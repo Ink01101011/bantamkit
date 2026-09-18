@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the twelve tools, the two resource templates, and the wire.
+ * The MCP surface: the fourteen tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -172,8 +172,11 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
   // Registration order IS served order, so `bantamkit_status` was appended, `memory_compact`
-  // after it, `skill_audit` after that and `memory_dream` after that, and the others stay
-  // exactly where they were. A list that reordered would be a wire change nobody asked for.
+  // after it, `skill_audit` after that, `memory_dream` after that, and `work_plan` then
+  // `shiftwork_plan` after that (job `workplan-dag`, W5) — and the others stay exactly where
+  // they were. A list that reordered would be a wire change nobody asked for, and the order
+  // of the last two is the reference's own, which `runtime-py/tests/data/
+  // served-tool-surface.json` pins as a golden and `wire.mjs` compares side to side.
   // `bantamkit_read` (tenth) and `repo_map` (thirteenth) left the list on 2026-09-12 (job50
   // I5); the node below pins that.
   assert.deepEqual(names, [
@@ -189,6 +192,8 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'skill_audit',
     'memory_dream',
     'token_ledger',
+    'work_plan',
+    'shiftwork_plan',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -231,7 +236,7 @@ test('the retired tools are exactly the ruled ones, none is served, and a call t
     { args: ['--store', freshStore()] },
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
-  assert.equal(names.length, 12);
+  assert.equal(names.length, 14);
   for (const name of RETIRED_TOOLS) assert.ok(!names.includes(name), `${name} is still served`);
   for (const [id, name] of [[3, 'bantamkit_read'], [4, 'repo_map']]) {
     const refused = byId(lines, id).result;
@@ -1242,7 +1247,7 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(rows.length, 5, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
-  assert.equal(rows[2], 'serving 12 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`

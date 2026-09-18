@@ -32,7 +32,7 @@ import { reprValue, type PyValue } from '../pyjson.js';
 /** What a parameter accepts. `optional` is `| None = None` in the signature. */
 export interface FieldSpec {
   readonly name: string;
-  readonly kind: 'str' | 'int' | 'bool' | 'dict' | 'dictInt' | 'dictStr' | 'listStr';
+  readonly kind: 'str' | 'int' | 'bool' | 'dict' | 'dictInt' | 'dictStr' | 'listDict' | 'listStr';
   readonly optional: boolean;
   /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
   readonly le?: bigint;
@@ -192,6 +192,16 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
       opt('versions', 'dictStr'),
     ],
   },
+  // `work_plan(nodes: list[dict[str, Any]])` on the reference (W4). The only
+  // `list[dict[...]]` on the surface and the reason `listDict` exists: pydantic validates
+  // the list's ITEMS, one error per bad element and in the list's own order, with the
+  // INDEX in the location — `nodes.0`, the way `listStr` reports it. `dict[str, Any]` puts
+  // no constraint on what is INSIDE a node, so `{}` and `{'id': 5}` both validate here and
+  // reach `workplan.plan`, exactly as they do on the reference.
+  work_plan: { model: 'work_planArguments', fields: [req('nodes', 'listDict')] },
+  // `shiftwork_plan(checkpoint: str)` — the same one strict `str` the other four
+  // shift-work tools take.
+  shiftwork_plan: { model: 'shiftwork_planArguments', fields: [req('checkpoint', 'str')] },
 };
 
 /** `type(value).__name__`, for the `input_type=` half of the sentence. */
@@ -310,6 +320,28 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
         else bad.push(checked);
       }
       return bad.length > 0 ? bad : { value: { t: 'dict', v: coerced } };
+    }
+    case 'listDict': {
+      // `list[dict[str, Any]]`. The same shape as `listStr` below with the `dict`
+      // validator on the items: measured against pydantic 2.13, `{'nodes': 'x'}` is one
+      // `list_type` at `nodes` and `{'nodes': [1, {...}, 'z']}` is TWO `dict_type` errors,
+      // `nodes.0` and `nodes.2` — every bad item, not the first.
+      if (value.t !== 'list') {
+        return [{ loc: spec.name, type: 'list_type', msg: 'Input should be a valid list', input: value }];
+      }
+      const bad: RawError[] = [];
+      for (let i = 0; i < value.v.length; i += 1) {
+        const item = value.v[i]!;
+        if (item.t !== 'dict') {
+          bad.push({
+            loc: `${spec.name}.${i}`,
+            type: 'dict_type',
+            msg: 'Input should be a valid dictionary',
+            input: item,
+          });
+        }
+      }
+      return bad.length > 0 ? bad : { value };
     }
     case 'listStr': {
       if (value.t !== 'list') {

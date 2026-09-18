@@ -47,8 +47,10 @@
     //
     // A JSON file cannot expand `~`, so both paths are spelled out in full.
     //
-    // Measured (npx-cold-start.mjs --offline, kept-install arms): launched this way with
-    // PATH=/usr/bin:/bin:/usr/sbin:/sbin and the network cut, it served 12 tools in 0.09 s.
+    // Measured (npx-cold-start.mjs --offline, kept-install arms; served-tools: dated — the
+    // surface was twelve at 0.33.0 and nobody re-ran this offline launch against fourteen):
+    // launched this way with PATH=/usr/bin:/bin:/usr/sbin:/sbin and the network cut, it
+    // served 12 tools in 0.09 s.
     // The same install's `node_modules/.bin/bantamkit-mcp` exited 127 in 0.16 s with
     // `env: node: No such file or directory`, because its first line is
     // `#!/usr/bin/env node`. That is why "command" is node itself and not the shim.

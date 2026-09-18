@@ -63,6 +63,7 @@ import type { Memory } from '../memory/component.js';
 import { PyOSError, asPyOSError, pyReadText } from '../memory/pyfs.js';
 import { fromJs, parseJson, reprValue, toJs, type PyValue } from '../pyjson.js';
 import * as shiftwork from '../shiftwork.js';
+import { plan, type PlanNode } from '../workplan.js';
 import { buildIdentity, SERVER_NAME } from './identity.js';
 import { ARG_MODELS, PyValidationFailure, validateArguments } from './pyargs.js';
 import { sdkJson } from './sdkjson.js';
@@ -80,13 +81,20 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The twelve, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The fourteen, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
  * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
  * beside `memory_save` where a reader would look for it, `skill_audit` after that,
- * `memory_dream` after that and `token_ledger` after that, for the same reason the reference
- * appends: registration order IS the served order, and appending is the only edit that
- * leaves the others where every existing declaration says they are.
+ * `memory_dream` after that, `token_ledger` after that and `work_plan` then `shiftwork_plan`
+ * after that, for the same reason the reference appends: registration order IS the served
+ * order, and appending is the only edit that leaves the others where every existing
+ * declaration says they are.
+ *
+ * `work_plan` BEFORE `shiftwork_plan` is the reference's order (`mcpserver.py`'s `tools`
+ * list), and it is load-bearing rather than alphabetical: `runtime-py/tests/data/
+ * served-tool-surface.json` pins the served order as a golden and `wire.mjs` compares the
+ * two `tools/list` answers frame by frame, so registering them the other way round is a
+ * red in three places and a wire change nobody asked for.
  *
  * `bantamkit_read` (tenth) and `repo_map` (thirteenth) LEFT this list on the user's ruling
  * of 2026-09-12 (job50, I5), the same ruling that took them out of the reference's
@@ -111,6 +119,8 @@ export const MCP_TOOLS = [
   'skill_audit',
   'memory_dream',
   'token_ledger',
+  'work_plan',
+  'shiftwork_plan',
 ] as const;
 
 /** The served set, for the call path: a name outside it is unknown, whatever `ARG_MODELS` says. */
@@ -201,6 +211,44 @@ function rpcError(code: number, message: string, data: unknown): Error {
 
 const asDict = (value: PyValue): Map<string, PyValue> => (value.t === 'dict' ? value.v : new Map());
 const asText = (value: PyValue | undefined): string => (value && value.t === 'str' ? value.v : '');
+
+/**
+ * `work_plan`'s `nodes` as `workplan.plan` takes them.
+ *
+ * The reference's model is `list[dict[str, Any]]`, so pydantic guarantees a list of dicts
+ * and NOTHING about what is inside one; `workplan.plan` then reads `node["id"]`,
+ * `node.get("depends_on") or []` and `node.get("priority", 0)` off raw Python objects. This
+ * reproduces those three reads and their defaults.
+ *
+ * A NODE WITH NO `id` RAISES, and raising is the port: `node["id"]` is a `KeyError` on the
+ * reference, whose `str()` is the key in single quotes, so the SDK's envelope reads
+ * `Error executing tool work_plan: 'id'`. Defaulting it here would answer a plan over a
+ * node the reference refused to look at.
+ *
+ * WHERE THE DYNAMIC HALF STOPS, said rather than hidden. Python keeps an id's own type and
+ * this side stringifies it with `str()`'s spelling (`reprValue` for every non-`str`), so a
+ * document mixing `5` and `"5"` is two nodes there and one here, and a non-numeric
+ * `priority` is a `TypeError` there and a 0 here. Both need a node whose types contradict
+ * `assets/tools/work_plan.json`, which nothing in the shift-work corpus produces; they are
+ * named here because an unwritten difference is the one that is found later.
+ */
+function planNodes(value: PyValue | undefined): PlanNode[] {
+  const pyText = (v: PyValue): string => (v.t === 'str' ? v.v : reprValue(v));
+  const items = value !== undefined && value.t === 'list' ? value.v : [];
+  return items.map((item) => {
+    const node = item.t === 'dict' ? item.v : new Map<string, PyValue>();
+    const id = node.get('id');
+    if (id === undefined) throw new BantamError("'id'");
+    const declared = node.get('depends_on');
+    const priority = node.get('priority');
+    return {
+      id: pyText(id),
+      // `list(node.get("depends_on") or [])`: missing, `null` and `[]` are one case.
+      depends_on: declared !== undefined && declared.t === 'list' ? declared.v.map(pyText) : [],
+      priority: priority !== undefined && (priority.t === 'int' || priority.t === 'float') ? Number(priority.v) : 0,
+    };
+  });
+}
 
 /** `int | None` after validation: the tagged int, or `null` for the default. */
 function asInt(value: PyValue | undefined): number | null {
@@ -963,6 +1011,48 @@ function runTool(
         return { value: { t: 'str', v: noted(tokenledger.asJson(result)) }, wrapped: true };
       });
     }
+    case 'work_plan':
+      // `depends_on` turned into the batches that may run in parallel, over any task list
+      // the caller hands over. No path, no file, no clock: `workplan.plan` is Layer 1 and
+      // this is the seam that serves it.
+      //
+      // `result` is added HERE and not in `workplan.plan`, which answers the COMPUTATION
+      // (`batches`, `sequence`, `width`) rather than a wire shape. The wire shape is the
+      // tool asset's, so the verdict key goes on at the seam that serves it — the same
+      // division `shiftwork.planBatches` uses one layer down. A refusal already carries its
+      // own `result` and passes through untouched, because `recordResult` reads that key to
+      // write the register's verdict to the log.
+      //
+      // THE MAPPING IS INSIDE THE CLOSURE, not above it, so that a node the core cannot
+      // read raises where the reference raises: within `_record_result`, which records the
+      // exception and re-raises it into the `Error executing tool work_plan:` envelope.
+      return {
+        value: notedDict(
+          recordResult(log, name, () => {
+            const answer = plan(planNodes(args.get('nodes')));
+            if ('result' in answer) return { t: 'dict', v: new Map<string, PyValue>([['result', { t: 'str', v: 'error' }], ['reason', { t: 'str', v: answer.reason }]]) };
+            return {
+              t: 'dict',
+              v: new Map<string, PyValue>([
+                ['result', { t: 'str', v: 'plan' }],
+                ['batches', { t: 'list', v: answer.batches.map((batch) => ({ t: 'list', v: batch.map((id) => ({ t: 'str', v: id })) })) }],
+                ['sequence', { t: 'list', v: answer.sequence.map((id) => ({ t: 'str', v: id })) }],
+                ['width', { t: 'int', v: BigInt(answer.width) }],
+              ]),
+            };
+          }),
+        ),
+        wrapped: false,
+      };
+    case 'shiftwork_plan':
+      // The read-only batch view of a checkpoint. Registered beside `shiftwork_status`
+      // because it is the same kind of thing: a path in, an answer out, and not one byte
+      // written — `test/shiftwork.test.mjs` hashes the checkpoint AND its `.log.jsonl`
+      // before and after to hold that, rather than commenting it.
+      return {
+        value: notedDict(recordResult(log, name, () => shiftwork.planBatches(asText(args.get('checkpoint'))))),
+        wrapped: false,
+      };
     default:
       // `tool_manager.call_tool` raises `ToolError(f"Unknown tool: {name}")`, which the
       // handler turns into an isError result rather than a JSON-RPC error.

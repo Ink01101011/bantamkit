@@ -32,11 +32,14 @@
  *   one stray write breaks the wire suite. Nothing in this module names `process.stdout`,
  *   `process.stderr` or `console`.
  * * **Metadata only.** Never a tool argument's value, never a memory body, never a
- *   validated output, never a query, never a document row. Most of the twelve tools take
- *   unbounded free text and two take absolute paths (`skill_audit`'s `root`, and
- *   `token_ledger`'s `root` and `prices`; `bantamkit_read`'s `path` and `repo_map`'s `root`
- *   and `focus` were two more until both tools left the roster — job50 I5, 2026-09-12 — and
- *   their DORMANT handlers still record the same way); each record carries counts and
+ *   validated output, never a query, never a document row. Nine of the fourteen tools take
+ *   an unbounded string and among those `skill_audit`'s `root`, `token_ledger`'s `root` and
+ *   `prices` and the four shift-work tools' `checkpoint` are absolute paths
+ *   (`bantamkit_read`'s `path` and `repo_map`'s `root` and `focus` were two more until both
+ *   tools left the roster — job50 I5, 2026-09-12 — and their DORMANT handlers still record
+ *   the same way; `work_plan` is NOT one of the nine: its `nodes` is an array of objects,
+ *   not an array of strings, so the rule does not reach the ids inside it); each record
+ *   carries counts and
  *   tokens from a closed set — never the path, never a part name, never a skill id, never a
  *   mapped file, never a session id, never a model name).
  *   Every value written here is an ASCII token from a closed set, a number, or a boolean.

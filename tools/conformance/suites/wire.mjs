@@ -1393,7 +1393,7 @@ export async function run(ctx) {
     notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
   }
 
-  // ------------------------------------------------ the roster: twelve tools, pinned per side
+  // ----------------------------------------------- the roster: fourteen tools, pinned per side
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
@@ -1407,9 +1407,14 @@ export async function run(ctx) {
    * It was FOURTEEN with `token_ledger` last until the user's ruling of 2026-09-12 (job50,
    * I5) took `bantamkit_read` (tenth) and `repo_map` (thirteenth) off both rosters; the
    * assets stayed, claiming no surface, and the handlers went dormant. `skill_audit` moved
-   * from eleventh to tenth and `memory_dream` from twelfth to eleventh, and the list below is
-   * the whole of what moved. A tool re-added on ONE side fails `advertisement: id 2` and the
-   * literal; a tool re-added on BOTH fails only the literal, which is why it exists.
+   * from eleventh to tenth and `memory_dream` from twelfth to eleventh. It is fourteen again
+   * as of job `workplan-dag` (W4, W5), which APPENDED `work_plan` and then `shiftwork_plan`
+   * behind `token_ledger` — a different fourteen, and the order of those last two is
+   * contract, not alphabetising: `runtime-py/tests/data/served-tool-surface.json` pins it as
+   * a golden too. The count alone would not have noticed the swap, which is why the names in
+   * order are the literal and the count is a separate case beside it. A tool re-added on ONE
+   * side fails `advertisement: id 2` and the literal; a tool re-added on BOTH fails only the
+   * literal, which is why it exists.
    */
   {
     const ROSTER = [
@@ -1425,6 +1430,8 @@ export async function run(ctx) {
       'skill_audit',
       'memory_dream',
       'token_ledger',
+      'work_plan',
+      'shiftwork_plan',
     ];
     const RETIRED = ['bantamkit_read', 'repo_map'];
     const { python, node } = results.get('advertisement');
@@ -1435,15 +1442,15 @@ export async function run(ctx) {
     });
     cases.push({ name: 'roster: the tool names, in order, side to side', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'roster: the twelve served tool names, in order, as a literal on each side',
+      name: 'roster: the fourteen served tool names, in order, as a literal on each side',
       kind: 'json',
       expected: { python: ROSTER, node: ROSTER },
       actual: { python: toolNames(python), node: toolNames(node) },
     });
     cases.push({
-      name: 'roster: twelve tools, and neither repo_map nor bantamkit_read among them, on each side',
+      name: 'roster: fourteen tools, and neither repo_map nor bantamkit_read among them, on each side',
       kind: 'json',
-      expected: { python: { count: 12, retired: [] }, node: { count: 12, retired: [] } },
+      expected: { python: { count: 14, retired: [] }, node: { count: 14, retired: [] } },
       actual: { python: rosterOf(python), node: rosterOf(node) },
     });
   }

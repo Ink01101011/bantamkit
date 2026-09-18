@@ -16,13 +16,15 @@
  * a careless port would rewrite un-escaped on its first successful clock-out.
  */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const dist = new URL('../dist/', import.meta.url);
-const { clockIn, clockOut, status, HISTORY_RING_SIZE } = await import(new URL('shiftwork.js', dist));
+const { clockIn, clockOut, planBatches, status, HISTORY_RING_SIZE } = await import(new URL('shiftwork.js', dist));
 const { dumpJson, fromJs, parseJson, toJs } = await import(new URL('pyjson.js', dist));
 const { pyNewlineOut, pyReadText, pyReplace, pyRepr, pySuffix, PyUnicodeDecodeError } =
   await import(new URL('memory/pyfs.js', dist));
@@ -1602,4 +1604,212 @@ test('clock_in in a READ-ONLY store costs only the record: the brief returns who
   clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1 }, { now: 2 });
   assert.equal(logLines(path).at(-1).briefed, false);
   rmSync(root, { recursive: true, force: true });
+});
+
+// ================================================== the MCP flavor: planBatches (W5)
+//
+// The adapter over `workplan.plan` — the Node half of `shiftwork.plan_batches`. It owns
+// exactly three decisions (which units are still in the graph, that every unit has
+// priority 0, and that the cursor is echoed) and NO graph logic at all; the batching is
+// Layer 1's and is gated in `test/workplan.test.mjs` beside its own implementation.
+//
+// These are the same twelve nodes the reference's `test_shiftwork.py` runs, against the
+// same two shipped checkpoints, because the failure this unit exists to avoid is the two
+// adapters mapping one checkpoint differently while both cores agree.
+
+/**
+ * The two SHIPPED example checkpoints — tracked templates under `tools/shiftwork/`, NOT a
+ * live `.shiftwork/` job. The file header's rule is about the latter: a live checkpoint
+ * mutates while a job runs. `test/server.test.mjs` already reads the codefix one this way.
+ */
+const repoShiftwork = join(dirname(dirname(fileURLToPath(import.meta.url))), '..', 'tools', 'shiftwork');
+const EXAMPLE_CHECKPOINT = join(repoShiftwork, 'example-checkpoint.json');
+const CODEFIX_CHECKPOINT = join(repoShiftwork, 'example-codefix-checkpoint.json');
+
+/**
+ * `[checkpoint digest, ledger digest or null]` — the pair a read-only tool must not move.
+ *
+ * The ledger is in here because it is the surface a "read-only" tool would break FIRST:
+ * `clock_in` is also read-only about the CHECKPOINT and still appends a brief line beside
+ * it. A hash of the checkpoint alone would call that read-only.
+ */
+const digests = (path) => [
+  createHash('sha256').update(readFileSync(path)).digest('hex'),
+  existsSync(`${path}.log.jsonl`)
+    ? createHash('sha256').update(readFileSync(`${path}.log.jsonl`)).digest('hex')
+    : null,
+];
+
+/** The shipped example, as a mutable document. */
+const exampleDocument = () => JSON.parse(readFileSync(EXAMPLE_CHECKPOINT, 'utf8'));
+
+test('plan_batches of the codefix chain is four batches of one', () => {
+  // CF1 -> CF2 -> CF3 -> CF4, all `todo`: a straight line has nothing to parallelize.
+  const root = fresh();
+  const path = join(root, 'checkpoint.json');
+  writeFileSync(path, readFileSync(CODEFIX_CHECKPOINT, 'utf8'), 'utf8');
+  assert.deepEqual(js(planBatches(path)), {
+    result: 'plan',
+    batches: [['CF1'], ['CF2'], ['CF3'], ['CF4']],
+    ready: ['CF1'],
+    sequence: ['CF1', 'CF2', 'CF3', 'CF4'],
+    width: 1,
+    cursor: 'CF1',
+  });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a done unit leaves the graph and its edges are satisfied', () => {
+  // Marking CF1 done drops it AND resolves CF2's edge into it — otherwise the whole
+  // remaining graph would be unplannable the moment the first unit finished.
+  const root = fresh();
+  const doc = JSON.parse(readFileSync(CODEFIX_CHECKPOINT, 'utf8'));
+  doc.plan.units[0].status = 'done';
+  doc.plan.cursor = 'CF2';
+  const r = js(planBatches(writeCheckpoint(root, doc)));
+  assert.deepEqual(r.batches, [['CF2'], ['CF3'], ['CF4']]);
+  assert.deepEqual(r.ready, ['CF2']);
+  assert.deepEqual(r.sequence, ['CF2', 'CF3', 'CF4']);
+  assert.equal(r.cursor, 'CF2');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a dropped unit is satisfied exactly like a done one', () => {
+  // `dropped` is terminal for the driver's success test, so it is terminal here too: a
+  // unit nobody will ever run cannot be a reason to hold its dependants back.
+  const root = fresh();
+  const doc = JSON.parse(readFileSync(CODEFIX_CHECKPOINT, 'utf8'));
+  doc.plan.units[0].status = 'dropped';
+  doc.plan.cursor = 'CF2';
+  assert.deepEqual(js(planBatches(writeCheckpoint(root, doc))).batches, [['CF2'], ['CF3'], ['CF4']]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('in_progress and blocked units stay in the graph', () => {
+  // The three non-terminal statuses are all still work, so all three still batch.
+  const root = fresh();
+  const doc = exampleDocument();
+  doc.plan.units[0].status = 'in_progress';
+  doc.plan.units[1].status = 'blocked';
+  const r = js(planBatches(writeCheckpoint(root, doc)));
+  assert.deepEqual(r.batches, [['U1'], ['U3'], ['U4']]);
+  assert.deepEqual(r.ready, ['U1']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('independent units share one batch and width reports the fan-out', () => {
+  // The number the whole design exists to produce: two units that may run at once.
+  const root = fresh();
+  const doc = exampleDocument();
+  doc.plan.units[2].depends_on = ['U1']; // U4 waits for U1, not for U3
+  const r = js(planBatches(writeCheckpoint(root, doc)));
+  assert.deepEqual(r.batches, [['U3', 'U4']]); // U1 is done and out of the graph
+  assert.deepEqual(r.ready, ['U3', 'U4']);
+  assert.equal(r.width, 2);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('order inside a batch is plan.units order, not sorted', () => {
+  // Every unit gets priority 0 — the checkpoint schema has no priority field and this job
+  // does not add one — so the tie-break is the order `plan.units` declares, and that is
+  // contract. Reversing the declaration reverses the batch; a sorted answer would not
+  // move, so this is what distinguishes the two.
+  const root = fresh();
+  const doc = exampleDocument();
+  doc.plan.units[2].depends_on = ['U1'];
+  doc.plan.units = [doc.plan.units[0], doc.plan.units[2], doc.plan.units[1]];
+  assert.deepEqual(js(planBatches(writeCheckpoint(root, doc))).ready, ['U4', 'U3']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an all-terminal plan is an empty answer, not a refusal', () => {
+  // The same judgement `clock_in` already makes: a finished job is an ANSWER.
+  const root = fresh();
+  const doc = exampleDocument();
+  for (const unit of doc.plan.units) unit.status = 'done';
+  const r = js(planBatches(writeCheckpoint(root, doc)));
+  assert.equal(r.result, 'plan');
+  assert.deepEqual([r.batches, r.ready, r.sequence, r.width], [[], [], [], 0]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('the schema refusal passes through planBatches unchanged', () => {
+  // `readValid`'s refusal is returned verbatim, so a caller cannot tell which read-only
+  // tool it asked. All three shapes: unparseable, parseable-but-invalid, unreadable.
+  const root = fresh();
+  const notJson = join(root, 'broken.json');
+  writeFileSync(notJson, '{not json at all', 'utf8');
+  assert.equal(js(planBatches(notJson)).result, 'error');
+
+  const doc = exampleDocument();
+  doc.version = 99;
+  const bad = js(planBatches(writeCheckpoint(root, doc, 'bad.json')));
+  assert.equal(bad.result, 'error');
+  assert.ok(bad.reason.startsWith('checkpoint invalid: '), bad.reason);
+
+  const missing = js(planBatches(join(root, 'nope.json')));
+  assert.equal(missing.result, 'error');
+  assert.ok(missing.reason.startsWith('checkpoint unreadable'), missing.reason);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a cycle among the remaining units is the core refusal, verbatim', () => {
+  // Layer 1 composes the sentence; the adapter neither rewrites nor swallows it. The
+  // sentence is pinned as a per-side LITERAL for the reason the module header gives: a
+  // string both runtimes copied is invisible to the differential half of the harness.
+  const root = fresh();
+  const doc = exampleDocument();
+  doc.plan.units[1].depends_on = ['U4']; // U3 <-> U4
+  assert.deepEqual(js(planBatches(writeCheckpoint(root, doc))), {
+    result: 'error',
+    reason: 'the graph has a cycle: U3 -> U4 -> U3',
+  });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('an edge into a unit no longer in the graph is not an unknown dependency', () => {
+  // The load-bearing half of "satisfied": U3 depends on U1, U1 is `done` and therefore
+  // absent from the nodes handed to Layer 1. If the adapter passed the edge through, the
+  // core's unknown-dependency refusal would fire on every checkpoint with a finished unit
+  // — which is every checkpoint after the first clock-out.
+  const root = fresh();
+  const r = js(planBatches(writeCheckpoint(root, exampleDocument())));
+  assert.equal(r.result, 'plan');
+  assert.deepEqual(r.batches, [['U3'], ['U4']]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('planBatches writes nothing — the checkpoint AND the ledger are byte-unchanged', () => {
+  // THE load-bearing test of the design. Without it, "read-only" is a comment.
+  //
+  // Hashes, not `existsSync`: a ledger line appended to an existing log, or a checkpoint
+  // rewritten with the same key order, would both survive a weaker check. The log must
+  // still be ABSENT after the first call, which is the state `clock_in` would have changed.
+  const root = fresh();
+  const path = writeCheckpoint(root, exampleDocument());
+  const log = `${path}.log.jsonl`;
+  assert.equal(existsSync(log), false);
+  const before = digests(path);
+  assert.equal(js(planBatches(path)).result, 'plan');
+  assert.deepEqual(digests(path), before);
+  assert.equal(existsSync(log), false, 'planBatches appended a ledger line beside the checkpoint');
+
+  // And on a checkpoint that ALREADY has a ledger: the bytes of both must not move.
+  clockIn(path, { now: 1 });
+  assert.equal(existsSync(log), true);
+  const withLog = digests(path);
+  assert.equal(js(planBatches(path)).result, 'plan');
+  assert.deepEqual(digests(path), withLog);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('planBatches does not move the repo’s own example checkpoints', () => {
+  // Run against the shipped files themselves, at their real paths. A tool that writes only
+  // when it CAN — beside a checkpoint in a real tree rather than under the temp directory
+  // — would pass every node above and be caught here.
+  for (const checkpoint of [EXAMPLE_CHECKPOINT, CODEFIX_CHECKPOINT]) {
+    const before = digests(checkpoint);
+    assert.equal(js(planBatches(checkpoint)).result, 'plan');
+    assert.deepEqual(digests(checkpoint), before, `${checkpoint} moved`);
+  }
 });

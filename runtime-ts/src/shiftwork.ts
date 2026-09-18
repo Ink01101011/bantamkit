@@ -69,6 +69,7 @@ import {
 } from './memory/pyfs.js';
 import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, type PyValue } from './pyjson.js';
 import { checkSchema, PyJsonSchemaUnsupported } from './pyjsonschema.js';
+import { plan, type PlanNode } from './workplan.js';
 
 export const SCHEMA_NAME = 'shiftwork-checkpoint';
 /** The accounting line's shape lives on the TOOL asset, not in a second copy here (F5). */
@@ -726,5 +727,75 @@ export function status(checkpoint: string): PyValue {
     ['units', { t: 'dict', v: counts }],
     ['open_questions', int(subList(subDict(doc, 'handoff'), 'open_questions').v.length)],
     ['last_history', history.v.length > 0 ? history.v[history.v.length - 1]! : { t: 'null' }],
+  ]);
+}
+
+// ------------------------------------------------------------------------- plan_batches
+
+/**
+ * Read-only batch view of a checkpoint. Never mutates.
+ *
+ * The adapter over `workplan.plan`, and it holds no graph logic of its own: a loop over
+ * `depends_on` here would be Layer 1's work done in Layer 5. Its whole content is the three
+ * decisions below plus the shape it answers in.
+ *
+ * **A `done` or `dropped` unit is SATISFIED**, which is two things and not one: it leaves
+ * the graph, AND every edge pointing at it is treated as already resolved. Only the first
+ * would be a defect rather than a simplification — `workplan.plan` refuses an edge into an
+ * id no node declares, so dropping the unit while keeping the edge would make every
+ * checkpoint with one finished unit unplannable, which is every checkpoint after its first
+ * clock-out. `todo`, `in_progress` and `blocked` are all still work and all stay in. The
+ * terminal pair is `TERMINAL_UNIT_STATUS`, the same constant the driver's success test
+ * uses, so "finished" means one thing in this module.
+ *
+ * **Every unit gets priority 0.** The checkpoint schema has no priority field and this
+ * design does not add one, so the tie-break inside a batch falls through to the core's
+ * insertion order — `plan.units` order, which is the order a reader of the checkpoint
+ * already sees.
+ *
+ * **The cursor is ECHOED, never written.** `clockOut` remains the only thing that moves it
+ * and stays v1-linear; this tool reports what the graph PERMITS beside the single pointer
+ * that says what the driver will actually do next, so an orchestrator can read the two side
+ * by side and decide. Advisory, in one direction only.
+ *
+ * Returns `{result: 'plan', batches, ready, sequence, width, cursor}` — `ready` is
+ * `batches[0]`, or `[]` when the plan is all terminal, which is an ANSWER and not a
+ * refusal. Refusals pass through verbatim in both directions: `readValid`'s for a
+ * checkpoint that cannot be read or does not validate, and the core's own duplicate-id /
+ * unknown-dependency / cycle sentences for a graph that cannot batch.
+ */
+export function planBatches(checkpoint: string): PyValue {
+  const { document, refusal } = readValid(pyJoin(checkpoint));
+  if (refusal !== null) return refusal;
+  const doc = document!;
+  const units = subList(subDict(doc, 'plan'), 'units').v;
+  const terminal = (unit: PyDict): boolean => TERMINAL_UNIT_STATUS.has(text(unit.v.get('status')!));
+  const satisfied = new Set<string>();
+  for (const unit of units) {
+    if (terminal(unit as PyDict)) satisfied.add(text((unit as PyDict).v.get('id')!));
+  }
+  const nodes: PlanNode[] = [];
+  for (const unit of units) {
+    const u = unit as PyDict;
+    if (terminal(u)) continue;
+    // `list(unit.get("depends_on") or [])`. `depends_on` is REQUIRED by the schema, so
+    // `readValid` has already refused a unit without it and this default cannot fire —
+    // it is written anyway because the reference writes it, and a default on one side
+    // only is how two runtimes come to disagree about real data.
+    const declared = u.v.get('depends_on');
+    const deps = declared !== undefined && declared.t === 'list' ? declared.v.map(text) : [];
+    nodes.push({ id: text(u.v.get('id')!), depends_on: deps.filter((dep) => !satisfied.has(dep)), priority: 0 });
+  }
+
+  const answer = plan(nodes);
+  if ('result' in answer) return errorResult(answer.reason);
+  const batches = answer.batches.map((batch) => ({ t: 'list', v: batch.map(str) }) as PyValue);
+  return dict([
+    ['result', str('plan')],
+    ['batches', { t: 'list', v: batches }],
+    ['ready', batches.length > 0 ? batches[0]! : { t: 'list', v: [] }],
+    ['sequence', { t: 'list', v: answer.sequence.map(str) }],
+    ['width', int(answer.width)],
+    ['cursor', field(subDict(doc, 'plan'), 'cursor')],
   ]);
 }

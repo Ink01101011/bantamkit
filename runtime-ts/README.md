@@ -5,7 +5,7 @@ store, JSON Schema validation and shift-work tools. Install it from **npm** with
 command, connect it to **Claude Code**, **Claude Desktop**, **Cursor** or **GitHub Copilot in VS
 Code**, and every later launch starts **offline**. No Python, `pip`, `uv`, `pipx` or venv.
 
-It serves the same twelve tools, `bantamkit_status` prompt and two resource templates as the
+It serves the same fourteen tools, `bantamkit_status` prompt and two resource templates as the
 Python server on **PyPI** (`pip install "bantamkit[mcp]"`), and reads and writes the same memory
 store. The two are compared frame by frame: 8,130 conformance cases on 2026-09-15, with every
 intentional difference written down as a ruling.
@@ -50,9 +50,9 @@ npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cur
 From 0.34.0 this runs `npm install --prefix ~/.bantamkit/mcp` once (Windows:
 `%USERPROFILE%\.bantamkit\mcp`, not measured) and records
 `<the node that ran it> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`, both absolute.
-No later launch needs npx, the registry or your PATH. Measured from the published 0.34.0:
-install exit 0 in 8.14 s; the recorded command then served 12 tools in 0.09 s with the network
-cut.
+No later launch needs npx, the registry or your PATH. Measured from the published 0.34.0
+(served-tools: dated — the surface was twelve then): install exit 0 in 8.14 s; the recorded
+command then served 12 tools in 0.09 s with the network cut.
 
 - **`@latest` matters:** without it npx may reuse an older cached resolve.
 - **It skips npm when the kept install already reports this version or a newer one.** It never
@@ -235,10 +235,15 @@ startup. In Claude Code: `/mcp` → reconnect. In Claude Desktop: a full restart
 **Verify with `bantamkit_status`, not the install log.** It reports the version and the
 `build_id` of *the code that is answering you*:
 
+*(A capture from 0.30.0. The version and build-digest bytes are left as a dated transcript
+rather than hand-edited to a number nobody ran; **line 3 is the exception and tracks the
+surface**, for the reason `docs/status.md` gives — the tool count is a live claim this repo
+gates against a running server, and a marker would only hide it from that gate.)*
+
 ```
 bantamkit Active 🟢
 version 0.30.0, build sha256:4441619d…
-serving 12 tools, 1 prompt, 2 resource templates
+serving 14 tools, 1 prompt, 2 resource templates
 ```
 
 A version that moved and a `build_id` that did not means you are reading a config, not a process.
