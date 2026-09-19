@@ -117,10 +117,29 @@ const check = (ok, what, detail = '') => {
  * `tools/list` (server.ts: `const advertised = MCP_TOOLS.map(...)`). Names and order, not a
  * count — a count cannot tell a rename from a swap.
  *
- * It is read from `src/`, deliberately, and not from `dist/` or from the tarball. `npm pack`
- * runs `prepack` (asset sync) and NOT `build`, so a stale `dist/` really does ship; comparing
+ * It is read from `src/`, deliberately, and not from `dist/` or from the tarball. Comparing
  * the tarball's advertisement against the compiled copy it was cut from could only ever agree
- * with itself. Against the source, a `dist/` that predates a tool is a red line here.
+ * with itself: `dist/` is an OUTPUT of the thing under test, so it cannot also be the
+ * statement of what the thing should do. `src/` is the only copy of that statement npm never
+ * touches, and against it a `dist/` that predates a tool is a red line here.
+ *
+ * THIS PARAGRAPH USED TO GIVE A DIFFERENT REASON, AND job56 FALSIFIED IT. It said `npm pack`
+ * runs `prepack` (asset sync) and NOT `build`, "so a stale `dist/` really does ship". That was
+ * true, and it shipped (served-tools: dated — the two numbers below are what the two PUBLISHED
+ * 0.35.0 artifacts answered on 2026-09-19, not what this checkout serves):
+ * `bantamkit-mcp@0.35.0` went to npm serving 12 tools against PyPI's 14,
+ * from a `dist/` compiled before `work_plan` existed. `runtime-ts/package.json`'s `prepack` now
+ * builds first (`scripts/build-for-pack.mjs`), so that sentence no longer describes npm.
+ *
+ * The DECISION it defended is unchanged, and this gate keeps its teeth for a reason that never
+ * depended on `prepack` at all: it is the only check in the repository that measures a REAL
+ * `npm pack` end to end, against a declaration the pack did not produce. `prepack` closing the
+ * hazard at source means the gate should now stay green — it does NOT mean the gate is
+ * redundant, because every way the build can go wrong lands here and nowhere else. One such
+ * way is measured rather than imagined: job56 tried `--incremental` to make the new prepack
+ * build cheap, and with a `.tsbuildinfo` on disk and `dist/` deleted, `tsc` emitted nothing at
+ * all and exited 0. A build that succeeds and produces no output passes every check that reads
+ * `src/`, and fails this one, because this one asks the tarball.
  *
  * A parse that finds nothing is a hard stop (exit 2), not a silent pass: an empty expectation
  * would make this check vacuous rather than failing, which is the defect it exists to prevent.

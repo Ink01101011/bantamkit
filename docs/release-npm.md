@@ -55,6 +55,58 @@ unconditionally — but only from the *package* root, and this repository's lice
 level above it. Both vendored copies are gitignored: a tracked second copy is a copy that
 drifts.
 
+## One command: `tools/release/publish.sh`
+
+The checklist below is the hand-run form, and it is still what the script does — but doing it
+by hand is how job56 happened. **`tools/release/publish.sh` is the whole release in one
+command**: test → build → prepublish → npm → PyPI, refusing before it ships and skipping what
+is already published.
+
+```bash
+tools/release/publish.sh --dry-run    # phases 0-3; nothing leaves the machine
+tools/release/publish.sh              # the real thing, from a terminal
+```
+
+Eight phases, in this order, because the order is a safety property — everything that can be
+checked before the first upload is checked before the first upload:
+
+| phase | what it does |
+|---|---|
+| 0 preflight | version sites agree, tree clean, toolchain present, PyPI credential present, **and both registries asked what they already carry** |
+| 1 test | the four gates. 0 failures is the bar |
+| 2 build | both artifacts, into a **clean directory named for the version** |
+| 3 prepublish | `npx-cold-start.mjs`, `twine check`, and the asset pack inside each artifact **hashed** against `assets/` |
+| 4 npm | `npm publish --access public`, output streamed live |
+| 5 verify npm | `registry.npmjs.org` directly, then the **published** tarball driven over stdio |
+| 6 PyPI | `twine upload`, **by exact filename** |
+| 7 verify PyPI | the per-version endpoint, sha256 against the local build, then an install with the `[mcp]` extra driven over stdio |
+| 8 summary | what shipped, and what is still yours to do (tag, GitHub release) |
+
+Four properties are worth knowing before you trust it:
+
+- **It is resumable.** A version already on a registry is skipped, never republished — npm
+  forbids republishing a version anyway, so skipping is the only correct behaviour and not a
+  convenience. This repository has a half-done release in its history: npm carries `0.26.0`
+  and PyPI's version list starts at `0.27.0`. Rerunning the script is how that gets finished.
+- **It refuses rather than proceeds.** Every refusal above happens while nothing has left the
+  machine. The refusals are named one by one, all of them in a single run.
+- **There is no secret in it.** npm publishes with no `--otp`: it answers with a callback URL
+  you authenticate in a browser, which is why the script streams npm's output straight through
+  and never captures it. twine reads its token from `~/.pypirc`, whose *existence* preflight
+  checks and whose contents it never reads — a missing credential is a refusal in phase 0, not
+  a prompt in phase 6 after npm has already published.
+- **`--dry-run` is a real rehearsal.** It runs phases 0–3 — including a real `npm pack`, a real
+  `python -m build` and the cold-start gate — and stops before the first publish.
+
+Two checks in phase 3 exist because nothing else in the repository performs them. The asset
+pack is compared **byte for byte** (`tools/release/check-asset-pack.py`): both packaging gates
+compare asset *names*, and job56 measured a pack with the right names and the wrong bytes going
+through a green build, a green packaging gate and an installed server that advertised a
+description and an input schema no commit carries — silently. And both published artifacts are
+**driven over real stdio** (`tools/release/roster-probe.mjs`) and compared against `MCP_TOOLS`,
+because every local gate rebuilds before it looks, and the artifact that reaches a user is the
+one nothing was asking.
+
 ## Before you publish
 
 Everything here is verification, and none of it contacts the registry.
@@ -91,6 +143,35 @@ Requires an explicit decision. Not part of any automated flow.
 cd runtime-ts
 npm publish --access public
 ```
+
+### `npm publish` refuses if the install gate is red
+
+`prepublishOnly` runs `runtime-ts/scripts/gate-before-publish.mjs`, which runs
+`tools/conformance/npx-cold-start.mjs` — a real `npm pack`, installed through `npx` into a
+cache that has never seen it and driven over stdio — and **exits non-zero if it fails, which
+stops the publish before npm packs anything or contacts the registry**. Measured with npm
+11.6.2 on a worktree whose `dist/` predated a tool: `npm publish --dry-run` stopped at the
+hook, printing `FAIL: npx cold start, 2 failed checks` naming the missing tools, with no
+`prepack`, no tarball listing and no `Publishing to …` line after it. The `--offline` arm is
+not used; it costs minutes, and a release step nobody will wait for is one somebody will
+bypass.
+
+`npm publish --dry-run` is a faithful rehearsal of that refusal: the hook does the same work
+and returns the same exit code. Two consequences worth knowing before you type it — it
+**compiles `runtime-ts/dist/`** and installs a real tarball into a temp `npx` cache (it still
+publishes nothing), and on an already-published version it ends at npm's own
+`You cannot publish over the previously published versions`, which is npm refusing, not the
+gate.
+
+**What the hook does not cover**, each measured rather than assumed:
+
+- `npm publish --ignore-scripts` skips it silently.
+- `npm publish <tarball.tgz>` skips it — npm runs no lifecycle script out of a pre-built
+  tarball. Publishing a tarball someone else packed is publishing something nothing checked.
+- The PyPI half: `twine upload` has no hook of any kind. (The Python wheel has no compiled
+  artifact that can go stale — see the job56 row in [porting.md](porting.md).)
+- It gates the **working tree you are standing in**, not the commit or the tag. The merged-PR
+  checkbox above is what ties the two together.
 
 Then verify from a clean directory, not from the checkout:
 
