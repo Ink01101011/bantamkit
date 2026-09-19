@@ -32,7 +32,7 @@ const FROZEN_CORPUS = join(here, 'fixtures', 'codec-corpus');
  * cannot see a fixture that loses ten files, which is exactly the size of shrink the live-store
  * era used to hide.
  */
-const FROZEN_FACTS = 57;
+const FROZEN_FACTS = 56;
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
@@ -54,8 +54,8 @@ const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
  *
  * WHAT THE LIVE READING WAS FOR IS NOT LOST. Real files carry accidents nobody invents — a
  * description PyYAML decided to single-quote, an em dash surviving a wrap at the 80th column,
- * leaked `</body>` markup in a body, `---` inside another. `fixtures/codec-corpus/` is 57 of
- * those files byte for byte, with the four that should not become public files left out and
+ * leaked `</body>` markup in a body, `---` inside another. `fixtures/codec-corpus/` is 56 of
+ * those files byte for byte, with the five that should not become public files left out and
  * named in its README. Every shape the live store exhibited survived the cut, including each
  * one with a single carrier.
  *
@@ -211,7 +211,7 @@ export async function run(ctx) {
   // reports PASS in exactly the same words. This one case is what makes that a failure.
   cases.push(corpusIntegrityCase(audit));
   // And the floor is not enough on its own. It is 32, deliberately far below any real store,
-  // so it would sit green through a fixture that lost twenty of its 57 files — which is a
+  // so it would sit green through a fixture that lost twenty of its 56 files — which is a
   // larger shrink than the one that went unnoticed for a whole job. This pins the exact
   // committed count against a typed literal, so the only way the corpus changes size is a
   // commit that also changes `FROZEN_FACTS`. It is not a Python-vs-Node comparison; it is the

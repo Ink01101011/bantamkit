@@ -50,7 +50,7 @@ THE TWO BLANKET EXEMPTIONS, and why each is principled rather than convenient.
    is read from the ledger rather than spelled here, so the two cannot drift.
 
 2. The frozen snapshot directories in `FROZEN_SNAPSHOTS`. Added J55-2b, 2026-09-19,
-   after J55-1 (`3619715`) committed `tools/conformance/fixtures/codec-corpus/` — 57
+   after J55-1 (`3619715`) committed `tools/conformance/fixtures/codec-corpus/facts/` —
    fact files copied BYTE FOR BYTE out of this machine's live memory store on a date —
    and two of them turned this gate red for saying 11 where the surface is now 12.
    Both sentences are dated on their face — quoted here from dated records, not
@@ -69,10 +69,25 @@ THE TWO BLANKET EXEMPTIONS, and why each is principled rather than convenient.
    APPENDED to, so a marker could in principle be written into one. A frozen snapshot
    may not be touched at all: the fixture's README stakes the whole codec suite on
    these being the bytes Python actually wrote — "a codec that round-trips only its
-   own output is the failure this suite exists to catch". Editing two of the 57 to
-   carry `served-tools: dated` would satisfy this gate by falsifying that claim and
-   by silently repairing the evidence a differential suite is built on. So the
-   snapshot is exempted and the bytes stay as Python wrote them.
+   own output is the failure this suite exists to catch". Editing two of the frozen
+   facts to carry `served-tools: dated` would satisfy this gate by falsifying that
+   claim and by silently repairing the evidence a differential suite is built on. So
+   the snapshot is exempted and the bytes stay as Python wrote them.
+
+   NARROWED J55-5, 2026-09-19, to `codec-corpus/facts/` from the whole of
+   `codec-corpus/`. The justification above is that every figure in a byte-for-byte
+   snapshot is dated by construction, and only `facts/` is byte-for-byte. `README.md`
+   is hand-written and re-edited on every re-freeze, and `index.md` was edited on the
+   way in (the excluded rows removed) and again when a fact was dropped; neither is
+   bounded by `FROZEN_FACTS`, which counts `facts/*.md` alone, so a tool count written
+   into either of them moved no file count and reddened nothing. Zero claims matched in
+   those two files at the time, so this changed no verdict — it closed the gap before it
+   opened. MEASURED both ways on the day, by appending one line to the fixture's
+   `README.md` and running this node against each root in turn: the old root passed
+   (`1 passed`), the narrowed root failed and named the file and line. The probe line,
+   which is a fabricated claim and not a record of any surface:
+
+     (served-tools: dated) "PROBE (temporary): both launchers serve 3 tools."
 
    Why this is NOT an unbounded hole. It names a directory rather than the two files
    that happen to trip it today (two is this month's accident; the category is the
@@ -192,7 +207,7 @@ MARKER = "served-tools: dated"
 # See blanket exemption 2 in the module docstring for why these are exempt and why the
 # rule names a directory rather than the files inside it that trip the gate today.
 # Repo-relative, POSIX separators, no trailing slash.
-FROZEN_SNAPSHOTS = ("tools/conformance/fixtures/codec-corpus",)
+FROZEN_SNAPSHOTS = ("tools/conformance/fixtures/codec-corpus/facts",)
 
 
 def _is_frozen_snapshot(rel: str) -> bool:
@@ -506,7 +521,7 @@ def test_the_frozen_snapshot_exemption_names_a_directory_and_stops_there() -> No
     """The frozen-snapshot exemption must be a DIRECTORY rule, and must not leak past it.
 
     J55-2b added the second blanket exemption. The failure mode a two-filename exemption
-    has is that it is spelled from today's accident: two of the 57 frozen facts happen to
+    has is that it is spelled from today's accident: two of the frozen facts happen to
     state a count. The third one to do so — the next time the corpus is re-frozen — would
     be red with nobody having changed the gate's reasoning. So the rule names the
     directory, and this node is what keeps it a directory rule.

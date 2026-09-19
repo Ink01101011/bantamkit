@@ -1,5 +1,4 @@
 - [[bantamkit-program-resume-pointer]] (project) — how to resume bantamkit program work after a cleared context, and why PR 32 is not merged
-- [[cache-miss-tail-is-cold-resume-of-huge-threads]] (project) — what causes the expensive cache-miss calls and why the 1h prompt-cache TTL turns a lunch break into the week's priciest calls
 - [[claude-md-rules-chain-is-42-percent-of-the-floor]] (project) — the largest token lever the user can pull without any code change - their own CLAUDE.md import chain, measured and bisected
 - [[compaction-ceiling-is-fixed-overhead]] (project) — how far compaction can actually be pushed - 66.62 percent of total tokens, 84.53 percent of the movable part, and the 21.2 percent fixed overhead is what makes 80 percent impossible
 - [[differential-is-blind-to-symmetric-regression]] (feedback) — why a two-runtime conformance case stays green through a real regression, three measured instances, and what a gate must pin instead
