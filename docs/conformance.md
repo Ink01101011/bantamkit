@@ -441,6 +441,17 @@ local gates, each run alone. At this tree:
 function of repo content rather than of test code, so each is quoted with the tree it was
 measured at and none of them is a standing number.
 
+**AMENDED 2026-09-19 (J55-3) — the lint gate is wider than the stamp above records.** That
+stamp is left exactly as it was written: `.venv/bin/ruff check runtime-py` really did print
+`All checks passed!` at `f484c70`, and editing the command inside a stamp to today's
+spelling would claim a run nobody made. Since job54 the gate is
+`.venv/bin/ruff check runtime-py tools`, with the rule set it applies to `tools/` pinned in
+`tools/ruff.toml` (J55-2). Re-measured here rather than restated:
+
+<!-- provenance: value=All checks passed!; commit=bb9a246 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
+`.venv/bin/ruff check runtime-py tools` **All checks passed!** at `bb9a246` plus this
+commit's working tree. That is the command to run today; the narrow one above is a record.
+
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how
 many emitted files carry PyYAML's 80-column wrap, and the one remaining `NOT MEASURED HERE`
@@ -466,15 +477,29 @@ on disk`), and the corpus-integrity case added by I3b is what makes a SHRINKING 
 failure rather than a smaller number. These are pointers, not records, so they are corrected in
 place.
 
-The `codec` and `store` suites use the live fact store as a fixture because synthetic
-facts do not carry the shapes real ones do — 35 of the 65 carry PyYAML's 80-column wrap.
-
-They **copy it to scratch with `cpSync(..., { preserveTimestamps: true })`** and run there.
-Timestamps are preserved so the `created`-from-mtime fallback reads the same number on both
-sides instead of two `cp` clock samples.
+The `store` suite uses the live fact store as a fixture because synthetic facts do not carry
+the shapes real ones do. It **copies it to scratch with
+`cpSync(..., { preserveTimestamps: true })`** and runs there. Timestamps are preserved so the
+`created`-from-mtime fallback reads the same number on both sides instead of two `cp` clock
+samples.
 
 Never point a suite at a store it does not own. A defect in exactly this area destroyed a
 13,472-byte index once already.
+
+**AMENDED 2026-09-19 — `codec` no longer reads the live store at all (J55-1).** It generates
+exactly three cases per corpus fact, so reading a gitignored directory the operator writes to
+all day made the suite's SIZE an input nobody could reproduce: job54 recorded 8166, 8169 and
+8172 cases from `--all` at one unchanged commit, and J55-1 measured `--suite codec` going
+**390 → 393 → 390** at `2b5c2ad` across one `memory_save` and its removal, with no code
+change. Its real half is now **57 fact files frozen in git** at
+`tools/conformance/fixtures/codec-corpus/`, copied byte for byte out of the live store on
+2026-09-19 with four left out and named in that fixture's `README.md`; the adversarial set is
+unchanged at 65. `--corpus` / `$BANTAMKIT_CONFORMANCE_CORPUS` therefore steer `store` only.
+Measured at `2b5c2ad` plus this change, three consecutive runs and a run with an extra fact in
+the live store: **379 cases, 0 failures** every time. The floor case is kept and joined by a
+typed literal pinning the exact committed file count — `CORPUS_FLOOR` is 32 and would sit green
+through a fixture that lost twenty files. Shown red rather than asserted: removing one fact
+reds 1 case at 376, halving the corpus to 28 reds 2 at 292, deleting the fixture reds 2 at 208.
 
 ## Platform
 

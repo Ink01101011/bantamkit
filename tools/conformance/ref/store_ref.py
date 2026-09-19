@@ -260,7 +260,7 @@ def main() -> None:
             "ceiling": [undegraded_index_ceiling(b) for b in request["budgets"]],
             "degraded": [
                 [size * 100 >= INDEX_PRESSURE_PERCENT * b for size in sizes]
-                for b, sizes in zip(request["budgets"], request["sizes"])
+                for b, sizes in zip(request["budgets"], request["sizes"], strict=False)
             ],
         }
     elif op == "winerror":
