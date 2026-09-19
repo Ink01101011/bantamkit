@@ -245,7 +245,7 @@ That position only holds if the operator has a lever, and until 2026-08-21 there
 was none: `index_budget` was on no argument parser, and the four ops above were
 reachable only by importing `MemoryStore` from Python. Both halves now exist —
 see [The operator CLI](#the-operator-cli) below and `--index-budget` on
-`bantamkit-mcp`. The MCP surface is now exactly twelve tools, `memory_compact`
+`bantamkit-mcp`. The MCP surface is now exactly fourteen tools, `memory_compact`
 being the ninth and `memory_dream` the eleventh; the in-process eval agent still
 binds only `memory_save` and `memory_recall`.
 

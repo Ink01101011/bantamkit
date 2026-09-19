@@ -29,6 +29,8 @@ pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v
 | `shiftwork_clock_in` | Validate a shift-work checkpoint and return the cursor unit's brief — see [Shift-work tools](#shift-work-tools) |
 | `shiftwork_clock_out` | Record a finished unit: validate-whole, atomic write, append an accounting line |
 | `shiftwork_status` | Read-only progress summary of a checkpoint |
+| `shiftwork_plan` | Read-only batch view of a checkpoint: which units its `depends_on` graph permits to run at once. Echoes the cursor unchanged and never mutates — see [Shift-work tools](#shift-work-tools) |
+| `work_plan` | The same batcher over any `{id, depends_on, priority}` graph handed to it. Takes no path and opens no file |
 | `bantamkit_status` | Is bantamkit working, and which bantamkit — one short report a person can read in the transcript. Also a **prompt** of the same name, so an operator can invoke it themselves. See [Status](status.md) |
 | `bantamkit_read` | Read a document through a program rather than its raw bytes: the manifest first (kind, parts, row counts, omissions), then rows a page at a time. See [Reader](docread.md) |
 | `skill_audit` | Price the skill catalogue every session pays for and name the collisions in it. See [Skill audit](skill-audit.md) |
@@ -41,7 +43,7 @@ The `memory_save`/`memory_recall` input schemas are the asset pack's
 ## Shift-work tools
 
 The [shift-work](shiftwork.md) driver spawns sessions from outside; these
-three tools serve the inverse topology — an already-running Claude session
+five tools serve the inverse topology — an already-running Claude session
 orchestrating subagents under checkpoint discipline (the
 [orchestrator flavor](shiftwork.md#orchestrator-flavor)). Every call
 full-schema-validates the checkpoint against
@@ -86,6 +88,23 @@ and never read by the tools.
 **`shiftwork_status(checkpoint)`** — read-only:
 `{"result": "status", "cursor", "units": {status: count}, "open_questions":
 <count>, "last_history"}`. Never mutates.
+
+**`shiftwork_plan(checkpoint)`** — read-only:
+`{"result": "plan", "batches", "ready", "sequence", "width", "cursor"}`.
+Which units the checkpoint's `depends_on` graph permits to run at once;
+`ready` is `batches[0]` and `width` is the widest fan-out. Units with
+status `done` or `dropped` are satisfied and drop out of the graph. The
+cursor is echoed **unchanged** — this tool reports, it does not dispatch,
+and cursor advance is still v1-linear.
+
+**`work_plan(nodes)`** — read-only, and the only tool here that takes no
+path: `nodes` is a list of `{id, depends_on, priority}` and the answer is
+`{"result": "plan", "batches", "sequence", "width"}`. Three refusals,
+one sentence each, shared with `shiftwork_plan` —
+`duplicate node id <id>`, `node <id> depends on <dep>, which no node
+declares`, `the graph has a cycle: <a> -> <b> -> <a>`. Empty `nodes` is an
+answer, not a refusal. Full semantics, with a measured worked example:
+[shiftwork.md → The batch view](shiftwork.md#the-batch-view-shiftwork_plan-and-work_plan).
 
 No lock tool, deliberately: this topology has one orchestrator by
 construction. The driver's `driver.lock` guards cross-process races;

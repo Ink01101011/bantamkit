@@ -332,7 +332,7 @@ async def test_a_raising_handler_names_the_type_and_leaks_no_argument_value(tmp_
 
 @synchronous
 async def test_no_free_text_argument_reaches_the_file(tmp_path):
-    """Eight of the twelve tools take an unbounded string. None of it is on disk.
+    """Nine of the fourteen tools take an unbounded string. None of it is on disk.
 
     (The count is `eventlog.py`'s rule over `assets/tools/`: a `string` parameter with no
     `enum` or `maxLength`, or an array of such.) `skill_audit`'s `root` is covered by

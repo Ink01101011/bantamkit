@@ -54,7 +54,8 @@ npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cur
 From 0.34.0 this runs `npm install --prefix ~/.bantamkit/mcp` once and records
 `<the node that ran it> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`, both absolute.
 No later launch needs npx, the registry or your PATH, and it never downgrades a newer kept
-install. Measured from the published 0.34.0: install exit 0 in 8.14 s; the recorded command
+install. Measured from the published 0.34.0 (served-tools: dated — the surface was twelve
+then): install exit 0 in 8.14 s; the recorded command
 then served 12 tools in 0.09 s with the network cut.
 
 - **The recorded node is one version of node.** Switch away from it and re-run with `--force`.

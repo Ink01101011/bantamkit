@@ -888,12 +888,14 @@ test('memory_dream is served eleventh and its schema is the asset', async () => 
   const client = await connect(memory, new EventLog(join(dir, 'log.jsonl'), CAP_BYTES, () => FIXED_MS));
   const listed = (await client.listTools()).tools;
 
-  // Eleventh of TWELVE since job50 I5 retired `bantamkit_read` (tenth) and `repo_map`
-  // (thirteenth) — index and length re-derived from a stdio `tools/list` on 2026-09-13
-  // (J50-16). The index is pinned rather than `at(-1)`: this node is about where
-  // `memory_dream` sits, and a later tool moving in behind it must not be able to satisfy it.
+  // Eleventh of FOURTEEN. It was eleventh of twelve when job50 I5 retired `bantamkit_read`
+  // (tenth) and `repo_map` (thirteenth); `work_plan` and `shiftwork_plan` were APPENDED
+  // (job `workplan-dag`, W5), which moves the total and leaves the index where it was —
+  // exactly the case this node is built for. The index is pinned rather than `at(-1)`:
+  // this node is about where `memory_dream` sits, and a later tool moving in behind it
+  // must not be able to satisfy it.
   assert.equal(listed[10].name, 'memory_dream');
-  assert.equal(listed.length, 12);
+  assert.equal(listed.length, 14);
   const asset = JSON.parse(readFileSync(join(scratchRepoRoot(), 'assets', 'tools', 'memory_dream.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'memory_dream');
   assert.equal(served.description, asset.description);

@@ -53,6 +53,8 @@ const SERVED_ORDER = [
   'skill_audit',
   'memory_dream',
   'token_ledger',
+  'work_plan',
+  'shiftwork_plan',
 ];
 
 const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-tokenledger-')));
@@ -473,10 +475,13 @@ test('a price table that will not load stops rather than reporting no rate', () 
 // ------------------------------------------------------------------- the MCP surface
 
 test('the tool is served twelfth and its schema is the asset', async () => {
-  // Twelfth, not fourteenth, since `bantamkit_read` and `repo_map` left the roster (job50 I5,
-  // 2026-09-12). The index is pinned rather than `at(-1)` for the reason `skill_audit`'s node
-  // gives: this node is about where `token_ledger` sits, and a later tool moving in behind it
-  // must not be able to satisfy it. Re-derived from `tools/list`, not renumbered by hand.
+  // Twelfth of fourteen. It became twelfth rather than fourteenth when `bantamkit_read` and
+  // `repo_map` left the roster (job50 I5, 2026-09-12), and `work_plan` and `shiftwork_plan`
+  // were then APPENDED behind it (job `workplan-dag`, W5), which is why `SERVED_ORDER` grew
+  // and this index did not. The index is pinned rather than `at(-1)` for the reason
+  // `skill_audit`'s node gives: this node is about where `token_ledger` sits, and a later
+  // tool moving in behind it must not be able to satisfy it. Re-derived from `tools/list`,
+  // not renumbered by hand.
   const { memory, log } = make(room());
   const client = await connect(memory, log);
   const listed = (await client.listTools()).tools;

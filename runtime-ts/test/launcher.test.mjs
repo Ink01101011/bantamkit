@@ -335,6 +335,8 @@ test('the launcher completes a handshake and the Node build is the one answering
     'skill_audit',
     'memory_dream',
     'token_ledger',
+    'work_plan',
+    'shiftwork_plan',
   ]);
   // `runtime` is the discriminator RB-P84 put in the output precisely because two endpoints
   // under one name had byte-identical surfaces: the Python build has no such key at all, so

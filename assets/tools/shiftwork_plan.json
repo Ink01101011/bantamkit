@@ -1,0 +1,25 @@
+{
+  "name": "shiftwork_plan",
+  "description": "Shift-work plan: read-only batch view of a checkpoint — which units its `depends_on` graph permits to run in parallel. Answers `{\"result\": \"plan\", \"batches\", \"ready\", \"sequence\", \"width\", \"cursor\"}`: `ready` is `batches[0]`, the units dispatchable right now, and `width` is the largest batch length, the widest fan-out. Units with status `done` or `dropped` are satisfied — dropped from the graph, and edges pointing at them treated as already resolved; `todo`, `in_progress` and `blocked` stay in it. Every unit has priority 0, because the checkpoint schema has no priority field, so order inside a batch is `plan.units` order. Same refusal sentences as `work_plan` for a duplicate id, an unknown dependency or a cycle, and the same refusals `shiftwork_status` gives for a checkpoint it cannot read. It reports what the dependency graph permits; it does not move the cursor, which is echoed unchanged so the single-pointer contract and the batch view can be read side by side. An orchestrator stays responsible for what it actually dispatches: `depends_on` encodes logical order, not file contention. Never mutates.",
+  "surfaces": [
+    "mcp"
+  ],
+  "parameters": {
+    "properties": {
+      "checkpoint": {
+        "title": "Checkpoint",
+        "type": "string"
+      }
+    },
+    "required": [
+      "checkpoint"
+    ],
+    "type": "object",
+    "title": "shiftwork_planArguments"
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "title": "shiftwork_planDictOutput"
+  }
+}

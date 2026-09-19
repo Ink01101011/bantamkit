@@ -43,12 +43,17 @@ Exactly five lines when healthy, `\n`-joined, no trailing newline:
 *(Captured from a live run at `0.32.1`, the version current when J50-16A regenerated this
 sample. The schema below is unchanged by the 0.33.0 release that follows it — only the
 version and build-digest bytes on line 2 would differ in a fresh capture — so the sample is
-left as a dated transcript rather than hand-edited to a number nobody ran.)*
+left as a dated transcript rather than hand-edited to a number nobody ran. **Line 3 is the
+exception and is re-captured, not hand-edited**: the tool count is a live claim this repo
+gates (`runtime-py/tests/test_served_tool_count_records.py`), so it tracks the surface
+rather than the capture date. Its current value is the one
+`test_the_status_tool_is_served_and_answers_active_on_a_healthy_server` asserts against a
+real server, and a marker would only hide it from the gate.)*
 
 ```
 bantamkit Active 🟢
 version 0.32.1, build sha256:bcf716f32e0b461383a30ed1539843f309b1eb00621f1d4d663440c605d3d685
-serving 12 tools, 1 prompt, 2 resource templates
+serving 14 tools, 1 prompt, 2 resource templates
 memory: 57 facts in the project store, index 12258 of 24000 bytes
 event log: off
 ```
@@ -58,7 +63,7 @@ When something is wrong, line 1 changes and a block is appended:
 ```
 bantamkit Degraded 🟠
 version 0.32.1, build sha256:bcf7…
-serving 12 tools, 1 prompt, 2 resource templates
+serving 14 tools, 1 prompt, 2 resource templates
 memory: 12 facts in the project store, index 23900 of 24000 bytes
 event log: on
 2 problems:
@@ -117,9 +122,10 @@ One shape always, including for a single condition. It reaches the two kinds of 
 differently, because a JSON result has no margin to write in:
 
 * **prose replies** (`memory_save`, `memory_recall`): `reply + "\n\n" + notice`.
-* **structured replies** (`validate_json`, the three `shiftwork_*`, `build_identity`): a
+* **structured replies** (`validate_json`, the four `shiftwork_*`, `work_plan`,
+  `build_identity`): a
   `"bantamkit_degraded"` key carrying the same string, **last** in key order and present
-  only when non-empty. All six advertise `additionalProperties: true`, so a key that comes
+  only when non-empty. All seven advertise `additionalProperties: true`, so a key that comes
   and goes is inside the contract they already declare.
 * **`bantamkit_status` itself never carries the footer** — the report already lists every
   condition in full.

@@ -99,7 +99,7 @@ One version, both runtimes, one release commit:
 ## The MCP server without Python: `npx bantamkit-mcp`
 
 Everything above installs the **library**, and it needs Python. The **MCP server** does
-not, any more. `runtime-ts/` is a pure-Node port of it — the same twelve tools, the same
+not, any more. `runtime-ts/` is a pure-Node port of it — the same fourteen tools, the same
 prompt, the same two resource templates, the same memory store on disk — packaged so a
 teammate can add one line to `.mcp.json` and be done:
 
@@ -188,7 +188,7 @@ Three things change, and all three are measured, not predicted:
 >   warm cache did not help.
 > - A local tarball (`--package=<file>.tgz`) on its own warm cache started in 1.35 s. A
 >   local file needs no registry round trip. Do not read this as "every npx launch hangs".
-> - `npx --offline -y bantamkit-mcp@0.33.0` on the warm cache served 12 tools in 0.40 s.
+> - `npx --offline -y bantamkit-mcp@0.33.0` on the warm cache served 12 tools in 0.40 s (served-tools: dated — the surface was twelve at 0.33.0).
 >   On a cache that had never seen the package, `npx --offline -y` exited 1 in 2.69 s with
 >   `npm error code ENOTCACHED`.
 >
@@ -261,14 +261,14 @@ an empty npm cache:
   ran no npm, and exited 0 in 0.35 s. That run launched from a local tarball spec, which needs
   no registry.
 - That command shape, launched under `PATH=/usr/bin:/bin:/usr/sbin:/sbin` with the network
-  cut, served 12 tools in 0.09 s (`node tools/conformance/npx-cold-start.mjs --offline`,
-  kept-install arm).
+  cut, served 12 tools in 0.09 s (served-tools: dated — the surface was twelve at 0.34.0;
+  `node tools/conformance/npx-cold-start.mjs --offline`, kept-install arm).
 
 Measured again from the **published** 0.34.0 (`.shiftwork/notes-job51/J51-11-published.md`):
 
 - `npx -y bantamkit-mcp@0.34.0 --install cursor` in a scratch `HOME` with a cold cache exited 0
-  in 8.14 s; the recorded command served 12 tools in 0.12 s with the network cut by proxy and
-  0.09 s with it also cut by a sandbox, under a GUI PATH.
+  in 8.14 s; the recorded command served 12 tools (served-tools: dated — twelve at 0.34.0) in
+  0.12 s with the network cut by proxy and 0.09 s with it also cut by a sandbox, under a GUI PATH.
 - **A second `--install` offline depends on how you launch it.** `npx -y bantamkit-mcp@0.34.0
   --install copilot` with the network cut hung silently for 60 s — npx's own registry hang,
   before bantamkit starts. `npx --offline -y bantamkit-mcp@0.34.0 --install copilot` exited 0 in

@@ -1472,14 +1472,19 @@ def test_the_tool_is_served_at_its_pinned_index_and_its_schema_is_the_assets(tmp
     # with the surface and the index does not — that is the whole design of this node.
     # (served-tools: dated — the counts above are job45's.) The index DID move once, and
     # for the one reason it can: a tool AHEAD of it left. `bantamkit_read` (tenth) was
-    # retired by ruling (job50 I5, 2026-09-12), so `skill_audit` is tenth of twelve now.
+    # retired by ruling (job50 I5, 2026-09-12), so `skill_audit` is tenth of FOURTEEN now:
+    # `work_plan` and `shiftwork_plan` were APPENDED (job `workplan-dag`, W4), which moves
+    # the total and leaves the index where it was — the case this node was built for.
     # RENAMED 2026-09-19 (J55-3): this node's name used to spell that ordinal out in
     # English, and the spelling did not move when the index did — so the name ended up
     # contradicting the `order[9]` directly below it. The name now says "at its pinned
     # index" and carries no ordinal at all, so the next tool to leave the roster ahead of
-    # `skill_audit` moves the assertion and leaves the name still true.
+    # `skill_audit` moves the assertion and leaves the name still true. J55-3 wrote "tenth
+    # of twelve" here; the append above made that twelve a fourteen the same day, which is
+    # the drift the rename was meant to stop happening to the NAME — and the exact reason
+    # the count belongs in the assertion, not in prose.
     assert order[9] == "skill_audit"
-    assert len(order) == 12
+    assert len(order) == 14
     asset = json.loads(
         (REPO / "assets" / "tools" / "skill_audit.json").read_text(encoding="utf-8")
     )

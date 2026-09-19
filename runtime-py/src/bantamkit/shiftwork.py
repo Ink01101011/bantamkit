@@ -67,7 +67,9 @@ a missing one.
 
 Cursor advance is v1-linear: it moves to the first non-terminal unit in plan
 order and ignores `depends_on` — non-linear plans need a planner unit to
-reorder `plan.units` first.
+reorder `plan.units` first. `plan_batches` below READS `depends_on` and answers
+the batch view, so the module no longer ignores the field; what still ignores it
+is CURSOR ADVANCE, and the batch view is read-only and moves nothing.
 
 No lock: the MCP topology has one orchestrator by construction. The driver's
 O_EXCL lock guards cross-process races this shape does not have, and clock-out
@@ -84,6 +86,7 @@ from typing import Any
 
 import jsonschema
 
+from bantamkit import workplan
 from bantamkit.assets import AssetNotFound, load_schema, load_tool_asset
 from bantamkit.contract import schema_error
 
@@ -549,4 +552,68 @@ def status(checkpoint: str) -> dict[str, Any]:
         "units": counts,
         "open_questions": len(document["handoff"]["open_questions"]),
         "last_history": history[-1] if history else None,
+    }
+
+
+def plan_batches(checkpoint: str) -> dict[str, Any]:
+    """Read-only batch view of a checkpoint. Never mutates.
+
+    The adapter over `workplan.plan`, and it holds no graph logic of its own: a loop over
+    `depends_on` here would be Layer 1's work done in Layer 5. Its whole content is the
+    three decisions below plus the shape it answers in.
+
+    **A `done` or `dropped` unit is SATISFIED**, which is two things and not one: it
+    leaves the graph, AND every edge pointing at it is treated as already resolved. Only
+    the first would be a defect rather than a simplification — `workplan.plan` refuses an
+    edge into an id no node declares, so dropping the unit while keeping the edge would
+    make every checkpoint with one finished unit unplannable, which is every checkpoint
+    after its first clock-out. `todo`, `in_progress` and `blocked` are all still work and
+    all stay in. The terminal pair is `TERMINAL_UNIT_STATUS`, the same constant the
+    driver's success test uses, so "finished" means one thing in this module.
+
+    **Every unit gets priority 0.** The checkpoint schema has no priority field and this
+    design does not add one, so the tie-break inside a batch falls through to the core's
+    insertion order — `plan.units` order, which is the order a reader of the checkpoint
+    already sees.
+
+    **The cursor is ECHOED, never written.** `clock_out` remains the only thing that
+    moves it and stays v1-linear; this tool reports what the graph PERMITS beside the
+    single pointer that says what the driver will actually do next, so an orchestrator
+    can read the two side by side and decide. Advisory, in one direction only.
+
+    Returns `{"result": "plan", "batches", "ready", "sequence", "width", "cursor"}` —
+    `ready` is `batches[0]`, or `[]` when the plan is all terminal, which is an ANSWER
+    and not a refusal. Refusals pass through verbatim in both directions: `_read_valid`'s
+    for a checkpoint that cannot be read or does not validate, and the core's own
+    duplicate-id / unknown-dependency / cycle sentences for a graph that cannot batch.
+    """
+    document, refusal = _read_valid(Path(checkpoint))
+    if refusal is not None:
+        return refusal
+    nodes = [
+        # `depends_on` is required by the schema, so `_read_valid` has already refused a
+        # unit without it and the default below cannot fire here. It is written anyway
+        # because the Node adapter reaches the same mapping and MUST default it too: a
+        # default on one side only is how two runtimes come to disagree about real data.
+        {"id": unit["id"], "depends_on": list(unit.get("depends_on") or []), "priority": 0}
+        for unit in document["plan"]["units"]
+        if unit["status"] not in TERMINAL_UNIT_STATUS
+    ]
+    satisfied = {
+        unit["id"] for unit in document["plan"]["units"] if unit["status"] in TERMINAL_UNIT_STATUS
+    }
+    for node in nodes:
+        node["depends_on"] = [dep for dep in node["depends_on"] if dep not in satisfied]
+
+    answer = workplan.plan(nodes)
+    if answer.get("result") == "error":
+        return answer
+    batches = answer["batches"]
+    return {
+        "result": "plan",
+        "batches": batches,
+        "ready": batches[0] if batches else [],
+        "sequence": answer["sequence"],
+        "width": answer["width"],
+        "cursor": document["plan"]["cursor"],
     }

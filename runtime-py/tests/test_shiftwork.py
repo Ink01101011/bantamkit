@@ -1,6 +1,7 @@
 """Shift-work: the checkpoint schema asset, its loader, the driver loop, the MCP-flavor ops."""
 
 import copy
+import hashlib
 import json
 import shutil
 import subprocess
@@ -1545,6 +1546,172 @@ def test_status_reports_empty_history_as_none(tmp_path, example):
 def test_status_errors_on_invalid_checkpoint(tmp_path):
     r = ops.status(str(write_checkpoint(tmp_path, "{not json at all")))
     assert r["result"] == "error"
+
+
+# --- MCP flavor: plan_batches -----------------------------------------------
+#
+# The adapter over `workplan.plan`. It owns exactly three decisions — which units are
+# still in the graph, that every unit has priority 0, and that the cursor is echoed —
+# and no graph logic at all; the batching itself is Layer 1's and is gated there.
+
+
+def digests(path):
+    """(checkpoint bytes, ledger bytes-or-None) — the pair a read-only tool must not move.
+
+    The ledger is included because it is the surface a "read-only" tool would break
+    FIRST: `clock_in` is also read-only about the checkpoint and still appends a brief
+    line beside it. A hash of the checkpoint alone would call that read-only.
+    """
+    log = Path(str(path) + ".log.jsonl")
+    return (
+        hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+        hashlib.sha256(log.read_bytes()).hexdigest() if log.exists() else None,
+    )
+
+
+def test_plan_batches_of_the_codefix_chain_is_four_batches_of_one(tmp_path):
+    """CF1 -> CF2 -> CF3 -> CF4, all `todo`: a straight line has nothing to parallelize."""
+    path = tmp_path / "checkpoint.json"
+    path.write_text(CODEFIX.read_text(encoding="utf-8"), encoding="utf-8")
+    assert ops.plan_batches(str(path)) == {
+        "result": "plan",
+        "batches": [["CF1"], ["CF2"], ["CF3"], ["CF4"]],
+        "ready": ["CF1"],
+        "sequence": ["CF1", "CF2", "CF3", "CF4"],
+        "width": 1,
+        "cursor": "CF1",
+    }
+
+
+def test_a_done_unit_leaves_the_graph_and_its_edges_are_satisfied(tmp_path):
+    """Marking CF1 done drops it AND resolves CF2's edge into it — otherwise the whole
+    remaining graph would be unplannable the moment the first unit finished."""
+    ckpt = json.loads(CODEFIX.read_text(encoding="utf-8"))
+    ckpt["plan"]["units"][0]["status"] = "done"
+    ckpt["plan"]["cursor"] = "CF2"
+    r = ops.plan_batches(str(write_checkpoint(tmp_path, ckpt)))
+    assert r["batches"] == [["CF2"], ["CF3"], ["CF4"]]
+    assert r["ready"] == ["CF2"]
+    assert r["sequence"] == ["CF2", "CF3", "CF4"]
+    assert r["cursor"] == "CF2"
+
+
+def test_a_dropped_unit_is_satisfied_exactly_like_a_done_one(tmp_path):
+    """`dropped` is terminal for the driver's success test, so it is terminal here too:
+    a unit nobody will ever run cannot be a reason to hold its dependants back."""
+    ckpt = json.loads(CODEFIX.read_text(encoding="utf-8"))
+    ckpt["plan"]["units"][0]["status"] = "dropped"
+    ckpt["plan"]["cursor"] = "CF2"
+    assert ops.plan_batches(str(write_checkpoint(tmp_path, ckpt)))["batches"] == [
+        ["CF2"],
+        ["CF3"],
+        ["CF4"],
+    ]
+
+
+def test_in_progress_and_blocked_units_stay_in_the_graph(tmp_path, example):
+    """The three non-terminal statuses are all still work, so all three still batch."""
+    example["plan"]["units"][0]["status"] = "in_progress"
+    example["plan"]["units"][1]["status"] = "blocked"
+    r = ops.plan_batches(str(write_checkpoint(tmp_path, example)))
+    assert r["batches"] == [["U1"], ["U3"], ["U4"]]
+    assert r["ready"] == ["U1"]
+
+
+def test_independent_units_share_one_batch_and_width_reports_the_fan_out(tmp_path, example):
+    """The number the whole design exists to produce: two units that may run at once."""
+    example["plan"]["units"][2]["depends_on"] = ["U1"]  # U4 waits for U1, not for U3
+    r = ops.plan_batches(str(write_checkpoint(tmp_path, example)))
+    assert r["batches"] == [["U3", "U4"]]  # U1 is done and out of the graph
+    assert r["ready"] == ["U3", "U4"]
+    assert r["width"] == 2
+
+
+def test_order_inside_a_batch_is_plan_units_order_not_sorted(tmp_path, example):
+    """Every unit gets priority 0 — the checkpoint schema has no priority field and this
+    job does not add one — so the tie-break is the order `plan.units` declares, and that
+    is contract. Reversing the declaration reverses the batch; a sorted answer would not
+    move, so this is what distinguishes the two."""
+    example["plan"]["units"][2]["depends_on"] = ["U1"]
+    example["plan"]["units"] = [
+        example["plan"]["units"][0],
+        example["plan"]["units"][2],
+        example["plan"]["units"][1],
+    ]
+    assert ops.plan_batches(str(write_checkpoint(tmp_path, example)))["ready"] == ["U4", "U3"]
+
+
+def test_an_all_terminal_plan_is_an_empty_answer_not_a_refusal(tmp_path, example):
+    """The same judgement `clock_in` already makes: a finished job is an ANSWER."""
+    for unit in example["plan"]["units"]:
+        unit["status"] = "done"
+    r = ops.plan_batches(str(write_checkpoint(tmp_path, example)))
+    assert r["result"] == "plan"
+    assert r["batches"] == [] and r["ready"] == [] and r["sequence"] == [] and r["width"] == 0
+
+
+def test_the_schema_refusal_passes_through_unchanged(tmp_path, example):
+    """`_read_valid`'s refusal is returned verbatim, so a caller cannot tell which
+    read-only tool it asked. Both shapes: unparseable, and parseable-but-invalid."""
+    assert ops.plan_batches(str(write_checkpoint(tmp_path, "{not json at all")))["result"] == (
+        "error"
+    )
+    bad = ops.plan_batches(str(write_checkpoint(tmp_path, mutate(example, ["version"], 99))))
+    assert bad["result"] == "error" and bad["reason"].startswith("checkpoint invalid: ")
+    missing = ops.plan_batches(str(tmp_path / "nope.json"))
+    assert missing["result"] == "error" and missing["reason"].startswith("checkpoint unreadable")
+
+
+def test_a_cycle_among_the_remaining_units_is_the_core_refusal(tmp_path, example):
+    """Layer 1 composes the sentence; the adapter neither rewrites nor swallows it."""
+    example["plan"]["units"][1]["depends_on"] = ["U4"]  # U3 <-> U4
+    r = ops.plan_batches(str(write_checkpoint(tmp_path, example)))
+    assert r == {"result": "error", "reason": "the graph has a cycle: U3 -> U4 -> U3"}
+
+
+def test_an_edge_into_a_unit_no_longer_in_the_graph_is_not_an_unknown_dependency(
+    tmp_path, example
+):
+    """The load-bearing half of "satisfied": U3 depends on U1, U1 is `done` and therefore
+    absent from the nodes handed to Layer 1. If the adapter passed the edge through, the
+    core's unknown-dependency refusal would fire on every checkpoint with a finished
+    unit — which is every checkpoint after the first clock-out."""
+    r = ops.plan_batches(str(write_checkpoint(tmp_path, example)))
+    assert r["result"] == "plan"
+    assert r["batches"] == [["U3"], ["U4"]]
+
+
+def test_plan_batches_writes_nothing(tmp_path, example):
+    """THE load-bearing test of the design. Without it, "read-only" is a comment.
+
+    Hashes, not `exists()`: a ledger line appended to an existing log, or a checkpoint
+    rewritten with the same key order, would both survive a weaker check. The log must
+    still be ABSENT afterwards, which is the state `clock_in` would have changed.
+    """
+    path = write_checkpoint(tmp_path, example)
+    log = Path(str(path) + ".log.jsonl")
+    assert not log.exists()
+    before = digests(path)
+    assert ops.plan_batches(str(path))["result"] == "plan"
+    assert digests(path) == before
+    assert not log.exists(), "plan_batches appended a ledger line beside the checkpoint"
+
+    # And on a checkpoint that ALREADY has a ledger: the bytes of both must not move.
+    ops.clock_in(str(path))
+    assert log.exists()
+    with_log = digests(path)
+    assert ops.plan_batches(str(path))["result"] == "plan"
+    assert digests(path) == with_log
+
+
+def test_plan_batches_does_not_move_the_repo_s_own_example_checkpoints():
+    """Run against the shipped files themselves, at their real paths. A tool that writes
+    only when it can — beside a checkpoint in a real tree rather than in `tmp_path` —
+    would pass every test above and be caught here."""
+    for checkpoint in (EXAMPLE, CODEFIX):
+        before = digests(checkpoint)
+        assert ops.plan_batches(str(checkpoint))["result"] == "plan"
+        assert digests(checkpoint) == before, f"{checkpoint} moved"
 
 
 # --- the code-fix example checkpoint ----------------------------------------

@@ -2,7 +2,7 @@
 
 `docs/memory.md` states, as a design decision, that `lint`, `archived` and
 `restore` are **not** agent tools — "lifecycle is an operator decision, not a
-model decision" — and the twelve-tool surface holds to it; `compact` is the one
+model decision" — and the fourteen-tool surface holds to it; `compact` is the one
 exception since job42 (`memory_compact`, the on-refusal path the model reaches
 itself). That position is only coherent if the operator can actually make the
 decision. Measured

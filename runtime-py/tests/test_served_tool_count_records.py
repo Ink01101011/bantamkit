@@ -498,17 +498,17 @@ def test_claim_still_matches_every_previously_caught_shape() -> None:
     adjacent-verb forms the widening must not lose.
     """
     still_good = [
-        "bantamkit serves 12 tools",
-        "serving 12 tools, 1 prompt, 2 resource templates",
-        "the servers served 12 tools",
-        "both launchers answer with twelve tools",  # adjacent, no token in between
-        "the CLI answered with twelve tools",  # adjacent, past tense
-        "registers twelve tools",
-        "registered twelve tools",
-        "the surface is still exactly twelve tools",
-        "serves the same twelve tools",
-        "one of the twelve served tools",
-        "the twelve-tool surface",
+        "bantamkit serves 14 tools",
+        "serving 14 tools, 1 prompt, 2 resource templates",
+        "the servers served 14 tools",
+        "both launchers answer with fourteen tools",  # adjacent, no token in between
+        "the CLI answered with fourteen tools",  # adjacent, past tense
+        "registers fourteen tools",
+        "registered fourteen tools",
+        "the surface is still exactly fourteen tools",
+        "serves the same fourteen tools",
+        "one of the fourteen served tools",
+        "the fourteen-tool surface",
     ]
     for line in still_good:
         assert CLAIM.search(line) is not None, f"widening lost a previously-matched shape: {line!r}"

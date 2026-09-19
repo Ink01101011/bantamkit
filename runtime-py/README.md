@@ -27,7 +27,7 @@ easy.
 | [Configuration](#configuration) | Every flag and variable, with its default |
 | [Update](#update) | `--update`, pipx, uv, then restart |
 | [Troubleshooting](#troubleshooting) | Timeouts, refusals, the wrong store |
-| [What it serves](#what-it-serves) | 12 tools, one prompt, two resource templates |
+| [What it serves](#what-it-serves) | 14 tools, one prompt, two resource templates |
 | [Requirements](#requirements) | Python and dependencies |
 | [The asset pack](#the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
 | [The operator CLI: `python -m bantamkit.memory`](#the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
@@ -60,7 +60,8 @@ python -m venv <env>
 ```
 
 `--install` records the venv's console script by absolute path with `"args": []`, so no launch
-needs the network or your shell's PATH. Measured on macOS arm64, it served 12 tools under a GUI
+needs the network or your shell's PATH. Measured on macOS arm64 (served-tools: dated — the
+surface was twelve then), it served 12 tools under a GUI
 app's PATH, `/usr/bin:/bin:/usr/sbin:/sbin`; the Windows layout (`<env>\Scripts\`) was not.
 
 **No network on the target? Carry a wheelhouse.** Download it on a machine with the **same OS,
@@ -68,9 +69,9 @@ CPU architecture and Python minor version** (some wheels, such as `pydantic_core
 one platform only), copy `wheels/` across, and install from it:
 
 ```bash
-python -m pip download "bantamkit[mcp]==0.34.3" -d wheels
+python -m pip download "bantamkit[mcp]==0.35.0" -d wheels
 python -m venv <env>
-<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.34.3"
+<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.35.0"
 <env>/bin/bantamkit-mcp --install cursor
 ```
 
@@ -244,7 +245,7 @@ you**; a new version with an old `build_id` means an old process.
 
 ## What it serves
 
-12 tools, the `bantamkit_status` prompt and two resource templates
+It serves 14 tools, the `bantamkit_status` prompt and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
 
 | Tool | What it does |
@@ -258,6 +259,8 @@ you**; a new version with an old `build_id` means an old process.
 | `shiftwork_clock_in` | open a unit of work and get its brief |
 | `shiftwork_clock_out` | close a unit with status and accounting |
 | `shiftwork_status` | report the open cursor |
+| `shiftwork_plan` | read-only: which units of a checkpoint its `depends_on` graph permits to run at once. Never moves the cursor |
+| `work_plan` | turn any `{id, depends_on, priority}` graph into the batches that may run in parallel, plus the widest fan-out |
 | `token_ledger` | what a session cost, read off the host's transcripts |
 | `bantamkit_status` | report store health against its budget |
 | `build_identity` | report the fingerprint of the source on disk, not the executing code — useful when a machine carries two installs under one name |

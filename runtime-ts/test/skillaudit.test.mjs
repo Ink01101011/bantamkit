@@ -1363,12 +1363,15 @@ test('the tool is served tenth and its schema is the assets', async () => {
   const { memory, log } = make(room());
   const client = await connect(memory, log);
   const listed = (await client.listTools()).tools;
-  // Tenth of TWELVE since `bantamkit_read` (tenth) and `repo_map` (thirteenth) left the
-  // roster (job50 I5, 2026-09-12) — eleventh of fourteen before that. The index is pinned
-  // rather than `at(-1)`: this node is about where `skill_audit` sits, and a later tool
-  // moving in behind it must not be able to satisfy it.
+  // Tenth of FOURTEEN. It became tenth when `bantamkit_read` (tenth) and `repo_map`
+  // (thirteenth) left the roster (job50 I5, 2026-09-12), and the total came back to
+  // fourteen when `work_plan` and `shiftwork_plan` were APPENDED (job `workplan-dag`, W5)
+  // — a tool arriving BEHIND this one moves the length and not the index, which is the
+  // case this node is built for. The index is pinned rather than `at(-1)`: this node is
+  // about where `skill_audit` sits, and a later tool moving in behind it must not be able
+  // to satisfy it.
   assert.equal(listed[9].name, 'skill_audit');
-  assert.equal(listed.length, 12);
+  assert.equal(listed.length, 14);
   const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'skill_audit.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'skill_audit');
   assert.equal(served.description, asset.description);
