@@ -336,14 +336,14 @@ def pointer_entries_changed(old: list[str], new: list[str]) -> set[int] | None:
     if len(old) != len(new) or not old:
         return None
     changed: set[int] = set()
-    for o, n in zip(old, new):
+    for o, n in zip(old, new, strict=True):
         if o == n:
             continue
         mo, co = mask_pointers_indexed(o)
         mn, cn = mask_pointers_indexed(n)
         if mo != mn:
             return None
-        for (i1, t1), (_i2, t2) in zip(co, cn):
+        for (i1, t1), (_i2, t2) in zip(co, cn, strict=False):
             if t1 != t2:
                 changed.add(i1)
     if not changed:
@@ -1009,7 +1009,8 @@ def calibrate(keep: Path | None = None) -> int:
             coverage.append((mut, "BROKEN", "the mutant did not run: " + r.stderr.strip()[-200:]))
             continue
         before, after = _fields(baseline_text), _fields(r.stdout)
-        moved = [b for b, a in zip(before, after) if b != a] if len(before) == len(after) else before
+        moved = ([b for b, a in zip(before, after, strict=True) if b != a]
+                 if len(before) == len(after) else before)
         if moved:
             coverage.append((mut, "PINNED", str(len(moved)) + " verdict fields moved"))
         elif r.stdout != baseline_text:
@@ -1023,7 +1024,7 @@ def calibrate(keep: Path | None = None) -> int:
         if not agree:
             flips.append(mut["id"] + ": declared " + mut["expect"] + ", measured " + status)
     print()
-    for mut, status, detail in coverage:
+    for mut, status, _detail in coverage:
         if status == "PINNED":
             continue
         # NOT DELETED TO IMPROVE THE NUMBER (RB-P48). A branch with no mutation that moves
