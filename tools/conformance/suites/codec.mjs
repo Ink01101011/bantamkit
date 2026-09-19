@@ -6,47 +6,65 @@
  * round-trips its own output is the failure mode this suite exists to catch — the live
  * store already holds files Python wrote, and `_stamp` rewrites one on every recall hit.
  *
- * The corpus is the operator's real fact store (copied to scratch — never opened in place; a defect
- * in this area destroyed its index once) plus an adversarial set, because the real corpus
- * is not adversarial enough: it has no non-ASCII in any frontmatter, no quoted scalar and
- * no empty description.
+ * The corpus is a FROZEN snapshot of real fact files, committed under
+ * `fixtures/codec-corpus/`, plus an adversarial set, because real files are not adversarial
+ * enough: they carry no empty description, no control character and no astral plane.
  */
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { auditCorpus, corpusIntegrityCase } from '../lib/corpus.mjs';
+import { auditFrozenCorpus, corpusIntegrityCase } from '../lib/corpus.mjs';
 
 export const name = 'codec';
 export const summary = 'fact-file frontmatter: emit byte-identically, and parse each other';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const REF = join(here, 'ref', 'codec_ref.py');
+const FROZEN_CORPUS = join(here, 'fixtures', 'codec-corpus');
+
+/**
+ * How many fact files `fixtures/codec-corpus/facts/` carries — SPELLED, not counted.
+ *
+ * Deriving it from the same `readdirSync` that builds the corpus would assert nothing; this is
+ * the one number in the suite that a `git checkout` has to move. `CORPUS_FLOOR` is 32 and
+ * cannot see a fixture that loses ten files, which is exactly the size of shrink the live-store
+ * era used to hide.
+ */
+const FROZEN_FACTS = 57;
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
 
 /**
- * Where the real store lives.
+ * Where the real fact files come from, and why they are in git rather than under the operator.
  *
- * Never read in place. This copies the directory to the harness scratch and reads only the
- * copy, which is also what makes the suite safe to run while a server is live. If no store
- * is found the adversarial half still runs and the suite SAYS so — a silently shrinking
- * corpus is the way a conformance gate stops meaning anything.
+ * THE CASE COUNT IS A FUNCTION OF GIT CONTENT. Three cases are generated per corpus fact, and
+ * until J55-1 the real half of that corpus was read out of the LIVE project store at
+ * `.bantamkit/memory/facts/` — gitignored, untracked, and rewritten by any `memory_save`,
+ * `memory_recall` stamp or dream that happened to fire. Measured at one unchanged commit in
+ * job54, `--all` reported 8166, 8169 and 8172 cases; measured again in J55-1 at `2b5c2ad`, one
+ * `memory_save` between two runs took `--suite codec` from 390 to 393 with no code change.
+ * Nothing failed — cases were ADDED — but a gate whose size nobody can reproduce is a gate
+ * nobody can quote, and `tokenledger.mjs`'s header already wrote up where that ends: a
+ * differential over a live corpus goes red for a reason nobody caused and is then "fixed" by
+ * weakening it.
  *
- * FINDING the store is not this suite's business any more: it is `lib/corpus.mjs`, shared
- * with `store.mjs`, because when the two finders were separate they drifted (I3-F1) and
- * this one accepted an empty `facts/` with no `index.md` — 494 cases became 206 and the run
- * still printed PASS. The floor case below is what stops that from being quiet again.
+ * WHAT THE LIVE READING WAS FOR IS NOT LOST. Real files carry accidents nobody invents — a
+ * description PyYAML decided to single-quote, an em dash surviving a wrap at the 80th column,
+ * leaked `</body>` markup in a body, `---` inside another. `fixtures/codec-corpus/` is 57 of
+ * those files byte for byte, with the four that should not become public files left out and
+ * named in its README. Every shape the live store exhibited survived the cut, including each
+ * one with a single carrier.
+ *
+ * It is read IN PLACE, which the live store never was — a defect in this area destroyed that
+ * store's index once. A committed fixture is nobody's working data and the suite only reads it.
  */
-function realStoreFacts(ctx) {
-  const audit = auditCorpus(ctx);
-  if (!audit.facts) return { audit, dir: null, source: audit.source };
-  const copy = join(ctx.scratch, 'real-facts');
-  cpSync(audit.facts, copy, { recursive: true });
-  return { audit, dir: copy, source: audit.facts };
+function frozenCorpusFacts() {
+  const audit = auditFrozenCorpus(FROZEN_CORPUS);
+  return { audit, dir: audit.facts, source: FROZEN_CORPUS };
 }
 
 /** The adversarial cases. Each one is here because something about it can silently differ. */
@@ -155,7 +173,7 @@ export async function run(ctx) {
   const notes = [];
 
   // ---------------------------------------------------------------- assemble the corpus
-  const { audit, dir, source } = realStoreFacts(ctx);
+  const { audit, dir, source } = frozenCorpusFacts();
   let realFacts = [];
   if (dir) {
     const files = readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
@@ -178,9 +196,12 @@ export async function run(ctx) {
         __case: `real/${files[i]}`,
       };
     });
-    notes.push(`real corpus: ${realFacts.length} facts copied from ${source}`);
+    notes.push(
+      `frozen corpus: ${realFacts.length} real facts read from ${relative(ctx.repoRoot, source)} ` +
+        '(committed; the live project store is NOT read by this suite)',
+    );
   } else {
-    notes.push(`real corpus: NOT FOUND (looked in ${source}) — only the adversarial set ran`);
+    notes.push(`frozen corpus: MISSING or incomplete at ${relative(ctx.repoRoot, source)}`);
   }
 
   const corpus = [...realFacts, ...adversarialFacts()];
@@ -189,6 +210,18 @@ export async function run(ctx) {
   // a corpus that quietly halves halves the suite — and a suite that compares half as much
   // reports PASS in exactly the same words. This one case is what makes that a failure.
   cases.push(corpusIntegrityCase(audit));
+  // And the floor is not enough on its own. It is 32, deliberately far below any real store,
+  // so it would sit green through a fixture that lost twenty of its 57 files — which is a
+  // larger shrink than the one that went unnoticed for a whole job. This pins the exact
+  // committed count against a typed literal, so the only way the corpus changes size is a
+  // commit that also changes `FROZEN_FACTS`. It is not a Python-vs-Node comparison; it is the
+  // harness asserting what is in git, which is the one thing a differential can never do.
+  cases.push({
+    name: 'frozen corpus: the committed fixture is intact',
+    kind: 'json',
+    expected: { facts: FROZEN_FACTS, has_index: true },
+    actual: { facts: audit.factCount, has_index: audit.candidates[0].hasIndex },
+  });
 
   // ------------------------------------------------------------------- direction 1: emit
   const pyEmitted = ctx
