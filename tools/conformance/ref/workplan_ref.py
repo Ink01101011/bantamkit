@@ -42,12 +42,16 @@ import sys
 import threading
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-TIMEOUT_SECONDS = 60
-
-sys.path.insert(0, str(REPO_ROOT / "runtime-py" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
 from bantamkit import shiftwork, workplan
+
+# Defined BELOW the late import, and inlined in the `sys.path` call above, so that nothing
+# but imports precedes it — the shape `shiftwork_ref.py` already uses. Assigning these two
+# first made the import E402 under the rule set J55-2 pinned for `tools/` (2026-09-19),
+# where the older defaults had not enforced it.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+TIMEOUT_SECONDS = 60
 
 
 def _b64(text: str) -> str:
