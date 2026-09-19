@@ -6,7 +6,9 @@
  * `npm pack` vendored CURRENT assets over whatever `dist/` happened to be sitting on disk.
  * `dist/` is gitignored, so it survives a checkout: compile at one commit, check `src/` back
  * to another, and the tree is silently inconsistent. That is not a hypothetical — it is what
- * shipped. `bantamkit-mcp@0.35.0` on npm serves 12 tools where `bantamkit==0.35.0` on PyPI
+ * shipped (served-tools: dated — the two numbers below are what the two PUBLISHED 0.35.0
+ * artifacts answered on 2026-09-19, not what this checkout serves):
+ * `bantamkit-mcp@0.35.0` on npm serves 12 tools where `bantamkit==0.35.0` on PyPI
  * serves 14, and the two missing ones (`work_plan`, `shiftwork_plan`) are present in the
  * published tarball's `assets/tools/*.json` and absent from every one of its 37 `.js` files.
  * Assets from the checkout, code from an older build: the fingerprint of an unbuilt pack.

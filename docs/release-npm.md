@@ -92,6 +92,35 @@ cd runtime-ts
 npm publish --access public
 ```
 
+### `npm publish` refuses if the install gate is red
+
+`prepublishOnly` runs `runtime-ts/scripts/gate-before-publish.mjs`, which runs
+`tools/conformance/npx-cold-start.mjs` — a real `npm pack`, installed through `npx` into a
+cache that has never seen it and driven over stdio — and **exits non-zero if it fails, which
+stops the publish before npm packs anything or contacts the registry**. Measured with npm
+11.6.2 on a worktree whose `dist/` predated a tool: `npm publish --dry-run` stopped at the
+hook, printing `FAIL: npx cold start, 2 failed checks` naming the missing tools, with no
+`prepack`, no tarball listing and no `Publishing to …` line after it. The `--offline` arm is
+not used; it costs minutes, and a release step nobody will wait for is one somebody will
+bypass.
+
+`npm publish --dry-run` is a faithful rehearsal of that refusal: the hook does the same work
+and returns the same exit code. Two consequences worth knowing before you type it — it
+**compiles `runtime-ts/dist/`** and installs a real tarball into a temp `npx` cache (it still
+publishes nothing), and on an already-published version it ends at npm's own
+`You cannot publish over the previously published versions`, which is npm refusing, not the
+gate.
+
+**What the hook does not cover**, each measured rather than assumed:
+
+- `npm publish --ignore-scripts` skips it silently.
+- `npm publish <tarball.tgz>` skips it — npm runs no lifecycle script out of a pre-built
+  tarball. Publishing a tarball someone else packed is publishing something nothing checked.
+- The PyPI half: `twine upload` has no hook of any kind. (The Python wheel has no compiled
+  artifact that can go stale — see the job56 row in [porting.md](porting.md).)
+- It gates the **working tree you are standing in**, not the commit or the tag. The merged-PR
+  checkbox above is what ties the two together.
+
 Then verify from a clean directory, not from the checkout:
 
 ```bash
