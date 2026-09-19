@@ -29,4 +29,4 @@ from bantamkit.structured import StructuredOutputError, extract_json, structured
 # file as its dynamic version source, so the wheel's metadata and the string the MCP
 # server advertises are the same committed bytes, and neither is a function of when
 # someone last ran `pip`.
-__version__ = "0.35.0"
+__version__ = "0.35.1"
