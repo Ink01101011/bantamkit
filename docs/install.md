@@ -71,17 +71,28 @@ directory named for the version for exactly that reason.
 The hand-run form, which is what the script automates. One version, both runtimes, one release
 commit:
 
-1. Bump `runtime-ts/package.json` `version` (and the root `version` fields of
-   `runtime-ts/package-lock.json`) and `__version__` in `runtime-py/src/bantamkit/__init__.py`
-   to the same number.
+1. Bump `runtime-ts/package.json` `version`, **both** root `version` fields of
+   `runtime-ts/package-lock.json` (`.version` and `.packages[""].version`), `__version__` in
+   `runtime-py/src/bantamkit/__init__.py`, and the `bantamkit[mcp]==<version>` pins in the
+   offline-wheelhouse block of `runtime-py/README.md` — to the same number. Those five are the
+   version *sites*, and `publish.sh` preflight refuses on any one of them left behind; a
+   version literal that *reports* what some artifact did on a date is a record, not a site, and
+   is deliberately not checked.
 2. Run the four gates: `.venv/bin/python -m pytest runtime-py/tests -q`,
    `.venv/bin/ruff check runtime-py tools`, `(cd runtime-ts && npm test)`,
    `node tools/conformance/run.mjs --all`.
 3. Build: `(cd runtime-ts && npm pack)`; `python -m build runtime-py`; `twine check` on both files.
    The npm checklist is [Releasing to npm](release-npm.md#before-you-publish).
 4. Merge to `main`, then publish:
-   `(cd runtime-ts && npm publish bantamkit-mcp-<version>.tgz --access public)` and
-   `twine upload` the wheel and sdist.
+   `(cd runtime-ts && npm publish --access public)` and `twine upload` the wheel and sdist
+   **by exact filename**.
+
+   > Publish from the **package directory**, never `npm publish <tarball>.tgz`. Since job56,
+   > `prepublishOnly` runs the install gate (`tools/conformance/npx-cold-start.mjs`) and
+   > refuses the publish when it is red — and npm runs **no lifecycle script at all** out of a
+   > pre-built tarball, so the tarball form skips the gate silently. This step used to name
+   > the tarball form; it was the one documented path that defeated the gate the same branch
+   > added. See [what the hook does not cover](release-npm.md#npm-publish-refuses-if-the-install-gate-is-red).
 5. Tag and release:
 
    ```bash

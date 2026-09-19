@@ -79,7 +79,18 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
-    --out-dir) shift; OUT_DIR="${1:-}" ;;
+    # `--out-dir` with nothing after it used to die SILENTLY: the `shift` in this case arm
+    # consumed the flag, the loop's own `shift` then ran with $# = 0, returned 1, and `set -e`
+    # exited the script with no output at all — exit 1 and not one word about why. Measured
+    # 2026-09-19 (J56-6): `publish.sh --out-dir` printed nothing. Same class as the five
+    # `[ cond ] && action` lines J56-7 found; this is the sixth.
+    --out-dir)
+      if [ $# -lt 2 ]; then
+        printf 'publish.sh: --out-dir needs a directory after it (try --help)\n' >&2
+        exit 2
+      fi
+      shift; OUT_DIR="$1"
+      ;;
     # The header IS the help text, printed from line 2 up to the first line that is not a
     # comment — a line range would need re-counting every time a paragraph gains a clause.
     --help|-h) awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -247,12 +258,24 @@ fi
 # context that cannot answer one is a release that hangs AFTER npm has already published,
 # which is the worst half-state available. So this is a refusal, in preflight, before anything
 # is built.
-if [ -n "${TWINE_PASSWORD:-}" ] || [ -n "${TWINE_API_KEY:-}" ]; then
-  ok "PyPI credential: TWINE_PASSWORD/TWINE_API_KEY is set in the environment"
+#
+# `TWINE_API_KEY` IS NOT A TWINE VARIABLE, and this check used to accept it as proof of a
+# credential. MEASURED 2026-09-19 (J56-6) against the twine in this repo's venv (7.0.0): the
+# only environment variables it reads are TWINE_USERNAME, TWINE_PASSWORD, TWINE_REPOSITORY,
+# TWINE_REPOSITORY_URL, TWINE_CERT and TWINE_NON_INTERACTIVE. So an operator who exported
+# TWINE_API_KEY and had no ~/.pypirc got `ok` here and a PROMPT in phase 6 — after npm had
+# already published, which is precisely the half-state this block exists to prevent. A
+# false green in a preflight is worse than no preflight.
+if [ -n "${TWINE_PASSWORD:-}" ]; then
+  ok "PyPI credential: TWINE_PASSWORD is set in the environment"
 elif [ -f "$HOME/.pypirc" ] && grep -q '^\[pypi\]' "$HOME/.pypirc" && grep -qE '^[[:space:]]*password[[:space:]]*=' "$HOME/.pypirc"; then
   ok "PyPI credential: ~/.pypirc carries a [pypi] password (existence only; not read, not printed)"
 else
   problem "no PyPI credential: ~/.pypirc has no [pypi] password and TWINE_PASSWORD is unset -- twine would reach a prompt."
+  if [ -n "${TWINE_API_KEY:-}" ]; then
+    printf '            ^ TWINE_API_KEY is set, and twine does not read it. Export the token as\n' >&2
+    printf '              TWINE_PASSWORD (with TWINE_USERNAME=__token__), or put it in ~/.pypirc.\n' >&2
+  fi
 fi
 
 # --- npm auth ----------------------------------------------------------------------------------
@@ -530,7 +553,13 @@ else
   say "    $WHEEL"
   say "    $SDIST"
   say ""
-  "$TWINE" upload "$WHEEL" "$SDIST" \
+  # TWINE_NON_INTERACTIVE turns the one thing this script cannot survive -- a password prompt
+  # reached AFTER npm has published, from a context that may have no one watching -- into an
+  # immediate error with a message. Preflight already refuses when no credential exists; this
+  # is the belt to that braces, for the cases preflight cannot see (a `password =` line with
+  # nothing after it, a token revoked between phase 0 and phase 6). Measured: twine 7.0.0
+  # reads it; older twine simply ignores an environment variable it does not know.
+  TWINE_NON_INTERACTIVE=1 "$TWINE" upload "$WHEEL" "$SDIST" \
     || die "twine upload failed (its output is above). npm is published and PyPI is not.
          Rerunning this script skips npm and retries PyPI."
   ok "twine upload returned 0"
