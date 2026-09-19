@@ -44,7 +44,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "sync-assets": "node scripts/sync-assets.mjs",
-    "prepack": "node scripts/sync-assets.mjs",
+    "prepack": "node scripts/build-for-pack.mjs && npm run sync-assets",
     "pretest": "npm run build",
     "test": "node scripts/run-tests.mjs"
   },
