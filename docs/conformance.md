@@ -441,6 +441,17 @@ local gates, each run alone. At this tree:
 function of repo content rather than of test code, so each is quoted with the tree it was
 measured at and none of them is a standing number.
 
+**AMENDED 2026-09-19 (J55-3) — the lint gate is wider than the stamp above records.** That
+stamp is left exactly as it was written: `.venv/bin/ruff check runtime-py` really did print
+`All checks passed!` at `f484c70`, and editing the command inside a stamp to today's
+spelling would claim a run nobody made. Since job54 the gate is
+`.venv/bin/ruff check runtime-py tools`, with the rule set it applies to `tools/` pinned in
+`tools/ruff.toml` (J55-2). Re-measured here rather than restated:
+
+<!-- provenance: value=All checks passed!; commit=bb9a246 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
+`.venv/bin/ruff check runtime-py tools` **All checks passed!** at `bb9a246` plus this
+commit's working tree. That is the command to run today; the narrow one above is a record.
+
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how
 many emitted files carry PyYAML's 80-column wrap, and the one remaining `NOT MEASURED HERE`
