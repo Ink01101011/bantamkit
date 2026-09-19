@@ -10,3 +10,4 @@ dist-*/
 .bantam-memory/
 .bantamkit/memory/
 .shiftwork/
+.release/

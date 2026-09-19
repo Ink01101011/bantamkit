@@ -59,7 +59,17 @@ Optional extras: add `[mcp]` (e.g. `bantamkit[mcp] @ git+https...`) for the
 
 ### Releasing (maintainers)
 
-One version, both runtimes, one release commit:
+**`tools/release/publish.sh` does steps 2 to 4 below in one command**, refusing before it
+ships and skipping whatever a registry already carries — see
+[Releasing to npm → One command](release-npm.md#one-command-toolsreleasepublishsh). Step 4's
+`twine upload` in particular **must name its two files in full**: `python -m build` does not
+clean its output directory, `twine check` reports `PASSED` on a stale wheel, and this checkout
+carries three sibling `runtime-py/dist*/` directories whose artifacts are all older releases,
+so a glob uploads the wrong version under a green check. The script builds into a clean
+directory named for the version for exactly that reason.
+
+The hand-run form, which is what the script automates. One version, both runtimes, one release
+commit:
 
 1. Bump `runtime-ts/package.json` `version` (and the root `version` fields of
    `runtime-ts/package-lock.json`) and `__version__` in `runtime-py/src/bantamkit/__init__.py`
