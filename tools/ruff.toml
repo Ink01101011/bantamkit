@@ -1,0 +1,80 @@
+# Ruff configuration for `tools/` — this repo's field programs.
+#
+# WHY THIS FILE EXISTS. The project lint gate is
+# `.venv/bin/ruff check runtime-py tools` (CLAUDE.md, runtime-py/README.md,
+# docs/install.md). Its `runtime-py` half is governed by
+# `runtime-py/pyproject.toml`. Its `tools` half was governed by NOTHING in this
+# repository: there is no root `pyproject.toml`, `ruff.toml` or `.ruff.toml`, so
+# ruff walked up past the repo and fell back to its own built-in defaults —
+# measured with ruff 0.16.1 at 413 enabled rules here against 153 in the package.
+# A gate whose rule set is chosen by the linter's release notes can turn red from
+# `pip install -U ruff` alone, with no change to this repository, and a gate that
+# can fail from something outside the repo is not a gate. Which rules apply to
+# `tools/` is now a decision this repository made, in a file it can re-read.
+#
+# WHY HERE AND NOT AT THE REPO ROOT. A root config would also capture
+# `docs/eval-data`, whose broader-than-the-package rule set is a DELIBERATE and
+# documented decision — see docs/eval.md, "One gate was two gates, measured",
+# which records the 413-vs-153 split there and explicitly declines to narrow it.
+# Narrowing it as a side effect of pinning `tools/` would undo that decision
+# without anyone choosing to. This file's blast radius is exactly `tools/`.
+#
+# These two are the same numbers as `[tool.ruff]` in runtime-py/pyproject.toml,
+# stated rather than inherited, so the two halves of one gate do not silently
+# measure line length or syntax era differently. Before this file `tools/` ran at
+# ruff's default line-length 88 with no resolved target version.
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = [
+    # The package's rule set, verbatim from runtime-py/pyproject.toml's
+    # `[tool.ruff.lint] select`, so one rule set governs the Python in both
+    # halves of the gate. Note this half of the list is by PREFIX, which still
+    # picks up whatever a future ruff adds under those six — that exposure is
+    # the package's existing choice and is kept identical here on purpose
+    # rather than made to differ.
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    # Plus the rules `tools/` is deliberately held to and the package is not.
+    # Each is named by EXACT CODE, not by prefix: a prefix here would re-import
+    # whatever a future ruff adds under `PIE`, `PLW`, `EXE`, `RUF`, `FURB`,
+    # `BLE` or `DTZ` and hand the rule set straight back to the linter, which is
+    # the defect this file exists to close.
+    #
+    # These five fired for real against `tools/` when job54 widened the gate and
+    # each was fixed rather than silenced. Dropping them to "match the package"
+    # would let those fixes regress unobserved.
+    "PIE810",   # multiple-starts-ends-with
+    "PLW1510",  # subprocess-run-without-check
+    "EXE001",   # shebang-not-executable
+    "RUF100",   # unused-noqa
+    "FURB167",  # regex-flag-alias
+    #
+    # These two are not a guess about what `tools/` wants: the tree SAYS so. 26
+    # `# noqa` directives under `tools/conformance/ref/` name `BLE001` (25) and
+    # `DTZ012` (1), and a `# noqa` is only written for a rule someone expects to
+    # be on. Deselect them and `RUF100` above correctly reports all 26 as dead
+    # directives — the rule set contradicting itself. Kept, so the directives
+    # keep meaning what they say.
+    "BLE001",   # blind-except
+    "DTZ012",   # call-date-fromtimestamp
+]
+
+ignore = [
+    # `E` is taken by prefix above to match the package, which brings `E501`
+    # with it. `E501` has NEVER applied to `tools/`: it is not in ruff's
+    # built-in defaults, so the tree that ran on those defaults was never line
+    # -length gated. Enabling it here is not pinning the existing rule set, it
+    # is imposing a new one — measured at 43 sites over 9 files with ruff
+    # 0.16.1 (17 in amendguard.py, 8 in pinned.py, 6 in shiftwork_ref.py), all
+    # of them long invocations, prose comments and fixture strings. That reflow
+    # is a formatting sweep across the field programs and belongs in its own
+    # change, not in the commit that writes down the rule set. Declared here so
+    # the exclusion is a decision on the record rather than a silent default.
+    "E501",
+]

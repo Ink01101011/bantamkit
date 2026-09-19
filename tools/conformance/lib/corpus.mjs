@@ -1,7 +1,8 @@
 /**
  * Where the real memory store is, and whether the one we found is real.
  *
- * ONE finder, imported by every suite that reads the operator's live store. There used to
+ * ONE finder, imported by every suite that reads the operator's live store — today that is
+ * `store.mjs` alone, `codec.mjs` having moved to the frozen corpus below. There used to
  * be two — `store.mjs` asked for the PAIR (`facts/` and `index.md`) and `codec.mjs` asked
  * for `facts/` alone — and the two drifted into a measured defect (I3-F1): a git worktree
  * in which anything had ever booted the runtime carries an EMPTY `<worktree>/.bantamkit/
@@ -90,6 +91,36 @@ export function auditCorpus(ctx) {
     /** Human-readable provenance for a note, whether or not anything resolved. */
     source: found?.root ?? roots.join(' | '),
     candidates,
+  };
+}
+
+/**
+ * The same audit shape over a corpus that is COMMITTED rather than found.
+ *
+ * `codec.mjs` used to build its cases from the live store above, and at three cases per fact
+ * that made the suite's size a function of a gitignored directory the operator writes to all
+ * day: 8166 / 8169 / 8172 cases at one unchanged commit, and 390 -> 393 on `--suite codec`
+ * from a single `memory_save` between two runs (J55-1, measured at `2b5c2ad`). It now reads a
+ * frozen snapshot in git, for the reason `tokenledger.mjs`'s header already states.
+ *
+ * ONE RULE CHANGES, AND IT IS RULE 2 INVERTED. For a live store, finding nothing is legitimate
+ * — CI has none. For a committed fixture it never is: an absent or emptied `facts/` is a
+ * deletion, not an environment. So the root is reported as RESOLVED whatever is on disk, which
+ * puts a missing corpus under `CORPUS_FLOOR` and turns it into a failure instead of letting it
+ * vanish into a quieter, smaller run. Rule 1 still applies to the pair, and the suite pins the
+ * exact file count besides, because a floor of 32 cannot see a fixture that loses ten files.
+ */
+export function auditFrozenCorpus(root) {
+  const facts = join(root, 'facts');
+  const hasFacts = existsSync(facts);
+  const hasIndex = existsSync(join(root, 'index.md'));
+  const candidate = { root, facts, hasFacts, hasIndex, factCount: hasFacts ? factsIn(facts) : 0 };
+  return {
+    root,
+    facts: hasFacts && hasIndex ? facts : null,
+    factCount: candidate.factCount,
+    source: root,
+    candidates: [candidate],
   };
 }
 

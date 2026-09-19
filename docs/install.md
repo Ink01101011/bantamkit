@@ -80,6 +80,22 @@ One version, both runtimes, one release commit:
    gh release create v<version> --notes-file <notes.md>
    ```
 
+   **Release notes cover tag to tag** — from the previous release tag to the commit being
+   released (`git log --stat v<previous>..HEAD`), not from a branch's merge base to its head.
+   A reader comparing two releases compares the two tags, so notes that silently start
+   somewhere else can omit something that did ship.
+
+<!-- provenance: value=29 paths tag to tag, 27 from the merge base, the 2 extra being docs/superpowers/specs/2026-09-11-scope-lock-design.md and tools/shiftwork/example-codefix-checkpoint.json.log.jsonl; commit=bb9a246; command=git diff --name-only v0.34.2..v0.34.3 | wc -l ; git diff --name-only 6666d8b..v0.34.3 | wc -l ; comm -23 <(git diff --name-only v0.34.2..v0.34.3 | sort) <(git diff --name-only 6666d8b..v0.34.3 | sort) -->
+   Measured once, on the release that prompted the convention: job54's notes were baselined
+   at the merge base `6666d8b`, while the previous tag `v0.34.2` is the commit `ca67a37`, two
+   commits earlier. `git diff --name-only v0.34.2..v0.34.3` names **29 paths** and
+   `git diff --name-only 6666d8b..v0.34.3` names **27** — the **2** the merge base hides are
+   `docs/superpowers/specs/2026-09-11-scope-lock-design.md` and
+   `tools/shiftwork/example-codefix-checkpoint.json.log.jsonl`. Neither ships in either
+   package, so those notes claimed *less* than was released; the same gap the other way round
+   would have shipped a change nobody announced. This is a convention, not a gate: nothing
+   enforces it, and it is reversible.
+
 ## The MCP server without Python: `npx bantamkit-mcp`
 
 Everything above installs the **library**, and it needs Python. The **MCP server** does

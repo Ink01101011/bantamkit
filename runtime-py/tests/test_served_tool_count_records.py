@@ -41,12 +41,67 @@ THE TWO THINGS C8B'S DESIGN INSISTS ON, and why each is here.
    mystery red rather than as a diff anyone reviewed. Prefer putting the marker on the
    claiming line itself (distance zero) when the prose allows it.
 
-THE ONE BLANKET EXEMPTION, and why it is principled rather than convenient:
-the files in `tools/amendguard/ledger.json`'s `amend_only` list. Those files
-cannot be edited in place at all — they are an append-only record of what was
-measured on a date, so EVERY figure in them is dated by construction and a gate
-demanding they track today's surface would be demanding the impossible. The list
-is read from the ledger rather than spelled here, so the two cannot drift.
+THE TWO BLANKET EXEMPTIONS, and why each is principled rather than convenient.
+
+1. The files in `tools/amendguard/ledger.json`'s `amend_only` list. Those files
+   cannot be edited in place at all — they are an append-only record of what was
+   measured on a date, so EVERY figure in them is dated by construction and a gate
+   demanding they track today's surface would be demanding the impossible. The list
+   is read from the ledger rather than spelled here, so the two cannot drift.
+
+2. The frozen snapshot directories in `FROZEN_SNAPSHOTS`. Added J55-2b, 2026-09-19,
+   after J55-1 (`3619715`) committed `tools/conformance/fixtures/codec-corpus/facts/` —
+   fact files copied BYTE FOR BYTE out of this machine's live memory store on a date —
+   and two of them turned this gate red for saying 11 where the surface is now 12.
+   Both sentences are dated on their face — quoted here from dated records, not
+   asserted about today, so each carries the marker on its OWN line at distance zero
+   (J46-25: a marker three lines up is one inserted line away from silently lapsing,
+   and this paragraph proved it while being written):
+
+     (served-tools: dated) "RULED by the user 2026-09-05 … both advertise the same 11 tools"
+     (served-tools: dated) "installed cold from their public registry … both serve 11 tools"
+
+   They were true when they were written and they are not claims about today, which is
+   the exact category paragraph 2 above describes — and this gate exists to catch "a
+   claim about today that stopped being true", never to correct history.
+
+   It is the amendguard category and then some. An `amend_only` file may at least be
+   APPENDED to, so a marker could in principle be written into one. A frozen snapshot
+   may not be touched at all: the fixture's README stakes the whole codec suite on
+   these being the bytes Python actually wrote — "a codec that round-trips only its
+   own output is the failure this suite exists to catch". Editing two of the frozen
+   facts to carry `served-tools: dated` would satisfy this gate by falsifying that
+   claim and by silently repairing the evidence a differential suite is built on. So
+   the snapshot is exempted and the bytes stay as Python wrote them.
+
+   NARROWED J55-5, 2026-09-19, to `codec-corpus/facts/` from the whole of
+   `codec-corpus/`. The justification above is that every figure in a byte-for-byte
+   snapshot is dated by construction, and only `facts/` is byte-for-byte. `README.md`
+   is hand-written and re-edited on every re-freeze, and `index.md` was edited on the
+   way in (the excluded rows removed) and again when a fact was dropped; neither is
+   bounded by `FROZEN_FACTS`, which counts `facts/*.md` alone, so a tool count written
+   into either of them moved no file count and reddened nothing. Zero claims matched in
+   those two files at the time, so this changed no verdict — it closed the gap before it
+   opened. MEASURED both ways on the day, by appending one line to the fixture's
+   `README.md` and running this node against each root in turn: the old root passed
+   (`1 passed`), the narrowed root failed and named the file and line. The probe line,
+   which is a fabricated claim and not a record of any surface:
+
+     (served-tools: dated) "PROBE (temporary): both launchers serve 3 tools."
+
+   Why this is NOT an unbounded hole. It names a directory rather than the two files
+   that happen to trip it today (two is this month's accident; the category is the
+   directory), and what may enter that directory is itself gated: adding or removing
+   a file there reddens `frozen corpus: the committed fixture is intact` in
+   `tools/conformance/suites/codec.mjs` unless `FROZEN_FACTS` moves in the same
+   commit. The exemption is therefore as wide as a reviewed, deliberate re-freeze and
+   no wider, and `test_the_frozen_snapshot_exemption_names_a_directory_and_stops_there`
+   holds it to path boundaries so a `codec-corpus-v2/` sibling is not swept in.
+
+   It is spelled HERE and not added to `amend_only`, deliberately: that list is read
+   by amendguard as well, so widening it would subject the fixture to the
+   record-vs-pointer rule — a different gate, a different layer, and a second silent
+   effect the ledger's own `not_covered` note warns about in as many words.
 
 WHAT THIS DELIBERATELY DOES NOT DO. It does not try to find every sentence about
 tools. The pattern is narrow on purpose — a count immediately preceded by a
@@ -146,6 +201,22 @@ CLAIM = re.compile(
 )
 
 MARKER = "served-tools: dated"
+
+#: Directories holding a FROZEN, byte-for-byte snapshot of something measured on a date.
+#
+# See blanket exemption 2 in the module docstring for why these are exempt and why the
+# rule names a directory rather than the files inside it that trip the gate today.
+# Repo-relative, POSIX separators, no trailing slash.
+FROZEN_SNAPSHOTS = ("tools/conformance/fixtures/codec-corpus/facts",)
+
+
+def _is_frozen_snapshot(rel: str) -> bool:
+    """Is this repo-relative path inside (or equal to) a frozen snapshot directory?
+
+    Path boundaries, not string prefixes: `codec-corpus-v2/x.md` and `codec-corpus.md`
+    both start with an exempt directory's spelling and neither is inside it.
+    """
+    return any(rel == root or rel.startswith(f"{root}/") for root in FROZEN_SNAPSHOTS)
 
 
 def _amend_only() -> list[str]:
@@ -249,6 +320,7 @@ def test_every_stated_tool_count_matches_what_is_served() -> None:
     checked = 0
     exempt_by_ledger = 0
     exempt_by_marker = 0
+    exempt_by_snapshot = 0
 
     for path in _tracked_text_files():
         rel = path.relative_to(REPO).as_posix()
@@ -257,12 +329,16 @@ def test_every_stated_tool_count_matches_what_is_served() -> None:
         except (UnicodeDecodeError, OSError):
             continue
         ledgered = any(Path(rel).match(glob) for glob in exempt_globs)
+        frozen = _is_frozen_snapshot(rel)
         for number, line in enumerate(lines, start=1):
             match = CLAIM.search(line)
             if match is None:
                 continue
             if ledgered:
                 exempt_by_ledger += 1
+                continue
+            if frozen:
+                exempt_by_snapshot += 1
                 continue
             # The marker may sit on the claiming line or on any of the THREE lines above
             # it. Three, because prose wraps and the sentence that dates a figure is
@@ -289,7 +365,8 @@ def test_every_stated_tool_count_matches_what_is_served() -> None:
     # a defect in the gate and it says so here rather than going quiet.
     assert checked >= 5, (
         f"only {checked} live claims matched — the pattern has probably stopped matching "
-        f"(ledger-exempt {exempt_by_ledger}, marker-exempt {exempt_by_marker})"
+        f"(ledger-exempt {exempt_by_ledger}, marker-exempt {exempt_by_marker}, "
+        f"snapshot-exempt {exempt_by_snapshot})"
     )
 
 
@@ -435,3 +512,52 @@ def test_claim_still_matches_every_previously_caught_shape() -> None:
     ]
     for line in still_good:
         assert CLAIM.search(line) is not None, f"widening lost a previously-matched shape: {line!r}"
+
+
+# ------------------------------------------- the second blanket exemption, bounded
+
+
+def test_the_frozen_snapshot_exemption_names_a_directory_and_stops_there() -> None:
+    """The frozen-snapshot exemption must be a DIRECTORY rule, and must not leak past it.
+
+    J55-2b added the second blanket exemption. The failure mode a two-filename exemption
+    has is that it is spelled from today's accident: two of the frozen facts happen to
+    state a count. The third one to do so — the next time the corpus is re-frozen — would
+    be red with nobody having changed the gate's reasoning. So the rule names the
+    directory, and this node is what keeps it a directory rule.
+
+    The opposite failure is a prefix match that is not a path match: a future
+    `codec-corpus-v2/` or `codec-corpus.md` sitting beside the snapshot would be silently
+    exempt for no reason at all. Hence the sibling assertions below.
+    """
+    assert FROZEN_SNAPSHOTS, "an empty exemption list would make every assertion here vacuous"
+
+    for rel in FROZEN_SNAPSHOTS:
+        assert (REPO / rel).is_dir(), (
+            f"{rel} is exempted as a frozen snapshot directory but is not a directory — "
+            "an exemption naming nothing is a hole with no subject"
+        )
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z", "--", rel],
+            cwd=REPO,
+            capture_output=True,
+            check=True,
+        ).stdout.decode("utf-8")
+        assert tracked.strip("\0"), (
+            f"{rel} is exempted but git tracks nothing under it, so the exemption covers "
+            "no file this gate would ever have scanned"
+        )
+
+    inside = f"{FROZEN_SNAPSHOTS[0]}/facts/some-fact.md"
+    assert _is_frozen_snapshot(inside), f"the directory rule does not cover {inside!r}"
+    assert _is_frozen_snapshot(FROZEN_SNAPSHOTS[0]), "the directory itself is not covered"
+
+    for outside in (
+        f"{FROZEN_SNAPSHOTS[0]}-v2/facts/some-fact.md",
+        f"{FROZEN_SNAPSHOTS[0]}.md",
+        "docs/status.md",
+        "runtime-py/tests/test_served_tool_count_records.py",
+    ):
+        assert not _is_frozen_snapshot(outside), (
+            f"the exemption reaches {outside!r}, which is not inside a frozen snapshot"
+        )

@@ -314,6 +314,16 @@ provenance stamp. That is deliberate — the number that started §2 was sitting
 <!-- provenance: value=All checks passed!; commit=da5f073 plus this commit's working tree; command=.venv/bin/ruff check runtime-py -->
 - Lint: **All checks passed!** — `.venv/bin/ruff check runtime-py`.
 
+  **AMENDED 2026-09-19 (J55-3).** The stamp above is left as measured — that command really
+  did print `All checks passed!` at `da5f073` — because rewriting a stamp's command would
+  claim a run nobody made. The gate has since widened: job54 made it
+  `.venv/bin/ruff check runtime-py tools`, and `tools/ruff.toml` (J55-2) pins the rule set it
+  applies to `tools/`. Re-measured rather than restated:
+
+<!-- provenance: value=All checks passed!; commit=bb9a246 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
+  `.venv/bin/ruff check runtime-py tools` **All checks passed!** at `bb9a246` plus this
+  commit's working tree. Run that one today; the narrow line above is a record, not the gate.
+
 <!-- provenance: value=19 expectations, 0 flips, 12 branches, 11 pinned, 1 formatter-only; commit=da5f073 plus this commit's working tree; command=python tools/amendguard/amendguard.py calibrate -->
 - Calibration: **19 expectations, 0 flips; 12 branches, 11 PINNED, 1 FORMATTER-ONLY** —
   `python tools/amendguard/amendguard.py calibrate`.
