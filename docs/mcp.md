@@ -271,7 +271,7 @@ MCP servers it writes itself; the checker guards the machine, run deliberately.
 
 | Resource | Serves |
 |---|---|
-| `bantamkit://skills/{name}` | Skill markdown (e.g. `bantamkit://skills/memory`) |
+| `bantamkit://skills/{name}` | Skill markdown (e.g. `bantamkit://skills/memory`). A skill paired with a tool this server does not serve is refused, not handed out: `file-graph` is the eval agent's snippet for `file_graph`, whose asset claims `surfaces: ["agent"]`, so reading it answers `skill asset file-graph is not served here: it pairs with tool file_graph, whose asset claims surfaces ['agent'], not mcp` — a client never receives an instruction naming a tool it cannot call. |
 | `bantamkit://rubrics/{name}` | Critique rubric YAML (e.g. `bantamkit://rubrics/task-completion`) — run our rubric prompts with *your* model; the server holds no model client |
 
 The server's MCP `instructions` field carries the memory skill, so connected

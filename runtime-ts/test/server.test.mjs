@@ -1113,8 +1113,9 @@ test('the two templates advertise an empty description, as the reference does', 
       INIT,
       INITIALIZED,
       { jsonrpc: '2.0', id: 2, method: 'resources/templates/list' },
-      { jsonrpc: '2.0', id: 3, method: 'resources/read', params: { uri: 'bantamkit://skills/file-graph' } },
+      { jsonrpc: '2.0', id: 3, method: 'resources/read', params: { uri: 'bantamkit://skills/memory' } },
       { jsonrpc: '2.0', id: 4, method: 'resources/read', params: { uri: 'bantamkit://skills/nosuch' } },
+      { jsonrpc: '2.0', id: 8, method: 'resources/read', params: { uri: 'bantamkit://skills/file-graph' } },
       { jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'bantamkit://other/x' } },
       { jsonrpc: '2.0', id: 6, method: 'resources/list' },
       { jsonrpc: '2.0', id: 7, method: 'prompts/list' },
@@ -1128,14 +1129,22 @@ test('the two templates advertise an empty description, as the reference does', 
   assert.deepEqual(byId(lines, 3).result.contents, [
     {
       mimeType: 'text/plain',
-      text: readFileSync(join(ASSETS, 'skills', 'file-graph.md'), 'utf8'),
-      uri: 'bantamkit://skills/file-graph',
+      text: readFileSync(join(ASSETS, 'skills', 'memory.md'), 'utf8'),
+      uri: 'bantamkit://skills/memory',
     },
   ]);
   assert.deepEqual(byId(lines, 4).error, {
     code: -32603,
     message: 'unknown skill asset: nosuch',
     data: { uri: 'bantamkit://skills/nosuch' },
+  });
+  // `file-graph` is on disk and is NOT served: it is `file_graph`'s system-prompt snippet, and
+  // that tool's asset claims only the agent surface. Serving it here would tell an MCP client
+  // to call a tool `tools/list` does not carry (job60 row 46; gated by the `instructions` suite).
+  assert.deepEqual(byId(lines, 8).error, {
+    code: -32603,
+    message: "skill asset file-graph is not served here: it pairs with tool file_graph, whose asset claims surfaces ['agent'], not mcp",
+    data: { uri: 'bantamkit://skills/file-graph' },
   });
   assert.deepEqual(byId(lines, 5).error, {
     code: -32602,

@@ -1183,6 +1183,26 @@ export function buildServer(
     const uri = request.params.uri;
     const skill = /^bantamkit:\/\/skills\/([^/]*)$/.exec(uri);
     if (skill) {
+      // A skill that pairs with a tool is served on that tool's surfaces and no other. The
+      // pairing is the one the reference's `filegraph.py` spells — `load_tool("file_graph")`
+      // beside `load_skill("file-graph")`, the skill's name with `-` for `_`. `file-graph` is
+      // the eval agent's snippet telling it to call `file_graph`, whose asset claims only
+      // `agent`; handing it to an MCP client names a tool `tools/list` does not carry (job60
+      // row 46). Same sentence and code as the reference; the `instructions` suite gates it.
+      const paired = skill[1]!.replace(/-/g, '_');
+      let pairedSurfaces: string[] | null = null;
+      try {
+        pairedSurfaces = (loadToolAsset(paired)['surfaces'] ?? []) as string[];
+      } catch (e) {
+        if (!(e instanceof AssetNotFound)) throw e;
+      }
+      if (pairedSurfaces !== null && !pairedSurfaces.includes('mcp')) {
+        throw rpcError(
+          ErrorCode.InternalError,
+          `skill asset ${skill[1]} is not served here: it pairs with tool ${paired}, whose asset claims surfaces [${pairedSurfaces.map((s) => `'${s}'`).join(', ')}], not mcp`,
+          { uri },
+        );
+      }
       let text: string;
       try {
         text = loadSkill(skill[1]!);

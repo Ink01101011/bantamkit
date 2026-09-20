@@ -199,7 +199,7 @@
       }
     },
     "shiftwork_clock_out": {
-      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). unit_id must be the cursor unit OR a unit briefed since its own last clock-out — the same measured `briefed` described below; anything else keeps the existing refusal, spelled unchanged. plan.cursor then advances to the first unit of the ready batch recomputed on the mutated document — the batch shiftwork_plan reports — falling back to plan.units order over the remaining non-terminal units only when the graph cannot batch at all (cycle or unknown dependency), and to unit_id when nothing non-terminal remains. Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `briefed` is written by the runtime, never taken from you — a self-reported value is overwritten by the measured one: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run inline after a blocked clock-out reads false. It records; it never refuses — a unit that was never clocked in still clocks out, with briefed=false. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly — a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
+      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). `unit_id` must be `plan.cursor` — which needs no brief, clocking out with briefed=false — OR a unit briefed since its own last clock-out; any other id keeps its refusal (`unit X is not the cursor unit Y`). plan.cursor then advances to the head of the ready batch recomputed on the mutated document, falling back to plan.units order over the remaining non-terminal units when the graph cannot batch (cycle or unknown dependency), and to unit_id when none remain. `handoff_patch` and `history_entry` are both required arguments: `handoff_patch` is shallow-merged into `handoff` and takes only its four keys (pass `{}` to leave it unchanged); `history_entry` needs `unit` and `outcome`; `status` is one of the five unit statuses — a value outside these shapes is refused by the schema check, nothing written. Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `accounting` is optional: null, the default, logs a line with no cost figures at all; a non-null line must fit the accounting shape below. `briefed` is written by the runtime, never taken from you: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run after a blocked clock-out reads false. If job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly, or nothing is written — see the `model` property below.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -208,21 +208,76 @@
           },
           "unit_id": {
             "title": "Unit Id",
-            "type": "string"
+            "type": "string",
+            "description": "The unit being clocked out. Must be plan.cursor, or a unit briefed since its own last clock-out: clock_in briefs the cursor unit by default and, when its unit_id names one, any unit shiftwork_plan reports in `ready` — and that brief is what lets clock_out accept a unit the cursor is not on."
           },
           "status": {
             "title": "Status",
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "todo",
+              "in_progress",
+              "done",
+              "blocked",
+              "dropped"
+            ],
+            "description": "The unit's new status; the same five values the checkpoint schema allows on plan.units[].status."
           },
           "handoff_patch": {
-            "additionalProperties": true,
             "title": "Handoff Patch",
-            "type": "object"
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Shallow-merged into `handoff`: only these four keys exist there, and a key outside them is refused by the schema check. Required; `{}` leaves `handoff` unchanged.",
+            "properties": {
+              "next_action": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Imperative first move — zero re-derivation."
+              },
+              "open_questions": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask."
+              },
+              "do_not": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Negative space — near-mistakes past sessions made."
+              },
+              "notes": {
+                "type": "string",
+                "description": "Free-form prose for the next session, one string; the empty string clears it."
+              }
+            }
           },
           "history_entry": {
-            "additionalProperties": true,
             "title": "History Entry",
-            "type": "object"
+            "type": "object",
+            "required": [
+              "unit",
+              "outcome"
+            ],
+            "additionalProperties": true,
+            "description": "Pushed onto the 5-entry `history` ring; `unit` and `outcome` are required, `notes` optional, other keys pass through.",
+            "properties": {
+              "unit": {
+                "type": "string",
+                "minLength": 1
+              },
+              "outcome": {
+                "type": "string",
+                "minLength": 1
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
           },
           "accounting": {
             "anyOf": [
@@ -233,7 +288,7 @@
                   "tokens": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Tokens the unit consumed as the harness's subagent counter reports them: every class it reports (input, output, cache creation) summed, EXCLUDING cache reads. Required, because a unit whose cost is unknown cannot be compared with any other; a rounded self-estimate is allowed only if `note` says it is one."
+                    "description": "Tokens the unit consumed as the harness's subagent counter reports them: every class it reports (input, output, cache creation) summed, EXCLUDING cache reads. In a non-null accounting line it is required — a line without it is refused before anything is written; only `accounting: null`, the default, is exempt, and that logs no cost at all. A rounded self-estimate is allowed only if `note` says it is one; a unit whose cost is unknown cannot be compared with any other."
                   },
                   "cache_read_tokens": {
                     "type": "integer",
@@ -243,7 +298,7 @@
                   "duration_ms": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Wall-clock from spawning the subagent to its final message, in whole milliseconds. Required, and the only duration key with a defined meaning: older lines carry `duration`, `duration_min` or `duration_s`, which this schema neither reads nor renames."
+                    "description": "Wall-clock from spawning the subagent to its final message, in whole milliseconds. In a non-null line it is required, and it is the only duration key with a defined meaning: older lines carry `duration`, `duration_min` or `duration_s`, which this schema neither reads nor renames."
                   },
                   "model": {
                     "type": "string",
@@ -510,7 +565,7 @@
       }
     },
     "shiftwork_plan": {
-      "description": "Shift-work plan: read-only batch view of a checkpoint — which units its `depends_on` graph permits to run in parallel. Answers `{\"result\": \"plan\", \"batches\", \"ready\", \"sequence\", \"width\", \"cursor\"}`: `ready` is `batches[0]`, the units dispatchable right now, and `width` is the largest batch length, the widest fan-out. Units with status `done` or `dropped` are satisfied — dropped from the graph, and edges pointing at them treated as already resolved; `todo`, `in_progress` and `blocked` stay in it. Every unit has priority 0, because the checkpoint schema has no priority field, so order inside a batch is `plan.units` order. Same refusal sentences as `work_plan` for a duplicate id, an unknown dependency or a cycle, and the same refusals `shiftwork_status` gives for a checkpoint it cannot read. It reports what the dependency graph permits; it does not move the cursor, which is echoed unchanged so the single-pointer contract and the batch view can be read side by side. An orchestrator stays responsible for what it actually dispatches: `depends_on` encodes logical order, not file contention. Never mutates.",
+      "description": "Shift-work plan: read-only batch view of a checkpoint — which units its `depends_on` graph permits to run in parallel. Answers `{\"result\": \"plan\", \"batches\", \"ready\", \"sequence\", \"width\", \"cursor\"}`: `ready` is `batches[0]`, the units whose dependencies are all satisfied, and `width` is the largest batch length, the widest fan-out. A `ready` member beyond the cursor is clockable, but only in that order: shiftwork_clock_in briefs any unit in `ready` when `unit_id` names it, and shiftwork_clock_out then accepts that unit because it was briefed — an id that is neither the cursor nor briefed since its own last clock-out is still refused. Units with status `done` or `dropped` are satisfied — dropped from the graph, and edges pointing at them treated as already resolved; `todo`, `in_progress` and `blocked` stay in it. Every unit has priority 0, because the checkpoint schema has no priority field, so order inside a batch is `plan.units` order. Same refusal sentences as `work_plan` for a duplicate id, an unknown dependency or a cycle, and the same refusals `shiftwork_status` gives for a checkpoint it cannot read. It reports what the dependency graph permits; it does not move the cursor, which is echoed unchanged so the single-pointer contract and the batch view can be read side by side. An orchestrator stays responsible for what it actually dispatches: `depends_on` encodes logical order, not file contention. Never mutates.",
       "inputSchema": {
         "properties": {
           "checkpoint": {

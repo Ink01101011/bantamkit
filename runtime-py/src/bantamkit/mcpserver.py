@@ -1913,6 +1913,25 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
 
     @server.resource("bantamkit://skills/{name}")
     def skill_resource(name: str) -> str:
+        # A skill that pairs with a tool is served on that tool's surfaces and no other. The
+        # pairing is the one `filegraph.py` spells: `load_tool("file_graph")` beside
+        # `load_skill("file-graph")` — the skill's name with `-` for `_`. `file-graph` is the
+        # eval agent's system-prompt snippet telling it to call `file_graph`, a tool whose
+        # asset claims only `agent`; handing that text to an MCP client sends it to a tool
+        # `tools/list` does not carry and `tools/call` refuses as unknown (job60 row 46).
+        # Same sentence and same error code on both runtimes; `tools/conformance/suites/
+        # instructions.mjs` reads every skill on disk over `resources/read` and resolves the
+        # tools it names against `tools/list`.
+        paired = name.replace("-", "_")
+        try:
+            asset = load_tool_asset(paired)
+        except AssetNotFound:
+            asset = None
+        if asset is not None and "mcp" not in asset["surfaces"]:
+            raise ResourceError(
+                f"skill asset {name} is not served here: it pairs with tool {paired}, "
+                f"whose asset claims surfaces {asset['surfaces']}, not mcp"
+            )
         try:
             return load_skill(name)
         except AssetNotFound:

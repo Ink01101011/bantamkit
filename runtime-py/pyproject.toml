@@ -69,7 +69,12 @@ dependencies = ["httpx>=0.27", "jsonschema>=4.21", "pyyaml>=6.0"]
 # without this declaration the bar would silently skip in exactly the environment
 # CI runs (`pip install -e "runtime-py[dev,mcp]"`). Declared here so it runs.
 dev = ["pytest>=8.0", "ruff>=0.4", "hatchling>=1.24"]
-mcp = ["mcp>=2.0,<3"]
+# Upper bound measured, not guessed: 2.0.0 and 2.0.1 wrap a tool crash as
+# `Error executing tool <name>: <exc>`, which runtime-ts/src/mcp/server.ts mirrors.
+# 2.1.0 added an UnexpectedToolError branch that drops the `: <exc>` suffix, so the
+# crash text stops reaching the client and `--suite workplan` goes red on the
+# reference while the port still carries it. Raise this only together with the port.
+mcp = ["mcp>=2.0,<2.1"]
 
 [project.scripts]
 bantamkit-mcp = "bantamkit.mcpserver:main"

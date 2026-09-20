@@ -1977,3 +1977,38 @@ test('a graph that cannot batch: clock_in passes the core refusal through, clock
   assert.deepEqual(js(clockIn(path, null, { now: 6 })), { result: 'success', reason: 'all units done or dropped' });
   rmSync(root, { recursive: true, force: true });
 });
+
+// J60-F2: the sub-schemas `shiftwork_clock_out` SERVES are a second copy of what the checkpoint
+// schema ENFORCES at write time (job59 rows 28/29/30: the served inputSchema said `status:
+// string`, `history_entry`/`handoff_patch` open, while the writer refused `finished`, `{}` and a
+// fifth handoff key). Both servers serve `asset.parameters` verbatim and validate arguments from
+// a signature, so the asset is disclosure and the checkpoint schema is enforcement; this node
+// keeps the two copies saying the same thing. Same pin as
+// `runtime-py/tests/test_tool_manifest.py::test_clock_out_serves_the_sub_schemas_the_checkpoint_writer_enforces`;
+// the running-surface version is `tools/conformance/suites/instructions.mjs` clause (b).
+test('clock_out serves the sub-schemas the checkpoint writer enforces', () => {
+  const asset = JSON.parse(readFileSync(join(assetsRoot(), 'tools', 'shiftwork_clock_out.json'), 'utf8'));
+  const served = asset.parameters;
+  const writer = loadSchema('shiftwork-checkpoint').properties;
+  const props = served.properties;
+
+  const status = writer.plan.properties.units.items.properties.status;
+  assert.deepEqual(props.status.enum, status.enum);
+
+  const historyItem = writer.history.items;
+  assert.deepEqual([...props.history_entry.required].sort(), [...historyItem.required].sort());
+  assert.equal(props.history_entry.additionalProperties, historyItem.additionalProperties);
+
+  const handoff = writer.handoff;
+  assert.equal(props.handoff_patch.additionalProperties, false);
+  assert.equal(handoff.additionalProperties, false);
+  assert.deepEqual(Object.keys(props.handoff_patch.properties).sort(), Object.keys(handoff.properties).sort());
+  // A patch is a shallow merge: it may omit keys the whole document requires.
+  assert.ok(!('required' in props.handoff_patch));
+
+  assert.ok(served.required.includes('handoff_patch') && served.required.includes('history_entry'));
+  const sentences = asset.description.replaceAll(';', '.').split('. ');
+  assert.ok(!asset.description.includes('never refuses'));
+  assert.ok(sentences.some((s) => s.includes('handoff_patch') && /required/i.test(s)));
+  assert.ok(sentences.some((s) => s.includes('unit_id') && s.includes('cursor')));
+});

@@ -617,8 +617,26 @@ say "  --- installing bantamkit[mcp]==$VERSION into a throwaway venv and driving
 # `bantamkit-mcp needs the MCP extra`, and a probe against that measures nothing at all.
 "$VENV_PY" -m venv "$SCRATCH/pyvenv" || die "could not create a throwaway venv."
 "$SCRATCH/pyvenv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
-"$SCRATCH/pyvenv/bin/pip" install --quiet "bantamkit[mcp]==$VERSION" \
-  || die "could not install bantamkit[mcp]==$VERSION from PyPI."
+# pip resolves through the SIMPLE INDEX, which is a different surface from the per-version
+# endpoint the loop above waited on -- and by that loop's own comment, it lags. Waiting for
+# one and then installing through the other loses the race on most releases: the digests
+# match, then pip reports `from versions: ...` ending one release short. So poll the surface
+# pip actually reads. --no-cache-dir keeps pip's own HTTP cache from re-serving the stale
+# index page it fetched on the first attempt.
+PYPI_INSTALLED="no"
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+  if "$SCRATCH/pyvenv/bin/pip" install --quiet --no-cache-dir "bantamkit[mcp]==$VERSION"; then
+    PYPI_INSTALLED="yes"
+    break
+  fi
+  attempt=$((attempt + 1))
+  say "      the simple index has not caught up yet (attempt $attempt); waiting 5 s"
+  sleep 5
+done
+if [ "$PYPI_INSTALLED" != "yes" ]; then
+  die "could not install bantamkit[mcp]==$VERSION from PyPI."
+fi
 node "$SCRIPT_DIR/roster-probe.mjs" --label "PyPI bantamkit[mcp]==$VERSION" \
   -- "$SCRATCH/pyvenv/bin/bantamkit-mcp" \
   || die "the PUBLISHED PyPI artifact does not advertise what MCP_TOOLS declares."

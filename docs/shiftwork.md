@@ -332,7 +332,7 @@ nobody was handed a brief for the second run — that inline re-run is
 exactly the shape F6 exists to make visible, where the older ledgers could
 only carry a self-report (`executed_by: orchestrator-inline`). Two briefs
 before one clock-out (a relaunch after a crashed subagent) both count as
-`true`. `clock_out` **never refuses** on it: a unit that was never clocked
+`true`. `clock_out` never refuses **on it**: a unit that was never clocked
 in clocks out normally, with `briefed: false` — the field records, it does
 not gate, because the recovery practice is to recover the accounting,
 never to drop it.
@@ -494,7 +494,10 @@ handed (Layer 1; see [architecture.md](architecture.md)).
 {"result": "plan", "batches": [...], "ready": [...], "sequence": [...], "width": N, "cursor": "<unit id>"}
 ```
 
-- **`ready`** is `batches[0]`: the units dispatchable right now.
+- **`ready`** is `batches[0]`: the units whose dependencies are all satisfied.
+  Only `cursor` can be clocked (`clock_in` briefs it, `clock_out` refuses any
+  other id), so a `ready` member beyond the cursor is what the graph permits,
+  not a unit the clock accepts yet.
 - **`cursor`** is echoed **unchanged** — deliberately, so the single-pointer
   contract and the batch view can be read side by side and the difference
   between them is visible rather than implied.
