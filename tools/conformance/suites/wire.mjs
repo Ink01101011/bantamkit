@@ -894,6 +894,88 @@ export async function run(ctx) {
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
+   * EVERY ARGUMENT THE HOST SENDS AS A JSON STRING — the step that runs BEFORE validation.
+   *
+   * The reference does not hand pydantic the arguments a client sent. `FuncMetadata.pre_parse_json`
+   * unwraps a JSON-encoded string first, for every field whose annotation `is not str`, because
+   * "Claude Desktop is prone to this — in fact it seems incapable of NOT doing it" (the SDK's
+   * own words). The port had no such step until J62-12, and nothing on this wire had ever sent
+   * one: `argument-refusals` id 21 sends `schema: 'notadict'`, which is not JSON and is the one
+   * string shape the two runtimes AGREED on. That is the shape this session exists to stop
+   * being the only one tested — the register's item (`next-job-register-after-0-35-2`) named
+   * `validate_json` alone, and driving both stdio servers found SIXTEEN shapes disagreeing
+   * across seven tools, one mechanism behind all of them.
+   *
+   * THE FOUR ARMS OF THE SDK'S RULE ARE EACH REACHED HERE, and each by a pair whose two halves
+   * answer DIFFERENTLY — a session where every line unwrapped would pass against a port that
+   * unwrapped unconditionally:
+   *
+   *   * unwrapped (a list, a dict, or `null`) — ids 2-5, 11-13, 16-17, 22-31;
+   *   * NOT unwrapped because the field is a REQUIRED `str`, whose annotation is `str` itself:
+   *     id 10's `output` and id 19's `query` stay the strings that were sent, while the
+   *     OPTIONAL `str` beside them — id 26's `check`, id 28's `model`, id 31's `unit_id` — is
+   *     `str | None`, which `is not str`, and does unwrap;
+   *   * NOT unwrapped because `json.loads` returned a `str`, `int` or `float` — ids 6, 9, 18 —
+   *     and, since `isinstance(True, int)` is true in Python, a `bool` goes out by that same
+   *     line: id 21. Ids 18 and 21 are the two that had to be CHOSEN rather than written: `k:
+   *     '2'` and `dry_run: 'true'` unwrap to values pydantic's lax parse produces anyway, so a
+   *     port that unwrapped them would answer identically and the line would prove nothing.
+   *     `k: '2.5'` is `int_parsing` as a string and `int_from_float` as a float, and
+   *     `dry_run: ' true '` is `bool_parsing` as a string (lax bool does not strip) and `True`
+   *     as a bool — one frame apart either way, so the skip is what the frame reports;
+   *   * NOT unwrapped because `json.loads` raised — ids 7 and 8 (a decode error), and id 14,
+   *     which is CPython's 4300-digit integer cap. 14 and 15 are a PAIR at 4301 and 4300
+   *     digits: one byte of input decides whether the value is a list or the string of one,
+   *     and the two frames say so. Without 15 the cap could be a port that never unwraps a
+   *     long document; without 14 it could be a port with no cap at all.
+   *
+   * Id 20 is the one that pins the ORDER of the two steps: `query` is absent and `k` is `'[1]'`,
+   * so the `missing` error's `input_value` is the dict pydantic was handed — `{'k': [1]}` —
+   * and not the one the wire carried.
+   *
+   * ITS OWN STORE, under `${store}`, which `setup()` already rebuilds between the two runs: the
+   * two saves below that validate do write, and a session appended to the shared store would move the index
+   * arithmetic `memory-compact` and `index-band` stand on if anyone ever reorders the list.
+   */
+  const jsonArgStore = join(store, 'json-string-arguments');
+  const over4300 = `[${'1'.repeat(4301)}]`;
+  const at4300 = `[${'1'.repeat(4300)}]`;
+  add('json-string-arguments', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'validate_json', { output: '{"a": 1}', schema: '{"type": "object"}' }),
+    callTool(3, 'validate_json', { output: '{"a": 1}', schema: '{"type": "object", "required": ["b"]}' }),
+    callTool(4, 'validate_json', { output: '{"a": 1}', schema: '[1, 2]' }),
+    callTool(5, 'validate_json', { output: '{"a": 1}', schema: 'null' }),
+    callTool(6, 'validate_json', { output: '{"a": 1}', schema: '"hello"' }),
+    callTool(7, 'validate_json', { output: '{"a": 1}', schema: 'notadict' }),
+    callTool(8, 'validate_json', { output: '{"a": 1}', schema: '' }),
+    callTool(9, 'validate_json', { output: '{"a": 1}', schema: '3' }),
+    callTool(10, 'validate_json', { output: '[1]', schema: '{"type": "object"}' }),
+    callTool(11, 'memory_save', { type: 'project', name: 'unwrap-links-list', description: 'links arrived as a JSON string', body: 'b', links: '["unwrap-links-null"]' }),
+    callTool(12, 'memory_save', { type: 'project', name: 'unwrap-links-null', description: 'links arrived as the string null', body: 'b', links: 'null' }),
+    callTool(13, 'memory_save', { type: 'project', name: 'unwrap-links-mixed', description: 'links arrived as a JSON string holding an int', body: 'b', links: '[1, "ok"]' }),
+    callTool(14, 'memory_save', { type: 'project', name: 'unwrap-links-over-cap', description: 'one digit past CPython int cap', body: 'b', links: over4300 }),
+    callTool(15, 'memory_save', { type: 'project', name: 'unwrap-links-at-cap', description: 'exactly at CPython int cap', body: 'b', links: at4300 }),
+    callTool(16, 'memory_recall', { query: 'links arrived', k: 'null' }),
+    callTool(17, 'memory_recall', { query: 'links arrived', k: '[1]' }),
+    callTool(18, 'memory_recall', { query: 'links arrived', k: '2.5' }),
+    callTool(19, 'memory_recall', { query: '["links arrived"]' }),
+    callTool(20, 'memory_recall', { k: '[1]' }),
+    callTool(21, 'memory_dream', { dry_run: ' true ' }),
+    callTool(22, 'memory_dream', { dry_run: 'null' }),
+    callTool(23, 'memory_compact', { reserve: 'null' }),
+    callTool(24, 'work_plan', { nodes: '[{"id": "a"}, {"id": "b", "deps": ["a"]}]' }),
+    callTool(25, 'skill_audit', { root: SKILL_CACHE, enabled: JSON.stringify(SKILL_ENABLED), usage: JSON.stringify(SKILL_USAGE), budget: 1024 }),
+    callTool(26, 'skill_audit', { root: SKILL_CACHE, check: 'null' }),
+    callTool(27, 'skill_audit', { root: SKILL_CACHE, usage: '{"solo-check": "x"}' }),
+    callTool(28, 'token_ledger', { root: SKILL_CACHE, model: '[1]' }),
+    callTool(29, 'shiftwork_clock_out', { checkpoint: missing, unit_id: 'A', status: 'done', handoff_patch: '{"a": 1}', history_entry: '{"unit": "A"}' }),
+    callTool(30, 'shiftwork_clock_out', { checkpoint: missing, unit_id: 'A', status: 'done', handoff_patch: {}, history_entry: {}, accounting: 'null' }),
+    callTool(31, 'shiftwork_clock_in', { checkpoint: missing, unit_id: '["A"]' }),
+  ], { argv: ['--store', jsonArgStore] });
+
+  /**
    * `build_identity` gets a session of its own, and the split is the point being made.
    *
    * Its REPLY is not comparable — `runtime`, `code_digest`, `build_id` and the Python-only

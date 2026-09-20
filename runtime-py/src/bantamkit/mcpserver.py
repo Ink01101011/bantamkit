@@ -1013,6 +1013,25 @@ class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
     instead of an `isError` carrying `Exceeds the limit (4300 digits)` (measured, review
     round 3). That is the frame Node already printed, so it is a parity gain, not a
     behaviour the nine keep.
+
+    **AMENDED 2026-09-21 (job62, J62-12).** "The Node SDK does no such thing" was true when
+    this was written and is no longer: `runtime-ts/src/mcp/pyargs.ts` now carries
+    `preParseJson`, a port of the SDK step above, and the whole rule with it — the
+    `annotation is not str` test that catches `str | None`, the `str | int | float` skip that
+    a `bool` falls out of because `isinstance(True, int)`, and the digit cap this paragraph
+    describes. It is the sentence that mattered: the claim was used to argue that
+    `bantamkit_read` was "the one tool whose two halves could read the same call
+    differently", and it was not. Driving both stdio servers over the same `tools/call` bytes
+    found SIXTEEN shapes disagreeing across SEVEN tools — `validate_json(schema=
+    '{"type": "object"}')` answered `{"valid": true}` here and `dict_type` there, and
+    `memory_save.links`, `memory_recall.k`, `memory_compact.reserve`, `memory_dream.dry_run`,
+    `work_plan.nodes`, `skill_audit.{enabled,usage,check}`, `token_ledger.model` and
+    `shiftwork_clock_out.{handoff_patch,accounting}` all did the same. Nothing on this side
+    changed, and nothing here needs to: the reference was right and the port had a hole.
+    Gated by the `json-string-arguments` session in `tools/conformance/suites/wire.mjs`, 31
+    calls over both servers. `_NO_JSON_UNWRAP` is still dormant and the port still unwraps
+    for every served tool; the day a name returns to that set, `preParseJson` needs the same
+    set or the two halves part again.
     """
 
     unwrap_json: bool = True
