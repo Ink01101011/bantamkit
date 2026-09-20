@@ -508,9 +508,10 @@ handed (Layer 1; see [architecture.md](architecture.md)).
 
 **The tool's own description still says "the single-pointer contract"; this
 document no longer does. Both halves are deliberate — do not "tidy" either.**
-`assets/tools/shiftwork_plan.json` ends: *"It reports what the dependency graph
-permits; it does not move the cursor, which is echoed unchanged so the
-single-pointer contract and the batch view can be read side by side."* There the
+`assets/tools/shiftwork_plan.json` still carries it, two sentences before the
+end of its description: *"It reports what the dependency graph permits; it does
+not move the cursor, which is echoed unchanged so the single-pointer contract
+and the batch view can be read side by side."* There the
 phrase is **not false**: the cursor is still one pointer, echoed unchanged, and
 an earlier sentence in the same description now states outright that *"a `ready`
 member beyond the cursor is clockable, but only in that order"* — so nothing on
@@ -528,8 +529,9 @@ requires every `ready` unit beyond the cursor to be accepted by a bare
 `shiftwork_clock_out` — which a never-briefed unit correctly is **not**. Deleting
 a sentence there instead of rewriting it makes the suite demand the wrong thing.
 Editing that asset is not free either: it moves the pack's `assets_digest`, which
-[porting.md](porting.md) quotes as a literal (`sha256:d47dcf4b…` over 87 files)
-and `tools/conformance/suites/wire.mjs` compares across runtimes.
+[porting.md](porting.md) quotes as a literal (`sha256:9e66e89a…` over 93 files,
+remeasured 2026-09-20 — that row is on its third literal, because the pack keeps
+moving under it) and `tools/conformance/suites/wire.mjs` compares across runtimes.
 
 **The satisfied rule.** A unit whose status is `done` or `dropped` is
 *satisfied*: it is removed from the graph, and every edge pointing at it is

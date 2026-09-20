@@ -1731,16 +1731,25 @@ def test_clock_in_with_a_unit_id_refuses_before_it_reads_the_graph(tmp_path, exa
 
     questions = copy.deepcopy(example)
     questions["handoff"]["open_questions"] = ["who owns the deploy key?"]
-    assert ops.clock_in(str(sub("q", questions)), "U4")["result"] == "escalate"
+    q = sub("q", questions)
+    assert ops.clock_in(str(q), "U4")["result"] == "escalate"
     done = copy.deepcopy(example)
     for unit in done["plan"]["units"]:
         unit["status"] = "done"
-    assert ops.clock_in(str(sub("d", done)), "U4") == {
+    d = sub("d", done)
+    assert ops.clock_in(str(d), "U4") == {
         "result": "success",
         "reason": "all units done or dropped",
     }
-    bad = ops.clock_in(str(sub("e", "{not json")), "U4")
+    e = sub("e", "{not json")
+    bad = ops.clock_in(str(e), "U4")
     assert bad["result"] == "error" and "not parseable as JSON" in bad["reason"]
+
+    # None of the three handed out a brief, so none of them recorded one — the same
+    # assertion the Node node makes, per arm, because one empty log beside two written
+    # ones would read as green. Same idiom as the cycle test above.
+    for path in (q, d, e):
+        assert read_log(path) == [], f"{path}: an answer that is not a brief recorded none"
 
 
 def test_the_three_callers_give_one_answer_about_one_document(tmp_path, example):

@@ -2041,6 +2041,14 @@ const SHIFTWORK_SRC = fileURLToPath(new URL('../src/shiftwork.ts', import.meta.u
  * The module header discusses `depends_on` at length, and rightly. A strip cannot produce
  * a false green here by accident: every assertion below is an exact count, so a strip that
  * ate too much drives the counts to zero and a strip that ate too little drives them up.
+ *
+ * One direction it cannot catch, stated rather than engineered around: the line strip cuts
+ * each line at its FIRST `//`, including a `//` that is inside a string literal, so code
+ * written after such a `//` on the same line would be invisible and a second `depends_on`
+ * walk there would not be counted. Measured on `src/shiftwork.ts` today: zero occurrences
+ * of `://` and zero string literals containing `//`, so no line here is mis-cut. A real
+ * comment parser would be more code than this property is worth, and the
+ * `raw > walks.length` guard below already fails closed on every other strip error.
  */
 function codeOf(path) {
   return readFileSync(path, 'utf8')
