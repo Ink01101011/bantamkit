@@ -827,3 +827,50 @@ disagreements.
 One hazard exists and is **not** a port defect: concurrent same-unit `clock_out` loses a
 history entry, 10/10 on Node **and** 10/10 on CPython. Reproduced, not introduced. Do not
 "fix" it on one side only.
+
+## The published export surface, and the one break in it
+
+`runtime-ts/src/index.ts:161–170` re-exports `clockIn`, `clockOut`, `HISTORY_RING_SIZE`,
+`SCHEMA_NAME`, `status`, `TERMINAL_UNIT_STATUS` and `timestamp` from `./shiftwork.js`, plus the
+type `ClockOptions`; `runtime-ts/package.json:29–30` points `main` and `types` at
+`./dist/index.js` and `./dist/index.d.ts`. So those names are the npm package's **public API**,
+not internals — `import { clockIn } from 'bantamkit-mcp'` is a supported call, and its arity is
+part of what the package publishes. Nothing else in this repository says so, which is how the
+next paragraph happened.
+
+**`clockIn` changed arity in job60 and nobody outside this repository was told.** The unit id
+went in as the **second positional parameter**, ahead of the options object:
+
+```ts
+// before — runtime-ts/src/shiftwork.ts:335 at 1e07fbb^
+export function clockIn(checkpoint: string, options: ClockOptions = {}): PyValue
+// after  — runtime-ts/src/shiftwork.ts:420, today
+export function clockIn(checkpoint: string, unitId: string | null = null, options: ClockOptions = {}): PyValue
+```
+
+A caller who wrote `clockIn(path, { now })` now hands the options object to the slot a unit id
+occupies. TypeScript stops that at the type. Plain JavaScript does not stop it at all: the
+object is read as the id, the call asks for a unit named `[object Object]`, and `now` is
+silently dropped — a wrong answer, not an error.
+
+That break is **measured, not predicted**, because this repository walked into it. The
+conformance suite's own call site was exactly that shape, and `--suite shiftwork` went
+`FAIL 1558 cases, 201 failures` → `PASS 1558 cases, 0 failures` on the arity fix alone
+(commit `efb4413`, whose message carries both lines). The fixed call site reads
+`shiftwork.clockIn(target, call.unit_id ?? null, { now: clock.now })`, in
+`tools/conformance/suites/shiftwork.mjs`.
+
+**What a caller must do.** Put the id — or `null` — in the second slot:
+`clockIn(path, null, { now })` for the old default-path call, `clockIn(path, 'U3')` to brief a
+named ready unit. `clockOut` is untouched: the same seven parameters in the same order
+(`runtime-ts/src/shiftwork.ts:730–738`). `runtime-ts/package.json:3` reads `0.35.3` in the tree;
+this section is the declaration for whichever published version first carries job60.
+
+**This is not a divergence, and job60 added no row above.** `runtime-py` grew the same parameter
+in the same job — `def clock_in(checkpoint: str, unit_id: str | None = None)` at
+`runtime-py/src/bantamkit/shiftwork.py:289` (commit `3023f89`) — but there it was **appended**
+to `def clock_in(checkpoint: str)` and displaced nothing, because the Python function has no
+trailing options argument: `ClockOptions` is a Node-only seam carrying `now`
+(`runtime-ts/src/shiftwork.ts:237–240`). Same behaviour, same `unit_id` tool input, same refusal
+sentences on both sides. The Node call surface broke only because it is the one with a parameter
+standing behind `unitId`.
