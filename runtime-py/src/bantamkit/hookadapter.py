@@ -385,23 +385,330 @@ def _write_json_safe(file: str, value: Any) -> None:
         pass  # the gate degrades to "always fires", which is safe and merely not free
 
 
-def _native_memory_exists(run: HookRun, cwd: str) -> bool:
-    """`~/.claude/projects/<slug>/memory/MEMORY.md` -- the host's own auto-memory for this cwd.
+# --------------------------------- A: the host's own auto-memory, found and written into
+#
+# WHAT WAS HERE, AND WHY IT IS GONE. `_native_memory_exists` answered "does the host have an
+# auto-memory store for this cwd" with `re.sub(r"[\\/:]", "-", cwd)` under
+# `~/.claude/projects/<slug>/memory/MEMORY.md`, and its own docstring said the rule was known
+# to be incomplete. It was ported that way on purpose -- a Python half computing a DIFFERENT
+# wrong slug would have been a divergence invented by a unit -- and the reason expired the
+# moment its Node twin was deleted (J62-6). S0 dumped the host's real resolver out of
+# `2.1.278`:
+#
+#     resolve()      = envOverride ?? policySettings ?? flagSettings ??
+#                      [localSettings, projectSettings], userSettings   (in that order)
+#                   ?? defaultPath()
+#     defaultPath()  = join(<root>, "projects", ok(gitRoot(projectRoot) ?? projectRoot), "memory")
+#     ok(e)          = k(e).length <= 200 ? k(e) : k(e).slice(0,200) + "-" + base36(hash(e))
+#
+# Three things the old rule was missing, each a wrong answer on a real machine: the
+# 200-character cap with its base36 hash suffix; the four-branch precedence in front of
+# `defaultPath` at all; and -- the one that matters most -- the KEY, which is the
+# canonicalized git WORKTREE ROOT and not the session cwd. Job62 itself runs inside a
+# worktree, precisely the case the old rule got wrong.
+#
+# The fix is not a better slug. RULING Q1.2/Q1.6 of
+# `.shiftwork/notes-job62/S1-delivery-path.md` forbids reimplementing `oS`/`ok`/`Gr` at all,
+# because re-deriving a four-branch resolver from a minified binary is the exact
+# instruction/surface drift job60 built its gate to stop. A learns the directory by
+# OBSERVATION WITH VERIFICATION instead, and when no branch answers it exports nothing rather
+# than guessing (RULING Q1.3).
+#
+# `native_store_root()` in `bantamkit/memory/divergence.py` is a DIFFERENT function, off the
+# MCP path, and RULING Q1.6 leaves it exactly where it is.
 
-    THE SLUG HERE IS THE NODE MODULE'S, CHARACTER FOR CHARACTER, AND IT IS KNOWN TO BE
-    INCOMPLETE. S0 measured the host's real resolver to be four-branch with a 200-character
-    cap and a base36 hash suffix, keyed on the canonicalized worktree root; this rule is
-    neither. It is ported unchanged anyway, and the reason is the rule it appears to break:
-    RULING Q1.6 forbids REIMPLEMENTING the host's slug, and a Python half that computed a
-    DIFFERENT answer here would make the two runtimes inject different SessionStart blocks
-    for the same cwd -- a divergence invented by a unit, in a read-only existence check that
-    creates nothing and writes nothing. The honest fix is one rule in one place for both
-    runtimes, which is unit A's problem (Q1.1-Q1.3: read the path back, never recompute it)
-    and not this arm's. Recorded for `docs/porting.md` rather than quietly repaired here.
+#: The file whose presence makes a candidate directory an ANSWER rather than a guess.
+NATIVE_INDEX = "MEMORY.md"
+#: The host's top-precedence branch, and the one on the MCP passthrough allowlist.
+NATIVE_OVERRIDE_ENV = "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"
+#: The one heading in the host's index that A writes under.
+#:
+#: A owns this line and nothing else in the file. It does NOT sort its entries into the host's
+#: own sections, because the host's taxonomy is the host's to change and a writer that guesses
+#: at it has to keep guessing right forever. One heading, appended once, at the end.
+NATIVE_SECTION = "## bantamkit"
+#: Names exported per hook run. The bound that binds in practice; see `_export_to_native`.
+NATIVE_EXPORT_MAX = 10
+#: Bytes A may append to `MEMORY.md` per hook run.
+#:
+#: This is the budget that means anything, because these are the only bytes the export puts in
+#: front of the model: the host injects its index, and reads a fact file only when something
+#: asks for it. 2000 B is two thirds of `SESSION_INJECT_MAX`, paid at most once per session
+#: and -- unlike an injection -- never paid again for a name already there.
+NATIVE_INDEX_BYTES_MAX = 2000
+#: A fact name A is willing to join into a path.
+#:
+#: `MemoryStore.save` enforces `^[a-z0-9][a-z0-9-]*$`, but `_facts()` does NOT revalidate on
+#: READ -- measured 2026-09-20: a hand-written `facts/*.md` whose frontmatter says
+#: `name: ../escape` parses and is handed out with that name. So this guard is reachable from
+#: disk, and `test_nativeexport.py` drives it with exactly that file.
+#:
+#: `\Z` AND NOT `$` IS A PARITY FLAG, NOT A TASTE ONE. JavaScript's `$` outside `m` anchors at
+#: the very end of the string; Python's also matches just BEFORE a final newline, so a name
+#: ending in a newline would pass this guard on one runtime and fail it on the other -- and
+#: that is exactly the kind of thing a hand-written frontmatter can carry.
+NATIVE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+#: `String.prototype.trim`'s character set, spelled out.
+#:
+#: A PARITY TRAP, MEASURED RATHER THAN ASSUMED: `str.strip()` and `trim()` are NOT the same
+#: function. `trim()` strips ECMAScript WhiteSpace + LineTerminator, which includes U+FEFF;
+#: `str.strip()` strips whatever `str.isspace()` accepts, which includes U+001C..U+001F and
+#: U+0085 and does NOT include U+FEFF. Measured 2026-09-20 over 23 probe strings: plain
+#: `.strip()` disagreed with `trim()` on 4 of them, this set on 0. A description carrying a
+#: BOM would otherwise be exported differently by the two runtimes.
+_JS_TRIM = (
+    "\t\n\x0b\f\r            "
+    "      　﻿"
+)
+
+
+@dataclass
+class NativeMemory:
+    """The host's own auto-memory directory, and which branch named it."""
+
+    #: The directory, or `None` when no branch answered.
+    dir: str | None
+    branch: str
+    #: The branches tried and REJECTED, in order -- the one line RULING Q1.3 asks for.
+    tried: list[str] = field(default_factory=list)
+
+
+@dataclass
+class NativeExport:
+    """What one export run did, in numbers the operator can rerun the arm against."""
+
+    #: Names for which SOMETHING was written this run.
+    exported: int = 0
+    files: int = 0
+    index_lines: int = 0
+    bytes: int = 0
+    index_bytes: int = 0
+    skipped: list[str] = field(default_factory=list)
+    #: Whether the host's index was there to append to. A never creates it.
+    index: str = "absent"
+    error: str | None = None
+
+
+def _readable_file(p: str) -> bool:
+    """`p` is a regular file this process can read. Not "exists": a directory is not an index."""
+    try:
+        return os.path.isfile(p) and os.access(p, os.R_OK)
+    except OSError:
+        return False
+
+
+def _resolve_native_memory(run: HookRun, payload: dict[str, Any]) -> NativeMemory:
+    """RULING Q1.2 -- the four branches, first one that ANSWERS wins.
+
+      1. `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`, non-empty -> that value IS the directory, with
+         no verification: it is the host's own top-precedence branch, so there is nothing
+         above it that could overrule what A sees.
+      2. `autoMemoryDirectory` from `<home>/.claude/settings.json` ONLY. A CANDIDATE, never an
+         answer: three higher-precedence sources exist in the host (`policySettings`,
+         `flagSettings`, and the env var) that A cannot read, so the candidate is accepted
+         only when it holds a readable `MEMORY.md`.
+      3. `dirname(transcript_path)/memory`, with the same `MEMORY.md` test. This is reading
+         back the slug the HOST computed, which is the whole distinction the rule against
+         recomputing it is about.
+      4. UNKNOWN. No fallback slug, no mkdir.
+
+    Branch 3 is why A is a rider on B and not a feature of its own (RULING Q1.4): only a hook
+    receives `transcript_path`. Any failure reading or parsing `settings.json` means "this
+    branch has no answer" -- never an error, never a raise.
     """
-    slug = re.sub(r"[\\/:]", "-", cwd)
-    native = os.path.join(run.home, ".claude", "projects", slug, "memory", "MEMORY.md")
-    return os.path.exists(native)
+    tried: list[str] = []
+
+    override = str(os.environ.get(NATIVE_OVERRIDE_ENV) or "").strip()
+    if override:
+        return NativeMemory(dir=override, branch="env", tried=tried)
+    tried.append("env")
+
+    try:
+        with open(os.path.join(run.home, ".claude", "settings.json"), encoding="utf-8") as fh:
+            settings = json.load(fh)
+        configured = settings.get("autoMemoryDirectory") if isinstance(settings, dict) else None
+        if isinstance(configured, str) and configured.strip():
+            directory = configured.strip()
+            if _readable_file(os.path.join(directory, NATIVE_INDEX)):
+                return NativeMemory(dir=directory, branch="settings", tried=tried)
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass  # absent, unreadable, not JSON, not an object -- all "no answer", never an error
+    tried.append("settings")
+
+    transcript = str(payload.get("transcript_path") or "").strip()
+    if transcript:
+        directory = os.path.join(os.path.dirname(transcript), "memory")
+        if _readable_file(os.path.join(directory, NATIVE_INDEX)):
+            return NativeMemory(dir=directory, branch="transcript", tried=tried)
+    tried.append("transcript")
+
+    return NativeMemory(dir=None, branch="unknown", tried=tried)
+
+
+def _collapse_whitespace(text: Any) -> str:
+    r"""Whitespace collapsed to single spaces, then trimmed the way `trim()` trims.
+
+    THE CLASS IS SPELLED OUT rather than `\s`, and the Node half spells it the same way: `\s`
+    is not the same set in the two languages (JavaScript's includes NBSP, BOM and the Unicode
+    separators; Python's `str` pattern includes its own list), so a description carrying one
+    of those characters would be exported differently by the two runtimes -- a divergence
+    invented by a helper nobody would think to compare. `_JS_TRIM` is the second half of the
+    same problem; its comment carries the measurement.
+    """
+    return re.sub(r"[ \t\n\r\f\x0b]+", " ", str(text)).strip(_JS_TRIM)
+
+
+def _native_fact_text(name: str, type_: str, description: str) -> str:
+    """One exported file, in the host's own auto-memory shape.
+
+    THE BODY IS NOT THE FACT'S BODY, and A is named for it: A exports DESCRIPTIONS. The file
+    is an entry that names where the body lives, for two reasons. The description is what the
+    host injects; and copying a user's fact bodies into a store whose dream rewords and
+    deletes them would be duplicating the user's data into a place bantamkit does not own.
+
+    `metadata.source: bantamkit` is provenance, so an operator reading this directory can see
+    at a glance which entries are exports. Nothing reads it back -- RULING Q1.5 forbids A
+    treating its own writes as state.
+
+    The description is a JSON string, which is a valid YAML 1.2 double-quoted scalar, so the
+    escaping needs no YAML writer on either side. `json.dumps(desc, ensure_ascii=False)`
+    agrees with `JSON.stringify` byte for byte on this input -- measured over 23 probe strings
+    on 2026-09-20, 0 differences; `ensure_ascii=True` would escape every non-ASCII character
+    the other side leaves alone.
+    """
+    return "\n".join(
+        [
+            "---",
+            f"name: {name}",
+            f"description: {json.dumps(description, ensure_ascii=False)}",
+            "metadata:",
+            "  node_type: memory",
+            f"  type: {type_}",
+            "  source: bantamkit",
+            "---",
+            "",
+            "Exported from bantamkit's project memory store. The body of this fact is not "
+            "here: call",
+            f"`mcp__bantamkit__memory_recall` with the name `{name}` to read it.",
+            "",
+            "Written once, only because the name was absent from this directory. bantamkit "
+            "never",
+            "rewrites and never deletes an entry here, so whatever the host does to this file "
+            "stands.",
+            "",
+        ]
+    )
+
+
+def _native_index_line(name: str, description: str) -> str:
+    """One index line, in the host's own index shape. The em dash is a raw U+2014."""
+    return f"- [{name}]({name}.md) — {description}\n"
+
+
+def _export_to_native(directory: str, store: str) -> NativeExport:
+    r"""A -- the export, one way and non-destructive (RULING Q1.5).
+
+    WRITE A NAME ONLY WHEN IT IS ABSENT. The two halves are gated INDEPENDENTLY: the fact
+    file is written when nothing is at its path, the index line is appended when
+    `](<name>.md)` does not appear in the index. They are independent because job59 measured
+    Claude Code's own dream rewording or removing 8 of 8 foreign index lines and deleting one
+    file, so the two halves really do go missing separately, and A must do exactly the one
+    thing that is missing.
+
+    `os.path.lexists` AND NOT `os.path.exists`: `exists` follows links, so a dangling symlink
+    would read as absent and A would write THROUGH it into whatever it points at. A dangling
+    link is an entry A did not create, and "absent" is the only condition under which A
+    writes. The exclusive-create mode (`"xb"`) is a SECOND guard on the same rule, reachable
+    only on a race between the check and the write; both are here on purpose.
+
+    A NEVER READS BACK ITS OWN WRITES AS STATE. The presence check above is not "did we export
+    this" -- it is "is this name in the host's directory right now", which is the
+    write-when-absent predicate itself. When the dream removes an entry, A puts it back next
+    session; when the dream REWORDS one, A leaves it alone, because the name is still there.
+
+    A NEVER CREATES ANYTHING THE HOST WOULD NOT HAVE. No `mkdir`, and no `MEMORY.md`: when the
+    index is absent (reachable only through branch 1, which accepts its directory unverified)
+    the files are written and no index is conjured into existence.
+
+    ORDER IS `SESSION_DROP_RULE`, the same order the session block keeps facts in, so a store
+    larger than one run's budget exports its most durable and most recently used facts first
+    and the rest on later sessions. A failed write is caught, recorded and ENDS the run: an
+    arm whose whole posture is exit 0 does not get to raise, and retrying every remaining name
+    against a directory that just refused one is spending syscalls to learn the same thing
+    again.
+
+    EVERY FILE HERE IS OPENED IN BINARY, and that is a parity requirement rather than a style
+    note: Python's text mode translates `\n` to `os.linesep` on write and back on read, so on
+    Windows this directory would be CRLF where the Node runtime writes LF -- two runtimes
+    writing different bytes into one shared store.
+    """
+    result = NativeExport()
+    index_file = os.path.join(directory, NATIVE_INDEX)
+    seeded = ""
+    if _readable_file(index_file):
+        try:
+            with open(index_file, "rb") as fh:
+                # `errors="replace"` mirrors `readFileSync(p, 'utf8')`, which substitutes
+                # U+FFFD rather than raising: a mojibake index is still an index.
+                seeded = fh.read().decode("utf-8", errors="replace")
+            result.index = "present"
+        except OSError:
+            pass  # readable a moment ago, not now: treat it as absent rather than as empty
+    named = seeded
+    appended: list[str] = []
+    try:
+        memory = MemoryStore(store, create=False)
+        ranked = _rank_by_session_drop_rule(
+            [
+                (fact, position, memory._index_line(fact))
+                for position, fact in enumerate(memory._facts())
+            ]
+        )
+        for fact, _position, _line in ranked:
+            if result.exported >= NATIVE_EXPORT_MAX:
+                break
+            name = str(fact.name)
+            if not NATIVE_NAME_RE.match(name) or name == "MEMORY":
+                result.skipped.append(name)
+                continue
+            file = os.path.join(directory, f"{name}.md")
+            need_file = not os.path.lexists(file)
+            need_line = result.index == "present" and f"]({name}.md)" not in named
+            if not need_file and not need_line:
+                continue
+            description = _collapse_whitespace(
+                "" if fact.description is None else fact.description
+            )
+            line = _native_index_line(name, description) if need_line else ""
+            if result.index_bytes + len(line.encode("utf-8")) > NATIVE_INDEX_BYTES_MAX:
+                break
+            if need_file:
+                text = _native_fact_text(name, str(fact.type), description)
+                with open(file, "xb") as fh:
+                    fh.write(text.encode("utf-8"))
+                result.files += 1
+                result.bytes += len(text.encode("utf-8"))
+            if need_line:
+                appended.append(line)
+                named += line
+                result.index_lines += 1
+                result.index_bytes += len(line.encode("utf-8"))
+                result.bytes += len(line.encode("utf-8"))
+            result.exported += 1
+        if appended:
+            # The heading is emitted only when the file does not already carry it as a whole
+            # LINE, so a second session appends under the first session's heading. If the host
+            # later moves that heading, A's later lines land at the end of the file rather
+            # than under it -- a cosmetic limit, accepted, because the alternative is A
+            # rewriting the host's index.
+            separator = "" if seeded.endswith("\n") else "\n"
+            heading = "" if NATIVE_SECTION in seeded.split("\n") else f"\n{NATIVE_SECTION}\n\n"
+            with open(index_file, "ab") as fh:
+                fh.write(f"{separator}{heading}{''.join(appended)}".encode())
+    except Exception as e:  # noqa: BLE001 - the arm's whole posture is exit 0
+        result.error = _message(e)
+    return result
 
 
 # The rule a capped session block keeps facts by, in the words the block, the log and
@@ -429,6 +736,38 @@ class CappedIndex:
     facts: int | None = None
 
 
+def _rank_by_session_drop_rule(
+    all_facts: list[tuple[Fact, int, str]],
+) -> list[tuple[Fact, int, str]]:
+    """`SESSION_DROP_RULE` as a sort, extracted 2026-09-20 (J62-7) so that the session block
+    and A's export cannot come to disagree about which facts matter most.
+
+    It was inline in `_capped_index` and had exactly one caller; `_export_to_native` is the
+    second, and a second copy of a four-key ordering is how "the same rule" stops being the
+    same rule. `runtime-ts`'s `rankBySessionDropRule` is the same extraction on the other side.
+
+    `evidence` DESCENDING inside a class, then name ascending, then the index's own order as
+    the final tie-break: a sort key cannot mix directions, so the date is negated by sorting
+    the whole list on the date alone first and letting Python's stable sort carry it under the
+    class key. Two passes, one order, no comparator to get backwards.
+
+    The name is coerced with `str()` because `MemoryStore._facts()` does not revalidate what
+    the frontmatter said -- the other runtime sorts on `pyText(fact.name)`, and a name that is
+    a YAML integer would otherwise be an unorderable mix here and a string there.
+    """
+
+    def decays(entry: tuple[Fact, int, str]) -> int:
+        return 0 if entry[0].type in DURABLE_TYPES else 1
+
+    def evidence(entry: tuple[Fact, int, str]) -> str:
+        return entry[0].last_recalled or entry[0].created or ""
+
+    ranked = sorted(all_facts, key=lambda e: (str(e[0].name), e[1]))
+    ranked.sort(key=evidence, reverse=True)
+    ranked.sort(key=decays)
+    return ranked
+
+
 def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> CappedIndex:
     """The index of `root` as ONE capped block.
 
@@ -450,20 +789,7 @@ def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> Ca
     all_facts: list[tuple[Fact, int, str]] = [
         (fact, position, store._index_line(fact)) for position, fact in enumerate(store._facts())
     ]
-
-    def decays(entry: tuple[Fact, int, str]) -> int:
-        return 0 if entry[0].type in DURABLE_TYPES else 1
-
-    def evidence(entry: tuple[Fact, int, str]) -> str:
-        return entry[0].last_recalled or entry[0].created or ""
-
-    # `evidence` DESCENDING inside a class, then name ascending, then the index's own order
-    # as the final tie-break: a sort key cannot mix directions, so the date is negated by
-    # sorting the whole list on the date alone first and letting Python's stable sort carry
-    # it under the class key. Two passes, one order, no comparator to get backwards.
-    ranked = sorted(all_facts, key=lambda e: (e[0].name, e[1]))
-    ranked.sort(key=evidence, reverse=True)
-    ranked.sort(key=decays)
+    ranked = _rank_by_session_drop_rule(all_facts)
 
     kept: set[int] = set()
     size = 0
@@ -526,23 +852,37 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             SESSION_INJECT_MAX,
         )
         parts.append(profile.block)
-    # A project store that is NOT the profile dir and has no native MEMORY.md beside it:
-    # inject its index too, otherwise the host already carries an index for this cwd.
+    # WHERE THE HOST'S OWN AUTO-MEMORY DIRECTORY IS, resolved ONCE per session and used twice:
+    # it decides whether the project index has to be injected at all, and it is where A
+    # exports. SessionStart is the event because it is the one that already had to answer this
+    # question, it is paid once per session, and `transcript_path` -- branch 3, the only branch
+    # that works on a machine the operator has not configured -- arrives on it.
+    native = _resolve_native_memory(run, payload)
+    #
+    # A project store that is NOT the profile dir, and one of two things:
+    #   - the host has no auto-memory store we can find -> inject the index, as before;
+    #   - the host HAS one -> export into it instead. Injecting as well would pay twice for
+    #     the same facts, which is the cost the old `_native_memory_exists` branch existed to
+    #     avoid.
+    # ONLY THE PROJECT LAYER IS EXPORTED. The native directory is keyed on the host's project
+    # root, so a cross-project profile fact placed in it would be copied into every project's
+    # store -- and the profile index is injected above on every session anyway, so exporting
+    # it buys nothing and costs the collision job50/J50-2A already paid for once.
     project: CappedIndex | None = None
+    exported: NativeExport | None = None
     try:
         store = str(discover_project_store(cwd))
-        if (
-            os.path.realpath(store) != os.path.realpath(run.profile)
-            and _count_facts(store) > 0
-            and not _native_memory_exists(run, cwd)
-        ):
-            project = _capped_index(
-                store,
-                lambda count: f"[bantamkit project memory — {count} facts]",
-                SESSION_INJECT_MAX,
-            )
-            project.facts = _count_facts(store)
-            parts.append(project.block)
+        if os.path.realpath(store) != os.path.realpath(run.profile) and _count_facts(store) > 0:
+            if native.dir is None:
+                project = _capped_index(
+                    store,
+                    lambda count: f"[bantamkit project memory — {count} facts]",
+                    SESSION_INJECT_MAX,
+                )
+                project.facts = _count_facts(store)
+                parts.append(project.block)
+            else:
+                exported = _export_to_native(native.dir, store)
     except Exception as e:  # noqa: BLE001 - a bad store is a log line, never a dead session
         _log(run, {"event": "SessionStart", "warn": _message(e)})
     parts.append(
@@ -593,6 +933,27 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
                 else {}
             ),
             "dropRule": SESSION_DROP_RULE,
+            # A -- the host's auto-memory directory. `nativeBranch` / `nativeTried` are the
+            # one line RULING Q1.3 asks for when nothing answered: they say WHICH branches
+            # were tried, so "bantamkit exported nothing" is never indistinguishable from
+            # "bantamkit did not look". The export fields appear only when an export ran.
+            "nativeBranch": native.branch,
+            "nativeTried": native.tried,
+            "nativeDir": native.dir,
+            **(
+                {
+                    "nativeExported": exported.exported,
+                    "nativeFiles": exported.files,
+                    "nativeIndexLines": exported.index_lines,
+                    "nativeBytes": exported.bytes,
+                    "nativeIndexBytes": exported.index_bytes,
+                    "nativeSkipped": exported.skipped,
+                    "nativeIndex": exported.index,
+                    **({"nativeError": exported.error} if exported.error else {}),
+                }
+                if exported
+                else {}
+            ),
             "storeScope": run.store_scope,
             "updateState": None,
             "updateProbe": "node-only",
@@ -967,9 +1328,10 @@ def _append_usage_event(run: HookRun, payload: dict[str, Any]) -> None:
     }
     # `os.path.expanduser("~")` AND NOT `run.home`, mirroring `os.homedir()` on the other
     # side: the Node arm reads the raw home here while every other path in the module goes
-    # through the RESOLVED one. Ported as spelled rather than repaired, for the reason
-    # `_native_memory_exists` gives -- a unit that fixes one runtime's reading of a shared
-    # on-disk path invents a divergence. Recorded for `docs/porting.md`.
+    # through the RESOLVED one. Ported as spelled rather than repaired, for the reason the
+    # deleted `_native_memory_exists` used to give -- a unit that fixes one runtime's reading
+    # of a shared on-disk path invents a divergence, and the fix belongs in both halves of one
+    # job or in neither. Recorded for `docs/porting.md`.
     directory = os.environ.get("TOOL_METRICS_DIR") or os.path.join(
         os.path.expanduser("~"), ".claude", "tool-metrics"
     )
