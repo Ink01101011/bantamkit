@@ -71,6 +71,8 @@ const repoRoot = dirname(dirname(here));
 /** The same process runner `cli` uses: argv, env, cwd, stdin in; the two streams and the exit out. */
 const CLI_REF = join(here, 'ref', 'cli_ref.py');
 const CLI = join(repoRoot, 'runtime-ts', 'dist', 'cli.js');
+/** ONE pty, allocated by a neutral third party and handed to whichever side is measured. */
+const TTY_REF = join(here, 'ref', 'cli_tty_ref.py');
 
 /**
  * Removed from BOTH children, always.
@@ -655,6 +657,256 @@ export async function run(ctx) {
         { wroteSettings: false, exit: 2 },
       ),
     );
+  }
+
+
+  // ================================================ --remove-hooks: THE SAME GATE, BOTH WAYS
+  //
+  // THIS FLAG HAD NO CONFORMANCE CASE AT ALL UNTIL THIS UNIT — J62-10's finding. It shipped in
+  // both runtimes, it rewrites the operator's own settings file, and nothing in `--all`
+  // compared the two answers. On 2026-09-20 it rewrote the operator's REAL
+  // `~/.claude/settings.json` with no terminal, no `--yes` and exit 0, the user overturned
+  // RULING Q3.7, and both runtimes grew `--install-hooks`' three-state gate. The cases below
+  // are that gate's first measurement across the two.
+  //
+  // FOUR STATES ARE MEASURED: refused (no terminal, no `--yes`), consented (`--yes`), DECLINED
+  // AT A REAL TERMINAL, and nothing-of-ours (the no-op that returns BEFORE the gate).
+  //
+  // EVERY REFUSAL CARRIES A SECOND, NON-RULED CASE OVER THE REFUSAL BIT. A differential over
+  // two sentences is satisfied by two runtimes that both stopped refusing, so what was written
+  // and what came back are ALSO pinned per side against a literal in this file.
+  //
+  // THE REDIRECT IS ASSERTED, NOT BELIEVED, and it is asserted from the runtime's own report:
+  // each side's `--install-hooks` seed must have named a path inside the throwaway home before
+  // a single removal runs. This is the flag whose unsandboxed probe did the damage.
+  {
+    const id = 'remove-hooks';
+    const cwd = join(root, id, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const settings = (h) => join(h, '.claude', 'settings.json');
+    const backupsIn = (h) => {
+      const d = join(h, '.claude');
+      return existsSync(d) ? readdirSync(d).filter((n) => n.includes('.backup-')).sort() : [];
+    };
+    // A hook entry nobody named bantamkit wrote. It must survive every case below, on both
+    // sides, which is what makes "only entries naming bantamkit are removed" a measurement.
+    const FOREIGN = { matcher: 'Bash', hooks: [{ type: 'command', command: '/opt/acme/audit.sh', timeout: 5 }] };
+    const mask = (buf, h) => dec(buf).split(h).join('<HOME>');
+    /**
+     * ONE FRESH PAIR OF HOMES PER STATE, AND THAT IS NOT TIDINESS — IT IS THE DIFFERENCE
+     * BETWEEN A CASE AND A VACUOUS ONE. A first draft of this block seeded once and ran the
+     * four states down one pair of homes; measured against the PRE-PORT reference, only 5 of
+     * the 13 cases could go red, because the first state's un-gated removal emptied the
+     * reference's file and every later state then compared two runtimes that both had nothing
+     * left to do. Each state now starts from the same seeded bed, so each one fails on its own.
+     */
+    const seeded = (state) => {
+      const homes = { py: home(`${id}-${state}`, 'py'), node: home(`${id}-${state}`, 'node') };
+      for (const side of ['py', 'node']) {
+        writeFile(settings(homes[side]), `${JSON.stringify({ model: 'opus', hooks: { PreToolUse: [FOREIGN] } }, null, 2)}\n`);
+      }
+      const out = {
+        py: runPy(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.py }),
+        node: runNode(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.node }),
+      };
+      for (const side of ['py', 'node']) {
+        if (out[side].exit !== 0) throw new Error(`hooks/${id}/${state}: the ${side} seed failed: ${dec(out[side].stderr)}`);
+        // THE REDIRECT, FROM INSIDE THE RUNTIME. The report names the file it wrote; if that
+        // path is not under the throwaway home, nothing below may run.
+        const named = dec(out[side].stdout).split('\n')[0] ?? '';
+        if (!named.includes(homes[side])) {
+          throw new Error(`hooks/${id}/${state}: the ${side} seed wrote outside the scratch home: ${named}`);
+        }
+        if (!existsSync(settings(homes[side]))) throw new Error(`hooks/${id}/${state}: the ${side} seed wrote no settings file`);
+      }
+      return homes;
+    };
+
+    // ---------------------------------------------------- state 1: no terminal, no `--yes`
+    {
+      const homes = seeded('refused');
+      const before = { py: readFileSync(settings(homes.py), 'utf8'), node: readFileSync(settings(homes.node), 'utf8') };
+      const backupsBefore = { py: backupsIn(homes.py).length, node: backupsIn(homes.node).length };
+      const py = runPy(ctx, { argv: ['--remove-hooks'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--remove-hooks'], cwd, home: homes.node });
+      cases.push({
+        name: 'remove-hooks-no-tty: the same refusal, on the same stream, with the same exit code',
+        kind: 'json',
+        expected: { stdout: mask(py.stdout, homes.py), stderr: mask(py.stderr, homes.py), exit: py.exit },
+        actual: { stdout: mask(nd.stdout, homes.node), stderr: mask(nd.stderr, homes.node), exit: nd.exit },
+      });
+      // THE REFUSAL BIT, PER SIDE. Two runtimes that both went back to rewriting the file
+      // unasked would still agree with each other, and the differential above would stay green.
+      const outcome = (side, r, h) => ({
+        exit: r.exit,
+        settingsByteIdentical: readFileSync(settings(h), 'utf8') === before[side],
+        backupsAdded: backupsIn(h).length - backupsBefore[side],
+        stdout: mask(r.stdout, h),
+        saysItNeedsATerminal: mask(r.stderr, h).startsWith(
+          '--remove-hooks rewrites your ~/.claude/settings.json and needs a terminal to ask.',
+        ),
+      });
+      cases.push(
+        ...literalCases(
+          outcome('py', py, homes.py),
+          outcome('node', nd, homes.node),
+          'remove-hooks-no-tty: it REFUSED and wrote nothing, against a literal',
+          { exit: 2, settingsByteIdentical: true, backupsAdded: 0, stdout: '', saysItNeedsATerminal: true },
+        ),
+      );
+    }
+
+    // ------------------------------- state 2: declined at a REAL TERMINAL — exit 1, no write
+    //
+    // The seam cases in each runtime's own suite cannot reach this: they inject the answer and
+    // never touch a terminal reader. `cli_tty_ref.py` allocates ONE `pty.openpty()` and hands
+    // the slave to whichever side is being measured — one terminal implementation for both,
+    // because measuring each side through its own fake would compare the fakes. It writes EOF
+    // down the master, and EOF is a NO: the ruled default is `[y/N]`.
+    {
+      const homes = seeded('declined');
+      const before = { py: readFileSync(settings(homes.py), 'utf8'), node: readFileSync(settings(homes.node), 'utf8') };
+      const backupsBefore = { py: backupsIn(homes.py).length, node: backupsIn(homes.node).length };
+      const atATerminal = (side) => {
+        const answer = ctx.runPython(TTY_REF, {
+          side,
+          argv: ['--remove-hooks'],
+          env: { HOME: homes[side], USERPROFILE: homes[side], ...Object.fromEntries(SCRUBBED.map((k) => [k, null])) },
+          cwd,
+          timeout: 60,
+          node: { exec: process.execPath, cli: CLI },
+        });
+        if (answer.unsupported) return null;
+        if (answer.error) throw new Error(`hooks/${id} (${side}): ${answer.error}`);
+        return { stdout: unb64(answer.stdout), stderr: unb64(answer.stderr), exit: answer.exit };
+      };
+      const pyTty = atATerminal('py');
+      const ndTty = pyTty === null ? null : atATerminal('node');
+      if (pyTty === null || ndTty === null) {
+        notes.push(
+          'remove-hooks-declined: NOT MEASURED HERE — `pty.openpty()` is POSIX-only and this is ' +
+            `${process.platform}. The declined branch IS exercised on every platform by each runtime's ` +
+            "own suite through the `ask` seam (`runtime-py/tests/test_hostinstall_hooks.py`, " +
+            '`runtime-ts/test/hostinstall-hooks.test.mjs`); what a Windows run cannot tell you is ' +
+            'whether the two still agree about a REAL terminal. The other three states are measured everywhere.',
+        );
+      } else {
+        cases.push({
+          name: 'remove-hooks-declined: the same question, the same refusal, the same exit code, at one pty',
+          kind: 'json',
+          expected: { stdout: mask(pyTty.stdout, homes.py), stderr: mask(pyTty.stderr, homes.py), exit: pyTty.exit },
+          actual: { stdout: mask(ndTty.stdout, homes.node), stderr: mask(ndTty.stderr, homes.node), exit: ndTty.exit },
+        });
+        const declined = (side, r, h) => ({
+          exit: r.exit,
+          settingsByteIdentical: readFileSync(settings(h), 'utf8') === before[side],
+          backupsAdded: backupsIn(h).length - backupsBefore[side],
+          askedTheRemovalQuestion: mask(r.stderr, h).includes('Remove these hook entries? [y/N] '),
+          saidNothingWasRemoved: mask(r.stderr, h).includes('no hooks were removed'),
+        });
+        cases.push(
+          ...literalCases(
+            declined('py', pyTty, homes.py),
+            declined('node', ndTty, homes.node),
+            'remove-hooks-declined: it ASKED, was told no, and wrote nothing, against a literal',
+            { exit: 1, settingsByteIdentical: true, backupsAdded: 0, askedTheRemovalQuestion: true, saidNothingWasRemoved: true },
+          ),
+        );
+      }
+    }
+
+    // ------------------------------------------------- state 3: `--yes`, the consented write
+    {
+      const homes = seeded('consented');
+      // THE BACKUP IS CHECKED BY ITS CONTENTS, NOT BY COUNTING FILES, and that took two tries.
+      // The seed takes a backup of its own, and the name is DATED — one file per day — so the
+      // removal's backup overwrites the seed's and the count never moves. A literal reading
+      // `backups: 1` was satisfied by a port with `backup()` deleted; so was `backupsAdded: 1`.
+      // What only a real backup can produce is the PRE-REMOVAL bytes, which is what is pinned.
+      const before = { py: readFileSync(settings(homes.py), 'utf8'), node: readFileSync(settings(homes.node), 'utf8') };
+      const py = runPy(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.node });
+      cases.push({
+        name: 'remove-hooks-yes: stdout, stderr and exit — the four-line plan and the report',
+        kind: 'json',
+        expected: { stdout: mask(py.stdout, homes.py), stderr: mask(py.stderr, homes.py), exit: py.exit },
+        actual: { stdout: mask(nd.stdout, homes.node), stderr: mask(nd.stderr, homes.node), exit: nd.exit },
+      });
+      // WHAT IS LEFT ON DISK, byte for byte. No ruled string is in this document: the removal
+      // plan has no `command:` line and the entries naming bantamkit are gone, so the only
+      // thing left is the operator's own file.
+      cases.push({
+        name: 'remove-hooks-yes: the settings.json left behind, byte for byte',
+        kind: 'bytes',
+        expected: readFileSync(settings(homes.py), 'utf8'),
+        actual: readFileSync(settings(homes.node), 'utf8'),
+      });
+      const left = (side, h) => {
+        const copies = backupsIn(h);
+        return {
+          exit: 0,
+          doc: JSON.parse(readFileSync(settings(h), 'utf8')),
+          backupHoldsThePreRemovalBytes:
+            copies.length === 1 && readFileSync(join(h, '.claude', copies[0]), 'utf8') === before[side],
+        };
+      };
+      // PER SIDE: the foreign entry survived, the non-`hooks` key survived, an event left with
+      // nothing lost its KEY rather than holding `[]`, and the dated backup was taken — the one
+      // thing that made 2026-09-20's damage recoverable.
+      cases.push(
+        ...literalCases(
+          { ...left('py', homes.py), exit: py.exit },
+          { ...left('node', homes.node), exit: nd.exit },
+          'remove-hooks-yes: only ours came out, and a backup was taken, against a literal',
+          { exit: 0, doc: { model: 'opus', hooks: { PreToolUse: [FOREIGN] } }, backupHoldsThePreRemovalBytes: true },
+        ),
+      );
+    }
+
+    // ------------------------ state 4: nothing of ours — the no-op RETURNS BEFORE THE GATE
+    //
+    // A second `--remove-hooks` has no write to consent to, so it must stay exit 0 with no
+    // terminal and no `--yes` — otherwise a teardown script that runs it twice starts
+    // refusing. This is the ORDER, and the order is the property.
+    {
+      const homes = seeded('noop');
+      // The first removal is the SETUP, consented so it cannot itself be the thing measured.
+      for (const [side, run] of [['py', runPy], ['node', runNode]]) {
+        const r = run(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes[side] });
+        if (r.exit !== 0) throw new Error(`hooks/${id}/noop: the ${side} setup removal failed: ${dec(r.stderr)}`);
+      }
+      const before = { py: readFileSync(settings(homes.py), 'utf8'), node: readFileSync(settings(homes.node), 'utf8') };
+      const backupsBefore = { py: backupsIn(homes.py).length, node: backupsIn(homes.node).length };
+      const py = runPy(ctx, { argv: ['--remove-hooks'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--remove-hooks'], cwd, home: homes.node });
+      cases.push({
+        name: 'remove-hooks-noop: nothing of ours — the same report, the same streams, the same exit',
+        kind: 'json',
+        expected: { stdout: mask(py.stdout, homes.py), stderr: mask(py.stderr, homes.py), exit: py.exit },
+        actual: { stdout: mask(nd.stdout, homes.node), stderr: mask(nd.stderr, homes.node), exit: nd.exit },
+      });
+      const noop = (side, r, h) => ({
+        exit: r.exit,
+        stdout: mask(r.stdout, h),
+        stderr: mask(r.stderr, h),
+        settingsByteIdentical: readFileSync(settings(h), 'utf8') === before[side],
+        backupsAdded: backupsIn(h).length - backupsBefore[side],
+      });
+      cases.push(
+        ...literalCases(
+          noop('py', py, homes.py),
+          noop('node', nd, homes.node),
+          'remove-hooks-noop: exit 0 with NO terminal and NO --yes, against a literal',
+          {
+            exit: 0,
+            stdout: 'no bantamkit hooks are installed in <HOME>/.claude/settings.json\n',
+            stderr: '',
+            settingsByteIdentical: true,
+            backupsAdded: 0,
+          },
+        ),
+      );
+    }
   }
 
   // ============================== docs/porting.md row 7: the 600 and 400 cuts, MEASURED

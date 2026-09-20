@@ -308,6 +308,16 @@ def this_command() -> tuple[str, list[str]]:
 # write gets the stronger gate (S1 RULING Q3.3), which is why the module docstring's "why it
 # never prompts" paragraph is true of `--install` and deliberately NOT of these two flags.
 #
+# BOTH FLAGS TAKE IT. RULING Q3.7 used to exempt `--remove-hooks` on the reasoning that taking
+# back out what bantamkit put in is not a write to somebody else's configuration. THE USER
+# OVERTURNED THAT ON 2026-09-20, and the reason is on disk: earlier the same day an unsandboxed
+# probe let the abbreviation `--remove` resolve to the newly-added `--remove-hooks`, and it ran
+# against the operator's REAL `~/.claude/settings.json` with no terminal, no `--yes` and exit 0
+# -- 256 lines / 9031 bytes / 12 hook-event keys / 18 matcher blocks became 188 / 6980 / 10 /
+# 11, with `PreCompact` and `PostCompact` gone. The file it rewrites is the same file either
+# way, so the gate is the same gate either way: an operator who has learned one of these two
+# flags must not be surprised by the other.
+#
 # `tools/hooks/install.mjs` is the ANTI-PATTERN this replaces, not the template. It writes the
 # same seven entries unconditionally: no plan, no question, no backup. Everything below is the
 # same data with a gate and `--install`'s existing write discipline around it.
@@ -356,6 +366,21 @@ class HookConsentUnavailable(Exception):
 
 class HookDeclined(Exception):
     """The person was asked and did not say yes. Exit 1, and nothing was written."""
+
+
+def _consent_unavailable(flag: str, verb: str) -> HookConsentUnavailable:
+    """THE REFUSAL, FOR BOTH FLAGS, FROM ONE TEMPLATE.
+
+    Written as a function rather than twice as a literal so the two flags CANNOT grow two
+    different consent stories by drift: the only thing either one may vary is its own name and
+    the verb for what it is about to do to the file. The `--install-hooks` string this produces
+    is byte-identical to the one that shipped before `--remove-hooks` joined it.
+    """
+    return HookConsentUnavailable(
+        f"{flag} {verb} your ~/.claude/settings.json and needs a terminal to ask.\n"
+        "There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n"
+        "--yes to say yes in advance."
+    )
 
 
 def claude_settings_path() -> Path:
@@ -466,6 +491,33 @@ def _hook_plan(path: Path, command: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _removal_plan(path: Path, events: list[str], entries: int) -> str:
+    """The same plan for the other direction: what is about to come OUT, and out of what.
+
+    FOUR LINES, NOT FIVE. There is no `command:` line because `remove_hooks` never resolves
+    one -- see its own note -- and printing one would be the plan naming something the write
+    will not touch. The `backup :` line is UNCONDITIONAL here, where `_hook_plan`'s is
+    guarded: the gate is only reached when at least one entry is actually coming out, and an
+    entry cannot be in a file that does not exist.
+
+    `events :` NAMES ONLY THE EVENTS THAT LOSE SOMETHING, not all seven, which is the honest
+    answer to "what will this do to my file" when only some of ours are there. The count on
+    the first line is entries, not events, for the same reason.
+    """
+    return (
+        "\n".join(
+            [
+                f"bantamkit would remove {entries} hook entries from {path}",
+                f"  events : {' '.join(events)}",
+                f"  backup : {path}.backup-{date.today().isoformat()}",
+                "Existing hooks are left byte-for-byte; only entries naming bantamkit are "
+                "removed.",
+            ]
+        )
+        + "\n"
+    )
+
+
 def install_hooks(
     *,
     ask: Callable[[], bool] | None = None,
@@ -505,13 +557,7 @@ def install_hooks(
         if ask is None:
             # NOTHING IS PRINTED HERE. The plan describes a write that is not going to
             # happen, and the refusal is the whole message.
-            raise HookConsentUnavailable(
-                "--install-hooks writes your ~/.claude/settings.json and needs a terminal "
-                "to ask.\n"
-                "There is no terminal here, so nothing was written. Re-run it at a prompt, "
-                "or pass\n"
-                "--yes to say yes in advance."
-            )
+            raise _consent_unavailable("--install-hooks", "writes")
         say(_hook_plan(path, rendered))
         if not ask():
             raise HookDeclined("no hooks were written")
@@ -539,18 +585,28 @@ def remove_hooks(
     yes: bool = False,
     tell: Callable[[str], None] | None = None,
 ) -> str:
-    """`--remove-hooks`: take out what bantamkit wrote, and nothing else.
+    """`--remove-hooks`: take out what bantamkit wrote, and nothing else -- AFTER asking.
 
-    NO CONSENT PROMPT (RULING Q3.7). Removing what bantamkit added is not a write to somebody
-    else's configuration in the sense the ruling is about. It still takes the dated backup, it
-    still touches only entries naming bantamkit, and a file with none of ours is left
-    byte-unchanged with no backup taken.
+    THE GATE IS `install_hooks`' GATE, deliberately identical: a TTY answer, or `--yes`, or a
+    refusal at exit 2 with nothing written. RULING Q3.7 exempted this flag; the user overturned
+    that on 2026-09-20 after this exact flag, unsandboxed and unasked, rewrote the operator's
+    real settings file. Two flags that rewrite one file do not get two consent stories.
 
-    `this_command` IS NOT CALLED. Removal does not need to know what a host should launch, and
-    calling it would put command resolution between an operator and the ability to undo. The
-    three seams are still accepted so the two flags read the same way at every call site.
+    THE ORDER IS `install_hooks`' ORDER, minus the step it does not have:
+
+      1. read and validate the settings file -- a file that does not parse is reported, never
+         overwritten;
+      2. NOTHING-TO-REMOVE RETURNS HERE, BEFORE THE GATE, which is the mirror of install's
+         already-installed no-op and matters for the same reason: there is no write to consent
+         to, so a second `--remove-hooks` stays exit 0 with no terminal and no `--yes`, and a
+         teardown script that runs it twice does not suddenly start refusing;
+      3. print the plan, then the gate;
+      4. dated backup, then one atomic write.
+
+    `this_command` IS STILL NOT CALLED. Removal does not need to know what a host should
+    launch, and calling it would put command resolution between an operator and the ability to
+    undo. That is also why the plan this prints has no `command:` line.
     """
-    del ask, yes, tell
     path = claude_settings_path()
     data = _read_config(path)
     current = _read_hooks(path, data)
@@ -558,6 +614,22 @@ def remove_hooks(
 
     if not touched:
         return f"no bantamkit hooks are installed in {path}"
+
+    # Entries, not events: an event can hold more than one of ours if somebody hand-edited the
+    # file, and the plan has to say what is actually going.
+    entries = sum(len(current.get(event, [])) - len(hooks.get(event, [])) for event in touched)
+
+    say = tell if tell is not None else (lambda _text: None)
+    if not yes:
+        if ask is None:
+            # NOTHING IS PRINTED HERE, the same as install: the plan describes a write that is
+            # not going to happen, and the refusal is the whole message.
+            raise _consent_unavailable("--remove-hooks", "rewrites")
+        say(_removal_plan(path, touched, entries))
+        if not ask():
+            raise HookDeclined("no hooks were removed")
+    else:
+        say(_removal_plan(path, touched, entries))
 
     copied = _backup(path)
     data["hooks"] = hooks

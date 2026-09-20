@@ -362,6 +362,12 @@ def test_one_event_whose_value_is_not_a_list_is_refused_by_name(home):
 
 
 # ------------------------------------------------------------------------- --remove-hooks
+#
+# THE GATE IS INSTALL'S GATE SINCE THE USER'S RULING OF 2026-09-20. RULING Q3.7 exempted this
+# flag; the user overturned that after `--remove-hooks` rewrote the operator's real
+# `~/.claude/settings.json` with no terminal, no `--yes` and exit 0. Every case below is the
+# `--install-hooks` case above it with the verb changed, which is the point: two flags that
+# rewrite one file do not get two consent stories.
 
 
 def test_remove_hooks_takes_out_only_what_bantamkit_wrote(home):
@@ -372,7 +378,7 @@ def test_remove_hooks_takes_out_only_what_bantamkit_wrote(home):
     )
     hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
 
-    report = hostinstall.remove_hooks(tell=refuse("--remove-hooks printed a plan"))
+    report = hostinstall.remove_hooks(tell=lambda _text: None, ask=lambda: True)
 
     after = read_json(path)
     assert after["model"] == "opus"
@@ -380,18 +386,143 @@ def test_remove_hooks_takes_out_only_what_bantamkit_wrote(home):
     assert report.startswith(f"removed bantamkit hooks from {path}")
 
 
-def test_remove_hooks_never_asks_for_consent(home):
+def test_remove_hooks_asks_exactly_once_and_honours_yes(home):
     hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
-    hostinstall.remove_hooks(
-        ask=refuse("--remove-hooks asked for consent"), tell=lambda _text: None
+    asked = []
+
+    def ask():
+        asked.append(1)
+        return True
+
+    hostinstall.remove_hooks(tell=lambda _text: None, ask=ask)
+    assert asked == [1], f"--remove-hooks asked {len(asked)} times"
+
+
+def test_remove_hooks_with_yes_never_asks_even_without_a_terminal(home):
+    path = hostinstall.claude_settings_path()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+
+    report = hostinstall.remove_hooks(ask=None, yes=True, tell=lambda _text: None)
+
+    assert report.startswith(f"removed bantamkit hooks from {path}")
+    assert read_json(path)["hooks"] == {}
+
+
+def test_the_removal_plan_is_four_lines_in_the_ruled_order(home):
+    path = hostinstall.claude_settings_path()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+    tell = Recorder()
+
+    hostinstall.remove_hooks(tell=tell, ask=lambda: True)
+
+    # FOUR LINES, NOT FIVE. There is no `command:` line: `remove_hooks` never resolves one,
+    # and printing one would name something the write will not touch. `backup :` is
+    # UNCONDITIONAL here -- the gate is only reached when an entry is actually coming out.
+    assert tell.text == (
+        f"bantamkit would remove 7 hook entries from {path}\n"
+        f"  events : {hostinstall._EVENT_NAMES}\n"
+        f"  backup : {path}.backup-{date.today().isoformat()}\n"
+        "Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.\n"
     )
+
+
+def test_the_removal_plan_names_only_the_events_that_lose_an_entry(home):
+    path = hostinstall.claude_settings_path()
+    rendered = hostinstall.hook_command("/opt/bantamkit/bin/bantamkit-mcp", [])
+    seed(
+        path,
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [FOREIGN],
+                    "Stop": [
+                        {"hooks": [{"type": "command", "command": rendered, "timeout": 10}]}
+                    ],
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+    tell = Recorder()
+
+    hostinstall.remove_hooks(tell=tell, ask=lambda: True)
+
+    # ENTRIES, NOT EVENTS, on the first line; and only `Stop` loses anything.
+    assert tell.text.splitlines()[0] == f"bantamkit would remove 1 hook entries from {path}"
+    assert tell.text.splitlines()[1] == "  events : Stop"
+
+
+def test_remove_hooks_with_no_terminal_and_no_yes_refuses_and_writes_nothing(home):
+    path = hostinstall.claude_settings_path()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+    before = path.read_bytes()
+    backups_before = backups_in(path)
+    tell = Recorder()
+
+    with pytest.raises(hostinstall.HookConsentUnavailable) as caught:
+        hostinstall.remove_hooks(ask=None, tell=tell)
+
+    assert str(caught.value) == (
+        "--remove-hooks rewrites your ~/.claude/settings.json and needs a terminal to ask.\n"
+        "There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n"
+        "--yes to say yes in advance."
+    )
+    # NOTHING IS PRINTED ON THIS PATH. The plan describes a write that is not going to happen.
+    assert tell.text == "", tell.text
+    # THE BYTES, NOT THE EXCEPTION: "it raised" is satisfied by a program that wrote and then
+    # raised.
+    assert path.read_bytes() == before, "a refused removal rewrote the settings file"
+    assert backups_in(path) == backups_before, "a refused removal took a backup"
+
+
+def test_the_two_refusals_come_from_one_template_and_differ_only_in_flag_and_verb(home):
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+    with pytest.raises(hostinstall.HookConsentUnavailable) as removal:
+        hostinstall.remove_hooks(ask=None, tell=lambda _text: None)
+    # A second, non-matching install is the state that reaches install's gate.
+    path = hostinstall.claude_settings_path()
+    doc = read_json(path)
+    doc["hooks"].pop("Stop")
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(hostinstall.HookConsentUnavailable) as install:
+        hostinstall.install_hooks(ask=None, tell=lambda _text: None)
+
+    assert str(removal.value).replace("--remove-hooks rewrites", "--install-hooks writes") == (
+        str(install.value)
+    ), "the two refusals are no longer one template"
+
+
+@pytest.mark.parametrize("answer", ["no", "", "yes", "YES", "n", "N", " "])
+def test_a_declined_removal_at_a_terminal_writes_nothing(home, answer):
+    path = hostinstall.claude_settings_path()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+    before = path.read_bytes()
+    backups_before = backups_in(path)
+    tell = Recorder()
+
+    with pytest.raises(hostinstall.HookDeclined) as caught:
+        hostinstall.remove_hooks(ask=lambda: answer in ("y", "Y"), tell=tell)
+
+    assert str(caught.value) == "no hooks were removed"
+    # The plan WAS printed -- the person had to see what they were declining -- and nothing
+    # after it.
+    assert tell.text.startswith("bantamkit would remove ")
+    assert path.read_bytes() == before, "a declined removal wrote to the settings file"
+    assert backups_in(path) == backups_before, "a declined removal took a backup"
 
 
 def test_remove_hooks_on_a_file_with_no_bantamkit_hooks_changes_nothing_and_says_so(home):
     path = hostinstall.claude_settings_path()
     before = seed(path, json.dumps({"hooks": {"PreToolUse": [FOREIGN]}}, indent=2) + "\n")
 
-    report = hostinstall.remove_hooks(ask=None, tell=lambda _text: None)
+    # THE NO-OP RETURNS BEFORE THE GATE, which is why `ask` may be `None` here and why `tell`
+    # is one that fails if it is called at all: there is no write to consent to, so a teardown
+    # script that runs this twice does not start refusing.
+    report = hostinstall.remove_hooks(
+        ask=refuse("a no-op removal asked for consent"),
+        tell=refuse("a no-op removal printed a plan"),
+    )
 
     assert report == f"no bantamkit hooks are installed in {path}"
     assert path.read_bytes() == before, "a no-op removal rewrote the settings file"
@@ -401,7 +532,10 @@ def test_remove_hooks_on_a_file_with_no_bantamkit_hooks_changes_nothing_and_says
 def test_remove_hooks_with_no_settings_file_at_all_writes_nothing(home):
     path = hostinstall.claude_settings_path()
 
-    report = hostinstall.remove_hooks(ask=None, tell=lambda _text: None)
+    report = hostinstall.remove_hooks(
+        ask=refuse("a no-op removal asked for consent"),
+        tell=refuse("a no-op removal printed a plan"),
+    )
 
     assert report == f"no bantamkit hooks are installed in {path}"
     assert not path.exists(), "--remove-hooks created the file it had nothing to remove from"
@@ -413,7 +547,7 @@ def test_remove_hooks_still_takes_the_dated_backup(home):
     hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
     before = path.read_bytes()
 
-    hostinstall.remove_hooks(tell=lambda _text: None)
+    hostinstall.remove_hooks(tell=lambda _text: None, ask=lambda: True)
 
     copies = backups_in(path)
     assert len(copies) == 1, copies
@@ -423,7 +557,7 @@ def test_remove_hooks_still_takes_the_dated_backup(home):
 def test_an_event_left_with_no_entries_loses_its_key_rather_than_holding_an_empty_list(home):
     path = hostinstall.claude_settings_path()
     hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
-    hostinstall.remove_hooks(tell=lambda _text: None)
+    hostinstall.remove_hooks(tell=lambda _text: None, ask=lambda: True)
     assert read_json(path)["hooks"] == {}
 
 
@@ -487,15 +621,56 @@ def test_the_real_cli_with_yes_writes_the_seven_entries_and_exits_0(tmp_path):
     assert "bantamkit would add 7 hook entries to " in done.stderr
 
 
-def test_the_real_cli_remove_hooks_needs_no_yes_and_exits_0(tmp_path):
+def test_the_real_cli_remove_hooks_with_no_terminal_exits_2_and_writes_nothing(tmp_path):
+    root = tmp_path / "home"
+    root.mkdir()
+    assert run_cli(["--install-hooks", "--yes"], root).returncode == 0
+    path = root / ".claude" / "settings.json"
+    before = path.read_bytes()
+    backups_before = backups_in(path)
+
+    done = run_cli(["--remove-hooks"], root)
+
+    assert done.returncode == 2, done.stdout + done.stderr
+    assert done.stderr == (
+        "--remove-hooks rewrites your ~/.claude/settings.json and needs a terminal to ask.\n"
+        "There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n"
+        "--yes to say yes in advance.\n"
+    )
+    assert done.stdout == ""
+    assert path.read_bytes() == before, "the CLI rewrote the file it refused to touch"
+    assert backups_in(path) == backups_before
+
+
+def test_the_real_cli_remove_hooks_with_yes_exits_0_and_prints_the_plan_on_stderr(tmp_path):
     root = tmp_path / "home"
     root.mkdir()
     assert run_cli(["--install-hooks", "--yes"], root).returncode == 0
 
-    done = run_cli(["--remove-hooks"], root)
+    done = run_cli(["--remove-hooks", "--yes"], root)
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert read_json(root / ".claude" / "settings.json")["hooks"] == {}
+    assert "bantamkit would remove 7 hook entries from " in done.stderr
+    assert done.stdout.startswith("removed bantamkit hooks from ")
+
+
+def test_the_real_cli_remove_hooks_with_nothing_to_remove_exits_0_with_no_terminal(tmp_path):
+    # THE NO-OP IS BEFORE THE GATE, so a teardown script that runs this twice does not start
+    # refusing. Measured on the SECOND removal, which is the one with nothing of ours left.
+    root = tmp_path / "home"
+    root.mkdir()
+    assert run_cli(["--install-hooks", "--yes"], root).returncode == 0
+    assert run_cli(["--remove-hooks", "--yes"], root).returncode == 0
+    path = root / ".claude" / "settings.json"
+    before = path.read_bytes()
+
+    done = run_cli(["--remove-hooks"], root)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert done.stdout == f"no bantamkit hooks are installed in {path}\n"
+    assert done.stderr == ""
+    assert path.read_bytes() == before
 
 
 def test_the_real_cli_refuses_yes_without_install_hooks(tmp_path):
@@ -505,7 +680,9 @@ def test_the_real_cli_refuses_yes_without_install_hooks(tmp_path):
     done = run_cli(["--yes"], root)
 
     assert done.returncode == 1, done.stdout + done.stderr
-    assert done.stderr == "--yes is only meaningful with --install-hooks\n"
+    # NAMES BOTH FLAGS since 2026-09-20: naming only one would send an operator who mistyped
+    # `--remove-hooks` looking for a flag they already had.
+    assert done.stderr == "--yes is only meaningful with --install-hooks or --remove-hooks\n"
     assert not (root / ".claude").exists()
 
 
@@ -526,7 +703,8 @@ def test_the_three_flags_are_in_dash_h_with_their_ruled_sentences(tmp_path):
         "then exit" in help_text
     ), done.stdout
     assert (
-        "--yes with --install-hooks, say yes in advance instead of being asked" in help_text
+        "--yes with --install-hooks or --remove-hooks, say yes in advance instead of being "
+        "asked" in help_text
     ), done.stdout
 
 
@@ -554,14 +732,14 @@ route that FOUND it is the route this section takes anyway, because no case abov
 
 PTY_DRIVER = r"""
 import os, pty, select, sys, time
-answer, home, src = sys.argv[1], sys.argv[2], sys.argv[3]
+answer, home, src, flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 pid, fd = pty.fork()
 if pid == 0:
     os.environ['HOME'] = home
     os.environ['USERPROFILE'] = home
     os.environ['PYTHONPATH'] = src
     os.environ.pop('BANTAMKIT_ASSETS', None)
-    os.execv(sys.executable, [sys.executable, '-m', 'bantamkit.mcpserver', '--install-hooks'])
+    os.execv(sys.executable, [sys.executable, '-m', 'bantamkit.mcpserver', flag])
 out, sent = b'', False
 while True:
     ready, _, _ = select.select([fd], [], [], 30)
@@ -599,7 +777,7 @@ def test_at_a_real_terminal_only_y_writes(tmp_path, answer, writes):
     driver.write_text(PTY_DRIVER, encoding="utf-8")
 
     done = subprocess.run(
-        [sys.executable, str(driver), answer, str(root), str(SRC)],
+        [sys.executable, str(driver), answer, str(root), str(SRC), "--install-hooks"],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -618,3 +796,61 @@ def test_at_a_real_terminal_only_y_writes(tmp_path, answer, writes):
         assert "\nEXIT 1\n" in out, out
         assert path.read_bytes() == before, "a terminal refusal wrote to the settings file"
         assert backups_in(path) == [], "a terminal refusal took a backup"
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("answer", "removes"), [("y", True), ("Y", True), ("n", False), ("", False)]
+)
+def test_at_a_real_terminal_only_y_removes(tmp_path, answer, removes):
+    """The same four answers, driving `--remove-hooks` at a real terminal.
+
+    The seam cases above cannot see this path at all: they never reach
+    `_ask_at_the_terminal`, so nothing but a pty proves that the QUESTION the removal asks is
+    the removal's question and that the reader honours the same four keystrokes.
+    """
+    root = tmp_path / "home"
+    root.mkdir()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(SRC)
+    env["HOME"] = str(root)
+    env["USERPROFILE"] = str(root)
+    env.pop("BANTAMKIT_ASSETS", None)
+    path = root / ".claude" / "settings.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"model": "opus", "hooks": {"PreToolUse": [FOREIGN]}}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    installed = subprocess.run(
+        [sys.executable, "-m", "bantamkit.mcpserver", "--install-hooks", "--yes"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        stdin=subprocess.DEVNULL,
+    )
+    assert installed.returncode == 0, installed.stderr
+    assert str(path).startswith(str(root)), "the child escaped the scratch home"
+    before = path.read_bytes()
+    driver = tmp_path / "drive.py"
+    driver.write_text(PTY_DRIVER, encoding="utf-8")
+
+    done = subprocess.run(
+        [sys.executable, str(driver), answer, str(root), str(SRC), "--remove-hooks"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert done.returncode == 0, f"the pty driver itself failed: {done.stderr}"
+    out = done.stdout
+
+    assert "Remove these hook entries? [y/N]" in out, out
+    if removes:
+        assert "\nEXIT 0\n" in out, out
+        assert read_json(path)["hooks"] == {"PreToolUse": [FOREIGN]}, out
+        assert read_json(path)["model"] == "opus"
+    else:
+        assert "no hooks were removed" in out, out
+        assert "\nEXIT 1\n" in out, out
+        assert path.read_bytes() == before, "a terminal refusal rewrote the settings file"

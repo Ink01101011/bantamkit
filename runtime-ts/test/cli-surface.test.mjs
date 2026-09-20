@@ -47,6 +47,16 @@
  * conformance suite is RED over this row and that red is the two runtimes genuinely
  * disagreeing, not a case needing adjustment.
  *
+ * **AMENDED 2026-09-21 (job62, J62-20) — THE DEBT ABOVE IS DISCHARGED AND THE SENTENCE IS
+ * TRUE AGAIN.** J62-20 landed the Python half of the gate and re-measured all four `HELP`
+ * blocks, plus the 80-column help, against `python -m bantamkit.mcpserver` on CPython
+ * 3.12.13 with `COLUMNS`, `LINES` and `BANTAMKIT_ASSETS` scrubbed. NOT ONE BYTE DIFFERED —
+ * `cmp` over the two processes' own output at COLUMNS 15/20/38/55/80: 1976, 1908, 2543, 2437
+ * and 1941 bytes, equal each time. Nothing below was edited by that re-measurement, which is
+ * the result being reported: the port had it right. The 18 `cli` conformance cases that were
+ * red over the `--yes` help row are green, and `--all` reads 8833 cases / 161
+ * ruled-different / 0 failures.
+ *
  * NOTHING HERE TOUCHES A REAL STORE. Every argv line below fails or prints before
  * `_build_memory` runs, so no `Memory` is ever constructed and no store is read or created.
  *

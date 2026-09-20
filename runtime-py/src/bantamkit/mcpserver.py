@@ -2127,10 +2127,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="take bantamkit's hook entries back out of ~/.claude/settings.json, then exit",
     )
+    # NAMES BOTH FLAGS since the user's ruling of 2026-09-20 put the same gate on
+    # `--remove-hooks`. RULING Q3.3 requires the non-interactive consent path to be in `-h` so
+    # nobody has to guess it; a `--yes` that silently also worked with `--remove-hooks` would
+    # leave the only way to script a removal undocumented, which is the defect `--assets-root`
+    # shipped once already.
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="with --install-hooks, say yes in advance instead of being asked",
+        help=(
+            "with --install-hooks or --remove-hooks, say yes in advance instead of being "
+            "asked"
+        ),
     )
     stores = parser.add_mutually_exclusive_group()
     stores.add_argument("--store", help="single memory store path (disables layering)")
@@ -2413,8 +2421,14 @@ def _have_a_terminal(stdin: TextIO | None = None) -> bool:
         return False
 
 
-def _ask_at_the_terminal() -> bool:
+def _ask_at_the_terminal(question: str) -> bool:
     """RULING Q3.4's question, on stderr, answered on stdin. Only ever called at a terminal.
+
+    THE QUESTION IS A PARAMETER AND THE READER IS NOT. `--install-hooks` asks "Write these
+    hook entries?" and `--remove-hooks` asks "Remove these hook entries?"; everything after
+    the question mark -- the `[y/N]` default, the one-line read, and the rule that only
+    `y`/`Y` is a yes -- is one implementation on purpose, because two flags rewriting one file
+    must not answer differently to the same keystroke.
 
     ONE LINE AND NO FURTHER. `readline()` stops at the newline, which leaves anything the
     person typed after it for whoever asks next; reading to EOF would wait for Ctrl-D at a
@@ -2432,7 +2446,7 @@ def _ask_at_the_terminal() -> bool:
     Written through `sys.stderr.buffer` like every other operator line in this file, so the
     bytes cannot pick up newline translation on Windows.
     """
-    sys.stderr.buffer.write(b"Write these hook entries? [y/N] ")
+    sys.stderr.buffer.write(f"{question} [y/N] ".encode())
     sys.stderr.buffer.flush()
     try:
         line = sys.stdin.readline()
@@ -2465,7 +2479,11 @@ def _run_install_hooks(args: argparse.Namespace) -> None:
 
     try:
         report = hostinstall.install_hooks(
-            ask=_ask_at_the_terminal if _have_a_terminal() else None,
+            ask=(
+                (lambda: _ask_at_the_terminal("Write these hook entries?"))
+                if _have_a_terminal()
+                else None
+            ),
             yes=args.yes,
             tell=tell,
         )
@@ -2485,15 +2503,43 @@ def _run_install_hooks(args: argparse.Namespace) -> None:
     sys.stdout.buffer.flush()
 
 
-def _run_remove_hooks() -> None:
-    """`--remove-hooks`: no gate (RULING Q3.7), still a dated backup, still only our entries.
+def _run_remove_hooks(args: argparse.Namespace) -> None:
+    """`--remove-hooks`: THE SAME THREE EXITS, AND THEY ARE THE SAME THREE NUMBERS.
 
-    Taking back out what bantamkit put in is not the write the ruling is about, so there is no
-    plan and no question here -- only the report, and an `InstallError` reported the way every
-    other refusal in this file is.
+      0  removed, or there was nothing of ours to remove
+      1  the person was asked at a terminal and did not say yes -- `no hooks were removed`
+      2  there was no terminal to ask at and no `--yes`
+
+    RULING Q3.7 used to exempt this flag from the gate; the user overturned that on 2026-09-20
+    after `--remove-hooks` rewrote the operator's real `~/.claude/settings.json` with no
+    terminal and no `--yes`. The arms below are `_run_install_hooks`' arms, in the same order,
+    for the same reasons -- including that neither refusal carries the `error:` prefix an
+    `InstallError` gets, and that the plan and the question go to stderr while the report goes
+    to stdout.
     """
+
+    def tell(text: str) -> None:
+        sys.stderr.buffer.write(text.encode())
+        sys.stderr.buffer.flush()
+
     try:
-        report = hostinstall.remove_hooks()
+        report = hostinstall.remove_hooks(
+            ask=(
+                (lambda: _ask_at_the_terminal("Remove these hook entries?"))
+                if _have_a_terminal()
+                else None
+            ),
+            yes=args.yes,
+            tell=tell,
+        )
+    except hostinstall.HookConsentUnavailable as exc:
+        sys.stderr.buffer.write(f"{exc}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(2) from None
+    except hostinstall.HookDeclined as exc:
+        sys.stderr.buffer.write(f"{exc}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(1) from None
     except hostinstall.InstallError as exc:
         sys.stderr.buffer.write(f"error: {exc}\n".encode())
         sys.stderr.buffer.flush()
@@ -2621,7 +2667,7 @@ def _dispatch(args: argparse.Namespace) -> None:
         _run_install_hooks(args)
         return
     if args.remove_hooks:
-        _run_remove_hooks()
+        _run_remove_hooks(args)
         return
     # `--force` alone is a typo with a plausible reading -- somebody meant to install and
     # dropped the flag that says where. Refusing names the missing half instead of starting
@@ -2629,11 +2675,13 @@ def _dispatch(args: argparse.Namespace) -> None:
     if args.force:
         raise SystemExit("--force is only meaningful with --install")
     # The same reading, and the same refusal, for the consent flag: `--yes` on its own is
-    # somebody who meant to install hooks and dropped the flag that says so. It is checked
-    # AFTER `--force` because that is registration order, and both are checked after every
-    # flag that acts, so `--install-hooks --yes` never reaches either of them.
+    # somebody who meant to install or remove hooks and dropped the flag that says which. It
+    # is checked AFTER `--force` because that is registration order, and both are checked
+    # after every flag that acts, so `--install-hooks --yes` never reaches either of them. The
+    # sentence names BOTH flags since the ruling of 2026-09-20: naming only one would send an
+    # operator who mistyped `--remove-hooks` looking for a flag they already had.
     if args.yes:
-        raise SystemExit("--yes is only meaningful with --install-hooks")
+        raise SystemExit("--yes is only meaningful with --install-hooks or --remove-hooks")
     # A PERSON TYPED IT. `_typed_bare_at_a_terminal` carries the whole argument; what
     # belongs here is only that this sits BEFORE `_build_memory`, which is what creates a
     # store. Somebody who typed a command to see what it does has not asked for a
