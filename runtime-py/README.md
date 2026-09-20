@@ -11,6 +11,10 @@ The same server in pure Node is on **npm** as
 disk and a conformance suite holds them to the same answers, so install whichever your host makes
 easy.
 
+**This page is the PyPI package's.** Every command on it runs `bantamkit` from PyPI. The npm
+package is named where the two differ, but its own install, update and CLI commands live on
+[its page](https://www.npmjs.com/package/bantamkit-mcp); run them here and you get nothing.
+
 ## Contents
 
 | Topic | What you'll find |
@@ -32,6 +36,7 @@ easy.
 | [The asset pack](#the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
 | [The operator CLI: `python -m bantamkit.memory`](#the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
 | [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; pdf/.doc/.rtf, CLI name, `build_id` |
+| [Module API](#module-api) | `import bantamkit`: the library half, measured from the wheel |
 | [Development](#development) | Clone, test, lint, conformance |
 | [Documentation](#documentation) | The full docs on GitHub |
 
@@ -104,7 +109,10 @@ or re-run. The entry's `command` and `args` depend on the install route:
 |---|---|---|
 | Python venv, install once | `/absolute/path/to/env/bin/bantamkit-mcp` | `[]` |
 | pipx at every launch | `pipx` | `["run", "--spec", "bantamkit[mcp]", "bantamkit-mcp"]` |
-| npm, install once | see the [npm package](https://www.npmjs.com/package/bantamkit-mcp) | |
+
+Both rows are PyPI installs. The npm package records a different `command` and `args`, written
+on [its page](https://www.npmjs.com/package/bantamkit-mcp); the two shapes are not
+interchangeable.
 
 To check a recorded command, run it in a terminal: with nothing on stdin it prints
 `usage: bantamkit-mcp …`.
@@ -309,6 +317,99 @@ a conformance case compares their answers. Three differences are deliberate, eac
   text and errors alike.
 - **`build_id`** hashes the executing tree, so it differs by construction; `assets_digest` is
   identical, and that is the one that carries meaning.
+
+## Module API
+
+The package is a server first, but it is importable too: `import bantamkit` is a supported call,
+and the names behind it are part of what is published.
+
+Everything in this section was measured against the **wheel**, not the source tree: a
+`bantamkit-0.35.3-py3-none-any.whl` built with `pip wheel --no-deps --no-build-isolation`,
+installed into a throwaway venv with `--no-index --no-deps`, and imported from a working
+directory outside the checkout (2026-09-21). A name that only exists in `src/` is not API; this
+is what an importer gets.
+
+**There is no `exports` map in Python, so nothing is sealed.** The wheel carries **31** modules
+and every one is deep-importable — `from bantamkit.mcpserver import main` resolves, and so does
+`from bantamkit.memory import MemoryStore`. That is the opposite of the npm package, which
+declares a single `.` entry point and refuses every deep import with
+`ERR_PACKAGE_PATH_NOT_EXPORTED`. Only the names below are *intended* as API; the rest are
+reachable because Python has no way to say otherwise.
+
+**`import bantamkit` binds 45 names, of which 30 are values.** The other 15 are submodules bound
+as a side effect of the package's own imports (`agent`, `assets`, `budget`, `client`, `contract`,
+`critique`, `docmanifest`, `docread`, `evalrun`, `filegraph`, `loopguard`, `memory`, `pdfread`,
+`profile`, `textutil`). There is no `__all__`, so `from bantamkit import *` takes all 45.
+
+| Module behind it | What it is | Names |
+| --- | --- | --- |
+| `bantamkit.agent` | the tool-calling loop | `Agent`, `AgentResult`, `MaxTurnsExceeded`, `ToolDef` |
+| `bantamkit.client` | the OpenAI-compatible transport and its wire types | `APIError`, `BantamError`, `Message`, `ModelClient`, `OpenAICompatible`, `Response`, `Tool`, `ToolCall`, `TransportError`, `Usage` |
+| `bantamkit.critique` | the critique gate and its rubrics | `CritiqueExhausted`, `CritiqueGate`, `GroundedCritiqueGate`, `Rubric`, `load_rubric` |
+| `bantamkit.evalrun` | the suite runner | `CONFIGS`, `format_report`, `run_suite` |
+| `bantamkit.structured` | schema-constrained output | `StructuredOutputError`, `structured` |
+| `bantamkit.contract` | JSON out of model prose, and evidence rendering | `extract_json`, `render_evidence` |
+| `bantamkit.loopguard` | the repetition cut-off | `LoopGuard` |
+| `bantamkit.filegraph` | the file-access graph | `FileAccessGraph` |
+| `bantamkit.memory` | the memory store | `Memory`, `MemoryStore` |
+| **9 modules** | | **30 values, no `__all__`** |
+
+**This is not the npm package's export surface.** Both runtimes serve the same fourteen MCP
+tools, but what each one exports *to an importer* is a different product: here it is the
+agent/critique/eval library above; there it is the memory store, the asset pack, the event log,
+the shift-work tools and a set of CPython-semantics shims — 139 values behind one entry point. Of
+these 30 names exactly **three** are spelled the same on the npm side (`BantamError`, `Memory`,
+`MemoryStore`), and a spelling is not a promise about behaviour. A parity claim about the MCP
+tools is not a parity claim about these.
+
+**A worked start.** Copy-paste examples:
+[`examples/`](https://github.com/Ink01101011/bantamkit/tree/main/examples).
+
+```python
+from bantamkit import Agent, CritiqueGate, Memory, OpenAICompatible, Tool, ToolDef
+
+client = OpenAICompatible(base_url="http://localhost:11434/v1", model="qwen2.5:7b-instruct")
+
+price_lookup = ToolDef(
+    tool=Tool(
+        name="price_lookup",
+        description="Get the unit price of an item",
+        parameters={
+            "type": "object",
+            "required": ["item"],
+            "properties": {"item": {"type": "string"}},
+        },
+    ),
+    handler=lambda item: f"{item} price: 25",
+)
+
+agent = Agent(client=client, tools=[price_lookup]).use(
+    Memory(store="./.bantam-memory"),
+    CritiqueGate("task-completion"),
+)
+
+result = agent.run("What does a widget cost? Remember it for next time.")
+print(result.output, result.usage.total)
+```
+
+Which options are worth attaching, measured over 528 runs per model:
+[docs/usage.md → Recommended defaults](https://github.com/Ink01101011/bantamkit/blob/main/docs/usage.md#recommended-defaults).
+
+**Rerun the numbers.** Against the published wheel, in a throwaway venv:
+
+```bash
+python -m venv /tmp/bk && /tmp/bk/bin/pip install bantamkit
+/tmp/bk/bin/python -c "import bantamkit; print(len([n for n in dir(bantamkit) if not n.startswith('_')]))"
+```
+
+It prints `45`. The 30 values alone, without the submodules:
+
+```bash
+/tmp/bk/bin/python -c "import bantamkit, types; print(sorted(n for n in dir(bantamkit) if not n.startswith('_') and not isinstance(getattr(bantamkit, n), types.ModuleType)))"
+```
+
+Both numbers move whenever `src/bantamkit/__init__.py` does, which is why they are quoted with
+the command that prints them rather than kept in prose.
 
 ## Development
 

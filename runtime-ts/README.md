@@ -6,9 +6,13 @@ command, connect it to **Claude Code**, **Claude Desktop**, **Cursor** or **GitH
 Code**, and every later launch starts **offline**. No Python, `pip`, `uv`, `pipx` or venv.
 
 It serves the same fourteen tools, `bantamkit_status` prompt and two resource templates as the
-Python server on **PyPI** (`pip install "bantamkit[mcp]"`), and reads and writes the same memory
-store. The two are compared frame by frame: 8,130 conformance cases on 2026-09-15, with every
-intentional difference written down as a ruling.
+Python server — [`bantamkit` on PyPI](https://pypi.org/project/bantamkit/) — and reads and
+writes the same memory store. The two are compared frame by frame: 8,130 conformance cases on
+2026-09-15, with every intentional difference written down as a ruling.
+
+**This page is the npm package's.** Every command on it runs `bantamkit-mcp` from npm. The
+Python package is named where the two differ, but its own install, update and CLI commands live
+on [its page](https://pypi.org/project/bantamkit/); run them here and you get nothing.
 
 ## Contents
 
@@ -108,7 +112,6 @@ Each host below has the same steps: **1** command, **2** file, **3** entry, **4*
 | Route | `command` | `args` |
 |---|---|---|
 | npm, install once | `/absolute/path/to/node` | `["/Users/you/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js"]` |
-| Python venv | `/absolute/path/to/env/bin/bantamkit-mcp` | `[]` |
 | npx every launch | `npx` | `["-y", "bantamkit-mcp"]` |
 
 A JSON file cannot expand `~`, so spell both paths out. To check a recorded command, run it in
@@ -227,8 +230,11 @@ It is the only network access here — not at startup, not on `bantamkit_status`
 | `npx -y bantamkit-mcp --install <host>` from 0.34.0: a kept install at `~/.bantamkit/mcp` | `npx -y bantamkit-mcp@latest --update` patches it in place, or `npm i --prefix ~/.bantamkit/mcp bantamkit-mcp@latest`. The recorded paths do not change. Before 0.34.0, `--update` from an npx cache refuses instead |
 | `npm i -g bantamkit-mcp` | `npm i -g bantamkit-mcp@latest` |
 | `npm i --prefix <dir> bantamkit-mcp` | `npm i --prefix <dir> bantamkit-mcp@latest` |
-| PyPI (`pip install "bantamkit[mcp]"`) | `pip install -U "bantamkit[mcp]"` · pipx: `pipx upgrade bantamkit` · uv: `uv tool upgrade bantamkit` |
 | a checkout, via `tools/bantamkit-mcp-node` | `git pull && npm ci --prefix runtime-ts && npm run build --prefix runtime-ts` — no registry, and `runtime-ts/dist/` is build output, so a pull alone changes nothing |
+
+No row above is the Python package. If what you have is **`bantamkit` from PyPI** instead, it
+updates by its own route, written on [its PyPI page](https://pypi.org/project/bantamkit/); the
+two sets of commands are not interchangeable.
 
 **Then restart the server in your host** — a running server keeps serving the code it loaded at
 startup. In Claude Code: `/mcp` → reconnect. In Claude Desktop: a full restart of the app.
