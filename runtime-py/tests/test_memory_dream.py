@@ -57,7 +57,7 @@ from bantamkit.memory.dream import (
     merge_links,
     split_blocks,
 )
-from bantamkit.memory.store import DUPLICATE_JACCARD, MemoryStore, _jaccard, _tokens
+from bantamkit.memory.store import DUPLICATE_JACCARD, MemoryStore, _jaccard, tokens
 
 # ---------------------------------------------------------------- fixture construction
 
@@ -205,8 +205,8 @@ def test_an_intra_store_near_duplicate_is_never_merged(tmp_path: Path) -> None:
     _write(project.root, "alpha-token-budgets", description="the token budgets for alpha",
            body="two")
     score = _jaccard(
-        _tokens("alpha-token-budget the token budget for alpha"),
-        _tokens("alpha-token-budgets the token budgets for alpha"),
+        tokens("alpha-token-budget the token budget for alpha"),
+        tokens("alpha-token-budgets the token budgets for alpha"),
     )
     assert score >= DUPLICATE_JACCARD, f"the fixture is not a duplicate at all: {score}"
 

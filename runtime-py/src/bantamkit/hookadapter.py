@@ -34,12 +34,14 @@ THE THREE PROPERTIES, same as the Node module and the statusline adapter beside 
 THE CONTRACT THE FLAG PINS, deliberately narrow so both runtimes can be compared: one JSON
 object in on stdin, AT MOST ONE JSON object out on stdout, exit 0 ALWAYS.
 
-WHAT THIS UNIT PORTED, AND WHAT IT DID NOT (J62-3 / J62-3B). SessionStart and
-UserPromptSubmit are here, with the dispatch table, the failure posture and the store pin the
-other arms also need. PreToolUse, PostToolUse, PreCompact, PostCompact and Stop are J62-3B's;
-they are NAMED in the dispatch table and answer `action: "unported"` -- one log line, nothing
-on stdout, exit 0 -- rather than falling into the `ignored` arm, because a missing port and an
-event that is none of bantamkit's business must not look the same in the log.
+EVERY ARM IS HERE (J62-3, then J62-3B). J62-3 landed the dispatch table, the failure
+posture, the store pin, SessionStart and UserPromptSubmit, and NAMED the five it had not
+ported yet in an `UNPORTED_EVENTS` tuple that answered `action: "unported"` -- so that a
+missing port and an event that is none of bantamkit's business were two different lines in
+the log rather than one. J62-3B landed those five -- PreToolUse[Read], PostToolUse (the usage
+log and the memory_save compaction), PreCompact, PostCompact and Stop (the save nudge and the
+dream preview beside it) -- and the tuple is GONE rather than left empty, because the list it
+held is empty.
 
 TWO DIVERGENCES FROM THE NODE MODULE, BOTH RULED, NEITHER SILENT (see `docs/porting.md`):
   1. THE STALE-INSTALL LINE IS NODE-ONLY. RULING Q2.4: it is decided from
@@ -57,8 +59,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import signal as signal_module
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -68,9 +73,8 @@ from pathlib import Path
 from typing import Any
 
 from .memory.component import Memory
-from .memory.layers import discover_project_store
-from .memory.store import DURABLE_TYPES, Fact, MemoryStore
-from .memory.store import _tokens as tokens
+from .memory.layers import discover_project_store, resolve_project_store
+from .memory.store import DURABLE_TYPES, Fact, MemoryStore, tokens
 
 # The process clock, for the `ms` on every log line. `time.time()` and not `monotonic`,
 # because the Node module reads `Date.now()` here and the two logs are read side by side.
@@ -116,6 +120,48 @@ def _home_dir() -> str:
 SESSION_INJECT_MAX = 3000
 PROMPT_INJECT_MAX = 700
 PROMPT_MIN_CHARS = 12
+STOP_NUDGE_MIN_TOOL_CALLS = 20
+COMPACT_AT = 0.9  # index >= 90% of budget -> compact ...
+COMPACT_TO = 0.8  # ... down to 80%, past the no-op band measured in job40 (C6)
+#
+# The Node module carries J46-6's amendment on these two numbers in full, and it is not
+# repeated here because it is a record of a DEFECT and its repair, not a rule this port has
+# to restate: the aim is asked for as a `--reserve` against the real budget rather than as a
+# fake budget, so `compact` lands at exactly `target` instead of at whatever its own default
+# reserve makes of a budget it was misled about. `_post_save` below spells the same
+# arithmetic; `runtime-ts/src/hookadapter.ts` (COMPACT_TO) holds the measurement.
+
+# PreCompact's steering, in BYTES. This string is paid TWICE: once as the summariser's
+# `newCustomInstructions`, and once echoed onto the user's screen as
+# `PreCompact [<command>] completed successfully: <output>`. The FIXED lines are never cut;
+# the file list absorbs the whole trim.
+PRECOMPACT_STDOUT_MAX = 4000
+PRECOMPACT_FILES_MAX = 40
+CHECKPOINT_LINE_MAX = 600  # one checkpoint line: an absolute path, a cursor, a title
+
+#: The usage events log's cap, and the two bounds on a `.shiftwork` scan. Same numbers as
+#: the Node module; see `runtime-ts/src/hookadapter.ts` for what each one was measured
+#: against on this machine.
+EVENTS_MAX_BYTES = 4_000_000
+CHECKPOINT_MAX_BYTES = 4_000_000  # ONE checkpoint file
+CHECKPOINT_SCAN_MAX_BYTES = 1_000_000
+CHECKPOINT_SCAN_MAX_FILES = 64
+
+
+def _dream_timeout_ms() -> float:
+    """The dream child's bound, in ms, with the same test seam the Node module has.
+
+    The host kills the WHOLE hook at 10 s, so the child's bound has to sit under that. The
+    env override exists only so a test can set a 1 ms bound and exercise a REAL kill of a
+    real child; without it the timeout is a constant no test can reach. `Number(x) || 8000`
+    on the other side means every unparseable or zero value falls back, which is what the
+    `try` below reproduces -- an empty string is `Number("") === 0`, falsy, so 8000.
+    """
+    try:
+        value = float(os.environ.get("BANTAMKIT_DREAM_TIMEOUT_MS", "") or 0)
+    except ValueError:
+        return 8000.0
+    return value if value else 8000.0
 
 
 @dataclass
@@ -187,6 +233,79 @@ def _emit(obj: Any) -> None:
     sys.stdout.buffer.flush()
 
 
+def _emit_text(text: str) -> int:
+    """PLAIN stdout, for the events whose steering the host reads as text.
+
+    `_pre_compact` is the reason that distinction is not cosmetic: the host's PreCompact
+    dispatcher reads the hook's own trimmed stdout as `newCustomInstructions`, and its
+    `hookSpecificOutput` union has NO `PreCompact` member -- emitting that envelope made the
+    host reject the output and DROP the steering. Returns the number of bytes ACTUALLY
+    written, so the caller's log line cannot claim bytes that never left the process.
+    """
+    out = str(text).strip()
+    if not out:
+        return 0
+    raw = out.encode("utf-8")
+    sys.stdout.buffer.write(raw)
+    sys.stdout.buffer.flush()
+    return len(raw)
+
+
+def _js_number(value: float) -> str:
+    """`String(n)` for a finite JS double in the range this module produces.
+
+    THE SPELLING IS A PARITY REQUIREMENT, NOT STYLE, and unlike `_dumps` it is one the
+    conformance suite cannot see: the strings this builds go into `ledger-<session>.json`
+    and `dream-state.json` -- files under `~/.bantamkit/hooks/` that BOTH runtimes read and
+    write. A machine whose hook is registered against one runtime and later against the
+    other must not have its read ledger silently invalidated, which is what a differently
+    spelled mtime would do: every prior read would fail its signature check and the refusal
+    this arm exists for would never fire again.
+
+    JS prints an integral double with no fractional part (`1758358800000`) where Python's
+    `repr` prints `1758358800000.0`; for a non-integral one both print the shortest string
+    that round-trips, and they agree over the whole range reachable here (mtimes are ~1.8e12
+    ms, well inside the 1e16 where Python switches to exponential and the 1e21 where JS
+    does).
+    """
+    if value != value or value in (float("inf"), float("-inf")):  # noqa: PLR0124 - NaN test
+        return {float("inf"): "Infinity", float("-inf"): "-Infinity"}.get(value, "NaN")
+    if float(value).is_integer() and abs(value) < 1e21:
+        return str(int(value))
+    return repr(float(value))
+
+
+def _js_str(value: Any) -> str:
+    """`${value}` for the scalars a hook payload can carry, `None` reading as `''`.
+
+    JS template interpolation of `undefined ?? ''` is the empty string, and of a number is
+    `String(n)` -- so an `offset` of `5` must key the ledger as `5` and never as `5.0`, and
+    it must read the same way in the refusal sentence, which is STDOUT.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return _js_number(value)
+    if isinstance(value, str):
+        return value
+    return _dumps(value)
+
+
+def _mtime_ms(st: os.stat_result) -> float:
+    """`fs.Stats.mtimeMs`: seconds x 1000 plus nanoseconds / 1e6, as ONE double.
+
+    NOT `st_mtime_ns / 1e6`, which is a different double. Measured on this machine against
+    `node -e 'process.stdout.write(String(fs.statSync(f).mtimeMs))'` over three successive
+    writes to one file: the seconds-first form matched all three, the nanoseconds-first form
+    disagreed on the third in the last digit (`...6614` vs `...6611`). Node computes the
+    former, so this does too -- see `_js_number` for why one shared spelling matters.
+    """
+    ns = st.st_mtime_ns
+    return (ns // 1_000_000_000) * 1000 + (ns % 1_000_000_000) / 1e6
+
+
 def _cap_bytes(text: str, max_bytes: int) -> str:
     """Truncate to at most `max_bytes` BYTES without splitting a UTF-8 character."""
     raw = str(text).encode("utf-8")
@@ -229,6 +348,41 @@ _LEDGER_UNSAFE = re.compile(r"[^\w-]", re.ASCII)
 def _ledger_path(run: HookRun, session_id: Any) -> str:
     safe = _LEDGER_UNSAFE.sub("_", str(session_id or "nosession"))
     return os.path.join(run.state, f"ledger-{safe}.json")
+
+
+def _read_ledger(run: HookRun, session_id: Any) -> dict[str, Any]:
+    """The per-session ledger, or an empty one. NOTHING here raises.
+
+    A ledger that cannot be read is an empty ledger and never an exception: the worst it
+    costs is one un-refused repeat read, and the alternative is a hook that fails a tool
+    call over its own cache.
+    """
+    try:
+        with open(_ledger_path(run, session_id), encoding="utf-8") as fh:
+            parsed = json.load(fh)
+    except (OSError, ValueError):
+        return {"reads": {}}
+    if not isinstance(parsed, dict):
+        return {"reads": {}}
+    if not isinstance(parsed.get("reads"), dict):
+        parsed["reads"] = {}
+    return parsed
+
+
+def _write_ledger(run: HookRun, session_id: Any, ledger: dict[str, Any]) -> None:
+    os.makedirs(run.state, exist_ok=True)
+    with open(_ledger_path(run, session_id), "w", encoding="utf-8") as fh:
+        fh.write(_dumps(ledger))
+
+
+def _write_json_safe(file: str, value: Any) -> None:
+    """Best-effort marker write. A marker that cannot be written costs a repeated dream."""
+    try:
+        os.makedirs(os.path.dirname(file), exist_ok=True)
+        with open(file, "w", encoding="utf-8") as fh:
+            fh.write(_dumps(value))
+    except OSError:
+        pass  # the gate degrades to "always fires", which is safe and merely not free
 
 
 def _native_memory_exists(run: HookRun, cwd: str) -> bool:
@@ -472,10 +626,10 @@ def _score_header(head: str, query_tokens: set[str]) -> dict[str, Any] | None:
     estimate -- for every fact `memory_save` writes, whose description is one line by
     construction.
 
-    `_tokens` IS STILL UNDERSCORED ON THIS SIDE. The Node runtime exports `tokens` from
-    `memory/store.ts`; promoting the Python one to public API is J62-3B's line item (it
-    carries the `__all__`, the docstring and the test), so this import is the single call
-    site that will move when it does.
+    `tokens` IS THE STORE'S PUBLIC NAME ON BOTH SIDES since J62-3B. It was `_tokens` here
+    while `runtime-ts/src/memory/store.ts` exported `tokens`, so this call site was an
+    adapter reaching across a layer boundary for a private name; the promotion removed the
+    divergence rather than the reach.
     """
     m = RECALL_HEADER.match(head)
     if not m:
@@ -613,6 +767,56 @@ def _winning_registration(run: HookRun, cwd: str) -> tuple[dict[str, Any] | None
     return None, None
 
 
+def _index_budget_from_args(args: Any) -> float | None:
+    """`--index-budget N` or `--index-budget=N` out of a registration's `args` list.
+
+    `Number(...)` on the other side accepts anything JS can coerce, and rejects only what
+    comes out `NaN`; `Number.isFinite` then refuses an infinity too. This is that test.
+    """
+    if not isinstance(args, list):
+        return None
+    for i, a in enumerate(args):
+        if a == "--index-budget" and i + 1 < len(args):
+            n = _as_number(args[i + 1])
+            if n is not None:
+                return n
+        elif isinstance(a, str) and a.startswith("--index-budget="):
+            n = _as_number(a[len("--index-budget=") :])
+            if n is not None:
+                return n
+    return None
+
+
+def _as_number(value: Any) -> float | None:
+    """`Number(v)`, but only where it lands on a FINITE number. `None` otherwise."""
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value) if math.isfinite(value) else None
+    if isinstance(value, str):
+        try:
+            n = float(value.strip() or 0)
+        except ValueError:
+            return None
+        return n if math.isfinite(n) else None
+    return None
+
+
+def _configured_index_budget(run: HookRun, cwd: str) -> tuple[float | None, str | None]:
+    """The `--index-budget` the registration a session in `cwd` would actually launch carries.
+
+    THE UNIT OF PRECEDENCE IS THE WHOLE ENTRY, NOT THE FLAG. A local-scope entry with no
+    `--index-budget` therefore means the DEFAULT, even when a user-scope entry names a
+    number -- because the user-scope entry is not what the session launched. Reading the
+    flag scope by scope instead would reintroduce the wrong-denominator bug this arm exists
+    to fix. `runtime-ts/src/hookadapter.ts` carries the host-documentation citation.
+    """
+    entry, scope = _winning_registration(run, cwd)
+    if entry is None:
+        return None, None
+    return _index_budget_from_args(entry.get("args")), scope
+
+
 def _apply_registration_store_pin(run: HookRun, cwd: str) -> None:
     """The winning registration's `BANTAMKIT_MEMORY_DIR`, applied to THIS process (J50-1).
 
@@ -648,16 +852,812 @@ def _apply_registration_store_pin(run: HookRun, cwd: str) -> None:
     run.store_scope = None if value.strip() == "" else scope
 
 
+# ------------------------------------------------------------- PreToolUse[Read]
+# The filegraph, over the OPERATOR's reads. `filegraph.md` measured the mechanism as net
+# positive and never a loss (the cache pays only on a repeat); it could not reach these
+# reads because they never pass through bantamkit's Agent. A PreToolUse hook is the one
+# place that does see them. Keyed by transcript (a subagent has its own transcript and has
+# NOT seen the parent's read), by path+offset+limit, and by mtime+size so an edit re-arms
+# it. REFUSES ONCE: the second identical call goes through, so nothing can be hard-blocked.
+
+
+def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
+    ti = payload.get("tool_input")
+    ti = ti if isinstance(ti, dict) else {}
+    file = ti.get("file_path")
+    if not isinstance(file, str) or not file:
+        return
+    try:
+        st = os.stat(file)
+    except OSError:
+        return  # missing file: let Read produce its own error
+    offset = ti.get("offset")
+    limit = ti.get("limit")
+    # The transcript is the CONTEXT dimension: a subagent has its own transcript and has not
+    # seen the parent's reads. It is carried on the record as well as in the key, because
+    # `_pre_compact` must filter on it and a path may itself contain the key's delimiter.
+    transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
+    key = f"{transcript}|{file}|{_js_str(offset)}|{_js_str(limit)}"
+    ledger = _read_ledger(run, payload.get("session_id"))
+    prev = ledger["reads"].get(key)
+    prev = prev if isinstance(prev, dict) else None
+    sig = f"{_js_number(_mtime_ms(st))}|{st.st_size}"
+    if prev and prev.get("sig") == sig and not prev.get("refused"):
+        prev["refused"] = True
+        prev["count"] = int(prev.get("count") or 0) + 1
+        _write_ledger(run, payload.get("session_id"), ledger)
+        where = ""
+        if offset is not None:
+            tail = f", limit {_js_str(limit)}" if limit is not None else ""
+            where = f" (offset {_js_str(offset)}{tail})"
+        reason = (
+            f"bantamkit filegraph: {file}{where} was already read in this context at "
+            f"{prev.get('at')} and is unchanged on disk (same mtime and size). Use the "
+            "content from that earlier read. If you genuinely need it again, repeat the "
+            "exact same call — this refusal fires only once per unchanged file."
+        )
+        _log(run, {"event": "PreToolUse", "action": "refuse", "file": file, "size": st.st_size})
+        _emit(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+        )
+        return
+    ledger["reads"][key] = {
+        "sig": sig,
+        "at": _stamp(),
+        "count": (int(prev.get("count") or 0) if prev else 0) + 1,
+        "refused": False,
+        "transcript": transcript,
+        "file": file,
+    }
+    _write_ledger(run, payload.get("session_id"), ledger)
+    _log(
+        run,
+        {
+            "event": "PreToolUse",
+            "action": "allow-after-refuse-or-change" if prev else "record",
+            "file": file,
+            "size": st.st_size,
+        },
+    )
+
+
+# ---------------------------------------------- PostToolUse -> the usage events log
+# One line per tool call, for `tools/ledger/tool-usage.mjs` to read when a transcript is
+# gone. The transcript is authoritative while it exists; this is the durable copy behind it,
+# and it is the ONLY record of a session whose transcript the host has since deleted (4 of
+# 110 logged sessions, measured 2026-09-04).
+#
+# AN APPEND, not the read-modify-write `_write_ledger` above: the host fires one hook
+# PROCESS per tool call and a parallel tool block fires them concurrently, which loses
+# 40-50% of a read-modify-write's records. An append of a line this size is atomic on both
+# platforms, so this half has no such race.
+
+
+def _append_usage_event(run: HookRun, payload: dict[str, Any]) -> None:
+    tool = payload.get("tool_name") or "?"
+    tool = tool if isinstance(tool, str) else "?"
+    ti = payload.get("tool_input")
+    ti = ti if isinstance(ti, dict) else {}
+    parts = tool.split("__")
+    if tool == "Skill":
+        detail = _js_str(ti.get("skill") if ti.get("skill") is not None else "")
+    elif tool == "Agent":
+        detail = _js_str(ti.get("subagent_type") or "general-purpose")
+    else:
+        detail = ""
+    record = {
+        "ts": _stamp(),
+        "session": payload.get("session_id") or "",
+        # The HOST's slug, not tool-metrics': `token-ledger.mjs` uses this same expression,
+        # and mapping `.` to a dash as well (which `log_event.py` did and the host does not)
+        # split one project into two keys.
+        "project": re.sub(r"[\\/:]", "-", _js_str(payload.get("cwd") or "")),
+        "tool": tool,
+        "server": parts[1] if tool.startswith("mcp__") and len(parts) >= 3 else "builtin",
+        # The dedupe key. Two writers append to this file by design and one machine can
+        # register the hook at both user and project scope, so a call can be logged twice.
+        "tool_use_id": _js_str(payload.get("tool_use_id")),
+        "detail": detail,
+    }
+    # `os.path.expanduser("~")` AND NOT `run.home`, mirroring `os.homedir()` on the other
+    # side: the Node arm reads the raw home here while every other path in the module goes
+    # through the RESOLVED one. Ported as spelled rather than repaired, for the reason
+    # `_native_memory_exists` gives -- a unit that fixes one runtime's reading of a shared
+    # on-disk path invents a divergence. Recorded for `docs/porting.md`.
+    directory = os.environ.get("TOOL_METRICS_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude", "tool-metrics"
+    )
+    file = os.path.join(directory, "events.jsonl")
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(file, "a", encoding="utf-8") as fh:
+            fh.write(f"{_dumps(record)}\n")
+        _prune_usage_events(run, file)
+    except OSError:
+        pass  # the log is a convenience; never fail a tool call over it
+
+
+def _prune_usage_events(run: HookRun, file: str) -> None:
+    """Above the cap, drop every line whose session STILL has a transcript.
+
+    The log's only reader reads only the sessions whose transcript the host has deleted, so
+    a line whose session still has one is redundant BY CONSTRUCTION and dropping it loses
+    nothing the reader would have used. The cost is paid the right way round: the `stat`
+    runs on every call and is microseconds; the walk and the rewrite run only above the cap,
+    and each prune puts the file far enough under that the next one is thousands of calls
+    away. The walk reads DIRECTORY ENTRIES, never file contents.
+    """
+    try:
+        size = os.stat(file).st_size
+    except OSError:
+        return
+    if size <= EVENTS_MAX_BYTES:
+        return
+
+    projects = os.path.join(run.home, ".claude", "projects")
+    on_disk: set[str] = set()
+
+    def walk(directory: str) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            return
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                on_disk.add(entry.name)
+                walk(entry.path)
+            elif entry.name.endswith(".jsonl"):
+                on_disk.add(entry.name[: -len(".jsonl")])
+
+    walk(projects)
+    # A walk that found nothing is an unreadable projects dir, not a machine with no
+    # transcripts. Pruning on that reading would delete the whole log.
+    if not on_disk:
+        _log(
+            run,
+            {
+                "event": "PostToolUse",
+                "action": "prune-skipped",
+                "reason": "no transcripts found",
+                "size": size,
+            },
+        )
+        return
+
+    kept: list[str] = []
+    with open(file, encoding="utf-8") as fh:
+        text = fh.read()
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            kept.append(line)  # keep what we cannot judge
+            continue
+        session = record.get("session") if isinstance(record, dict) else None
+        if not session or _js_str(session) not in on_disk:
+            kept.append(line)
+    tmp = f"{file}.prune-{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(kept) + "\n" if kept else "")
+    os.replace(tmp, file)
+    _log(
+        run,
+        {
+            "event": "PostToolUse",
+            "action": "prune",
+            "before": size,
+            "after": os.stat(file).st_size,
+            "kept": len(kept),
+        },
+    )
+
+
+# ---------------------------------------------- PostToolUse[memory_save] -> compact
+
+
+def _budget_value(n: float) -> int | float:
+    """A budget as the number a log should print: `19200`, never `19200.0`."""
+    return int(n) if float(n).is_integer() else n
+
+
+def _post_save(run: HookRun, payload: dict[str, Any]) -> None:
+    ledger = _read_ledger(run, payload.get("session_id"))
+    ledger["saved"] = int(ledger.get("saved") or 0) + 1
+    _write_ledger(run, payload.get("session_id"), ledger)
+    cwd = str(payload.get("cwd") or os.getcwd())
+    configured, scope = _configured_index_budget(run, cwd)
+    budget_source = "configured" if configured is not None else "default"
+    budget_scope = scope if configured is not None else None
+    m = (
+        Memory.layered(cwd)
+        if configured is None
+        else Memory.layered(cwd, index_budget=_budget_value(configured))
+    )
+    size, budget = m.index_accounting()
+    if size is None or size < COMPACT_AT * budget:
+        _log(
+            run,
+            {
+                "event": "PostToolUse",
+                "action": "saved",
+                "bytes": size,
+                "budget": budget,
+                "budgetSource": budget_source,
+                "budgetScope": budget_scope,
+            },
+        )
+        return
+    # The user ruled compaction AUTOMATIC (2026-08-24). The aim is asked for as a RESERVE
+    # against the real budget rather than as a fake budget, so `compact` lands at exactly
+    # `target` instead of at whatever its own default reserve makes of a budget it was
+    # misled about. `reserve` is at least 1 for every budget >= 1 (both parsers refuse 0),
+    # and 0.2 * budget is always under the `budget // 2` cap, so neither edge is reachable.
+    target = math.floor(COMPACT_TO * budget)
+    reserve = budget - target
+    # THE CHILD IS THIS RUNTIME'S OWN memory CLI, not the Node one: `python -m
+    # bantamkit.memory compact` is the same subcommand with the same flags and, as the
+    # `memory` conformance suite compares, the same printed lines -- which is what keeps the
+    # sentence this arm emits byte-identical across the two runtimes.
+    command = [
+        sys.executable,
+        "-m",
+        "bantamkit.memory",
+        "compact",
+        "--store",
+        str(m.store.root),
+        "--budget",
+        _js_number(budget),
+        "--reserve",
+        _js_number(reserve),
+    ]
+    try:
+        done = subprocess.run(  # noqa: S603 - argv list, no shell, all values ours
+            command,
+            capture_output=True,
+            text=True,
+            # `encoding` and `errors` NAMED, not defaulted: `text=True` alone decodes with
+            # the locale, which on a Windows console code page cannot hold the em dash the
+            # compact report prints -- and a strict decode would RAISE inside an arm whose
+            # whole posture is that nothing reaches the user as an error. `utf8` with
+            # replacement is also exactly what `spawnSync({encoding: "utf8"})` does.
+            encoding="utf-8",
+            errors="replace",
+            timeout=8.0,
+            check=False,
+        )
+        status: int | None = done.returncode
+        out = f"{done.stdout or ''}{done.stderr or ''}".strip()
+    except subprocess.TimeoutExpired as e:
+        status = None
+        out = f"{_decoded(e.stdout)}{_decoded(e.stderr)}".strip()
+    except OSError as e:
+        status = None
+        out = _message(e)
+    _log(
+        run,
+        {
+            "event": "PostToolUse",
+            "action": "auto-compact",
+            "bytes": size,
+            "budget": budget,
+            "target": target,
+            "reserve": reserve,
+            "budgetSource": budget_source,
+            "budgetScope": budget_scope,
+            "exit": status,
+            "out": out[:400],
+        },
+    )
+    _emit(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": (
+                    f"[bantamkit] memory index was {size}/{budget} B; auto-compacted to "
+                    f"≤{target} B. {out[:600]}"
+                ),
+            }
+        }
+    )
+
+
+def _decoded(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "replace")
+    return str(raw)
+
+
+# -------------------------------------------------------------------- PreCompact
+# Steering for the summariser, derived from state the hook already holds: which files this
+# context read (from the read ledger) and which shiftwork unit is open.
+#
+# THE CHANNEL IS PLAIN STDOUT, NOT `hookSpecificOutput`, and that is measured against the
+# host binary rather than assumed -- see `runtime-ts/src/hookadapter.ts` for the dispatcher
+# it was read off and the union that has no `PreCompact` member. Emitting the envelope here
+# made the host reject the output and DROP the text, so every compaction went unsteered.
+
+
+def _checkpoint_shape(doc: Any) -> tuple[str, list[dict[str, Any]]] | None:
+    """The parts of `assets/schemas/shiftwork-checkpoint.json` this arm reads.
+
+    Deliberately NOT a full schema validation -- a hook that loads a JSON-Schema validator
+    stops being cheap, and a checkpoint that satisfies this shape but fails the full schema
+    still yields a true steering line.
+    """
+    if not isinstance(doc, dict):
+        return None
+    plan = doc.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    cursor = plan.get("cursor")
+    units = plan.get("units")
+    if not isinstance(cursor, str) or not cursor:
+        return None
+    if not isinstance(units, list) or not units:
+        return None
+    for u in units:
+        if not isinstance(u, dict):
+            return None
+        if not isinstance(u.get("id"), str) or not isinstance(u.get("status"), str):
+            return None
+    return cursor, units
+
+
+def _open_checkpoint(cwd: str) -> dict[str, Any] | None:
+    """The OPEN checkpoint under `<cwd>/.shiftwork`, whatever it is called.
+
+    Real jobs write named checkpoints, so a hardcoded `checkpoint.json` read whichever stale
+    job happened to own that name. Open means: at least one unit is neither `done` nor
+    `dropped`. Most recently written wins, filename breaks the tie, so the choice is
+    deterministic. Every failure -- no directory, unreadable file, malformed JSON, wrong
+    shape -- is a SKIP, never a raise. Returns `None` when there is no `.shiftwork` at all,
+    else the scan's accounting, because a scan that silently stops on a budget is a scan
+    nobody can audit.
+    """
+    directory = os.path.join(cwd, ".shiftwork")
+    try:
+        names = [n for n in os.listdir(directory) if n.endswith(".json")]
+    except OSError:
+        return None
+
+    # stat first (cheap, and the mtime is what orders the scan), read second (the expensive
+    # half, and the one the budget bounds). Same comparator the winner was already chosen
+    # by, so applying it before the read changes which files are READ, never which one wins.
+    candidates: list[tuple[str, float, int]] = []
+    for name in names:
+        file = os.path.join(directory, name)
+        try:
+            st = os.stat(file)
+        except OSError:
+            continue  # unreadable: skip
+        if not os.path.isfile(file) or st.st_size > CHECKPOINT_MAX_BYTES:
+            continue
+        candidates.append((file, _mtime_ms(st), st.st_size))
+    candidates.sort(key=lambda c: (-c[1], c[0]))
+
+    scanned_bytes = 0
+    read = 0
+    winner: dict[str, Any] | None = None
+    for file, mtime_ms, size in candidates:
+        # The budget is checked BEFORE each read and never before the first, so the newest
+        # candidate is always considered however large it is.
+        if read > 0 and (
+            scanned_bytes >= CHECKPOINT_SCAN_MAX_BYTES or read >= CHECKPOINT_SCAN_MAX_FILES
+        ):
+            break
+        read += 1
+        scanned_bytes += size
+        try:
+            with open(file, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        shape = _checkpoint_shape(doc)
+        if shape is None:
+            continue
+        cursor, units = shape
+        if not any(u.get("status") not in ("done", "dropped") for u in units):
+            continue
+        winner = {"file": file, "mtimeMs": mtime_ms, "cursor": cursor, "units": units}
+        break  # newest-first: the first open one IS the most recent open one
+    return {
+        "winner": winner,
+        "scanned": read,
+        "bytes": scanned_bytes,
+        "skipped": len(candidates) - read,
+    }
+
+
+def _transcript_files(ledger: dict[str, Any], transcript: Any) -> list[str]:
+    """The files THIS transcript read. A claim about one transcript, not about one session.
+
+    The ledger file is per session and a session holds the parent's reads and every
+    subagent's. Measured before this filter existed, on this repo's own tree: of the 30
+    files handed to a parent's summariser, 7 had been read only by a subagent whose output
+    the parent never saw -- so the summary carried a false premise, and the PostCompact
+    ledger reset cannot undo it because the summary is already written.
+    """
+    me = _js_str(transcript or "")
+    files: list[str] = []
+    seen: set[str] = set()
+    reads = ledger.get("reads")
+    for key, rec in (reads if isinstance(reads, dict) else {}).items():
+        # Record fields where the entry has them; the key is the fallback for a ledger
+        # written by an older adapter, so an in-flight session degrades quietly.
+        parts = str(key).split("|")
+        rec = rec if isinstance(rec, dict) else {}
+        owner = rec.get("transcript", parts[0] if parts else None)
+        file = rec.get("file", parts[1] if len(parts) > 1 else None)
+        if not file or _js_str(owner) != me or file in seen:
+            continue
+        seen.add(file)
+        files.append(file)
+    return files
+
+
+def _pre_compact(run: HookRun, payload: dict[str, Any]) -> None:
+    ledger = _read_ledger(run, payload.get("session_id"))
+    mine = _transcript_files(ledger, payload.get("transcript_path") or payload.get("session_id"))
+    files = mine[:PRECOMPACT_FILES_MAX]
+
+    scan: dict[str, Any] | None
+    try:
+        scan = _open_checkpoint(str(payload.get("cwd") or os.getcwd()))
+    except Exception:  # noqa: BLE001 - a bad .shiftwork is a missing line, never a crash
+        scan = None
+    cp = scan["winner"] if scan else None
+
+    # The FIXED lines are assembled first and are never cut: they carry the instruction, and
+    # a trimmed instruction steers worse than a trimmed list. Whatever budget they leave is
+    # what the file list gets.
+    fixed: list[str] = []
+    if cp:
+        # The cursor names THE next unit; the schema keeps it at `plan.cursor`.
+        unit = next((u for u in cp["units"] if u.get("id") == cp["cursor"]), None)
+        if unit:
+            title = f" — {unit['title']}" if unit.get("title") else ""
+            at = f"unit {unit['id']} ({unit['status']}){title}"
+        else:
+            at = f"unit {cp['cursor']}, which is not present in plan.units"
+        head = _cap_bytes(
+            f"Open shiftwork checkpoint: {cp['file']}, cursor {_dumps(cp['cursor'])} → {at}.",
+            CHECKPOINT_LINE_MAX,
+        )
+        fixed.append(f"{head} Preserve unit status and the next unit to clock in.")
+    fixed.append(
+        "Preserve verbatim: every number the user was shown, every decision the user made, "
+        "and any pending operator step."
+    )
+
+    room = PRECOMPACT_STDOUT_MAX - len("\n\n".join(fixed).encode("utf-8")) - 2
+    block = ""
+    if files:
+        listing = "\n".join(f"- {f}" for f in files)
+        block = _cap_lines(
+            "Files already read in this context (keep the list; do not re-read unchanged "
+            f"ones after compaction):\n{listing}",
+            max(0, room),
+        )
+    # A header the budget left with no file under it steers nothing and costs bytes.
+    listed = sum(1 for line in block.split("\n") if line.startswith("- "))
+    if listed == 0:
+        block = ""
+
+    ctx = "\n\n".join(part for part in [block, *fixed] if part)
+    written = _emit_text(ctx)
+    _log(
+        run,
+        {
+            "event": "PreCompact",
+            "trigger": payload.get("trigger"),
+            "ledgerFiles": len(mine),
+            "capped": len(files),
+            "listed": listed,
+            "checkpoint": cp["file"] if cp else None,
+            "cursor": cp["cursor"] if cp else None,
+            "cpScanned": scan["scanned"] if scan else 0,
+            "cpSkipped": scan["skipped"] if scan else 0,
+            "cpBytes": scan["bytes"] if scan else 0,
+            "bytes": written,  # what LEFT the process, not what was considered
+        },
+    )
+
+
+# ------------------------------------------------------------------- PostCompact
+
+
+def _post_compact(run: HookRun, payload: dict[str, Any]) -> None:
+    try:
+        os.unlink(_ledger_path(run, payload.get("session_id")))
+    except OSError:
+        pass
+    _log(run, {"event": "PostCompact", "action": "ledger-reset"})
+
+
+# ------------------------------------------------------------------ Stop -> dream
+# The trigger row 5 of `docs/roadmap-toolbox.md` left open. `Stop` and not `SessionEnd`,
+# because `SessionEnd` is not among the events this registration actually delivers and a
+# unit may not edit the user's own hook surface.
+#
+# RULING 2026-09-12 (J50-2A): THE AUTOMATIC TRIGGER RUNS THE DREAM IN DRY-RUN ONLY. It never
+# writes to any store. Firing it with `dry_run=False` made J45's mitigation stop existing --
+# measured on the user's own machine, 14 of 20 profile facts archived silently at the end of
+# turns nobody was watching. A real merge stays a deliberate `memory_dream` call.
+#
+# THE GATE IS THE STORE'S OWN FINGERPRINT, because `Stop` fires every turn. Both layers are
+# fingerprinted: the profile store is machine-wide, so another project's session can add the
+# very duplicate this session should consolidate, and a gate keyed on THIS session's saves
+# would never see it.
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Do two paths name the same directory? REALPATH, in the KERNEL's order.
+
+    `os.path.abspath` normalises `..` lexically, before the symlink in front of it has been
+    followed, so it calls two spellings of one directory different and lets a self-merge
+    through. On macOS the same directory arrives as `/private/var/...` from the store
+    resolution and `/var/...` from the home, which is the instance that was measured.
+    """
+    return _real_dir(a) == _real_dir(b)
+
+
+def _store_fingerprint(roots: list[str]) -> str:
+    h = hashlib.sha256()
+    for root in roots:
+        h.update(f"\u0000{root}\u0000".encode())
+        try:
+            names = sorted(
+                n for n in os.listdir(os.path.join(root, "facts")) if n.endswith(".md")
+            )
+        except OSError:
+            names = []  # a layer with no facts/ contributes its name and nothing else
+        for n in names:
+            try:
+                st = os.stat(os.path.join(root, "facts", n))
+            except OSError:
+                continue
+            h.update(f"{n}\u0000{st.st_size}\u0000{_js_number(_mtime_ms(st))}\u0000".encode())
+    return h.hexdigest()
+
+
+#: The dream child, as a program rather than a prompt. It is a CHILD and not an in-process
+#: call for the property the Node arm has and an in-process call cannot offer: a bound. The
+#: host kills the whole hook at 10 s, and a consolidation that hangs would take the session
+#: with it, so the pass runs where it can be killed and its failure is a log line.
+_DREAM_CHILD = (
+    "import json,sys\n"
+    "from bantamkit.memory.component import Memory\n"
+    # DRY RUN, by the ruling of 2026-09-12 (J50-2A). `False` here is what archived the
+    # user's profile facts; `True` is the J45 default and the only value this arm may pass.
+    "o = Memory.layered(sys.argv[1]).dream_outcome(True)\n"
+    "sys.stdout.write(json.dumps({'status': o.status, 'dryRun': o.dry_run,\n"
+    "  'merged': o.merged, 'consumed': o.consumed, 'absolutised': o.absolutised,\n"
+    "  'superseded': o.superseded, 'changes': o.result.changes if o.result else 0,\n"
+    "  'indexBefore': o.index_before, 'indexAfter': o.index_after, 'budget': o.budget}))\n"
+)
+
+
+def _maybe_dream(run: HookRun, payload: dict[str, Any]) -> None:
+    """PREVIEW the consolidation, at most once per change to either layer, in a bounded child.
+
+    NOTHING IS EMITTED. `_stop` may answer the host with `decision: "block"`, and two JSON
+    objects on one stdout is not a protocol -- so this arm reports only into the hook log.
+
+    WHAT IS LOGGED IS WHAT THE PASS ACTUALLY FOUND, parsed out of the child's stdout. A log
+    record whose fields are computed BEFORE the spawn is vacuous, and J46-6 measured its own
+    first repair of that habit being vacuous for exactly that reason.
+
+    THE LOG LINE CARRIES NO FIELD NAMED `merged`, on purpose. A preview's line is
+    `dream-preview` with `wouldMerge`/`wouldConsume`; "would have merged 14" must never read
+    as "merged 14" to a human skimming the only place this arm is visible.
+    """
+    cwd = str(payload.get("cwd") or os.getcwd())
+    try:
+        project_root = str(resolve_project_store(cwd).path)
+    except Exception as e:  # noqa: BLE001 - an unresolved store is a log line, never a crash
+        _log(
+            run,
+            {
+                "event": "Stop",
+                "action": "dream-skip",
+                "reason": "unresolved-store",
+                "error": _message(e),
+            },
+        )
+        return
+    # THE TWO LAYERS MUST BE TWO DIRECTORIES, and measured on 2026-09-10 they are not always:
+    # a session whose cwd has no project store above it resolves the PROFILE store as the
+    # "project" store, and a dream then merges that store with itself -- every fact matches
+    # itself by name and the "profile copy" is archived, which empties `facts/`. That
+    # happened to the user's real store. `Memory.layered` refuses the binding in both
+    # runtimes now (J47-1/J47-2), and this guard is kept anyway: it costs one realpath
+    # compare and it refuses BEFORE a child is spawned rather than inside it.
+    if _same_path(project_root, run.profile):
+        _log(
+            run,
+            {
+                "event": "Stop",
+                "action": "dream-skip",
+                "reason": "single-layer",
+                "root": project_root,
+            },
+        )
+        return
+    roots = [project_root, run.profile]
+    fingerprint = _store_fingerprint(roots)
+    prior = _read_json_safe(run.dream_state)
+    if prior.get("fingerprint") == fingerprint:
+        _log(
+            run,
+            {
+                "event": "Stop",
+                "action": "dream-skip",
+                "reason": "unchanged",
+                "fingerprint": fingerprint[:12],
+            },
+        )
+        return
+    t = time.time()
+    status: int | None = None
+    sig: str | None = None
+    timed_out = False
+    stdout = ""
+    stderr = ""
+    try:
+        done = subprocess.run(  # noqa: S603 - argv list, no shell, the script is ours
+            [sys.executable, "-c", _DREAM_CHILD, cwd],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",  # never the locale; see `_post_save` for why it is named
+            errors="replace",
+            timeout=_dream_timeout_ms() / 1000.0,
+            check=False,
+        )
+        status = done.returncode
+        stdout, stderr = done.stdout or "", done.stderr or ""
+        if status is not None and status < 0:
+            try:
+                sig = signal_module.Signals(-status).name
+            except ValueError:
+                sig = None
+    except subprocess.TimeoutExpired as e:
+        # `timedOut` AND NOT `signal`: the signal is a POSIX notion and on Windows the kill
+        # is `TerminateProcess` with no SIGTERM to report, so the field that MEANS "the
+        # bound stopped this" is the portable one and it is the one to assert on.
+        timed_out = True
+        stdout, stderr = _decoded(e.stdout), _decoded(e.stderr)
+    except OSError as e:
+        stderr = _message(e)
+    ms = int((time.time() - t) * 1000)
+    outcome: dict[str, Any] | None
+    try:
+        parsed = json.loads(stdout or "")
+        outcome = parsed if isinstance(parsed, dict) else None
+    except ValueError:
+        outcome = None  # a child that died has no JSON to give
+    if outcome is None:
+        # A failed or timed-out pass must NOT record the new fingerprint: the next Stop
+        # should try again rather than treat an unconsolidated store as already dreamt.
+        _log(
+            run,
+            {
+                "event": "Stop",
+                "action": "dream-failed",
+                "ms": ms,
+                "exit": status,
+                "signal": sig,
+                "timedOut": timed_out,
+                "error": stderr.strip()[:400],
+            },
+        )
+        return
+    # THE MARKER ADVANCES AFTER A DRY RUN, DELIBERATELY. It answers "has either layer changed
+    # since the last look", never "is the store consolidated" -- the status it records is the
+    # pass's own. Not advancing it would spawn a child on every Stop for as long as one
+    # duplicate exists, which is the every-turn cost this arm rules out. The fingerprint is
+    # still recomputed AFTER the pass, and `storeMoved` says whether the two were equal: a
+    # preview that moved anything is the bug this arm exists without.
+    after = _store_fingerprint(roots)
+    _write_json_safe(
+        run.dream_state,
+        {"fingerprint": after, "at": _stamp(), "status": outcome.get("status"), "dryRun": True},
+    )
+    _log(
+        run,
+        {
+            "event": "Stop",
+            "action": "dream-preview",
+            "ms": ms,
+            "dryRun": True,
+            "status": outcome.get("status"),
+            "wouldMerge": outcome.get("merged"),
+            "wouldConsume": outcome.get("consumed"),
+            "wouldAbsolutise": outcome.get("absolutised"),
+            "wouldSupersede": outcome.get("superseded"),
+            "changes": outcome.get("changes"),
+            "indexBefore": outcome.get("indexBefore"),
+            "indexProjected": outcome.get("indexAfter"),
+            "budget": outcome.get("budget"),
+            "storeMoved": after != fingerprint,
+        },
+    )
+
+
+# -------------------------------------------------------------------------- Stop
+# The experience collector. Once per session, when the session did real work and nothing
+# durable was written, hand the turn back with one instruction. The host's `type:prompt`
+# hook could judge this with a model call; a grep over the transcript is free.
+
+_TOOL_USE = re.compile(r'"type":\s*"tool_use"')
+_SAVE_CALL = re.compile(r'"name":\s*"mcp__bantamkit__memory_save"')
+#: A write into any `memory/` directory, as the transcript spells a tool input. The class
+#: is backslash-or-slash, and it is spelled as a module constant because a backslash inside
+#: an f-string expression is a syntax error before CPython 3.12 and this package supports
+#: 3.11.
+_SAVE_WRITE = re.compile(r'"file_path":"[^"]*[\\/]memory[\\/][^"]*\.md"')
+
+
+def _stop(run: HookRun, payload: dict[str, Any]) -> None:
+    if payload.get("stop_hook_active"):
+        return
+    ledger = _read_ledger(run, payload.get("session_id"))
+    if ledger.get("stopNudged"):
+        return
+    try:
+        with open(
+            _js_str(payload.get("transcript_path") or ""), encoding="utf-8", errors="replace"
+        ) as fh:
+            text = fh.read()
+    except OSError:
+        return
+    tool_uses = len(_TOOL_USE.findall(text))
+    saved = bool(
+        int(ledger.get("saved") or 0) > 0
+        or _SAVE_CALL.search(text)
+        or _SAVE_WRITE.search(text)
+    )
+    if tool_uses < STOP_NUDGE_MIN_TOOL_CALLS or saved:
+        _log(run, {"event": "Stop", "action": "pass", "toolUses": tool_uses, "saved": saved})
+        return
+    ledger["stopNudged"] = True
+    _write_ledger(run, payload.get("session_id"), ledger)
+    _log(run, {"event": "Stop", "action": "nudge", "toolUses": tool_uses})
+    _emit(
+        {
+            "decision": "block",
+            "reason": (
+                f"bantamkit: this session made {tool_uses} tool calls and saved no memory. "
+                "Before stopping, decide whether anything durable was learned that is NOT "
+                "derivable from the repo, git history, or docs — a correction or preference "
+                "the user stated (feedback), a fact about ongoing work or a decision "
+                "(project), a URL/ticket/dashboard (reference). If so, call "
+                "mcp__bantamkit__memory_save for each (at most 3, description written as "
+                "the words a future query would use). If nothing qualifies, stop with one "
+                "line saying so. This nudge fires once per session."
+            ),
+        }
+    )
+
+
 # ---------------------------------------------------------------------- dispatch
 
-#: The arms J62-3B ports. They are NAMED here rather than left to the `ignored` default so
-#: that "bantamkit serves this event and has not ported it yet" and "this event is none of
-#: bantamkit's business" are two different lines in the log. Each one is a Node arm that
-#: exists and works (`runtime-ts/src/hookadapter.ts`), so this list is a to-do with a gate
-#: behind it: `tools/conformance/suites` (J62-8) feeds both runtimes the same payload.
-UNPORTED_EVENTS = ("PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "Stop")
-
-
+#: THERE IS NO `UNPORTED_EVENTS` ANY MORE, and its absence is the record of why it existed.
+#: J62-3 listed the five arms it had not reached here, so that a missing port and an event
+#: that is none of bantamkit's business were two different lines in the log rather than one
+#: silence; J62-3B landed all five and the list emptied. The test that asserted its contents
+#: (`test_an_arm_this_unit_did_not_port_is_recognised_and_degrades_visibly`) was SHRUNK to
+#: assert the empty set rather than deleted -- it still goes red if an arm is quietly moved
+#: back out of dispatch.
 def run_hook(stdin: Any = None) -> None:
     """`bantamkit-mcp --hook`: ONE JSON object in, AT MOST ONE JSON object out.
 
@@ -689,8 +1689,25 @@ def run_hook(stdin: Any = None) -> None:
     if event == "UserPromptSubmit":
         _user_prompt_submit(run, payload)
         return
-    if event in UNPORTED_EVENTS:
-        _log(run, {"event": event, "action": "unported"})
+    if event == "PreToolUse":
+        if payload.get("tool_name") == "Read":
+            _pre_tool_use_read(run, payload)
+        return
+    if event == "PostToolUse":
+        # EVERY tool, not just bantamkit's -- it is a usage denominator.
+        _append_usage_event(run, payload)
+        if payload.get("tool_name") == "mcp__bantamkit__memory_save":
+            _post_save(run, payload)
+        return
+    if event == "PreCompact":
+        _pre_compact(run, payload)
+        return
+    if event == "PostCompact":
+        _post_compact(run, payload)
+        return
+    if event == "Stop":
+        _maybe_dream(run, payload)  # gated on the store changing; logs only, never emits
+        _stop(run, payload)
         return
     _log(run, {"event": event, "action": "ignored"})
 
