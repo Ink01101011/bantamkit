@@ -43,7 +43,7 @@ when it wants more.
 
 | Event | Matcher | Action | Cost (measured) |
 |---|---|---|---|
-| `SessionStart` | `startup\|resume\|clear\|compact` | Injects the **profile** index (cross-project lessons) and, when the cwd has no native `MEMORY.md`, the project index. On `compact` it resets the read ledger. **Which project store (J50-1, 2026-09-12):** the one the `bantamkit` registration that wins for this cwd pins with `env.BANTAMKIT_MEMORY_DIR`, read off the whole winning entry by the same `local > project > user` walk the `PostToolUse` row describes for `--index-budget`; with no pin on that entry, the walk from cwd. Until this the hook never saw a registration's `env` — the host hands it to the server's process only — so a pinned registration had the server saving into one store and this row injecting from another. The log line carries `storeScope` (`local`/`project`/`user`, or `null` for the walk). A pin the server would refuse (`docs/memory.md`, "Pinning the store") is refused here through the same code and logged as `warn`, never downgraded to the walk. **The header counts what ARRIVED (J50-2E, 2026-09-12):** each block's header number is the number of fact lines in that block — `15 of 20 facts` when the 3,000-byte cap dropped some, a bare `20 facts` when it dropped none — a drop adds one disclosure line to the block, the log names the dropped facts and the rule, and the rule is no longer the alphabet. See "The session header counts what arrived" below. **And, since J57-4 (2026-09-19), ONE more line — only when the kept install is behind the package index: see "The stale-install signal" below. It is decided from a file, never from a registry, and the detached probe that keeps that file fresh runs at most once per 24 h.** | 3658 B once per session on this machine's 20-fact profile store (was 3353 B before the disclosure line: 2981 B of fact lines under the 3000 B cap, plus header and the one 298 B disclosure line), 12 ms |
+| `SessionStart` | `startup\|resume\|clear\|compact` | Injects the **profile** index (cross-project lessons) and, when the cwd has no native `MEMORY.md`, the project index. **AMENDED 2026-09-20 (job62, J62-6):** "has no native `MEMORY.md`" is no longer a slug this adapter computes — it is the four-branch resolver in "Exporting into the host's own auto-memory" below; and when the host DOES have a store, the project facts are exported into it instead of withheld. On `compact` it resets the read ledger. **Which project store (J50-1, 2026-09-12):** the one the `bantamkit` registration that wins for this cwd pins with `env.BANTAMKIT_MEMORY_DIR`, read off the whole winning entry by the same `local > project > user` walk the `PostToolUse` row describes for `--index-budget`; with no pin on that entry, the walk from cwd. Until this the hook never saw a registration's `env` — the host hands it to the server's process only — so a pinned registration had the server saving into one store and this row injecting from another. The log line carries `storeScope` (`local`/`project`/`user`, or `null` for the walk). A pin the server would refuse (`docs/memory.md`, "Pinning the store") is refused here through the same code and logged as `warn`, never downgraded to the walk. **The header counts what ARRIVED (J50-2E, 2026-09-12):** each block's header number is the number of fact lines in that block — `15 of 20 facts` when the 3,000-byte cap dropped some, a bare `20 facts` when it dropped none — a drop adds one disclosure line to the block, the log names the dropped facts and the rule, and the rule is no longer the alphabet. See "The session header counts what arrived" below. **And, since J57-4 (2026-09-19), ONE more line — only when the kept install is behind the package index: see "The stale-install signal" below. It is decided from a file, never from a registry, and the detached probe that keeps that file fresh runs at most once per 24 h.** | 3658 B once per session on this machine's 20-fact profile store (was 3353 B before the disclosure line: 2981 B of fact lines under the 3000 B cap, plus header and the one 298 B disclosure line), 12 ms |
 | `UserPromptSubmit` | — | Layered `recall(prompt, 3)`; injects only the **header line** of each hit (`[layer] [name] (type) description`) and tells the model the name to pass to `memory_recall` for the body. Skips prompts < 12 chars and `/commands`. The project layer is bound the way the `SessionStart` row says: the winning registration's `env.BANTAMKIT_MEMORY_DIR` when it names one, else the walk (J50-1). | ≤700 B per prompt, 10–16 ms |
 | `PreToolUse` | `Read` | The filegraph over the operator's own reads. Key = transcript + path + offset + limit; signature = mtime + size. A repeat of an unchanged read is **refused once** with a reason; the next identical call goes through, so nothing can be hard-blocked. A subagent has its own transcript and is never refused for the parent's read. Registered follow-up 2026-08-28, not fixed: the matcher is `Read`, so a document read through `mcp__bantamkit__bantamkit_read` is neither ledgered nor refused on repeat, and `PreCompact` steering (below) cannot name the files it read. **WIDENED 2026-09-06 (job44, unit U11), and it is worse than the follow-up says.** The matcher is `Read` and AUTO MODE READS THROUGH `Bash`, so what this ledger misses is not just `bantamkit_read` but the ordinary reading an agent does — and the `PreCompact` steering built on it names files the compacted context never read through this path. Measured over 45 compaction boundaries: 41.2 % of the 5,212 post-boundary reads are re-reads; rejected-steering 42.1 % against no-hook 41.7 %, which is indistinguishable; and at the 3 boundaries where steering was actually delivered, 0 of 22 re-reads were of a file it named. Post-2026-08-27 there are ZERO post-boundary `Read` calls at all, which is why a `Read`-only counter would have reported a fall to 0 % rather than the defect. Registered in `docs/roadmap-toolbox.md` row 9 and NOT fixed there: widening the matcher changes what this hook ledgers on every tool call, which is its own budget question. `docs/eval-data/2026-09-06-job44-measurements.md`. | 1–2 ms per Read |
 | `PostToolUse` | `mcp__bantamkit__memory_save` | Marks the session as "saved"; if the index is ≥ 90 % of budget, runs `bantamkit-memory compact --budget <budget> --reserve <20 % of budget>`, which aims at 80 % (**AMENDED 2026-09-10, job46:** this cell used to read `--budget 80 %`, past the 90–99.2 % no-op band job40/C6 measured. That band is closed — `docs/porting.md` item 7 — and naming a fake budget began compounding with the new floor: 15 facts archived per fire became 23 on this machine's own store. The 80 % aim stays as hysteresis; it is now asked for as a reserve, so `compact`'s target is `budget - reserve` exactly) and reports what was archived. This is the automatic half; when a save is actually **refused** for budget, the reply names the `memory_compact` MCP tool and the model compacts on its own (`docs/memory.md`). **Fixed 2026-09-06 (job44):** this arm used to always measure the 90 % band against the DEFAULT budget, so a real `--index-budget N` was measured against the wrong denominator and only the tool's half applied. A running server never writes its budget to disk (`MemoryStore.indexBudget` is process-memory-only), so the hook now reads `--index-budget` from the same three scopes `tools/mcpdrift/mcpdrift.py`'s `discover()` reads for the `bantamkit` registration — user (`~/.claude.json` `.mcpServers`), local (that file's `.projects[<cwd>].mcpServers`), project (`<cwd>/.mcp.json`). None configuring it is the honest default; more than one configuring a *different* value is a real drift this process cannot resolve, so it logs `skip-ambiguous-budget` and refuses to compact that cycle rather than guess against a denominator it knows may be wrong. Not covered: other MCP hosts (this hook only runs under Claude Code), enterprise-managed settings, and a server launched by hand outside all three files. **AMENDED the same day (job44, unit F4): the sentence above about `skip-ambiguous-budget` describes behaviour that has been REMOVED, and it was wrong when written.** Claude Code does not treat two scopes naming different values as a drift — it resolves them by PRECEDENCE, `local > project > user`, connecting once to the highest-precedence definition and never merging fields across scopes (https://code.claude.com/docs/en/mcp, "MCP installation scopes", read 2026-09-06). So the refusal fired on the ordinary case of a project override beside a user default, and auto-compaction silently stopped for that project. The hook now follows that precedence over the WHOLE ENTRY — the highest scope that registers `bantamkit` at all supplies the args, so a winning entry with no `--index-budget` means the default even when a lower scope names a number — and the ambiguity branch is gone rather than narrowed, because precedence leaves no ambiguous case for it to catch. The log line now carries `budgetScope`. `docs/roadmap-toolbox.md` (bb) and the `(aa)` residual there carry the rest. | 12 ms |
@@ -334,6 +334,12 @@ rather than a sentence:
 - It does not replace native auto-memory. Where the host already injects `MEMORY.md` for a
   cwd, the project index is not injected a second time. The profile layer is injected
   everywhere because the host has no cross-project store.
+
+  **AMENDED 2026-09-20 (job62, J62-6). Both halves of that sentence have moved.** "Where the
+  host already injects `MEMORY.md` for a cwd" used to be decided by a slug this adapter
+  COMPUTED, and it no longer computes one; and where the host does have a store, the project
+  facts are now EXPORTED into it rather than merely withheld. See "Exporting into the host's
+  own auto-memory" below.
 - It does not compact on the warning threshold. The remedy is aimed at 80 %, because a
   `compact` at the default reserve is a measured no-op between 90 % and 99.2 %.
 
@@ -352,6 +358,69 @@ rather than a sentence:
   landing at 19109 against the advertised 19200. Pinned in `runtime-ts/test/hooks.test.mjs`
   on the accounting line `compact` itself echoes — not on the hook's log record, which was
   measured to be identical under both spellings.
+
+## Exporting into the host's own auto-memory (2026-09-20, job62 / J62-6)
+
+Claude Code keeps an auto-memory store of its own — a directory of `<name>.md` files with an
+index in `MEMORY.md` — and injects that index itself. `SessionStart` now writes bantamkit's
+**project** fact descriptions into it, one way, only when a name is absent.
+
+**Finding the directory, and NOT computing it.** The adapter used to answer "does the host
+have a store for this cwd" with `cwd.replace(/[\\/:]/g,'-')` under `~/.claude/projects`.
+Measured against the host binary (`2.1.278`), that rule is wrong three ways: the real slug has
+a 200-character cap with a base36 hash suffix, there are four higher-precedence branches in
+front of it, and its key is the canonicalized **git worktree root**, not the cwd. So the
+adapter stopped computing it. It resolves, first answer wins:
+
+| # | branch | accepted when |
+|---|---|---|
+| 1 | `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` from the environment | non-empty — no verification; it is the host's own top-precedence branch |
+| 2 | `autoMemoryDirectory` from `<home>/.claude/settings.json` | `<dir>/MEMORY.md` is a readable file |
+| 3 | `dirname(transcript_path)/memory`, from the hook payload | `<dir>/MEMORY.md` is a readable file |
+| 4 | — | nothing: **export nothing**, no `mkdir`, no fallback slug |
+
+Branches 2 and 3 are candidates rather than answers because three sources above
+`userSettings` in the host's precedence (`policySettings`, `flagSettings`, and the env var)
+are ones bantamkit cannot read. Branch 3 is why this is a hook feature and not a server one:
+only a hook is handed `transcript_path`. The `SessionStart` log record carries `nativeBranch`,
+`nativeTried` and `nativeDir`, so "bantamkit exported nothing" is never indistinguishable
+from "bantamkit did not look".
+
+**bantamkit does NOT write `autoMemoryDirectory`.** In the host's precedence `userSettings` is
+the *last* branch, so a value written there is silently overridden by three things the adapter
+cannot see — and it would relocate the operator's whole store to a path bantamkit chose.
+
+**The write contract.** One way and non-destructive: a name is written only when it is
+**absent**, an entry bantamkit did not just create is never rewritten, and nothing is ever
+deleted. The fact file and the `MEMORY.md` line are gated independently, because the host's
+own memory pass rewords and removes foreign entries — job59 measured 8 of 8 index lines
+reworded or removed and one file deleted — so the two halves really do go missing separately.
+bantamkit never reads its own writes back as state: a removed entry is re-exported next
+session, a reworded one is left alone, and "have we exported X" is a question only bantamkit's
+own store may answer.
+
+**What a written file is.** The host's own shape — `name`, `description`, `metadata.node_type`,
+`metadata.type`, plus `metadata.source: bantamkit` as provenance — and a body that says where
+the real body is. Descriptions are exported, not bodies: the description is what the host
+injects, and copying fact bodies into a store bantamkit does not own would duplicate the
+user's data into a directory that prunes itself.
+
+**The index line** is `- [<name>](<name>.md) — <description>`, appended at the end of
+`MEMORY.md` under a `## bantamkit` heading written once. Nothing already in the file is
+touched, entries are not sorted into the host's own sections, and `MEMORY.md` is never created
+— when it is absent (reachable only through branch 1) the files are written and no index is
+conjured into existence.
+
+**Budgets, per hook run:** at most 10 names, and at most 2000 bytes appended to `MEMORY.md`.
+The byte budget is on the index because those are the only bytes the host injects. Facts leave
+in `SESSION_DROP_RULE` order, so a store larger than one run exports its most durable and most
+recently used facts first and the rest on later sessions. The log record carries
+`nativeExported`, `nativeFiles`, `nativeIndexLines`, `nativeBytes`, `nativeIndexBytes`,
+`nativeSkipped`, `nativeIndex` and — on a failed write — `nativeError`.
+
+**Only the project layer is exported.** The native directory is keyed on the host's project
+root, so a cross-project profile fact placed in it would be copied into every project's store;
+and the profile index is injected on every session anyway.
 
 ## Seeding the profile layer
 

@@ -324,10 +324,326 @@ function writeLedger(run: HookRun, sessionId: string | undefined, ledger: Ledger
   fs.writeFileSync(ledgerPath(run, sessionId), JSON.stringify(ledger));
 }
 
-/** `~/.claude/projects/<slug>/memory/MEMORY.md` — the host's own auto-memory for this cwd. */
-function nativeMemoryExists(run: HookRun, cwd: string): boolean {
-  const slug = cwd.replace(/[\\/:]/g, '-');
-  return fs.existsSync(path.join(run.home, '.claude', 'projects', slug, 'memory', 'MEMORY.md'));
+// ------------------------------------- the host's auto-memory directory, and A's export
+//
+// WHAT THIS REPLACED, AND WHY IT HAD TO GO (2026-09-20, job62 / J62-6). Until this change the
+// question "does the host have an auto-memory store here" was answered by
+//
+//     const slug = cwd.replace(/[\\/:]/g, '-');
+//     fs.existsSync(path.join(run.home, '.claude', 'projects', slug, 'memory', 'MEMORY.md'))
+//
+// — an incomplete reimplementation of Claude Code's own slug, on the hook path. S0
+// (`.shiftwork/notes-job62/S0-prep-probe.md`) dumped the real resolver out of `2.1.278`:
+//
+//     resolveEntry() = CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+//                   ?? autoMemoryDirectory from policySettings, flagSettings,
+//                      [localSettings, projectSettings], userSettings   (in that order)
+//                   ?? defaultPath()
+//     defaultPath()  = join(<root>, "projects", ok(gitRoot(projectRoot) ?? projectRoot), "memory")
+//     ok(e)          = k(e).length <= 200 ? k(e) : k(e).slice(0,200) + "-" + base36(hash(e))
+//
+// Three things the old rule is missing, and each one is a wrong answer on a real machine: the
+// 200-character cap with its base36 hash suffix; the four-branch precedence in front of
+// `defaultPath` at all; and — the one that matters most here — the KEY, which is the
+// canonicalized git WORKTREE ROOT and not the session cwd. Job62 itself runs inside a
+// worktree, which is precisely the case the old rule gets wrong.
+//
+// The fix is not a better slug. RULING Q1.2/Q1.6 of `.shiftwork/notes-job62/S1-delivery-path.md`
+// forbids reimplementing `oS`/`ok`/`Gr` at all, because re-deriving a four-branch resolver from
+// a minified binary is the exact instruction/surface drift job60 built its gate to stop. A
+// learns the directory by OBSERVATION WITH VERIFICATION instead, and when no branch answers it
+// exports nothing rather than guessing (RULING Q1.3): a directory at a slug the host does not
+// resolve to is a store nobody reads and nobody prunes.
+//
+// `native_store_root()` in `runtime-py/src/bantamkit/memory/divergence.py` is a DIFFERENT
+// function, off the MCP path, and RULING Q1.6 leaves it exactly where it is.
+
+/** The file whose presence makes a candidate directory an ANSWER rather than a guess. */
+const NATIVE_INDEX = 'MEMORY.md';
+/** The host's top-precedence branch, and the one on the MCP passthrough allowlist. */
+const NATIVE_OVERRIDE_ENV = 'CLAUDE_COWORK_MEMORY_PATH_OVERRIDE';
+/**
+ * The one heading in the host's index that A writes under.
+ *
+ * A owns this line and nothing else in the file. It does NOT sort its entries into the host's
+ * own sections, because the host's taxonomy is the host's to change and a writer that guesses
+ * at it has to keep guessing right forever. One heading, appended once, at the end.
+ */
+const NATIVE_SECTION = '## bantamkit';
+/** Names exported per hook run. The binding bound in practice; see `exportToNative`. */
+const NATIVE_EXPORT_MAX = 10;
+/**
+ * Bytes A may append to `MEMORY.md` per hook run.
+ *
+ * This is the budget that means anything, because these are the only bytes the export puts in
+ * front of the model: the host injects its index, and reads a fact file only when something
+ * asks for it. 2000 B is two thirds of `SESSION_INJECT_MAX`, paid at most once per session and
+ * — unlike an injection — never paid again for a name already there.
+ */
+const NATIVE_INDEX_BYTES_MAX = 2000;
+/**
+ * A fact name A is willing to join into a path.
+ *
+ * `MemoryStore.save` enforces `^[a-z0-9][a-z0-9-]*$`, but `facts()` does NOT revalidate on
+ * READ — measured 2026-09-20: a hand-written `facts/*.md` whose frontmatter says
+ * `name: ../escape` parses and is handed out with that name. So this guard is reachable from
+ * disk, and `nativeexport.test.mjs` drives it with exactly that file.
+ */
+const NATIVE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** The host's own auto-memory directory, and which branch named it. */
+interface NativeMemory {
+  /** The directory, or `null` when no branch answered. */
+  dir: string | null;
+  branch: 'env' | 'settings' | 'transcript' | 'unknown';
+  /** The branches tried and REJECTED, in order — the one line RULING Q1.3 asks for. */
+  tried: string[];
+}
+
+/** `p` is a regular file this process can read. Not "exists": a directory is not an index. */
+function readableFile(p: string): boolean {
+  try {
+    if (!fs.statSync(p).isFile()) return false;
+    fs.accessSync(p, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `os.path.lexists`: something is AT this path, symlink or not.
+ *
+ * `existsSync` follows links, so a dangling symlink would read as absent and A would write
+ * THROUGH it into whatever it points at. A dangling link is an entry A did not create, and
+ * "absent" is the only condition under which A writes.
+ */
+function lexists(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * RULING Q1.2 — the four branches, first one that ANSWERS wins.
+ *
+ *   1. `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`, non-empty → that value IS the directory, with no
+ *      verification: it is the host's own top-precedence branch, so there is nothing above it
+ *      that could overrule what A sees.
+ *   2. `autoMemoryDirectory` from `<home>/.claude/settings.json` ONLY. A CANDIDATE, never an
+ *      answer: three higher-precedence sources exist in the host (`policySettings`,
+ *      `flagSettings`, and the env var) that A cannot read, so the candidate is accepted only
+ *      when it holds a readable `MEMORY.md`.
+ *   3. `dirname(transcript_path)/memory`, with the same `MEMORY.md` test. This is reading back
+ *      the slug the HOST computed, which is the whole distinction invariant 5 is about.
+ *   4. UNKNOWN. No fallback slug, no mkdir.
+ *
+ * Branch 3 is why A is a rider on B and not a feature of its own (RULING Q1.4): only a hook
+ * receives `transcript_path`.
+ */
+function resolveNativeMemory(run: HookRun, input: HookInput): NativeMemory {
+  const tried: string[] = [];
+
+  const override = String(process.env[NATIVE_OVERRIDE_ENV] ?? '').trim();
+  if (override) return { dir: override, branch: 'env', tried };
+  tried.push('env');
+
+  try {
+    const raw = fs.readFileSync(path.join(run.home, '.claude', 'settings.json'), 'utf8');
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+    const configured = settings['autoMemoryDirectory'];
+    if (typeof configured === 'string' && configured.trim()) {
+      const dir = configured.trim();
+      if (readableFile(path.join(dir, NATIVE_INDEX))) return { dir, branch: 'settings', tried };
+    }
+  } catch {
+    /* no settings file, unreadable, or not JSON — all of them mean "this branch has no answer" */
+  }
+  tried.push('settings');
+
+  const transcript = String(input.transcript_path ?? '').trim();
+  if (transcript) {
+    const dir = path.join(path.dirname(transcript), 'memory');
+    if (readableFile(path.join(dir, NATIVE_INDEX))) return { dir, branch: 'transcript', tried };
+  }
+  tried.push('transcript');
+
+  return { dir: null, branch: 'unknown', tried };
+}
+
+/** What one export run did, in numbers the operator can rerun the arm against. */
+interface NativeExport {
+  /** Names for which SOMETHING was written this run. */
+  exported: number;
+  files: number;
+  indexLines: number;
+  bytes: number;
+  indexBytes: number;
+  skipped: string[];
+  /** Whether the host's index was there to append to. A never creates it. */
+  index: 'present' | 'absent';
+  error?: string;
+}
+
+/**
+ * Whitespace collapsed to single spaces, then trimmed.
+ *
+ * THE CLASS IS SPELLED OUT rather than `\s`, and the Python half must spell it the same way:
+ * `\s` is not the same set in the two languages (JavaScript's includes NBSP, BOM and the
+ * Unicode separators; Python's `str` pattern includes its own list), so a description carrying
+ * one of those characters would be exported differently by the two runtimes — a divergence
+ * invented by a helper nobody would think to compare.
+ */
+function collapseWhitespace(text: string): string {
+  return String(text)
+    .replace(/[ \t\n\r\f\u000b]+/g, ' ')
+    .trim();
+}
+
+/**
+ * One exported file, in the host's own auto-memory shape: `name`, `description`,
+ * `metadata.type`, and a body.
+ *
+ * THE BODY IS NOT THE FACT'S BODY, and the unit is titled for it: A exports DESCRIPTIONS. The
+ * file is an entry that names where the body lives, for two reasons. The description is what
+ * the host injects; and copying a user's fact bodies into a store whose dream rewords and
+ * deletes them would be duplicating the user's data into a place bantamkit does not own.
+ *
+ * `metadata.source: bantamkit` is provenance, so an operator reading this directory can see at
+ * a glance which entries are exports. Nothing reads it back — RULING Q1.5 forbids A treating
+ * its own writes as state, and the test that deletes both halves and re-runs pins that.
+ *
+ * The description is a JSON string, which is a valid YAML 1.2 double-quoted scalar, so the
+ * escaping needs no YAML writer on either side. `json.dumps(desc, ensure_ascii=False)` agrees
+ * with `JSON.stringify` byte for byte on this input.
+ */
+function nativeFactText(name: string, type: string, description: string): string {
+  return [
+    '---',
+    `name: ${name}`,
+    `description: ${JSON.stringify(description)}`,
+    'metadata:',
+    '  node_type: memory',
+    `  type: ${type}`,
+    '  source: bantamkit',
+    '---',
+    '',
+    "Exported from bantamkit's project memory store. The body of this fact is not here: call",
+    `\`mcp__bantamkit__memory_recall\` with the name \`${name}\` to read it.`,
+    '',
+    'Written once, only because the name was absent from this directory. bantamkit never',
+    'rewrites and never deletes an entry here, so whatever the host does to this file stands.',
+    '',
+  ].join('\n');
+}
+
+/** One index line, in the host's own index shape. The em dash is a raw U+2014. */
+function nativeIndexLine(name: string, description: string): string {
+  return `- [${name}](${name}.md) — ${description}\n`;
+}
+
+/**
+ * A — the export, one way and non-destructive (RULING Q1.5).
+ *
+ * WRITE A NAME ONLY WHEN IT IS ABSENT. The two halves are gated INDEPENDENTLY: the fact file
+ * is written when nothing is at its path, the index line is appended when `](<name>.md)` does
+ * not appear in the index. They are independent because job59 measured Claude Code's own dream
+ * rewording or removing 8 of 8 foreign index lines and deleting one file, so the two halves
+ * really do go missing separately, and A must do exactly the one thing that is missing.
+ *
+ * A NEVER READS BACK ITS OWN WRITES AS STATE. The presence check above is not "did we export
+ * this" — it is "is this name in the host's directory right now", which is the write-when-absent
+ * predicate itself. When the dream removes an entry, A puts it back next session; when the
+ * dream REWORDS one, A leaves it alone, because the name is still there. Any later unit that
+ * wants "have we exported X" must answer it from bantamkit's own store.
+ *
+ * A NEVER CREATES ANYTHING THE HOST WOULD NOT HAVE. No `mkdir`, and no `MEMORY.md`: when the
+ * index is absent (reachable only through branch 1, which accepts its directory unverified)
+ * the files are written and no index is conjured into existence.
+ *
+ * ORDER IS `SESSION_DROP_RULE`, the same order the session block keeps facts in, so a store
+ * larger than one run's budget exports its most durable and most recently used facts first and
+ * the rest on later sessions. A failed write is caught, recorded and ends the run: an arm whose
+ * whole posture is exit 0 does not get to throw, and retrying every remaining name against a
+ * directory that just refused one is spending syscalls to learn the same thing again.
+ */
+function exportToNative(dir: string, store: string): NativeExport {
+  const result: NativeExport = {
+    exported: 0,
+    files: 0,
+    indexLines: 0,
+    bytes: 0,
+    indexBytes: 0,
+    skipped: [],
+    index: 'absent',
+  };
+  const indexFile = path.join(dir, NATIVE_INDEX);
+  let seeded = '';
+  if (readableFile(indexFile)) {
+    try {
+      seeded = fs.readFileSync(indexFile, 'utf8');
+      result.index = 'present';
+    } catch {
+      /* readable a moment ago, not now: treat it as absent rather than as empty */
+    }
+  }
+  let named = seeded;
+  const appended: string[] = [];
+  try {
+    const { facts, indexLine } = new MemoryStore(store).internals();
+    const ranked = rankBySessionDropRule(
+      facts().map((fact, position) => ({
+        fact,
+        position,
+        line: indexLine(fact),
+        name: pyText(fact.name),
+      })),
+    );
+    for (const f of ranked) {
+      if (result.exported >= NATIVE_EXPORT_MAX) break;
+      const name = f.name;
+      if (!NATIVE_NAME_RE.test(name) || name === 'MEMORY') {
+        result.skipped.push(name);
+        continue;
+      }
+      const file = path.join(dir, `${name}.md`);
+      const needFile = !lexists(file);
+      const needLine = result.index === 'present' && !named.includes(`](${name}.md)`);
+      if (!needFile && !needLine) continue;
+      const description = collapseWhitespace(f.fact.description == null ? '' : pyText(f.fact.description));
+      const line = needLine ? nativeIndexLine(name, description) : '';
+      if (result.indexBytes + Buffer.byteLength(line) > NATIVE_INDEX_BYTES_MAX) break;
+      if (needFile) {
+        const text = nativeFactText(name, pyText(f.fact.type), description);
+        fs.writeFileSync(file, text, { flag: 'wx' });
+        result.files += 1;
+        result.bytes += Buffer.byteLength(text);
+      }
+      if (needLine) {
+        appended.push(line);
+        named += line;
+        result.indexLines += 1;
+        result.indexBytes += Buffer.byteLength(line);
+        result.bytes += Buffer.byteLength(line);
+      }
+      result.exported += 1;
+    }
+    if (appended.length) {
+      // The heading is emitted only when the file does not already carry it as a whole LINE,
+      // so a second session appends under the first session's heading. If the host later moves
+      // that heading, A's later lines land at the end of the file rather than under it — a
+      // cosmetic limit, accepted, because the alternative is A rewriting the host's index.
+      const separator = seeded.endsWith('\n') ? '' : '\n';
+      const heading = seeded.split('\n').includes(NATIVE_SECTION) ? '' : `\n${NATIVE_SECTION}\n\n`;
+      fs.appendFileSync(indexFile, `${separator}${heading}${appended.join('')}`);
+    }
+  } catch (e) {
+    result.error = message(e);
+  }
+  return result;
 }
 
 // The rule a capped session block keeps facts by, in the words the block, the log and
@@ -376,6 +692,25 @@ interface CappedIndex {
  * `header(count)` is handed `"15 of 20"` when something was dropped and `"20"` when not, so
  * a reader who sees a bare number knows the block is whole.
  */
+/**
+ * `SESSION_DROP_RULE` as a sort, extracted 2026-09-20 (J62-6) so that the session block and
+ * A's export cannot come to disagree about which facts matter most.
+ *
+ * It was inline in `cappedIndex` and had exactly one caller; the export is the second, and a
+ * second copy of a four-key comparator is how "the same rule" stops being the same rule.
+ */
+function rankBySessionDropRule(all: readonly IndexedFact[]): IndexedFact[] {
+  const text = (value: unknown): string => (value == null ? '' : pyText(value));
+  const decays = (f: IndexedFact): number =>
+    DURABLE_TYPES.some((durable) => pyEqualValue(f.fact.type, durable)) ? 0 : 1;
+  const evidence = (f: IndexedFact): string => text(f.fact.last_recalled) || text(f.fact.created);
+  const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+  return [...all].sort(
+    (a, b) =>
+      decays(a) - decays(b) || cmp(evidence(b), evidence(a)) || cmp(a.name, b.name) || a.position - b.position,
+  );
+}
+
 function cappedIndex(root: string, header: (count: string) => string, max: number): CappedIndex {
   const { facts, indexLine } = new MemoryStore(root).internals();
   const all: IndexedFact[] = facts().map((fact, position) => ({
@@ -384,15 +719,7 @@ function cappedIndex(root: string, header: (count: string) => string, max: numbe
     line: indexLine(fact),
     name: pyText(fact.name),
   }));
-  const text = (value: unknown): string => (value == null ? '' : pyText(value));
-  const decays = (f: IndexedFact): number =>
-    DURABLE_TYPES.some((durable) => pyEqualValue(f.fact.type, durable)) ? 0 : 1;
-  const evidence = (f: IndexedFact): string => text(f.fact.last_recalled) || text(f.fact.created);
-  const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-  const ranked = [...all].sort(
-    (a, b) =>
-      decays(a) - decays(b) || cmp(evidence(b), evidence(a)) || cmp(a.name, b.name) || a.position - b.position,
-  );
+  const ranked = rankBySessionDropRule(all);
   const kept = new Set<IndexedFact>();
   let size = 0;
   for (const f of ranked) {
@@ -615,19 +942,33 @@ function sessionStart(run: HookRun, input: HookInput): void {
     );
     parts.push(profile.block);
   }
-  // A project store that is NOT the profile dir and has no native MEMORY.md beside it:
-  // inject its index too, otherwise the host already carries an index for this cwd.
+  // WHERE THE HOST'S OWN AUTO-MEMORY DIRECTORY IS, resolved ONCE per session and used twice:
+  // it decides whether the project index has to be injected at all, and it is where A exports.
+  // SessionStart is the event because it is the one that already had to answer this question,
+  // it is paid once per session, and `transcript_path` — branch 3, the only branch that works
+  // on a machine the operator has not configured — arrives on it.
+  const native = resolveNativeMemory(run, input);
+  //
+  // A project store that is NOT the profile dir, and one of two things:
+  //   - the host has no auto-memory store we can find → inject the index, as before;
+  //   - the host HAS one → export into it instead. Injecting as well would pay twice for the
+  //     same facts, which is the cost the old `nativeMemoryExists` branch existed to avoid.
+  // ONLY THE PROJECT LAYER IS EXPORTED. The native directory is keyed on the host's project
+  // root, so a cross-project profile fact placed in it would be copied into every project's
+  // store — and the profile index is injected above on every session anyway, so exporting it
+  // buys nothing and costs the collision job50/J50-2A already paid for once.
   let project: CappedIndex | null = null;
+  let exported: NativeExport | null = null;
   try {
     const store = discoverProjectStore(cwd);
-    if (
-      path.resolve(store) !== path.resolve(run.profile) &&
-      countFacts(store) > 0 &&
-      !nativeMemoryExists(run, cwd)
-    ) {
-      project = cappedIndex(store, (count) => `[bantamkit project memory — ${count} facts]`, SESSION_INJECT_MAX);
-      project.facts = countFacts(store);
-      parts.push(project.block);
+    if (path.resolve(store) !== path.resolve(run.profile) && countFacts(store) > 0) {
+      if (native.dir === null) {
+        project = cappedIndex(store, (count) => `[bantamkit project memory — ${count} facts]`, SESSION_INJECT_MAX);
+        project.facts = countFacts(store);
+        parts.push(project.block);
+      } else {
+        exported = exportToNative(native.dir, store);
+      }
     }
   } catch (e) {
     log(run, { event: 'SessionStart', warn: message(e) });
@@ -671,6 +1012,25 @@ function sessionStart(run: HookRun, input: HookInput): void {
       ? { projectFacts: project.facts, projectInjected: project.injected, projectDropped: project.dropped }
       : {}),
     dropRule: SESSION_DROP_RULE,
+    // A — the host's auto-memory directory. `nativeBranch` / `nativeTried` are the one line
+    // RULING Q1.3 asks for when nothing answered: they say WHICH branches were tried, so
+    // "bantamkit exported nothing" is never indistinguishable from "bantamkit did not look".
+    // The export trio appears only when an export actually ran.
+    nativeBranch: native.branch,
+    nativeTried: native.tried,
+    nativeDir: native.dir,
+    ...(exported
+      ? {
+          nativeExported: exported.exported,
+          nativeFiles: exported.files,
+          nativeIndexLines: exported.indexLines,
+          nativeBytes: exported.bytes,
+          nativeIndexBytes: exported.indexBytes,
+          nativeSkipped: exported.skipped,
+          nativeIndex: exported.index,
+          ...(exported.error ? { nativeError: exported.error } : {}),
+        }
+      : {}),
     storeScope: run.storeScope,
     // The stale-install signal, in three fields so the claim "it fired / it stayed quiet / it
     // asked the registry" is a number the operator can rerun rather than a sentence. `state` is
