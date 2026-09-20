@@ -585,11 +585,17 @@ function runTool(
       log.record('validate_json', error === null ? 'valid' : 'invalid');
       return { value: notedDict({ t: 'dict', v: out }), wrapped: false };
     }
-    case 'shiftwork_clock_in':
+    case 'shiftwork_clock_in': {
+      // J60: optional `unit_id`. Read the way `bantamkit_read` reads its optional `part` —
+      // a value that is not a string is the DEFAULT, which is the cursor unit, so a host
+      // sending `null` gets exactly the call it got before the field existed.
+      const unitArg = args.get('unit_id');
+      const unit = unitArg !== undefined && unitArg.t === 'str' ? unitArg.v : null;
       return {
-        value: notedDict(recordResult(log, name, () => shiftwork.clockIn(asText(args.get('checkpoint'))))),
+        value: notedDict(recordResult(log, name, () => shiftwork.clockIn(asText(args.get('checkpoint')), unit))),
         wrapped: false,
       };
+    }
     case 'shiftwork_clock_out':
       return {
         value: notedDict(
