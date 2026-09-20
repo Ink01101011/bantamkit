@@ -1,5 +1,6 @@
 """Shift-work: the checkpoint schema asset, its loader, the driver loop, the MCP-flavor ops."""
 
+import ast
 import copy
 import hashlib
 import json
@@ -1676,6 +1677,14 @@ def test_clock_out_accepts_a_briefed_non_cursor_unit(tmp_path, example):
     line = read_log(path)[-1]
     assert line["unit"] == "N2" and line["status"] == "done" and line["briefed"] is True
 
+    # And the brief is CONSUMED. `briefed` means "briefed since this unit's own last
+    # clock-out", so the clock-out above spent it: a SECOND clock-out of N2 has no brief
+    # left to stand on and meets the same sentence, unreworded. Without this half the
+    # gate is an open door — one brief would license a unit to report forever.
+    written = len(read_log(path))
+    assert out(path, "N2") == {"result": "error", "reason": "unit N2 is not the cursor unit N1"}
+    assert len(read_log(path)) == written  # the refusal wrote nothing beside it
+
 
 def test_clock_out_of_a_unit_never_briefed_keeps_its_existing_refusal(tmp_path, example):
     """D2 widened the MEANING and not the WORDING — every ruled case on this sentence
@@ -1734,11 +1743,13 @@ def test_clock_in_with_a_unit_id_refuses_before_it_reads_the_graph(tmp_path, exa
     assert bad["result"] == "error" and "not parseable as JSON" in bad["reason"]
 
 
-def test_the_module_walks_depends_on_in_exactly_one_place(tmp_path, example):
-    """The bug was two answers about one document, so the fix is one loop with three
-    callers. Measured on the ANSWERS, not by reading the source: `clock_in`'s refusal
-    quotes the batch `plan_batches` publishes, and the cursor `clock_out` writes is that
-    batch's first id — on a checkpoint where plan order would say something else.
+def test_the_three_callers_give_one_answer_about_one_document(tmp_path, example):
+    """The bug was two answers about one document. Measured on the ANSWERS: `clock_in`'s
+    refusal quotes the batch `plan_batches` publishes, and the cursor `clock_out` writes
+    is that batch's first id — on a checkpoint where plan order would say something else.
+
+    This is the half a second loop can PASS, which is why the source-level test below
+    exists beside it: two loops that agree today agree here too.
     """
     ckpt = graph_checkpoint(example, [("A", []), ("C", ["B"]), ("B", [])], "A")
     path = write_checkpoint(tmp_path, ckpt)
@@ -1746,6 +1757,82 @@ def test_the_module_walks_depends_on_in_exactly_one_place(tmp_path, example):
     ready = ops.plan_batches(str(path))["ready"]
     assert ops.clock_in(str(path), "C")["reason"].endswith(f"ready is {', '.join(ready)}")
     assert json.loads(path.read_text(encoding="utf-8"))["plan"]["cursor"] == ready[0]
+
+
+def code_mentions(node, name):
+    """How many times `name` is EXECUTED under `node` — prose does not count.
+
+    A docstring naming `depends_on` is documentation, not a walk over it, so every
+    string that stands alone as a statement is dropped before counting. What remains is
+    a dict key, a subscript, an attribute, a parameter — a use.
+    """
+    prose = {
+        id(n.value)
+        for n in ast.walk(node)
+        if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+    }
+    hits = 0
+    for n in ast.walk(node):
+        if id(n) in prose:
+            continue
+        if isinstance(n, ast.Constant) and n.value == name:
+            hits += 1
+        elif isinstance(n, (ast.Name, ast.Attribute, ast.arg)) and name in (
+            getattr(n, "id", None),
+            getattr(n, "attr", None),
+            getattr(n, "arg", None),
+        ):
+            hits += 1
+    return hits
+
+
+def depends_on_owners(source):
+    """{top-level def that executes `depends_on`: how many times}, parsed from SOURCE."""
+    tree = ast.parse(source)
+    owners = {}
+    for top in tree.body:
+        hits = code_mentions(top, "depends_on")
+        if hits:
+            owners[getattr(top, "name", "<module>")] = hits
+    return owners
+
+
+def test_the_module_walks_depends_on_in_exactly_one_place():
+    """The claim in the name, measured where it lives: the SOURCE of `bantamkit.
+    shiftwork`. The answer-level test above cannot fail on a second loop that happens to
+    agree — and "two loops that agree today are the next divergence" is the whole reason
+    job60 merged them — so this one reads the module and counts.
+
+    Two counts, because one walk over `depends_on` is only half of it: the graph logic
+    itself is Layer 1's, so the module must also enter the planner exactly once. The
+    import form is pinned too — `from bantamkit.workplan import plan` would put a second
+    door in the wall that `workplan.plan` is counted through.
+    """
+    source = Path(ops.__file__).read_text(encoding="utf-8")
+    assert set(depends_on_owners(source)) == {"_batch_view"}
+
+    tree = ast.parse(source)
+
+    def planner_calls(node):
+        return [
+            n
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "plan"
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "workplan"
+        ]
+
+    assert len(planner_calls(tree)) == 1
+    assert {getattr(top, "name", "<module>") for top in tree.body if planner_calls(top)} == {
+        "_batch_view"
+    }
+    assert [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "bantamkit.workplan"
+    ] == []
 
 
 # --- MCP flavor: status -----------------------------------------------------
@@ -1950,14 +2037,17 @@ def test_codefix_example_validates(schema):
     assert schema_error(CODEFIX.read_text(encoding="utf-8"), schema) is None
 
 
-def test_codefix_example_shapes_the_job(schema):
+def test_codefix_example_shapes_the_job(tmp_path, schema):
     ckpt = json.loads(CODEFIX.read_text(encoding="utf-8"))
     units = ckpt["plan"]["units"]
     assert [u["id"] for u in units] == ["CF1", "CF2", "CF3", "CF4"]
     assert ckpt["plan"]["cursor"] == "CF1"
     # reproduce -> locate -> fix are implementer; the fix is gated by the reviewer unit.
     assert [u["role"] for u in units] == ["implementer", "implementer", "implementer", "reviewer"]
-    brief = ops.clock_in(str(CODEFIX))
+    # Briefed from a COPY, like every other template test here: `clock_in` appends a
+    # brief line beside the checkpoint it is handed, so calling it on the tracked
+    # template in place made `git status` dirty after every pytest run.
+    brief = ops.clock_in(str(write_checkpoint(tmp_path, ckpt)))
     assert brief["result"] == "brief" and brief["unit"]["id"] == "CF1"
 
 
