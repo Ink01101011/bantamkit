@@ -24,9 +24,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /**
  * The directory `p` names, as the KERNEL names it. `realpathSync.native`, not `realpathSync`.
@@ -60,7 +60,8 @@ const T0 = Date.now();
 const HOME = realDir(os.homedir());
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
-const DIST = path.join(REPO, 'runtime-ts', 'dist', 'memory');
+const RT_DIST = path.join(REPO, 'runtime-ts', 'dist');
+const DIST = path.join(RT_DIST, 'memory');
 const STATE = path.join(HOME, '.bantamkit', 'hooks');
 const LOG = path.join(STATE, 'hook-log.jsonl');
 const PROFILE = path.join(HOME, '.bantamkit', 'memory');
@@ -270,6 +271,167 @@ function countFacts(store) {
   try { return fs.readdirSync(path.join(store, 'facts')).filter((n) => n.endsWith('.md')).length; } catch { return 0; }
 }
 
+// ------------------------------------------------------- the stale-install signal
+// Reader 2 and Writer 1 of `docs/superpowers/specs/2026-09-19-stale-version-signal-design.md`.
+// One line at SessionStart when the install this hook can SEE is older than what the package
+// index serves, and a detached probe that keeps the record it reads from fresh.
+//
+// NOTHING ON THIS PATH REACHES THE NETWORK. The line is decided from one file on disk; the
+// only thing here that asks a registry anything is `update-probe.mjs`, which is spawned
+// `detached` with `stdio: 'ignore'` and never waited for. That is the whole design: measured
+// 2026-09-19, one registry GET is 0.14-0.46 s on a good network and 10.0 s on a captive one,
+// against a 0.09 s cold server boot, so a fetch anywhere on this function's path would be a
+// visible pause at the top of every session for a fact that is not urgent.
+
+/** The detached writer. Beside this file, so a checkout of the repo has both or neither. */
+const UPDATE_PROBE = path.join(HERE, 'update-probe.mjs');
+
+/**
+ * At most one probe per 24 h, decided from the `checked_at` of the record already in hand.
+ *
+ * THE TTL LIVES HERE AND NOWHERE ELSE. Neither runtime's reader has one, deliberately: the
+ * comparison is between the version that is RUNNING and the version the record last saw, so an
+ * old record cannot manufacture a false "you are stale" — if the operator updated since,
+ * running >= recorded and the line goes quiet by itself. Freshness is the writer's problem, and
+ * this is the writer's side of the fence.
+ */
+const UPDATE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The line's byte budget, the same mechanism `SESSION_INJECT_MAX` and `PROMPT_INJECT_MAX` are:
+ * nothing this file injects is unbounded. The sentence itself is 137 bytes plus two version
+ * numbers; the one component that is not fixed is the operator's home path inside `{path}`, so
+ * the cap is generous and exists to bound that, not to trim the sentence.
+ */
+const UPDATE_LINE_MAX = 500;
+
+/**
+ * THE SENTENCE. Only in the stale state, silent in the other four.
+ *
+ * It is NOT `updatecheck.UPDATE_AVAILABLE` and must not be made into it: that one is the status
+ * tool's, prefixed `update:` and naming no path, because a caller of `bantamkit_status` already
+ * knows which endpoint answered it. This hook does not — the host may talk to any registered
+ * endpoint, and this line names the install it ACTUALLY compared so the claim can be checked.
+ * Same reason `_install_source_condition` is the one condition allowed to name a path.
+ *
+ * `{program}` is `updatecheck.PROGRAM` — the COMMAND, `bantamkit-mcp`, never a package name:
+ * the PyPI distribution is `bantamkit` and the npm package is `bantamkit-mcp`, and the command
+ * is the one word that is true on both sides.
+ *
+ * "then reconnect the host" is measured reason 1 in `selfupdate.py:13-20`: a running server
+ * keeps serving the code it loaded at startup, so an updated install does nothing for THIS
+ * session.
+ */
+const UPDATE_LINE = '[bantamkit] {program} {installed} at {path} is running; the package index has {latest} — run `{program} --update`, then reconnect the host.';
+
+/** `{name}` substitution. A missing key is left alone rather than rendered `undefined`. */
+function fillLine(template, values) {
+  return template.replace(/\{([a-z]+)\}/g, (whole, name) => (name in values ? values[name] : whole));
+}
+
+/**
+ * `{updatecheck, npminstall}` from the built Node runtime, or `null` when it is not built.
+ *
+ * BOTH ARE IMPORTED RATHER THAN RESPELLED, and that is the point of loading them at all:
+ * `updatecheck` owns the record path, the record key this install's registry answers to, and
+ * the five-state decision, and `npminstall` owns `compareVersions` (which `decide` calls) and
+ * the kept install's paths. Writing any of those a second time here would be a second thing to
+ * keep in step with two runtimes. There is no comparator in this file.
+ */
+async function updateModules() {
+  try {
+    const [updatecheck, npminstall] = await Promise.all([
+      import(pathToFileURL(path.join(RT_DIST, 'updatecheck.js')).href),
+      import(pathToFileURL(path.join(RT_DIST, 'npminstall.js')).href),
+    ]);
+    if (typeof updatecheck.decide !== 'function' || typeof npminstall.keptManifest !== 'function') return null;
+    return { updatecheck, npminstall };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The kept install's `{path, version}`, or `null`.
+ *
+ * `<homedir>/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json` — the install `--install`
+ * makes and a host launches. It is the only install this hook can see; the endpoint the host
+ * actually talks to may be another one entirely, which is exactly why the line names this path
+ * instead of claiming to speak for all of them. No manifest means no line: a machine with no
+ * kept install has nothing here to be stale.
+ */
+function keptInstall(npminstall) {
+  const manifest = npminstall.keptManifest(npminstall.keptPrefix(HOME));
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    const version = parsed && typeof parsed.version === 'string' ? parsed.version.trim() : '';
+    return version === '' ? null : { path: manifest, version };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The line to inject (or `null`), and what was done about the record. Never throws.
+ *
+ * ORDER IS DELIBERATE: the record is read ONCE, the line is decided from it, and the probe
+ * decision is made from the SAME load. A second read would be a second answer.
+ */
+async function updateSignal() {
+  const loaded = await updateModules();
+  if (loaded === null) return { line: null, state: null, probe: 'unbuilt' };
+  const { updatecheck, npminstall } = loaded;
+
+  const file = updatecheck.recordPath(HOME);
+  const { source, record } = updatecheck.loadRecord(file);
+
+  let line = null;
+  let state = null;
+  const kept = keptInstall(npminstall);
+  if (kept) {
+    // `updatecheck.KEY` is `npm` in this runtime, which is the registry the kept install came
+    // from — so the key the reader picks is right by construction, not by a choice made here.
+    const status = updatecheck.decide(kept.version, source, record, updatecheck.KEY);
+    state = status.state;
+    if (state === updatecheck.STATE_AVAILABLE) {
+      const latest = record && record[updatecheck.KEY] ? String(record[updatecheck.KEY].latest) : '';
+      line = capBytes(fillLine(UPDATE_LINE, {
+        program: updatecheck.PROGRAM, installed: kept.version, path: kept.path, latest,
+      }), UPDATE_LINE_MAX);
+    }
+  }
+
+  return { line, state, probe: maybeProbe(record) };
+}
+
+/**
+ * Fork the probe and forget it, at most once per 24 h. Returns the word the log records.
+ *
+ * `detached: true` + `stdio: 'ignore'` + `.unref()` is the whole mechanism, and each third of
+ * it is load-bearing: `detached` puts the child in its own process group so the host reaping
+ * this hook does not reap it, `stdio: 'ignore'` means nothing it might ever print can reach the
+ * host's screen or hold a pipe open, and `unref()` releases the event loop so THIS process can
+ * exit while the child keeps running. Take any one away and SessionStart waits on a registry.
+ *
+ * A record that cannot say when it was written is treated as due, not as fresh — the same
+ * direction `updatecheck` takes it (an unparseable `checked_at` is not a record), and the safe
+ * one: the cost of an extra probe is a detached GET nobody waits for.
+ */
+function maybeProbe(record) {
+  const checkedAt = record && typeof record.checked_at === 'string' ? Date.parse(record.checked_at) : NaN;
+  if (Number.isFinite(checkedAt) && Date.now() - checkedAt < UPDATE_TTL_MS) return 'fresh';
+  if (!fs.existsSync(UPDATE_PROBE)) return 'missing';
+  try {
+    const child = spawn(process.execPath, [UPDATE_PROBE], { detached: true, stdio: 'ignore' });
+    child.unref();
+    return 'spawned';
+  } catch (e) {
+    // A spawn this hook cannot make is a log line, never a session that fails to start.
+    log({ event: 'SessionStart', warn: `update-probe: ${String(e.message || e)}` });
+    return 'failed';
+  }
+}
+
 // ---------------------------------------------------------------- SessionStart
 async function sessionStart(input) {
   const cwd = input.cwd || process.cwd();
@@ -293,6 +455,13 @@ async function sessionStart(input) {
     }
   } catch (e) { log({ event: 'SessionStart', warn: String(e.message || e) }); }
   parts.push('[bantamkit] Toolbox is live: mcp__bantamkit__memory_recall reads the body of any fact above; memory_save stores a durable lesson (feedback|user|project|reference — never something derivable from the repo). Repeat reads of an unchanged file are refused once by the filegraph hook; a save nudge fires once at session end when nothing was saved.');
+  // LAST, AND ONLY WHEN IT IS TRUE. The toolbox line above is constant boilerplate the agent
+  // sees every session; this one appears in one of five states and asks for an action, so it
+  // gets the strongest position in the block. Everything above it is unchanged when it is
+  // absent, which is the other four states and most sessions.
+  let update = { line: null, state: null, probe: 'error' };
+  try { update = await updateSignal(); } catch (e) { log({ event: 'SessionStart', warn: `update-signal: ${String(e.message || e)}` }); }
+  if (update.line) parts.push(update.line);
   const ctx = parts.join('\n\n');
   if (input.source === 'compact') {
     // context was just rebuilt: earlier reads are gone, so the read ledger must not refuse them
@@ -307,6 +476,11 @@ async function sessionStart(input) {
     profileFacts, profileInjected: profile.injected, profileDropped: profile.dropped,
     ...(project ? { projectFacts: project.facts, projectInjected: project.injected, projectDropped: project.dropped } : {}),
     dropRule: SESSION_DROP_RULE, storeScope: STORE_SCOPE,
+    // The stale-install signal, in three fields so the claim "it fired / it stayed quiet / it
+    // asked the registry" is a number the operator can rerun rather than a sentence. `state` is
+    // one of `updatecheck`'s five (or `null` when there is no kept install to compare);
+    // `probe` is `spawned` / `fresh` / `unbuilt` / `missing` / `failed` / `error`.
+    updateState: update.state, updateProbe: update.probe, updateBytes: Buffer.byteLength(update.line || ''),
   });
   emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } });
 }

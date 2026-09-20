@@ -46,6 +46,7 @@ sides, not by reading either.
 | `statusline` | `--statusline` as a process, over synthetic event logs ([statusline.md](statusline.md)) |
 | `store` | save/recall/index: the directory after the call, byte for byte |
 | `tokenledger` | AS-1(c)'s transcript ledger: what a session cost, read off the host's own transcripts. The whole `as_json()` document over a FROZEN corpus in git (`tools/ledger/fixtures/token-ledger/`) plus five corpora built into the harness scratch — the walk order as a sequence, the `requestId` dedupe across files, every omission subject, the four argument refusals with the class that raised each, the 2**53 ceiling, and the cost, whose default answer over the shipped price table is the REFUSAL. **It never reads `~/.claude/projects`**: the operator scripts under `tools/ledger/` do, and J46-1 measured two runs of one of them on one day disagreeing because the session in between added a call — a differential over a live corpus is a case that goes red for a reason nobody caused and is then "fixed" by weakening it. Six of its cases are NOT differential: the omission vocabulary, the committed corpus's headline counts and the shipped table's refusal are pinned as typed literals against each runtime separately, because a `requestId` dedupe deleted from BOTH sides leaves two runtimes agreeing perfectly on a wrong number |
+| `updatecheck` | the stale-install signal (J57): one record on disk, five states, two registry keys. 42 arms — 38 record shapes plus four PATH shapes (nothing there, a path under a regular file, a directory, a mode nobody may read) — each written ONCE and handed to both runtimes as the same absolute path, then answered by each under `pypi` AND under `npm`: the loader's outcome, the state, the parsed record and the whole sentence. Plus the five sentences byte for byte, the five rendered lines against hand-written literals, every arm's state against a hand-written table per side, that not one shape RAISES on either side, that a read creates NOTHING (the fixture directory afterwards, and a home a default-path read left as empty as it found it), and six writer arms over `selfupdate.record_update` / `recordUpdate` — what it wrote, what it refused to create, the temp file it did not leave behind, and the other registry's entry it left exactly as found. Three `ruling:` cases carry the one deliberate difference; `HOME` and `USERPROFILE` are redirected on both sides for every arm. Nothing is held out of the tables. **The UTF-8 BOM the first cut of this suite found is closed (J57-5b)**: a well-formed record carrying a BOM — what Windows PowerShell writes by default — was `unreadable` on the reference (`json.loads` refuses a BOM) and a live `available` on the port (`TextDecoder` strips it), and the fix was in the RUNTIME, toward both sides ACCEPTING it: the reference reads with `utf-8-sig`, the port is unchanged. It is deliberately NOT a ruling — nobody chose the difference, and there is none left. Four arms hold it: the same record at three running versions (`available` / `current` / `ahead`, identical to the same record without a BOM) and `unreadable/bom-not-json`, the control that says stripping a BOM does not make broken bytes readable. |
 | `validate` | the validator: every sentence a schema failure can produce |
 | `wire` | the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves — including a `retired` session over `repo_map` and `bantamkit_read`, refused by name on both sides with the event log on, now that job50 I5 (2026-09-12) retired them from the roster and removed the six sessions that used to exercise the reader over the wire (`read`, `read-ruled`, `read-edges`, `read-round2`, `read-round3`, `read-cache`); the reader's own parity stays gated at the library layer, `tools/conformance/suites/docread.mjs` |
 | `workplan` | the dependency planner: `plan()` over 21 real graphs — `{id, depends_on}` extracted ONCE from `plan.units` of every checkpoint in `.shiftwork/`, 228 units, and written into the suite as LITERAL DATA — plus a synthetic corpus of the edges (empty input, a single node, priority ties, an order in which insertion-order tie-breaking is observable) and the three refusals, each compared both as the whole answer and as the bare sentence; `shiftwork_plan` over the tracked template copied into scratch and over the four refusals a checkpoint can produce before the graph is reached, as `json.dumps` TEXT; and the `work_plan` TOOL over stdio on both servers, which is the only place a node with no `depends_on` can be compared at all — the reference defaults it in `workplan.plan` and the port in `planNodes`, so the core cannot carry that case and the schema's `required` keeps it out of `shiftwork_plan`. 86 of its cases are NOT differential: each graph's batch WIDTHS, each graph's FIRST BATCH and the corpus's own headline (21 graphs, 228 units, 126 batches) are pinned as typed numbers and typed id lists against each runtime separately, and they are teeth against two different mutations — measured 2026-09-19, reversing the order inside a batch reddens 35 cases and NO width case, while emitting one node per batch on BOTH sides at once reddens 52 literal cases and NOT ONE differential one. There is no `ruling:` case here, deliberately: nothing in the planner is supposed to differ |
@@ -453,6 +454,67 @@ spelling would claim a run nobody made. Since job54 the gate is
 <!-- provenance: value=All checks passed!; commit=bb9a246 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
 `.venv/bin/ruff check runtime-py tools` **All checks passed!** at `bb9a246` plus this
 commit's working tree. That is the command to run today; the narrow one above is a record.
+
+**AMENDED 2026-09-19 (J57-5) — the `updatecheck` suite landed, and `--all` is RED by one
+case on purpose.** Measured at `56772d8` plus this commit's working tree, each command run
+alone:
+
+<!-- provenance: value=8481 cases, 2394 byte-identical, 3432 exact-string, 2655 structural, 154 ruled-different, 1 failures; commit=56772d8 plus this commit's working tree; command=node tools/conformance/run.mjs --all -->
+<!-- provenance: value=2985 passed, 57 skipped, 2 deselected, 3 xfailed; commit=56772d8 plus this commit's working tree; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=All checks passed!; commit=56772d8 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
+<!-- provenance: value=1127 tests, 1080 pass, 0 fail, 47 skipped; commit=56772d8 plus this commit's working tree; command=cd runtime-ts && npm test -->
+<!-- provenance: value=15 pass, 0 fail; commit=56772d8 plus this commit's working tree; command=node --test 'tools/hooks/*.test.mjs' -->
+```
+FAIL: 8481 cases, 2394 byte-identical, 3432 exact-string, 2655 structural, 154 ruled-different, 1 failures
+```
+
+against a baseline, taken on the same tree before a line of the suite existed, of `PASS: 8322
+cases, 2373 byte-identical, 3427 exact-string, 2522 structural, 151 ruled-different, 0
+failures`. **+159 cases, +3 rulings, +1 failure, and every other suite byte-identical in its
+own line** — the delta is entirely the new suite. The one failure is the UTF-8-BOM arm
+described in the suite table above: a real disagreement between the two readers, found by
+writing the gate, not a regression in it. `.venv/bin/python -m pytest runtime-py/tests -q`
+**2985 passed, 57 skipped, 2 deselected, 3 xfailed**; `.venv/bin/ruff check runtime-py tools`
+**All checks passed!**; `cd runtime-ts && npm test` **1127 tests, 1080 pass, 0 fail, 47
+skipped**; `node --test 'tools/hooks/*.test.mjs'` **15 pass, 0 fail**. That line is
+SUPERSEDED by the J57-5b amendment below, which closed the failure; it is kept because it is
+the measurement that found the defect.
+
+**AMENDED AGAIN 2026-09-19 (J57-5b) — the BOM arm is closed IN THE RUNTIME and `--all` is
+green.** `updatecheck.py` now reads the record with `utf-8-sig`, so both sides ACCEPT a
+leading BOM (PowerShell writes one by default, and bantamkit must work on Windows);
+`updatecheck.ts` is unchanged, its `TextDecoder` having stripped the BOM all along. The
+held-out arm moved into the compared tables as three arms over the same BOM'd record at three
+running versions, plus `unreadable/bom-not-json` as the control — so the suite grew by 7
+cases and lost its failure. It is deliberately NOT a `ruling:`: nobody chose that difference
+and there is none left to assert (see [porting.md](porting.md)). Measured at `56772d8` plus
+this commit's working tree, each command run alone:
+
+<!-- provenance: value=8488 cases, 2394 byte-identical, 3432 exact-string, 2662 structural, 154 ruled-different, 0 failures; commit=56772d8 plus this commit's working tree; command=node tools/conformance/run.mjs --all -->
+<!-- provenance: value=2990 passed, 57 skipped, 2 deselected, 3 xfailed; commit=56772d8 plus this commit's working tree; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=All checks passed!; commit=56772d8 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
+<!-- provenance: value=1132 tests, 1085 pass, 0 fail, 47 skipped; commit=56772d8 plus this commit's working tree; command=cd runtime-ts && npm test -->
+<!-- provenance: value=15 pass, 0 fail; commit=56772d8 plus this commit's working tree; command=node --test 'tools/hooks/*.test.mjs' -->
+```
+PASS: 8488 cases, 2394 byte-identical, 3432 exact-string, 2662 structural, 154 ruled-different, 0 failures
+```
+
+**+7 cases, +0 rulings, -1 failure against the J57-5 line, and every other suite
+byte-identical in its own line.** THE NEW CASES ARE NOT VACUOUS, measured both ways on this
+tree: with `encoding="utf-8"` put back in `updatecheck.py` the same run printed `FAIL: … 9
+failures` (the three BOM arms under each key, plus the three summary tables that carry them),
+and with `ignoreBOM: true` put into `updatecheck.ts` the port's own
+`test/updatecheck.test.mjs` went **4 fail**. `.venv/bin/python -m pytest runtime-py/tests -q`
+**2990 passed, 57 skipped, 2 deselected, 3 xfailed**; `.venv/bin/ruff check runtime-py tools`
+**All checks passed!**; `cd runtime-ts && npm test` **1132 tests, 1085 pass, 0 fail, 47
+skipped**; `node --test 'tools/hooks/*.test.mjs'` **15 pass, 0 fail**.
+
+**And a measurement about this harness, taken by accident and worth keeping.** The first
+`--all` of this unit was run WHILE `pytest` was running, and `ref/validate_ref.py` — which
+finishes in well under a minute on an idle machine — was still going at ten minutes and was
+SIGKILLed by the reference timeout, ending the run. The bound did exactly what its comment
+says it does, and named the script. The lesson is for the operator, not the code: **run the
+gates one at a time**, or a starved reference child looks exactly like a hang.
 
 **The notes are part of the result, not decoration.** Several measurements this project
 depends on exist only there — the live index byte count, the corpus SHA on both sides, how

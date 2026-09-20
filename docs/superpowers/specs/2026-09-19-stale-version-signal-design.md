@@ -208,6 +208,17 @@ per CLAUDE.md:
 - **Teaching `--install` to wire the hook.** `hostinstall.ts` wires no hooks today (no
   `SessionStart`, no `hooks` in it), so Reader 2 and Writer 1 serve this machine and not
   somebody's `npx bantamkit-mcp`. Making the hook a shipped surface is its own job.
+
+  **Corrected J57-5, 2026-09-19: true but incomplete, and the missing half changes who
+  "this machine" means.** There IS a hook installer — `tools/hooks/install.mjs`, which
+  writes six entries into `~/.claude/settings.json`. It is not `hostinstall.ts` and it is
+  not on any shipped path: `runtime-ts` publishes `files: ["dist", "assets"]`, so nothing
+  under `tools/` reaches npm at all, and what that installer writes is an ABSOLUTE PATH into
+  THIS CHECKOUT. So the correct statement is narrower than "this machine" and wider than
+  "the author's laptop": Reader 2 and Writer 1 serve **anyone with a clone of this repo who
+  has run `node tools/hooks/install.mjs`**, and still nobody whose bantamkit came from
+  `npx bantamkit-mcp`. The scope call is unchanged — shipping the hook is its own job —
+  but the reason is that the hook is not PACKAGED, not that no installer exists.
 - Any `Condition`, any change to `degraded_notice`, `Degraded 🟠`, or the per-call cost.
 - A new severity tier below degraded.
 - MCP `notifications/message` as a push channel — **unmeasured**: it is not known whether

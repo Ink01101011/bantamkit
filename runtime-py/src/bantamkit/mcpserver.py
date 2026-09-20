@@ -30,6 +30,7 @@ from bantamkit import (
     shiftwork,
     skillaudit,
     tokenledger,
+    updatecheck,
     workplan,
 )
 from bantamkit.assets import AssetNotFound, assets_root, load_skill, load_tool_asset
@@ -965,6 +966,18 @@ def status_report(
         + ("unreadable" if size is None else str(size))
         + f" of {budget} bytes",
         f"event log: {'on' if log.enabled else 'off'}",
+        # THE UPDATE LINE IS NOT A CONDITION, and that is the ruling of 2026-09-19 rather
+        # than an omission. A newer version existing is not a fault: the server is serving
+        # correctly, and `degraded_notice`'s docstring above is the operator's own reason —
+        # a footer on every result is noise, and noise trains a reader to skip it. So this
+        # never flips line 1, never enters `degraded_conditions`, and never rides another
+        # tool's reply. It also means the record is opened ONLY here, when someone asked for
+        # a report, and not on the per-call path whose cost `docs/status.md` documents.
+        #
+        # `updatecheck` opens one file and asks nobody anything — AS-7(3) is intact, and
+        # `test_selfupdate.py::test_only_the_update_flag_reaches_this_module_from_the_server`
+        # still holds, because the name this reaches is `updatecheck` and not `selfupdate`.
+        updatecheck.update_line(str(identity["version"])),
     ]
     if conditions:
         lines.append(f"{_plural(len(conditions), 'problem')}:")

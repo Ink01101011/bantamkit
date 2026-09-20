@@ -2523,8 +2523,41 @@ export async function run(ctx) {
   // flag EXISTS on both sides and NOTHING about what it says. Twenty-five arms, one table,
   // driven on both runtimes through the seams described where `UPDATE_ARMS` is defined.
 
-  const updatePy = ctx.runPython(UPDATE_REF, { arms: UPDATE_ARMS, compare: UPDATE_COMPARE_PAIRS });
-  const updateNode = await nodeUpdateAnswers(ctx, UPDATE_ARMS, UPDATE_COMPARE_PAIRS);
+  // BOTH SIDES RUN WITH HOME AT A SCRATCH DIRECTORY. Since J57-3 a successful `--update`
+  // writes `<homedir>/.bantamkit/update-check.json` out of the answer it already fetched, and
+  // every arm below hands `update` a STUB index — so a run against the real HOME would write
+  // the developer's own record with a fixture's version number. The directory is left EMPTY
+  // (no `.bantamkit`), which is the one state in which the writer does nothing at all, so no
+  // arm's answer moves: `update()` never reads `homedir()` for anything else — `keptInstall`
+  // is `runUpdate`'s, and the dispatch arms below already carry their own per-side homes.
+  const updateHome = { py: join(ctx.scratch, 'update-home-py'), node: join(ctx.scratch, 'update-home-node') };
+  mkdirSync(updateHome.py, { recursive: true });
+  mkdirSync(updateHome.node, { recursive: true });
+  const updatePy = ctx.runPython(
+    UPDATE_REF,
+    { arms: UPDATE_ARMS, compare: UPDATE_COMPARE_PAIRS },
+    { HOME: updateHome.py, USERPROFILE: updateHome.py },
+  );
+  // The port is driven IN THIS PROCESS, so its HOME is swapped around the call and put back in
+  // a `finally` — a leaked HOME would follow every later `homedir()` in this runner.
+  const nodeHomeBefore = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = updateHome.node;
+  process.env.USERPROFILE = updateHome.node;
+  let updateNode;
+  try {
+    updateNode = await nodeUpdateAnswers(ctx, UPDATE_ARMS, UPDATE_COMPARE_PAIRS);
+  } finally {
+    for (const [key, value] of Object.entries(nodeHomeBefore)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  cases.push({
+    name: 'update/PINNED PER SIDE: a stubbed --update wrote no record into a home with no .bantamkit',
+    kind: 'json',
+    expected: { python: [], node: [] },
+    actual: { python: readdirSync(updateHome.py).sort(), node: readdirSync(updateHome.node).sort() },
+  });
 
   // ---- the sentences, side to side. ONE case for all seventeen: any drift on either side
   // reddens it, and it reddens naming the constant rather than naming an arm.
