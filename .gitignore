@@ -11,3 +11,4 @@ dist-*/
 .bantamkit/memory/
 .shiftwork/
 .release/
+.claude/

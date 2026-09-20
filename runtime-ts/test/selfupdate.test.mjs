@@ -55,9 +55,11 @@ import {
   latestFromIndexPayload,
   runUpdate,
   shlexJoin,
+  recordUpdate,
   update,
   upgradeCommand,
 } from '../dist/selfupdate.js';
+import { updateLine, updateStatus } from '../dist/updatecheck.js';
 import { INSTALL_SHAPES, currentInstall } from '../dist/mcp/identity.js';
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -137,6 +139,36 @@ function room() {
   const dir = mkdtempSync(join(tmpdir(), 'bk-update-'));
   rooms.push(dir);
   return dir;
+}
+
+/**
+ * EVERY NODE IN THIS FILE RUNS WITH HOME AT A SCRATCH DIRECTORY, and it is set once here
+ * rather than per node.
+ *
+ * `update` now writes `<homedir>/.bantamkit/update-check.json` out of the answer it already
+ * fetched, so a node that calls it with a stub `fetch` and the developer's real HOME would
+ * write the developer's real record — with a version number that came from a fixture. That is
+ * the defect this redirection exists to make impossible, and it is file-wide rather than
+ * per-node so a node added later gets it without knowing to ask. `withHome` below still saves
+ * and restores around its own arms, and now restores to THIS home rather than to a real one.
+ *
+ * The `.bantamkit` directory is made, because the writer refuses to create one and a home
+ * without it would make every write arm vacuously green; the arms that assert the refusal
+ * build their own bare home.
+ */
+const FILE_HOME = room();
+mkdirSync(join(FILE_HOME, '.bantamkit'), { recursive: true });
+process.env.HOME = FILE_HOME;
+process.env.USERPROFILE = FILE_HOME;
+assert.equal(homedir(), FILE_HOME, 'homedir() did not follow HOME; this file would write a real record');
+
+/** The record as it stands, parsed. */
+const readRecordFile = (home = FILE_HOME) =>
+  JSON.parse(readFileSync(join(home, '.bantamkit', 'update-check.json'), 'utf8'));
+
+/** No record at all, so each arm starts from the state it means to start from. */
+function clearRecord(home = FILE_HOME) {
+  rmSync(join(home, '.bantamkit', 'update-check.json'), { force: true, recursive: true });
 }
 
 // ============================================================ the answers that change nothing
@@ -980,3 +1012,194 @@ test('fetchIndex maps a real hang to IndexTimeout and a real refusal to a plain 
  * that erases its own evidence to stay green is one nobody can trust afterwards. Ordering
  * costs nothing and keeps `assert.deepEqual(seen, [])` meaning exactly what it says.
  */
+
+// ============================================================ the record this flag leaves behind
+//
+// `--update` is the only thing in this toolbox that may reach the network, and it is therefore
+// the only thing that can know what the registry holds. `bantamkit_status` prints a line from a
+// RECORD instead of asking anybody, so the number in that record has to come from here. Every
+// node below drives the flag through its existing `fetch` seam and then reads the file: no
+// second network call exists to be tested, which is the property. The port of
+// `runtime-py/tests/test_selfupdate.py`'s section of the same name.
+
+test('a successful fetch writes the record the status line reads, from ONE fetch', async () => {
+  clearRecord();
+  const fetch = stubFetch('0.31.0');
+
+  await update('0.30.0', REGISTRY, { fetch, installer: recordingInstaller(), environment: ENV });
+
+  assert.equal(fetch.calls.length, 1, JSON.stringify(fetch.calls));
+  assert.deepEqual(readRecordFile().npm, { package: PACKAGE, latest: '0.31.0' });
+});
+
+test('the record written here is the one updatecheck reads back', async () => {
+  clearRecord();
+  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV });
+
+  assert.equal(
+    updateLine('0.30.0'),
+    'update: bantamkit-mcp 0.30.0 is running; the package index has 0.31.0 — run ' +
+      '`bantamkit-mcp --update`, then reconnect the host.',
+  );
+  assert.equal(updateStatus('0.31.0').state, 'current');
+});
+
+test("the other runtime's key is left exactly as it was found", async () => {
+  writeFileSync(
+    join(FILE_HOME, '.bantamkit', 'update-check.json'),
+    JSON.stringify({
+      checked_at: '2020-01-01T00:00:00Z',
+      npm: { package: PACKAGE, latest: '0.29.0' },
+      pypi: { distribution: 'bantamkit', latest: '0.29.0' },
+      'a-key-nobody-here-owns': ['kept'],
+    }),
+    'utf8',
+  );
+
+  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV });
+
+  const written = readRecordFile();
+  // npm and PyPI are two registries that can disagree at one version number — job56 shipped a
+  // day where they did — so a Node `--update` that helpfully filled in `pypi` would be
+  // publishing a number it never asked for.
+  assert.deepEqual(written.pypi, { distribution: 'bantamkit', latest: '0.29.0' });
+  assert.deepEqual(written['a-key-nobody-here-owns'], ['kept']);
+  assert.equal(written.npm.latest, '0.31.0');
+  assert.notEqual(written.checked_at, '2020-01-01T00:00:00Z');
+});
+
+test('a machine with no .bantamkit directory is not given one', async () => {
+  // `<homedir>/.bantamkit` is made by an install. A flag that created it would also be a flag
+  // that could create one in the wrong place, and a `.bantamkit` under a cwd is a MEMORY STORE
+  // — the J54-3 defect class. The cwd is checked too, for the same reason.
+  const bare = room();
+  const workdir = room();
+  const previousCwd = process.cwd();
+  const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = bare;
+  process.env.USERPROFILE = bare;
+  process.chdir(workdir);
+  try {
+    const report = await update('0.30.0', REGISTRY, {
+      fetch: stubFetch('0.31.0'),
+      installer: recordingInstaller(),
+      environment: ENV,
+    });
+    assert.ok(report.startsWith('bantamkit-mcp 0.30.0 is installed; the package index has 0.31.0.'), report);
+    assert.ok(report.includes('updated bantamkit-mcp from 0.30.0 to 0.31.0.'), report);
+    assert.deepEqual(readdirSync(bare), []);
+    assert.deepEqual(readdirSync(workdir), []);
+  } finally {
+    process.chdir(previousCwd);
+    process.env.HOME = previousHome.HOME;
+    process.env.USERPROFILE = previousHome.USERPROFILE;
+  }
+});
+
+test('a write that cannot land does not turn a good update into a failure', async () => {
+  // The install already happened. A DIRECTORY is put where the record goes, which is a shape
+  // `renameSync` refuses on every platform.
+  clearRecord();
+  mkdirSync(join(FILE_HOME, '.bantamkit', 'update-check.json'), { recursive: true });
+  try {
+    const report = await update('0.30.0', REGISTRY, {
+      fetch: stubFetch('0.31.0'),
+      installer: recordingInstaller(),
+      environment: ENV,
+    });
+    assert.ok(report.includes('updated bantamkit-mcp from 0.30.0 to 0.31.0.'), report);
+    assert.equal(recordUpdate('0.31.0'), false);
+    assert.equal(updateLine('0.30.0'), 'update: the update record could not be read.');
+  } finally {
+    clearRecord();
+  }
+});
+
+test('a refused shape still records what the index said', async () => {
+  // The fetch succeeded, so the number is true — whatever the flag then decides to do. A
+  // checkout has no registry route and `--update` refuses it, but the operator is owed the
+  // number: `bantamkit_status` can now tell them they are five releases behind.
+  clearRecord();
+  await assert.rejects(
+    () =>
+      update('0.30.0', { shape: 'checkout', source: '/some/checkout' }, {
+        fetch: stubFetch('0.31.0'),
+        installer: installerMustNotRun,
+        environment: ENV,
+      }),
+    UpdateRefused,
+  );
+
+  assert.equal(readRecordFile().npm.latest, '0.31.0');
+});
+
+test('a fetch that never answered writes no record, and does not clobber a stale one', async () => {
+  writeFileSync(
+    join(FILE_HOME, '.bantamkit', 'update-check.json'),
+    JSON.stringify({ checked_at: '2020-01-01T00:00:00Z', npm: { package: PACKAGE, latest: '0.29.0' } }),
+    'utf8',
+  );
+
+  await assert.rejects(
+    () =>
+      update('0.30.0', REGISTRY, {
+        fetch: throwingFetch(new IndexTimeout('timed out')),
+        installer: installerMustNotRun,
+        environment: ENV,
+      }),
+    UpdateRefused,
+  );
+
+  assert.deepEqual(readRecordFile(), {
+    checked_at: '2020-01-01T00:00:00Z',
+    npm: { package: PACKAGE, latest: '0.29.0' },
+  });
+});
+
+test('an unreadable record is replaced rather than merged into', async () => {
+  // There is nothing in it to preserve, and leaving it would leave the line unreadable.
+  writeFileSync(join(FILE_HOME, '.bantamkit', 'update-check.json'), '<html>captive portal</html>', 'utf8');
+
+  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV });
+
+  assert.equal(readRecordFile().npm.latest, '0.31.0');
+  assert.equal(updateStatus('0.31.0').state, 'current');
+});
+
+test('the record is these bytes', () => {
+  // The two runtimes write the SAME file, one key each, and a reader on either side has to be
+  // able to read what the other wrote. That makes the serialization a contract and not an
+  // implementation detail — the reference pins the identical shape for its own key.
+  clearRecord();
+  assert.equal(recordUpdate('0.31.0', '2026-09-19T21:04:11Z'), true);
+
+  assert.equal(
+    readFileSync(join(FILE_HOME, '.bantamkit', 'update-check.json'), 'utf8'),
+    '{\n' +
+      '  "checked_at": "2026-09-19T21:04:11Z",\n' +
+      '  "npm": {\n' +
+      '    "package": "bantamkit-mcp",\n' +
+      '    "latest": "0.31.0"\n' +
+      '  }\n' +
+      '}\n',
+  );
+});
+
+test('the stamp is UTC and shaped the way the reader slices it', () => {
+  // `YYYY-MM-DDTHH:MM:SSZ` — not `.000Z`, which is what `toISOString()` alone would give, and
+  // not `+00:00`, which is what the reference's `isoformat()` would.
+  clearRecord();
+  assert.equal(recordUpdate('0.31.0'), true);
+  const written = readRecordFile().checked_at;
+  assert.match(written, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, written);
+  assert.equal(updateStatus('0.31.0').state, 'current');
+});
+
+test('the writer leaves no temporary file behind', () => {
+  // Temp-file-and-rename, and the temp file is gone either way. A reader that saw half a record
+  // would print `could not be read` over a good update; a writer that littered would fill
+  // `.bantamkit` with them.
+  clearRecord();
+  for (let i = 0; i < 3; i += 1) assert.equal(recordUpdate('0.31.0'), true);
+  assert.deepEqual(readdirSync(join(FILE_HOME, '.bantamkit')).sort(), ['update-check.json']);
+});

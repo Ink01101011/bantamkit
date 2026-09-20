@@ -23,6 +23,7 @@ vacuous":
 """
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 
@@ -32,6 +33,7 @@ pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
 
+from bantamkit import updatecheck  # noqa: E402
 from bantamkit.assets import AssetNotFound, assets_root  # noqa: E402
 from bantamkit.eventlog import EventLog  # noqa: E402
 from bantamkit.mcpserver import (  # noqa: E402
@@ -47,6 +49,43 @@ from bantamkit.memory.__main__ import _PROG  # noqa: E402
 FOOTER_MARK = "⚠️ bantamkit degraded"
 HEALTHY_LINE = "bantamkit Active 🟢"
 DEGRADED_LINE = "bantamkit Degraded 🟠"
+
+
+@pytest.fixture(autouse=True)
+def record_home(tmp_path, monkeypatch):
+    """A home nobody lives in, for every node here — the report now reads a file off it.
+
+    `AUTOUSE`, because the report's last line is a function of the operator's own
+    `~/.bantamkit/update-check.json`. A node that asserted the line against the real home
+    would pass on a machine that has never run `--update` and fail on one that has, which is
+    the "passes on a Tuesday" shape this whole surface is written against. The redirection
+    moves `updatecheck._home` — the one seam every path in that module derives from — so it
+    is total, and the `.bantamkit` directory is made so a record can be constructed.
+
+    The default state is therefore `never checked`: the directory is empty.
+    """
+    root = tmp_path / "record-home"
+    (root / ".bantamkit").mkdir(parents=True)
+    monkeypatch.setattr(updatecheck, "_home", lambda: root)
+    return root
+
+
+def write_update_record(home: Path, text: str) -> Path:
+    """The record, exactly as given — including shapes no writer would produce."""
+    path = home / ".bantamkit" / "update-check.json"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def running_version() -> str:
+    """The version the report prints on line 2, which is the one the update line compares.
+
+    Read off the report rather than off `__version__` so the two halves cannot drift: the
+    line under test claims something ABOUT the number line 2 carries.
+    """
+    from bantamkit.mcpserver import build_identity
+
+    return str(build_identity()["version"])
 
 
 def run(coro):
@@ -108,11 +147,80 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     report = status_of(build_server(make_memory(tmp_path)))
     lines = report.split("\n")
     assert lines[0] == HEALTHY_LINE
-    assert len(lines) == 5, report
+    assert len(lines) == 6, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
     assert lines[2] == "serving 14 tools, 1 prompt, 2 resource templates"
     assert lines[3] == "memory: 0 facts in the project store, index 0 of 24000 bytes"
     assert lines[4] == "event log: off"
+    # Line 6, and it is NOT a condition: the home is redirected and empty, so the server is
+    # still `Active 🟢` while saying it has never been checked.
+    assert lines[5] == updatecheck.UPDATE_NEVER
+
+
+def _record(latest: str, checked_at: str = "2026-09-19T21:04:11Z") -> str:
+    """A record carrying BOTH registries, the way the writer on each side leaves it."""
+    return json.dumps(
+        {
+            "checked_at": checked_at,
+            "npm": {"package": "bantamkit-mcp", "latest": latest},
+            "pypi": {"distribution": "bantamkit", "latest": latest},
+        }
+    )
+
+
+@pytest.mark.parametrize("state", list(updatecheck.STATES))
+def test_the_report_carries_the_update_line_in_every_one_of_the_five_states(
+    tmp_path, record_home, state
+):
+    """All five, CONSTRUCTED — not one of them waits for the world to be in a mood.
+
+    Both installs on this machine are at the same version, so there is no naturally stale one
+    to point at and a node that waited for one would be a node that passes on a Tuesday. The
+    record is written by hand and the report is read back OFF THE WIRE through the tool, which
+    is the same reason `status_of` exists: a node that called `status_report()` would agree
+    with itself through any registration mistake.
+
+    `99.0.0` and `0.0.1` are used rather than a number next to the running one so this keeps
+    working after a release bumps the version out from under it.
+    """
+    installed = running_version()
+    path = record_home / ".bantamkit" / "update-check.json"
+    expected = {
+        updatecheck.STATE_NEVER: updatecheck.UPDATE_NEVER,
+        updatecheck.STATE_AVAILABLE: updatecheck.UPDATE_AVAILABLE.format(
+            program=updatecheck.PROGRAM, installed=installed, latest="99.0.0"
+        ),
+        updatecheck.STATE_CURRENT: updatecheck.UPDATE_CURRENT.format(
+            program=updatecheck.PROGRAM, installed=installed, date="2026-09-19"
+        ),
+        updatecheck.STATE_AHEAD: updatecheck.UPDATE_AHEAD.format(
+            program=updatecheck.PROGRAM, installed=installed, latest="0.0.1"
+        ),
+        updatecheck.STATE_UNREADABLE: updatecheck.UPDATE_UNREADABLE,
+    }[state]
+
+    if state == updatecheck.STATE_AVAILABLE:
+        write_update_record(record_home, _record("99.0.0"))
+    elif state == updatecheck.STATE_CURRENT:
+        write_update_record(record_home, _record(installed))
+    elif state == updatecheck.STATE_AHEAD:
+        write_update_record(record_home, _record("0.0.1"))
+    elif state == updatecheck.STATE_UNREADABLE:
+        write_update_record(record_home, "<html>captive portal</html>")
+    else:
+        assert not path.exists(), "the `never` arm must start with no record at all"
+
+    lines = status_of(build_server(make_memory(tmp_path))).split("\n")
+
+    assert lines[5] == expected
+    # THE LINE IS NOT A CONDITION, IN EVERY STATE. This is the half that makes the node worth
+    # running: a stale install is not a fault, so line 1 stays Active, the report grows no
+    # `problems:` block, and `degraded_conditions` never learns the record exists.
+    assert lines[0] == HEALTHY_LINE
+    assert len(lines) == 6, lines
+    assert FOOTER_MARK not in "\n".join(lines)
+    assert degraded_conditions(make_memory(tmp_path), EventLog(None)) == []
+
 
 
 def test_the_prompt_is_the_person_facing_half_and_carries_the_report_itself(tmp_path):

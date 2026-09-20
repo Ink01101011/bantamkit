@@ -40,12 +40,13 @@
  * `test/selfupdate.test.mjs` — and it calls `runUpdate` from the flag and returns before a
  * memory store or a transport exists, the same shape `--assets-root` and `--install` use.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
 import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
+import { KEY as RECORD_KEY, loadRecord, recordPath, SOURCE_RECORD } from './updatecheck.js';
 
 // `PACKAGE`, `shlexJoin` and `runInstaller` moved to `npminstall.ts` in job51 so `--install` can
 // share the npm spawner without importing this module (see that file's header). Re-exported so
@@ -510,6 +511,70 @@ export function keptInstall(prefix: string = keptPrefix()): KeptInstall | null {
  * checkout five releases behind is owed that number even though this flag will not be the thing
  * that installs it. The shape decides the ACTION, never whether the question is asked.
  */
+/**
+ * The `checked_at` stamp's shape, spelled rather than defaulted.
+ *
+ * `toISOString()` renders `.000Z` and CPython's `isoformat()` renders `+00:00`, so a record
+ * written by the two runtimes would differ in bytes neither reader cares about. The reference
+ * formats `%Y-%m-%dT%H:%M:%SZ`; this strips the milliseconds to reach the same shape.
+ */
+function stamp(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Put the version this flag just fetched into the record `bantamkit_status` reads.
+ *
+ * THE PORT OF `selfupdate.record_update`. Its docstring carries the argument and is not
+ * restated: no second network call and no new failure mode (`update` already holds `latest`),
+ * no directory is ever created, the other runtime's key is left exactly as found, and the
+ * write goes through a temp file and a rename so no reader sees half a record.
+ *
+ * WHY THE WRITER IS HERE AND NOT IN `updatecheck.ts`. That module is the READER, and
+ * `test/updatecheck.test.mjs` gates its source against `writeFileSync`, `renameSync`,
+ * `mkdirSync` and the rest by name — the same claim `test_updatecheck.py` makes over the
+ * reference's AST. The split is structural on both sides, so a future reader cannot grow a
+ * write by accident. `updatecheck.js` is imported here for the PATH and the KEY, which is the
+ * direction that keeps one spelling of each.
+ *
+ * `renameSync` is atomic on POSIX and on Windows, and the temp file is made in the SAME
+ * directory so the rename is never across a filesystem.
+ *
+ * RETURNS whether it wrote, and THROWS FOR NOTHING. A failed write must not turn a successful
+ * `--update` into a failure: the operator's install was updated either way, and the worst case
+ * is a status line that still says `never checked`.
+ */
+export function recordUpdate(latest: string, now?: string): boolean {
+  const path = recordPath();
+  const directory = dirname(path);
+  try {
+    if (!statSync(directory).isDirectory()) return false;
+  } catch {
+    // No `<homedir>/.bantamkit` at all: an install makes that directory, and `--update` does
+    // not get to decide where this toolbox's home lives. Writing nothing is the answer.
+    return false;
+  }
+  const { source, record } = loadRecord(path);
+  // An UNREADABLE record is replaced rather than merged: there is nothing in it to preserve.
+  const payload: Record<string, unknown> =
+    source === SOURCE_RECORD && record !== null ? { ...record } : {};
+  payload['checked_at'] = now ?? stamp();
+  payload[RECORD_KEY] = { package: PACKAGE, latest };
+  const temporary = join(directory, `.update-check-${process.pid}-${Date.now()}.json`);
+  try {
+    writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    renameSync(temporary, path);
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      /* the temp file never existed, or is already gone: either way there is nothing to do */
+    }
+    return false;
+  }
+  return true;
+}
+
 export async function update(
   installed: string,
   origin: Origin,
@@ -536,6 +601,15 @@ export async function update(
   }
 
   const latest = latestFromIndexPayload(body);
+
+  // THE RECORD IS WRITTEN HERE AND NOT IN ONE OF THE ARMS BELOW, because what it records is
+  // "the index said X on this date" — which is true the moment the fetch returned, whatever
+  // this flag then decides to do about it. An operator whose shape has no route gets the
+  // refusal AND a `bantamkit_status` that now knows the number; one who is already current
+  // gets a line that says so with a date. The return value is deliberately dropped: a record
+  // that could not be written is not a reason to fail an update that worked.
+  recordUpdate(latest);
+
   const header = fill(COMPARISON, { program: PROGRAM, installed, latest });
   const order = compareVersions(installed, latest);
   if (order === 0) return `${header}\n${UP_TO_DATE}`;
