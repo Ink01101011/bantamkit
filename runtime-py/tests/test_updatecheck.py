@@ -433,6 +433,81 @@ def test_an_old_record_cannot_manufacture_a_false_stale(home):
     assert updatecheck.update_status("0.37.0").state == STATE_AHEAD
 
 
+# --- two stamps, and which one dates which number (J62-13, 2026-09-21) --------------------
+#
+# An ENTRY's `checked_at` is when THAT registry answered; the record's is when a writer
+# refreshed the record AS A WHOLE, and is the fallback for an entry without one. Before this,
+# a writer that filled ONE key stamped the record — so the reader of the OTHER key dated its
+# stale number by a check that never touched its registry. The port's half of these is
+# `runtime-ts/test/updatecheck.test.mjs`; the two are compared in
+# `tools/conformance/suites/updatecheck.mjs`.
+
+
+def _two_stamps(pypi_stamp: object = ..., npm_stamp: str = "2026-09-20T09:12:00Z") -> str:
+    """A record stamped 2026-09-19, with an entry stamp of 2026-09-20 on npm."""
+    pypi: dict[str, object] = {"distribution": "bantamkit", "latest": "0.36.0"}
+    if pypi_stamp is not ...:
+        pypi["checked_at"] = pypi_stamp
+    return json.dumps(
+        {
+            "checked_at": "2026-09-19T21:04:11Z",
+            "npm": {"package": "bantamkit-mcp", "latest": "0.36.0", "checked_at": npm_stamp},
+            "pypi": pypi,
+        }
+    )
+
+
+def test_an_entrys_own_stamp_dates_that_entrys_number(home):
+    """One file, two keys, TWO DATES — and this reader takes the one that dates ITS number."""
+    write_record(home, _two_stamps())
+    assert updatecheck.update_line("0.36.0", "pypi").endswith("current as of 2026-09-19.")
+    assert updatecheck.update_line("0.36.0", "npm").endswith("current as of 2026-09-20.")
+
+
+def test_an_entry_without_a_stamp_falls_back_to_the_records(home):
+    """The fallback is not a leniency: such an entry WAS last written by a whole-record write.
+
+    This is the arm that keeps every record written before J62-13 answering byte for byte as
+    it did, which is why the whole pre-existing conformance table stayed green.
+    """
+    write_record(home, record(pypi="0.35.1", checked_at="2026-01-02T03:04:05Z"))
+    assert updatecheck.update_line("0.35.1") == (
+        "update: bantamkit-mcp 0.35.1 is current as of 2026-01-02."
+    )
+
+
+def test_a_record_with_no_record_level_stamp_is_read_through_the_entrys(home):
+    """What `--update` leaves on a machine that had no record: an entry stamp and nothing else.
+
+    Before this, such a record was `could not be read` — which is why `record_update` used to
+    stamp the record and why fixing THAT alone would have broken the fresh-install path.
+    """
+    entry = {
+        "distribution": "bantamkit",
+        "latest": "0.36.0",
+        "checked_at": "2026-09-20T09:12:00Z",
+    }
+    write_record(home, json.dumps({"pypi": entry}))
+    assert updatecheck.update_line("0.36.0") == (
+        "update: bantamkit-mcp 0.36.0 is current as of 2026-09-20."
+    )
+
+
+@pytest.mark.parametrize("bad", ["yesterday", "19/09/2026", 20260920, None, ""])
+def test_a_garbage_entry_stamp_is_unreadable_and_never_falls_back(home, bad):
+    """ONE SELECTION, THEN ONE RULE — not two rules, and not the more flattering of two dates.
+
+    The record's own stamp here is perfectly good. An entry that CARRIES the name is the
+    entry's answer, so a garbage value there is unreadable exactly as a garbage top-level one
+    is. A reader that fell back would date this number by a check of the other registry, which
+    is the defect this whole change exists to remove.
+    """
+    write_record(home, _two_stamps(pypi_stamp=bad))
+    assert updatecheck.update_status("0.36.0", "pypi").state == STATE_UNREADABLE
+    # …and the key whose stamp is fine is unaffected: one bad entry is not a bad record.
+    assert updatecheck.update_status("0.36.0", "npm").state == STATE_CURRENT
+
+
 # --- what this module never does ----------------------------------------------------------
 
 

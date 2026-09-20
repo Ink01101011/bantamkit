@@ -298,12 +298,69 @@ test('the probe writes the record both readers expect, byte for byte', async () 
   const bytes = readFileSync(recordFile(home), 'utf8');
   assert.ok(bytes.endsWith('\n'), 'the record ends in exactly one newline');
   const parsed = JSON.parse(bytes);
-  assert.deepEqual(parsed.npm, { package: PACKAGE, latest: SERVED });
-  assert.deepEqual(parsed.pypi, { distribution: 'bantamkit', latest: SERVED });
-  assert.match(parsed.checked_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, 'the `--update` writer\'s stamp');
+  // AMENDED 2026-09-21 (job62, J62-13): each entry carries its own `checked_at` — when THAT
+  // registry answered. The record's own stamp survives and means "a writer refreshed the
+  // record as a whole", which both registries answering is.
+  assert.deepEqual(parsed.npm, { package: PACKAGE, latest: SERVED, checked_at: parsed.npm.checked_at });
+  assert.deepEqual(parsed.pypi, { distribution: 'bantamkit', latest: SERVED, checked_at: parsed.pypi.checked_at });
+  assert.match(parsed.npm.checked_at, STAMP_SHAPE);
+  assert.match(parsed.pypi.checked_at, STAMP_SHAPE);
+  assert.match(parsed.checked_at, STAMP_SHAPE, 'the `--update` writer\'s stamp');
   // The serialization `selfupdate.recordUpdate` pins: `JSON.stringify(payload, null, 2)` + "\n".
   assert.equal(bytes, `${JSON.stringify(parsed, null, 2)}\n`);
   assert.ok(npmHits > 0 && pypiHits > 0, 'both registries were asked');
+});
+
+/** `YYYY-MM-DDTHH:MM:SSZ` — `selfupdate.STAMP` on both sides. */
+const STAMP_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+// ---- ONE registry answers and the other does not (J62-13) -----------------------------
+//
+// THE SHAPE NOTHING HERE COVERED. Until this unit every probe test drove both registries the
+// same way — both answering or both failing — so the partial success, which is the ordinary
+// case on a network that blocks one host, was never run. What it did: stamp the RECORD's
+// `checked_at`, the fallback dating every entry without one of its own. So the runtime
+// reading the half that did NOT answer said `is current as of <today>` about a number weeks
+// old, and the 24 h TTL below went quiet for the whole interval instead of retrying.
+//
+// Both arms are asserted in BOTH directions — npm answering and pypi answering — because a
+// writer that stamped only the key it happens to be asked for first would pass one of them.
+
+for (const [answered, failed] of [['npm', 'pypi'], ['pypi', 'npm']]) {
+  test(`only ${answered} answers: its entry is stamped, ${failed}'s and the record's are not`, async () => {
+    const home = newHome();
+    const seeded = record('0.30.0', 25 * 3600_000);   // 25 h old: outside the TTL, and not `now`
+    writeRecord(home, seeded);
+
+    await probe(home, {
+      ...served(),
+      [`BANTAMKIT_UPDATE_${failed.toUpperCase()}_URL`]: REFUSED,
+    });
+
+    const parsed = JSON.parse(readFileSync(recordFile(home), 'utf8'));
+    assert.equal(parsed[answered].latest, SERVED, `${answered} answered and was not recorded`);
+    assert.match(parsed[answered].checked_at, STAMP_SHAPE, `${answered} was not stamped`);
+    // THE ENTRY THAT DID NOT ANSWER IS UNTOUCHED — version AND the absence of a stamp, so it
+    // keeps falling back to the record's, which is when it was actually last confirmed.
+    assert.deepEqual(parsed[failed], seeded[failed], `${failed} was rewritten`);
+    // AND THE RECORD'S OWN STAMP DID NOT MOVE. This is the assertion the whole unit exists
+    // for: a partial success is not a check of the record as a whole.
+    assert.equal(parsed.checked_at, seeded.checked_at, 'a partial probe moved the record stamp');
+  });
+}
+
+test('a partial probe leaves the record DUE, so the next session retries the half that failed', async () => {
+  // The consequence of the assertion above, judged where an operator would see it: the hook's
+  // 24 h TTL reads exactly that field. Before J62-13 this reported `fresh` and the failed half
+  // waited a full day; a machine running `--update` more often than daily waited forever.
+  const home = newHome();
+  installKept(home, '0.35.1');
+  writeRecord(home, record('0.30.0', 25 * 3600_000));
+
+  await probe(home, { ...served(), BANTAMKIT_UPDATE_PYPI_URL: REFUSED });
+
+  const after = await sessionStart({ home, env: { ...served(), BANTAMKIT_UPDATE_PYPI_URL: REFUSED } });
+  assert.equal(after.log.updateProbe, 'spawned', 'the record was treated as fresh after a partial probe');
 });
 
 test('the probe keeps what it did not fetch and leaves no temp file behind', async () => {

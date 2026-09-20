@@ -108,9 +108,19 @@ One of exactly five sentences, byte-identical across the runtimes, named constan
 
 `{program}` is the **command**, `bantamkit-mcp` — never a package name, because the PyPI
 distribution is `bantamkit` and the npm package is `bantamkit-mcp`, and a sentence naming
-either could not be identical on both sides. `{date}` is the `YYYY-MM-DD` **prefix** of the
-record's `checked_at`, sliced rather than rendered, so a machine set to another locale does
-not make the two runtimes disagree.
+either could not be identical on both sides. `{date}` is the `YYYY-MM-DD` **prefix** of a
+`checked_at`, sliced rather than rendered, so a machine set to another locale does not make
+the two runtimes disagree.
+
+**AMENDED 2026-09-21 (job62, J62-13): *which* `checked_at`.** The record carries two kinds —
+an entry's own, meaning "when THAT registry answered", and the record's, meaning "when a
+writer refreshed the record as a whole". This line takes the entry's when the entry it reads
+carries one, and the record's otherwise. It used to take the record's always, so a writer
+that filled one key — `--update` does by construction — dated the OTHER registry's stale
+number by a check that never asked it. One selection, then the single shape rule applied to
+whatever was selected: a per-key stamp that is present and unparseable makes the record
+`unreadable` exactly as a top-level one does. The measured reproduction and the writers'
+table: [hooks.md](hooks.md), *Two stamps, and which one dates which number*.
 
 **Nothing on this path reaches the network, and nothing here has a TTL.** The line is
 decided from one file, opened once, inside `status_report`. A writer outside both runtimes

@@ -1029,7 +1029,14 @@ test('a successful fetch writes the record the status line reads, from ONE fetch
   await update('0.30.0', REGISTRY, { fetch, installer: recordingInstaller(), environment: ENV });
 
   assert.equal(fetch.calls.length, 1, JSON.stringify(fetch.calls));
-  assert.deepEqual(readRecordFile().npm, { package: PACKAGE, latest: '0.31.0' });
+  // AMENDED 2026-09-21 (job62, J62-13): the entry carries a third field now — its own
+  // `checked_at`, the day npm answered — so this compares field by field. The stamp's SHAPE
+  // is the assertable part; its value is a clock.
+  const written = readRecordFile().npm;
+  assert.equal(written.package, PACKAGE);
+  assert.equal(written.latest, '0.31.0');
+  assert.match(written.checked_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  assert.deepEqual(Object.keys(written).sort(), ['checked_at', 'latest', 'package']);
 });
 
 test('the record written here is the one updatecheck reads back', async () => {
@@ -1065,7 +1072,18 @@ test("the other runtime's key is left exactly as it was found", async () => {
   assert.deepEqual(written.pypi, { distribution: 'bantamkit', latest: '0.29.0' });
   assert.deepEqual(written['a-key-nobody-here-owns'], ['kept']);
   assert.equal(written.npm.latest, '0.31.0');
-  assert.notEqual(written.checked_at, '2020-01-01T00:00:00Z');
+  // AMENDED 2026-09-21 (job62, J62-13), AND THIS ASSERTION IS INVERTED. It used to be
+  // `assert.notEqual(..., '2020-01-01T00:00:00Z')` — this writer moved the record's stamp.
+  // That stamp is the fallback dating every entry WITHOUT one of its own, so moving it
+  // re-dated the untouched `pypi` number by a check that never asked PyPI: the reference
+  // reading this very record would then have said `is current as of <today>` about a number
+  // from 2020. "Left exactly as found" was true of the entry's bytes and false of the fact
+  // about it. The record's stamp stays put now, and `--update` stamps its own entry.
+  assert.equal(written.checked_at, '2020-01-01T00:00:00Z');
+  assert.equal(
+    updateStatus('0.29.0', 'pypi').line,
+    'update: bantamkit-mcp 0.29.0 is current as of 2020-01-01.',
+  );
 });
 
 test('a machine with no .bantamkit directory is not given one', async () => {
@@ -1170,16 +1188,22 @@ test('the record is these bytes', () => {
   // The two runtimes write the SAME file, one key each, and a reader on either side has to be
   // able to read what the other wrote. That makes the serialization a contract and not an
   // implementation detail — the reference pins the identical shape for its own key.
+  //
+  // AMENDED 2026-09-21 (job62, J62-13). The stamp moved INSIDE the entry and there is no
+  // record-level one: `--update` holds one registry's answer by construction, and the
+  // record's `checked_at` means "a writer refreshed the whole record". A record this writer
+  // creates therefore cannot say when it was refreshed as a whole — which is exactly what
+  // makes the hook's 24 h TTL treat it as due and send the probe that fills the other half.
   clearRecord();
   assert.equal(recordUpdate('0.31.0', '2026-09-19T21:04:11Z'), true);
 
   assert.equal(
     readFileSync(join(FILE_HOME, '.bantamkit', 'update-check.json'), 'utf8'),
     '{\n' +
-      '  "checked_at": "2026-09-19T21:04:11Z",\n' +
       '  "npm": {\n' +
       '    "package": "bantamkit-mcp",\n' +
-      '    "latest": "0.31.0"\n' +
+      '    "latest": "0.31.0",\n' +
+      '    "checked_at": "2026-09-19T21:04:11Z"\n' +
       '  }\n' +
       '}\n',
   );
@@ -1188,9 +1212,13 @@ test('the record is these bytes', () => {
 test('the stamp is UTC and shaped the way the reader slices it', () => {
   // `YYYY-MM-DDTHH:MM:SSZ` — not `.000Z`, which is what `toISOString()` alone would give, and
   // not `+00:00`, which is what the reference's `isoformat()` would.
+  // AMENDED 2026-09-21 (job62, J62-13): read off the ENTRY, which is where this writer puts
+  // its stamp now. `recordUpdate` writes no record-level `checked_at` at all.
   clearRecord();
   assert.equal(recordUpdate('0.31.0'), true);
-  const written = readRecordFile().checked_at;
+  const record = readRecordFile();
+  assert.equal(Object.prototype.hasOwnProperty.call(record, 'checked_at'), false);
+  const written = record.npm.checked_at;
   assert.match(written, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, written);
   assert.equal(updateStatus('0.31.0').state, 'current');
 });

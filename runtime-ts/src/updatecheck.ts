@@ -6,7 +6,11 @@
  * reach the network (`selfupdate.py:29-31`, measured: one registry GET is 1.5x to 100x an
  * entire 0.09 s cold stdio boot), why a newer version existing is NOT a degraded condition,
  * why there is NO TTL in a reader, and why the date is sliced rather than rendered. It is not
- * restated here; read it there. What belongs HERE is the part that could not be copied.
+ * restated here; read it there. What belongs HERE is the part that could not be copied. That
+ * includes *Two stamps, and which one dates which number* (J62-13, 2026-09-21): an ENTRY may
+ * carry a `checked_at` of its own — when that registry last answered — and the record's own
+ * `checked_at` is the fallback for an entry that has none. `checkedDate` SELECTS one of the
+ * two and then applies the single shape rule to whatever it selected.
  *
  * EXACTLY ONE THING DIFFERS FROM THE REFERENCE, and it is a genuinely different object rather
  * than a different spelling of one: `KEY` is `npm` here and `pypi` there, because npm and
@@ -265,9 +269,23 @@ function latestIn(record: Record<string, unknown>, key: string): string | null {
   return VERSION.test(trimmed) ? trimmed : null;
 }
 
-/** The `YYYY-MM-DD` prefix of `checked_at`, or `null`. Sliced, never rendered. */
-function checkedDate(record: Record<string, unknown>): string | null {
-  const checkedAt = record['checked_at'];
+/**
+ * The `YYYY-MM-DD` prefix of the stamp that dates THIS key's number, or `null`. Sliced, never
+ * rendered.
+ *
+ * ONE SELECTION, THEN ONE RULE — the reference's `_checked_date`, and its docstring carries
+ * the argument. `hasOwnProperty` rather than `in` is how this side spells CPython's `in` on a
+ * dict: `JSON.parse` hands back plain objects, so the two agree, and an entry that carries
+ * the name is the entry's own answer even when the value is garbage.
+ */
+function checkedDate(record: Record<string, unknown>, key: string): string | null {
+  const entry = record[key];
+  const own =
+    typeof entry === 'object' &&
+    entry !== null &&
+    !Array.isArray(entry) &&
+    Object.prototype.hasOwnProperty.call(entry, 'checked_at');
+  const checkedAt = own ? (entry as Record<string, unknown>)['checked_at'] : record['checked_at'];
   if (typeof checkedAt !== 'string') return null;
   const found = DATE_PREFIX.exec(checkedAt.trim());
   return found?.[1] ?? null;
@@ -279,9 +297,9 @@ function checkedDate(record: Record<string, unknown>): string | null {
  * Split from the reading so the conformance harness and the tests can construct a state
  * directly and so the only thing that touches a disk is `loadRecord`.
  *
- * `checked_at` is validated in EVERY arm that reached a record and not only on the `current`
- * path: a record that cannot say when it was written is not a record, and one rule is one thing
- * for the two runtimes to reproduce instead of two.
+ * The SELECTED `checked_at` (see `checkedDate`) is validated in EVERY arm that reached a record
+ * and not only on the `current` path: a record that cannot say when it was written is not a
+ * record, and one rule is one thing for the two runtimes to reproduce instead of two.
  */
 export function decide(
   installed: string,
@@ -293,7 +311,7 @@ export function decide(
   if (source !== SOURCE_RECORD || record === null) {
     return { state: STATE_UNREADABLE, line: UPDATE_UNREADABLE };
   }
-  const date = checkedDate(record);
+  const date = checkedDate(record, key);
   const latest = latestIn(record, key);
   if (date === null || latest === null) {
     return { state: STATE_UNREADABLE, line: UPDATE_UNREADABLE };

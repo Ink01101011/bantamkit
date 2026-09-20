@@ -485,13 +485,66 @@ exit while the child runs. Take any one away and SessionStart waits on a registr
 lands for the *next* session; the probe is silent always, creates no directory, and on any
 failure leaves the previous record exactly as it found it.
 
-**The 24 h TTL lives in the hook and nowhere else.** It is decided from the `checked_at` of
-the record the hook has *already* loaded for its own line — one read, one decision — and a
-record that cannot say when it was written is treated as **due**, not as fresh. Neither
-runtime's reader has a TTL, deliberately ([status.md](status.md)): the comparison is between
-the version that is running and the version the record last saw, so an old record cannot
-manufacture a false "you are stale". Freshness is the writer's problem, and this is the
-writer's side of the fence.
+**The 24 h TTL lives in the hook and nowhere else.** It is decided from the record's own
+`checked_at` — the record the hook has *already* loaded for its own line, one read, one
+decision — and a record that cannot say when it was written is treated as **due**, not as
+fresh. Neither runtime's reader has a TTL, deliberately ([status.md](status.md)): the
+comparison is between the version that is running and the version the record last saw, so an
+old record cannot manufacture a false "you are stale". Freshness is the writer's problem, and
+this is the writer's side of the fence.
+
+### Two stamps, and which one dates which number (2026-09-21, job62 / J62-13)
+
+**This section used to describe a single `checked_at`, and a single `checked_at` was being
+used to date a number nobody had asked for.** Two of the record's three writers fill ONE key:
+`--update` only ever holds the version it fetched itself, and the probe fills one key when one
+registry answers and the other does not. Both stamped the record anyway. Reproduced on this
+branch, one file, two readers, after a Node `--update` took `npm` from 0.30.0 to 0.36.0 and
+left `pypi` at 0.30.0 from three weeks earlier:
+
+    the reference (reads pypi):  update: bantamkit-mcp 0.30.0 is current as of 2026-09-20.
+    the port      (reads npm):   update: bantamkit-mcp 0.30.0 is running; the package index
+                                 has 0.36.0 — run `bantamkit-mcp --update`, …
+
+`2026-09-20` is the day **npm** was asked. PyPI was asked on the 1st. The date is in the
+sentence so the operator can judge how old the claim is, which is the one job it cannot do
+while it names another registry's check.
+
+**So the record carries two stamps now, and the rule is one sentence each.** An **entry's**
+`checked_at` is when THAT registry answered. The **record's** `checked_at` is when a writer
+refreshed the record AS A WHOLE, and it is the fallback for an entry that carries no stamp of
+its own — which is exactly right, because such an entry was last written by a whole-record
+write.
+
+    {"checked_at": "2026-09-19T21:04:11Z",
+     "npm":  {"package": "bantamkit-mcp", "latest": "0.36.0",
+              "checked_at": "2026-09-20T09:12:00Z"},
+     "pypi": {"distribution": "bantamkit", "latest": "0.36.0"}}
+
+    the port      (reads npm):   … is current as of 2026-09-20.
+    the reference (reads pypi):  … is current as of 2026-09-19.
+
+| writer | entry stamp | record stamp |
+|---|---|---|
+| `update-probe.mjs`, both registries answered | both entries | **yes** — the record *was* refreshed as a whole |
+| `update-probe.mjs`, one answered | the one that answered | **no** |
+| `update-probe.mjs`, neither answered | — | nothing is written at all, as before |
+| `--update` (`selfupdate.record_update` / `recordUpdate`) | its own key | **never** — it asks one registry by construction |
+
+**A record written before this carries no entry stamps, so every reader answers it byte for
+byte as it did** — which is how the whole pre-existing conformance table stayed green rather
+than being migrated. Gated in `tools/conformance/suites/updatecheck.mjs` (194 cases, 50 arms
+over 38 records, 0 failures), in both runtimes' unit tests, and in
+`tools/hooks/update-signal.test.mjs`, which until this unit drove **both** registries the same
+way in every arm and so had never once run a partial success.
+
+**What this costs, stated.** The TTL field now moves only on a whole-record refresh, so a
+machine that can reach one registry and not the other spawns a detached probe **once per
+session** rather than once per day, until the other registry answers. That is exactly the cost
+the both-failed case has always paid — nothing is written, so the record stays due — and
+nothing waits for the child (measured 0.14–0.46 s per GET on a good network, `stdio: 'ignore'`
+and `unref()`ed). The alternative, a "last attempted" field, would mean writing on total
+failure, which the probe rules out for a better reason than this one is worth.
 
 **The sentence is not the status tool's.** `bantamkit_status`'s line is prefixed `update:`
 and names no path, because a caller of that tool already knows which endpoint answered it.

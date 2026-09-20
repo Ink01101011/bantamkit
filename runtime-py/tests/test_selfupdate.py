@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -776,16 +777,21 @@ def test_a_successful_fetch_writes_the_record_the_status_line_reads(record_home)
 
     The fetch stub counts its calls, so a writer that re-asked the index for something it was
     already holding fails here rather than costing an operator a second registry round trip.
+
+    AMENDED 2026-09-21 (job62, J62-13): the entry carries a third field now — its own
+    `checked_at`, the day PyPI answered — so this compares field by field instead of the
+    whole dict. The stamp's SHAPE is the assertable part; its value is a clock.
     """
     fetch = _fetch("0.31.0")
 
     update("0.30.0", REGISTRY, fetch=fetch, installer=_recording_installer())
 
     assert len(fetch.calls) == 1, fetch.calls
-    assert _read_record(record_home)["pypi"] == {
-        "distribution": "bantamkit",
-        "latest": "0.31.0",
-    }
+    written = _read_record(record_home)["pypi"]
+    assert written["distribution"] == "bantamkit"
+    assert written["latest"] == "0.31.0"
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", written["checked_at"])
+    assert sorted(written) == ["checked_at", "distribution", "latest"]
 
 
 def test_the_record_written_here_is_the_one_updatecheck_reads_back(record_home):
@@ -810,6 +816,14 @@ def test_the_other_runtimes_key_is_left_exactly_as_it_was_found(record_home):
     job56 shipped a day where they did disagree — npm at a stale dist while PyPI was ahead —
     which is why the record carries both and why a Python `--update` that helpfully filled in
     `npm` would be publishing a number it never asked for.
+
+    AMENDED 2026-09-21 (job62, J62-13), AND THE LAST ASSERTION IS INVERTED. It used to read
+    `written["checked_at"] != "2020-01-01T00:00:00Z"` — this writer moved the record's stamp.
+    That stamp is the fallback dating every entry WITHOUT one of its own, so moving it
+    re-dated the untouched `npm` number by a check that never asked npm: the Node reader on
+    this very record would then have said `is current as of <today>` about a number from
+    2020. "Left exactly as found" was true of the entry's bytes and false of the fact about
+    it. The record's stamp now stays put, and `--update` stamps its own entry instead.
     """
     (record_home / ".bantamkit" / "update-check.json").write_text(
         json.dumps(
@@ -829,7 +843,12 @@ def test_the_other_runtimes_key_is_left_exactly_as_it_was_found(record_home):
     assert written["npm"] == {"package": "bantamkit-mcp", "latest": "0.29.0"}
     assert written["a-key-nobody-here-owns"] == ["kept"]
     assert written["pypi"]["latest"] == "0.31.0"
-    assert written["checked_at"] != "2020-01-01T00:00:00Z"
+    assert written["checked_at"] == "2020-01-01T00:00:00Z"
+    # And the fact that assertion protects, said out loud: the reader of the key this writer
+    # did NOT fill still dates that number by the check that actually wrote it.
+    assert updatecheck.update_status("0.29.0", "npm").line == (
+        "update: bantamkit-mcp 0.29.0 is current as of 2020-01-01."
+    )
 
 
 def test_a_machine_with_no_bantamkit_directory_is_not_given_one(tmp_path, monkeypatch):
@@ -932,15 +951,21 @@ def test_the_record_is_these_bytes(record_home):
     able to read what the other wrote. That makes the serialization a contract and not an
     implementation detail: two spaces of indent, a trailing newline, and no `ensure_ascii`
     escaping, which is what `JSON.stringify(payload, null, 2)` produces on the other side.
+
+    AMENDED 2026-09-21 (job62, J62-13). The stamp moved INSIDE the entry and there is no
+    record-level one: `--update` holds one registry's answer by construction, and the
+    record's `checked_at` means "a writer refreshed the whole record". A record this writer
+    creates therefore cannot say when it was refreshed as a whole — which is exactly what
+    makes the hook's 24 h TTL treat it as due and send the probe that fills the other half.
     """
     assert selfupdate.record_update("0.31.0", now="2026-09-19T21:04:11Z") is True
 
     assert (record_home / ".bantamkit" / "update-check.json").read_text(encoding="utf-8") == (
         "{\n"
-        '  "checked_at": "2026-09-19T21:04:11Z",\n'
         '  "pypi": {\n'
         '    "distribution": "bantamkit",\n'
-        '    "latest": "0.31.0"\n'
+        '    "latest": "0.31.0",\n'
+        '    "checked_at": "2026-09-19T21:04:11Z"\n'
         "  }\n"
         "}\n"
     )
@@ -951,11 +976,12 @@ def test_the_stamp_is_utc_and_shaped_the_way_the_reader_slices_it(record_home):
 
     The reader slices the `YYYY-MM-DD` prefix and never renders a date, so what matters here
     is that the prefix is there and that the suffix is the same shape the port produces.
-    """
-    import re
 
+    AMENDED 2026-09-21 (job62, J62-13): read off the ENTRY, which is where this writer puts
+    its stamp now. `record_update` writes no record-level `checked_at` at all.
+    """
     assert selfupdate.record_update("0.31.0") is True
-    written = _read_record(record_home)["checked_at"]
+    written = _read_record(record_home)["pypi"]["checked_at"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", written), written
     assert updatecheck.update_status("0.31.0").state == "current"
 
