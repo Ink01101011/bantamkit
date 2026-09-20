@@ -398,3 +398,272 @@ export function installSelf(host: Host, force = false, options: CommandOptions =
   const { command, args } = thisCommand(options);
   return install(host, command, args, force);
 }
+
+/*
+ * ============================================================================================
+ * `--install-hooks` / `--remove-hooks` — the SEVEN hook entries in `~/.claude/settings.json`
+ * ============================================================================================
+ *
+ * THIS IS THE ONE SURFACE IN THIS PROGRAM THAT ASKS BEFORE IT WRITES, AND THAT IS A RULING,
+ * not a style. `--install` writes a file that exists to hold server entries; this writes the
+ * user's own settings file and registers a command that runs on EVERY tool call. The stronger
+ * write gets the stronger gate (S1 RULING Q3.3).
+ *
+ * `tools/hooks/install.mjs` is the ANTI-PATTERN this replaces, not the template. It writes the
+ * same seven entries unconditionally: no plan, no question, no backup. Everything below is the
+ * same data with a gate and `--install`'s existing write discipline around it.
+ *
+ * THE THREE-STATE GATE LIVES HERE AND THE TERMINAL DOES NOT. `ask` is a seam: a function when
+ * there is a terminal to ask at, `null` when there is none. `cli.ts` supplies the real one off
+ * `process.stdin.isTTY` — the same signal `typedBareAtATerminal` uses and for the same reason.
+ * Keeping the seam here is what makes the two REFUSING states testable without a pty, and a
+ * refusal nothing can test is a refusal nobody has seen work.
+ *
+ *   ask is a function        -> print the plan, ask, and honour the answer
+ *   yes is true              -> print the plan and proceed; `--yes` is written-down consent
+ *   ask is null and no --yes -> HookConsentUnavailable. Nothing is printed, nothing is written.
+ *
+ * WHAT IS NOT WRITTEN HERE, EVER: `BANTAMKIT_DREAM_TIMEOUT_MS`. It is a TEST seam, and a seam
+ * that reaches a user's settings file stops being one.
+ */
+
+/**
+ * The seven events, their matchers, and the ORDER RULING Q3.4 prints them in.
+ *
+ * The data is `tools/hooks/install.mjs:22–32`; the order is the ruled `events :` line, which
+ * is not that file's order. Both runtimes iterate this list, so it also decides the key order
+ * of a freshly written `hooks` object and therefore the bytes on disk.
+ *
+ * `PostToolUse` IS MATCHER-LESS AND MUST STAY THAT WAY. Its arm logs a usage event for EVERY
+ * tool call and runs the `memory_save` half only when the tool was that one. A second, narrower
+ * entry beside it would fire the save half twice.
+ */
+export const HOOK_EVENTS: readonly (readonly [string, string | null])[] = [
+  ['SessionStart', 'startup|resume|clear|compact'],
+  ['PreToolUse', 'Read'],
+  ['PostToolUse', null],
+  ['UserPromptSubmit', null],
+  ['PreCompact', null],
+  ['PostCompact', null],
+  ['Stop', null],
+];
+
+/** The per-entry `timeout`, in seconds, carried from `tools/hooks/install.mjs`. */
+export const HOOK_TIMEOUT = 10;
+
+/**
+ * The only file these two flags touch: `~/.claude/settings.json`, user scope.
+ *
+ * RULING Q3.8 — hooks are a Claude Code concept, `--install-hooks` takes no host argument, and
+ * the other three hosts in `HOSTS` get nothing. Resolved from `homedir()` and nothing else, so
+ * pointing `HOME` at a scratch directory moves it, which is what makes the tests possible.
+ */
+export function claudeSettingsPath(): string {
+  return join(homedir(), '.claude', 'settings.json');
+}
+
+/** The one command all seven entries run. The event arrives on stdin, never in argv. */
+export function hookCommand(command: string, args: readonly string[]): string {
+  return shlexJoin([command, ...args, '--hook']);
+}
+
+/** There is no terminal to ask at and `--yes` was not given. Exit 2, and nothing was written. */
+export class HookConsentUnavailable extends Error {}
+
+/** The person was asked and did not say yes. Exit 1, and nothing was written. */
+export class HookDeclined extends Error {}
+
+/** The seams the two hook flags take. Nothing here reaches a terminal or the network. */
+export interface HookOptions extends CommandOptions {
+  /** Consent. A function when there is a terminal; `null` when there is none. */
+  readonly ask?: (() => boolean) | null;
+  /** `--yes`: the written-down consent that stands in for the terminal. */
+  readonly yes?: boolean;
+  /** Where the plan and the question go. Default: nowhere — `cli.ts` sends them to stderr. */
+  readonly tell?: (text: string) => void;
+}
+
+/** One entry, in the shape Claude Code reads. `matcher` first, and only where there is one. */
+function hookEntry(matcher: string | null, command: string): Record<string, unknown> {
+  const entry: Record<string, unknown> = {};
+  if (matcher !== null) entry['matcher'] = matcher;
+  entry['hooks'] = [{ type: 'command', command, timeout: HOOK_TIMEOUT }];
+  return entry;
+}
+
+/**
+ * RULING Q3.6's idempotence rule, and the whole of it: an entry is OURS when its JSON mentions
+ * `bantamkit`. Every other hook the operator has is left byte-for-byte.
+ *
+ * `dumps` rather than `JSON.stringify` for the reason the module header gives — the two write
+ * different separators — and `sortKeys` so the same entry renders the same way whatever order
+ * its keys arrived in.
+ */
+function isOurs(entry: unknown): boolean {
+  return dumps(entry, null, true).includes('bantamkit');
+}
+
+/** The `hooks` object, validated. Refuses by name rather than crashing on somebody's file. */
+function readHooks(path: string, data: Record<string, unknown>): Record<string, unknown[]> {
+  const raw = data['hooks'];
+  if (raw === undefined) return {};
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new InstallError(`${path} has a 'hooks' that is not an object; refusing to touch it`);
+  }
+  const hooks: Record<string, unknown[]> = {};
+  for (const [event, entries] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) {
+      throw new InstallError(`${path} has a 'hooks.${event}' that is not a list; refusing to touch it`);
+    }
+    hooks[event] = [...entries];
+  }
+  return hooks;
+}
+
+/**
+ * The `hooks` object this run wants, built from whatever is there now.
+ *
+ * ONE PASS OVER THE SEVEN EVENTS AND NOTHING ELSE: every event keeps its non-bantamkit entries
+ * in their existing order, ours is appended after them, and an event left with none loses its
+ * key rather than holding an empty list — `install.mjs`'s rule, kept because a settings file
+ * full of empty arrays is a worse artefact than one with nothing in it.
+ *
+ * Events outside the seven are not read, not reordered and not removed.
+ */
+function plannedHooks(
+  current: Record<string, unknown[]>,
+  command: string,
+  remove: boolean,
+): { hooks: Record<string, unknown[]>; touched: string[] } {
+  const hooks: Record<string, unknown[]> = { ...current };
+  const touched: string[] = [];
+  for (const [event, matcher] of HOOK_EVENTS) {
+    const before = hooks[event] ?? [];
+    const kept = before.filter((entry) => !isOurs(entry));
+    if (remove) {
+      if (kept.length !== before.length) touched.push(event);
+    } else {
+      kept.push(hookEntry(matcher, command));
+      touched.push(event);
+    }
+    if (kept.length > 0) hooks[event] = kept;
+    else delete hooks[event];
+  }
+  return { hooks, touched };
+}
+
+const EVENT_NAMES = HOOK_EVENTS.map(([event]) => event).join(' ');
+
+/**
+ * RULING Q3.4's plan, printed before any question and before any write.
+ *
+ * THE `backup :` LINE IS OMITTED WHEN THERE IS NO FILE TO BACK UP, which is `--install`'s own
+ * report discipline (`backup` returns `null` and the line does not print). The ruled template
+ * shows the line because the ordinary case has a file; printing a backup path for a file that
+ * does not exist would be the plan stating something the write will not do.
+ */
+function hookPlan(path: string, command: string): string {
+  const lines = [
+    `bantamkit would add ${HOOK_EVENTS.length} hook entries to ${path}`,
+    `  events : ${EVENT_NAMES}`,
+    `  command: ${command}`,
+  ];
+  if (existsSync(path)) lines.push(`  backup : ${path}.backup-${today()}`);
+  lines.push('Existing hooks are left byte-for-byte; only entries naming bantamkit are replaced.');
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * `--install-hooks`: the seven entries, in ONE write, AFTER asking.
+ *
+ * THE ORDER IS THE PROPERTY, and it is `installSelf`'s order for `installSelf`'s reason:
+ *
+ *   1. resolve the command — on an `npx` cache this makes the kept install, and npm failing
+ *      there is an `InstallError` thrown before the settings file has been opened at all;
+ *   2. read and validate the settings file — a file that does not parse is reported, never
+ *      overwritten;
+ *   3. ALREADY-INSTALLED-AND-MATCHING RETURNS HERE, before the gate. There is no write to
+ *      consent to, so a second `--install-hooks` is a no-op at exit 0 whether or not anybody
+ *      is at a terminal, which is what makes it safe in a setup script;
+ *   4. print the plan, then the gate;
+ *   5. dated backup, then one atomic write.
+ *
+ * The write itself is `writeConfig` — the same temp-file replace, the same carried mode, the
+ * same `indent: 2` through `dumps` — so the bytes this leaves and the bytes `--install` leaves
+ * are produced by one function (RULING Q3.5).
+ */
+export function installHooks(options: HookOptions = {}): string {
+  const { command, args } = thisCommand(options);
+  const rendered = hookCommand(command, args);
+  const path = claudeSettingsPath();
+  const data = readConfig(path);
+  const current = readHooks(path, data);
+  const { hooks } = plannedHooks(current, rendered, false);
+
+  if (dumps(hooks, null, true) === dumps(current, null, true)) {
+    return `bantamkit hooks are already installed in ${path} and match`;
+  }
+
+  const tell = options.tell ?? ((): void => {});
+  const yes = options.yes ?? false;
+  const ask = options.ask ?? null;
+  if (!yes) {
+    if (ask === null) {
+      // NOTHING IS PRINTED HERE. The plan describes a write that is not going to happen, and
+      // the refusal is the whole message.
+      throw new HookConsentUnavailable(
+        '--install-hooks writes your ~/.claude/settings.json and needs a terminal to ask.\n' +
+          'There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n' +
+          '--yes to say yes in advance.',
+      );
+    }
+    tell(hookPlan(path, rendered));
+    if (!ask()) throw new HookDeclined('no hooks were written');
+  } else {
+    tell(hookPlan(path, rendered));
+  }
+
+  const copied = backup(path);
+  data['hooks'] = hooks;
+  writeConfig(path, data);
+
+  const lines = [
+    `installed bantamkit hooks into ${path}`,
+    `  events : ${EVENT_NAMES}`,
+    `  command: ${rendered}`,
+  ];
+  if (copied !== null) lines.push(`  backup : ${copied}`);
+  lines.push('restart Claude Code (or run /hooks) for this to take effect');
+  return lines.join('\n');
+}
+
+/**
+ * `--remove-hooks`: take out what bantamkit wrote, and nothing else.
+ *
+ * NO CONSENT PROMPT (RULING Q3.7). Removing what bantamkit added is not a write to somebody
+ * else's configuration in the sense the ruling is about. It still takes the dated backup, it
+ * still touches only entries naming bantamkit, and a file with none of ours is left
+ * byte-unchanged with no backup taken.
+ *
+ * `thisCommand` IS NOT CALLED. Removal does not need to know what a host should launch, and
+ * calling it would put an `npx` cache's kept install between an operator and the ability to
+ * undo. `options` still takes the same shape so the two flags read the same way.
+ */
+export function removeHooks(options: HookOptions = {}): string {
+  void options;
+  const path = claudeSettingsPath();
+  const data = readConfig(path);
+  const current = readHooks(path, data);
+  const { hooks, touched } = plannedHooks(current, '', true);
+
+  if (touched.length === 0) return `no bantamkit hooks are installed in ${path}`;
+
+  const copied = backup(path);
+  data['hooks'] = hooks;
+  writeConfig(path, data);
+
+  const lines = [`removed bantamkit hooks from ${path}`, `  events : ${touched.join(' ')}`];
+  if (copied !== null) lines.push(`  backup : ${copied}`);
+  lines.push('restart Claude Code (or run /hooks) for this to take effect');
+  return lines.join('\n');
+}

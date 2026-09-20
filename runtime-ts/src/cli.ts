@@ -68,7 +68,7 @@
  * reaches for is answered on the wire instead, by `build_identity`. `runtime-ts/README.md`
  * and `docs/install.md` carry the same correction in their own words.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -93,7 +93,16 @@ import {
   type ParserSpec,
 } from './pyargparse.js';
 import { pyJoin, PyOSError, pyRepr, pyStatIsDir } from './memory/pyfs.js';
-import { HOSTS, type Host, InstallError, installSelf } from './hostinstall.js';
+import {
+  HOSTS,
+  type Host,
+  HookConsentUnavailable,
+  HookDeclined,
+  installHooks,
+  InstallError,
+  installSelf,
+  removeHooks,
+} from './hostinstall.js';
 import { runUpdate } from './selfupdate.js';
 import { statusLine } from './statusline.js';
 
@@ -273,6 +282,47 @@ const PARSER: ParserSpec = {
       help: 'with --install, replace an existing bantamkit entry',
       defaultValue: false,
     },
+    // THE HOOK REGISTRATION, AND IT IS THREE FLAGS, NOT A MODIFIER ON `--install`.
+    //
+    // S1 RULING Q3.1: hooks are NEVER written as a side effect of `--install <host>`. Somebody
+    // asking to register an MCP server has not asked to register seven hooks that run on every
+    // tool call. RULING Q3.2 makes it its own opt-in, with a paired `--remove-hooks`, and gives
+    // the reason a modifier was refused: `--force`'s help above says "with --install", and
+    // overloading `--install` with a second, differently-consented write would make that
+    // sentence false.
+    //
+    // `--yes` IS THE THIRD STATE OF THE GATE, WHICH IS WHY IT IS A FLAG AND NOT AN ENV VAR.
+    // RULING Q3.3 makes the no-terminal-and-no-`--yes` case a REFUSAL at exit 2, so `--yes` is
+    // the only path a CI or scripted install has, and the ruling requires it to appear in `-h`
+    // so nobody has to guess it. It carries `--force`'s "with --install…" phrasing for the
+    // same reason `--force` does: a flag that is inert on its own says so in its own help.
+    //
+    // POSITION IS WIRE-VISIBLE, the same as every flag above. These three land AFTER `--force`
+    // and before the `--store`/`--start` group, which leaves the FIRST line of the 80-column
+    // usage — the line pinned by `test/cli-surface.test.mjs` and by the `cli` conformance
+    // suite — byte-identical, and moves the wrap boundary on the later lines only. The group
+    // indices below move with them.
+    {
+      optionStrings: ['--install-hooks'],
+      dest: 'install_hooks',
+      kind: 'storeTrue',
+      help: "add bantamkit's hook entries to ~/.claude/settings.json, then exit",
+      defaultValue: false,
+    },
+    {
+      optionStrings: ['--remove-hooks'],
+      dest: 'remove_hooks',
+      kind: 'storeTrue',
+      help: "take bantamkit's hook entries back out of ~/.claude/settings.json, then exit",
+      defaultValue: false,
+    },
+    {
+      optionStrings: ['--yes'],
+      dest: 'yes',
+      kind: 'storeTrue',
+      help: 'with --install-hooks, say yes in advance instead of being asked',
+      defaultValue: false,
+    },
     {
       optionStrings: ['--store'],
       dest: 'store',
@@ -289,10 +339,11 @@ const PARSER: ParserSpec = {
     },
   ],
   // `--store`/`--start` moved from 6/7 to 8/9 when `--install` and `--force` were added
-  // ahead of them, from 8/9 to 9/10 when `--update` was, and from 9/10 to 10/11 when `--hook`
-  // was. These are POSITIONS, not names, so adding an action above the group and leaving this
+  // ahead of them, from 8/9 to 9/10 when `--update` was, from 9/10 to 10/11 when `--hook`
+  // was, and from 10/11 to 13/14 when `--install-hooks`, `--remove-hooks` and `--yes` were.
+  // These are POSITIONS, not names, so adding an action above the group and leaving this
   // line alone would silently make two unrelated flags mutually exclusive.
-  groups: [[10, 11]],
+  groups: [[13, 14]],
 };
 
 /*
@@ -318,6 +369,9 @@ export interface Options {
   update: boolean;
   install: Host | null;
   force: boolean;
+  installHooks: boolean;
+  removeHooks: boolean;
+  yes: boolean;
 }
 
 /** `_parse_args`, arm for arm, including the mutually exclusive group and `-h`. */
@@ -335,6 +389,9 @@ export function parseArgs(argv: readonly string[]): Options {
     update: values['update'] as boolean,
     install: values['install'] as Host | null,
     force: values['force'] as boolean,
+    installHooks: values['install_hooks'] as boolean,
+    removeHooks: values['remove_hooks'] as boolean,
+    yes: values['yes'] as boolean,
   };
 }
 
@@ -391,6 +448,76 @@ function typedBareAtATerminal(argv: readonly string[]): boolean {
   }
   if (stream === null || stream === undefined) return false;
   return Boolean(stream.isTTY);
+}
+
+/**
+ * Is there a terminal to ask a question at? The SAME signal `typedBareAtATerminal` uses.
+ *
+ * `process.stdin.isTTY` is `true` on a terminal and **`undefined`** — not `false` — on a pipe,
+ * a file or `/dev/null`, so this is a truthiness test for the reason spelled out above: a
+ * `=== false` test would make every non-terminal invocation look like a terminal, and on THIS
+ * path that inverts a consent gate. Neither the getter throwing nor a null `process.stdin` is
+ * a terminal, and neither may take the process down: what is at stake is a refusal.
+ */
+function haveATerminal(): boolean {
+  let stream: NodeJS.ReadStream | null;
+  try {
+    stream = process.stdin;
+  } catch {
+    return false;
+  }
+  if (stream === null || stream === undefined) return false;
+  return Boolean(stream.isTTY);
+}
+
+/**
+ * RULING Q3.4's question, on stderr, answered on stdin. Only ever called at a terminal.
+ *
+ * ONE LINE, READ SYNCHRONOUSLY, ONE BYTE AT A TIME. `readFileSync(0)` would block until EOF —
+ * at a terminal that is Ctrl-D, not Enter — so the answer is read to the first newline and no
+ * further, which leaves anything the person typed after it for whoever asks next.
+ *
+ * ANYTHING OTHER THAN `y` OR `Y` MEANS NO, including empty and including EOF. That is the
+ * ruling, and it is why the default in the prompt is spelled `[y/N]`: the safe answer is the
+ * one you get by pressing Enter, by piping nothing, or by closing the terminal.
+ *
+ * EAGAIN IS NOT AN ANSWER, AND THE FIRST VERSION OF THIS FUNCTION THOUGHT IT WAS. Node leaves
+ * a terminal's fd 0 in NON-BLOCKING mode, so a synchronous read of one the person has not
+ * typed into yet throws `EAGAIN` instead of waiting. Measured on a real pty on 2026-09-20:
+ * `isTTY=true`, and the very first `readSync(0, …)` threw
+ * `EAGAIN: resource temporarily unavailable, read` before anything had been typed. Treating
+ * that as EOF answered "no" to a question nobody had been given a chance to answer — the
+ * refusal was safe, but the feature was unreachable at the only place it is meant to work,
+ * and NO UNIT TEST COULD SEE IT because every one of them injects the answer through the
+ * `ask` seam. A pty found it; a suite could not.
+ *
+ * `Atomics.wait` IS THE ONLY SYNCHRONOUS SLEEP THERE IS, and one is needed: without it the
+ * retry is a busy spin on a terminal waiting for a human.
+ */
+function askAtTheTerminal(): boolean {
+  process.stderr.write('Write these hook entries? [y/N] ');
+  const byte = Buffer.alloc(1);
+  const idle = new Int32Array(new SharedArrayBuffer(4));
+  let answer = '';
+  for (;;) {
+    let read: number;
+    try {
+      read = readSync(0, byte, 0, 1, null);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EAGAIN') {
+        Atomics.wait(idle, 0, 0, 20); // nothing typed yet; wait for the person, not for the cpu
+        continue;
+      }
+      break; // a closed fd, a stream the platform cannot read this way — not a yes
+    }
+    if (read === 0) break; // EOF: Ctrl-D, or a terminal that went away
+    const ch = byte.toString('utf8');
+    if (ch === '\n') break;
+    if (ch !== '\r') answer += ch;
+  }
+  process.stderr.write('\n');
+  const said = answer.trim();
+  return said === 'y' || said === 'Y';
 }
 
 /** `_build_memory`, including the two refusals argparse cannot express. */
@@ -580,9 +707,66 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     return 0;
   }
+  // REGISTRATION ORDER AGAIN, which is what makes `--mcp-report --install-hooks` print a
+  // report and write nothing, exactly as `--mcp-report --install cursor` already does.
+  //
+  // THREE EXITS, AND THE TWO THAT WRITE NOTHING ARE NOT THE SAME EXIT (S1 RULING Q3.3/Q3.4):
+  //
+  //   0  written, or already installed and matching
+  //   1  the person was asked at a terminal and did not say yes — `no hooks were written`
+  //   2  there was no terminal to ask at and no `--yes`
+  //
+  // Neither refusal carries the `error:` prefix `InstallError` gets. Nothing went wrong: the
+  // program asked, or found it could not ask, and then did nothing — which is the feature.
+  //
+  // THE PLAN AND THE QUESTION GO TO STDERR, the report to stdout. One stream is the operator's
+  // answer and the other is the conversation that led to it, and a caller piping stdout into
+  // something should get the report and not the prompt.
+  if (options.installHooks) {
+    try {
+      process.stdout.write(
+        `${installHooks({
+          version: version(),
+          yes: options.yes,
+          ask: haveATerminal() ? askAtTheTerminal : null,
+          tell: (text) => process.stderr.write(text),
+        })}\n`,
+      );
+    } catch (e) {
+      if (e instanceof HookConsentUnavailable) {
+        process.stderr.write(`${e.message}\n`);
+        return 2;
+      }
+      if (e instanceof HookDeclined) {
+        process.stderr.write(`${e.message}\n`);
+        return 1;
+      }
+      if (!(e instanceof InstallError)) throw e;
+      process.stderr.write(`error: ${e.message}\n`);
+      return 1;
+    }
+    return 0;
+  }
+  if (options.removeHooks) {
+    // No gate (RULING Q3.7): taking back out what bantamkit put in is not the write the
+    // ruling is about. It still backs the file up and still touches only our own entries.
+    try {
+      process.stdout.write(`${removeHooks()}\n`);
+    } catch (e) {
+      if (!(e instanceof InstallError)) throw e;
+      process.stderr.write(`error: ${e.message}\n`);
+      return 1;
+    }
+    return 0;
+  }
   // `--force` alone is a typo with a plausible reading — somebody meant to install and
   // dropped the flag that says where. Refusing names the missing half.
   if (options.force) throw new Refusal('--force is only meaningful with --install');
+  // The same reading, and the same refusal, for the consent flag: `--yes` on its own is
+  // somebody who meant to install hooks and dropped the flag that says so. It is checked
+  // AFTER `--force` because that is registration order, and both are checked after every
+  // flag that acts, so `--install-hooks --yes` never reaches either of them.
+  if (options.yes) throw new Refusal('--yes is only meaningful with --install-hooks');
   // A PERSON TYPED IT. `typedBareAtATerminal` carries the whole argument; what belongs here is
   // only that this sits BEFORE `buildMemory`, which is what creates a store. Somebody who typed
   // a command to see what it does has not asked for a `.bantamkit/memory` directory in whatever

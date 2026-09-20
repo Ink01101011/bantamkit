@@ -15,6 +15,15 @@
  * reason: otherwise a developer's terminal size is an input to the result. Nothing here was
  * copied out of `argparse.py` by eye.
  *
+ * WITH ONE EXCEPTION, AND IT IS SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED. `USAGE_80`
+ * and the four `HELP` blocks were re-measured on 2026-09-20 (job62, J62-4) from THIS PORT and
+ * not from the reference, because the three flags that moved them — `--install-hooks`,
+ * `--remove-hooks` and `--yes` — landed on the Node parser in that unit and the reference did
+ * not yet carry them. For the length of ONE unit the sentence above is false of those five
+ * literals, and the `cli` conformance suite is RED over exactly that gap. J62-5 lands the same
+ * three flags on the reference and re-measures these blocks against it; if one byte of any of
+ * them then differs, the port is wrong and this file is the thing that says so.
+ *
  * NOTHING HERE TOUCHES A REAL STORE. Every argv line below fails or prints before
  * `_build_memory` runs, so no `Memory` is ever constructed and no store is read or created.
  *
@@ -53,7 +62,8 @@ const USAGE_80 =
   "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]\n" +
   "                     [--hook] [--mcp-report] [--statusline] [--update]\n" +
   "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
-  "                     [--force] [--store STORE | --start START]\n";
+  "                     [--force] [--install-hooks] [--remove-hooks] [--yes]\n" +
+  "                     [--store STORE | --start START]\n";
 
 const HELP = new Map([
   [
@@ -69,6 +79,9 @@ const HELP = new Map([
     "       [--update]\n" +
     "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "       [--force]\n" +
+    "       [--install-hooks]\n" +
+    "       [--remove-hooks]\n" +
+    "       [--yes]\n" +
     "       [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP\n" +
@@ -148,6 +161,33 @@ const HELP = new Map([
     "    existing\n" +
     "    bantamkit\n" +
     "    entry\n" +
+    "  --install-hooks\n" +
+    "    add\n" +
+    "    bantamkit's\n" +
+    "    hook\n" +
+    "    entries to \n" +
+    "    ~/.claude/s\n" +
+    "    ettings.jso\n" +
+    "    n, then\n" +
+    "    exit\n" +
+    "  --remove-hooks\n" +
+    "    take\n" +
+    "    bantamkit's\n" +
+    "    hook\n" +
+    "    entries\n" +
+    "    back out of\n" +
+    "    ~/.claude/s\n" +
+    "    ettings.jso\n" +
+    "    n, then\n" +
+    "    exit\n" +
+    "  --yes\n" +
+    "    with\n" +
+    "    --install-\n" +
+    "    hooks, say\n" +
+    "    yes in\n" +
+    "    advance\n" +
+    "    instead of\n" +
+    "    being asked\n" +
     "  --store STORE\n" +
     "    single\n" +
     "    memory\n" +
@@ -177,6 +217,9 @@ const HELP = new Map([
     "       [--update]\n" +
     "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "       [--force]\n" +
+    "       [--install-hooks]\n" +
+    "       [--remove-hooks]\n" +
+    "       [--yes]\n" +
     "       [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP\n" +
@@ -247,6 +290,28 @@ const HELP = new Map([
     "    existing\n" +
     "    bantamkit\n" +
     "    entry\n" +
+    "  --install-hooks\n" +
+    "    add\n" +
+    "    bantamkit's\n" +
+    "    hook entries\n" +
+    "    to ~/.claude/s\n" +
+    "    ettings.json,\n" +
+    "    then exit\n" +
+    "  --remove-hooks\n" +
+    "    take\n" +
+    "    bantamkit's\n" +
+    "    hook entries\n" +
+    "    back out of ~/\n" +
+    "    .claude/settin\n" +
+    "    gs.json, then\n" +
+    "    exit\n" +
+    "  --yes\n" +
+    "    with\n" +
+    "    --install-\n" +
+    "    hooks, say yes\n" +
+    "    in advance\n" +
+    "    instead of\n" +
+    "    being asked\n" +
     "  --store STORE\n" +
     "    single memory\n" +
     "    store path\n" +
@@ -271,6 +336,9 @@ const HELP = new Map([
     "                     [--update]\n" +
     "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "                     [--force]\n" +
+    "                     [--install-hooks]\n" +
+    "                     [--remove-hooks]\n" +
+    "                     [--yes]\n" +
     "                     [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP server (stdio): per-\n" +
@@ -314,6 +382,21 @@ const HELP = new Map([
     "  --force       with --install,\n" +
     "                replace an existing\n" +
     "                bantamkit entry\n" +
+    "  --install-hooks\n" +
+    "                add bantamkit's hook\n" +
+    "                entries to ~/.claude\n" +
+    "                /settings.json, then\n" +
+    "                exit\n" +
+    "  --remove-hooks\n" +
+    "                take bantamkit's\n" +
+    "                hook entries back\n" +
+    "                out of ~/.claude/set\n" +
+    "                tings.json, then\n" +
+    "                exit\n" +
+    "  --yes         with --install-\n" +
+    "                hooks, say yes in\n" +
+    "                advance instead of\n" +
+    "                being asked\n" +
     "  --store STORE\n" +
     "                single memory store\n" +
     "                path (disables\n" +
@@ -331,7 +414,8 @@ const HELP = new Map([
     "                     [--mcp-report] [--statusline]\n" +
     "                     [--update]\n" +
     "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
-    "                     [--force]\n" +
+    "                     [--force] [--install-hooks]\n" +
+    "                     [--remove-hooks] [--yes]\n" +
     "                     [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP server (stdio): per-person memory +\n" +
@@ -365,6 +449,16 @@ const HELP = new Map([
     "                        then exit\n" +
     "  --force               with --install, replace an\n" +
     "                        existing bantamkit entry\n" +
+    "  --install-hooks       add bantamkit's hook entries\n" +
+    "                        to ~/.claude/settings.json,\n" +
+    "                        then exit\n" +
+    "  --remove-hooks        take bantamkit's hook entries\n" +
+    "                        back out of\n" +
+    "                        ~/.claude/settings.json, then\n" +
+    "                        exit\n" +
+    "  --yes                 with --install-hooks, say yes\n" +
+    "                        in advance instead of being\n" +
+    "                        asked\n" +
     "  --store STORE         single memory store path\n" +
     "                        (disables layering)\n" +
     "  --start START         directory to start project-\n" +
