@@ -322,6 +322,38 @@ claude mcp remove bantamkit -s user
 npx -y bantamkit-mcp@latest --install claude
 ```
 
+### Hooks are a separate step, and it asks: `--install-hooks` (job62, 2026-09-20)
+
+`--install <host>` registers the MCP SERVER and nothing else. The hooks — the automatic half
+of the toolbox, seven entries in `~/.claude/settings.json` that run on every session start,
+every prompt and every tool call — are a second consent, so they are a second flag:
+
+```bash
+npx -y bantamkit-mcp@latest --install-hooks     # asks, then writes
+npx -y bantamkit-mcp@latest --remove-hooks      # takes them back out
+```
+
+Both flags exist on both runtimes with the same sentences; on a pip install the same two are
+`python -m bantamkit.mcpserver --install-hooks` and `--remove-hooks`. What they write is the
+interpreter and entry point of the install that should run, by absolute path, which is the
+same divergence `--install`'s recorded command has and for the same reason (`docs/porting.md`).
+
+**It refuses rather than guessing when it cannot ask.** With no terminal and no `--yes` it
+prints its refusal on stderr, writes nothing, and **exits 2** — measured 2026-09-20, identical
+on both runtimes, with `~/.claude` not even created. That is the state a CI job or any
+non-interactive caller hits, and `--yes` is how such a caller says yes in advance:
+
+```bash
+npx -y bantamkit-mcp@latest --install-hooks --yes
+```
+
+Measured 2026-09-20 in a throwaway `HOME` seeded with a `~/.claude/settings.json` that already
+carried a `hooks` key: `--install cursor` wrote `~/.cursor/mcp.json`, recorded a command with
+no `--hook` in it, and left `~/.claude/settings.json` byte-identical with no backup beside it.
+Registering the server does not register the hooks, in either direction. What the entries do,
+what they cost, and the full consent gate are in [hooks.md](hooks.md).
+
+
 ### The Python route with no network
 
 For a machine with no network, `pip download` a wheelhouse on a connected machine with the same

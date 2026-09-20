@@ -26,6 +26,109 @@ no longer resolve — read `runtime-ts/src/hookadapter.ts` instead; and the deta
 `tools/hooks/update-probe.mjs` does not ship either, so an npx install logs
 `updateProbe: "missing"` and the SessionStart block is otherwise unchanged.
 
+**AMENDED 2026-09-20 (job62, J62-9), three corrections and one addition to the block above.**
+
+1. **Its own attribution is wrong.** It says *job61, J61-2*, and the move landed in
+   **job62, unit J62-2** — `git log --oneline -1 -S'is now a four-line shim' -- docs/hooks.md`
+   answers `bdc64fb feat(runtime-ts): bantamkit-mcp --hook, the adapter where npm can reach it
+   — J62-2`. The same wrong id is in `tools/hooks/bantamkit-hook.mjs`'s own header comment,
+   which this unit did not touch (it is source, and this unit is docs). Corrected here rather
+   than rewritten there, per `docs/record-vs-pointer.md`.
+2. **The shim is 33 lines, of which four are code.** `wc -l tools/hooks/bantamkit-hook.mjs`
+   → `33`. "Four-line shim" is the code; the other 29 lines are the comment that says why the
+   file still exists. **It exists deliberately and is not scheduled for deletion**: it is the
+   command already written into every `~/.claude/settings.json` that registered bantamkit's
+   hooks before this change, and it is what `tools/hooks/install.mjs`,
+   `tools/hooks/update-signal.test.mjs`, `tools/conformance/suites/instructions.mjs` and
+   `runtime-ts/test/hooks.test.mjs` spawn. Deleting it would silently unhook every machine
+   that already names it. It is a SHIM and not a second copy — one adapter, so the two cannot
+   drift — and it requires a built `runtime-ts/dist`, which is what it always required.
+3. **`--hook` is on BOTH runtimes now**, not just the port. The Python half landed in J62-3
+   and J62-3B as `runtime-py/src/bantamkit/hookadapter.py`, every arm, and it ships for the
+   same reason the Node half does: a wheel built from this tree at 0.35.3 carries 135 entries
+   and exactly one matching `hook`, `bantamkit/hookadapter.py` (built with
+   `hatchling.builders.wheel.WheelBuilder`), against the npm tarball's 176 files carrying
+   `dist/hookadapter.js` and `dist/hookadapter.d.ts`. Neither artifact carries anything from
+   `tools/`. So the shipped spellings are **two**, and each is the one for the install you
+   have:
+
+       npx bantamkit-mcp --hook                     # the npm install
+       python -m bantamkit.mcpserver --hook         # the pip install
+
+   Everything the rest of this page describes is true of both, except the stale-install line
+   (see *The stale-install signal*), which is Node-only for the reason recorded in
+   `docs/porting.md`'s divergence table.
+4. **You no longer write the registration by hand.** `--install-hooks` writes the seven
+   entries after asking, and `--remove-hooks` takes them back out; see *Registering the hooks*
+   below. The `node tools/hooks/install.mjs` lines at the top of this page still work in a
+   checkout and are still unconditional, unasked and backup-less — which is why they are not
+   the documented route any more.
+
+## Registering the hooks: `--install-hooks`, after asking (2026-09-20, job62 / J62-4, J62-5)
+
+Two paired flags, on both runtimes, byte for byte:
+
+      --install-hooks       add bantamkit's hook entries to ~/.claude/settings.json, then exit
+      --remove-hooks        take bantamkit's hook entries back out of ~/.claude/settings.json, then exit
+      --yes                 with --install-hooks, say yes in advance instead of being asked
+
+> the three rows as printed, from `env -u COLUMNS COLUMNS=400 node runtime-ts/dist/cli.js -h`
+> and from `env -u COLUMNS COLUMNS=400 python -m bantamkit.mcpserver -h`. The two full `-h`
+> outputs at `COLUMNS=400` diff to **zero hunks**.
+
+**Hooks are never a side effect of `--install <host>`.** Registering an MCP server and
+rewriting the file that decides what runs on every tool call are two different consents, and
+`--install` asks for the first one only. Measured 2026-09-20 in a throwaway `HOME` seeded with
+a `~/.claude/settings.json` carrying a `hooks` key: `--install cursor` exited 0, wrote
+`~/.cursor/mcp.json`, recorded `<absolute node> <absolute dist/cli.js>` with no `--hook` in it,
+and left `~/.claude/settings.json` byte-identical with no backup taken beside it.
+
+**The consent gate has three states, and only one of them writes.** `--install-hooks` prints
+the plan — the file it would write, the seven events, the exact command, and the backup path
+when there is a file to back up — and then:
+
+| state | what happens |
+|---|---|
+| a terminal, answered `y` | the seven entries are written, a backup is taken when a file was already there, and stdout carries the report |
+| a terminal, answered anything else | nothing is written; the refusal goes to stderr |
+| **no terminal and no `--yes`** | **nothing is written, and the process exits 2** |
+| `--yes` | the plan is still printed — it is what is being agreed to in advance — and the write proceeds with no prompt |
+
+The third state is the one CI and any non-interactive caller hits, and it is a REFUSAL rather
+than a default-yes or a default-no-silence. Measured 2026-09-20 with stdin at EOF in a
+throwaway `HOME` (`HOME` and `USERPROFILE` both redirected, the redirect asserted from inside
+each runtime first), identical on both sides, on **stderr**, `exit=2`, and `~/.claude` was not
+even created:
+
+    --install-hooks writes your ~/.claude/settings.json and needs a terminal to ask.
+    There is no terminal here, so nothing was written. Re-run it at a prompt, or pass
+    --yes to say yes in advance.
+
+`--yes` outside `--install-hooks` is itself a refusal: `--yes is only meaningful with
+--install-hooks`, exit 1.
+
+**What is written.** Seven entries — `SessionStart`, `PreToolUse`, `PostToolUse`,
+`UserPromptSubmit`, `PreCompact`, `PostCompact`, `Stop`, in that order, which is the order
+they take on disk — each with `timeout: 10`, each naming **one** command, because the event
+arrives on stdin and never in argv. Existing hooks are left byte for byte; only entries
+naming bantamkit are replaced. The command is the interpreter and entry point of the install
+that should run, by absolute path, so it differs per runtime and is meant to:
+`<absolute node> <absolute dist/cli.js> --hook` on the port,
+`<absolute python> -m bantamkit.mcpserver --hook` on the reference. That is a ruled divergence
+with a case: `docs/porting.md`, *`--install`'s recorded command*, and
+`install-hooks: the recorded command — each runtime registers ITSELF, by absolute path` in
+`tools/conformance/suites/hooks.mjs`.
+
+**`--remove-hooks` is the same write in reverse**, and says so when there is nothing to do:
+`no bantamkit hooks are installed in <path>`, exit 0. A removal that does remove something
+takes a `.backup-<date>` first and ends, like the install, with `restart Claude Code (or run
+/hooks) for this to take effect` — a running host has already loaded its hook table.
+
+**The gate.** 42 cases in `node tools/conformance/run.mjs --suite hooks`, of which eight cover
+`--install-hooks` and two cover the no-terminal refusal per side; 39 unit cases per runtime in
+`runtime-ts/test/hostinstall-hooks.test.mjs` and `runtime-py/tests/test_hostinstall_hooks.py`.
+
+
 ## Why it exists — measured, 2026-08-27
 
 The host's own MCP logs (`~/Library/Caches/claude-cli-nodejs/*/mcp-logs-bantamkit/`),
@@ -320,6 +423,19 @@ rather than a sentence:
 | `updateProbe` | `spawned` / `fresh` / `unbuilt` / `missing` / `failed` / `error` |
 | `updateBytes` | bytes of line that reached the block — `0` in the four quiet states |
 
+**AMENDED 2026-09-20 (job62, J62-9): this whole section is the ONE part of the hook that is
+Node-only.** `--hook` is on both runtimes now, but the line is decided through `updatecheck`'s
+reading of the kept npm install `npminstall.ts` makes, and there is no Python counterpart to
+that under the pure-node-install ruling; `tools/hooks/update-probe.mjs` ships in neither
+artifact. Measured 2026-09-20 in a throwaway `HOME` seeded with a kept install at 0.35.1 and
+an `~/.bantamkit/update-check.json` naming 0.36.0: the port emits the toolbox line **plus**
+the stale-install line and logs `{"updateState":"available","updateProbe":"fresh",
+"updateBytes":262}`; the reference emits the toolbox line alone and logs
+`{"updateState":null,"updateProbe":"node-only","updateBytes":0}`. It is a difference the model
+can see, so under CLAUDE.md it owes a `ruling:` case and a refusal-bit companion. **Neither
+exists yet** — the row in `docs/porting.md` says so in those words, and the numbers above are
+a hand probe rather than a gate.
+
 ## The three properties (same as `docs/statusline.md`)
 
 1. **Cheap.** Imports `runtime-ts/dist/memory` in-process; never starts an MCP server.
@@ -421,6 +537,49 @@ recently used facts first and the rest on later sessions. The log record carries
 **Only the project layer is exported.** The native directory is keyed on the host's project
 root, so a cross-project profile fact placed in it would be copied into every project's store;
 and the profile index is injected on every session anyway.
+
+**AMENDED 2026-09-20 (job62, J62-7 and J62-8): the section above describes BOTH runtimes, and
+it is now compared rather than claimed.** When it was written only `runtime-ts` had the
+export; `runtime-py`'s landed the same day, `_native_memory_exists` deleted on that side too,
+and the two were driven over one bed in turn — the same absolute paths, the bed reset from a
+pristine copy between runs, so nothing compared can be a path difference. **Zero bytes differ**
+in the written fact files, in the appended index lines, and in the ten `native*` log fields;
+the bed carries an em dash, a `"quote"`, a `\` backslash, `café 中文 😀`, an NBSP, a
+`facts/weird.md` whose frontmatter says `name: ../escape`, a host `alpha.md` with no index
+line and a `beta` index line with no file, so the file gate and the line gate are exercised
+independently in one run. Seven cases in `tools/conformance/suites/hooks.mjs` hold it, and the
+one over stdout is deliberately **not** the gate: what the export changes in the injected
+block is an ABSENCE (the project index is not injected), so stdout looks the same whether four
+files were written or none. The case says so in its own name.
+
+**One field is ruled different, and one is a hole the resolver has by design.** Branch 1 is
+taken unverified, so an override naming a directory that is not there is the one shape in
+which the write fails — and then `nativeError` holds the sentence each language spells for a
+failed `open()`, CPython's `[Errno 2] …` against libuv's `ENOENT: …`. Both sides export
+nothing, create nothing, emit their one object and exit 0; the ruling covers the sentence and
+four unruled cases beside it cover the refusal itself, including `A created no directory` per
+side, because `mkdir` is the thing this feature must never do. `docs/porting.md`,
+*the hook's `nativeError`*.
+
+## Two defects this hook carries on stdout, measured rather than suspected (job62, J62-8)
+
+Both are in `docs/porting.md`'s divergence table, written there **as defects rather than as
+designs**: each is one line per runtime to repair, the repair lands in both runtimes or in
+neither, and when it lands the conformance rulings that record them go STALE and redden. That
+is the design — a case beats a sentence precisely because it expires.
+
+1. **The compact report is cut in UTF-16 code units on the port and in code points on the
+   reference**, at 600 into `additionalContext` and at 400 into the log's `out`. It was
+   recorded as latent on the grounds that the report carries no astral characters. It carries
+   the STORE PATH, twice, and a project directory is a name the operator chose. MEASURED over
+   a project directory holding eight emoji with `--index-budget 300`: `additionalContext` is
+   **667 code points on the reference and 659 on the port** — the port's text is a strict
+   prefix of the reference's, and eight code points of the model's context are dropped.
+2. **Two open checkpoints written in the same millisecond break their tie differently.** The
+   port sorts filenames with `localeCompare` (ICU collation), the reference by code point.
+   MEASURED: the reference steers the summariser at `checkpoint-Banana.json` and the port at
+   `checkpoint-apple.json` — on stdout, in `PreCompact`'s `Open shiftwork checkpoint:` line,
+   and in the log's `checkpoint`. Two runtimes, one summariser, two different jobs.
 
 ## Seeding the profile layer
 
