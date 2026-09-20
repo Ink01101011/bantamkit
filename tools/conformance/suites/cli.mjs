@@ -1505,6 +1505,16 @@ function matrix(scratch) {
     // stale for a third time.
     { label: 'help-columns-207', argv: ['-h'], env: { COLUMNS: '207' } },
     { label: 'help-columns-208', argv: ['-h'], env: { COLUMNS: '208' } },
+    // AND IT WORKED, WHICH IS THE POINT OF THE PARAGRAPH ABOVE. `--hook` (job62, J62-3)
+    // added ` [--hook]` to both parsers and moved the boundary from 208 to 217, and the
+    // case below did exactly what J46-31 built it to do: it went RED naming the new number
+    // instead of leaving a comment to go stale a fourth time. 207/208 therefore straddles
+    // nothing any more — both of them wrap — and it is kept beside the three older pairs
+    // for the reason all of them were kept. MEASURED on this checkout by running BOTH
+    // runtimes at each width: the single-line usage is 215 characters on each, 216 wraps
+    // (first line 183 chars) and 217 does not (215).
+    { label: 'help-columns-216', argv: ['-h'], env: { COLUMNS: '216' } },
+    { label: 'help-columns-217', argv: ['-h'], env: { COLUMNS: '217' } },
     { label: 'help-columns-200', argv: ['-h'], env: { COLUMNS: '200' } },
   ];
 }
@@ -1546,8 +1556,16 @@ const SINGLE_LINE_USAGE =
   '[--statusline] [--store STORE | --start START]';
 const wrapBoundary = SINGLE_LINE_USAGE.length + 2;
 
-/** The widths the matrix above uses as today's straddle, asserted rather than trusted. */
-const STRADDLE = { wraps: 207, fits: 208 };
+/**
+ * The widths the matrix above uses as today's straddle, asserted rather than trusted.
+ *
+ * MOVED 2026-09-20 (job62, J62-3) from `{ wraps: 207, fits: 208 }`, by the case this pair
+ * feeds going red on its own: `--hook` landed in both parsers, ` [--hook]` is nine
+ * characters, and the measured boundary came back 217 against an expected 208. Measured on
+ * this checkout at each width, on BOTH runtimes: the single-line usage is 215 characters,
+ * 216 wraps and 217 fits. The two numbers here are the only thing that had to move.
+ */
+const STRADDLE = { wraps: 216, fits: 217 };
 
 /**
  * The single-line usage as THIS tree assembles it, and the width below which it wraps.

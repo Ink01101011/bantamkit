@@ -24,6 +24,7 @@ from bantamkit import (
     __version__,
     docmanifest,
     docread,
+    hookadapter,
     hostinstall,
     repomap,
     selfupdate,
@@ -1984,6 +1985,37 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="BYTES",
         help=f"memory index byte budget (default: {DEFAULT_INDEX_BUDGET})",
     )
+    # THE HOOK ADAPTER, AND IT IS A FLAG FOR THE REASON `--mcp-report` GIVES BELOW, ONLY
+    # HARDER. `runtime-ts/package.json` declares exactly one bin, so anything hung off a
+    # second entry point is unreachable in the pure-npx install that is the shipped product
+    # -- and the hook adapter was, literally: it lived in `tools/hooks/bantamkit-hook.mjs`,
+    # and MEASURED at 0.35.3 with `npm pack --dry-run` the tarball is 174 files under
+    # `files: ["dist","assets"]` with not one of them matching `hook`. An operator who
+    # installed bantamkit the only way it is published had no adapter on disk to register.
+    #
+    # POSITION IS WIRE-VISIBLE AND IT IS MEASURED, the same as every flag below it. At the
+    # 80-column fallback argparse breaks the usage after `[--index-budget BYTES]`, and that
+    # first line is pinned in `test_mcpserver.py`, in `test_mcpreport.py`, in
+    # `test_selfupdate.py`, in `runtime-ts/test/cli-surface.test.mjs` and as a THROWING
+    # precondition in `tools/conformance/suites/cli.mjs`. Registered HERE -- the first flag
+    # AFTER `--index-budget` -- it grows the SECOND usage line only. Registering it earlier
+    # would move the pinned line and turn a differential suite into a re-baselining one, and
+    # it is the same position `runtime-ts/src/cli.ts` registers it at because the two `-h`
+    # outputs are compared byte for byte.
+    #
+    # BARE, WITH NO METAVAR, AND THE EVENT COMES FROM STDIN. The host sends one JSON object
+    # carrying `hook_event_name`, which is what the adapter dispatches on; a second spelling
+    # of the event on the command line would be a second thing to keep in step with the
+    # host, and the registration in `~/.claude/settings.json` would have to carry seven
+    # different commands instead of one.
+    #
+    # THE CONTRACT IS DELIBERATELY NARROW, WHICH IS WHAT MAKES IT GATEABLE: one JSON object
+    # in on stdin, at most one JSON object out on stdout, exit 0 ALWAYS.
+    parser.add_argument(
+        "--hook",
+        action="store_true",
+        help="run as a Claude Code hook: one JSON event on stdin, then exit",
+    )
     # WHY THIS IS A FLAG ON THIS PROCESS AND NOT A NEW ENTRY POINT.
     # `memory/__main__.py` argues lifecycle needs a stream it owns, because this process
     # speaks MCP over stdout. True of a RUNNING server; not true of a flag that prints and
@@ -2203,6 +2235,39 @@ def _check_store_flag(raw: str) -> None:
         raise SystemExit(f"--store is not a directory: {store}")
 
 
+def _run_hook(args: argparse.Namespace) -> None:
+    """`--hook`: one JSON event on stdin, at most one JSON object on stdout, EXIT 0 ALWAYS.
+
+    DISPATCH ORDER IS REGISTRATION ORDER, which is the rule the flags around it already
+    follow and the reason `--mcp-report --install cursor` prints a report and writes
+    nothing. `--hook` is registered directly after `--index-budget`, so it is checked
+    directly after `--assets-root` -- the same order `runtime-ts/src/cli.ts` checks it in.
+
+    EXIT 0 ALWAYS, AND THAT IS THE CONTRACT, not a convenience. A hook that exits non-zero
+    or lets a traceback reach stderr is rendered by the host as an error on the USER'S
+    SCREEN, so every failure is logged into `~/.bantamkit/hooks/hook-log.jsonl` and
+    swallowed. This is the one arm in this file whose refusal path is a log line rather than
+    a sentence, and the `except` is deliberately wide for that reason: `main` catches
+    `BantamError` and exits 1, which is right for every other surface here and wrong for
+    this one.
+
+    `SystemExit` and `KeyboardInterrupt` are NOT swallowed -- they are not failures of the
+    adapter, and a hook that ignored an interrupt would be a process the operator cannot
+    stop.
+
+    It returns before `_build_memory` for the same reason every flag around it does: the
+    adapter binds whatever store the winning MCP registration pins, from the cwd the HOST
+    sent in the payload -- not from whatever directory the hook process was spawned in. It
+    takes `args` for the signature every `_run_*` here has and reads nothing off it, because
+    the payload is the entire input contract.
+    """
+    del args  # the event, the cwd and the session all arrive on stdin
+    try:
+        hookadapter.run_hook()
+    except Exception as e:  # noqa: BLE001 - see the docstring: exit 0 is the contract
+        hookadapter.log_hook_failure(e)
+
+
 def _print_mcp_report(args: argparse.Namespace) -> None:
     """`--mcp-report`: the joined report on stdout, then return. No transport, no server.
 
@@ -2382,6 +2447,9 @@ def _dispatch(args: argparse.Namespace) -> None:
     # all -- the Node arm returns from `main` here too, ahead of `new RawStdioTransport()`.
     if args.assets_root:
         _print_assets_root()
+        return
+    if args.hook:
+        _run_hook(args)
         return
     if args.mcp_report:
         _print_mcp_report(args)
