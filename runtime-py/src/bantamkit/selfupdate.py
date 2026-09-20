@@ -55,11 +55,14 @@ a store or a transport exists, the same shape `--assets-root` and `--install` us
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from bantamkit import __version__
 
@@ -359,6 +362,83 @@ def compare_versions(installed: str, latest: str) -> int:
     return 1 if left > right else -1
 
 
+#: The `checked_at` stamp's shape, spelled rather than defaulted. `datetime.isoformat()`
+#: renders `+00:00` and `Date.prototype.toISOString` renders `.000Z`, so a record written by
+#: the two runtimes would differ in bytes neither reader cares about. Both sides render this
+#: one shape instead, and `runtime-ts` strips its milliseconds to reach it.
+STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def record_update(latest: str, now: str | None = None) -> bool:
+    """Put the version this flag just fetched into the record `bantamkit_status` reads.
+
+    NO SECOND NETWORK CALL AND NO NEW FAILURE MODE, which is the whole reason the writer is
+    here rather than anywhere a reader could reach. `update` already holds `latest` — it was
+    parsed out of the answer the operator's own `--update` asked for — so this writes what is
+    in hand. `updatecheck` reads that file and NEVER writes it; the split is structural and
+    both halves are gated (`test_updatecheck.py::test_the_source_writes_nothing_and_reaches_
+    no_network`), so a future reader cannot grow a write by accident.
+
+    `updatecheck` IS IMPORTED INSIDE THE BODY, and not for style. `updatecheck` imports
+    `PROGRAM` and `compare_versions` from THIS module at its top level, so a module-level
+    import here would be a cycle that fails at interpreter start. The function-local import
+    is the direction that works, and `_names_reached_by` in `test_selfupdate.py` sees it —
+    `bantamkit.updatecheck` is on that gate's allowlist by name.
+
+    IT CREATES NO DIRECTORY. `<homedir>/.bantamkit` is made by an install, and a `--update`
+    run on a machine that has never had one writes nothing rather than deciding where this
+    toolbox's home directory should be. A cwd-relative `.bantamkit` is a MEMORY STORE (J54-3)
+    and the path here comes from `updatecheck.record_path()`, which hangs off `_home()`.
+
+    THE OTHER RUNTIME'S KEY IS LEFT EXACTLY AS FOUND. npm and PyPI are two registries that
+    can disagree at one version number — job56 shipped a day where they did — so this fills
+    `updatecheck.KEY` and copies the rest of the record through untouched. An UNREADABLE
+    record is replaced rather than merged: there is nothing in it to preserve.
+
+    TEMP FILE AND RENAME, so a reader never sees half a record: `os.replace` is atomic on
+    POSIX and on Windows, and the temp file is made in the SAME directory so the rename is
+    never across a filesystem.
+
+    RETURNS whether it wrote, and RAISES FOR NOTHING. A failed write must not turn a
+    successful `--update` into a failure: the operator's install was updated either way, and
+    the worst case is a status line that still says `never checked`.
+    """
+    # The MODULE is named in the import so the gate's allowlist can name it too: a
+    # `from bantamkit import updatecheck` records only `bantamkit`, which would let any
+    # sibling module in under the same allowance.
+    from bantamkit.updatecheck import KEY, SOURCE_RECORD, load_record, record_path
+
+    path = record_path()
+    directory = path.parent
+    if not directory.is_dir():
+        return False
+    source, existing = load_record(path)
+    payload: dict[str, object] = dict(existing) if source == SOURCE_RECORD and existing else {}
+    payload["checked_at"] = now or datetime.now(UTC).strftime(STAMP)
+    payload[KEY] = {"distribution": DISTRIBUTION, "latest": latest}
+    try:
+        body = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    except (TypeError, ValueError):
+        return False
+    try:
+        handle, temporary = tempfile.mkstemp(
+            dir=str(directory), prefix=".update-check-", suffix=".json"
+        )
+    except OSError:
+        return False
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(body)
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def update(
     installed: str,
     origin: Origin,
@@ -389,6 +469,15 @@ def update(
         raise UpdateRefused(UNREACHABLE.format(reason=exc)) from None
 
     latest = latest_from_index_payload(body)
+
+    # THE RECORD IS WRITTEN HERE AND NOT IN ONE OF THE ARMS BELOW, because what it records is
+    # "the index said X on this date" — which is true the moment the fetch returned, whatever
+    # this flag then decides to do about it. An operator whose shape has no route gets the
+    # refusal AND a `bantamkit_status` that now knows the number; one who is already current
+    # gets a line that says so with a date. The return value is deliberately dropped: a record
+    # that could not be written is not a reason to fail an update that worked.
+    record_update(latest)
+
     header = COMPARISON.format(program=PROGRAM, installed=installed, latest=latest)
     order = compare_versions(installed, latest)
     if order == 0:
