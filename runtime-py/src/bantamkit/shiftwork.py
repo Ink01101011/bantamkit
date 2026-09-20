@@ -9,8 +9,10 @@ asset, same discipline:
   + the `schema_error` engine sessions use under the driver);
 * ESCALATE (non-empty `handoff.open_questions`) and SUCCESS (every unit
   done/dropped) come back as structured refusals, never exceptions;
-* clock-out only accepts the cursor unit — the contract is
-  execute-the-cursor-unit (driver parity), never pick-a-unit;
+* clock-out accepts the cursor unit OR a unit briefed since its own last
+  clock-out (job60/D2) — a wave of briefs has to be clockable out in whatever
+  order it finishes; a unit that was never dispatched still cannot be, and the
+  refusal keeps its existing sentence word for word;
 * clock-out validates the ENTIRE mutated document before writing, then writes
   atomically (temp file + rename, the driver's pattern) — a validation failure
   writes nothing, and every write-path OSError comes back as a structured
@@ -65,11 +67,16 @@ is detectable by re-reading the checkpoint (its unit is still the non-terminal
 cursor unit), so a retried clock-out may leave one duplicate log line — never
 a missing one.
 
-Cursor advance is v1-linear: it moves to the first non-terminal unit in plan
-order and ignores `depends_on` — non-linear plans need a planner unit to
-reorder `plan.units` first. `plan_batches` below READS `depends_on` and answers
-the batch view, so the module no longer ignores the field; what still ignores it
-is CURSOR ADVANCE, and the batch view is read-only and moves nothing.
+Cursor advance FOLLOWS THE GRAPH (job60/D3). It was v1-linear — the first
+non-terminal unit in `plan.units` order, `depends_on` ignored — while
+`plan_batches` answered `ready` from the graph, so the pointer could land on a
+unit whose dependencies were unmet and the two surfaces disagreed about one
+document. It now moves to `ready[0]` of the batch view recomputed on the
+mutated document, falling back to plan order over the remaining non-terminal
+units only when the graph cannot batch AT ALL (cycle, unknown dependency) — a
+recording surface does not acquire a new way to refuse — and to the clocked-out
+unit when nothing non-terminal remains. On a linear chain the two orders
+coincide, which is why every case written before this holds its value.
 
 No lock: the MCP topology has one orchestrator by construction. The driver's
 O_EXCL lock guards cross-process races this shape does not have, and clock-out
@@ -218,13 +225,101 @@ def _briefed(log_path: Path, unit_id: str) -> bool:
     return briefed
 
 
-def clock_in(checkpoint: str) -> dict[str, Any]:
-    """Validate the checkpoint and return the cursor unit's brief, or a refusal.
+def _batch_view(document: dict) -> dict[str, Any]:
+    """The `depends_on` graph of an IN-MEMORY checkpoint document. THE module's only one.
+
+    Three callers, one loop, on purpose (job60). `plan_batches` reads a file and
+    publishes the read-only batch view; `clock_in` (D1) needs the same answer to
+    decide whether a requested unit may run; `clock_out` (D3) needs it about a
+    document it has just MUTATED and not yet written. A second walk over
+    `depends_on` written for any one of them is precisely how `plan.cursor` and
+    `ready` came to answer differently about one document — the contradiction this
+    job exists to close — so the loop is written once and the callers differ only
+    in what they do with it.
+
+    Returns Layer 1's answer verbatim (`{"batches", "sequence", "width"}`) or
+    Layer 1's refusal verbatim (`{"result": "error", ...}` — duplicate id, unknown
+    dependency, cycle). Nothing here composes, rewrites or swallows either: the
+    sentences are the core's.
+
+    The three adapter decisions moved here from `plan_batches` unchanged. A `done`
+    or `dropped` unit is SATISFIED, which is two things and not one: it leaves the
+    graph AND every edge pointing at it is resolved — only the first alone would be
+    a defect, because `workplan.plan` refuses an edge into an id no node declares,
+    so dropping the unit while keeping the edge would make every checkpoint with
+    one finished unit unplannable, which is every checkpoint after its first
+    clock-out. Every unit gets priority 0, the checkpoint schema having no priority
+    field, so the tie-break inside a batch falls through to the core's insertion
+    order — `plan.units` order. And `plan.cursor` is not read here at all: this is
+    what the graph PERMITS, and what the single pointer says is the caller's
+    business.
+    """
+    nodes = [
+        # `depends_on` is required by the schema, so `_read_valid` has already refused a
+        # unit without it and the default below cannot fire here. It is written anyway
+        # because the Node adapter reaches the same mapping and MUST default it too: a
+        # default on one side only is how two runtimes come to disagree about real data.
+        {"id": unit["id"], "depends_on": list(unit.get("depends_on") or []), "priority": 0}
+        for unit in document["plan"]["units"]
+        if unit["status"] not in TERMINAL_UNIT_STATUS
+    ]
+    satisfied = {
+        unit["id"] for unit in document["plan"]["units"] if unit["status"] in TERMINAL_UNIT_STATUS
+    }
+    for node in nodes:
+        node["depends_on"] = [dep for dep in node["depends_on"] if dep not in satisfied]
+
+    return workplan.plan(nodes)
+
+
+def _ready(document: dict) -> tuple[list[str] | None, dict[str, Any] | None]:
+    """`(ready, None)` or `(None, refusal)` — the ready batch of an in-memory document.
+
+    `ready` is `batches[0]`, or `[]` when no non-terminal unit remains, which is an
+    ANSWER and not a refusal — the same judgement `plan_batches` already publishes.
+    The refusal arm is the core's, handed back untouched for the caller to return.
+    """
+    answer = _batch_view(document)
+    if answer.get("result") == "error":
+        return None, answer
+    batches = answer["batches"]
+    return (batches[0] if batches else []), None
+
+
+def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
+    """Validate the checkpoint and return a unit's brief, or a refusal.
 
     Refusals mirror the driver's terminal exits: ``escalate`` when
     `handoff.open_questions` is non-empty or the cursor names no unit,
     ``success`` when every unit is done/dropped. The ``brief`` payload is what
     the orchestrator hands to the spawned agent verbatim.
+
+    WHICH UNIT (job60/D1). `unit_id` omitted is the whole prior contract, byte for
+    byte — `plan.cursor`, including its `escalate` when the cursor names no unit —
+    and the order of judgements above the selection is unmoved, so no existing
+    refusal changes its place or its wording. `unit_id` GIVEN must name a unit the
+    graph says may run now: a member of `_ready`'s batch, which is exactly
+    `shiftwork_plan`'s `ready`. That is what lets an orchestrator spend the `width`
+    the batch view reports instead of only ever being handed the single pointer.
+
+    ONE refusal covers both ways that can fail, because they are one property — the
+    unit is not ready — and a `unit_id` that names no unit at all is the limiting
+    case of it, not a second thing to spell:
+
+        {"result": "error", "reason": "unit C is not ready; ready is B"}
+
+    `ready` is joined in batch order and included because the caller's next move is
+    to pick from it. It cannot be empty at that point: the all-terminal check above
+    has already answered `success` for a plan with no non-terminal unit, so no
+    sentence is written for a case that cannot be reached. A refusal from the batch
+    view ITSELF — cycle, unknown dependency — passes through VERBATIM, exactly as
+    `plan_batches` passes `_read_valid`'s.
+
+    AND CLOCK-IN STILL NEVER WRITES `plan.cursor`. A wave of N briefs leaves the
+    pointer exactly where it was; `clock_out` is the only thing that moves it, and
+    D3 changes only where to. The brief line records the unit ACTUALLY briefed, so
+    `clock_out`'s `briefed` flag keeps working per unit with no change at all to how
+    it is computed — which is what makes D2 possible with no new field anywhere.
     """
     document, refusal = _read_valid(Path(checkpoint))
     if refusal is not None:
@@ -239,13 +334,22 @@ def clock_in(checkpoint: str) -> dict[str, Any]:
     units = document["plan"]["units"]
     if all(u["status"] in TERMINAL_UNIT_STATUS for u in units):
         return {"result": "success", "reason": "all units done or dropped"}
-    cursor = document["plan"]["cursor"]
-    unit = _find_unit(document, cursor)
-    if unit is None:
-        return {"result": "escalate", "reason": f"cursor {cursor} names no unit"}
+    if unit_id is None:
+        selected = document["plan"]["cursor"]
+        unit = _find_unit(document, selected)
+        if unit is None:
+            return {"result": "escalate", "reason": f"cursor {selected} names no unit"}
+    else:
+        ready, batch_refusal = _ready(document)
+        if batch_refusal is not None:
+            return batch_refusal  # the core's sentence, verbatim — `_read_valid`'s idiom
+        unit = _find_unit(document, unit_id)
+        if unit is None or unit_id not in ready:
+            return _error(f"unit {unit_id} is not ready; ready is {', '.join(ready)}")
+        selected = unit_id
     # F6: the brief is issued, so say so in the ledger — best effort, and only on this
     # branch: a refusal above issued nothing and therefore records nothing.
-    _record_brief(_log_path(Path(checkpoint)), cursor, unit["role"])
+    _record_brief(_log_path(Path(checkpoint)), selected, unit["role"])
     return {
         "result": "brief",
         "unit": unit,
@@ -444,10 +548,21 @@ def clock_out(
     history_entry: dict[str, Any],
     accounting: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Apply the cursor unit's result to the checkpoint, validate whole, write atomically.
+    """Apply a dispatched unit's result to the checkpoint, validate whole, write atomically.
 
-    `unit_id` must name the cursor unit — the contract is execute-the-cursor
-    (driver parity); anything else is a structured error. When `job.roles` names
+    `unit_id` must name THE CURSOR UNIT OR A UNIT BRIEFED SINCE ITS OWN LAST
+    CLOCK-OUT (job60/D2) — the `briefed` value `_briefed` already measures off
+    `<checkpoint>.log.jsonl` and already refuses to take from the caller; anything
+    else is a structured error. The widening is what makes `clock_in(unit_id=...)`
+    spendable: a two-wide wave is briefed against one cursor, so if only the cursor
+    could clock out, the second unit's result would have nowhere to go. A unit that
+    was never dispatched still cannot clock out, and THE REFUSAL KEEPS ITS EXISTING
+    SENTENCE, `unit N2 is not the cursor unit N1`, byte for byte — widened meaning,
+    unwidened wording, so every ruled case pinning it stays green and
+    `docs/shiftwork.md` carries the fuller meaning. The gate still runs before the
+    AS-2 role/model check and before anything at all is written.
+
+    When `job.roles` names
     the unit's role, `accounting["model"]` must be one of that role's models,
     spelled exactly; a wrong or missing model is refused here, before any
     mutation and before the accounting line. Extended 2026-09-11 (job47): so is a
@@ -461,8 +576,9 @@ def clock_out(
     a non-null line under a pack that cannot supply that shape at all — one
     fixed sentence, `ACCOUNTING_SHAPE_UNREADABLE`, never `AssetNotFound` out of
     this function. Mutations: set the
-    unit's status, advance `plan.cursor` to the first non-terminal unit
-    (v1-linear, `depends_on` is ignored), shallow-merge `handoff_patch` into
+    unit's status, advance `plan.cursor` to the first unit of the ready batch
+    recomputed on the mutated document (job60/D3 — the graph's order, not
+    `plan.units` order; see below), shallow-merge `handoff_patch` into
     `handoff`, push `history_entry` onto the 5-entry ring. The mutated
     document is validated against the full schema BEFORE any write — a
     validation failure writes nothing. Then log-then-commit: the accounting
@@ -472,6 +588,7 @@ def clock_out(
     commit failed is the detectable, tolerable leftover).
     """
     path = Path(checkpoint)
+    log_path = _log_path(path)
     document, refusal = _read_valid(path)
     if refusal is not None:
         return refusal
@@ -479,7 +596,11 @@ def clock_out(
     if unit is None:
         return _error(f"unit {unit_id} is not in the plan")
     cursor = document["plan"]["cursor"]
-    if unit_id != cursor:
+    # D2: the cursor unit, OR one this checkpoint's ledger says was briefed since its own
+    # last clock-out. `_briefed` is CALLED, never reimplemented — its rule (a brief line
+    # sets, an accounting line clears) is the same one that writes `briefed` onto the
+    # accounting line below, so the gate and the record can never disagree about a unit.
+    if unit_id != cursor and not _briefed(log_path, unit_id):
         return _error(f"unit {unit_id} is not the cursor unit {cursor}")
     wrong_model = _model_refusal(document, unit_id, unit, accounting)
     if wrong_model is not None:
@@ -489,8 +610,22 @@ def clock_out(
         return _error(bad_line)
 
     unit["status"] = status
+    # D3: the cursor follows the GRAPH, on the document as just mutated. Three arms, in
+    # this order. `ready[0]` is the answer `shiftwork_plan` would publish for the same
+    # bytes, so the pointer and the batch view can no longer name different units. Plan
+    # order over the remaining non-terminal units is reachable ONLY when the graph cannot
+    # batch at all — `ready` is computed over exactly those units, so an empty `ready`
+    # with units left means the core refused (cycle, unknown dependency) — and it exists
+    # so such a checkpoint can still be driven to its end: clock-out RECORDS, and a
+    # recording surface does not acquire a new way to refuse. `unit_id` is the last arm,
+    # unchanged from before this job. On a linear chain `ready[0] == remaining[0]["id"]`,
+    # which is why every case written before D3 keeps its value.
     remaining = [u for u in document["plan"]["units"] if u["status"] not in TERMINAL_UNIT_STATUS]
-    document["plan"]["cursor"] = remaining[0]["id"] if remaining else unit_id
+    ready, _batch_refusal = _ready(document)
+    if ready:
+        document["plan"]["cursor"] = ready[0]
+    else:
+        document["plan"]["cursor"] = remaining[0]["id"] if remaining else unit_id
     document["handoff"].update(handoff_patch or {})
     document["history"] = (document["history"] + [history_entry])[-HISTORY_RING_SIZE:]
 
@@ -505,7 +640,6 @@ def clock_out(
         "status": status,
     }
     record.update(accounting or {})
-    log_path = _log_path(path)
     # F6: `briefed` is MEASURED off the ledger, after the orchestrator's keys are merged, so
     # the runtime's answer wins over a self-reported one. `executed_by: orchestrator-inline`
     # in the job41 ledger IS a self-report, and it is the only kind the ledger ever had; a
@@ -558,28 +692,20 @@ def status(checkpoint: str) -> dict[str, Any]:
 def plan_batches(checkpoint: str) -> dict[str, Any]:
     """Read-only batch view of a checkpoint. Never mutates.
 
-    The adapter over `workplan.plan`, and it holds no graph logic of its own: a loop over
-    `depends_on` here would be Layer 1's work done in Layer 5. Its whole content is the
-    three decisions below plus the shape it answers in.
+    The adapter over `_batch_view`, and it holds no graph logic of its own: a loop over
+    `depends_on` here would be Layer 1's work done in Layer 5, and a loop over it here
+    AND in `clock_in`/`clock_out` is the job60 contradiction re-created by hand. Its
+    whole content is reading the file and the shape it answers in. The three decisions
+    that used to be written out below — a `done`/`dropped` unit is SATISFIED (it leaves
+    the graph and its edges are resolved), every unit has priority 0 so the tie-break is
+    `plan.units` order, and `plan.cursor` is not consulted by the graph at all — moved
+    to `_batch_view` verbatim, where all three callers now get them.
 
-    **A `done` or `dropped` unit is SATISFIED**, which is two things and not one: it
-    leaves the graph, AND every edge pointing at it is treated as already resolved. Only
-    the first would be a defect rather than a simplification — `workplan.plan` refuses an
-    edge into an id no node declares, so dropping the unit while keeping the edge would
-    make every checkpoint with one finished unit unplannable, which is every checkpoint
-    after its first clock-out. `todo`, `in_progress` and `blocked` are all still work and
-    all stay in. The terminal pair is `TERMINAL_UNIT_STATUS`, the same constant the
-    driver's success test uses, so "finished" means one thing in this module.
-
-    **Every unit gets priority 0.** The checkpoint schema has no priority field and this
-    design does not add one, so the tie-break inside a batch falls through to the core's
-    insertion order — `plan.units` order, which is the order a reader of the checkpoint
-    already sees.
-
-    **The cursor is ECHOED, never written.** `clock_out` remains the only thing that
-    moves it and stays v1-linear; this tool reports what the graph PERMITS beside the
-    single pointer that says what the driver will actually do next, so an orchestrator
-    can read the two side by side and decide. Advisory, in one direction only.
+    **The cursor is ECHOED here, never written.** `clock_out` remains the only thing that
+    moves it. Since job60/D3 it moves it to `ready[0]` of this same view, so the two
+    fields no longer name different units — but this tool still only reports, and the
+    orchestrator still reads `ready` beside `cursor` and decides. Advisory, in one
+    direction only.
 
     Returns `{"result": "plan", "batches", "ready", "sequence", "width", "cursor"}` —
     `ready` is `batches[0]`, or `[]` when the plan is all terminal, which is an ANSWER
@@ -590,22 +716,7 @@ def plan_batches(checkpoint: str) -> dict[str, Any]:
     document, refusal = _read_valid(Path(checkpoint))
     if refusal is not None:
         return refusal
-    nodes = [
-        # `depends_on` is required by the schema, so `_read_valid` has already refused a
-        # unit without it and the default below cannot fire here. It is written anyway
-        # because the Node adapter reaches the same mapping and MUST default it too: a
-        # default on one side only is how two runtimes come to disagree about real data.
-        {"id": unit["id"], "depends_on": list(unit.get("depends_on") or []), "priority": 0}
-        for unit in document["plan"]["units"]
-        if unit["status"] not in TERMINAL_UNIT_STATUS
-    ]
-    satisfied = {
-        unit["id"] for unit in document["plan"]["units"] if unit["status"] in TERMINAL_UNIT_STATUS
-    }
-    for node in nodes:
-        node["depends_on"] = [dep for dep in node["depends_on"] if dep not in satisfied]
-
-    answer = workplan.plan(nodes)
+    answer = _batch_view(document)
     if answer.get("result") == "error":
         return answer
     batches = answer["batches"]

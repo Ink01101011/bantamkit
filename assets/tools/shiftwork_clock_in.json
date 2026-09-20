@@ -1,6 +1,6 @@
 {
   "name": "shiftwork_clock_in",
-  "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
+  "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. The unit briefed is the one at plan.cursor, or, when unit_id is given, that unit — which must appear in shiftwork_plan's `ready`, the batch the dependency graph says may run now. A unit_id that is not ready, including one naming no unit, is refused with {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and the refusals of the batch view itself (cycle, unknown dependency, unreadable checkpoint) pass through verbatim. Clock-in still never moves plan.cursor; clock_out does. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
   "surfaces": [
     "mcp"
   ],
@@ -9,6 +9,18 @@
       "checkpoint": {
         "title": "Checkpoint",
         "type": "string"
+      },
+      "unit_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Unit Id"
       }
     },
     "required": [

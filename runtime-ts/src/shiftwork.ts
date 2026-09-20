@@ -58,6 +58,19 @@
  * ruling) — it moves to the first non-terminal unit in `plan.units` order, and a non-linear
  * plan still needs a planner unit to reorder `plan.units` first. The batch view is read-only
  * and moves nothing.
+ *
+ * AMENDED 2026-09-20 (job60). The paragraph above stands as the history and is now FALSE as a
+ * description of this code: cursor advance no longer ignores `depends_on`. A read-only surface
+ * answering from the graph beside a dispatch surface answering from a single pointer is two
+ * answers to one question, and they were MEASURED disagreeing two ways — a two-wide `ready`
+ * the driver gives no way to spend, and a cursor landing on a unit whose `depends_on` has not
+ * run. `docs/superpowers/specs/2026-09-20-clock-in-unit-id-design.md` is the other half of the
+ * 2026-09-18 design, not a repair of it. Three changes, all below: `clockIn` takes an optional
+ * `unitId` and briefs it IF the graph says it is ready; `clockOut` accepts the cursor unit OR
+ * one it briefed, keeping its existing refusal sentence; and cursor advance is `ready[0]`,
+ * falling back to `plan.units` order only for a graph that cannot batch at all. There is ONE
+ * loop over `depends_on` in this module (`batchView`) and three callers, because a second one
+ * is precisely how the two surfaces came to disagree.
  */
 import { AssetNotFound, loadSchema, loadToolAsset } from './assets.js';
 import { schemaError } from './contract.js';
@@ -75,7 +88,7 @@ import {
 } from './memory/pyfs.js';
 import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, type PyValue } from './pyjson.js';
 import { checkSchema, PyJsonSchemaUnsupported } from './pyjsonschema.js';
-import { plan, type PlanNode } from './workplan.js';
+import { plan, type PlanNode, type PlanResult } from './workplan.js';
 
 export const SCHEMA_NAME = 'shiftwork-checkpoint';
 /** The accounting line's shape lives on the TOOL asset, not in a second copy here (F5). */
@@ -317,10 +330,82 @@ function briefed(log: string, unitId: string): boolean {
   return flag;
 }
 
+// -------------------------------------------------------------------------- the graph
+
+/**
+ * The batch view of an IN-MEMORY document — the module's ONE loop over `depends_on`.
+ *
+ * J60. Three callers need the same answer and only one of them has a file to read:
+ * `planBatches` answers it for a checkpoint on disk, `clockIn` needs it to judge a
+ * requested `unitId`, and `clockOut` needs it on the document it has just MUTATED and has
+ * not written yet. A second loop for the in-memory callers is exactly how the advisory
+ * surface and the dispatch surface came to disagree, which is the defect this job closes,
+ * so the loop lives here and the three callers share its answer.
+ *
+ * The three decisions it holds are the ones `planBatches` documents — a `done` or
+ * `dropped` unit is SATISFIED (it leaves the graph and every edge into it is resolved),
+ * every unit has priority 0, and the cursor is not consulted at all. Refusals are the
+ * core's own: a `PlanResult` that is a `PlanError` carries the duplicate-id, unknown-
+ * dependency or cycle sentence, and every caller passes it on verbatim rather than
+ * rewording it.
+ */
+function batchView(doc: PyDict): PlanResult {
+  const units = subList(subDict(doc, 'plan'), 'units').v;
+  const terminal = (unit: PyDict): boolean => TERMINAL_UNIT_STATUS.has(text(unit.v.get('status')!));
+  const satisfied = new Set<string>();
+  for (const unit of units) {
+    if (terminal(unit as PyDict)) satisfied.add(text((unit as PyDict).v.get('id')!));
+  }
+  const nodes: PlanNode[] = [];
+  for (const unit of units) {
+    const u = unit as PyDict;
+    if (terminal(u)) continue;
+    // `list(unit.get("depends_on") or [])`. `depends_on` is REQUIRED by the schema, so
+    // `readValid` has already refused a unit without it and this default cannot fire —
+    // it is written anyway because the reference writes it, and a default on one side
+    // only is how two runtimes come to disagree about real data.
+    const declared = u.v.get('depends_on');
+    const deps = declared !== undefined && declared.t === 'list' ? declared.v.map(text) : [];
+    nodes.push({ id: text(u.v.get('id')!), depends_on: deps.filter((dep) => !satisfied.has(dep)), priority: 0 });
+  }
+  return plan(nodes);
+}
+
+/**
+ * `batches[0]`, or `[]` — for a plan that is all terminal AND for a graph that refuses.
+ *
+ * The empty answer is what makes the refusal case fall through to the caller's own
+ * fallback instead of acquiring a new way to refuse: `clockOut` RECORDS, and a recording
+ * surface does not stop working because the graph it was handed cannot be batched.
+ * `clockIn` never reaches this with a refusal — it returns the core's sentence first.
+ */
+function readyIds(view: PlanResult): string[] {
+  if ('result' in view) return [];
+  return view.batches.length > 0 ? view.batches[0]! : [];
+}
+
 // ----------------------------------------------------------------------------- clock_in
 
 /**
- * Validate the checkpoint and return the cursor unit's brief, or a refusal.
+ * Validate the checkpoint and return a unit's brief, or a refusal.
+ *
+ * `unitId` OMITTED IS THE CURSOR UNIT, BYTE FOR BYTE WHAT IT WAS (J60/D1). Given, it is
+ * briefed instead — IF the batch view says it is ready. That is the only new judgement, it
+ * is taken LAST, and the three above it are untouched, so no existing refusal moves and no
+ * caller that never passes a unit can see a difference. A unit that is not ready, including
+ * an id naming no unit at all, is ONE refusal carrying the list the caller's next move is to
+ * pick from; a batch view that refuses (cycle, unknown dependency) passes through verbatim,
+ * in both directions, exactly as `planBatches` already passes `readValid`'s.
+ *
+ * `ready` cannot be empty here: the all-terminal test above has already answered `success`
+ * for a plan with no non-terminal unit, and a non-terminal unit that cannot batch is a
+ * refusal rather than an empty list. No sentence is written for a case that cannot be
+ * reached.
+ *
+ * STILL NEVER WRITES `plan.cursor`. A wave of N briefs leaves the pointer where it was; it
+ * is `clockOut` that moves it. What each brief DOES write is its own ledger line, naming the
+ * unit actually briefed, so `clockOut`'s `briefed` flag keeps working per unit with no
+ * change to how it is computed — which is what makes D2 possible.
  *
  * `invariants` IS SYNTHESIZED HERE. It is not a key of the checkpoint — it is
  * `document["job"]["constraints"]` under a different name — which is precisely why a brief
@@ -332,7 +417,7 @@ function briefed(log: string, unitId: string): boolean {
  * all-terminal test before the cursor lookup — so an empty plan reports success rather than
  * escalating on its dangling cursor, because `all([])` is true.
  */
-export function clockIn(checkpoint: string, options: ClockOptions = {}): PyValue {
+export function clockIn(checkpoint: string, unitId: string | null = null, options: ClockOptions = {}): PyValue {
   const { document, refusal } = readValid(pyJoin(checkpoint));
   if (refusal !== null) return refusal;
   const doc = document!;
@@ -353,7 +438,20 @@ export function clockIn(checkpoint: string, options: ClockOptions = {}): PyValue
     ]);
   }
   const cursor = text(field(subDict(doc, 'plan'), 'cursor'));
-  const unit = findUnit(doc, cursor);
+  // D1: selection, and it is the LAST judgement. `selected` differs from `cursor` only on
+  // the new branch, so the dangling-cursor escalation below still says `cursor` truthfully:
+  // a `unitId` that reached `selected` came out of `ready`, whose ids are `plan.units`' own,
+  // and `findUnit` cannot fail for it.
+  let selected = cursor;
+  if (unitId !== null && unitId !== undefined) {
+    const view = batchView(doc);
+    if ('result' in view) return errorResult(view.reason);
+    const ready = readyIds(view);
+    // `", "` in BATCH order, not sorted: the order the caller would dispatch them in.
+    if (!ready.includes(unitId)) return errorResult(`unit ${unitId} is not ready; ready is ${ready.join(', ')}`);
+    selected = unitId;
+  }
+  const unit = findUnit(doc, selected);
   if (unit === null) {
     return dict([
       ['result', str('escalate')],
@@ -363,7 +461,8 @@ export function clockIn(checkpoint: string, options: ClockOptions = {}): PyValue
   // F6: the brief is issued, so say so in the ledger — best effort, and only on this branch:
   // a refusal above issued nothing and therefore records nothing. `pyJoin` is the same
   // normalisation `clockOut` applies before it builds ITS log path, so the two land in one file.
-  recordBrief(logPath(pyJoin(checkpoint)), cursor, field(unit, 'role'), options.now ?? Date.now() / 1000);
+  // The line names the unit ACTUALLY briefed, which is what D2 reads back.
+  recordBrief(logPath(pyJoin(checkpoint)), selected, field(unit, 'role'), options.now ?? Date.now() / 1000);
   return dict([
     ['result', str('brief')],
     ['unit', unit],
@@ -597,8 +696,14 @@ function accountingRefusal(unitId: string, unit: PyDict, accounting: unknown): s
 /**
  * Apply the cursor unit's result, validate the WHOLE mutated document, write atomically.
  *
- * `unitId` must name the cursor unit — the contract is execute-the-cursor (driver parity),
- * never pick-a-unit. When `job.roles` names the unit's role, `accounting.model` must be one
+ * `unitId` must name the cursor unit OR a unit briefed since its own last clock-out
+ * (J60/D2) — the `briefed` value this module already computes off `<checkpoint>.log.jsonl`
+ * for the accounting line and already refuses to take from the caller, so a wave of briefs
+ * can be clocked out in the order the agents actually return. A unit that was never
+ * dispatched still cannot be clocked out, and it is refused with the sentence it has always
+ * had, unchanged in both runtimes, so every ruled case pinning it stays green;
+ * `docs/shiftwork.md` carries the fuller meaning. The gate still runs BEFORE the AS-2
+ * role/model check and before the first mutation. When `job.roles` names the unit's role, `accounting.model` must be one
  * of that role's models, spelled exactly; a wrong or missing model is refused here, before
  * any mutation and before the accounting line. Extended 2026-09-11 (job47): so is a
  * `job.roles` value for that role that is not a list of model identifiers — an unreadable
@@ -607,7 +712,9 @@ function accountingRefusal(unitId: string, unit: PyDict, accounting: unknown): s
  * that does not fit the shape the `shiftwork_clock_out` asset declares — checked after the
  * roles gate, before any mutation, same structured return, nothing written; a null
  * accounting is not validated and stays legal. Mutations: set the unit's status, advance
- * `plan.cursor` to the first non-terminal unit in PLAN order (`depends_on` is ignored),
+ * `plan.cursor` to the first unit the GRAPH says is ready (J60/D3 — `ready[0]` of the
+ * mutated document, falling back to the first non-terminal unit in `plan.units` order only
+ * when the graph cannot batch at all, and to `unitId` when nothing is left),
  * shallow-merge `handoffPatch` into `handoff`, push `historyEntry` onto the 5-entry ring.
  *
  * VALIDATE BEFORE WRITING, AND WRITE NOTHING ON REFUSAL. The mutated document goes through
@@ -637,17 +744,34 @@ export function clockOut(
   if (unit === null) return errorResult(`unit ${unitId} is not in the plan`);
   const plan = subDict(doc, 'plan');
   const cursor = text(field(plan, 'cursor'));
-  if (unitId !== cursor) return errorResult(`unit ${unitId} is not the cursor unit ${cursor}`);
+  const log = logPath(path);
+  // D2: the cursor unit, or one this checkpoint's ledger says was briefed and not yet
+  // clocked out. `briefed` is the SAME helper the accounting line's own field is measured
+  // with, called here rather than reimplemented — two readers of one ledger is the shape
+  // this job exists to remove. The sentence is unchanged, deliberately: it is pinned by
+  // ruled conformance cases, and widening the wording would move every one of them.
+  if (unitId !== cursor && !briefed(log, unitId)) {
+    return errorResult(`unit ${unitId} is not the cursor unit ${cursor}`);
+  }
   const wrongModel = modelRefusal(doc, unitId, unit, accounting);
   if (wrongModel !== null) return errorResult(wrongModel);
   const badLine = accountingRefusal(unitId, unit, accounting);
   if (badLine !== null) return errorResult(badLine);
 
   unit.v.set('status', str(status));
+  // D3: the cursor follows the GRAPH, on the MUTATED document — the unit just finished is
+  // already out of it. Three steps, and the middle one is only reachable for a graph that
+  // cannot batch at all (a cycle, an unknown dependency), because `ready` is computed over
+  // exactly the units `remaining` holds: a recording surface does not acquire a new way to
+  // refuse, so such a checkpoint can still be driven to its end in plan order. For a linear
+  // chain `ready[0] === remaining[0]`, which is why every case written before this holds its
+  // value.
   const remaining = subList(plan, 'units').v.filter(
     (u) => !TERMINAL_UNIT_STATUS.has(text((u as PyDict).v.get('status')!)),
   );
-  plan.v.set('cursor', remaining.length > 0 ? field(remaining[0] as PyDict, 'id') : str(unitId));
+  const ready = readyIds(batchView(doc));
+  if (ready.length > 0) plan.v.set('cursor', str(ready[0]!));
+  else plan.v.set('cursor', remaining.length > 0 ? field(remaining[0] as PyDict, 'id') : str(unitId));
   const handoff = subDict(doc, 'handoff');
   for (const [key, value] of asPatch(handoffPatch)) handoff.v.set(key, value);
   const history = subList(doc, 'history');
@@ -670,7 +794,6 @@ export function clockOut(
   ]);
   for (const [key, value] of asPatch(accounting)) record.set(key, value);
 
-  const log = logPath(path);
   // F6: `briefed` is MEASURED off the ledger, AFTER the orchestrator's keys are merged, so the
   // runtime's answer wins over a self-reported one — the order is load-bearing. It is written
   // on every line, `accounting: null` included: the base shape (ts/unit/role/status) is the
@@ -743,7 +866,9 @@ export function status(checkpoint: string): PyValue {
  *
  * The adapter over `workplan.plan`, and it holds no graph logic of its own: a loop over
  * `depends_on` here would be Layer 1's work done in Layer 5. Its whole content is the three
- * decisions below plus the shape it answers in.
+ * decisions below plus the shape it answers in — and since J60 even the loop that applies
+ * them is `batchView`'s, because `clockIn` and `clockOut` judge by the same three and a
+ * second copy is how they would drift apart again.
  *
  * **A `done` or `dropped` unit is SATISFIED**, which is two things and not one: it leaves
  * the graph, AND every edge pointing at it is treated as already resolved. Only the first
@@ -759,10 +884,12 @@ export function status(checkpoint: string): PyValue {
  * insertion order — `plan.units` order, which is the order a reader of the checkpoint
  * already sees.
  *
- * **The cursor is ECHOED, never written.** `clockOut` remains the only thing that moves it
- * and stays v1-linear; this tool reports what the graph PERMITS beside the single pointer
- * that says what the driver will actually do next, so an orchestrator can read the two side
- * by side and decide. Advisory, in one direction only.
+ * **The cursor is ECHOED, never written.** `clockOut` remains the only thing that moves it;
+ * this tool reports what the graph PERMITS beside the single pointer that says what the
+ * driver will actually do next, so an orchestrator can read the two side by side and
+ * decide. Advisory, in one direction only. Since J60 the pointer is moved BY this same view
+ * (`ready[0]`), so the two fields can no longer contradict each other on a plannable graph
+ * — which was the whole defect — but the echo stays an echo.
  *
  * Returns `{result: 'plan', batches, ready, sequence, width, cursor}` — `ready` is
  * `batches[0]`, or `[]` when the plan is all terminal, which is an ANSWER and not a
@@ -774,26 +901,7 @@ export function planBatches(checkpoint: string): PyValue {
   const { document, refusal } = readValid(pyJoin(checkpoint));
   if (refusal !== null) return refusal;
   const doc = document!;
-  const units = subList(subDict(doc, 'plan'), 'units').v;
-  const terminal = (unit: PyDict): boolean => TERMINAL_UNIT_STATUS.has(text(unit.v.get('status')!));
-  const satisfied = new Set<string>();
-  for (const unit of units) {
-    if (terminal(unit as PyDict)) satisfied.add(text((unit as PyDict).v.get('id')!));
-  }
-  const nodes: PlanNode[] = [];
-  for (const unit of units) {
-    const u = unit as PyDict;
-    if (terminal(u)) continue;
-    // `list(unit.get("depends_on") or [])`. `depends_on` is REQUIRED by the schema, so
-    // `readValid` has already refused a unit without it and this default cannot fire —
-    // it is written anyway because the reference writes it, and a default on one side
-    // only is how two runtimes come to disagree about real data.
-    const declared = u.v.get('depends_on');
-    const deps = declared !== undefined && declared.t === 'list' ? declared.v.map(text) : [];
-    nodes.push({ id: text(u.v.get('id')!), depends_on: deps.filter((dep) => !satisfied.has(dep)), priority: 0 });
-  }
-
-  const answer = plan(nodes);
+  const answer = batchView(doc);
   if ('result' in answer) return errorResult(answer.reason);
   const batches = answer.batches.map((batch) => ({ t: 'list', v: batch.map(str) }) as PyValue);
   return dict([

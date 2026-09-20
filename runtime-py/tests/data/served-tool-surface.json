@@ -166,12 +166,24 @@
       }
     },
     "shiftwork_clock_in": {
-      "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
+      "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. The unit briefed is the one at plan.cursor, or, when unit_id is given, that unit — which must appear in shiftwork_plan's `ready`, the batch the dependency graph says may run now. A unit_id that is not ready, including one naming no unit, is refused with {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and the refusals of the batch view itself (cycle, unknown dependency, unreadable checkpoint) pass through verbatim. Clock-in still never moves plan.cursor; clock_out does. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
             "title": "Checkpoint",
             "type": "string"
+          },
+          "unit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Unit Id"
           }
         },
         "required": [
@@ -187,7 +199,7 @@
       }
     },
     "shiftwork_clock_out": {
-      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). `unit_id` must be `plan.cursor`, the one unit clock_in briefs; any other id is refused (`unit X is not the cursor unit Y`). `handoff_patch` and `history_entry` are both required arguments: `handoff_patch` is shallow-merged into `handoff` and takes only its four keys (pass `{}` to leave it unchanged); `history_entry` needs `unit` and `outcome`; `status` is one of the five unit statuses — a value outside these shapes is refused by the schema check, nothing written. Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `accounting` is optional: null, the default, logs a line with no cost figures at all; a non-null line must fit the accounting shape below. `briefed` is written by the runtime, never taken from you — a self-reported value is overwritten by the measured one: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run inline after a blocked clock-out reads false. A brief is not a precondition: a unit that was never clocked in still clocks out, with briefed=false. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly — a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
+      "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). `unit_id` must be `plan.cursor` — which needs no brief, clocking out with briefed=false — OR a unit briefed since its own last clock-out; any other id keeps its refusal (`unit X is not the cursor unit Y`). plan.cursor then advances to the head of the ready batch recomputed on the mutated document, falling back to plan.units order over the remaining non-terminal units when the graph cannot batch (cycle or unknown dependency), and to unit_id when none remain. `handoff_patch` and `history_entry` are both required arguments: `handoff_patch` is shallow-merged into `handoff` and takes only its four keys (pass `{}` to leave it unchanged); `history_entry` needs `unit` and `outcome`; `status` is one of the five unit statuses — a value outside these shapes is refused by the schema check, nothing written. Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `accounting` is optional: null, the default, logs a line with no cost figures at all; a non-null line must fit the accounting shape below. `briefed` is written by the runtime, never taken from you: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run after a blocked clock-out reads false. If job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly, or nothing is written — see the `model` property below.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -197,7 +209,7 @@
           "unit_id": {
             "title": "Unit Id",
             "type": "string",
-            "description": "The unit being clocked out. Must equal plan.cursor — the single-pointer contract: clock_in briefs only the cursor unit and clock_out accepts only it."
+            "description": "The unit being clocked out. Must be plan.cursor, or a unit briefed since its own last clock-out: clock_in briefs the cursor unit by default and, when its unit_id names one, any unit shiftwork_plan reports in `ready` — and that brief is what lets clock_out accept a unit the cursor is not on."
           },
           "status": {
             "title": "Status",
@@ -553,7 +565,7 @@
       }
     },
     "shiftwork_plan": {
-      "description": "Shift-work plan: read-only batch view of a checkpoint — which units its `depends_on` graph permits to run in parallel. Answers `{\"result\": \"plan\", \"batches\", \"ready\", \"sequence\", \"width\", \"cursor\"}`: `ready` is `batches[0]`, the units whose dependencies are all satisfied, and `width` is the largest batch length, the widest fan-out. Only `cursor` can be clocked: shiftwork_clock_in briefs it and shiftwork_clock_out refuses every other id, so a `ready` member beyond the cursor is what the graph permits, not a unit the clock accepts yet. Units with status `done` or `dropped` are satisfied — dropped from the graph, and edges pointing at them treated as already resolved; `todo`, `in_progress` and `blocked` stay in it. Every unit has priority 0, because the checkpoint schema has no priority field, so order inside a batch is `plan.units` order. Same refusal sentences as `work_plan` for a duplicate id, an unknown dependency or a cycle, and the same refusals `shiftwork_status` gives for a checkpoint it cannot read. It reports what the dependency graph permits; it does not move the cursor, which is echoed unchanged so the single-pointer contract and the batch view can be read side by side. An orchestrator stays responsible for what it actually dispatches: `depends_on` encodes logical order, not file contention. Never mutates.",
+      "description": "Shift-work plan: read-only batch view of a checkpoint — which units its `depends_on` graph permits to run in parallel. Answers `{\"result\": \"plan\", \"batches\", \"ready\", \"sequence\", \"width\", \"cursor\"}`: `ready` is `batches[0]`, the units whose dependencies are all satisfied, and `width` is the largest batch length, the widest fan-out. A `ready` member beyond the cursor is clockable, but only in that order: shiftwork_clock_in briefs any unit in `ready` when `unit_id` names it, and shiftwork_clock_out then accepts that unit because it was briefed — an id that is neither the cursor nor briefed since its own last clock-out is still refused. Units with status `done` or `dropped` are satisfied — dropped from the graph, and edges pointing at them treated as already resolved; `todo`, `in_progress` and `blocked` stay in it. Every unit has priority 0, because the checkpoint schema has no priority field, so order inside a batch is `plan.units` order. Same refusal sentences as `work_plan` for a duplicate id, an unknown dependency or a cycle, and the same refusals `shiftwork_status` gives for a checkpoint it cannot read. It reports what the dependency graph permits; it does not move the cursor, which is echoed unchanged so the single-pointer contract and the batch view can be read side by side. An orchestrator stays responsible for what it actually dispatches: `depends_on` encodes logical order, not file contention. Never mutates.",
       "inputSchema": {
         "properties": {
           "checkpoint": {

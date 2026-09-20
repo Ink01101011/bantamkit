@@ -1519,6 +1519,235 @@ def test_the_sentence_is_the_modules_constant_and_interpolates_nothing():
     assert "{" not in UNREADABLE and "/" not in UNREADABLE  # no format slot, no path
 
 
+# --- job60: clock_in takes a unit, clock_out takes a briefed one, the cursor follows ---
+#
+# The contradiction these close, both halves MEASURED 2026-09-20 against the live MCP and
+# the Python module before any of it was written:
+#
+#   shape 1  units N1, N2 independent, N3 on both. `shiftwork_plan` said width 2 and
+#            ready [N1, N2]; three `clock_in` calls answered N1, N1, N1, and
+#            `clock_out N2` answered "unit N2 is not the cursor unit N1". The width was
+#            announced by one surface and unspendable on the other.
+#   shape 2  units [A, C(depends_on B), B], cursor A. `clock_out A done` moved the cursor
+#            to C in PLAN order, `shiftwork_plan` said ready [B], and `clock_in` handed
+#            out C's brief with no refusal and no warning — work whose input does not
+#            exist yet.
+#
+# Why nothing was red: every `plan_batches` case above picks a checkpoint where
+# `cursor == ready[0]`, the two-wide one included, so nothing ever compared the two
+# FIELDS. These cases compare them against each other, which is the assertion that was
+# missing rather than the code that was wrong.
+
+
+def graph_checkpoint(example, units, cursor):
+    """`example` with its plan replaced: `units` is [(id, [deps]), ...], every one `todo`.
+
+    Built off the shipped example so the rest of the document (job, handoff, state,
+    history) is a real validating checkpoint and only the graph under test varies.
+    """
+    ckpt = copy.deepcopy(example)
+    ckpt["plan"]["units"] = [
+        {
+            "id": unit_id,
+            "title": f"unit {unit_id}",
+            "brief_path": f".shiftwork/briefs/{unit_id}.md",
+            "status": "todo",
+            "role": "implementer",
+            "depends_on": list(deps),
+            "verify": "true",
+        }
+        for unit_id, deps in units
+    ]
+    ckpt["plan"]["cursor"] = cursor
+    return ckpt
+
+
+def out(path, unit_id, status="done"):
+    return ops.clock_out(str(path), unit_id, status, {}, {"unit": unit_id, "outcome": status})
+
+
+def test_clock_in_with_no_unit_id_answers_exactly_what_it_always_did(tmp_path):
+    """D1's whole promise to a caller that never heard of it: the default path is unmoved.
+
+    Asserted field by field against the file rather than "result == brief", and then
+    asserted AGAIN against the explicit call naming the same unit — the two routes into
+    the brief must build one payload, or `unit_id` is a second implementation of it.
+    """
+    path = write_checkpoint(tmp_path, json.loads(CODEFIX.read_text(encoding="utf-8")))
+    ckpt = json.loads(CODEFIX.read_text(encoding="utf-8"))
+    brief = ops.clock_in(str(path))
+    assert brief["result"] == "brief"
+    assert ckpt["plan"]["cursor"] == "CF1"
+    assert brief["unit"] == ckpt["plan"]["units"][0]  # CF1, the cursor unit, verbatim
+    assert brief["role"] == "implementer"
+    assert brief["invariants"] == ckpt["job"]["constraints"]
+    assert brief["handoff"] == ckpt["handoff"]
+    assert brief["do_not"] == ckpt["handoff"]["do_not"]
+    assert brief["files"] == ckpt["state"]["artifacts"]
+    assert ops.clock_in(str(path), "CF1") == brief
+
+
+def test_the_cursor_lands_on_the_graphs_next_unit_not_the_plans(tmp_path, example):
+    """SHAPE 2, and the one assertion that would have caught it: cursor B, never C.
+
+    `plan.units` declares [A, C, B] and C depends on B, so plan order and graph order
+    disagree by construction. Before D3 the cursor advanced in plan order and landed on
+    C — a unit whose input had not run — while `shiftwork_plan` said ready [B]. The
+    assertion is the two fields against EACH OTHER, which is what no case did.
+    """
+    ckpt = graph_checkpoint(example, [("A", []), ("C", ["B"]), ("B", [])], "A")
+    path = write_checkpoint(tmp_path, ckpt)
+    assert ops.plan_batches(str(path))["ready"] == ["A", "B"]
+
+    assert out(path, "A")["cursor"] == "B"
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["plan"]["cursor"] == "B"
+    view = ops.plan_batches(str(path))
+    assert view["ready"] == ["B"] and view["cursor"] == view["ready"][0]
+
+    brief = ops.clock_in(str(path))
+    assert brief["result"] == "brief" and brief["unit"]["id"] == "B"
+
+
+def test_clock_in_refuses_a_unit_the_graph_has_not_released(tmp_path, example):
+    """The D1 sentence, exact. C is declared before B and depends on it, so it is the
+    unit an orchestrator reading `plan.units` would reach for — and it is not ready."""
+    ckpt = graph_checkpoint(example, [("A", []), ("C", ["B"]), ("B", [])], "A")
+    path = write_checkpoint(tmp_path, ckpt)
+    assert out(path, "A")["cursor"] == "B"
+    assert ops.clock_in(str(path), "C") == {
+        "result": "error",
+        "reason": "unit C is not ready; ready is B",
+    }
+    assert not any(line.get("unit") == "C" for line in read_log(path))
+
+
+def test_a_unit_id_naming_no_unit_gets_the_same_not_ready_sentence(tmp_path, example):
+    """One property, one sentence: a name the plan does not carry is the limiting case of
+    not-ready, not a second refusal to spell (and to drift between two runtimes)."""
+    ckpt = graph_checkpoint(example, [("A", []), ("C", ["B"]), ("B", [])], "A")
+    path = write_checkpoint(tmp_path, ckpt)
+    assert out(path, "A")["cursor"] == "B"
+    assert ops.clock_in(str(path), "nope") == {
+        "result": "error",
+        "reason": "unit nope is not ready; ready is B",
+    }
+
+
+def test_the_not_ready_sentence_joins_the_whole_ready_batch(tmp_path, example):
+    """`ready` is listed because the caller's next move is to pick from it, so a two-wide
+    batch must name both, joined with ", " in batch order."""
+    ckpt = graph_checkpoint(example, [("N1", []), ("N2", []), ("N3", ["N1", "N2"])], "N1")
+    path = write_checkpoint(tmp_path, ckpt)
+    assert ops.clock_in(str(path), "N3")["reason"] == "unit N3 is not ready; ready is N1, N2"
+
+
+def test_clock_in_briefs_a_second_ready_unit_and_leaves_the_cursor_alone(tmp_path, example):
+    """SHAPE 1: the width `shiftwork_plan` reports is now spendable.
+
+    And the invariant that makes a wave safe — clock-in NEVER writes `plan.cursor`. Both
+    briefs are issued against one pointer, and the pointer does not move until a
+    clock-out moves it.
+    """
+    ckpt = graph_checkpoint(example, [("N1", []), ("N2", []), ("N3", ["N1", "N2"])], "N1")
+    path = write_checkpoint(tmp_path, ckpt)
+    assert ops.plan_batches(str(path))["width"] == 2
+
+    first = ops.clock_in(str(path))
+    second = ops.clock_in(str(path), "N2")
+    assert first["unit"]["id"] == "N1" and second["unit"]["id"] == "N2"
+    assert second["invariants"] == ckpt["job"]["constraints"]
+
+    briefs = [line for line in read_log(path) if line.get("event") == "brief"]
+    assert [line["unit"] for line in briefs] == ["N1", "N2"]  # the unit ACTUALLY briefed
+    assert json.loads(path.read_text(encoding="utf-8"))["plan"]["cursor"] == "N1"
+
+
+def test_clock_out_accepts_a_briefed_non_cursor_unit(tmp_path, example):
+    """D2. Without it the wave above is unusable: N2 was briefed against cursor N1, so
+    its result would have nowhere to go until N1 happened to finish first."""
+    ckpt = graph_checkpoint(example, [("N1", []), ("N2", []), ("N3", ["N1", "N2"])], "N1")
+    path = write_checkpoint(tmp_path, ckpt)
+    assert ops.clock_in(str(path), "N2")["result"] == "brief"
+
+    r = out(path, "N2")
+    assert r["result"] == "ok" and r["unit"] == "N2"
+    assert r["cursor"] == "N1"  # N1 is still the only ready unit; N3 waits on it
+    line = read_log(path)[-1]
+    assert line["unit"] == "N2" and line["status"] == "done" and line["briefed"] is True
+
+
+def test_clock_out_of_a_unit_never_briefed_keeps_its_existing_refusal(tmp_path, example):
+    """D2 widened the MEANING and not the WORDING — every ruled case on this sentence
+    stays green — and it did NOT become permissive: a unit nobody dispatched is refused,
+    with nothing written on either surface."""
+    ckpt = graph_checkpoint(example, [("N1", []), ("N2", []), ("N3", ["N1", "N2"])], "N1")
+    path = write_checkpoint(tmp_path, ckpt)
+    before = path.read_bytes()
+    assert out(path, "N2") == {"result": "error", "reason": "unit N2 is not the cursor unit N1"}
+    assert path.read_bytes() == before
+    assert read_log(path) == []
+
+
+def test_a_graph_that_cannot_batch_refuses_clock_in_and_still_drives_to_the_end(
+    tmp_path, example
+):
+    """The core's refusal passes through VERBATIM — the same bytes `plan_batches` answers,
+    so a caller cannot tell which surface it asked — and D3's second arm keeps clock-out
+    RECORDING: a checkpoint whose graph is unplannable is still driven to its end in plan
+    order. B and C cycle around each other and A does not, so the cycle survives A's
+    clock-out; that is what makes the fallback reachable at all.
+    """
+    ckpt = graph_checkpoint(example, [("A", []), ("B", ["C"]), ("C", ["B"])], "A")
+    path = write_checkpoint(tmp_path, ckpt)
+    cycle = {"result": "error", "reason": "the graph has a cycle: B -> C -> B"}
+    assert ops.plan_batches(str(path)) == cycle
+    assert ops.clock_in(str(path), "A") == cycle
+    assert ops.clock_in(str(path), "nope") == cycle  # the batch view refuses FIRST
+    assert read_log(path) == []
+
+    assert out(path, "A")["cursor"] == "B"  # plan order over the remaining units
+    assert out(path, "B")["cursor"] == "C"  # C's edge into B is satisfied: ready again
+    assert out(path, "C")["cursor"] == "C"  # nothing non-terminal left: the unit itself
+    assert ops.clock_in(str(path)) == {"result": "success", "reason": "all units done or dropped"}
+
+
+def test_clock_in_with_a_unit_id_refuses_before_it_reads_the_graph(tmp_path, example):
+    """The order of judgements above the selection is UNMOVED, so no existing refusal
+    changed place: escalate and success still answer first, whatever `unit_id` says."""
+    def sub(name, ckpt):
+        directory = tmp_path / name
+        directory.mkdir()
+        return write_checkpoint(directory, ckpt)
+
+    questions = copy.deepcopy(example)
+    questions["handoff"]["open_questions"] = ["who owns the deploy key?"]
+    assert ops.clock_in(str(sub("q", questions)), "U4")["result"] == "escalate"
+    done = copy.deepcopy(example)
+    for unit in done["plan"]["units"]:
+        unit["status"] = "done"
+    assert ops.clock_in(str(sub("d", done)), "U4") == {
+        "result": "success",
+        "reason": "all units done or dropped",
+    }
+    bad = ops.clock_in(str(sub("e", "{not json")), "U4")
+    assert bad["result"] == "error" and "not parseable as JSON" in bad["reason"]
+
+
+def test_the_module_walks_depends_on_in_exactly_one_place(tmp_path, example):
+    """The bug was two answers about one document, so the fix is one loop with three
+    callers. Measured on the ANSWERS, not by reading the source: `clock_in`'s refusal
+    quotes the batch `plan_batches` publishes, and the cursor `clock_out` writes is that
+    batch's first id — on a checkpoint where plan order would say something else.
+    """
+    ckpt = graph_checkpoint(example, [("A", []), ("C", ["B"]), ("B", [])], "A")
+    path = write_checkpoint(tmp_path, ckpt)
+    out(path, "A")
+    ready = ops.plan_batches(str(path))["ready"]
+    assert ops.clock_in(str(path), "C")["reason"].endswith(f"ready is {', '.join(ready)}")
+    assert json.loads(path.read_text(encoding="utf-8"))["plan"]["cursor"] == ready[0]
+
+
 # --- MCP flavor: status -----------------------------------------------------
 
 

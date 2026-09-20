@@ -1407,7 +1407,7 @@ const briefLine = (role, ts, unit) => `{"event": "brief", "role": "${role}", "ts
 test('clock_in appends ONE brief line — `{"event", "role", "ts", "unit"}`, sorted, no `status`', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
-  const answer = js(clockIn(path, { now: 1755930000.9 }));
+  const answer = js(clockIn(path, null, { now: 1755930000.9 }));
   assert.equal(answer.result, 'brief');
   assert.equal(BRIEF_EVENT, 'brief');
   // The verbatim shape: keys sorted the way every ledger line is written, the clock floored.
@@ -1436,12 +1436,12 @@ test('clock_in refusals — escalate, success, error — record no brief line', 
     ['c.json', dangling, 'escalate'],
   ]) {
     const path = writeCheckpoint(root, doc, name);
-    assert.equal(js(clockIn(path, { now: 1 })).result, expected);
+    assert.equal(js(clockIn(path, null, { now: 1 })).result, expected);
     assert.equal(existsSync(`${path}.log.jsonl`), false, `${name}: a refusal issued nothing`);
   }
   const broken = join(root, 'e.json');
   writeFileSync(broken, '{not json', 'utf8');
-  assert.equal(js(clockIn(broken, { now: 1 })).result, 'error');
+  assert.equal(js(clockIn(broken, null, { now: 1 })).result, 'error');
   assert.equal(existsSync(`${broken}.log.jsonl`), false);
   rmSync(root, { recursive: true, force: true });
 });
@@ -1449,7 +1449,7 @@ test('clock_in refusals — escalate, success, error — record no brief line', 
 test('a clock-out after a brief writes `briefed: true`, and the accounting still passes beside it', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
-  clockIn(path, { now: 1755930000 });
+  clockIn(path, null, { now: 1755930000 });
   const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1234, duration_ms: 88200 }, { now: 1755930001 }));
   assert.equal(answer.result, 'ok');
   const lines = logLines(path);
@@ -1484,7 +1484,7 @@ test('a clock-out WITHOUT a brief records `briefed: false` and never refuses —
 test('`briefed` is written on a null accounting line too — it is the runtime’s field', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
-  clockIn(path, { now: 1 });
+  clockIn(path, null, { now: 1 });
   clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 2 });
   const line = logLines(path).at(-1);
   assert.deepEqual(Object.keys(line).sort(), ['briefed', 'role', 'status', 'ts', 'unit']);
@@ -1495,8 +1495,8 @@ test('`briefed` is written on a null accounting line too — it is the runtime�
 test('two briefs before one clock-out is a relaunch: TWO lines, and the clock-out is briefed', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
-  assert.equal(js(clockIn(path, { now: 1 })).unit.id, 'N1');
-  assert.equal(js(clockIn(path, { now: 2 })).unit.id, 'N1');
+  assert.equal(js(clockIn(path, null, { now: 1 })).unit.id, 'N1');
+  assert.equal(js(clockIn(path, null, { now: 2 })).unit.id, 'N1');
   clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1 }, { now: 3 });
   const lines = logLines(path);
   assert.deepEqual(lines.map((l) => l.event ?? null), ['brief', 'brief', null]);
@@ -1508,10 +1508,10 @@ test('a clock-out CONSUMES the brief: brief→blocked→re-run reads false, then
   const root = fresh();
   const path = writeCheckpoint(root);
   const BLOCKED = { unit: 'N1', outcome: 'blocked' };
-  clockIn(path, { now: 1 });
+  clockIn(path, null, { now: 1 });
   clockOut(path, 'N1', 'blocked', {}, BLOCKED, null, { now: 2 });
   clockOut(path, 'N1', 'blocked', {}, BLOCKED, null, { now: 3 }); // the inline re-run, no clock_in
-  clockIn(path, { now: 4 });
+  clockIn(path, null, { now: 4 });
   clockOut(path, 'N1', 'done', {}, OK_ENTRY, { tokens: 1, duration_ms: 1 }, { now: 5 });
   const lines = logLines(path);
   assert.deepEqual(lines.map((l) => l.event ?? null), ['brief', null, null, 'brief', null]);
@@ -1531,7 +1531,7 @@ test('`briefed` is MEASURED off the ledger — a self-reported `briefed: true` i
 test('the briefed reader skips lines it cannot parse or that do not name the unit as a string', () => {
   const root = fresh();
   const path = writeCheckpoint(root);
-  clockIn(path, { now: 1 });
+  clockIn(path, null, { now: 1 });
   // A ledger people edit by hand during recovery: junk, a list, a blank, a unit that is not a
   // string (`5 != "N1"` in Python, so it is skipped rather than compared), an accounting line
   // for the OTHER unit — none of them clears N1's brief.
@@ -1560,7 +1560,7 @@ test('clock_in with a DIRECTORY where the log belongs still returns the brief (p
   const root = fresh();
   const path = writeCheckpoint(root);
   mkdirSync(`${path}.log.jsonl`);
-  const brief = js(clockIn(path, { now: 1 }));
+  const brief = js(clockIn(path, null, { now: 1 }));
   assert.equal(brief.result, 'brief');
   assert.equal(brief.unit.id, 'N1');
   assert.ok(statSync(`${path}.log.jsonl`).isDirectory(), 'nothing was written anywhere');
@@ -1591,7 +1591,7 @@ test('clock_in in a READ-ONLY store costs only the record: the brief returns who
   }
   let brief;
   try {
-    brief = js(clockIn(path, { now: 1 }));
+    brief = js(clockIn(path, null, { now: 1 }));
   } finally {
     chmodSync(inner, 0o755);
   }
@@ -1795,7 +1795,7 @@ test('planBatches writes nothing — the checkpoint AND the ledger are byte-unch
   assert.equal(existsSync(log), false, 'planBatches appended a ledger line beside the checkpoint');
 
   // And on a checkpoint that ALREADY has a ledger: the bytes of both must not move.
-  clockIn(path, { now: 1 });
+  clockIn(path, null, { now: 1 });
   assert.equal(existsSync(log), true);
   const withLog = digests(path);
   assert.equal(js(planBatches(path)).result, 'plan');
@@ -1812,6 +1812,170 @@ test('planBatches does not move the repo’s own example checkpoints', () => {
     assert.equal(js(planBatches(checkpoint)).result, 'plan');
     assert.deepEqual(digests(checkpoint), before, `${checkpoint} moved`);
   }
+});
+
+// ============================== J60: the cursor and the graph answer the same question
+//
+// `shiftwork_plan` answered `ready` from `depends_on` while `clock_in` answered from
+// `plan.cursor`, and the two disagreed two measurable ways: a `ready` two units wide that
+// the driver gave no way to spend, and a cursor landing on a unit whose `depends_on` had
+// not run. Neither was a coding defect — the 2026-09-18 design declared cursor advance
+// untouched — and no gate could see it, because every `plan_batches` case picked a
+// checkpoint where `cursor === ready[0]`. These nodes assert the two fields AGAINST EACH
+// OTHER, which is the assertion whose absence hid it.
+//
+// The design is `docs/superpowers/specs/2026-09-20-clock-in-unit-id-design.md`. The Python
+// differential is the conformance suite's; this file is the per-side half, and the refusal
+// sentences below are LITERALS here for the reason the module header gives — a string both
+// runtimes copied is invisible to the differential.
+
+/** A schema-valid unit, so a graph can be written as a list of ids and their edges. */
+const graphUnit = (id, depends_on = [], over = {}) => ({
+  id,
+  title: `t${id}`,
+  brief_path: `${id}.md`,
+  status: 'todo',
+  role: 'implementer',
+  depends_on,
+  verify: `v${id}`,
+  ...over,
+});
+const graphDocument = (units, cursor) => checkpointDocument({ plan: { cursor, units } });
+const finish = (path, id, now) => js(clockOut(path, id, 'done', {}, { unit: id, outcome: 'done' }, null, { now }));
+
+test('D1: no unit_id is the cursor unit, and the codefix template answers what it always did', () => {
+  // The default path, on the checkpoint the tool is actually driven from. Everything here
+  // predates this job: the keys, the synthesized `invariants`, and the one brief line.
+  const root = fresh();
+  const path = join(root, 'checkpoint.json');
+  writeFileSync(path, readFileSync(CODEFIX_CHECKPOINT, 'utf8'), 'utf8');
+  const doc = JSON.parse(readFileSync(CODEFIX_CHECKPOINT, 'utf8'));
+  const answer = js(clockIn(path, null, { now: 1 }));
+  assert.equal(answer.result, 'brief');
+  assert.equal(answer.unit.id, doc.plan.cursor);
+  assert.deepEqual(answer.unit, doc.plan.units[0]);
+  assert.deepEqual(answer.invariants, doc.job.constraints);
+  assert.deepEqual(Object.keys(answer), ['result', 'unit', 'role', 'invariants', 'handoff', 'do_not', 'files']);
+  assert.deepEqual(logLines(path).map((l) => [l.event, l.unit]), [['brief', doc.plan.cursor]]);
+  // An omitted argument and an explicit null are ONE case — the MCP server hands over the
+  // latter for a host that sends `"unit_id": null`.
+  assert.equal(js(clockIn(path)).unit.id, doc.plan.cursor);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('D3: cursor advance follows the GRAPH — [A, C(depends_on B), B] lands on B, never C', () => {
+  // Shape 2, the sharper half of the contradiction and the one this node exists for: plan
+  // order says C, the graph says B, and C's input has not run. Before J60 `clock_in` here
+  // briefed C with no refusal and no warning.
+  const root = fresh();
+  const path = writeCheckpoint(root, graphDocument([graphUnit('A'), graphUnit('C', ['B']), graphUnit('B')], 'A'));
+  assert.deepEqual(js(planBatches(path)).ready, ['A', 'B'], 'the advisory surface, before anything is driven');
+  assert.equal(finish(path, 'A', 1).cursor, 'B');
+  assert.equal(JSON.parse(text(path)).plan.cursor, 'B', 'and the file says so too');
+  assert.equal(js(clockIn(path, null, { now: 2 })).unit.id, 'B', 'the brief the orchestrator would actually get');
+  // The two fields, against each other. This is the comparison nothing made.
+  const view = js(planBatches(path));
+  assert.equal(view.cursor, view.ready[0]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('D1: a unit the graph has not made ready is refused, and the refusal carries `ready`', () => {
+  // The list is in the sentence because the caller's next move is to pick from it, joined
+  // with ", " in BATCH order — C is not in it because B has not run.
+  const root = fresh();
+  const path = writeCheckpoint(root, graphDocument([graphUnit('A'), graphUnit('C', ['B']), graphUnit('B')], 'A'));
+  assert.deepEqual(js(clockIn(path, 'C', { now: 1 })), {
+    result: 'error',
+    reason: 'unit C is not ready; ready is A, B',
+  });
+  assert.equal(existsSync(`${path}.log.jsonl`), false, 'a refusal issued no brief, so it recorded none');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('D1: a unit_id naming no unit at all is the SAME refusal, not a second sentence', () => {
+  // Not-in-the-plan and not-yet-ready are one property — this id cannot be briefed now —
+  // so there is one sentence, and a typo reads the list of what it could have meant.
+  const root = fresh();
+  const path = writeCheckpoint(root, graphDocument([graphUnit('A'), graphUnit('C', ['B']), graphUnit('B')], 'A'));
+  assert.deepEqual(js(clockIn(path, 'nope', { now: 1 })), {
+    result: 'error',
+    reason: 'unit nope is not ready; ready is A, B',
+  });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('D1: a two-wide batch can be SPENT — clock_in N2 briefs N2 and leaves the cursor at N1', () => {
+  // Shape 1. The width `shiftwork_plan` has reported since job59 is now reachable, and the
+  // pointer does not move for it: `clock_in` still never writes `plan.cursor`.
+  const root = fresh();
+  const wide = graphDocument([graphUnit('N1'), graphUnit('N2'), graphUnit('N3', ['N1', 'N2'])], 'N1');
+  const path = writeCheckpoint(root, wide);
+  const before = bytes(path);
+  const view = js(planBatches(path));
+  assert.deepEqual([view.ready, view.width], [['N1', 'N2'], 2]);
+  const answer = js(clockIn(path, 'N2', { now: 1755930000 }));
+  assert.equal(answer.result, 'brief');
+  assert.equal(answer.unit.id, 'N2');
+  assert.deepEqual(bytes(path), before, 'clock_in wrote the checkpoint');
+  assert.equal(JSON.parse(text(path)).plan.cursor, 'N1');
+  // The ledger line names the unit ACTUALLY briefed — which is what makes D2 possible.
+  assert.equal(text(`${path}.log.jsonl`), disk(briefLine('implementer', '2025-08-23T06:20:00Z', 'N2')));
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('D2: clock_out takes a unit it BRIEFED, and still refuses one it never dispatched', () => {
+  // The permission is the ledger's, not the caller's: `briefed` is the same value the
+  // accounting line carries, measured by the same helper. The refusal keeps its sentence
+  // byte for byte, so every ruled case pinning it stays green.
+  const root = fresh();
+  const units = () => [graphUnit('N1'), graphUnit('N2'), graphUnit('N3', ['N1', 'N2'])];
+  const never = writeCheckpoint(root, graphDocument(units(), 'N1'), 'never.json');
+  const before = bytes(never);
+  assert.deepEqual(js(clockOut(never, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, null, { now: 1 })), {
+    result: 'error',
+    reason: 'unit N2 is not the cursor unit N1',
+  });
+  assert.deepEqual(bytes(never), before, 'the checkpoint is byte-unchanged');
+  assert.equal(existsSync(`${never}.log.jsonl`), false, 'no line was ever appended');
+
+  const wave = writeCheckpoint(root, graphDocument(units(), 'N1'), 'wave.json');
+  clockIn(wave, 'N2', { now: 1 });
+  const answer = finish(wave, 'N2', 2);
+  assert.equal(answer.result, 'ok');
+  assert.equal(answer.unit, 'N2');
+  assert.equal(logLines(wave).at(-1).briefed, true, 'the brief it was let in on is the brief it consumed');
+  // N3 still waits on N1, so the cursor is N1 — the unit that was never touched.
+  assert.equal(answer.cursor, 'N1');
+  assert.deepEqual(js(planBatches(wave)).ready, ['N1']);
+  // And the brief is CONSUMED: a second clock-out of N2 has no brief left to stand on.
+  assert.deepEqual(js(clockOut(wave, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, null, { now: 3 })), {
+    result: 'error',
+    reason: 'unit N2 is not the cursor unit N1',
+  });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('a graph that cannot batch: clock_in passes the core refusal through, clock_out still finishes', () => {
+  // The core's sentence is not reworded and not swallowed, exactly as `planBatches` passes
+  // it. And `clock_out` RECORDS — a recording surface does not acquire a new way to refuse
+  // — so the plan-order fallback drives even an unplannable checkpoint to its end.
+  const root = fresh();
+  const path = writeCheckpoint(root, graphDocument([graphUnit('P'), graphUnit('Q', ['R']), graphUnit('R', ['Q'])], 'P'));
+  assert.equal(finish(path, 'P', 1).cursor, 'Q', 'ready is empty, so plan.units order answers');
+  const refusal = { result: 'error', reason: 'the graph has a cycle: Q -> R -> Q' };
+  assert.deepEqual(js(clockIn(path, 'Q', { now: 2 })), refusal);
+  assert.deepEqual(js(planBatches(path)), refusal, 'the same sentence, out of the same helper');
+  // The ledger already holds P's accounting line, so ABSENCE is not the test here: what the
+  // refusal must not have appended is a BRIEF line.
+  assert.deepEqual(logLines(path).filter((l) => l.event === 'brief'), [], 'the refusal issued no brief');
+  // With no unit_id the cursor unit is still briefed: the batch view is consulted only for
+  // a selection, so a cyclic checkpoint does not lose the default path.
+  assert.equal(js(clockIn(path, null, { now: 3 })).unit.id, 'Q');
+  // Q done satisfies R's edge, so the graph answers again and the run ends normally.
+  assert.equal(finish(path, 'Q', 4).cursor, 'R');
+  assert.equal(finish(path, 'R', 5).cursor, 'R', 'nothing left: the cursor holds on the last unit');
+  assert.deepEqual(js(clockIn(path, null, { now: 6 })), { result: 'success', reason: 'all units done or dropped' });
+  rmSync(root, { recursive: true, force: true });
 });
 
 // J60-F2: the sub-schemas `shiftwork_clock_out` SERVES are a second copy of what the checkpoint

@@ -96,7 +96,15 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   },
   memory_recall: { model: 'memory_recallArguments', fields: [req('query', 'str'), opt('k', 'int')] },
   validate_json: { model: 'validate_jsonArguments', fields: [req('output', 'str'), req('schema', 'dict')] },
-  shiftwork_clock_in: { model: 'shiftwork_clock_inArguments', fields: [req('checkpoint', 'str')] },
+  // `clock_in(checkpoint: str, unit_id: str | None = None)` since job60: the optional field
+  // is the same `opt(...)` `shiftwork_clock_out`'s `accounting` already is, and `str` is the
+  // strict string `unit_id` is on `shiftwork_clock_out` — one spelling for one argument name
+  // across the two tools. An omitted or explicitly null `unit_id` is the default, which is
+  // the cursor unit and is byte for byte what the tool did before it had the field.
+  shiftwork_clock_in: {
+    model: 'shiftwork_clock_inArguments',
+    fields: [req('checkpoint', 'str'), opt('unit_id', 'str')],
+  },
   shiftwork_clock_out: {
     model: 'shiftwork_clock_outArguments',
     fields: [
