@@ -633,11 +633,73 @@ const shape2 = (cursor, aStatus) => baseDocument({
   },
 });
 
-/** job60 shape 1: two independent units and one that joins them — a ready batch of WIDTH 2. */
+/**
+ * job60 shape 1: two independent units and one that joins them — a ready batch of WIDTH 2.
+ *
+ * job61/(a): `N4` IS THE REASON THE CURSOR ROWS BELOW ARE GATES. The wave used to be
+ * `[N1, N2, N3]` — declared in dependency order, so at every step of the session the head of
+ * the remaining units in `plan.units` order and the head of the ready batch were the SAME
+ * unit, and the pre-job60 rule (`remaining[0]`) and D3's rule (`ready[0]`) could not disagree.
+ * Measured on this suite's own documents by job60's review: both `cursor/wave-cursor-after-N2`
+ * and `cursor/wave-cursor-after-N1` answered `N1`/`N3` under EITHER rule, so neither was a
+ * gate for D3 — they pinned the wave's other properties and a reader counted them twice.
+ *
+ * `N4` is declared FIRST and runnable LAST: nothing depends on it and it depends on `N3`, the
+ * join. Plan order therefore leads with a unit the graph can never run first, and the two
+ * rules come apart at BOTH clock-outs — plan order says `N4` each time, the graph says `N1`
+ * then `N3`. Every expectation in this file keeps the value it already had: the ready batch is
+ * still `N1, N2` (so the not-ready sentence is unchanged), the cursor is still `N1` then `N3`,
+ * the briefs and the ledger trail are untouched. What changed is that those values can now be
+ * wrong — which is the whole difference between a row and a gate.
+ */
 const waveDocument = () => baseDocument({
   plan: {
     cursor: 'N1',
-    units: [unit('N1', []), unit('N2', [], { role: 'reviewer' }), unit('N3', ['N1', 'N2'], { role: 'planner' })],
+    units: [
+      unit('N4', ['N3']),
+      unit('N1', []),
+      unit('N2', [], { role: 'reviewer' }),
+      unit('N3', ['N1', 'N2'], { role: 'planner' }),
+    ],
+  },
+});
+
+/**
+ * job61/(b): a graph the batch view REFUSES — a cycle, and one that does NOT touch the cursor.
+ *
+ * `clock_in(unit_id)` is specified to pass the core's refusal through VERBATIM, and both
+ * runtimes unit-test that separately; until this document existed nothing compared the two
+ * answers, which is the difference between a promise and a gate.
+ *
+ * WHY `A` SITS OUTSIDE THE CYCLE. `_batch_view` drops every `done`/`dropped` unit AND every
+ * edge pointing at one, so a 2-cycle containing the clocked-out unit stops being a cycle the
+ * moment that unit is satisfied — a session built on one would refuse at its first step and
+ * succeed at its last for a reason that has nothing to do with the pass-through. `B <-> C`
+ * survives `A` being done, so the same call answers the same sentence before and after.
+ *
+ * `A` is also the cursor, which is what lets one document hold both halves: the default call
+ * never reads the graph and still briefs, while the named call cannot avoid it and refuses.
+ * And the clock-out reaches D3's OTHER arm — `ready` empty with units remaining is reachable
+ * only when the core refused, so the pointer falls back to plan order over what is left.
+ */
+const cycleDocument = () => baseDocument({
+  plan: {
+    cursor: 'A',
+    units: [unit('A', []), unit('B', ['C'], { role: 'reviewer' }), unit('C', ['B'], { role: 'planner' })],
+  },
+});
+
+/**
+ * job61/(b), the second refusal kind: an edge into an id no unit declares.
+ *
+ * `A` is the cursor and has no dependencies — it is exactly the unit a readiness check would
+ * wave through — so naming it proves the graph refusal is reached BEFORE readiness is asked
+ * at all, and is not the not-ready sentence wearing different words.
+ */
+const unknownDepDocument = () => baseDocument({
+  plan: {
+    cursor: 'A',
+    units: [unit('A', []), unit('B', ['GHOST'], { role: 'reviewer' })],
   },
 });
 
@@ -711,6 +773,30 @@ function unitIdSessions() {
     // the graph says can run. `status` last: the escalate wrote nothing and the brief writes no
     // cursor, so `GHOST` is still on disk at the end.
     ['unit-id/dangling-cursor', b64(raw(danglingDocument())), [IN(), IN('N2'), ST()]],
+
+    // ---- 7. job61/(b). A GRAPH THAT CANNOT BATCH AT ALL, driven through `clock_in`. The
+    // core's refusal is specified to pass through verbatim, and both runtimes unit-test that
+    // on their own side; nothing here ever compared the two sentences. Named unit first, then
+    // a `unit_id` that names nothing — on a refusing graph that is the SAME answer, because
+    // the batch view is consulted before readiness and before the unit is even looked up. Then
+    // the default call, which never reads the graph and still briefs the cursor unit; then the
+    // clock-out, which RECORDS and therefore must not acquire a new refusal (D3's fallback arm
+    // moves the pointer in plan order, the only place that arm is reachable); and last, the
+    // same named call again, to show the cycle outlived the unit that was satisfied.
+    ['unit-id/graph-refusal-cycle', b64(raw(cycleDocument())), [
+      IN('B'),
+      IN('nope'),
+      IN(),
+      OUT('A', 'done'),
+      ST(),
+      IN('B'),
+    ]],
+    // ---- 8. job61/(b), the other refusal kind. `A` is ready by every reading — cursor, no
+    // dependencies, first in plan order — and is refused anyway, by a sentence about a
+    // different unit's edge. That is what "verbatim" means: `clock_in` is not paraphrasing.
+    // The clock-out is here so the closing `status` row has something it can be WRONG about:
+    // on a graph that cannot batch the pointer moves by plan order, so it must read `B`.
+    ['unit-id/graph-refusal-unknown-dependency', b64(raw(unknownDepDocument())), [IN('A'), IN(), OUT('A', 'done'), ST()]],
   ];
 }
 
@@ -2136,8 +2222,15 @@ export async function run(ctx) {
     // THE MOVE D2 EXISTS FOR: N2 clocked out before N1, which the pre-job60 runtime refused.
     bit('wave-clock-out-N2-before-N1', WAVE, 2, 'ok');
     // and the pointer did not follow N2 anywhere: N1 is still the only ready unit.
+    //
+    // job61/(a): THESE THREE ROWS ARE D3 GATES, and until `N4` joined `waveDocument()` they
+    // were not. Plan order over what remains leads with `N4` at both clock-outs — it is
+    // declared first and runnable last — so the pre-job60 rule answers `N4` here and `N4`
+    // again below, while `ready[0]` answers `N1` then `N3`. The expected values are the same
+    // constants they always were; what moved is the document underneath them.
     cursor('wave-cursor-after-N2', WAVE, 2, 'N1');
     cursor('wave-cursor-after-N1', WAVE, 3, 'N3');
+    // `status` reads back the cursor step 3 WROTE, so this row inherits the same gate.
     cursor('wave-status-agrees', WAVE, 4, 'N3');
     briefed('wave-N3-once-both-dependencies-are-done', WAVE, 5, 'N3');
     // the ledger: both briefs landed, and BOTH clock-outs read `true` — the named brief counts
@@ -2193,6 +2286,48 @@ export async function run(ctx) {
     cursor('dangling-cursor-left-broken', DANGLING, 2, 'GHOST');
     trail('dangling-cursor', DANGLING, 2, ['brief N2']);
 
+    // ==================== 7. job61/(b): the core's refusal, passed through `clock_in`
+    //
+    // Two refusal kinds, read off EACH side as literals. The sentences are `workplan.plan`'s
+    // and `clock_in` is specified to hand them back untouched, so a row here goes red for a
+    // paraphrase, for a swallow (an empty `ready` answering `unit B is not ready; ready is `),
+    // and for a refusal that started writing — none of which either runtime's own unit tests
+    // can see in the other, and none of which the session's byte rows can see when both sides
+    // drift the same way.
+    const CYCLE = 'unit-id/graph-refusal-cycle';
+    bit('cycle-refuses-a-named-unit', CYCLE, 0, 'error');
+    says('cycle-refuses-a-named-unit', CYCLE, 0, 'the graph has a cycle: B -> C -> B');
+    untouched('cycle-refuses-a-named-unit', CYCLE, 0);
+    // a `unit_id` naming no unit at all gets the GRAPH's sentence here, not the not-ready one:
+    // the batch view is consulted first, so there is no ready list to name and none is named.
+    bit('cycle-outranks-the-not-ready-sentence', CYCLE, 1, 'error');
+    says('cycle-outranks-the-not-ready-sentence', CYCLE, 1, 'the graph has a cycle: B -> C -> B');
+    untouched('cycle-outranks-the-not-ready-sentence', CYCLE, 1);
+    // and the default path is unaffected, on the same bytes at the same instant: `clock_in()`
+    // reads `plan.cursor` and never the graph, so an unbatchable checkpoint is still drivable.
+    bit('cycle-default-path-still-briefs', CYCLE, 2, 'brief');
+    briefed('cycle-default-path-still-briefs', CYCLE, 2, 'A');
+    // clock-out RECORDS: a recording surface acquires no new way to refuse on a broken graph.
+    bit('cycle-clock-out-still-records', CYCLE, 3, 'ok');
+    // D3's other arm, and the only session in this file that reaches it: `ready` is empty with
+    // units remaining ONLY when the core refused, so the pointer falls back to plan order.
+    cursor('cycle-clock-out-falls-back-to-plan-order', CYCLE, 3, 'B');
+    cursor('cycle-status-agrees', CYCLE, 4, 'B');
+    // the cycle outlived the satisfied unit, which is why `A` was placed outside it.
+    bit('cycle-survives-the-satisfied-unit', CYCLE, 5, 'error');
+    says('cycle-survives-the-satisfied-unit', CYCLE, 5, 'the graph has a cycle: B -> C -> B');
+    trail('graph-refusal-cycle', CYCLE, 5, ['brief A', 'out A true']);
+
+    const UNKNOWNDEP = 'unit-id/graph-refusal-unknown-dependency';
+    bit('unknown-dependency', UNKNOWNDEP, 0, 'error');
+    says('unknown-dependency', UNKNOWNDEP, 0, 'node B depends on GHOST, which no node declares');
+    untouched('unknown-dependency', UNKNOWNDEP, 0);
+    bit('unknown-dependency-default-path-still-briefs', UNKNOWNDEP, 1, 'brief');
+    briefed('unknown-dependency-default-path-still-briefs', UNKNOWNDEP, 1, 'A');
+    bit('unknown-dependency-clock-out-still-records', UNKNOWNDEP, 2, 'ok');
+    cursor('unknown-dependency-falls-back-to-plan-order', UNKNOWNDEP, 2, 'B');
+    cursor('unknown-dependency-status-agrees', UNKNOWNDEP, 3, 'B');
+
     notes.push(
       'job60/D1-D3 (J60-4): `clock_in(unit_id)` is pinned by ' +
         `${cases.filter((c) => c.name.startsWith('unit-id/')).length} per-side cases over ` +
@@ -2202,7 +2337,13 @@ export async function run(ctx) {
         'the cursor landing on `ready[0]` rather than plan order, a two-wide wave clocked out ' +
         'in the other order, `clock_out`\'s unwidened cursor sentence, the shipped template ' +
         'answering identically with and without the argument, and (DEF-2) the dangling cursor ' +
-        'that still escalates on the default path while a named ready unit proceeds anyway.',
+        'that still escalates on the default path while a named ready unit proceeds anyway. ' +
+        'job61/(a): the wave carries a fourth unit declared first and runnable last, so its ' +
+        'two cursor rows now separate `ready[0]` from plan order instead of agreeing with ' +
+        'both. job61/(b): two sessions on graphs that cannot batch at all — a cycle outside ' +
+        'the cursor and an edge into an id no unit declares — pin the core\'s sentence coming ' +
+        'back through `clock_in` verbatim, the default path briefing anyway, and D3 falling ' +
+        'back to plan order, which is the one arm no other session reaches.',
     );
   }
 

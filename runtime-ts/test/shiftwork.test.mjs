@@ -1904,6 +1904,48 @@ test('D1: a unit_id naming no unit at all is the SAME refusal, not a second sent
   rmSync(root, { recursive: true, force: true });
 });
 
+test('D1: the selection is the LAST judgement — escalate and success answer before the graph is read', () => {
+  // D1's whole safety argument is that it inserted ONE judgement at the end and moved
+  // nothing above it. An implementation that read the graph first would pass every other
+  // node in this section, so the order is pinned here on its own. Same property as
+  // `runtime-py/tests/test_shiftwork.py::test_clock_in_with_a_unit_id_refuses_before_it_reads_the_graph`.
+  //
+  // Each graph below is chosen so that consulting it FIRST would be visible in the answer,
+  // not merely wasteful: a cycle would refuse with the core's sentence instead of
+  // escalating, and an all-terminal plan has an EMPTY `ready`, so the selection would
+  // refuse the unit_id instead of reporting success.
+  const root = fresh();
+
+  const questions = graphDocument([graphUnit('Q', ['R']), graphUnit('R', ['Q'])], 'Q');
+  questions.handoff.open_questions = ['who owns the deploy key?'];
+  const q = writeCheckpoint(root, questions, 'q.json');
+  assert.deepEqual(js(clockIn(q, 'Q', { now: 1 })), {
+    result: 'escalate',
+    reason: 'open question: who owns the deploy key?',
+    open_questions: ['who owns the deploy key?'],
+  });
+
+  const done = graphDocument([graphUnit('A'), graphUnit('C', ['B']), graphUnit('B')], 'A');
+  for (const unit of done.plan.units) unit.status = 'done';
+  const d = writeCheckpoint(root, done, 'd.json');
+  assert.deepEqual(js(clockIn(d, 'C', { now: 2 })), { result: 'success', reason: 'all units done or dropped' });
+
+  // And below both of those, the read itself: a checkpoint that never parses has no graph
+  // to consult, and the decoder's refusal is what comes back. The offsets are pinned by
+  // `an unparseable checkpoint refuses with the decoder’s own offsets`; what is pinned
+  // here is only that a `unit_id` does not get in front of it.
+  const e = join(root, 'e.json');
+  writeFileSync(e, '{not json', 'utf8');
+  const bad = js(clockIn(e, 'C', { now: 3 }));
+  assert.equal(bad.result, 'error');
+  assert.ok(bad.reason.startsWith('checkpoint is not parseable as JSON: '), bad.reason);
+
+  for (const path of [q, d, e]) {
+    assert.equal(existsSync(`${path}.log.jsonl`), false, `${path}: a refusal issued no brief`);
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('D1: a two-wide batch can be SPENT — clock_in N2 briefs N2 and leaves the cursor at N1', () => {
   // Shape 1. The width `shiftwork_plan` has reported since job59 is now reachable, and the
   // pointer does not move for it: `clock_in` still never writes `plan.cursor`.
@@ -1976,6 +2018,85 @@ test('a graph that cannot batch: clock_in passes the core refusal through, clock
   assert.equal(finish(path, 'R', 5).cursor, 'R', 'nothing left: the cursor holds on the last unit');
   assert.deepEqual(js(clockIn(path, null, { now: 6 })), { result: 'success', reason: 'all units done or dropped' });
   rmSync(root, { recursive: true, force: true });
+});
+
+// --- the ONE loop, measured on the SOURCE -----------------------------------------------
+//
+// The defect J60 closed was TWO answers about one document, so the fix is one walk with
+// three callers — and "one walk" is a property of the code, not of any single answer. The
+// nodes above compare `clock_in`, `clock_out` and `planBatches` to each other, which is
+// what catches a second loop that has ALREADY drifted; this one catches the second loop on
+// the day it is written, while it still agrees.
+//
+// It reads the TYPESCRIPT SOURCE beside the module under test, not `dist/`: `tsc` may
+// inline, hoist or duplicate, so a compiled artefact cannot tell a second walk from the
+// first, and the property is about the file a human edits.
+
+/** `runtime-ts/src/shiftwork.ts` — the source, one directory up from this test. */
+const SHIFTWORK_SRC = fileURLToPath(new URL('../src/shiftwork.ts', import.meta.url));
+
+/**
+ * The file with its comments removed — the CODE, because prose is not a loop.
+ *
+ * The module header discusses `depends_on` at length, and rightly. A strip cannot produce
+ * a false green here by accident: every assertion below is an exact count, so a strip that
+ * ate too much drives the counts to zero and a strip that ate too little drives them up.
+ *
+ * One direction it cannot catch, stated rather than engineered around: the line strip cuts
+ * each line at its FIRST `//`, including a `//` that is inside a string literal, so code
+ * written after such a `//` on the same line would be invisible and a second `depends_on`
+ * walk there would not be counted. Measured on `src/shiftwork.ts` today: zero occurrences
+ * of `://` and zero string literals containing `//`, so no line here is mis-cut. A real
+ * comment parser would be more code than this property is worth, and the
+ * `raw > walks.length` guard below already fails closed on every other strip error.
+ */
+function codeOf(path) {
+  return readFileSync(path, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[^\n]*?\/\/[^\n]*$/gm, (line) => line.slice(0, line.indexOf('//')));
+}
+
+/** `[start, end]` of a function body, by brace-matching from its signature. */
+function bodySpan(code, signature) {
+  const start = code.indexOf(signature);
+  assert.notEqual(start, -1, `${signature} is no longer in the source`);
+  let depth = 0;
+  for (let i = code.indexOf('{', start); i < code.length; i += 1) {
+    if (code[i] === '{') depth += 1;
+    else if (code[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return [start, i];
+    }
+  }
+  return assert.fail(`${signature} has no closing brace`);
+}
+
+test('the module walks depends_on in exactly ONE place, and enters Layer 1 exactly once', () => {
+  const code = codeOf(SHIFTWORK_SRC);
+  const [start, end] = bodySpan(code, 'function batchView(');
+  const inside = (m) => m.index > start && m.index < end;
+  const walks = [...code.matchAll(/\bdepends_on\b/g)];
+  // `workplan.plan(` matches too: the lookbehind excludes only an identifier character, so
+  // reaching the planner through the namespace is not a way round this count.
+  const planner = [...code.matchAll(/(?<![A-Za-z0-9_$])plan\(/g)];
+
+  // The strip did something: the file names the field far more often in prose than in code.
+  const raw = [...readFileSync(SHIFTWORK_SRC, 'utf8').matchAll(/\bdepends_on\b/g)].length;
+  assert.ok(raw > walks.length, `the comment strip removed nothing — ${raw} mentions, ${walks.length} in code`);
+
+  // Twice, both inside `batchView`: once READ off the unit, once as the key of the
+  // `PlanNode` handed to Layer 1. A convenience walk in `clockIn`, or a `ready` recomputed
+  // in `clockOut`, moves one of these counts — which is the whole reason to count them.
+  assert.equal(walks.length, 2, `depends_on is named ${walks.length} times in the code, not 2`);
+  assert.equal(walks.filter(inside).length, 2, 'a mention of depends_on lives outside batchView');
+  assert.equal([...code.matchAll(/'depends_on'/g)].length, 1, 'the field is READ in more than one place');
+  assert.ok(code.includes("const declared = u.v.get('depends_on');"), 'the one read is not where it was');
+
+  // And one entry into the planner. `planBatches` has a file to read, `clockIn` judges a
+  // requested unit and `clockOut` judges a document it has mutated and not yet written —
+  // three callers, one answer, because two answers is the bug.
+  assert.equal(planner.length, 1, `the Layer 1 planner is called ${planner.length} times, not once`);
+  assert.equal(planner.filter(inside).length, 1, 'the planner is entered from outside batchView');
 });
 
 // J60-F2: the sub-schemas `shiftwork_clock_out` SERVES are a second copy of what the checkpoint

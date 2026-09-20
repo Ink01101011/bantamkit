@@ -506,6 +506,33 @@ handed (Layer 1; see [architecture.md](architecture.md)).
   `clock_out` moves it; what job60 changed is that it is no longer the only
   unit `clock_in` will hand out.
 
+**The tool's own description still says "the single-pointer contract"; this
+document no longer does. Both halves are deliberate — do not "tidy" either.**
+`assets/tools/shiftwork_plan.json` still carries it, two sentences before the
+end of its description: *"It reports what the dependency graph permits; it does
+not move the cursor, which is echoed unchanged so the single-pointer contract
+and the batch view can be read side by side."* There the
+phrase is **not false**: the cursor is still one pointer, echoed unchanged, and
+an earlier sentence in the same description now states outright that *"a `ready`
+member beyond the cursor is clockable, but only in that order"* — so nothing on
+that asset claims the cursor is the only clockable unit. In the `cursor` bullet
+above, the same phrase sat directly beside the `ready` bullet saying a briefed
+non-cursor unit *is* clockable, and the two read as an argument, so job60
+rewrote the prose (58c4280) and left the asset's
+sentence standing. The asset was **rewritten, not cut**, and that is the part
+worth remembering: clause (e) of `tools/conformance/suites/instructions.mjs`
+takes the first sentence of the plan description containing both `ready` and a
+clock word (its `sentenceWith(planDesc, …)` call) as the advertisement that
+discloses a non-cursor `ready` unit's clockability. With no such sentence the
+clause falls through to its undisclosed branch, which
+requires every `ready` unit beyond the cursor to be accepted by a bare
+`shiftwork_clock_out` — which a never-briefed unit correctly is **not**. Deleting
+a sentence there instead of rewriting it makes the suite demand the wrong thing.
+Editing that asset is not free either: it moves the pack's `assets_digest`, which
+[porting.md](porting.md) quotes as a literal (`sha256:9e66e89a…` over 93 files,
+remeasured 2026-09-20 — that row is on its third literal, because the pack keeps
+moving under it) and `tools/conformance/suites/wire.mjs` compares across runtimes.
+
 **The satisfied rule.** A unit whose status is `done` or `dropped` is
 *satisfied*: it is removed from the graph, and every edge pointing at it is
 treated as already resolved. `todo`, `in_progress` and `blocked` stay in the

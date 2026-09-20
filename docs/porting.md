@@ -289,7 +289,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 
 | | reason |
 |---|---|
-| `build_id` | hashes the executing tree; two runtimes, two trees. `assets_digest` **is** identical (`sha256:d47dcf4b…` over 87 files, remeasured 2026-09-05; the `sha256:b03141bf…` this row carried was written at #75 and has been stale since the pack last changed) and that is the one that matters — but only because both walks now EXCLUDE `__pycache__`. That is a precondition, not a given: the pack ships eleven `.py` fixtures, `pip install` byte-compiles them, and on the published 0.27.0 artifacts the wheel answered `sha256:fa8372f6…` over 98 files against npm's `sha256:d47dcf4b…` over 87 while this row already claimed they were identical. Gated per side by `build_identity: a __pycache__ does not move assets_digest` in `tools/conformance/suites/wire.mjs` — per side, because pointed at one polluted pack both runtimes moved together and the cross-runtime comparison stayed green. |
+| `build_id` | hashes the executing tree; two runtimes, two trees. `assets_digest` **is** identical (`sha256:9e66e89a…` over 93 files, remeasured 2026-09-20 from `_assets_fingerprint()` on this tree; before that this row read `sha256:d47dcf4b…` over 87 files, remeasured 2026-09-05, and `sha256:b03141bf…` before that, written at #75 — a third literal, stale by the same route each time: the pack changed and the row did not) and that is the one that matters — but only because both walks now EXCLUDE `__pycache__`. That is a precondition, not a given: the pack ships eleven `.py` fixtures, `pip install` byte-compiles them, and on the published 0.27.0 artifacts the wheel answered `sha256:fa8372f6…` over 98 files against npm's `sha256:d47dcf4b…` over 87 while this row already claimed they were identical. Gated per side by `build_identity: a __pycache__ does not move assets_digest` in `tools/conformance/suites/wire.mjs` — per side, because pointed at one polluted pack both runtimes moved together and the cross-runtime comparison stayed green. |
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
@@ -827,3 +827,50 @@ disagreements.
 One hazard exists and is **not** a port defect: concurrent same-unit `clock_out` loses a
 history entry, 10/10 on Node **and** 10/10 on CPython. Reproduced, not introduced. Do not
 "fix" it on one side only.
+
+## The published export surface, and the one break in it
+
+`runtime-ts/src/index.ts:161–170` re-exports `clockIn`, `clockOut`, `HISTORY_RING_SIZE`,
+`SCHEMA_NAME`, `status`, `TERMINAL_UNIT_STATUS` and `timestamp` from `./shiftwork.js`, plus the
+type `ClockOptions`; `runtime-ts/package.json:29–30` points `main` and `types` at
+`./dist/index.js` and `./dist/index.d.ts`. So those names are the npm package's **public API**,
+not internals — `import { clockIn } from 'bantamkit-mcp'` is a supported call, and its arity is
+part of what the package publishes. Nothing else in this repository says so, which is how the
+next paragraph happened.
+
+**`clockIn` changed arity in job60 and nobody outside this repository was told.** The unit id
+went in as the **second positional parameter**, ahead of the options object:
+
+```ts
+// before — runtime-ts/src/shiftwork.ts:335 at 1e07fbb^
+export function clockIn(checkpoint: string, options: ClockOptions = {}): PyValue
+// after  — runtime-ts/src/shiftwork.ts:420, today
+export function clockIn(checkpoint: string, unitId: string | null = null, options: ClockOptions = {}): PyValue
+```
+
+A caller who wrote `clockIn(path, { now })` now hands the options object to the slot a unit id
+occupies. TypeScript stops that at the type. Plain JavaScript does not stop it at all: the
+object is read as the id, the call asks for a unit named `[object Object]`, and `now` is
+silently dropped — a wrong answer, not an error.
+
+That break is **measured, not predicted**, because this repository walked into it. The
+conformance suite's own call site was exactly that shape, and `--suite shiftwork` went
+`FAIL 1558 cases, 201 failures` → `PASS 1558 cases, 0 failures` on the arity fix alone
+(commit `efb4413`, whose message carries both lines). The fixed call site reads
+`shiftwork.clockIn(target, call.unit_id ?? null, { now: clock.now })`, in
+`tools/conformance/suites/shiftwork.mjs`.
+
+**What a caller must do.** Put the id — or `null` — in the second slot:
+`clockIn(path, null, { now })` for the old default-path call, `clockIn(path, 'U3')` to brief a
+named ready unit. `clockOut` is untouched: the same seven parameters in the same order
+(`runtime-ts/src/shiftwork.ts:730–738`). `runtime-ts/package.json:3` reads `0.35.3` in the tree;
+this section is the declaration for whichever published version first carries job60.
+
+**This is not a divergence, and job60 added no row above.** `runtime-py` grew the same parameter
+in the same job — `def clock_in(checkpoint: str, unit_id: str | None = None)` at
+`runtime-py/src/bantamkit/shiftwork.py:289` (commit `3023f89`) — but there it was **appended**
+to `def clock_in(checkpoint: str)` and displaced nothing, because the Python function has no
+trailing options argument: `ClockOptions` is a Node-only seam carrying `now`
+(`runtime-ts/src/shiftwork.ts:237–240`). Same behaviour, same `unit_id` tool input, same refusal
+sentences on both sides. The Node call surface broke only because it is the one with a parameter
+standing behind `unitId`.
