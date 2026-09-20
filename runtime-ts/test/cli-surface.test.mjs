@@ -15,14 +15,18 @@
  * reason: otherwise a developer's terminal size is an input to the result. Nothing here was
  * copied out of `argparse.py` by eye.
  *
- * WITH ONE EXCEPTION, AND IT IS SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED. `USAGE_80`
- * and the four `HELP` blocks were re-measured on 2026-09-20 (job62, J62-4) from THIS PORT and
- * not from the reference, because the three flags that moved them — `--install-hooks`,
- * `--remove-hooks` and `--yes` — landed on the Node parser in that unit and the reference did
- * not yet carry them. For the length of ONE unit the sentence above is false of those five
- * literals, and the `cli` conformance suite is RED over exactly that gap. J62-5 lands the same
- * three flags on the reference and re-measures these blocks against it; if one byte of any of
- * them then differs, the port is wrong and this file is the thing that says so.
+ * THAT SENTENCE WAS FALSE OF FIVE LITERALS FOR THE LENGTH OF ONE UNIT, AND IT IS TRUE AGAIN.
+ * `USAGE_80` and the four `HELP` blocks were re-measured on 2026-09-20 (job62, J62-4) from
+ * THIS PORT and not from the reference, because the three flags that moved them —
+ * `--install-hooks`, `--remove-hooks` and `--yes` — landed on the Node parser in that unit and
+ * the reference did not yet carry them; the `cli` conformance suite was RED over exactly that
+ * gap, 23 cases of it. J62-5 landed the same three flags on the reference and re-measured all
+ * five blocks against `python -m bantamkit.mcpserver` on CPython 3.12.13 with `COLUMNS`,
+ * `LINES` and `BANTAMKIT_ASSETS` scrubbed. NOT ONE BYTE DIFFERED, at any of the four widths or
+ * on the 80-column usage — `cmp` over the two processes' own output: 1949, 1881, 2510, 2395
+ * and 396 bytes, equal each time. Nothing below was edited by that re-measurement, which is
+ * the result being reported: the port had it right, and this file is what would have said so
+ * if it had not.
  *
  * NOTHING HERE TOUCHES A REAL STORE. Every argv line below fails or prints before
  * `_build_memory` runs, so no `Memory` is ever constructed and no store is read or created.

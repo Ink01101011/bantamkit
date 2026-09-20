@@ -2087,6 +2087,51 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --install, replace an existing bantamkit entry",
     )
+    # THE HOOK REGISTRATION, AND IT IS THREE FLAGS, NOT A MODIFIER ON `--install`.
+    #
+    # S1 RULING Q3.1: hooks are NEVER written as a side effect of `--install <host>`. Somebody
+    # asking to register an MCP server has not asked to register seven hooks that run on every
+    # tool call. RULING Q3.2 makes it its own opt-in, with a paired `--remove-hooks`, and gives
+    # the reason a modifier was refused: `--force`'s help above says "with --install", and
+    # overloading `--install` with a second, differently-consented write would make that
+    # sentence false.
+    #
+    # `--yes` IS THE THIRD STATE OF THE GATE, WHICH IS WHY IT IS A FLAG AND NOT AN ENV VAR.
+    # RULING Q3.3 makes the no-terminal-and-no-`--yes` case a REFUSAL at exit 2, so `--yes` is
+    # the only path a CI or scripted install has, and the ruling requires it to appear in the
+    # `-h` text so nobody has to guess it. It carries `--force`'s "with --install…" phrasing
+    # for the same reason `--force` does: a flag that is inert on its own says so in its own
+    # help.
+    #
+    # POSITION IS WIRE-VISIBLE, the same as every flag above. These three land AFTER `--force`
+    # and before the `--store`/`--start` group, which leaves the FIRST line of the 80-column
+    # usage -- the line pinned by
+    # `test_assets_root_appears_in_the_generated_help_in_the_documented_position`, by
+    # `runtime-ts/test/cli-surface.test.mjs` and by the `cli` conformance suite --
+    # byte-identical, and moves the wrap boundary on the later lines only.
+    # `runtime-ts/src/cli.ts` registers them at the same position for the same reason: the two
+    # `-h` outputs are compared byte for byte.
+    #
+    # A NEW ABBREVIATION COLLISION COMES WITH THEM, AND IT IS THE SAME ON BOTH SIDES.
+    # `--install` is now a proper prefix of `--install-hooks`, so `--inst` no longer resolves:
+    # argparse answers `ambiguous option: --inst could match --install, --install-hooks`. An
+    # EXACT option string still wins over any abbreviation, so `--install cursor` is
+    # unaffected, and `--remove` resolves uniquely to `--remove-hooks`.
+    parser.add_argument(
+        "--install-hooks",
+        action="store_true",
+        help="add bantamkit's hook entries to ~/.claude/settings.json, then exit",
+    )
+    parser.add_argument(
+        "--remove-hooks",
+        action="store_true",
+        help="take bantamkit's hook entries back out of ~/.claude/settings.json, then exit",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="with --install-hooks, say yes in advance instead of being asked",
+    )
     stores = parser.add_mutually_exclusive_group()
     stores.add_argument("--store", help="single memory store path (disables layering)")
     stores.add_argument(
@@ -2350,6 +2395,113 @@ def _run_install(args: argparse.Namespace) -> None:
     sys.stdout.buffer.flush()
 
 
+def _have_a_terminal(stdin: TextIO | None = None) -> bool:
+    """Is there a terminal to ask a question at? The SAME signal `_typed_bare_at_a_terminal`
+    uses, and deliberately the same one rather than a second detector.
+
+    `sys.stdin` is `None` under a GUI launcher with no console and `isatty()` raises
+    `ValueError` on a closed stream. Neither is a person at a terminal, and neither may take
+    the process down: what is at stake here is a REFUSAL, and a refusal that crashes instead
+    of refusing has not refused.
+    """
+    stream = sys.stdin if stdin is None else stdin
+    if stream is None:
+        return False
+    try:
+        return bool(stream.isatty())
+    except ValueError:
+        return False
+
+
+def _ask_at_the_terminal() -> bool:
+    """RULING Q3.4's question, on stderr, answered on stdin. Only ever called at a terminal.
+
+    ONE LINE AND NO FURTHER. `readline()` stops at the newline, which leaves anything the
+    person typed after it for whoever asks next; reading to EOF would wait for Ctrl-D at a
+    terminal, which is not what pressing Enter does.
+
+    ANYTHING OTHER THAN `y` OR `Y` MEANS NO, including empty and including EOF. That is the
+    ruling, and it is why the default in the prompt is spelled `[y/N]`: the safe answer is the
+    one you get by pressing Enter, by piping nothing, or by closing the terminal.
+
+    THE PROMPT HAS A TRAILING SPACE AND NO NEWLINE, and the newline is written AFTER the
+    answer is read -- both of those are bytes the port emits too, so they are contract rather
+    than formatting. `\\r` is dropped anywhere in the answer for the same reason Node's reader
+    drops it: a Windows terminal delivers CRLF and `Y\\r` is a yes.
+
+    Written through `sys.stderr.buffer` like every other operator line in this file, so the
+    bytes cannot pick up newline translation on Windows.
+    """
+    sys.stderr.buffer.write(b"Write these hook entries? [y/N] ")
+    sys.stderr.buffer.flush()
+    try:
+        line = sys.stdin.readline()
+    except (OSError, ValueError):
+        line = ""  # a closed fd, or a stream the platform cannot read this way -- not a yes
+    sys.stderr.buffer.write(b"\n")
+    sys.stderr.buffer.flush()
+    return line.replace("\r", "").strip() in ("y", "Y")
+
+
+def _run_install_hooks(args: argparse.Namespace) -> None:
+    """`--install-hooks`: the plan, the question, and THREE exits (S1 RULING Q3.3/Q3.4).
+
+      0  written, or already installed and matching
+      1  the person was asked at a terminal and did not say yes -- `no hooks were written`
+      2  there was no terminal to ask at and no `--yes`
+
+    Neither refusal carries the `error:` prefix an `InstallError` gets. Nothing went wrong:
+    the program asked, or found it could not ask, and then did nothing -- which is the
+    feature.
+
+    THE PLAN AND THE QUESTION GO TO STDERR, the report to stdout. One stream is the operator's
+    answer and the other is the conversation that led to it, and a caller piping stdout into
+    something should get the report and not the prompt.
+    """
+
+    def tell(text: str) -> None:
+        sys.stderr.buffer.write(text.encode())
+        sys.stderr.buffer.flush()
+
+    try:
+        report = hostinstall.install_hooks(
+            ask=_ask_at_the_terminal if _have_a_terminal() else None,
+            yes=args.yes,
+            tell=tell,
+        )
+    except hostinstall.HookConsentUnavailable as exc:
+        sys.stderr.buffer.write(f"{exc}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(2) from None
+    except hostinstall.HookDeclined as exc:
+        sys.stderr.buffer.write(f"{exc}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(1) from None
+    except hostinstall.InstallError as exc:
+        sys.stderr.buffer.write(f"error: {exc}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(1) from None
+    sys.stdout.buffer.write(f"{report}\n".encode())
+    sys.stdout.buffer.flush()
+
+
+def _run_remove_hooks() -> None:
+    """`--remove-hooks`: no gate (RULING Q3.7), still a dated backup, still only our entries.
+
+    Taking back out what bantamkit put in is not the write the ruling is about, so there is no
+    plan and no question here -- only the report, and an `InstallError` reported the way every
+    other refusal in this file is.
+    """
+    try:
+        report = hostinstall.remove_hooks()
+    except hostinstall.InstallError as exc:
+        sys.stderr.buffer.write(f"error: {exc}\n".encode())
+        sys.stderr.buffer.flush()
+        raise SystemExit(1) from None
+    sys.stdout.buffer.write(f"{report}\n".encode())
+    sys.stdout.buffer.flush()
+
+
 def _run_update() -> None:
     """`--update`: ask the package index, act on the answer, print what happened, return.
 
@@ -2463,11 +2615,25 @@ def _dispatch(args: argparse.Namespace) -> None:
     if args.install:
         _run_install(args)
         return
+    # REGISTRATION ORDER AGAIN, which is what makes `--mcp-report --install-hooks` print a
+    # report and write nothing, exactly as `--mcp-report --install cursor` already does.
+    if args.install_hooks:
+        _run_install_hooks(args)
+        return
+    if args.remove_hooks:
+        _run_remove_hooks()
+        return
     # `--force` alone is a typo with a plausible reading -- somebody meant to install and
     # dropped the flag that says where. Refusing names the missing half instead of starting
     # a server that ignores it.
     if args.force:
         raise SystemExit("--force is only meaningful with --install")
+    # The same reading, and the same refusal, for the consent flag: `--yes` on its own is
+    # somebody who meant to install hooks and dropped the flag that says so. It is checked
+    # AFTER `--force` because that is registration order, and both are checked after every
+    # flag that acts, so `--install-hooks --yes` never reaches either of them.
+    if args.yes:
+        raise SystemExit("--yes is only meaningful with --install-hooks")
     # A PERSON TYPED IT. `_typed_bare_at_a_terminal` carries the whole argument; what
     # belongs here is only that this sits BEFORE `_build_memory`, which is what creates a
     # store. Somebody who typed a command to see what it does has not asked for a

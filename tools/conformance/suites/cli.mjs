@@ -1515,6 +1515,16 @@ function matrix(scratch) {
     // (first line 183 chars) and 217 does not (215).
     { label: 'help-columns-216', argv: ['-h'], env: { COLUMNS: '216' } },
     { label: 'help-columns-217', argv: ['-h'], env: { COLUMNS: '217' } },
+    // AND IT WORKED A SECOND TIME. `--install-hooks`, `--remove-hooks` and `--yes` (job62,
+    // J62-4 on the port, J62-5 on the reference) added ` [--install-hooks] [--remove-hooks]
+    // [--yes]` to both parsers and moved the boundary from 217 to 260, and the case below
+    // went RED naming the new number rather than leaving a comment to go stale a fifth time.
+    // 216/217 therefore straddles nothing any more — both of them wrap — and it is kept
+    // beside the four older pairs for the reason all of them were kept. MEASURED on this
+    // checkout by running BOTH runtimes at each width: the single-line usage is 258
+    // characters on each, 259 wraps (first line 226 chars) and 260 does not (258).
+    { label: 'help-columns-259', argv: ['-h'], env: { COLUMNS: '259' } },
+    { label: 'help-columns-260', argv: ['-h'], env: { COLUMNS: '260' } },
     { label: 'help-columns-200', argv: ['-h'], env: { COLUMNS: '200' } },
   ];
 }
@@ -1564,8 +1574,16 @@ const wrapBoundary = SINGLE_LINE_USAGE.length + 2;
  * characters, and the measured boundary came back 217 against an expected 208. Measured on
  * this checkout at each width, on BOTH runtimes: the single-line usage is 215 characters,
  * 216 wraps and 217 fits. The two numbers here are the only thing that had to move.
+ *
+ * MOVED AGAIN 2026-09-20 (job62, J62-5) from `{ wraps: 216, fits: 217 }`, the same way and
+ * by the same case: `--install-hooks`, `--remove-hooks` and `--yes` landed in both parsers,
+ * ` [--install-hooks] [--remove-hooks] [--yes]` is forty-three characters, and the measured
+ * boundary came back 260 against an expected 217. Measured on this checkout at each width,
+ * on BOTH runtimes: the single-line usage is 258 characters, 259 wraps (first line 226) and
+ * 260 fits (258). Twice now this has moved a case instead of a comment, which is what
+ * J46-31 built it to do.
  */
-const STRADDLE = { wraps: 216, fits: 217 };
+const STRADDLE = { wraps: 259, fits: 260 };
 
 /**
  * The single-line usage as THIS tree assembles it, and the width below which it wraps.

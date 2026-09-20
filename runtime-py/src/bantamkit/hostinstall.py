@@ -39,9 +39,11 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
@@ -294,3 +296,275 @@ def this_command() -> tuple[str, list[str]]:
     if argv0 is not None and argv0.name.startswith("bantamkit-mcp") and argv0.exists():
         return str(argv0.resolve()), []
     return str(Path(sys.executable).resolve()), ["-m", "bantamkit.mcpserver"]
+
+
+# ==============================================================================================
+# `--install-hooks` / `--remove-hooks` — the SEVEN hook entries in `~/.claude/settings.json`
+# ==============================================================================================
+#
+# THIS IS THE ONE SURFACE IN THIS PROGRAM THAT ASKS BEFORE IT WRITES, AND THAT IS A RULING,
+# not a style. `--install` writes a file that exists to hold server entries; this writes the
+# user's own settings file and registers a command that runs on EVERY tool call. The stronger
+# write gets the stronger gate (S1 RULING Q3.3), which is why the module docstring's "why it
+# never prompts" paragraph is true of `--install` and deliberately NOT of these two flags.
+#
+# `tools/hooks/install.mjs` is the ANTI-PATTERN this replaces, not the template. It writes the
+# same seven entries unconditionally: no plan, no question, no backup. Everything below is the
+# same data with a gate and `--install`'s existing write discipline around it.
+#
+# THE THREE-STATE GATE LIVES HERE AND THE TERMINAL DOES NOT. `ask` is a seam: a callable when
+# there is a terminal to ask at, `None` when there is none. `mcpserver.py` supplies the real
+# one off `sys.stdin.isatty()` — the same signal `_typed_bare_at_a_terminal` uses and for the
+# same reason. Keeping the seam here is what makes the two REFUSING states testable without a
+# pty, and a refusal nothing can test is a refusal nobody has seen work.
+#
+#   ask is a callable        -> print the plan, ask, and honour the answer
+#   yes is True              -> print the plan and proceed; `--yes` is written-down consent
+#   ask is None and no --yes -> HookConsentUnavailable. Nothing is printed, nothing is written.
+#
+# WHAT IS NOT WRITTEN HERE, EVER: `BANTAMKIT_DREAM_TIMEOUT_MS`. It is a TEST seam, and a seam
+# that reaches a user's settings file stops being one.
+
+# The seven events, their matchers, and the ORDER RULING Q3.4 prints them in.
+#
+# The data is `tools/hooks/install.mjs:22-32`; the order is the ruled `events :` line, which is
+# not that file's order. Both runtimes iterate this list, so it also decides the key order of a
+# freshly written `hooks` object and therefore the bytes on disk.
+#
+# `PostToolUse` IS MATCHER-LESS AND MUST STAY THAT WAY. Its arm logs a usage event for EVERY
+# tool call and runs the `memory_save` half only when the tool was that one. A second, narrower
+# entry beside it would fire the save half twice.
+HOOK_EVENTS: tuple[tuple[str, str | None], ...] = (
+    ("SessionStart", "startup|resume|clear|compact"),
+    ("PreToolUse", "Read"),
+    ("PostToolUse", None),
+    ("UserPromptSubmit", None),
+    ("PreCompact", None),
+    ("PostCompact", None),
+    ("Stop", None),
+)
+
+# The per-entry `timeout`, in seconds, carried from `tools/hooks/install.mjs`.
+HOOK_TIMEOUT = 10
+
+_EVENT_NAMES = " ".join(event for event, _ in HOOK_EVENTS)
+
+
+class HookConsentUnavailable(Exception):
+    """There is no terminal to ask at and `--yes` was not given. Exit 2, nothing written."""
+
+
+class HookDeclined(Exception):
+    """The person was asked and did not say yes. Exit 1, and nothing was written."""
+
+
+def claude_settings_path() -> Path:
+    """The only file these two flags touch: `~/.claude/settings.json`, user scope.
+
+    RULING Q3.8 — hooks are a Claude Code concept, `--install-hooks` takes no host argument,
+    and the other three hosts in `HOSTS` get nothing. Resolved from `_home()` and nothing
+    else, so pointing `Path.home()` at a scratch directory moves it, which is what makes the
+    tests possible — the same property `host_config_path` has and for the same reason.
+    """
+    return _home() / ".claude" / "settings.json"
+
+
+def hook_command(command: str, args: list[str]) -> str:
+    """The one command all seven entries run. The event arrives on stdin, never in argv.
+
+    `shlex.join` rather than `" ".join`: a home directory or an interpreter path with a space
+    in it is the normal case on Windows and not an edge one, and the port's `shlexJoin` is a
+    transcription of `shlex.quote`'s own rule, so the two runtimes quote identically.
+    """
+    return shlex.join([command, *args, "--hook"])
+
+
+def _hook_entry(matcher: str | None, command: str) -> dict:
+    """One entry, in the shape Claude Code reads. `matcher` first, and only where there is one."""
+    entry: dict = {}
+    if matcher is not None:
+        entry["matcher"] = matcher
+    entry["hooks"] = [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]
+    return entry
+
+
+def _is_ours(entry: object) -> bool:
+    """RULING Q3.6's idempotence rule, and the whole of it: an entry is OURS when its JSON
+    mentions `bantamkit`. Every other hook the operator has is left byte-for-byte.
+
+    `sort_keys` so the same entry renders the same way whatever order its keys arrived in,
+    and `json.dumps` rather than `repr` because the port compares the same rendering.
+    """
+    return "bantamkit" in json.dumps(entry, sort_keys=True)
+
+
+def _read_hooks(path: Path, data: dict) -> dict[str, list]:
+    """The `hooks` object, validated. Refuses by name rather than crashing on somebody's file."""
+    raw = data.get("hooks")
+    if raw is None and "hooks" not in data:
+        return {}
+    if not isinstance(raw, dict):
+        raise InstallError(f"{path} has a 'hooks' that is not an object; refusing to touch it")
+    hooks: dict[str, list] = {}
+    for event, entries in raw.items():
+        if not isinstance(entries, list):
+            raise InstallError(
+                f"{path} has a 'hooks.{event}' that is not a list; refusing to touch it"
+            )
+        hooks[event] = list(entries)
+    return hooks
+
+
+def _planned_hooks(
+    current: dict[str, list], command: str, remove: bool
+) -> tuple[dict[str, list], list[str]]:
+    """The `hooks` object this run wants, built from whatever is there now.
+
+    ONE PASS OVER THE SEVEN EVENTS AND NOTHING ELSE: every event keeps its non-bantamkit
+    entries in their existing order, ours is appended after them, and an event left with none
+    loses its key rather than holding an empty list — `install.mjs`'s rule, kept because a
+    settings file full of empty arrays is a worse artefact than one with nothing in it.
+
+    Events outside the seven are not read, not reordered and not removed.
+    """
+    hooks = dict(current)
+    touched: list[str] = []
+    for event, matcher in HOOK_EVENTS:
+        before = hooks.get(event, [])
+        kept = [entry for entry in before if not _is_ours(entry)]
+        if remove:
+            if len(kept) != len(before):
+                touched.append(event)
+        else:
+            kept.append(_hook_entry(matcher, command))
+            touched.append(event)
+        if kept:
+            hooks[event] = kept
+        else:
+            hooks.pop(event, None)
+    return hooks, touched
+
+
+def _hook_plan(path: Path, command: str) -> str:
+    """RULING Q3.4's plan, printed before any question and before any write.
+
+    THE `backup :` LINE IS OMITTED WHEN THERE IS NO FILE TO BACK UP, which is `--install`'s
+    own report discipline (`_backup` returns None and the line does not print). The ruled
+    template shows the line because the ordinary case has a file; printing a backup path for a
+    file that does not exist would be the plan stating something the write will not do.
+    """
+    lines = [
+        f"bantamkit would add {len(HOOK_EVENTS)} hook entries to {path}",
+        f"  events : {_EVENT_NAMES}",
+        f"  command: {command}",
+    ]
+    if path.exists():
+        lines.append(f"  backup : {path}.backup-{date.today().isoformat()}")
+    lines.append(
+        "Existing hooks are left byte-for-byte; only entries naming bantamkit are replaced."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def install_hooks(
+    *,
+    ask: Callable[[], bool] | None = None,
+    yes: bool = False,
+    tell: Callable[[str], None] | None = None,
+) -> str:
+    """`--install-hooks`: the seven entries, in ONE write, AFTER asking.
+
+    THE ORDER IS THE PROPERTY, and it is `install`'s order for `install`'s reason:
+
+      1. resolve the command — anything that can fail there fails before the settings file
+         has been opened at all;
+      2. read and validate the settings file — a file that does not parse is reported, never
+         overwritten;
+      3. ALREADY-INSTALLED-AND-MATCHING RETURNS HERE, before the gate. There is no write to
+         consent to, so a second `--install-hooks` is a no-op at exit 0 whether or not
+         anybody is at a terminal, which is what makes it safe in a setup script;
+      4. print the plan, then the gate;
+      5. dated backup, then one atomic write.
+
+    The write itself is `_write_config` — the same temp-file replace, the same carried mode,
+    the same `indent=2` and default `ensure_ascii` — so the bytes this leaves and the bytes
+    `--install` leaves are produced by one function (RULING Q3.5).
+    """
+    command, extra = this_command()
+    rendered = hook_command(command, extra)
+    path = claude_settings_path()
+    data = _read_config(path)
+    current = _read_hooks(path, data)
+    hooks, _touched = _planned_hooks(current, rendered, remove=False)
+
+    if json.dumps(hooks, sort_keys=True) == json.dumps(current, sort_keys=True):
+        return f"bantamkit hooks are already installed in {path} and match"
+
+    say = tell if tell is not None else (lambda _text: None)
+    if not yes:
+        if ask is None:
+            # NOTHING IS PRINTED HERE. The plan describes a write that is not going to
+            # happen, and the refusal is the whole message.
+            raise HookConsentUnavailable(
+                "--install-hooks writes your ~/.claude/settings.json and needs a terminal "
+                "to ask.\n"
+                "There is no terminal here, so nothing was written. Re-run it at a prompt, "
+                "or pass\n"
+                "--yes to say yes in advance."
+            )
+        say(_hook_plan(path, rendered))
+        if not ask():
+            raise HookDeclined("no hooks were written")
+    else:
+        say(_hook_plan(path, rendered))
+
+    copied = _backup(path)
+    data["hooks"] = hooks
+    _write_config(path, data)
+
+    lines = [
+        f"installed bantamkit hooks into {path}",
+        f"  events : {_EVENT_NAMES}",
+        f"  command: {rendered}",
+    ]
+    if copied is not None:
+        lines.append(f"  backup : {copied}")
+    lines.append("restart Claude Code (or run /hooks) for this to take effect")
+    return "\n".join(lines)
+
+
+def remove_hooks(
+    *,
+    ask: Callable[[], bool] | None = None,
+    yes: bool = False,
+    tell: Callable[[str], None] | None = None,
+) -> str:
+    """`--remove-hooks`: take out what bantamkit wrote, and nothing else.
+
+    NO CONSENT PROMPT (RULING Q3.7). Removing what bantamkit added is not a write to somebody
+    else's configuration in the sense the ruling is about. It still takes the dated backup, it
+    still touches only entries naming bantamkit, and a file with none of ours is left
+    byte-unchanged with no backup taken.
+
+    `this_command` IS NOT CALLED. Removal does not need to know what a host should launch, and
+    calling it would put command resolution between an operator and the ability to undo. The
+    three seams are still accepted so the two flags read the same way at every call site.
+    """
+    del ask, yes, tell
+    path = claude_settings_path()
+    data = _read_config(path)
+    current = _read_hooks(path, data)
+    hooks, touched = _planned_hooks(current, "", remove=True)
+
+    if not touched:
+        return f"no bantamkit hooks are installed in {path}"
+
+    copied = _backup(path)
+    data["hooks"] = hooks
+    _write_config(path, data)
+
+    lines = [f"removed bantamkit hooks from {path}", f"  events : {' '.join(touched)}"]
+    if copied is not None:
+        lines.append(f"  backup : {copied}")
+    lines.append("restart Claude Code (or run /hooks) for this to take effect")
+    return "\n".join(lines)
