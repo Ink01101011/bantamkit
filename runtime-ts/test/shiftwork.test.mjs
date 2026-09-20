@@ -2036,25 +2036,92 @@ test('a graph that cannot batch: clock_in passes the core refusal through, clock
 const SHIFTWORK_SRC = fileURLToPath(new URL('../src/shiftwork.ts', import.meta.url));
 
 /**
- * The file with its comments removed — the CODE, because prose is not a loop.
+ * The index of the first `//` on `line` that is NOT inside a string literal, or `-1`.
+ *
+ * Quotes open and close within the line and a backslash escapes the next character, which
+ * is what keeps the apostrophe in `'it\'s // not a comment'` from closing the literal.
+ */
+function lineCommentAt(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote !== null) {
+      if (ch === '\\') i += 1;
+      else if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+    } else if (ch === '/' && line[i + 1] === '/') {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * `text` with its comments removed — the CODE, because prose is not a loop.
  *
  * The module header discusses `depends_on` at length, and rightly. A strip cannot produce
  * a false green here by accident: every assertion below is an exact count, so a strip that
  * ate too much drives the counts to zero and a strip that ate too little drives them up.
  *
- * One direction it cannot catch, stated rather than engineered around: the line strip cuts
- * each line at its FIRST `//`, including a `//` that is inside a string literal, so code
- * written after such a `//` on the same line would be invisible and a second `depends_on`
- * walk there would not be counted. Measured on `src/shiftwork.ts` today: zero occurrences
- * of `://` and zero string literals containing `//`, so no line here is mis-cut. A real
- * comment parser would be more code than this property is worth, and the
- * `raw > walks.length` guard below already fails closed on every other strip error.
+ * AMENDED 2026-09-21 (J62-14). What stood here stated a hole and then declined to close it:
+ * the line strip cut every line at its FIRST `//`, including a `//` inside a string literal,
+ * so code written after such a `//` on the same line was invisible and a second `depends_on`
+ * walk there would not have been counted. Its measurement still holds — `src/shiftwork.ts`
+ * has zero occurrences of `://` and zero string literals containing `//` — and that is the
+ * reason to close the hole rather than re-measure it: a count that is right only because the
+ * file under test happens to avoid a shape is a property of that file, not of the strip, and
+ * the file is expected to change. `lineCommentAt` now cuts only at a `//` outside a literal.
+ * MEASURED at this commit, over `src/shiftwork.ts`: the new strip and the old one produce
+ * byte-identical output (15,500 bytes from 48,701), so no count below moved, and the test
+ * directly beneath these helpers drives `stripComments` over the lines the old one got wrong.
+ *
+ * Two narrower holes are left, stated rather than engineered around: the block-comment strip
+ * still runs over string literals, so a block-comment opener inside one would be honoured;
+ * and the quote tracking restarts at every newline, so a template literal spanning lines is
+ * not followed. A real comment parser would be more code than this property is worth, and
+ * the `raw > walks.length` guard below already fails closed on every other strip error.
  */
-function codeOf(path) {
-  return readFileSync(path, 'utf8')
+function stripComments(text) {
+  return text
     .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^[^\n]*?\/\/[^\n]*$/gm, (line) => line.slice(0, line.indexOf('//')));
+    .split('\n')
+    .map((line) => {
+      const at = lineCommentAt(line);
+      return at === -1 ? line : line.slice(0, at);
+    })
+    .join('\n');
 }
+
+/** The file at `path` with its comments removed. */
+function codeOf(path) {
+  return stripComments(readFileSync(path, 'utf8'));
+}
+
+// J62-14. The counts below are only as good as the strip that feeds them, and until this
+// commit the strip was only as good as `src/shiftwork.ts` happening to contain no `//`
+// inside a string literal. This case drives the strip over the shapes the file avoids, so
+// the property is pinned on the helper instead of on the file under test. Every assertion
+// here is one the previous strip failed: it cut `'https://…'` at the scheme and took the
+// rest of the line — including a `depends_on` — with it.
+test('the comment strip cuts at a // outside a string literal and keeps one inside it', () => {
+  assert.equal(
+    stripComments("const u = 'https://example.invalid/x'; const d = u.depends_on; // gone"),
+    "const u = 'https://example.invalid/x'; const d = u.depends_on; ",
+  );
+  assert.equal(
+    stripComments("const s = 'it\\'s // fine'; // gone"),
+    "const s = 'it\\'s // fine'; ",
+  );
+  assert.equal(stripComments('const t = `a // b`;'), 'const t = `a // b`;');
+  assert.equal(stripComments('const d = "x // y"; // gone'), 'const d = "x // y"; ');
+  // A comment with no literal in front of it is still removed, and a block comment still
+  // goes: the fix must not turn the strip into a no-op.
+  assert.equal(stripComments('const a = 1; // two'), 'const a = 1; ');
+  assert.equal(stripComments('const a = /* x */ 1;'), 'const a =  1;');
+  // A bare `//` at column 0 cuts the whole line.
+  assert.equal(stripComments('// all of it'), '');
+});
 
 /** `[start, end]` of a function body, by brace-matching from its signature. */
 function bodySpan(code, signature) {
