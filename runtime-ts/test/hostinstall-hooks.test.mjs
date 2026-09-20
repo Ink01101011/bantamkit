@@ -343,7 +343,7 @@ test('--remove-hooks takes out only what bantamkit wrote', async () => {
     const path = h.claudeSettingsPath();
     seed(path, `${JSON.stringify({ model: 'opus', hooks: { PreToolUse: [FOREIGN] } }, null, 2)}\n`);
     h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
-    const report = h.removeHooks({ ...CHECKOUT, tell: () => assert.fail('--remove-hooks printed a plan') });
+    const report = h.removeHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
     const after = readJson(path);
     assert.equal(after.model, 'opus');
     assert.deepEqual(after.hooks, { PreToolUse: [FOREIGN] }, 'the foreign entry did not survive intact');
@@ -351,10 +351,137 @@ test('--remove-hooks takes out only what bantamkit wrote', async () => {
   });
 });
 
-test('--remove-hooks never asks for consent', async () => {
+/*
+ * THE CONSENT GATE ON REMOVAL — the user's ruling of 2026-09-20, which OVERTURNS RULING Q3.7.
+ *
+ * Q3.7 said removal needed no prompt, because taking back out what bantamkit put in is not a
+ * write to somebody else's configuration. That was written by the spec subagent, not by the
+ * user, and the day it shipped an unsandboxed probe let the abbreviation `--remove` resolve to
+ * `--remove-hooks` and it rewrote the operator's REAL `~/.claude/settings.json`: 256 lines went
+ * to 188, twelve hook-event keys to ten, and `PreCompact`/`PostCompact` were gone. It needed no
+ * terminal and no `--yes` to do it.
+ *
+ * So removal now takes the SAME three-state gate as install, and the cases below are install's
+ * cases with the verb changed, deliberately: two flags that touch the same file must not grow
+ * two different consent stories.
+ */
+
+test('--remove-hooks asks before it removes, and honours a yes', async () => {
   await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
     h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
-    h.removeHooks({ ...CHECKOUT, ask: () => assert.fail('--remove-hooks asked for consent'), tell: () => {} });
+    let asked = 0;
+    const { said, tell } = recorder();
+    const report = h.removeHooks({ ...CHECKOUT, tell, ask: () => (asked += 1, true) });
+    assert.equal(asked, 1, 'it must ask exactly once');
+    assert.deepEqual(readJson(path).hooks, {});
+    assert.ok(report.startsWith(`removed bantamkit hooks from ${path}`), report);
+    assert.ok(said.join('').includes('bantamkit would remove 7 hook entries from '), said.join(''));
+  });
+});
+
+test('the removal plan is the four ruled lines, in order', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    const { said, tell } = recorder();
+    h.removeHooks({ ...CHECKOUT, tell, ask: () => true });
+    const printed = said.join('');
+    const lines = printed.split('\n');
+    assert.equal(lines[0], `bantamkit would remove 7 hook entries from ${path}`);
+    assert.equal(
+      lines[1],
+      '  events : SessionStart PreToolUse PostToolUse UserPromptSubmit PreCompact PostCompact Stop',
+    );
+    assert.match(lines[2], /^ {2}backup : .*\.backup-\d{4}-\d{2}-\d{2}$/);
+    assert.equal(
+      lines[3],
+      'Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.',
+    );
+    assert.equal(lines[4], '', 'the plan must end with exactly one newline');
+    assert.equal(lines.length, 5, printed);
+  });
+});
+
+test('--remove-hooks with no terminal and no --yes refuses and leaves the file byte-unchanged', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    const before = readFileSync(path);
+    const { said, tell } = recorder();
+    assert.throws(
+      () => h.removeHooks({ ...CHECKOUT, tell, ask: null }),
+      (e) => {
+        assert.equal(e.constructor.name, 'HookConsentUnavailable');
+        assert.equal(
+          e.message,
+          '--remove-hooks rewrites your ~/.claude/settings.json and needs a terminal to ask.\n' +
+            'There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n' +
+            '--yes to say yes in advance.',
+        );
+        return true;
+      },
+    );
+    assert.deepEqual(readFileSync(path), before, 'the refusal wrote to the settings file');
+    assert.deepEqual(backupsIn(path), [], 'the refusal took a backup, so it was about to write');
+    assert.equal(said.join(''), '', 'the refusal printed a plan for a write it was never going to do');
+  });
+});
+
+for (const answer of ['no', '', 'yes', 'YES', 'n', 'N', ' ']) {
+  test(`--remove-hooks answered ${JSON.stringify(answer)} removes nothing and says so`, async () => {
+    await withHome(async (h) => {
+      const path = h.claudeSettingsPath();
+      h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+      const before = readFileSync(path);
+      assert.throws(
+        () => h.removeHooks({ ...CHECKOUT, tell: () => {}, ask: () => answer.trim() === 'y' || answer.trim() === 'Y' }),
+        (e) => {
+          assert.equal(e.constructor.name, 'HookDeclined');
+          assert.equal(e.message, 'no hooks were removed');
+          return true;
+        },
+      );
+      assert.deepEqual(readFileSync(path), before, 'a declined removal wrote to the settings file');
+      assert.deepEqual(backupsIn(path), [], 'a declined removal took a backup');
+    });
+  });
+}
+
+test('--remove-hooks --yes removes with no terminal at all and never asks', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    const { said, tell } = recorder();
+    const report = h.removeHooks({ ...CHECKOUT, tell, yes: true, ask: null });
+    assert.ok(report.startsWith(`removed bantamkit hooks from ${path}`), report);
+    assert.deepEqual(readJson(path).hooks, {});
+    // The plan is still printed: it is what the person consented to in advance.
+    assert.ok(said.join('').includes('bantamkit would remove 7 hook entries from '), said.join(''));
+  });
+});
+
+test('the removal plan names only the events that actually lose an entry', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    seed(
+      path,
+      `${JSON.stringify(
+        {
+          hooks: {
+            PreToolUse: [FOREIGN],
+            Stop: [{ hooks: [{ type: 'command', command: '/opt/bantamkit/x --hook', timeout: 10 }] }],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const { said, tell } = recorder();
+    h.removeHooks({ ...CHECKOUT, tell, yes: true, ask: null });
+    const lines = said.join('').split('\n');
+    assert.equal(lines[0], `bantamkit would remove 1 hook entries from ${path}`);
+    assert.equal(lines[1], '  events : Stop');
   });
 });
 
@@ -362,7 +489,14 @@ test('--remove-hooks on a file with no bantamkit hooks changes nothing and says 
   await withHome(async (h) => {
     const path = h.claudeSettingsPath();
     const before = seed(path, `${JSON.stringify({ hooks: { PreToolUse: [FOREIGN] } }, null, 2)}\n`);
-    const report = h.removeHooks({ ...CHECKOUT, ask: null, tell: () => {} });
+    // THE NO-OP RETURNS BEFORE THE GATE, exactly as a second `--install-hooks` does. There is
+    // no write to consent to, so this must stay exit 0 with no terminal — which is what keeps
+    // `--remove-hooks` safe to put in a teardown script.
+    const report = h.removeHooks({
+      ...CHECKOUT,
+      ask: () => assert.fail('a removal with nothing to remove asked for consent'),
+      tell: () => assert.fail('a removal with nothing to remove printed a plan'),
+    });
     assert.equal(report, `no bantamkit hooks are installed in ${path}`);
     assert.deepEqual(readFileSync(path), before, 'a no-op removal rewrote the settings file');
     assert.deepEqual(backupsIn(path), [], 'a no-op removal took a backup');
@@ -372,7 +506,11 @@ test('--remove-hooks on a file with no bantamkit hooks changes nothing and says 
 test('--remove-hooks with no settings file at all writes nothing', async () => {
   await withHome(async (h, root) => {
     const path = h.claudeSettingsPath();
-    const report = h.removeHooks({ ...CHECKOUT, ask: null, tell: () => {} });
+    const report = h.removeHooks({
+      ...CHECKOUT,
+      ask: () => assert.fail('a removal with no file at all asked for consent'),
+      tell: () => {},
+    });
     assert.equal(report, `no bantamkit hooks are installed in ${path}`);
     assert.equal(existsSync(path), false, '--remove-hooks created the file it had nothing to remove from');
     assert.equal(existsSync(join(root, '.claude')), false, '--remove-hooks created ~/.claude');
@@ -384,7 +522,7 @@ test('--remove-hooks still takes the dated backup', async () => {
     const path = h.claudeSettingsPath();
     h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
     const before = readFileSync(path);
-    h.removeHooks({ ...CHECKOUT, tell: () => {} });
+    h.removeHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
     const copies = backupsIn(path);
     assert.equal(copies.length, 1, JSON.stringify(copies));
     assert.deepEqual(readFileSync(join(dirname(path), copies[0])), before);
@@ -395,7 +533,7 @@ test('an event left with no entries loses its key rather than holding an empty l
   await withHome(async (h) => {
     const path = h.claudeSettingsPath();
     h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
-    h.removeHooks({ ...CHECKOUT, tell: () => {} });
+    h.removeHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
     assert.deepEqual(readJson(path).hooks, {});
   });
 });
@@ -451,24 +589,71 @@ test('the real CLI with --yes writes the seven entries and exits 0', () => {
   }
 });
 
-test('the real CLI --remove-hooks needs no --yes and exits 0', () => {
+/*
+ * THE REAL CLI, AND THE REGRESSION THAT MADE THIS UNIT EXIST.
+ *
+ * Until the user's ruling of 2026-09-20 the three cases below read the other way: the first
+ * one exited 0 and rewrote the file with no terminal and no `--yes`, which is exactly what
+ * happened to the operator's own `~/.claude/settings.json`.
+ */
+
+test('the real CLI --remove-hooks with no terminal and no --yes exits 2 and writes nothing', () => {
   const root = mkdtempSync(join(tmpdir(), 'bk-hooks-cli-'));
   try {
     assert.equal(runCli(['--install-hooks', '--yes'], root).status, 0);
+    const path = join(root, '.claude', 'settings.json');
+    const before = readFileSync(path);
+    // The backup the INSTALL took is already sitting there; count it, so the assertion below
+    // is about what the removal added and not about what the whole directory holds.
+    const backupsBefore = backupsIn(path).length;
     const r = runCli(['--remove-hooks'], root);
-    assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
-    assert.deepEqual(readJson(join(root, '.claude', 'settings.json')).hooks, {});
+    assert.equal(r.status, 2, `${r.stdout}${r.stderr}`);
+    assert.equal(
+      r.stderr,
+      '--remove-hooks rewrites your ~/.claude/settings.json and needs a terminal to ask.\n' +
+        'There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n' +
+        '--yes to say yes in advance.\n',
+    );
+    assert.equal(r.stdout, '');
+    assert.deepEqual(readFileSync(path), before, 'the CLI removed hooks it had refused to touch');
+    assert.equal(backupsIn(path).length, backupsBefore, 'the refusal took a backup');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('the real CLI refuses --yes without --install-hooks', () => {
+test('the real CLI --remove-hooks --yes removes and exits 0', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bk-hooks-cli-'));
+  try {
+    assert.equal(runCli(['--install-hooks', '--yes'], root).status, 0);
+    const r = runCli(['--remove-hooks', '--yes'], root);
+    assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+    assert.deepEqual(readJson(join(root, '.claude', 'settings.json')).hooks, {});
+    assert.ok(r.stderr.includes('bantamkit would remove 7 hook entries from '), r.stderr);
+    assert.ok(r.stdout.startsWith('removed bantamkit hooks from '), r.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the real CLI --remove-hooks with nothing to remove exits 0 with no terminal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bk-hooks-cli-'));
+  try {
+    const r = runCli(['--remove-hooks'], root);
+    assert.equal(r.status, 0, `${r.stdout}${r.stderr}`);
+    assert.ok(r.stdout.startsWith('no bantamkit hooks are installed in '), r.stdout);
+    assert.equal(r.stderr, '');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the real CLI refuses --yes without a flag it can consent to', () => {
   const root = mkdtempSync(join(tmpdir(), 'bk-hooks-cli-'));
   try {
     const r = runCli(['--yes'], root);
     assert.equal(r.status, 1, `${r.stdout}${r.stderr}`);
-    assert.equal(r.stderr, '--yes is only meaningful with --install-hooks\n');
+    assert.equal(r.stderr, '--yes is only meaningful with --install-hooks or --remove-hooks\n');
     assert.equal(existsSync(join(root, '.claude')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -483,7 +668,10 @@ test('the three flags are in -h, with their ruled sentences', () => {
     const help = r.stdout.replace(/\s+/g, ' ');
     assert.ok(help.includes("--install-hooks add bantamkit's hook entries to ~/.claude/settings.json, then exit"), r.stdout);
     assert.ok(help.includes("--remove-hooks take bantamkit's hook entries back out of ~/.claude/settings.json, then exit"), r.stdout);
-    assert.ok(help.includes('--yes with --install-hooks, say yes in advance instead of being asked'), r.stdout);
+    assert.ok(
+      help.includes('--yes with --install-hooks or --remove-hooks, say yes in advance instead of being asked'),
+      r.stdout,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -506,11 +694,12 @@ test('the three flags are in -h, with their ruled sentences', () => {
 const PTY_DRIVER = `
 import os, pty, select, sys, time
 answer, home, cli = sys.argv[1], sys.argv[2], sys.argv[3]
+flag = sys.argv[5]
 pid, fd = pty.fork()
 if pid == 0:
     os.environ['HOME'] = home
     os.environ['USERPROFILE'] = home
-    os.execv(sys.argv[4], [sys.argv[4], cli, '--install-hooks'])
+    os.execv(sys.argv[4], [sys.argv[4], cli, flag])
 out, sent = b'', False
 while True:
     ready, _, _ = select.select([fd], [], [], 15)
@@ -534,10 +723,10 @@ sys.stdout.write('\\nEXIT %d\\n' % os.waitstatus_to_exitcode(status))
 
 const havePython = process.platform !== 'win32' && spawnSync('python3', ['-c', 'import pty'], { encoding: 'utf8' }).status === 0;
 
-function overAPty(answer, root) {
+function overAPty(answer, root, flag = '--install-hooks') {
   const driver = join(root, 'drive.py');
   writeFileSync(driver, PTY_DRIVER, 'utf8');
-  const r = spawnSync('python3', [driver, answer, root, OWN_CLI, process.execPath], { encoding: 'utf8' });
+  const r = spawnSync('python3', [driver, answer, root, OWN_CLI, process.execPath, flag], { encoding: 'utf8' });
   assert.equal(r.status, 0, `the pty driver itself failed: ${r.stderr}`);
   return r.stdout;
 }
@@ -565,6 +754,44 @@ for (const [answer, writes] of [
         assert.ok(out.includes('\nEXIT 1\n'), out);
         assert.deepEqual(readFileSync(path), before, 'a terminal refusal wrote to the settings file');
         assert.deepEqual(backupsIn(path), [], 'a terminal refusal took a backup');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+/*
+ * AND THE SAME FOUR ANSWERS ON THE REMOVAL PATH. The reader is the same function, but the
+ * QUESTION is not, and neither is the sentence a "no" produces — so a removal that reached a
+ * terminal and then wrote anyway, or that printed the install's question, is only visible
+ * here. The seam cases above cannot see either: they never reach `askAtTheTerminal` at all.
+ */
+for (const [answer, removes] of [
+  ['y', true],
+  ['Y', true],
+  ['n', false],
+  ['', false],
+]) {
+  test(`at a REAL terminal, --remove-hooks answered ${JSON.stringify(answer)} ${removes ? 'removes' : 'removes nothing'}`, { skip: !havePython && 'python3 with a pty module is the only terminal a test can open here' }, () => {
+    const root = mkdtempSync(join(tmpdir(), 'bk-hooks-pty-'));
+    try {
+      const path = join(root, '.claude', 'settings.json');
+      seed(path, `${JSON.stringify({ model: 'opus', hooks: { PreToolUse: [FOREIGN] } }, null, 2)}\n`);
+      assert.equal(runCli(['--install-hooks', '--yes'], root).status, 0);
+      const before = readFileSync(path);
+      const backupsBefore = backupsIn(path).length;
+      const out = overAPty(answer, root, '--remove-hooks');
+      assert.ok(out.includes('Remove these hook entries? [y/N]'), out);
+      if (removes) {
+        assert.ok(out.includes('\nEXIT 0\n'), out);
+        assert.deepEqual(readJson(path).hooks, { PreToolUse: [FOREIGN] }, out);
+        assert.equal(readJson(path).model, 'opus');
+      } else {
+        assert.ok(out.includes('no hooks were removed'), out);
+        assert.ok(out.includes('\nEXIT 1\n'), out);
+        assert.deepEqual(readFileSync(path), before, 'a terminal refusal removed hooks anyway');
+        assert.equal(backupsIn(path).length, backupsBefore, 'a terminal refusal took a backup');
       }
     } finally {
       rmSync(root, { recursive: true, force: true });

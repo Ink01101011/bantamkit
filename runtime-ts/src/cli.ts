@@ -320,7 +320,12 @@ const PARSER: ParserSpec = {
       optionStrings: ['--yes'],
       dest: 'yes',
       kind: 'storeTrue',
-      help: 'with --install-hooks, say yes in advance instead of being asked',
+      // NAMES BOTH FLAGS since the user's ruling of 2026-09-20 put the same gate on
+      // `--remove-hooks`. RULING Q3.3 requires the non-interactive consent path to be in `-h`
+      // so nobody has to guess it; a `--yes` that silently also worked with `--remove-hooks`
+      // would leave the only way to script a removal undocumented, which is the defect
+      // `--assets-root` shipped once already.
+      help: 'with --install-hooks or --remove-hooks, say yes in advance instead of being asked',
       defaultValue: false,
     },
     {
@@ -473,6 +478,12 @@ function haveATerminal(): boolean {
 /**
  * RULING Q3.4's question, on stderr, answered on stdin. Only ever called at a terminal.
  *
+ * THE QUESTION IS A PARAMETER AND THE READER IS NOT. `--install-hooks` asks "Write these hook
+ * entries?" and `--remove-hooks` asks "Remove these hook entries?"; everything after the
+ * question mark — the `[y/N]` default, the one-byte read, the EAGAIN retry, and the rule that
+ * only `y`/`Y` is a yes — is one implementation on purpose, because two flags rewriting one
+ * file must not answer differently to the same keystroke.
+ *
  * ONE LINE, READ SYNCHRONOUSLY, ONE BYTE AT A TIME. `readFileSync(0)` would block until EOF —
  * at a terminal that is Ctrl-D, not Enter — so the answer is read to the first newline and no
  * further, which leaves anything the person typed after it for whoever asks next.
@@ -494,8 +505,8 @@ function haveATerminal(): boolean {
  * `Atomics.wait` IS THE ONLY SYNCHRONOUS SLEEP THERE IS, and one is needed: without it the
  * retry is a busy spin on a terminal waiting for a human.
  */
-function askAtTheTerminal(): boolean {
-  process.stderr.write('Write these hook entries? [y/N] ');
+function askAtTheTerminal(question: string): boolean {
+  process.stderr.write(`${question} [y/N] `);
   const byte = Buffer.alloc(1);
   const idle = new Int32Array(new SharedArrayBuffer(4));
   let answer = '';
@@ -728,7 +739,7 @@ async function main(argv: readonly string[]): Promise<number> {
         `${installHooks({
           version: version(),
           yes: options.yes,
-          ask: haveATerminal() ? askAtTheTerminal : null,
+          ask: haveATerminal() ? (): boolean => askAtTheTerminal('Write these hook entries?') : null,
           tell: (text) => process.stderr.write(text),
         })}\n`,
       );
@@ -748,11 +759,32 @@ async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
   if (options.removeHooks) {
-    // No gate (RULING Q3.7): taking back out what bantamkit put in is not the write the
-    // ruling is about. It still backs the file up and still touches only our own entries.
+    // THE SAME THREE EXITS, AND THEY ARE THE SAME THREE NUMBERS. RULING Q3.7 used to exempt
+    // this flag from the gate; the user overturned that on 2026-09-20 after `--remove-hooks`
+    // rewrote the operator's real `~/.claude/settings.json` with no terminal and no `--yes`.
+    //
+    //   0  removed, or there was nothing of ours to remove
+    //   1  the person was asked at a terminal and did not say yes — `no hooks were removed`
+    //   2  there was no terminal to ask at and no `--yes`
+    //
+    // The arms below are `--install-hooks`' arms, in the same order, for the same reasons.
     try {
-      process.stdout.write(`${removeHooks()}\n`);
+      process.stdout.write(
+        `${removeHooks({
+          yes: options.yes,
+          ask: haveATerminal() ? (): boolean => askAtTheTerminal('Remove these hook entries?') : null,
+          tell: (text) => process.stderr.write(text),
+        })}\n`,
+      );
     } catch (e) {
+      if (e instanceof HookConsentUnavailable) {
+        process.stderr.write(`${e.message}\n`);
+        return 2;
+      }
+      if (e instanceof HookDeclined) {
+        process.stderr.write(`${e.message}\n`);
+        return 1;
+      }
       if (!(e instanceof InstallError)) throw e;
       process.stderr.write(`error: ${e.message}\n`);
       return 1;
@@ -763,10 +795,12 @@ async function main(argv: readonly string[]): Promise<number> {
   // dropped the flag that says where. Refusing names the missing half.
   if (options.force) throw new Refusal('--force is only meaningful with --install');
   // The same reading, and the same refusal, for the consent flag: `--yes` on its own is
-  // somebody who meant to install hooks and dropped the flag that says so. It is checked
-  // AFTER `--force` because that is registration order, and both are checked after every
-  // flag that acts, so `--install-hooks --yes` never reaches either of them.
-  if (options.yes) throw new Refusal('--yes is only meaningful with --install-hooks');
+  // somebody who meant to install or remove hooks and dropped the flag that says which. It is
+  // checked AFTER `--force` because that is registration order, and both are checked after
+  // every flag that acts, so `--install-hooks --yes` never reaches either of them. The
+  // sentence names BOTH flags since the ruling of 2026-09-20: naming only one would send an
+  // operator who mistyped `--remove-hooks` looking for a flag they already had.
+  if (options.yes) throw new Refusal('--yes is only meaningful with --install-hooks or --remove-hooks');
   // A PERSON TYPED IT. `typedBareAtATerminal` carries the whole argument; what belongs here is
   // only that this sits BEFORE `buildMemory`, which is what creates a store. Somebody who typed
   // a command to see what it does has not asked for a `.bantamkit/memory` directory in whatever

@@ -409,6 +409,16 @@ export function installSelf(host: Host, force = false, options: CommandOptions =
  * user's own settings file and registers a command that runs on EVERY tool call. The stronger
  * write gets the stronger gate (S1 RULING Q3.3).
  *
+ * BOTH FLAGS TAKE IT. RULING Q3.7 used to exempt `--remove-hooks` on the reasoning that taking
+ * back out what bantamkit put in is not a write to somebody else's configuration. THE USER
+ * OVERTURNED THAT ON 2026-09-20, and the reason is on disk: earlier the same day an
+ * unsandboxed probe let the abbreviation `--remove` resolve to the newly-added
+ * `--remove-hooks`, and it ran against the operator's REAL `~/.claude/settings.json` with no
+ * terminal, no `--yes` and exit 0 — 256 lines / 9031 bytes / 12 hook-event keys / 18 matcher
+ * blocks became 188 / 6980 / 10 / 11, with `PreCompact` and `PostCompact` gone. The file it
+ * rewrites is the same file either way, so the gate is the same gate either way: an operator
+ * who has learned one of these two flags must not be surprised by the other.
+ *
  * `tools/hooks/install.mjs` is the ANTI-PATTERN this replaces, not the template. It writes the
  * same seven entries unconditionally: no plan, no question, no backup. Everything below is the
  * same data with a gate and `--install`'s existing write discipline around it.
@@ -472,6 +482,22 @@ export class HookConsentUnavailable extends Error {}
 
 /** The person was asked and did not say yes. Exit 1, and nothing was written. */
 export class HookDeclined extends Error {}
+
+/**
+ * THE REFUSAL, FOR BOTH FLAGS, FROM ONE TEMPLATE.
+ *
+ * Written as a function rather than twice as a literal so the two flags CANNOT grow two
+ * different consent stories by drift: the only thing either one may vary is its own name and
+ * the verb for what it is about to do to the file. The `--install-hooks` string this produces
+ * is byte-identical to the one that shipped before `--remove-hooks` joined it.
+ */
+function consentUnavailable(flag: string, verb: string): HookConsentUnavailable {
+  return new HookConsentUnavailable(
+    `${flag} ${verb} your ~/.claude/settings.json and needs a terminal to ask.\n` +
+      'There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n' +
+      '--yes to say yes in advance.',
+  );
+}
 
 /** The seams the two hook flags take. Nothing here reaches a terminal or the network. */
 export interface HookOptions extends CommandOptions {
@@ -574,6 +600,30 @@ function hookPlan(path: string, command: string): string {
 }
 
 /**
+ * The same plan for the other direction: what is about to come OUT, and out of what.
+ *
+ * FOUR LINES, NOT FIVE. There is no `command:` line because `removeHooks` never resolves one —
+ * see its own note — and printing one would be the plan naming something the write will not
+ * touch. The `backup :` line is UNCONDITIONAL here, where `hookPlan`'s is guarded: the gate is
+ * only reached when at least one entry is actually coming out, and an entry cannot be in a
+ * file that does not exist.
+ *
+ * `events :` NAMES ONLY THE EVENTS THAT LOSE SOMETHING, not all seven, which is the honest
+ * answer to "what will this do to my file" when only some of ours are there. The count on the
+ * first line is entries, not events, for the same reason.
+ */
+function removalPlan(path: string, events: readonly string[], entries: number): string {
+  return (
+    [
+      `bantamkit would remove ${entries} hook entries from ${path}`,
+      `  events : ${events.join(' ')}`,
+      `  backup : ${path}.backup-${today()}`,
+      'Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.',
+    ].join('\n') + '\n'
+  );
+}
+
+/**
  * `--install-hooks`: the seven entries, in ONE write, AFTER asking.
  *
  * THE ORDER IS THE PROPERTY, and it is `installSelf`'s order for `installSelf`'s reason:
@@ -611,11 +661,7 @@ export function installHooks(options: HookOptions = {}): string {
     if (ask === null) {
       // NOTHING IS PRINTED HERE. The plan describes a write that is not going to happen, and
       // the refusal is the whole message.
-      throw new HookConsentUnavailable(
-        '--install-hooks writes your ~/.claude/settings.json and needs a terminal to ask.\n' +
-          'There is no terminal here, so nothing was written. Re-run it at a prompt, or pass\n' +
-          '--yes to say yes in advance.',
-      );
+      throw consentUnavailable('--install-hooks', 'writes');
     }
     tell(hookPlan(path, rendered));
     if (!ask()) throw new HookDeclined('no hooks were written');
@@ -638,25 +684,56 @@ export function installHooks(options: HookOptions = {}): string {
 }
 
 /**
- * `--remove-hooks`: take out what bantamkit wrote, and nothing else.
+ * `--remove-hooks`: take out what bantamkit wrote, and nothing else — AFTER asking.
  *
- * NO CONSENT PROMPT (RULING Q3.7). Removing what bantamkit added is not a write to somebody
- * else's configuration in the sense the ruling is about. It still takes the dated backup, it
- * still touches only entries naming bantamkit, and a file with none of ours is left
- * byte-unchanged with no backup taken.
+ * THE GATE IS `installHooks`' GATE, deliberately identical: a TTY answer, or `--yes`, or a
+ * refusal at exit 2 with nothing written. RULING Q3.7 exempted this flag; the user overturned
+ * that on 2026-09-20 after this exact flag, unsandboxed and unasked, rewrote the operator's
+ * real settings file. The module header above carries the measurement. Two flags that rewrite
+ * one file do not get two consent stories.
  *
- * `thisCommand` IS NOT CALLED. Removal does not need to know what a host should launch, and
- * calling it would put an `npx` cache's kept install between an operator and the ability to
- * undo. `options` still takes the same shape so the two flags read the same way.
+ * THE ORDER IS `installHooks`' ORDER, minus the step it does not have:
+ *
+ *   1. read and validate the settings file — a file that does not parse is reported, never
+ *      overwritten;
+ *   2. NOTHING-TO-REMOVE RETURNS HERE, BEFORE THE GATE, which is the mirror of install's
+ *      already-installed no-op and matters for the same reason: there is no write to consent
+ *      to, so a second `--remove-hooks` stays exit 0 with no terminal and no `--yes`, and a
+ *      teardown script that runs it twice does not suddenly start refusing;
+ *   3. print the plan, then the gate;
+ *   4. dated backup, then one atomic write.
+ *
+ * `thisCommand` IS STILL NOT CALLED. Removal does not need to know what a host should launch,
+ * and calling it would put an `npx` cache's kept install between an operator and the ability
+ * to undo. That is also why the plan this prints has no `command:` line.
  */
 export function removeHooks(options: HookOptions = {}): string {
-  void options;
   const path = claudeSettingsPath();
   const data = readConfig(path);
   const current = readHooks(path, data);
   const { hooks, touched } = plannedHooks(current, '', true);
 
   if (touched.length === 0) return `no bantamkit hooks are installed in ${path}`;
+
+  // Entries, not events: an event can hold more than one of ours if somebody hand-edited the
+  // file, and the plan has to say what is actually going.
+  let entries = 0;
+  for (const event of touched) entries += (current[event] ?? []).length - (hooks[event] ?? []).length;
+
+  const tell = options.tell ?? ((): void => {});
+  const yes = options.yes ?? false;
+  const ask = options.ask ?? null;
+  if (!yes) {
+    if (ask === null) {
+      // NOTHING IS PRINTED HERE, the same as install: the plan describes a write that is not
+      // going to happen, and the refusal is the whole message.
+      throw consentUnavailable('--remove-hooks', 'rewrites');
+    }
+    tell(removalPlan(path, touched, entries));
+    if (!ask()) throw new HookDeclined('no hooks were removed');
+  } else {
+    tell(removalPlan(path, touched, entries));
+  }
 
   const copied = backup(path);
   data['hooks'] = hooks;
