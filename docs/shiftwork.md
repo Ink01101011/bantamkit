@@ -495,12 +495,16 @@ handed (Layer 1; see [architecture.md](architecture.md)).
 ```
 
 - **`ready`** is `batches[0]`: the units whose dependencies are all satisfied.
-  Only `cursor` can be clocked (`clock_in` briefs it, `clock_out` refuses any
-  other id), so a `ready` member beyond the cursor is what the graph permits,
-  not a unit the clock accepts yet.
-- **`cursor`** is echoed **unchanged** — deliberately, so the single-pointer
-  contract and the batch view can be read side by side and the difference
-  between them is visible rather than implied.
+  Since job60 a `ready` member beyond the cursor is clockable, but only in that
+  order: `clock_in` briefs any unit in `ready` when `unit_id` names it, and
+  `clock_out` then takes that unit back *because it was briefed*. An id that is
+  neither the cursor nor briefed since its own last clock-out is still refused.
+  See [Spending the width](#spending-the-width-clock_inunit_id-job60).
+- **`cursor`** is echoed **unchanged** — deliberately, so the pointer and the
+  batch view can be read side by side and any difference between them is
+  visible rather than implied. The pointer is still one unit and only
+  `clock_out` moves it; what job60 changed is that it is no longer the only
+  unit `clock_in` will hand out.
 
 **The satisfied rule.** A unit whose status is `done` or `dropped` is
 *satisfied*: it is removed from the graph, and every edge pointing at it is
@@ -600,6 +604,16 @@ non-terminal unit, so no sentence is written for a case that cannot be reached.
 A refusal from the batch view *itself* — a cycle, an unknown dependency, an
 unreadable file — passes through verbatim, in the three sentences listed above.
 
+**A dangling `plan.cursor` is now escapable, and that is deliberate.** A pointer
+naming no unit still `escalate`s on the default path, with the sentence it has
+always had (`cursor <id> names no unit`) — that judgement sits above the
+selection and job60 did not move it. But naming a ready unit proceeds anyway, on
+the same bytes, because the graph is readable whatever the pointer says: a
+broken pointer no longer stops a wave the graph permits. It is the one existing
+refusal this job made conditional without changing a word of it, so it is pinned
+by its own conformance session rather than left as a behaviour both runtimes
+happen to share.
+
 **`clock_in` still never writes `plan.cursor`.** A wave of N briefs leaves the
 pointer exactly where it was; `clock_out` is the only thing that moves it. The
 brief line records the unit actually briefed, so `briefed` keeps working per
@@ -678,29 +692,33 @@ dispatched by leaving the tools: clock the first unit out at `in_progress` as a
 dispatch-only record, then edit `plan.cursor` to the second unit **by hand** in
 the checkpoint file — because `clock_in` only ever returned the cursor unit and
 `clock_out` advanced the cursor only on a terminal status. The alternative was
-worse: declaring a running unit `done` falsifies the ledger. This job's own
-checkpoint carries the last use of it —
-`.shiftwork/checkpoint-job60.json`, the `U2` history entry, where the two
-runtime halves were dispatched together. The same dispatch is now
+worse: declaring a running unit `done` falsifies the ledger. Its last use was
+this job's own two runtime halves, dispatched together: the ledger line that
+did the dispatching says so in its own words — *"Dispatch line, not a cost
+line: U2 is still running, so tokens and `duration_ms` are written 0 and the
+measured figures land on U2's terminal clock-out"* — and then `plan.cursor` was
+edited by hand to the Node half. That ledger lives under `.shiftwork/`, which
+this repository gitignores, so it is quoted here rather than cited: a path no
+reader can open is not evidence. The same dispatch is now
 `shiftwork_clock_in(checkpoint, unit_id="U3")`, and nothing edits the file.
 
-**The gate.** Six conformance sessions in
+**The gate.** Seven conformance sessions in
 `tools/conformance/suites/shiftwork.mjs` compare the two runtimes over this
-surface — the disagreement state, the wave, both refusals and the default path.
-They are built on documents whose plan order and graph order *disagree*, and the
-suite prints what they pin: 36 per-side cases over those 6 sessions, on top of
-the differential rows, because the differential alone is blind to a sentence
-paraphrased on both sides. The corpus gap that hid the defect is worth
-naming, because it is the shape a future case must avoid: every checkpoint
-already in the suite declares its units in dependency order, so `cursor` equals
-`ready[0]` at every step, and `clock_in(unit_id)` could only ever have been
-handed the unit `clock_in()` would have picked anyway. A case that asserts each
-field against itself cannot see this class of bug; the one that does asserts the
-two fields against *each other*.
+surface — the disagreement state, the wave, both refusals, the default path and
+the dangling cursor. They are built on documents whose plan order and graph
+order *disagree*, and the suite prints what they pin: 43 per-side cases over
+those 7 sessions, on top of the differential rows, because the differential
+alone is blind to a sentence paraphrased on both sides. The corpus gap that hid
+the defect is worth naming, because it is the shape a future case must avoid:
+every checkpoint already in the suite declares its units in dependency order, so
+`cursor` equals `ready[0]` at every step, and `clock_in(unit_id)` could only
+ever have been handed the unit `clock_in()` would have picked anyway. A case
+that asserts each field against itself cannot see this class of bug; the one
+that does asserts the two fields against *each other*.
 
 ```
 node tools/conformance/run.mjs --suite shiftwork
-  PASS 1678 cases, 1096 byte-identical, 582 structural, 1 ruled-different, 0 failures
+PASS: 1697 cases, 1105 byte-identical, 0 exact-string, 592 structural, 1 ruled-different, 0 failures
 ```
 
 Both runtimes agreed on every new case, so job60 adds no row to

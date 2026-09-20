@@ -642,6 +642,21 @@ const waveDocument = () => baseDocument({
 });
 
 /**
+ * job60/DEF-2: shape 1 under a cursor that names NO unit — a dangling pointer.
+ *
+ * `clock_in()` has always answered `escalate` here, and still does: the judgement sits above
+ * the selection and job60 did not move it. What job60 changed is that the escalate is no
+ * longer the only answer available on this document — the graph is still readable, so naming
+ * a `ready` unit proceeds. Both runtimes already did this; nothing said so and nothing pinned
+ * it, which is exactly how an escapable refusal survives a release unnoticed.
+ */
+const danglingDocument = () => {
+  const document = waveDocument();
+  document.plan.cursor = 'GHOST';
+  return document;
+};
+
+/**
  * `[name, checkpoint, calls]` triples for job60 — `clock_in(unit_id)`, D2 and D3.
  *
  * WHY THESE DOCUMENTS AND NOT THE ONES ABOVE. `baseDocument()` and the shipped codefix
@@ -688,6 +703,14 @@ function unitIdSessions() {
     // behaviour", and it is also the control for cases 1a and 3: the refusal there is a
     // property of the graph, not something `unit_id` does to every checkpoint it touches.
     ['unit-id/default-path-on-the-template', b64(realCheckpointText), [IN(), IN(CURSOR), ST()]],
+
+    // ---- 6. THE ESCAPE D1 OPENED (DEF-2). A dangling `plan.cursor` was an unconditional
+    // `escalate` before job60; `unit_id` now routes around it. The default call must still
+    // escalate with the sentence it always had — that is the "byte for byte" half of D1 — and
+    // naming a ready unit must proceed anyway, because a broken pointer should not stop a wave
+    // the graph says can run. `status` last: the escalate wrote nothing and the brief writes no
+    // cursor, so `GHOST` is still on disk at the end.
+    ['unit-id/dangling-cursor', b64(raw(danglingDocument())), [IN(), IN('N2'), ST()]],
   ];
 }
 
@@ -2151,6 +2174,25 @@ export async function run(ctx) {
     briefed('template-naming-the-cursor-unit', TEMPLATE, 1, CURSOR);
     cursor('template-cursor-unmoved', TEMPLATE, 2, CURSOR);
 
+    // ==================== 6. the escape D1 opened: a dangling cursor (DEF-2)
+    //
+    // Two halves of one fact, and neither is pinned anywhere else. The default path still
+    // escalates with the sentence it carried before job60 — read that against case 5, where
+    // the default path is a brief: the escalate is a property of the pointer, not something
+    // `unit_id` did to this checkpoint. And the SAME document answers a brief when a ready
+    // unit is named, which is the escape itself: the refusal that used to stop everything on
+    // this document is now conditional on which call you make.
+    const DANGLING = 'unit-id/dangling-cursor';
+    bit('dangling-cursor-still-escalates', DANGLING, 0, 'escalate');
+    says('dangling-cursor-still-escalates', DANGLING, 0, 'cursor GHOST names no unit');
+    untouched('dangling-cursor-escalate', DANGLING, 0);
+    bit('dangling-cursor-named-ready-unit-proceeds', DANGLING, 1, 'brief');
+    briefed('dangling-cursor-named-ready-unit-proceeds', DANGLING, 1, 'N2');
+    // the pointer is still broken afterwards — the escape dispatches work, it does not repair
+    // the document, and `clock_in` writing a cursor here would be D1's invariant broken.
+    cursor('dangling-cursor-left-broken', DANGLING, 2, 'GHOST');
+    trail('dangling-cursor', DANGLING, 2, ['brief N2']);
+
     notes.push(
       'job60/D1-D3 (J60-4): `clock_in(unit_id)` is pinned by ' +
         `${cases.filter((c) => c.name.startsWith('unit-id/')).length} per-side cases over ` +
@@ -2158,8 +2200,9 @@ export async function run(ctx) {
         'graph order DISAGREE — the one row holding `cursor` and `ready` against each other, the ' +
         'not-ready sentence (a unit with unmet dependencies and one that names no unit at all), ' +
         'the cursor landing on `ready[0]` rather than plan order, a two-wide wave clocked out ' +
-        'in the other order, `clock_out`\'s unwidened cursor sentence, and the shipped template ' +
-        'answering identically with and without the argument.',
+        'in the other order, `clock_out`\'s unwidened cursor sentence, the shipped template ' +
+        'answering identically with and without the argument, and (DEF-2) the dangling cursor ' +
+        'that still escalates on the default path while a named ready unit proceeds anyway.',
     );
   }
 

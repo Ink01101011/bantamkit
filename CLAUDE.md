@@ -101,8 +101,8 @@ graph recomputed on the mutated document, so the pointer can no longer land on a
 unit whose dependencies have not run; the `plan.units` fallback is reachable only
 when the graph cannot batch at all. A caller that never passes `unit_id` is
 unaffected, and no checkpoint field was added. Enforced in both runtimes and
-gated by 36 per-side cases over 6 sessions in `node tools/conformance/run.mjs
---suite shiftwork` (PASS 1678 cases, 0 failures); see `docs/shiftwork.md`,
+gated by 43 per-side cases over 7 sessions in `node tools/conformance/run.mjs
+--suite shiftwork` (PASS 1697 cases, 0 failures); see `docs/shiftwork.md`,
 *Spending the width*.
 
 Exempt: one-off ad-hoc spawns (a single search or review with no plan
