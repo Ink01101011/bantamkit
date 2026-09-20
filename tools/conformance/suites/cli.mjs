@@ -1473,6 +1473,16 @@ function matrix(scratch) {
     // code. Two runtimes can both fail and fail differently; a boolean would not say so.
     // See the ambiguity precondition below for why the literal `--st` cannot go quietly stale.
     { label: 'ambiguous-abbreviation', argv: ['--st'] },
+    // THE AMBIGUITY job62 CREATED, and the one this matrix would not otherwise have had.
+    // `--inst` resolved to `--install` on both runtimes until J62-4/J62-5 added
+    // `--install-hooks`, at which point `--install` became a proper PREFIX of another option
+    // and every abbreviation between `--inst` and `--install` stopped resolving. That is a
+    // user-visible break in a shipped command line — `bantamkit-mcp --inst cursor` was a
+    // working line and is now an error — and it is compared here exactly the way `--st` is:
+    // the message on the stream that carried it, the empty stream beside it, and the exit
+    // code. Both runtimes print `ambiguous option: --inst could match --install,
+    // --install-hooks` and exit 2. The precondition below keeps it from going quietly stale.
+    { label: 'ambiguous-abbreviation-inst', argv: ['--inst'] },
     // The wrap boundary, straddled. See `wrapBoundary` below for where 106 comes from.
     { label: 'help-columns-60', argv: ['-h'], env: { COLUMNS: '60' } },
     { label: 'help-columns-80', argv: ['-h'], env: { COLUMNS: '80' } },
@@ -1656,13 +1666,15 @@ export async function run(ctx) {
 
   const specs = matrix(ctx.scratch);
 
-  /** The reference's own answer for the argv line whose ambiguity is asserted below. */
+  /** The reference's own answers for the argv lines whose ambiguity is asserted below. */
   let ambiguousPy = null;
+  let ambiguousInstPy = null;
 
   for (const spec of specs) {
     const py = runPy(ctx, spec);
     const node = runNode(spec);
     if (spec.label === 'ambiguous-abbreviation') ambiguousPy = py;
+    if (spec.label === 'ambiguous-abbreviation-inst') ambiguousInstPy = py;
     if (spec.shape === 'wrote-nothing') {
       // A LITERAL, not a differential. Both runtimes must leave the config ABSENT, and a
       // side-to-side comparison would have stayed green through the defect this case exists
@@ -1913,6 +1925,31 @@ export async function run(ctx) {
         '  a long option was renamed and the ambiguous-abbreviation case now tests something\n' +
         '  else. Repoint it at a prefix that STILL matches two or more options — do not delete\n' +
         '  it, and do not let it pass as an unrecognized-option case.',
+    );
+  }
+
+  /**
+   * THE SAME PRECONDITION FOR `--inst`, and this one is anchored on the WHOLE sentence.
+   *
+   * `--st` is ambiguous by accident — three flags happen to share three letters — so its
+   * candidate list is deliberately left unpinned. `--inst` is ambiguous by CONSTRUCTION:
+   * `--install` is a proper prefix of `--install-hooks`, which is a property of the two flag
+   * NAMES and not of how many other flags happen to exist. So the whole sentence is pinned,
+   * both candidates included. If `--install-hooks` is ever renamed to something that is not
+   * an extension of `--install`, `--inst` starts resolving again, the break this case records
+   * is gone, and this stops the suite rather than letting the case pass as an ordinary
+   * unrecognized-option line.
+   */
+  const AMBIGUOUS_INST = 'bantamkit-mcp: error: ambiguous option: --inst could match --install, --install-hooks';
+  const ambiguousInstStderr = dec(ambiguousInstPy?.stderr ?? Buffer.alloc(0));
+  if (!ambiguousInstStderr.includes(AMBIGUOUS_INST)) {
+    throw new Error(
+      `cli: --inst is no longer ambiguous between --install and --install-hooks.\n` +
+        `  expected stderr to contain : ${JSON.stringify(AMBIGUOUS_INST)}\n` +
+        `  argparse printed           : ${JSON.stringify(ambiguousInstStderr)}\n` +
+        '  either a flag was renamed, or one of the two was removed. `--inst` resolving again\n' +
+        '  is GOOD NEWS for the operator and BAD NEWS for this case: repoint it, or retire it\n' +
+        '  deliberately along with the `docs/porting.md` note about the break.',
     );
   }
 
@@ -3011,6 +3048,13 @@ export async function run(ctx) {
       `${ambiguousPy.stdout.length} on stdout, exit ${ambiguousPy.exit}. a precondition in this ` +
       'file stops the suite if a flag rename ever makes --st unambiguous, because that would ' +
       'leave the case green and pointed at nothing.',
+  );
+  notes.push(
+    '--inst REFUSES on both runtimes since job62: --install is now a proper prefix of ' +
+      `--install-hooks, so an abbreviation that used to resolve is an error. compared as it left ` +
+      `each process: ${ambiguousInstPy.stderr.length} stderr bytes, ${ambiguousInstPy.stdout.length} on stdout, ` +
+      `exit ${ambiguousInstPy.exit}. this is a user-visible break in a shipped command line and it ` +
+      'is gated here rather than only described.',
   );
   notes.push(
     `the --assets-root ruling has a precondition: runtime-ts/assets/ is gitignored and only ` +
