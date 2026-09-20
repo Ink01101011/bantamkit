@@ -1460,9 +1460,15 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             }
         )
 
-    def shiftwork_clock_in(checkpoint: str) -> dict[str, Any]:
+    def shiftwork_clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
+        # job60/D1: `unit_id` is optional here because it is optional in the asset, and the
+        # signature is what `_from_manifest` binds as `fn_metadata` — i.e. what validates
+        # the CALL. The advertised schema is the asset's; a signature that did not accept
+        # the argument would advertise a property every host call carrying it then bounced.
         return _noted_dict(
-            _record_result(log, "shiftwork_clock_in", lambda: shiftwork.clock_in(checkpoint))
+            _record_result(
+                log, "shiftwork_clock_in", lambda: shiftwork.clock_in(checkpoint, unit_id)
+            )
         )
 
     def shiftwork_clock_out(
