@@ -1,6 +1,6 @@
 {
   "name": "shiftwork_clock_out",
-  "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `briefed` is written by the runtime, never taken from you — a self-reported value is overwritten by the measured one: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run inline after a blocked clock-out reads false. It records; it never refuses — a unit that was never clocked in still clocks out, with briefed=false. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly \u2014 a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
+  "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). `unit_id` must be `plan.cursor`, the one unit clock_in briefs; any other id is refused (`unit X is not the cursor unit Y`). `handoff_patch` and `history_entry` are both required arguments: `handoff_patch` is shallow-merged into `handoff` and takes only its four keys (pass `{}` to leave it unchanged); `history_entry` needs `unit` and `outcome`; `status` is one of the five unit statuses — a value outside these shapes is refused by the schema check, nothing written. Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `accounting` is optional: null, the default, logs a line with no cost figures at all; a non-null line must fit the accounting shape below. `briefed` is written by the runtime, never taken from you — a self-reported value is overwritten by the measured one: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run inline after a blocked clock-out reads false. A brief is not a precondition: a unit that was never clocked in still clocks out, with briefed=false. If the checkpoint's job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly — a model that is not on the list, or none reported at all, is refused before anything is written; a role job.roles omits, and a checkpoint carrying no job.roles, are unconstrained.",
   "surfaces": [
     "mcp"
   ],
@@ -12,21 +12,76 @@
       },
       "unit_id": {
         "title": "Unit Id",
-        "type": "string"
+        "type": "string",
+        "description": "The unit being clocked out. Must equal plan.cursor — the single-pointer contract: clock_in briefs only the cursor unit and clock_out accepts only it."
       },
       "status": {
         "title": "Status",
-        "type": "string"
+        "type": "string",
+        "enum": [
+          "todo",
+          "in_progress",
+          "done",
+          "blocked",
+          "dropped"
+        ],
+        "description": "The unit's new status; the same five values the checkpoint schema allows on plan.units[].status."
       },
       "handoff_patch": {
-        "additionalProperties": true,
         "title": "Handoff Patch",
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Shallow-merged into `handoff`: only these four keys exist there, and a key outside them is refused by the schema check. Required; `{}` leaves `handoff` unchanged.",
+        "properties": {
+          "next_action": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Imperative first move — zero re-derivation."
+          },
+          "open_questions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask."
+          },
+          "do_not": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Negative space — near-mistakes past sessions made."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Free-form prose for the next session, one string; the empty string clears it."
+          }
+        }
       },
       "history_entry": {
-        "additionalProperties": true,
         "title": "History Entry",
-        "type": "object"
+        "type": "object",
+        "required": [
+          "unit",
+          "outcome"
+        ],
+        "additionalProperties": true,
+        "description": "Pushed onto the 5-entry `history` ring; `unit` and `outcome` are required, `notes` optional, other keys pass through.",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
       },
       "accounting": {
         "anyOf": [
@@ -37,7 +92,7 @@
               "tokens": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Tokens the unit consumed as the harness's subagent counter reports them: every class it reports (input, output, cache creation) summed, EXCLUDING cache reads. Required, because a unit whose cost is unknown cannot be compared with any other; a rounded self-estimate is allowed only if `note` says it is one."
+                "description": "Tokens the unit consumed as the harness's subagent counter reports them: every class it reports (input, output, cache creation) summed, EXCLUDING cache reads. In a non-null accounting line it is required — a line without it is refused before anything is written; only `accounting: null`, the default, is exempt, and that logs no cost at all. A rounded self-estimate is allowed only if `note` says it is one; a unit whose cost is unknown cannot be compared with any other."
               },
               "cache_read_tokens": {
                 "type": "integer",
@@ -47,7 +102,7 @@
               "duration_ms": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Wall-clock from spawning the subagent to its final message, in whole milliseconds. Required, and the only duration key with a defined meaning: older lines carry `duration`, `duration_min` or `duration_s`, which this schema neither reads nor renames."
+                "description": "Wall-clock from spawning the subagent to its final message, in whole milliseconds. In a non-null line it is required, and it is the only duration key with a defined meaning: older lines carry `duration`, `duration_min` or `duration_s`, which this schema neither reads nor renames."
               },
               "model": {
                 "type": "string",

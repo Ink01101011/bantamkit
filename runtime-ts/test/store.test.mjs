@@ -255,7 +255,7 @@ test('an over-budget new save unlinks the fact, rebuilds the index, and raises',
   const before = bytes(join(root, 'index.md'));
   assert.throws(() => s.save('project', 'beta', 'five six seven eight nine ten', 'b'), (e) => {
     assert.ok(e instanceof MemoryBudgetExceeded);
-    assert.match(e.message, /^memory index is \d+ bytes, budget is 60: run compact\(\) or tersen descriptions$/);
+    assert.match(e.message, /^memory index is \d+ bytes, budget is 60: compact the store or tersen descriptions$/);
     return true;
   });
   assert.deepEqual(readdirSync(join(root, 'facts')), ['alpha.md']);

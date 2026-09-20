@@ -1,9 +1,17 @@
 # bantamkit
 
 Layer discipline is strict: a change lives in exactly one layer
-(docs/architecture.md). Run the suite from the repo venv:
-`.venv/bin/python -m pytest runtime-py/tests -q` and keep
-`.venv/bin/ruff check runtime-py tools` clean.
+(docs/architecture.md). Run the suite from the repo venv. A fresh clone or
+worktree has none, and a venv borrowed from another checkout tests THAT
+checkout's source, so make this tree's own first (docs/install.md):
+`python3 -m venv .venv && .venv/bin/pip install -e "runtime-py[dev,mcp]"`.
+That resolves the `mcp` SDK inside the bound runtime-py/pyproject.toml declares,
+which is upper-capped on purpose: a newer SDK drops the `: <exc>` suffix from a
+tool crash and `--all` goes red on the reference, not the port.
+Then `.venv/bin/python -m pytest runtime-py/tests -q` and keep
+`.venv/bin/ruff check runtime-py tools` clean. Every conformance gate below
+runs the Node build, which a fresh tree also lacks:
+`cd runtime-ts && npm ci && npm run build` first.
 
 ## Two runtimes, one surface — a feature lands in BOTH or it does not land
 
@@ -54,7 +62,7 @@ run its agent spawns through the shiftwork MCP tools:
    `tools/shiftwork/example-codefix-checkpoint.json`).
 2. Per unit: `shiftwork_clock_in` → spawn the subagent with the returned
    brief verbatim → `shiftwork_clock_out` with status, handoff patch,
-   history entry, and accounting (tokens, duration, and the model actually
+   history entry, and accounting (tokens, duration_ms, and the model actually
    used — the model choice is yours per role, never random, always logged).
 3. On `result: escalate`, stop and ask the user. On `result: success`, the
    job is done.

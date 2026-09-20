@@ -384,7 +384,7 @@ async function userPromptSubmit(input) {
   // tells the model exactly which name to pass to memory_recall if it wants the body.
   const heads = o.reply.split('\n').filter((l) => RECALL_HEADER.test(l));
   if (heads.length === 0) { log({ event: 'UserPromptSubmit', action: 'none', reason: 'no-headers' }); return; }
-  const ctx = capLines(`[bantamkit recall — memories that match this prompt; call mcp__bantamkit__memory_recall with the name for the body]\n${heads.join('\n')}`, PROMPT_INJECT_MAX);
+  const ctx = capLines(`[bantamkit recall — memories that match this prompt; call mcp__bantamkit__memory_recall with {"query":"<name>"} for the body]\n${heads.join('\n')}`, PROMPT_INJECT_MAX);
   // `injected` is read back off `ctx`, NOT off `heads`. The byte cap drops whole lines, so a
   // header that `recallOutcome` picked need not have left the process — and roadmap #6 asks
   // "was an INJECTED name later used", a question a name the model never saw would poison.

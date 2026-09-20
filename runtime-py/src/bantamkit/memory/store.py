@@ -133,7 +133,7 @@ _FACTS_UNREADABLE = (
 _ARCHIVE_UNREADABLE = (
     "an archive that could not be listed is not an empty archive, and answering "
     "'nothing is archived' here is what makes compaction look like deletion — the "
-    "facts compact() moved are still on disk under this path"
+    "facts that compaction moved are still on disk under this path"
 )
 # The same distinction one syscall down, for `restore`, which stats one named path
 # instead of listing (see `archived()` for why). A refused stat is not an absent file,
@@ -1310,5 +1310,5 @@ class MemoryStore:
         if size > self.index_budget:
             raise MemoryBudgetExceeded(
                 f"memory index is {size} bytes, budget is {self.index_budget}: "
-                f"run compact() or tersen descriptions"
+                f"compact the store or tersen descriptions"
             )

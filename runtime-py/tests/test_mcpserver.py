@@ -231,6 +231,28 @@ def test_missing_resource_errors_name_the_asset(tmp_path):
     run(scenario())
 
 
+def test_a_skill_paired_with_an_agent_only_tool_is_not_served(tmp_path):
+    """`file-graph` is `file_graph`'s system-prompt snippet; that tool claims only `agent`.
+
+    Served over MCP it told the client to call a tool `tools/list` does not carry (job60
+    row 46). The pairing is the one `filegraph.py` spells — the skill's name with `-` for
+    `_` — and the refusal names the surfaces the tool's asset does claim.
+    """
+
+    async def scenario():
+        async with Client(make_server(tmp_path)) as c:
+            with pytest.raises(
+                MCPError,
+                match=(
+                    r"skill asset file-graph is not served here: it pairs with tool "
+                    r"file_graph, whose asset claims surfaces \['agent'\], not mcp"
+                ),
+            ):
+                await c.read_resource("bantamkit://skills/file-graph")
+
+    run(scenario())
+
+
 def test_resource_templates_listed(tmp_path):
     async def scenario():
         async with Client(make_server(tmp_path)) as c:

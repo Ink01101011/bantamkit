@@ -750,7 +750,7 @@ test('a budget refusal names a remedy the model actually has', () => {
   const mem = new Memory(join(fresh(), 'store'), frozen({ indexBudget: 10 }));
   assert.equal(
     mem.save('project', 'a', 'a long description', 'b'),
-    'error: memory index is 41 bytes, budget is 10: run compact() or tersen descriptions. ' +
+    'error: memory index is 41 bytes, budget is 10: compact the store or tersen descriptions. ' +
       'Nothing was saved and retrying will not help — shorten the description, or save ' +
       'under the name of an existing memory to replace it. Or call `memory_compact` to ' +
       'archive the stalest facts and free room — nothing is deleted.',

@@ -295,7 +295,7 @@ const FACTS_UNREADABLE =
 const ARCHIVE_UNREADABLE =
   'an archive that could not be listed is not an empty archive, and answering ' +
   "'nothing is archived' here is what makes compaction look like deletion — the " +
-  'facts compact() moved are still on disk under this path';
+  'facts that compaction moved are still on disk under this path';
 const ARCHIVE_UNREACHABLE =
   "an archived fact that could not be stat'd is not an archived fact that is not " +
   "there, and answering 'no archived fact' here sends the operator looking for a " +
@@ -1526,7 +1526,7 @@ export class MemoryStore {
     if (size > this.indexBudget) {
       throw new MemoryBudgetExceeded(
         `memory index is ${size} bytes, budget is ${this.indexBudget}: ` +
-          'run compact() or tersen descriptions',
+          'compact the store or tersen descriptions',
       );
     }
   }

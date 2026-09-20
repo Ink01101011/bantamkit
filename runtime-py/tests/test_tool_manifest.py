@@ -33,7 +33,7 @@ pytest.importorskip("mcp")
 from mcp import ClientSession  # noqa: E402
 from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: E402
 
-from bantamkit.assets import assets_root, load_tool  # noqa: E402
+from bantamkit.assets import assets_root, load_schema, load_tool  # noqa: E402
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -491,4 +491,51 @@ def test_the_advertised_surface_is_read_from_the_asset_pack_at_startup(tmp_path)
     assert sorted(order) == sorted(expected)
     assert not _surface_differences(expected, wire), "\n".join(
         _surface_differences(expected, wire)
+    )
+
+
+# ---------------------------------------------------------------------------
+# J60-F2: the sub-schemas `shiftwork_clock_out` SERVES are a second copy of what the checkpoint
+# schema ENFORCES at write time. Until job60 the served `inputSchema` said `status: string`,
+# `history_entry: {additionalProperties: true}` and `handoff_patch: {additionalProperties: true}`
+# while the writer refused `finished`, `{}` and any fifth handoff key — a host read one contract
+# and hit another (job59 rows 28/29/30). The served copy exists because both servers serve
+# `asset["parameters"]` verbatim and validate arguments from a signature, never from the asset;
+# so the asset is disclosure, the checkpoint schema is enforcement, and this node is what keeps
+# the two saying the same thing. The running-surface version of the same check is
+# `tools/conformance/suites/instructions.mjs` clause (b).
+
+
+def test_clock_out_serves_the_sub_schemas_the_checkpoint_writer_enforces():
+    served = _asset("shiftwork_clock_out")["parameters"]
+    writer = load_schema("shiftwork-checkpoint")["properties"]
+    props = served["properties"]
+
+    status = writer["plan"]["properties"]["units"]["items"]["properties"]["status"]
+    assert props["status"]["enum"] == status["enum"]
+
+    history_item = writer["history"]["items"]
+    assert sorted(props["history_entry"]["required"]) == sorted(history_item["required"])
+    assert props["history_entry"]["additionalProperties"] is history_item["additionalProperties"]
+
+    handoff = writer["handoff"]
+    assert props["handoff_patch"]["additionalProperties"] is False
+    assert handoff["additionalProperties"] is False
+    assert set(props["handoff_patch"]["properties"]) == set(handoff["properties"])
+    # A patch is a shallow merge: it may omit keys the whole document requires.
+    assert "required" not in props["handoff_patch"]
+
+    # The tool requires both objects, and the description says so in the same sentence that
+    # names `handoff_patch` — the row-56 disclosure — rather than leaving `required` to be
+    # discovered by a refused call.
+    assert {"handoff_patch", "history_entry"} <= set(served["required"])
+    description = _asset("shiftwork_clock_out")["description"]
+    assert "never refuses" not in description
+    assert any(
+        "handoff_patch" in sentence and "required" in sentence.lower()
+        for sentence in description.replace(";", ".").split(". ")
+    )
+    assert any(
+        "unit_id" in sentence and "cursor" in sentence
+        for sentence in description.replace(";", ".").split(". ")
     )
