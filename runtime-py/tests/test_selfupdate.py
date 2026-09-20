@@ -31,10 +31,38 @@ import pytest
 # `cli` suite exists to catch, and this one has its own four-row red-proof next door.
 from test_install_shape import _names_reached_by
 
-from bantamkit import selfupdate
+from bantamkit import selfupdate, updatecheck
 from bantamkit.selfupdate import Origin, UpdateRefused, compare_versions, update
 
 SRC = Path(selfupdate.__file__)
+
+
+@pytest.fixture(autouse=True)
+def record_home(tmp_path, monkeypatch):
+    """A home nobody lives in, for EVERY node in this file — including the ones that do not
+    look like they touch a path.
+
+    `update` now writes `<homedir>/.bantamkit/update-check.json` out of the answer it already
+    fetched, so a node that calls it with a substitute `fetch` and the operator's real HOME
+    would write the operator's real record — with a version number that came from a stub. That
+    is the shape of defect this fixture exists to make impossible, which is why it is `autouse`
+    rather than requested: a node added later gets the redirection without knowing to ask.
+
+    BOTH SEAMS ARE MOVED, because two different things resolve the home here. In-process code
+    goes through `updatecheck._home`; a subprocess this file spawns reads `HOME`/`USERPROFILE`
+    out of the environment it inherits. Moving one and not the other leaves half the file
+    pointed at the real machine.
+
+    THE `.bantamkit` DIRECTORY IS MADE, because the writer refuses to create one and a home
+    without it would make every write-arm below vacuously green. The nodes that assert the
+    refusal build their own bare home instead.
+    """
+    root = tmp_path / "record-home"
+    (root / ".bantamkit").mkdir(parents=True)
+    monkeypatch.setattr(updatecheck, "_home", lambda: root)
+    monkeypatch.setenv("HOME", str(root))
+    monkeypatch.setenv("USERPROFILE", str(root))
+    return root
 
 
 def _payload(version: str) -> str:
@@ -440,6 +468,7 @@ def test_a_timeout_is_not_swallowed_by_the_unreachable_arm():
 
 
 NETWORK_FREE = {
+    "record_update",
     "latest_from_index_payload",
     "upgrade_command",
     "run_installer",
@@ -451,6 +480,18 @@ NETWORK_FREE = {
 #: What the offline half of this module may touch. `fetch_index` is deliberately absent:
 #: it is the one function allowed to reach `urllib`, and it is checked separately below.
 ALLOWED = {
+    # The record writer's imports and the module it reaches for the path and the key. Every
+    # one of them is offline: `bantamkit.updatecheck` opens one file and asks nobody anything
+    # (its own source is gated against writing AND against the network next door), and
+    # `tempfile`/`os`/`datetime` are the temp-file-and-rename this writes through. Named here
+    # rather than exempted, so the gate still reddens on anything else that appears.
+    "bantamkit.updatecheck",
+    "datetime",
+    "os",
+    "tempfile",
+    "UTC",
+    "STAMP",
+    "record_update",
     "Callable",
     "DEFAULT_TIMEOUT_SECONDS",
     "DISTRIBUTION",
@@ -715,3 +756,218 @@ def test_update_is_in_the_generated_help_without_moving_the_pinned_first_line(mo
         "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]"
     )
     assert "  --update              check the package index and update this install if it" in text
+
+
+# --- the record this flag leaves behind -------------------------------------------------
+#
+# `--update` is the only thing in this toolbox that may reach the network, and it is
+# therefore the only thing that can know what the index holds. `bantamkit_status` prints a
+# line from a RECORD instead of asking anybody, so the number in that record has to come
+# from here. Every node below drives the flag through its existing `fetch` seam and then
+# reads the file: no second network call exists to be tested, which is the property.
+
+
+def _read_record(home: Path) -> dict:
+    return json.loads((home / ".bantamkit" / "update-check.json").read_text(encoding="utf-8"))
+
+
+def test_a_successful_fetch_writes_the_record_the_status_line_reads(record_home):
+    """The number in the file is the number the index answered, and it arrived by ONE fetch.
+
+    The fetch stub counts its calls, so a writer that re-asked the index for something it was
+    already holding fails here rather than costing an operator a second registry round trip.
+    """
+    fetch = _fetch("0.31.0")
+
+    update("0.30.0", REGISTRY, fetch=fetch, installer=_recording_installer())
+
+    assert len(fetch.calls) == 1, fetch.calls
+    assert _read_record(record_home)["pypi"] == {
+        "distribution": "bantamkit",
+        "latest": "0.31.0",
+    }
+
+
+def test_the_record_written_here_is_the_one_updatecheck_reads_back(record_home):
+    """The round trip, end to end: the writer's output is the reader's input.
+
+    Asserted through `update_line` rather than through the parsed dict, because a record that
+    parsed but whose shape the reader could not act on would print `could not be read` and
+    still pass a key-by-key comparison.
+    """
+    update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+
+    assert updatecheck.update_line("0.30.0") == (
+        "update: bantamkit-mcp 0.30.0 is running; the package index has 0.31.0 — run "
+        "`bantamkit-mcp --update`, then reconnect the host."
+    )
+    assert updatecheck.update_status("0.31.0").state == "current"
+
+
+def test_the_other_runtimes_key_is_left_exactly_as_it_was_found(record_home):
+    """npm and PyPI are two registries that can disagree, so neither side writes the other's.
+
+    job56 shipped a day where they did disagree — npm at a stale dist while PyPI was ahead —
+    which is why the record carries both and why a Python `--update` that helpfully filled in
+    `npm` would be publishing a number it never asked for.
+    """
+    (record_home / ".bantamkit" / "update-check.json").write_text(
+        json.dumps(
+            {
+                "checked_at": "2020-01-01T00:00:00Z",
+                "npm": {"package": "bantamkit-mcp", "latest": "0.29.0"},
+                "pypi": {"distribution": "bantamkit", "latest": "0.29.0"},
+                "a-key-nobody-here-owns": ["kept"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+
+    written = _read_record(record_home)
+    assert written["npm"] == {"package": "bantamkit-mcp", "latest": "0.29.0"}
+    assert written["a-key-nobody-here-owns"] == ["kept"]
+    assert written["pypi"]["latest"] == "0.31.0"
+    assert written["checked_at"] != "2020-01-01T00:00:00Z"
+
+
+def test_a_machine_with_no_bantamkit_directory_is_not_given_one(tmp_path, monkeypatch):
+    """`--update` succeeds and writes NOTHING. It does not decide where this toolbox lives.
+
+    `<homedir>/.bantamkit` is made by an install. A flag that created it would also be a flag
+    that could create one in the wrong place, and a `.bantamkit` under a cwd is a MEMORY
+    STORE — the J54-3 defect class. The cwd is checked too, for the same reason.
+    """
+    bare = tmp_path / "bare-home"
+    bare.mkdir()
+    workdir = tmp_path / "some-repo"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setattr(updatecheck, "_home", lambda: bare)
+
+    report = update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+
+    assert report.startswith("bantamkit-mcp 0.30.0 is installed; the package index has 0.31.0.")
+    assert "updated bantamkit-mcp from 0.30.0 to 0.31.0." in report
+    assert list(bare.iterdir()) == []
+    assert not (workdir / ".bantamkit").exists()
+    assert list(workdir.iterdir()) == []
+
+
+def test_a_write_that_cannot_land_does_not_turn_a_good_update_into_a_failure(record_home):
+    """The install already happened. A record that could not be written is not a reason to fail.
+
+    A DIRECTORY is put where the record goes, which is a shape `os.replace` refuses on every
+    platform. The worst case is asserted as well as the refusal: the status line falls back to
+    a state it already has a sentence for, rather than to an exception.
+    """
+    (record_home / ".bantamkit" / "update-check.json").mkdir()
+
+    report = update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+
+    assert "updated bantamkit-mcp from 0.30.0 to 0.31.0." in report
+    assert selfupdate.record_update("0.31.0") is False
+    assert updatecheck.update_line("0.30.0") == "update: the update record could not be read."
+
+
+def test_a_refused_shape_still_records_what_the_index_said(record_home):
+    """The fetch succeeded, so the number is true — whatever the flag then decides to do.
+
+    A checkout has no registry route and `--update` refuses it, but the operator is owed the
+    number: `bantamkit_status` can now tell them they are five releases behind, which is the
+    whole thing AS-7 asked for and the reason the write is not inside the success arm.
+    """
+    with pytest.raises(UpdateRefused):
+        update(
+            "0.30.0",
+            Origin("checkout", "/some/checkout"),
+            fetch=_fetch("0.31.0"),
+            installer=_installer_that_must_not_run,
+        )
+
+    assert _read_record(record_home)["pypi"]["latest"] == "0.31.0"
+
+
+def test_a_fetch_that_never_answered_writes_no_record(record_home):
+    """Nothing was learned, so nothing is recorded — and a stale record is not clobbered."""
+    (record_home / ".bantamkit" / "update-check.json").write_text(
+        json.dumps(
+            {
+                "checked_at": "2020-01-01T00:00:00Z",
+                "pypi": {"distribution": "bantamkit", "latest": "0.29.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def offline(url: str, timeout: float) -> str:
+        raise TimeoutError("timed out")
+
+    with pytest.raises(UpdateRefused):
+        update("0.30.0", REGISTRY, fetch=offline, installer=_installer_that_must_not_run)
+
+    assert _read_record(record_home) == {
+        "checked_at": "2020-01-01T00:00:00Z",
+        "pypi": {"distribution": "bantamkit", "latest": "0.29.0"},
+    }
+
+
+def test_an_unreadable_record_is_replaced_rather_than_merged_into(record_home):
+    """There is nothing in it to preserve, and leaving it would leave the line unreadable."""
+    (record_home / ".bantamkit" / "update-check.json").write_text(
+        "<html>captive portal</html>", encoding="utf-8"
+    )
+
+    update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+
+    assert _read_record(record_home)["pypi"]["latest"] == "0.31.0"
+    assert updatecheck.update_status("0.31.0").state == "current"
+
+
+def test_the_record_is_these_bytes(record_home):
+    """The written shape, pinned — so `runtime-ts` can be pinned to the same one.
+
+    The two runtimes write the SAME file, one key each, and a reader on either side has to be
+    able to read what the other wrote. That makes the serialization a contract and not an
+    implementation detail: two spaces of indent, a trailing newline, and no `ensure_ascii`
+    escaping, which is what `JSON.stringify(payload, null, 2)` produces on the other side.
+    """
+    assert selfupdate.record_update("0.31.0", now="2026-09-19T21:04:11Z") is True
+
+    assert (record_home / ".bantamkit" / "update-check.json").read_text(encoding="utf-8") == (
+        "{\n"
+        '  "checked_at": "2026-09-19T21:04:11Z",\n'
+        '  "pypi": {\n'
+        '    "distribution": "bantamkit",\n'
+        '    "latest": "0.31.0"\n'
+        "  }\n"
+        "}\n"
+    )
+
+
+def test_the_stamp_is_utc_and_shaped_the_way_the_reader_slices_it(record_home):
+    """`YYYY-MM-DDTHH:MM:SSZ` — not `+00:00`, which is what `isoformat()` would have given.
+
+    The reader slices the `YYYY-MM-DD` prefix and never renders a date, so what matters here
+    is that the prefix is there and that the suffix is the same shape the port produces.
+    """
+    import re
+
+    assert selfupdate.record_update("0.31.0") is True
+    written = _read_record(record_home)["checked_at"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", written), written
+    assert updatecheck.update_status("0.31.0").state == "current"
+
+
+def test_the_writer_leaves_no_temporary_file_behind(record_home):
+    """Temp-file-and-rename, and the temp file is gone either way.
+
+    A reader that saw half a record would print `could not be read` over a good update, so the
+    write is atomic; a writer that littered would fill `.bantamkit` with them.
+    """
+    for _ in range(3):
+        assert selfupdate.record_update("0.31.0") is True
+    assert sorted(p.name for p in (record_home / ".bantamkit").iterdir()) == [
+        "update-check.json"
+    ]

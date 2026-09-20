@@ -24,6 +24,20 @@ import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 
 import { badCentralDirectoryOffset, checkedInFixtures, corruptStream, docxBytes, inlineCell, para, row, xlsxBytes } from './docread-fixtures.mjs';
+import {
+  PROGRAM as UPDATE_PROGRAM,
+  STATES as UPDATE_STATES,
+  STATE_AHEAD,
+  STATE_AVAILABLE,
+  STATE_CURRENT,
+  STATE_NEVER,
+  STATE_UNREADABLE,
+  UPDATE_AHEAD,
+  UPDATE_AVAILABLE,
+  UPDATE_CURRENT,
+  UPDATE_NEVER,
+  UPDATE_UNREADABLE,
+} from '../dist/updatecheck.js';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(packageRoot);
@@ -1235,7 +1249,7 @@ async function statusSession(requests, budget) {
   return { lines, stderr, code, store };
 }
 
-test('a healthy server reports Active, and the report is the five lines docs/status.md fixes', async () => {
+test('a healthy server reports Active, and the report is the six lines docs/status.md fixes', async () => {
   const { size: INDEX_BYTES, healthy: HEALTHY_BUDGET } = await indexFacts();
   const { lines, stderr, store } = await statusSession(
     [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
@@ -1244,16 +1258,92 @@ test('a healthy server reports Active, and the report is the five lines docs/sta
   assert.equal(statSync(join(store, 'index.md')).size, INDEX_BYTES, 'two sessions wrote different indexes');
   const report = byId(lines, 3).result.structuredContent.result;
   const rows = report.split('\n');
-  assert.equal(rows.length, 5, report);
+  assert.equal(rows.length, 6, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
   assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
   assert.equal(rows[4], 'event log: off');
+  // Line 6, and it is NOT a condition: `session()` puts HOME at a scratch directory with no
+  // record in it, so the server says it has never been checked and is still `Active 🟢`.
+  assert.equal(rows[5], UPDATE_NEVER);
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
   // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
   assert.equal(byId(lines, 3).result.content[0].text, report);
   assert.equal(stderr, '');
+});
+
+/**
+ * The update record, written by hand into a home nobody lives in.
+ *
+ * Both installs on this machine are at the same version, so there is no naturally stale one to
+ * point at and a node that waited for one would be a node that passes on a Tuesday. `99.0.0`
+ * and `0.0.1` are used rather than a number next to the running one so this keeps working
+ * after a release bumps the version out from under it.
+ */
+function seedUpdateRecord(latest, checkedAt = '2026-09-19T21:04:11Z') {
+  const home = join(scratch, `updatehome${(homeSeq += 1)}`);
+  mkdirSync(join(home, '.bantamkit'), { recursive: true });
+  if (latest !== null) {
+    writeFileSync(
+      join(home, '.bantamkit', 'update-check.json'),
+      typeof latest === 'string' && !latest.startsWith('{')
+        ? JSON.stringify({
+            checked_at: checkedAt,
+            npm: { package: 'bantamkit-mcp', latest },
+            pypi: { distribution: 'bantamkit', latest },
+          })
+        : latest,
+      'utf8',
+    );
+  }
+  return home;
+}
+let homeSeq = 0;
+
+test('the report carries the update line in every one of the five states, and none of them is a condition', async () => {
+  const { healthy: HEALTHY_BUDGET } = await indexFacts();
+  // The running version is read off line 2 of the report rather than off package.json, because
+  // the line under test claims something ABOUT the number line 2 carries.
+  const first = await statusSession([INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})], HEALTHY_BUDGET);
+  const installed = /^version (\S+),/.exec(byId(first.lines, 3).result.structuredContent.result.split('\n')[1])[1];
+
+  const arms = {
+    [STATE_NEVER]: [seedUpdateRecord(null), UPDATE_NEVER],
+    [STATE_AVAILABLE]: [
+      seedUpdateRecord('99.0.0'),
+      UPDATE_AVAILABLE.replace(/\{program\}/g, UPDATE_PROGRAM).replace('{installed}', installed).replace('{latest}', '99.0.0'),
+    ],
+    [STATE_CURRENT]: [
+      seedUpdateRecord(installed),
+      UPDATE_CURRENT.replace('{program}', UPDATE_PROGRAM).replace('{installed}', installed).replace('{date}', '2026-09-19'),
+    ],
+    [STATE_AHEAD]: [
+      seedUpdateRecord('0.0.1'),
+      UPDATE_AHEAD.replace('{program}', UPDATE_PROGRAM).replace('{installed}', installed).replace('{latest}', '0.0.1'),
+    ],
+    [STATE_UNREADABLE]: [seedUpdateRecord('<html>captive portal</html>'), UPDATE_UNREADABLE],
+  };
+  assert.deepEqual(Object.keys(arms).sort(), [...UPDATE_STATES].sort(), 'a state exists that this node does not drive');
+
+  for (const [state, [home, expected]] of Object.entries(arms)) {
+    const { lines, stderr } = await session(
+      [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {}), call(4, 'validate_json', { output: '{}', schema: { type: 'object' } })],
+      { args: ['--store', freshStore(), '--index-budget', String(HEALTHY_BUDGET)], env: { HOME: home, USERPROFILE: home } },
+    );
+    const report = byId(lines, 3).result.structuredContent.result;
+    const rows = report.split('\n');
+    assert.equal(rows[5], expected, `${state}: ${report}`);
+    // THE LINE IS NOT A CONDITION, IN EVERY STATE. This is the half that makes the node worth
+    // running: a stale install is not a fault, so line 1 stays Active, the report grows no
+    // `problems:` block, and no OTHER tool's reply carries a footer about it.
+    assert.equal(rows[0], REPORT_LINE_1_ACTIVE, state);
+    assert.equal(rows.length, 6, `${state}: ${report}`);
+    assert.ok(!report.includes(FOOTER_HEAD), state);
+    const other = byId(lines, 4).result;
+    assert.ok(!JSON.stringify(other).includes('bantamkit_degraded'), `${state}: a footer rode an unrelated reply`);
+    assert.equal(stderr, '', state);
+  }
 });
 
 test('the same store one byte of budget tighter reports Degraded, and names the condition', async () => {
@@ -1266,13 +1356,16 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
   const rows = report.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${DEGRADED_BUDGET} bytes`);
-  assert.equal(rows[5], '1 problem:');
+  // The update line sits between `event log:` and the problem block in EVERY state, degraded
+  // included — it is not a problem, so it does not join the list of them.
+  assert.equal(rows[5], UPDATE_NEVER);
+  assert.equal(rows[6], '1 problem:');
   assert.equal(
-    rows[6],
+    rows[7],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
-  assert.equal(rows.length, 7);
+  assert.equal(rows.length, 8);
   /**
    * THE REMEDY NAMES A COMMAND THIS INSTALL ACTUALLY PROVIDES, from outside the server.
    *
@@ -1288,7 +1381,7 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
    */
   const bins = Object.keys(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).bin);
   assert.ok(bins.includes('bantamkit-memory'), `package.json ships no bantamkit-memory bin: ${bins}`);
-  assert.match(rows[6], /`bantamkit-memory compact`/);
+  assert.match(rows[7], /`bantamkit-memory compact`/);
   assert.ok(
     !report.includes('python -m bantamkit.memory'),
     `the degraded report names a command a pure-npm install cannot run:\n${report}`,
@@ -1409,9 +1502,10 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
   const report = byId(lines, 2).result.structuredContent.result;
   const rows = report.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
-  assert.equal(rows[5], '1 problem:');
+  assert.equal(rows[5], UPDATE_NEVER);
+  assert.equal(rows[6], '1 problem:');
   assert.equal(
-    rows[6],
+    rows[7],
     '- 1 memory layer could not be read (1 kind: extra), so an empty recall is not evidence that ' +
       'nothing is saved — check that those store directories exist and are readable.',
   );
@@ -1666,19 +1760,20 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
 
   const rows = byId(lines, 3).result.structuredContent.result.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
-  assert.equal(rows[5], '2 problems:');
+  assert.equal(rows[5], UPDATE_NEVER);
+  assert.equal(rows[6], '2 problems:');
   assert.equal(
-    rows[6],
+    rows[7],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
   assert.equal(
-    rows[7],
+    rows[8],
     `- this server was installed from ${gone}, which no longer exists, so nothing can be ` +
       'refreshed in place there — reinstall bantamkit by name from a package registry and ' +
       'restart the server.',
   );
-  assert.equal(rows.length, 8);
+  assert.equal(rows.length, 9);
 
   // The footer shows the FIRST condition, which is still the index one — so the count moved
   // and the sentence did not. That pair is what would break if the order were changed by hand.

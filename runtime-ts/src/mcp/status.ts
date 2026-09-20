@@ -37,6 +37,7 @@ import type { EventLog } from '../eventlog.js';
 import { Memory } from '../memory/component.js';
 import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
 import type { MemoryStore } from '../memory/store.js';
+import { updateLine } from '../updatecheck.js';
 import { Undetermined, currentInstall, originStat } from './identity.js';
 import type { Install } from './identity.js';
 
@@ -463,6 +464,19 @@ export function statusReport(
       (size === null ? 'unreadable' : String(size)) +
       ` of ${budget} bytes`,
     `event log: ${log.enabled ? 'on' : 'off'}`,
+    // THE UPDATE LINE IS NOT A CONDITION, and that is the ruling of 2026-09-19 rather than an
+    // omission. A newer version existing is not a fault: the server is serving correctly, and
+    // this file's own header carries the operator's reason — a footer on every result is
+    // noise, noise trains the reader to stop reading. So this never flips line 1, never enters
+    // `degradedConditions`, and never rides another tool's reply. It also means the record is
+    // opened ONLY here, when someone asked for a report, and not on the per-call path whose
+    // cost `docs/status.md` documents.
+    //
+    // `updatecheck` opens one file and asks nobody anything. It is imported instead of
+    // `selfupdate.js` deliberately: `test/selfupdate.test.mjs` pins that `cli.ts` is the ONLY
+    // module in `src/` reaching the one `fetch` in this runtime, and this file is on a path a
+    // host reaches. The version is the one line 2 already printed.
+    updateLine(identity.get('version') as string),
   ];
   if (conditions.length > 0) {
     lines.push(`${plural(conditions.length, 'problem')}:`);

@@ -38,34 +38,40 @@ surface rather than an addition to an existing list.
 
 ## The report
 
-Exactly five lines when healthy, `\n`-joined, no trailing newline:
+Exactly six lines when healthy, `\n`-joined, no trailing newline:
 
-*(Captured from a live run at `0.32.1`, the version current when J50-16A regenerated this
-sample. The schema below is unchanged by the 0.33.0 release that follows it — only the
-version and build-digest bytes on line 2 would differ in a fresh capture — so the sample is
-left as a dated transcript rather than hand-edited to a number nobody ran. **Line 3 is the
-exception and is re-captured, not hand-edited**: the tool count is a live claim this repo
-gates (`runtime-py/tests/test_served_tool_count_records.py`), so it tracks the surface
-rather than the capture date. Its current value is the one
+*(Captured from a live run at `0.35.1` — both runtimes, over stdio, `tools/call
+bantamkit_status` — when J57-5 regenerated this sample for the line the report gained in
+J57-3. The two captures are byte-identical except the `build` digest on line 2, which
+[porting.md](porting.md) already rules divergent. **Line 3 is re-captured and never
+hand-edited**: the tool count is a live claim this repo gates
+(`runtime-py/tests/test_served_tool_count_records.py`), so it tracks the surface rather than
+the capture date. Its current value is the one
 `test_the_status_tool_is_served_and_answers_active_on_a_healthy_server` asserts against a
-real server, and a marker would only hide it from the gate.)*
+real server, and a marker would only hide it from the gate. **Line 6 is a real reading of
+this machine's own record**, which is why it says `current` and names a date: it is one of
+five sentences, and which one you see depends on what the record last held —
+`update: never checked.` on a machine that has none, which is what the degraded sample
+below shows.)*
 
 ```
 bantamkit Active 🟢
-version 0.32.1, build sha256:bcf716f32e0b461383a30ed1539843f309b1eb00621f1d4d663440c605d3d685
+version 0.35.1, build sha256:29cdf998317a9675b58dd37c23b889cbf6b21cd8322b814367d4388e7da1c5cd
 serving 14 tools, 1 prompt, 2 resource templates
-memory: 57 facts in the project store, index 12258 of 24000 bytes
+memory: 66 facts in the project store, index 14594 of 24000 bytes
 event log: off
+update: bantamkit-mcp 0.35.1 is current as of 2026-09-19.
 ```
 
 When something is wrong, line 1 changes and a block is appended:
 
 ```
 bantamkit Degraded 🟠
-version 0.32.1, build sha256:bcf7…
+version 0.35.1, build sha256:29cd…
 serving 14 tools, 1 prompt, 2 resource templates
 memory: 12 facts in the project store, index 23900 of 24000 bytes
 event log: on
+update: never checked.
 2 problems:
 - <condition sentence>
 - <condition sentence>
@@ -83,13 +89,64 @@ Field by field:
 | 4 `index` | `stat(<store>/index.md).st_size` | `0` when the file is absent, the literal `unreadable` on any other `OSError` |
 | 4 `budget` | `store.index_budget` | |
 | 5 | `log.enabled` | `on` / `off` |
+| 6 | `updatecheck.update_line(version)` | one of **five** sentences, read off `<homedir>/.bantamkit/update-check.json`. Never absent — there is no silent state. See below. |
 | problems | one `- ` line per condition, worst first | |
+
+### Line 6 — the update line (J57-3, 2026-09-19)
+
+One of exactly five sentences, byte-identical across the runtimes, named constants in
+`updatecheck.py` / `updatecheck.ts` and gated by
+[`tools/conformance/suites/updatecheck.mjs`](../tools/conformance/suites/updatecheck.mjs):
+
+| state | the sentence |
+|---|---|
+| `never` | `update: never checked.` |
+| `available` | ``update: {program} {installed} is running; the package index has {latest} — run `{program} --update`, then reconnect the host.`` |
+| `current` | `update: {program} {installed} is current as of {date}.` |
+| `ahead` | `update: {program} {installed} is ahead of the package index, which has {latest}.` |
+| `unreadable` | `update: the update record could not be read.` |
+
+`{program}` is the **command**, `bantamkit-mcp` — never a package name, because the PyPI
+distribution is `bantamkit` and the npm package is `bantamkit-mcp`, and a sentence naming
+either could not be identical on both sides. `{date}` is the `YYYY-MM-DD` **prefix** of the
+record's `checked_at`, sliced rather than rendered, so a machine set to another locale does
+not make the two runtimes disagree.
+
+**Nothing on this path reaches the network, and nothing here has a TTL.** The line is
+decided from one file, opened once, inside `status_report`. A writer outside both runtimes
+puts the number there — the SessionStart hook's detached probe ([hooks.md](hooks.md)) and
+`--update` out of the answer it already fetched. The comparison is between the version that
+is *running* and the version the record last saw, so an old record cannot manufacture a
+false "you are stale": if the operator updated since, running ≥ recorded and the line goes
+quiet by itself.
+
+**A read creates nothing** — not the file, not the `.bantamkit` directory around it — and
+the path resolves against the home directory and never a cwd, because a cwd-relative
+`.bantamkit` is a memory store (J54-3). Both halves are pinned by the conformance suite,
+per side.
+
+**Which registry the record is read from is the one deliberate difference**, and it costs a
+row in [porting.md](porting.md#where-the-two-runtimes-deliberately-differ): the reference
+reads `pypi`, the port reads `npm`. Everything else about the line — all five states, every
+malformed shape, and the sentences themselves — is compared unruled under *both* keys.
+
+**This is NOT a condition, and that is a ruling.** See below.
 
 **`build` is ruled divergent.** It is a fingerprint of the executing tree and the two
 runtimes are two trees — [porting.md](porting.md)'s divergence table already says exactly
 this about `build_id`, and `assets_digest` is the field that is identical. Every other line
 of the **healthy** report is byte-identical across the runtimes, so `status-active` compares
 it with line 2's digest masked, the same way the `identity` wire session is ruled.
+
+**Line 6 carries one condition on that sentence, and it is stated rather than assumed.** The
+two runtimes read two different keys of one record (the divergence row), so line 6 is
+byte-identical exactly when the record's `npm` and `pypi` entries agree about `latest` —
+which is every ordinary day, and was not true on the day job56 shipped. The `status-active`
+and `status-degraded` wire sessions run with `HOME` inside harness scratch and no record at
+all, so both sides print `update: never checked.` and the byte comparison is honest about
+what it is comparing. The five states, the sentences and every malformed shape are compared
+under *both* keys by [`updatecheck`](../tools/conformance/suites/updatecheck.mjs), which is
+where that surface is actually gated.
 
 **The degraded report carries a second ruled difference, and it is not a second mask.** The
 `index-budget-low` sentence — in the problem list, and in the footer when it is the worst
@@ -216,6 +273,31 @@ origin path names the gap as `{"unavailable": <reason>}` rather than dropping th
 sides — mutation-checked: folding it in reddens a test in each runtime. Four of these
 answers differ between the runtimes by ecosystem and each difference costs a row in
 [porting.md](porting.md#where-the-two-runtimes-deliberately-differ).
+
+### Amendment, 2026-09-19 — the update line is NOT a sixth condition (J57-3)
+
+**There are still five conditions.** A newer version existing on a package index is not a
+fault: the server is serving correctly, and what is true is only that a newer one exists.
+So line 6 never flips line 1, never enters `degraded_conditions()`, never appears in the
+problem list, and **never rides the footer on another tool's result** — the footer rule at
+the top of this file is the reason, in the operator's own words: *a footer on every result
+is noise, and noise trains the reader to skip it.* A line that would appear on every call
+for months, asking for an action the reader has already decided not to take yet, is exactly
+that.
+
+**The per-call cost of `degraded_conditions` is UNCHANGED, and that promise is the reason
+this is not a condition.** The cost line above — one `stat` for the index, one `is_dir` for
+the pack, one `scandir` per bound layer, one field read for the log, and (since AS-7a) one
+`stat` for the install origin — still describes every syscall that function makes. **Not
+one byte of the update record is opened on that path.** The record is read in
+`status_report` only, when somebody asked for a report, which is once per `bantamkit_status`
+call and never on the footer path that every *other* tool pays for. Had this been a
+condition, the number in that list would have gone up by one `open` on every tool call in
+every session — the cost the ruling was made to avoid.
+
+Both halves are structural rather than promised: `updatecheck` is imported by
+`status_report` and by nothing on the conditions path in either runtime, and the suite that
+compares the two runtimes drives `decide()` directly, with no `Condition` anywhere in it.
 
 ### What the index condition does not promise
 

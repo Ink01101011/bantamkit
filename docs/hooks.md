@@ -23,7 +23,7 @@ when it wants more.
 
 | Event | Matcher | Action | Cost (measured) |
 |---|---|---|---|
-| `SessionStart` | `startup\|resume\|clear\|compact` | Injects the **profile** index (cross-project lessons) and, when the cwd has no native `MEMORY.md`, the project index. On `compact` it resets the read ledger. **Which project store (J50-1, 2026-09-12):** the one the `bantamkit` registration that wins for this cwd pins with `env.BANTAMKIT_MEMORY_DIR`, read off the whole winning entry by the same `local > project > user` walk the `PostToolUse` row describes for `--index-budget`; with no pin on that entry, the walk from cwd. Until this the hook never saw a registration's `env` — the host hands it to the server's process only — so a pinned registration had the server saving into one store and this row injecting from another. The log line carries `storeScope` (`local`/`project`/`user`, or `null` for the walk). A pin the server would refuse (`docs/memory.md`, "Pinning the store") is refused here through the same code and logged as `warn`, never downgraded to the walk. **The header counts what ARRIVED (J50-2E, 2026-09-12):** each block's header number is the number of fact lines in that block — `15 of 20 facts` when the 3,000-byte cap dropped some, a bare `20 facts` when it dropped none — a drop adds one disclosure line to the block, the log names the dropped facts and the rule, and the rule is no longer the alphabet. See "The session header counts what arrived" below. | 3658 B once per session on this machine's 20-fact profile store (was 3353 B before the disclosure line: 2981 B of fact lines under the 3000 B cap, plus header and the one 298 B disclosure line), 12 ms |
+| `SessionStart` | `startup\|resume\|clear\|compact` | Injects the **profile** index (cross-project lessons) and, when the cwd has no native `MEMORY.md`, the project index. On `compact` it resets the read ledger. **Which project store (J50-1, 2026-09-12):** the one the `bantamkit` registration that wins for this cwd pins with `env.BANTAMKIT_MEMORY_DIR`, read off the whole winning entry by the same `local > project > user` walk the `PostToolUse` row describes for `--index-budget`; with no pin on that entry, the walk from cwd. Until this the hook never saw a registration's `env` — the host hands it to the server's process only — so a pinned registration had the server saving into one store and this row injecting from another. The log line carries `storeScope` (`local`/`project`/`user`, or `null` for the walk). A pin the server would refuse (`docs/memory.md`, "Pinning the store") is refused here through the same code and logged as `warn`, never downgraded to the walk. **The header counts what ARRIVED (J50-2E, 2026-09-12):** each block's header number is the number of fact lines in that block — `15 of 20 facts` when the 3,000-byte cap dropped some, a bare `20 facts` when it dropped none — a drop adds one disclosure line to the block, the log names the dropped facts and the rule, and the rule is no longer the alphabet. See "The session header counts what arrived" below. **And, since J57-4 (2026-09-19), ONE more line — only when the kept install is behind the package index: see "The stale-install signal" below. It is decided from a file, never from a registry, and the detached probe that keeps that file fresh runs at most once per 24 h.** | 3658 B once per session on this machine's 20-fact profile store (was 3353 B before the disclosure line: 2981 B of fact lines under the 3000 B cap, plus header and the one 298 B disclosure line), 12 ms |
 | `UserPromptSubmit` | — | Layered `recall(prompt, 3)`; injects only the **header line** of each hit (`[layer] [name] (type) description`) and tells the model the name to pass to `memory_recall` for the body. Skips prompts < 12 chars and `/commands`. The project layer is bound the way the `SessionStart` row says: the winning registration's `env.BANTAMKIT_MEMORY_DIR` when it names one, else the walk (J50-1). | ≤700 B per prompt, 10–16 ms |
 | `PreToolUse` | `Read` | The filegraph over the operator's own reads. Key = transcript + path + offset + limit; signature = mtime + size. A repeat of an unchanged read is **refused once** with a reason; the next identical call goes through, so nothing can be hard-blocked. A subagent has its own transcript and is never refused for the parent's read. Registered follow-up 2026-08-28, not fixed: the matcher is `Read`, so a document read through `mcp__bantamkit__bantamkit_read` is neither ledgered nor refused on repeat, and `PreCompact` steering (below) cannot name the files it read. **WIDENED 2026-09-06 (job44, unit U11), and it is worse than the follow-up says.** The matcher is `Read` and AUTO MODE READS THROUGH `Bash`, so what this ledger misses is not just `bantamkit_read` but the ordinary reading an agent does — and the `PreCompact` steering built on it names files the compacted context never read through this path. Measured over 45 compaction boundaries: 41.2 % of the 5,212 post-boundary reads are re-reads; rejected-steering 42.1 % against no-hook 41.7 %, which is indistinguishable; and at the 3 boundaries where steering was actually delivered, 0 of 22 re-reads were of a file it named. Post-2026-08-27 there are ZERO post-boundary `Read` calls at all, which is why a `Read`-only counter would have reported a fall to 0 % rather than the defect. Registered in `docs/roadmap-toolbox.md` row 9 and NOT fixed there: widening the matcher changes what this hook ledgers on every tool call, which is its own budget question. `docs/eval-data/2026-09-06-job44-measurements.md`. | 1–2 ms per Read |
 | `PostToolUse` | `mcp__bantamkit__memory_save` | Marks the session as "saved"; if the index is ≥ 90 % of budget, runs `bantamkit-memory compact --budget <budget> --reserve <20 % of budget>`, which aims at 80 % (**AMENDED 2026-09-10, job46:** this cell used to read `--budget 80 %`, past the 90–99.2 % no-op band job40/C6 measured. That band is closed — `docs/porting.md` item 7 — and naming a fake budget began compounding with the new floor: 15 facts archived per fire became 23 on this machine's own store. The 80 % aim stays as hysteresis; it is now asked for as a reserve, so `compact`'s target is `budget - reserve` exactly) and reports what was archived. This is the automatic half; when a save is actually **refused** for budget, the reply names the `memory_compact` MCP tool and the model compacts on its own (`docs/memory.md`). **Fixed 2026-09-06 (job44):** this arm used to always measure the 90 % band against the DEFAULT budget, so a real `--index-budget N` was measured against the wrong denominator and only the tool's half applied. A running server never writes its budget to disk (`MemoryStore.indexBudget` is process-memory-only), so the hook now reads `--index-budget` from the same three scopes `tools/mcpdrift/mcpdrift.py`'s `discover()` reads for the `bantamkit` registration — user (`~/.claude.json` `.mcpServers`), local (that file's `.projects[<cwd>].mcpServers`), project (`<cwd>/.mcp.json`). None configuring it is the honest default; more than one configuring a *different* value is a real drift this process cannot resolve, so it logs `skip-ambiguous-budget` and refuses to compact that cycle rather than guess against a denominator it knows may be wrong. Not covered: other MCP hosts (this hook only runs under Claude Code), enterprise-managed settings, and a server launched by hand outside all three files. **AMENDED the same day (job44, unit F4): the sentence above about `skip-ambiguous-budget` describes behaviour that has been REMOVED, and it was wrong when written.** Claude Code does not treat two scopes naming different values as a drift — it resolves them by PRECEDENCE, `local > project > user`, connecting once to the highest-precedence definition and never merging fields across scopes (https://code.claude.com/docs/en/mcp, "MCP installation scopes", read 2026-09-06). So the refusal fired on the ordinary case of a project override beside a user default, and auto-compaction silently stopped for that project. The hook now follows that precedence over the WHOLE ENTRY — the highest scope that registers `bantamkit` at all supplies the args, so a winning entry with no `--index-budget` means the default even when a lower scope names a number — and the ambiguity branch is gone rather than narrowed, because precedence leaves no ambiguous case for it to catch. The log line now carries `budgetScope`. `docs/roadmap-toolbox.md` (bb) and the `(aa)` residual there carry the rest. | 12 ms |
@@ -245,6 +245,60 @@ tokenizer is exported from `dist/memory/store.js`, and `name`/`description` are 
 roadmap #6 lives entirely in this operator-tooling layer.
 
 `node tools/ledger/injection-precision.mjs` is the consumer — see `docs/ledger.md`.
+
+## The stale-install signal (J57-4, 2026-09-19)
+
+One line at `SessionStart`, and **only in one of the five states** (wrapped here; it is one
+line):
+
+    [bantamkit] bantamkit-mcp 0.35.1 at /Users/…/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json
+    is running; the package index has 0.36.0 — run `bantamkit-mcp --update`, then reconnect the host.
+
+**Nothing on the session's path reaches the network.** The line is decided from one file,
+`~/.bantamkit/update-check.json`, through the Node runtime's own `updatecheck` module —
+imported, never respelled, so the record path, the record key and the five-state decision
+have one definition and the hook has no comparator of its own. Measured 2026-09-19: one
+registry GET is 0.14–0.46 s on a good network and 10.0 s on a captive one, against a 0.09 s
+cold server boot, so a fetch on this path would be 1.5×–100× the whole server start, at the
+top of every session, for a fact that is not urgent.
+
+**The writer is a grandchild nobody waits for.** `tools/hooks/update-probe.mjs` asks both
+registries (npm *and* PyPI — it is the only thing in the repo that asks both, because each
+runtime knows only its own) and writes the answer through a temp file and a rename. The hook
+forks it with `detached: true`, `stdio: 'ignore'`, and `.unref()`, then returns; **each third
+of that is load-bearing** — `detached` keeps the host from reaping it, `stdio: 'ignore'` means
+nothing it prints can reach the user's screen or hold a pipe open, `unref()` lets this process
+exit while the child runs. Take any one away and SessionStart waits on a registry. The answer
+lands for the *next* session; the probe is silent always, creates no directory, and on any
+failure leaves the previous record exactly as it found it.
+
+**The 24 h TTL lives in the hook and nowhere else.** It is decided from the `checked_at` of
+the record the hook has *already* loaded for its own line — one read, one decision — and a
+record that cannot say when it was written is treated as **due**, not as fresh. Neither
+runtime's reader has a TTL, deliberately ([status.md](status.md)): the comparison is between
+the version that is running and the version the record last saw, so an old record cannot
+manufacture a false "you are stale". Freshness is the writer's problem, and this is the
+writer's side of the fence.
+
+**The sentence is not the status tool's.** `bantamkit_status`'s line is prefixed `update:`
+and names no path, because a caller of that tool already knows which endpoint answered it.
+This hook does not — the host may talk to any registered endpoint — so this line names the
+install it **actually compared**, `~/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json`,
+the kept install `--install` makes. No kept install means no line: there is nothing there to
+be stale. The line is capped at 500 bytes, like everything else this file injects, and it is
+appended **last**, after the toolbox line, because it is the one part of the block that asks
+for an action. "then reconnect the host" is measured reason 1 in `selfupdate.py`: a running
+server keeps serving the code it loaded at startup, so an updated install does nothing for
+*this* session.
+
+The `SessionStart` log record gains three fields, so every claim here is a number to rerun
+rather than a sentence:
+
+| field | meaning |
+|---|---|
+| `updateState` | one of `never` / `available` / `current` / `ahead` / `unreadable`, or `null` when there is no kept install to compare |
+| `updateProbe` | `spawned` / `fresh` / `unbuilt` / `missing` / `failed` / `error` |
+| `updateBytes` | bytes of line that reached the block — `0` in the four quiet states |
 
 ## The three properties (same as `docs/statusline.md`)
 
