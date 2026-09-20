@@ -186,7 +186,12 @@ const TIMESTAMPS = [
  * step. `handoff_patch`, `history_entry` and `accounting` travel as JSON TEXT so that each
  * runtime's own decoder builds them — which is the route that keeps `5.0` a float.
  */
-const IN = () => ({ fn: 'clock_in' });
+/**
+ * `IN()` is the cursor unit — the whole contract before job60, unchanged. `IN('N2')` names a
+ * unit and is the D1 argument: both sides receive it in the same positional slot, so a case
+ * that asks for a specific unit is one field on the shared call list and not two code paths.
+ */
+const IN = (unitId = null) => ({ fn: 'clock_in', unit_id: unitId });
 /** The note the F8 sessions write, read back per side below — so it is one literal, not two. */
 const HANDOFF_NOTE = 'gate baseline at plan time — 3989 cases, 0 failures; เป้าหมาย: parity';
 const ST = () => ({ fn: 'status' });
@@ -532,6 +537,15 @@ function sessions(packDir, anyPackDir, brokenPacks) {
   // thing the ledger can differ by is this feature.
   for (const [name, doc, calls] of briefedSessions()) cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls });
 
+  // ------------------------------------------- job60 (J60-4): `clock_in(unit_id)`, D2 and D3
+  //
+  // Nothing above reaches this either, and for a reason worth stating: every checkpoint in this
+  // file declares its units in dependency order, so `plan.cursor` and `ready[0]` agree in all of
+  // them and the new argument can only be handed the unit the old code would have picked. A
+  // feature that is unobservable on the whole existing corpus needs its own documents — see
+  // `unitIdSessions`.
+  for (const [name, doc, calls] of unitIdSessions()) cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls });
+
   return cases;
 }
 
@@ -585,6 +599,97 @@ function briefedSessions() {
 
 /** A line the shipped shape accepts: the two required keys, the model, and the cache figure. */
 const CONFORMING = b64('{"tokens": 110623, "duration_ms": 745045, "model": "claude-sonnet-5", "cache_read_tokens": 9876543}');
+
+/** One unit of a `plan.units` list, spelled once so a graph below is only its ids and edges. */
+const unit = (id, dependsOn, over = {}) => ({
+  id,
+  title: `unit ${id} — with a dash`,
+  brief_path: `briefs/${id}.md`,
+  status: 'todo',
+  role: 'implementer',
+  depends_on: dependsOn,
+  verify: 'npm test',
+  ...over,
+});
+
+/**
+ * job60 shape 2: `[A, C(depends_on B), B]` — plan order and graph order are DIFFERENT orders.
+ *
+ * The whole point of this document is that no other one in this file has it. Every checkpoint
+ * above declares its units in an order the graph agrees with, so `plan.cursor` and the batch
+ * view's `ready[0]` name the same unit in all of them and no case could ever have compared the
+ * two fields. Here they come apart: with `A` satisfied the only runnable unit is `B`, while the
+ * pointer a pre-job60 `clock_out` advanced in `plan.units` order lands on `C`, whose dependency
+ * has not run.
+ */
+const shape2 = (cursor, aStatus) => baseDocument({
+  plan: {
+    cursor,
+    units: [
+      unit('A', [], { status: aStatus }),
+      unit('C', ['B'], { role: 'reviewer' }),
+      unit('B', []),
+    ],
+  },
+});
+
+/** job60 shape 1: two independent units and one that joins them — a ready batch of WIDTH 2. */
+const waveDocument = () => baseDocument({
+  plan: {
+    cursor: 'N1',
+    units: [unit('N1', []), unit('N2', [], { role: 'reviewer' }), unit('N3', ['N1', 'N2'], { role: 'planner' })],
+  },
+});
+
+/**
+ * `[name, checkpoint, calls]` triples for job60 — `clock_in(unit_id)`, D2 and D3.
+ *
+ * WHY THESE DOCUMENTS AND NOT THE ONES ABOVE. `baseDocument()` and the shipped codefix
+ * template are both LINEAR chains whose units are declared in dependency order, so on either
+ * of them `plan.cursor == ready[0]` at every step and `clock_in(unit_id)` can only ever be
+ * handed the unit `clock_in()` would have picked anyway. That is precisely the corpus gap the
+ * spec names: the feature is unobservable on every checkpoint this suite already carried, so
+ * it needs documents whose two orders disagree. The template is still driven below — as the
+ * case that must NOT move.
+ */
+function unitIdSessions() {
+  const LATER = { now: 1755930061 };
+  const N2OUT = (over = {}) => OUT('N2', 'done', { history_entry: b64('{"unit": "N2", "outcome": "done"}'), ...over });
+  return [
+    // ---- 1a. THE CASE WHOSE ABSENCE HID THE BUG. The pointer is already on `C` — the state a
+    // pre-job60 `clock_out A` left on disk — and the graph says `B`. Both surfaces are asked,
+    // against the same bytes at the same instant: `clock_in()` hands out `C`'s brief exactly as
+    // it always did, and `clock_in('C')` refuses it by name. Then `B`, the unit that is ready,
+    // and finally `status`, because D1 says a wave of briefs never moves the cursor.
+    ['unit-id/cursor-disagrees-with-ready', b64(raw(shape2('C', 'done'))), [IN(), IN('C'), IN('B'), ST()]],
+    // ---- 1b. and the repair, on the SAME graph driven from the top: D3 advances to `ready[0]`,
+    // so the pointer lands on `B` and not on the `C` that plan order would have chosen.
+    ['unit-id/advance-follows-the-graph', b64(raw(shape2('A', 'todo'))), [OUT('A', 'done'), ST(), IN()]],
+
+    // ---- 2. A WAVE. Width 2, both briefed against one cursor, and `N2` clocked out FIRST —
+    // which is the move D2 exists for and which the pre-job60 runtime refused. Then the cursor
+    // value after each, and the brief for `N3` once both its dependencies are satisfied.
+    ['unit-id/wave', b64(raw(waveDocument())), [IN(), IN('N2'), N2OUT(), OUT('N1', 'done', LATER), ST(), IN()]],
+
+    // ---- 3. the not-ready refusal: a unit whose dependencies have not run, and — the limiting
+    // case of the same property, not a second sentence — a `unit_id` that names no unit at all.
+    // `status` last, because a refusal writes nothing and the pointer must still be `N1`.
+    ['unit-id/not-ready-refusal', b64(raw(waveDocument())), [IN('N3'), IN('nope'), ST()]],
+
+    // ---- 4. D2 DID NOT BECOME PERMISSIVE. `N2` is ready and could have been briefed, but this
+    // session never briefs it, so the clock-out is refused with the sentence it has always had.
+    // Read against case 2, where the same call on the same document succeeds: the brief is the
+    // only difference between them, which is exactly what D2 says the rule is.
+    ['unit-id/never-briefed-clock-out-still-refuses', b64(raw(waveDocument())), [N2OUT(), ST()]],
+
+    // ---- 5. THE DEFAULT PATH, on the shipped codefix template — a linear chain where
+    // `cursor == ready[0]`, so naming the unit and naming nothing must answer the same thing.
+    // This is the case that pins "a caller that never passes `unit_id` sees byte-identical
+    // behaviour", and it is also the control for cases 1a and 3: the refusal there is a
+    // property of the graph, not something `unit_id` does to every checkpoint it touches.
+    ['unit-id/default-path-on-the-template', b64(realCheckpointText), [IN(), IN(CURSOR), ST()]],
+  ];
+}
 
 /**
  * `[name, checkpoint, calls]` triples for the shape check, the pack being the SHIPPED one.
@@ -874,7 +979,12 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
       continue;
     }
     let answer;
-    if (call.fn === 'clock_in') answer = shiftwork.clockIn(target, { now: clock.now });
+    // job60/D1: `unitId` is the SECOND positional argument on both sides now
+    // (`clockIn(checkpoint, unitId, options)` against `clock_in(checkpoint, unit_id)`), so a
+    // call that names no unit must pass an explicit `null` and let the options object keep
+    // the third slot. Before this line was widened the options object sat in the unit slot
+    // and every clock-in in the suite asked for a unit named `[object Object]`.
+    if (call.fn === 'clock_in') answer = shiftwork.clockIn(target, call.unit_id ?? null, { now: clock.now });
     else if (call.fn === 'status') answer = shiftwork.status(target);
     else {
       clock.now = call.now;
@@ -1872,6 +1982,184 @@ export async function run(ctx) {
         `${specs.filter((s) => s.name.startsWith('briefed/')).length} sessions — the success bit for a clock-out ` +
         'that was never clocked in, the ledger trail read off each side (two brief lines for two clock-ins, ' +
         'the brief consumed by a clock-out, per unit, self-report overwritten), and the brief line as a literal.',
+    );
+  }
+
+  // ------------------------- job60 (J60-4): `clock_in(unit_id)` — read per side
+  //
+  // The session rows above compare Node's bytes to Python's, and this feature landed in the two
+  // runtimes as two hand-written copies of one design. Delete the readiness check from both and
+  // every one of those rows stays green; paraphrase the refusal on both and they stay green;
+  // advance the cursor in plan order on both again and they stay green — which is the shape the
+  // `differential-is-blind-to-symmetric-regression` note in this file already names twice. So
+  // each ruling below is a constant read off EACH side's answer, never off the other runtime:
+  //
+  //   1. THE RELATIONSHIP, not each field on its own. The bug hid for a release because
+  //      `cursor` and `ready` were only ever asserted separately, on checkpoints where they
+  //      happened to agree. `disagreement` reads BOTH surfaces of ONE document at one instant
+  //      and pins them as a single value: the cursor briefs `C` while the graph says `B`.
+  //   2. THE SENTENCES, as literals — the not-ready refusal with its `", "` join and its batch
+  //      order, and `clock_out`'s cursor sentence, which D2 deliberately did NOT widen.
+  //   3. THE BIT, separately from the text: a refusal happened, not a success carrying an odd
+  //      `reason` — and, on the accept arms, a brief was issued and not a refusal.
+  //   4. AND NOTHING WAS WRITTEN. Compared against the bytes the harness wrote, which is a
+  //      statement about one runtime and cannot be satisfied by agreeing with the other.
+  {
+    const at = (name, step) => {
+      const entry = ran.get(name);
+      const pick = (side) => entry[side].steps[step];
+      return {
+        python: JSON.parse(unb64(pick('python').result)),
+        node: JSON.parse(unb64(pick('node').result)),
+        pythonRaw: pick('python'),
+        nodeRaw: pick('node'),
+        wrote: entry.spec.checkpoint,
+      };
+    };
+    const both = (v) => ({ python: v, node: v });
+    const row = (label, name, step, expected, read) => {
+      const got = at(name, step);
+      cases.push({
+        name: `unit-id/${label}`,
+        kind: 'json',
+        expected: both(expected),
+        actual: { python: read(got.python, got.pythonRaw), node: read(got.node, got.nodeRaw) },
+      });
+    };
+    /** `result` alone: did it refuse, or brief, at all? */
+    const bit = (label, name, step, expected) => row(`bit/${label}`, name, step, expected, (r) => r.result);
+    /** The refusal SENTENCE as a literal, on each side. */
+    const says = (label, name, step, sentence) => row(`sentence/${label}`, name, step, sentence, (r) => r.reason ?? null);
+    /** Which unit's brief came back — `(not a brief)` when the call refused. */
+    const briefed = (label, name, step, unitId) =>
+      row(`briefed/${label}`, name, step, unitId, (r) => (r.result === 'brief' ? r.unit.id : '(not a brief)'));
+    /** The cursor, off `status`'s answer or off `clock_out`'s. */
+    const cursor = (label, name, step, unitId) => row(`cursor/${label}`, name, step, unitId, (r) => r.cursor ?? null);
+    /** This side's checkpoint is still the bytes the harness wrote, and no ledger exists. */
+    const untouched = (label, name, step) => {
+      const got = at(name, step);
+      const state = (raw_) => ({
+        checkpoint: raw_.checkpoint === got.wrote ? 'as written' : 'REWRITTEN',
+        log: raw_.log === null ? 'no log file' : `log exists: ${unb64(raw_.log)}`,
+      });
+      cases.push({
+        name: `unit-id/untouched/${label}`,
+        kind: 'json',
+        expected: both({ checkpoint: 'as written', log: 'no log file' }),
+        actual: { python: state(got.pythonRaw), node: state(got.nodeRaw) },
+      });
+    };
+    /** Every ledger line in order, `brief <unit>` / `out <unit> <briefed>` — the shape F6 uses. */
+    const ledger = (raw_) => {
+      if (raw_.log === null) return '(no log file)';
+      return unb64(raw_.log)
+        .trim()
+        .split('\n')
+        .map((text) => {
+          const line = JSON.parse(text);
+          return line.event === 'brief' ? `brief ${line.unit}` : `out ${line.unit} ${String(line.briefed)}`;
+        });
+    };
+    const trail = (label, name, step, expected) => row(`trail/${label}`, name, step, expected, (_, raw_) => ledger(raw_));
+
+    // ==================== 1. cursor != ready[0] — the two fields against EACH OTHER
+    const DISAGREE = 'unit-id/cursor-disagrees-with-ready';
+    // The one row this whole block exists for. It is a single value because the two fields are
+    // a single claim: on these bytes the pointer surface and the graph surface name different
+    // units. Make `clock_out` advance in plan order again and the cursor half changes; drop the
+    // readiness check and the graph half changes; agree with the other runtime about either and
+    // this row still fails, because its expected value is a constant written here.
+    cases.push({
+      name: 'unit-id/disagreement/cursor-briefs-C-while-ready-is-B',
+      kind: 'json',
+      expected: both('cursor briefs C; ready is B'),
+      actual: (() => {
+        const noArg = at(DISAGREE, 0);
+        const named = at(DISAGREE, 1);
+        const read = (side) => {
+          const brief = noArg[side];
+          const refusal = named[side];
+          const head = brief.result === 'brief' ? brief.unit.id : `(${brief.result})`;
+          const tail = /ready is (.*)$/.exec(refusal.reason ?? '')?.[1] ?? `(${refusal.result}: no ready list)`;
+          return `cursor briefs ${head}; ready is ${tail}`;
+        };
+        return { python: read('python'), node: read('node') };
+      })(),
+    });
+    // and the same disagreement spelled out call by call, so a red row above has a cause here.
+    bit('no-unit-id-still-briefs-the-cursor-unit', DISAGREE, 0, 'brief');
+    briefed('no-unit-id-is-the-cursor-unit', DISAGREE, 0, 'C');
+    bit('cursor-unit-named-is-refused', DISAGREE, 1, 'error');
+    says('cursor-unit-named-is-refused', DISAGREE, 1, 'unit C is not ready; ready is B');
+    bit('the-ready-unit-is-briefed', DISAGREE, 2, 'brief');
+    briefed('the-ready-unit-is-briefed', DISAGREE, 2, 'B');
+    // D1: a wave of briefs never moves the pointer. Three clock-ins, cursor still `C`.
+    cursor('clock-in-never-writes-the-cursor', DISAGREE, 3, 'C');
+    // the ledger records the units ACTUALLY briefed — the refusal issued nothing, so it logged
+    // nothing, which is what keeps `clock_out`'s `briefed` flag honest for a named unit.
+    trail('refusal-records-no-brief', DISAGREE, 3, ['brief C', 'brief B']);
+
+    // ==================== 1b. D3 — the pointer lands on the graph's head, not plan order's
+    const ADVANCE = 'unit-id/advance-follows-the-graph';
+    // `plan.units` order would say `C` here, and said `C` in the measurement that opened job60.
+    cursor('advance-lands-on-ready-head-not-plan-order', ADVANCE, 0, 'B');
+    cursor('and-status-agrees', ADVANCE, 1, 'B');
+    briefed('and-the-brief-that-follows-is-B', ADVANCE, 2, 'B');
+
+    // ==================== 2. a wave: width 2, briefed together, clocked out out of order
+    const WAVE = 'unit-id/wave';
+    briefed('wave-default-is-the-cursor-unit', WAVE, 0, 'N1');
+    briefed('wave-names-the-second-ready-unit', WAVE, 1, 'N2');
+    // THE MOVE D2 EXISTS FOR: N2 clocked out before N1, which the pre-job60 runtime refused.
+    bit('wave-clock-out-N2-before-N1', WAVE, 2, 'ok');
+    // and the pointer did not follow N2 anywhere: N1 is still the only ready unit.
+    cursor('wave-cursor-after-N2', WAVE, 2, 'N1');
+    cursor('wave-cursor-after-N1', WAVE, 3, 'N3');
+    cursor('wave-status-agrees', WAVE, 4, 'N3');
+    briefed('wave-N3-once-both-dependencies-are-done', WAVE, 5, 'N3');
+    // the ledger: both briefs landed, and BOTH clock-outs read `true` — the named brief counts
+    // for the unit it named, which is the whole reason D2 needs no new field.
+    trail('wave', WAVE, 5, ['brief N1', 'brief N2', 'out N2 true', 'out N1 true', 'brief N3']);
+
+    // ==================== 3. the not-ready refusal, and the unit that does not exist
+    const NOTREADY = 'unit-id/not-ready-refusal';
+    bit('not-ready', NOTREADY, 0, 'error');
+    says('not-ready', NOTREADY, 0, 'unit N3 is not ready; ready is N1, N2');
+    untouched('not-ready', NOTREADY, 0);
+    // the limiting case of the same property, refused by the same sentence and not a second one
+    bit('no-such-unit', NOTREADY, 1, 'error');
+    says('no-such-unit', NOTREADY, 1, 'unit nope is not ready; ready is N1, N2');
+    untouched('no-such-unit', NOTREADY, 1);
+    cursor('refusals-left-the-cursor-alone', NOTREADY, 2, 'N1');
+
+    // ==================== 4. `clock_out` did NOT become permissive
+    const NEVER = 'unit-id/never-briefed-clock-out-still-refuses';
+    bit('never-briefed', NEVER, 0, 'error');
+    // D2 kept this sentence deliberately, so every ruled case pinning it stays green. A widened
+    // wording is a docs change in `docs/shiftwork.md`, never a change here.
+    says('never-briefed', NEVER, 0, 'unit N2 is not the cursor unit N1');
+    untouched('never-briefed', NEVER, 0);
+    cursor('never-briefed-cursor-unmoved', NEVER, 1, 'N1');
+
+    // ==================== 5. the default path, on the shipped template — unmoved
+    const TEMPLATE = 'unit-id/default-path-on-the-template';
+    bit('template-default-path', TEMPLATE, 0, 'brief');
+    briefed('template-default-path', TEMPLATE, 0, CURSOR);
+    // cursor == ready[0] here, so NAMING the unit answers the same thing as naming nothing —
+    // which is why no checkpoint in this suite could see the bug before these sessions existed.
+    bit('template-naming-the-cursor-unit', TEMPLATE, 1, 'brief');
+    briefed('template-naming-the-cursor-unit', TEMPLATE, 1, CURSOR);
+    cursor('template-cursor-unmoved', TEMPLATE, 2, CURSOR);
+
+    notes.push(
+      'job60/D1-D3 (J60-4): `clock_in(unit_id)` is pinned by ' +
+        `${cases.filter((c) => c.name.startsWith('unit-id/')).length} per-side cases over ` +
+        `${specs.filter((s) => s.name.startsWith('unit-id/')).length} sessions on documents whose plan order and ` +
+        'graph order DISAGREE — the one row holding `cursor` and `ready` against each other, the ' +
+        'not-ready sentence (a unit with unmet dependencies and one that names no unit at all), ' +
+        'the cursor landing on `ready[0]` rather than plan order, a two-wide wave clocked out ' +
+        'in the other order, `clock_out`\'s unwidened cursor sentence, and the shipped template ' +
+        'answering identically with and without the argument.',
     );
   }
 
