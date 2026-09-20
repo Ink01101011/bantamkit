@@ -6,6 +6,26 @@ dispatched on `hook_event_name`. Register it once, user scope:
     node tools/hooks/install.mjs          # writes six entries into ~/.claude/settings.json
     node tools/hooks/install.mjs --remove
 
+**AMENDED 2026-09-20 (job61, J61-2): the sentence above is no longer where the code is, and
+the rest of this file still describes the behaviour exactly.** The adapter moved to
+`runtime-ts/src/hookadapter.ts`; `tools/hooks/bantamkit-hook.mjs` is now a four-line shim onto
+the built module, so every registration that already names it keeps working and there is one
+adapter, not two. The move was forced by a measurement: `npm pack --dry-run` at 0.35.3 cuts a
+tarball of 174 files under `files: ["dist","assets"]`, and **not one of them matches `hook`**
+— so an operator who installed bantamkit the only way it is published (`npx bantamkit-mcp`)
+had no adapter on disk at all and could not write the registration line above. The shipped
+spelling of that command is now
+
+    npx bantamkit-mcp --hook
+
+which reads one JSON object on stdin, dispatches on `hook_event_name`, writes at most one
+JSON object on stdout, and exits 0 always. Two consequences for readers of this file: the
+line-number citations into `bantamkit-hook.mjs` below (e.g. `:430-432`) point at the shim and
+no longer resolve — read `runtime-ts/src/hookadapter.ts` instead; and the detached
+`update-probe.mjs` writer is the one arm that is still checkout-only, because
+`tools/hooks/update-probe.mjs` does not ship either, so an npx install logs
+`updateProbe: "missing"` and the SessionStart block is otherwise unchanged.
+
 ## Why it exists — measured, 2026-08-27
 
 The host's own MCP logs (`~/Library/Caches/claude-cli-nodejs/*/mcp-logs-bantamkit/`),

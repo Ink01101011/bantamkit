@@ -51,7 +51,7 @@ function run(argv, columns, assets) {
 /** `parser.print_usage(sys.stderr)` at the no-tty fallback width of 80. Measured. */
 const USAGE_80 =
   "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]\n" +
-  "                     [--mcp-report] [--statusline] [--update]\n" +
+  "                     [--hook] [--mcp-report] [--statusline] [--update]\n" +
   "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
   "                     [--force] [--store STORE | --start START]\n";
 
@@ -63,6 +63,7 @@ const HELP = new Map([
     "       [--assets-root]\n" +
     "       [--k K]\n" +
     "       [--index-budget BYTES]\n" +
+    "       [--hook]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
     "       [--update]\n" +
@@ -103,6 +104,13 @@ const HELP = new Map([
     "    budget\n" +
     "    (default:\n" +
     "    24000)\n" +
+    "  --hook\n" +
+    "    run as a\n" +
+    "    Claude Code\n" +
+    "    hook: one\n" +
+    "    JSON event\n" +
+    "    on stdin,\n" +
+    "    then exit\n" +
     "  --mcp-report\n" +
     "    print an\n" +
     "    analysis of\n" +
@@ -163,6 +171,7 @@ const HELP = new Map([
     "       [--assets-root]\n" +
     "       [--k K]\n" +
     "       [--index-budget BYTES]\n" +
+    "       [--hook]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
     "       [--update]\n" +
@@ -196,6 +205,13 @@ const HELP = new Map([
     "    byte budget\n" +
     "    (default:\n" +
     "    24000)\n" +
+    "  --hook\n" +
+    "    run as a\n" +
+    "    Claude Code\n" +
+    "    hook: one JSON\n" +
+    "    event on\n" +
+    "    stdin, then\n" +
+    "    exit\n" +
     "  --mcp-report\n" +
     "    print an\n" +
     "    analysis of\n" +
@@ -249,6 +265,7 @@ const HELP = new Map([
     "                     [--assets-root]\n" +
     "                     [--k K]\n" +
     "                     [--index-budget BYTES]\n" +
+    "                     [--hook]\n" +
     "                     [--mcp-report]\n" +
     "                     [--statusline]\n" +
     "                     [--update]\n" +
@@ -273,6 +290,9 @@ const HELP = new Map([
     "                memory index byte\n" +
     "                budget (default:\n" +
     "                24000)\n" +
+    "  --hook        run as a Claude Code\n" +
+    "                hook: one JSON event\n" +
+    "                on stdin, then exit\n" +
     "  --mcp-report  print an analysis of\n" +
     "                the host MCP log\n" +
     "                joined with\n" +
@@ -307,7 +327,7 @@ const HELP = new Map([
   [
     55,
     "usage: bantamkit-mcp [-h] [--assets-root] [--k K]\n" +
-    "                     [--index-budget BYTES]\n" +
+    "                     [--index-budget BYTES] [--hook]\n" +
     "                     [--mcp-report] [--statusline]\n" +
     "                     [--update]\n" +
     "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
@@ -327,6 +347,9 @@ const HELP = new Map([
     "                        (default: 3)\n" +
     "  --index-budget BYTES  memory index byte budget\n" +
     "                        (default: 24000)\n" +
+    "  --hook                run as a Claude Code hook:\n" +
+    "                        one JSON event on stdin, then\n" +
+    "                        exit\n" +
     "  --mcp-report          print an analysis of the host\n" +
     "                        MCP log joined with\n" +
     "                        bantamkit's event log, then\n" +

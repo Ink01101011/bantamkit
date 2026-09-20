@@ -74,6 +74,7 @@ import { fileURLToPath } from 'node:url';
 
 import { assetsRoot } from './assets.js';
 import { BantamError } from './errors.js';
+import { logHookFailure, runHook } from './hookadapter.js';
 import { buildReport, resolveEventLogPath } from './mcpreport.js';
 import { Memory } from './memory/component.js';
 import { DEFAULT_INDEX_BUDGET } from './memory/store.js';
@@ -148,6 +149,38 @@ const PARSER: ParserSpec = {
       convert: pyIntStrict,
       typeName: 'int',
       defaultValue: DEFAULT_INDEX_BUDGET,
+    },
+    // THE HOOK ADAPTER, AND IT IS A FLAG FOR THE REASON `--mcp-report` GIVES BELOW, ONLY
+    // HARDER. `package.json` declares exactly one bin, so anything hung off a second entry
+    // point is unreachable in the pure-npx install that is the shipped product -- and the
+    // hook adapter was, literally: it lived in `tools/hooks/bantamkit-hook.mjs`, and MEASURED
+    // at 0.35.3 with `npm pack --dry-run` the tarball is 174 files under
+    // `files: ["dist","assets"]` with not one of them matching `hook`. An operator who
+    // installed bantamkit the only way it is published had no adapter on disk to register.
+    //
+    // POSITION IS WIRE-VISIBLE AND IT IS MEASURED, the same as every flag below it. At the
+    // 80-column fallback argparse breaks the usage after `[--index-budget BYTES]`, and that
+    // first line is pinned in `test_mcpserver.py`, in `test/cli-surface.test.mjs` and as a
+    // THROWING precondition in `tools/conformance/suites/cli.mjs`. Registered HERE -- the
+    // first flag AFTER `--index-budget` -- it grows the SECOND usage line only, from 61
+    // columns to 70 against a fold at 78. Registering it any earlier would move the pinned
+    // line and turn a differential suite into a re-baselining one.
+    //
+    // BARE, WITH NO METAVAR, AND THE EVENT COMES FROM STDIN. The host sends one JSON object
+    // carrying `hook_event_name`, which is what the adapter has always dispatched on; a
+    // second spelling of the event on the command line would be a second thing to keep in
+    // step with the host, and the registration in `~/.claude/settings.json` would have to
+    // carry seven different commands instead of one.
+    //
+    // THE CONTRACT IS DELIBERATELY NARROW, WHICH IS WHAT MAKES IT GATEABLE: one JSON object
+    // in on stdin, at most one JSON object out on stdout, exit 0 ALWAYS. A conformance case
+    // can feed both runtimes the same payload and compare the emitted object byte for byte.
+    {
+      optionStrings: ['--hook'],
+      dest: 'hook',
+      kind: 'storeTrue',
+      help: 'run as a Claude Code hook: one JSON event on stdin, then exit',
+      defaultValue: false,
     },
     // WHY THIS IS A FLAG ON THIS PROCESS AND NOT A NEW ENTRY POINT, and why it sits HERE.
     // The lifecycle argument against printing from this process -- stdout is the JSON-RPC
@@ -256,10 +289,10 @@ const PARSER: ParserSpec = {
     },
   ],
   // `--store`/`--start` moved from 6/7 to 8/9 when `--install` and `--force` were added
-  // ahead of them, and from 8/9 to 9/10 when `--update` was. These are POSITIONS, not names,
-  // so adding an action above the group and leaving this line alone would silently make two
-  // unrelated flags mutually exclusive.
-  groups: [[9, 10]],
+  // ahead of them, from 8/9 to 9/10 when `--update` was, and from 9/10 to 10/11 when `--hook`
+  // was. These are POSITIONS, not names, so adding an action above the group and leaving this
+  // line alone would silently make two unrelated flags mutually exclusive.
+  groups: [[10, 11]],
 };
 
 /*
@@ -279,6 +312,7 @@ export interface Options {
   store: string | null;
   start: string | null;
   assetsRoot: boolean;
+  hook: boolean;
   mcpReport: boolean;
   statusline: boolean;
   update: boolean;
@@ -295,6 +329,7 @@ export function parseArgs(argv: readonly string[]): Options {
     store: values['store'] as string | null,
     start: values['start'] as string | null,
     assetsRoot: values['assets_root'] as boolean,
+    hook: values['hook'] as boolean,
     mcpReport: values['mcp_report'] as boolean,
     statusline: values['statusline'] as boolean,
     update: values['update'] as boolean,
@@ -461,6 +496,27 @@ async function main(argv: readonly string[]): Promise<number> {
     // `build_identity` reports must be the same number for the same pack, and on a
     // `pip install` the unfiltered version made one process contradict itself.
     process.stdout.write(`${root}\n${packFileCount(root)} files\n`);
+    return 0;
+  }
+  if (options.hook) {
+    // DISPATCH ORDER IS REGISTRATION ORDER, which is the rule the four flags below already
+    // follow and the reason `--mcp-report --install cursor` prints a report and writes
+    // nothing. `--hook` is registered directly after `--index-budget`, so it is checked
+    // directly after `--assets-root`.
+    //
+    // EXIT 0 ALWAYS, AND THAT IS THE CONTRACT, not a convenience. A hook that exits non-zero
+    // or lets a stack reach stderr is rendered by the host as an error on the user's screen,
+    // so every failure is logged into `~/.bantamkit/hooks/hook-log.jsonl` and swallowed. This
+    // is the one arm in this file whose refusal path is a log line rather than a message.
+    //
+    // It returns before `buildMemory` for the same reason every flag around it does: the
+    // adapter binds whatever store the winning MCP registration pins, from the cwd the HOST
+    // sent in the payload — not from whatever directory the hook process was spawned in.
+    try {
+      await runHook();
+    } catch (e) {
+      logHookFailure(e);
+    }
     return 0;
   }
   if (options.mcpReport) {
