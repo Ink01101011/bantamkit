@@ -356,6 +356,66 @@ export async function run(ctx) {
         'string',
       ),
     );
+    // WHAT A WROTE, PINNED PER SIDE — added by J62-10 (review) after a MEASURED blind spot.
+    // Everything above compares A's output side to side, and the only literal is a summary of
+    // COUNTS. That leaves the bytes A puts into the host's auto-memory held by a differential
+    // alone, and a differential is blind to a regression that lands in both runtimes. Measured
+    // 2026-09-20: changing the file's own body prose in BOTH runtimes to say *"bantamkit
+    // rewrites this file every session"* — the exact opposite of the one-way rule this whole
+    // section exists to keep — left `--suite hooks` at 42 cases / 0 failures, and left
+    // `runtime-py/tests/test_nativeexport.py` and `runtime-ts/test/nativeexport.test.mjs`
+    // green too, because neither pins that paragraph. These two literals are what sees it.
+    //
+    // `gamma` is the escaping-sensitive one: an em dash, a `"quote"` and a `\` backslash, all
+    // of which have to survive a JSON string used as a YAML double-quoted scalar identically
+    // on both sides.
+    cases.push(
+      ...literalCases(
+        pyTree['gamma.md'],
+        ndTree['gamma.md'],
+        'native-export: one exported file, byte for byte, against a literal',
+        '---\n' +
+          'name: gamma\n' +
+          'description: "a description with an em dash — a \\"quote\\" and a \\\\ backslash"\n' +
+          'metadata:\n' +
+          '  node_type: memory\n' +
+          '  type: reference\n' +
+          '  source: bantamkit\n' +
+          '---\n' +
+          '\n' +
+          "Exported from bantamkit's project memory store. The body of this fact is not here: call\n" +
+          '`mcp__bantamkit__memory_recall` with the name `gamma` to read it.\n' +
+          '\n' +
+          'Written once, only because the name was absent from this directory. bantamkit never\n' +
+          'rewrites and never deletes an entry here, so whatever the host does to this file stands.\n',
+        'string',
+      ),
+    );
+    // AND THE INDEX, whole. This is the non-destructiveness rule as a literal rather than as a
+    // comparison: the host's own two lines are still the first two lines, in the host's own
+    // words (`beta` stays "a description the host reworded" even though bantamkit's store
+    // describes it differently), A's section is APPENDED under its own heading, and `beta` has
+    // no second line because the host's index already named it.
+    cases.push(
+      ...literalCases(
+        pyTree['MEMORY.md'],
+        ndTree['MEMORY.md'],
+        'native-export: the host index A appended to, byte for byte, against a literal',
+        '# Memory index\n' +
+          '\n' +
+          '## Project\n' +
+          '\n' +
+          '- [host-fact](host-fact.md) — the host wrote this\n' +
+          '- [beta](beta.md) — a description the host reworded\n' +
+          '\n' +
+          '## bantamkit\n' +
+          '\n' +
+          '- [alpha](alpha.md) — the first fact\n' +
+          '- [delta](delta.md) — unicode: café 中文 😀 nbsp here\n' +
+          '- [gamma](gamma.md) — a description with an em dash — a "quote" and a \\ backslash\n',
+        'string',
+      ),
+    );
     // Necessary, NOT sufficient, and labelled: the injected block is the same on both sides.
     // It cannot show what the export did — that is the whole reason the two cases above
     // exist — but a port that started injecting the project index as WELL as exporting would
@@ -898,6 +958,220 @@ export async function run(ctx) {
         'checkpoint-apple.json',
         'string',
       ),
+    );
+  }
+
+  // ========================================= the stale-install line: the row nothing compared
+  //
+  // ADDED BY J62-10 (review). `docs/porting.md`'s stale-install row said in its own words that
+  // it was "held by a sentence, not by a rerunnable gate", and named its owner as "whichever
+  // unit next touches `hooks.mjs`". This unit is that unit.
+  //
+  // THE COMPANION SHAPE IS NOT `nativeError`'s, and the difference matters. There, BOTH sides
+  // refuse, so the refusal bit is the SAME on both and a differential over it is the
+  // companion. Here exactly ONE side emits, so a differential over the bit could only ever be
+  // red — the honest companion is the bit PINNED PER SIDE, plus an unruled differential over
+  // everything the ruling does not license (the block with the update line taken out).
+  {
+    const id = 'stale-install';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), [
+      { type: 'project', name: 'seeded', description: 'a fact so the session block is not empty' },
+    ]);
+    b.snapshot();
+    // Each side gets its OWN home (the two hook logs cannot be one file), so the kept install
+    // is seeded into each and the home is masked out of everything compared below.
+    const seedHome = (h) => {
+      writeFile(
+        join(h, '.bantamkit', 'mcp', 'node_modules', 'bantamkit-mcp', 'package.json'),
+        JSON.stringify({ name: 'bantamkit-mcp', version: '0.35.1' }),
+      );
+      // `checked_at` is stamped NOW on purpose: a record inside the 24 h TTL makes the probe
+      // report `fresh` and the adapter spawn NOTHING. A stale stamp would have this suite
+      // launching detached child processes on the operator's machine.
+      writeFile(
+        join(h, '.bantamkit', 'update-check.json'),
+        JSON.stringify({ checked_at: new Date().toISOString(), npm: { latest: '0.36.0' } }),
+      );
+      return h;
+    };
+    const pyHome = seedHome(home(id, 'py'));
+    const ndHome = seedHome(home(id, 'node'));
+    const payload = {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+      cwd,
+      session_id: id,
+      transcript_path: join(b.root, 'session.jsonl'),
+    };
+    writeFile(payload.transcript_path, '');
+    const py = runHook(ctx, 'py', { payload, cwd, home: pyHome });
+    b.restore();
+    const nd = runHook(ctx, 'node', { payload, cwd, home: ndHome });
+
+    const ctxOf = (r, h) => {
+      const objs = dec(r.stdout)
+        .split('\n')
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l));
+      const out = objs[objs.length - 1]?.hookSpecificOutput?.additionalContext ?? '';
+      return String(out).split(h).join('<HOME>');
+    };
+    const pyCtx = ctxOf(py, pyHome);
+    const ndCtx = ctxOf(nd, ndHome);
+    // The update line is APPENDED, separator and all, so removing it has to remove the
+    // separator the port added with it — otherwise this companion reddens on a trailing
+    // newline the reference never had a reason to write, which is what it did first.
+    const withoutUpdate = (s) => s.replace(/\n*\[bantamkit\] bantamkit-mcp [^\n]*\n*$/, '');
+
+    // PRECONDITION. A bed where the port ALSO emitted nothing — a kept install the reader
+    // could not parse, a record outside the TTL — would make every case below pass by
+    // agreement instead of by measurement.
+    if (!ndCtx.includes('the package index has 0.36.0')) {
+      throw new Error(
+        'hooks: stale-install bed did not arm — the port emitted no update line. ' +
+          `updateState=${nd.last['updateState']} updateProbe=${nd.last['updateProbe']}`,
+      );
+    }
+    cases.push({
+      name: 'stale-install: the SessionStart block — the port names the kept install, the reference cannot',
+      kind: 'string',
+      expected: pyCtx,
+      actual: ndCtx,
+      ruling:
+        'RULED DIFFERENT, AND THIS ONE IS A DESIGN — `docs/porting.md`, *the hook’s ' +
+        'stale-install line, and the probe that feeds it (job62)*. The port decides the line ' +
+        'from the KEPT npm install under `~/.bantamkit/mcp`, which `npminstall.ts` makes and ' +
+        'which has no Python counterpart under the pure-node-install ruling, so the reference ' +
+        'emits nothing and does not pretend to. It is a REFUSAL rather than a spelling, and ' +
+        'the companions it owes are below: the bit PINNED PER SIDE (a differential over it ' +
+        'could only ever be red, because exactly one side emits) and the same block with the ' +
+        'update line removed, compared unruled. Until J62-10 this row was held by a sentence ' +
+        'and by a hand probe; the row said so and named the owner as whichever unit next ' +
+        'touched this file.',
+    });
+    // The half the ruling does NOT license: everything else in the injected block is the same
+    // on both sides. A port that also reworded the session header would redden here while the
+    // ruling stayed green.
+    cases.push({
+      name: 'stale-install: everything the ruling does NOT license — the same block with the update line taken out',
+      kind: 'string',
+      expected: withoutUpdate(pyCtx),
+      actual: withoutUpdate(ndCtx),
+    });
+    // THE BIT, PER SIDE. `updateBytes` is deliberately NOT pinned: it counts a line carrying
+    // an absolute path, so it is a function of where the scratch directory landed.
+    cases.push({
+      name: 'stale-install: the bit, PINNED PER SIDE — the reference',
+      kind: 'json',
+      expected: { updateState: null, updateProbe: 'node-only', emitsUpdateLine: false, updateBytes: 0 },
+      actual: {
+        updateState: py.last['updateState'] ?? null,
+        updateProbe: py.last['updateProbe'] ?? null,
+        emitsUpdateLine: pyCtx !== withoutUpdate(pyCtx),
+        updateBytes: py.last['updateBytes'] ?? null,
+      },
+    });
+    cases.push({
+      name: 'stale-install: the bit, PINNED PER SIDE — the port',
+      kind: 'json',
+      expected: { updateState: 'available', updateProbe: 'fresh', emitsUpdateLine: true, spawnedNothing: true },
+      actual: {
+        updateState: nd.last['updateState'] ?? null,
+        updateProbe: nd.last['updateProbe'] ?? null,
+        emitsUpdateLine: ndCtx !== withoutUpdate(ndCtx),
+        spawnedNothing: nd.last['updateProbe'] !== 'spawned',
+      },
+    });
+  }
+
+  // ============================== promptFingerprint.chars — the third code-unit/code-point cut
+  //
+  // ADDED BY J62-10 (review). `docs/porting.md`'s prose paragraph on this divergence said it
+  // could not be gated "without the suite reading a hook log field nothing else reads". The
+  // suite already reads hook log records — `runHook` returns them — so the reason was wrong,
+  // and an ungated defect in the same class as row 7 is exactly the thing this job set out to
+  // stop being held by a sentence. The paragraph is amended to point here.
+  //
+  // `UserPromptSubmit` only logs the fingerprint on the INJECT branch, so the bed needs a
+  // store whose fact actually answers the prompt; the precondition case below is what says it
+  // did, rather than letting a `skip` record pass as agreement.
+  {
+    const id = 'prompt-fingerprint';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), [
+      {
+        type: 'project',
+        name: 'deployment-rollback',
+        description: 'the deployment path rollback procedure for the staging cluster',
+      },
+    ]);
+    // Three astral characters, so the two counts part company by exactly three.
+    const PROMPT = 'deployment path rollback procedure 😀🎉🚀 for the staging cluster';
+    b.snapshot();
+    const payload = { hook_event_name: 'UserPromptSubmit', prompt: PROMPT, cwd, session_id: id };
+    const py = runHook(ctx, 'py', { payload, cwd, home: home(id, 'py') });
+    b.restore();
+    const nd = runHook(ctx, 'node', { payload, cwd, home: home(id, 'node') });
+
+    // PRECONDITION. A `skip` or a `none` record carries no fingerprint at all, and two absent
+    // fingerprints compare equal — the shape `tests-that-pick-the-input-that-cannot-fail`
+    // warns about. This stops the suite instead.
+    if (py.last['action'] !== 'inject' || nd.last['action'] !== 'inject') {
+      throw new Error(
+        `hooks: prompt-fingerprint needs the INJECT branch on both sides and got ` +
+          `py=${py.last['action']} node=${nd.last['action']}; the bed's store no longer ` +
+          'answers the prompt, so nothing below would be comparing a fingerprint.',
+      );
+    }
+    cases.push(
+      ...literalCases(
+        { astral: astralCount(PROMPT), codePoints: codePoints(PROMPT) },
+        { astral: astralCount(PROMPT), codePoints: codePoints(PROMPT) },
+        'prompt-fingerprint: precondition — three astral characters in the prompt, and both sides injected',
+        { astral: 3, codePoints: 62 },
+      ),
+    );
+    cases.push({
+      name: 'prompt-fingerprint: chars — code points against UTF-16 code units',
+      kind: 'json',
+      expected: { chars: py.last['prompt']['chars'] },
+      actual: { chars: nd.last['prompt']['chars'] },
+      ruling:
+        'RULED DIFFERENT AND IT IS A BUG, recorded rather than endorsed — `docs/porting.md`, ' +
+        'the `promptFingerprint.chars` paragraph under the divergence table. The ' +
+        '`UserPromptSubmit` arm logs `{sha256, chars, bytes}` for the prompt it answered; ' +
+        '`chars` is `String.prototype.length` on the port and `len(str)` on the reference, ' +
+        'so the two agree below U+10000 and part company by one per astral character. It is ' +
+        'the same class as row 7 and the same one-line repair closes both. Until J62-10 this ' +
+        'was named in prose and gated by nothing, on the stated grounds that a case would ' +
+        'have to read a hook log field nothing else reads — which this suite already does. ' +
+        'When the repair lands this ruling goes stale and reddens, and the per-side literals ' +
+        'below redden with it; that pair of failures is the whole reason it is a case.',
+    });
+    // The half the ruling does not license: the digest and the byte count are the same
+    // function on both sides, and a port that started hashing something else would redden
+    // here while the ruling stayed green.
+    cases.push({
+      name: 'prompt-fingerprint: everything the ruling does NOT license — sha256 and bytes',
+      kind: 'json',
+      expected: { sha256: py.last['prompt']['sha256'], bytes: py.last['prompt']['bytes'] },
+      actual: { sha256: nd.last['prompt']['sha256'], bytes: nd.last['prompt']['bytes'] },
+    });
+    // PER SIDE, because a repair landing on BOTH leaves the ruling stale but the differential
+    // green — the symmetric-regression shape.
+    cases.push(
+      ...literalCases(
+        py.last['prompt']['chars'],
+        nd.last['prompt']['chars'],
+        'prompt-fingerprint: PINNED PER SIDE: 62 code points on the reference, 65 UTF-16 units on the port',
+        undefined,
+        'json',
+      ).map((c, i) => ({ ...c, expected: i === 0 ? 62 : 65 })),
     );
   }
 

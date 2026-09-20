@@ -29,9 +29,15 @@ no longer resolve — read `runtime-ts/src/hookadapter.ts` instead; and the deta
 **AMENDED 2026-09-20 (job62, J62-9), three corrections and one addition to the block above.**
 
 1. **Its own attribution is wrong.** It says *job61, J61-2*, and the move landed in
-   **job62, unit J62-2** — `git log --oneline -1 -S'is now a four-line shim' -- docs/hooks.md`
+   **job62, unit J62-2** — `git log --oneline --diff-filter=A -- runtime-ts/src/hookadapter.ts`
    answers `bdc64fb feat(runtime-ts): bantamkit-mcp --hook, the adapter where npm can reach it
-   — J62-2`. The same wrong id is in `tools/hooks/bantamkit-hook.mjs`'s own header comment,
+   — J62-2`. **CITATION CORRECTED 2026-09-20 (J62-10).** This sentence first cited
+   `git log --oneline -1 -S'is now a four-line shim' -- docs/hooks.md`. That command answered
+   `bdc64fb` while it was being written and has answered `e1c2657` — the commit that wrote
+   this very sentence — ever since, because writing it added a second occurrence of the phrase
+   it searches for. The CLAIM was true and is still true; the PROBE stopped reproducing it. A
+   file can only be ADDED once, so `--diff-filter=A` over the adapter cannot be overtaken the
+   same way. The same wrong id is in `tools/hooks/bantamkit-hook.mjs`'s own header comment,
    which this unit did not touch (it is source, and this unit is docs). Corrected here rather
    than rewritten there, per `docs/record-vs-pointer.md`.
 2. **The shim is 33 lines, of which four are code.** `wc -l tools/hooks/bantamkit-hook.mjs`
