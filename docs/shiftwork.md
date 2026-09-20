@@ -263,23 +263,31 @@ The workflow, per unit:
    on `success`, the job is done. A `brief` answer also appends one
    `{"event": "brief", ts, unit, role}` line to `<checkpoint>.log.jsonl` —
    best-effort, and only on that branch; see *Clock-in writes too* below.
+   Since job60 it also takes an optional `unit_id`, which must name a unit
+   the graph says is ready — that is how a wave is dispatched; see
+   [Spending the width](#spending-the-width-clock_inunit_id-job60) below.
 3. Spawn the subagent with the returned brief verbatim, picking the model
    from the unit's `role`.
 4. `shiftwork_clock_out(checkpoint, unit_id, status, handoff_patch,
-   history_entry, accounting)` — `unit_id` must be the cursor unit
-   (execute-the-cursor, driver parity). The whole mutated document is
+   history_entry, accounting)` — `unit_id` must be the cursor unit or,
+   since job60, a unit briefed since its own last clock-out, which is what
+   lets a wave come back in any order. The whole mutated document is
    validated before any write; then one accounting line is appended to
    `<checkpoint>.log.jsonl` and the checkpoint is renamed into place, in
    that order (log-then-commit) — a partial failure can lose the commit
    but never the accounting, and a log line whose commit failed is
    detectable by re-reading the checkpoint.
 
-Cursor advance is v1-linear: clock-out moves the cursor to the first
-non-terminal unit in plan order and ignores `depends_on` — a non-linear
-plan needs a planner unit to reorder `plan.units` first. That is still
-true. `shiftwork_plan` (below) now READS `depends_on` and says what the
-graph would permit, but it is read-only and moves nothing: the executor
-is one cursor, exactly as it was.
+Cursor advance was v1-linear until job60: clock-out moved the cursor to
+the first non-terminal unit in plan order and ignored `depends_on`, so a
+non-linear plan needed a planner unit to reorder `plan.units` first. That
+is no longer true — `clock_out` now advances to `ready[0]` of the batch
+view recomputed on the document it just mutated, which is the same answer
+`shiftwork_plan` publishes for the same bytes. The executor is still ONE
+cursor and the checkpoint still has no wave object; what changed is which
+order the pointer walks, and that `clock_in` can be asked for a unit the
+pointer is not on. See
+[Spending the width](#spending-the-width-clock_inunit_id-job60) below.
 
 **Log-line comparability with the driver.** The driver logs one JSONL
 line per session; the MCP flavor logs one accounting line per clock-out
@@ -442,15 +450,21 @@ concurrent driver run fails validation-visibly rather than corrupting.
 
 ### The batch view: `shiftwork_plan` and `work_plan`
 
-**Both are READ-ONLY, and neither changes how work is executed.** They answer
-one question — *which of these units does the dependency graph permit to run at
-the same time?* — and then stop. Nothing about clock-in, clock-out or cursor
-advance moved: the cursor is still a single pointer, it still advances to the
-first non-terminal unit in `plan.units` order, and it still ignores
-`depends_on`. Reading this page and coming away thinking the executor became
-dependency-aware would be the one wrong conclusion. It did not. What exists now
-is an *instrument*: an orchestrator can see the false serialization it is
-paying for, and a plan can be re-ordered by hand in response.
+**Both are READ-ONLY.** They answer one question — *which of these units does
+the dependency graph permit to run at the same time?* — and then stop. Neither
+opens the checkpoint for writing, and neither dispatches anything.
+
+When they shipped (job59) that was the whole story, and this paragraph said so:
+nothing about clock-in, clock-out or cursor advance moved, so the batch view was
+an *instrument* — an orchestrator could see the false serialization it was
+paying for, and re-order a plan by hand in response. **That stopped being the
+whole story at job60**, which made the `width` reported here dispatchable
+through `clock_in(unit_id)` and pointed cursor advance at `ready[0]`. The
+division is still worth holding onto, because it is where the two halves meet:
+these two tools compute and report, the answer they compute is now the answer
+`clock_in` and `clock_out` are held to, and
+[Spending the width](#spending-the-width-clock_inunit_id-job60) is where the
+spending is described.
 
 **`work_plan(nodes)` — any graph, no file.** `nodes` is a list of
 `{id, depends_on, priority}`; `priority` defaults to `0`. The answer is
@@ -481,12 +495,43 @@ handed (Layer 1; see [architecture.md](architecture.md)).
 ```
 
 - **`ready`** is `batches[0]`: the units whose dependencies are all satisfied.
-  Only `cursor` can be clocked (`clock_in` briefs it, `clock_out` refuses any
-  other id), so a `ready` member beyond the cursor is what the graph permits,
-  not a unit the clock accepts yet.
-- **`cursor`** is echoed **unchanged** — deliberately, so the single-pointer
-  contract and the batch view can be read side by side and the difference
-  between them is visible rather than implied.
+  Since job60 a `ready` member beyond the cursor is clockable, but only in that
+  order: `clock_in` briefs any unit in `ready` when `unit_id` names it, and
+  `clock_out` then takes that unit back *because it was briefed*. An id that is
+  neither the cursor nor briefed since its own last clock-out is still refused.
+  See [Spending the width](#spending-the-width-clock_inunit_id-job60).
+- **`cursor`** is echoed **unchanged** — deliberately, so the pointer and the
+  batch view can be read side by side and any difference between them is
+  visible rather than implied. The pointer is still one unit and only
+  `clock_out` moves it; what job60 changed is that it is no longer the only
+  unit `clock_in` will hand out.
+
+**The tool's own description still says "the single-pointer contract"; this
+document no longer does. Both halves are deliberate — do not "tidy" either.**
+`assets/tools/shiftwork_plan.json` still carries it, two sentences before the
+end of its description: *"It reports what the dependency graph permits; it does
+not move the cursor, which is echoed unchanged so the single-pointer contract
+and the batch view can be read side by side."* There the
+phrase is **not false**: the cursor is still one pointer, echoed unchanged, and
+an earlier sentence in the same description now states outright that *"a `ready`
+member beyond the cursor is clockable, but only in that order"* — so nothing on
+that asset claims the cursor is the only clockable unit. In the `cursor` bullet
+above, the same phrase sat directly beside the `ready` bullet saying a briefed
+non-cursor unit *is* clockable, and the two read as an argument, so job60
+rewrote the prose (58c4280) and left the asset's
+sentence standing. The asset was **rewritten, not cut**, and that is the part
+worth remembering: clause (e) of `tools/conformance/suites/instructions.mjs`
+takes the first sentence of the plan description containing both `ready` and a
+clock word (its `sentenceWith(planDesc, …)` call) as the advertisement that
+discloses a non-cursor `ready` unit's clockability. With no such sentence the
+clause falls through to its undisclosed branch, which
+requires every `ready` unit beyond the cursor to be accepted by a bare
+`shiftwork_clock_out` — which a never-briefed unit correctly is **not**. Deleting
+a sentence there instead of rewriting it makes the suite demand the wrong thing.
+Editing that asset is not free either: it moves the pack's `assets_digest`, which
+[porting.md](porting.md) quotes as a literal (`sha256:9e66e89a…` over 93 files,
+remeasured 2026-09-20 — that row is on its third literal, because the pack keeps
+moving under it) and `tools/conformance/suites/wire.mjs` compares across runtimes.
 
 **The satisfied rule.** A unit whose status is `done` or `dropped` is
 *satisfied*: it is removed from the graph, and every edge pointing at it is
@@ -530,8 +575,9 @@ shiftwork_plan, .shiftwork/checkpoint-workplan.json with W1..W6 done:
 
 That first line is also the honest self-assessment of this feature: the job that
 built the planner was itself dispatched as eight serial units, because
-`shiftwork_clock_in` only ever hands back the cursor unit. Its own planner says
-three of those eight could have gone at once.
+`shiftwork_clock_in` only ever handed back the cursor unit. Its own planner says
+three of those eight could have gone at once. That is the gap job60 closed, and
+the next section is the closing of it.
 
 **What the tools do NOT decide.** `depends_on` encodes *logical* order, not file
 contention. A batch these tools call parallel may still hold two units that
@@ -546,6 +592,164 @@ responsible for what it actually dispatches.
 The checkpoint reader is `shiftwork.plan_batches` / `planBatches`, and the two
 are compared by the `workplan` suite (`node tools/conformance/run.mjs --suite
 workplan`).
+
+### Spending the width: `clock_in(unit_id)` (job60)
+
+The batch view shipped announcing a `width` the dispatch surface gave no way to
+spend. `shiftwork_plan` answered `ready` from `depends_on`; `shiftwork_clock_in`
+answered from `plan.cursor`, a pointer `clock_out` advanced in `plan.units`
+order with `depends_on` ignored. Two surfaces reading one document in two
+different orders, which cost two things: a two-wide batch could be *seen* and
+not *dispatched*, and — the sharper one — the cursor could land on a unit whose
+dependencies had not run, handing an agent work whose inputs did not exist yet,
+with no refusal and no warning. Since job60 the two orders are one order.
+
+**`clock_in` takes an optional `unit_id`.**
+
+```
+shiftwork_clock_in(checkpoint)            # unchanged, byte for byte: the cursor unit
+shiftwork_clock_in(checkpoint, unit_id)   # that unit, IF the graph says it is ready
+```
+
+Omitting it is the whole prior contract, including its `escalate` when the
+cursor names no unit; the order of judgements above the selection is unmoved, so
+no existing refusal changed its place or its wording. Given, `unit_id` must name
+a member of `ready` — the same list `shiftwork_plan` publishes for the same
+bytes, recomputed on the document as read. **One** refusal covers both ways that
+can fail, because they are one property — the unit is not ready — and a
+`unit_id` that names no unit at all is the limiting case of it rather than a
+second thing to spell:
+
+```json
+{"result": "error", "reason": "unit N3 is not ready; ready is N1, N2"}
+```
+
+`ready` is joined with `", "` in batch order, and it is in the sentence because
+the caller's next move is to pick from it. It can never be empty there: the
+all-terminal check above it has already answered `success` for a plan with no
+non-terminal unit, so no sentence is written for a case that cannot be reached.
+A refusal from the batch view *itself* — a cycle, an unknown dependency, an
+unreadable file — passes through verbatim, in the three sentences listed above.
+
+**A dangling `plan.cursor` is now escapable, and that is deliberate.** A pointer
+naming no unit still `escalate`s on the default path, with the sentence it has
+always had (`cursor <id> names no unit`) — that judgement sits above the
+selection and job60 did not move it. But naming a ready unit proceeds anyway, on
+the same bytes, because the graph is readable whatever the pointer says: a
+broken pointer no longer stops a wave the graph permits. It is the one existing
+refusal this job made conditional without changing a word of it, so it is pinned
+by its own conformance session rather than left as a behaviour both runtimes
+happen to share.
+
+**`clock_in` still never writes `plan.cursor`.** A wave of N briefs leaves the
+pointer exactly where it was; `clock_out` is the only thing that moves it. The
+brief line records the unit actually briefed, so `briefed` keeps working per
+unit with no change to how it is computed — which is what lets the clock-out
+side widen with no new field anywhere, and why the checkpoint schema
+(`assets/schemas/shiftwork-checkpoint.json`) is untouched by this job.
+
+**`clock_out` accepts the cursor unit OR a unit briefed since its own last
+clock-out.** That is the `briefed` value defined in *Clock-in writes too* above
+— measured by the runtime off `<checkpoint>.log.jsonl` and never taken from the
+caller, so the gate and the record cannot disagree about a unit. The widening is
+what makes a wave spendable: N briefs are issued against one cursor, so if only
+the cursor could clock out, the other N−1 results would have nowhere to go. A
+unit that was never dispatched still cannot clock out.
+
+**The refusal sentence still says "is not the cursor unit", and that is
+deliberate:**
+
+```json
+{"result": "error", "reason": "unit N3 is not the cursor unit N1"}
+```
+
+It is kept byte for byte — widened meaning, unwidened wording — so that every
+ruled case pinning it stays green, and this paragraph is where the fuller
+meaning lives. Read it as *"N3 is neither the cursor unit nor a unit this
+checkpoint's ledger says was briefed since its own last clock-out"*. The cursor
+is the half named because it is the half a caller can see without reading the
+ledger. (A `unit_id` naming no unit in the plan is still refused earlier and
+separately, `unit N3 is not in the plan`, unchanged.)
+
+**Cursor advance follows the graph.** After the status is applied, on the
+document as just mutated, `clock_out` sets `plan.cursor` to:
+
+1. `ready[0]` of the batch view recomputed on that document — the value
+   `shiftwork_plan` would publish for the same bytes; else
+2. the first remaining non-terminal unit in `plan.units` order. Reachable only
+   when the graph cannot batch at all — a cycle, an unknown dependency — because
+   `ready` is computed over exactly those remaining units. It exists so such a
+   checkpoint can still be driven to its end: clock-out *records*, and a
+   recording surface does not acquire a new way to refuse; else
+3. `unit_id`, unchanged from before this job.
+
+On a linear chain `ready[0]` is `remaining[0]`, so a plan whose units are
+declared in dependency order — which is every plan written in this repository
+before job60 — keeps every cursor value it had.
+
+**A worked wave, measured 2026-09-20** by driving the same three-unit checkpoint
+through **both** runtimes — `runtime-py`'s module and `runtime-ts/dist` — which
+answered this line for line. `N1` and `N2` are independent, `N3` depends on
+both, all three are `todo`, and the cursor is `N1`:
+
+```
+shiftwork_plan              -> {"result":"plan","batches":[["N1","N2"],["N3"]],
+                                "ready":["N1","N2"],"width":2,"cursor":"N1"}
+clock_in()                  -> brief N1                              cursor N1
+clock_in(unit_id="N2")      -> brief N2                              cursor N1
+clock_in(unit_id="N3")      -> error: unit N3 is not ready; ready is N1, N2
+clock_in(unit_id="N9")      -> error: unit N9 is not ready; ready is N1, N2
+   ... both agents run in parallel, N2 finishes first ...
+clock_out("N2", done)       -> {"result":"ok","cursor":"N1"}         cursor N1
+shiftwork_plan              -> ready ["N1"], width 1, cursor "N1"
+clock_out("N3", done)       -> error: unit N3 is not the cursor unit N1
+clock_out("N1", done)       -> {"result":"ok","cursor":"N3"}         cursor N3
+clock_in()                  -> brief N3                              cursor N3
+```
+
+Four things in that trace are the point of the feature. The two `clock_in`s hand
+out two different units. Neither moves the cursor. `N2` clocks out before `N1`
+and is accepted although the cursor never pointed at it, because the ledger says
+it was briefed — while `N3`, briefed to nobody, is refused by the same gate one
+line later. And the last cursor is `N3` because the graph says so, not because
+`N3` is next in `plan.units`.
+
+**The workaround this retires.** Before job60 a two-wide wave could only be
+dispatched by leaving the tools: clock the first unit out at `in_progress` as a
+dispatch-only record, then edit `plan.cursor` to the second unit **by hand** in
+the checkpoint file — because `clock_in` only ever returned the cursor unit and
+`clock_out` advanced the cursor only on a terminal status. The alternative was
+worse: declaring a running unit `done` falsifies the ledger. Its last use was
+this job's own two runtime halves, dispatched together: the ledger line that
+did the dispatching says so in its own words — *"Dispatch line, not a cost
+line: U2 is still running, so tokens and `duration_ms` are written 0 and the
+measured figures land on U2's terminal clock-out"* — and then `plan.cursor` was
+edited by hand to the Node half. That ledger lives under `.shiftwork/`, which
+this repository gitignores, so it is quoted here rather than cited: a path no
+reader can open is not evidence. The same dispatch is now
+`shiftwork_clock_in(checkpoint, unit_id="U3")`, and nothing edits the file.
+
+**The gate.** Seven conformance sessions in
+`tools/conformance/suites/shiftwork.mjs` compare the two runtimes over this
+surface — the disagreement state, the wave, both refusals, the default path and
+the dangling cursor. They are built on documents whose plan order and graph
+order *disagree*, and the suite prints what they pin: 43 per-side cases over
+those 7 sessions, on top of the differential rows, because the differential
+alone is blind to a sentence paraphrased on both sides. The corpus gap that hid
+the defect is worth naming, because it is the shape a future case must avoid:
+every checkpoint already in the suite declares its units in dependency order, so
+`cursor` equals `ready[0]` at every step, and `clock_in(unit_id)` could only
+ever have been handed the unit `clock_in()` would have picked anyway. A case
+that asserts each field against itself cannot see this class of bug; the one
+that does asserts the two fields against *each other*.
+
+```
+node tools/conformance/run.mjs --suite shiftwork
+PASS: 1697 cases, 1105 byte-identical, 0 exact-string, 592 structural, 1 ruled-different, 0 failures
+```
+
+Both runtimes agreed on every new case, so job60 adds no row to
+[porting.md](porting.md)'s divergence table.
 
 ## Conventions and future work
 

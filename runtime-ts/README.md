@@ -31,6 +31,7 @@ intentional difference written down as a ruling.
 | [Memory stores are layered by default](#memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
 | [The asset pack](#the-asset-pack) | What ships in `assets/` and how it is found |
 | [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; concurrent writes, one hand-edit to avoid |
+| [Module API](#module-api) | Importing the package as a library, and the one break in `clockIn` |
 | [Development](#development) | Build, test, conformance |
 | [Measurements and history](#measurements-and-history) | Where the measured numbers behind this page live |
 
@@ -404,6 +405,31 @@ are deliberate and each is ruled in the
   `description: 2026` is a YAML integer. Python interpolates it and carries on; this port refuses
   the whole store with `malformed fact file …`. Quote it: `description: '2026'`. Every fact the
   tools *write* is quoted correctly (`src/memory/factfile.ts:257`).
+
+## Module API
+
+The package is a server first, but `main` and `types` point at `dist/index.js` and
+`dist/index.d.ts`, so `import { clockIn } from 'bantamkit-mcp'` is a supported call and the
+exported arities are part of what is published. `src/index.ts` re-exports the memory, asset,
+event-log and shift-work surfaces; the shift-work names are `clockIn`, `clockOut`, `status`,
+`timestamp`, `HISTORY_RING_SIZE`, `SCHEMA_NAME`, `TERMINAL_UNIT_STATUS` and the type
+`ClockOptions`.
+
+**One of them changed shape.** `clockIn` took a unit id as its **second positional parameter**,
+ahead of the options object:
+
+```ts
+clockIn(checkpoint: string, unitId: string | null = null, options: ClockOptions = {}): PyValue
+```
+
+A caller who wrote `clockIn(path, { now })` must now write `clockIn(path, null, { now })`, and
+`clockIn(path, 'U3')` briefs a named ready unit. TypeScript rejects the old shape at the type;
+plain JavaScript does not — the object lands in the id slot, the call asks for a unit named
+`[object Object]`, and `now` is dropped, which is a wrong answer rather than an error.
+`clockOut` is unchanged. The reasoning and the measurement behind it are in
+[docs/porting.md → The published export surface](https://github.com/Ink01101011/bantamkit/blob/main/docs/porting.md#the-published-export-surface-and-the-one-break-in-it);
+`docs/` is not in the npm tarball (`files: ["dist", "assets"]`), which is why the migration line
+is repeated here.
 
 ## Development
 

@@ -29,7 +29,7 @@ since the whole property under test is what bytes land on disk.
 
 A call is one of
 
-    {"fn": "clock_in"}
+    {"fn": "clock_in", "unit_id": str|null}
     {"fn": "status"}
     {"fn": "clock_out", "unit": str, "status": str, "now": float,
      "handoff_patch": b64_json_text|null, "history_entry": b64_json_text|null,
@@ -174,7 +174,7 @@ def main() -> None:
                     steps.append({"result": b64("null"), "checkpoint": None, "log": None, "tmp_left": False})
                     continue
                 if fn == "clock_in":
-                    answer = shiftwork.clock_in(target)
+                    answer = shiftwork.clock_in(target, call.get("unit_id"))
                 elif fn == "status":
                     answer = shiftwork.status(target)
                 elif fn == "clock_out":

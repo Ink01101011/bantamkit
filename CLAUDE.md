@@ -81,5 +81,29 @@ written before this job is unaffected. Enforced in both runtimes and gated by
 38 per-side cases in `node tools/conformance/run.mjs --suite shiftwork`; see
 `docs/shiftwork.md`.
 
+**Amendment 2026-09-20 (job60, waves).** Step 2 above reads as a strictly
+sequential loop, and until this job it was one: `shiftwork_clock_in` only ever
+returned `plan.cursor`, so dispatching two units at once meant leaving the tools
+— a dispatch-only clock-out at `in_progress` and then editing `plan.cursor` by
+hand in the checkpoint file. As of this job the step is still per unit, but a
+whole wave may run through it at once. `shiftwork_clock_in` takes an optional
+`unit_id`; a unit named there must be one `shiftwork_plan` reports as `ready`,
+and anything else is refused with `unit <id> is not ready; ready is <list>`
+before any brief is issued. Clock-in still never writes `plan.cursor`, so N
+briefs leave the pointer where it was. `shiftwork_clock_out` now takes back the
+cursor unit **or** any unit briefed since its own last clock-out — measured by
+the runtime off `<checkpoint>.log.jsonl`, never reported by the orchestrator —
+so a wave clocks out in whatever order it finishes; a unit that was never
+dispatched is still refused, and that refusal keeps its existing sentence
+(`unit <id> is not the cursor unit <cursor>`) byte for byte so every case
+pinning it stays green. And `plan.cursor` now advances to `ready[0]` of the
+graph recomputed on the mutated document, so the pointer can no longer land on a
+unit whose dependencies have not run; the `plan.units` fallback is reachable only
+when the graph cannot batch at all. A caller that never passes `unit_id` is
+unaffected, and no checkpoint field was added. Enforced in both runtimes and
+gated by 43 per-side cases over 7 sessions in `node tools/conformance/run.mjs
+--suite shiftwork` (PASS 1697 cases, 0 failures); see `docs/shiftwork.md`,
+*Spending the width*.
+
 Exempt: one-off ad-hoc spawns (a single search or review with no plan
 behind it) — no unit to clock.
