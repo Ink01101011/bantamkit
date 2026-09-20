@@ -24,7 +24,7 @@ two sources and agreed they match — which is the check that has never once cau
 difference that mattered. Every defect this job found in the port was found by running both
 sides, not by reading either.
 
-## The twenty-one suites
+## The twenty-two suites
 
 | suite | what it compares |
 |---|---|
