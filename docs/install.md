@@ -322,7 +322,7 @@ claude mcp remove bantamkit -s user
 npx -y bantamkit-mcp@latest --install claude
 ```
 
-### Hooks are a separate step, and it asks: `--install-hooks` (job62, 2026-09-20)
+### Hooks are a separate step, and BOTH flags ask: `--install-hooks`, `--remove-hooks` (job62, 2026-09-20)
 
 `--install <host>` registers the MCP SERVER and nothing else. The hooks — the automatic half
 of the toolbox, seven entries in `~/.claude/settings.json` that run on every session start,
@@ -330,7 +330,7 @@ every prompt and every tool call — are a second consent, so they are a second 
 
 ```bash
 npx -y bantamkit-mcp@latest --install-hooks     # asks, then writes
-npx -y bantamkit-mcp@latest --remove-hooks      # takes them back out
+npx -y bantamkit-mcp@latest --remove-hooks      # asks, then takes them back out
 ```
 
 Both flags exist on both runtimes with the same sentences; on a pip install the same two are
@@ -338,14 +338,31 @@ Both flags exist on both runtimes with the same sentences; on a pip install the 
 interpreter and entry point of the install that should run, by absolute path, which is the
 same divergence `--install`'s recorded command has and for the same reason (`docs/porting.md`).
 
-**It refuses rather than guessing when it cannot ask.** With no terminal and no `--yes` it
-prints its refusal on stderr, writes nothing, and **exits 2** — measured 2026-09-20, identical
-on both runtimes, with `~/.claude` not even created. That is the state a CI job or any
-non-interactive caller hits, and `--yes` is how such a caller says yes in advance:
+**Removal asks too, and that is a user ruling, not a preference.** Until 2026-09-20
+`--remove-hooks` rewrote `~/.claude/settings.json` with no terminal, no `--yes` and exit 0 —
+and it did exactly that to the operator's own file. The user ruled that removal takes the
+same gate as installation. Both flags now behave identically here.
+
+**They refuse rather than guessing when they cannot ask.** With no terminal and no `--yes`
+each prints its refusal on stderr, writes nothing, and **exits 2** — measured 2026-09-20 for
+`--install-hooks` (with `~/.claude` not even created) and 2026-09-21 for `--remove-hooks`
+(with the existing file left byte-identical and no backup taken), identical on both runtimes
+in each case. That is the state a CI job or any non-interactive caller hits, and `--yes` is
+how such a caller says yes in advance to either:
 
 ```bash
 npx -y bantamkit-mcp@latest --install-hooks --yes
+npx -y bantamkit-mcp@latest --remove-hooks --yes
 ```
+
+At a terminal, declining — anything but `y`/`Y`, EOF included — writes nothing and **exits
+1**. The one state that does not ask is a removal with **nothing of ours to remove**: it
+reports `no bantamkit hooks are installed in <path>` and returns BEFORE the gate, still
+**exit 0** with no terminal and no `--yes`, so a teardown script that runs it twice does not
+start refusing. A consented removal takes a dated `.backup-<YYYY-MM-DD>` first, one file per
+day — the only reason 2026-09-20's damage was recoverable. The four states, the exact
+sentences, and the thirteen conformance cases that hold them are in
+[hooks.md](hooks.md), *`--remove-hooks` asks too*.
 
 Measured 2026-09-20 in a throwaway `HOME` seeded with a `~/.claude/settings.json` that already
 carried a `hooks` key: `--install cursor` wrote `~/.cursor/mcp.json`, recorded a command with

@@ -65,8 +65,8 @@ no longer resolve — read `runtime-ts/src/hookadapter.ts` instead; and the deta
    (see *The stale-install signal*), which is Node-only for the reason recorded in
    `docs/porting.md`'s divergence table.
 4. **You no longer write the registration by hand.** `--install-hooks` writes the seven
-   entries after asking, and `--remove-hooks` takes them back out; see *Registering the hooks*
-   below. The `node tools/hooks/install.mjs` lines at the top of this page still work in a
+   entries after asking, and `--remove-hooks` takes them back out — after asking too, since
+   2026-09-20; see *Registering the hooks* below. The `node tools/hooks/install.mjs` lines at the top of this page still work in a
    checkout and are still unconditional, unasked and backup-less — which is why they are not
    the documented route any more.
 
@@ -76,7 +76,7 @@ Two paired flags, on both runtimes, byte for byte:
 
       --install-hooks       add bantamkit's hook entries to ~/.claude/settings.json, then exit
       --remove-hooks        take bantamkit's hook entries back out of ~/.claude/settings.json, then exit
-      --yes                 with --install-hooks, say yes in advance instead of being asked
+      --yes                 with --install-hooks or --remove-hooks, say yes in advance instead of being asked
 
 > the three rows as printed, from `env -u COLUMNS COLUMNS=400 node runtime-ts/dist/cli.js -h`
 > and from `env -u COLUMNS COLUMNS=400 python -m bantamkit.mcpserver -h`. The two full `-h`
@@ -110,8 +110,8 @@ even created:
     There is no terminal here, so nothing was written. Re-run it at a prompt, or pass
     --yes to say yes in advance.
 
-`--yes` outside `--install-hooks` is itself a refusal: `--yes is only meaningful with
---install-hooks`, exit 1.
+`--yes` outside those two flags is itself a refusal: `--yes is only meaningful with
+--install-hooks or --remove-hooks`, exit 1 (printed 2026-09-21 on both runtimes).
 
 **What is written.** Seven entries — `SessionStart`, `PreToolUse`, `PostToolUse`,
 `UserPromptSubmit`, `PreCompact`, `PostCompact`, `Stop`, in that order, which is the order
@@ -125,14 +125,98 @@ with a case: `docs/porting.md`, *`--install`'s recorded command*, and
 `install-hooks: the recorded command — each runtime registers ITSELF, by absolute path` in
 `tools/conformance/suites/hooks.mjs`.
 
-**`--remove-hooks` is the same write in reverse**, and says so when there is nothing to do:
-`no bantamkit hooks are installed in <path>`, exit 0. A removal that does remove something
-takes a `.backup-<date>` first and ends, like the install, with `restart Claude Code (or run
-/hooks) for this to take effect` — a running host has already loaded its hook table.
+### `--remove-hooks` asks too (2026-09-20, job62 / J62-19, J62-20, J62-21)
 
-**The gate.** 42 cases in `node tools/conformance/run.mjs --suite hooks`, of which eight cover
-`--install-hooks` and two cover the no-terminal refusal per side; 39 unit cases per runtime in
-`runtime-ts/test/hostinstall-hooks.test.mjs` and `runtime-py/tests/test_hostinstall_hooks.py`.
+**This page used to call removal "the same write in reverse" and describe no gate on it. That
+was wrong, and it is not a design preference that changed it — the user ruled it.** RULING
+Q3.7, written during this job's own spec pass, said `--remove-hooks` needed no consent prompt.
+The user OVERTURNED it on 2026-09-20, after the un-gated flag rewrote the operator's real
+`~/.claude/settings.json` with no terminal, no `--yes` and exit 0, on BOTH runtimes. A removal
+is a rewrite of the file that decides what runs on every tool call, and taking entries out
+changes the host exactly as much as putting them in. So removal now takes the SAME three-state
+gate as `--install-hooks`, and `--yes` is what says yes in advance to either — which is why
+the `--yes` help row above names both flags.
+
+**Four states, and only two of them write.** Measured 2026-09-21 on both runtimes in a
+throwaway `HOME` — both `HOME` and `USERPROFILE` redirected, and the redirect asserted from
+inside each runtime by a non-writing `--remove-hooks` naming the sandboxed path before
+anything was seeded — against a `settings.json` carrying bantamkit's seven entries plus one
+foreign `Stop` entry:
+
+| state | what happens | exit |
+|---|---|---|
+| **nothing of ours to remove** | `no bantamkit hooks are installed in <path>` on stdout, stderr empty, nothing written. **This returns BEFORE the gate**, so it never asks: a teardown script that runs `--remove-hooks` twice does not start refusing on the second run | **0** |
+| **no terminal and no `--yes`** | **REFUSED.** Nothing on stdout, the refusal on stderr, the file byte-identical, no backup taken | **2** |
+| **a terminal, declined** — anything but `y`/`Y`, EOF included, because `[y/N]` defaults to no | `no hooks were removed` on stderr, the file byte-identical, no backup taken | **1** |
+| **consented** — `y`/`Y` at a terminal, or `--yes` with no terminal at all | the four-line plan on stderr, a dated backup, one atomic write, the report on stdout | **0** |
+
+The refusal, on **stderr**, identical on both sides:
+
+    --remove-hooks rewrites your ~/.claude/settings.json and needs a terminal to ask.
+    There is no terminal here, so nothing was written. Re-run it at a prompt, or pass
+    --yes to say yes in advance.
+
+It is `--install-hooks`' refusal with two words changed — the flag and `rewrites` for
+`writes` — because on each side both are built from ONE template, so the `--install-hooks`
+sentence quoted above is still byte-for-byte what it always was.
+
+The question, on **stderr**, only where there is a terminal (trailing space, no newline):
+
+    Remove these hook entries? [y/N] 
+
+The plan printed before the gate is **four lines, where the install's is five**: removal never
+names a command, because it does not write one. Printed 2026-09-21:
+
+    bantamkit would remove 7 hook entries from <path>
+      events : SessionStart PreToolUse PostToolUse UserPromptSubmit PreCompact PostCompact Stop
+      backup : <path>.backup-<YYYY-MM-DD>
+    Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.
+
+The count is ENTRIES, not events, and `events :` names only the events that lose one. A
+removal that does remove something ends, like the install, with `restart Claude Code (or run
+/hooks) for this to take effect` — a running host has already loaded its hook table. Every
+foreign entry and every non-`hooks` key survives byte for byte; an event left with none of
+ours loses its KEY rather than holding an empty list.
+
+**The dated backup stays, and it is the reason today's damage was recoverable.** A consented
+removal copies the file to `<path>.backup-<YYYY-MM-DD>` before it writes. That copy is the
+only reason the un-gated removal of 2026-09-20 could be undone: the repaired
+`~/.claude/settings.json` is byte-identical to `~/.claude/settings.json.backup-2026-09-20`.
+Measured 2026-09-21 on both runtimes, the backup holds the PRE-REMOVAL bytes exactly — sha256
+of the backup equals sha256 of the file as it stood before the removal ran. **It is one file
+per day**, so a second removal on the same day overwrites the first copy instead of adding
+one. That is why a COUNT of backup files is not evidence that a backup was taken: J62-20
+measured both `backups: 1` and `backupsAdded: 1` surviving the backup being deleted outright,
+and the conformance case therefore pins the backup's CONTENTS.
+
+**The gate.** `node tools/conformance/run.mjs --suite hooks` prints **69 cases, 7
+ruled-different, 0 failures** (2026-09-21). Eight of the 69 cover `--install-hooks` and two
+its no-terminal refusal per side. **Thirteen are `--remove-hooks`' own**, added by J62-20 —
+the flag had none in either direction before — and they are the four states above, each
+refusal carrying the per-side literal a differential over a bit cannot replace:
+
+- `remove-hooks-noop: nothing of ours — the same report, the same streams, the same exit`,
+  with `remove-hooks-noop: exit 0 with NO terminal and NO --yes, against a literal` per side
+- `remove-hooks-no-tty: the same refusal, on the same stream, with the same exit code`, with
+  `remove-hooks-no-tty: it REFUSED and wrote nothing, against a literal` per side
+- `remove-hooks-declined: the same question, the same refusal, the same exit code, at one pty`,
+  with `remove-hooks-declined: it ASKED, was told no, and wrote nothing, against a literal`
+  per side — driven over ONE `pty.openpty()` from `tools/conformance/ref/cli_tty_ref.py`,
+  allocated by the harness and handed to whichever side is measured, so a difference in the
+  answers cannot be a difference between two fakes
+- `remove-hooks-yes: stdout, stderr and exit — the four-line plan and the report`,
+  `remove-hooks-yes: the settings.json left behind, byte for byte`, and
+  `remove-hooks-yes: only ours came out, and a backup was taken, against a literal` per side
+
+**Nothing in the removal is ruled different**, so `docs/porting.md` owes it no row: the same
+four states, the same exit codes, the same sentences, the same streams, the same four-line
+plan. Each state builds its OWN freshly seeded pair of homes — the first draft shared one
+pair, and eight of the thirteen cases were vacuous because the first state emptied the file
+that every later state then compared.
+
+Unit cases beside them, printed 2026-09-21: **56** in
+`runtime-ts/test/hostinstall-hooks.test.mjs` and **57** in
+`runtime-py/tests/test_hostinstall_hooks.py` (39 per runtime before this change).
 
 
 ## Why it exists — measured, 2026-08-27

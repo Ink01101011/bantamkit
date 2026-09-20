@@ -982,7 +982,9 @@ and J62-3B as `runtime-py/src/bantamkit/hookadapter.py` — so the pin-reading
 paragraph above describes BOTH runtimes, and the registration walk, the
 refusals and the `warn` log line are ported rather than mirrored in prose.
 There are conformance cases now: `node tools/conformance/run.mjs --suite hooks`
-drives 42 of them as real processes over both runtimes. What the paragraph above
+drives 42 of them as real processes over both runtimes (**AMENDED 2026-09-21,
+J62-21: 69, after J62-10's fourteen and J62-20's thirteen for
+`--remove-hooks`' consent gate**). What the paragraph above
 still gets right is the exclusion: `${VAR}` expansion in `.mcp.json` values is
 the host's, not the hook's, and a pin that needs it is refused as relative on
 both sides rather than resolved to the wrong store.
