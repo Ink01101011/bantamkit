@@ -146,7 +146,7 @@ test('the plan is the ruled five lines, in the ruled order', async () => {
     assert.ok(plan[2].startsWith('  command: '), plan[2]);
     assert.ok(plan[2].endsWith(' --hook'), plan[2]);
     assert.equal(plan[3], `  backup : ${path}.backup-${stamp}`);
-    assert.equal(plan[4], 'Existing hooks are left byte-for-byte; only entries naming bantamkit are replaced.');
+    assert.equal(plan[4], "Existing hooks are left byte-for-byte; only bantamkit's own entries are replaced.");
   });
 });
 
@@ -396,7 +396,7 @@ test('the removal plan is the four ruled lines, in order', async () => {
     assert.match(lines[2], /^ {2}backup : .*\.backup-\d{4}-\d{2}-\d{2}$/);
     assert.equal(
       lines[3],
-      'Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.',
+      "Existing hooks are left byte-for-byte; only bantamkit's own entries are removed.",
     );
     assert.equal(lines[4], '', 'the plan must end with exactly one newline');
     assert.equal(lines.length, 5, printed);
@@ -809,4 +809,137 @@ test('--mcp-report --install-hooks prints a report and writes no settings file',
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ====================================================================================
+// OWNERSHIP IS A PROPERTY OF THE ENTRY, NOT OF WHERE THE BINARY SITS  (J62-22)
+// ====================================================================================
+//
+// `isOurs` used to be `dumps(entry, null, true).includes('bantamkit')`. `thisCommand()` returns
+// `process.execPath` plus `<dir>/cli.js`, and the only `bantamkit` in that is whatever the
+// INSTALL PATH carries. Every checkout on the machine this was written on is called
+// `bantamkit*`, so it looked right. MEASURED from a copy of `dist/` at a neutral path: three
+// `--install-hooks --yes` left TWENTY-ONE entries instead of seven, and `--remove-hooks --yes`
+// then answered `no bantamkit hooks are installed` over the file it had just filled. An npm
+// install under another name, a Docker image with `dist/` at `/app/dist/`, and any vendored
+// build all reach it; `runtime-py` never could, because its command always names the product.
+//
+// THE PREDICATE IS NOT EXPORTED AND THESE CASES DO NOT REACH FOR IT. Every one goes through
+// `installHooks`/`removeHooks` and reads the bytes, because "would this entry be claimed" is
+// only interesting as "is this entry still in the operator's file afterwards".
+
+/** What 0.35.4 writes from an install path that carries no `bantamkit` anywhere. */
+const NEUTRAL_MARKED = {
+  type: 'command',
+  command: '/opt/vendor/bin/node /opt/vendor/app/dist/cli.js --hook',
+  timeout: 10,
+  bantamkit: 'hook',
+};
+/** What `tools/hooks/install.mjs` wrote, and what is in real settings files today. No marker. */
+const LEGACY_ADAPTER = {
+  type: 'command',
+  command: 'node /srv/checkouts/toolbox/tools/hooks/bantamkit-hook.mjs',
+  timeout: 10,
+};
+
+test('every entry this writes carries the marker, and PRESENCE is the whole test', async () => {
+  await withHome(async (h) => {
+    const { HOOK_MARKER_KEY, HOOK_MARKER_VALUE } = await import('../dist/hostinstall.js');
+    h.installHooks({ ...CHECKOUT, yes: true, tell: () => {} });
+    const hooks = readJson(h.claudeSettingsPath()).hooks;
+    assert.equal(Object.keys(hooks).length, 7);
+    for (const [event, entries] of Object.entries(hooks)) {
+      for (const entry of entries) {
+        for (const hook of entry.hooks) assert.equal(hook[HOOK_MARKER_KEY], HOOK_MARKER_VALUE, event);
+      }
+    }
+    // A RELEASE THAT WROTE A DIFFERENT VALUE MUST NOT ORPHAN WHAT THIS ONE WROTE, so the value
+    // is never read — including when it is falsy, which is the shape a `in`-test gets wrong.
+    for (const value of ['hook', '', '0.99.0', 0, false, null, { v: 1 }]) {
+      const path = h.claudeSettingsPath();
+      seed(path, `${JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: '/x/y', [HOOK_MARKER_KEY]: value }] }] } }, null, 2)}\n`);
+      const report = h.removeHooks({ yes: true, tell: () => {} });
+      assert.match(report, /^removed bantamkit hooks from /, `value ${JSON.stringify(value)} orphaned the entry`);
+    }
+  });
+});
+
+// NOT A REPRODUCTION OF THE BUG, AND SAYING SO IS THE POINT: the marker key is itself spelled
+// `bantamkit`, so the superseded substring test would have found THIS entry too. What it could
+// not find is an entry from before the marker existed written at a neutral path, and nothing in
+// such an entry names us — no entry-local test can claim it, which is why `docs/hooks.md` tells
+// the operator to delete those by hand. The reproduction that CAN fail is end to end, from a
+// copy of `dist/` at a neutral path: `hook-ownership-neutral` in `tools/conformance/suites/hooks.mjs`.
+test('an entry written from a path that never says bantamkit is still ours, and comes out', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    assert.ok(!NEUTRAL_MARKED.command.includes('bantamkit'), 'the fixture must not name us in its command');
+    seed(path, `${JSON.stringify({ model: 'opus', hooks: { PostToolUse: [{ hooks: [NEUTRAL_MARKED] }, FOREIGN] } }, null, 2)}\n`);
+    h.removeHooks({ yes: true, tell: () => {} });
+    const after = readJson(path);
+    assert.deepEqual(after.hooks, { PostToolUse: [FOREIGN] }, 'the neutral-path entry was orphaned');
+    assert.equal(after.model, 'opus');
+  });
+});
+
+test('BACKWARD COMPATIBILITY: the tools/hooks adapter entry is still recognised and removable', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    seed(path, `${JSON.stringify({ hooks: { Stop: [{ hooks: [LEGACY_ADAPTER] }, FOREIGN] } }, null, 2)}\n`);
+    h.removeHooks({ yes: true, tell: () => {} });
+    assert.deepEqual(readJson(path).hooks, { Stop: [FOREIGN] }, 'a real operator file was orphaned');
+  });
+});
+
+test('reinstalling over marked entries another build wrote leaves SEVEN, not fourteen', async () => {
+  await withHome(async (h) => {
+    const { HOOK_EVENTS } = await import('../dist/hostinstall.js');
+    const path = h.claudeSettingsPath();
+    const seeded = Object.fromEntries(
+      HOOK_EVENTS.map(([event, matcher]) => [
+        event,
+        [matcher === null ? { hooks: [NEUTRAL_MARKED] } : { matcher, hooks: [NEUTRAL_MARKED] }],
+      ]),
+    );
+    seed(path, `${JSON.stringify({ hooks: seeded }, null, 2)}\n`);
+    h.installHooks({ ...CHECKOUT, yes: true, tell: () => {} });
+    const hooks = readJson(path).hooks;
+    const entries = Object.values(hooks).flat();
+    assert.equal(entries.length, 7, 'the stale entries were duplicated instead of replaced');
+    const commands = entries.flatMap((e) => e.hooks.map((x) => x.command));
+    assert.ok(!commands.includes(NEUTRAL_MARKED.command), "a foreign build's entry survived");
+    assert.equal(new Set(commands).size, 1, 'seven events, one command');
+  });
+});
+
+for (const [label, entry] of [
+  ['a matcher that happens to say bantamkit', { matcher: 'bantamkit', hooks: [{ type: 'command', command: '/opt/acme/audit.sh' }] }],
+  ['a script the operator named after us', { hooks: [{ type: 'command', command: '/home/dev/bin/backup-bantamkit-notes.sh' }] }],
+  ['a statusMessage that mentions us', { hooks: [{ type: 'command', command: '/opt/acme/lint.sh', statusMessage: 'linting for bantamkit' }] }],
+  ['a third-party tool with its own --hook flag', { hooks: [{ type: 'command', command: '/opt/acme/acmetool --hook' }] }],
+  ['a prompt hook quoting our docs', { hooks: [{ type: 'prompt', prompt: 'is this bantamkit-hook safe?' }] }],
+]) {
+  // NOT WIDENING. The first three were CLAIMED AND DELETED by the superseded substring test.
+  test(`NOT OURS: ${label}`, async () => {
+    await withHome(async (h) => {
+      const path = h.claudeSettingsPath();
+      const before = seed(path, `${JSON.stringify({ hooks: { Stop: [entry] } }, null, 2)}\n`);
+      const report = h.removeHooks({ yes: true, tell: () => {} });
+      assert.match(report, /^no bantamkit hooks are installed in /, `${label} was claimed as ours`);
+      assert.deepEqual(readFileSync(path), before, `${label} was rewritten`);
+      assert.deepEqual(backupsIn(path), [], 'a file with nothing of ours in it was backed up');
+    });
+  });
+}
+
+test('a hand-edited entry of any shape is answered, never thrown on', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    // `readHooks` guarantees the VALUE of each event is a list; it guarantees nothing about
+    // what is IN the list, and somebody else's settings file is input, not a contract.
+    const before = seed(path, `${JSON.stringify({ hooks: { Stop: [null, 7, 'x', [], {}, { hooks: 'not a list' }] } }, null, 2)}\n`);
+    const report = h.removeHooks({ yes: true, tell: () => {} });
+    assert.match(report, /^no bantamkit hooks are installed in /);
+    assert.deepEqual(readFileSync(path), before);
+  });
 });

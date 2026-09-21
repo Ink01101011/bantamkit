@@ -170,7 +170,7 @@ names a command, because it does not write one. Printed 2026-09-21:
     bantamkit would remove 7 hook entries from <path>
       events : SessionStart PreToolUse PostToolUse UserPromptSubmit PreCompact PostCompact Stop
       backup : <path>.backup-<YYYY-MM-DD>
-    Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.
+    Existing hooks are left byte-for-byte; only bantamkit's own entries are removed.
 
 The count is ENTRIES, not events, and `events :` names only the events that lose one. A
 removal that does remove something ends, like the install, with `restart Claude Code (or run
@@ -189,8 +189,9 @@ one. That is why a COUNT of backup files is not evidence that a backup was taken
 measured both `backups: 1` and `backupsAdded: 1` surviving the backup being deleted outright,
 and the conformance case therefore pins the backup's CONTENTS.
 
-**The gate.** `node tools/conformance/run.mjs --suite hooks` prints **69 cases, 7
-ruled-different, 0 failures** (2026-09-21). Eight of the 69 cover `--install-hooks` and two
+**The gate.** `node tools/conformance/run.mjs --suite hooks` prints **81 cases, 7
+ruled-different, 0 failures** (2026-09-21; it printed 69 when this paragraph was written and
+J62-22 added twelve more below). Eight of the 69 cover `--install-hooks` and two
 its no-terminal refusal per side. **Thirteen are `--remove-hooks`' own**, added by J62-20 —
 the flag had none in either direction before — and they are the four states above, each
 refusal carrying the per-side literal a differential over a bit cannot replace:
@@ -214,9 +215,90 @@ plan. Each state builds its OWN freshly seeded pair of homes — the first draft
 pair, and eight of the thirteen cases were vacuous because the first state emptied the file
 that every later state then compared.
 
-Unit cases beside them, printed 2026-09-21: **56** in
-`runtime-ts/test/hostinstall-hooks.test.mjs` and **57** in
-`runtime-py/tests/test_hostinstall_hooks.py` (39 per runtime before this change).
+Unit cases beside them, printed 2026-09-21: **66** in
+`runtime-ts/test/hostinstall-hooks.test.mjs` and **74** in
+`runtime-py/tests/test_hostinstall_hooks.py` (39 per runtime before J62-20; 56 and 57 after
+it, and the rest are J62-22's below).
+
+
+### Which entries are ours (2026-09-21, job62 / J62-22)
+
+**Until this fix, bantamkit could write hook entries into a user's settings that neither
+runtime could ever remove, and that duplicated without bound on every reinstall.** One line
+in each runtime decided ownership — `dumps(entry, null, true).includes('bantamkit')`, and its
+Python twin — by asking whether the entry's JSON happened to contain the product's name. The
+Node command is `process.execPath` plus `<dir>/cli.js`, so the only `bantamkit` in it is
+whatever the **install path** carries. Every checkout on the machine this was developed on is
+called `bantamkit*`, so the test looked correct and nothing compared the two CLIs from
+anywhere else.
+
+Measured 2026-09-21 from two copies of the same `dist/`, one at a path containing the word and
+one not, `HOME` and `USERPROFILE` sandboxed and the real `~/.claude/settings.json` asserted
+unchanged at 9031 bytes throughout:
+
+| `dist/cli.js` launched from | 3× `--install-hooks --yes` | then `--remove-hooks --yes` |
+|---|---|---|
+| a path containing `bantamkit` | 7 entries, idempotent | removes 7, writes the dated backup |
+| a path that does **not** | **21 entries — +7 per run** | **`no bantamkit hooks are installed`** |
+
+`python -m bantamkit.mcpserver --remove-hooks --yes` gave the **same refusal** over that same
+file, so this was never "the two runtimes disagree": both runtimes shared one blind spot in one
+file they both write. The reference could not reach the *duplication* half — `this_command()`
+returns a `bantamkit-mcp*` console script or `<python> -m bantamkit.mcpserver`, so its own
+command names the product wherever it is installed — but it could not remove what the port had
+written, into the settings file the two share. It reaches an npm install under another name, a
+Docker image that copies `dist/` to `/app/dist/`, and any vendored build.
+
+**Ownership is now a property of the entry and of nothing else.** Every hook bantamkit writes
+carries a marker key on the inner hook object:
+
+    { "matcher": "Read",
+      "hooks": [ { "type": "command",
+                   "command": "/opt/vendor/bin/node /opt/vendor/app/dist/cli.js --hook",
+                   "timeout": 10,
+                   "bantamkit": "hook" } ] }
+
+**Presence of the key is the whole test; its value is never read** — so a later release that
+writes a different value cannot orphan what this one wrote, which is the bug in miniature.
+
+**Claude Code keeps it, and that was measured rather than assumed.** Two things had to hold.
+The host must not drop the key when it rewrites the file: extracted from Claude Code 2.1.278,
+the `/hooks` editor parses a hook with a non-strict zod union and then explicitly puts back
+every key the parse dropped (`for(let i of Object.keys(e))if(!(i in n.data)&&!A.has(i))a[i]=e[i]`,
+where `A` holds only `__proto__`, `constructor` and `prototype`), and the surrounding entry is
+carried through a raw spread. And the hook must still **fire** with the key there: two
+sandboxed homes with identical settings but for this key, `claude -p` pointed at a dead
+localhost so the session starts and the model call cannot leave the machine — `SessionStart`
+and `UserPromptSubmit` fired **twice on both sides**. The control is why that number means
+anything: the same probe driven through `claude mcp list` fires **nothing** on either side and
+would have "passed" vacuously.
+
+**Nothing already on disk was orphaned by the change.** An entry written by
+`tools/hooks/install.mjs` — the shape in real settings files today — names
+`bantamkit-hook.mjs` in its **filename**, so it is recognised whatever the checkout is called,
+and `--remove-hooks` still takes it out. The same goes for a pre-marker `… --hook` command that
+names bantamkit. The one population nothing can rescue is an entry written by a **pre-0.35.4
+build from a path that never said `bantamkit`**: no entry-local test can claim it because
+nothing in it names us. `--install-hooks` first ships in 0.35.4, so that population is bounded
+to this repository's own development checkouts — **if you have one, delete it by hand**; it is
+the seven-event block whose command ends in `--hook` and carries no `"bantamkit"` key.
+
+**The new test is NARROWER than the one it replaces, deliberately.** The old substring test
+claimed — and deleted — a foreign entry whose `matcher` said `bantamkit`, a script the operator
+had named `backup-bantamkit-notes.sh`, and a `statusMessage` that mentioned us. None of those
+is touched now. A third-party tool with its own `--hook` flag was never claimed and still is
+not.
+
+**The gate.** Twelve cases in `tools/conformance/suites/hooks.mjs`, and the one that reproduces
+the defect end to end is `hook-ownership-neutral`: it copies `dist/` to a path under the
+harness's temp root (asserted not to contain the word), installs three times from there and
+then removes. Against the pre-fix build the port read
+`{entriesAfterThreeInstalls: 21, entriesAfterRemoval: 21, removalFoundThem: false}` against the
+reference's `{7, 0, true}`. **Six of the twelve went red before the fix and six did not**, and
+which is which is written into the file: the seeded entry-local cases cannot reproduce the
+duplication, because the marker key is itself spelled `bantamkit` and the superseded substring
+test therefore finds a marker-bearing entry by accident. They are backward-compatibility and
+non-widening guards; the neutral-tree case is the reproduction.
 
 
 ## Why it exists — measured, 2026-08-27

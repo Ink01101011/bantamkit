@@ -404,23 +404,103 @@ def hook_command(command: str, args: list[str]) -> str:
     return shlex.join([command, *args, "--hook"])
 
 
+# THE OWNERSHIP MARKER, AND IT IS THE WHOLE OF THE ANSWER TO "is this entry ours".
+#
+# WRITTEN ON THE INNER HOOK OBJECT, not on the entry, and that placement is MEASURED rather
+# than assumed (J62-22, Claude Code 2.1.278, extracted from the binary at the `edit_hook`
+# implementation). The host parses a hook with a non-strict zod union and then, on a `/hooks`
+# edit, puts back every key the parse dropped:
+#
+#     function R(e,o){let t=o,a={};
+#       if(h(e)){let n=gSe().safeParse(e);
+#         if(n.success){for(let i of Object.keys(e))if(!(i in n.data)&&!A.has(i))a[i]=e[i]; ...}}
+#       let r={...a,...t}; ...}                // A = {"__proto__","constructor","prototype"}
+#
+# That loop is unknown-key preservation written on purpose, and the deny-list it consults holds
+# only the three prototype-pollution names. The surrounding entry is preserved too, but only
+# incidentally (`(d??[]).map((f)=>...?{...f,hooks:[...f.hooks]}:f)` -- a raw spread), so the key
+# goes where the host has code that means to keep it.
+#
+# AND THE HOOK STILL FIRES WITH IT THERE. Measured live, not reasoned from the schema: two
+# sandboxed HOMEs, identical settings but for this key, `claude -p` pointed at a dead localhost
+# so the session starts and the model call cannot leave the machine -- SessionStart and
+# UserPromptSubmit fired twice on BOTH sides. The control matters: the same probe run through
+# `claude mcp list` fires nothing on either side, and would have "passed" vacuously.
+#
+# PRESENCE IS THE TEST AND THE VALUE IS NEVER READ. A future release may want to write a
+# different value here; if the value were part of the test, that release would orphan every
+# entry the previous one wrote -- which is the exact bug this marker exists to end.
+HOOK_MARKER_KEY = "bantamkit"
+# What we write today. Informational only -- HOOK_MARKER_KEY's PRESENCE decides ownership.
+HOOK_MARKER_VALUE = "hook"
+
+
 def _hook_entry(matcher: str | None, command: str) -> dict:
     """One entry, in the shape Claude Code reads. `matcher` first, and only where there is one."""
     entry: dict = {}
     if matcher is not None:
         entry["matcher"] = matcher
-    entry["hooks"] = [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]
+    entry["hooks"] = [
+        {
+            "type": "command",
+            "command": command,
+            "timeout": HOOK_TIMEOUT,
+            HOOK_MARKER_KEY: HOOK_MARKER_VALUE,
+        }
+    ]
     return entry
 
 
-def _is_ours(entry: object) -> bool:
-    """RULING Q3.6's idempotence rule, and the whole of it: an entry is OURS when its JSON
-    mentions `bantamkit`. Every other hook the operator has is left byte-for-byte.
+def _is_legacy_ours(hook: dict) -> bool:
+    """The two command spellings bantamkit ever wrote, for entries that predate the marker.
 
-    `sort_keys` so the same entry renders the same way whatever order its keys arrived in,
-    and `json.dumps` rather than `repr` because the port compares the same rendering.
+    1. `tools/hooks/install.mjs` wrote `node <abs>/tools/hooks/bantamkit-hook.mjs`, and its own
+       ownership test was the literal `bantamkit-hook`. That token is in the FILENAME, so it is
+       there whatever the checkout is called -- this arm is path-independent and stays exact.
+    2. This module, before the marker, wrote `<interpreter> <entry point> --hook`. Recognising
+       it needs the command to name bantamkit, which is the defect itself: on an install path
+       that does not carry the word, such an entry says nothing about who wrote it and NO
+       entry-local test can claim it. `--install-hooks` never shipped (it is new in 0.35.4), so
+       that population is bounded to this repository's own development checkouts;
+       `docs/hooks.md` says so and says to delete those by hand.
+
+    BOTH ARMS ARE NARROWER THAN THE TEST THEY REPLACE, ON PURPOSE. The old one asked whether
+    the entry's JSON happened to contain `bantamkit` anywhere, so a matcher, a `statusMessage`
+    or a third-party script with the word in its filename was claimed as ours and deleted.
     """
-    return "bantamkit" in json.dumps(entry, sort_keys=True)
+    if hook.get("type") != "command":
+        return False
+    command = hook.get("command")
+    if not isinstance(command, str) or "bantamkit" not in command:
+        return False
+    return "bantamkit-hook" in command or command == "--hook" or command.endswith(" --hook")
+
+
+def _is_ours(entry: object) -> bool:
+    """RULING Q3.6's idempotence rule, RE-DECIDED ON THE ENTRY ALONE (J62-22).
+
+    It used to read `"bantamkit" in json.dumps(entry, sort_keys=True)` -- does this entry's
+    JSON happen to contain the product's name. On this machine every checkout is called
+    `bantamkit*`, so the entry's own command carried the word and the test looked correct.
+    MEASURED from an install tree whose path does not: three `--install-hooks --yes` left
+    TWENTY-ONE entries instead of seven, and `--remove-hooks --yes` then answered `no bantamkit
+    hooks are installed` on BOTH runtimes -- hook entries in a user's settings that neither
+    runtime could ever take back out, growing by seven on every reinstall. An npm install under
+    another name, a Docker image that copies `dist/` to `/app/dist/`, and any vendored build all
+    reach it.
+
+    Ownership is now a property of the ENTRY and of nothing else: our marker, or one of the two
+    shapes we wrote before the marker existed. Where any binary lives is not consulted.
+    """
+    if not isinstance(entry, dict):
+        return False
+    hooks = entry.get("hooks")
+    if not isinstance(hooks, list):
+        return False
+    return any(
+        isinstance(hook, dict) and (HOOK_MARKER_KEY in hook or _is_legacy_ours(hook))
+        for hook in hooks
+    )
 
 
 def _read_hooks(path: Path, data: dict) -> dict[str, list]:
@@ -486,7 +566,7 @@ def _hook_plan(path: Path, command: str) -> str:
     if path.exists():
         lines.append(f"  backup : {path}.backup-{date.today().isoformat()}")
     lines.append(
-        "Existing hooks are left byte-for-byte; only entries naming bantamkit are replaced."
+        "Existing hooks are left byte-for-byte; only bantamkit's own entries are replaced."
     )
     return "\n".join(lines) + "\n"
 
@@ -510,8 +590,8 @@ def _removal_plan(path: Path, events: list[str], entries: int) -> str:
                 f"bantamkit would remove {entries} hook entries from {path}",
                 f"  events : {' '.join(events)}",
                 f"  backup : {path}.backup-{date.today().isoformat()}",
-                "Existing hooks are left byte-for-byte; only entries naming bantamkit are "
-                "removed.",
+                "Existing hooks are left byte-for-byte; only bantamkit's own entries "
+                "are removed.",
             ]
         )
         + "\n"

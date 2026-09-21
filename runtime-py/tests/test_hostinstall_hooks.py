@@ -177,7 +177,7 @@ def test_the_plan_is_the_ruled_five_lines_in_the_ruled_order(home):
     assert plan[2].endswith(" --hook")
     assert plan[3] == f"  backup : {path}.backup-{date.today().isoformat()}"
     assert plan[4] == (
-        "Existing hooks are left byte-for-byte; only entries naming bantamkit are replaced."
+        "Existing hooks are left byte-for-byte; only bantamkit's own entries are replaced."
     )
 
 
@@ -422,7 +422,7 @@ def test_the_removal_plan_is_four_lines_in_the_ruled_order(home):
         f"bantamkit would remove 7 hook entries from {path}\n"
         f"  events : {hostinstall._EVENT_NAMES}\n"
         f"  backup : {path}.backup-{date.today().isoformat()}\n"
-        "Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.\n"
+        "Existing hooks are left byte-for-byte; only bantamkit's own entries are removed.\n"
     )
 
 
@@ -854,3 +854,180 @@ def test_at_a_real_terminal_only_y_removes(tmp_path, answer, removes):
         assert "no hooks were removed" in out, out
         assert "\nEXIT 1\n" in out, out
         assert path.read_bytes() == before, "a terminal refusal rewrote the settings file"
+
+
+# ==================================================================================================
+# OWNERSHIP IS A PROPERTY OF THE ENTRY, NOT OF WHERE THE BINARY SITS  (J62-22)
+# ==================================================================================================
+#
+# `_is_ours` used to be `"bantamkit" in json.dumps(entry)`. Every checkout on the machine this
+# was written on is called `bantamkit*`, so an entry's own command carried the word and the test
+# looked right. From an install tree whose path does not -- an npm install under another name, a
+# Docker image with `dist/` at `/app/dist/`, a vendored build -- three `--install-hooks --yes`
+# left TWENTY-ONE entries instead of seven and `--remove-hooks --yes` then said `no bantamkit
+# hooks are installed`, on BOTH runtimes.
+#
+# THE REFERENCE COULD NEVER REACH THE DUPLICATION ITSELF and that is worth saying out loud:
+# `this_command()` returns a `bantamkit-mcp*` console script or `<python> -m bantamkit.mcpserver`,
+# so the word is in the reference's command whatever path it was installed at. What the reference
+# COULD do, and did, was fail to remove an entry the PORT wrote from a neutral path -- into the
+# same `~/.claude/settings.json` both runtimes share. These tests are over the entries.
+
+# What 0.35.4 writes from an install path that carries no `bantamkit` anywhere.
+NEUTRAL_MARKED = {
+    "type": "command",
+    "command": "/opt/vendor/bin/node /opt/vendor/app/dist/cli.js --hook",
+    "timeout": 10,
+    "bantamkit": "hook",
+}
+# What `tools/hooks/install.mjs` wrote, and what is in real settings files today. No marker.
+LEGACY_ADAPTER = {
+    "type": "command",
+    "command": "node /srv/checkouts/toolbox/tools/hooks/bantamkit-hook.mjs",
+    "timeout": 10,
+}
+
+
+def test_every_entry_this_writes_carries_the_marker_and_presence_is_the_whole_test(home):
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+
+    hooks = read_json(hostinstall.claude_settings_path())["hooks"]
+    assert len(hooks) == 7
+    for event, entries in hooks.items():
+        for entry in entries:
+            for hook in entry["hooks"]:
+                assert hook[hostinstall.HOOK_MARKER_KEY] == hostinstall.HOOK_MARKER_VALUE, event
+
+    # THE VALUE IS NEVER READ. A release that wrote a different one must not orphan what this
+    # one wrote, so ownership must survive any value at all -- including a falsy one.
+    for value in ["hook", "", "0.99.0", 0, False, None, {"v": 1}]:
+        hook = {"type": "command", "command": "/x/y", hostinstall.HOOK_MARKER_KEY: value}
+        entry = {"hooks": [hook]}
+        assert hostinstall._is_ours(entry), value
+
+
+def test_an_entry_written_from_a_path_that_does_not_say_bantamkit_is_still_ours(home):
+    """The defect, at the level it is decided. The old test answered False for this entry."""
+    assert "bantamkit" not in NEUTRAL_MARKED["command"]
+    assert hostinstall._is_ours({"matcher": "Read", "hooks": [NEUTRAL_MARKED]})
+    # ... and the superseded test really did miss it, which is why this is not a tautology.
+    assert "bantamkit" in json.dumps({"hooks": [NEUTRAL_MARKED]}), "only because of the marker key"
+    assert "bantamkit" not in json.dumps(
+        {"hooks": [{k: v for k, v in NEUTRAL_MARKED.items() if k != "bantamkit"}]}
+    ), "strip the marker and the old substring test has nothing left to find"
+
+
+def test_the_legacy_tools_hooks_adapter_is_still_recognised_and_removable(home):
+    """BACKWARD COMPATIBILITY. These entries are in real settings files right now."""
+    path = hostinstall.claude_settings_path()
+    seed(
+        path,
+        json.dumps(
+            {"model": "opus", "hooks": {"Stop": [{"hooks": [LEGACY_ADAPTER]}, FOREIGN]}}, indent=2
+        )
+        + "\n",
+    )
+
+    report = hostinstall.remove_hooks(tell=lambda _text: None, yes=True)
+
+    after = read_json(path)
+    assert after["hooks"] == {"Stop": [FOREIGN]}, "the legacy adapter entry was orphaned"
+    assert report.startswith(f"removed bantamkit hooks from {path}")
+
+
+def test_removal_takes_out_a_neutral_path_entry_the_other_runtime_wrote(home):
+    """ONE settings file, two runtimes. The port writes it; the reference must take it back out."""
+    path = hostinstall.claude_settings_path()
+    seed(
+        path,
+        json.dumps({"hooks": {"PostToolUse": [{"hooks": [NEUTRAL_MARKED]}, FOREIGN]}}, indent=2)
+        + "\n",
+    )
+
+    hostinstall.remove_hooks(tell=lambda _text: None, yes=True)
+
+    assert read_json(path)["hooks"] == {"PostToolUse": [FOREIGN]}
+
+
+def test_reinstalling_over_marked_entries_another_build_wrote_leaves_seven_not_fourteen(home):
+    """IDEMPOTENCE, the other half of the same defect -- the half the `21` came from."""
+    path = hostinstall.claude_settings_path()
+    seed(
+        path,
+        json.dumps(
+            {
+                "hooks": {
+                    event: [
+                        {"hooks": [NEUTRAL_MARKED]}
+                        if matcher is None
+                        else {"matcher": matcher, "hooks": [NEUTRAL_MARKED]}
+                    ]
+                    for event, matcher in hostinstall.HOOK_EVENTS
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+
+    hostinstall.install_hooks(tell=lambda _text: None, yes=True)
+
+    hooks = read_json(path)["hooks"]
+    assert sum(len(entries) for entries in hooks.values()) == 7, "the stale entries were duplicated"
+    commands = [h["command"] for entries in hooks.values() for e in entries for h in e["hooks"]]
+    assert NEUTRAL_MARKED["command"] not in commands, "a foreign build's entry survived"
+    assert len(set(commands)) == 1, "seven events, one command"
+
+
+@pytest.mark.parametrize(
+    ("label", "entry"),
+    [
+        (
+            "a matcher that happens to say bantamkit",
+            {
+                "matcher": "bantamkit",
+                "hooks": [{"type": "command", "command": "/opt/acme/audit.sh"}],
+            },
+        ),
+        (
+            "a script the operator named after us",
+            {
+                "hooks": [
+                    {"type": "command", "command": "/home/dev/bin/backup-bantamkit-notes.sh"}
+                ]
+            },
+        ),
+        (
+            "a statusMessage that mentions us",
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/opt/acme/lint.sh",
+                        "statusMessage": "linting for bantamkit",
+                    }
+                ]
+            },
+        ),
+        (
+            "a third-party tool with its own --hook flag",
+            {"hooks": [{"type": "command", "command": "/opt/acme/acmetool --hook"}]},
+        ),
+        (
+            "a prompt hook quoting our docs",
+            {"hooks": [{"type": "prompt", "prompt": "is this bantamkit-hook safe?"}]},
+        ),
+    ],
+)
+def test_a_foreign_entry_is_not_claimed_however_it_mentions_us(home, label, entry):
+    """NOT WIDENING. The first three were CLAIMED AND DELETED by the superseded test."""
+    assert not hostinstall._is_ours(entry), label
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["not an object", None, 42, [], {}, {"hooks": "not a list"}, {"hooks": [None, 7, "x"]}],
+)
+def test_ownership_never_raises_on_a_hand_edited_file(home, entry):
+    """Somebody else's settings file is input, not a contract. It answers False, it never throws."""
+    assert hostinstall._is_ours(entry) is False

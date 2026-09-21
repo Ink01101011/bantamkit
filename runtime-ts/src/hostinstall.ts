@@ -509,24 +509,99 @@ export interface HookOptions extends CommandOptions {
   readonly tell?: (text: string) => void;
 }
 
+/**
+ * THE OWNERSHIP MARKER, AND IT IS THE WHOLE OF THE ANSWER TO "is this entry ours".
+ *
+ * WRITTEN ON THE INNER HOOK OBJECT, not on the entry, and that placement is MEASURED rather
+ * than assumed (J62-22, Claude Code 2.1.278, extracted from the binary at the `edit_hook`
+ * implementation). The host parses a hook with a non-strict zod union and then, on a `/hooks`
+ * edit, puts back every key the parse dropped:
+ *
+ *     function R(e,o){let t=o,a={};
+ *       if(h(e)){let n=gSe().safeParse(e);
+ *         if(n.success){for(let i of Object.keys(e))if(!(i in n.data)&&!A.has(i))a[i]=e[i]; …}}
+ *       let r={...a,...t}; …}                 // A = {"__proto__","constructor","prototype"}
+ *
+ * That loop is unknown-key preservation written on purpose, and the deny-list it consults holds
+ * only the three prototype-pollution names. The surrounding entry is preserved too, but only
+ * incidentally (`(d??[]).map((f)=>…?{...f,hooks:[...f.hooks]}:f)` — a raw spread), so the key
+ * goes where the host has code that means to keep it.
+ *
+ * AND THE HOOK STILL FIRES WITH IT THERE. Measured live, not reasoned from the schema: two
+ * sandboxed HOMEs, identical settings but for this key, `claude -p` pointed at a dead
+ * localhost so the session starts and the model call cannot leave the machine — SessionStart
+ * and UserPromptSubmit fired twice on BOTH sides. The control matters: the same probe run
+ * through `claude mcp list` fires nothing on either side, and would have "passed" vacuously.
+ *
+ * PRESENCE IS THE TEST AND THE VALUE IS NEVER READ. A future release may want to write a
+ * different value here; if the value were part of the test, that release would orphan every
+ * entry the previous one wrote — which is the exact bug this marker exists to end.
+ */
+export const HOOK_MARKER_KEY = 'bantamkit';
+/** What we write today. Informational only — {@link HOOK_MARKER_KEY}'s presence decides. */
+export const HOOK_MARKER_VALUE = 'hook';
+
 /** One entry, in the shape Claude Code reads. `matcher` first, and only where there is one. */
 function hookEntry(matcher: string | null, command: string): Record<string, unknown> {
   const entry: Record<string, unknown> = {};
   if (matcher !== null) entry['matcher'] = matcher;
-  entry['hooks'] = [{ type: 'command', command, timeout: HOOK_TIMEOUT }];
+  entry['hooks'] = [
+    { type: 'command', command, timeout: HOOK_TIMEOUT, [HOOK_MARKER_KEY]: HOOK_MARKER_VALUE },
+  ];
   return entry;
 }
 
+/** A plain object — not null, not an array. The shape every test below needs first. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /**
- * RULING Q3.6's idempotence rule, and the whole of it: an entry is OURS when its JSON mentions
- * `bantamkit`. Every other hook the operator has is left byte-for-byte.
+ * The two command spellings bantamkit ever wrote, for entries that predate the marker.
  *
- * `dumps` rather than `JSON.stringify` for the reason the module header gives — the two write
- * different separators — and `sortKeys` so the same entry renders the same way whatever order
- * its keys arrived in.
+ *   1. `tools/hooks/install.mjs` wrote `node <abs>/tools/hooks/bantamkit-hook.mjs`, and its own
+ *      ownership test was the literal `bantamkit-hook`. That token is in the FILENAME, so it is
+ *      there whatever the checkout is called — this arm is path-independent and stays exact.
+ *   2. This module, before the marker, wrote `<interpreter> <entry point> --hook`. Recognising
+ *      it needs the command to name bantamkit, which is the defect itself: on an install path
+ *      that does not carry the word, such an entry says nothing about who wrote it and NO
+ *      entry-local test can claim it. `--install-hooks` never shipped (it is new in 0.35.4), so
+ *      that population is bounded to this repository's own development checkouts; `docs/hooks.md`
+ *      says so and says to delete those by hand.
+ *
+ * BOTH ARMS ARE NARROWER THAN THE TEST THEY REPLACE, ON PURPOSE. The old one asked whether the
+ * entry's JSON happened to contain `bantamkit` anywhere, so a matcher, a `statusMessage` or a
+ * third-party script with the word in its filename was claimed as ours and deleted.
+ */
+function isLegacyOurs(hook: Record<string, unknown>): boolean {
+  if (hook['type'] !== 'command') return false;
+  const command = hook['command'];
+  if (typeof command !== 'string' || !command.includes('bantamkit')) return false;
+  return command.includes('bantamkit-hook') || command === '--hook' || command.endsWith(' --hook');
+}
+
+/**
+ * RULING Q3.6's idempotence rule, RE-DECIDED ON THE ENTRY ALONE (J62-22).
+ *
+ * It used to read `dumps(entry, null, true).includes('bantamkit')` — does this entry's JSON
+ * happen to contain the product's name. On this machine every checkout is called `bantamkit*`,
+ * so the entry's own command carried the word and the test looked correct. MEASURED from an
+ * install tree whose path does not: three `--install-hooks --yes` left TWENTY-ONE entries
+ * instead of seven, and `--remove-hooks --yes` then answered `no bantamkit hooks are installed`
+ * on BOTH runtimes — hook entries in a user's settings that neither runtime could ever take
+ * back out, growing by seven on every reinstall. An npm install under another name, a Docker
+ * image that copies `dist/` to `/app/dist/`, and any vendored build all reach it.
+ *
+ * Ownership is now a property of the ENTRY and of nothing else: our marker, or one of the two
+ * shapes we wrote before the marker existed. Where any binary lives is not consulted.
  */
 function isOurs(entry: unknown): boolean {
-  return dumps(entry, null, true).includes('bantamkit');
+  if (!isObject(entry)) return false;
+  const hooks = entry['hooks'];
+  if (!Array.isArray(hooks)) return false;
+  return hooks.some(
+    (hook) => isObject(hook) && (HOOK_MARKER_KEY in hook || isLegacyOurs(hook)),
+  );
 }
 
 /** The `hooks` object, validated. Refuses by name rather than crashing on somebody's file. */
@@ -595,7 +670,7 @@ function hookPlan(path: string, command: string): string {
     `  command: ${command}`,
   ];
   if (existsSync(path)) lines.push(`  backup : ${path}.backup-${today()}`);
-  lines.push('Existing hooks are left byte-for-byte; only entries naming bantamkit are replaced.');
+  lines.push("Existing hooks are left byte-for-byte; only bantamkit's own entries are replaced.");
   return `${lines.join('\n')}\n`;
 }
 
@@ -618,7 +693,7 @@ function removalPlan(path: string, events: readonly string[], entries: number): 
       `bantamkit would remove ${entries} hook entries from ${path}`,
       `  events : ${events.join(' ')}`,
       `  backup : ${path}.backup-${today()}`,
-      'Existing hooks are left byte-for-byte; only entries naming bantamkit are removed.',
+      "Existing hooks are left byte-for-byte; only bantamkit's own entries are removed.",
     ].join('\n') + '\n'
   );
 }

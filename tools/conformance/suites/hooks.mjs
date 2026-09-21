@@ -57,6 +57,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -114,7 +115,7 @@ const codePoints = (s) => [...s].length;
 
 // ------------------------------------------------------------------------------- the runs
 
-function runNode(_ctx, { argv, cwd, home, env = {}, stdin = '' }) {
+function runNode(_ctx, { argv, cwd, home, env = {}, stdin = '', cli = CLI }) {
   const childEnv = { ...process.env };
   for (const key of SCRUBBED) delete childEnv[key];
   childEnv['HOME'] = home;
@@ -123,7 +124,7 @@ function runNode(_ctx, { argv, cwd, home, env = {}, stdin = '' }) {
     if (v === null) delete childEnv[k];
     else childEnv[k] = String(v);
   }
-  const r = spawnSync(process.execPath, [CLI, ...argv], {
+  const r = spawnSync(process.execPath, [cli, ...argv], {
     input: stdin,
     cwd,
     env: childEnv,
@@ -689,7 +690,7 @@ export async function run(ctx) {
       return existsSync(d) ? readdirSync(d).filter((n) => n.includes('.backup-')).sort() : [];
     };
     // A hook entry nobody named bantamkit wrote. It must survive every case below, on both
-    // sides, which is what makes "only entries naming bantamkit are removed" a measurement.
+    // sides, which is what makes "only bantamkit's own entries are removed" a measurement.
     const FOREIGN = { matcher: 'Bash', hooks: [{ type: 'command', command: '/opt/acme/audit.sh', timeout: 5 }] };
     const mask = (buf, h) => dec(buf).split(h).join('<HOME>');
     /**
@@ -906,6 +907,306 @@ export async function run(ctx) {
           },
         ),
       );
+    }
+  }
+
+  // ================================ OWNERSHIP IS A PROPERTY OF THE ENTRY (J62-22), NOT OF THE
+  //                                  PATH THE BINARY HAPPENS TO SIT AT
+  //
+  // THE BUG THIS BLOCK EXISTS FOR, MEASURED BEFORE IT WAS FIXED. `isOurs` asked whether an
+  // entry's JSON happened to contain the literal `bantamkit`. Every checkout on the machine
+  // this was written on is called `bantamkit*`, so the entry's own command carried the word and
+  // the test looked right. From an install tree whose path does not carry it — an npm install
+  // under another name, a Docker image with `dist/` at `/app/dist/`, any vendored build — three
+  // `--install-hooks --yes` left TWENTY-ONE entries instead of seven, and `--remove-hooks --yes`
+  // then answered `no bantamkit hooks are installed` on BOTH runtimes. Hook entries in a user's
+  // settings that neither runtime could ever take back out, growing by seven per reinstall.
+  //
+  // WHY THIS BLOCK NEVER COPIES A TREE TO A NEUTRAL PATH. It does not have to, and a suite that
+  // did would be measuring the copy. The property is that ownership is decidable FROM THE ENTRY
+  // ALONE, so the entries are SEEDED: a marker-bearing entry whose command names no path of
+  // ours, a `tools/hooks/install.mjs` entry from before the marker existed, and four foreign
+  // entries chosen to be exactly the ones the old substring test would have eaten. Nothing in
+  // the bed depends on where either runtime lives, which is the whole claim.
+  //
+  // AND IT IS THE SAME BED ON BOTH SIDES, BYTE FOR BYTE — no interpreter path, no home, no
+  // `dist/cli.js` appears in it. That is why the removal case below compares the two documents
+  // with no masking at all: if a path could leak into the answer, the comparison would say so.
+  {
+    const id = 'hook-ownership';
+    const cwd = join(root, id, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const settings = (h) => join(h, '.claude', 'settings.json');
+
+    /** What 0.35.4 writes, from an install path with no `bantamkit` anywhere in it. */
+    const marked = (command) => ({
+      type: 'command',
+      command,
+      timeout: 10,
+      bantamkit: 'hook',
+    });
+    const NEUTRAL = '/opt/vendor/bin/node /opt/vendor/app/dist/cli.js --hook';
+    /** `tools/hooks/install.mjs`, which never carried a marker and is on real machines today. */
+    const LEGACY = {
+      type: 'command',
+      command: 'node /srv/checkouts/toolbox/tools/hooks/bantamkit-hook.mjs',
+      timeout: 10,
+    };
+    // THE FOUR FOREIGN ENTRIES, AND EACH ONE IS A WAY THE OLD TEST WIDENED. The first three
+    // were CLAIMED AND DELETED by it; the fourth never was, and is here so that narrowing the
+    // test cannot be mistaken for narrowing it to nothing.
+    const FOREIGN_MATCHER = { matcher: 'bantamkit', hooks: [{ type: 'command', command: '/opt/acme/audit.sh', timeout: 5 }] };
+    const FOREIGN_MENTIONS = { hooks: [{ type: 'command', command: '/home/dev/bin/backup-bantamkit-notes.sh', timeout: 5 }] };
+    const FOREIGN_MESSAGE = { hooks: [{ type: 'command', command: '/opt/acme/lint.sh', timeout: 5, statusMessage: 'linting for bantamkit' }] };
+    const FOREIGN_HOOKFLAG = { hooks: [{ type: 'command', command: '/opt/acme/acmetool --hook', timeout: 5 }] };
+
+    /** The bed. Identical bytes for both runtimes; `Notification` is outside the seven. */
+    const BED = {
+      model: 'opus',
+      hooks: {
+        SessionStart: [{ matcher: 'startup|resume|clear|compact', hooks: [marked(NEUTRAL)] }, FOREIGN_MENTIONS],
+        PreToolUse: [{ matcher: 'Read', hooks: [LEGACY] }, FOREIGN_HOOKFLAG],
+        PostToolUse: [{ hooks: [marked(NEUTRAL)] }, FOREIGN_MESSAGE],
+        Stop: [FOREIGN_MATCHER],
+        Notification: [FOREIGN_MATCHER],
+      },
+    };
+    const BED_BYTES = `${JSON.stringify(BED, null, 2)}\n`;
+
+    // ------------------------------------ removal: ours come out wherever the binary lives
+    {
+      const homes = { py: home(id, 'py'), node: home(id, 'node') };
+      for (const side of ['py', 'node']) writeFile(settings(homes[side]), BED_BYTES);
+      const py = runPy(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.node });
+      const mask = (buf, h) => dec(buf).split(h).join('<HOME>');
+      cases.push({
+        name: 'hook-ownership: the same streams and the same exit, removing entries neither runtime wrote',
+        kind: 'json',
+        expected: { stdout: mask(py.stdout, homes.py), stderr: mask(py.stderr, homes.py), exit: py.exit },
+        actual: { stdout: mask(nd.stdout, homes.node), stderr: mask(nd.stderr, homes.node), exit: nd.exit },
+      });
+      cases.push({
+        name: 'hook-ownership: the settings.json left behind, byte for byte, unmasked',
+        kind: 'bytes',
+        expected: readFileSync(settings(homes.py), 'utf8'),
+        actual: readFileSync(settings(homes.node), 'utf8'),
+      });
+      // PER SIDE, AND THIS IS THE CASE THAT CATCHES THE BUG. The differential above is blind to
+      // it: before the fix BOTH runtimes answered `no bantamkit hooks are installed` over this
+      // bed and BOTH left it byte-identical, so the two agreed perfectly while orphaning every
+      // entry in it. Only a literal in this file can fail on that.
+      const removed = (r, h) => ({
+        exit: r.exit,
+        doc: JSON.parse(readFileSync(settings(h), 'utf8')),
+        reportedRemoval: mask(r.stdout, h).split('\n')[0],
+      });
+      cases.push(
+        ...literalCases(
+          removed(py, homes.py),
+          removed(nd, homes.node),
+          'hook-ownership: the marker and the legacy adapter came out, the four foreign entries stayed, against a literal',
+          {
+            exit: 0,
+            doc: {
+              model: 'opus',
+              hooks: {
+                SessionStart: [FOREIGN_MENTIONS],
+                PreToolUse: [FOREIGN_HOOKFLAG],
+                PostToolUse: [FOREIGN_MESSAGE],
+                Stop: [FOREIGN_MATCHER],
+                Notification: [FOREIGN_MATCHER],
+              },
+            },
+            reportedRemoval: 'removed bantamkit hooks from <HOME>/.claude/settings.json',
+          },
+        ),
+      );
+    }
+
+    // ------------------------------------------------- install over the same foreign entries
+    //
+    // IDEMPOTENCE IS THE OTHER HALF OF THE SAME DEFECT, and it is the half the `21` came from.
+    // A reinstall over seven marker-bearing entries this build did not write — the shape an
+    // `npm -g` upgrade leaves, or a second machine's image — must leave SEVEN, not fourteen.
+    {
+      const homes = { py: home(`${id}-install`, 'py'), node: home(`${id}-install`, 'node') };
+      const seed = {
+        model: 'opus',
+        hooks: Object.fromEntries([
+          ...[
+            ['SessionStart', 'startup|resume|clear|compact'],
+            ['PreToolUse', 'Read'],
+            ['PostToolUse', null],
+            ['UserPromptSubmit', null],
+            ['PreCompact', null],
+            ['PostCompact', null],
+            ['Stop', null],
+          ].map(([event, matcher]) => [
+            event,
+            [matcher === null ? { hooks: [marked(NEUTRAL)] } : { matcher, hooks: [marked(NEUTRAL)] }],
+          ]),
+          ['Notification', [FOREIGN_MATCHER]],
+        ]),
+      };
+      const seedBytes = `${JSON.stringify(seed, null, 2)}\n`;
+      for (const side of ['py', 'node']) writeFile(settings(homes[side]), seedBytes);
+      const py = runPy(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.node });
+      const shape = (r, h) => {
+        const doc = JSON.parse(readFileSync(settings(h), 'utf8'));
+        const entries = Object.entries(doc.hooks ?? {}).filter(([event]) => event !== 'Notification');
+        const commands = entries.flatMap(([, list]) => list.flatMap((e) => (e.hooks ?? []).map((x) => x.command)));
+        return {
+          exit: r.exit,
+          ourEvents: entries.length,
+          ourEntries: entries.reduce((n, [, list]) => n + list.length, 0),
+          distinctCommands: new Set(commands).size,
+          neutralSurvivors: commands.filter((c) => c === NEUTRAL).length,
+          everyEntryCarriesTheMarker: entries.every(([, list]) =>
+            list.every((e) => (e.hooks ?? []).every((x) => Object.hasOwn(x, 'bantamkit'))),
+          ),
+          notificationUntouched: JSON.stringify(doc.hooks?.Notification) === JSON.stringify([FOREIGN_MATCHER]),
+        };
+      };
+      cases.push({
+        name: 'hook-ownership-install: reinstalling over entries this build did not write — the same shape',
+        kind: 'json',
+        expected: shape(py, homes.py),
+        actual: shape(nd, homes.node),
+      });
+      // PER SIDE. `ourEntries: 7` is the whole `21` failure in one number, and it is pinned
+      // here rather than only compared because before the fix BOTH sides produced 14.
+      cases.push(
+        ...literalCases(
+          shape(py, homes.py),
+          shape(nd, homes.node),
+          'hook-ownership-install: seven entries, none of them duplicated, against a literal',
+          {
+            exit: 0,
+            ourEvents: 7,
+            ourEntries: 7,
+            distinctCommands: 1,
+            neutralSurvivors: 0,
+            everyEntryCarriesTheMarker: true,
+            notificationUntouched: true,
+          },
+        ),
+      );
+      // AND AGAIN, over what this build itself just wrote. `--install-hooks` twice is the case
+      // an operator actually reaches, and it is pinned per side for the same reason.
+      const again = {
+        py: runPy(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.py }),
+        node: runNode(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.node }),
+      };
+      const repeat = (r, h) => ({
+        exit: r.exit,
+        ourEntries: Object.entries(JSON.parse(readFileSync(settings(h), 'utf8')).hooks ?? [])
+          .filter(([event]) => event !== 'Notification')
+          .reduce((n, [, list]) => n + list.length, 0),
+        saidAlreadyInstalled: dec(r.stdout).includes('bantamkit hooks are already installed'),
+      });
+      cases.push(
+        ...literalCases(
+          repeat(again.py, homes.py),
+          repeat(again.node, homes.node),
+          'hook-ownership-install: a second --install-hooks is a no-op, against a literal',
+          { exit: 0, ourEntries: 7, saidAlreadyInstalled: true },
+        ),
+      );
+    }
+    // -------------------------------- and the real thing: a Node install tree with a NEUTRAL name
+    //
+    // THE SEEDED CASES ABOVE DECIDE OWNERSHIP FROM A HAND-WRITTEN ENTRY. This one makes the
+    // runtime write the entry itself, from a copy of `dist/` at a path that does not carry the
+    // product's name — the `21` in the defect report, reproduced inside the harness.
+    //
+    // ONLY THE PORT CAN REACH IT, and that asymmetry is the measurement, not a gap. The
+    // reference's `this_command()` returns either a `bantamkit-mcp*` console script or
+    // `<python> -m bantamkit.mcpserver`, so the reference's own command names the product
+    // WHATEVER path it was installed at, and the reference could always recognise its own
+    // entries. The port's returns `process.execPath` plus `<dir>/cli.js`, whose only occurrence
+    // of the word is whatever the install path happens to carry. So the port is driven from a
+    // neutral tree, the reference from its ordinary invocation, and the two answers are
+    // compared: ownership must not depend on which side you are on OR where it sits.
+    //
+    // THE NEUTRAL PATH IS ASSERTED, NOT ASSUMED. If the harness's own temporary root contains
+    // the word — a `TMPDIR` inside this repository would do it — the copy proves nothing and
+    // the sub-case says so instead of passing.
+    {
+      const neutralRoot = join(root, 'hook-ownership-neutral', 'vendor-app');
+      const neutralCli = join(neutralRoot, 'dist', 'cli.js');
+      const usable = (() => {
+        if (neutralCli.toLowerCase().includes('bantamkit')) return 'named';
+        try {
+          mkdirSync(neutralRoot, { recursive: true });
+          cpSync(dirname(CLI), join(neutralRoot, 'dist'), { recursive: true });
+          cpSync(join(repoRoot, 'runtime-ts', 'package.json'), join(neutralRoot, 'package.json'));
+          // A junction on Windows, which needs no elevation; a directory symlink elsewhere.
+          symlinkSync(
+            join(repoRoot, 'runtime-ts', 'node_modules'),
+            join(neutralRoot, 'node_modules'),
+            process.platform === 'win32' ? 'junction' : 'dir',
+          );
+          return 'ok';
+        } catch (e) {
+          return `link: ${e.code ?? e.message}`;
+        }
+      })();
+      if (usable !== 'ok') {
+        notes.push(
+          `hook-ownership-neutral: NOT MEASURED — ${
+            usable === 'named'
+              ? `the harness's temporary root ${root} contains "bantamkit", so a copy under it ` +
+                'would carry the word in its path and the comparison would prove nothing'
+              : `this tree's dependencies could not be linked into the copy (${usable})`
+          }. The entry-local cases above are measured everywhere; what is lost here is the ` +
+            'end-to-end reproduction of the duplication itself.',
+        );
+      } else {
+        const homes = { py: home(`${id}-neutral`, 'py'), node: home(`${id}-neutral`, 'node') };
+        const entriesIn = (h) =>
+          Object.values(JSON.parse(readFileSync(settings(h), 'utf8')).hooks ?? {}).reduce(
+            (n, list) => n + list.length,
+            0,
+          );
+        const INSTALLS = 3;
+        let lastPy;
+        let lastNode;
+        for (let i = 0; i < INSTALLS; i++) {
+          lastPy = runPy(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.py });
+          lastNode = runNode(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.node, cli: neutralCli });
+        }
+        const installed = { py: entriesIn(homes.py), node: entriesIn(homes.node) };
+        const rmPy = runPy(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.py });
+        const rmNode = runNode(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.node, cli: neutralCli });
+        const shape = (side, install, remove, h) => ({
+          installExit: install.exit,
+          entriesAfterThreeInstalls: installed[side],
+          removeExit: remove.exit,
+          entriesAfterRemoval: entriesIn(h),
+          removalFoundThem: !dec(remove.stdout).includes('no bantamkit hooks are installed'),
+        });
+        const shapePy = shape('py', lastPy, rmPy, homes.py);
+        const shapeNode = shape('node', lastNode, rmNode, homes.node);
+        cases.push({
+          name: 'hook-ownership-neutral: three installs and a removal — the same answer whatever the tree is called',
+          kind: 'json',
+          expected: shapePy,
+          actual: shapeNode,
+        });
+        // PER SIDE, AND THE PORT'S ROW IS THE DEFECT ITSELF. Before the fix this side read
+        // `entriesAfterThreeInstalls: 21`, `removalFoundThem: false`, `entriesAfterRemoval: 21`.
+        cases.push(
+          ...literalCases(shapePy, shapeNode, 'hook-ownership-neutral: seven, then none, against a literal', {
+            installExit: 0,
+            entriesAfterThreeInstalls: 7,
+            removeExit: 0,
+            entriesAfterRemoval: 0,
+            removalFoundThem: true,
+          }),
+        );
+      }
     }
   }
 
