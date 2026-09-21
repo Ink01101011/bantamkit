@@ -1055,6 +1055,14 @@ function anyPackSessions() {
  * the same step, and the comparison stays symmetric. Same caveat as the `applyModes` helpers
  * in `store.mjs` / `memorycli.mjs` / `recall-strings.mjs`, and same honest limit: that the
  * case then proves less is asserted, that it still passes is not measured on Windows.
+ *
+ * J63-2 (2026-09-21, roadmap (eee)): root was the one caller the paragraph above waved
+ * through. "The write SUCCEEDS on both sides" is exactly the symmetric success that hides an
+ * arm that never armed, and measured as uid 0 in `bk-linux:gates3` it is not even symmetric
+ * across the suite: the two `readonly-directory-*` sessions were green with nothing proved,
+ * while `briefed/clock-in-on-an-unwritable-log` was red on its two per-side LITERAL rows.
+ * `run()` now withholds every chmod-dependent session before either side runs it as uid 0,
+ * and names and counts what it withheld in a note. This loop still chmods when it is reached.
  */
 async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
   const { dumpJson, parseJson } = pyjson;
@@ -1294,10 +1302,32 @@ export async function run(ctx) {
 
   // -------------------------------------------------------------------------- sessions
   const brokenPacks = writeBrokenAccountingPacks(ctx.scratch);
-  const specs = sessions(
+  const planned = sessions(
     writeSchemaPackWithoutMinItems(ctx.scratch),
     writeSchemaPackWithAnyRolesValue(ctx.scratch),
     brokenPacks,
+  );
+  // J63-2 (roadmap (eee)): a `chmod 0o555` step is how three sessions make a directory
+  // unwritable, and root ignores permission bits, so as uid 0 the arm never arms. What that
+  // looked like, measured 2026-09-21 in `bk-linux:gates3` as root on this tree: the two
+  // `readonly-directory-*` sessions stayed GREEN — every row they have is a differential,
+  // both runtimes wrote the checkpoint they were meant to fail to write, and two identical
+  // successes compare equal — while `briefed/clock-in-on-an-unwritable-log` went RED on its
+  // two per-side literal rows (`(no log file)` against the brief line both sides had landed).
+  // Green for the wrong reason on two sessions, red for the wrong reason on the third. So as
+  // uid 0 every chmod-dependent session is withheld before EITHER side runs it (the reference
+  // walks the same list, as the same uid), every case it would have produced is named and
+  // counted in a note, and the run says so instead of passing. Privileges are not dropped
+  // instead: `readonly-directory-after-the-log-line` relies on the append to a log ROOT
+  // created still succeeding under the read-only directory, which a dropped euid cannot do.
+  // `getuid` is undefined on win32, where the mode is advisory anyway (see `runNodeSession`).
+  const asRoot = process.getuid?.() === 0;
+  const chmodDependent = (s) => s.calls.some((c) => c.fn === 'chmod');
+  const withheldSessions = asRoot ? planned.filter(chmodDependent) : [];
+  const specs = asRoot ? planned.filter((s) => !chmodDependent(s)) : planned;
+  /** Every case name a withheld session would have produced, so the note can count them. */
+  const withheld = withheldSessions.flatMap((s) =>
+    s.calls.flatMap((c, i) => ['result', 'checkpoint', 'log', 'tmp-left'].map((k) => `session/${s.name}/${i}:${c.fn}/${k}`)),
   );
   const dirs = specs.map((_, i) => join(ctx.scratch, `c${i}`));
   const pythonPayload = {
@@ -2012,6 +2042,12 @@ export async function run(ctx) {
     };
     const both = (v) => ({ python: v, node: v });
     const row = (label, name, step, expected, read) => {
+      // J63-2: a row over a session withheld as uid 0 is recorded by name, not emitted — and
+      // ONLY over one of those, so a session name nobody ran still throws in `at` below.
+      if (withheldSessions.some((s) => s.name === name)) {
+        withheld.push(`briefed/${label}`);
+        return;
+      }
       const got = at(name, step);
       cases.push({
         name: `briefed/${label}`,
@@ -2394,6 +2430,17 @@ export async function run(ctx) {
 
   notes.push(`${DUMP_TEXTS.length + 2} documents x 2 indents x 2 sort settings through json.dumps`);
   notes.push(`${specs.length} sessions, ${specs.reduce((n, s) => n + s.calls.length, 0)} calls, 4 comparisons each`);
+  // J63-2: the abstention is COUNTABLE — a reader of this line can say "N cases abstained" —
+  // and every withheld session and per-side row is named, in the shape `instructions.mjs`
+  // uses for its win32 skips. Absent entirely when nothing was withheld.
+  if (asRoot) {
+    const rows = withheld.filter((n) => !n.startsWith('session/'));
+    notes.push(
+      `${withheld.length} cases skipped as uid 0: root ignores permission bits, so an unwritable directory cannot be made — ` +
+        `${withheldSessions.length} chmod sessions (${withheldSessions.map((s) => `${s.name}: ${s.calls.length} calls x 4`).join('; ')}) ` +
+        `and ${rows.length} per-side rows (${rows.join(', ')}); run as a non-root uid to arm them`,
+    );
+  }
 
   return { cases, notes };
 }
