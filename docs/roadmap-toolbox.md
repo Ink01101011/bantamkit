@@ -976,7 +976,10 @@ then reads is the file the recipe intended depends on (zz). *The single observat
 recipe as written on Windows and check `git status --porcelain --untracked-files=all` shows
 nothing under `.bantamkit`, which is the property the POSIX form was checked against. *Why not
 here:* backslash paths and 5.1. *Cheapest:* the same Windows session as (zz). The other half is
-(fff) and is reachable today.
+(fff) and is reachable today. **(fff) is DONE** (job63, J63-3 at `3c40c16`, see CLOSED below):
+`docs/memory.md` no longer says "no PowerShell installed here", the forward-slash form was run
+on pwsh 7.4.2 in a container and wrote `2A 0A`, and this row — 5.1 with the backslash path on a
+real Windows — stays open exactly as written.
 
 ### NOT WINDOWS — reachable on this machine, and filed here so nobody re-files them as Windows debt
 
@@ -984,60 +987,46 @@ J62-16 found that one claim everybody had filed as Windows-bound (the PowerShell
 was in fact a `docker run` away. **That mistake is why this section exists.** Each row below is
 reachable now.
 
-**(ddd) `ntpath.splitroot` is a CONTRIBUTOR-floor bug, not a shipped one — and no gate can see
-it.** `tools/conformance/ref/store_ref.py:221` calls `ntpath.splitroot`, added in **3.12**,
-while `runtime-py/pyproject.toml:10` declares `requires-python = ">=3.11"`. J62-16 stated this
-as a flat mismatch; **that overstates it, and the correction was verified by building the
-packages, not by reading the manifest.** `python -m hatchling build` over `runtime-py/`: the
-wheel's top-level entries are `bantamkit/` and `bantamkit-0.35.3.dist-info/`; the sdist's are
-`src/`, `tests/`, `_assets/`, `hatch_build.py`, `pyproject.toml`, `README.md`, `PKG-INFO`.
-`npm pack --dry-run` over `runtime-ts/`: 176 files, top level `dist/`, `assets/`, `package.json`,
-`README.md`, `LICENSE`. **The repository's `tools/` directory is in none of the three** (the
-`assets/tools/*.json` entries that do ship are the tool-schema pack, a different thing), and
-`grep -rn splitroot runtime-py/src` is empty — the only Python caller in the tree is that one
-line under `tools/`. **So a user installing on 3.11 is fine; a contributor on 3.11 has `--all`
-abort at the `store` suite with `store`, `tokenledger`, `updatecheck`, `validate`, `wire` and
-`workplan` silently never running** — six suites' worth of green that was never earned.
-**New here, and the reason this is worse than it reads:** the CI matrix cannot catch it either.
-`ci.yml` runs `pytest` on the 3.11 cells but runs `node tools/conformance/run.mjs --all` only in
-the `node` job, which pins `python-version: "3.12"`. No gate this repository owns is ever
-executed at its own declared floor. *The single observation:* `--all` under 3.11 — already made,
-in J62-16's run A (Debian 12, Python 3.11.2). *Fix:* raise the floor or guard the call; either
-way it is a one-line change plus a decision, and the decision belongs to whoever owns the floor.
+Rows (ddd), (eee), (fff) and (ggg) stood here until job63 closed them (2026-09-21); they are
+in the CLOSED section below, and their original text is at
+`git show a2b5aae:docs/roadmap-toolbox.md | sed -n '987,1040p'` rather than paraphrased here.
 
-**(eee) The "unwritable" arms silently cannot arm as root.** `shiftwork/briefed/trail/clock-in-
-on-an-unwritable-log-then-out` and its sibling failed only in J62-16's root pass: **root ignores
-POSIX permission bits**, so `chmod`-ing a log unwritable does not make it unwritable for uid 0,
-and the arm that exists to observe "it could not write" never arms. Re-run as uid 1000:
-`✔ shiftwork: 1759 cases, 0 differed`. *Why it is registered and not closed:* nothing in the
-suite detects that it is running as root, so in any container-based CI — where root is the
-default — these arms would be **green for the wrong reason**, which is this repository's
-oldest recurring defect shape. *The single observation, available today:* run the suite twice in
-the existing Linux image, once as root and once as uid 1000, and compare. *Fix:* either refuse
-to run those arms as uid 0 with a named `note:`, or drop privileges inside the fixture.
+**Registered 2026-09-21 by job63 (J63-5): found by job63, NOT acted on.** All four rows below
+come from one run that is J63-1's, not re-measured by J63-5: `--all` with the reference on
+Python 3.11.16 as root in `bk-py311-node:j63-1` (recipe in `docs/conformance.md`, "The
+reference at the 3.11 floor") — 8841 cases, 12 failures, one of them (ddd). The other eleven
+are these four rows. Nobody in job63 read past each first-difference line, so every row needs
+its own single observation before it is a fix.
 
-**(fff) The 7.x half of (ccc): "no PowerShell installed here" is now only half true.**
-`docs/memory.md:199` says PowerShell is unavailable on this machine. `pwsh` **7.4.2** is one
-`docker run mcr.microsoft.com/powershell:latest` away and J62-16 used it. A Linux pwsh cannot
-run the recipe *as written* (backslash path), so this does not close (ccc) — but the sentence in
-the doc is now inaccurate about what is reachable, and a POSIX-path variant of the recipe can be
-checked against the same `git status --porcelain` property today. *Caveat worth keeping:*
-`docker manifest inspect` lists only `linux/amd64`, `linux/arm` and `windows/amd64` for that
-image — **there is no `linux/arm64`** — so on this host the container runs emulated. Fine for a
-byte measurement; **not fine for anything timed.**
+**(hhh) argparse quotes `choices` on 3.11 and not on 3.12, in two RUNTIME sentences.**
+`memorycli/bad-choice/stderr` printed `(choose from 'status', …)` with the 3.11 reference
+against `(choose from status, …)` on the 3.12 host, and `cli/install-bad-host/stderr` differed
+at byte 421 the same way. These are Python-side sentences that change with the interpreter the
+USER runs, so the Node port can match at most one of them, and `docs/porting.md` names neither.
+*The single observation:* those two cases in the 3.11 image against the host. *Fix:* a
+decision — pin one wording on both sides, or rule the other with the companion the porting
+table requires.
 
-**(ggg) The hook marker's "the value is never read" property is pinned one layer below where a
-reader would look.** J62-22's fix identifies a hook entry as ours by the **presence** of a
-`bantamkit` key on the inner hook object, deliberately never reading its value, so a later
-release can change the value without orphaning what this one wrote. Mutation testing by the
-orchestrator: reverting `isOurs` to the path-dependent test → **2 conformance failures**;
-dropping the legacy arm → **2**; turning the presence test into a **value** test → **0
-conformance failures, GREEN**, with only 1 per-runtime unit test red on each side. The mutation
-is symmetric *and* produces identical observable output for every entry bantamkit itself writes,
-so the differential layer cannot see it by construction. The property **is** pinned — by
-`runtime-py/tests` and `runtime-ts/test`, not by conformance. Registered so that a later reader
-who checks "is this gated?" by looking at the conformance suite does not conclude it is
-unpinned and delete the unit tests that are actually holding it.
+**(iii) `hooks/install-hooks: PINNED PER SIDE` expects `<PYTHON> -m` and the 3.11 image
+answers `<PYTHON>3.11 -m`.** The suite's placeholder covers an interpreter named `python`, not
+the versioned basename a Debian `python3.11` install has. Tools-only, but it makes the hooks
+suite red on any host whose interpreter is `pythonX.Y`. *The single observation:* `--suite
+hooks` in the 3.11 image. *Fix:* widen the placeholder to the resolved basename, red first.
+
+**(jjj) The `~someone-else` ruling in `recall-strings` goes STALE as root.** The `RULED:
+~someone-else …` case stopped differing because as uid 0 `~root` IS the current user's home on
+both sides, and the harness reports a ruling that no longer differs as `STALE RULING` — the
+right answer, on a run nobody expected to be root. Same family as (eee): the suite does not
+know its uid. *The single observation:* `--suite recall-strings` as root in `bk-linux:gates3`.
+*Fix:* withhold or re-target that ruling as uid 0, named and counted, in the shape J63-2 used.
+
+**(kkk) `memorycli/archive-into-a-write-denied-archive-directory` and `instructions` row 58
+are root-blind, as (eee) was.** As uid 0 the `chmod`-denied archive directory is not denied,
+so the archive succeeded on both sides and seven rows went red in J63-1's run: `memorycli`'s
+`archived-names`, `step-1-stderr` and `exit-codes`, and `instructions/a/row58/{py,node}/
+archive-refusal-*` (`no archive sentence` on the port). *The single observation:* both suites
+as root in `bk-linux:gates3`. *Fix:* the (eee) shape — detect uid 0, withhold by name, count
+in a note — in `memorycli.mjs` and `instructions.mjs`.
 
 ### CLOSED by this job, listed so it is not re-registered
 
@@ -1050,8 +1039,88 @@ neither runtime could ever take back out. Verified closed by this unit at `aaf66
 `hostinstall.ts:598-605` tests `HOOK_MARKER_KEY in hook || isLegacyOurs(hook)` and
 `hostinstall.py:479` carries the matching re-decision. Conformance `hooks` 69 → 81.
 
-<!-- provenance: value=8906 cases, 2523 byte-identical, 3504 exact-string, 2879 structural, 161 ruled-different, 0 failures; commit=aaf6679 plus this commit's working tree; command=node tools/conformance/run.mjs --all -->
-<!-- provenance: value=3205 passed, 57 skipped, 2 deselected, 3 xfailed; commit=aaf6679 plus this commit's working tree; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q -->
-<!-- provenance: value=tests 1259, pass 1212, fail 0, skipped 47; commit=aaf6679 plus this commit's working tree; command=cd runtime-ts && npm test -->
-<!-- provenance: value=tests 18, pass 18, fail 0; commit=aaf6679 plus this commit's working tree; command=node --test 'tools/hooks/*.test.mjs' -->
-<!-- provenance: value=All checks passed!; commit=aaf6679 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
+**Closed by job63 (2026-09-21), branch `fix/job63-docker-rows`, reviewed by J63-5 at `b3374ae`
+plus its working tree — every command below was run by the reviewer from the repo root, and
+no unit changed `runtime-py/src` or `runtime-ts/src` (`git diff --stat a2b5aae -- runtime-py/src
+runtime-ts/src` is empty).**
+
+**(ddd) `ntpath.splitroot` at the 3.11 contributor floor — CLOSED at `b3374ae`** (J63-1
+`71cd230` "guard ntpath.splitroot so the reference no longer aborts at Python 3.11", then J63-1b
+`b3374ae` "withhold the winpaths case below Python 3.12 by name, and drop the dead splitroot
+port"). It was: `store_ref.py` calling a 3.12-only function under a 3.11 floor, so a 3.11
+contributor's `--all` aborted at `store` and the **five** suites after it (`tokenledger`,
+`updatecheck`, `validate`, `wire`, `workplan` — `--list` names five; the row said six) never
+ran. Original text: `git show a2b5aae:docs/roadmap-toolbox.md | sed -n '987,1006p'`. What
+closed it: the floor stays 3.11; `suites/store.mjs` asks `store_ref.py` a `version` op and
+below 3.12 WITHHOLDS the one case (`ntpath.splitroot and PureWindowsPath parsing, on every
+platform`) by name in a counted `note:` — not a `ruling:`, not a skip — because 3.11's
+`PureWindowsPath` is a different algorithm nobody chose (J63-1's 44-row probe, kept in git at
+`71cd230`, found `splitroot` itself identical and `PureWindowsPath` not). J63-5 added the
+literal J63-1b reported missing: `winpaths is armed exactly when the reference is 3.12+,
+against a literal` (9 lines in `store.mjs`). Verified by this review: host `node
+tools/conformance/run.mjs --suite store` → `PASS: 256 cases … 0 failures`, no withhold note; the
+same in `bk-py311-node:j63-1` with `BANTAMKIT_CONFORMANCE_PYTHON=/usr/local/bin/python` (recipe
+in `docs/conformance.md`), printing `3.11.16 /src/runtime-py/src/bantamkit/__init__.py` first →
+`PASS: 255 cases … 0 failures` with the note; the floor test mutated to `< 0` at 3.11 →
+`AttributeError: module 'ntpath' has no attribute 'splitroot'`, exit 2 (the row's abort, back);
+mutated to `< 99` on the host → `FAIL: 255 cases … 1 failures`, the new literal
+(`{"armed":true}` against `{"armed":false}`) — before that literal the same mutation was
+`PASS: 254 cases` with a note reading `the reference is 3.12.13`. Every mutation reverted by
+editing the line back; `shasum -a 256 tools/conformance/suites/store.mjs` unchanged. Residue:
+(hhh)–(kkk) above, the eleven other failures of J63-1's 3.11 `--all`.
+
+**(eee) The unwritable arms cannot arm as root — CLOSED at `6a2fa4e`** ("withhold the chmod
+arms as uid 0 and count them by name — J63-2"). It was: three `chmod 0o555` sessions in
+`shiftwork.mjs` that root ignores, so in a root container two `readonly-directory-*` sessions
+were green with nothing proved and `briefed/clock-in-on-an-unwritable-log` was red on its two
+per-side literals. Original text: `git show a2b5aae:docs/roadmap-toolbox.md | sed -n
+'1008,1017p'`. What closed it: shape (a) of the row — `run()` reads `process.getuid?.() === 0`,
+withholds every chmod-dependent session before EITHER side runs it, and prints a counted, named
+`note:` (`56 cases skipped as uid 0: root ignores permission bits, so an unwritable directory
+cannot be made — …`); privileges are not dropped because `readonly-directory-after-the-log-line`
+needs the append to a root-created log to still succeed. Verified by this review on the CURRENT
+tree mounted at `/src` (each run printed `/src/runtime-py/src/bantamkit/__init__.py` first, and
+`runtime-ts/node_modules` carries no `.node` binary): `docker run --rm -v "$PWD":/src -w /src
+-e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/src/runtime-py/src -e
+BANTAMKIT_CONFORMANCE_PYTHON=/repo/.venv/bin/python bk-linux:gates3 bash -c 'node
+tools/conformance/run.mjs --suite shiftwork'` as root → the note and `PASS: 1703 cases … 0
+failures`; the same with `--user 1000:1000 -e HOME=/tmp` → no note, `PASS: 1759 cases … 0
+failures`; the host (uid 501) → `PASS: 1759 cases … 0 failures`; the uid test mutated to
+`=== -1` as root → `FAIL: 1759 cases … 2 failures`, the same two `briefed/trail/…` rows, note
+absent; reverted, `shasum` unchanged. 1759 − 1703 = 56 = (5+4+4)×4 sessions + 4 named rows.
+
+**(fff) "no PowerShell installed here" — CLOSED at `3c40c16`** ("docs(memory): the PowerShell
+recipe was run — pwsh 7.4.2 in a container, forward-slash path — J63-3"). Docs-only. It was:
+`docs/memory.md` claiming pwsh was unreachable when `mcr.microsoft.com/powershell:latest` was
+one `docker run` away. Original text: `git show a2b5aae:docs/roadmap-toolbox.md | sed -n
+'1019,1027p'`. What closed it: the sentence is gone and a dated console block shows the
+forward-slash `Set-Content` form on pwsh 7.4.2 with its bytes and the same `git status`
+property the POSIX form had. Verified by this review in two fresh throwaway repos: `docker run
+--rm --platform linux/amd64 -v "$PWD":/work -w /work mcr.microsoft.com/powershell:latest pwsh
+-NoProfile -Command '… Set-Content -Path .bantamkit/.gitignore -Value "*" …'` → `7.4.2`, bytes
+`2A 0A`, `git status --porcelain --untracked-files=all` prints nothing; the backslash form on
+Linux pwsh landed on the same `.bantamkit/.gitignore` (no file with a literal backslash in its
+name), as J63-3 measured. Only the 7.x half: (ccc) — 5.1 with the backslash path on Windows —
+stays open above and says so. Emulated container; bytes only, no timing claimed.
+
+**(ggg) The hook-marker PRESENCE property, invisible to the differential — CLOSED at
+`b977e9d`** ("pin the hook marker's PRESENCE rule with per-side literals — J63-4"). It was: the
+rule "an entry is ours because the `bantamkit` key is present, never by its value" held only by
+unit tests, and a symmetric value-test mutation left `--suite hooks` green. Original text: `git
+show a2b5aae:docs/roadmap-toolbox.md | sed -n '1029,1040p'`. What closed it: a
+`hook-marker-presence` block of 24 cases in `hooks.mjs` — seven non-current marker values
+(`"some-future-release"`, `""`, `0`, `1`, `false`, `null`, `{"v":1}`) removed with
+`--remove-hooks --yes` and pinned per side, plus `--install-hooks --yes` over seven stale
+entries pinned at seven, none duplicated; the runtimes were not changed. Verified by this
+review: `node tools/conformance/run.mjs --suite hooks` → `PASS: 105 cases … 0 failures`; the
+value-test mutation applied to BOTH `hostinstall.py` and `hostinstall.ts` (rebuilt) → `FAIL:
+105 cases … 16 failures`, all 16 the new per-side literals and every differential green; to
+the Python side only → `16 failures`, the 8 differentials plus the 8 `— the reference` literals
+and no `— the port` literal; both sources restored by the inverse substitution to their
+pre-mutation `shasum`, `dist/` rebuilt, `git diff` on runtime source empty.
+
+<!-- provenance: value=8931 cases, 2523 byte-identical, 3504 exact-string, 2904 structural, 161 ruled-different, 0 failures; commit=b3374ae plus this commit's working tree (J63-5's store.mjs literal included); command=node tools/conformance/run.mjs --all -->
+<!-- provenance: value=3205 passed, 57 skipped, 2 deselected, 3 xfailed in 194.04s; commit=b3374ae plus this commit's working tree; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=tests 1259, pass 1212, fail 0, skipped 47; commit=b3374ae plus this commit's working tree; command=cd runtime-ts && npm test -->
+<!-- provenance: value=tests 18, pass 18, fail 0; commit=b3374ae plus this commit's working tree; command=node --test 'tools/hooks/*.test.mjs' -->
+<!-- provenance: value=All checks passed!; commit=b3374ae plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->

@@ -20,6 +20,7 @@ survive byte-exactly travels as base64.
      "k": int|null, "create": bool, "calls": [{"op": ..., "args": [...]}, ...]}
       -> {"results": [<result>|{"error": {...}}, ...]}
 
+    {"op": "version"}                             -> {"version": "3.12.13", "version_info": [3, 12, 13]}
     {"op": "strerror", "names": ["EACCES", ...]}  -> {"strerror": {name: text}}
     {"op": "decode",   "seqs": [[byte, ...]]}     -> {"decoded": [{...}]}
     {"op": "tokens",   "texts_b64": [...]}        -> {"tokens": [[...]]}
@@ -138,6 +139,13 @@ def main() -> None:
     op = request["op"]
     if op == "run":
         out = run_calls(request)
+    elif op == "version":
+        # The interpreter this reference runs on, so a suite can withhold a case whose
+        # reference the floor cannot compute (`winpaths` needs 3.12; see suites/store.mjs).
+        out = {
+            "version": sys.version.split()[0],
+            "version_info": list(sys.version_info[:3]),
+        }
     elif op == "strerror":
         out = {
             "strerror": {
@@ -218,6 +226,8 @@ def main() -> None:
         # the filesystem, so it runs on the laptop that wrote the code.
         raws = [unb64(r) for r in request["raws"]]
         out = {
+            # `ntpath.splitroot` exists from 3.12. This op is only ever asked of a 3.12+ interpreter:
+            # `suites/store.mjs` probes the `version` op first and withholds the case below 3.12.
             "splitroot": [[b64(x) for x in ntpath.splitroot(r)] for r in raws],
             "parsed": [
                 [b64(PureWindowsPath(r).drive), b64(PureWindowsPath(r).root),
