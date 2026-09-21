@@ -130,6 +130,51 @@ that may not resolve. CI has no `.venv` at all, so the workflow writes
 `BANTAMKIT_CONFORMANCE_PYTHON=$(python -c 'import sys; print(sys.executable)')` into
 `GITHUB_ENV` before the step.
 
+### The reference at the 3.11 floor
+
+`runtime-py/pyproject.toml` declares `requires-python = ">=3.11"`, and no gate this repository
+owns runs the reference there: the venv is 3.12, CI's conformance job pins 3.12, and Actions is
+off. So until 2026-09-21 (J63-1, roadmap row (ddd)) a contributor on 3.11 had `--suite store`
+exit 2 and `--all` stop at `store`: `ref/store_ref.py`'s `winpaths` op called
+`ntpath.splitroot`, which CPython added in 3.12 (`docker run --rm python:3.11-slim python -c
+"import ntpath;print(hasattr(ntpath,'splitroot'))"` prints `False`). The floor was kept and the
+CALL guarded: `store_ref.py` carries `_splitroot_ported`, CPython 3.12.13's `Lib/ntpath.py`
+`splitroot` verbatim, bound only where the stdlib has nothing — on 3.12 the native function is
+still the one called. The host gate for the port is `node --test 'tools/conformance/*.test.mjs'`
+(`tools/conformance/splitroot-fallback.test.mjs`): it runs the port on whatever interpreter the
+harness would pick against a table of 44 triples, the native function against the SAME table
+wherever one exists, and asserts which of the two is bound, so the port is executed on 3.12 too
+and a 3.11 run reports the absence rather than skipping. Seen red before it was trusted (J63-1
+note): a drift in the port reddens the table assertion on both interpreters, and binding the
+port unconditionally reddens the binding assertion on 3.12 — and only there, since on 3.11 the
+port is the right binding. To run the reference AT the floor there is no
+host gate; the one that counts is Docker, and the whole recipe is:
+
+```
+printf 'FROM python:3.11-slim\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs npm git >/dev/null && rm -rf /var/lib/apt/lists/*\nRUN pip install -q --root-user-action=ignore pyyaml jsonschema httpx\n' | docker build -q -t bk-py311-node:j63-1 -
+docker run --rm -v "$PWD":/src -w /src -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/src/runtime-py/src \
+  -e BANTAMKIT_CONFORMANCE_PYTHON=/usr/local/bin/python bk-py311-node:j63-1 \
+  sh -c 'git config --global --add safe.directory /src; node tools/conformance/run.mjs --suite store'
+```
+
+Measured 2026-09-21 with the reference on 3.11.16 against this tree: `--suite store` no longer
+aborts — 255 cases, and the `splitroot` field is byte-identical to 3.12.13's for all 26 suite
+raws plus 18 edges — but it reports **one failure**, `ntpath.splitroot and PureWindowsPath
+parsing, on every platform`, on the OTHER fields of that one case. 3.11's `PureWindowsPath`
+predates the 3.12 rewrite over `os.path.splitroot` and answers `absolute`, `parsed`, `parents`,
+`str` and `name` differently for `//a`, `///a`, `////a/b`, `//a/`, `//`, `\\`, `\\\`, `//?`,
+`\\.\PhysicalDrive0`, `//?/unc/srv/share/x` and `é:/x`, and `PureWindowsPath('C:/a', 'C:b')`
+joins to `C:\a\b` on 3.11 against `C:b` on 3.12; `ntpath.join`, `ntpath.split`, `ntpath.isabs`
+and `.suffix` agree on every row. The port was written to 3.12's pathlib and the reference is
+the interpreter's own, so at 3.11 that one case is a known red with a named cause: re-doing
+3.12's `PureWindowsPath` inside the reference would be the second implementation
+`store_ref.py`'s header refuses to have, and a `ruling:` is for a difference somebody chose.
+Every other `store` case is green at 3.11, and `--all` no longer stops there: measured the same
+day as root in that image, all 23 suites ran — 8841 cases, 12 failures, of which one is the case
+above; the other eleven (an argparse wording that 3.11 quotes and 3.12 does not, the chmod arms
+that root cannot be denied, a `python3.11` interpreter name, a `~root` ruling that goes stale
+when root is the current user) are named in the J63-1 note and are not this row's.
+
 ## A reference child that stops answering
 
 Each reference script is bounded at **600 s**, killed with `SIGKILL`, and reported as its

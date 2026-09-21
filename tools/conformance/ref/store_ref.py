@@ -67,6 +67,73 @@ def unb64(text: str) -> str:
     return base64.b64decode(text).decode("utf-8", "surrogatepass")
 
 
+# ------------------------------------------------------------------ the 3.11 floor (ddd, J63-1)
+#
+# `ntpath.splitroot` was added in CPython 3.12, and `runtime-py/pyproject.toml` declares
+# `requires-python = ">=3.11"`. The shipped packages do not carry `tools/`, so a USER on 3.11
+# never meets this file; a CONTRIBUTOR on 3.11 had the `winpaths` op crash the reference with
+# `AttributeError: module 'ntpath' has no attribute 'splitroot'`, which is `--suite store`
+# exiting 2 and `--all` stopping there. Measured 2026-09-21 with the reference on 3.11.16
+# (docker `python:3.11-slim`) against this tree. The floor stays at 3.11 — raising it is a
+# packaging change that owes a release for a bug no user has — so the CALL is guarded.
+#
+# `_splitroot_ported` is `def splitroot` from CPython 3.12.13 `Lib/ntpath.py` (lines 180-229 of
+# the `python3.12/ntpath.py` the repo venv's interpreter ships), copied verbatim minus its
+# docstring, bytes arm included, so a reader can diff it against upstream line for line. It is
+# the whole of what this file asks of `splitroot`; nothing else in 3.11's stdlib is re-done here,
+# and whether 3.11's `PureWindowsPath` answers the rest of `winpaths` like 3.12's is a thing the
+# 3.11 run MEASURES (docs/conformance.md, "The reference at the 3.11 floor"), not one this port
+# promises.
+#
+# ON 3.12 THE NATIVE FUNCTION IS STILL THE ONE CALLED: the choice is by `hasattr`, so the port
+# only runs where the stdlib has nothing. `tools/conformance/splitroot-fallback.test.mjs` pins
+# the port against a table of triples, the native function against the SAME table wherever it
+# exists, and which of the two `_splitroot` is bound to on the interpreter under test.
+def _splitroot_ported(p):
+    p = os.fspath(p)
+    if isinstance(p, bytes):
+        sep = b"\\"
+        altsep = b"/"
+        colon = b":"
+        unc_prefix = b"\\\\?\\UNC\\"
+        empty = b""
+    else:
+        sep = "\\"
+        altsep = "/"
+        colon = ":"
+        unc_prefix = "\\\\?\\UNC\\"
+        empty = ""
+    normp = p.replace(altsep, sep)
+    if normp[:1] == sep:
+        if normp[1:2] == sep:
+            # UNC drives, e.g. \\server\share or \\?\UNC\server\share
+            # Device drives, e.g. \\.\device or \\?\device
+            start = 8 if normp[:8].upper() == unc_prefix else 2
+            index = normp.find(sep, start)
+            if index == -1:
+                return p, empty, empty
+            index2 = normp.find(sep, index + 1)
+            if index2 == -1:
+                return p, empty, empty
+            return p[:index2], p[index2 : index2 + 1], p[index2 + 1 :]
+        else:
+            # Relative path with root, e.g. \Windows
+            return empty, p[:1], p[1:]
+    elif normp[1:2] == colon:
+        if normp[2:3] == sep:
+            # Absolute drive-letter path, e.g. X:\Windows
+            return p[:2], p[2:3], p[3:]
+        else:
+            # Relative path with drive, e.g. X:Windows
+            return p[:2], empty, p[2:]
+    else:
+        # Relative path, e.g. Windows
+        return empty, empty, p
+
+
+_splitroot = ntpath.splitroot if hasattr(ntpath, "splitroot") else _splitroot_ported
+
+
 def fact_json(fact) -> dict:
     """A `Fact` as JSON. `name` and friends are whatever the frontmatter resolved to."""
     # A field is `None` on BOTH sides or a string on both: `None` stays JSON null rather
@@ -218,7 +285,7 @@ def main() -> None:
         # the filesystem, so it runs on the laptop that wrote the code.
         raws = [unb64(r) for r in request["raws"]]
         out = {
-            "splitroot": [[b64(x) for x in ntpath.splitroot(r)] for r in raws],
+            "splitroot": [[b64(x) for x in _splitroot(r)] for r in raws],
             "parsed": [
                 [b64(PureWindowsPath(r).drive), b64(PureWindowsPath(r).root),
                  [b64(t) for t in PureWindowsPath(r).parts[1:]]
