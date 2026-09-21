@@ -46,6 +46,25 @@
  * the repair and the unit that owns it, and both carry per-side literals so that a repair
  * landing on ONE side reddens the ruling (stale) while a repair landing on BOTH reddens the
  * literals — which is the pair of failures that tells a reader what happened.
+ *
+ * AMENDED 2026-09-21 (job63, J63-4): THE MARKER-PRESENCE PROPERTY IS GATED HERE NOW. J62-22
+ * decides whether a hook entry is bantamkit's by the PRESENCE of the `bantamkit` key on the
+ * inner hook object and never by its value (`_is_ours` in `runtime-py/src/bantamkit/hostinstall.py`,
+ * `isOurs` in `runtime-ts/src/hostinstall.ts`), so that a release writing a different value
+ * cannot orphan what the previous one wrote. MEASURED BLIND FIRST: rewriting BOTH predicates
+ * to a value test (`hook.get(HOOK_MARKER_KEY) == HOOK_MARKER_VALUE` on the reference,
+ * `hook[HOOK_MARKER_KEY] === HOOK_MARKER_VALUE` on the port), rebuilding and running this
+ * suite left it at 81 cases, 0 failures — every bed carried the current value and the mutation
+ * was symmetric. The `hook-marker-presence` block below adds 24 cases: seven values that are
+ * NOT the current one (`"some-future-release"`, `""`, `0`, `1`, `false`, `null`, `{"v":1}`),
+ * each removed over its own pair of homes and pinned per side against a literal that says the
+ * report claimed a removal and the file holds no marker, plus `--install-hooks` over seven
+ * stale foreign-valued entries pinned at seven-not-fourteen. Under the same symmetric mutation
+ * the 16 per-side literals go red and the 8 differentials stay green (105 cases, 16 failures);
+ * under the mutation on ONE side only, 16 go red on either side — the 8 differentials plus
+ * that side's 8 literals — and the other side's literals stay green. The unit tests that also
+ * hold this (`runtime-py/tests/test_hostinstall_hooks.py`, `runtime-ts/test/hostinstall-hooks.test.mjs`)
+ * are the in-process half and stay; this block is the process half.
  */
 import { spawnSync } from 'node:child_process';
 import {
@@ -1207,6 +1226,182 @@ export async function run(ctx) {
           }),
         );
       }
+    }
+  }
+
+  // ======================= THE MARKER'S PRESENCE IS THE TEST, AND THE VALUE IS NEVER READ
+  //                          (J62-22's rule; job63 J63-4 is its first conformance case)
+  //
+  // THE HOLE THIS BLOCK CLOSES WAS MEASURED, NOT SUSPECTED. `isOurs` / `_is_ours` decide
+  // ownership from the PRESENCE of the `bantamkit` key on the inner hook object; the value is
+  // informational, so that a release which writes a different value does not orphan every
+  // entry the previous one wrote. Rewrite BOTH sides to a VALUE test
+  // (`hook.get(HOOK_MARKER_KEY) == HOOK_MARKER_VALUE` on the reference,
+  // `hook[HOOK_MARKER_KEY] === HOOK_MARKER_VALUE` on the port), rebuild, and on 2026-09-21
+  // this suite stayed at 81 cases, 0 failures. Every entry either runtime writes carries the
+  // CURRENT value, every bed above is either written by a runtime or hand-seeded with
+  // `bantamkit: 'hook'`, and the mutation is symmetric — so the two sides agreed with each
+  // other while both orphaned exactly what the rule protects. Until this block the property
+  // was held only by each runtime's own unit test (`runtime-py/tests/test_hostinstall_hooks.py`,
+  // `runtime-ts/test/hostinstall-hooks.test.mjs`), and a reader asking "is this gated?" of
+  // the conformance suite was told no.
+  //
+  // WHAT IS SEEDED. Marker-bearing entries whose value is NOT what this build writes: a string
+  // a future release might choose, and the falsy and non-string shapes the unit tests promise
+  // (`''`, `0`, `false`, `null`, an object) — the values a truthiness test or a
+  // `typeof === 'string'` test would drop. ONE PAIR OF HOMES PER VALUE, so a red line names the
+  // value that was orphaned instead of reporting one combined bed as "differed".
+  //
+  // WHAT IS PINNED, PER SIDE. (i) the report's first line says the entries were removed, and
+  // (ii) the document left behind holds NO hook object carrying the marker key, while the
+  // foreign entry that sat beside ours in the same event survived. The differential is kept
+  // too: it is the case that catches ONE side regressing, and the literals catch both.
+  //
+  // AND `--install-hooks` OVER THE SAME SHAPE, because the ownership decision is what turns
+  // "replace the stale entry" into "append beside it": under a value test the seed's seven are
+  // foreign, ours are appended after them, and the file holds fourteen — the `21` defect's
+  // shape by a different road.
+  {
+    const id = 'hook-marker-presence';
+    const cwd = join(root, id, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const settings = (h) => join(h, '.claude', 'settings.json');
+    const mask = (buf, h) => dec(buf).split(h).join('<HOME>');
+    const FOREIGN = { matcher: 'Bash', hooks: [{ type: 'command', command: '/opt/acme/audit.sh', timeout: 5 }] };
+    const NEUTRAL = '/opt/vendor/bin/node /opt/vendor/app/dist/cli.js --hook';
+    /** An entry a build OTHER than this one wrote: our marker key, somebody else's value. */
+    const markedWith = (value) => ({ type: 'command', command: NEUTRAL, timeout: 10, bantamkit: value });
+    /** How many hook objects under `hooks` carry the marker key, whatever its value. */
+    const markedHooksIn = (doc) =>
+      Object.values(doc.hooks ?? {})
+        .flat()
+        .flatMap((e) => (Array.isArray(e?.hooks) ? e.hooks : []))
+        .filter((x) => x !== null && typeof x === 'object' && Object.hasOwn(x, 'bantamkit')).length;
+    // The label is what a red line prints, so a non-string value is spelled as JSON, never coerced.
+    const VALUES = [
+      ['a string a future release might write', 'some-future-release'],
+      ['the empty string', ''],
+      ['the number 0', 0],
+      ['the number 1', 1],
+      ['false', false],
+      ['null', null],
+      ['an object', { v: 1 }],
+    ];
+
+    // ----------------------------------- removal: ours come out whatever the value says
+    for (const [i, [label, value]] of VALUES.entries()) {
+      const tag = `${JSON.stringify(value)} (${label})`;
+      const homes = { py: home(`${id}-remove-${i}`, 'py'), node: home(`${id}-remove-${i}`, 'node') };
+      // Ours with a matcher, ours without one, and ours SHARING an event with a foreign entry
+      // that must be the only thing left in it. `Notification` is outside the seven.
+      const bed = {
+        model: 'opus',
+        hooks: {
+          SessionStart: [{ matcher: 'startup|resume|clear|compact', hooks: [markedWith(value)] }],
+          PreToolUse: [FOREIGN, { matcher: 'Read', hooks: [markedWith(value)] }],
+          Stop: [{ hooks: [markedWith(value)] }],
+          Notification: [FOREIGN],
+        },
+      };
+      for (const side of ['py', 'node']) writeFile(settings(homes[side]), `${JSON.stringify(bed, null, 2)}\n`);
+      const py = runPy(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.node });
+      const docOf = (h) => JSON.parse(readFileSync(settings(h), 'utf8'));
+      cases.push({
+        name: `hook-marker-presence: value ${tag} — the same streams, the same exit, the same file left behind`,
+        kind: 'json',
+        expected: { stdout: mask(py.stdout, homes.py), stderr: mask(py.stderr, homes.py), exit: py.exit, doc: docOf(homes.py) },
+        actual: { stdout: mask(nd.stdout, homes.node), stderr: mask(nd.stderr, homes.node), exit: nd.exit, doc: docOf(homes.node) },
+      });
+      // PER SIDE, AND THIS IS THE CASE THE MUTATION REDDENS. Under a value test both runtimes
+      // answer `no bantamkit hooks are installed`, exit 0, file untouched — and agree.
+      const removed = (r, h) => {
+        const doc = docOf(h);
+        return {
+          exit: r.exit,
+          reportedRemoval: mask(r.stdout, h).split('\n')[0],
+          markedHooksLeft: markedHooksIn(doc),
+          doc,
+        };
+      };
+      cases.push(
+        ...literalCases(
+          removed(py, homes.py),
+          removed(nd, homes.node),
+          `hook-marker-presence: value ${tag} — removed, and no marker left in the file, against a literal`,
+          {
+            exit: 0,
+            reportedRemoval: 'removed bantamkit hooks from <HOME>/.claude/settings.json',
+            markedHooksLeft: 0,
+            doc: { model: 'opus', hooks: { PreToolUse: [FOREIGN], Notification: [FOREIGN] } },
+          },
+        ),
+      );
+    }
+
+    // --------------------------------- install over seven stale entries, one value per event
+    //
+    // Seven events, seven foreign values — each event's stale entry carries a different one, so
+    // a test that drops SOME values leaves SOME duplicates, and `ourEntries` says how many.
+    {
+      const homes = { py: home(`${id}-install`, 'py'), node: home(`${id}-install`, 'node') };
+      const seed = {
+        model: 'opus',
+        hooks: Object.fromEntries([
+          ...[
+            ['SessionStart', 'startup|resume|clear|compact'],
+            ['PreToolUse', 'Read'],
+            ['PostToolUse', null],
+            ['UserPromptSubmit', null],
+            ['PreCompact', null],
+            ['PostCompact', null],
+            ['Stop', null],
+          ].map(([event, matcher], i) => [
+            event,
+            [matcher === null ? { hooks: [markedWith(VALUES[i][1])] } : { matcher, hooks: [markedWith(VALUES[i][1])] }],
+          ]),
+          ['Notification', [FOREIGN]],
+        ]),
+      };
+      for (const side of ['py', 'node']) writeFile(settings(homes[side]), `${JSON.stringify(seed, null, 2)}\n`);
+      const py = runPy(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.node });
+      const shape = (r, h) => {
+        const doc = JSON.parse(readFileSync(settings(h), 'utf8'));
+        const entries = Object.entries(doc.hooks ?? {}).filter(([event]) => event !== 'Notification');
+        const hooks = entries.flatMap(([, list]) => list.flatMap((e) => e.hooks ?? []));
+        return {
+          exit: r.exit,
+          ourEvents: entries.length,
+          ourEntries: entries.reduce((n, [, list]) => n + list.length, 0),
+          staleSurvivors: hooks.filter((x) => x.command === NEUTRAL).length,
+          hooksCarryingThisBuildsValue: hooks.filter((x) => x.bantamkit === 'hook').length,
+          notificationUntouched: JSON.stringify(doc.hooks?.Notification) === JSON.stringify([FOREIGN]),
+        };
+      };
+      cases.push({
+        name: 'hook-marker-presence-install: reinstalling over seven foreign-valued markers — the same shape',
+        kind: 'json',
+        expected: shape(py, homes.py),
+        actual: shape(nd, homes.node),
+      });
+      // PER SIDE. Under a value test this reads `ourEntries: 14, staleSurvivors: 7` on BOTH
+      // sides, and the differential above stays green.
+      cases.push(
+        ...literalCases(
+          shape(py, homes.py),
+          shape(nd, homes.node),
+          'hook-marker-presence-install: seven replaced, none duplicated, against a literal',
+          {
+            exit: 0,
+            ourEvents: 7,
+            ourEntries: 7,
+            staleSurvivors: 0,
+            hooksCarryingThisBuildsValue: 7,
+            notificationUntouched: true,
+          },
+        ),
+      );
     }
   }
 
