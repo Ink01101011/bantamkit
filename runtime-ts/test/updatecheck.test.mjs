@@ -331,10 +331,16 @@ for (const shape of Object.keys(MALFORMED).sort()) {
 // `encoding="utf-8"`, `json.loads` refused the leading BOM by name, and the same file was
 // `unreadable` there while THIS side's `TextDecoder` stripped the BOM and answered `available`.
 // The reference now reads with `utf-8-sig` and this side is unchanged: `ignoreBOM` stays at its
-// default of `false`, which strips it. PowerShell's `Set-Content` and `Out-File` write UTF-8
-// WITH a BOM by default, so this is what a Windows operator who opens the record and saves it
-// produces, and a record a reader can plainly act on is not a shape it cannot act on. The bytes
-// go to disk as BYTES below, never through an encoder that might add or eat one.
+// default of `false`, which strips it. What has to be accepted is the three bytes `EF BB BF`,
+// whoever wrote them, and a record a reader can plainly act on is not a shape it cannot act on.
+// The bytes go to disk as BYTES below, never through an encoder that might add or eat one.
+//
+// AMENDED 2026-09-21 (J62-16). This block used to name PowerShell's `Set-Content`/`Out-File`
+// defaults as the source of those bytes. Measured in `mcr.microsoft.com/powershell:latest`,
+// PowerShell 7.4.2 writes NO BOM from any of `Set-Content`, `Out-File`, `>` or `Add-Content`;
+// only an explicit `-Encoding utf8BOM` produces one. Windows PowerShell 5.1 is UNMEASURED here
+// — it needs a Windows kernel this machine does not have. The cases below never depended on the
+// writer; see `updatecheck.ts`'s `UTF8` comment for the full amendment.
 
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 

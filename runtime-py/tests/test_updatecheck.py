@@ -241,10 +241,17 @@ def test_every_malformed_shape_is_unreadable_and_nothing_raises(home, shape):
 # NOT A DIVERGENCE, AND THESE NODES ARE WHY. Until J57-5b this module opened the record with
 # `encoding="utf-8"`, `json.loads` refused the leading BOM by name, and the record was
 # `unreadable` HERE while the port's `TextDecoder` stripped the BOM and answered `available` —
-# one file, two answers. PowerShell's `Set-Content` and `Out-File` write UTF-8 WITH a BOM by
-# default, so this is what a Windows operator who opens the record and saves it produces; a
-# record a reader can plainly act on is not a shape it cannot act on. Both sides accept it now.
-# The bytes are written as BYTES below, never through an encoder that might add or eat one.
+# one file, two answers. What has to be accepted is the three bytes `EF BB BF`, whoever wrote
+# them: a record a reader can plainly act on is not a shape it cannot act on. Both sides accept
+# it now. The bytes are written as BYTES below, never through an encoder that might add or eat
+# one.
+#
+# AMENDED 2026-09-21 (J62-16). This block used to name PowerShell's `Set-Content`/`Out-File`
+# defaults as the source of those bytes. Measured in `mcr.microsoft.com/powershell:latest`,
+# PowerShell 7.4.2 writes NO BOM from any of `Set-Content`, `Out-File`, `>` or `Add-Content`;
+# only an explicit `-Encoding utf8BOM` produces one. Windows PowerShell 5.1 is UNMEASURED here
+# — it needs a Windows kernel this machine does not have. The cases below never depended on the
+# writer; see `updatecheck.load_record`'s docstring for the full amendment.
 
 BOM = b"\xef\xbb\xbf"
 

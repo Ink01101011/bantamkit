@@ -454,10 +454,16 @@ leading BOM by name, so the record was `unreadable` on the Python side, while th
 `new TextDecoder('utf-8', {fatal: true})` strips a BOM at its default `ignoreBOM: false` and
 answered a live `available` — one file, two answers, found by writing the gate and left RED on
 purpose rather than hidden. **J57-5b closed it in the runtimes, toward ACCEPTING the BOM**:
-`updatecheck.py` reads with `utf-8-sig` and `updatecheck.ts` is unchanged. PowerShell's
-`Set-Content` and `Out-File` write UTF-8 WITH a BOM by default, bantamkit must work on Windows,
-and a record a reader can plainly act on is not "a shape this reader cannot act on" — which is
-this reader's own definition of unreadable. It is **not** a `ruling:`, because a ruling asserts a
+`updatecheck.py` reads with `utf-8-sig` and `updatecheck.ts` is unchanged. What has to be
+accepted is the three bytes `EF BB BF`, whoever wrote them, bantamkit must work on Windows, and
+a record a reader can plainly act on is not "a shape this reader cannot act on" — which is this
+reader's own definition of unreadable. *(Amended 2026-09-21, J62-16: this paragraph used to give
+"PowerShell's `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default" as the reason, and
+that sentence had never been run. Measured in `mcr.microsoft.com/powershell:latest`, PowerShell
+7.4.2 writes NO BOM from `Set-Content`, `Out-File`, `>` or `Add-Content`, and `-Encoding utf8`
+is the alias of `utf8NoBOM`; only `-Encoding utf8BOM` produces one. Windows PowerShell 5.1 is
+UNMEASURED — it needs a Windows kernel this machine does not have. The four arms below never
+depended on the writer.)* It is **not** a `ruling:`, because a ruling asserts a
 difference somebody chose and after J57-5b there is no difference left to assert; the four
 `available/utf-8-bom`, `current/utf-8-bom`, `ahead/utf-8-bom` and `unreadable/bom-not-json` arms
 in `tools/conformance/suites/updatecheck.mjs` are compared in every table like any other shape,

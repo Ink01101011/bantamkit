@@ -263,12 +263,24 @@ def load_record(path: Path | None = None) -> tuple[str, dict[str, Any] | None]:
     `utf-8-sig` AND NOT `utf-8`, AND THAT IS A PARITY FIX, NOT A PREFERENCE. `json.loads`
     refuses a leading BOM by name (`Unexpected UTF-8 BOM (decode using utf-8-sig)`), while the
     port's `new TextDecoder('utf-8', {fatal: true})` strips one before `JSON.parse` ever sees
-    it — so the same file was `unreadable` here and `available` there until J57-5b. PowerShell's
-    `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default, so a Windows operator who
-    opens this record and saves it again produces exactly those bytes; a record a reader can
-    plainly act on is not "a shape this reader cannot act on". `utf-8-sig` strips a LEADING BOM
-    and is `utf-8` in every other respect: bytes that are not UTF-8 still raise here and are
-    still UNREADABLE.
+    it — so the same file was `unreadable` here and `available` there until J57-5b. WHAT HAS TO
+    BE ACCEPTED IS THE THREE BYTES `EF BB BF`, WHOEVER WROTE THEM: a record a reader can plainly
+    act on is not "a shape this reader cannot act on". `utf-8-sig` strips a LEADING BOM and is
+    `utf-8` in every other respect: bytes that are not UTF-8 still raise here and are still
+    UNREADABLE. The property is gated by `tools/conformance/suites/updatecheck.mjs`'s
+    `available|current|ahead/utf-8-bom` arms, with `unreadable/bom-not-json` as the control that
+    says stripping the BOM is not a blanket pass.
+
+    AMENDED 2026-09-21 (J62-16). This paragraph used to justify the codec with the sentence
+    "PowerShell's `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default". THAT SENTENCE
+    IS VERSION-QUALIFIED AND HAD NEVER BEEN RUN. Measured in `mcr.microsoft.com/powershell:latest`
+    — PowerShell **7.4.2** (Core, Ubuntu 22.04, linux/amd64) — `Set-Content`, `Out-File`, `>` and
+    `Add-Content` ALL write UTF-8 with NO BOM, `-Encoding utf8` is the alias of `utf8NoBOM`, and
+    `EF BB BF` appears only under an explicit `-Encoding utf8BOM`. So the sentence is FALSE of
+    PowerShell 6+ on every platform, and it is UNMEASURED for WINDOWS PowerShell 5.1, which runs
+    only on a Windows kernel this machine does not have. THE CODEC DOES NOT DEPEND ON IT EITHER
+    WAY: `Out-File -Encoding utf8BOM`, Notepad before 2019 and any editor set to "UTF-8 with BOM"
+    each produce the same three bytes, and this reader's business is the bytes, not the writer.
     """
     target = record_path() if path is None else Path(path)
     try:

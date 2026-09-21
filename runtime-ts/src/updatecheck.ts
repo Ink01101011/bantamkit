@@ -160,13 +160,26 @@ const DATE_PREFIX = /^([0-9]{4}-[0-9]{2}-[0-9]{2})/;
  * a different state on the two sides. Decoding the bytes with `fatal` makes it the same one.
  *
  * `ignoreBOM` IS LEFT AT ITS DEFAULT OF `false`, WHICH STRIPS A LEADING BOM, AND THAT IS LOAD
- * BEARING. The reference reads with `utf-8-sig` for exactly this reason: PowerShell's
- * `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default, and a record a reader can
- * plainly act on is not "a shape this reader cannot act on". Setting `ignoreBOM: true` here
- * would leave the BOM in the string, `JSON.parse` would refuse it, and this side would call a
- * Windows operator's perfectly good record broken. The BOM arms in
- * `tools/conformance/suites/updatecheck.mjs` are what hold the two sides together on it; it is
- * NOT a `docs/porting.md` divergence, because there is no difference left to register.
+ * BEARING. The reference reads with `utf-8-sig` for exactly this reason: WHAT HAS TO BE
+ * ACCEPTED IS THE THREE BYTES `EF BB BF`, WHOEVER WROTE THEM, and a record a reader can plainly
+ * act on is not "a shape this reader cannot act on". Setting `ignoreBOM: true` here would leave
+ * the BOM in the string, `JSON.parse` would refuse it, and this side would call a perfectly good
+ * record broken. The `available|current|ahead/utf-8-bom` arms in
+ * `tools/conformance/suites/updatecheck.mjs`, with `unreadable/bom-not-json` as their control,
+ * are what hold the two sides together on it; it is NOT a `docs/porting.md` divergence, because
+ * there is no difference left to register.
+ *
+ * AMENDED 2026-09-21 (J62-16). This comment used to justify the setting with the sentence
+ * "PowerShell's `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default". THAT SENTENCE
+ * IS VERSION-QUALIFIED AND HAD NEVER BEEN RUN. Measured in `mcr.microsoft.com/powershell:latest`
+ * — PowerShell 7.4.2 (Core, Ubuntu 22.04, linux/amd64) — `Set-Content`, `Out-File`, `>` and
+ * `Add-Content` ALL write UTF-8 with NO BOM, `-Encoding utf8` is the alias of `utf8NoBOM`, and
+ * `EF BB BF` appears only under an explicit `-Encoding utf8BOM`. So it is FALSE of PowerShell 6+
+ * on every platform, and UNMEASURED for WINDOWS PowerShell 5.1, which needs a Windows kernel
+ * this machine does not have. The setting does not depend on it either way: `-Encoding utf8BOM`,
+ * Notepad before 2019 and any editor set to "UTF-8 with BOM" all produce the same three bytes,
+ * and this reader's business is the bytes, not the writer. The reference's `load_record`
+ * docstring carries the same amendment.
  */
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
 

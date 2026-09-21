@@ -202,9 +202,12 @@ const RECORDS = {
   whitespace: '   \n',
   // A truncated two-byte sequence: not UTF-8, and the reason the port decodes with `fatal`.
   'not-utf8': Uint8Array.from([0x7b, 0x22, 0x63, 0x22, 0x3a, 0x22, 0xc3, 0x22, 0x7d, 0x0a]),
-  // A WELL-FORMED record with a UTF-8 BOM in front of it — what Windows PowerShell's
-  // `Set-Content`/`Out-File` writes by default, so an operator who edits this file by hand on
-  // Windows produces exactly these bytes. BOTH RUNTIMES ACCEPT IT (J57-5b): the reference reads
+  // A WELL-FORMED record with a UTF-8 BOM in front of it — the three bytes `EF BB BF` that an
+  // editor set to "UTF-8 with BOM", Notepad before 2019, or `Out-File -Encoding utf8BOM` puts in
+  // front of a file an operator edits by hand. (J62-16 measured PowerShell 7.4.2: none of
+  // `Set-Content`, `Out-File`, `>` or `Add-Content` writes a BOM by default on 6+, so the writer
+  // this comment used to name is version-qualified and is not what the arms rest on.)
+  // BOTH RUNTIMES ACCEPT IT (J57-5b): the reference reads
   // with `utf-8-sig`, the port's `TextDecoder` strips it at its default `ignoreBOM: false`. The
   // three arms below answer it at three running versions, so the BOM changes the state in
   // neither direction; `bom-not-json` is the control that says the BOM is not a blanket pass.
