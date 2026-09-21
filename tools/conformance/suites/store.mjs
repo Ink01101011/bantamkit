@@ -1411,6 +1411,7 @@ export async function run(ctx) {
   // reddened this one case with its old first-difference line (J63-1b note).
   const ref = ctx.runPython(REF, { op: 'version' });
   const [refMajor, refMinor] = ref.version_info;
+  let winpathsArmed = false; // J63-5: the arming decision, pinned against a literal below
   if (refMajor < 3 || (refMajor === 3 && refMinor < 12)) {
     notes.push(
       `1 case withheld below Python 3.12 (the reference is ${ref.version}): ` +
@@ -1419,6 +1420,7 @@ export async function run(ctx) {
         'run the reference on 3.12+ to arm it',
     );
   } else {
+    winpathsArmed = true;
     const win = ctx.runPython(REF, {
       op: 'winpaths',
       raws: winRaws.map(b64),
@@ -1465,6 +1467,13 @@ export async function run(ctx) {
       },
     });
   }
+  // J63-5: the floor test's OTHER direction — mutated to `< 99` the host was 254/0 with a self-contradicting note; this is what reddens (1 case).
+  cases.push({
+    name: 'winpaths is armed exactly when the reference is 3.12+, against a literal',
+    kind: 'json',
+    expected: { armed: refMajor > 3 || (refMajor === 3 && refMinor >= 12) },
+    actual: { armed: winpathsArmed },
+  });
 
   // The Win32 message table, asked of the running Windows. Off Windows `ctypes.FormatError`
   // has nothing to answer, so the case does not exist there and SAYS SO in a note rather

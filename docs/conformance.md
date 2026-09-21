@@ -182,8 +182,12 @@ asked the op and aborts on `AttributeError: module 'ntpath' has no attribute 'sp
 exactly that one case with its old first-difference line (`first difference at byte 25`,
 `absolute[2]` for `////a/b`; 1 failure). Mutated the other way, so it withholds at every
 version, the HOST run stays green one case short with a note that reads `the reference is
-3.12.13`: no gate pins the case count (counts co-move with the tree), so that direction is
-caught by reading the note, not by a red.
+3.12.13`: no gate pins the case count (counts co-move with the tree), so until J63-5 that
+direction was caught only by reading the note. J63-5 added one per-side literal beside the
+arm — `winpaths is armed exactly when the reference is 3.12+, against a literal`, `{armed}`
+against the version the reference reported — and measured it: under that `< 99` mutation the
+host goes `1 failures` (`{"armed":true}` expected, `{"armed":false}` got); unmutated, the host
+runs 256 cases and the 3.11 image 255 with the note, both at 0 failures.
 
 `--all` no longer stops at `store`: measured 2026-09-21 (J63-1) as root in that image, before
 the withhold, all 23 suites ran — 8841 cases, 12 failures, of which one was the case now
