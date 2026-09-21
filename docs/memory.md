@@ -196,9 +196,7 @@ Set-Content -Path .bantamkit\.gitignore -Value '*'
 
 The POSIX form was checked against the property that matters, not just typed: `git status
 --porcelain --untracked-files=all` shows nothing under `.bantamkit` afterwards. Measured on
-this machine (macOS, no PowerShell installed here). The PowerShell form was written to the
-same contract and reviewed, but was not run on this machine — the checked measurement below is
-for the POSIX form only:
+this machine (macOS):
 
 ```console
 $ printf '*\n' > .bantamkit/.gitignore
@@ -206,8 +204,38 @@ $ git status --porcelain --untracked-files=all
 
 ```
 
-Nothing printed. To commit the ignored files instead, `rm .bantamkit/.gitignore` and they are
-untracked again, as shown above — no emptying step, and no second write puts the file back.
+**Update, 2026-09-21 (J63-3):** the claim above — that this machine has nothing that can run
+`pwsh` — is no longer the whole story. This machine has no native `pwsh`, but
+`docker run --platform linux/amd64 mcr.microsoft.com/powershell:latest` reaches `pwsh`
+**7.4.2**, and the forward-slash form of the same `Set-Content` line was run against it and
+checked against the same property:
+
+```console
+$ docker run --rm --platform linux/amd64 -v "$PWD":/work -w /work \
+    mcr.microsoft.com/powershell:latest pwsh -NoProfile -Command '
+      New-Item -ItemType Directory -Path .bantamkit -Force | Out-Null
+      Set-Content -Path .bantamkit/.gitignore -Value "*"
+    '
+$ xxd .bantamkit/.gitignore
+00000000: 2a0a                                     *.
+$ git status --porcelain --untracked-files=all
+
+```
+
+Nothing printed, and the bytes are `2A 0A` — `*` + a bare LF, no CRLF, no BOM — the same as the
+POSIX form's output and consistent with what J62-16 measured for 7.4.2 elsewhere. The backslash
+path *as literally written above* (`.bantamkit\.gitignore`) was also tried on this same Linux
+pwsh: it did **not** create a file literally named `.bantamkit\.gitignore` in the working
+directory. PowerShell's own path handling normalized the backslash to the platform separator, so
+`Set-Content -Path ".bantamkit\.gitignore"` landed on the very same `.bantamkit/.gitignore` file
+— a measurement, not the guess it looked like it would be.
+
+What remains unmeasured is Windows PowerShell 5.1 running on actual Windows, where the backslash
+form is the native path and a different `Set-Content` implementation is in play. That gap is
+roadmap row (ccc) and it stays open; nothing above is a claim about it.
+
+To commit the ignored files instead, `rm .bantamkit/.gitignore` and they are untracked again, as
+shown above — no emptying step, and no second write puts the file back.
 
 The exact bytes, "only on the write that creates `.bantamkit`", "never rewritten", and
 "deleting it stays deleted" are compared across the two runtimes, and each side against the
