@@ -1400,51 +1400,71 @@ export async function run(ctx) {
     '//?/C:/x', '//?/UNC/srv/share/x', 'a.md', '/f/.md', '/f/a.', 'x/y.md', '\\\\a/b\\c'];
   const winJoins = [...joins, [String.raw`C:\a`, 'facts'], ['//srv/share', 'facts'],
     ['a', 'C:x'], ['C:/a', 'D:/b'], ['C:/a', 'C:b'], ['/a', '/b'], ['a', ''], ['', 'a']];
-  const win = ctx.runPython(REF, {
-    op: 'winpaths',
-    raws: winRaws.map(b64),
-    joins: winJoins.map((parts) => parts.map(b64)),
-    suffixes: suffixes.map(([p, sfx]) => [b64(p), b64(sfx)]),
-  });
-  cases.push({
-    name: 'ntpath.splitroot and PureWindowsPath parsing, on every platform',
-    kind: 'json',
-    expected: {
-      splitroot: win.splitroot.map((row) => row.map(unb64)),
-      parsed: win.parsed.map(([d, r, t]) => [unb64(d), unb64(r), t.map(unb64)]),
-      str: win.str.map(unb64),
-      parents: win.parents.map((row) => row.map(unb64)),
-      absolute: win.absolute,
-      ntisabs: win.ntisabs,
-      ntsplit: win.ntsplit.map((row) => row.map(unb64)),
-      name: win.name.map(unb64),
-      suffix: win.suffix.map(unb64),
-      ntjoined: win.ntjoined.map(unb64),
-      joined: win.joined.map(unb64),
-      suffixed: win.suffixed.map(unb64),
-    },
-    actual: {
-      splitroot: winRaws.map((r) => [...pyfs.ntSplitRoot(r)]),
-      parsed: winRaws.map((r) => {
-        const { drive, root, tail } = pyfs.parseWindowsPath(r);
-        return [drive, root, tail];
-      }),
-      str: winRaws.map((r) => pyfs.winStr(r)),
-      parents: winRaws.map((r) => pyfs.winParents(r)),
-      absolute: winRaws.map((r) => pyfs.winIsAbsolute(r)),
-      ntisabs: winRaws.map((r) => pyfs.ntIsAbs(r)),
-      ntsplit: winRaws.map((r) => [...pyfs.ntSplit(r)]),
-      name: winRaws.map((r) => pyfs.winName(r)),
-      suffix: winRaws.map((r) => {
-        const nm = pyfs.winName(r);
-        const dot = nm.lastIndexOf('.');
-        return dot > 0 && dot < nm.length - 1 ? nm.slice(dot) : '';
-      }),
-      ntjoined: winJoins.map((parts) => pyfs.ntJoin(...parts)),
-      joined: winJoins.map((parts) => pyfs.winStr(pyfs.ntJoin(...parts))),
-      suffixed: suffixes.map(([pth, sfx]) => pyfs.winWithSuffix(pth, sfx)),
-    },
-  });
+  // J63-1b (roadmap row (ddd)): the port follows CPython 3.12's `PureWindowsPath`, rewritten
+  // in 3.12 over `os.path.splitroot`; 3.11's is a different algorithm that nobody chose (`//a`,
+  // `////a/b`, `//?` and `PureWindowsPath('C:/a', 'C:b')` parse differently there, measured in
+  // the J63-1 note), and `ntpath.splitroot` itself does not exist below 3.12. So the case is
+  // asked ONLY of a 3.12+ reference. Below that it is WITHHELD — not sent to either side, and
+  // named and counted in a note in the shape the win32 skips above use — rather than left as
+  // a permanent red or hidden behind a `ruling:`, which is for a difference somebody chose.
+  // Seen red before it was trusted: with the floor test mutated to `< 99` the 3.11 reference
+  // reddened this one case with its old first-difference line (J63-1b note).
+  const ref = ctx.runPython(REF, { op: 'version' });
+  const [refMajor, refMinor] = ref.version_info;
+  if (refMajor < 3 || (refMajor === 3 && refMinor < 12)) {
+    notes.push(
+      `1 case withheld below Python 3.12 (the reference is ${ref.version}): ` +
+        '`ntpath.splitroot and PureWindowsPath parsing, on every platform` — the port follows ' +
+        "3.12's PureWindowsPath, and 3.11's is a different algorithm nobody chose; " +
+        'run the reference on 3.12+ to arm it',
+    );
+  } else {
+    const win = ctx.runPython(REF, {
+      op: 'winpaths',
+      raws: winRaws.map(b64),
+      joins: winJoins.map((parts) => parts.map(b64)),
+      suffixes: suffixes.map(([p, sfx]) => [b64(p), b64(sfx)]),
+    });
+    cases.push({
+      name: 'ntpath.splitroot and PureWindowsPath parsing, on every platform',
+      kind: 'json',
+      expected: {
+        splitroot: win.splitroot.map((row) => row.map(unb64)),
+        parsed: win.parsed.map(([d, r, t]) => [unb64(d), unb64(r), t.map(unb64)]),
+        str: win.str.map(unb64),
+        parents: win.parents.map((row) => row.map(unb64)),
+        absolute: win.absolute,
+        ntisabs: win.ntisabs,
+        ntsplit: win.ntsplit.map((row) => row.map(unb64)),
+        name: win.name.map(unb64),
+        suffix: win.suffix.map(unb64),
+        ntjoined: win.ntjoined.map(unb64),
+        joined: win.joined.map(unb64),
+        suffixed: win.suffixed.map(unb64),
+      },
+      actual: {
+        splitroot: winRaws.map((r) => [...pyfs.ntSplitRoot(r)]),
+        parsed: winRaws.map((r) => {
+          const { drive, root, tail } = pyfs.parseWindowsPath(r);
+          return [drive, root, tail];
+        }),
+        str: winRaws.map((r) => pyfs.winStr(r)),
+        parents: winRaws.map((r) => pyfs.winParents(r)),
+        absolute: winRaws.map((r) => pyfs.winIsAbsolute(r)),
+        ntisabs: winRaws.map((r) => pyfs.ntIsAbs(r)),
+        ntsplit: winRaws.map((r) => [...pyfs.ntSplit(r)]),
+        name: winRaws.map((r) => pyfs.winName(r)),
+        suffix: winRaws.map((r) => {
+          const nm = pyfs.winName(r);
+          const dot = nm.lastIndexOf('.');
+          return dot > 0 && dot < nm.length - 1 ? nm.slice(dot) : '';
+        }),
+        ntjoined: winJoins.map((parts) => pyfs.ntJoin(...parts)),
+        joined: winJoins.map((parts) => pyfs.winStr(pyfs.ntJoin(...parts))),
+        suffixed: suffixes.map(([pth, sfx]) => pyfs.winWithSuffix(pth, sfx)),
+      },
+    });
+  }
 
   // The Win32 message table, asked of the running Windows. Off Windows `ctypes.FormatError`
   // has nothing to answer, so the case does not exist there and SAYS SO in a note rather

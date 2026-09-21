@@ -134,21 +134,37 @@ that may not resolve. CI has no `.venv` at all, so the workflow writes
 
 `runtime-py/pyproject.toml` declares `requires-python = ">=3.11"`, and no gate this repository
 owns runs the reference there: the venv is 3.12, CI's conformance job pins 3.12, and Actions is
-off. So until 2026-09-21 (J63-1, roadmap row (ddd)) a contributor on 3.11 had `--suite store`
-exit 2 and `--all` stop at `store`: `ref/store_ref.py`'s `winpaths` op called
-`ntpath.splitroot`, which CPython added in 3.12 (`docker run --rm python:3.11-slim python -c
-"import ntpath;print(hasattr(ntpath,'splitroot'))"` prints `False`). The floor was kept and the
-CALL guarded: `store_ref.py` carries `_splitroot_ported`, CPython 3.12.13's `Lib/ntpath.py`
-`splitroot` verbatim, bound only where the stdlib has nothing — on 3.12 the native function is
-still the one called. The host gate for the port is `node --test 'tools/conformance/*.test.mjs'`
-(`tools/conformance/splitroot-fallback.test.mjs`): it runs the port on whatever interpreter the
-harness would pick against a table of 44 triples, the native function against the SAME table
-wherever one exists, and asserts which of the two is bound, so the port is executed on 3.12 too
-and a 3.11 run reports the absence rather than skipping. Seen red before it was trusted (J63-1
-note): a drift in the port reddens the table assertion on both interpreters, and binding the
-port unconditionally reddens the binding assertion on 3.12 — and only there, since on 3.11 the
-port is the right binding. To run the reference AT the floor there is no
-host gate; the one that counts is Docker, and the whole recipe is:
+off. So until 2026-09-21 (roadmap row (ddd)) a contributor on 3.11 had `--suite store` exit 2
+and `--all` stop at `store`: `ref/store_ref.py`'s `winpaths` op calls `ntpath.splitroot`, which
+CPython added in 3.12 (`docker run --rm python:3.11-slim python -c
+"import ntpath;print(hasattr(ntpath,'splitroot'))"` prints `False`). The floor stays at 3.11 and
+the abort is gone: the one case that needs 3.12, `ntpath.splitroot and PureWindowsPath parsing,
+on every platform`, is asked ONLY of a 3.12+ reference. `suites/store.mjs` asks `store_ref.py`
+a `version` op first (`sys.version_info`; one extra reference child per run, nothing added to
+`ctx`) and below 3.12 WITHHOLDS the case — it is sent to neither side — and prints a `note:`
+that names it, counts it (1) and gives the reason: the port was written to 3.12's
+`PureWindowsPath`, which 3.12 rewrote over `os.path.splitroot`, and 3.11's is a different
+algorithm that nobody chose. Measured (J63-1's probe over the 26 suite raws plus 18 edges):
+3.11 answers `absolute`, `parsed`, `parents`, `str` and `name` differently for `//a`, `///a`,
+`////a/b`, `//a/`, `//`, `\\`, `\\\`, `//?`, `\\.\PhysicalDrive0`, `//?/unc/srv/share/x` and
+`é:/x`, and joins `PureWindowsPath('C:/a', 'C:b')` to `C:\a\b` against 3.12's `C:b`, while
+`ntpath.join`, `ntpath.split`, `ntpath.isabs`, `.suffix` and `splitroot` itself agree on every
+row. That is why it is a withheld case and not a `ruling:` — a ruling is for a difference
+somebody chose — and not a `skip` inside a helper: the note is the shape this harness already
+uses for a case the platform cannot measure (`instructions.mjs` on win32, `shiftwork.mjs` as
+uid 0). At 3.12+ nothing is withheld and the case list is what it was.
+
+J63-1 first closed the abort the other way: a verbatim port of 3.12's `splitroot` bound in the
+reference where the stdlib had none, and a `node --test` pinning the port against 44 triples on
+both interpreters. With the case withheld below 3.12 and the native function present at 3.12+,
+that port was code no configuration executed, so J63-1b removed it and its test. Both, and the
+44-row proof that `splitroot` itself is identical across the two interpreters, stay reachable in
+git at `71cd230` (`git show 71cd230:tools/conformance/ref/store_ref.py`,
+`git show 71cd230:tools/conformance/splitroot-fallback.test.mjs`). The call site is the plain
+`ntpath.splitroot(r)` again, under a comment naming where the 3.12 requirement is decided.
+
+To run the reference AT the floor there is no host gate; the one that counts is Docker, and
+the whole recipe is:
 
 ```
 printf 'FROM python:3.11-slim\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends nodejs npm git >/dev/null && rm -rf /var/lib/apt/lists/*\nRUN pip install -q --root-user-action=ignore pyyaml jsonschema httpx\n' | docker build -q -t bk-py311-node:j63-1 -
@@ -157,23 +173,23 @@ docker run --rm -v "$PWD":/src -w /src -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPAT
   sh -c 'git config --global --add safe.directory /src; node tools/conformance/run.mjs --suite store'
 ```
 
-Measured 2026-09-21 with the reference on 3.11.16 against this tree: `--suite store` no longer
-aborts — 255 cases, and the `splitroot` field is byte-identical to 3.12.13's for all 26 suite
-raws plus 18 edges — but it reports **one failure**, `ntpath.splitroot and PureWindowsPath
-parsing, on every platform`, on the OTHER fields of that one case. 3.11's `PureWindowsPath`
-predates the 3.12 rewrite over `os.path.splitroot` and answers `absolute`, `parsed`, `parents`,
-`str` and `name` differently for `//a`, `///a`, `////a/b`, `//a/`, `//`, `\\`, `\\\`, `//?`,
-`\\.\PhysicalDrive0`, `//?/unc/srv/share/x` and `é:/x`, and `PureWindowsPath('C:/a', 'C:b')`
-joins to `C:\a\b` on 3.11 against `C:b` on 3.12; `ntpath.join`, `ntpath.split`, `ntpath.isabs`
-and `.suffix` agree on every row. The port was written to 3.12's pathlib and the reference is
-the interpreter's own, so at 3.11 that one case is a known red with a named cause: re-doing
-3.12's `PureWindowsPath` inside the reference would be the second implementation
-`store_ref.py`'s header refuses to have, and a `ruling:` is for a difference somebody chose.
-Every other `store` case is green at 3.11, and `--all` no longer stops there: measured the same
-day as root in that image, all 23 suites ran — 8841 cases, 12 failures, of which one is the case
-above; the other eleven (an argparse wording that 3.11 quotes and 3.12 does not, the chmod arms
-that root cannot be denied, a `python3.11` interpreter name, a `~root` ruling that goes stale
-when root is the current user) are named in the J63-1 note and are not this row's.
+Measured 2026-09-21 with the reference on 3.11.16 against this tree: `--suite store` prints
+`PASS` with `0 failures`, one case fewer than the host's run of the same tree, and the note
+`1 case withheld below Python 3.12 (the reference is 3.11.16): ...`. Seen red before it was
+trusted (J63-1b note): with the floor test mutated so it never withholds, the 3.11 reference is
+asked the op and aborts on `AttributeError: module 'ntpath' has no attribute 'splitroot'` (exit
+2, no cases); on a copy of the tree with `71cd230`'s port put back, the same mutation reddens
+exactly that one case with its old first-difference line (`first difference at byte 25`,
+`absolute[2]` for `////a/b`; 1 failure). Mutated the other way, so it withholds at every
+version, the HOST run stays green one case short with a note that reads `the reference is
+3.12.13`: no gate pins the case count (counts co-move with the tree), so that direction is
+caught by reading the note, not by a red.
+
+`--all` no longer stops at `store`: measured 2026-09-21 (J63-1) as root in that image, before
+the withhold, all 23 suites ran — 8841 cases, 12 failures, of which one was the case now
+withheld; the other eleven (an argparse wording that 3.11 quotes and 3.12 does not, the chmod
+arms that root cannot be denied, a `python3.11` interpreter name, a `~root` ruling that goes
+stale when root is the current user) are named in the J63-1 note and are not this row's.
 
 ## A reference child that stops answering
 
