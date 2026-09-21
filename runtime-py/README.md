@@ -74,9 +74,9 @@ CPU architecture and Python minor version** (some wheels, such as `pydantic_core
 one platform only), copy `wheels/` across, and install from it:
 
 ```bash
-python -m pip download "bantamkit[mcp]==0.35.4" -d wheels
+python -m pip download "bantamkit[mcp]==0.35.5" -d wheels
 python -m venv <env>
-<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.35.4"
+<env>/bin/pip install --no-index --find-links wheels "bantamkit[mcp]==0.35.5"
 <env>/bin/bantamkit-mcp --install cursor
 ```
 
