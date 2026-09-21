@@ -31,6 +31,30 @@
 // PyPI are two registries that can disagree at one version number, and job56 shipped a day
 // where they did.
 //
+// AMENDED 2026-09-21 (job62, J62-13): "leaves the other exactly as found" was true of the
+// other ENTRY and false of the record. This program also stamped the record's own
+// `checked_at` whenever EITHER registry answered — and that field is the fallback that dates
+// every entry without a stamp of its own, so a partial success was written down as a clean
+// check of both registries. Two things followed, both measured on this branch: the runtime
+// reading the half that did NOT answer printed `is current as of <today>` about a number
+// from weeks earlier, and the 24 h TTL in `bantamkit-hook.mjs` — which reads exactly this
+// field — went quiet for the whole interval instead of retrying the half that failed.
+//
+// SO THERE ARE TWO STAMPS NOW, AND THE RULE IS ONE SENTENCE: an ENTRY's `checked_at` is when
+// THAT registry answered, and the RECORD's `checked_at` is when a writer refreshed the record
+// AS A WHOLE. This program is the only writer in the repo that asks both registries, so it is
+// the only one that may ever write the record's — and it writes it only when both answered.
+// A partial success stamps its own entry, leaves the record's stamp where it was, and is
+// therefore still DUE at the next session rather than fresh for a day.
+//
+// THE COST OF THAT, STATED. A machine that can reach one registry and not the other now
+// spawns a detached probe once per SESSION rather than once per day, until the other registry
+// answers. That is exactly the cost the both-failed case has always paid — nothing is
+// written, so the record stays due — and nothing waits for the child: measured 0.14-0.46 s
+// per GET on a good network, in a process given `stdio: 'ignore'` and `unref()`ed. The
+// alternative, a "last attempted" field, would mean writing on total failure, which the
+// paragraph above rules out for a better reason than this one is worth.
+//
 // THE BYTES ARE `selfupdate.recordUpdate`'s BYTES. `JSON.stringify(payload, null, 2)` plus one
 // trailing newline, a temp file in the SAME directory, and `renameSync` — atomic on POSIX and
 // on Windows, and never across a filesystem. Two writers (this probe and `--update`) can race
@@ -203,9 +227,15 @@ async function main() {
   const payload = loaded.source === updatecheck.SOURCE_RECORD && loaded.record !== null
     ? { ...loaded.record }
     : {};
-  payload.checked_at = stamp();
-  if (npm !== null) payload[NPM_KEY] = { package: NPM_PACKAGE, latest: npm };
-  if (pypi !== null) payload[PYPI_KEY] = { distribution: PYPI_DISTRIBUTION, latest: pypi };
+  const at = stamp();
+  // THE RECORD'S STAMP ONLY WHEN THE RECORD AS A WHOLE WAS REFRESHED — see the header. A
+  // partial success leaves it exactly where it was, which is what keeps the entry it did not
+  // fill dated by the check that actually wrote it, and keeps the hook's TTL due.
+  if (npm !== null && pypi !== null) payload.checked_at = at;
+  if (npm !== null) payload[NPM_KEY] = { package: NPM_PACKAGE, latest: npm, checked_at: at };
+  if (pypi !== null) {
+    payload[PYPI_KEY] = { distribution: PYPI_DISTRIBUTION, latest: pypi, checked_at: at };
+  }
 
   let body;
   try {

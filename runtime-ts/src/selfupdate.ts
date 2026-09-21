@@ -528,7 +528,10 @@ function stamp(): string {
  * THE PORT OF `selfupdate.record_update`. Its docstring carries the argument and is not
  * restated: no second network call and no new failure mode (`update` already holds `latest`),
  * no directory is ever created, the other runtime's key is left exactly as found, and the
- * write goes through a temp file and a rename so no reader sees half a record.
+ * write goes through a temp file and a rename so no reader sees half a record. That includes
+ * its AMENDED 2026-09-21 clause — this writer stamps its OWN entry's `checked_at` and never
+ * the record's, because the record's stamp means "a writer refreshed the whole record" and
+ * `--update` holds one registry's answer by construction.
  *
  * WHY THE WRITER IS HERE AND NOT IN `updatecheck.ts`. That module is the READER, and
  * `test/updatecheck.test.mjs` gates its source against `writeFileSync`, `renameSync`,
@@ -558,8 +561,8 @@ export function recordUpdate(latest: string, now?: string): boolean {
   // An UNREADABLE record is replaced rather than merged: there is nothing in it to preserve.
   const payload: Record<string, unknown> =
     source === SOURCE_RECORD && record !== null ? { ...record } : {};
-  payload['checked_at'] = now ?? stamp();
-  payload[RECORD_KEY] = { package: PACKAGE, latest };
+  const at = now ?? stamp();
+  payload[RECORD_KEY] = { package: PACKAGE, latest, checked_at: at };
   const temporary = join(directory, `.update-check-${process.pid}-${Date.now()}.json`);
   try {
     writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');

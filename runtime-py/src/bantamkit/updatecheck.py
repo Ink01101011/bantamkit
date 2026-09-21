@@ -26,12 +26,45 @@ inferred, with no timer anywhere in a runtime.
     <homedir>/.bantamkit/update-check.json
 
     {"checked_at": "2026-09-19T21:04:11Z",
-     "npm":  {"package": "bantamkit-mcp", "latest": "0.36.0"},
+     "npm":  {"package": "bantamkit-mcp", "latest": "0.36.0",
+              "checked_at": "2026-09-20T09:12:00Z"},
      "pypi": {"distribution": "bantamkit", "latest": "0.36.0"}}
 
 Both registries, because they are two registries. THIS runtime reads `pypi.latest`; the Node
 runtime reads `npm.latest`. That split is the `docs/porting.md` divergence row — the same
 genuinely-different-object as `--update`'s URL row, not a new kind of one.
+
+## TWO STAMPS, AND WHICH ONE DATES WHICH NUMBER (J62-13, 2026-09-21)
+
+An ENTRY may carry a `checked_at` of its own: when THAT registry last answered. The
+record's own `checked_at` is when a writer last refreshed the record AS A WHOLE, and it is
+the fallback for an entry that carries no stamp — which is exactly right, because such an
+entry was last written by a whole-record write.
+
+THE SECOND STAMP EXISTS BECAUSE THE FIRST ONE WAS BEING USED TO DATE A NUMBER NOBODY HAD
+ASKED FOR. Two of the three writers fill ONE key: `selfupdate.record_update` only ever holds
+the version `--update` itself fetched, and `tools/hooks/update-probe.mjs` fills one key when
+one registry answers and the other does not. Both stamped the record's `checked_at` anyway,
+so the OTHER runtime's reader dated its own stale number by a check that never touched its
+registry. Measured 2026-09-20 on this branch, one file, two readers, after a Node `--update`
+took npm from 0.30.0 to 0.36.0 and left `pypi` at 0.30.0 from three weeks earlier:
+
+    the reference (reads pypi):  update: bantamkit-mcp 0.30.0 is current as of 2026-09-20.
+    the port      (reads npm):   update: bantamkit-mcp 0.30.0 is running; the package index
+                                 has 0.36.0 — run `bantamkit-mcp --update`, …
+
+`2026-09-20` is the day NPM was asked. PyPI was asked on the 1st. The date is in the sentence
+so the operator can judge how old the claim is (see below), which is the one job it cannot do
+while it names another registry's check.
+
+`_checked_date` therefore SELECTS one stamp — the entry's when the entry carries one, the
+record's otherwise — and then applies the single rule below to whatever it selected. One
+selection and one rule, not two rules: a per-key stamp that is present and unparseable makes
+the record unreadable exactly as a top-level one does.
+
+A record written before this change carries no entry stamps at all, so every one of them
+falls back and this module answers it byte for byte as it did — which is what keeps the
+whole existing conformance table green rather than migrated.
 
 THE PATH RESOLVES AGAINST `Path.home()` AND NOTHING ELSE. A `.bantamkit` directory relative
 to a cwd is a MEMORY STORE, and creating one by accident is a defect class this repo has
@@ -47,10 +80,11 @@ the one word that is true on npm and on PyPI both — and never a package name, 
 PyPI distribution is `bantamkit` and the npm package is `bantamkit-mcp` and a sentence naming
 either one could not be identical on both sides.
 
-`{date}` is the `YYYY-MM-DD` PREFIX of `checked_at`, never a locale rendering: a rendered
-date would make the two runtimes disagree on a machine set to another locale, and the
-`current` state names a date because the record may be months old and "current" without one
-would be a claim the record cannot support.
+`{date}` is the `YYYY-MM-DD` PREFIX of the stamp that dates THIS KEY's number (see *Two
+stamps* above), never a locale rendering: a rendered date would make the two runtimes
+disagree on a machine set to another locale, and the `current` state names a date because the
+record may be months old and "current" without one would be a claim the record cannot
+support.
 
 "then reconnect the host" is not politeness. It is measured reason 1 in `selfupdate.py:13-20`
 — a running server keeps serving the code it loaded at startup — and an update line that did
@@ -60,7 +94,8 @@ not say so would be the confusion AS-7 predicted.
 
 EVERY shape this reader cannot act on, and it NEVER raises for any of them: bytes that are
 not UTF-8, text that is not JSON, JSON that is not an object, no key for this runtime, a
-`latest` that is absent or is not a version, and a missing or unparseable `checked_at`. A
+`latest` that is absent or is not a version, and a missing or unparseable SELECTED
+`checked_at` — the entry's when it has one, the record's otherwise. A
 leading UTF-8 BOM is NOT one of them — see `load_record`: both runtimes accept it, which is
 what `tools/conformance/suites/updatecheck.mjs`'s BOM arms prove and why it is not a
 `docs/porting.md` divergence row. The
@@ -228,12 +263,24 @@ def load_record(path: Path | None = None) -> tuple[str, dict[str, Any] | None]:
     `utf-8-sig` AND NOT `utf-8`, AND THAT IS A PARITY FIX, NOT A PREFERENCE. `json.loads`
     refuses a leading BOM by name (`Unexpected UTF-8 BOM (decode using utf-8-sig)`), while the
     port's `new TextDecoder('utf-8', {fatal: true})` strips one before `JSON.parse` ever sees
-    it — so the same file was `unreadable` here and `available` there until J57-5b. PowerShell's
-    `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default, so a Windows operator who
-    opens this record and saves it again produces exactly those bytes; a record a reader can
-    plainly act on is not "a shape this reader cannot act on". `utf-8-sig` strips a LEADING BOM
-    and is `utf-8` in every other respect: bytes that are not UTF-8 still raise here and are
-    still UNREADABLE.
+    it — so the same file was `unreadable` here and `available` there until J57-5b. WHAT HAS TO
+    BE ACCEPTED IS THE THREE BYTES `EF BB BF`, WHOEVER WROTE THEM: a record a reader can plainly
+    act on is not "a shape this reader cannot act on". `utf-8-sig` strips a LEADING BOM and is
+    `utf-8` in every other respect: bytes that are not UTF-8 still raise here and are still
+    UNREADABLE. The property is gated by `tools/conformance/suites/updatecheck.mjs`'s
+    `available|current|ahead/utf-8-bom` arms, with `unreadable/bom-not-json` as the control that
+    says stripping the BOM is not a blanket pass.
+
+    AMENDED 2026-09-21 (J62-16). This paragraph used to justify the codec with the sentence
+    "PowerShell's `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default". THAT SENTENCE
+    IS VERSION-QUALIFIED AND HAD NEVER BEEN RUN. Measured in `mcr.microsoft.com/powershell:latest`
+    — PowerShell **7.4.2** (Core, Ubuntu 22.04, linux/amd64) — `Set-Content`, `Out-File`, `>` and
+    `Add-Content` ALL write UTF-8 with NO BOM, `-Encoding utf8` is the alias of `utf8NoBOM`, and
+    `EF BB BF` appears only under an explicit `-Encoding utf8BOM`. So the sentence is FALSE of
+    PowerShell 6+ on every platform, and it is UNMEASURED for WINDOWS PowerShell 5.1, which runs
+    only on a Windows kernel this machine does not have. THE CODEC DOES NOT DEPEND ON IT EITHER
+    WAY: `Out-File -Encoding utf8BOM`, Notepad before 2019 and any editor set to "UTF-8 with BOM"
+    each produce the same three bytes, and this reader's business is the bytes, not the writer.
     """
     target = record_path() if path is None else Path(path)
     try:
@@ -276,9 +323,24 @@ def _latest_in(record: dict[str, Any], key: str) -> str | None:
     return latest if _VERSION.match(latest) else None
 
 
-def _checked_date(record: dict[str, Any]) -> str | None:
-    """The `YYYY-MM-DD` prefix of `checked_at`, or `None`. Sliced, never rendered."""
-    checked_at = record.get("checked_at")
+def _checked_date(record: dict[str, Any], key: str) -> str | None:
+    """The `YYYY-MM-DD` prefix of the stamp that dates THIS key's number. Sliced, never rendered.
+
+    ONE SELECTION, THEN ONE RULE. The stamp is `record[key]["checked_at"]` when the entry is
+    an object that CARRIES that name, and `record["checked_at"]` otherwise; whichever was
+    selected is then judged by the single shape check this module has always applied. A
+    per-key stamp that is present and unparseable is unreadable exactly as a top-level one
+    is — see the module docstring for why that is one thing to port rather than two.
+
+    `"checked_at" in entry` and not a truth test: an entry that carries the name is the
+    entry's own answer even when the value is garbage, and falling back from a garbage stamp
+    to the record's would be a reader quietly preferring the more flattering of two dates.
+    """
+    entry = record.get(key)
+    if isinstance(entry, dict) and "checked_at" in entry:
+        checked_at = entry["checked_at"]
+    else:
+        checked_at = record.get("checked_at")
     if not isinstance(checked_at, str):
         return None
     found = _DATE_PREFIX.match(checked_at.strip())
@@ -300,7 +362,7 @@ def decide(
         return UpdateStatus(STATE_NEVER, UPDATE_NEVER)
     if source != SOURCE_RECORD or not isinstance(record, dict):
         return UpdateStatus(STATE_UNREADABLE, UPDATE_UNREADABLE)
-    date = _checked_date(record)
+    date = _checked_date(record, key)
     latest = _latest_in(record, key)
     if date is None or latest is None:
         return UpdateStatus(STATE_UNREADABLE, UPDATE_UNREADABLE)

@@ -15,6 +15,48 @@
  * reason: otherwise a developer's terminal size is an input to the result. Nothing here was
  * copied out of `argparse.py` by eye.
  *
+ * THAT SENTENCE WAS FALSE OF FIVE LITERALS FOR THE LENGTH OF ONE UNIT, AND IT IS TRUE AGAIN.
+ * `USAGE_80` and the four `HELP` blocks were re-measured on 2026-09-20 (job62, J62-4) from
+ * THIS PORT and not from the reference, because the three flags that moved them —
+ * `--install-hooks`, `--remove-hooks` and `--yes` — landed on the Node parser in that unit and
+ * the reference did not yet carry them; the `cli` conformance suite was RED over exactly that
+ * gap, 23 cases of it. J62-5 landed the same three flags on the reference and re-measured all
+ * five blocks against `python -m bantamkit.mcpserver` on CPython 3.12.13 with `COLUMNS`,
+ * `LINES` and `BANTAMKIT_ASSETS` scrubbed. NOT ONE BYTE DIFFERED, at any of the four widths or
+ * on the 80-column usage — `cmp` over the two processes' own output: 1949, 1881, 2510, 2395
+ * and 396 bytes, equal each time. Nothing below was edited by that re-measurement, which is
+ * the result being reported: the port had it right, and this file is what would have said so
+ * if it had not.
+ *
+ * AND IT IS FALSE AGAIN, ON PURPOSE, FOR ONE ROW AND ONE UNIT (2026-09-20, job62, J62-19).
+ * The user's ruling of that date put `--install-hooks`' consent gate on `--remove-hooks` too,
+ * so `--yes` now applies to both flags and its help says so:
+ *
+ *     with --install-hooks or --remove-hooks, say yes in advance instead of being asked
+ *
+ * The four `HELP` blocks below were re-measured from THIS PORT — `node dist/cli.js -h` with
+ * `COLUMNS`, `LINES` and `BANTAMKIT_ASSETS` scrubbed — because the reference does not carry
+ * that sentence until J62-20 lands the Python half of the gate. THE RE-MEASUREMENT MOVED
+ * NOTHING ELSE: diffed against the previous literals, the only lines that changed are the
+ * `--yes` help row at each of the four widths (and at 15 and 20 it now hyphen-breaks
+ * `--remove-` as well). `USAGE_80` is BYTE-UNCHANGED, because no option string moved — only
+ * one help sentence got longer.
+ *
+ * WHAT THIS OWES: J62-20 re-measures all four against `python -m bantamkit.mcpserver` and
+ * reports whether a byte differed, exactly as J62-5 did for J62-4. Until then the `cli`
+ * conformance suite is RED over this row and that red is the two runtimes genuinely
+ * disagreeing, not a case needing adjustment.
+ *
+ * **AMENDED 2026-09-21 (job62, J62-20) — THE DEBT ABOVE IS DISCHARGED AND THE SENTENCE IS
+ * TRUE AGAIN.** J62-20 landed the Python half of the gate and re-measured all four `HELP`
+ * blocks, plus the 80-column help, against `python -m bantamkit.mcpserver` on CPython
+ * 3.12.13 with `COLUMNS`, `LINES` and `BANTAMKIT_ASSETS` scrubbed. NOT ONE BYTE DIFFERED —
+ * `cmp` over the two processes' own output at COLUMNS 15/20/38/55/80: 1976, 1908, 2543, 2437
+ * and 1941 bytes, equal each time. Nothing below was edited by that re-measurement, which is
+ * the result being reported: the port had it right. The 18 `cli` conformance cases that were
+ * red over the `--yes` help row are green, and `--all` reads 8833 cases / 161
+ * ruled-different / 0 failures.
+ *
  * NOTHING HERE TOUCHES A REAL STORE. Every argv line below fails or prints before
  * `_build_memory` runs, so no `Memory` is ever constructed and no store is read or created.
  *
@@ -51,9 +93,10 @@ function run(argv, columns, assets) {
 /** `parser.print_usage(sys.stderr)` at the no-tty fallback width of 80. Measured. */
 const USAGE_80 =
   "usage: bantamkit-mcp [-h] [--assets-root] [--k K] [--index-budget BYTES]\n" +
-  "                     [--mcp-report] [--statusline] [--update]\n" +
+  "                     [--hook] [--mcp-report] [--statusline] [--update]\n" +
   "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
-  "                     [--force] [--store STORE | --start START]\n";
+  "                     [--force] [--install-hooks] [--remove-hooks] [--yes]\n" +
+  "                     [--store STORE | --start START]\n";
 
 const HELP = new Map([
   [
@@ -63,11 +106,15 @@ const HELP = new Map([
     "       [--assets-root]\n" +
     "       [--k K]\n" +
     "       [--index-budget BYTES]\n" +
+    "       [--hook]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
     "       [--update]\n" +
     "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "       [--force]\n" +
+    "       [--install-hooks]\n" +
+    "       [--remove-hooks]\n" +
+    "       [--yes]\n" +
     "       [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP\n" +
@@ -103,6 +150,13 @@ const HELP = new Map([
     "    budget\n" +
     "    (default:\n" +
     "    24000)\n" +
+    "  --hook\n" +
+    "    run as a\n" +
+    "    Claude Code\n" +
+    "    hook: one\n" +
+    "    JSON event\n" +
+    "    on stdin,\n" +
+    "    then exit\n" +
     "  --mcp-report\n" +
     "    print an\n" +
     "    analysis of\n" +
@@ -140,6 +194,35 @@ const HELP = new Map([
     "    existing\n" +
     "    bantamkit\n" +
     "    entry\n" +
+    "  --install-hooks\n" +
+    "    add\n" +
+    "    bantamkit's\n" +
+    "    hook\n" +
+    "    entries to \n" +
+    "    ~/.claude/s\n" +
+    "    ettings.jso\n" +
+    "    n, then\n" +
+    "    exit\n" +
+    "  --remove-hooks\n" +
+    "    take\n" +
+    "    bantamkit's\n" +
+    "    hook\n" +
+    "    entries\n" +
+    "    back out of\n" +
+    "    ~/.claude/s\n" +
+    "    ettings.jso\n" +
+    "    n, then\n" +
+    "    exit\n" +
+    "  --yes\n" +
+    "    with\n" +
+    "    --install-\n" +
+    "    hooks or\n" +
+    "    --remove-\n" +
+    "    hooks, say\n" +
+    "    yes in\n" +
+    "    advance\n" +
+    "    instead of\n" +
+    "    being asked\n" +
     "  --store STORE\n" +
     "    single\n" +
     "    memory\n" +
@@ -163,11 +246,15 @@ const HELP = new Map([
     "       [--assets-root]\n" +
     "       [--k K]\n" +
     "       [--index-budget BYTES]\n" +
+    "       [--hook]\n" +
     "       [--mcp-report]\n" +
     "       [--statusline]\n" +
     "       [--update]\n" +
     "       [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "       [--force]\n" +
+    "       [--install-hooks]\n" +
+    "       [--remove-hooks]\n" +
+    "       [--yes]\n" +
     "       [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP\n" +
@@ -196,6 +283,13 @@ const HELP = new Map([
     "    byte budget\n" +
     "    (default:\n" +
     "    24000)\n" +
+    "  --hook\n" +
+    "    run as a\n" +
+    "    Claude Code\n" +
+    "    hook: one JSON\n" +
+    "    event on\n" +
+    "    stdin, then\n" +
+    "    exit\n" +
     "  --mcp-report\n" +
     "    print an\n" +
     "    analysis of\n" +
@@ -231,6 +325,30 @@ const HELP = new Map([
     "    existing\n" +
     "    bantamkit\n" +
     "    entry\n" +
+    "  --install-hooks\n" +
+    "    add\n" +
+    "    bantamkit's\n" +
+    "    hook entries\n" +
+    "    to ~/.claude/s\n" +
+    "    ettings.json,\n" +
+    "    then exit\n" +
+    "  --remove-hooks\n" +
+    "    take\n" +
+    "    bantamkit's\n" +
+    "    hook entries\n" +
+    "    back out of ~/\n" +
+    "    .claude/settin\n" +
+    "    gs.json, then\n" +
+    "    exit\n" +
+    "  --yes\n" +
+    "    with\n" +
+    "    --install-\n" +
+    "    hooks or\n" +
+    "    --remove-\n" +
+    "    hooks, say yes\n" +
+    "    in advance\n" +
+    "    instead of\n" +
+    "    being asked\n" +
     "  --store STORE\n" +
     "    single memory\n" +
     "    store path\n" +
@@ -249,11 +367,15 @@ const HELP = new Map([
     "                     [--assets-root]\n" +
     "                     [--k K]\n" +
     "                     [--index-budget BYTES]\n" +
+    "                     [--hook]\n" +
     "                     [--mcp-report]\n" +
     "                     [--statusline]\n" +
     "                     [--update]\n" +
     "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
     "                     [--force]\n" +
+    "                     [--install-hooks]\n" +
+    "                     [--remove-hooks]\n" +
+    "                     [--yes]\n" +
     "                     [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP server (stdio): per-\n" +
@@ -273,6 +395,9 @@ const HELP = new Map([
     "                memory index byte\n" +
     "                budget (default:\n" +
     "                24000)\n" +
+    "  --hook        run as a Claude Code\n" +
+    "                hook: one JSON event\n" +
+    "                on stdin, then exit\n" +
     "  --mcp-report  print an analysis of\n" +
     "                the host MCP log\n" +
     "                joined with\n" +
@@ -294,6 +419,22 @@ const HELP = new Map([
     "  --force       with --install,\n" +
     "                replace an existing\n" +
     "                bantamkit entry\n" +
+    "  --install-hooks\n" +
+    "                add bantamkit's hook\n" +
+    "                entries to ~/.claude\n" +
+    "                /settings.json, then\n" +
+    "                exit\n" +
+    "  --remove-hooks\n" +
+    "                take bantamkit's\n" +
+    "                hook entries back\n" +
+    "                out of ~/.claude/set\n" +
+    "                tings.json, then\n" +
+    "                exit\n" +
+    "  --yes         with --install-hooks\n" +
+    "                or --remove-hooks,\n" +
+    "                say yes in advance\n" +
+    "                instead of being\n" +
+    "                asked\n" +
     "  --store STORE\n" +
     "                single memory store\n" +
     "                path (disables\n" +
@@ -307,11 +448,12 @@ const HELP = new Map([
   [
     55,
     "usage: bantamkit-mcp [-h] [--assets-root] [--k K]\n" +
-    "                     [--index-budget BYTES]\n" +
+    "                     [--index-budget BYTES] [--hook]\n" +
     "                     [--mcp-report] [--statusline]\n" +
     "                     [--update]\n" +
     "                     [--install {claude,claude-desktop,copilot,cursor}]\n" +
-    "                     [--force]\n" +
+    "                     [--force] [--install-hooks]\n" +
+    "                     [--remove-hooks] [--yes]\n" +
     "                     [--store STORE | --start START]\n" +
     "\n" +
     "bantamkit MCP server (stdio): per-person memory +\n" +
@@ -327,6 +469,9 @@ const HELP = new Map([
     "                        (default: 3)\n" +
     "  --index-budget BYTES  memory index byte budget\n" +
     "                        (default: 24000)\n" +
+    "  --hook                run as a Claude Code hook:\n" +
+    "                        one JSON event on stdin, then\n" +
+    "                        exit\n" +
     "  --mcp-report          print an analysis of the host\n" +
     "                        MCP log joined with\n" +
     "                        bantamkit's event log, then\n" +
@@ -342,6 +487,17 @@ const HELP = new Map([
     "                        then exit\n" +
     "  --force               with --install, replace an\n" +
     "                        existing bantamkit entry\n" +
+    "  --install-hooks       add bantamkit's hook entries\n" +
+    "                        to ~/.claude/settings.json,\n" +
+    "                        then exit\n" +
+    "  --remove-hooks        take bantamkit's hook entries\n" +
+    "                        back out of\n" +
+    "                        ~/.claude/settings.json, then\n" +
+    "                        exit\n" +
+    "  --yes                 with --install-hooks or\n" +
+    "                        --remove-hooks, say yes in\n" +
+    "                        advance instead of being\n" +
+    "                        asked\n" +
     "  --store STORE         single memory store path\n" +
     "                        (disables layering)\n" +
     "  --start START         directory to start project-\n" +

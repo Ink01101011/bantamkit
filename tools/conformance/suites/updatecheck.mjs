@@ -101,6 +101,12 @@ const STAMP_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 /** The stamp every fixture carries, so `current`'s date is a constant this file can assert. */
 const STAMPED = '2026-09-19T21:04:11Z';
 
+/**
+ * An ENTRY's own stamp (J62-13), a DAY LATER than the record's so the two dates are
+ * distinguishable in a rendered sentence. `2026-09-20` against `STAMPED`'s `2026-09-19`.
+ */
+const ENTRY_STAMPED = '2026-09-20T09:12:00Z';
+
 // ------------------------------------------------------------------------------ the records
 // One entry per SHAPE the reader can be handed. A string is written as UTF-8; a `Uint8Array` is
 // written as the bytes it is, which is how the undecodable arm gets on disk at all.
@@ -127,6 +133,50 @@ const RECORDS = {
     npm: { package: NPM_PACKAGE, latest: '0.34.0' },
     pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0' },
   }),
+  // --- TWO STAMPS (J62-13). An ENTRY's `checked_at` is when THAT registry answered; the
+  // record's is when a writer refreshed the whole record, and is the fallback for an entry
+  // without one. The reader SELECTS one and then applies its single shape rule to it.
+  'stamped-both': text({
+    checked_at: STAMPED,
+    npm: { package: NPM_PACKAGE, latest: '0.36.0', checked_at: ENTRY_STAMPED },
+    pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0', checked_at: ENTRY_STAMPED },
+  }),
+  // THE PARTIAL-PROBE SHAPE, and the record this whole change exists for: npm answered and
+  // carries its own stamp, pypi did not answer and is still dated by the record's older one.
+  // Under `npm` the sentence names 2026-09-20 and under `pypi` it names 2026-09-19, off ONE
+  // file — which is the claim that was false before J62-13.
+  'stamped-npm-only': text({
+    checked_at: STAMPED,
+    npm: { package: NPM_PACKAGE, latest: '0.36.0', checked_at: ENTRY_STAMPED },
+    pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0' },
+  }),
+  // What `--update` leaves on a machine with no record at all: entry stamps and NO record
+  // stamp. Readable, because the entry says when it was written.
+  'stamped-no-record-stamp': text({
+    npm: { package: NPM_PACKAGE, latest: '0.36.0', checked_at: ENTRY_STAMPED },
+    pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0', checked_at: ENTRY_STAMPED },
+  }),
+  // ONE RULE AND NOT TWO. An entry that CARRIES the name is the entry's answer even when the
+  // value is garbage: falling back from a garbage entry stamp to a good record stamp would be
+  // a reader quietly preferring the more flattering of two dates. These three are unreadable
+  // although the record's own stamp is perfectly good.
+  'entry-stamp-not-a-date': text({
+    checked_at: STAMPED,
+    npm: { package: NPM_PACKAGE, latest: '0.36.0', checked_at: 'yesterday' },
+    pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0', checked_at: 'yesterday' },
+  }),
+  'entry-stamp-not-a-string': text({
+    checked_at: STAMPED,
+    npm: { package: NPM_PACKAGE, latest: '0.36.0', checked_at: 20260920 },
+    pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0', checked_at: 20260920 },
+  }),
+  // `null` is present-but-not-a-string on both sides, and is its own arm because `in` on a
+  // CPython dict and `hasOwnProperty` on a JSON object are the two spellings being compared.
+  'entry-stamp-null': text({
+    checked_at: STAMPED,
+    npm: { package: NPM_PACKAGE, latest: '0.36.0', checked_at: null },
+    pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0', checked_at: null },
+  }),
   'npm-only': text({ checked_at: STAMPED, npm: { package: NPM_PACKAGE, latest: '0.36.0' } }),
   'pypi-only': text({ checked_at: STAMPED, pypi: { distribution: PYPI_DISTRIBUTION, latest: '0.36.0' } }),
   // --- a record that is JSON and an object and still says nothing this reader can act on
@@ -152,9 +202,12 @@ const RECORDS = {
   whitespace: '   \n',
   // A truncated two-byte sequence: not UTF-8, and the reason the port decodes with `fatal`.
   'not-utf8': Uint8Array.from([0x7b, 0x22, 0x63, 0x22, 0x3a, 0x22, 0xc3, 0x22, 0x7d, 0x0a]),
-  // A WELL-FORMED record with a UTF-8 BOM in front of it — what Windows PowerShell's
-  // `Set-Content`/`Out-File` writes by default, so an operator who edits this file by hand on
-  // Windows produces exactly these bytes. BOTH RUNTIMES ACCEPT IT (J57-5b): the reference reads
+  // A WELL-FORMED record with a UTF-8 BOM in front of it — the three bytes `EF BB BF` that an
+  // editor set to "UTF-8 with BOM", Notepad before 2019, or `Out-File -Encoding utf8BOM` puts in
+  // front of a file an operator edits by hand. (J62-16 measured PowerShell 7.4.2: none of
+  // `Set-Content`, `Out-File`, `>` or `Add-Content` writes a BOM by default on 6+, so the writer
+  // this comment used to name is version-qualified and is not what the arms rest on.)
+  // BOTH RUNTIMES ACCEPT IT (J57-5b): the reference reads
   // with `utf-8-sig`, the port's `TextDecoder` strips it at its default `ignoreBOM: false`. The
   // three arms below answer it at three running versions, so the BOM changes the state in
   // neither direction; `bom-not-json` is the control that says the BOM is not a blanket pass.
@@ -197,6 +250,18 @@ const ARMS = [
   { id: 'keys/disagree', record: 'disagree', installed: '0.35.1' },
   { id: 'keys/npm-only', record: 'npm-only', installed: '0.35.1' },
   { id: 'keys/pypi-only', record: 'pypi-only', installed: '0.35.1' },
+
+  // The two stamps (J62-13). `current/entry-stamp-one-key` is the arm where the DATE is
+  // key-sensitive although the STATE is not, which is why its sentence is pinned per key
+  // below and not only through the state table.
+  { id: 'current/entry-stamp', record: 'stamped-both', installed: '0.36.0' },
+  { id: 'current/entry-stamp-one-key', record: 'stamped-npm-only', installed: '0.36.0' },
+  { id: 'current/no-record-stamp', record: 'stamped-no-record-stamp', installed: '0.36.0' },
+  { id: 'available/entry-stamp', record: 'stamped-both', installed: '0.35.1' },
+  { id: 'ahead/entry-stamp', record: 'stamped-both', installed: '0.37.0' },
+  { id: 'unreadable/entry-stamp-not-a-date', record: 'entry-stamp-not-a-date', installed: '0.35.1' },
+  { id: 'unreadable/entry-stamp-not-a-string', record: 'entry-stamp-not-a-string', installed: '0.35.1' },
+  { id: 'unreadable/entry-stamp-null', record: 'entry-stamp-null', installed: '0.35.1' },
 
   { id: 'unreadable/no-keys', record: 'no-keys', installed: '0.35.1' },
   { id: 'unreadable/no-checked-at', record: 'no-checked-at', installed: '0.35.1' },
@@ -252,6 +317,16 @@ const COMMON_STATES = {
   'ahead/one-minor': 'ahead',
   'ahead/ten-against-nine': 'ahead',
   'ahead/prerelease-installed': 'ahead',
+  // The two stamps (J62-13). The STATE is the same under both keys on all of these — what
+  // differs under `stamped-npm-only` is the DATE in the sentence, pinned separately.
+  'current/entry-stamp': 'current',
+  'current/entry-stamp-one-key': 'current',
+  'current/no-record-stamp': 'current',
+  'available/entry-stamp': 'available',
+  'ahead/entry-stamp': 'ahead',
+  'unreadable/entry-stamp-not-a-date': 'unreadable',
+  'unreadable/entry-stamp-not-a-string': 'unreadable',
+  'unreadable/entry-stamp-null': 'unreadable',
   'unreadable/no-keys': 'unreadable',
   'unreadable/no-checked-at': 'unreadable',
   'unreadable/checked-at-not-a-date': 'unreadable',
@@ -683,6 +758,51 @@ export async function run(ctx) {
     );
   }
 
+  // ------------------------------------------------- the two stamps, and which dates which
+  //
+  // THE DIFFERENTIAL ABOVE CANNOT SEE THIS ONE. It compares the two runtimes under a fixed
+  // key, and both of them going back to the record's stamp for every key would leave every
+  // one of those cases green — the symmetric-regression shape this repo has been bitten by
+  // three times. So the two dates are written out here, by hand, from one record.
+  //
+  // `stamped-npm-only` is the partial-probe record: npm answered and carries its own stamp,
+  // pypi did not answer and is dated by the record's older one. One file, one running
+  // version, two keys, TWO DATES.
+  for (const [key, date] of [['npm', '2026-09-20'], ['pypi', '2026-09-19']]) {
+    cases.push(
+      ...literalCases(
+        py.answers[key]['current/entry-stamp-one-key'].line,
+        node.answers[key]['current/entry-stamp-one-key'].line,
+        `updatecheck: the date on \`current/entry-stamp-one-key\` under \`${key}\``,
+        `update: ${PROGRAM} 0.36.0 is current as of ${date}.`,
+        'bytes',
+      ),
+    );
+  }
+  // An entry stamp WINS over a record stamp that disagrees with it, under either key.
+  for (const key of ['npm', 'pypi']) {
+    cases.push(
+      ...literalCases(
+        py.answers[key]['current/entry-stamp'].line,
+        node.answers[key]['current/entry-stamp'].line,
+        `updatecheck: an entry's own stamp dates its own number, under \`${key}\``,
+        `update: ${PROGRAM} 0.36.0 is current as of 2026-09-20.`,
+        'bytes',
+      ),
+    );
+  }
+  // And a record with NO record-level stamp — what `--update` leaves on a fresh machine — is
+  // readable through the entry's, where before J62-13 it was `could not be read`.
+  cases.push(
+    ...literalCases(
+      py.answers.pypi['current/no-record-stamp'].line,
+      node.answers.pypi['current/no-record-stamp'].line,
+      'updatecheck: a record with no record-level stamp is read through the entry\'s',
+      `update: ${PROGRAM} 0.36.0 is current as of 2026-09-20.`,
+      'bytes',
+    ),
+  );
+
   // The one-call surface agrees with the two-step one, on both sides and for every arm.
   const viaOneCall = (side) => Object.fromEntries(compared.map((arm) => [arm.id, side.pypi[arm.id].line === side.pypi[arm.id].line_via_update_line]));
   cases.push(...literalCases(viaOneCall(py.answers), viaOneCall(node.answers), 'updatecheck: `update_line` says what `decide` says, per arm', Object.fromEntries(compared.map((arm) => [arm.id, true]))));
@@ -779,7 +899,12 @@ export async function run(ctx) {
       normaliseBody(py.writes['write/fresh'].body),
       normaliseBody(node.writes['write/fresh'].body),
       'updatecheck: what a fresh record looks like, to the byte',
-      `{\n  "checked_at": "${WRITE_NOW}",\n  "<key>": {\n    "<field>": "<name>",\n    "latest": "${WRITE_LATEST}"\n  }\n}\n`,
+      // NO RECORD-LEVEL `checked_at` (J62-13). That field means "a writer refreshed the whole
+      // record", and `--update` holds one registry's answer by construction — so it stamps its
+      // own entry and nothing else. A record this writer creates therefore cannot say when it
+      // was refreshed as a whole, which is what makes the hook's 24 h TTL treat it as DUE and
+      // send the probe that fills the other half.
+      `{\n  "<key>": {\n    "<field>": "<name>",\n    "latest": "${WRITE_LATEST}",\n    "checked_at": "${WRITE_NOW}"\n  }\n}\n`,
       'bytes',
     ),
   );
@@ -817,12 +942,19 @@ export async function run(ctx) {
   cases.push(
     ...literalCases(merged(py, 'py'), merged(node, 'node'), 'updatecheck: what a merge leaves behind, against a literal', {
       key_order: ['checked_at', 'npm', 'pypi', 'extra'],
-      checked_at: WRITE_NOW,
+      // THE RECORD'S OWN STAMP IS NOT TOUCHED, and this literal is the gate on it (J62-13).
+      // It used to be `WRITE_NOW`. That stamp is the fallback dating every entry WITHOUT one
+      // of its own, so a one-key writer that moved it re-dated the other registry's number by
+      // a check that never asked that registry — measured on this branch, one file, the
+      // reference saying `is current as of <today>` about a number three weeks old while the
+      // port read the fresh half of the same record.
+      checked_at: '2026-09-01T00:00:00Z',
       untouched_other_latest: '0.30.0',
       untouched_other_fields: 2,
       untouched_stranger: { kept: true },
       own_latest: WRITE_LATEST,
-      own_entry_fields: 2,
+      // Three, not two: `<field>`, `latest`, and the entry's own `checked_at`.
+      own_entry_fields: 3,
     }),
   );
   // The entry each writer did NOT own, byte for byte, per side: the whole point of the merge is
@@ -841,8 +973,9 @@ export async function run(ctx) {
   });
 
   // An UNREADABLE record is replaced rather than merged — there is nothing in it to preserve.
+  // ONE key, not two: the writer's own entry and nothing else — see the fresh-record bytes.
   const replaced = (side) => Object.keys(side.writes['write/unreadable-existing'].record ?? {}).length;
-  cases.push(...literalCases(replaced(py), replaced(node), 'updatecheck: an unreadable record is replaced, not merged', 2, 'json'));
+  cases.push(...literalCases(replaced(py), replaced(node), 'updatecheck: an unreadable record is replaced, not merged', 1, 'json'));
 
   // A `.bantamkit` that is a regular FILE is left exactly as it was: not opened, not replaced.
   const fileKept = (homesFor) => readFileSync(join(homesFor['write/directory-is-a-file'], RECORD_DIR), 'utf8');
@@ -851,9 +984,19 @@ export async function run(ctx) {
   );
 
   // The stamp's SHAPE, on the one arm that let each runtime use its own clock. The two clocks
-  // cannot be compared; the shape they render is the thing that must be the same.
-  const stamped = (side) => STAMP_SHAPE.test(String((side.writes['write/own-stamp'].record ?? {}).checked_at));
+  // cannot be compared; the shape they render is the thing that must be the same. Read off the
+  // writer's OWN ENTRY since J62-13 — a fresh `--update` record has no record-level stamp.
+  const stamped = (side) =>
+    STAMP_SHAPE.test(String(((side.writes['write/own-stamp'].record ?? {})[side.constants.KEY] ?? {}).checked_at));
   cases.push(...literalCases(stamped(py), stamped(node), 'updatecheck: an unstamped write renders `YYYY-MM-DDTHH:MM:SSZ`', true));
+
+  // AND THAT A FRESH `--update` RECORD CARRIES NO RECORD-LEVEL STAMP AT ALL, per side. The
+  // literal above compares the two sides' bytes with the licensed strings spelled out; this is
+  // the bit on its own, so a runtime that started stamping the record again reddens by name.
+  const recordStamp = (side) => Object.prototype.hasOwnProperty.call(side.writes['write/own-stamp'].record ?? {}, 'checked_at');
+  cases.push(
+    ...literalCases(recordStamp(py), recordStamp(node), 'updatecheck: `--update` stamps its own entry and never the record', false),
+  );
 
   // ------------------------------------------------------------- the one deliberate difference
 

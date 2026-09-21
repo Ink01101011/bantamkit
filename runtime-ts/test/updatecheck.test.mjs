@@ -331,10 +331,16 @@ for (const shape of Object.keys(MALFORMED).sort()) {
 // `encoding="utf-8"`, `json.loads` refused the leading BOM by name, and the same file was
 // `unreadable` there while THIS side's `TextDecoder` stripped the BOM and answered `available`.
 // The reference now reads with `utf-8-sig` and this side is unchanged: `ignoreBOM` stays at its
-// default of `false`, which strips it. PowerShell's `Set-Content` and `Out-File` write UTF-8
-// WITH a BOM by default, so this is what a Windows operator who opens the record and saves it
-// produces, and a record a reader can plainly act on is not a shape it cannot act on. The bytes
-// go to disk as BYTES below, never through an encoder that might add or eat one.
+// default of `false`, which strips it. What has to be accepted is the three bytes `EF BB BF`,
+// whoever wrote them, and a record a reader can plainly act on is not a shape it cannot act on.
+// The bytes go to disk as BYTES below, never through an encoder that might add or eat one.
+//
+// AMENDED 2026-09-21 (J62-16). This block used to name PowerShell's `Set-Content`/`Out-File`
+// defaults as the source of those bytes. Measured in `mcr.microsoft.com/powershell:latest`,
+// PowerShell 7.4.2 writes NO BOM from any of `Set-Content`, `Out-File`, `>` or `Add-Content`;
+// only an explicit `-Encoding utf8BOM` produces one. Windows PowerShell 5.1 is UNMEASURED here
+// — it needs a Windows kernel this machine does not have. The cases below never depended on the
+// writer; see `updatecheck.ts`'s `UTF8` comment for the full amendment.
 
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 
@@ -542,6 +548,76 @@ test('an old record cannot manufacture a false stale', () => {
     assert.equal(updateStatus('0.37.0').state, STATE_AHEAD);
   });
 });
+
+// ==================================== two stamps, and which one dates which number (J62-13)
+//
+// An ENTRY's `checked_at` is when THAT registry answered; the record's is when a writer
+// refreshed the record AS A WHOLE, and is the fallback for an entry without one. Before this,
+// a writer that filled ONE key stamped the record — so the reader of the OTHER key dated its
+// stale number by a check that never touched its registry. The reference's half of these is
+// `runtime-py/tests/test_updatecheck.py`; the two are compared in
+// `tools/conformance/suites/updatecheck.mjs`.
+
+const ENTRY_CHECKED_AT = '2026-09-20T09:12:00Z';
+
+/** The record stamped 2026-09-19, with an entry stamp of 2026-09-20 on npm. */
+function twoStamps(pypiStamp) {
+  const pypi = { distribution: 'bantamkit', latest: '0.36.0' };
+  if (pypiStamp !== undefined) pypi.checked_at = pypiStamp;
+  return JSON.stringify({
+    checked_at: CHECKED_AT,
+    npm: { package: 'bantamkit-mcp', latest: '0.36.0', checked_at: ENTRY_CHECKED_AT },
+    pypi,
+  });
+}
+
+test("an entry's own stamp dates that entry's number", () => {
+  // One file, two keys, TWO DATES — and this reader takes the one that dates ITS number.
+  withHome((home) => {
+    writeRecord(home, twoStamps());
+    assert.ok(updateLine('0.36.0', 'npm').endsWith('current as of 2026-09-20.'));
+    assert.ok(updateLine('0.36.0', 'pypi').endsWith('current as of 2026-09-19.'));
+  });
+});
+
+test("an entry without a stamp falls back to the record's", () => {
+  // The fallback is not a leniency: such an entry WAS last written by a whole-record write.
+  // This is the arm that keeps every record written before J62-13 answering byte for byte as
+  // it did, which is why the whole pre-existing conformance table stayed green.
+  withHome((home) => {
+    writeRecord(home, record({ npm: '0.35.1', checked_at: '2026-01-02T03:04:05Z' }));
+    assert.equal(updateLine('0.35.1'), 'update: bantamkit-mcp 0.35.1 is current as of 2026-01-02.');
+  });
+});
+
+test("a record with no record-level stamp is read through the entry's", () => {
+  // What `--update` leaves on a machine that had no record: an entry stamp and nothing else.
+  // Before this, such a record was `could not be read` — which is why `recordUpdate` used to
+  // stamp the record and why fixing THAT alone would have broken the fresh-install path.
+  withHome((home) => {
+    writeRecord(
+      home,
+      JSON.stringify({ npm: { package: 'bantamkit-mcp', latest: '0.36.0', checked_at: ENTRY_CHECKED_AT } }),
+    );
+    assert.equal(updateLine('0.36.0'), 'update: bantamkit-mcp 0.36.0 is current as of 2026-09-20.');
+  });
+});
+
+for (const bad of ['yesterday', '19/09/2026', 20260920, null, '']) {
+  test(`a garbage entry stamp (${JSON.stringify(bad)}) is unreadable and never falls back`, () => {
+    // ONE SELECTION, THEN ONE RULE — not two rules, and not the more flattering of two dates.
+    // The record's own stamp here is perfectly good. An entry that CARRIES the name is the
+    // entry's answer, so a garbage value there is unreadable exactly as a garbage top-level
+    // one is; a reader that fell back would date this number by a check of the OTHER registry,
+    // which is the defect this whole change exists to remove. `hasOwnProperty` is how this
+    // side spells CPython's `in` on a dict, and `null` is the arm that says the two agree.
+    withHome((home) => {
+      writeRecord(home, twoStamps(bad));
+      assert.equal(updateStatus('0.36.0', 'npm').state, STATE_CURRENT);
+      assert.equal(updateStatus('0.36.0', 'pypi').state, STATE_UNREADABLE);
+    });
+  });
+}
 
 // ============================================================ what this module never does
 

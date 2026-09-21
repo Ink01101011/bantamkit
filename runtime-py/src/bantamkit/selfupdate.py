@@ -395,6 +395,26 @@ def record_update(latest: str, now: str | None = None) -> bool:
     `updatecheck.KEY` and copies the rest of the record through untouched. An UNREADABLE
     record is replaced rather than merged: there is nothing in it to preserve.
 
+    AMENDED 2026-09-21 (job62, J62-13). The paragraph above was true of the two ENTRIES and
+    false of the record, because this writer also stamped the record's own `checked_at` —
+    the fallback that dates every entry without a stamp of its own. Overwriting it is what
+    destroyed the only record of when the OTHER registry was last asked, and the other
+    runtime's reader then dated its stale number by a check of a registry it does not read
+    (measured, `updatecheck`'s docstring). So:
+
+    THIS WRITER STAMPS ITS OWN ENTRY AND NEVER THE RECORD'S `checked_at`. The record's stamp
+    means "a writer refreshed this record AS A WHOLE", and `--update` holds one registry's
+    answer by construction — it is the version this flag itself fetched, and there is no
+    second network call here to get the other one. `tools/hooks/update-probe.mjs` is the only
+    writer that asks both, so it is the only one that may write that field.
+
+    TWO CONSEQUENCES, BOTH WANTED. A record this writer creates from nothing carries no
+    record-level stamp at all, so the hook's 24 h TTL treats it as DUE rather than fresh and
+    the probe runs and fills the other half — where before, an operator running `--update`
+    more often than daily starved the probe indefinitely. And on a merge, the entry this
+    writer did not fill keeps falling back to the record's OLD stamp, which is exactly when
+    that entry was last written.
+
     TEMP FILE AND RENAME, so a reader never sees half a record: `os.replace` is atomic on
     POSIX and on Windows, and the temp file is made in the SAME directory so the rename is
     never across a filesystem.
@@ -414,8 +434,8 @@ def record_update(latest: str, now: str | None = None) -> bool:
         return False
     source, existing = load_record(path)
     payload: dict[str, object] = dict(existing) if source == SOURCE_RECORD and existing else {}
-    payload["checked_at"] = now or datetime.now(UTC).strftime(STAMP)
-    payload[KEY] = {"distribution": DISTRIBUTION, "latest": latest}
+    stamp = now or datetime.now(UTC).strftime(STAMP)
+    payload[KEY] = {"distribution": DISTRIBUTION, "latest": latest, "checked_at": stamp}
     try:
         body = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     except (TypeError, ValueError):

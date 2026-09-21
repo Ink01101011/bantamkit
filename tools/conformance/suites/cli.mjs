@@ -1473,6 +1473,16 @@ function matrix(scratch) {
     // code. Two runtimes can both fail and fail differently; a boolean would not say so.
     // See the ambiguity precondition below for why the literal `--st` cannot go quietly stale.
     { label: 'ambiguous-abbreviation', argv: ['--st'] },
+    // THE AMBIGUITY job62 CREATED, and the one this matrix would not otherwise have had.
+    // `--inst` resolved to `--install` on both runtimes until J62-4/J62-5 added
+    // `--install-hooks`, at which point `--install` became a proper PREFIX of another option
+    // and every abbreviation between `--inst` and `--install` stopped resolving. That is a
+    // user-visible break in a shipped command line — `bantamkit-mcp --inst cursor` was a
+    // working line and is now an error — and it is compared here exactly the way `--st` is:
+    // the message on the stream that carried it, the empty stream beside it, and the exit
+    // code. Both runtimes print `ambiguous option: --inst could match --install,
+    // --install-hooks` and exit 2. The precondition below keeps it from going quietly stale.
+    { label: 'ambiguous-abbreviation-inst', argv: ['--inst'] },
     // The wrap boundary, straddled. See `wrapBoundary` below for where 106 comes from.
     { label: 'help-columns-60', argv: ['-h'], env: { COLUMNS: '60' } },
     { label: 'help-columns-80', argv: ['-h'], env: { COLUMNS: '80' } },
@@ -1505,6 +1515,26 @@ function matrix(scratch) {
     // stale for a third time.
     { label: 'help-columns-207', argv: ['-h'], env: { COLUMNS: '207' } },
     { label: 'help-columns-208', argv: ['-h'], env: { COLUMNS: '208' } },
+    // AND IT WORKED, WHICH IS THE POINT OF THE PARAGRAPH ABOVE. `--hook` (job62, J62-3)
+    // added ` [--hook]` to both parsers and moved the boundary from 208 to 217, and the
+    // case below did exactly what J46-31 built it to do: it went RED naming the new number
+    // instead of leaving a comment to go stale a fourth time. 207/208 therefore straddles
+    // nothing any more — both of them wrap — and it is kept beside the three older pairs
+    // for the reason all of them were kept. MEASURED on this checkout by running BOTH
+    // runtimes at each width: the single-line usage is 215 characters on each, 216 wraps
+    // (first line 183 chars) and 217 does not (215).
+    { label: 'help-columns-216', argv: ['-h'], env: { COLUMNS: '216' } },
+    { label: 'help-columns-217', argv: ['-h'], env: { COLUMNS: '217' } },
+    // AND IT WORKED A SECOND TIME. `--install-hooks`, `--remove-hooks` and `--yes` (job62,
+    // J62-4 on the port, J62-5 on the reference) added ` [--install-hooks] [--remove-hooks]
+    // [--yes]` to both parsers and moved the boundary from 217 to 260, and the case below
+    // went RED naming the new number rather than leaving a comment to go stale a fifth time.
+    // 216/217 therefore straddles nothing any more — both of them wrap — and it is kept
+    // beside the four older pairs for the reason all of them were kept. MEASURED on this
+    // checkout by running BOTH runtimes at each width: the single-line usage is 258
+    // characters on each, 259 wraps (first line 226 chars) and 260 does not (258).
+    { label: 'help-columns-259', argv: ['-h'], env: { COLUMNS: '259' } },
+    { label: 'help-columns-260', argv: ['-h'], env: { COLUMNS: '260' } },
     { label: 'help-columns-200', argv: ['-h'], env: { COLUMNS: '200' } },
   ];
 }
@@ -1546,8 +1576,24 @@ const SINGLE_LINE_USAGE =
   '[--statusline] [--store STORE | --start START]';
 const wrapBoundary = SINGLE_LINE_USAGE.length + 2;
 
-/** The widths the matrix above uses as today's straddle, asserted rather than trusted. */
-const STRADDLE = { wraps: 207, fits: 208 };
+/**
+ * The widths the matrix above uses as today's straddle, asserted rather than trusted.
+ *
+ * MOVED 2026-09-20 (job62, J62-3) from `{ wraps: 207, fits: 208 }`, by the case this pair
+ * feeds going red on its own: `--hook` landed in both parsers, ` [--hook]` is nine
+ * characters, and the measured boundary came back 217 against an expected 208. Measured on
+ * this checkout at each width, on BOTH runtimes: the single-line usage is 215 characters,
+ * 216 wraps and 217 fits. The two numbers here are the only thing that had to move.
+ *
+ * MOVED AGAIN 2026-09-20 (job62, J62-5) from `{ wraps: 216, fits: 217 }`, the same way and
+ * by the same case: `--install-hooks`, `--remove-hooks` and `--yes` landed in both parsers,
+ * ` [--install-hooks] [--remove-hooks] [--yes]` is forty-three characters, and the measured
+ * boundary came back 260 against an expected 217. Measured on this checkout at each width,
+ * on BOTH runtimes: the single-line usage is 258 characters, 259 wraps (first line 226) and
+ * 260 fits (258). Twice now this has moved a case instead of a comment, which is what
+ * J46-31 built it to do.
+ */
+const STRADDLE = { wraps: 259, fits: 260 };
 
 /**
  * The single-line usage as THIS tree assembles it, and the width below which it wraps.
@@ -1620,13 +1666,15 @@ export async function run(ctx) {
 
   const specs = matrix(ctx.scratch);
 
-  /** The reference's own answer for the argv line whose ambiguity is asserted below. */
+  /** The reference's own answers for the argv lines whose ambiguity is asserted below. */
   let ambiguousPy = null;
+  let ambiguousInstPy = null;
 
   for (const spec of specs) {
     const py = runPy(ctx, spec);
     const node = runNode(spec);
     if (spec.label === 'ambiguous-abbreviation') ambiguousPy = py;
+    if (spec.label === 'ambiguous-abbreviation-inst') ambiguousInstPy = py;
     if (spec.shape === 'wrote-nothing') {
       // A LITERAL, not a differential. Both runtimes must leave the config ABSENT, and a
       // side-to-side comparison would have stayed green through the defect this case exists
@@ -1877,6 +1925,31 @@ export async function run(ctx) {
         '  a long option was renamed and the ambiguous-abbreviation case now tests something\n' +
         '  else. Repoint it at a prefix that STILL matches two or more options — do not delete\n' +
         '  it, and do not let it pass as an unrecognized-option case.',
+    );
+  }
+
+  /**
+   * THE SAME PRECONDITION FOR `--inst`, and this one is anchored on the WHOLE sentence.
+   *
+   * `--st` is ambiguous by accident — three flags happen to share three letters — so its
+   * candidate list is deliberately left unpinned. `--inst` is ambiguous by CONSTRUCTION:
+   * `--install` is a proper prefix of `--install-hooks`, which is a property of the two flag
+   * NAMES and not of how many other flags happen to exist. So the whole sentence is pinned,
+   * both candidates included. If `--install-hooks` is ever renamed to something that is not
+   * an extension of `--install`, `--inst` starts resolving again, the break this case records
+   * is gone, and this stops the suite rather than letting the case pass as an ordinary
+   * unrecognized-option line.
+   */
+  const AMBIGUOUS_INST = 'bantamkit-mcp: error: ambiguous option: --inst could match --install, --install-hooks';
+  const ambiguousInstStderr = dec(ambiguousInstPy?.stderr ?? Buffer.alloc(0));
+  if (!ambiguousInstStderr.includes(AMBIGUOUS_INST)) {
+    throw new Error(
+      `cli: --inst is no longer ambiguous between --install and --install-hooks.\n` +
+        `  expected stderr to contain : ${JSON.stringify(AMBIGUOUS_INST)}\n` +
+        `  argparse printed           : ${JSON.stringify(ambiguousInstStderr)}\n` +
+        '  either a flag was renamed, or one of the two was removed. `--inst` resolving again\n' +
+        '  is GOOD NEWS for the operator and BAD NEWS for this case: repoint it, or retire it\n' +
+        '  deliberately along with the `docs/porting.md` note about the break.',
     );
   }
 
@@ -2975,6 +3048,13 @@ export async function run(ctx) {
       `${ambiguousPy.stdout.length} on stdout, exit ${ambiguousPy.exit}. a precondition in this ` +
       'file stops the suite if a flag rename ever makes --st unambiguous, because that would ' +
       'leave the case green and pointed at nothing.',
+  );
+  notes.push(
+    '--inst REFUSES on both runtimes since job62: --install is now a proper prefix of ' +
+      `--install-hooks, so an abbreviation that used to resolve is an error. compared as it left ` +
+      `each process: ${ambiguousInstPy.stderr.length} stderr bytes, ${ambiguousInstPy.stdout.length} on stdout, ` +
+      `exit ${ambiguousInstPy.exit}. this is a user-visible break in a shipped command line and it ` +
+      'is gated here rather than only described.',
   );
   notes.push(
     `the --assets-root ruling has a precondition: runtime-ts/assets/ is gitignored and only ` +

@@ -27,7 +27,7 @@
  *     becomes head-25-bytes + `...` + tail-24-bytes, each end floored to a character
  *     boundary. Thirty Thai characters are 34 repr CHARACTERS and are still truncated.
  */
-import { reprValue, type PyValue } from '../pyjson.js';
+import { parseJson, reprValue, type PyValue } from '../pyjson.js';
 
 /** What a parameter accepts. `optional` is `| None = None` in the signature. */
 export interface FieldSpec {
@@ -460,6 +460,94 @@ function checkInt(loc: string, value: PyValue): { value: PyValue } | RawError {
 }
 
 /**
+ * CPython's default `sys.int_max_str_digits`, which `json.loads` hits before it returns.
+ *
+ * `int(<4301 digits>)` is a `ValueError` since CPython 3.11, and the reference's
+ * `_ArgMetadata.pre_parse_json` catches exactly that and leaves the key as the string it was
+ * — measured in `runtime-py/src/bantamkit/mcpserver.py`'s own docstring, review round 3, on
+ * `memory_save(links="[" + "1"*4301 + "]")`. `parseJson` here has no such cap (Python's ints
+ * do not overflow and neither does a `bigint`), so the cap is applied to the RESULT instead:
+ * a document CPython would have refused mid-decode is one holding an integer literal of more
+ * than 4300 digits, and that literal is exactly an `int` node this wide. The observable
+ * effect is the same one — the original string survives into validation — which is why this
+ * is a check on the tree and not a second decoder. Same number as `docread.ts`'s.
+ */
+const INT_MAX_STR_DIGITS = 4300;
+
+/** Does any integer in this document spell wider than CPython's decoder will convert? */
+function exceedsIntDigitCap(value: PyValue): boolean {
+  switch (value.t) {
+    case 'int': {
+      const magnitude = value.v < 0n ? -value.v : value.v;
+      return magnitude.toString().length > INT_MAX_STR_DIGITS;
+    }
+    case 'list':
+      return value.v.some(exceedsIntDigitCap);
+    case 'dict': {
+      for (const nested of value.v.values()) if (exceedsIntDigitCap(nested)) return true;
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * `FuncMetadata.pre_parse_json` — the SDK step that runs BEFORE `model_validate`.
+ *
+ * WHY THIS EXISTS AT ALL. The reference does not validate the arguments a client sent; it
+ * validates the arguments the SDK handed pydantic, and the SDK unwraps a JSON-encoded string
+ * first, because "Claude Desktop is prone to this — in fact it seems incapable of NOT doing
+ * it" (the SDK's own words). Until this function the port skipped that step entirely, so the
+ * two runtimes read the same `tools/call` differently on every non-`str` argument. Measured
+ * over the real stdio servers on both sides, 2026-09-21, sixteen shapes disagreed, including
+ * the register's own item: `validate_json(output='{"a": 1}', schema='{"type": "object"}')`
+ * answered `{"valid": true}` on Python and `dict_type` on Node. The reference is the
+ * reference, so the port gains the step rather than the reference losing it.
+ *
+ * THE RULE IS THE SDK'S, NOT A PARAPHRASE. A key is unwrapped when all of this holds:
+ *
+ *   * the key names a field of the model — an unknown key is not in `key_to_field_info` and
+ *     is left alone (it is ignored by validation anyway);
+ *   * the value is a string;
+ *   * the field's annotation `is not str`. That is an IDENTITY test on the annotation
+ *     object, so `str | None` is NOT `str` and DOES get unwrapped: `skill_audit(check=
+ *     'null')` reaches the handler as `None` on the reference. Here that is exactly
+ *     "required `str`" — every other kind, and every OPTIONAL `str`, qualifies;
+ *   * `json.loads` succeeds. It can fail two ways and both keep the string: a decode error,
+ *     and the digit cap above;
+ *   * the result is not a `str`, `int` or `float`. `isinstance(True, int)` is true in
+ *     Python, so a `bool` is skipped by that same line — `dry_run='true'` stays the string
+ *     `'true'` and pydantic's lax bool parse is what reads it. What is left, and what this
+ *     therefore replaces, is exactly a list, a dict, or `null`.
+ *
+ * It is NOT applied per tool. The reference's one opt-out, `_NO_JSON_UNWRAP`, is dormant —
+ * `bantamkit_read` left the roster in job50 — so every served tool unwraps today, and a
+ * roster line coming back is the moment to give this function the same set.
+ */
+export function preParseJson(model: ArgModel, args: PyValue): PyValue {
+  if (args.t !== 'dict') return args;
+  const byName = new Map(model.fields.map((field) => [field.name, field]));
+  let unwrapped: Map<string, PyValue> | null = null;
+  for (const [key, value] of args.v) {
+    const spec = byName.get(key);
+    if (spec === undefined || value.t !== 'str') continue;
+    if (spec.kind === 'str' && !spec.optional) continue;
+    let parsed: PyValue;
+    try {
+      parsed = parseJson(value.v);
+    } catch {
+      continue;
+    }
+    if (parsed.t === 'str' || parsed.t === 'int' || parsed.t === 'float' || parsed.t === 'bool') continue;
+    if (exceedsIntDigitCap(parsed)) continue;
+    if (unwrapped === null) unwrapped = new Map(args.v);
+    unwrapped.set(key, parsed);
+  }
+  return unwrapped === null ? args : { t: 'dict', v: unwrapped };
+}
+
+/**
  * The pydantic `ValidationError` text, WITHOUT the `Error executing tool <name>: ` prefix.
  *
  * The prefix is the SDK's, added by `Tool.run`'s `except Exception` for every failure a tool
@@ -479,9 +567,15 @@ export class PyValidationFailure extends Error {
  * measured server accepts `{"query": "a", "extra": 1}` without complaint. The absent-key case
  * and the explicit-`null` case are different: `{}` is `missing`, `{"handoff_patch": null}` is
  * `dict_type`, and only an OPTIONAL field treats `null` as its default.
+ *
+ * `preParseJson` runs FIRST, and what it returns is what every error below reports. That
+ * ordering is the SDK's: `model_validate` never sees the arguments a client sent, only the
+ * unwrapped ones, so a `missing` error on `memory_recall(k='[1]')` carries `{'k': [1]}` as
+ * its `input_value` and not the string the wire held.
  */
 export function validateArguments(model: ArgModel, args: PyValue): Map<string, PyValue> {
-  const supplied = args.t === 'dict' ? args.v : new Map<string, PyValue>();
+  const unwrapped = preParseJson(model, args);
+  const supplied = unwrapped.t === 'dict' ? unwrapped.v : new Map<string, PyValue>();
   const errors: RawError[] = [];
   const bound = new Map<string, PyValue>();
   for (const spec of model.fields) {
@@ -490,7 +584,7 @@ export function validateArguments(model: ArgModel, args: PyValue): Map<string, P
         bound.set(spec.name, { t: 'null' });
         continue;
       }
-      errors.push({ loc: spec.name, type: 'missing', msg: 'Field required', input: args });
+      errors.push({ loc: spec.name, type: 'missing', msg: 'Field required', input: unwrapped });
       continue;
     }
     const checked = checkField(spec, supplied.get(spec.name)!);

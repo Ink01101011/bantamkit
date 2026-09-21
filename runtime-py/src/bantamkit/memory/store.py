@@ -43,7 +43,7 @@ DUPLICATE_JACCARD = 0.5
 # refusing.
 #
 # WHY A RATIO AND NOT A COUNT. `score` is an unnormalised intersection size,
-# `len(_tokens(name + " " + description) & _tokens(query))`, so it scales with how long
+# `len(tokens(name + " " + description) & tokens(query))`, so it scales with how long
 # the QUERY is. Measured on the three instrumented records: the same two-fact shape scored
 # 2 and 2 on a 452-character prompt, 4 and 4 on a 453-character prompt, and 22 and 21 on a
 # 7855-character one. An absolute cut of, say, 5 would gate out both short prompts
@@ -55,7 +55,7 @@ DUPLICATE_JACCARD = 0.5
 # image bias: `len(a & b) / len(a | b)` puts the query's own token count in the
 # denominator, so it would gate out LONG prompts instead of short ones.
 #
-# WHAT THE RATIO DOES NOT FIX, and must be read alongside it: `_tokens` is
+# WHAT THE RATIO DOES NOT FIX, and must be read alongside it: `tokens` is
 # `re.findall(r"[a-z0-9]+", text.lower())`, ASCII-only. A wholly non-Latin prompt tokenises
 # to the empty set and scores 0 against every fact, so it never reaches this gate at all —
 # it is already an empty recall. This store's operator writes Thai; a threshold tuned on
@@ -229,7 +229,23 @@ class CompactResult:
         return self.budget - self.index_after
 
 
-def _tokens(text: str) -> set[str]:
+def tokens(text: str) -> set[str]:
+    """The store's own tokenizer: lowercase, then every `[a-z0-9]+` run, as a set.
+
+    PUBLIC ON PURPOSE, AND SINCE J62-3B PUBLIC ON BOTH SIDES. It was `tokens` here while
+    `runtime-ts/src/memory/store.ts` exported `tokens`, which is the shape CLAUDE.md's
+    both-runtimes rule exists to stop: the Python hook adapter had to reach across a layer
+    boundary for a PRIVATE name to compute the very score this function defines, and a
+    reader comparing the two files saw one runtime offering a surface the other hid.
+
+    It is the definition of `recall`'s score --
+    `len(tokens(name + " " + description) & tokens(query))` -- and of `save`'s duplicate
+    test, so a caller that needs to re-derive either (the `UserPromptSubmit` hook arm does)
+    computes the store's number rather than an estimate of it. No behaviour changed with
+    the rename; the private spelling is GONE rather than aliased, because a leading
+    underscore never carried a compatibility promise and two live names for one function is
+    the drift this promotion removes.
+    """
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
 
@@ -479,7 +495,7 @@ class MemoryStore:
         if not (description or "").strip():
             raise MemoryValidationError("description must be a non-empty line")
 
-        new_tokens = _tokens(f"{name} {description}")
+        new_tokens = tokens(f"{name} {description}")
         existing = None
         # THE FIRST OF TWO READS, AND THE ONE THAT MAKES THIS OP SAFE. WAS: a blind
         # listing made this check pass vacuously and the save went on to have
@@ -493,7 +509,7 @@ class MemoryStore:
                 existing = fact
                 continue  # same name = update, not duplicate
             if (
-                _jaccard(new_tokens, _tokens(f"{fact.name} {fact.description}"))
+                _jaccard(new_tokens, tokens(f"{fact.name} {fact.description}"))
                 >= DUPLICATE_JACCARD
             ):
                 return SaveResult(status="duplicate", name=name, similar=fact.name)
@@ -579,10 +595,10 @@ class MemoryStore:
         if not 0.0 <= min_ratio <= 1.0:
             raise MemoryValidationError(_MIN_RATIO_RANGE)
         k = k if k is not None else self.k
-        q = _tokens(query)
+        q = tokens(query)
         scored = []
         for fact in self._snapshot if self._snapshot is not None else self._facts():
-            score = len(q & _tokens(f"{fact.name} {fact.description}"))
+            score = len(q & tokens(f"{fact.name} {fact.description}"))
             if score > 0:
                 scored.append((score, fact))
         if scored:

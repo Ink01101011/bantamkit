@@ -69,7 +69,7 @@ from bantamkit.memory.store import (
     MemoryStore,
     _jaccard,
     _mtime_date,
-    _tokens,
+    tokens,
 )
 
 #: The two layer names this pass knows. A read-only GRANT is deliberately not one of them:
@@ -654,8 +654,8 @@ def dream(
                 name=name,
                 kind=kind,
                 jaccard=_jaccard(
-                    _tokens(f"{here.name} {here.description}"),
-                    _tokens(f"{there.name} {there.description}"),
+                    tokens(f"{here.name} {here.description}"),
+                    tokens(f"{there.name} {there.description}"),
                 ),
                 survivor_layer=PROJECT_LAYER,
                 consumed_layer=PROFILE_LAYER,
@@ -685,8 +685,8 @@ def dream(
             if here.name == there.name:
                 continue
             score = _jaccard(
-                _tokens(f"{here.name} {here.description}"),
-                _tokens(f"{there.name} {there.description}"),
+                tokens(f"{here.name} {here.description}"),
+                tokens(f"{there.name} {there.description}"),
             )
             if score >= DUPLICATE_JACCARD:
                 similar.append(SimilarPair(here.name, there.name, score))

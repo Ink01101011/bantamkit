@@ -6,9 +6,13 @@ command, connect it to **Claude Code**, **Claude Desktop**, **Cursor** or **GitH
 Code**, and every later launch starts **offline**. No Python, `pip`, `uv`, `pipx` or venv.
 
 It serves the same fourteen tools, `bantamkit_status` prompt and two resource templates as the
-Python server on **PyPI** (`pip install "bantamkit[mcp]"`), and reads and writes the same memory
-store. The two are compared frame by frame: 8,130 conformance cases on 2026-09-15, with every
-intentional difference written down as a ruling.
+Python server — [`bantamkit` on PyPI](https://pypi.org/project/bantamkit/) — and reads and
+writes the same memory store. The two are compared frame by frame: 8,130 conformance cases on
+2026-09-15, with every intentional difference written down as a ruling.
+
+**This page is the npm package's.** Every command on it runs `bantamkit-mcp` from npm. The
+Python package is named where the two differ, but its own install, update and CLI commands live
+on [its page](https://pypi.org/project/bantamkit/); run them here and you get nothing.
 
 ## Contents
 
@@ -31,7 +35,7 @@ intentional difference written down as a ruling.
 | [Memory stores are layered by default](#memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
 | [The asset pack](#the-asset-pack) | What ships in `assets/` and how it is found |
 | [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; concurrent writes, one hand-edit to avoid |
-| [Module API](#module-api) | Importing the package as a library, and the one break in `clockIn` |
+| [Module API](#module-api) | The one entry point, all 139 exports it reaches, and the one break in `clockIn` |
 | [Development](#development) | Build, test, conformance |
 | [Measurements and history](#measurements-and-history) | Where the measured numbers behind this page live |
 
@@ -108,7 +112,6 @@ Each host below has the same steps: **1** command, **2** file, **3** entry, **4*
 | Route | `command` | `args` |
 |---|---|---|
 | npm, install once | `/absolute/path/to/node` | `["/Users/you/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js"]` |
-| Python venv | `/absolute/path/to/env/bin/bantamkit-mcp` | `[]` |
 | npx every launch | `npx` | `["-y", "bantamkit-mcp"]` |
 
 A JSON file cannot expand `~`, so spell both paths out. To check a recorded command, run it in
@@ -227,8 +230,11 @@ It is the only network access here — not at startup, not on `bantamkit_status`
 | `npx -y bantamkit-mcp --install <host>` from 0.34.0: a kept install at `~/.bantamkit/mcp` | `npx -y bantamkit-mcp@latest --update` patches it in place, or `npm i --prefix ~/.bantamkit/mcp bantamkit-mcp@latest`. The recorded paths do not change. Before 0.34.0, `--update` from an npx cache refuses instead |
 | `npm i -g bantamkit-mcp` | `npm i -g bantamkit-mcp@latest` |
 | `npm i --prefix <dir> bantamkit-mcp` | `npm i --prefix <dir> bantamkit-mcp@latest` |
-| PyPI (`pip install "bantamkit[mcp]"`) | `pip install -U "bantamkit[mcp]"` · pipx: `pipx upgrade bantamkit` · uv: `uv tool upgrade bantamkit` |
 | a checkout, via `tools/bantamkit-mcp-node` | `git pull && npm ci --prefix runtime-ts && npm run build --prefix runtime-ts` — no registry, and `runtime-ts/dist/` is build output, so a pull alone changes nothing |
+
+No row above is the Python package. If what you have is **`bantamkit` from PyPI** instead, it
+updates by its own route, written on [its PyPI page](https://pypi.org/project/bantamkit/); the
+two sets of commands are not interchangeable.
 
 **Then restart the server in your host** — a running server keeps serving the code it loaded at
 startup. In Claude Code: `/mcp` → reconnect. In Claude Desktop: a full restart of the app.
@@ -408,14 +414,62 @@ are deliberate and each is ruled in the
 
 ## Module API
 
-The package is a server first, but `main` and `types` point at `dist/index.js` and
-`dist/index.d.ts`, so `import { clockIn } from 'bantamkit-mcp'` is a supported call and the
-exported arities are part of what is published. `src/index.ts` re-exports the memory, asset,
-event-log and shift-work surfaces; the shift-work names are `clockIn`, `clockOut`, `status`,
-`timestamp`, `HISTORY_RING_SIZE`, `SCHEMA_NAME`, `TERMINAL_UNIT_STATUS` and the type
-`ClockOptions`.
+The package is a server first, but it is importable too: `exports` maps exactly one entry
+point — `.` — to `dist/index.js` and `dist/index.d.ts`, so `import { clockIn } from
+'bantamkit-mcp'` is a supported call, and the names and arities behind that entry point are
+part of what is published.
 
-**One of them changed shape.** `clockIn` took a unit id as its **second positional parameter**,
+Everything in this section was measured against the **tarball**, not the source tree: `npm
+pack`, extracted into a throwaway package's `node_modules`, and imported by `node`. A name in
+`src/` that no entry point reaches is not API; the table below is what an importer gets.
+
+**One entry point, and nothing beside it.** There are no subpaths, so every deep import is
+refused by Node's resolver:
+
+| specifier | result |
+| --- | --- |
+| `bantamkit-mcp` | 139 value exports, 26 type-only exports |
+| `bantamkit-mcp/dist/cli.js` | `ERR_PACKAGE_PATH_NOT_EXPORTED` |
+| `bantamkit-mcp/dist/shiftwork.js` | `ERR_PACKAGE_PATH_NOT_EXPORTED` |
+| `bantamkit-mcp/package.json` | `ERR_PACKAGE_PATH_NOT_EXPORTED` |
+| `bantamkit-mcp/assets/tools/memory_save.json` | `ERR_PACKAGE_PATH_NOT_EXPORTED` |
+
+**So what you can import is the library half, not the server.** The MCP server and its
+transport, both CLIs, the host-install and self-update code, the hook adapter, the document
+reader, the repo map, the skill audit, the token ledger, the pricing table and the work planner
+all ship inside `dist/` and none of them is reachable through an import — they are reached by
+running `bantamkit-mcp` and `bantamkit-memory`. Importing the package starts no server and
+opens no transport. The vendored `assets/` is not importable either, but it is *readable*:
+`assetsRoot()` resolves to the `assets/` directory inside the installed package, which is how
+`loadTool('memory_save')` answers from a consumer that never unpacked anything itself.
+
+**What the one entry point exports**, grouped by the module each name comes from:
+
+| module | what it is | exported names |
+| --- | --- | --- |
+| `errors.js` | The base error every other one extends | `BantamError` |
+| `contract.js` | The JSON-answer contract: load it, pull JSON out of a model reply, compose the retry feedback | `ContractParseError`, `extractJson`, `loadContract`, `parseContractDocument`, `parseErrorMessage`, `REQUIRED_KEYS`, `schemaError`, `schemaRetryFeedback`, `validationErrorMessage` |
+| `pyjson.js` | CPython `json` semantics over a `PyValue` tree — float repr and decode errors included | `dumpJson`, `fromJs`, `parseJson`, `PY_NONE`, `pyFloatRepr`, `PyJSONDecodeError`, `PyValueError`, `rawDecode`, `reprValue`, `toJs`<br>*types:* `DumpOptions`, `PyValue` |
+| `pyjsonschema.js` | The JSON Schema validator, with CPython `jsonschema`'s error ordering and best-match | `absolutePath`, `bestMatch`, `iterErrors`, `pyEqual`, `PyJsonSchemaUnsupported`, `validate`<br>*types:* `PyValidationError` |
+| `assets.js` | The vendored asset pack: schemas, skills and tool definitions | `AssetNotFound`, `assetsRoot`, `loadSchema`, `loadSkill`, `loadTool`, `loadToolAsset`<br>*types:* `Tool` |
+| `memory/factfile.js` | One fact file: frontmatter, parse, format | `decodeFactBytes`, `FactParseError`, `formatFact`, `parseFactText`, `parseFrontmatter`, `pySplit`, `pyStrip`, `todayLocal`<br>*types:* `Fact`, `FactMeta`, `FactValue` |
+| `memory/pyyaml.js` | The YAML subset PyYAML's safe loader and dumper accept | `constructPlain`, `PyScalar`, `resolveImplicitTag`, `safeDumpMapping`, `YamlConstructError`, `YamlEmitError`<br>*types:* `PyOrder`, `YamlScalar`, `YamlValue` |
+| `memory/layers.js` | Which stores a recall reads, and where the project store is | `countFacts`, `discoverProjectStore`, `loadGrants`, `MEMORY_DIR_ENV`, `PROJECT_STORE`, `resolveProjectStore`<br>*types:* `StoreBinding` |
+| `memory/component.js` | `Memory`, the save/recall/compact/dream component the server calls | `layerLabel`, `Memory`, `normalizeName`, `profileStore`<br>*types:* `CompactOutcome`, `DreamOutcome`, `MemoryOptions`, `RecallOutcome`, `SaveOutcome` |
+| `memory/dream.js` | The consolidation pass: similarity, merge, supersede | `absolutise`, `blockKey`, `claimSlot`, `collapse`, `dream`, `formatFixed3`, `mergeBodies`, `mergeDescriptions`, `mergeLinks`, `PROFILE_LAYER`, `PROJECT_LAYER`, `pyIntDigits`, `sortedNames`, `splitBlocks`, `SUPERSEDED_HEADING`<br>*types:* `DateHit`, `DreamMerge`, `DreamResult`, `SimilarPair`, `Superseded` |
+| `eventlog.js` | The JSONL event log | `CAP_BYTES`, `DEFAULT_RELATIVE_PATH`, `defaultPath`, `encodeRecord`, `EVENT_LOG_ENV`, `EventLog`, `formatTimestamp`, `resolvePath`, `SCHEMA_VERSION`<br>*types:* `DetailValue` |
+| `memory/store.js` | `MemoryStore`: the on-disk store, its budgets and its dedupe | `BANTAMKIT_GITIGNORE_TEXT`, `DEFAULT_INDEX_BUDGET`, `DUPLICATE_JACCARD`, `ensureBantamkitGitignore`, `jaccard`, `MemoryBudgetExceeded`, `MemoryStore`, `MemoryValidationError`, `pyCompareLt`, `pyEqualValue`, `pyHashKey`, `pyText`, `RECALL_MIN_SCORE_RATIO`, `sortScored`, `tokens`, `VALID_TYPES`<br>*types:* `MemoryStoreOptions`, `SaveResult`, `StoreInternals` |
+| `memory/pyfs.js` | CPython `pathlib` and `os.path` semantics over `node:fs`, error numbering included | `asPyOSError`, `cmpCodepoint`, `matchesMd`, `normcase`, `pyAppendText`, `pyCwd`, `pyDecodeUtf8`, `pyExists`, `pyExpanduser`, `pyHome`, `pyIsAbsolute`, `pyIsDir`, `pyIsFile`, `pyJoin`, `pyLexists`, `pyMkdirParents`, `pyMtimeDate`, `pyName`, `PyOSError`, `pyParent`, `pyParents`, `pyReadText`, `pyReplace`, `pyRepr`, `pyResolve`, `PyRuntimeError`, `pyScandirNames`, `pyStatIsDir`, `pySuffix`, `PyUnicodeDecodeError`, `pyUnlink`, `pyWithSuffix`, `pyWriteText`, `sortedPathNames`, `sortedPathParts`, `STRERROR_NAMES` |
+| `shiftwork.js` | The shift-work checkpoint tools | `clockIn`, `clockOut`, `HISTORY_RING_SIZE`, `SCHEMA_NAME`, `status`, `TERMINAL_UNIT_STATUS`, `timestamp`<br>*types:* `ClockOptions` |
+| **14 modules** | | **139 values, 26 types** |
+
+Two things that table is easy to misread. The `py*` names are not a Python bridge — they are
+this port's re-implementations of CPython semantics (`pyfs.js` alone is 36 of the 139), and
+they are exported because the conformance harness and the operator tooling call them, not
+because an application should. And `Function.length` is not the signature: `clockIn.length` is
+`1` because two of its three parameters have defaults.
+
+**One export changed shape.** `clockIn` took a unit id as its **second positional parameter**,
 ahead of the options object:
 
 ```ts
@@ -430,6 +484,27 @@ plain JavaScript does not — the object lands in the id slot, the call asks for
 [docs/porting.md → The published export surface](https://github.com/Ink01101011/bantamkit/blob/main/docs/porting.md#the-published-export-surface-and-the-one-break-in-it);
 `docs/` is not in the npm tarball (`files: ["dist", "assets"]`), which is why the migration line
 is repeated here.
+
+**Rerun the whole table.** From a clone, in `runtime-ts/`:
+
+```sh
+npm pack --pack-destination /tmp/bk
+mkdir -p /tmp/bk/consumer/node_modules/bantamkit-mcp
+tar -xzf /tmp/bk/bantamkit-mcp-*.tgz -C /tmp/bk/consumer/node_modules/bantamkit-mcp --strip-components=1
+printf '{"name":"c","private":true,"type":"module"}' > /tmp/bk/consumer/package.json
+cd /tmp/bk/consumer && node -e "import('bantamkit-mcp').then((m) => console.log(Object.keys(m).length))"
+```
+
+It prints `139`, with no `npm install` and nothing fetched: `dist/index.js` pulls in none of the
+server code, so the one runtime dependency is never reached. The 26 type-only exports are in the
+same tarball — from `/tmp/bk/consumer`:
+
+```sh
+node -e "const t=require('fs').readFileSync('node_modules/bantamkit-mcp/dist/index.d.ts','utf8');console.log([...t.matchAll(/export type \{([^}]*)\}/g)].flatMap((m) => m[1].split(',')).map((x) => x.trim()).filter(Boolean).length)"
+```
+
+Both numbers move whenever `src/index.ts` does, which is why they are quoted with the command
+that prints them rather than kept in prose.
 
 ## Development
 

@@ -54,7 +54,7 @@ from bantamkit.memory.store import (
     INDEX_PRESSURE_PERCENT,
     MemoryStore,
     _jaccard,
-    _tokens,
+    tokens,
     undegraded_index_ceiling,
 )
 
@@ -199,7 +199,7 @@ def main() -> None:
     elif op == "jaccard":
         out = {"jaccard": [_jaccard(set(a), set(b)) for a, b in request["pairs"]]}
     elif op == "tokens":
-        out = {"tokens": [sorted(_tokens(unb64(t))) for t in request["texts_b64"]]}
+        out = {"tokens": [sorted(tokens(unb64(t))) for t in request["texts_b64"]]}
     elif op == "sortpaths":
         base = Path(request["dir"])
         out = {"sorted": [b64(p.name) for p in sorted(base / unb64(n) for n in request["names"])]}

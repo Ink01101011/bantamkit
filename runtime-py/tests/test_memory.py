@@ -2724,7 +2724,7 @@ def test_restore_cli_prints_one_sentence_for_index_md_being_a_directory(tmp_path
 def _score_ladder(store):
     """Four facts scoring 4, 3, 2 and 1 against `_LADDER_QUERY`.
 
-    The name is scored too (`_tokens(f"{name} {description}")`), so each name is a
+    The name is scored too (`tokens(f"{name} {description}")`), so each name is a
     word the query does not contain; otherwise every fact would carry a free point
     and the ladder would be 5/4/3/2 with the same shape but a lying docstring.
     """

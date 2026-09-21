@@ -6,7 +6,11 @@
  * reach the network (`selfupdate.py:29-31`, measured: one registry GET is 1.5x to 100x an
  * entire 0.09 s cold stdio boot), why a newer version existing is NOT a degraded condition,
  * why there is NO TTL in a reader, and why the date is sliced rather than rendered. It is not
- * restated here; read it there. What belongs HERE is the part that could not be copied.
+ * restated here; read it there. What belongs HERE is the part that could not be copied. That
+ * includes *Two stamps, and which one dates which number* (J62-13, 2026-09-21): an ENTRY may
+ * carry a `checked_at` of its own — when that registry last answered — and the record's own
+ * `checked_at` is the fallback for an entry that has none. `checkedDate` SELECTS one of the
+ * two and then applies the single shape rule to whatever it selected.
  *
  * EXACTLY ONE THING DIFFERS FROM THE REFERENCE, and it is a genuinely different object rather
  * than a different spelling of one: `KEY` is `npm` here and `pypi` there, because npm and
@@ -156,13 +160,26 @@ const DATE_PREFIX = /^([0-9]{4}-[0-9]{2}-[0-9]{2})/;
  * a different state on the two sides. Decoding the bytes with `fatal` makes it the same one.
  *
  * `ignoreBOM` IS LEFT AT ITS DEFAULT OF `false`, WHICH STRIPS A LEADING BOM, AND THAT IS LOAD
- * BEARING. The reference reads with `utf-8-sig` for exactly this reason: PowerShell's
- * `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default, and a record a reader can
- * plainly act on is not "a shape this reader cannot act on". Setting `ignoreBOM: true` here
- * would leave the BOM in the string, `JSON.parse` would refuse it, and this side would call a
- * Windows operator's perfectly good record broken. The BOM arms in
- * `tools/conformance/suites/updatecheck.mjs` are what hold the two sides together on it; it is
- * NOT a `docs/porting.md` divergence, because there is no difference left to register.
+ * BEARING. The reference reads with `utf-8-sig` for exactly this reason: WHAT HAS TO BE
+ * ACCEPTED IS THE THREE BYTES `EF BB BF`, WHOEVER WROTE THEM, and a record a reader can plainly
+ * act on is not "a shape this reader cannot act on". Setting `ignoreBOM: true` here would leave
+ * the BOM in the string, `JSON.parse` would refuse it, and this side would call a perfectly good
+ * record broken. The `available|current|ahead/utf-8-bom` arms in
+ * `tools/conformance/suites/updatecheck.mjs`, with `unreadable/bom-not-json` as their control,
+ * are what hold the two sides together on it; it is NOT a `docs/porting.md` divergence, because
+ * there is no difference left to register.
+ *
+ * AMENDED 2026-09-21 (J62-16). This comment used to justify the setting with the sentence
+ * "PowerShell's `Set-Content` and `Out-File` write UTF-8 WITH a BOM by default". THAT SENTENCE
+ * IS VERSION-QUALIFIED AND HAD NEVER BEEN RUN. Measured in `mcr.microsoft.com/powershell:latest`
+ * — PowerShell 7.4.2 (Core, Ubuntu 22.04, linux/amd64) — `Set-Content`, `Out-File`, `>` and
+ * `Add-Content` ALL write UTF-8 with NO BOM, `-Encoding utf8` is the alias of `utf8NoBOM`, and
+ * `EF BB BF` appears only under an explicit `-Encoding utf8BOM`. So it is FALSE of PowerShell 6+
+ * on every platform, and UNMEASURED for WINDOWS PowerShell 5.1, which needs a Windows kernel
+ * this machine does not have. The setting does not depend on it either way: `-Encoding utf8BOM`,
+ * Notepad before 2019 and any editor set to "UTF-8 with BOM" all produce the same three bytes,
+ * and this reader's business is the bytes, not the writer. The reference's `load_record`
+ * docstring carries the same amendment.
  */
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
 
@@ -265,9 +282,23 @@ function latestIn(record: Record<string, unknown>, key: string): string | null {
   return VERSION.test(trimmed) ? trimmed : null;
 }
 
-/** The `YYYY-MM-DD` prefix of `checked_at`, or `null`. Sliced, never rendered. */
-function checkedDate(record: Record<string, unknown>): string | null {
-  const checkedAt = record['checked_at'];
+/**
+ * The `YYYY-MM-DD` prefix of the stamp that dates THIS key's number, or `null`. Sliced, never
+ * rendered.
+ *
+ * ONE SELECTION, THEN ONE RULE — the reference's `_checked_date`, and its docstring carries
+ * the argument. `hasOwnProperty` rather than `in` is how this side spells CPython's `in` on a
+ * dict: `JSON.parse` hands back plain objects, so the two agree, and an entry that carries
+ * the name is the entry's own answer even when the value is garbage.
+ */
+function checkedDate(record: Record<string, unknown>, key: string): string | null {
+  const entry = record[key];
+  const own =
+    typeof entry === 'object' &&
+    entry !== null &&
+    !Array.isArray(entry) &&
+    Object.prototype.hasOwnProperty.call(entry, 'checked_at');
+  const checkedAt = own ? (entry as Record<string, unknown>)['checked_at'] : record['checked_at'];
   if (typeof checkedAt !== 'string') return null;
   const found = DATE_PREFIX.exec(checkedAt.trim());
   return found?.[1] ?? null;
@@ -279,9 +310,9 @@ function checkedDate(record: Record<string, unknown>): string | null {
  * Split from the reading so the conformance harness and the tests can construct a state
  * directly and so the only thing that touches a disk is `loadRecord`.
  *
- * `checked_at` is validated in EVERY arm that reached a record and not only on the `current`
- * path: a record that cannot say when it was written is not a record, and one rule is one thing
- * for the two runtimes to reproduce instead of two.
+ * The SELECTED `checked_at` (see `checkedDate`) is validated in EVERY arm that reached a record
+ * and not only on the `current` path: a record that cannot say when it was written is not a
+ * record, and one rule is one thing for the two runtimes to reproduce instead of two.
  */
 export function decide(
   installed: string,
@@ -293,7 +324,7 @@ export function decide(
   if (source !== SOURCE_RECORD || record === null) {
     return { state: STATE_UNREADABLE, line: UPDATE_UNREADABLE };
   }
-  const date = checkedDate(record);
+  const date = checkedDate(record, key);
   const latest = latestIn(record, key);
   if (date === null || latest === null) {
     return { state: STATE_UNREADABLE, line: UPDATE_UNREADABLE };

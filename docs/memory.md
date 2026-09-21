@@ -976,6 +976,36 @@ means the walk even when a lower scope pins. Not covered: `${VAR}` expansion in
 is refused as relative, loudly, rather than resolved to the wrong store.
 Node-only by construction: there is no Python hook, so no conformance case.
 
+**AMENDED 2026-09-20 (job62, J62-9): that last sentence is FALSE now.** There is a
+Python hook — `python -m bantamkit.mcpserver --hook`, every arm, landed in J62-3
+and J62-3B as `runtime-py/src/bantamkit/hookadapter.py` — so the pin-reading
+paragraph above describes BOTH runtimes, and the registration walk, the
+refusals and the `warn` log line are ported rather than mirrored in prose.
+There are conformance cases now: `node tools/conformance/run.mjs --suite hooks`
+drives 42 of them as real processes over both runtimes (**AMENDED 2026-09-21,
+J62-21: 69, after J62-10's fourteen and J62-20's thirteen for
+`--remove-hooks`' consent gate**). What the paragraph above
+still gets right is the exclusion: `${VAR}` expansion in `.mcp.json` values is
+the host's, not the hook's, and a pin that needs it is refused as relative on
+both sides rather than resolved to the wrong store.
+
+### The host's own auto-memory is now written to, one way
+
+`SessionStart` exports this store's **project** fact descriptions into Claude
+Code's own auto-memory directory when the host has one. It is one-way and
+non-destructive by contract: a name is written only when it is **absent**, an
+entry bantamkit did not just create is never rewritten, and nothing is ever
+deleted — because the host's own memory pass rewords and removes foreign
+entries (job59 measured 8 of 8 index lines reworded or removed, and one file
+deleted), so bantamkit must never treat what it wrote as state it can read back.
+Descriptions travel, bodies do not: the description is what the host injects,
+and copying bodies would duplicate this store into a directory bantamkit does
+not own and that prunes itself. bantamkit never writes the host's
+`autoMemoryDirectory` setting, and never computes the host's project slug.
+The whole contract, the four-branch resolver and the `native*` log fields are in
+[hooks.md](hooks.md#exporting-into-the-hosts-own-auto-memory-2026-09-20-job62--j62-6);
+this page owns the store the facts come FROM, not the one they go to.
+
 ### What an empty recall says
 
 `Memory.recall` used to answer every empty result with `no memories matched. Try

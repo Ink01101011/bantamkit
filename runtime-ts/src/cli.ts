@@ -68,12 +68,13 @@
  * reaches for is answered on the wire instead, by `build_identity`. `runtime-ts/README.md`
  * and `docs/install.md` carry the same correction in their own words.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { assetsRoot } from './assets.js';
 import { BantamError } from './errors.js';
+import { logHookFailure, runHook } from './hookadapter.js';
 import { buildReport, resolveEventLogPath } from './mcpreport.js';
 import { Memory } from './memory/component.js';
 import { DEFAULT_INDEX_BUDGET } from './memory/store.js';
@@ -92,7 +93,16 @@ import {
   type ParserSpec,
 } from './pyargparse.js';
 import { pyJoin, PyOSError, pyRepr, pyStatIsDir } from './memory/pyfs.js';
-import { HOSTS, type Host, InstallError, installSelf } from './hostinstall.js';
+import {
+  HOSTS,
+  type Host,
+  HookConsentUnavailable,
+  HookDeclined,
+  installHooks,
+  InstallError,
+  installSelf,
+  removeHooks,
+} from './hostinstall.js';
 import { runUpdate } from './selfupdate.js';
 import { statusLine } from './statusline.js';
 
@@ -148,6 +158,38 @@ const PARSER: ParserSpec = {
       convert: pyIntStrict,
       typeName: 'int',
       defaultValue: DEFAULT_INDEX_BUDGET,
+    },
+    // THE HOOK ADAPTER, AND IT IS A FLAG FOR THE REASON `--mcp-report` GIVES BELOW, ONLY
+    // HARDER. `package.json` declares exactly one bin, so anything hung off a second entry
+    // point is unreachable in the pure-npx install that is the shipped product -- and the
+    // hook adapter was, literally: it lived in `tools/hooks/bantamkit-hook.mjs`, and MEASURED
+    // at 0.35.3 with `npm pack --dry-run` the tarball is 174 files under
+    // `files: ["dist","assets"]` with not one of them matching `hook`. An operator who
+    // installed bantamkit the only way it is published had no adapter on disk to register.
+    //
+    // POSITION IS WIRE-VISIBLE AND IT IS MEASURED, the same as every flag below it. At the
+    // 80-column fallback argparse breaks the usage after `[--index-budget BYTES]`, and that
+    // first line is pinned in `test_mcpserver.py`, in `test/cli-surface.test.mjs` and as a
+    // THROWING precondition in `tools/conformance/suites/cli.mjs`. Registered HERE -- the
+    // first flag AFTER `--index-budget` -- it grows the SECOND usage line only, from 61
+    // columns to 70 against a fold at 78. Registering it any earlier would move the pinned
+    // line and turn a differential suite into a re-baselining one.
+    //
+    // BARE, WITH NO METAVAR, AND THE EVENT COMES FROM STDIN. The host sends one JSON object
+    // carrying `hook_event_name`, which is what the adapter has always dispatched on; a
+    // second spelling of the event on the command line would be a second thing to keep in
+    // step with the host, and the registration in `~/.claude/settings.json` would have to
+    // carry seven different commands instead of one.
+    //
+    // THE CONTRACT IS DELIBERATELY NARROW, WHICH IS WHAT MAKES IT GATEABLE: one JSON object
+    // in on stdin, at most one JSON object out on stdout, exit 0 ALWAYS. A conformance case
+    // can feed both runtimes the same payload and compare the emitted object byte for byte.
+    {
+      optionStrings: ['--hook'],
+      dest: 'hook',
+      kind: 'storeTrue',
+      help: 'run as a Claude Code hook: one JSON event on stdin, then exit',
+      defaultValue: false,
     },
     // WHY THIS IS A FLAG ON THIS PROCESS AND NOT A NEW ENTRY POINT, and why it sits HERE.
     // The lifecycle argument against printing from this process -- stdout is the JSON-RPC
@@ -240,6 +282,52 @@ const PARSER: ParserSpec = {
       help: 'with --install, replace an existing bantamkit entry',
       defaultValue: false,
     },
+    // THE HOOK REGISTRATION, AND IT IS THREE FLAGS, NOT A MODIFIER ON `--install`.
+    //
+    // S1 RULING Q3.1: hooks are NEVER written as a side effect of `--install <host>`. Somebody
+    // asking to register an MCP server has not asked to register seven hooks that run on every
+    // tool call. RULING Q3.2 makes it its own opt-in, with a paired `--remove-hooks`, and gives
+    // the reason a modifier was refused: `--force`'s help above says "with --install", and
+    // overloading `--install` with a second, differently-consented write would make that
+    // sentence false.
+    //
+    // `--yes` IS THE THIRD STATE OF THE GATE, WHICH IS WHY IT IS A FLAG AND NOT AN ENV VAR.
+    // RULING Q3.3 makes the no-terminal-and-no-`--yes` case a REFUSAL at exit 2, so `--yes` is
+    // the only path a CI or scripted install has, and the ruling requires it to appear in `-h`
+    // so nobody has to guess it. It carries `--force`'s "with --install…" phrasing for the
+    // same reason `--force` does: a flag that is inert on its own says so in its own help.
+    //
+    // POSITION IS WIRE-VISIBLE, the same as every flag above. These three land AFTER `--force`
+    // and before the `--store`/`--start` group, which leaves the FIRST line of the 80-column
+    // usage — the line pinned by `test/cli-surface.test.mjs` and by the `cli` conformance
+    // suite — byte-identical, and moves the wrap boundary on the later lines only. The group
+    // indices below move with them.
+    {
+      optionStrings: ['--install-hooks'],
+      dest: 'install_hooks',
+      kind: 'storeTrue',
+      help: "add bantamkit's hook entries to ~/.claude/settings.json, then exit",
+      defaultValue: false,
+    },
+    {
+      optionStrings: ['--remove-hooks'],
+      dest: 'remove_hooks',
+      kind: 'storeTrue',
+      help: "take bantamkit's hook entries back out of ~/.claude/settings.json, then exit",
+      defaultValue: false,
+    },
+    {
+      optionStrings: ['--yes'],
+      dest: 'yes',
+      kind: 'storeTrue',
+      // NAMES BOTH FLAGS since the user's ruling of 2026-09-20 put the same gate on
+      // `--remove-hooks`. RULING Q3.3 requires the non-interactive consent path to be in `-h`
+      // so nobody has to guess it; a `--yes` that silently also worked with `--remove-hooks`
+      // would leave the only way to script a removal undocumented, which is the defect
+      // `--assets-root` shipped once already.
+      help: 'with --install-hooks or --remove-hooks, say yes in advance instead of being asked',
+      defaultValue: false,
+    },
     {
       optionStrings: ['--store'],
       dest: 'store',
@@ -256,10 +344,11 @@ const PARSER: ParserSpec = {
     },
   ],
   // `--store`/`--start` moved from 6/7 to 8/9 when `--install` and `--force` were added
-  // ahead of them, and from 8/9 to 9/10 when `--update` was. These are POSITIONS, not names,
-  // so adding an action above the group and leaving this line alone would silently make two
-  // unrelated flags mutually exclusive.
-  groups: [[9, 10]],
+  // ahead of them, from 8/9 to 9/10 when `--update` was, from 9/10 to 10/11 when `--hook`
+  // was, and from 10/11 to 13/14 when `--install-hooks`, `--remove-hooks` and `--yes` were.
+  // These are POSITIONS, not names, so adding an action above the group and leaving this
+  // line alone would silently make two unrelated flags mutually exclusive.
+  groups: [[13, 14]],
 };
 
 /*
@@ -279,11 +368,15 @@ export interface Options {
   store: string | null;
   start: string | null;
   assetsRoot: boolean;
+  hook: boolean;
   mcpReport: boolean;
   statusline: boolean;
   update: boolean;
   install: Host | null;
   force: boolean;
+  installHooks: boolean;
+  removeHooks: boolean;
+  yes: boolean;
 }
 
 /** `_parse_args`, arm for arm, including the mutually exclusive group and `-h`. */
@@ -295,11 +388,15 @@ export function parseArgs(argv: readonly string[]): Options {
     store: values['store'] as string | null,
     start: values['start'] as string | null,
     assetsRoot: values['assets_root'] as boolean,
+    hook: values['hook'] as boolean,
     mcpReport: values['mcp_report'] as boolean,
     statusline: values['statusline'] as boolean,
     update: values['update'] as boolean,
     install: values['install'] as Host | null,
     force: values['force'] as boolean,
+    installHooks: values['install_hooks'] as boolean,
+    removeHooks: values['remove_hooks'] as boolean,
+    yes: values['yes'] as boolean,
   };
 }
 
@@ -356,6 +453,82 @@ function typedBareAtATerminal(argv: readonly string[]): boolean {
   }
   if (stream === null || stream === undefined) return false;
   return Boolean(stream.isTTY);
+}
+
+/**
+ * Is there a terminal to ask a question at? The SAME signal `typedBareAtATerminal` uses.
+ *
+ * `process.stdin.isTTY` is `true` on a terminal and **`undefined`** — not `false` — on a pipe,
+ * a file or `/dev/null`, so this is a truthiness test for the reason spelled out above: a
+ * `=== false` test would make every non-terminal invocation look like a terminal, and on THIS
+ * path that inverts a consent gate. Neither the getter throwing nor a null `process.stdin` is
+ * a terminal, and neither may take the process down: what is at stake is a refusal.
+ */
+function haveATerminal(): boolean {
+  let stream: NodeJS.ReadStream | null;
+  try {
+    stream = process.stdin;
+  } catch {
+    return false;
+  }
+  if (stream === null || stream === undefined) return false;
+  return Boolean(stream.isTTY);
+}
+
+/**
+ * RULING Q3.4's question, on stderr, answered on stdin. Only ever called at a terminal.
+ *
+ * THE QUESTION IS A PARAMETER AND THE READER IS NOT. `--install-hooks` asks "Write these hook
+ * entries?" and `--remove-hooks` asks "Remove these hook entries?"; everything after the
+ * question mark — the `[y/N]` default, the one-byte read, the EAGAIN retry, and the rule that
+ * only `y`/`Y` is a yes — is one implementation on purpose, because two flags rewriting one
+ * file must not answer differently to the same keystroke.
+ *
+ * ONE LINE, READ SYNCHRONOUSLY, ONE BYTE AT A TIME. `readFileSync(0)` would block until EOF —
+ * at a terminal that is Ctrl-D, not Enter — so the answer is read to the first newline and no
+ * further, which leaves anything the person typed after it for whoever asks next.
+ *
+ * ANYTHING OTHER THAN `y` OR `Y` MEANS NO, including empty and including EOF. That is the
+ * ruling, and it is why the default in the prompt is spelled `[y/N]`: the safe answer is the
+ * one you get by pressing Enter, by piping nothing, or by closing the terminal.
+ *
+ * EAGAIN IS NOT AN ANSWER, AND THE FIRST VERSION OF THIS FUNCTION THOUGHT IT WAS. Node leaves
+ * a terminal's fd 0 in NON-BLOCKING mode, so a synchronous read of one the person has not
+ * typed into yet throws `EAGAIN` instead of waiting. Measured on a real pty on 2026-09-20:
+ * `isTTY=true`, and the very first `readSync(0, …)` threw
+ * `EAGAIN: resource temporarily unavailable, read` before anything had been typed. Treating
+ * that as EOF answered "no" to a question nobody had been given a chance to answer — the
+ * refusal was safe, but the feature was unreachable at the only place it is meant to work,
+ * and NO UNIT TEST COULD SEE IT because every one of them injects the answer through the
+ * `ask` seam. A pty found it; a suite could not.
+ *
+ * `Atomics.wait` IS THE ONLY SYNCHRONOUS SLEEP THERE IS, and one is needed: without it the
+ * retry is a busy spin on a terminal waiting for a human.
+ */
+function askAtTheTerminal(question: string): boolean {
+  process.stderr.write(`${question} [y/N] `);
+  const byte = Buffer.alloc(1);
+  const idle = new Int32Array(new SharedArrayBuffer(4));
+  let answer = '';
+  for (;;) {
+    let read: number;
+    try {
+      read = readSync(0, byte, 0, 1, null);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EAGAIN') {
+        Atomics.wait(idle, 0, 0, 20); // nothing typed yet; wait for the person, not for the cpu
+        continue;
+      }
+      break; // a closed fd, a stream the platform cannot read this way — not a yes
+    }
+    if (read === 0) break; // EOF: Ctrl-D, or a terminal that went away
+    const ch = byte.toString('utf8');
+    if (ch === '\n') break;
+    if (ch !== '\r') answer += ch;
+  }
+  process.stderr.write('\n');
+  const said = answer.trim();
+  return said === 'y' || said === 'Y';
 }
 
 /** `_build_memory`, including the two refusals argparse cannot express. */
@@ -463,6 +636,27 @@ async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(`${root}\n${packFileCount(root)} files\n`);
     return 0;
   }
+  if (options.hook) {
+    // DISPATCH ORDER IS REGISTRATION ORDER, which is the rule the four flags below already
+    // follow and the reason `--mcp-report --install cursor` prints a report and writes
+    // nothing. `--hook` is registered directly after `--index-budget`, so it is checked
+    // directly after `--assets-root`.
+    //
+    // EXIT 0 ALWAYS, AND THAT IS THE CONTRACT, not a convenience. A hook that exits non-zero
+    // or lets a stack reach stderr is rendered by the host as an error on the user's screen,
+    // so every failure is logged into `~/.bantamkit/hooks/hook-log.jsonl` and swallowed. This
+    // is the one arm in this file whose refusal path is a log line rather than a message.
+    //
+    // It returns before `buildMemory` for the same reason every flag around it does: the
+    // adapter binds whatever store the winning MCP registration pins, from the cwd the HOST
+    // sent in the payload — not from whatever directory the hook process was spawned in.
+    try {
+      await runHook();
+    } catch (e) {
+      logHookFailure(e);
+    }
+    return 0;
+  }
   if (options.mcpReport) {
     // Same discipline as `--assets-root`, and the same place in `main`: BEFORE
     // `buildMemory`, which touches the filesystem, and before the transport exists at all.
@@ -524,9 +718,89 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     return 0;
   }
+  // REGISTRATION ORDER AGAIN, which is what makes `--mcp-report --install-hooks` print a
+  // report and write nothing, exactly as `--mcp-report --install cursor` already does.
+  //
+  // THREE EXITS, AND THE TWO THAT WRITE NOTHING ARE NOT THE SAME EXIT (S1 RULING Q3.3/Q3.4):
+  //
+  //   0  written, or already installed and matching
+  //   1  the person was asked at a terminal and did not say yes — `no hooks were written`
+  //   2  there was no terminal to ask at and no `--yes`
+  //
+  // Neither refusal carries the `error:` prefix `InstallError` gets. Nothing went wrong: the
+  // program asked, or found it could not ask, and then did nothing — which is the feature.
+  //
+  // THE PLAN AND THE QUESTION GO TO STDERR, the report to stdout. One stream is the operator's
+  // answer and the other is the conversation that led to it, and a caller piping stdout into
+  // something should get the report and not the prompt.
+  if (options.installHooks) {
+    try {
+      process.stdout.write(
+        `${installHooks({
+          version: version(),
+          yes: options.yes,
+          ask: haveATerminal() ? (): boolean => askAtTheTerminal('Write these hook entries?') : null,
+          tell: (text) => process.stderr.write(text),
+        })}\n`,
+      );
+    } catch (e) {
+      if (e instanceof HookConsentUnavailable) {
+        process.stderr.write(`${e.message}\n`);
+        return 2;
+      }
+      if (e instanceof HookDeclined) {
+        process.stderr.write(`${e.message}\n`);
+        return 1;
+      }
+      if (!(e instanceof InstallError)) throw e;
+      process.stderr.write(`error: ${e.message}\n`);
+      return 1;
+    }
+    return 0;
+  }
+  if (options.removeHooks) {
+    // THE SAME THREE EXITS, AND THEY ARE THE SAME THREE NUMBERS. RULING Q3.7 used to exempt
+    // this flag from the gate; the user overturned that on 2026-09-20 after `--remove-hooks`
+    // rewrote the operator's real `~/.claude/settings.json` with no terminal and no `--yes`.
+    //
+    //   0  removed, or there was nothing of ours to remove
+    //   1  the person was asked at a terminal and did not say yes — `no hooks were removed`
+    //   2  there was no terminal to ask at and no `--yes`
+    //
+    // The arms below are `--install-hooks`' arms, in the same order, for the same reasons.
+    try {
+      process.stdout.write(
+        `${removeHooks({
+          yes: options.yes,
+          ask: haveATerminal() ? (): boolean => askAtTheTerminal('Remove these hook entries?') : null,
+          tell: (text) => process.stderr.write(text),
+        })}\n`,
+      );
+    } catch (e) {
+      if (e instanceof HookConsentUnavailable) {
+        process.stderr.write(`${e.message}\n`);
+        return 2;
+      }
+      if (e instanceof HookDeclined) {
+        process.stderr.write(`${e.message}\n`);
+        return 1;
+      }
+      if (!(e instanceof InstallError)) throw e;
+      process.stderr.write(`error: ${e.message}\n`);
+      return 1;
+    }
+    return 0;
+  }
   // `--force` alone is a typo with a plausible reading — somebody meant to install and
   // dropped the flag that says where. Refusing names the missing half.
   if (options.force) throw new Refusal('--force is only meaningful with --install');
+  // The same reading, and the same refusal, for the consent flag: `--yes` on its own is
+  // somebody who meant to install or remove hooks and dropped the flag that says which. It is
+  // checked AFTER `--force` because that is registration order, and both are checked after
+  // every flag that acts, so `--install-hooks --yes` never reaches either of them. The
+  // sentence names BOTH flags since the ruling of 2026-09-20: naming only one would send an
+  // operator who mistyped `--remove-hooks` looking for a flag they already had.
+  if (options.yes) throw new Refusal('--yes is only meaningful with --install-hooks or --remove-hooks');
   // A PERSON TYPED IT. `typedBareAtATerminal` carries the whole argument; what belongs here is
   // only that this sits BEFORE `buildMemory`, which is what creates a store. Somebody who typed
   // a command to see what it does has not asked for a `.bantamkit/memory` directory in whatever

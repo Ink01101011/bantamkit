@@ -867,3 +867,191 @@ and `docs/memory.md`; the gate is not built, and the quoted strings this reposit
 were not enumerated.
 
 <!-- provenance: value=2841 passed, 4 skipped, 2 deselected, 3 xfailed, 0 failures; commit=2efbc9d plus this commit's working tree; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+
+## Registered 2026-09-21 — what still needs a real Windows, and what only looked like it (J62-17), branch `feat/job62-native-invocation`
+
+**Why this section exists rather than a note under `.shiftwork/`.** `.shiftwork/` is
+gitignored — nothing under it is tracked — so a Windows register written only there is
+deleted with the worktree that holds it. The working notes for this job are at
+`.shiftwork/notes-job62/U17-pwsh-linux.md` (J62-16) and
+`.shiftwork/notes-job62/U17-what-still-needs-windows.md` (this unit); **this section is the
+copy that survives.** Nothing below is fixed by this commit; this is a docs-only unit and it
+changed no behaviour.
+
+**The machine, measured here and not recalled.** `uname`: `Darwin 25.6.0 … arm64`.
+`docker version`: server `29.4.0`, `linux/arm64` — Docker Desktop, which runs **Linux**
+containers only; a Windows container needs a Windows kernel. `command -v` finds none of
+`qemu-system-x86_64`, `qemu-system-aarch64`, `vagrant`, `VBoxManage`, `wine`, `prlctl`, and
+`/Applications` contains no UTM, Parallels, VMware, VirtualBox, CrossOver or Whisky. There is
+no `pwsh` or `powershell` on the host. **So every row marked KERNEL-BOUND below is unreachable
+on this machine by measurement, not by assumption.**
+
+**The cheapest route for every KERNEL-BOUND row is the same one, and it is already built.**
+`.github/workflows/ci.yml` already carries `os: [ubuntu-latest, windows-latest]` on **both**
+jobs — `test` × Python `["3.11","3.12"]` and `node` × Node `["20","22"]`, eight cells,
+`fail-fast: false`, `timeout-minutes: 30`. One push with Actions enabled settles (zz)'s
+neighbourhood, (aaa) and most of (bbb) in a single run. **Actions is OFF because it bills the
+user** (`github-actions-stays-off-it-costs-credit`), and this account is additionally under a
+billing block that refuses every job. So the decision is the user's and it costs money; it is
+not a technical blocker, and no row below should be read as "impossible".
+
+### KERNEL-BOUND — these genuinely need a Windows kernel
+
+**(zz) Windows PowerShell 5.1's write defaults are UNMEASURED, and the docstring that used to
+assert them now says so.** `runtime-py/src/bantamkit/updatecheck.py:275` and its five siblings
+carried, for months, "PowerShell's `Set-Content` and `Out-File` write UTF-8 WITH a BOM by
+default" as the whole justification for reading the update record with `utf-8-sig`. J62-16
+measured it on **PowerShell 7.4.2** (Core, Ubuntu 22.04, `linux/amd64` under emulation) and it
+is **FALSE there**: `Set-Content`, `Out-File`, `>` and `Add-Content` all wrote no BOM, and
+`EF BB BF` appeared only under an explicit `-Encoding utf8BOM`. *What is unknown:* whether the
+sentence is true of **Windows PowerShell 5.1**, which is a different product — .NET Framework,
+Windows-only, the `powershell.exe` an operator gets by default — and is what the original
+sentence was probably reaching for. *The single observation that settles it:* run
+`Set-Content` / `Add-Content` / `Out-File` / `>` / `-Encoding UTF8` under `powershell.exe` 5.1
+and print `[System.IO.File]::ReadAllBytes($p)[0..7]` — **the bytes, never a codec name, and
+never documentation**; the entire reason this item exists is that a documented-sounding
+sentence had never been run. *Why not here:* 5.1 ships only inside Windows and cannot be
+installed on Darwin or in a Linux container; the `mcr.microsoft.com/powershell` manifest's
+`windows/amd64` entry needs a Windows kernel. *Cheapest:* one `powershell.exe` session on any
+Windows machine — it does not need this repo, a build, or CI. **Note the codec itself is not
+at risk:** the property that matters (a record carrying `EF BB BF` lands in the same state on
+both runtimes) is measured and gated by four arms in
+`tools/conformance/suites/updatecheck.mjs`, and both mutation directions redden nine named
+cases. Only the *justifying sentence* is open.
+
+**(aaa) The raw-`writeFileSync` CRLF residue — the one likely real Windows bug in this
+register.** Python writes these files through `Path.write_text` / `open(..., "w")`, where
+CPython's `newline=None` translates `\n` to `\r\n` on Windows; the port writes the same files
+through **raw** `writeFileSync`/`appendFileSync`, which translates nothing. Both runtimes share
+these files on disk. **Line numbers re-verified at `aaf6679` by this unit**, because J62-16's
+own brief cited a line that had moved by 35:
+
+| file | reference | port, raw and untranslated |
+|---|---|---|
+| `~/.claude/settings.json`, MCP config | `hostinstall.py:169` `tmp.write_text(...)` | `hostinstall.ts:168` — the only `writeFileSync` in the file |
+| `~/.bantamkit/update-check.json` | the `selfupdate` writer | `selfupdate.ts:568` |
+| hook ledger / index / jsonl | `hookadapter.py:374, 382, 1410` `open(..., "w")` | `hookadapter.ts:233, 324, 621, 641, 1262, 1331, 1410` — seven sites |
+| shiftwork checkpoint | `shiftwork.py:658` `tmp.write_text(...)` | `shiftwork.ts:811` — uses `pyWriteText`, **correct today** |
+
+*What is unknown:* whether the bytes actually differ, and in which of the three modules.
+*The single observation:* `node tools/conformance/run.mjs --all` on Windows — read which of
+`hostinstall` / `selfupdate` / `hookadapter` redden. *Why not here:* `os.linesep == '\n'` on
+both Darwin and Linux (measured in the container), so neither platform this machine can reach
+can produce the divergence. *Cheapest:* the `node` job of the existing CI matrix, one run.
+*If it reddens,* the fix is the one the memory store already took — route the port through
+`pyfs.pyWriteText` — plus a conformance case per file. **Priced by precedent:** the `store`
+suite's own note records this class as **83 of the 132** Windows conformance failures in CI run
+32646521489, before `pyNewlineOut` was reversed for the memory store.
+
+**This row absorbs M17, and the absorption is the point.** M17 is a surviving mutant whose
+stated mechanism — "on Windows text mode writes CRLF where Node writes LF, into a store both
+runtimes SHARE" — **is dead for the memory store** and the repo says so on every conformance
+run: `runtime-ts/src/memory/pyfs.ts:678` `pyNewlineOut` returns `toCrlf(text)` on `win32`, used
+by `pyWriteText` (686) and `pyAppendText` (703), and `tools/conformance/suites/store.mjs:1085`
+prints that the old premise is dead. Carrying M17 as a row of its own alongside this one would
+double-count a single unknown under two names. It is one unknown, and the table above is its
+addressed form. M17 must **not** be "fixed"; it survives because `os.linesep == '\n'` here, and
+that is a fact about the measuring machine.
+
+**(bbb) The set that no amount of container work reaches.** Registered as one row because they
+share one blocker and one settling run, and each names its own observable: Win32 path semantics
+and drive letters; UNC paths; `ntpath.splitroot` against a path a real Windows kernel produced
+(as opposed to the string fixtures `store.mjs:1410` already compares on every platform); file
+locking — a sharing violation raised when one runtime opens a file the other holds, which POSIX
+simply does not raise; and `chmod` not removing directory-list permission, which is why
+`tools/conformance/suites/instructions.mjs:367` returns `null` on `win32` and line 593 records
+`row 58 skipped on win32`. **Correction to J62-16, which cited `instructions.mjs:363-367`:** the
+guard is at **367**, its note at 365, and there is a **second** win32 skip J62-16 did not name —
+`instructions.mjs:754-755`, `clause (d) skipped on win32: the CLAUDE.md commands are POSIX shell
+lines`. So two fixtures, not one, are green-by-abstention on Windows. *The single observation:*
+the same `--all` run as (aaa), reading the harness's own `note:` lines for how many fixtures
+abstained. *Cheapest:* the same one push.
+
+**(ccc) `docs/memory.md:191-199`'s PowerShell `.gitignore` recipe, Windows half.** The file
+already admits the recipe was never run ("Measured on this machine (macOS, no PowerShell
+installed here)"). Two halves, and only this one is Windows-bound: the recipe is written with a
+backslash path (`Set-Content -Path .bantamkit\.gitignore -Value '*'`), and **5.1's**
+`Set-Content` with no `-Encoding` writes the ANSI codepage, not UTF-8 — so whether the file git
+then reads is the file the recipe intended depends on (zz). *The single observation:* run the
+recipe as written on Windows and check `git status --porcelain --untracked-files=all` shows
+nothing under `.bantamkit`, which is the property the POSIX form was checked against. *Why not
+here:* backslash paths and 5.1. *Cheapest:* the same Windows session as (zz). The other half is
+(fff) and is reachable today.
+
+### NOT WINDOWS — reachable on this machine, and filed here so nobody re-files them as Windows debt
+
+J62-16 found that one claim everybody had filed as Windows-bound (the PowerShell BOM sentence)
+was in fact a `docker run` away. **That mistake is why this section exists.** Each row below is
+reachable now.
+
+**(ddd) `ntpath.splitroot` is a CONTRIBUTOR-floor bug, not a shipped one — and no gate can see
+it.** `tools/conformance/ref/store_ref.py:221` calls `ntpath.splitroot`, added in **3.12**,
+while `runtime-py/pyproject.toml:10` declares `requires-python = ">=3.11"`. J62-16 stated this
+as a flat mismatch; **that overstates it, and the correction was verified by building the
+packages, not by reading the manifest.** `python -m hatchling build` over `runtime-py/`: the
+wheel's top-level entries are `bantamkit/` and `bantamkit-0.35.3.dist-info/`; the sdist's are
+`src/`, `tests/`, `_assets/`, `hatch_build.py`, `pyproject.toml`, `README.md`, `PKG-INFO`.
+`npm pack --dry-run` over `runtime-ts/`: 176 files, top level `dist/`, `assets/`, `package.json`,
+`README.md`, `LICENSE`. **The repository's `tools/` directory is in none of the three** (the
+`assets/tools/*.json` entries that do ship are the tool-schema pack, a different thing), and
+`grep -rn splitroot runtime-py/src` is empty — the only Python caller in the tree is that one
+line under `tools/`. **So a user installing on 3.11 is fine; a contributor on 3.11 has `--all`
+abort at the `store` suite with `store`, `tokenledger`, `updatecheck`, `validate`, `wire` and
+`workplan` silently never running** — six suites' worth of green that was never earned.
+**New here, and the reason this is worse than it reads:** the CI matrix cannot catch it either.
+`ci.yml` runs `pytest` on the 3.11 cells but runs `node tools/conformance/run.mjs --all` only in
+the `node` job, which pins `python-version: "3.12"`. No gate this repository owns is ever
+executed at its own declared floor. *The single observation:* `--all` under 3.11 — already made,
+in J62-16's run A (Debian 12, Python 3.11.2). *Fix:* raise the floor or guard the call; either
+way it is a one-line change plus a decision, and the decision belongs to whoever owns the floor.
+
+**(eee) The "unwritable" arms silently cannot arm as root.** `shiftwork/briefed/trail/clock-in-
+on-an-unwritable-log-then-out` and its sibling failed only in J62-16's root pass: **root ignores
+POSIX permission bits**, so `chmod`-ing a log unwritable does not make it unwritable for uid 0,
+and the arm that exists to observe "it could not write" never arms. Re-run as uid 1000:
+`✔ shiftwork: 1759 cases, 0 differed`. *Why it is registered and not closed:* nothing in the
+suite detects that it is running as root, so in any container-based CI — where root is the
+default — these arms would be **green for the wrong reason**, which is this repository's
+oldest recurring defect shape. *The single observation, available today:* run the suite twice in
+the existing Linux image, once as root and once as uid 1000, and compare. *Fix:* either refuse
+to run those arms as uid 0 with a named `note:`, or drop privileges inside the fixture.
+
+**(fff) The 7.x half of (ccc): "no PowerShell installed here" is now only half true.**
+`docs/memory.md:199` says PowerShell is unavailable on this machine. `pwsh` **7.4.2** is one
+`docker run mcr.microsoft.com/powershell:latest` away and J62-16 used it. A Linux pwsh cannot
+run the recipe *as written* (backslash path), so this does not close (ccc) — but the sentence in
+the doc is now inaccurate about what is reachable, and a POSIX-path variant of the recipe can be
+checked against the same `git status --porcelain` property today. *Caveat worth keeping:*
+`docker manifest inspect` lists only `linux/amd64`, `linux/arm` and `windows/amd64` for that
+image — **there is no `linux/arm64`** — so on this host the container runs emulated. Fine for a
+byte measurement; **not fine for anything timed.**
+
+**(ggg) The hook marker's "the value is never read" property is pinned one layer below where a
+reader would look.** J62-22's fix identifies a hook entry as ours by the **presence** of a
+`bantamkit` key on the inner hook object, deliberately never reading its value, so a later
+release can change the value without orphaning what this one wrote. Mutation testing by the
+orchestrator: reverting `isOurs` to the path-dependent test → **2 conformance failures**;
+dropping the legacy arm → **2**; turning the presence test into a **value** test → **0
+conformance failures, GREEN**, with only 1 per-runtime unit test red on each side. The mutation
+is symmetric *and* produces identical observable output for every entry bantamkit itself writes,
+so the differential layer cannot see it by construction. The property **is** pinned — by
+`runtime-py/tests` and `runtime-ts/test`, not by conformance. Registered so that a later reader
+who checks "is this gated?" by looking at the conformance suite does not conclude it is
+unpinned and delete the unit tests that are actually holding it.
+
+### CLOSED by this job, listed so it is not re-registered
+
+**R1 — `isOurs` path-dependence — CLOSED at `aaf6679`** ("fix(hooks): decide hook ownership from
+the entry, not the install path — J62-22"). It was the highest-value row J62-16 left: from an
+install path not containing the literal `bantamkit`, three `--install-hooks --yes` left
+**twenty-one** entries instead of seven and `--remove-hooks --yes` then answered `no bantamkit
+hooks are installed` on **both** runtimes — entries in a user's `~/.claude/settings.json` that
+neither runtime could ever take back out. Verified closed by this unit at `aaf6679`:
+`hostinstall.ts:598-605` tests `HOOK_MARKER_KEY in hook || isLegacyOurs(hook)` and
+`hostinstall.py:479` carries the matching re-decision. Conformance `hooks` 69 → 81.
+
+<!-- provenance: value=8906 cases, 2523 byte-identical, 3504 exact-string, 2879 structural, 161 ruled-different, 0 failures; commit=aaf6679 plus this commit's working tree; command=node tools/conformance/run.mjs --all -->
+<!-- provenance: value=3205 passed, 57 skipped, 2 deselected, 3 xfailed; commit=aaf6679 plus this commit's working tree; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=tests 1259, pass 1212, fail 0, skipped 47; commit=aaf6679 plus this commit's working tree; command=cd runtime-ts && npm test -->
+<!-- provenance: value=tests 18, pass 18, fail 0; commit=aaf6679 plus this commit's working tree; command=node --test 'tools/hooks/*.test.mjs' -->
+<!-- provenance: value=All checks passed!; commit=aaf6679 plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
