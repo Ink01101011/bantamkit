@@ -1297,3 +1297,21 @@ pointed at the real user file for the read-only `instructions` check:**
 <!-- provenance: value=tests 1277, pass 1230, fail 0, skipped 47; commit=cbd12d9 plus J64-7's doc edits; command=cd runtime-ts && npm test -->
 <!-- provenance: value=tests 18, pass 18, fail 0; commit=cbd12d9 plus J64-7's doc edits; command=node --test 'tools/hooks/*.test.mjs' -->
 <!-- provenance: value=All checks passed!; commit=cbd12d9 plus J64-7's doc edits; command=.venv/bin/ruff check runtime-py tools -->
+
+**Amendment 2026-09-26 (job64, J64-8, re-reviewed by J64-9).** J64-7 returned NOT MERGEABLE on one
+blocker: `runtime-ts/src/hookadapter.ts` tested the injection seen-set with `name in seen`, which
+also matches `Object.prototype` members, and `constructor` is a legal fact name, so Node
+suppressed that fact on the first prompt of a fresh context while Python injected it. CLOSED by
+`4bf71d7`: both seen-set reads use `Object.hasOwn`; `hooks.mjs` `inject-dedupe` (g) holds a store
+with a fact named `constructor`, 2 of 152 red on the old code (J64-8, reproduced by J64-9 on a
+worktree copy). The gate figures above stay as measured at `cbd12d9`; at `4bf71d7`:
+
+<!-- provenance: value=9019 cases, 2533 byte-identical, 3520 exact-string, 2966 structural, 161 ruled-different, 0 failures; commit=4bf71d7; command=node tools/conformance/run.mjs --all -->
+
+**(sss) Node ledger objects are still sensitive to the key `__proto__`.** The `injectedSeen` read
+(own-key since `4bf71d7`, but no case reddens when that hunk is reverted) and the
+`ledger.injected[transcript] = seen` write both key a plain object by `transcript_path` or
+`session_id`. A `__proto__` key would read `Object.prototype` / set the prototype and never
+persist. Unreachable from Claude Code (the key is an absolute path or a UUID; `NAME_RE` rules
+`__proto__` out as a fact name), so it is registered, not fixed: a `Map` or a null-prototype
+object would close it when the file is next touched.
