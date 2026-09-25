@@ -710,6 +710,52 @@ export async function run(ctx) {
       'string',
     );
 
+    // Job64, J64-4: the served `memory_recall` description makes two claims about the surface
+    // — "never fewer than the store default of 3 when that many match" (RB-P1's floor, which
+    // the old sentence "Returns at most k matching facts" contradicted) and "a query that is
+    // exactly a fact's name returns that fact alone" — and both are checked against the
+    // surface here, per side, so the sentence cannot outlive the behaviour. The wording is
+    // pinned as a literal beside them: clause (a)'s sweep only checks that NAMES resolve, and
+    // this sentence names none. Three facts share one word (`osprey`) and nothing else, so
+    // the duplicate gate lets all three in and `k: 1` over the three is the floor's own test.
+    const recallTool = S.tools.memory_recall ?? { description: '', inputSchema: { properties: {} } };
+    push(
+      N('c', 'j64', 'memory_recall-description-wording'),
+      'Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact\'s name returns that fact alone.',
+      recallTool.description ?? '',
+      'string',
+    );
+    push(
+      N('c', 'j64', 'memory_recall-k-description-states-the-floor'),
+      'Facts wanted. Raised to the store default of 3 when smaller; never lowered below it.',
+      recallTool.inputSchema?.properties?.k?.description ?? '',
+      'string',
+    );
+    const floorFacts = [
+      ['floor-probe-a', 'osprey alpha wren'],
+      ['floor-probe-b', 'osprey beta heron'],
+      ['floor-probe-c', 'osprey gamma crane'],
+    ];
+    const sNamed = await session(ctx, side, {
+      name: 'j64-recall-claims',
+      env: S.env,
+      lines: [
+        INIT,
+        INITIALIZED,
+        ...floorFacts.map(([n, d], i) => callTool(2 + i, 'memory_save', { type: 'project', name: n, description: d, body: `BODY-${n}` })),
+        callTool(5, 'memory_recall', { query: 'osprey', k: 1 }),
+        callTool(6, 'memory_recall', { query: 'floor-probe-b' }),
+      ],
+    });
+    const heads = (id) => outcome(sNamed, id).text.match(/^\[project\] \[[^\]]+\]/gm) ?? [];
+    push(
+      N('c', 'j64', 'the-three-probe-facts-were-saved'),
+      floorFacts.map(([n]) => `${n}: saved`),
+      floorFacts.map(([n], i) => `${n}: ${/^saved /.test(outcome(sNamed, 2 + i).text) ? 'saved' : brief(outcome(sNamed, 2 + i).text)}`),
+    );
+    push(N('c', 'j64', 'k-1-over-three-matches-answers-three-as-the-description-says'), 3, heads(5).length);
+    push(N('c', 'j64', 'an-exact-name-answers-that-fact-alone-as-the-description-says'), ['[project] [floor-probe-b]'], heads(6));
+
     // -------------------------------------------------------------- (e) advertised-actionable
     const plan = dictOf(sClock, 20);
     const ready = Array.isArray(plan.ready) ? plan.ready : [];

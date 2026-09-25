@@ -273,14 +273,17 @@ function scenarios() {
       storeSpec('direct'),
       { registration: 'store', root: 'direct' },
       [recall('anything')]],
+    // Spaced, not `nothing-shares-this`: since J64-4 a hyphenated query is in the NAME SHAPE
+    // and a miss on it leads with the "no fact named" line — pinned in its own scenarios
+    // below. "Says only that" is the claim these two make, so they ask with words.
     ['--store: a populated store that misses says only that',
       storeSpec('direct', { 'probe-fact-one': 'a probe fact' }),
       { registration: 'store', root: 'direct' },
-      [recall('nothing-shares-this')]],
+      [recall('nothing shares this')]],
     ['layered: a populated store that misses says only that',
       merge(populated, homeStore),
       { registration: 'layered', start: 'companyB' },
-      [recall('nothing-shares-this')]],
+      [recall('nothing shares this')]],
     ['layered: an empty store that is the start directory\'s own',
       merge(emptyOwn, homeStore),
       { registration: 'layered', start: 'companyA' },
@@ -379,6 +382,42 @@ function scenarios() {
       }), homeStore),
       { registration: 'layered', start: 'companyA', k: 3 },
       [recall('shared', 1)]],
+
+    // ---- the exact-name walk (job64, J64-4) -----------------------------------------
+    // COMMON.md premise 4, the bed J64-0 Q5 measured: three project facts share tokens with
+    // the name of a PROFILE fact, so the word walk spent the budget in the project layer and
+    // never opened the profile. The reply is compared as a string AND the tree as bytes —
+    // the profile fact must stay undated (read-only) and the three project facts untouched.
+    ['layered: an exact name in the profile layer is answered alone, past a full project layer',
+      merge(storeSpec('companyA/.bantamkit/memory', {
+        'local-dev-loop': 'local install of the mcp for development',
+        'mcp-server-notes': 'notes on the bantamkit mcp server',
+        'npx-windows-eperm': 'npx install fails on windows with eperm',
+      }), storeSpec('home/.bantamkit/memory', {
+        'feedback-bantamkit-mcp-local-install-not-npx': 'install the mcp locally, never through npx',
+      })),
+      { registration: 'layered', start: 'companyA' },
+      [recall('feedback-bantamkit-mcp-local-install-not-npx'), recall('  feedback-bantamkit-mcp-local-install-not-npx\n')]],
+    ['layered: an exact name held by both layers answers from the project and dates only that file',
+      merge(storeSpec('companyA/.bantamkit/memory', {
+        'deploy-command': 'how we deploy', 'deploy-notes': 'deploy command notes',
+      }), storeSpec('home/.bantamkit/memory', { 'deploy-command': 'how we deploy' })),
+      { registration: 'layered', start: 'companyA' },
+      [recall('deploy-command')]],
+    ['layered: a name-shaped miss leads with the line, then exactly the word search',
+      merge(storeSpec('companyA/.bantamkit/memory', { deploy: 'a fact about deploys' }), homeStore),
+      { registration: 'layered', start: 'companyA' },
+      [recall('deploy command'), recall('deploy-command'), recall('zzz-nothing-like-this')]],
+    ['layered: a bare word that names a fact is still the word search',
+      merge(storeSpec('companyA/.bantamkit/memory', {
+        deploy: 'a fact about deploys', runbook: 'the deploy runbook',
+      }), homeStore),
+      { registration: 'layered', start: 'companyA' },
+      [recall('deploy')]],
+    ['--store: the exact-name walk runs under the --store form too, untagged',
+      storeSpec('direct', { 'probe-fact-one': 'a probe fact', 'probe-fact-two': 'a probe fact' }),
+      { registration: 'store', root: 'direct' },
+      [recall('probe-fact-two'), recall('probe-fact-nine')]],
 
     // ---- the pin's own refusals, through the component ---------------------------------
     ['layered: a relative pin refuses the whole construction',
@@ -629,6 +668,49 @@ export async function run(ctx) {
     expected: { python: [DESIGNATED_FROM_NOTHING], node: [DESIGNATED_FROM_NOTHING] },
     actual: { python: designated.py, node: designated.node },
   });
+  // ---- THE EXACT-NAME WALK, PINNED PER SIDE (job64, J64-4). Every scenario above is a
+  // differential, and the walk was added to BOTH runtimes in one unit, so deleting it from both
+  // — or from neither, since it did not exist before — leaves every differential green. These
+  // compare each side against text typed into this file, one arm per claim.
+  const NPX = 'feedback-bantamkit-mcp-local-install-not-npx';
+  const pinned = (label, expected) => {
+    const got = answersByLabel.get(label);
+    cases.push({
+      name: `PINNED PER SIDE: ${label}`,
+      kind: 'json',
+      expected: { python: expected, node: expected },
+      actual: { python: got?.py ?? '<no scenario>', node: got?.node ?? '<no scenario>' },
+    });
+  };
+  pinned('layered: an exact name in the profile layer is answered alone, past a full project layer', [
+    `[profile] [${NPX}] (project) install the mcp locally, never through npx\nb`,
+    `[profile] [${NPX}] (project) install the mcp locally, never through npx\nb`,
+  ]);
+  pinned('layered: an exact name held by both layers answers from the project and dates only that file', [
+    '[project] [deploy-command] (project) how we deploy\nb',
+  ]);
+  pinned('layered: a name-shaped miss leads with the line, then exactly the word search', [
+    '[project] [deploy] (project) a fact about deploys\nb',
+    "no fact named 'deploy-command' in any layer bound here; matching by words instead:\n\n" +
+      '[project] [deploy] (project) a fact about deploys\nb',
+    "no fact named 'zzz-nothing-like-this' in any layer bound here; matching by words instead:\n\n" +
+      'no memories matched. Try different words, or proceed without.',
+  ]);
+  pinned('layered: a bare word that names a fact is still the word search', [
+    '[project] [deploy] (project) a fact about deploys\nb\n\n[project] [runbook] (project) the deploy runbook\nb',
+  ]);
+  pinned('--store: the exact-name walk runs under the --store form too, untagged', [
+    '[probe-fact-two] (project) a probe fact\nb',
+    "no fact named 'probe-fact-nine' in any layer bound here; matching by words instead:\n\n" +
+      '[probe-fact-one] (project) a probe fact\nb\n\n[probe-fact-two] (project) a probe fact\nb',
+  ]);
+  // RB-P1's floor, as a literal for the first time: `k: 1` over three matches answers three.
+  // The differential above has held this since job44; a floor removed from BOTH sides would
+  // have left it green (the user ruled 2026-09-25 that the floor stays).
+  pinned('layered: k is raised to the default, never lowered', [
+    '[project] [fact-a] (project) shared token\nb\n\n[project] [fact-b] (project) shared token\nb\n\n' +
+      '[project] [fact-c] (project) shared token\nb',
+  ]);
   const sealedAnswers = answersByLabel.get(
     'layered: the designated root cannot be created, so it is not — and the server still answers',
   );

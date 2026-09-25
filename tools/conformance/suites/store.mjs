@@ -188,6 +188,7 @@ const save = (type, name, description, body, links = []) => ({
   args: [b64(type), b64(name), b64(description), b64(body), links.map(b64)],
 });
 const recall = (query, k = null, stamp = true) => ({ op: 'recall', args: [b64(query), k, stamp] });
+const lookup = (name, stamp = true) => ({ op: 'lookup', args: [b64(name), stamp] });
 const indexText = () => ({ op: 'index_text' });
 
 /** The Node side of one scenario, shaped exactly like `store_ref.py`'s answer. */
@@ -227,6 +228,25 @@ function runNode(store, request) {
             last_recalled: nullable(f.last_recalled),
             created: nullable(f.created),
           })),
+        );
+      } else if (call.op === 'lookup') {
+        // `lookup` (job64, J64-4) answers ONE fact or nothing; the same fact JSON as a
+        // recall hit, so a port that found the right fact but rendered it differently
+        // still differs. `null` is the miss, on both sides.
+        const [name_, stamp] = call.args;
+        const f = s.lookup(unb64(name_), stamp);
+        results.push(
+          f === null
+            ? null
+            : {
+                name: nullable(f.name),
+                description: nullable(f.description),
+                type: nullable(f.type),
+                body: b64(f.body),
+                links: f.links.map((l) => b64(store.pyText(l))),
+                last_recalled: nullable(f.last_recalled),
+                created: nullable(f.created),
+              },
         );
       } else if (call.op === 'index_text') {
         results.push({ index_text: b64(s.indexText()) });
@@ -398,6 +418,14 @@ function scenarios(ctx, real) {
     ]],
     ['recall hits, ordered and stamped', three, {}, [recall('w0a w1a w2a fact', 3, true)]],
     ['recall misses and writes nothing', three, {}, [recall('nothing-shares-this', 3, true)]],
+    // `lookup` (job64, J64-4): the name, not a score. `fact-1` shares every token of its name
+    // with `fact-0` and `fact-2` as a QUERY would score them, and the tree says only
+    // `fact-1.md` was dated; the second call is the miss that must write nothing, and the
+    // third is `stamp: false` over a hit — found, undated.
+    ['lookup answers the named fact alone and stamps only it', three, {}, [lookup('fact-1', true)]],
+    ['lookup misses write nothing, and a name is not a query', three, {}, [
+      lookup('fact', true), lookup('fact 1', true), lookup('fact-1', false), indexText(),
+    ]],
     ['recall without stamping', three, {}, [recall('w0a', 3, false)]],
     ['recall k=1', three, {}, [recall('w0a w1a w2a fact', 1, true)]],
     // Astral names: JS sorts by UTF-16 code unit and Python by codepoint, and they disagree.

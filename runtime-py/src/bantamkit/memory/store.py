@@ -75,6 +75,10 @@ RECALL_MIN_SCORE_RATIO = 0.0
 # interpolated: Python renders `2.0` as `2.0` and JavaScript renders it as `2`, so a
 # sentence carrying the number would be a divergence manufactured by float formatting.
 _MIN_RATIO_RANGE = "recall min-score ratio must be between 0.0 and 1.0"
+# PUBLIC SINCE J64-4, ON BOTH SIDES, for the same reason `tokens` is: `component.Memory` runs
+# the range check itself now, before an exact-name walk reads a file, and it must raise the
+# store's sentence and not a second spelling of it. The private name is kept as an alias.
+MIN_RATIO_RANGE = _MIN_RATIO_RANGE
 
 # The index is loaded into the prompt every session, so this is a context bill, not a
 # disk limit. It was 4096 and that number was never measured against a real store.
@@ -613,6 +617,36 @@ class MemoryStore:
             for fact in hits:
                 self._stamp(fact)
         return hits
+
+    def lookup(self, name: str, stamp: bool = True) -> Fact | None:
+        """The fact whose `name` field is exactly `name`, or `None`; no scoring, no ranking.
+
+        WHY THIS EXISTS (job64, J64-4): `component.Memory` walks the layers looking for a
+        fact the model asked for BY NAME, and `recall` cannot answer that question. It
+        scores by token overlap, so the named fact ties with any fact whose name and
+        description happen to contain the same words, the tie is broken by name, and
+        every hit inside `k` is stamped — there is no `k` that returns "the one named X
+        and dates only that one". A caller reaching for `_facts`/`_stamp` instead would be
+        the private-name crossing the `tokens` docstring above spends a paragraph refusing.
+
+        The comparison is `==` against the `name` field as `_facts` resolved it, not against
+        the file name: a hand-edited `name:` that no longer matches its path is found by
+        what it SAYS it is, which is what `recall` and the index line already go by. Two
+        files claiming one name answer the first in `_fact_paths` order, the same order
+        `recall` breaks a tie in. A non-string `name` (`name: 7`) never equals a string, so
+        it is never an exact hit; the port compares with `===` for the same reason.
+
+        `stamp` dates the hit through `_stamp`, exactly as `recall` dates its hits, snapshot
+        semantics included; nothing else on disk is touched, and a miss writes nothing.
+        An unreadable store raises out of `_facts` here as it does out of `recall`, and
+        `component.Memory` treats the two the same way per layer.
+        """
+        for fact in self._snapshot if self._snapshot is not None else self._facts():
+            if fact.name == name:
+                if stamp:
+                    self._stamp(fact)
+                return fact
+        return None
 
     def lint(self) -> None:
         """Every fact parses and carries a valid type, and the index fits its budget.

@@ -89,6 +89,33 @@ def test_recall_no_match_returns_empty(store):
     assert store.recall("quantum flowers") == []
 
 
+def test_lookup_answers_the_named_fact_alone_and_stamps_only_it(store):
+    """`lookup` (job64, J64-4) is the primitive `recall` cannot be: a name, not a score.
+
+    `deploy-command` and `deploy-notes` share every token of the query with each other, so
+    `recall` would return both (tied, name order) and stamp both; `lookup` returns the one
+    named and dates the one named."""
+    store.save("project", "deploy-command", "how we deploy to prod", "make ship-prod")
+    store.save("project", "deploy-notes", "deploy command prod notes", "the notes")
+    fact = store.lookup("deploy-command")
+    assert fact is not None and (fact.name, fact.body) == ("deploy-command", "make ship-prod")
+    facts = store.root / "facts"
+    named = (facts / "deploy-command.md").read_text(encoding="utf-8")
+    assert "last_recalled: '2026-08-06'" in named
+    assert "last_recalled: null" in (facts / "deploy-notes.md").read_text(encoding="utf-8")
+
+
+def test_lookup_misses_write_nothing_and_never_score(store):
+    store.save("project", "deploy-command", "how we deploy to prod", "x")
+    before = (store.root / "facts" / "deploy-command.md").read_bytes()
+    # Every token of the name is in the query, which is a top score for `recall` — and
+    # nothing at all for a name lookup.
+    assert store.lookup("deploy command") is None
+    assert store.lookup("deploy") is None
+    assert store.lookup("deploy-command", stamp=False) is not None
+    assert (store.root / "facts" / "deploy-command.md").read_bytes() == before
+
+
 def test_lint_passes_under_budget_and_fails_over(tmp_path):
     store = MemoryStore(tmp_path / "mem", index_budget=100, today=lambda: "2026-08-06")
     store.lint()  # empty store is fine

@@ -471,6 +471,147 @@ test('a layered recall stamps the project layer by default, and not when told no
   });
 });
 
+// ---------------------------------------------------- the exact-name walk (job64, J64-4)
+//
+// COMMON.md premise 4, measured 2026-09-25: a `memory_recall` whose query was exactly the name
+// of a PROFILE fact came back with three PROJECT facts, because the project layer's fuzzy hits
+// filled the budget and `recallOutcome` broke out of the loop before the profile layer was
+// read. The bed below is that shape. Every literal here was measured out of the reference
+// first (`test_memory_component.py`, the same names).
+
+const NPX = 'feedback-bantamkit-mcp-local-install-not-npx';
+
+function shadowedBed() {
+  const bed = fresh();
+  const home = join(bed, 'home');
+  const project = join(bed, 'companyA');
+  const store = mkstore(join(project, '.bantamkit', 'memory'), {
+    'local-dev-loop': 'local install of the mcp for development',
+    'mcp-server-notes': 'notes on the bantamkit mcp server',
+    'npx-windows-eperm': 'npx install fails on windows with eperm',
+  });
+  const profile = mkstore(join(home, '.bantamkit', 'memory'), { [NPX]: 'install the mcp locally, never through npx' });
+  return { home, project, store, profile };
+}
+
+test('a query that is a profile fact name is answered alone past a full project layer', () => {
+  const { home, project, store, profile } = shadowedBed();
+  const untouched = Object.fromEntries(readdirSync(join(store, 'facts')).map((f) => [f, readFileSync(join(store, 'facts', f), 'utf8')]));
+  const profileBefore = readFileSync(join(profile, 'facts', `${NPX}.md`), 'utf8');
+  sandboxed(home, () => {
+    const out = Memory.layered(project, frozen()).recallOutcome(NPX);
+    assert.equal(out.reply, `[profile] [${NPX}] (project) install the mcp locally, never through npx\nb`);
+    assert.deepEqual([out.status, out.lookup, out.returned, out.reached, out.source], ['answered', 'hit', 1, 2, 'profile']);
+    // The project layer WAS read (reached 2, candidates count it) and nothing in it was
+    // stamped: an exact hit dates the fact named, and only in a writable layer.
+    assert.equal(out.candidates, 4);
+  });
+  assert.deepEqual(Object.fromEntries(readdirSync(join(store, 'facts')).map((f) => [f, readFileSync(join(store, 'facts', f), 'utf8')])), untouched);
+  assert.equal(readFileSync(join(profile, 'facts', `${NPX}.md`), 'utf8'), profileBefore);
+});
+
+test('the same name padded with whitespace is still the name', () => {
+  const { home, project } = shadowedBed();
+  sandboxed(home, () => {
+    const mem = Memory.layered(project, frozen());
+    assert.equal(mem.recallOutcome(`  ${NPX}\n`).reply, mem.recallOutcome(NPX).reply);
+    assert.equal(mem.recallOutcome(`  ${NPX}\n`).lookup, 'hit');
+  });
+});
+
+test('an exact hit in the project layer stops the walk and stamps only that fact', () => {
+  // Precedence is unchanged: when both layers hold the name, the project copy answers, the
+  // profile copy is never read, and `stamp = false` (the hook's flag) still writes nothing.
+  const bed = fresh();
+  const home = join(bed, 'home');
+  const project = join(bed, 'companyA');
+  const store = mkstore(join(project, '.bantamkit', 'memory'), {
+    'deploy-command': 'a fact about deploys',
+    'deploy-notes': 'deploy command notes',
+  });
+  const profile = mkstore(join(home, '.bantamkit', 'memory'), { 'deploy-command': 'a fact about deploys' });
+  const path = join(store, 'facts', 'deploy-command.md');
+  const before = readFileSync(path, 'utf8');
+  sandboxed(home, () => {
+    const quiet = Memory.layered(project, frozen()).recallOutcome('deploy-command', null, RECALL_MIN_SCORE_RATIO, false);
+    assert.equal(quiet.reply, '[project] [deploy-command] (project) a fact about deploys\nb');
+    assert.deepEqual([quiet.lookup, quiet.reached, quiet.returned], ['hit', 1, 1]);
+    assert.equal(readFileSync(path, 'utf8'), before);
+
+    const loud = Memory.layered(project, frozen()).recallOutcome('deploy-command');
+    assert.equal(loud.reply, quiet.reply);
+  });
+  assert.match(readFileSync(path, 'utf8'), new RegExp(`^last_recalled: '${TODAY}'$`, 'm'));
+  assert.match(readFileSync(join(store, 'facts', 'deploy-notes.md'), 'utf8'), /^last_recalled: null$/m);
+  assert.match(readFileSync(join(profile, 'facts', 'deploy-command.md'), 'utf8'), /^last_recalled: null$/m);
+});
+
+test('a name-shaped query nobody holds says so in one leading line, then the ordinary reply', () => {
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkdirSync(home);
+  const project = join(bed, 'companyA');
+  mkstore(join(project, '.bantamkit', 'memory'), { deploy: 'a fact about deploys' });
+  sandboxed(home, () => {
+    const mem = Memory.layered(project, frozen());
+    const ordinary = mem.recallOutcome('deploy command'); // spaced: never enters the name walk
+    assert.equal(ordinary.lookup, null);
+    const named = mem.recallOutcome('deploy-command');
+    assert.equal(named.lookup, 'miss');
+    assert.equal(
+      named.reply,
+      `no fact named 'deploy-command' in any layer bound here; matching by words instead:\n\n${ordinary.reply}`,
+    );
+    assert.deepEqual([named.status, named.returned, named.reached], [ordinary.status, ordinary.returned, ordinary.reached]);
+
+    const empty = mem.recallOutcome('zzz-nothing-like-this');
+    assert.equal(
+      empty.reply,
+      "no fact named 'zzz-nothing-like-this' in any layer bound here; matching by words instead:\n\n" +
+        'no memories matched. Try different words, or proceed without.',
+    );
+    assert.deepEqual([empty.status, empty.lookup], ['empty-no-match', 'miss']);
+  });
+});
+
+test('a bare word is the ordinary walk even when a fact is named by it', () => {
+  // `deploy` is `NAME_RE`-valid but carries no hyphen, so it is NOT in the name shape: a
+  // single word is a word anyone might search, and the layered dedupe test above has always
+  // pinned that a bare word naming a fact in two layers still returns the merged word
+  // matches. Here: the word search returns two facts; no exact hit, no miss line.
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkdirSync(home);
+  const project = join(bed, 'companyA');
+  mkstore(join(project, '.bantamkit', 'memory'), { deploy: 'a fact about deploys', runbook: 'the deploy runbook' });
+  sandboxed(home, () => {
+    const out = Memory.layered(project, frozen()).recallOutcome('deploy');
+    assert.equal(
+      out.reply,
+      '[project] [deploy] (project) a fact about deploys\nb\n\n[project] [runbook] (project) the deploy runbook\nb',
+    );
+    assert.deepEqual([out.lookup, out.returned], [null, 2]);
+  });
+});
+
+test('a bad ratio is refused before the name walk reads a file', () => {
+  // An exact hit must not swallow a caller's bug: the range check runs first, with the
+  // store's own sentence, and the named fact is left undated.
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkdirSync(home);
+  const project = join(bed, 'companyA');
+  const store = mkstore(join(project, '.bantamkit', 'memory'), { 'deploy-command': 'a fact about deploys' });
+  const before = readFileSync(join(store, 'facts', 'deploy-command.md'), 'utf8');
+  sandboxed(home, () => {
+    assert.throws(
+      () => Memory.layered(project, frozen()).recallOutcome('deploy-command', null, 1.5),
+      (e) => e instanceof MemoryValidationError && e.message === 'recall min-score ratio must be between 0.0 and 1.0',
+    );
+  });
+  assert.equal(readFileSync(join(store, 'facts', 'deploy-command.md'), 'utf8'), before);
+});
+
 // ---------------------------------------------------- one directory is one layer (J47-2)
 //
 // The Node twin of `test_memory_dream.py`'s two nodes of the same name, landed for the
@@ -568,8 +709,11 @@ test('a populated store that misses says so, and makes no claim about the bindin
   const project = join(bed, 'p');
   mkstore(join(project, '.bantamkit', 'memory'), { a: 'a description' });
   sandboxed(home, () => {
+    // Spaced, not `nothing-shares-this`: since J64-4 a hyphenated query is in the NAME SHAPE
+    // and a miss on it leads with the "no fact named" line (pinned in its own test above).
+    // The verdict this test pins is the one a plain miss still says alone.
     assert.equal(
-      Memory.layered(project, frozen()).recall('nothing-shares-this'),
+      Memory.layered(project, frozen()).recall('nothing shares this'),
       'no memories matched. Try different words, or proceed without.',
     );
   });

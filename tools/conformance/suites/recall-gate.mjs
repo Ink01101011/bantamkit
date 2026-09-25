@@ -519,6 +519,15 @@ export async function run(ctx) {
       'layered: a ratio outside the range surfaces out of the writable project layer',
       [call('nan', { k: 5 })],
     ],
+    // job64, J64-4: `top-fact` is in the NAME SHAPE and IS a fact in the project layer, so
+    // the exact-name walk would answer it alone — and must not, over a bad ratio. The range
+    // check runs in the component BEFORE the walk reads a file; the trees case beside this
+    // says `top-fact.md` stayed undated on both sides, which a walk that ran first and stamped
+    // its hit before raising would break.
+    [
+      'layered: a bad ratio is refused before the exact-name walk reads a file',
+      [call('nan', { query: 'top-fact', k: 5 })],
+    ],
   ];
   const layeredSpec = merge(
     storeSpec('project/.bantamkit/memory', {
@@ -602,6 +611,19 @@ export async function run(ctx) {
       names('node', 'THE RELATIVE GATE: a uniformly weak field at 1.0 returns ALL of it'),
       'LITERAL: the gate is relative, so 1.0 over a uniform field suppresses nothing',
       ['weak-a', 'weak-b', 'weak-c'],
+    ),
+  );
+  // job64, J64-4: the refusal over an exact-name query, per side. A component that ran the
+  // name walk first would answer `[project] [top-fact] ...` here on both sides and the
+  // differential above would stay green.
+  const guarded = layeredAnswers['layered: a bad ratio is refused before the exact-name walk reads a file'];
+  cases.push(
+    ...literalCases(
+      guarded.py[0],
+      guarded.node[0],
+      'LITERAL: an exact-name query over a bad ratio is refused, not answered',
+      'MemoryValidationError: recall min-score ratio must be between 0.0 and 1.0',
+      'string',
     ),
   );
 

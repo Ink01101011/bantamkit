@@ -309,6 +309,17 @@ fact nobody has recalled yet.
 name and description; this is why the skill insists descriptions be written to
 match the future query.
 
+#### lookup (job64, J64-4)
+
+`MemoryStore.lookup(name, stamp=True)` / `lookup(name, stamp = true)` is the
+store's other read: the fact whose `name` field is exactly `name`, or nothing —
+no scoring, no ranking, and only the fact named is stamped. It exists because
+`recall` cannot answer "the one called X": the named fact ties on score with any
+fact whose words it shares, the tie breaks by name, and every hit inside `k` is
+dated. The layered component's exact-name walk (see *Recall across layers*) is
+its caller; nothing on the tool surface exposes it directly. Pinned per runtime
+in `tools/conformance/suites/store.mjs` (`lookup` op, answer and whole tree).
+
 #### The precision gate (`min_ratio` / `minRatio`) — roadmap #6
 
 `recall` takes a fourth argument in both runtimes: keep a fact only if its score
@@ -1121,7 +1132,24 @@ Every layer is queried with the **full** budget, and the results are merged in
 order — project, then extras in config order, then profile — deduped by fact
 name, with the earlier layer winning. The merged result is at most `k` facts
 total, so a project store that already answers the query spends the budget and
-the later layers are never even read.
+the later layers are never even read — **unless the query is a fact's name.**
+
+**Amendment 2026-09-25 (job64, J64-4): an exact name is looked up in every
+layer before any scoring.** The sentence above described the design as built,
+and it had a measured cost: 4 of 28 `memory_recall` calls on this machine whose
+query was exactly a fact name came back with other facts, one of them because
+the name lived in the profile layer and the project layer's word matches had
+already spent the budget. Now a query that, after trimming, is a legal fact name
+*and carries a hyphen* (`deploy-command`, not `deploy` — a bare word is a word
+search even when a fact happens to be named by it) is first asked of every
+layer by name, in precedence order. The first layer that holds it answers with
+**that fact alone**, stamped only if the layer is writable, and no later layer
+is read. If no layer holds the name, the reply leads with one line —
+`no fact named 'deploy-command' in any layer bound here; matching by words
+instead:` — followed, byte for byte, by what the word search would have said on
+its own. Every other query, including the `k` floor (RB-P1), is unchanged.
+Pinned per runtime in `tools/conformance/suites/recall-strings.mjs` and
+`recall-gate.mjs`.
 
 Results carry their origin: `[project] [deploy-command] (project) how we deploy
 …`. A plain `Memory(store=...)` prints no prefixes at all — the v1 output

@@ -343,6 +343,152 @@ def test_layered_recall_stamps_the_project_layer_by_default_and_not_when_told_no
     assert b"last_recalled: '" in path.read_bytes()
 
 
+# ---- the exact-name walk (job64, J64-4) -------------------------------------------------
+#
+# COMMON.md premise 4, measured 2026-09-25: a `memory_recall` whose query was exactly the
+# name of a PROFILE fact came back with three PROJECT facts, because the project layer's
+# fuzzy hits filled the budget and `recall_outcome` broke out of the loop before the profile
+# layer was read. The bed below is that shape: three project facts share tokens with the name,
+# and the fact itself lives one layer down.
+
+_NPX = "feedback-bantamkit-mcp-local-install-not-npx"
+
+
+def _shadowed_bed(tmp_path, fake_home):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "local-dev-loop", "b", description="local install of the mcp for development")
+    _seed(store, "mcp-server-notes", "b", description="notes on the bantamkit mcp server")
+    _seed(store, "npx-windows-eperm", "b", description="npx install fails on windows with eperm")
+    profile = fake_home / ".bantamkit" / "memory"
+    _seed(profile, _NPX, "the body", description="install the mcp locally, never through npx")
+    return project, store, profile
+
+
+def test_a_query_that_is_a_profile_fact_name_is_answered_alone_past_a_full_project_layer(
+    tmp_path, fake_home
+):
+    project, store, profile = _shadowed_bed(tmp_path, fake_home)
+    untouched = {p: p.read_bytes() for p in (store / "facts").iterdir()}
+    profile_before = (profile / "facts" / f"{_NPX}.md").read_bytes()
+
+    out = Memory.layered(start=project).recall_outcome(_NPX)
+
+    assert out.reply == (
+        f"[profile] [{_NPX}] (project) install the mcp locally, never through npx\nthe body"
+    )
+    assert (out.status, out.lookup, out.returned, out.reached, out.source) == (
+        "answered", "hit", 1, 2, "profile"
+    )
+    # The project layer WAS read (reached 2, candidates count it) and nothing in it was
+    # stamped: an exact hit dates the fact named, and only in a writable layer.
+    assert out.candidates == 4
+    assert {p: p.read_bytes() for p in (store / "facts").iterdir()} == untouched
+    assert (profile / "facts" / f"{_NPX}.md").read_bytes() == profile_before
+
+
+def test_the_same_name_padded_with_whitespace_is_still_the_name(tmp_path, fake_home):
+    project, _store, _profile = _shadowed_bed(tmp_path, fake_home)
+    mem = Memory.layered(start=project)
+    assert mem.recall_outcome(f"  {_NPX}\n").reply == mem.recall_outcome(_NPX).reply
+    assert mem.recall_outcome(f"  {_NPX}\n").lookup == "hit"
+
+
+def test_an_exact_hit_in_the_project_layer_stops_the_walk_and_stamps_only_that_fact(
+    tmp_path, fake_home
+):
+    """Precedence is unchanged: when both layers hold the name, the project copy answers,
+    the profile copy is never read, and `stamp=False` (the hook's flag) still writes nothing."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "deploy-command", "project truth")
+    _seed(store, "deploy-notes", "other", description="deploy command notes")
+    profile = fake_home / ".bantamkit" / "memory"
+    _seed(profile, "deploy-command", "profile stale")
+    path = store / "facts" / "deploy-command.md"
+    before = path.read_bytes()
+
+    quiet = Memory.layered(start=project).recall_outcome("deploy-command", stamp=False)
+    assert quiet.reply == "[project] [deploy-command] (project) a fact about deploys\nproject truth"
+    assert (quiet.lookup, quiet.reached, quiet.returned) == ("hit", 1, 1)
+    assert path.read_bytes() == before
+
+    loud = Memory.layered(start=project).recall_outcome("deploy-command")
+    assert loud.reply == quiet.reply
+    assert b"last_recalled: '" in path.read_bytes()
+    assert b"last_recalled: null" in (store / "facts" / "deploy-notes.md").read_bytes()
+    assert b"last_recalled: null" in (profile / "facts" / "deploy-command.md").read_bytes()
+
+
+def test_a_name_shaped_query_nobody_holds_says_so_in_one_leading_line(tmp_path, fake_home):
+    """The line is followed by EXACTLY the reply the ordinary walk gives — a hit here, one of
+    the empty verdicts in the test below — so the ordinary walk is pinned as a suffix."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
+    mem = Memory.layered(start=project)
+
+    ordinary = mem.recall_outcome("deploy command")  # spaced: never enters the name walk
+    assert ordinary.lookup is None
+    named = mem.recall_outcome("deploy-command")
+    assert named.lookup == "miss"
+    assert named.reply == (
+        "no fact named 'deploy-command' in any layer bound here; matching by words instead:"
+        "\n\n" + ordinary.reply
+    )
+    assert (named.status, named.returned, named.reached) == (
+        ordinary.status, ordinary.returned, ordinary.reached
+    )
+
+
+def test_a_name_shaped_query_over_a_store_that_misses_leads_with_the_line_then_the_verdict(
+    tmp_path, fake_home
+):
+    project = tmp_path / "companyA"
+    project.mkdir()
+    _seed(project / ".bantamkit" / "memory", "deploy", "project truth")
+    out = Memory.layered(start=project).recall_outcome("zzz-nothing-like-this")
+    assert out.reply == (
+        "no fact named 'zzz-nothing-like-this' in any layer bound here; matching by words "
+        "instead:\n\nno memories matched. Try different words, or proceed without."
+    )
+    assert (out.status, out.lookup) == ("empty-no-match", "miss")
+
+
+def test_a_bare_word_is_the_ordinary_walk_even_when_a_fact_is_named_by_it(tmp_path, fake_home):
+    """`deploy` is `NAME_RE`-valid but carries no hyphen, so it is NOT in the name shape: a
+    single word is a word anyone might search, and the layered dedupe test above
+    (`test_layered_project_wins_on_duplicate_name_and_prefixes_layers`) has always pinned
+    that a bare word naming a fact in two layers still returns the merged word matches.
+    Here: the word search returns two facts; no exact hit, no miss line."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "deploy", "project truth")
+    _seed(store, "runbook", "other", description="the deploy runbook")
+    out = Memory.layered(start=project).recall_outcome("deploy")
+    assert out.reply == (
+        "[project] [deploy] (project) a fact about deploys\nproject truth\n\n"
+        "[project] [runbook] (project) the deploy runbook\nother"
+    )
+    assert (out.lookup, out.returned) == (None, 2)
+
+
+def test_a_bad_ratio_is_refused_before_the_name_walk_reads_a_file(tmp_path, fake_home):
+    """An exact hit must not swallow a caller's bug: the range check runs first, with the
+    store's own sentence, and the named fact is left undated."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "deploy-command", "project truth")
+    before = (store / "facts" / "deploy-command.md").read_bytes()
+    with pytest.raises(MemoryValidationError, match="^recall min-score ratio must be between"):
+        Memory.layered(start=project).recall_outcome("deploy-command", min_ratio=1.5)
+    assert (store / "facts" / "deploy-command.md").read_bytes() == before
+
+
 def test_layered_corrupt_grant_does_not_break_project_recall(tmp_path, fake_home):
     project = tmp_path / "companyA"
     project.mkdir()

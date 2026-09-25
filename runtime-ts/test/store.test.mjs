@@ -364,6 +364,35 @@ test('recall with stamp=false writes nothing', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('lookup answers the named fact alone and stamps only it (job64, J64-4)', () => {
+  // `deploy-command` and `deploy-notes` share every token of the query with each other, so
+  // `recall` would return both (tied, name order) and stamp both; `lookup` returns the one
+  // named and dates the one named.
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'deploy-command', 'how we deploy to prod', 'make ship-prod');
+  s.save('project', 'deploy-notes', 'deploy command prod notes', 'the notes');
+  const fact = s.lookup('deploy-command');
+  assert.deepEqual([fact?.name, fact?.body], ['deploy-command', 'make ship-prod']);
+  assert.match(text(join(root, 'facts', 'deploy-command.md')), /last_recalled: '2026-08-23'/);
+  assert.match(text(join(root, 'facts', 'deploy-notes.md')), /last_recalled: null/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('lookup misses write nothing and never score', () => {
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'deploy-command', 'how we deploy to prod', 'x');
+  const before = bytes(join(root, 'facts', 'deploy-command.md'));
+  // Every token of the name is in the query, which is a top score for `recall` — and
+  // nothing at all for a name lookup.
+  assert.equal(s.lookup('deploy command'), null);
+  assert.equal(s.lookup('deploy'), null);
+  assert.notEqual(s.lookup('deploy-command', false), null);
+  assert.deepEqual(bytes(join(root, 'facts', 'deploy-command.md')), before);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('the name tie-break is by CODEPOINT, which is not what String.sort does', () => {
   // JS compares UTF-16 code units, Python compares codepoints, and they disagree the
   // moment a name is astral: `sort()` puts U+1F414 before U+FF01, Python puts it after.
