@@ -1124,3 +1124,176 @@ pre-mutation `shasum`, `dist/` rebuilt, `git diff` on runtime source empty.
 <!-- provenance: value=tests 1259, pass 1212, fail 0, skipped 47; commit=b3374ae plus this commit's working tree; command=cd runtime-ts && npm test -->
 <!-- provenance: value=tests 18, pass 18, fail 0; commit=b3374ae plus this commit's working tree; command=node --test 'tools/hooks/*.test.mjs' -->
 <!-- provenance: value=All checks passed!; commit=b3374ae plus this commit's working tree; command=.venv/bin/ruff check runtime-py tools -->
+
+## Registered 2026-09-26 — the closing review of job64, recall hygiene (J64-7), branch `feat/job64-recall-hygiene`
+
+**Why this section exists rather than a note under `.shiftwork/`.** The unit notes are
+`.shiftwork/notes-job64/J64-{0,1,2,3,4,6,7}.md`, and `.shiftwork/` is gitignored, so they are
+deleted with the tree that holds them. The pointers below name those notes for whoever still
+has them; every number a row depends on is restated here, because **this section is the copy
+that survives.**
+
+**What moved, and what is owed.** `git diff --stat c3e3c63 -- runtime-py/src runtime-ts/src
+assets` is not empty: `hookadapter.py`, `memory/component.py`, `memory/store.py`,
+`hookadapter.ts`, `memory/component.ts`, `memory/store.ts` and `assets/tools/memory_recall.json`
+all changed, in both runtimes, in every unit. **A release of both packages is owed** (a job ends
+when it is live on npm and PyPI, not when it merges), and the served `memory_recall`
+description changed, so the published artifact must be run and its `tools/list` read, not
+inferred.
+
+### CLOSED by this job, listed so it is not re-registered
+
+These four were measured on 2026-09-25 over a snapshot of `~/.claude/projects` and
+`~/.bantamkit/hooks/hook-log.jsonl` for 19–25 Sep (job64's COMMON brief), none had a row, and
+each is closed here by one commit that changed both runtimes and added its conformance case.
+
+**(J64-1) An automatic injection counted as a recall — CLOSED at `e43fe8e`** ("memory: an
+automatic injection no longer counts as a recall"). It was: the `UserPromptSubmit` arm called
+the layered recall with stamping on, so every prompt dated up to three facts' `last_recalled`
+and moved their mtime — 25 of 42 facts in one store read "recalled today", and compaction's
+stalest-first, the SessionStart drop rule and the Stop dream's fingerprint all read injection
+traffic. What closed it: `Memory.recall_outcome(..., *, stamp=True)` / `recallOutcome(query, k,
+minRatio, stamp = true)`, and the hook alone passes `False`; the MCP tool, the CLI and
+`Memory.recall` still stamp. Pinned by `hooks.mjs` block `inject-no-stamp` (12 cases, per-side
+`factsDiff` literals over sha256 + mtime_ns + the `last_recalled:` line) and a new per-side
+`memory_recall stamps` literal in `wire.mjs` (3 cases), which is the first thing that pinned the
+TOOL's stamp at all. Verified by this review on a worktree copy: hook stamping restored on both
+sides → `--suite hooks` **4 failures** (the four per-side literals; every differential green),
+pytest 1 failed, node 1 failed; both MCP handlers made not to stamp → `--suite wire` **2
+failures**. Both equal what J64-1 reported.
+
+**(J64-2) 56 % of injections repeated a fact the same context had already been shown — CLOSED
+at `55dffea`** ("hooks: a fact the context has already been shown is not injected again").
+It was: 333 of 598 fact-injections in the window repeated a name injected earlier in the same
+session. What closed it: a per-context seen-set in the session ledger (`injected[<transcript
+or session>][<name>]`), consulted before emitting; seen headers are DROPPED, never refilled
+from rank 4 (RB-P1's `k` floor untouched); a fully-seen pick emits nothing and logs `action:
+"suppress"`; `hits == injected + dropped + suppressed` on every record; reset on `PostCompact`,
+`SessionStart compact` (ledger unlink) and `SessionStart clear` (the `injected` key only).
+Pinned by `hooks.mjs` block `inject-dedupe` (23 cases). Verified by this review: seen-set
+replaced by `{}` on both sides → `--suite hooks` **10 failures**, pytest 5, node 5; the `clear`
+reset removed on both → **4**, 1, 1. Both equal J64-2's figures.
+**Merge was withheld at review for one defect in this unit:** the Node check
+`if (name in seen)` (`hookadapter.ts:1184`) walks `Object.prototype`, so a fact named
+`constructor` — a legal fact name — is suppressed on the first prompt of every context by the
+port and injected by the reference. Measured by a two-sided probe over one store. It is not a
+register row because it must not merge open; the fix commit names it.
+
+**(J64-3) The Stop dream preview re-ran on every recall — CLOSED at `dbbc90b`** ("hooks: the
+dream preview reruns only when a fact's content changed"). It was: the store fingerprint hashed
+`name + size + mtimeMs`, and a recall rewrites `last_recalled` and the mtime, so 103 of 236
+previews in the window reported the identical `wouldMerge 14 / wouldConsume 14`. What closed
+it: the fingerprint is `name + sha256(file bytes minus the frontmatter's last_recalled: line)`
+on both sides — the two runtimes now print the same hex for one store. Cost measured by J64-3:
+in-process 0.23 → 1.33 ms (py) and 0.21 → 1.34 ms (node) on 80 facts; whole-hook skip 389 ms
+py / 91 ms node, unchanged within noise. Pinned by `hooks.mjs` block `dream-fingerprint` (7
+cases). Verified by this review: fingerprint put back to size + mtime on both sides →
+`--suite hooks` **4 failures**, pytest 2, node 1 (J64-3's figures); and a mutation J64-3 did not
+run — the `last_recalled:` mask removed, no stat field restored — reddens the same 4 per-side
+literals, pytest 2, node 1.
+
+**(J64-4) A query that WAS a fact's name returned other facts, and the tool description
+promised "at most k" — CLOSED at `cbd12d9`** ("memory: a query that is a fact's name returns
+that fact, and the recall description tells the truth"). It was: 4 of 28 `memory_recall`
+calls whose query was exactly a fact name came back with other facts; one name lived in the
+profile layer and was never read because the project layer's word matches spent the budget;
+and the description said "Returns at most k matching facts" while RB-P1's floor (ruled to stay,
+2026-09-25) raises any `k` below 3 to 3. What closed it: a query that, trimmed, is a legal fact
+name carrying a hyphen is looked up by name in every layer first (a new public store primitive
+`MemoryStore.lookup(name, stamp)` on both sides); the first layer holding it answers with that
+fact alone; a miss prefixes one line and then the word search's reply byte for byte; bare words
+and every other query are unchanged. The description and a new `k` description say what the
+floor does. Pinned by `recall-strings.mjs` (+20), `recall-gate.mjs` (+4), `store.mjs` (+4,
+differential only), `instructions.mjs` (+10). Verified by this review, both sides mutated each
+time: the name walk removed → `recall-strings` **4**, `instructions` 2, pytest 5, node 4; the
+`k` floor removed → `recall-strings` **1** (a per-side floor literal new in this job — the floor
+was invisible to the suite before), `instructions` 2, pytest 2, node 1; `lookup` answering
+`recall`'s top hit → `recall-strings` 3, pytest 3, node 3, and `store` **0** (differential
+only); the description reverted → `instructions` 2 and the served-surface golden. All equal
+J64-4's figures. Scope ruling: the new public store primitive outside J64-4's file list is
+ACCEPTED — no public store call answered "the fact named X, stamp only it", and reaching the
+private `_facts`/`facts()` would be the layer crossing the store's docstrings refuse.
+
+### OPEN — J64-6's three proposals (measure-and-propose only, by the user's ruling of 2026-09-25)
+
+**(lll) Profile-store scoping: repo-specific facts ride in every repo's SessionStart, and a
+repo with no store saves into the profile.** Proposal A of `.shiftwork/notes-job64/J64-6.md`
+(§A.1–A.6). Measured there: the profile store holds 26 facts whose index is 5,144 B against the
+3,000 B SessionStart cap, so every session injects 15 and drops 11. Three bantamkit-only facts
+(`feedback-worktree-pytest-tests-mains-source`, `merge-authorized-standing-tag-withheld`,
+`recall-before-declaring-a-target-refuted`) were injected into OTHER repos' sessions for
+28,875 B over 256 reconstructed sessions (3.0 % of all SessionStart bytes; 40,400 B / 7.2 %
+counting the borderline `feedback-must-run-on-windows-not-just-macos`), and four
+startbiz-api facts were never injected anywhere. ROOT CAUSE: `discover_project_store` walks up
+from the cwd and `~` is an ancestor of every repo, so a repo with no `.bantamkit/memory` binds
+`~/.bantamkit/memory` as its PROJECT store and `memory_save` writes there. **Recommendation, for
+the user to accept or reject in one line:** archive the three bantamkit-only profile copies
+(project copies already exist; `merge-authorized` differs, the project copy is newer), create a
+startbiz-api store and move its four facts in (commands in §A.5, not run), and file "the walk
+must never treat `~` as a project root" as a code row for a later job. Expected: −593 B per
+SessionStart block today. Nothing was moved by this job.
+
+**(mmm) The read-refusal lever and three never-called tools.** Proposal B (§B.1–B.5).
+Measured there: 76 refusals since 2026-08-27, 42 overridden within 120 s, net 34 avoided ≈
+70.9 k tokens estimated — 0.003 % of 2.63 G tokens of main-session usage since 09-01 — and
+**every refusal was in a subagent**, because the main session's re-reads are partial
+(`offset`/`limit`) and the ledger keys on them. `memory_compact`, `memory_dream` and
+`work_plan` had **0** `tool_use` calls since each shipped (28, 18 and 7 days); the first two run
+through hook arms (4 auto-compactions, 70 dreams / 3 consolidated), and `work_plan`'s module is
+`shiftwork_plan`'s engine (18 calls). **Recommendation:** keep the read-refusal lever off the
+table as a token lever and decide it on its tool-turn cost; the numbers support retiring the two
+memory TOOLS (not their functions or hook arms) and support nothing yet about `work_plan`.
+Retirement cost if accepted: both runtimes (~25 files), 39 conformance lines re-baselined plus a
+per-side absence literal, 2 tool-instruction files, ~20 doc mentions; no change to any user's
+registration. No tool was retired by this job (user ruling 2026-09-25).
+
+**(nnn) The hooks-on vs hooks-off A/B has never been run.** Proposal C (§C.1–C.4). Measured
+there: injected prefix is a median 0.40 % (pooled 0.82 %) of a session's tokens, cache reads are
+96.7 % of a median session, so the effect to detect is ≈ +0.4 to +0.8 % and cross-task CV is
+1.33–1.98 — only a paired design can see it. Protocol written: the 8 `assets/evals/devteam`
+tasks with `json_equal` scoring, ON/OFF arms differing only in the bantamkit hook entries,
+sandboxed `HOME` + `CLAUDE_CONFIG_DIR`, pinned model/store/MCP config, metric = API usage
+INCLUDING cache reads. **Recommendation:** do not launch the powered run; run the 30-run pilot
+(5 tasks × 2 arms × 3 repeats, ≈35 M tokens, ~1.5 h) to measure run-to-run CV, then decide
+whether 87–2,178 pairs is affordable. First command of the pilot: verify auth under
+`CLAUDE_CONFIG_DIR` in a sandboxed HOME (unverified). Not run by this job.
+
+### OPEN — found by this job's units and review, not acted on
+
+**(ooo) `RecallOutcome.lookup` is computed and logged by nobody.** J64-4 added `lookup:
+hit|miss|null` on both sides; neither MCP handler (`mcpserver.py:~1400`, `mcp/server.ts:568`)
+writes it to the event log, so whether exact-name lookups happen in real use cannot be counted.
+One field per handler plus a `wire` case.
+
+**(ppp) `/clear` forgets what was injected but still refuses a re-read.** J64-2 reset the
+injection seen-set on `SessionStart clear` and deliberately left the `reads` in the same ledger,
+so a file read before `/clear` is still refused once after it although the window no longer
+holds it. Whether the host keeps `session_id` across `/clear` is also unsettled (the real log:
+4 kept, 12 changed, 15 unknown over 31 clears, confounded by concurrent sessions); one
+sandboxed real `/clear` answers it.
+
+**(qqq) The `memory-compact` wire session's comment claims more than it can see.**
+`tools/conformance/suites/wire.mjs` says THE EVICTION ORDER MUST NOT DEPEND ON THE WALL-CLOCK
+DATE and relies on the id-11 recall stamp for that; J64-1 measured (both MCP handlers made not
+to stamp) that nothing in `wire` moves within one day, because every date in the session is
+today either way. The new `memory_recall stamps` literal is what pins the tool stamp now; the
+comment is true only across a midnight.
+
+**(rrr) Comments point into gitignored notes.** `hookadapter.py:935,1893` and
+`hookadapter.ts:1023,2037` cite `.shiftwork/notes-job64/J64-0.md` and `J64-2.md` for the
+`/clear` measurement and the fingerprint's stat-field finding, and `hooks.mjs` (4 places) and
+`wire.mjs` (1) cite the J64-0..3 notes for their red counts
+(`grep -rn "\.shiftwork/notes-job64" runtime-py/src runtime-ts/src tools/conformance/suites`).
+Those paths do not exist in any clone. The runtime comments restate their numbers inline, and
+the suites' red counts are restated in the CLOSED rows above; the pointers should name this
+section instead when the files are next touched.
+
+**Gates, run one at a time by this review at `cbd12d9` plus the review's uncommitted doc edits
+(no runtime file differs from `cbd12d9`), throwaway `HOME`, `BANTAMKIT_INSTRUCTIONS_USER_CLAUDE_MD`
+pointed at the real user file for the read-only `instructions` check:**
+
+<!-- provenance: value=9014 cases, 2533 byte-identical, 3520 exact-string, 2961 structural, 161 ruled-different, 0 failures; commit=cbd12d9 plus J64-7's doc edits; command=node tools/conformance/run.mjs --all -->
+<!-- provenance: value=3225 passed, 57 skipped, 2 deselected, 3 xfailed in 193.15s; commit=cbd12d9 plus J64-7's doc edits; command=PYTHONPATH=$PWD/runtime-py/src .venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=tests 1277, pass 1230, fail 0, skipped 47; commit=cbd12d9 plus J64-7's doc edits; command=cd runtime-ts && npm test -->
+<!-- provenance: value=tests 18, pass 18, fail 0; commit=cbd12d9 plus J64-7's doc edits; command=node --test 'tools/hooks/*.test.mjs' -->
+<!-- provenance: value=All checks passed!; commit=cbd12d9 plus J64-7's doc edits; command=.venv/bin/ruff check runtime-py tools -->

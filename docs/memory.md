@@ -303,7 +303,10 @@ with `"{name} {description}"`, keeps those with a non-zero score, sorts by score
 then name, and returns the top `k` (default 3, or `k` passed per call). Every
 returned fact has `last_recalled` stamped with today's date — that stamp is what
 `compact()` later uses to decide what to drop, falling back to `created` for a
-fact nobody has recalled yet.
+fact nobody has recalled yet. **Amendment 2026-09-26 (job64, J64-1):** the
+hook's automatic `UserPromptSubmit` injection goes through the layered recall
+with `stamp=False` and dates nothing, so the stamp now records explicit recalls
+only (the `memory_recall` tool, the memory CLI, `Memory.recall`).
 
 **The body is not searched.** A fact is only findable through the words in its
 name and description; this is why the skill insists descriptions be written to
@@ -317,8 +320,12 @@ no scoring, no ranking, and only the fact named is stamped. It exists because
 `recall` cannot answer "the one called X": the named fact ties on score with any
 fact whose words it shares, the tie breaks by name, and every hit inside `k` is
 dated. The layered component's exact-name walk (see *Recall across layers*) is
-its caller; nothing on the tool surface exposes it directly. Pinned per runtime
-in `tools/conformance/suites/store.mjs` (`lookup` op, answer and whole tree).
+its caller; nothing on the tool surface exposes it directly. Compared across the
+runtimes in `tools/conformance/suites/store.mjs` (`lookup` op, answer and whole
+tree) — a differential only, so a change landing in both stores at once is
+invisible there (measured by J64-4's M5: `store` stayed green); what pins it per
+runtime is `test_memory.py::test_lookup_*`, `store.test.mjs` `lookup *`, and the
+exact-name literals in `tools/conformance/suites/recall-strings.mjs`.
 
 #### The precision gate (`min_ratio` / `minRatio`) — roadmap #6
 
@@ -712,6 +719,11 @@ auditable. It is still a date a careless reader will misread. Neither field on d
 answers the question correctly today (`created` is first-landing, mtime is
 last-touched); the honest fix is a third field recording when the **body** last
 changed, which no store records.
+
+**Amendment 2026-09-26 (job64, J64-1):** the contamination is smaller now, not
+gone. The hook's per-prompt injection no longer stamps, so it no longer moves a
+fact's mtime; an explicit `memory_recall` (and an exact-name hit, which stamps
+the one fact it returns) still does.
 
 ### The gate
 
