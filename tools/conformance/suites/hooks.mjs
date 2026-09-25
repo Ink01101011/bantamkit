@@ -2374,6 +2374,84 @@ export async function run(ctx) {
       expected: py.ledgerS5,
       actual: nd.ledgerS5,
     });
+
+    // (g) OWN KEYS ONLY (job64, J64-8, the J64-7 blocker). `constructor` is the one
+    // `Object.prototype` key `NAME_RE` admits (all lowercase, no underscore), and the port's
+    // seen-set is a plain object read back from JSON — so a membership test written with `in`
+    // found the prototype's `constructor` on a FRESH context and withheld the fact before it
+    // was ever shown, while the reference's dict has no such key. The two runtimes disagreed
+    // on the first prompt over the same store, and no bed above could see it because none
+    // held such a name. A second store, same shape: two facts hit, one of them named
+    // `constructor`; the same prompt twice in one context.
+    // MUTATION EVIDENCE (2026-09-26): on the code before the fix (`name in seen` at
+    // `userPromptSubmit`, the port) the first-prompt literal for the port and the two-prompt
+    // differential went red, 2 of 152, the port injecting `widget-rollout-notes` alone with
+    // `constructor` in `suppressed` on a context that had been shown nothing; the reference's
+    // two literals and the second prompt's stayed green, which is why this is pinned per side.
+    {
+      const id2 = `${id}-constructor`;
+      const b2 = bed(join(root, id2));
+      const cwd2 = join(b2.root, 'cwd');
+      mkdirSync(cwd2, { recursive: true });
+      seedStore(ctx, join(cwd2, '.bantamkit', 'memory'), [
+        { type: 'project', name: 'constructor', description: 'the widget constructor rollout checklist for staging' },
+        {
+          type: 'project',
+          name: 'widget-rollout-notes',
+          description: 'notes on the widget rollout timing for the staging window',
+        },
+        { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      ]);
+      // Hits `constructor` then `widget-rollout-notes`, and not `unrelated-alpha` — measured
+      // through `Memory.recall_outcome` on this bed (`.shiftwork/notes-job64/J64-8.md`).
+      const P = 'the widget constructor rollout checklist for staging';
+      const CTOR_NAMES = ['constructor', 'widget-rollout-notes'];
+      b2.snapshot();
+      const twice = (side) => {
+        const h = home(id2, side);
+        return [1, 2].map(() => {
+          const r = runHook(ctx, side, {
+            payload: { hook_event_name: 'UserPromptSubmit', prompt: P, cwd: cwd2, session_id: 'c1', transcript_path: '/t/c1.jsonl' },
+            cwd: cwd2,
+            home: h,
+          });
+          return {
+            action: r.last['action'],
+            hits: r.last['hits'],
+            injected: (r.last['injected'] ?? []).map((x) => x.name),
+            suppressed: r.last['suppressed'],
+            dropped: r.last['dropped'] ?? null,
+            stdout: dec(r.stdout),
+          };
+        });
+      };
+      const p = twice('py');
+      b2.restore();
+      const n = twice('node');
+      const rec = (r) => ({ action: r.action, hits: r.hits, injected: r.injected, suppressed: r.suppressed, dropped: r.dropped });
+      cases.push(
+        ...literalCases(
+          rec(p[0]),
+          rec(n[0]),
+          'inject-dedupe: PINNED PER SIDE (g): a fact named `constructor` is injected on the first prompt of a fresh context',
+          { action: 'inject', hits: 2, injected: CTOR_NAMES, suppressed: [], dropped: 0 },
+        ),
+      );
+      cases.push(
+        ...literalCases(
+          p[1],
+          n[1],
+          'inject-dedupe: PINNED PER SIDE (g): and suppressed on the second, with nothing on stdout',
+          { action: 'suppress', hits: 2, injected: [], suppressed: CTOR_NAMES, dropped: null, stdout: '' },
+        ),
+      );
+      cases.push({
+        name: 'inject-dedupe (g): the two prompts over the `constructor` bed, record by record and byte by byte, are the same on both sides',
+        kind: 'json',
+        expected: p,
+        actual: n,
+      });
+    }
   }
 
   // ======================= dream-fingerprint: a re-dated fact does not re-arm the preview

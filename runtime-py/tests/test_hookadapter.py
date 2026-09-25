@@ -582,9 +582,9 @@ _PROMPT_C = "nothing shared here at all about the staging cluster"
 _A_NAMES = ["deployment-rollback", "rollback-runbook", "staging-cluster-notes"]
 
 
-def _dedupe_bed(tmp_path: Path, name: str) -> tuple[Path, Path]:
+def _dedupe_bed(tmp_path: Path, name: str, facts=_DEDUPE_FACTS) -> tuple[Path, Path]:
     home, cwd = _bed(tmp_path, name)
-    for type_, fact, description in _DEDUPE_FACTS:
+    for type_, fact, description in facts:
         _save(cwd / ".bantamkit" / "memory", type_, fact, description, "body")
     return home, cwd
 
@@ -626,6 +626,47 @@ def test_a_name_this_context_was_shown_is_not_injected_again_and_the_record_says
     ledger = _ledger(home)
     assert list(ledger["injected"]["/t/main.jsonl"]) == _A_NAMES, "seen = what LEFT, by name"
     assert ledger["reads"] == {}, "the read ledger is untouched by an injection"
+
+
+# (job64, J64-8, the J64-7 blocker) `constructor` is the one `Object.prototype` key `NAME_RE`
+# admits. The port's seen-set is a plain JSON object, and a membership test written with `in`
+# found the prototype's `constructor` on a FRESH context, so the two runtimes disagreed on the
+# first prompt over the same store. This side's dict never had the defect; the test is the
+# reference half of the per-side pin, green before and after the port's fix
+# (`.shiftwork/notes-job64/J64-8.md`).
+_CTOR_FACTS = [
+    ("project", "constructor", "the widget constructor rollout checklist for staging"),
+    (
+        "project",
+        "widget-rollout-notes",
+        "notes on the widget rollout timing for the staging window",
+    ),
+    ("reference", "unrelated-alpha", "nothing shared here at all"),
+]
+#: Hits `constructor` then `widget-rollout-notes`, and not `unrelated-alpha` (measured).
+_PROMPT_CTOR = "the widget constructor rollout checklist for staging"
+_CTOR_NAMES = ["constructor", "widget-rollout-notes"]
+
+
+def test_a_fact_named_constructor_is_injected_first_and_suppressed_second(tmp_path):
+    """(g) A fact whose name is an `Object.prototype` member is shown to a fresh context like
+    any other, and withheld only once it has actually been shown."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-constructor", _CTOR_FACTS)
+    first = _prompt(home, cwd, _PROMPT_CTOR)
+    second = _prompt(home, cwd, _PROMPT_CTOR)
+
+    assert first.stdout != b""
+    assert second.stdout == b"", "both picked headers were already in the window"
+    one, two = _prompt_records(home)
+    assert one["action"] == "inject"
+    assert one["hits"] == 2
+    assert [x["name"] for x in one["injected"]] == _CTOR_NAMES
+    assert one["suppressed"] == [], "nothing withheld from a context that had been shown nothing"
+    assert two["action"] == "suppress"
+    assert two["hits"] == 2
+    assert two["suppressed"] == _CTOR_NAMES
+    ledger = _ledger(home)
+    assert list(ledger["injected"]["/t/main.jsonl"]) == _CTOR_NAMES, "seen = what LEFT, by name"
 
 
 def test_a_different_session_is_not_suppressed_by_what_another_was_shown(tmp_path):

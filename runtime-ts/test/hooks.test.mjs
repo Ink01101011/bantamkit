@@ -1139,12 +1139,12 @@ const PROMPT_A = 'deployment path rollback procedure for the staging cluster';
 const PROMPT_C = 'nothing shared here at all about the staging cluster';
 const A_NAMES = ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'];
 
-async function dedupeBed() {
+async function dedupeBed(facts = DEDUPE_FACTS) {
   const cwd = newCwd();
   const home = newHome();
   const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
   const m = new Memory(join(cwd, '.bantamkit', 'memory'));
-  for (const [type, name, description] of DEDUPE_FACTS) {
+  for (const [type, name, description] of facts) {
     const o = m.saveOutcome(type, name, description, 'body');
     assert.equal(o.status, 'saved', `fixture fact ${name} must save: ${o.reply}`);
   }
@@ -1180,6 +1180,45 @@ test('(a) a name this context was shown is not injected again, and the record sa
   const ledger = ledgerOf(bed.home);
   assert.deepEqual(Object.keys(ledger.injected['/t/main.jsonl']), A_NAMES, 'seen = what LEFT, by name');
   assert.deepEqual(ledger.reads, {}, 'the read ledger is untouched by an injection');
+});
+
+// (job64, J64-8, the J64-7 blocker) `constructor` is the one `Object.prototype` key `NAME_RE`
+// admits — all lowercase, no underscore — and the seen-set is a plain object read back from
+// JSON. A membership test written with `in` found the prototype's `constructor` on a FRESH
+// context and withheld the fact before it was ever shown, while Python's dict has no such key:
+// the two runtimes disagreed on the first prompt over the same store. Own keys only, now.
+// This test went RED on `name in seen` (the port injected `widget-rollout-notes` alone and
+// listed `constructor` as suppressed); count in `.shiftwork/notes-job64/J64-8.md`.
+const CTOR_FACTS = [
+  ['project', 'constructor', 'the widget constructor rollout checklist for staging'],
+  ['project', 'widget-rollout-notes', 'notes on the widget rollout timing for the staging window'],
+  ['reference', 'unrelated-alpha', 'nothing shared here at all'],
+];
+/** Hits `constructor` then `widget-rollout-notes`, and not `unrelated-alpha` (measured). */
+const PROMPT_CTOR = 'the widget constructor rollout checklist for staging';
+const CTOR_NAMES = ['constructor', 'widget-rollout-notes'];
+
+test('(g) a fact named `constructor` is injected on the first prompt and suppressed on the second', async () => {
+  const bed = await dedupeBed(CTOR_FACTS);
+  const first = promptIn(bed, PROMPT_CTOR);
+  const second = promptIn(bed, PROMPT_CTOR);
+
+  assert.notEqual(first.stdout, '');
+  assert.equal(second.stdout, '', 'both picked headers were already in the window');
+  const [one, two] = promptRecords(bed.home);
+  assert.equal(one.action, 'inject');
+  assert.equal(one.hits, 2);
+  assert.deepEqual(
+    one.injected.map((x) => x.name),
+    CTOR_NAMES,
+    'a fresh context is shown the fact named `constructor` like any other',
+  );
+  assert.deepEqual(one.suppressed, [], 'nothing was withheld from a context that had been shown nothing');
+  assert.equal(two.action, 'suppress');
+  assert.equal(two.hits, 2);
+  assert.deepEqual(two.suppressed, CTOR_NAMES);
+  const ledger = ledgerOf(bed.home);
+  assert.deepEqual(Object.keys(ledger.injected['/t/main.jsonl']), CTOR_NAMES, 'seen = what LEFT, by name');
 });
 
 test('(b) a different session is not suppressed by what another was shown', async () => {

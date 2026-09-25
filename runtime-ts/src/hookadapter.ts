@@ -316,12 +316,14 @@ interface Ledger {
  * `session_id` otherwise — because a subagent shares the parent's `session_id` (J64-0, Q3
  * step 11) and therefore this FILE, while its window has never held what the parent was
  * shown. A missing or malformed entry is "nothing seen", never an exception, for the reason
- * `readLedger` gives.
+ * `readLedger` gives. Both lookups here answer for OWN keys only (job64, J64-8): the objects
+ * are plain, read back from JSON, and keyed by user data, so a bare `[key]` read would hand
+ * back `Object.prototype`'s members for a key that happens to be one of its names.
  */
 function injectedSeen(ledger: Ledger, transcript: string): Record<string, string> {
   const everyone = ledger.injected;
   if (!everyone || typeof everyone !== 'object') return {};
-  const mine = everyone[transcript];
+  const mine = Object.hasOwn(everyone, transcript) ? everyone[transcript] : undefined;
   return mine && typeof mine === 'object' ? mine : {};
 }
 
@@ -1181,7 +1183,11 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   const suppressed: string[] = [];
   for (const line of heads) {
     const name = RECALL_HEADER.exec(line)?.[2] ?? '';
-    if (name in seen) suppressed.push(name);
+    // OWN keys only (job64, J64-8). `seen` is a plain object read back from JSON, and `in`
+    // walks `Object.prototype` — so `name in seen` was true for a fact named `constructor`
+    // (the one prototype key `NAME_RE` admits) on a context that had been shown nothing, and
+    // the port withheld it on the first prompt while the reference injected it.
+    if (Object.hasOwn(seen, name)) suppressed.push(name);
     else fresh.push(line);
   }
   if (fresh.length === 0) {
