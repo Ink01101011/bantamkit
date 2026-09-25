@@ -1078,8 +1078,10 @@ test('no prompt text reaches the log — a digest, two sizes, and a closed field
   assert.equal(rec.prompt.bytes, Buffer.byteLength(prompt));
   assert.deepEqual(Object.keys(rec.prompt).sort(), ['bytes', 'chars', 'sha256'],
     'the prompt object is CLOSED: a field added here is a field that could carry text');
+  // `suppressed` joined the set 2026-09-25 (job64, J64-2): fact NAMES this context was already
+  // shown and was not shown again — the same strings `injected[].name` already carries.
   assert.deepEqual(Object.keys(rec).sort(),
-    ['action', 'bytes', 'dropped', 'event', 'hits', 'injected', 'ms', 'prompt', 'session', 'source', 'ts'].sort(),
+    ['action', 'bytes', 'dropped', 'event', 'hits', 'injected', 'ms', 'prompt', 'session', 'source', 'suppressed', 'ts'].sort(),
     'the record is closed too — every string field here is ours, none is the user\'s');
   for (const inj of rec.injected) {
     assert.deepEqual(Object.keys(inj).sort(), ['layer', 'name', 'score', 'type']);
@@ -1114,6 +1116,152 @@ test('a header the byte cap dropped is NOT logged as injected', async () => {
     if (rec.injected.some((i) => i.name === name)) continue;
     assert.ok(!ctx.includes(`[${name}]`), `${name} was dropped by the cap and must not appear in the context`);
   }
+});
+
+// ------------------- what this context was shown is not shown again (job64, J64-2)
+//
+// Measured 2026-09-25 over a week of the real log: 333 of 598 injections repeated a name
+// injected earlier in the same session, because the arm never read the session ledger. The
+// bed is the conformance suite's `inject-dedupe` bed, so a number pinned here is the number
+// pinned there. Every test below went RED with the seen-set forced empty on this side
+// (`const seen = {}` in `userPromptSubmit`); counts in `.shiftwork/notes-job64/J64-2.md`.
+
+const DEDUPE_FACTS = [
+  ['project', 'deployment-rollback', 'the deployment path rollback procedure for the staging cluster'],
+  ['project', 'staging-cluster-notes', 'wiring notes kept about the staging cluster nodes'],
+  ['project', 'rollback-runbook', 'runbook steps when a rollback of the deployment is needed'],
+  ['reference', 'unrelated-alpha', 'nothing shared here at all'],
+  ['reference', 'unrelated-beta', 'still nothing in common with anything'],
+];
+/** Hits the three `deployment`/`rollback`/`staging` facts, in this order (scores 8, 3, 3). */
+const PROMPT_A = 'deployment path rollback procedure for the staging cluster';
+/** Hits `unrelated-alpha` first and then two of A's three — the MIXED case after A. */
+const PROMPT_C = 'nothing shared here at all about the staging cluster';
+const A_NAMES = ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'];
+
+async function dedupeBed() {
+  const cwd = newCwd();
+  const home = newHome();
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  const m = new Memory(join(cwd, '.bantamkit', 'memory'));
+  for (const [type, name, description] of DEDUPE_FACTS) {
+    const o = m.saveOutcome(type, name, description, 'body');
+    assert.equal(o.status, 'saved', `fixture fact ${name} must save: ${o.reply}`);
+  }
+  return { cwd, home };
+}
+function promptIn(bed, text, { session = 'probe-session', transcript = '/t/main.jsonl' } = {}) {
+  const r = runHook(
+    { hook_event_name: 'UserPromptSubmit', prompt: text, transcript_path: transcript, session_id: session },
+    bed,
+  );
+  assert.equal(r.status, 0, r.stderr);
+  return r;
+}
+const promptRecords = (home) => hookLog(home, 'UserPromptSubmit');
+const ledgerOf = (home, session = 'probe-session') =>
+  JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', `ledger-${session}.json`), 'utf8'));
+
+test('(a) a name this context was shown is not injected again, and the record says why', async () => {
+  const bed = await dedupeBed();
+  const first = promptIn(bed, PROMPT_A);
+  const second = promptIn(bed, PROMPT_A);
+
+  assert.notEqual(first.stdout, '');
+  assert.equal(second.stdout, '', 'every picked header was already in the window');
+  const [one, two] = promptRecords(bed.home);
+  assert.equal(one.action, 'inject');
+  assert.deepEqual(one.suppressed, []);
+  assert.equal(two.action, 'suppress');
+  assert.deepEqual(two.suppressed, A_NAMES);
+  assert.equal(two.hits, 3);
+  assert.equal(two.session, 'probe-session');
+  assert.deepEqual(Object.keys(two.prompt).sort(), ['bytes', 'chars', 'sha256'], 'the fingerprint, never text');
+  const ledger = ledgerOf(bed.home);
+  assert.deepEqual(Object.keys(ledger.injected['/t/main.jsonl']), A_NAMES, 'seen = what LEFT, by name');
+  assert.deepEqual(ledger.reads, {}, 'the read ledger is untouched by an injection');
+});
+
+test('(b) a different session is not suppressed by what another was shown', async () => {
+  const bed = await dedupeBed();
+  promptIn(bed, PROMPT_A, { session: 'one', transcript: '/t/one.jsonl' });
+  const other = promptIn(bed, PROMPT_A, { session: 'two', transcript: '/t/two.jsonl' });
+
+  assert.notEqual(other.stdout, '');
+  assert.deepEqual(promptRecords(bed.home).map((r) => r.action), ['inject', 'inject']);
+  assert.deepEqual(Object.keys(ledgerOf(bed.home, 'two').injected), ['/t/two.jsonl']);
+});
+
+test('(c) a compaction forgets what was shown, so it is injected again', async () => {
+  // The suppress in the middle is the control: a hook that never suppressed would pass the
+  // rest of this test.
+  const bed = await dedupeBed();
+  promptIn(bed, PROMPT_A);
+  assert.equal(promptIn(bed, PROMPT_A).stdout, '');
+  runHook({ hook_event_name: 'PostCompact' }, bed);
+  const again = promptIn(bed, PROMPT_A);
+
+  assert.notEqual(again.stdout, '');
+  assert.deepEqual(promptRecords(bed.home).map((r) => r.action), ['inject', 'suppress', 'inject']);
+});
+
+test('(d) only the unseen headers are injected when some were shown before', async () => {
+  const bed = await dedupeBed();
+  promptIn(bed, PROMPT_A);
+  const mixed = promptIn(bed, PROMPT_C);
+
+  const ctx = JSON.parse(mixed.stdout).hookSpecificOutput.additionalContext;
+  assert.ok(ctx.includes('[unrelated-alpha]'));
+  for (const name of A_NAMES) assert.ok(!ctx.includes(`[${name}]`), `${name} was already in the window`);
+  const rec = promptRecords(bed.home)[1];
+  assert.equal(rec.action, 'inject');
+  assert.deepEqual(rec.injected.map((x) => x.name), ['unrelated-alpha']);
+  assert.deepEqual(rec.suppressed, ['staging-cluster-notes', 'deployment-rollback']);
+  assert.equal(rec.hits, 3, 'the store was still asked for three; two were withheld, not refilled');
+  assert.equal(rec.dropped, 0);
+  assert.equal(rec.hits, rec.injected.length + rec.dropped + rec.suppressed.length);
+  const seen = Object.keys(ledgerOf(bed.home).injected['/t/main.jsonl']).sort();
+  assert.deepEqual(seen, [...A_NAMES, 'unrelated-alpha'].sort(), 'what just left is seen now too');
+});
+
+test('(e) clear forgets what was shown and startup does not; clear leaves the reads alone', async () => {
+  const bed = await dedupeBed();
+  const target = join(bed.cwd, 'a.txt');
+  writeFileSync(target, 'alpha');
+  runHook(
+    { hook_event_name: 'PreToolUse', tool_name: 'Read', transcript_path: '/t/main.jsonl', tool_input: { file_path: target } },
+    bed,
+  );
+  promptIn(bed, PROMPT_A);
+  runHook({ hook_event_name: 'SessionStart', source: 'startup' }, bed);
+  assert.equal(promptIn(bed, PROMPT_A).stdout, '', 'startup is not a rebuilt window');
+  runHook({ hook_event_name: 'SessionStart', source: 'clear' }, bed);
+
+  const afterClear = ledgerOf(bed.home);
+  assert.ok(!('injected' in afterClear));
+  assert.equal(Object.keys(afterClear.reads).length, 1, 'the reads are the read ledger\'s business, not clear\'s');
+  assert.notEqual(promptIn(bed, PROMPT_A).stdout, '');
+  assert.deepEqual(promptRecords(bed.home).map((r) => r.action), ['inject', 'suppress', 'inject']);
+});
+
+test('clear with no ledger creates none', () => {
+  const r = runHook({ hook_event_name: 'SessionStart', source: 'clear' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!existsSync(join(r.home, '.bantamkit', 'hooks', 'ledger-probe-session.json')));
+});
+
+test('(f) a subagent transcript keeps its own seen-set in the parent\'s ledger', async () => {
+  // Same `session_id`, so the same FILE (J64-0, Q3 step 11); its own window, so its own
+  // key — like `reads`. And the parent is still suppressed afterwards.
+  const bed = await dedupeBed();
+  promptIn(bed, PROMPT_A, { transcript: '/t/parent.jsonl' });
+  const child = promptIn(bed, PROMPT_A, { transcript: '/t/child.jsonl' });
+  const parentAgain = promptIn(bed, PROMPT_A, { transcript: '/t/parent.jsonl' });
+
+  assert.notEqual(child.stdout, '', 'the subagent\'s window never held the parent\'s headers');
+  assert.equal(parentAgain.stdout, '');
+  assert.deepEqual(promptRecords(bed.home).map((r) => r.action), ['inject', 'inject', 'suppress']);
+  assert.deepEqual(Object.keys(ledgerOf(bed.home).injected).sort(), ['/t/child.jsonl', '/t/parent.jsonl']);
 });
 
 // ------------------------------------------------------- Stop -> dream (J46-14, row 5)

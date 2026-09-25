@@ -554,6 +554,169 @@ def test_the_injected_block_is_capped_in_bytes_and_the_log_counts_what_left(tmp_
     assert line["dropped"] > 0
 
 
+# --- 4b. UserPromptSubmit — what this context was shown is not shown again (job64, J64-2) --
+#
+# Measured 2026-09-25 over a week of the real log: 333 of 598 injections repeated a name
+# injected earlier in the same session, because the arm never read the session ledger. The
+# bed is the conformance suite's `inject-dedupe` bed, so a number pinned here is the number
+# pinned there. Every test below went RED with the seen-set forced empty on this side
+# (`seen = {}` in `_user_prompt_submit`); counts in `.shiftwork/notes-job64/J64-2.md`.
+
+_DEDUPE_FACTS = [
+    (
+        "project",
+        "deployment-rollback",
+        "the deployment path rollback procedure for the staging cluster",
+    ),
+    ("project", "staging-cluster-notes", "wiring notes kept about the staging cluster nodes"),
+    ("project", "rollback-runbook", "runbook steps when a rollback of the deployment is needed"),
+    ("reference", "unrelated-alpha", "nothing shared here at all"),
+    ("reference", "unrelated-beta", "still nothing in common with anything"),
+]
+#: Hits the three `deployment`/`rollback`/`staging` facts, in this order (scores 8, 3, 3).
+_PROMPT_A = "deployment path rollback procedure for the staging cluster"
+#: Hits `unrelated-alpha` first and then two of A's three, measured through `Memory.layered`
+#: on this bed -- so after A it is the MIXED case: one unseen header, two seen.
+_PROMPT_C = "nothing shared here at all about the staging cluster"
+_A_NAMES = ["deployment-rollback", "rollback-runbook", "staging-cluster-notes"]
+
+
+def _dedupe_bed(tmp_path: Path, name: str) -> tuple[Path, Path]:
+    home, cwd = _bed(tmp_path, name)
+    for type_, fact, description in _DEDUPE_FACTS:
+        _save(cwd / ".bantamkit" / "memory", type_, fact, description, "body")
+    return home, cwd
+
+
+def _prompt(
+    home: Path, cwd: Path, text: str, *, session="probe-session", transcript="/t/main.jsonl"
+):
+    done = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": text, "transcript_path": transcript},
+        home=home,
+        cwd=cwd,
+        session=session,
+    )
+    assert done.returncode == 0, done.stderr
+    return done
+
+
+def _prompt_records(home: Path) -> list[dict]:
+    return [x for x in _log_lines(home) if x["event"] == "UserPromptSubmit"]
+
+
+def test_a_name_this_context_was_shown_is_not_injected_again_and_the_record_says_why(tmp_path):
+    """(a) The same prompt twice in one context: the second time NOTHING leaves, and the
+    record is not a silent `none` -- it names what was withheld."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-same")
+    first = _prompt(home, cwd, _PROMPT_A)
+    second = _prompt(home, cwd, _PROMPT_A)
+
+    assert first.stdout != b""
+    assert second.stdout == b"", "every picked header was already in the window"
+    one, two = _prompt_records(home)
+    assert one["action"] == "inject"
+    assert one["suppressed"] == []
+    assert two["action"] == "suppress"
+    assert two["suppressed"] == _A_NAMES
+    assert two["hits"] == 3
+    assert two["session"] == "probe-session"
+    assert set(two["prompt"]) == {"sha256", "chars", "bytes"}, "the fingerprint, never text"
+    ledger = _ledger(home)
+    assert list(ledger["injected"]["/t/main.jsonl"]) == _A_NAMES, "seen = what LEFT, by name"
+    assert ledger["reads"] == {}, "the read ledger is untouched by an injection"
+
+
+def test_a_different_session_is_not_suppressed_by_what_another_was_shown(tmp_path):
+    """(b) Sessions do not see each other's seen-sets."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-session")
+    _prompt(home, cwd, _PROMPT_A, session="one", transcript="/t/one.jsonl")
+    other = _prompt(home, cwd, _PROMPT_A, session="two", transcript="/t/two.jsonl")
+
+    assert other.stdout != b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "inject"]
+    assert list(_ledger(home, "two")["injected"]) == ["/t/two.jsonl"]
+
+
+def test_a_compaction_forgets_what_was_shown_so_it_is_injected_again(tmp_path):
+    """(c) After PostCompact the window was rebuilt from a summary and the headers are gone,
+    so re-injecting is correct, not a leak. The suppress in the middle is the control: without
+    it a hook that never suppressed would pass this test."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-compact")
+    _prompt(home, cwd, _PROMPT_A)
+    assert _prompt(home, cwd, _PROMPT_A).stdout == b""
+    _run_hook({"hook_event_name": "PostCompact"}, home=home, cwd=cwd)
+    again = _prompt(home, cwd, _PROMPT_A)
+
+    assert again.stdout != b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "suppress", "inject"]
+
+
+def test_only_the_unseen_headers_are_injected_when_some_were_shown_before(tmp_path):
+    """(d) The mixed case: the seen headers are DROPPED, the budget is not refilled, and the
+    record's arithmetic closes: `hits == injected + dropped + suppressed`."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-mixed")
+    _prompt(home, cwd, _PROMPT_A)
+    mixed = _prompt(home, cwd, _PROMPT_C)
+
+    ctx = json.loads(mixed.stdout.decode())["hookSpecificOutput"]["additionalContext"]
+    assert "[unrelated-alpha]" in ctx
+    for name in _A_NAMES:
+        assert f"[{name}]" not in ctx, f"{name} was already in the window"
+    rec = _prompt_records(home)[1]
+    assert rec["action"] == "inject"
+    assert [x["name"] for x in rec["injected"]] == ["unrelated-alpha"]
+    assert rec["suppressed"] == ["staging-cluster-notes", "deployment-rollback"]
+    assert rec["hits"] == 3, "the store was still asked for three; two were withheld, not refilled"
+    assert rec["dropped"] == 0
+    assert rec["hits"] == len(rec["injected"]) + rec["dropped"] + len(rec["suppressed"])
+    seen = _ledger(home)["injected"]["/t/main.jsonl"]
+    assert sorted(seen) == sorted([*_A_NAMES, "unrelated-alpha"]), "what just left is seen now too"
+
+
+def test_clear_forgets_what_was_shown_and_startup_does_not(tmp_path):
+    """(e) `/clear` empties the window like a compaction; `startup` is the control, since a
+    constant reset on SessionStart would pass the `clear` half alone. `clear` touches ONLY the
+    seen-set: the read entries in the same file survive it."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-clear")
+    target = cwd / "a.txt"
+    target.write_text("alpha", encoding="utf-8")
+    _run_hook(_read_payload(target, transcript="/t/main.jsonl"), home=home, cwd=cwd)
+    _prompt(home, cwd, _PROMPT_A)
+    _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
+    assert _prompt(home, cwd, _PROMPT_A).stdout == b"", "startup is not a rebuilt window"
+    _run_hook({"hook_event_name": "SessionStart", "source": "clear"}, home=home, cwd=cwd)
+
+    after_clear = _ledger(home)
+    assert "injected" not in after_clear
+    assert len(after_clear["reads"]) == 1, "the reads are the read ledger's business, not clear's"
+    assert _prompt(home, cwd, _PROMPT_A).stdout != b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "suppress", "inject"]
+
+
+def test_clear_with_no_ledger_creates_none(tmp_path):
+    home, cwd = _bed(tmp_path, "dedupe-clear-none")
+    done = _run_hook({"hook_event_name": "SessionStart", "source": "clear"}, home=home, cwd=cwd)
+
+    assert done.returncode == 0
+    assert not (home / ".bantamkit" / "hooks" / "ledger-probe-session.json").exists()
+
+
+def test_a_subagent_transcript_keeps_its_own_seen_set_in_the_parents_ledger(tmp_path):
+    """(f) A subagent shares the parent's `session_id` and so the parent's ledger FILE
+    (J64-0, Q3 step 11), but its window never held the parent's headers -- so it is keyed by
+    `transcript_path`, like `reads`. And the parent is still suppressed afterwards."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-subagent")
+    _prompt(home, cwd, _PROMPT_A, transcript="/t/parent.jsonl")
+    child = _prompt(home, cwd, _PROMPT_A, transcript="/t/child.jsonl")
+    parent_again = _prompt(home, cwd, _PROMPT_A, transcript="/t/parent.jsonl")
+
+    assert child.stdout != b"", "the subagent's window never held the parent's headers"
+    assert parent_again.stdout == b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "inject", "suppress"]
+    assert sorted(_ledger(home)["injected"]) == ["/t/child.jsonl", "/t/parent.jsonl"]
+
+
 # --- 5. PreToolUse[Read] — the filegraph over the operator's own reads --------------------
 
 

@@ -2102,6 +2102,258 @@ export async function run(ctx) {
     );
   }
 
+  // ============================ inject-dedupe: what a context was shown is not shown again
+  //
+  // job64 / J64-2. Measured 2026-09-25 over a week of the real log: 333 of 598 injections
+  // repeated a name already injected earlier in the SAME session, because the arm never
+  // consulted the per-session ledger. Now it does: the seen-set lives in
+  // `ledger-<session>.json` under `injected[<transcript>]`, so it is forgotten exactly when
+  // the window is (PostCompact, SessionStart `compact`, and now SessionStart `clear`). The
+  // seen headers are DROPPED, never refilled from rank 4 — what leaves is a subset of what
+  // the un-deduped arm sent. Six properties from the unit brief, each pinned PER SIDE against
+  // a literal and then the whole sequence compared across sides, on the `inject-no-stamp` bed
+  // and one sequence of payloads per side under its own throwaway home:
+  //   (a) the same prompt twice in one context: the second emits nothing, `action: suppress`;
+  //   (b) another session is not suppressed by the first's injection;
+  //   (c) after PostCompact the same context is injected again;
+  //   (d) a prompt whose top 3 mixes seen and unseen names emits only the unseen;
+  //   (e) SessionStart `clear` forgets, `startup` does not (the control);
+  //   (f) a subagent (same session_id, own transcript_path) is not suppressed by the parent,
+  //       and the parent is still suppressed afterwards.
+  // MUTATION EVIDENCE (2026-09-25) — the seen-set forced empty on BOTH sides (`seen = {}` /
+  // `const seen = {}`): (a), (d), (e), (f) and the identity literal go red per side, 10 of
+  // 140, while the precondition, (b), (c), the s5 ledger shape and EVERY differential stay
+  // green — the symmetric-regression shape, and why the sequence differential alone could
+  // never hold this. (b) and (c) pin the "still injected" halves and are green either way;
+  // the s5 ledger is still written by the mutant, so its shape is not what catches it; the
+  // identity literal is 9 long because exactly 9 of the 12 prompts inject, and the mutant
+  // injects 12. On the port alone the port's five literals, the (d) stdout-bytes
+  // differential and the sequence differential go red, 7 of 140. Two narrower mutations,
+  // (e)'s `clear` reset removed and the seen-set keyed by session instead of transcript, are
+  // counted in `.shiftwork/notes-job64/J64-2.md` with the commands.
+  {
+    const id = 'inject-dedupe';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), [
+      {
+        type: 'project',
+        name: 'deployment-rollback',
+        description: 'the deployment path rollback procedure for the staging cluster',
+      },
+      { type: 'project', name: 'staging-cluster-notes', description: 'wiring notes kept about the staging cluster nodes' },
+      { type: 'project', name: 'rollback-runbook', description: 'runbook steps when a rollback of the deployment is needed' },
+      { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      { type: 'reference', name: 'unrelated-beta', description: 'still nothing in common with anything' },
+    ]);
+    // A hits the three deployment/rollback/staging facts (scores 8, 3, 3); C hits
+    // `unrelated-alpha` and then two of A's three — measured through `Memory.layered` on this
+    // bed, so after A it is the mixed case.
+    const A = 'deployment path rollback procedure for the staging cluster';
+    const C = 'nothing shared here at all about the staging cluster';
+    const A_NAMES = ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'];
+    b.snapshot();
+
+    const maskStamps = (ledger) => ({
+      ...ledger,
+      injected: Object.fromEntries(
+        Object.entries(ledger.injected ?? {}).map(([t, names]) => [
+          t,
+          Object.fromEntries(Object.keys(names).map((n) => [n, '<ts>'])),
+        ]),
+      ),
+    });
+    const sequence = (side) => {
+      const h = home(id, side);
+      const seq = [];
+      const up = (session, transcript, text) => {
+        const r = runHook(ctx, side, {
+          payload: { hook_event_name: 'UserPromptSubmit', prompt: text, cwd, session_id: session, transcript_path: transcript },
+          cwd,
+          home: h,
+        });
+        seq.push({
+          action: r.last['action'],
+          hits: r.last['hits'],
+          injected: (r.last['injected'] ?? []).map((x) => x.name),
+          suppressed: r.last['suppressed'],
+          dropped: r.last['dropped'] ?? null,
+          bytes: r.last['bytes'] ?? null,
+          stdout: dec(r.stdout),
+        });
+        return r;
+      };
+      const ev = (payload) => runHook(ctx, side, { payload: { ...payload, cwd }, cwd, home: h });
+      up('s1', '/t/s1.jsonl', A); // 0  precondition
+      up('s1', '/t/s1.jsonl', A); // 1  (a)
+      up('s2', '/t/s2.jsonl', A); // 2  (b)
+      ev({ hook_event_name: 'PostCompact', session_id: 's1' });
+      up('s1', '/t/s1.jsonl', A); // 3  (c)
+      up('s3', '/t/s3.jsonl', A); // 4
+      up('s3', '/t/s3.jsonl', C); // 5  (d)
+      up('s4', '/t/s4.jsonl', A); // 6
+      ev({ hook_event_name: 'SessionStart', source: 'startup', session_id: 's4' });
+      up('s4', '/t/s4.jsonl', A); // 7  (e) control
+      ev({ hook_event_name: 'SessionStart', source: 'clear', session_id: 's4' });
+      up('s4', '/t/s4.jsonl', A); // 8  (e)
+      up('s5', '/t/parent.jsonl', A); // 9
+      up('s5', '/t/child.jsonl', A); // 10 (f)
+      up('s5', '/t/parent.jsonl', A); // 11 (f)
+      ev({ hook_event_name: 'SessionStart', source: 'clear', session_id: 's9' });
+      const ledgerS5 = JSON.parse(readFileSync(join(h, '.bantamkit', 'hooks', 'ledger-s5.json'), 'utf8'));
+      return {
+        seq,
+        ledgerS5: maskStamps(ledgerS5),
+        s9Exists: existsSync(join(h, '.bantamkit', 'hooks', 'ledger-s9.json')),
+      };
+    };
+    const py = sequence('py');
+    b.restore();
+    const nd = sequence('node');
+
+    // PRECONDITION: the first prompt of a fresh context injects all three on both sides. A
+    // `skip` or `none` there would make every "suppress" below vacuous.
+    if (py.seq[0].action !== 'inject' || nd.seq[0].action !== 'inject') {
+      throw new Error(
+        `hooks: inject-dedupe needs the INJECT branch first on both sides and got ` +
+          `py=${py.seq[0].action} node=${nd.seq[0].action}; the bed's store no longer answers ` +
+          'the prompt, so nothing below would be measuring a suppression.',
+      );
+    }
+    const pick = (s, i, fields) => Object.fromEntries(fields.map((f) => [f, s.seq[i][f]]));
+    const RECORD = ['action', 'hits', 'injected', 'suppressed', 'dropped'];
+    cases.push(
+      ...literalCases(
+        pick(py, 0, RECORD),
+        pick(nd, 0, RECORD),
+        'inject-dedupe: precondition — a fresh context is injected all three, nothing suppressed',
+        { action: 'inject', hits: 3, injected: A_NAMES, suppressed: [], dropped: 0 },
+      ),
+    );
+    // (a) THE PROPERTY, PER SIDE: the same prompt again in the same context emits NOTHING,
+    // and the record names what was withheld rather than saying `none`.
+    cases.push(
+      ...literalCases(
+        pick(py, 1, [...RECORD, 'stdout']),
+        pick(nd, 1, [...RECORD, 'stdout']),
+        'inject-dedupe: PINNED PER SIDE (a): the second identical prompt emits nothing and logs `suppress` with the names',
+        { action: 'suppress', hits: 3, injected: [], suppressed: A_NAMES, dropped: null, stdout: '' },
+      ),
+    );
+    // (b) another session, unaffected.
+    cases.push(
+      ...literalCases(
+        pick(py, 2, RECORD),
+        pick(nd, 2, RECORD),
+        'inject-dedupe: PINNED PER SIDE (b): a different session is injected in full',
+        { action: 'inject', hits: 3, injected: A_NAMES, suppressed: [], dropped: 0 },
+      ),
+    );
+    // (c) after PostCompact, the same context again.
+    cases.push(
+      ...literalCases(
+        pick(py, 3, RECORD),
+        pick(nd, 3, RECORD),
+        'inject-dedupe: PINNED PER SIDE (c): after PostCompact the same context is injected again',
+        { action: 'inject', hits: 3, injected: A_NAMES, suppressed: [], dropped: 0 },
+      ),
+    );
+    // (d) the mixed case: only the unseen header leaves; the seen two are withheld, not
+    // refilled; and `hits == injected + dropped + suppressed`. 194 is MEASURED on both sides
+    // (2026-09-25): the header line plus the one `[project] [unrelated-alpha] (reference) …`.
+    cases.push(
+      ...literalCases(
+        pick(py, 5, [...RECORD, 'bytes']),
+        pick(nd, 5, [...RECORD, 'bytes']),
+        'inject-dedupe: PINNED PER SIDE (d): a mixed pick emits only the unseen header, and withholds the seen two',
+        {
+          action: 'inject',
+          hits: 3,
+          injected: ['unrelated-alpha'],
+          suppressed: ['staging-cluster-notes', 'deployment-rollback'],
+          dropped: 0,
+          bytes: 194,
+        },
+      ),
+    );
+    cases.push({
+      name: 'inject-dedupe (d): the mixed block on stdout, byte for byte',
+      kind: 'bytes',
+      expected: Buffer.from(py.seq[5].stdout, 'utf8'),
+      actual: Buffer.from(nd.seq[5].stdout, 'utf8'),
+    });
+    // (e) `clear` forgets; `startup` between two identical prompts is the CONTROL — without
+    // it a SessionStart that always reset would pass the `clear` half alone.
+    const actions = (s, ...i) => i.map((k) => s.seq[k].action);
+    cases.push(
+      ...literalCases(
+        actions(py, 6, 7, 8),
+        actions(nd, 6, 7, 8),
+        'inject-dedupe: PINNED PER SIDE (e): inject, then suppressed across `startup`, then injected again after `clear`',
+        ['inject', 'suppress', 'inject'],
+      ),
+    );
+    // (f) parent, subagent, parent: the subagent is not suppressed by the parent's injection
+    // and the parent still is by its own.
+    cases.push(
+      ...literalCases(
+        actions(py, 9, 10, 11),
+        actions(nd, 9, 10, 11),
+        'inject-dedupe: PINNED PER SIDE (f): a subagent transcript is injected; the parent is still suppressed after it',
+        ['inject', 'inject', 'suppress'],
+      ),
+    );
+    const s5 = {
+      reads: {},
+      injected: {
+        '/t/parent.jsonl': Object.fromEntries(A_NAMES.map((n) => [n, '<ts>'])),
+        '/t/child.jsonl': Object.fromEntries(A_NAMES.map((n) => [n, '<ts>'])),
+      },
+    };
+    cases.push(
+      ...literalCases(
+        py.ledgerS5,
+        nd.ledgerS5,
+        'inject-dedupe: PINNED PER SIDE (f): one ledger file for the session, one seen-set per transcript, stamps masked',
+        s5,
+      ),
+    );
+    // The record arithmetic closes on every inject record of the sequence.
+    const identity = (s) =>
+      s.seq.filter((r) => r.action === 'inject').map((r) => r.hits === r.injected.length + r.dropped + r.suppressed.length);
+    cases.push(
+      ...literalCases(
+        identity(py),
+        identity(nd),
+        'inject-dedupe: PINNED PER SIDE: hits == injected + dropped + suppressed on every inject record',
+        Array(9).fill(true),
+      ),
+    );
+    cases.push(
+      ...literalCases(
+        py.s9Exists,
+        nd.s9Exists,
+        'inject-dedupe: a `clear` with no ledger under the session creates none',
+        false,
+      ),
+    );
+    // And the two sides ran the identical sequence: every record field and every byte of
+    // stdout, twelve prompts long.
+    cases.push({
+      name: 'inject-dedupe: the twelve-prompt sequence, record by record and byte by byte, is the same on both sides',
+      kind: 'json',
+      expected: py.seq,
+      actual: nd.seq,
+    });
+    cases.push({
+      name: 'inject-dedupe: the s5 ledger, stamps masked, is the same file on both sides',
+      kind: 'json',
+      expected: py.ledgerS5,
+      actual: nd.ledgerS5,
+    });
+  }
+
   notes.push(
     'every hook run in this suite asserted that the adapter followed the throwaway HOME ' +
       '(both HOME and USERPROFILE) before a byte it wrote was read; a run that did not stops the suite',

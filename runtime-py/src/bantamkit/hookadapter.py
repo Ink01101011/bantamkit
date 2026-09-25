@@ -375,6 +375,25 @@ def _write_ledger(run: HookRun, session_id: Any, ledger: dict[str, Any]) -> None
         fh.write(_dumps(ledger))
 
 
+def _injected_seen(ledger: dict[str, Any], transcript: str) -> dict[str, Any]:
+    """The fact names this CONTEXT has already been shown, `name -> ISO stamp` (job64, J64-2).
+
+    Lives under `ledger["injected"][<transcript>]`, beside `reads`, so it inherits the
+    ledger's reset points: `PostCompact` and `SessionStart source=compact` unlink the file,
+    which is exactly when the model's window has been rebuilt and a name it was shown is
+    gone again. The context key is the same one `reads` uses -- `transcript_path` when the
+    host sends it, `session_id` otherwise -- because a subagent shares the parent's
+    `session_id` (J64-0, Q3 step 11) and therefore this FILE, while its window has never
+    held what the parent was shown. A missing or malformed entry is "nothing seen", never
+    an exception, for the reason `_read_ledger` gives.
+    """
+    everyone = ledger.get("injected")
+    if not isinstance(everyone, dict):
+        return {}
+    mine = everyone.get(transcript)
+    return mine if isinstance(mine, dict) else {}
+
+
 def _write_json_safe(file: str, value: Any) -> None:
     """Best-effort marker write. A marker that cannot be written costs a repeated dream."""
     try:
@@ -909,6 +928,19 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             os.unlink(_ledger_path(run, payload.get("session_id")))
         except OSError:
             pass
+    elif payload.get("source") == "clear":
+        # `/clear` empties the window the way a compaction does, and the host MAY keep the
+        # `session_id` across it (the real log cannot settle this: 4 kept, 12 changed, 15
+        # unknown over 31 clears, with concurrent sessions confounding every count --
+        # `.shiftwork/notes-job64/J64-2.md`). So the names this session was shown are
+        # forgotten here either way; if the id changed there is no ledger and this is a
+        # no-op. Only the seen-set: whether a re-read after `/clear` should still be
+        # refused is the read ledger's own question, and `resume` restores the window, so
+        # it resets nothing. No ledger is created when none exists (job64, J64-2).
+        ledger = _read_ledger(run, payload.get("session_id"))
+        if "injected" in ledger:
+            del ledger["injected"]
+            _write_ledger(run, payload.get("session_id"), ledger)
     # `profileFacts` keeps its old meaning -- files in the store -- so older records stay
     # comparable; `profileInjected` / `profileDropped` are what the block carried and did
     # not, and `dropRule` is the order the drop followed. The project trio appears only when
@@ -1051,7 +1083,42 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     if not heads:
         _log(run, {"event": "UserPromptSubmit", "action": "none", "reason": "no-headers"})
         return
-    joined = "\n".join(heads)
+    # WHAT THIS CONTEXT HAS ALREADY BEEN SHOWN IS NOT SHOWN AGAIN (job64, J64-2). Measured
+    # 2026-09-25: 333 of 598 injections in a week repeated a name injected earlier in the
+    # same session. The top 3 are still asked for (RB-P1's floor stays) and the seen ones are
+    # DROPPED, not refilled from rank 4 onward: what leaves is always a subset of what the
+    # un-deduped arm would have sent, so its precision can only rise, and a repeated prompt
+    # says nothing rather than walking down the ranking on every repeat. The seen-set is the
+    # session ledger's, so it is forgotten exactly when the window is (compaction, `/clear`).
+    transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
+    ledger = _read_ledger(run, payload.get("session_id"))
+    seen = _injected_seen(ledger, transcript)
+    fresh: list[str] = []
+    suppressed: list[str] = []
+    for line in heads:
+        matched = RECALL_HEADER.match(line)
+        name = matched.group(2) if matched else ""
+        if name in seen:
+            suppressed.append(name)
+        else:
+            fresh.append(line)
+    if not fresh:
+        # Everything picked was already in the window. Nothing is emitted, and the record
+        # says WHY with the names, so an audit can count what dedupe withheld.
+        _log(
+            run,
+            {
+                "event": "UserPromptSubmit",
+                "action": "suppress",
+                "hits": len(heads),
+                "source": o.source,
+                "session": payload.get("session_id"),
+                "prompt": _prompt_fingerprint(prompt),
+                "suppressed": suppressed,
+            },
+        )
+        return
+    joined = "\n".join(fresh)
     ctx = _cap_lines(
         "[bantamkit recall — memories that match this prompt; call "
         'mcp__bantamkit__memory_recall with {"query":"<name>"} for the body]\n'
@@ -1063,13 +1130,25 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # asks "was an INJECTED name later used", a question a name the model never saw would
     # poison. `hits` keeps its old meaning (headers picked, pre-cap) so the 487 records
     # written before this change stay comparable; `dropped` is the difference the old shape
-    # could not show.
+    # could not show, counted over the unseen headers only, so that
+    # `hits == injected + dropped + suppressed` on every record.
     query_tokens = tokens(prompt)
     injected = [
         scored
         for scored in (_score_header(line, query_tokens) for line in ctx.split("\n"))
         if scored is not None
     ]
+    # Remembered AFTER the cap, off `injected`: a name the cap cut never reached the window
+    # and must be eligible next time.
+    at = _stamp()
+    for scored in injected:
+        seen[scored["name"]] = at
+    everyone = ledger.get("injected")
+    if not isinstance(everyone, dict):
+        everyone = {}
+        ledger["injected"] = everyone
+    everyone[transcript] = seen
+    _write_ledger(run, payload.get("session_id"), ledger)
     _log(
         run,
         {
@@ -1084,7 +1163,8 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
             "session": payload.get("session_id"),
             "prompt": _prompt_fingerprint(prompt),
             "injected": injected,
-            "dropped": len(heads) - len(injected),
+            "dropped": len(fresh) - len(injected),
+            "suppressed": suppressed,
         },
     )
     _emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}})
