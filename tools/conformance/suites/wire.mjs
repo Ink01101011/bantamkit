@@ -1054,7 +1054,26 @@ export async function run(ctx) {
       // `index.md` as the session left it: its byte size and its longest line, the two
       // numbers the `memory-compact` session's budget arithmetic stands on.
       index: indexOf(join(store, 'index.md')),
+      // `last_recalled` per fact, in every store a session can reach (job64, J64-1): the
+      // one on-disk trace an explicit `memory_recall` leaves, read here for the same reason
+      // the archives are — a session that stopped stamping, or one that started stamping a
+      // read-only layer, is visible only if the file is looked at.
+      stamps: {
+        store: stampsOf(join(store, 'facts')),
+        project: stampsOf(join(project, '.bantamkit', 'memory', 'facts')),
+        profile: stampsOf(join(home, '.bantamkit', 'memory', 'facts')),
+      },
     };
+  }
+  /** name -> the `last_recalled:` frontmatter value of each fact, or `null` for no such directory. */
+  function stampsOf(facts) {
+    if (!existsSync(facts)) return null;
+    const out = {};
+    for (const name of readdirSync(facts).filter((n) => n.endsWith('.md')).sort()) {
+      const text = readFileSync(join(facts, name), 'utf8');
+      out[name.slice(0, -3)] = (/^last_recalled: (.*)$/m.exec(text) ?? [, '<no last_recalled line>'])[1];
+    }
+    return out;
   }
   /** The sorted names in a directory, or `null` if there is no such directory. */
   function listingOf(dir) {
@@ -2005,6 +2024,48 @@ export async function run(ctx) {
       });
     }
     notes.push(`memory_compact (node): ${textOf(results.get('memory-compact').node, 9).split('\n')[0]}`);
+  }
+
+  // ------------------------------- an explicit memory_recall still stamps (job64, J64-1)
+  //
+  // THE OTHER HALF of `hooks.mjs`'s `inject-no-stamp` block. J64-1 took the `last_recalled`
+  // stamp away from the hook's automatic injection and left it on every EXPLICIT recall; the
+  // hook half is pinned there, and this is the tool half, on the production shape: the
+  // `memory-layered` session (no `--store`, `Memory.layered` binds the project store under
+  // `cwd` and the profile store under the redirected `HOME`) saves `layered` at id 3 with
+  // `last_recalled: null` and recalls it at id 4. J64-0 Q2 found the tool-level stamp pinned
+  // by NOTHING as a file byte on either side — `wire.mjs`'s compaction ordering RELIES on it
+  // and `store.mjs` pins `MemoryStore.recall` below the tool — so the literal is new.
+  //
+  // PER SIDE, because the regression it guards is one default flipped in one shared
+  // component and would land on both sides at once. The value is pinned as "an ISO date" and
+  // not as today's date: the session runs across a midnight like any other.
+  //
+  // RED-THEN-GREEN, measured 2026-09-25: both `memory_recall` handlers passing `stamp=False`
+  // / `false` reddens the two per-side literals and leaves the differential green; one side
+  // alone reddens the differential and that side's literal. Counts in
+  // `.shiftwork/notes-job64/J64-1.md`.
+  {
+    const { python, node } = results.get('memory-layered');
+    const ISO_DATE = /^'\d{4}-\d{2}-\d{2}'$/;
+    const stampOf = (side) => side.stamps.project?.['layered'] ?? '<no project fact>';
+    cases.push({
+      name: 'memory_recall stamps: the layered session left the same `last_recalled` on the same facts',
+      kind: 'json',
+      expected: python.stamps,
+      actual: node.stamps,
+    });
+    for (const [label, side] of [['the reference', python], ['the port', node]]) {
+      cases.push({
+        name: `memory_recall stamps: PINNED PER SIDE: id 4 dated \`layered\` on disk, and only in the project store — ${label}`,
+        kind: 'json',
+        expected: { layered: 'an ISO date', profileStamped: [] },
+        actual: {
+          layered: ISO_DATE.test(stampOf(side)) ? 'an ISO date' : stampOf(side),
+          profileStamped: Object.entries(side.stamps.profile ?? {}).filter(([, v]) => v !== 'null').map(([n]) => n),
+        },
+      });
+    }
   }
 
   // -------------------------------------------------- the band, held to register item 7

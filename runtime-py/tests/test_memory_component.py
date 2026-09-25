@@ -318,6 +318,31 @@ def test_layered_recall_does_not_stamp_readonly_layers(tmp_path, fake_home):
     assert (profile_store / "facts" / "prof.md").read_text(encoding="utf-8") == before
 
 
+def test_layered_recall_stamps_the_project_layer_by_default_and_not_when_told_not_to(
+    tmp_path, fake_home
+):
+    """`stamp=False` (job64, J64-1) is the hook's flag: the same walk, the same answer, and
+    not one byte written. The default half is pinned in the same test because J64-0 found
+    the POSITIVE ("a layered recall stamps the project layer") pinned nowhere at this level
+    — only the negative for read-only layers, one test up."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "deploy", "project truth")
+    path = store / "facts" / "deploy.md"
+    before = path.read_bytes()
+    assert b"last_recalled: null" in before
+
+    quiet = Memory.layered(start=project).recall_outcome("deploy", stamp=False)
+    assert (quiet.status, quiet.returned) == ("answered", 1)
+    assert path.read_bytes() == before
+
+    loud = Memory.layered(start=project).recall_outcome("deploy")
+    assert loud.reply == quiet.reply, "the flag changes what is written, never what is answered"
+    assert path.read_bytes() != before
+    assert b"last_recalled: '" in path.read_bytes()
+
+
 def test_layered_corrupt_grant_does_not_break_project_recall(tmp_path, fake_home):
     project = tmp_path / "companyA"
     project.mkdir()

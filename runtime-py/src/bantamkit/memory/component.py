@@ -371,6 +371,8 @@ class Memory:
         query: str,
         k: int | None = None,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
+        *,
+        stamp: bool = True,
     ) -> RecallOutcome:
         """`recall`, carrying the walk it performed as numbers rather than as prose.
 
@@ -398,6 +400,16 @@ class Memory:
         store, so it surfaces as the error it is rather than as an `unreadable` count —
         the read-only-layer `except` below would otherwise file a caller's bad argument as
         a corrupt grant.
+
+        `stamp` (job64, J64-1) is whether a hit in the WRITABLE layer gets its
+        `last_recalled` dated. It defaults to True, which is what every explicit recall —
+        the `memory_recall` tool, the memory CLI, `Memory.recall` — has always done, and
+        those callers do not pass it. The one caller that passes False is the hook's
+        `UserPromptSubmit` arm: an automatic injection is not the model asking for a fact,
+        and dating it as one was measured (2026-09-25) to stamp 25 of 42 facts in one
+        store as "recalled today", so every rule keyed on `last_recalled` — compaction's
+        stalest-first, SessionStart's drop rule — was reading injection traffic instead of
+        model demand. Read-only layers are never stamped whatever this says.
         """
         budget = self.k if k is None else max(k, self.k)
         picked: list[tuple[str, Fact]] = []
@@ -410,7 +422,7 @@ class Memory:
                 break  # budget spent: later (read-only) layers are never even read
             reached += 1
             try:
-                facts = store.recall(query, budget, stamp=writable, min_ratio=min_ratio)
+                facts = store.recall(query, budget, stamp=writable and stamp, min_ratio=min_ratio)
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in v1

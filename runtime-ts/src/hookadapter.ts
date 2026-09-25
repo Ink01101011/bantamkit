@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Memory } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
-import { DURABLE_TYPES, MemoryStore, pyEqualValue, pyText, tokens } from './memory/store.js';
+import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
 import type { Fact } from './memory/store.js';
 import { keptManifest, keptPrefix } from './npminstall.js';
 import {
@@ -1114,7 +1114,12 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
     return;
   }
   const m = Memory.layered(input.cwd || process.cwd());
-  const o = m.recallOutcome(prompt, 3);
+  // `stamp = false` (job64, J64-1): an injection is the HOOK reading the store, not the model
+  // asking for a fact, so it must not date `last_recalled`. Before this it did, on every
+  // prompt, for up to three files — and the rules keyed on that date (compaction's
+  // stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
+  // reading this arm's traffic. An explicit `memory_recall` still stamps.
+  const o = m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false);
   if (o.status !== 'answered') {
     log(run, { event: 'UserPromptSubmit', action: 'none', status: o.status, candidates: o.candidates });
     return;

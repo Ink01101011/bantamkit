@@ -19,6 +19,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -444,6 +445,29 @@ test('layered binds project, then the grants, then the profile', () => {
   writeFileSync(join(project, '.bantamkit', 'config.yaml'), 'extra_stores:\n- ../../shared\n');
   sandboxed(home, () => {
     assert.deepEqual(Memory.layered(project, frozen()).layerLabels(), ['project', 'extra:shared', 'profile']);
+  });
+});
+
+test('a layered recall stamps the project layer by default, and not when told not to', () => {
+  // `stamp = false` (job64, J64-1) is the hook's flag: the same walk, the same answer, and
+  // not one byte written. The default half is pinned in the same test because J64-0 found
+  // the POSITIVE ("a layered recall stamps the project layer") pinned nowhere at this level.
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkstore(join(home, '.bantamkit', 'memory'));
+  const project = join(bed, 'companyA');
+  mkstore(join(project, '.bantamkit', 'memory'), { deploy: 'project truth about the deploy' });
+  const path = join(project, '.bantamkit', 'memory', 'facts', 'deploy.md');
+  const before = readFileSync(path, 'utf8');
+  assert.match(before, /^last_recalled: null$/m);
+  sandboxed(home, () => {
+    const quiet = Memory.layered(project, frozen()).recallOutcome('deploy', null, RECALL_MIN_SCORE_RATIO, false);
+    assert.deepEqual([quiet.status, quiet.returned], ['answered', 1]);
+    assert.equal(readFileSync(path, 'utf8'), before);
+
+    const loud = Memory.layered(project, frozen()).recallOutcome('deploy');
+    assert.equal(loud.reply, quiet.reply, 'the flag changes what is written, never what is answered');
+    assert.match(readFileSync(path, 'utf8'), new RegExp(`^last_recalled: '${TODAY}'$`, 'm'));
   });
 });
 

@@ -452,8 +452,23 @@ export class Memory {
    * raises out of the FIRST layer, which is the writable project store, so it surfaces as
    * the error it is rather than as an `unreadable` count — the read-only-layer `catch`
    * below would otherwise file a caller's bad argument as a corrupt grant.
+   *
+   * `stamp` (job64, J64-1) is whether a hit in the WRITABLE layer gets its `last_recalled`
+   * dated. It defaults to true, which is what every explicit recall — the `memory_recall`
+   * tool, the memory CLI, `Memory.recall` — has always done, and those callers do not pass
+   * it. The one caller that passes false is the hook's `UserPromptSubmit` arm: an automatic
+   * injection is not the model asking for a fact, and dating it as one was measured
+   * (2026-09-25) to stamp 25 of 42 facts in one store as "recalled today", so every rule
+   * keyed on `last_recalled` — compaction's stalest-first, SessionStart's drop rule — was
+   * reading injection traffic instead of model demand. Read-only layers are never stamped
+   * whatever this says.
    */
-  recallOutcome(query: string, k: number | null = null, minRatio = RECALL_MIN_SCORE_RATIO): RecallOutcome {
+  recallOutcome(
+    query: string,
+    k: number | null = null,
+    minRatio = RECALL_MIN_SCORE_RATIO,
+    stamp = true,
+  ): RecallOutcome {
     const budget = k === null ? this.k : Math.max(k, this.k);
     const picked: Array<[string, Fact]> = [];
     const seen = new Set<string>();
@@ -465,7 +480,7 @@ export class Memory {
       reached += 1;
       let facts: Fact[];
       try {
-        facts = store.recall(query, budget, writable, minRatio);
+        facts = store.recall(query, budget, writable && stamp, minRatio);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
           throw e;

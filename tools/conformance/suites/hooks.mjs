@@ -67,6 +67,7 @@
  * are the in-process half and stay; this block is the process half.
  */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -262,6 +263,38 @@ function treeOf(dir) {
 }
 
 const NATIVE_FIELDS = (rec) => Object.fromEntries(Object.entries(rec).filter(([k]) => k.startsWith('native')));
+
+/**
+ * Every fact file under `<store>/facts`, name -> { sha256, mtimeNs, lastRecalled }.
+ *
+ * Three fields because a stamp moves all three and a same-day re-stamp moves only ONE:
+ * J64-0 measured that a fact already dated today is rewritten with identical bytes and only
+ * its mtime carries the write (`.shiftwork/notes-job64/J64-0.md`, Q4). A case that compared
+ * contents alone would therefore pass green on a bed whose facts were already stamped, which
+ * is why `mtimeNs` is read as a BigInt string and compared as a literal. `lastRecalled` is
+ * the frontmatter line itself, so a failure names the field that moved and not just the file.
+ */
+function factsState(factsDir) {
+  const out = {};
+  if (!existsSync(factsDir)) return out;
+  for (const name of readdirSync(factsDir).filter((n) => n.endsWith('.md')).sort()) {
+    const path = join(factsDir, name);
+    const text = readFileSync(path, 'utf8');
+    out[name] = {
+      sha256: createHash('sha256').update(text, 'utf8').digest('hex'),
+      mtimeNs: String(statSync(path, { bigint: true }).mtimeNs),
+      lastRecalled: (/^last_recalled: (.*)$/m.exec(text) ?? [, '<no last_recalled line>'])[1],
+    };
+  }
+  return out;
+}
+
+/** Which facts moved between two `factsState` snapshots, per field, so `[]` means "none". */
+function factsDiff(before, after) {
+  const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+  const moved = (field) => names.filter((n) => (before[n] ?? {})[field] !== (after[n] ?? {})[field]);
+  return { rewritten: moved('sha256'), mtimeMoved: moved('mtimeNs'), stamped: moved('lastRecalled') };
+}
 
 // ------------------------------------------------------------------------------------ run
 
@@ -1920,6 +1953,152 @@ export async function run(ctx) {
         undefined,
         'json',
       ).map((c, i) => ({ ...c, expected: i === 0 ? 62 : 65 })),
+    );
+  }
+
+  // ================================ an injection is not a recall (job64, J64-1)
+  //
+  // THE PROPERTY: a `UserPromptSubmit` that INJECTS leaves every fact file in the store it
+  // read byte-identical, contents AND mtime, on both sides — and the injection itself is
+  // unchanged: the same block on stdout, the same `inject` record. Until this job the arm
+  // went down `Memory.recallOutcome(prompt, 3)` with the component's default `stamp`, so
+  // every automatic injection dated up to three facts as "recalled today" and moved their
+  // mtime; J64-0 measured 25 of 42 facts in one real store carrying that day's date, and
+  // every rule keyed on `last_recalled` (compaction's stalest-first, the SessionStart drop
+  // rule, the Stop dream's `size + mtimeMs` fingerprint) was reading this arm's traffic.
+  //
+  // NOTHING PINNED IT. J64-0 Q2 found no unit test on either side and no case in this suite
+  // that read a fact file after a `UserPromptSubmit`; the one Node test that needs a stamped
+  // fact seeds it through `Memory.recall`, not the hook. So this block is the first, and it is
+  // PER SIDE against a typed constant, because the regression it guards lands symmetrically
+  // (one default flipped in one shared component) and a differential would stay green.
+  //
+  // THE BED HAS A CONTROL BUILT IN. Three facts share tokens with the prompt and two share
+  // none, so `hits: 3` is pinned first as the precondition — an arm that skipped the store
+  // altogether would leave the files alone for the wrong reason, and `hits: 0` would say so.
+  // The "explicit recall still stamps" half of the property is pinned where that surface
+  // lives: `tools/conformance/suites/wire.mjs` (`memory_recall` over MCP, per side) and
+  // `store.mjs` (`MemoryStore.recall` with `stamp=true`, the whole tree diffed).
+  //
+  // RED-THEN-GREEN, measured 2026-09-25: with the hook's `stamp=False` / `false` put back to
+  // the default on BOTH sides, the four per-side property literals below go red (the
+  // `rewritten` / `mtimeMoved` / `stamped` lists each name the three hit files, and the
+  // field-for-field snapshot moves on the same three) while the precondition literals, the
+  // record differential and the stdout differential all stay green — the symmetric-regression
+  // shape, and the reason the record and stdout comparisons alone could never have held this
+  // (117 cases, 4 failures). Put back on the port alone: the port's two go red, the reference's
+  // two and every differential stay green (117 cases, 2 failures). Counts and commands in
+  // `.shiftwork/notes-job64/J64-1.md`.
+  {
+    const id = 'inject-no-stamp';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const factsDir = join(cwd, '.bantamkit', 'memory', 'facts');
+    // Pairwise Jaccard over `tokens(name + description)` stays under the store's 0.5
+    // duplicate threshold, or `seedStore` refuses the bed; each hit shares three or more
+    // prompt tokens, each miss shares none.
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), [
+      {
+        type: 'project',
+        name: 'deployment-rollback',
+        description: 'the deployment path rollback procedure for the staging cluster',
+      },
+      { type: 'project', name: 'staging-cluster-notes', description: 'wiring notes kept about the staging cluster nodes' },
+      { type: 'project', name: 'rollback-runbook', description: 'runbook steps when a rollback of the deployment is needed' },
+      { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      { type: 'reference', name: 'unrelated-beta', description: 'still nothing in common with anything' },
+    ]);
+    const PROMPT = 'deployment path rollback procedure for the staging cluster';
+    const payload = { hook_event_name: 'UserPromptSubmit', prompt: PROMPT, cwd, session_id: id };
+    b.snapshot();
+    // Snapshotted PER SIDE and AFTER the restore: `cpSync` does not preserve timestamps, so
+    // the port's bed carries the copy's mtimes and a snapshot taken before the restore would
+    // fail the port for the harness's own copy.
+    const pyBefore = factsState(factsDir);
+    const py = runHook(ctx, 'py', { payload, cwd, home: home(id, 'py') });
+    const pyAfter = factsState(factsDir);
+    b.restore();
+    const ndBefore = factsState(factsDir);
+    const nd = runHook(ctx, 'node', { payload, cwd, home: home(id, 'node') });
+    const ndAfter = factsState(factsDir);
+
+    // PRECONDITION: the inject branch, with three hits, on both sides. A `skip` or `none`
+    // record leaves the files alone for a reason this block is not about.
+    if (py.last['action'] !== 'inject' || nd.last['action'] !== 'inject') {
+      throw new Error(
+        `hooks: inject-no-stamp needs the INJECT branch on both sides and got ` +
+          `py=${py.last['action']} node=${nd.last['action']}; the bed's store no longer ` +
+          'answers the prompt, so nothing below would be measuring an injection.',
+      );
+    }
+    const recordOf = (r) => ({ action: r.last['action'], hits: r.last['hits'], dropped: r.last['dropped'] });
+    cases.push(
+      ...literalCases(
+        recordOf(py),
+        recordOf(nd),
+        'inject-no-stamp: precondition — the arm read the store and injected three of five',
+        { action: 'inject', hits: 3, dropped: 0 },
+      ),
+    );
+    // Both sides seeded the same five facts, all undated: the state the property is measured
+    // against, pinned so a bed that arrived pre-stamped cannot make the cases below vacuous.
+    cases.push(
+      ...literalCases(
+        Object.fromEntries(Object.entries(pyBefore).map(([n, s]) => [n, s.lastRecalled])),
+        Object.fromEntries(Object.entries(ndBefore).map(([n, s]) => [n, s.lastRecalled])),
+        'inject-no-stamp: precondition — five facts on disk, none of them dated',
+        {
+          'deployment-rollback.md': 'null',
+          'rollback-runbook.md': 'null',
+          'staging-cluster-notes.md': 'null',
+          'unrelated-alpha.md': 'null',
+          'unrelated-beta.md': 'null',
+        },
+      ),
+    );
+    // THE PROPERTY, PER SIDE: not one file rewritten, not one mtime moved, not one stamp.
+    cases.push(
+      ...literalCases(
+        factsDiff(pyBefore, pyAfter),
+        factsDiff(ndBefore, ndAfter),
+        'inject-no-stamp: PINNED PER SIDE: the injection left every fact file byte- and mtime-identical',
+        { rewritten: [], mtimeMoved: [], stamped: [] },
+      ),
+    );
+    cases.push(
+      ...literalCases(
+        pyAfter,
+        ndAfter,
+        'inject-no-stamp: the five files after the injection are the five files before it, field for field',
+        undefined,
+      ).map((c, i) => ({ ...c, expected: i === 0 ? pyBefore : ndBefore })),
+    );
+    // WHAT DID NOT CHANGE: the injected block and the record are the same on both sides,
+    // and the same as before this job — the stamp was the only thing taken away.
+    cases.push({
+      name: 'inject-no-stamp: the injected block on stdout, byte for byte',
+      kind: 'bytes',
+      expected: py.stdout,
+      actual: nd.stdout,
+    });
+    const injectFields = (r) =>
+      Object.fromEntries(Object.entries(r.last).filter(([k]) => !['ts', 'ms'].includes(k)));
+    cases.push({
+      name: 'inject-no-stamp: the inject record, with only `ts` and `ms` masked',
+      kind: 'json',
+      expected: injectFields(py),
+      actual: injectFields(nd),
+    });
+    cases.push(
+      ...literalCases(
+        { bytes: py.last['bytes'], injected: py.last['injected'].map((x) => x.name) },
+        { bytes: nd.last['bytes'], injected: nd.last['injected'].map((x) => x.name) },
+        'inject-no-stamp: PINNED PER SIDE: the three names injected, in score order, and the block size',
+        // 423 is MEASURED off both sides on this bed (2026-09-25), not derived: the header
+        // line plus three `[project] [name] (type) description` headers, under the cap.
+        { bytes: 423, injected: ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'] },
+      ),
     );
   }
 

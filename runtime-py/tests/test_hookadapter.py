@@ -420,6 +420,50 @@ def test_a_matching_prompt_injects_recall_HEADERS_and_not_bodies(tmp_path):
     assert line["dropped"] == 0
 
 
+def test_an_injection_leaves_every_fact_file_byte_and_mtime_identical(tmp_path):
+    """AN INJECTION IS NOT A RECALL (job64, J64-1). Until this job the arm went through
+    `Memory.recall_outcome` with the component's default `stamp`, so every automatic
+    injection dated up to three facts `last_recalled: <today>` and rewrote their files —
+    25 of 42 facts in one real store carried one day's date, and every rule keyed on that
+    field (compaction's stalest-first, the SessionStart drop rule, the Stop dream's
+    `size + mtime` fingerprint) was reading injection traffic. The control at the end is the
+    explicit path on the SAME bed, which must still stamp: without it a bed whose recall
+    never reached the file would pass this test for the wrong reason."""
+    home, cwd = _bed(tmp_path, "nostamp")
+    store = cwd / ".bantamkit" / "memory"
+    _save(store, "reference", "conformance-gate", "the gate is zero failures, never a total", "b")
+    _save(store, "project", "unrelated", "a fact sharing no token with that prompt", "body")
+
+    def state() -> dict[str, tuple[bytes, int]]:
+        facts = sorted((store / "facts").glob("*.md"))
+        return {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in facts}
+
+    before = state()
+    assert b"last_recalled: null" in before["conformance-gate.md"][0]
+
+    done = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": "what is the conformance gate here"},
+        home=home,
+        cwd=cwd,
+    )
+
+    assert done.returncode == 0, done.stderr
+    line = _log_lines(home)[0]
+    assert (line["action"], line["hits"]) == ("inject", 1), "the arm must have READ the store"
+    ctx = json.loads(done.stdout.decode())["hookSpecificOutput"]["additionalContext"]
+    assert "[conformance-gate]" in ctx
+    assert state() == before, "an injection rewrote a fact file, or moved its mtime"
+
+    # CONTROL: the explicit path, on the same bed, still stamps — and only the hit.
+    from bantamkit.memory.component import Memory
+
+    Memory(store=store).recall("what is the conformance gate here")
+    after = state()
+    assert b"last_recalled: '" in after["conformance-gate.md"][0]
+    assert after["conformance-gate.md"] != before["conformance-gate.md"]
+    assert after["unrelated.md"] == before["unrelated.md"]
+
+
 def test_the_prompt_is_logged_as_a_fingerprint_and_never_as_text(tmp_path):
     """THE LOG PERSISTS TO DISK AND THE PROMPTS ARE THE USER'S. A sha256 and two sizes;
     no substring of the prompt at any length."""

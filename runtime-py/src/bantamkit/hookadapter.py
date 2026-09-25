@@ -1027,7 +1027,12 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
         _log(run, {"event": "UserPromptSubmit", "action": "skip", "reason": "short-or-command"})
         return
     m = Memory.layered(str(payload.get("cwd") or os.getcwd()))
-    o = m.recall_outcome(prompt, 3)
+    # `stamp=False` (job64, J64-1): an injection is the HOOK reading the store, not the model
+    # asking for a fact, so it must not date `last_recalled`. Before this it did, on every
+    # prompt, for up to three files -- and the rules keyed on that date (compaction's
+    # stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
+    # reading this arm's traffic. An explicit `memory_recall` still stamps.
+    o = m.recall_outcome(prompt, 3, stamp=False)
     if o.status != "answered":
         _log(
             run,

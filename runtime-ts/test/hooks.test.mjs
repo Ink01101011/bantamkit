@@ -30,7 +30,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -1011,6 +1011,49 @@ test('the injection record names WHICH facts were injected and at what score', a
   const scores = rec.injected.map((i) => i.score);
   assert.deepEqual(scores, [...scores].sort((a, b) => b - a),
     'the store ranks by descending score; a logged score that does not is not that score');
+});
+
+test('an injection leaves every fact file byte- and mtime-identical; the explicit path still stamps', async () => {
+  // AN INJECTION IS NOT A RECALL (job64, J64-1). Until this job the arm went through
+  // `Memory.recallOutcome` with the component's default `stamp`, so every automatic
+  // injection dated up to three facts `last_recalled: <today>` and rewrote their files — 25
+  // of 42 facts in one real store carried one day's date, and every rule keyed on that field
+  // (compaction's stalest-first, the SessionStart drop rule, the Stop dream's `size + mtimeMs`
+  // fingerprint) was reading injection traffic. The control at the end is the explicit path
+  // on the SAME bed, which must still stamp: without it a bed whose recall never reached the
+  // file would pass for the wrong reason.
+  const cwd = newCwd();
+  const home = newHome();
+  const store = join(cwd, '.bantamkit', 'memory');
+  await seedScored(store, [
+    ['pinned', 'deploy flag ships wombat wombat'],
+    ['unrelated', 'a fact sharing no token with that prompt'],
+  ]);
+  const state = () => {
+    const out = {};
+    for (const n of factNames(store)) {
+      const p = join(store, 'facts', n);
+      out[n] = { bytes: readFileSync(p, 'utf8'), mtimeNs: String(statSync(p, { bigint: true }).mtimeNs) };
+    }
+    return out;
+  };
+  const before = state();
+  assert.match(before['pinned.md'].bytes, /^last_recalled: null$/m);
+
+  const r = runHook({ hook_event_name: 'UserPromptSubmit', prompt: 'the deploy flag ships tonight' }, { cwd, home });
+  assert.equal(r.status, 0, r.stderr);
+  const rec = injectRecord(home);
+  assert.equal(rec.hits, 1, 'the arm must have READ the store');
+  assert.match(r.stdout, /\[pinned\]/);
+  assert.deepEqual(state(), before, 'an injection rewrote a fact file, or moved its mtime');
+
+  // CONTROL: the explicit path, on the same bed, still stamps — and only the hit.
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  new Memory(store).recall('the deploy flag ships tonight');
+  const after = state();
+  assert.match(after['pinned.md'].bytes, /^last_recalled: '\d{4}-\d{2}-\d{2}'$/m);
+  assert.notDeepEqual(after['pinned.md'], before['pinned.md']);
+  assert.deepEqual(after['unrelated.md'], before['unrelated.md']);
 });
 
 test('no prompt text reaches the log — a digest, two sizes, and a closed field set', async () => {
