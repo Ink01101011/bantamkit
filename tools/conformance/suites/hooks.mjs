@@ -248,6 +248,28 @@ function seedStore(ctx, storeRoot, facts) {
   if (r.status !== 0) throw new Error(`hooks: could not seed ${storeRoot}\n${r.stderr}`);
 }
 
+/**
+ * An explicit recall through the reference's own `MemoryStore` — the ONE path that still
+ * dates a fact on disk after J64-1 — so "re-dated by a recall" is what the product writes and
+ * not a line this file spelled. Asserts the name was a hit, or the re-dating never happened.
+ */
+function recallStore(ctx, storeRoot, query, expectName) {
+  const r = spawnSync(
+    ctx.python,
+    [
+      '-c',
+      'import sys;sys.path.insert(0,sys.argv[1]);from bantamkit.memory.component import Memory;' +
+        'out=Memory(store=sys.argv[2]).recall(sys.argv[3]);assert sys.argv[4] in out,out',
+      join(repoRoot, 'runtime-py', 'src'),
+      storeRoot,
+      query,
+      expectName,
+    ],
+    { encoding: 'utf8' },
+  );
+  if (r.status !== 0) throw new Error(`hooks: could not recall in ${storeRoot}\n${r.stderr}`);
+}
+
 /** Every file under `dir`, path -> content, so "what A wrote" is compared byte for byte. */
 function treeOf(dir) {
   const out = {};
@@ -2351,6 +2373,149 @@ export async function run(ctx) {
       kind: 'json',
       expected: py.ledgerS5,
       actual: nd.ledgerS5,
+    });
+  }
+
+  // ======================= dream-fingerprint: a re-dated fact does not re-arm the preview
+  //
+  // job64 / J64-3. The Stop arm previews the cross-layer dream once per change to either
+  // layer, gated by a fingerprint of `facts/*.md` in `dream-state.json`. Until this unit that
+  // fingerprint was `name + size + mtimeMs`, and every recall rewrites one frontmatter line
+  // (`last_recalled:`) and the mtime — so a session of recalls re-armed the preview on every
+  // Stop (measured 2026-09-25 over a week of the real log: 103 of 236 previews reported the
+  // identical `wouldMerge 14 / wouldConsume 14`). Size is no signal either: J64-0 measured a
+  // same-day re-stamp moving the mtime ALONE. The fingerprint is now a sha256 over each fact's
+  // name and its bytes with that one line dropped, identical on both sides.
+  //
+  // Six Stops per side on one three-fact project store (restored between sides) and a
+  // one-fact profile store per side, with a change between each pair:
+  //   S1 first look                       -> dream-preview
+  //   (a1) an explicit recall through the reference store (null -> today, bytes + mtime move)
+  //   S2                                  -> dream-skip unchanged, same fingerprint
+  //   (a2) the `last_recalled:` line re-dated to another day
+  //   S3                                  -> dream-skip unchanged, same fingerprint
+  //   (a3) the mtime alone (utimes)
+  //   S4                                  -> dream-skip unchanged, same fingerprint
+  //   (b)  the body edited
+  //   S5                                  -> dream-preview, fingerprint moved
+  //   (c)  a fact added
+  //   S6                                  -> dream-preview, fingerprint moved again
+  // The (a1) diff is pinned as a precondition so the three skips cannot be vacuous: the
+  // recall really rewrote the file. MUTATION EVIDENCE (2026-09-25) — the stat fields put back
+  // on both sides (`size + mtimeMs` instead of the content digest): the two PINNED PER SIDE
+  // literals go red per side, 4 cases, while the precondition and the sequence differential
+  // stay green — the symmetric-regression shape, and why the differential alone could never
+  // hold this. Counts and commands in `.shiftwork/notes-job64/J64-3.md`.
+  {
+    const id = 'dream-fingerprint';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const store = join(cwd, '.bantamkit', 'memory');
+    const factsDir = join(store, 'facts');
+    seedStore(ctx, store, [
+      { type: 'project', name: 'shared-ruling', description: 'a ruling both layers carry a copy of' },
+      { type: 'project', name: 'recalled-often', description: 'the fact the operator recalls every turn' },
+      { type: 'reference', name: 'left-alone', description: 'nothing here answers any query' },
+    ]);
+    const transcript = join(cwd, 'transcript.jsonl');
+    writeFileSync(transcript, '');
+    b.snapshot();
+    const fact = join(factsDir, 'recalled-often.md');
+    const REDATED = "last_recalled: '2020-01-01'";
+
+    const sequence = (side) => {
+      const h = home(id, side);
+      // The profile layer is under the per-side home: one shared name, so the preview has
+      // something to report and the child's status is `previewed` on every preview.
+      seedStore(ctx, join(h, '.bantamkit', 'memory'), [
+        { type: 'project', name: 'shared-ruling', description: 'the profile copy of the ruling' },
+      ]);
+      const payload = { hook_event_name: 'Stop', cwd, session_id: id, transcript_path: transcript };
+      const state = join(h, '.bantamkit', 'hooks', 'dream-state.json');
+      const fingerprintOf = () => (existsSync(state) ? JSON.parse(readFileSync(state, 'utf8'))['fingerprint'] : null);
+      const steps = [];
+      const stop = (label) => {
+        const r = runHook(ctx, side, { payload, cwd, home: h });
+        const rec = r.records.filter((x) => String(x['action']).startsWith('dream')).pop() ?? {};
+        steps.push({ label, action: rec['action'], reason: rec['reason'] ?? null, fingerprint: fingerprintOf() });
+      };
+      stop('S1 first look');
+      const a1Before = factsState(factsDir);
+      recallStore(ctx, store, 'the operator recalls every turn', 'recalled-often');
+      const a1 = factsDiff(a1Before, factsState(factsDir));
+      stop('S2 after an explicit recall');
+      writeFileSync(fact, readFileSync(fact, 'utf8').replace(/^last_recalled: .*$/m, REDATED));
+      stop('S3 after re-dating last_recalled');
+      const later = new Date(statSync(fact).mtimeMs + 1000);
+      utimesSync(fact, later, later);
+      stop('S4 after a touch');
+      writeFileSync(fact, readFileSync(fact, 'utf8').replace(/\nbody\n$/, '\na new body\n'));
+      stop('S5 after a body edit');
+      seedStore(ctx, store, [{ type: 'reference', name: 'brand-new', description: 'written after the last look' }]);
+      stop('S6 after a fact was added');
+      const fp = steps.map((s) => s.fingerprint);
+      return {
+        steps,
+        a1,
+        bodyEdited: /a new body/.test(readFileSync(fact, 'utf8')),
+        movement: {
+          sameAfterRecall: fp[1] === fp[0],
+          sameAfterRedate: fp[2] === fp[0],
+          sameAfterTouch: fp[3] === fp[0],
+          movedOnBodyEdit: fp[4] !== fp[0],
+          movedOnAdd: fp[5] !== fp[4],
+        },
+      };
+    };
+    const py = sequence('py');
+    b.restore();
+    const nd = sequence('node');
+
+    // PRECONDITION: the first look previewed on both sides, the recall really rewrote the
+    // fact (bytes, mtime and the date all moved), and the body edit landed.
+    const pre = (s) => ({ first: s.steps[0].action, a1: s.a1, bodyEdited: s.bodyEdited });
+    cases.push(
+      ...literalCases(pre(py), pre(nd), 'dream-fingerprint: precondition — S1 previewed, the recall re-dated the file, the body edit landed', {
+        first: 'dream-preview',
+        a1: { rewritten: ['recalled-often.md'], mtimeMoved: ['recalled-often.md'], stamped: ['recalled-often.md'] },
+        bodyEdited: true,
+      }),
+    );
+    // THE PROPERTY, PER SIDE: three re-datings are three skips, and the two content changes
+    // are two previews.
+    const actionsOf = (s) => s.steps.map((x) => x.action + (x.reason ? `/${x.reason}` : ''));
+    cases.push(
+      ...literalCases(
+        actionsOf(py),
+        actionsOf(nd),
+        'dream-fingerprint: PINNED PER SIDE: a recall, a re-date and a touch each skip; a body edit and a new fact each preview',
+        [
+          'dream-preview',
+          'dream-skip/unchanged',
+          'dream-skip/unchanged',
+          'dream-skip/unchanged',
+          'dream-preview',
+          'dream-preview',
+        ],
+      ),
+    );
+    cases.push(
+      ...literalCases(
+        py.movement,
+        nd.movement,
+        'dream-fingerprint: PINNED PER SIDE: the stored fingerprint is unmoved by re-dating and moved by content',
+        { sameAfterRecall: true, sameAfterRedate: true, sameAfterTouch: true, movedOnBodyEdit: true, movedOnAdd: true },
+      ),
+    );
+    // The whole sequence, side to side, with the hex masked: the profile root's path is in
+    // the hash and the two homes differ, so the hexes are not comparable across sides.
+    const masked = (s) => s.steps.map(({ label, action, reason }) => ({ label, action, reason }));
+    cases.push({
+      name: 'dream-fingerprint: the six-Stop sequence is the same on both sides',
+      kind: 'json',
+      expected: masked(py),
+      actual: masked(nd),
     });
   }
 

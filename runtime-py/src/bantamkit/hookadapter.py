@@ -1858,7 +1858,40 @@ def _same_path(a: str, b: str) -> bool:
     return _real_dir(a) == _real_dir(b)
 
 
+def _fact_content_digest(data: bytes) -> str:
+    """sha256 of a fact file with the frontmatter's `last_recalled:` line left out.
+
+    THE DATE IS NOT CONTENT. Every recall rewrites that one line (and the file's mtime), so a
+    fingerprint that saw it re-armed the dream preview on every `memory_recall` -- measured
+    2026-09-25 (job64): 103 of 236 previews in a week reported the identical `wouldMerge 14 /
+    wouldConsume 14`. Name, description, type, created, links and the body all stay in.
+
+    Byte-exact and identical in both runtimes (`factContentDigest` in
+    `runtime-ts/src/hookadapter.ts`): the split is on `\\n`, a trailing `\\r` is ignored only
+    for the two comparisons (a Windows-written file keeps its bytes in the hash), and only the
+    lines between the first two `---` fences are frontmatter -- a body line that happens to
+    start with `last_recalled:` is still content.
+    """
+    h = hashlib.sha256()
+    fences = 0
+    for line in data.split(b"\n"):
+        bare = line[:-1] if line.endswith(b"\r") else line
+        if bare == b"---" and fences < 2:
+            fences += 1
+        elif fences == 1 and bare.startswith(b"last_recalled:"):
+            continue
+        h.update(line)
+        h.update(b"\n")
+    return h.hexdigest()
+
+
 def _store_fingerprint(roots: list[str]) -> str:
+    """One hash over both layers: each root's name, then every `facts/*.md` as name + content
+    digest. Adding, removing or renaming a fact moves it; editing any field but `last_recalled`
+    moves it; a recall (which rewrites only that line and the mtime) does not. Neither size nor
+    mtime is in it any more: J64-0 measured that a same-day re-stamp moves the mtime ALONE, so
+    no stat field could be kept as a content signal (`.shiftwork/notes-job64/J64-0.md`, Q4).
+    """
     h = hashlib.sha256()
     for root in roots:
         h.update(f"\u0000{root}\u0000".encode())
@@ -1870,10 +1903,11 @@ def _store_fingerprint(roots: list[str]) -> str:
             names = []  # a layer with no facts/ contributes its name and nothing else
         for n in names:
             try:
-                st = os.stat(os.path.join(root, "facts", n))
+                with open(os.path.join(root, "facts", n), "rb") as f:
+                    data = f.read()
             except OSError:
                 continue
-            h.update(f"{n}\u0000{st.st_size}\u0000{_js_number(_mtime_ms(st))}\u0000".encode())
+            h.update(f"{n}\u0000{_fact_content_digest(data)}\u0000".encode())
     return h.hexdigest()
 
 

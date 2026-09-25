@@ -2001,6 +2001,41 @@ function samePath(a: string, b: string): boolean {
   return realDir(a) === realDir(b);
 }
 
+/**
+ * sha256 of a fact file with the frontmatter's `last_recalled:` line left out.
+ *
+ * THE DATE IS NOT CONTENT. Every recall rewrites that one line (and the file's mtime), so a
+ * fingerprint that saw it re-armed the dream preview on every `memory_recall` — measured
+ * 2026-09-25 (job64): 103 of 236 previews in a week reported the identical `wouldMerge 14 /
+ * wouldConsume 14`. Name, description, type, created, links and the body all stay in.
+ *
+ * Byte-exact and identical in both runtimes (`_fact_content_digest` in
+ * `runtime-py/src/bantamkit/hookadapter.py`): the buffer is walked as latin1 so every byte
+ * is its own character, the split is on `\n`, a trailing `\r` is ignored only for the two
+ * comparisons (a Windows-written file keeps its bytes in the hash), and only the lines between
+ * the first two `---` fences are frontmatter — a body line that happens to start with
+ * `last_recalled:` is still content.
+ */
+function factContentDigest(data: Buffer): string {
+  const h = createHash('sha256');
+  let fences = 0;
+  for (const line of data.toString('latin1').split('\n')) {
+    const bare = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (bare === '---' && fences < 2) fences++;
+    else if (fences === 1 && bare.startsWith('last_recalled:')) continue;
+    h.update(line, 'latin1');
+    h.update('\n', 'latin1');
+  }
+  return h.digest('hex');
+}
+
+/**
+ * One hash over both layers: each root's name, then every `facts/*.md` as name + content
+ * digest. Adding, removing or renaming a fact moves it; editing any field but `last_recalled`
+ * moves it; a recall (which rewrites only that line and the mtime) does not. Neither size nor
+ * mtime is in it any more: J64-0 measured that a same-day re-stamp moves the mtime ALONE, so
+ * no stat field could be kept as a content signal (`.shiftwork/notes-job64/J64-0.md`, Q4).
+ */
 function storeFingerprint(roots: readonly string[]): string {
   const h = createHash('sha256');
   for (const root of roots) {
@@ -2015,13 +2050,13 @@ function storeFingerprint(roots: readonly string[]): string {
       /* a layer with no facts/ contributes its name and nothing else */
     }
     for (const n of names) {
-      let st: fs.Stats;
+      let data: Buffer;
       try {
-        st = fs.statSync(path.join(root, 'facts', n));
+        data = fs.readFileSync(path.join(root, 'facts', n));
       } catch {
         continue;
       }
-      h.update(`${n}\u0000${st.size}\u0000${st.mtimeMs}\u0000`);
+      h.update(`${n}\u0000${factContentDigest(data)}\u0000`);
     }
   }
   return h.digest('hex');

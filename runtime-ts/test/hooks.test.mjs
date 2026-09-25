@@ -1436,6 +1436,65 @@ test('an unchanged store does not dream a second time, and the skip is cheap', (
   }
 });
 
+// job64 / J64-3. Every recall rewrites `last_recalled:` and the mtime, and until this unit the
+// fingerprint was `name + size + mtimeMs`, so a session of recalls re-armed the preview on
+// every Stop (measured: 103 of 236 previews in a week said the identical `wouldMerge 14`).
+// Size is not a usable signal either: J64-0 measured a same-day re-stamp moving the mtime
+// ALONE. So the fingerprint reads content with that one line left out. The three (a) steps
+// are checked to have really rewritten the file, or a skip would prove nothing. MUTATION
+// (2026-09-25): the stat fields put back on both sides turn this red at S2; count in
+// `.shiftwork/notes-job64/J64-3.md`.
+test('re-dating a fact does not re-arm the dream gate, and a content change does', async () => {
+  const home = newHome(); const cwd = newCwd();
+  const { project } = seedTwoLayers({ home, cwd });
+  writeFileSync(join(scratch, 'transcript.jsonl'), '{"type":"tool_use"}\n');
+  const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
+  const m = new Memory(project, { today: () => '2026-09-25' });
+  m.saveOutcome('project', 'recalled-often', 'the fact the operator recalls every turn', 'body');
+  const fact = join(project, 'facts', 'recalled-often.md');
+  const fingerprint = () => JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', 'dream-state.json'), 'utf8')).fingerprint;
+  const actions = () => dreamRecords(home).map((r) => r.action + (r.reason ? `/${r.reason}` : ''));
+
+  runHook(stopPayload(), { home, cwd }); // S1: the first look previews
+  const fp1 = fingerprint();
+
+  // (a1) an explicit recall dates the fact: null -> today, bytes AND mtime move.
+  const bytesBefore = readFileSync(fact, 'utf8'); const mtimeBefore = statSync(fact).mtimeMs;
+  assert.match(m.recall('operator recalls every turn'), /recalled-often/);
+  assert.notEqual(readFileSync(fact, 'utf8'), bytesBefore, 'the recall rewrote the file');
+  assert.notEqual(statSync(fact).mtimeMs, mtimeBefore, 'the recall moved the mtime');
+  assert.match(readFileSync(fact, 'utf8'), /^last_recalled: '2026-09-25'$/m, 'the recall dated it');
+  runHook(stopPayload(), { home, cwd }); // S2
+  // (a2) the same line re-dated to another day — what tomorrow's recall writes.
+  writeFileSync(fact, readFileSync(fact, 'utf8').replace(/^last_recalled: .*$/m, "last_recalled: '2020-01-01'"));
+  runHook(stopPayload(), { home, cwd }); // S3
+  // (a3) the mtime alone — a same-day re-stamp (J64-0 Q4).
+  const later = new Date(statSync(fact).mtimeMs + 1000);
+  utimesSync(fact, later, later);
+  runHook(stopPayload(), { home, cwd }); // S4
+  assert.equal(fingerprint(), fp1, 'three re-datings, one fingerprint');
+
+  // (b) a body edit through the store (same name = update)
+  m.saveOutcome('project', 'recalled-often', 'the fact the operator recalls every turn', 'a new body');
+  assert.match(readFileSync(fact, 'utf8'), /a new body/);
+  runHook(stopPayload(), { home, cwd }); // S5
+  const fp5 = fingerprint();
+  assert.notEqual(fp5, fp1, 'a body edit is a change');
+  // (c) a fact added
+  seedFact(project, 'brand-new', { description: 'written after the last look', body: 'new.' });
+  runHook(stopPayload(), { home, cwd }); // S6
+  assert.notEqual(fingerprint(), fp5, 'a new fact is a change');
+
+  assert.deepEqual(actions(), [
+    'dream-preview',
+    'dream-skip/unchanged',
+    'dream-skip/unchanged',
+    'dream-skip/unchanged',
+    'dream-preview',
+    'dream-preview',
+  ]);
+});
+
 test('a change to either layer re-arms the gate, and the second preview reports the duplicate again', () => {
   const home = newHome(); const cwd = newCwd();
   const { project, profile } = seedTwoLayers({ home, cwd });

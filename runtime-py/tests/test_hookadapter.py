@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1404,6 +1405,136 @@ def test_an_unchanged_store_does_not_dream_a_second_time(tmp_path):
     assert actions == ["dream-preview", "dream-skip"], actions
     skip = [x for x in _log_lines(home) if x.get("action") == "dream-skip"][0]
     assert skip["reason"] == "unchanged"
+
+
+def _dream_actions(home: Path) -> list[str]:
+    """Every dream record's action, with the skip reason attached: `dream-skip/unchanged`."""
+    return [
+        x["action"] + (f"/{x['reason']}" if x.get("reason") else "")
+        for x in _log_lines(home)
+        if str(x.get("action", "")).startswith("dream")
+    ]
+
+
+def _dream_fingerprint(home: Path) -> str:
+    state = home / ".bantamkit" / "hooks" / "dream-state.json"
+    return json.loads(state.read_text(encoding="utf-8"))["fingerprint"]
+
+
+def test_the_store_fingerprint_masks_only_the_last_recalled_line(tmp_path):
+    """job64 / J64-3. Every recall rewrites `last_recalled:` and the mtime, and until this
+    unit the fingerprint was `name + size + mtimeMs`, so a session of recalls re-armed the
+    preview on every Stop (measured: 103 of 236 previews in a week said the identical
+    `wouldMerge 14`). Size is not a usable signal either: J64-0 measured a same-day re-stamp
+    moving the mtime ALONE. So the fingerprint reads content, with that one line left out --
+    and EVERY other field, the body, the name and a body line spelled like the key still move
+    it. MUTATION (2026-09-25): the stat fields put back on both sides turn this red on the
+    first `==` below; count in `.shiftwork/notes-job64/J64-3.md`."""
+    from bantamkit.hookadapter import _fact_content_digest, _store_fingerprint
+
+    root = tmp_path / "store"
+    facts = root / "facts"
+    facts.mkdir(parents=True)
+    text = (
+        "---\nname: a\ndescription: d\ntype: project\ncreated: '2026-08-01'\n"
+        "last_recalled: null\nlinks: []\n---\n\nbody\n"
+    )
+    (facts / "a.md").write_text(text, encoding="utf-8")
+    fp = _store_fingerprint([str(root)])
+
+    (facts / "a.md").write_text(
+        text.replace("last_recalled: null", "last_recalled: '2026-09-25'"), encoding="utf-8"
+    )
+    assert _store_fingerprint([str(root)]) == fp, "a recall's date is not content"
+    now = os.stat(facts / "a.md").st_mtime_ns
+    os.utime(facts / "a.md", ns=(now + 10**9, now + 10**9))
+    assert _store_fingerprint([str(root)]) == fp, "a touch is not content"
+
+    for field, new in (
+        ("description: d", "description: e"),
+        ("type: project", "type: feedback"),
+        ("created: '2026-08-01'", "created: '2026-08-02'"),
+        ("links: []", "links: [b]"),
+        ("\nbody\n", "\nanother body\n"),
+    ):
+        (facts / "a.md").write_text(text.replace(field, new), encoding="utf-8")
+        assert _store_fingerprint([str(root)]) != fp, f"{field!r} is content"
+    (facts / "a.md").write_text(text + "last_recalled: in the body\n", encoding="utf-8")
+    assert _store_fingerprint([str(root)]) != fp, "only the FRONTMATTER line is masked"
+    (facts / "a.md").write_text(text, encoding="utf-8")
+    assert _store_fingerprint([str(root)]) == fp, "the original bytes, back to the original"
+    os.rename(facts / "a.md", facts / "b.md")
+    assert _store_fingerprint([str(root)]) != fp, "a rename is a change"
+
+    # A Windows-written file carries `\r\n`; the mask still finds the line, and the bytes
+    # themselves (with their `\r`) are what is hashed, so the two spellings differ.
+    crlf = text.replace("\n", "\r\n").encode()
+    dated = crlf.replace(b"last_recalled: null", b"last_recalled: '2026-09-25'")
+    assert _fact_content_digest(crlf) == _fact_content_digest(dated)
+    assert _fact_content_digest(crlf) != _fact_content_digest(text.encode())
+
+
+def test_re_dating_a_fact_does_not_re_arm_the_dream_gate_but_a_content_change_does(tmp_path):
+    """The same property through the hook: (a) an explicit recall, a re-dating of the line
+    and a bare touch each leave the next Stop a `dream-skip unchanged` with the SAME stored
+    fingerprint; (b) a body edit and (c) a new fact each produce a preview. The three (a)
+    steps are checked to have really rewritten the file, or a skip would prove nothing."""
+    from bantamkit.memory.component import Memory
+
+    home, cwd = _bed(tmp_path, "stop-dream-redate")
+    _two_layers(home, cwd)
+    project = cwd / ".bantamkit" / "memory"
+    _save(project, "project", "recalled-often", "the fact the operator recalls every turn", "body")
+    fact = project / "facts" / "recalled-often.md"
+    transcript = _transcript(cwd, tool_uses=1)
+
+    _stop(home, cwd, transcript)  # S1: the first look previews
+    fp1 = _dream_fingerprint(home)
+
+    # (a1) an explicit recall dates the fact: null -> today, bytes AND mtime move.
+    bytes_before, mtime_before = fact.read_bytes(), fact.stat().st_mtime_ns
+    assert "recalled-often" in Memory(store=project).recall("operator recalls every turn")
+    assert fact.read_bytes() != bytes_before and fact.stat().st_mtime_ns != mtime_before
+    assert "last_recalled: '" in fact.read_text(encoding="utf-8"), "the recall dated it"
+    _stop(home, cwd, transcript)  # S2
+    # (a2) the same line re-dated to another day -- what tomorrow's recall writes.
+    fact.write_text(
+        re.sub(
+            r"^last_recalled: .*$",
+            "last_recalled: '2020-01-01'",
+            fact.read_text(encoding="utf-8"),
+            flags=re.M,
+        ),
+        encoding="utf-8",
+    )
+    _stop(home, cwd, transcript)  # S3
+    # (a3) the mtime alone -- a same-day re-stamp (J64-0 Q4).
+    later = fact.stat().st_mtime_ns + 10**9
+    os.utime(fact, ns=(later, later))
+    _stop(home, cwd, transcript)  # S4
+    assert _dream_fingerprint(home) == fp1, "three re-datings, one fingerprint"
+
+    # (b) a body edit through the store (same name = update)
+    Memory(store=project).save(
+        "project", "recalled-often", "the fact the operator recalls every turn", "a new body"
+    )
+    assert "a new body" in fact.read_text(encoding="utf-8")
+    _stop(home, cwd, transcript)  # S5
+    fp5 = _dream_fingerprint(home)
+    assert fp5 != fp1, "a body edit is a change"
+    # (c) a fact added
+    _save(project, "project", "brand-new", "written after the last look", "body")
+    _stop(home, cwd, transcript)  # S6
+    assert _dream_fingerprint(home) != fp5, "a new fact is a change"
+
+    assert _dream_actions(home) == [
+        "dream-preview",
+        "dream-skip/unchanged",
+        "dream-skip/unchanged",
+        "dream-skip/unchanged",
+        "dream-preview",
+        "dream-preview",
+    ]
 
 
 def test_a_cwd_whose_project_store_is_the_profile_store_does_not_dream_with_itself(tmp_path):
