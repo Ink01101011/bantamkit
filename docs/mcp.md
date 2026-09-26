@@ -429,6 +429,18 @@ your **configuration**. The diagnosis is dropped the moment the project store
 holds a fact, so a store you have started using never keeps being described as
 empty.
 
+**AMENDED 2026-09-26 — job64, J64-4: a query that is a fact's NAME.** A query that,
+trimmed, is a legal fact name carrying a hyphen (`deploy-command`, not `deploy`) is
+looked up by name in every bound layer before any word matching; the first layer that
+holds it answers with that one fact. When no layer holds it, the reply is prefixed with
+one line — `no fact named '<name>' in any layer bound here; matching by words instead:`
+and a blank line — and continues, byte for byte, with whichever reply above the word
+search would have given (hits, or one of the states). The tool description changed with
+it: it no longer says "Returns at most k matching facts", which RB-P1's floor made false
+(`k` below the store default of 3 is raised to 3, never honoured below it — ruled to stay
+2026-09-25); `k` now carries its own description saying so. Details and the pins:
+[memory.md](memory.md), *Recall across layers*.
+
 ## Recording what this log cannot see
 
 The host's own MCP log already holds every tool call's name, its success bit, its

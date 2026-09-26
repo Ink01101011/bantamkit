@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from bantamkit.memory.layers import (
 )
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
+    MIN_RATIO_RANGE,
     RECALL_MIN_SCORE_RATIO,
     Fact,
     MemoryBudgetExceeded,
@@ -69,6 +71,12 @@ class RecallOutcome:
     `project`, `extra` or `profile` — deliberately not the layer's full label, because
     `extra:<name>` carries a directory name off the operator's disk and the log this
     feeds is metadata-only.
+
+    `lookup` (job64, J64-4) is what the exact-name walk decided, again read off the branch
+    and not off the reply: `hit` when the query WAS a fact's name and that fact alone is the
+    reply, `miss` when the query was shaped like a name, no layer held it, and the reply
+    leads with the line that says so, `None` for every other query — the walk that has
+    always run, unchanged.
     """
 
     reply: str
@@ -80,6 +88,7 @@ class RecallOutcome:
     candidates: int
     source: str | None = None
     unreadable: int = 0
+    lookup: str | None = None
 
 
 def normalize_name(name: str) -> str:
@@ -94,6 +103,26 @@ def normalize_name(name: str) -> str:
     if not isinstance(name, str):
         return name
     return name.strip().lower().replace("_", "-").replace(" ", "-")
+
+
+# THE NAME SHAPE (job64, J64-4), spelled once here and once in the port: a recall query,
+# after `str.strip()`, that the store's own `NAME_RE` would accept as a fact name AND that
+# carries a hyphen. `fullmatch` rather than `NAME_RE.match`, because Python's `$` matches
+# before a trailing newline and the strip has already removed one; the port's `pyStrip` +
+# anchored test is the same set. A query in this shape is looked up BY NAME in every layer
+# before any scoring happens, and a miss on it is said out loud. The hyphen is the whole
+# distinction: `deploy` is a word anyone might search, and stays the word search it has
+# always been even when a fact happens to be named `deploy` (the layered dedupe test pins
+# that); `deploy-command` is a name somebody typed from an index.
+_NAME_SHAPE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def _is_name_shaped(query: str) -> bool:
+    return "-" in query and _NAME_SHAPE.fullmatch(query) is not None
+
+
+def _miss_line(name: str) -> str:
+    return f"no fact named '{name}' in any layer bound here; matching by words instead:"
 
 
 @dataclass(frozen=True)
@@ -371,6 +400,8 @@ class Memory:
         query: str,
         k: int | None = None,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
+        *,
+        stamp: bool = True,
     ) -> RecallOutcome:
         """`recall`, carrying the walk it performed as numbers rather than as prose.
 
@@ -398,8 +429,45 @@ class Memory:
         store, so it surfaces as the error it is rather than as an `unreadable` count —
         the read-only-layer `except` below would otherwise file a caller's bad argument as
         a corrupt grant.
+
+        `stamp` (job64, J64-1) is whether a hit in the WRITABLE layer gets its
+        `last_recalled` dated. It defaults to True, which is what every explicit recall —
+        the `memory_recall` tool, the memory CLI, `Memory.recall` — has always done, and
+        those callers do not pass it. The one caller that passes False is the hook's
+        `UserPromptSubmit` arm: an automatic injection is not the model asking for a fact,
+        and dating it as one was measured (2026-09-25) to stamp 25 of 42 facts in one
+        store as "recalled today", so every rule keyed on `last_recalled` — compaction's
+        stalest-first, SessionStart's drop rule — was reading injection traffic instead of
+        model demand. Read-only layers are never stamped whatever this says.
+
+        THE EXACT-NAME WALK (job64, J64-4) runs first, and only for a query in the name
+        shape (`_is_name_shaped`: `strip()`ped, `NAME_RE`-valid, and carrying a hyphen —
+        a bare word is a word search even when a fact is named by it). Measured
+        2026-09-25 on the operator's own
+        stores: 4 of 28 `memory_recall` calls whose query was exactly a fact name came back
+        with OTHER facts. One of those names existed in the PROFILE layer and was never
+        reached, because the project layer's fuzzy hits filled the budget and the loop below
+        breaks before the next layer is read — a name lookup is a request for one known fact,
+        and the `k`-floor (RB-P1, ruled to stay 2026-09-25) has nothing to say about it. So:
+        every layer is asked, in precedence order, `store.lookup(name)`; the first that
+        holds it answers ALONE, stamped only if it is the writable layer, and no other layer
+        is read after it. If no layer holds it, the reply leads with `_miss_line` and the
+        ordinary walk follows, byte for byte what it would have said alone. Every query
+        outside the shape never enters this block. The range
+        check on `min_ratio` runs BEFORE the walk for the same reason it runs before any
+        file is read in `MemoryStore.recall`: a caller's bad argument must surface as the
+        error it is, not be swallowed by an exact hit.
         """
+        if not 0.0 <= min_ratio <= 1.0:
+            raise MemoryValidationError(MIN_RATIO_RANGE)
         budget = self.k if k is None else max(k, self.k)
+        name = query.strip()
+        lookup: str | None = None
+        if _is_name_shaped(name):
+            named = self._lookup_by_name(name, budget, stamp)
+            if named is not None:
+                return named
+            lookup = "miss"
         picked: list[tuple[str, Fact]] = []
         seen: set[str] = set()
         reached = 0
@@ -410,7 +478,7 @@ class Memory:
                 break  # budget spent: later (read-only) layers are never even read
             reached += 1
             try:
-                facts = store.recall(query, budget, stamp=writable, min_ratio=min_ratio)
+                facts = store.recall(query, budget, stamp=writable and stamp, min_ratio=min_ratio)
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in v1
@@ -434,16 +502,59 @@ class Memory:
             "returned": len(picked),
             "candidates": candidates,
             "unreadable": unreadable,
+            "lookup": lookup,
         }
+        lead = f"{_miss_line(name)}\n\n" if lookup == "miss" else ""
         if not picked:
             status, reply = self._nothing_to_report()
-            return RecallOutcome(reply=reply, status=status, **counts)
+            return RecallOutcome(reply=lead + reply, status=status, **counts)
         return RecallOutcome(
-            reply="\n\n".join(self._format(label, fact) for label, fact in picked),
+            reply=lead + "\n\n".join(self._format(label, fact) for label, fact in picked),
             status="answered",
             source=picked[0][0].split(":", 1)[0],
             **counts,
         )
+
+    def _lookup_by_name(self, name: str, budget: int, stamp: bool) -> RecallOutcome | None:
+        """The exact-name walk: the first layer holding a fact named `name` answers alone.
+
+        The counters mean what they mean in `recall_outcome`, over the layers this walk
+        READ — `reached` stops at the layer that answered, `candidates` counts the facts in
+        the layers up to and including it, and a corrupt read-only layer raises
+        `unreadable` and is skipped exactly as the scoring walk skips it. `None` means no
+        layer holds the name, and the caller falls through to the scoring walk with its
+        own, fresh counters: the numbers a miss logs are the numbers the ordinary walk logs.
+        """
+        reached = 0
+        unreadable = 0
+        candidates = 0
+        for label, store, writable in self._layers:
+            reached += 1
+            try:
+                fact = store.lookup(name, stamp=writable and stamp)
+            except (BantamError, OSError, UnicodeDecodeError):
+                if writable:
+                    raise  # the project layer failing is a real error, as in the scoring walk
+                unreadable += 1
+                continue
+            try:
+                candidates += count_facts(store.root)
+            except OSError:
+                pass  # it listed a moment ago; a race must not fail the recall for a log field
+            if fact is not None:
+                return RecallOutcome(
+                    reply=self._format(label, fact),
+                    status="answered",
+                    source=label.split(":", 1)[0],
+                    budget=budget,
+                    layers=len(self._layers),
+                    reached=reached,
+                    returned=1,
+                    candidates=candidates,
+                    unreadable=unreadable,
+                    lookup="hit",
+                )
+        return None
 
     def index_accounting(self) -> tuple[int | None, int]:
         """`(index bytes, budget)` for the writable project store; bytes may be `None`.

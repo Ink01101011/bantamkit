@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -420,6 +421,50 @@ def test_a_matching_prompt_injects_recall_HEADERS_and_not_bodies(tmp_path):
     assert line["dropped"] == 0
 
 
+def test_an_injection_leaves_every_fact_file_byte_and_mtime_identical(tmp_path):
+    """AN INJECTION IS NOT A RECALL (job64, J64-1). Until this job the arm went through
+    `Memory.recall_outcome` with the component's default `stamp`, so every automatic
+    injection dated up to three facts `last_recalled: <today>` and rewrote their files —
+    25 of 42 facts in one real store carried one day's date, and every rule keyed on that
+    field (compaction's stalest-first, the SessionStart drop rule, the Stop dream's
+    `size + mtime` fingerprint) was reading injection traffic. The control at the end is the
+    explicit path on the SAME bed, which must still stamp: without it a bed whose recall
+    never reached the file would pass this test for the wrong reason."""
+    home, cwd = _bed(tmp_path, "nostamp")
+    store = cwd / ".bantamkit" / "memory"
+    _save(store, "reference", "conformance-gate", "the gate is zero failures, never a total", "b")
+    _save(store, "project", "unrelated", "a fact sharing no token with that prompt", "body")
+
+    def state() -> dict[str, tuple[bytes, int]]:
+        facts = sorted((store / "facts").glob("*.md"))
+        return {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in facts}
+
+    before = state()
+    assert b"last_recalled: null" in before["conformance-gate.md"][0]
+
+    done = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": "what is the conformance gate here"},
+        home=home,
+        cwd=cwd,
+    )
+
+    assert done.returncode == 0, done.stderr
+    line = _log_lines(home)[0]
+    assert (line["action"], line["hits"]) == ("inject", 1), "the arm must have READ the store"
+    ctx = json.loads(done.stdout.decode())["hookSpecificOutput"]["additionalContext"]
+    assert "[conformance-gate]" in ctx
+    assert state() == before, "an injection rewrote a fact file, or moved its mtime"
+
+    # CONTROL: the explicit path, on the same bed, still stamps — and only the hit.
+    from bantamkit.memory.component import Memory
+
+    Memory(store=store).recall("what is the conformance gate here")
+    after = state()
+    assert b"last_recalled: '" in after["conformance-gate.md"][0]
+    assert after["conformance-gate.md"] != before["conformance-gate.md"]
+    assert after["unrelated.md"] == before["unrelated.md"]
+
+
 def test_the_prompt_is_logged_as_a_fingerprint_and_never_as_text(tmp_path):
     """THE LOG PERSISTS TO DISK AND THE PROMPTS ARE THE USER'S. A sha256 and two sizes;
     no substring of the prompt at any length."""
@@ -508,6 +553,210 @@ def test_the_injected_block_is_capped_in_bytes_and_the_log_counts_what_left(tmp_
     assert line["hits"] == 3
     assert line["dropped"] == line["hits"] - len(line["injected"])
     assert line["dropped"] > 0
+
+
+# --- 4b. UserPromptSubmit — what this context was shown is not shown again (job64, J64-2) --
+#
+# Measured 2026-09-25 over a week of the real log: 333 of 598 injections repeated a name
+# injected earlier in the same session, because the arm never read the session ledger. The
+# bed is the conformance suite's `inject-dedupe` bed, so a number pinned here is the number
+# pinned there. Every test below went RED with the seen-set forced empty on this side
+# (`seen = {}` in `_user_prompt_submit`); counts in `.shiftwork/notes-job64/J64-2.md`.
+
+_DEDUPE_FACTS = [
+    (
+        "project",
+        "deployment-rollback",
+        "the deployment path rollback procedure for the staging cluster",
+    ),
+    ("project", "staging-cluster-notes", "wiring notes kept about the staging cluster nodes"),
+    ("project", "rollback-runbook", "runbook steps when a rollback of the deployment is needed"),
+    ("reference", "unrelated-alpha", "nothing shared here at all"),
+    ("reference", "unrelated-beta", "still nothing in common with anything"),
+]
+#: Hits the three `deployment`/`rollback`/`staging` facts, in this order (scores 8, 3, 3).
+_PROMPT_A = "deployment path rollback procedure for the staging cluster"
+#: Hits `unrelated-alpha` first and then two of A's three, measured through `Memory.layered`
+#: on this bed -- so after A it is the MIXED case: one unseen header, two seen.
+_PROMPT_C = "nothing shared here at all about the staging cluster"
+_A_NAMES = ["deployment-rollback", "rollback-runbook", "staging-cluster-notes"]
+
+
+def _dedupe_bed(tmp_path: Path, name: str, facts=_DEDUPE_FACTS) -> tuple[Path, Path]:
+    home, cwd = _bed(tmp_path, name)
+    for type_, fact, description in facts:
+        _save(cwd / ".bantamkit" / "memory", type_, fact, description, "body")
+    return home, cwd
+
+
+def _prompt(
+    home: Path, cwd: Path, text: str, *, session="probe-session", transcript="/t/main.jsonl"
+):
+    done = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": text, "transcript_path": transcript},
+        home=home,
+        cwd=cwd,
+        session=session,
+    )
+    assert done.returncode == 0, done.stderr
+    return done
+
+
+def _prompt_records(home: Path) -> list[dict]:
+    return [x for x in _log_lines(home) if x["event"] == "UserPromptSubmit"]
+
+
+def test_a_name_this_context_was_shown_is_not_injected_again_and_the_record_says_why(tmp_path):
+    """(a) The same prompt twice in one context: the second time NOTHING leaves, and the
+    record is not a silent `none` -- it names what was withheld."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-same")
+    first = _prompt(home, cwd, _PROMPT_A)
+    second = _prompt(home, cwd, _PROMPT_A)
+
+    assert first.stdout != b""
+    assert second.stdout == b"", "every picked header was already in the window"
+    one, two = _prompt_records(home)
+    assert one["action"] == "inject"
+    assert one["suppressed"] == []
+    assert two["action"] == "suppress"
+    assert two["suppressed"] == _A_NAMES
+    assert two["hits"] == 3
+    assert two["session"] == "probe-session"
+    assert set(two["prompt"]) == {"sha256", "chars", "bytes"}, "the fingerprint, never text"
+    ledger = _ledger(home)
+    assert list(ledger["injected"]["/t/main.jsonl"]) == _A_NAMES, "seen = what LEFT, by name"
+    assert ledger["reads"] == {}, "the read ledger is untouched by an injection"
+
+
+# (job64, J64-8, the J64-7 blocker) `constructor` is the one `Object.prototype` key `NAME_RE`
+# admits. The port's seen-set is a plain JSON object, and a membership test written with `in`
+# found the prototype's `constructor` on a FRESH context, so the two runtimes disagreed on the
+# first prompt over the same store. This side's dict never had the defect; the test is the
+# reference half of the per-side pin, green before and after the port's fix
+# (`.shiftwork/notes-job64/J64-8.md`).
+_CTOR_FACTS = [
+    ("project", "constructor", "the widget constructor rollout checklist for staging"),
+    (
+        "project",
+        "widget-rollout-notes",
+        "notes on the widget rollout timing for the staging window",
+    ),
+    ("reference", "unrelated-alpha", "nothing shared here at all"),
+]
+#: Hits `constructor` then `widget-rollout-notes`, and not `unrelated-alpha` (measured).
+_PROMPT_CTOR = "the widget constructor rollout checklist for staging"
+_CTOR_NAMES = ["constructor", "widget-rollout-notes"]
+
+
+def test_a_fact_named_constructor_is_injected_first_and_suppressed_second(tmp_path):
+    """(g) A fact whose name is an `Object.prototype` member is shown to a fresh context like
+    any other, and withheld only once it has actually been shown."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-constructor", _CTOR_FACTS)
+    first = _prompt(home, cwd, _PROMPT_CTOR)
+    second = _prompt(home, cwd, _PROMPT_CTOR)
+
+    assert first.stdout != b""
+    assert second.stdout == b"", "both picked headers were already in the window"
+    one, two = _prompt_records(home)
+    assert one["action"] == "inject"
+    assert one["hits"] == 2
+    assert [x["name"] for x in one["injected"]] == _CTOR_NAMES
+    assert one["suppressed"] == [], "nothing withheld from a context that had been shown nothing"
+    assert two["action"] == "suppress"
+    assert two["hits"] == 2
+    assert two["suppressed"] == _CTOR_NAMES
+    ledger = _ledger(home)
+    assert list(ledger["injected"]["/t/main.jsonl"]) == _CTOR_NAMES, "seen = what LEFT, by name"
+
+
+def test_a_different_session_is_not_suppressed_by_what_another_was_shown(tmp_path):
+    """(b) Sessions do not see each other's seen-sets."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-session")
+    _prompt(home, cwd, _PROMPT_A, session="one", transcript="/t/one.jsonl")
+    other = _prompt(home, cwd, _PROMPT_A, session="two", transcript="/t/two.jsonl")
+
+    assert other.stdout != b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "inject"]
+    assert list(_ledger(home, "two")["injected"]) == ["/t/two.jsonl"]
+
+
+def test_a_compaction_forgets_what_was_shown_so_it_is_injected_again(tmp_path):
+    """(c) After PostCompact the window was rebuilt from a summary and the headers are gone,
+    so re-injecting is correct, not a leak. The suppress in the middle is the control: without
+    it a hook that never suppressed would pass this test."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-compact")
+    _prompt(home, cwd, _PROMPT_A)
+    assert _prompt(home, cwd, _PROMPT_A).stdout == b""
+    _run_hook({"hook_event_name": "PostCompact"}, home=home, cwd=cwd)
+    again = _prompt(home, cwd, _PROMPT_A)
+
+    assert again.stdout != b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "suppress", "inject"]
+
+
+def test_only_the_unseen_headers_are_injected_when_some_were_shown_before(tmp_path):
+    """(d) The mixed case: the seen headers are DROPPED, the budget is not refilled, and the
+    record's arithmetic closes: `hits == injected + dropped + suppressed`."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-mixed")
+    _prompt(home, cwd, _PROMPT_A)
+    mixed = _prompt(home, cwd, _PROMPT_C)
+
+    ctx = json.loads(mixed.stdout.decode())["hookSpecificOutput"]["additionalContext"]
+    assert "[unrelated-alpha]" in ctx
+    for name in _A_NAMES:
+        assert f"[{name}]" not in ctx, f"{name} was already in the window"
+    rec = _prompt_records(home)[1]
+    assert rec["action"] == "inject"
+    assert [x["name"] for x in rec["injected"]] == ["unrelated-alpha"]
+    assert rec["suppressed"] == ["staging-cluster-notes", "deployment-rollback"]
+    assert rec["hits"] == 3, "the store was still asked for three; two were withheld, not refilled"
+    assert rec["dropped"] == 0
+    assert rec["hits"] == len(rec["injected"]) + rec["dropped"] + len(rec["suppressed"])
+    seen = _ledger(home)["injected"]["/t/main.jsonl"]
+    assert sorted(seen) == sorted([*_A_NAMES, "unrelated-alpha"]), "what just left is seen now too"
+
+
+def test_clear_forgets_what_was_shown_and_startup_does_not(tmp_path):
+    """(e) `/clear` empties the window like a compaction; `startup` is the control, since a
+    constant reset on SessionStart would pass the `clear` half alone. `clear` touches ONLY the
+    seen-set: the read entries in the same file survive it."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-clear")
+    target = cwd / "a.txt"
+    target.write_text("alpha", encoding="utf-8")
+    _run_hook(_read_payload(target, transcript="/t/main.jsonl"), home=home, cwd=cwd)
+    _prompt(home, cwd, _PROMPT_A)
+    _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
+    assert _prompt(home, cwd, _PROMPT_A).stdout == b"", "startup is not a rebuilt window"
+    _run_hook({"hook_event_name": "SessionStart", "source": "clear"}, home=home, cwd=cwd)
+
+    after_clear = _ledger(home)
+    assert "injected" not in after_clear
+    assert len(after_clear["reads"]) == 1, "the reads are the read ledger's business, not clear's"
+    assert _prompt(home, cwd, _PROMPT_A).stdout != b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "suppress", "inject"]
+
+
+def test_clear_with_no_ledger_creates_none(tmp_path):
+    home, cwd = _bed(tmp_path, "dedupe-clear-none")
+    done = _run_hook({"hook_event_name": "SessionStart", "source": "clear"}, home=home, cwd=cwd)
+
+    assert done.returncode == 0
+    assert not (home / ".bantamkit" / "hooks" / "ledger-probe-session.json").exists()
+
+
+def test_a_subagent_transcript_keeps_its_own_seen_set_in_the_parents_ledger(tmp_path):
+    """(f) A subagent shares the parent's `session_id` and so the parent's ledger FILE
+    (J64-0, Q3 step 11), but its window never held the parent's headers -- so it is keyed by
+    `transcript_path`, like `reads`. And the parent is still suppressed afterwards."""
+    home, cwd = _dedupe_bed(tmp_path, "dedupe-subagent")
+    _prompt(home, cwd, _PROMPT_A, transcript="/t/parent.jsonl")
+    child = _prompt(home, cwd, _PROMPT_A, transcript="/t/child.jsonl")
+    parent_again = _prompt(home, cwd, _PROMPT_A, transcript="/t/parent.jsonl")
+
+    assert child.stdout != b"", "the subagent's window never held the parent's headers"
+    assert parent_again.stdout == b""
+    assert [x["action"] for x in _prompt_records(home)] == ["inject", "inject", "suppress"]
+    assert sorted(_ledger(home)["injected"]) == ["/t/child.jsonl", "/t/parent.jsonl"]
 
 
 # --- 5. PreToolUse[Read] — the filegraph over the operator's own reads --------------------
@@ -1197,6 +1446,136 @@ def test_an_unchanged_store_does_not_dream_a_second_time(tmp_path):
     assert actions == ["dream-preview", "dream-skip"], actions
     skip = [x for x in _log_lines(home) if x.get("action") == "dream-skip"][0]
     assert skip["reason"] == "unchanged"
+
+
+def _dream_actions(home: Path) -> list[str]:
+    """Every dream record's action, with the skip reason attached: `dream-skip/unchanged`."""
+    return [
+        x["action"] + (f"/{x['reason']}" if x.get("reason") else "")
+        for x in _log_lines(home)
+        if str(x.get("action", "")).startswith("dream")
+    ]
+
+
+def _dream_fingerprint(home: Path) -> str:
+    state = home / ".bantamkit" / "hooks" / "dream-state.json"
+    return json.loads(state.read_text(encoding="utf-8"))["fingerprint"]
+
+
+def test_the_store_fingerprint_masks_only_the_last_recalled_line(tmp_path):
+    """job64 / J64-3. Every recall rewrites `last_recalled:` and the mtime, and until this
+    unit the fingerprint was `name + size + mtimeMs`, so a session of recalls re-armed the
+    preview on every Stop (measured: 103 of 236 previews in a week said the identical
+    `wouldMerge 14`). Size is not a usable signal either: J64-0 measured a same-day re-stamp
+    moving the mtime ALONE. So the fingerprint reads content, with that one line left out --
+    and EVERY other field, the body, the name and a body line spelled like the key still move
+    it. MUTATION (2026-09-25): the stat fields put back on both sides turn this red on the
+    first `==` below; count in `.shiftwork/notes-job64/J64-3.md`."""
+    from bantamkit.hookadapter import _fact_content_digest, _store_fingerprint
+
+    root = tmp_path / "store"
+    facts = root / "facts"
+    facts.mkdir(parents=True)
+    text = (
+        "---\nname: a\ndescription: d\ntype: project\ncreated: '2026-08-01'\n"
+        "last_recalled: null\nlinks: []\n---\n\nbody\n"
+    )
+    (facts / "a.md").write_text(text, encoding="utf-8")
+    fp = _store_fingerprint([str(root)])
+
+    (facts / "a.md").write_text(
+        text.replace("last_recalled: null", "last_recalled: '2026-09-25'"), encoding="utf-8"
+    )
+    assert _store_fingerprint([str(root)]) == fp, "a recall's date is not content"
+    now = os.stat(facts / "a.md").st_mtime_ns
+    os.utime(facts / "a.md", ns=(now + 10**9, now + 10**9))
+    assert _store_fingerprint([str(root)]) == fp, "a touch is not content"
+
+    for field, new in (
+        ("description: d", "description: e"),
+        ("type: project", "type: feedback"),
+        ("created: '2026-08-01'", "created: '2026-08-02'"),
+        ("links: []", "links: [b]"),
+        ("\nbody\n", "\nanother body\n"),
+    ):
+        (facts / "a.md").write_text(text.replace(field, new), encoding="utf-8")
+        assert _store_fingerprint([str(root)]) != fp, f"{field!r} is content"
+    (facts / "a.md").write_text(text + "last_recalled: in the body\n", encoding="utf-8")
+    assert _store_fingerprint([str(root)]) != fp, "only the FRONTMATTER line is masked"
+    (facts / "a.md").write_text(text, encoding="utf-8")
+    assert _store_fingerprint([str(root)]) == fp, "the original bytes, back to the original"
+    os.rename(facts / "a.md", facts / "b.md")
+    assert _store_fingerprint([str(root)]) != fp, "a rename is a change"
+
+    # A Windows-written file carries `\r\n`; the mask still finds the line, and the bytes
+    # themselves (with their `\r`) are what is hashed, so the two spellings differ.
+    crlf = text.replace("\n", "\r\n").encode()
+    dated = crlf.replace(b"last_recalled: null", b"last_recalled: '2026-09-25'")
+    assert _fact_content_digest(crlf) == _fact_content_digest(dated)
+    assert _fact_content_digest(crlf) != _fact_content_digest(text.encode())
+
+
+def test_re_dating_a_fact_does_not_re_arm_the_dream_gate_but_a_content_change_does(tmp_path):
+    """The same property through the hook: (a) an explicit recall, a re-dating of the line
+    and a bare touch each leave the next Stop a `dream-skip unchanged` with the SAME stored
+    fingerprint; (b) a body edit and (c) a new fact each produce a preview. The three (a)
+    steps are checked to have really rewritten the file, or a skip would prove nothing."""
+    from bantamkit.memory.component import Memory
+
+    home, cwd = _bed(tmp_path, "stop-dream-redate")
+    _two_layers(home, cwd)
+    project = cwd / ".bantamkit" / "memory"
+    _save(project, "project", "recalled-often", "the fact the operator recalls every turn", "body")
+    fact = project / "facts" / "recalled-often.md"
+    transcript = _transcript(cwd, tool_uses=1)
+
+    _stop(home, cwd, transcript)  # S1: the first look previews
+    fp1 = _dream_fingerprint(home)
+
+    # (a1) an explicit recall dates the fact: null -> today, bytes AND mtime move.
+    bytes_before, mtime_before = fact.read_bytes(), fact.stat().st_mtime_ns
+    assert "recalled-often" in Memory(store=project).recall("operator recalls every turn")
+    assert fact.read_bytes() != bytes_before and fact.stat().st_mtime_ns != mtime_before
+    assert "last_recalled: '" in fact.read_text(encoding="utf-8"), "the recall dated it"
+    _stop(home, cwd, transcript)  # S2
+    # (a2) the same line re-dated to another day -- what tomorrow's recall writes.
+    fact.write_text(
+        re.sub(
+            r"^last_recalled: .*$",
+            "last_recalled: '2020-01-01'",
+            fact.read_text(encoding="utf-8"),
+            flags=re.M,
+        ),
+        encoding="utf-8",
+    )
+    _stop(home, cwd, transcript)  # S3
+    # (a3) the mtime alone -- a same-day re-stamp (J64-0 Q4).
+    later = fact.stat().st_mtime_ns + 10**9
+    os.utime(fact, ns=(later, later))
+    _stop(home, cwd, transcript)  # S4
+    assert _dream_fingerprint(home) == fp1, "three re-datings, one fingerprint"
+
+    # (b) a body edit through the store (same name = update)
+    Memory(store=project).save(
+        "project", "recalled-often", "the fact the operator recalls every turn", "a new body"
+    )
+    assert "a new body" in fact.read_text(encoding="utf-8")
+    _stop(home, cwd, transcript)  # S5
+    fp5 = _dream_fingerprint(home)
+    assert fp5 != fp1, "a body edit is a change"
+    # (c) a fact added
+    _save(project, "project", "brand-new", "written after the last look", "body")
+    _stop(home, cwd, transcript)  # S6
+    assert _dream_fingerprint(home) != fp5, "a new fact is a change"
+
+    assert _dream_actions(home) == [
+        "dream-preview",
+        "dream-skip/unchanged",
+        "dream-skip/unchanged",
+        "dream-skip/unchanged",
+        "dream-preview",
+        "dream-preview",
+    ]
 
 
 def test_a_cwd_whose_project_store_is_the_profile_store_does_not_dream_with_itself(tmp_path):

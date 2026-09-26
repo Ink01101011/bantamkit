@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Memory } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
-import { DURABLE_TYPES, MemoryStore, pyEqualValue, pyText, tokens } from './memory/store.js';
+import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
 import type { Fact } from './memory/store.js';
 import { keptManifest, keptPrefix } from './npminstall.js';
 import {
@@ -300,8 +300,31 @@ interface ReadRecord {
 
 interface Ledger {
   reads: Record<string, ReadRecord>;
+  /** Per context (`transcript_path`, else `session_id`): fact name -> ISO stamp it was injected at. */
+  injected?: Record<string, Record<string, string>>;
   saved?: number;
   stopNudged?: boolean;
+}
+
+/**
+ * The fact names this CONTEXT has already been shown, `name -> ISO stamp` (job64, J64-2).
+ *
+ * Lives under `ledger.injected[<transcript>]`, beside `reads`, so it inherits the ledger's
+ * reset points: `PostCompact` and `SessionStart source=compact` unlink the file, which is
+ * exactly when the model's window has been rebuilt and a name it was shown is gone again.
+ * The context key is the same one `reads` uses — `transcript_path` when the host sends it,
+ * `session_id` otherwise — because a subagent shares the parent's `session_id` (J64-0, Q3
+ * step 11) and therefore this FILE, while its window has never held what the parent was
+ * shown. A missing or malformed entry is "nothing seen", never an exception, for the reason
+ * `readLedger` gives. Both lookups here answer for OWN keys only (job64, J64-8): the objects
+ * are plain, read back from JSON, and keyed by user data, so a bare `[key]` read would hand
+ * back `Object.prototype`'s members for a key that happens to be one of its names.
+ */
+function injectedSeen(ledger: Ledger, transcript: string): Record<string, string> {
+  const everyone = ledger.injected;
+  if (!everyone || typeof everyone !== 'object' || Array.isArray(everyone)) return {};
+  const mine = Object.hasOwn(everyone, transcript) ? everyone[transcript] : undefined;
+  return mine && typeof mine === 'object' && !Array.isArray(mine) ? mine : {};
 }
 
 function ledgerPath(run: HookRun, sessionId: string | undefined): string {
@@ -311,8 +334,8 @@ function ledgerPath(run: HookRun, sessionId: string | undefined): string {
 function readLedger(run: HookRun, sessionId: string | undefined): Ledger {
   try {
     const parsed = JSON.parse(fs.readFileSync(ledgerPath(run, sessionId), 'utf8')) as Ledger;
-    if (!parsed || typeof parsed !== 'object') return { reads: {} };
-    if (!parsed.reads || typeof parsed.reads !== 'object') parsed.reads = {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { reads: {} };
+    if (!parsed.reads || typeof parsed.reads !== 'object' || Array.isArray(parsed.reads)) parsed.reads = {};
     return parsed;
   } catch {
     return { reads: {} };
@@ -995,6 +1018,20 @@ function sessionStart(run: HookRun, input: HookInput): void {
     } catch {
       /* none */
     }
+  } else if (input.source === 'clear') {
+    // `/clear` empties the window the way a compaction does, and the host MAY keep the
+    // `session_id` across it (the real log cannot settle this: 4 kept, 12 changed, 15 unknown
+    // over 31 clears, with concurrent sessions confounding every count —
+    // `.shiftwork/notes-job64/J64-2.md`). So the names this session was shown are forgotten
+    // here either way; if the id changed there is no ledger and this is a no-op. Only the
+    // seen-set: whether a re-read after `/clear` should still be refused is the read ledger's
+    // own question, and `resume` restores the window, so it resets nothing. No ledger is
+    // created when none exists (job64, J64-2).
+    const ledger = readLedger(run, input.session_id);
+    if ('injected' in ledger) {
+      delete ledger.injected;
+      writeLedger(run, input.session_id, ledger);
+    }
   }
   // `profileFacts` keeps its old meaning — files in the store — so older records stay
   // comparable; `profileInjected` / `profileDropped` are what the block carried and did
@@ -1114,7 +1151,12 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
     return;
   }
   const m = Memory.layered(input.cwd || process.cwd());
-  const o = m.recallOutcome(prompt, 3);
+  // `stamp = false` (job64, J64-1): an injection is the HOOK reading the store, not the model
+  // asking for a fact, so it must not date `last_recalled`. Before this it did, on every
+  // prompt, for up to three files — and the rules keyed on that date (compaction's
+  // stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
+  // reading this arm's traffic. An explicit `memory_recall` still stamps.
+  const o = m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false);
   if (o.status !== 'answered') {
     log(run, { event: 'UserPromptSubmit', action: 'none', status: o.status, candidates: o.candidates });
     return;
@@ -1127,20 +1169,64 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
     log(run, { event: 'UserPromptSubmit', action: 'none', reason: 'no-headers' });
     return;
   }
+  // WHAT THIS CONTEXT HAS ALREADY BEEN SHOWN IS NOT SHOWN AGAIN (job64, J64-2). Measured
+  // 2026-09-25: 333 of 598 injections in a week repeated a name injected earlier in the same
+  // session. The top 3 are still asked for (RB-P1's floor stays) and the seen ones are
+  // DROPPED, not refilled from rank 4 onward: what leaves is always a subset of what the
+  // un-deduped arm would have sent, so its precision can only rise, and a repeated prompt
+  // says nothing rather than walking down the ranking on every repeat. The seen-set is the
+  // session ledger's, so it is forgotten exactly when the window is (compaction, `/clear`).
+  const transcript = String(input.transcript_path || input.session_id || '');
+  const ledger = readLedger(run, input.session_id);
+  const seen = injectedSeen(ledger, transcript);
+  const fresh: string[] = [];
+  const suppressed: string[] = [];
+  for (const line of heads) {
+    const name = RECALL_HEADER.exec(line)?.[2] ?? '';
+    // OWN keys only (job64, J64-8). `seen` is a plain object read back from JSON, and `in`
+    // walks `Object.prototype` — so `name in seen` was true for a fact named `constructor`
+    // (the one prototype key `NAME_RE` admits) on a context that had been shown nothing, and
+    // the port withheld it on the first prompt while the reference injected it.
+    if (Object.hasOwn(seen, name)) suppressed.push(name);
+    else fresh.push(line);
+  }
+  if (fresh.length === 0) {
+    // Everything picked was already in the window. Nothing is emitted, and the record says
+    // WHY with the names, so an audit can count what dedupe withheld.
+    log(run, {
+      event: 'UserPromptSubmit',
+      action: 'suppress',
+      hits: heads.length,
+      source: o.source,
+      session: input.session_id ?? null,
+      prompt: promptFingerprint(prompt),
+      suppressed,
+    });
+    return;
+  }
   const ctx = capLines(
-    `[bantamkit recall — memories that match this prompt; call mcp__bantamkit__memory_recall with {"query":"<name>"} for the body]\n${heads.join('\n')}`,
+    `[bantamkit recall — memories that match this prompt; call mcp__bantamkit__memory_recall with {"query":"<name>"} for the body]\n${fresh.join('\n')}`,
     PROMPT_INJECT_MAX,
   );
   // `injected` is read back off `ctx`, NOT off `heads`. The byte cap drops whole lines, so a
   // header that `recallOutcome` picked need not have left the process — and roadmap #6 asks
   // "was an INJECTED name later used", a question a name the model never saw would poison.
   // `hits` keeps its old meaning (headers picked, pre-cap) so the 487 records written before
-  // this change stay comparable; `dropped` is the difference the old shape could not show.
+  // this change stay comparable; `dropped` is the difference the old shape could not show,
+  // counted over the unseen headers only, so that `hits == injected + dropped + suppressed`
+  // on every record.
   const queryTokens = tokens(prompt);
   const injected = ctx
     .split('\n')
     .map((l) => scoreHeader(l, queryTokens))
     .filter((x): x is ScoredHeader => x !== null);
+  // Remembered AFTER the cap, off `injected`: a name the cap cut never reached the window and
+  // must be eligible next time.
+  const at = new Date().toISOString();
+  for (const x of injected) seen[x.name] = at;
+  if (!ledger.injected || typeof ledger.injected !== 'object' || Array.isArray(ledger.injected)) ledger.injected = {};
+  ledger.injected[transcript] = seen;
+  writeLedger(run, input.session_id, ledger);
   log(run, {
     event: 'UserPromptSubmit',
     action: 'inject',
@@ -1152,7 +1238,8 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
     session: input.session_id ?? null,
     prompt: promptFingerprint(prompt),
     injected,
-    dropped: heads.length - injected.length,
+    dropped: fresh.length - injected.length,
+    suppressed,
   });
   emit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: ctx } });
 }
@@ -1920,6 +2007,41 @@ function samePath(a: string, b: string): boolean {
   return realDir(a) === realDir(b);
 }
 
+/**
+ * sha256 of a fact file with the frontmatter's `last_recalled:` line left out.
+ *
+ * THE DATE IS NOT CONTENT. Every recall rewrites that one line (and the file's mtime), so a
+ * fingerprint that saw it re-armed the dream preview on every `memory_recall` — measured
+ * 2026-09-25 (job64): 103 of 236 previews in a week reported the identical `wouldMerge 14 /
+ * wouldConsume 14`. Name, description, type, created, links and the body all stay in.
+ *
+ * Byte-exact and identical in both runtimes (`_fact_content_digest` in
+ * `runtime-py/src/bantamkit/hookadapter.py`): the buffer is walked as latin1 so every byte
+ * is its own character, the split is on `\n`, a trailing `\r` is ignored only for the two
+ * comparisons (a Windows-written file keeps its bytes in the hash), and only the lines between
+ * the first two `---` fences are frontmatter — a body line that happens to start with
+ * `last_recalled:` is still content.
+ */
+function factContentDigest(data: Buffer): string {
+  const h = createHash('sha256');
+  let fences = 0;
+  for (const line of data.toString('latin1').split('\n')) {
+    const bare = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (bare === '---' && fences < 2) fences++;
+    else if (fences === 1 && bare.startsWith('last_recalled:')) continue;
+    h.update(line, 'latin1');
+    h.update('\n', 'latin1');
+  }
+  return h.digest('hex');
+}
+
+/**
+ * One hash over both layers: each root's name, then every `facts/*.md` as name + content
+ * digest. Adding, removing or renaming a fact moves it; editing any field but `last_recalled`
+ * moves it; a recall (which rewrites only that line and the mtime) does not. Neither size nor
+ * mtime is in it any more: J64-0 measured that a same-day re-stamp moves the mtime ALONE, so
+ * no stat field could be kept as a content signal (`.shiftwork/notes-job64/J64-0.md`, Q4).
+ */
 function storeFingerprint(roots: readonly string[]): string {
   const h = createHash('sha256');
   for (const root of roots) {
@@ -1934,13 +2056,13 @@ function storeFingerprint(roots: readonly string[]): string {
       /* a layer with no facts/ contributes its name and nothing else */
     }
     for (const n of names) {
-      let st: fs.Stats;
+      let data: Buffer;
       try {
-        st = fs.statSync(path.join(root, 'facts', n));
+        data = fs.readFileSync(path.join(root, 'facts', n));
       } catch {
         continue;
       }
-      h.update(`${n}\u0000${st.size}\u0000${st.mtimeMs}\u0000`);
+      h.update(`${n}\u0000${factContentDigest(data)}\u0000`);
     }
   }
   return h.digest('hex');

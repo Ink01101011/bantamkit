@@ -242,7 +242,11 @@ export const RECALL_MIN_SCORE_RATIO = 0.0;
 // Spelled once because both runtimes raise it verbatim. The offending value is NOT
 // interpolated: Python renders `2.0` as `2.0` and JavaScript renders it as `2`, so a
 // sentence carrying the number would be a divergence manufactured by float formatting.
-const MIN_RATIO_RANGE = 'recall min-score ratio must be between 0.0 and 1.0';
+// PUBLIC SINCE J64-4, ON BOTH SIDES, for the same reason `tokens` is: `component.Memory` runs
+// the range check itself now, before an exact-name walk reads a file, and it must throw the
+// store's sentence and not a second spelling of it. The reference spells it `MIN_RATIO_RANGE`
+// beside its private alias.
+export const MIN_RATIO_RANGE = 'recall min-score ratio must be between 0.0 and 1.0';
 
 /** See the reference's comment: measured against a real store, not chosen. */
 export const DEFAULT_INDEX_BUDGET = 24_000;
@@ -861,6 +865,32 @@ export class MemoryStore {
     const hits = sortScored(scored).slice(0, limit).map((s) => s.fact);
     if (stamp) for (const fact of hits) this.stamp(fact);
     return hits;
+  }
+
+  /**
+   * The fact whose `name` field is exactly `name`, or `null`; no scoring, no ranking.
+   *
+   * WHY THIS EXISTS (job64, J64-4): `component.Memory` walks the layers looking for a fact
+   * the model asked for BY NAME, and `recall` cannot answer that question — it scores by
+   * token overlap, ties are broken by name, and every hit inside `k` is stamped, so there is
+   * no `k` that returns "the one named X and dates only that one". This is the public
+   * primitive that keeps `facts()`/`stamp()` private (see `factCount`'s docstring for why
+   * they are) and `internals()` at its one caller.
+   *
+   * `===` against the `name` field as `facts()` resolved it: a hand-edited `name: 7` is a
+   * number here and an `int` in the reference, and neither equals a string, so it is never an
+   * exact hit on either side. Two files claiming one name answer the first in `factPaths`
+   * order, which is the order `recall` breaks a tie in. `stamp` dates the hit through
+   * `stamp()` exactly as `recall` dates its hits; a miss writes nothing.
+   */
+  lookup(name: string, stamp = true): Fact | null {
+    for (const fact of this.facts()) {
+      if (typeof fact.name === 'string' && fact.name === name) {
+        if (stamp) this.stamp(fact);
+        return fact;
+      }
+    }
+    return null;
   }
 
   /**

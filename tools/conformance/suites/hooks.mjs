@@ -67,6 +67,7 @@
  * are the in-process half and stay; this block is the process half.
  */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -247,6 +248,28 @@ function seedStore(ctx, storeRoot, facts) {
   if (r.status !== 0) throw new Error(`hooks: could not seed ${storeRoot}\n${r.stderr}`);
 }
 
+/**
+ * An explicit recall through the reference's own `MemoryStore` — the ONE path that still
+ * dates a fact on disk after J64-1 — so "re-dated by a recall" is what the product writes and
+ * not a line this file spelled. Asserts the name was a hit, or the re-dating never happened.
+ */
+function recallStore(ctx, storeRoot, query, expectName) {
+  const r = spawnSync(
+    ctx.python,
+    [
+      '-c',
+      'import sys;sys.path.insert(0,sys.argv[1]);from bantamkit.memory.component import Memory;' +
+        'out=Memory(store=sys.argv[2]).recall(sys.argv[3]);assert sys.argv[4] in out,out',
+      join(repoRoot, 'runtime-py', 'src'),
+      storeRoot,
+      query,
+      expectName,
+    ],
+    { encoding: 'utf8' },
+  );
+  if (r.status !== 0) throw new Error(`hooks: could not recall in ${storeRoot}\n${r.stderr}`);
+}
+
 /** Every file under `dir`, path -> content, so "what A wrote" is compared byte for byte. */
 function treeOf(dir) {
   const out = {};
@@ -262,6 +285,38 @@ function treeOf(dir) {
 }
 
 const NATIVE_FIELDS = (rec) => Object.fromEntries(Object.entries(rec).filter(([k]) => k.startsWith('native')));
+
+/**
+ * Every fact file under `<store>/facts`, name -> { sha256, mtimeNs, lastRecalled }.
+ *
+ * Three fields because a stamp moves all three and a same-day re-stamp moves only ONE:
+ * J64-0 measured that a fact already dated today is rewritten with identical bytes and only
+ * its mtime carries the write (`.shiftwork/notes-job64/J64-0.md`, Q4). A case that compared
+ * contents alone would therefore pass green on a bed whose facts were already stamped, which
+ * is why `mtimeNs` is read as a BigInt string and compared as a literal. `lastRecalled` is
+ * the frontmatter line itself, so a failure names the field that moved and not just the file.
+ */
+function factsState(factsDir) {
+  const out = {};
+  if (!existsSync(factsDir)) return out;
+  for (const name of readdirSync(factsDir).filter((n) => n.endsWith('.md')).sort()) {
+    const path = join(factsDir, name);
+    const text = readFileSync(path, 'utf8');
+    out[name] = {
+      sha256: createHash('sha256').update(text, 'utf8').digest('hex'),
+      mtimeNs: String(statSync(path, { bigint: true }).mtimeNs),
+      lastRecalled: (/^last_recalled: (.*)$/m.exec(text) ?? [, '<no last_recalled line>'])[1],
+    };
+  }
+  return out;
+}
+
+/** Which facts moved between two `factsState` snapshots, per field, so `[]` means "none". */
+function factsDiff(before, after) {
+  const names = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+  const moved = (field) => names.filter((n) => (before[n] ?? {})[field] !== (after[n] ?? {})[field]);
+  return { rewritten: moved('sha256'), mtimeMoved: moved('mtimeNs'), stamped: moved('lastRecalled') };
+}
 
 // ------------------------------------------------------------------------------------ run
 
@@ -1921,6 +1976,690 @@ export async function run(ctx) {
         'json',
       ).map((c, i) => ({ ...c, expected: i === 0 ? 62 : 65 })),
     );
+  }
+
+  // ================================ an injection is not a recall (job64, J64-1)
+  //
+  // THE PROPERTY: a `UserPromptSubmit` that INJECTS leaves every fact file in the store it
+  // read byte-identical, contents AND mtime, on both sides — and the injection itself is
+  // unchanged: the same block on stdout, the same `inject` record. Until this job the arm
+  // went down `Memory.recallOutcome(prompt, 3)` with the component's default `stamp`, so
+  // every automatic injection dated up to three facts as "recalled today" and moved their
+  // mtime; J64-0 measured 25 of 42 facts in one real store carrying that day's date, and
+  // every rule keyed on `last_recalled` (compaction's stalest-first, the SessionStart drop
+  // rule, the Stop dream's `size + mtimeMs` fingerprint) was reading this arm's traffic.
+  //
+  // NOTHING PINNED IT. J64-0 Q2 found no unit test on either side and no case in this suite
+  // that read a fact file after a `UserPromptSubmit`; the one Node test that needs a stamped
+  // fact seeds it through `Memory.recall`, not the hook. So this block is the first, and it is
+  // PER SIDE against a typed constant, because the regression it guards lands symmetrically
+  // (one default flipped in one shared component) and a differential would stay green.
+  //
+  // THE BED HAS A CONTROL BUILT IN. Three facts share tokens with the prompt and two share
+  // none, so `hits: 3` is pinned first as the precondition — an arm that skipped the store
+  // altogether would leave the files alone for the wrong reason, and `hits: 0` would say so.
+  // The "explicit recall still stamps" half of the property is pinned where that surface
+  // lives: `tools/conformance/suites/wire.mjs` (`memory_recall` over MCP, per side) and
+  // `store.mjs` (`MemoryStore.recall` with `stamp=true`, the whole tree diffed).
+  //
+  // RED-THEN-GREEN, measured 2026-09-25: with the hook's `stamp=False` / `false` put back to
+  // the default on BOTH sides, the four per-side property literals below go red (the
+  // `rewritten` / `mtimeMoved` / `stamped` lists each name the three hit files, and the
+  // field-for-field snapshot moves on the same three) while the precondition literals, the
+  // record differential and the stdout differential all stay green — the symmetric-regression
+  // shape, and the reason the record and stdout comparisons alone could never have held this
+  // (117 cases, 4 failures). Put back on the port alone: the port's two go red, the reference's
+  // two and every differential stay green (117 cases, 2 failures). Counts and commands in
+  // `.shiftwork/notes-job64/J64-1.md`.
+  {
+    const id = 'inject-no-stamp';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const factsDir = join(cwd, '.bantamkit', 'memory', 'facts');
+    // Pairwise Jaccard over `tokens(name + description)` stays under the store's 0.5
+    // duplicate threshold, or `seedStore` refuses the bed; each hit shares three or more
+    // prompt tokens, each miss shares none.
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), [
+      {
+        type: 'project',
+        name: 'deployment-rollback',
+        description: 'the deployment path rollback procedure for the staging cluster',
+      },
+      { type: 'project', name: 'staging-cluster-notes', description: 'wiring notes kept about the staging cluster nodes' },
+      { type: 'project', name: 'rollback-runbook', description: 'runbook steps when a rollback of the deployment is needed' },
+      { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      { type: 'reference', name: 'unrelated-beta', description: 'still nothing in common with anything' },
+    ]);
+    const PROMPT = 'deployment path rollback procedure for the staging cluster';
+    const payload = { hook_event_name: 'UserPromptSubmit', prompt: PROMPT, cwd, session_id: id };
+    b.snapshot();
+    // Snapshotted PER SIDE and AFTER the restore: `cpSync` does not preserve timestamps, so
+    // the port's bed carries the copy's mtimes and a snapshot taken before the restore would
+    // fail the port for the harness's own copy.
+    const pyBefore = factsState(factsDir);
+    const py = runHook(ctx, 'py', { payload, cwd, home: home(id, 'py') });
+    const pyAfter = factsState(factsDir);
+    b.restore();
+    const ndBefore = factsState(factsDir);
+    const nd = runHook(ctx, 'node', { payload, cwd, home: home(id, 'node') });
+    const ndAfter = factsState(factsDir);
+
+    // PRECONDITION: the inject branch, with three hits, on both sides. A `skip` or `none`
+    // record leaves the files alone for a reason this block is not about.
+    if (py.last['action'] !== 'inject' || nd.last['action'] !== 'inject') {
+      throw new Error(
+        `hooks: inject-no-stamp needs the INJECT branch on both sides and got ` +
+          `py=${py.last['action']} node=${nd.last['action']}; the bed's store no longer ` +
+          'answers the prompt, so nothing below would be measuring an injection.',
+      );
+    }
+    const recordOf = (r) => ({ action: r.last['action'], hits: r.last['hits'], dropped: r.last['dropped'] });
+    cases.push(
+      ...literalCases(
+        recordOf(py),
+        recordOf(nd),
+        'inject-no-stamp: precondition — the arm read the store and injected three of five',
+        { action: 'inject', hits: 3, dropped: 0 },
+      ),
+    );
+    // Both sides seeded the same five facts, all undated: the state the property is measured
+    // against, pinned so a bed that arrived pre-stamped cannot make the cases below vacuous.
+    cases.push(
+      ...literalCases(
+        Object.fromEntries(Object.entries(pyBefore).map(([n, s]) => [n, s.lastRecalled])),
+        Object.fromEntries(Object.entries(ndBefore).map(([n, s]) => [n, s.lastRecalled])),
+        'inject-no-stamp: precondition — five facts on disk, none of them dated',
+        {
+          'deployment-rollback.md': 'null',
+          'rollback-runbook.md': 'null',
+          'staging-cluster-notes.md': 'null',
+          'unrelated-alpha.md': 'null',
+          'unrelated-beta.md': 'null',
+        },
+      ),
+    );
+    // THE PROPERTY, PER SIDE: not one file rewritten, not one mtime moved, not one stamp.
+    cases.push(
+      ...literalCases(
+        factsDiff(pyBefore, pyAfter),
+        factsDiff(ndBefore, ndAfter),
+        'inject-no-stamp: PINNED PER SIDE: the injection left every fact file byte- and mtime-identical',
+        { rewritten: [], mtimeMoved: [], stamped: [] },
+      ),
+    );
+    cases.push(
+      ...literalCases(
+        pyAfter,
+        ndAfter,
+        'inject-no-stamp: the five files after the injection are the five files before it, field for field',
+        undefined,
+      ).map((c, i) => ({ ...c, expected: i === 0 ? pyBefore : ndBefore })),
+    );
+    // WHAT DID NOT CHANGE: the injected block and the record are the same on both sides,
+    // and the same as before this job — the stamp was the only thing taken away.
+    cases.push({
+      name: 'inject-no-stamp: the injected block on stdout, byte for byte',
+      kind: 'bytes',
+      expected: py.stdout,
+      actual: nd.stdout,
+    });
+    const injectFields = (r) =>
+      Object.fromEntries(Object.entries(r.last).filter(([k]) => !['ts', 'ms'].includes(k)));
+    cases.push({
+      name: 'inject-no-stamp: the inject record, with only `ts` and `ms` masked',
+      kind: 'json',
+      expected: injectFields(py),
+      actual: injectFields(nd),
+    });
+    cases.push(
+      ...literalCases(
+        { bytes: py.last['bytes'], injected: py.last['injected'].map((x) => x.name) },
+        { bytes: nd.last['bytes'], injected: nd.last['injected'].map((x) => x.name) },
+        'inject-no-stamp: PINNED PER SIDE: the three names injected, in score order, and the block size',
+        // 423 is MEASURED off both sides on this bed (2026-09-25), not derived: the header
+        // line plus three `[project] [name] (type) description` headers, under the cap.
+        { bytes: 423, injected: ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'] },
+      ),
+    );
+  }
+
+  // ============================ inject-dedupe: what a context was shown is not shown again
+  //
+  // job64 / J64-2. Measured 2026-09-25 over a week of the real log: 333 of 598 injections
+  // repeated a name already injected earlier in the SAME session, because the arm never
+  // consulted the per-session ledger. Now it does: the seen-set lives in
+  // `ledger-<session>.json` under `injected[<transcript>]`, so it is forgotten exactly when
+  // the window is (PostCompact, SessionStart `compact`, and now SessionStart `clear`). The
+  // seen headers are DROPPED, never refilled from rank 4 — what leaves is a subset of what
+  // the un-deduped arm sent. Six properties from the unit brief, each pinned PER SIDE against
+  // a literal and then the whole sequence compared across sides, on the `inject-no-stamp` bed
+  // and one sequence of payloads per side under its own throwaway home:
+  //   (a) the same prompt twice in one context: the second emits nothing, `action: suppress`;
+  //   (b) another session is not suppressed by the first's injection;
+  //   (c) after PostCompact the same context is injected again;
+  //   (d) a prompt whose top 3 mixes seen and unseen names emits only the unseen;
+  //   (e) SessionStart `clear` forgets, `startup` does not (the control);
+  //   (f) a subagent (same session_id, own transcript_path) is not suppressed by the parent,
+  //       and the parent is still suppressed afterwards.
+  // MUTATION EVIDENCE (2026-09-25) — the seen-set forced empty on BOTH sides (`seen = {}` /
+  // `const seen = {}`): (a), (d), (e), (f) and the identity literal go red per side, 10 of
+  // 140, while the precondition, (b), (c), the s5 ledger shape and EVERY differential stay
+  // green — the symmetric-regression shape, and why the sequence differential alone could
+  // never hold this. (b) and (c) pin the "still injected" halves and are green either way;
+  // the s5 ledger is still written by the mutant, so its shape is not what catches it; the
+  // identity literal is 9 long because exactly 9 of the 12 prompts inject, and the mutant
+  // injects 12. On the port alone the port's five literals, the (d) stdout-bytes
+  // differential and the sequence differential go red, 7 of 140. Two narrower mutations,
+  // (e)'s `clear` reset removed and the seen-set keyed by session instead of transcript, are
+  // counted in `.shiftwork/notes-job64/J64-2.md` with the commands.
+  {
+    const id = 'inject-dedupe';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), [
+      {
+        type: 'project',
+        name: 'deployment-rollback',
+        description: 'the deployment path rollback procedure for the staging cluster',
+      },
+      { type: 'project', name: 'staging-cluster-notes', description: 'wiring notes kept about the staging cluster nodes' },
+      { type: 'project', name: 'rollback-runbook', description: 'runbook steps when a rollback of the deployment is needed' },
+      { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      { type: 'reference', name: 'unrelated-beta', description: 'still nothing in common with anything' },
+    ]);
+    // A hits the three deployment/rollback/staging facts (scores 8, 3, 3); C hits
+    // `unrelated-alpha` and then two of A's three — measured through `Memory.layered` on this
+    // bed, so after A it is the mixed case.
+    const A = 'deployment path rollback procedure for the staging cluster';
+    const C = 'nothing shared here at all about the staging cluster';
+    const A_NAMES = ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'];
+    b.snapshot();
+
+    const maskStamps = (ledger) => ({
+      ...ledger,
+      injected: Object.fromEntries(
+        Object.entries(ledger.injected ?? {}).map(([t, names]) => [
+          t,
+          Object.fromEntries(Object.keys(names).map((n) => [n, '<ts>'])),
+        ]),
+      ),
+    });
+    const sequence = (side) => {
+      const h = home(id, side);
+      const seq = [];
+      const up = (session, transcript, text) => {
+        const r = runHook(ctx, side, {
+          payload: { hook_event_name: 'UserPromptSubmit', prompt: text, cwd, session_id: session, transcript_path: transcript },
+          cwd,
+          home: h,
+        });
+        seq.push({
+          action: r.last['action'],
+          hits: r.last['hits'],
+          injected: (r.last['injected'] ?? []).map((x) => x.name),
+          suppressed: r.last['suppressed'],
+          dropped: r.last['dropped'] ?? null,
+          bytes: r.last['bytes'] ?? null,
+          stdout: dec(r.stdout),
+        });
+        return r;
+      };
+      const ev = (payload) => runHook(ctx, side, { payload: { ...payload, cwd }, cwd, home: h });
+      up('s1', '/t/s1.jsonl', A); // 0  precondition
+      up('s1', '/t/s1.jsonl', A); // 1  (a)
+      up('s2', '/t/s2.jsonl', A); // 2  (b)
+      ev({ hook_event_name: 'PostCompact', session_id: 's1' });
+      up('s1', '/t/s1.jsonl', A); // 3  (c)
+      up('s3', '/t/s3.jsonl', A); // 4
+      up('s3', '/t/s3.jsonl', C); // 5  (d)
+      up('s4', '/t/s4.jsonl', A); // 6
+      ev({ hook_event_name: 'SessionStart', source: 'startup', session_id: 's4' });
+      up('s4', '/t/s4.jsonl', A); // 7  (e) control
+      ev({ hook_event_name: 'SessionStart', source: 'clear', session_id: 's4' });
+      up('s4', '/t/s4.jsonl', A); // 8  (e)
+      up('s5', '/t/parent.jsonl', A); // 9
+      up('s5', '/t/child.jsonl', A); // 10 (f)
+      up('s5', '/t/parent.jsonl', A); // 11 (f)
+      ev({ hook_event_name: 'SessionStart', source: 'clear', session_id: 's9' });
+      const ledgerS5 = JSON.parse(readFileSync(join(h, '.bantamkit', 'hooks', 'ledger-s5.json'), 'utf8'));
+      return {
+        seq,
+        ledgerS5: maskStamps(ledgerS5),
+        s9Exists: existsSync(join(h, '.bantamkit', 'hooks', 'ledger-s9.json')),
+      };
+    };
+    const py = sequence('py');
+    b.restore();
+    const nd = sequence('node');
+
+    // PRECONDITION: the first prompt of a fresh context injects all three on both sides. A
+    // `skip` or `none` there would make every "suppress" below vacuous.
+    if (py.seq[0].action !== 'inject' || nd.seq[0].action !== 'inject') {
+      throw new Error(
+        `hooks: inject-dedupe needs the INJECT branch first on both sides and got ` +
+          `py=${py.seq[0].action} node=${nd.seq[0].action}; the bed's store no longer answers ` +
+          'the prompt, so nothing below would be measuring a suppression.',
+      );
+    }
+    const pick = (s, i, fields) => Object.fromEntries(fields.map((f) => [f, s.seq[i][f]]));
+    const RECORD = ['action', 'hits', 'injected', 'suppressed', 'dropped'];
+    cases.push(
+      ...literalCases(
+        pick(py, 0, RECORD),
+        pick(nd, 0, RECORD),
+        'inject-dedupe: precondition — a fresh context is injected all three, nothing suppressed',
+        { action: 'inject', hits: 3, injected: A_NAMES, suppressed: [], dropped: 0 },
+      ),
+    );
+    // (a) THE PROPERTY, PER SIDE: the same prompt again in the same context emits NOTHING,
+    // and the record names what was withheld rather than saying `none`.
+    cases.push(
+      ...literalCases(
+        pick(py, 1, [...RECORD, 'stdout']),
+        pick(nd, 1, [...RECORD, 'stdout']),
+        'inject-dedupe: PINNED PER SIDE (a): the second identical prompt emits nothing and logs `suppress` with the names',
+        { action: 'suppress', hits: 3, injected: [], suppressed: A_NAMES, dropped: null, stdout: '' },
+      ),
+    );
+    // (b) another session, unaffected.
+    cases.push(
+      ...literalCases(
+        pick(py, 2, RECORD),
+        pick(nd, 2, RECORD),
+        'inject-dedupe: PINNED PER SIDE (b): a different session is injected in full',
+        { action: 'inject', hits: 3, injected: A_NAMES, suppressed: [], dropped: 0 },
+      ),
+    );
+    // (c) after PostCompact, the same context again.
+    cases.push(
+      ...literalCases(
+        pick(py, 3, RECORD),
+        pick(nd, 3, RECORD),
+        'inject-dedupe: PINNED PER SIDE (c): after PostCompact the same context is injected again',
+        { action: 'inject', hits: 3, injected: A_NAMES, suppressed: [], dropped: 0 },
+      ),
+    );
+    // (d) the mixed case: only the unseen header leaves; the seen two are withheld, not
+    // refilled; and `hits == injected + dropped + suppressed`. 194 is MEASURED on both sides
+    // (2026-09-25): the header line plus the one `[project] [unrelated-alpha] (reference) …`.
+    cases.push(
+      ...literalCases(
+        pick(py, 5, [...RECORD, 'bytes']),
+        pick(nd, 5, [...RECORD, 'bytes']),
+        'inject-dedupe: PINNED PER SIDE (d): a mixed pick emits only the unseen header, and withholds the seen two',
+        {
+          action: 'inject',
+          hits: 3,
+          injected: ['unrelated-alpha'],
+          suppressed: ['staging-cluster-notes', 'deployment-rollback'],
+          dropped: 0,
+          bytes: 194,
+        },
+      ),
+    );
+    cases.push({
+      name: 'inject-dedupe (d): the mixed block on stdout, byte for byte',
+      kind: 'bytes',
+      expected: Buffer.from(py.seq[5].stdout, 'utf8'),
+      actual: Buffer.from(nd.seq[5].stdout, 'utf8'),
+    });
+    // (e) `clear` forgets; `startup` between two identical prompts is the CONTROL — without
+    // it a SessionStart that always reset would pass the `clear` half alone.
+    const actions = (s, ...i) => i.map((k) => s.seq[k].action);
+    cases.push(
+      ...literalCases(
+        actions(py, 6, 7, 8),
+        actions(nd, 6, 7, 8),
+        'inject-dedupe: PINNED PER SIDE (e): inject, then suppressed across `startup`, then injected again after `clear`',
+        ['inject', 'suppress', 'inject'],
+      ),
+    );
+    // (f) parent, subagent, parent: the subagent is not suppressed by the parent's injection
+    // and the parent still is by its own.
+    cases.push(
+      ...literalCases(
+        actions(py, 9, 10, 11),
+        actions(nd, 9, 10, 11),
+        'inject-dedupe: PINNED PER SIDE (f): a subagent transcript is injected; the parent is still suppressed after it',
+        ['inject', 'inject', 'suppress'],
+      ),
+    );
+    const s5 = {
+      reads: {},
+      injected: {
+        '/t/parent.jsonl': Object.fromEntries(A_NAMES.map((n) => [n, '<ts>'])),
+        '/t/child.jsonl': Object.fromEntries(A_NAMES.map((n) => [n, '<ts>'])),
+      },
+    };
+    cases.push(
+      ...literalCases(
+        py.ledgerS5,
+        nd.ledgerS5,
+        'inject-dedupe: PINNED PER SIDE (f): one ledger file for the session, one seen-set per transcript, stamps masked',
+        s5,
+      ),
+    );
+    // The record arithmetic closes on every inject record of the sequence.
+    const identity = (s) =>
+      s.seq.filter((r) => r.action === 'inject').map((r) => r.hits === r.injected.length + r.dropped + r.suppressed.length);
+    cases.push(
+      ...literalCases(
+        identity(py),
+        identity(nd),
+        'inject-dedupe: PINNED PER SIDE: hits == injected + dropped + suppressed on every inject record',
+        Array(9).fill(true),
+      ),
+    );
+    cases.push(
+      ...literalCases(
+        py.s9Exists,
+        nd.s9Exists,
+        'inject-dedupe: a `clear` with no ledger under the session creates none',
+        false,
+      ),
+    );
+    // And the two sides ran the identical sequence: every record field and every byte of
+    // stdout, twelve prompts long.
+    cases.push({
+      name: 'inject-dedupe: the twelve-prompt sequence, record by record and byte by byte, is the same on both sides',
+      kind: 'json',
+      expected: py.seq,
+      actual: nd.seq,
+    });
+    cases.push({
+      name: 'inject-dedupe: the s5 ledger, stamps masked, is the same file on both sides',
+      kind: 'json',
+      expected: py.ledgerS5,
+      actual: nd.ledgerS5,
+    });
+
+    // (g) OWN KEYS ONLY (job64, J64-8, the J64-7 blocker). `constructor` is the one
+    // `Object.prototype` key `NAME_RE` admits (all lowercase, no underscore), and the port's
+    // seen-set is a plain object read back from JSON — so a membership test written with `in`
+    // found the prototype's `constructor` on a FRESH context and withheld the fact before it
+    // was ever shown, while the reference's dict has no such key. The two runtimes disagreed
+    // on the first prompt over the same store, and no bed above could see it because none
+    // held such a name. A second store, same shape: two facts hit, one of them named
+    // `constructor`; the same prompt twice in one context.
+    // MUTATION EVIDENCE (2026-09-26): on the code before the fix (`name in seen` at
+    // `userPromptSubmit`, the port) the first-prompt literal for the port and the two-prompt
+    // differential went red, 2 of 152, the port injecting `widget-rollout-notes` alone with
+    // `constructor` in `suppressed` on a context that had been shown nothing; the reference's
+    // two literals and the second prompt's stayed green, which is why this is pinned per side.
+    {
+      const id2 = `${id}-constructor`;
+      const b2 = bed(join(root, id2));
+      const cwd2 = join(b2.root, 'cwd');
+      mkdirSync(cwd2, { recursive: true });
+      seedStore(ctx, join(cwd2, '.bantamkit', 'memory'), [
+        { type: 'project', name: 'constructor', description: 'the widget constructor rollout checklist for staging' },
+        {
+          type: 'project',
+          name: 'widget-rollout-notes',
+          description: 'notes on the widget rollout timing for the staging window',
+        },
+        { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      ]);
+      // Hits `constructor` then `widget-rollout-notes`, and not `unrelated-alpha` — measured
+      // through `Memory.recall_outcome` on this bed (`.shiftwork/notes-job64/J64-8.md`).
+      const P = 'the widget constructor rollout checklist for staging';
+      const CTOR_NAMES = ['constructor', 'widget-rollout-notes'];
+      b2.snapshot();
+      const twice = (side) => {
+        const h = home(id2, side);
+        return [1, 2].map(() => {
+          const r = runHook(ctx, side, {
+            payload: { hook_event_name: 'UserPromptSubmit', prompt: P, cwd: cwd2, session_id: 'c1', transcript_path: '/t/c1.jsonl' },
+            cwd: cwd2,
+            home: h,
+          });
+          return {
+            action: r.last['action'],
+            hits: r.last['hits'],
+            injected: (r.last['injected'] ?? []).map((x) => x.name),
+            suppressed: r.last['suppressed'],
+            dropped: r.last['dropped'] ?? null,
+            stdout: dec(r.stdout),
+          };
+        });
+      };
+      const p = twice('py');
+      b2.restore();
+      const n = twice('node');
+      const rec = (r) => ({ action: r.action, hits: r.hits, injected: r.injected, suppressed: r.suppressed, dropped: r.dropped });
+      cases.push(
+        ...literalCases(
+          rec(p[0]),
+          rec(n[0]),
+          'inject-dedupe: PINNED PER SIDE (g): a fact named `constructor` is injected on the first prompt of a fresh context',
+          { action: 'inject', hits: 2, injected: CTOR_NAMES, suppressed: [], dropped: 0 },
+        ),
+      );
+      cases.push(
+        ...literalCases(
+          p[1],
+          n[1],
+          'inject-dedupe: PINNED PER SIDE (g): and suppressed on the second, with nothing on stdout',
+          { action: 'suppress', hits: 2, injected: [], suppressed: CTOR_NAMES, dropped: null, stdout: '' },
+        ),
+      );
+      cases.push({
+        name: 'inject-dedupe (g): the two prompts over the `constructor` bed, record by record and byte by byte, are the same on both sides',
+        kind: 'json',
+        expected: p,
+        actual: n,
+      });
+    }
+
+    // (h) AN ARRAY WHERE AN OBJECT BELONGS (PR 112 review). The ledger is read back from JSON,
+    // and `typeof [] === 'object'`, so the port took an array at the whole ledger, at
+    // `injected`, or at `injected[<context>]` as the object it expected, stored the seen names
+    // as array properties, and `JSON.stringify` dropped them: the seen-set never persisted and
+    // every prompt injected again. The reference's `isinstance(..., dict)` replaces each with
+    // an empty one. Three pre-written ledgers, the same prompt twice each; the second must
+    // suppress on both sides.
+    // MUTATION EVIDENCE (2026-09-26): with the `Array.isArray` guards removed from the port's
+    // `readLedger`, `injectedSeen` and the `injected` write, the port's three second-prompt
+    // literals and the three differentials went red: 6 of 161 hooks cases (PASS 161 with them).
+    {
+      const id3 = `${id}-array`;
+      const b3 = bed(join(root, id3));
+      const cwd3 = join(b3.root, 'cwd');
+      mkdirSync(cwd3, { recursive: true });
+      seedStore(ctx, join(cwd3, '.bantamkit', 'memory'), [
+        { type: 'project', name: 'widget-rollout-notes', description: 'notes on the widget rollout timing for the staging window' },
+        { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      ]);
+      const P = 'widget rollout timing for the staging window';
+      const SHAPES = {
+        whole: [],
+        injected: { reads: {}, injected: [] },
+        context: { reads: {}, injected: { '/t/h1.jsonl': [] } },
+      };
+      b3.snapshot();
+      for (const [shape, ledger] of Object.entries(SHAPES)) {
+        const twice = (side) => {
+          const h = home(`${id3}-${shape}`, side);
+          mkdirSync(join(h, '.bantamkit', 'hooks'), { recursive: true });
+          writeFileSync(join(h, '.bantamkit', 'hooks', 'ledger-h1.json'), JSON.stringify(ledger), 'utf8');
+          return [1, 2].map(() => {
+            const r = runHook(ctx, side, {
+              payload: { hook_event_name: 'UserPromptSubmit', prompt: P, cwd: cwd3, session_id: 'h1', transcript_path: '/t/h1.jsonl' },
+              cwd: cwd3,
+              home: h,
+            });
+            return {
+              action: r.last['action'],
+              injected: (r.last['injected'] ?? []).map((x) => x.name),
+              suppressed: r.last['suppressed'] ?? null,
+            };
+          });
+        };
+        const p = twice('py');
+        b3.restore();
+        const n = twice('node');
+        b3.restore();
+        cases.push(
+          ...literalCases(
+            p[1],
+            n[1],
+            `inject-dedupe: PINNED PER SIDE (h): a ledger with an array at \`${shape}\` still remembers the first prompt, so the second is suppressed`,
+            { action: 'suppress', injected: [], suppressed: ['widget-rollout-notes'] },
+          ),
+        );
+        cases.push({
+          name: `inject-dedupe (h): the two prompts over an array at \`${shape}\` are the same on both sides`,
+          kind: 'json',
+          expected: p,
+          actual: n,
+        });
+      }
+    }
+  }
+
+  // ======================= dream-fingerprint: a re-dated fact does not re-arm the preview
+  //
+  // job64 / J64-3. The Stop arm previews the cross-layer dream once per change to either
+  // layer, gated by a fingerprint of `facts/*.md` in `dream-state.json`. Until this unit that
+  // fingerprint was `name + size + mtimeMs`, and every recall rewrites one frontmatter line
+  // (`last_recalled:`) and the mtime — so a session of recalls re-armed the preview on every
+  // Stop (measured 2026-09-25 over a week of the real log: 103 of 236 previews reported the
+  // identical `wouldMerge 14 / wouldConsume 14`). Size is no signal either: J64-0 measured a
+  // same-day re-stamp moving the mtime ALONE. The fingerprint is now a sha256 over each fact's
+  // name and its bytes with that one line dropped, identical on both sides.
+  //
+  // Six Stops per side on one three-fact project store (restored between sides) and a
+  // one-fact profile store per side, with a change between each pair:
+  //   S1 first look                       -> dream-preview
+  //   (a1) an explicit recall through the reference store (null -> today, bytes + mtime move)
+  //   S2                                  -> dream-skip unchanged, same fingerprint
+  //   (a2) the `last_recalled:` line re-dated to another day
+  //   S3                                  -> dream-skip unchanged, same fingerprint
+  //   (a3) the mtime alone (utimes)
+  //   S4                                  -> dream-skip unchanged, same fingerprint
+  //   (b)  the body edited
+  //   S5                                  -> dream-preview, fingerprint moved
+  //   (c)  a fact added
+  //   S6                                  -> dream-preview, fingerprint moved again
+  // The (a1) diff is pinned as a precondition so the three skips cannot be vacuous: the
+  // recall really rewrote the file. MUTATION EVIDENCE (2026-09-25) — the stat fields put back
+  // on both sides (`size + mtimeMs` instead of the content digest): the two PINNED PER SIDE
+  // literals go red per side, 4 cases, while the precondition and the sequence differential
+  // stay green — the symmetric-regression shape, and why the differential alone could never
+  // hold this. Counts and commands in `.shiftwork/notes-job64/J64-3.md`.
+  {
+    const id = 'dream-fingerprint';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const store = join(cwd, '.bantamkit', 'memory');
+    const factsDir = join(store, 'facts');
+    seedStore(ctx, store, [
+      { type: 'project', name: 'shared-ruling', description: 'a ruling both layers carry a copy of' },
+      { type: 'project', name: 'recalled-often', description: 'the fact the operator recalls every turn' },
+      { type: 'reference', name: 'left-alone', description: 'nothing here answers any query' },
+    ]);
+    const transcript = join(cwd, 'transcript.jsonl');
+    writeFileSync(transcript, '');
+    b.snapshot();
+    const fact = join(factsDir, 'recalled-often.md');
+    const REDATED = "last_recalled: '2020-01-01'";
+
+    const sequence = (side) => {
+      const h = home(id, side);
+      // The profile layer is under the per-side home: one shared name, so the preview has
+      // something to report and the child's status is `previewed` on every preview.
+      seedStore(ctx, join(h, '.bantamkit', 'memory'), [
+        { type: 'project', name: 'shared-ruling', description: 'the profile copy of the ruling' },
+      ]);
+      const payload = { hook_event_name: 'Stop', cwd, session_id: id, transcript_path: transcript };
+      const state = join(h, '.bantamkit', 'hooks', 'dream-state.json');
+      const fingerprintOf = () => (existsSync(state) ? JSON.parse(readFileSync(state, 'utf8'))['fingerprint'] : null);
+      const steps = [];
+      const stop = (label) => {
+        const r = runHook(ctx, side, { payload, cwd, home: h });
+        const rec = r.records.filter((x) => String(x['action']).startsWith('dream')).pop() ?? {};
+        steps.push({ label, action: rec['action'], reason: rec['reason'] ?? null, fingerprint: fingerprintOf() });
+      };
+      stop('S1 first look');
+      const a1Before = factsState(factsDir);
+      recallStore(ctx, store, 'the operator recalls every turn', 'recalled-often');
+      const a1 = factsDiff(a1Before, factsState(factsDir));
+      stop('S2 after an explicit recall');
+      writeFileSync(fact, readFileSync(fact, 'utf8').replace(/^last_recalled: .*$/m, REDATED));
+      stop('S3 after re-dating last_recalled');
+      const later = new Date(statSync(fact).mtimeMs + 1000);
+      utimesSync(fact, later, later);
+      stop('S4 after a touch');
+      writeFileSync(fact, readFileSync(fact, 'utf8').replace(/\nbody\n$/, '\na new body\n'));
+      stop('S5 after a body edit');
+      seedStore(ctx, store, [{ type: 'reference', name: 'brand-new', description: 'written after the last look' }]);
+      stop('S6 after a fact was added');
+      const fp = steps.map((s) => s.fingerprint);
+      return {
+        steps,
+        a1,
+        bodyEdited: /a new body/.test(readFileSync(fact, 'utf8')),
+        movement: {
+          sameAfterRecall: fp[1] === fp[0],
+          sameAfterRedate: fp[2] === fp[0],
+          sameAfterTouch: fp[3] === fp[0],
+          movedOnBodyEdit: fp[4] !== fp[0],
+          movedOnAdd: fp[5] !== fp[4],
+        },
+      };
+    };
+    const py = sequence('py');
+    b.restore();
+    const nd = sequence('node');
+
+    // PRECONDITION: the first look previewed on both sides, the recall really rewrote the
+    // fact (bytes, mtime and the date all moved), and the body edit landed.
+    const pre = (s) => ({ first: s.steps[0].action, a1: s.a1, bodyEdited: s.bodyEdited });
+    cases.push(
+      ...literalCases(pre(py), pre(nd), 'dream-fingerprint: precondition — S1 previewed, the recall re-dated the file, the body edit landed', {
+        first: 'dream-preview',
+        a1: { rewritten: ['recalled-often.md'], mtimeMoved: ['recalled-often.md'], stamped: ['recalled-often.md'] },
+        bodyEdited: true,
+      }),
+    );
+    // THE PROPERTY, PER SIDE: three re-datings are three skips, and the two content changes
+    // are two previews.
+    const actionsOf = (s) => s.steps.map((x) => x.action + (x.reason ? `/${x.reason}` : ''));
+    cases.push(
+      ...literalCases(
+        actionsOf(py),
+        actionsOf(nd),
+        'dream-fingerprint: PINNED PER SIDE: a recall, a re-date and a touch each skip; a body edit and a new fact each preview',
+        [
+          'dream-preview',
+          'dream-skip/unchanged',
+          'dream-skip/unchanged',
+          'dream-skip/unchanged',
+          'dream-preview',
+          'dream-preview',
+        ],
+      ),
+    );
+    cases.push(
+      ...literalCases(
+        py.movement,
+        nd.movement,
+        'dream-fingerprint: PINNED PER SIDE: the stored fingerprint is unmoved by re-dating and moved by content',
+        { sameAfterRecall: true, sameAfterRedate: true, sameAfterTouch: true, movedOnBodyEdit: true, movedOnAdd: true },
+      ),
+    );
+    // The whole sequence, side to side, with the hex masked: the profile root's path is in
+    // the hash and the two homes differ, so the hexes are not comparable across sides.
+    const masked = (s) => s.steps.map(({ label, action, reason }) => ({ label, action, reason }));
+    cases.push({
+      name: 'dream-fingerprint: the six-Stop sequence is the same on both sides',
+      kind: 'json',
+      expected: masked(py),
+      actual: masked(nd),
+    });
   }
 
   notes.push(

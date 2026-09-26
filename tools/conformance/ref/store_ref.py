@@ -123,6 +123,11 @@ def run_calls(request: dict) -> dict:
                 query, k, stamp = call["args"]
                 hits = store.recall(unb64(query), k, stamp)
                 results.append([fact_json(f) for f in hits])
+            elif op == "lookup":
+                # `lookup` (job64, J64-4): one fact or `None`, rendered exactly as a recall hit.
+                name, stamp = call["args"]
+                found = store.lookup(unb64(name), stamp)
+                results.append(None if found is None else fact_json(found))
             elif op == "index_text":
                 results.append({"index_text": b64(store.index_text())})
             else:

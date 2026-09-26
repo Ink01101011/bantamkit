@@ -45,12 +45,29 @@ import {
   MemoryBudgetExceeded,
   MemoryStore,
   MemoryValidationError,
+  MIN_RATIO_RANGE,
   pyHashKey,
   pyText,
   RECALL_MIN_SCORE_RATIO,
 } from './store.js';
 import { dream as runDream, formatFixed3, SUPERSEDED_HEADING } from './dream.js';
 import type { DreamResult } from './dream.js';
+
+// THE NAME SHAPE (job64, J64-4), spelled once here and once in the reference: a recall query,
+// after `pyStrip` (Python's `str.strip()`), that the store's own `NAME_RE` would accept as a
+// fact name AND that carries a hyphen. Anchored without the reference's trailing-newline
+// quirk, because the strip has already removed one — `_NAME_SHAPE.fullmatch` on the other side
+// is the same set. A query in this shape is looked up BY NAME in every layer before any
+// scoring happens, and a miss on it is said out loud. The hyphen is the whole distinction:
+// `deploy` is a word anyone might search, and stays the word search it has always been even
+// when a fact happens to be named `deploy` (the layered dedupe test pins that);
+// `deploy-command` is a name somebody typed from an index.
+const NAME_SHAPE = /^[a-z0-9][a-z0-9-]*$/;
+
+const isNameShaped = (query: string): boolean => query.includes('-') && NAME_SHAPE.test(query);
+
+const missLine = (name: string): string =>
+  `no fact named '${name}' in any layer bound here; matching by words instead:`;
 
 /**
  * The model's spelling adapted to the store's contract: lowercase, `_`/space -> `-`.
@@ -219,6 +236,13 @@ export interface RecallOutcome {
   readonly candidates: number;
   readonly source: string | null;
   readonly unreadable: number;
+  /**
+   * What the exact-name walk decided (job64, J64-4), read off the branch and not off the
+   * reply: `'hit'` when the query WAS a fact's name and that fact alone is the reply, `'miss'`
+   * when the query was shaped like a name, no layer held it, and the reply leads with the line
+   * that says so, `null` for every other query — the walk that has always run, unchanged.
+   */
+  readonly lookup: string | null;
 }
 
 /**
@@ -452,9 +476,49 @@ export class Memory {
    * raises out of the FIRST layer, which is the writable project store, so it surfaces as
    * the error it is rather than as an `unreadable` count — the read-only-layer `catch`
    * below would otherwise file a caller's bad argument as a corrupt grant.
+   *
+   * `stamp` (job64, J64-1) is whether a hit in the WRITABLE layer gets its `last_recalled`
+   * dated. It defaults to true, which is what every explicit recall — the `memory_recall`
+   * tool, the memory CLI, `Memory.recall` — has always done, and those callers do not pass
+   * it. The one caller that passes false is the hook's `UserPromptSubmit` arm: an automatic
+   * injection is not the model asking for a fact, and dating it as one was measured
+   * (2026-09-25) to stamp 25 of 42 facts in one store as "recalled today", so every rule
+   * keyed on `last_recalled` — compaction's stalest-first, SessionStart's drop rule — was
+   * reading injection traffic instead of model demand. Read-only layers are never stamped
+   * whatever this says.
+   *
+   * THE EXACT-NAME WALK (job64, J64-4) runs first, and only for a query in the name shape
+   * (`isNameShaped`: `pyStrip`ped, `NAME_RE`-valid, and carrying a hyphen — a bare word is a
+   * word search even when a fact is named by it). Measured 2026-09-25 on the operator's own stores: 4 of
+   * 28 `memory_recall` calls whose query was exactly a fact name came back with OTHER facts.
+   * One of those names existed in the PROFILE layer and was never reached, because the
+   * project layer's fuzzy hits filled the budget and the loop below breaks before the next
+   * layer is read — a name lookup is a request for one known fact, and the `k`-floor (RB-P1,
+   * ruled to stay 2026-09-25) has nothing to say about it. So: every layer is asked, in
+   * precedence order, `store.lookup(name)`; the first that holds it answers ALONE, stamped
+   * only if it is the writable layer, and no other layer is read after it. If no layer holds
+   * it, the reply leads with `missLine` and the ordinary walk follows, byte for byte what it
+   * would have said alone. Every query outside the shape never enters this block. The range
+   * check on `minRatio` runs BEFORE the walk for the same reason
+   * it runs before any file is read in `MemoryStore.recall`: a caller's bad argument must
+   * surface as the error it is, not be swallowed by an exact hit.
    */
-  recallOutcome(query: string, k: number | null = null, minRatio = RECALL_MIN_SCORE_RATIO): RecallOutcome {
+  recallOutcome(
+    query: string,
+    k: number | null = null,
+    minRatio = RECALL_MIN_SCORE_RATIO,
+    stamp = true,
+  ): RecallOutcome {
+    // `not 0.0 <= min_ratio <= 1.0`: NaN fails the same chain on both sides.
+    if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
     const budget = k === null ? this.k : Math.max(k, this.k);
+    const name = pyStrip(query);
+    let lookup: string | null = null;
+    if (isNameShaped(name)) {
+      const named = this.lookupByName(name, budget, stamp);
+      if (named !== null) return named;
+      lookup = 'miss';
+    }
     const picked: Array<[string, Fact]> = [];
     const seen = new Set<string>();
     let reached = 0;
@@ -465,7 +529,7 @@ export class Memory {
       reached += 1;
       let facts: Fact[];
       try {
-        facts = store.recall(query, budget, writable, minRatio);
+        facts = store.recall(query, budget, writable && stamp, minRatio);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
           throw e;
@@ -497,17 +561,70 @@ export class Memory {
       returned: picked.length,
       candidates,
       unreadable,
+      lookup,
     };
+    const lead = lookup === 'miss' ? `${missLine(name)}\n\n` : '';
     if (picked.length === 0) {
       const [status, reply] = this.nothingToReport();
-      return { reply, status, source: null, ...counts };
+      return { reply: lead + reply, status, source: null, ...counts };
     }
     return {
-      reply: picked.map(([label, fact]) => this.format(label, fact)).join('\n\n'),
+      reply: lead + picked.map(([label, fact]) => this.format(label, fact)).join('\n\n'),
       status: 'answered',
       source: picked[0]![0].split(':', 1)[0]!,
       ...counts,
     };
+  }
+
+  /**
+   * The exact-name walk: the first layer holding a fact named `name` answers alone.
+   *
+   * The counters mean what they mean in `recallOutcome`, over the layers this walk READ —
+   * `reached` stops at the layer that answered, `candidates` counts the facts in the layers
+   * up to and including it, and a corrupt read-only layer raises `unreadable` and is skipped
+   * exactly as the scoring walk skips it. `null` means no layer holds the name, and the
+   * caller falls through to the scoring walk with its own, fresh counters: the numbers a miss
+   * logs are the numbers the ordinary walk logs.
+   */
+  private lookupByName(name: string, budget: number, stamp: boolean): RecallOutcome | null {
+    let reached = 0;
+    let unreadable = 0;
+    let candidates = 0;
+    for (const [label, store, writable] of this.layers) {
+      reached += 1;
+      let fact: Fact | null;
+      try {
+        fact = store.lookup(name, writable && stamp);
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
+          throw e;
+        }
+        if (writable) throw e; // the project layer failing is a real error, as in the scoring walk
+        unreadable += 1;
+        continue;
+      }
+      try {
+        candidates += countFacts(store.root);
+      } catch (e) {
+        // It listed a moment ago; a race must not fail the recall for a log field.
+        if (!(e instanceof PyOSError)) throw e;
+      }
+      if (fact !== null) {
+        return {
+          reply: this.format(label, fact),
+          status: 'answered',
+          source: label.split(':', 1)[0]!,
+          budget,
+          layers: this.layers.length,
+          reached,
+          returned: 1,
+          candidates,
+          unreadable,
+          lookup: 'hit',
+        };
+      }
+    }
+    return null;
   }
 
   /**

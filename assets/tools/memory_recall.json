@@ -1,6 +1,6 @@
 {
   "name": "memory_recall",
-  "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns at most k matching facts.",
+  "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone.",
   "surfaces": [
     "agent",
     "mcp"
@@ -18,7 +18,8 @@
       "k": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 5
+        "maximum": 5,
+        "description": "Facts wanted. Raised to the store default of 3 when smaller; never lowered below it."
       }
     }
   },
