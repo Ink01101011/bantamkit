@@ -322,9 +322,9 @@ interface Ledger {
  */
 function injectedSeen(ledger: Ledger, transcript: string): Record<string, string> {
   const everyone = ledger.injected;
-  if (!everyone || typeof everyone !== 'object') return {};
+  if (!everyone || typeof everyone !== 'object' || Array.isArray(everyone)) return {};
   const mine = Object.hasOwn(everyone, transcript) ? everyone[transcript] : undefined;
-  return mine && typeof mine === 'object' ? mine : {};
+  return mine && typeof mine === 'object' && !Array.isArray(mine) ? mine : {};
 }
 
 function ledgerPath(run: HookRun, sessionId: string | undefined): string {
@@ -334,8 +334,8 @@ function ledgerPath(run: HookRun, sessionId: string | undefined): string {
 function readLedger(run: HookRun, sessionId: string | undefined): Ledger {
   try {
     const parsed = JSON.parse(fs.readFileSync(ledgerPath(run, sessionId), 'utf8')) as Ledger;
-    if (!parsed || typeof parsed !== 'object') return { reads: {} };
-    if (!parsed.reads || typeof parsed.reads !== 'object') parsed.reads = {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { reads: {} };
+    if (!parsed.reads || typeof parsed.reads !== 'object' || Array.isArray(parsed.reads)) parsed.reads = {};
     return parsed;
   } catch {
     return { reads: {} };
@@ -1224,7 +1224,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   // must be eligible next time.
   const at = new Date().toISOString();
   for (const x of injected) seen[x.name] = at;
-  if (!ledger.injected || typeof ledger.injected !== 'object') ledger.injected = {};
+  if (!ledger.injected || typeof ledger.injected !== 'object' || Array.isArray(ledger.injected)) ledger.injected = {};
   ledger.injected[transcript] = seen;
   writeLedger(run, input.session_id, ledger);
   log(run, {

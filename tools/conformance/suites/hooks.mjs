@@ -2452,6 +2452,71 @@ export async function run(ctx) {
         actual: n,
       });
     }
+
+    // (h) AN ARRAY WHERE AN OBJECT BELONGS (PR 112 review). The ledger is read back from JSON,
+    // and `typeof [] === 'object'`, so the port took an array at the whole ledger, at
+    // `injected`, or at `injected[<context>]` as the object it expected, stored the seen names
+    // as array properties, and `JSON.stringify` dropped them: the seen-set never persisted and
+    // every prompt injected again. The reference's `isinstance(..., dict)` replaces each with
+    // an empty one. Three pre-written ledgers, the same prompt twice each; the second must
+    // suppress on both sides.
+    // MUTATION EVIDENCE (2026-09-26): with the `Array.isArray` guards removed from the port's
+    // `readLedger`, `injectedSeen` and the `injected` write, the port's three second-prompt
+    // literals and the three differentials went red: 6 of 161 hooks cases (PASS 161 with them).
+    {
+      const id3 = `${id}-array`;
+      const b3 = bed(join(root, id3));
+      const cwd3 = join(b3.root, 'cwd');
+      mkdirSync(cwd3, { recursive: true });
+      seedStore(ctx, join(cwd3, '.bantamkit', 'memory'), [
+        { type: 'project', name: 'widget-rollout-notes', description: 'notes on the widget rollout timing for the staging window' },
+        { type: 'reference', name: 'unrelated-alpha', description: 'nothing shared here at all' },
+      ]);
+      const P = 'widget rollout timing for the staging window';
+      const SHAPES = {
+        whole: [],
+        injected: { reads: {}, injected: [] },
+        context: { reads: {}, injected: { '/t/h1.jsonl': [] } },
+      };
+      b3.snapshot();
+      for (const [shape, ledger] of Object.entries(SHAPES)) {
+        const twice = (side) => {
+          const h = home(`${id3}-${shape}`, side);
+          mkdirSync(join(h, '.bantamkit', 'hooks'), { recursive: true });
+          writeFileSync(join(h, '.bantamkit', 'hooks', 'ledger-h1.json'), JSON.stringify(ledger), 'utf8');
+          return [1, 2].map(() => {
+            const r = runHook(ctx, side, {
+              payload: { hook_event_name: 'UserPromptSubmit', prompt: P, cwd: cwd3, session_id: 'h1', transcript_path: '/t/h1.jsonl' },
+              cwd: cwd3,
+              home: h,
+            });
+            return {
+              action: r.last['action'],
+              injected: (r.last['injected'] ?? []).map((x) => x.name),
+              suppressed: r.last['suppressed'] ?? null,
+            };
+          });
+        };
+        const p = twice('py');
+        b3.restore();
+        const n = twice('node');
+        b3.restore();
+        cases.push(
+          ...literalCases(
+            p[1],
+            n[1],
+            `inject-dedupe: PINNED PER SIDE (h): a ledger with an array at \`${shape}\` still remembers the first prompt, so the second is suppressed`,
+            { action: 'suppress', injected: [], suppressed: ['widget-rollout-notes'] },
+          ),
+        );
+        cases.push({
+          name: `inject-dedupe (h): the two prompts over an array at \`${shape}\` are the same on both sides`,
+          kind: 'json',
+          expected: p,
+          actual: n,
+        });
+      }
+    }
   }
 
   // ======================= dream-fingerprint: a re-dated fact does not re-arm the preview

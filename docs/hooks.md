@@ -578,9 +578,10 @@ exists. `startup` and `resume` reset nothing: a resumed session has its window b
 `/clear` keeps the `session_id` could not be settled from the log (31 clears: 4 kept, 12
 changed, 15 unknown, with concurrent sessions confounding all three counts); the reset is
 correct either way, and a no-op when the id changed. Pinned per side and across sides by the
-`inject-dedupe` block of `tools/conformance/suites/hooks.mjs` (cases (a)–(f)) and by the
-seven `test_*` functions from `test_a_name_this_context_was_shown_…` to
-`test_a_subagent_transcript_keeps_its_own_seen_set_…` in `runtime-py/tests/test_hookadapter.py`
+`inject-dedupe` block of `tools/conformance/suites/hooks.mjs` (cases (a)–(h): (g) pins a fact
+named `constructor`, (h) a ledger with an array where an object belongs — both port-only
+defects, found in review) and by the seven `test_*` functions from `test_a_name_this_context_was_shown_…` to
+`test_a_subagent_transcript_keeps_its_own_seen_set_…` plus `test_a_fact_named_constructor_…` in `runtime-py/tests/test_hookadapter.py`
 and the `(a)`–`(f)` tests in `runtime-ts/test/hooks.test.mjs`. Measured red with dedupe
 disabled on BOTH sides (the seen-set replaced by `{}`): `--suite hooks` 10 failures — the
 per-side literals of (a), (d), (e), (f) and the `hits == …` identity, while every differential
