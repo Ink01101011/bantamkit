@@ -595,7 +595,21 @@ One line at `SessionStart`, and **only in one of the five states** (wrapped here
 line):
 
     [bantamkit] bantamkit-mcp 0.35.1 at /Users/…/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json
-    is running; the package index has 0.36.0 — run `bantamkit-mcp --update`, then reconnect the host.
+    is running; the package index has 0.36.0 — run
+    `node "/Users/…/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js" --update`, then reconnect the host.
+
+**AMENDED 2026-09-26: the command is the kept install's own `cli.js`, run with node.** Until
+this the line said `bantamkit-mcp --update`, and `--install` puts that name only in
+`~/.bantamkit/mcp/node_modules/.bin`, which is on nobody's PATH — the operator it was written
+for typed it and got `zsh: command not found: bantamkit-mcp`. `node "<cli.js>"` is the file a
+host is already told to launch (`npminstall.keptCli`), needs no PATH and no Windows `.cmd`
+shim, and the quotes hold a home directory with a space in it. Pinned by
+`tools/hooks/update-signal.test.mjs`, *the stale line prints a command that runs from a shell
+with no bantamkit on PATH*: it hands the printed command to `/bin/sh` with a PATH holding only
+node's directory and asserts it reached the kept `cli.js` with `--update` (red on the old
+sentence, together with the sentence literal: 2 of 19). `bantamkit_status`'s own update line
+(`updatecheck`, both runtimes) still names the bare command; it is a separate, two-runtime
+sentence and is not changed here.
 
 **Nothing on the session's path reaches the network.** The line is decided from one file,
 `~/.bantamkit/update-check.json`, through the Node runtime's own `updatecheck` module —

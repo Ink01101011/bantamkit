@@ -79,6 +79,7 @@ function newCwd() {
 
 const recordFile = (home) => join(home, '.bantamkit', 'update-check.json');
 const manifestFile = (home) => join(home, '.bantamkit', 'mcp', 'node_modules', PACKAGE, 'package.json');
+const cliFile = (home) => join(home, '.bantamkit', 'mcp', 'node_modules', PACKAGE, 'dist', 'cli.js');
 
 function writeRecord(home, doc) {
   const file = recordFile(home);
@@ -242,8 +243,39 @@ const served = () => ({
 /** The sentence, spelled here independently of the constant so a silent edit to it goes red. */
 function expectedLine(home, installed, latest) {
   return `[bantamkit] ${PACKAGE} ${installed} at ${manifestFile(home)} is running; `
-    + `the package index has ${latest} — run \`${PACKAGE} --update\`, then reconnect the host.`;
+    + `the package index has ${latest} — run \`node "${cliFile(home)}" --update\`, then reconnect the host.`;
 }
+
+// The command the line prints must RUN. It used to print the bare `bantamkit-mcp --update`,
+// and `--install` puts that name only in `<prefix>/node_modules/.bin`, on nobody's PATH, so
+// the operator it was written for got `command not found` (2026-09-26). The kept install here
+// gets a `cli.js` that reports its argv; the printed command is handed to a shell with a PATH
+// holding nothing but node's own directory, and must reach that file with `--update`.
+test('the stale line prints a command that runs from a shell with no bantamkit on PATH', async () => {
+  const home = newHome();
+  installKept(home, '0.35.1');
+  mkdirSync(dirname(cliFile(home)), { recursive: true });
+  writeFileSync(cliFile(home), 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+  writeRecord(home, record('0.36.0', 60_000));
+
+  const r = await sessionStart({ home });
+  const m = /— run `([^`]+)`, then reconnect the host\.$/.exec(r.ctx);
+  assert.ok(m, `no command in the update line:\n${r.ctx}`);
+  const out = await new Promise((done, fail) => {
+    const child = spawn('/bin/sh', ['-c', m[1]], {
+      env: { PATH: dirname(process.execPath), HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let text = '';
+    let err = '';
+    child.stdout.on('data', (d) => { text += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', fail);
+    child.on('close', (code) => done({ code, text, err }));
+  });
+  assert.equal(out.code, 0, `the printed command failed: ${m[1]}\n${out.err}`);
+  assert.deepEqual(JSON.parse(out.text), ['--update']);
+});
 
 test('the stale state produces exactly one line, and it names the install it compared', async () => {
   const home = newHome();

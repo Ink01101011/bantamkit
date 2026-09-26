@@ -490,9 +490,44 @@ else
   say ''
   # No pipe, no capture, no wrapper: stdout and stderr are this script's own, unbuffered by
   # anything we control, so the callback URL reaches the person running this.
-  ( cd "$REPO/runtime-ts" && npm publish --access public ) \
-    || die "npm publish failed (its output is above). Nothing was uploaded to PyPI."
-  ok "npm publish returned 0"
+  if ( cd "$REPO/runtime-ts" && npm publish --access public ); then
+    ok "npm publish returned 0"
+  else
+    # A NON-ZERO npm publish IS NOT PROOF THAT NOTHING WAS PUBLISHED (0.35.6, 2026-09-26).
+    # The registry stamped bantamkit-mcp@0.35.6 at 13:20:32Z with this run's own tarball, and
+    # npm then printed "You cannot publish over the previously published versions: 0.35.6"
+    # and exited 1 -- its own second PUT, after the browser authentication, colliding with
+    # its first. This script stopped there and PyPI was not uploaded, so the release sat
+    # half-done until a rerun. So the registry decides, not npm's exit code: when it carries
+    # this version AND its dist.shasum is the sha1 of the tarball built above, the publish
+    # happened and this run carries on to phase 5, which verifies it by running it. A version
+    # the registry carries with ANY other shasum is someone else's artifact and a stop.
+    # `npm pack` is deterministic for the same tree -- measured: the 0.35.6 phase-2 tarball
+    # and the registry's copy are both sha1 5d376813f2c8fadba24bd3312b7d365c08f67865.
+    say ''
+    note "npm publish exited non-zero. Asking the registry whether it published anyway."
+    LOCAL_SHA1="$(node -e 'process.stdout.write(require("crypto").createHash("sha1").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$TGZ")"
+    REMOTE_SHA1=""
+    attempt=0
+    while [ "$attempt" -lt 6 ]; do
+      REMOTE_SHA1="$(curl -sS --max-time 30 "https://registry.npmjs.org/bantamkit-mcp/$VERSION" 2>/dev/null \
+        | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(t).dist.shasum||""))}catch{}})' \
+        || true)"
+      [ -n "$REMOTE_SHA1" ] && break
+      attempt=$((attempt + 1))
+      say "      the registry does not carry it (attempt $attempt); waiting 5 s"
+      sleep 5
+    done
+    if [ -z "$REMOTE_SHA1" ]; then
+      die "npm publish failed (its output is above), and registry.npmjs.org does not carry
+         bantamkit-mcp@$VERSION after 30 s. Nothing was uploaded to PyPI."
+    elif [ "$REMOTE_SHA1" != "$LOCAL_SHA1" ]; then
+      die "npm publish failed, and registry.npmjs.org carries bantamkit-mcp@$VERSION with shasum
+         $REMOTE_SHA1 -- not $LOCAL_SHA1, the tarball this run built. That is a different
+         artifact under this version. Nothing was uploaded to PyPI."
+    fi
+    ok "npm publish exited non-zero, but the registry carries THIS tarball (sha1 $LOCAL_SHA1) -- continuing"
+  fi
 fi
 
 # ============================================================== phase 5: verify npm landed
