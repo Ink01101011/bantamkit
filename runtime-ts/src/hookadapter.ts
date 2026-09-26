@@ -51,7 +51,7 @@ import { Memory } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
 import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
 import type { Fact } from './memory/store.js';
-import { keptManifest, keptPrefix } from './npminstall.js';
+import { keptCli, keptManifest, keptPrefix } from './npminstall.js';
 import {
   decide as decideUpdate,
   KEY as UPDATE_KEY,
@@ -840,9 +840,16 @@ const UPDATE_LINE_MAX = 500;
  * "then reconnect the host" is measured reason 1 in `selfupdate.py:13-20`: a running server
  * keeps serving the code it loaded at startup, so an updated install does nothing for THIS
  * session.
+ *
+ * THE COMMAND IS THE KEPT INSTALL'S OWN `cli.js`, RUN WITH NODE — not the bare `{program}`
+ * (2026-09-26). `--install` puts `bantamkit-mcp` in `<prefix>/node_modules/.bin`, which is on
+ * nobody's PATH, so the bare word this line used to print answered `command not found` on the
+ * machine it was measured on. `node "<cli>"` is what a host is already told to run
+ * (`npminstall.keptCli`), needs no PATH and no `.cmd` shim on Windows, and the double quotes
+ * hold a home directory with a space in it in zsh, bash, cmd and PowerShell alike.
  */
 const UPDATE_LINE =
-  '[bantamkit] {program} {installed} at {path} is running; the package index has {latest} — run `{program} --update`, then reconnect the host.';
+  '[bantamkit] {program} {installed} at {path} is running; the package index has {latest} — run `node "{cli}" --update`, then reconnect the host.';
 
 /** `{name}` substitution. A missing key is left alone rather than rendered `undefined`. */
 function fillLine(template: string, values: Readonly<Record<string, string>>): string {
@@ -863,12 +870,13 @@ function fillLine(template: string, values: Readonly<Record<string, string>>): s
  * record key and the five-state decision. Writing any of those a second time here would be a
  * second thing to keep in step with two runtimes. There is no comparator in this file.
  */
-function keptInstall(home: string): { path: string; version: string } | null {
-  const manifest = keptManifest(keptPrefix(home));
+function keptInstall(home: string): { path: string; cli: string; version: string } | null {
+  const prefix = keptPrefix(home);
+  const manifest = keptManifest(prefix);
   try {
     const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { version?: unknown };
     const version = parsed && typeof parsed.version === 'string' ? parsed.version.trim() : '';
-    return version === '' ? null : { path: manifest, version };
+    return version === '' ? null : { path: manifest, cli: keptCli(prefix), version };
   } catch {
     return null;
   }
@@ -906,6 +914,7 @@ function updateSignal(run: HookRun): UpdateSignal {
           program: UPDATE_PROGRAM,
           installed: kept.version,
           path: kept.path,
+          cli: kept.cli,
           latest,
         }),
         UPDATE_LINE_MAX,
