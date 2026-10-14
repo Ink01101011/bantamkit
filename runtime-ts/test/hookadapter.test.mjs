@@ -25,7 +25,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -61,6 +61,24 @@ function runCli(args, env = {}) {
     env: { ...process.env, ...env },
   });
 }
+
+test('directory reads are never ledgered or refused', () => {
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  const target = join(cwd, 'a.txt');
+  writeFileSync(target, 'alpha');
+  const payload = file => ({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: file } });
+  runHook(payload(target), { home, cwd });
+  const ledger = join(home, '.bantamkit', 'hooks', 'ledger-probe-session.json');
+  const before = readFileSync(ledger, 'utf8');
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = runHook(payload(cwd), { home, cwd });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '', 'a failed directory read has no reusable content');
+    assert.equal(readFileSync(ledger, 'utf8'), before);
+  }
+});
 
 // ------------------------------------------------------------------ the parser surface
 

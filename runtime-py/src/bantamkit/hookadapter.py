@@ -63,6 +63,7 @@ import math
 import os
 import re
 import signal as signal_module
+import stat
 import subprocess
 import sys
 import time
@@ -1317,6 +1318,8 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
         st = os.stat(file)
     except OSError:
         return  # missing file: let Read produce its own error
+    if not stat.S_ISREG(st.st_mode):
+        return  # a directory/device read has no file content to reuse
     offset = ti.get("offset")
     limit = ti.get("limit")
     # The transcript is the CONTEXT dimension: a subagent has its own transcript and has not

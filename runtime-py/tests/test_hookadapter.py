@@ -816,6 +816,20 @@ def test_an_identical_repeat_read_of_an_unchanged_file_is_refused_exactly_once(t
     assert actions == ["record", "refuse", "allow-after-refuse-or-change"], actions
 
 
+def test_directory_reads_are_never_ledgered_or_refused(tmp_path):
+    home, cwd = _bed(tmp_path, "read-directory")
+    target = cwd / "a.txt"
+    target.write_text("alpha", encoding="utf-8")
+    _run_hook(_read_payload(target), home=home, cwd=cwd)
+    before = _ledger(home)
+
+    for _ in range(2):
+        done = _run_hook(_read_payload(cwd), home=home, cwd=cwd)
+        assert done.returncode == 0, done.stderr
+        assert done.stdout == b"", "a failed directory read has no reusable content"
+        assert _ledger(home) == before
+
+
 def test_a_file_that_changed_on_disk_re_arms_the_gate(tmp_path):
     """mtime+size is the signature. An edit between the two reads is a different file."""
     home, cwd = _bed(tmp_path, "read-changed")

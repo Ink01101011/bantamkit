@@ -332,6 +332,38 @@ export async function run(ctx) {
     return h;
   };
 
+  {
+    const id = 'read-directory';
+    const cwd = join(root, id);
+    mkdirSync(cwd, { recursive: true });
+    const file = join(cwd, 'a.txt');
+    writeFile(file, 'alpha');
+    const probe = (side) => {
+      const h = home(id, side);
+      const payload = (target) => ({
+        cwd, session_id: id, hook_event_name: 'PreToolUse', tool_name: 'Read',
+        tool_input: { file_path: target },
+      });
+      // A real file read establishes the redirected ledger before testing no-op reads.
+      runHook(ctx, side, { payload: payload(file), cwd, home: h });
+      const ledger = join(h, '.bantamkit', 'hooks', `ledger-${id}.json`);
+      const before = readFileSync(ledger, 'utf8');
+      return [0, 1].map(() => {
+        const r = runHook(ctx, side, { payload: payload(cwd), cwd, home: h });
+        return { exit: r.exit, stdout: dec(r.stdout), unchanged: readFileSync(ledger, 'utf8') === before };
+      });
+    };
+    const py = probe('py');
+    const nd = probe('node');
+    cases.push(
+      { name: 'directory Read retries leave the ledger unchanged on both runtimes', kind: 'json', expected: py, actual: nd },
+      ...literalCases(py, nd, 'directory Read is never recorded or refused', [
+        { exit: 0, stdout: '', unchanged: true },
+        { exit: 0, stdout: '', unchanged: true },
+      ]),
+    );
+  }
+
   // =========================================================== A, the export: the full bed
   //
   // U7 §2.1's bed, rebuilt here: one project store, one native directory carrying a host
