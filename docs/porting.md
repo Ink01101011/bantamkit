@@ -871,9 +871,13 @@ Measured, not assumed: 12 pipelined saves all land in order; a recall behind a s
 the save in Node and does **not** in Python; two processes over 8 trials × 15 saves gave 0
 disagreements.
 
-One hazard exists and is **not** a port defect: concurrent same-unit `clock_out` loses a
-history entry, 10/10 on Node **and** 10/10 on CPython. Reproduced, not introduced. Do not
-"fix" it on one side only.
+One hazard existed and was **not** a port defect: concurrent same-unit `clock_out` lost a
+history entry, 10/10 on Node **and** 10/10 on CPython — reproduced, not introduced, and
+job65 (#116) measured the wider shape, two DIFFERENT units of one wave losing 10 of 20 `ok`
+answers. Closed on both sides at once: `clock_out` holds `<checkpoint>.lock` (O_EXCL, one
+protocol in both runtimes, so a Python writer and a Node writer serialise against each
+other) and writes through a per-writer temp name. The `shiftwork` suite's `concurrency/`
+cases pin the lock refusal and the old temp name's sibling surviving, per side.
 
 ## The published export surface, and the one break in it
 

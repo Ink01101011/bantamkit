@@ -47,10 +47,14 @@
  * same place. That makes three refusal strings, not two, and the third is likewise a
  * per-side literal.
  *
- * WHAT IS NOT PORTED, DELIBERATELY. There is no lock (the MCP topology has one orchestrator
- * by construction), and log-then-commit ordering is preserved exactly: the accounting line is
- * appended BEFORE the atomic rename, so a partial failure can lose the commit but never the
- * accounting.
+ * WHAT IS NOT PORTED, DELIBERATELY. Log-then-commit ordering is preserved exactly: the
+ * accounting line is appended BEFORE the atomic rename, so a partial failure can lose the
+ * commit but never the accounting. "There is no lock" used to open this paragraph, with the
+ * reason that the MCP topology has one orchestrator by construction; job60's waves made that
+ * false and job65 (#116) measured it — two clock-outs of DIFFERENT units at one instant lost
+ * 10 of 20 `ok` answers in 10 trials, on each runtime and across them. Both runtimes now take
+ * `<checkpoint>.lock` around the whole read-modify-write (see `acquireLock`), the same
+ * O_EXCL protocol on both sides because the two share one checkpoint on disk.
  *
  * `depends_on` USED TO BE LISTED ABOVE, AND NO LONGER BELONGS THERE. `planBatches` below
  * READS `depends_on` and answers the batch view, so the module no longer ignores the field;
@@ -74,15 +78,17 @@
  */
 import { AssetNotFound, loadSchema, loadToolAsset } from './assets.js';
 import { schemaError } from './contract.js';
+import { randomBytes } from 'node:crypto';
+import { closeSync, openSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import {
+  asPyOSError,
   pyAppendText,
   pyJoin,
+  pyNewlineOut,
   PyOSError,
   pyReplace,
-  pySuffix,
+  pyResolve,
   pyUnlink,
-  pyWithSuffix,
-  pyWriteText,
   pyReadText,
   PyUnicodeDecodeError,
 } from './memory/pyfs.js';
@@ -191,7 +197,13 @@ function readValid(path: string): ReadResult {
   try {
     raw = pyReadText(path);
   } catch (e) {
-    if (e instanceof PyOSError) return { document: null, refusal: errorResult(`checkpoint unreadable: ${e.message}`) };
+    // #163: `UnicodeDecodeError` is a ValueError, not an OSError, and it escaped every tool as
+    // a raised error while a missing file answered `result: error`. Same sentence head as the
+    // missing file: the bytes could not be read. The paragraph above that says it escapes in
+    // both runtimes is the history; it no longer does in either.
+    if (e instanceof PyOSError || e instanceof PyUnicodeDecodeError) {
+      return { document: null, refusal: errorResult(`checkpoint unreadable: ${e.message}`) };
+    }
     throw e;
   }
   let document: PyValue;
@@ -205,6 +217,17 @@ function readValid(path: string): ReadResult {
   }
   const problem = schemaError(raw, loadSchema(SCHEMA_NAME));
   if (problem !== null) return { document: null, refusal: errorResult(`checkpoint invalid: ${problem}`) };
+  // #165: the schema cannot say that unit ids are unique, so this is the only check, and it
+  // sits on the read every tool starts with: status, clock_in and clock_out now answer what
+  // `shiftwork_plan` already answered through the core. Before it, `findUnit` took the first
+  // match and a clock-out of the first `A` of two left a document no job could finish. The
+  // sentence is `workplan`'s, verbatim, so the plan view's answer does not move.
+  const seen = new Set<string>();
+  for (const unit of subList(subDict(document as PyDict, 'plan'), 'units').v) {
+    const id = text(field(unit as PyDict, 'id'));
+    if (seen.has(id)) return { document: null, refusal: errorResult(`duplicate node id ${id}`) };
+    seen.add(id);
+  }
   return { document: document as PyDict, refusal: null };
 }
 
@@ -237,7 +260,27 @@ export function timestamp(now: number): string {
 export interface ClockOptions {
   /** Seconds since the epoch, as `time.time()` returns them. */
   now?: number;
+  /**
+   * A TEST SEAM, like `now`: how long `clockOut` waits for `<checkpoint>.lock` before it
+   * refuses. The product value is `LOCK_WAIT_MS`; the Python side has no such option and its
+   * tests monkeypatch the module constant instead. Nothing on the wire reads it.
+   */
+  lockWaitMs?: number;
 }
+
+/**
+ * job65/#116: the checkpoint's read-modify-write runs under `<checkpoint>.lock`, taken with
+ * O_EXCL — the one primitive both platforms and both runtimes share without a dependency,
+ * and the shape `driver.lock` and the hook ledger's lock (J65-4, #167) already use, so a
+ * Python writer and a Node writer serialise against each other on the one file they share.
+ * One policy differs from the ledger's: a writer that cannot take the lock within
+ * `LOCK_WAIT_MS` is REFUSED, nothing written — never let through unlocked, because through
+ * is exactly the race #116 measured. A lock older than `LOCK_STALE_MS` is a dead holder's.
+ * The three numbers are `shiftwork.py`'s, verbatim.
+ */
+export const LOCK_WAIT_MS = 5000;
+export const LOCK_STALE_MS = 30_000;
+export const LOCK_POLL_MS = 5;
 
 // ------------------------------------------------------------------------ F6: the ledger
 
@@ -737,6 +780,100 @@ export function clockOut(
   options: ClockOptions = {},
 ): PyValue {
   const path = pyJoin(checkpoint);
+  const real = realTarget(path);
+  const lock = `${real}.lock`;
+  const { held, refusal: locked } = acquireLock(lock, options.lockWaitMs ?? LOCK_WAIT_MS);
+  if (locked !== null) return locked;
+  try {
+    return clockOutLocked(path, real, unitId, status, handoffPatch, historyEntry, accounting, options);
+  } finally {
+    if (held) {
+      try {
+        unlinkSync(lock);
+      } catch {
+        /* `contextlib.suppress(OSError)`: the release's own failure is not the story */
+      }
+    }
+  }
+}
+
+/**
+ * #137: the file the rename lands on — a symlinked checkpoint's TARGET, so the link stays a
+ * link and every other path to the same file sees the clock-out. Only the write side
+ * resolves: the read, the ledger and every sentence use the path as given.
+ */
+function realTarget(path: string): string {
+  try {
+    return pyResolve(path);
+  } catch {
+    return path; // a symlink loop, or a path the OS will not resolve — `Path.resolve`'s own arm
+  }
+}
+
+/**
+ * `_acquire_lock`: take `<checkpoint>.lock` with O_EXCL. Answers `{held, refusal}`.
+ *
+ * `held` is false without a refusal in exactly one case: the directory will not hold a lock
+ * file for a reason other than one existing (read-only, gone). The clock-out then goes on
+ * UNLOCKED, because the temp file that follows cannot be created there either and ITS
+ * refusal is the one that names the cause — the `readonly-directory-*` arms keep their
+ * sentences. A lock that exists is waited on; one older than `LOCK_STALE_MS` is a dead
+ * holder's and is removed; past the wait the clock-out is refused with nothing written, so
+ * the caller can retry — never let through, which is the race.
+ */
+function acquireLock(lock: string, waitMs: number): { held: boolean; refusal: PyValue | null } {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    let fd: number;
+    try {
+      fd = openSync(lock, 'wx', 0o644);
+    } catch (e) {
+      if ((e as { code?: string })?.code !== 'EEXIST') return { held: false, refusal: null };
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) unlinkSync(lock);
+      } catch {
+        /* released between the open and the stat: go round again */
+      }
+      if (Date.now() >= deadline) {
+        return { held: false, refusal: errorResult(`checkpoint locked by another clock-out, nothing written: ${lock}`) };
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS);
+      continue;
+    }
+    try {
+      writeSync(fd, `${process.pid}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    return { held: true, refusal: null };
+  }
+}
+
+/** `tmp.open("x", encoding="utf-8").write(text)` — O_EXCL, newline translation included. */
+function pyWriteTextExclusive(path: string, text: string): void {
+  try {
+    writeFileSync(path, pyNewlineOut(text), { encoding: 'utf8', flag: 'wx' });
+  } catch (e) {
+    throw asPyOSError(e, path, undefined, 'crt');
+  }
+}
+
+/** `str(OSError(e.errno, e.strerror, str(path)))`: the sentence with the checkpoint in the filename slot. */
+function atCheckpoint(e: PyOSError, path: string): string {
+  return new PyOSError(e.errno, e.code, e.strerror, path, null, e.winerror).message;
+}
+
+/** `clock_out`'s body, run under the lock its caller holds: mutate, validate, write. */
+function clockOutLocked(
+  path: string,
+  real: string,
+  unitId: string,
+  status: string,
+  handoffPatch: unknown,
+  historyEntry: unknown,
+  accounting: unknown,
+  options: ClockOptions,
+): PyValue {
   const { document, refusal } = readValid(path);
   if (refusal !== null) return refusal;
   const doc = document!;
@@ -806,10 +943,17 @@ export function clockOut(
     return errorResult(`accounting log unwritable, checkpoint untouched: ${e.message}`);
   }
 
-  const tmp = pyWithSuffix(path, `${pySuffix(path)}.tmp`);
+  // #116: a PER-WRITER temp name, created exclusively — never `with_suffix(".tmp")`, which
+  // gave every writer of one checkpoint the same temp file (two renames of one file, so one
+  // `ok` answer with nothing of it on disk) and gave a suffix-less `checkpoint` the name of
+  // an unrelated sibling, `checkpoint.tmp`, which it overwrote and renamed away. #137: the
+  // rename lands on `real`, the link's target. The refusal names the checkpoint AS GIVEN and
+  // not the temp name: a random name in a sentence is not reproducible, and the file the
+  // caller could not write is, to the caller, the checkpoint.
+  const tmp = `${real}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   try {
-    pyWriteText(tmp, `${dumpJson(doc, { indent: 2 })}\n`);
-    pyReplace(tmp, path);
+    pyWriteTextExclusive(tmp, `${dumpJson(doc, { indent: 2 })}\n`);
+    pyReplace(tmp, real);
   } catch (e) {
     if (!(e instanceof PyOSError)) throw e;
     // `contextlib.suppress(OSError)` — the cleanup's own failure is not the story.
@@ -818,7 +962,7 @@ export function clockOut(
     } catch (cleanup) {
       if (!(cleanup instanceof PyOSError)) throw cleanup;
     }
-    return errorResult(`checkpoint unwritable, last log line uncommitted: ${e.message}`);
+    return errorResult(`checkpoint unwritable, last log line uncommitted: ${atCheckpoint(e, path)}`);
   }
 
   return dict([

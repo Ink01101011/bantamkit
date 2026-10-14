@@ -80,8 +80,25 @@ refused exactly as before.
    field decides clock-out vs escalate.
 8. **Atomic single-writer discipline.** Only the clocking-out session writes,
    via temp-file + rename. The reader validates `version` first and refuses
-   unknown majors. No separate checkpoint lock is needed: `driver.lock`
-   guarantees one driver, and sessions run sequentially.
+   unknown majors. Under the driver no separate checkpoint lock is needed:
+   `driver.lock` guarantees one driver, and sessions run sequentially. Under
+   the MCP tools that stopped being true with job60's waves, and job65 (#116)
+   measured the cost: two `shiftwork_clock_out` calls on DIFFERENT units at
+   one instant lost 10 of 20 `ok` answers in 10 trials, on both runtimes and
+   across them, because every writer used the one temp name
+   `<checkpoint>.tmp`. Since job65 the whole read-modify-write of
+   `shiftwork_clock_out` runs under `<checkpoint>.lock` (O_EXCL, the same
+   primitive as `driver.lock`, identical in Python and Node so the two
+   serialise against each other), the temp file is a per-writer name
+   (`<checkpoint>.<pid>.<random>.tmp`, created exclusively, so a suffix-less
+   `checkpoint` never touches a sibling called `checkpoint.tmp`), and the
+   rename lands on the checkpoint's resolved target, so a symlinked checkpoint
+   stays a link and its target carries the clock-out (#137). A writer that
+   cannot take the lock within 5 s answers `{"result": "error", "reason":
+   "checkpoint locked by another clock-out, nothing written: <lock>"}` and
+   writes nothing — it is never let through unlocked, because through is the
+   race; a lock older than 30 s is a dead holder's and is taken over. The
+   ledger (`<checkpoint>.log.jsonl`) is still keyed by the path AS GIVEN.
 
 `plan.units[].role` (planner | implementer | reviewer) exists purely so the
 driver can pick a model without reading a brief. Re-planning needs no special
@@ -276,7 +293,9 @@ The workflow, per unit:
    `<checkpoint>.log.jsonl` and the checkpoint is renamed into place, in
    that order (log-then-commit) — a partial failure can lose the commit
    but never the accounting, and a log line whose commit failed is
-   detectable by re-reading the checkpoint.
+   detectable by re-reading the checkpoint. The whole call holds
+   `<checkpoint>.lock` (decision 8), so a wave's clock-outs from several
+   processes land one after another and every `ok` is on disk.
 
 Cursor advance was v1-linear until job60: clock-out moved the cursor to
 the first non-terminal unit in plan order and ignored `depends_on`, so a

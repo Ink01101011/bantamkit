@@ -4,9 +4,11 @@ import ast
 import copy
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2503,3 +2505,229 @@ def test_main_runs_end_to_end_without_spawning(tmp_path):
     assert code == shiftwork.EXIT_SUCCESS
     assert (tmp_path / "driver-state.json").exists()
     assert not (tmp_path / "driver.lock").exists()
+
+
+# ======================================================= job65 / J65-1: #116 #137 #163 #165
+#
+# Every sentence below is a LITERAL on this side. The conformance suite compares the two
+# runtimes; a regression that lands in both at once is invisible to it, so the absolute
+# properties — the sentence, the refusal bit, the bytes on disk — are pinned here as well.
+
+
+def _j65_unit(unit_id):
+    return {
+        "id": unit_id,
+        "title": unit_id,
+        "brief_path": "b.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": [],
+        "verify": "true",
+    }
+
+
+def _j65_doc(units, cursor=None):
+    return {
+        "version": 1,
+        "job": {"id": "j", "goal": "g", "done_definition": "d", "constraints": []},
+        "plan": {"cursor": cursor or units[0]["id"], "units": units},
+        "state": {
+            "repo": {"branch": "b", "head_sha": "h", "dirty": False},
+            "artifacts": [],
+            "external": [],
+        },
+        "history": [],
+        "retro": [],
+        "handoff": {"next_action": "n", "open_questions": [], "do_not": []},
+    }
+
+
+def _j65_write(path, units, cursor=None):
+    path.write_text(json.dumps(_j65_doc(units, cursor)), encoding="utf-8")
+    return path.read_bytes()
+
+
+def _j65_out(path, unit_id):
+    return ops.clock_out(str(path), unit_id, "done", {}, {"unit": unit_id, "outcome": "x"})
+
+
+def _j65_leftovers(root):
+    """Every `*.tmp` / `*.lock` in the directory: a per-writer temp name cannot be predicted,
+    so "no temp file left behind" is a listing, not a `.exists()` on one name."""
+    return sorted(p.name for p in root.iterdir() if p.name.endswith((".tmp", ".lock")))
+
+
+J65_UTF8 = (
+    "checkpoint unreadable: 'utf-8' codec can't decode byte 0xff in position 1: "
+    "invalid start byte"
+)
+
+
+def test_j65_invalid_utf8_is_a_structured_refusal_on_every_tool(tmp_path):
+    """#163: the missing-file control answered `result: error`; the undecodable file raised.
+    Mutation: drop `UnicodeDecodeError` from `_read_valid`'s except and all four raise."""
+    path = tmp_path / "cp.json"
+    path.write_bytes(b"{\xff}")
+    for fn in (ops.status, ops.plan_batches, ops.clock_in):
+        assert fn(str(path)) == {"result": "error", "reason": J65_UTF8}
+    assert _j65_out(path, "A") == {"result": "error", "reason": J65_UTF8}
+    assert path.read_bytes() == b"{\xff}"
+    assert _j65_leftovers(tmp_path) == []
+
+
+def test_j65_duplicate_unit_ids_are_refused_by_every_tool(tmp_path):
+    """#165: `work_plan`'s sentence, from the read every tool starts with, nothing written.
+    Mutation: drop the `seen` loop from `_read_valid` and status counts 3, clock_in briefs
+    the first A, clock_out answers ok and leaves A=done A=todo on disk."""
+    path = tmp_path / "cp.json"
+    before = _j65_write(path, [_j65_unit("A"), _j65_unit("A"), _j65_unit("B")])
+    refusal = {"result": "error", "reason": "duplicate node id A"}
+    for fn in (ops.status, ops.plan_batches, ops.clock_in):
+        assert fn(str(path)) == refusal
+    assert ops.clock_in(str(path), "A") == refusal
+    assert _j65_out(path, "A") == refusal
+    assert path.read_bytes() == before
+    assert not Path(str(path) + ".log.jsonl").exists()
+    # The control: the same shape with distinct ids is the ordinary happy path.
+    _j65_write(path, [_j65_unit("A"), _j65_unit("A2"), _j65_unit("B")])
+    assert ops.status(str(path))["units"] == {"todo": 3}
+    assert _j65_out(path, "A")["result"] == "ok"
+
+
+def test_j65_symlinked_checkpoint_rewrites_the_target_and_keeps_the_link(tmp_path):
+    """#137: the rename lands on the link's target; the link stays a link; every path to
+    the file sees the clock-out. The ledger stays beside the path AS GIVEN (the link).
+    Mutation: rename onto `path` instead of `real` and the link becomes a regular file
+    while `real.json` keeps cursor A."""
+    real = tmp_path / "real.json"
+    link = tmp_path / "cp.json"
+    _j65_write(real, [_j65_unit("A"), _j65_unit("B")])
+    try:
+        link.symlink_to(real)
+    except OSError as e:  # pragma: no cover - Windows without the symlink privilege
+        pytest.skip(f"symlink not available here: {e}")
+    r = _j65_out(link, "A")
+    assert r["result"] == "ok" and r["cursor"] == "B"
+    assert r["log"] == str(link) + ".log.jsonl"
+    assert link.is_symlink()
+    assert json.loads(real.read_text(encoding="utf-8"))["plan"]["cursor"] == "B"
+    assert ops.status(str(real))["cursor"] == "B" and ops.status(str(link))["cursor"] == "B"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "cp.json",
+        "cp.json.log.jsonl",
+        "real.json",
+    ]
+
+
+def test_j65_suffixless_checkpoint_never_touches_a_sibling_named_tmp(tmp_path):
+    """#116: `with_suffix(path.suffix + ".tmp")` named a suffix-less `checkpoint`'s temp
+    file `checkpoint.tmp` — an unrelated user file, overwritten and renamed away. The
+    per-writer name leaves it byte-identical. Mutation: restore the `with_suffix` name and
+    the sibling's bytes become the checkpoint's (then vanish under the rename)."""
+    path = tmp_path / "checkpoint"
+    _j65_write(path, [_j65_unit("A"), _j65_unit("B")])
+    sibling = tmp_path / "checkpoint.tmp"
+    sibling.write_bytes(b"USER DATA - unrelated file\n")
+    assert _j65_out(path, "A")["result"] == "ok"
+    assert sibling.read_bytes() == b"USER DATA - unrelated file\n"
+    assert json.loads(path.read_text(encoding="utf-8"))["plan"]["cursor"] == "B"
+    assert _j65_leftovers(tmp_path) == ["checkpoint.tmp"]  # the planted one, nothing of ours
+
+
+def test_j65_old_temp_name_as_a_directory_blocks_nothing(tmp_path):
+    """Until job65 a directory at `cp.json.tmp` failed every clock-out EISDIR, and the
+    conformance suite's `temp-file-name-*` cases used that to make the name observable.
+    The name is per-writer now, so the same directory blocks nothing and is untouched."""
+    path = tmp_path / "cp.json"
+    _j65_write(path, [_j65_unit("A"), _j65_unit("B")])
+    (tmp_path / "cp.json.tmp").mkdir()
+    assert _j65_out(path, "A")["result"] == "ok"
+    assert (tmp_path / "cp.json.tmp").is_dir()
+    assert _j65_leftovers(tmp_path) == ["cp.json.tmp"]
+
+
+def test_j65_lock_held_by_another_writer_refuses_and_a_stale_lock_is_taken_over(
+    tmp_path, monkeypatch
+):
+    """#116: the refusal is total — no log line, checkpoint byte-unchanged, the other
+    writer's lock left alone — and it names the lock. Past `LOCK_STALE_MS` the lock is a dead
+    holder's and the clock-out proceeds. Mutation: make `_acquire_lock` answer `(False,
+    None)` on EEXIST and the first clock-out succeeds under the foreign lock."""
+    monkeypatch.setattr(ops, "LOCK_WAIT_MS", 50)
+    path = tmp_path / "cp.json"
+    before = _j65_write(path, [_j65_unit("A"), _j65_unit("B")])
+    lock = Path(str(path.resolve()) + ".lock")
+    lock.write_text("1\n", encoding="utf-8")
+    assert _j65_out(path, "A") == {
+        "result": "error",
+        "reason": f"checkpoint locked by another clock-out, nothing written: {lock}",
+    }
+    assert path.read_bytes() == before
+    assert not Path(str(path) + ".log.jsonl").exists()
+    assert lock.read_text(encoding="utf-8") == "1\n"
+    old = time.time() - ops.LOCK_STALE_MS / 1000 - 1
+    os.utime(lock, (old, old))
+    assert _j65_out(path, "A")["result"] == "ok"
+    assert _j65_leftovers(tmp_path) == []
+
+
+def test_j65_write_failure_sentence_names_the_checkpoint_not_the_temp_file(
+    tmp_path, example
+):
+    """The refusal's filename slot carries the checkpoint as given: a per-writer temp name in
+    a sentence is not reproducible. Reuses the read-only-directory arm the earlier test
+    takes, so it skips where that one does."""
+    if windows_cannot_construct or os.geteuid() == 0:
+        pytest.skip("a read-only directory cannot be constructed here")
+    path = write_checkpoint(tmp_path, example)
+    first = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    assert first["result"] == "ok", first
+    tmp_path.chmod(0o555)
+    try:
+        r = ops.clock_out(str(path), "U3", "done", {}, {"unit": "U3", "outcome": "done"})
+    finally:
+        tmp_path.chmod(0o755)
+    assert r["result"] == "error" and "uncommitted" in r["reason"], r
+    assert r["reason"].endswith(f": {str(path)!r}"), r["reason"]
+    assert ".tmp" not in r["reason"]
+
+
+def test_j65_two_clock_outs_of_different_units_at_one_instant_both_land(tmp_path):
+    """#116, the measured shape (10 of 20 `ok` answers lost before the lock): two processes
+    release at one instant, clocking out A (the cursor) and B (briefed). With the lock both
+    answer ok and both are on disk. Mutation: remove the lock and keep the per-writer temp
+    name — the loss returns (measured in `.shiftwork/notes-job65/J65-1.md`)."""
+    snippet = (
+        "import sys, json, time\n"
+        "from bantamkit import shiftwork\n"
+        "cp, u, at = sys.argv[1], sys.argv[2], float(sys.argv[3])\n"
+        "while time.time() < at:\n"
+        "    pass\n"
+        "print(json.dumps(shiftwork.clock_out(cp, u, 'done', {}, {'unit': u, 'outcome': 'x'})))\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(ops.__file__).resolve().parents[1])}
+    for trial in range(3):
+        root = tmp_path / f"t{trial}"
+        root.mkdir()
+        path = root / "cp.json"
+        _j65_write(path, [_j65_unit("A"), _j65_unit("B")])
+        Path(str(path) + ".log.jsonl").write_text(
+            '{"event": "brief", "role": "implementer", "ts": "x", "unit": "B"}\n', encoding="utf-8"
+        )
+        at = str(time.time() + 1.0)
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", snippet, str(path), unit, at],
+                stdout=subprocess.PIPE,
+                env=env,
+            )
+            for unit in ("A", "B")
+        ]
+        answers = [json.loads(p.communicate(timeout=120)[0]) for p in procs]
+        assert [a["result"] for a in answers] == ["ok", "ok"], answers
+        on_disk = {
+            u["id"]: u["status"]
+            for u in json.loads(path.read_text(encoding="utf-8"))["plan"]["units"]
+        }
+        assert on_disk == {"A": "done", "B": "done"}
+        assert _j65_leftovers(root) == []

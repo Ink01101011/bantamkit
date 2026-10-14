@@ -78,15 +78,26 @@ recording surface does not acquire a new way to refuse — and to the clocked-ou
 unit when nothing non-terminal remains. On a linear chain the two orders
 coincide, which is why every case written before this holds its value.
 
-No lock: the MCP topology has one orchestrator by construction. The driver's
-O_EXCL lock guards cross-process races this shape does not have, and clock-out
-re-validates before writing so a concurrent driver run fails validation-visibly.
+A lock, since job65 (#116). The paragraph that stood here said the MCP topology
+has one orchestrator by construction and needs none; job60's waves made that
+false — a wave clocks out from several processes at once — and it was MEASURED:
+two clock-outs of DIFFERENT units at one instant, 10 trials, lost 10 of 20 `ok`
+answers and committed up to 5 `error` ones, on each runtime and across the two.
+The whole read-modify-write now runs under `<checkpoint>.lock` (O_EXCL, the same
+primitive as `driver.lock` and the hook ledger's lock, so a Python writer and a
+Node writer serialise against each other on the one file they share), the temp
+file is a per-writer name created exclusively, and the rename lands on the
+checkpoint's resolved target (#137) so a symlinked checkpoint stays a link. A
+writer that cannot take the lock is REFUSED, nothing written — never let through,
+because through is the race.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -113,6 +124,16 @@ TERMINAL_UNIT_STATUS = frozenset({"done", "dropped"})  # the driver's SUCCESS te
 #: the thing it recorded with the same word the wire used.
 BRIEF_EVENT = "brief"
 HISTORY_RING_SIZE = 5  # the schema's maxItems — older entries fall off the ring
+#: job65/#116: the checkpoint's read-modify-write runs under `<checkpoint>.lock`, taken with
+#: O_EXCL — the one primitive both platforms and both runtimes share without a dependency,
+#: and the shape `driver.lock` and the hook ledger's lock (J65-4, #167) already use, so a
+#: Python writer and a Node writer serialise against each other on the one file they share.
+#: One policy differs from the ledger's: a writer that cannot take the lock within
+#: `LOCK_WAIT_MS` is REFUSED, nothing written — never let through unlocked, because through
+#: is exactly the race #116 measured. A lock older than `LOCK_STALE_MS` is a dead holder's.
+LOCK_WAIT_MS = 5000
+LOCK_STALE_MS = 30_000
+LOCK_POLL_MS = 5
 
 
 def _error(reason: str) -> dict[str, Any]:
@@ -123,7 +144,10 @@ def _read_valid(path: Path) -> tuple[dict | None, dict[str, Any] | None]:
     """Read and full-schema-validate. Returns (document, None) or (None, refusal)."""
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # #163: invalid UTF-8 is `UnicodeDecodeError`, a ValueError and not an OSError, and it
+        # escaped every tool as a raised exception while a missing file answered
+        # `result: error`. Same sentence head as the missing file: the bytes could not be read.
         return None, _error(f"checkpoint unreadable: {e}")
     try:
         document = json.loads(text)
@@ -132,6 +156,16 @@ def _read_valid(path: Path) -> tuple[dict | None, dict[str, Any] | None]:
     problem = schema_error(text, load_schema(SCHEMA_NAME))
     if problem is not None:
         return None, _error(f"checkpoint invalid: {problem}")
+    # #165: the schema cannot say that unit ids are unique, so this is the only check, and it
+    # sits on the read every tool starts with: status, clock_in and clock_out now answer what
+    # `shiftwork_plan` already answered through the core. Before it, `_find_unit` took the
+    # first match and a clock-out of the first `A` of two left a document no job could finish.
+    # The sentence is `workplan`'s, verbatim, so the plan view's answer does not move.
+    seen: set[str] = set()
+    for unit in document["plan"]["units"]:
+        if unit["id"] in seen:
+            return None, _error(f"duplicate node id {unit['id']}")
+        seen.add(unit["id"])
     return document, None
 
 
@@ -588,6 +622,82 @@ def clock_out(
     commit failed is the detectable, tolerable leftover).
     """
     path = Path(checkpoint)
+    real = _real_target(path)
+    lock = Path(f"{real}.lock")
+    held, refusal = _acquire_lock(lock)
+    if refusal is not None:
+        return refusal
+    try:
+        return _clock_out_locked(
+            path, real, unit_id, status, handoff_patch, history_entry, accounting
+        )
+    finally:
+        if held:
+            with contextlib.suppress(OSError):
+                lock.unlink()
+
+
+def _real_target(path: Path) -> Path:
+    """#137: the file the rename lands on — a symlinked checkpoint's TARGET, so the link stays
+    a link and every other path to the same file sees the clock-out. Only the write side
+    resolves: the read, the ledger and every sentence use the path as given."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):  # a symlink loop, or a path the OS will not resolve
+        return path
+
+
+def _acquire_lock(lock: Path) -> tuple[bool, dict[str, Any] | None]:
+    """Take `<checkpoint>.lock` with O_EXCL. Answers `(held, refusal)`.
+
+    `held` is False without a refusal in exactly one case: the directory will not hold a
+    lock file for a reason other than one existing (read-only, gone). The clock-out then
+    goes on UNLOCKED, because the temp file that follows cannot be created there either
+    and ITS refusal is the one that names the cause — the `readonly-directory-*` arms keep
+    their sentences. A lock that exists is waited on; one older than `LOCK_STALE_MS` is a
+    dead holder's and is removed; past `LOCK_WAIT_MS` the clock-out is refused with
+    nothing written, so the caller can retry — never let through, which is the race.
+    """
+    deadline = time.monotonic() + LOCK_WAIT_MS / 1000
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            pass
+        except OSError:
+            return False, None
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f"{os.getpid()}\n")
+            return True, None
+        with contextlib.suppress(OSError):
+            if time.time() - os.stat(lock).st_mtime > LOCK_STALE_MS / 1000:
+                os.unlink(lock)
+        if time.monotonic() >= deadline:
+            return False, _error(f"checkpoint locked by another clock-out, nothing written: {lock}")
+        time.sleep(LOCK_POLL_MS / 1000)
+
+
+def _at(e: OSError, path: Path) -> str:
+    """`str(e)` with the checkpoint's own path in the filename slot (see the write path)."""
+    if e.errno is None:
+        return str(e)
+    winerror = getattr(e, "winerror", None)
+    if winerror is not None:
+        return str(OSError(e.errno, e.strerror, str(path), winerror))
+    return str(OSError(e.errno, e.strerror, str(path)))
+
+
+def _clock_out_locked(
+    path: Path,
+    real: Path,
+    unit_id: str,
+    status: str,
+    handoff_patch: dict[str, Any],
+    history_entry: dict[str, Any],
+    accounting: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """`clock_out`'s body, run under the lock its caller holds: mutate, validate, write."""
     log_path = _log_path(path)
     document, refusal = _read_valid(path)
     if refusal is not None:
@@ -653,14 +763,22 @@ def clock_out(
     except OSError as e:
         return _error(f"accounting log unwritable, checkpoint untouched: {e}")
 
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # #116: a PER-WRITER temp name, created exclusively — never `with_suffix(".tmp")`, which
+    # gave every writer of one checkpoint the same temp file (two renames of one file, so one
+    # `ok` answer with nothing of it on disk) and gave a suffix-less `checkpoint` the name of
+    # an unrelated sibling, `checkpoint.tmp`, which it overwrote and renamed away. #137: the
+    # rename lands on `real`, the link's target. The refusal names the checkpoint AS GIVEN and
+    # not the temp name: a random name in a sentence is not reproducible, and the file the
+    # caller could not write is, to the caller, the checkpoint.
+    tmp = Path(f"{real}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
-        tmp.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        with tmp.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(document, indent=2) + "\n")
+        tmp.replace(real)
     except OSError as e:
         with contextlib.suppress(OSError):
             tmp.unlink()
-        return _error(f"checkpoint unwritable, last log line uncommitted: {e}")
+        return _error(f"checkpoint unwritable, last log line uncommitted: {_at(e, path)}")
 
     return {
         "result": "ok",

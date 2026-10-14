@@ -984,29 +984,25 @@ test('read_text folds CRLF before the decoder counts characters', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test('PurePath.suffix: a leading dot is not a suffix, so the temp file is `.json.tmp`', () => {
+test('PurePath.suffix: a leading dot is not a suffix — and since job65 no temp name is derived from it', () => {
   assert.equal(pySuffix('/a/.json'), '');
   assert.equal(pySuffix('/a/cp.json'), '.json');
   assert.equal(pySuffix('/a/cp.a.json'), '.json');
   assert.equal(pySuffix('/a/cp.'), '');
   assert.equal(pySuffix('/a/cp'), '');
-  // Which is the whole reason clock_out writes `path.with_suffix(path.suffix + ".tmp")`
-  // rather than appending: `cp.json` gets `cp.json.tmp`, and `.json` gets `.json.tmp`.
+  // Until job65 (#116) clock_out wrote `path.with_suffix(path.suffix + ".tmp")`, so a
+  // DIRECTORY planted at `.json.tmp` failed the write EISDIR and this test asserted that
+  // sentence, temp name included. The temp file is a per-writer name now
+  // (`<real>.<pid>.<random>.tmp`), so the same planted directory blocks nothing: the
+  // clock-out succeeds and the directory is untouched. A regression to the old name reddens
+  // this with the `[Errno 21] Is a directory` sentence it used to expect.
   const root = fresh();
   const path = join(root, '.json');
   writeFileSync(path, `${JSON.stringify(checkpointDocument(), null, 2)}\n`, 'utf8');
   mkdirSync(`${path}.tmp`);
   const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 1 }));
-  // Opening a directory for WRITE goes through the C runtime, not the Win32 API: CPython
-  // reports `[Errno 13] Permission denied` there where libuv says `EISDIR`. MEASURED,
-  // run 32646521489, over six consecutive conformance cases of this exact shape.
-  const isdir = process.platform === 'win32'
-    ? '[Errno 13] Permission denied'
-    : '[Errno 21] Is a directory';
-  assert.equal(
-    answer.reason,
-    `checkpoint unwritable, last log line uncommitted: ${isdir}: ${asRepr(`${path}.tmp`)}`,
-  );
+  assert.equal(answer.result, 'ok', answer.reason);
+  assert.ok(statSync(`${path}.tmp`).isDirectory(), 'the planted directory is untouched');
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -2199,4 +2195,183 @@ test('clock_out serves the sub-schemas the checkpoint writer enforces', () => {
   assert.ok(!asset.description.includes('never refuses'));
   assert.ok(sentences.some((s) => s.includes('handoff_patch') && /required/i.test(s)));
   assert.ok(sentences.some((s) => s.includes('unit_id') && s.includes('cursor')));
+});
+
+// ====================================================== job65 / J65-1: #116 #137 #163 #165
+//
+// Every sentence below is a LITERAL on this side. The conformance suite compares the two
+// runtimes; a regression that lands in both at once is invisible to it, so the absolute
+// properties — the sentence, the refusal bit, the bytes on disk — are pinned here as well.
+import { spawn } from 'node:child_process';
+import { lstatSync, readdirSync, symlinkSync, utimesSync } from 'node:fs';
+
+const j65Unit = (id) => ({ id, title: id, brief_path: 'b.md', status: 'todo', role: 'implementer', depends_on: [], verify: 'true' });
+const j65Doc = (units, cursor = units[0].id) => ({
+  version: 1,
+  job: { id: 'j', goal: 'g', done_definition: 'd', constraints: [] },
+  plan: { cursor, units },
+  state: { repo: { branch: 'b', head_sha: 'h', dirty: false }, artifacts: [], external: [] },
+  history: [],
+  retro: [],
+  handoff: { next_action: 'n', open_questions: [], do_not: [] },
+});
+const j65Write = (path, units, cursor) => {
+  writeFileSync(path, JSON.stringify(j65Doc(units, cursor)), 'utf8');
+  return readFileSync(path);
+};
+const j65Out = (path, unit, options = {}) => js(clockOut(path, unit, 'done', {}, { unit, outcome: 'x' }, null, { now: 1, ...options }));
+/** Every `*.tmp` / `*.lock` in the directory: a per-writer temp name cannot be predicted. */
+const j65Leftovers = (root) => readdirSync(root).filter((f) => /\.(tmp|lock)$/.test(f)).sort();
+const J65_UTF8 = "checkpoint unreadable: 'utf-8' codec can't decode byte 0xff in position 1: invalid start byte";
+
+test('#163: invalid UTF-8 in a checkpoint is a structured refusal on every tool, never raised', () => {
+  // Mutation: drop `PyUnicodeDecodeError` from `readValid`'s catch and all four throw.
+  const root = fresh();
+  const path = join(root, 'cp.json');
+  writeFileSync(path, Buffer.from([0x7b, 0xff, 0x7d]));
+  for (const fn of [status, planBatches, (p) => clockIn(p, null)]) {
+    assert.deepEqual(js(fn(path)), { result: 'error', reason: J65_UTF8 });
+  }
+  assert.deepEqual(j65Out(path, 'A'), { result: 'error', reason: J65_UTF8 });
+  assert.deepEqual([...readFileSync(path)], [0x7b, 0xff, 0x7d]);
+  assert.deepEqual(j65Leftovers(root), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("#165: duplicate unit ids are refused by every tool with work_plan's sentence, nothing written", () => {
+  // Mutation: drop the `seen` loop from `readValid` and status counts 3, clockIn briefs the
+  // first A, clockOut answers ok and leaves A=done A=todo on disk.
+  const root = fresh();
+  const path = join(root, 'cp.json');
+  const before = j65Write(path, [j65Unit('A'), j65Unit('A'), j65Unit('B')]);
+  const refusal = { result: 'error', reason: 'duplicate node id A' };
+  for (const fn of [status, planBatches, (p) => clockIn(p, null), (p) => clockIn(p, 'A')]) {
+    assert.deepEqual(js(fn(path)), refusal);
+  }
+  assert.deepEqual(j65Out(path, 'A'), refusal);
+  assert.deepEqual(readFileSync(path), before);
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  // The control: the same shape with distinct ids is the ordinary happy path.
+  j65Write(path, [j65Unit('A'), j65Unit('A2'), j65Unit('B')]);
+  assert.deepEqual(js(status(path)).units, { todo: 3 });
+  assert.equal(j65Out(path, 'A').result, 'ok');
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#137: a symlinked checkpoint — the target is rewritten and the link stays a link', (t) => {
+  // Mutation: rename onto `path` instead of `real` and the link becomes a regular file while
+  // `real.json` keeps cursor A.
+  const root = fresh();
+  const real = join(root, 'real.json');
+  const link = join(root, 'cp.json');
+  j65Write(real, [j65Unit('A'), j65Unit('B')]);
+  try {
+    symlinkSync(real, link);
+  } catch (e) {
+    t.skip(`symlink not available here: ${e.message}`);
+    rmSync(root, { recursive: true, force: true });
+    return;
+  }
+  const r = j65Out(link, 'A');
+  assert.equal(r.result, 'ok', r.reason);
+  assert.equal(r.cursor, 'B');
+  assert.equal(r.log, `${link}.log.jsonl`, 'the ledger stays beside the path as given');
+  assert.ok(lstatSync(link).isSymbolicLink(), 'the link is still a link');
+  assert.equal(JSON.parse(readFileSync(real, 'utf8')).plan.cursor, 'B');
+  assert.equal(js(status(real)).cursor, 'B');
+  assert.equal(js(status(link)).cursor, 'B');
+  assert.deepEqual(readdirSync(root).sort(), ['cp.json', 'cp.json.log.jsonl', 'real.json']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#116: a suffix-less checkpoint never touches a sibling named <name>.tmp', () => {
+  // Mutation: restore `pyWithSuffix(path, `${pySuffix(path)}.tmp`)` and the sibling's bytes
+  // become the checkpoint's, then vanish under the rename.
+  const root = fresh();
+  const path = join(root, 'checkpoint');
+  j65Write(path, [j65Unit('A'), j65Unit('B')]);
+  const sibling = join(root, 'checkpoint.tmp');
+  writeFileSync(sibling, 'USER DATA - unrelated file\n');
+  assert.equal(j65Out(path, 'A').result, 'ok');
+  assert.equal(readFileSync(sibling, 'utf8'), 'USER DATA - unrelated file\n');
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).plan.cursor, 'B');
+  assert.deepEqual(j65Leftovers(root), ['checkpoint.tmp']);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#116: a lock held by another writer refuses after the wait and writes nothing; a stale lock is taken over', () => {
+  // Mutation: make `acquireLock` answer `{held: false, refusal: null}` on EEXIST and the
+  // first clock-out succeeds under the foreign lock.
+  const root = fresh();
+  const path = join(root, 'cp.json');
+  const before = j65Write(path, [j65Unit('A'), j65Unit('B')]);
+  const lock = `${path}.lock`;
+  writeFileSync(lock, '1\n');
+  assert.deepEqual(j65Out(path, 'A', { lockWaitMs: 50 }), {
+    result: 'error',
+    reason: `checkpoint locked by another clock-out, nothing written: ${lock}`,
+  });
+  assert.deepEqual(readFileSync(path), before, 'the checkpoint is byte-unchanged');
+  assert.equal(existsSync(`${path}.log.jsonl`), false, 'no log line: the lock comes first');
+  assert.equal(readFileSync(lock, 'utf8'), '1\n', "the other writer's lock is not ours to remove");
+  const old = (Date.now() - 30_000 - 1000) / 1000;
+  utimesSync(lock, old, old);
+  assert.equal(j65Out(path, 'A', { lockWaitMs: 50 }).result, 'ok');
+  assert.deepEqual(j65Leftovers(root), []);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#116: the write-failure sentence names the checkpoint, not the per-writer temp file', (t) => {
+  const root = fresh();
+  const inner = join(root, 'ro');
+  mkdirSync(inner);
+  const path = writeCheckpoint(inner);
+  assert.equal(js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, null, { now: 1 })).result, 'ok');
+  if (!withUnwritable(inner, t, 'which filename the checkpoint-leg refusal carries')) {
+    rmSync(root, { recursive: true, force: true });
+    return;
+  }
+  try {
+    const answer = js(clockOut(path, 'N2', 'done', {}, { unit: 'N2', outcome: 'done' }, null, { now: 2 }));
+    assert.equal(answer.result, 'error');
+    assert.ok(answer.reason.startsWith('checkpoint unwritable, last log line uncommitted: [Errno 13]'), answer.reason);
+    assert.ok(answer.reason.endsWith(`: ${asRepr(path)}`), answer.reason);
+    assert.ok(!answer.reason.includes('.tmp'), answer.reason);
+  } finally {
+    chmodSync(inner, 0o755);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('#116: two processes clocking out different units at one instant both land', async () => {
+  // The measured shape (10 of 20 `ok` answers lost before the lock): two processes release at
+  // one instant, clocking out A (the cursor) and B (briefed). Mutation: remove the lock and keep
+  // the per-writer temp name — the loss returns (measured in .shiftwork/notes-job65/J65-1.md).
+  const snippet =
+    `import { clockOut } from ${JSON.stringify(new URL('shiftwork.js', dist).href)};` +
+    `import { dumpJson, fromJs } from ${JSON.stringify(new URL('pyjson.js', dist).href)};` +
+    'const [cp, u, at] = process.argv.slice(1); while (Date.now() < Number(at));' +
+    "process.stdout.write(dumpJson(clockOut(cp, u, 'done', fromJs({}), fromJs({ unit: u, outcome: 'x' }))));";
+  const child = (cp, u, at) =>
+    new Promise((resolve) => {
+      const c = spawn(process.execPath, ['--input-type=module', '-e', snippet, '--', cp, u, at]);
+      let out = '';
+      c.stdout.on('data', (d) => (out += d));
+      c.on('close', () => resolve(out));
+    });
+  const root = fresh();
+  for (let trial = 0; trial < 3; trial += 1) {
+    const dir = join(root, `t${trial}`);
+    mkdirSync(dir);
+    const path = join(dir, 'cp.json');
+    j65Write(path, [j65Unit('A'), j65Unit('B')]);
+    writeFileSync(`${path}.log.jsonl`, '{"event": "brief", "role": "implementer", "ts": "x", "unit": "B"}\n');
+    const at = String(Date.now() + 1000);
+    const answers = (await Promise.all([child(path, 'A', at), child(path, 'B', at)])).map((o) => JSON.parse(o));
+    assert.deepEqual(answers.map((a) => a.result), ['ok', 'ok'], JSON.stringify(answers));
+    const onDisk = Object.fromEntries(JSON.parse(readFileSync(path, 'utf8')).plan.units.map((u) => [u.id, u.status]));
+    assert.deepEqual(onDisk, { A: 'done', B: 'done' });
+    assert.deepEqual(j65Leftovers(dir), []);
+  }
+  rmSync(root, { recursive: true, force: true });
 });

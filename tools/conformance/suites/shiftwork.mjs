@@ -28,7 +28,7 @@
  * scratch and exercised there — see the note on `REAL_CHECKPOINT` below for why it is the
  * tracked template and not the live job file it used to be.
  */
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -62,6 +62,14 @@ const REF = join(here, 'ref', 'shiftwork_ref.py');
 const REAL_CHECKPOINT = join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json');
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+/** #116: the bytes of a user's own `checkpoint.tmp` beside a suffix-less checkpoint. */
+const SIBLING_BYTES = 'USER DATA - unrelated file\n';
+/** #165: `baseDocument()` with its first unit declared twice. */
+function duplicateIdDocument() {
+  const document = baseDocument();
+  document.plan.units.splice(1, 0, { ...document.plan.units[0] });
+  return document;
+}
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 const b64bytes = (buf) => buf.toString('base64');
 const unb64bytes = (s) => Buffer.from(s, 'base64');
@@ -437,44 +445,61 @@ function sessions(packDir, anyPackDir, brokenPacks) {
       IN(),
     ],
   });
-  // The ONLY thing that makes the temp file's NAME observable. `path.with_suffix(
-  // path.suffix + ".tmp")` is `checkpoint.json.tmp`, not `checkpoint.tmp`; on every other
-  // path the temp file is renamed on success and unlinked on failure, so its name never
-  // reaches a caller. With a DIRECTORY planted there the write fails EISDIR and the name is
-  // in the sentence — and the `contextlib.suppress(OSError)` around the cleanup unlink is
-  // exercised too, since unlinking a directory fails.
+  // UNTIL JOB65 THIS BLOCK MADE THE TEMP FILE'S NAME OBSERVABLE: `path.with_suffix(
+  // path.suffix + ".tmp")` was `checkpoint.json.tmp`, a DIRECTORY planted there failed the
+  // write EISDIR, and the name was in the sentence. Issue #116 ruled that name a defect —
+  // every writer of one checkpoint shared it (two renames of one file: `ok` answers with
+  // nothing on disk, measured 10 of 20), and a suffix-less `checkpoint` got the name of an
+  // unrelated sibling, `checkpoint.tmp`, which it overwrote — so the temp file is a
+  // per-writer name now (`<real>.<pid>.<random>.tmp`) and nothing can be planted in its way.
+  // The five sessions keep their files and their planted directories and prove the OPPOSITE
+  // of what they used to: the old name blocks nothing. The differential alone would accept
+  // both runtimes failing EISDIR together, so `concurrency/old-temp-name/*` below pins the
+  // `ok` bit per side; a regression to the old name on either side reddens those rows (the
+  // measured count is in `.shiftwork/notes-job65/J65-1.md`).
   cases.push({
-    name: 'temp-file-name-is-observable-when-a-directory-is-in-the-way',
+    name: 'old-temp-name-blocks-nothing',
     file: 'checkpoint.json',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'checkpoint.json.tmp' }, OUT('N1', 'done'), IN()],
   });
   cases.push({
-    name: 'temp-file-name-two-dots',
+    name: 'old-temp-name-two-dots',
     file: 'cp.a.json',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'cp.a.json.tmp' }, OUT('N1', 'done')],
   });
   cases.push({
-    name: 'temp-file-name-no-suffix',
+    name: 'old-temp-name-no-suffix',
     file: 'cp',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'cp.tmp' }, OUT('N1', 'done')],
   });
-
-  // `PurePath('.json').suffix` is '' — a leading dot is not a suffix — so the temp file is
-  // `.json.tmp` and not `.json.json.tmp`. Only the planted-directory arm can see the name.
+  // `PurePath('.json').suffix` is '' — a leading dot is not a suffix — so the OLD name here
+  // was `.json.tmp` and not `.json.json.tmp`; `cp.` likewise gave `cp..tmp`.
   cases.push({
-    name: 'temp-file-name-all-leading-dot',
+    name: 'old-temp-name-all-leading-dot',
     file: '.json',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: '.json.tmp' }, OUT('N1', 'done')],
   });
   cases.push({
-    name: 'temp-file-name-trailing-dot',
+    name: 'old-temp-name-trailing-dot',
     file: 'cp.',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'cp..tmp' }, OUT('N1', 'done')],
+  });
+  // #116, the sibling: the user's own `checkpoint.tmp` beside a suffix-less `checkpoint` is
+  // read back by `probe` after the clock-out and pinned byte for byte per side below.
+  cases.push({
+    name: 'suffixless-sibling-survives',
+    file: 'checkpoint',
+    checkpoint: b64(raw(baseDocument())),
+    calls: [
+      { fn: 'plant', path: 'checkpoint.tmp', content: b64(SIBLING_BYTES) },
+      OUT('N1', 'done'),
+      { fn: 'probe', path: 'checkpoint.tmp' },
+    ],
   });
 
   // And the arm where the log itself cannot be created: a fresh read-only directory.
@@ -489,6 +514,57 @@ function sessions(packDir, anyPackDir, brokenPacks) {
       IN(),
     ],
   });
+
+  // ------------------------------------------------------ job65 / J65-1: #116 #137 #163 #165
+  //
+  // Four properties, each a differential session here AND a per-side literal in the
+  // `concurrency/` and `refusal/` blocks below, because every one of them is absolute and a
+  // regression landing in both runtimes at once would leave the differential green.
+  //
+  // #163: `{\xff}` is not UTF-8. `read_text` raised `UnicodeDecodeError` — a ValueError, not
+  // an OSError — out of every tool while a MISSING file answered `result: error`. Now the same
+  // sentence head as the missing file, on all four entry points.
+  cases.push({
+    name: 'invalid-utf8-is-a-structured-refusal',
+    file: 'checkpoint.json',
+    checkpoint: b64bytes(Buffer.from([0x7b, 0xff, 0x7d])),
+    calls: [ST(), IN(), OUT('N1', 'done')],
+  });
+  // #165: two units named N1. The schema cannot say ids are unique; `shiftwork_plan` refused
+  // through the core while status counted three, clock_in briefed the first N1 and clock_out
+  // rewrote only the first. Every tool now answers the core's sentence from the read itself.
+  cases.push({
+    name: 'duplicate-unit-ids-are-refused-by-every-tool',
+    file: 'checkpoint.json',
+    checkpoint: b64(raw(duplicateIdDocument())),
+    calls: [ST(), IN(), IN('N1'), OUT('N1', 'done')],
+  });
+  // #116: a lock another writer holds. Both sides wait `LOCK_WAIT_MS` (5 s each, the one slow
+  // session in this suite) and refuse with nothing written — never let through unlocked,
+  // because through is the race. The planted lock is theirs, so it is still there afterwards.
+  cases.push({
+    name: 'lock-held-by-another-writer',
+    file: 'checkpoint.json',
+    checkpoint: b64(raw(baseDocument())),
+    calls: [{ fn: 'plant', path: 'checkpoint.json.lock', content: b64('1\n') }, OUT('N1', 'done'), ST()],
+  });
+  // #137: the clock-out goes through a LINK. The rename lands on the link's target, the link
+  // stays a link, and a status read through either path sees the new cursor. Withheld on
+  // win32, where creating a symlink needs a privilege the runner may not have.
+  if (process.platform !== 'win32') {
+    cases.push({
+      name: 'symlinked-checkpoint-keeps-the-link',
+      file: 'real.json',
+      targetSuffix: '/link.json',
+      checkpoint: b64(raw(baseDocument())),
+      calls: [
+        { fn: 'symlink', link: 'link.json', target: 'real.json' },
+        OUT('N1', 'done'),
+        ST(),
+        { fn: 'probe', path: 'link.json' },
+      ],
+    });
+  }
 
   // ------------------------------------------------- AS-2: `job.roles`, the model check
   //
@@ -1065,8 +1141,16 @@ function anyPackSessions() {
  * and names and counts what it withheld in a note. This loop still chmods when it is reached.
  */
 async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
-  const { dumpJson, parseJson } = pyjson;
+  const { dumpJson, fromJs, parseJson } = pyjson;
   mkdirSync(dir, { recursive: true });
+  /** job65: ANY `*.tmp` / `*.lock` in the directory — the temp name is per writer now. */
+  const leftovers = () => {
+    try {
+      return readdirSync(dir).some((f) => /\.(tmp|lock)$/.test(f));
+    } catch {
+      return false;
+    }
+  };
   const path = join(dir, caseSpec.file);
   if (caseSpec.checkpoint !== null && caseSpec.checkpoint !== undefined) {
     writeFileSync(path, unb64bytes(caseSpec.checkpoint));
@@ -1082,7 +1166,7 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
     result: b64(result),
     checkpoint: existsSync(path) ? b64bytes(readFileSync(path)) : null,
     log: existsSync(`${path}.log.jsonl`) ? b64bytes(readFileSync(`${path}.log.jsonl`)) : null,
-    tmp_left: existsSync(`${path}.tmp`),
+    tmp_left: leftovers(),
   });
   for (const call of caseSpec.calls) {
     if (call.fn === 'chmod') {
@@ -1093,6 +1177,38 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
     if (call.fn === 'mkdir') {
       mkdirSync(join(dir, call.path), { recursive: true });
       steps.push({ result: b64('null'), checkpoint: null, log: null, tmp_left: false });
+      continue;
+    }
+    if (call.fn === 'plant') {
+      writeFileSync(join(dir, call.path), unb64bytes(call.content));
+      steps.push({ result: b64('null'), checkpoint: null, log: null, tmp_left: false });
+      continue;
+    }
+    if (call.fn === 'symlink') {
+      symlinkSync(join(dir, call.target), join(dir, call.link));
+      steps.push({ result: b64('null'), checkpoint: null, log: null, tmp_left: false });
+      continue;
+    }
+    if (call.fn === 'probe') {
+      // The reference answers `json.dumps({"kind", "bytes"})`, so this side dumps through
+      // `pyjson` too — `JSON.stringify` would differ by the two separators.
+      const at = join(dir, call.path);
+      let kind = 'absent';
+      try {
+        const st = lstatSync(at);
+        kind = st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'absent';
+      } catch {
+        kind = 'absent';
+      }
+      let bytes = null;
+      if (kind === 'symlink' || kind === 'file') {
+        try {
+          bytes = b64bytes(readFileSync(at));
+        } catch {
+          bytes = null;
+        }
+      }
+      steps.push({ result: b64(dumpJson(fromJs({ kind, bytes }))), checkpoint: null, log: null, tmp_left: false });
       continue;
     }
     let answer;
@@ -2383,6 +2499,113 @@ export async function run(ctx) {
     );
   }
 
+  // ------------------------------------------ job65 / J65-1: the four properties, per side
+  //
+  // The sessions above compare the two runtimes; these rows compare EACH runtime to a
+  // constant, because every property here is absolute and a regression that lands in both
+  // at once (the port is written from the reference) leaves the differential green. The
+  // mutation that reddened each row, and by how much, is in `.shiftwork/notes-job65/J65-1.md`.
+  {
+    const at = (name, step) => {
+      const entry = ran.get(name);
+      const pick = (side) => entry[side].steps[step];
+      return {
+        python: JSON.parse(unb64(pick('python').result)),
+        node: JSON.parse(unb64(pick('node').result)),
+        pythonRaw: pick('python'),
+        nodeRaw: pick('node'),
+        wrote: entry.spec.checkpoint,
+        dir: dirs[specs.indexOf(entry.spec)],
+      };
+    };
+    const both = (v) => ({ python: v, node: v });
+    const bit = (label, name, step, expected) => {
+      const got = at(name, step);
+      cases.push({
+        name: `${label}/bit`,
+        kind: 'json',
+        expected: both(expected),
+        actual: { python: got.python.result, node: got.node.result },
+      });
+    };
+    const says = (label, name, step, sentence) => {
+      const got = at(name, step);
+      cases.push({
+        name: `${label}/sentence`,
+        kind: 'json',
+        expected: both(sentence),
+        actual: { python: got.python.reason ?? null, node: got.node.reason ?? null },
+      });
+    };
+    /** Checkpoint still the harness's bytes, and no log line — read per side off the step. */
+    const untouched = (label, name, step, tmp = false) => {
+      const got = at(name, step);
+      const state = (raw_) => ({
+        checkpoint: raw_.checkpoint === got.wrote ? 'as written' : 'REWRITTEN',
+        log: raw_.log === null ? 'no log file' : `log exists: ${unb64(raw_.log)}`,
+        tmp: raw_.tmp_left,
+      });
+      cases.push({
+        name: `${label}/untouched`,
+        kind: 'json',
+        expected: both({ checkpoint: 'as written', log: 'no log file', tmp }),
+        actual: { python: state(got.pythonRaw), node: state(got.nodeRaw) },
+      });
+    };
+    /** A `probe` step's answer, per side, against a literal. */
+    const probed = (label, name, step, expected) => {
+      const got = at(name, step);
+      cases.push({ name: `${label}/probe`, kind: 'json', expected: both(expected), actual: { python: got.python, node: got.node } });
+    };
+
+    // ---- #116: the old temp name blocks nothing (five file shapes), and the sibling survives.
+    for (const variant of ['blocks-nothing', 'two-dots', 'no-suffix', 'all-leading-dot', 'trailing-dot']) {
+      bit(`concurrency/old-temp-name/${variant}`, `old-temp-name-${variant}`, 1, 'ok');
+    }
+    bit('concurrency/suffixless-sibling', 'suffixless-sibling-survives', 1, 'ok');
+    probed('concurrency/suffixless-sibling', 'suffixless-sibling-survives', 2, { kind: 'file', bytes: b64(SIBLING_BYTES) });
+
+    // ---- #116: a lock another writer holds refuses, names the lock, writes nothing, leaves it.
+    {
+      const lock = join(at('lock-held-by-another-writer', 1).dir, 'checkpoint.json.lock');
+      bit('concurrency/lock-held', 'lock-held-by-another-writer', 1, 'error');
+      says('concurrency/lock-held', 'lock-held-by-another-writer', 1, `checkpoint locked by another clock-out, nothing written: ${lock}`);
+      // `tmp: true` is the planted `.lock` still being there: it is the other writer's.
+      untouched('concurrency/lock-held', 'lock-held-by-another-writer', 1, true);
+      bit('concurrency/lock-held/status-after', 'lock-held-by-another-writer', 2, 'status');
+    }
+
+    // ---- #137: through a link, the target is rewritten and the link is still a link.
+    if (ran.has('symlinked-checkpoint-keeps-the-link')) {
+      bit('concurrency/symlink', 'symlinked-checkpoint-keeps-the-link', 1, 'ok');
+      const got = at('symlinked-checkpoint-keeps-the-link', 3);
+      const seen = (side) => ({ kind: side.kind, cursor: side.bytes === null ? null : JSON.parse(unb64bytes(side.bytes).toString('utf8')).plan.cursor });
+      cases.push({
+        name: 'concurrency/symlink/link-stays-a-link-and-target-moved',
+        kind: 'json',
+        expected: both({ kind: 'symlink', cursor: 'N2' }),
+        actual: { python: seen(got.python), node: seen(got.node) },
+      });
+    }
+
+    // ---- #163: the UTF-8 sentence on all three entry points, nothing written.
+    {
+      const UTF8 = "checkpoint unreadable: 'utf-8' codec can't decode byte 0xff in position 1: invalid start byte";
+      for (const [step, fn] of [[0, 'status'], [1, 'clock-in'], [2, 'clock-out']]) {
+        bit(`refusal/invalid-utf8/${fn}`, 'invalid-utf8-is-a-structured-refusal', step, 'error');
+        says(`refusal/invalid-utf8/${fn}`, 'invalid-utf8-is-a-structured-refusal', step, UTF8);
+      }
+      untouched('refusal/invalid-utf8', 'invalid-utf8-is-a-structured-refusal', 2);
+    }
+
+    // ---- #165: the core's sentence from every tool, nothing written.
+    for (const [step, fn] of [[0, 'status'], [1, 'clock-in'], [2, 'clock-in-unit-id'], [3, 'clock-out']]) {
+      bit(`refusal/duplicate-ids/${fn}`, 'duplicate-unit-ids-are-refused-by-every-tool', step, 'error');
+      says(`refusal/duplicate-ids/${fn}`, 'duplicate-unit-ids-are-refused-by-every-tool', step, 'duplicate node id N1');
+    }
+    untouched('refusal/duplicate-ids', 'duplicate-unit-ids-are-refused-by-every-tool', 3);
+  }
+
   // ------------------------------------------------------------------- the ruled cases
   //
   // The ONE place this port cannot recover Python's answer, and it is upstream of this
@@ -2428,6 +2651,14 @@ export async function run(ctx) {
     );
   }
 
+  notes.push(
+    'job65/J65-1 (#116 #137 #163 #165): the lock refusal, the old temp name blocking nothing on ' +
+      'five file shapes, a suffix-less checkpoint\'s sibling `.tmp` surviving byte for byte, a ' +
+      'symlinked checkpoint keeping its link, the invalid-UTF-8 sentence on three entry points ' +
+      'and the duplicate-id sentence on four are pinned by 29 per-side cases over 10 sessions ' +
+      '(9 on win32, where the symlink session is withheld); the mutation that reddened each is ' +
+      'in `.shiftwork/notes-job65/J65-1.md`.',
+  );
   notes.push(`${DUMP_TEXTS.length + 2} documents x 2 indents x 2 sort settings through json.dumps`);
   notes.push(`${specs.length} sessions, ${specs.reduce((n, s) => n + s.calls.length, 0)} calls, 4 comparisons each`);
   // J63-2: the abstention is COUNTABLE — a reader of this line can say "N cases abstained" —
