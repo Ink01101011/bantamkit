@@ -313,6 +313,38 @@ replace it`. Measured on Cursor: exit 1, then exit 0 with a `.backup-<date>` bes
 npx -y bantamkit-mcp@latest --install cursor --force
 ```
 
+**What the writer promises about YOUR file (job65: #118, #129, #136, #138).** Each is gated in
+`tools/conformance/suites/install.mjs` (the `install-foreign-bytes`, `install-non-finite`,
+`install-broken-json`, `install-symlink` and `install-twice-same-day` cases) and in both
+runtimes' own suites (`runtime-py/tests/test_hostinstall.py`, `runtime-ts/test/hostinstall.test.mjs`):
+
+- **Your other entries come back as they went in (#118).** The file is parsed losslessly on
+  both runtimes — the port through its own CPython-decoder port, `pyjson.parseJson`, never
+  `JSON.parse` — so `12345678901234567890` stays that integer, `1.0` stays `1.0`, and key
+  order survives (a JS object would move an integer-like key such as `"9"` to the front; a
+  `Map` does not). What does change: the file is re-indented at two spaces, and non-ASCII
+  text is written as `\uXXXX` escapes — deliberately, so both runtimes write identical bytes;
+  it is the same JSON to every host. A number JSON cannot carry — `1e400`, `-1e400`, `NaN`, a
+  literal `Infinity` — is refused BEFORE anything is planned, with
+  `<file> has a number at mcpServers.other.huge that JSON cannot carry (Infinity); refusing to touch it`
+  (exit 1, nothing written, no backup), because writing it back as the bare word `Infinity`
+  left Cursor unable to read ANY of its servers and the next run refusing its own output.
+  The parse-error sentence is the same on both sides now —
+  `… is not valid JSON, so this refuses to touch it: Expecting property name enclosed in double quotes (line 1, column 19)`
+  — which retired the `install-broken-json/stderr` ruling in `docs/porting.md`.
+- **A symlinked config is written through (#136).** `~/.cursor/mcp.json` kept as a link into
+  a dotfiles directory stays a link; the temp file is made beside the REAL file and renamed
+  onto it, so the dotfiles copy gets the entry. The backup is a regular file beside the link.
+- **A backup is never overwritten (#138).** The first write of a day takes
+  `<name>.backup-<date>`; a second write on the same day takes `<name>.backup-<date>.1`,
+  then `.2`, … — the first free name — so the copy that holds the file as it was BEFORE
+  bantamkit touched it survives every later run and the undo steps above restore it. The
+  report's `backup :` line names the copy that run took. (Until job65 a second same-day run
+  overwrote the dated copy on purpose; the issue outranked that choice.)
+- **`--install-hooks` / `--remove-hooks` use the same writer**, and remove per command
+  object (#129): a hook you added inside one of bantamkit's blocks survives; see
+  [hooks.md](hooks.md).
+
 `--force` does not reach Claude Code. There, `claude mcp add` refuses a name it already has
 (`MCP server bantamkit already exists in user config`, exit 1, measured with Claude Code 2.1.270
 against a scratch `HOME`, and again with 2.1.272 in job52), so remove the old entry first:
@@ -359,8 +391,9 @@ At a terminal, declining — anything but `y`/`Y`, EOF included — writes nothi
 1**. The one state that does not ask is a removal with **nothing of ours to remove**: it
 reports `no bantamkit hooks are installed in <path>` and returns BEFORE the gate, still
 **exit 0** with no terminal and no `--yes`, so a teardown script that runs it twice does not
-start refusing. A consented removal takes a dated `.backup-<YYYY-MM-DD>` first, one file per
-day — the only reason 2026-09-20's damage was recoverable. The four states, the exact
+start refusing. A consented removal takes a dated `.backup-<YYYY-MM-DD>` first (a second
+write on the same day takes `.backup-<YYYY-MM-DD>.1`, never the first copy's name — job65,
+#138) — the only reason 2026-09-20's damage was recoverable. The four states, the exact
 sentences, and the thirteen conformance cases that hold them are in
 [hooks.md](hooks.md), *`--remove-hooks` asks too*.
 
@@ -407,6 +440,30 @@ History, kept short: the README's update paragraph used to open "There is no `--
 and was amended twice (2026-09-11 when the flag shipped; 2026-09-15 for job51's kept-install
 route) before a review (J51-9b, F4) had it rewritten. From 0.34.0 the kept-install route runs
 `npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@latest` instead of refusing.
+
+Since job65 (J65-19, 2026-10-14; issues #128, #135, #177) the flag does three things it did not
+do in 0.35.7, on both runtimes:
+
+- **It asks the package manager, not a URL.** The version check is `npm view --prefix <root>
+  bantamkit-mcp@latest --json` (`pip install --dry-run --report -` on the Python side), so the
+  registry npm is configured for — `npm_config_registry`, `.npmrc`, a proxy, a private
+  mirror's token — is the registry the check asks. 0.35.7 asked `registry.npmjs.org` regardless
+  and only the install that followed honoured the config, which behind a mirror meant comparing
+  against one registry and installing from another.
+- **It installs the version it compared, and checks.** The command is `npm install --prefix
+  <root> bantamkit-mcp@<latest>` (`--save-exact` when the prefix's `package.json` pinned
+  exactly; `pip install --upgrade bantamkit==<latest>` on Python), and `updated … to <latest>`
+  is printed only after the tree's own manifest reports that version. An installer that exits 0
+  and leaves the old version refuses instead: `the update command exited 0 but did not install
+  <latest>: <command>` / `bantamkit-mcp now reports <old>, not <latest>; …`, exit 1. 0.35.7
+  installed `@latest` — resolved a second time, by npm, against its own registry — and printed
+  success from the number it had compared, which a stubbed index and a no-op npm turned into
+  `updated bantamkit-mcp from 0.35.7 to 9.9.9.` at exit 0 with 0.35.7 still on disk.
+- **The refusal reads `an ephemeral install`**, and a checkout's refusal names the source tree
+  (`…/runtime-ts`), not its `dist/`.
+
+The transcript below predates this: its command line reads `bantamkit-mcp@latest` where a run
+today prints `bantamkit-mcp@0.33.0`.
 
 The per-install update table is in
 [the npm package's README](../runtime-ts/README.md#updating); the measured failure it exists for

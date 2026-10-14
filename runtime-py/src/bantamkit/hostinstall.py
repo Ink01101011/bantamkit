@@ -37,6 +37,7 @@ a transport exists, the same shape `--assets-root` uses.
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import shlex
@@ -147,17 +148,77 @@ def _read_config(path: Path) -> dict:
         raise InstallError(
             f"{path} holds {type(loaded).__name__}, not an object; refusing to touch it"
         )
+    # A NUMBER JSON CANNOT CARRY IS REFUSED HERE, before anything is planned (#118). `1e400`
+    # decodes to `inf` and `json.dumps` would write it back as the bare word `Infinity`, which
+    # no JSON parser accepts -- the host then cannot read ANY of its servers, and the next run
+    # of this very command refuses its own output. The literals `NaN`/`Infinity` that CPython's
+    # decoder tolerates take the same door: they were never valid JSON either.
+    found = _non_finite_in(loaded, ())
+    if found is not None:
+        where, value = found
+        raise InstallError(
+            f"{path} has a number at {where} that JSON cannot carry ({json.dumps(value)}); "
+            "refusing to touch it"
+        )
     return loaded
 
 
+def _non_finite_in(value: object, trail: tuple[object, ...]) -> tuple[str, float] | None:
+    """The first non-finite float in `value`, with where it sits, or None. Depth-first, in
+    document order, so both runtimes name the same number when a file holds two."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return _where(trail), value
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found = _non_finite_in(item, (*trail, key))
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found = _non_finite_in(item, (*trail, index))
+            if found is not None:
+                return found
+    return None
+
+
+def _where(trail: tuple[object, ...]) -> str:
+    """`mcpServers.other.huge`, `servers.list[2]`: keys joined by `.`, indexes in brackets."""
+    out = ""
+    for segment in trail:
+        if isinstance(segment, int):
+            out += f"[{segment}]"
+        else:
+            out += f".{segment}" if out else segment
+    return out or "the top level"
+
+
+def _write_target(path: Path) -> Path:
+    """Where the bytes land: the file ITSELF, through any symlink (#136).
+
+    A dotfiles user keeps `~/.cursor/mcp.json` as a link into a repository. Writing a temp
+    file beside the LINK and renaming it onto the link's name replaces the link with a
+    detached regular file: the repository copy never gets the entry and the next sync reverts
+    it without a word. `os.path.realpath` is non-strict, so a link whose target does not exist
+    yet resolves to that target and the write creates it -- the link stays a link either way.
+    """
+    return Path(os.path.realpath(path))
+
+
 def _write_config(path: Path, data: dict) -> None:
-    """Write the whole object, atomically, leaving no half-file behind on a crash."""
+    """Write the whole object, atomically, leaving no half-file behind on a crash.
+
+    Atomic ONTO THE REAL FILE: the temp file is made beside `_write_target(path)` and replaced
+    onto it, so a symlinked config is written through rather than swapped for a regular file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".bantamkit-tmp")
+    target = _write_target(path)
+    if target != path:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".bantamkit-tmp")
     # The mode of the file being replaced, carried onto its replacement. A host config holds
     # API keys in per-server `env` blocks, and a user who chmod'ed theirs to 0600 had it come
     # back 0644 because a fresh temp file gets the process umask. Measured on both runtimes.
-    mode = path.stat().st_mode & 0o7777 if path.exists() else None
+    mode = target.stat().st_mode & 0o7777 if target.exists() else None
     # `ensure_ascii` is left at its DEFAULT, which escapes non-ASCII as `\uXXXX`. That is not
     # a style choice: `runtime-ts`'s `dumpJson` reproduces `json.dumps` including this, and a
     # home directory with a non-ASCII name — a Thai or Japanese Windows username, say — would
@@ -169,22 +230,45 @@ def _write_config(path: Path, data: dict) -> None:
         tmp.write_text(payload, encoding="utf-8")
         if mode is not None:
             os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        os.replace(tmp, target)
     except OSError as exc:
         tmp.unlink(missing_ok=True)
         raise InstallError(f"cannot write {path}: {exc}") from None
 
 
+def _backup_target(path: Path) -> Path:
+    """The name the next backup of `path` gets: the first one that is not taken.
+
+    `<name>.backup-<date>` when nothing holds that name, then `<name>.backup-<date>.1`,
+    `.2`, ... on the same day. The plan lines print this same name before the write, so
+    what the plan says and what the write does are one computation.
+    """
+    stamp = date.today().isoformat()
+    candidate = path.with_name(f"{path.name}.backup-{stamp}")
+    n = 0
+    while os.path.lexists(candidate):
+        n += 1
+        candidate = path.with_name(f"{path.name}.backup-{stamp}.{n}")
+    return candidate
+
+
 def _backup(path: Path) -> Path | None:
     """Copy the file aside before changing it. Returns the copy, or None if there was none.
 
-    Dated rather than numbered: a person looking at their own config directory a week later
-    can tell when it happened, and a second run on the same day overwrites the same name
-    rather than growing a pile nobody prunes.
+    Dated, so a person looking at their own config directory a week later can tell when it
+    happened -- and NEVER OVERWRITTEN (#138). Until job65 a second run on the same day wrote
+    the same `<name>.backup-<date>` on purpose, "rather than growing a pile nobody prunes";
+    the README's undo promise is that the backup restores the file as it was BEFORE bantamkit
+    touched it, and the second run was overwriting exactly that copy with the first run's
+    output. A pile of dated copies is the price of an undo that works; the counter suffix is
+    the price of keeping the documented name for the first one.
+
+    `shutil.copy2` follows a symlink on the source, so the copy holds the REAL file's bytes
+    and sits beside the path the report names.
     """
     if not path.exists():
         return None
-    backup = path.with_name(f"{path.name}.backup-{date.today().isoformat()}")
+    backup = _backup_target(path)
     try:
         shutil.copy2(path, backup)
     except OSError as exc:
@@ -503,6 +587,35 @@ def _is_ours(entry: object) -> bool:
     )
 
 
+def _is_our_hook(hook: object) -> bool:
+    """ONE inner hook object: ours by marker, or by one of the two legacy spellings."""
+    return isinstance(hook, dict) and (HOOK_MARKER_KEY in hook or _is_legacy_ours(hook))
+
+
+def _without_ours(entry: object) -> tuple[object | None, int]:
+    """`entry` with bantamkit's own command objects taken out, and how many came out.
+
+    THE UNIT OF OWNERSHIP IS THE COMMAND OBJECT, NOT THE MATCHER BLOCK (#129). `_is_ours`
+    answers "does this block hold one of ours", and dropping the whole block on that answer
+    deleted a user's `notify-send` that shared the block with ours -- after a plan that had
+    just promised their hooks were left byte for byte. So: a block that is not ours comes
+    back untouched (same object, nothing removed); a block that holds ours loses ONLY those
+    objects and keeps every other key it had; and a block left with no hooks at all is
+    `None`, because `{"matcher": ..., "hooks": []}` is an artefact nobody wrote.
+    """
+    if not _is_ours(entry):
+        return entry, 0
+    assert isinstance(entry, dict)
+    hooks = entry["hooks"]
+    kept = [hook for hook in hooks if not _is_our_hook(hook)]
+    removed = len(hooks) - len(kept)
+    if not kept:
+        return None, removed
+    trimmed = dict(entry)
+    trimmed["hooks"] = kept
+    return trimmed, removed
+
+
 def _read_hooks(path: Path, data: dict) -> dict[str, list]:
     """The `hooks` object, validated. Refuses by name rather than crashing on somebody's file."""
     raw = data.get("hooks")
@@ -522,23 +635,34 @@ def _read_hooks(path: Path, data: dict) -> dict[str, list]:
 
 def _planned_hooks(
     current: dict[str, list], command: str, remove: bool
-) -> tuple[dict[str, list], list[str]]:
-    """The `hooks` object this run wants, built from whatever is there now.
+) -> tuple[dict[str, list], list[str], int]:
+    """The `hooks` object this run wants, built from whatever is there now, the events that
+    change, and how many of OUR command objects came out.
 
     ONE PASS OVER THE SEVEN EVENTS AND NOTHING ELSE: every event keeps its non-bantamkit
-    entries in their existing order, ours is appended after them, and an event left with none
-    loses its key rather than holding an empty list — `install.mjs`'s rule, kept because a
-    settings file full of empty arrays is a worse artefact than one with nothing in it.
+    hooks in their existing order and their existing blocks, ours is appended after them,
+    and an event left with none loses its key rather than holding an empty list —
+    `install.mjs`'s rule, kept because a settings file full of empty arrays is a worse
+    artefact than one with nothing in it. A block is dropped only when taking ours out of it
+    leaves it empty (`_without_ours`).
 
     Events outside the seven are not read, not reordered and not removed.
     """
     hooks = dict(current)
     touched: list[str] = []
+    removed = 0
     for event, matcher in HOOK_EVENTS:
         before = hooks.get(event, [])
-        kept = [entry for entry in before if not _is_ours(entry)]
+        kept: list = []
+        removed_here = 0
+        for entry in before:
+            trimmed, count = _without_ours(entry)
+            removed_here += count
+            if trimmed is not None:
+                kept.append(trimmed)
+        removed += removed_here
         if remove:
-            if len(kept) != len(before):
+            if removed_here:
                 touched.append(event)
         else:
             kept.append(_hook_entry(matcher, command))
@@ -547,7 +671,7 @@ def _planned_hooks(
             hooks[event] = kept
         else:
             hooks.pop(event, None)
-    return hooks, touched
+    return hooks, touched, removed
 
 
 def _hook_plan(path: Path, command: str) -> str:
@@ -564,7 +688,7 @@ def _hook_plan(path: Path, command: str) -> str:
         f"  command: {command}",
     ]
     if path.exists():
-        lines.append(f"  backup : {path}.backup-{date.today().isoformat()}")
+        lines.append(f"  backup : {_backup_target(path)}")
     lines.append(
         "Existing hooks are left byte-for-byte; only bantamkit's own entries are replaced."
     )
@@ -589,7 +713,7 @@ def _removal_plan(path: Path, events: list[str], entries: int) -> str:
             [
                 f"bantamkit would remove {entries} hook entries from {path}",
                 f"  events : {' '.join(events)}",
-                f"  backup : {path}.backup-{date.today().isoformat()}",
+                f"  backup : {_backup_target(path)}",
                 "Existing hooks are left byte-for-byte; only bantamkit's own entries "
                 "are removed.",
             ]
@@ -627,7 +751,7 @@ def install_hooks(
     path = claude_settings_path()
     data = _read_config(path)
     current = _read_hooks(path, data)
-    hooks, _touched = _planned_hooks(current, rendered, remove=False)
+    hooks, _touched, _removed = _planned_hooks(current, rendered, remove=False)
 
     if json.dumps(hooks, sort_keys=True) == json.dumps(current, sort_keys=True):
         return f"bantamkit hooks are already installed in {path} and match"
@@ -690,14 +814,15 @@ def remove_hooks(
     path = claude_settings_path()
     data = _read_config(path)
     current = _read_hooks(path, data)
-    hooks, touched = _planned_hooks(current, "", remove=True)
+    hooks, touched, entries = _planned_hooks(current, "", remove=True)
 
     if not touched:
         return f"no bantamkit hooks are installed in {path}"
 
-    # Entries, not events: an event can hold more than one of ours if somebody hand-edited the
-    # file, and the plan has to say what is actually going.
-    entries = sum(len(current.get(event, [])) - len(hooks.get(event, [])) for event in touched)
+    # `entries` counts OUR COMMAND OBJECTS, not events and not matcher blocks: an event can
+    # hold more than one of ours if somebody hand-edited the file, and a block that also holds
+    # a user's hook stays while ours leaves it (#129) -- the plan has to say what is actually
+    # going.
 
     say = tell if tell is not None else (lambda _text: None)
     if not yes:

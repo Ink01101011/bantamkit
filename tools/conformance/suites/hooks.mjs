@@ -926,10 +926,18 @@ export async function run(ctx) {
     {
       const homes = seeded('consented');
       // THE BACKUP IS CHECKED BY ITS CONTENTS, NOT BY COUNTING FILES, and that took two tries.
-      // The seed takes a backup of its own, and the name is DATED — one file per day — so the
-      // removal's backup overwrites the seed's and the count never moves. A literal reading
-      // `backups: 1` was satisfied by a port with `backup()` deleted; so was `backupsAdded: 1`.
-      // What only a real backup can produce is the PRE-REMOVAL bytes, which is what is pinned.
+      // A literal reading `backups: 1` was satisfied by a port with `backup()` deleted; so was
+      // `backupsAdded: 1`. What only a real backup can produce is the PRE-REMOVAL bytes, which
+      // is what is pinned.
+      //
+      // AMENDED J65-18 (#138). This block used to read "the name is DATED — one file per day —
+      // so the removal's backup overwrites the seed's and the count never moves", and pinned
+      // `copies.length === 1`. That overwrite IS #138: the seed's backup held the file as it was
+      // before bantamkit touched it, and the removal's backup replaced it with the seed's own
+      // output, so the documented undo restored the wrong state. The issue outranks the pin
+      // (COMMON.md). Now the first backup keeps the documented name AND the pre-install bytes,
+      // the removal's gets `.1`, and both are pinned by CONTENT — the seed's text is known here.
+      const SEED_TEXT = `${JSON.stringify({ model: 'opus', hooks: { PreToolUse: [FOREIGN] } }, null, 2)}\n`;
       const before = { py: readFileSync(settings(homes.py), 'utf8'), node: readFileSync(settings(homes.node), 'utf8') };
       const py = runPy(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.py });
       const nd = runNode(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.node });
@@ -950,22 +958,30 @@ export async function run(ctx) {
       });
       const left = (side, h) => {
         const copies = backupsIn(h);
+        const read = (name) => readFileSync(join(h, '.claude', name), 'utf8');
         return {
           exit: 0,
           doc: JSON.parse(readFileSync(settings(h), 'utf8')),
-          backupHoldsThePreRemovalBytes:
-            copies.length === 1 && readFileSync(join(h, '.claude', copies[0]), 'utf8') === before[side],
+          backups: copies.map((name) => name.replace(/\d{4}-\d{2}-\d{2}/, '<DATE>')),
+          firstBackupStillHoldsThePreInstallBytes: copies.length > 0 && read(copies[0]) === SEED_TEXT,
+          aBackupHoldsThePreRemovalBytes: copies.some((name) => read(name) === before[side]),
         };
       };
       // PER SIDE: the foreign entry survived, the non-`hooks` key survived, an event left with
       // nothing lost its KEY rather than holding `[]`, and the dated backup was taken — the one
-      // thing that made 2026-09-20's damage recoverable.
+      // thing that made 2026-09-20's damage recoverable — WITHOUT overwriting the seed's (#138).
       cases.push(
         ...literalCases(
           { ...left('py', homes.py), exit: py.exit },
           { ...left('node', homes.node), exit: nd.exit },
           'remove-hooks-yes: only ours came out, and a backup was taken, against a literal',
-          { exit: 0, doc: { model: 'opus', hooks: { PreToolUse: [FOREIGN] } }, backupHoldsThePreRemovalBytes: true },
+          {
+            exit: 0,
+            doc: { model: 'opus', hooks: { PreToolUse: [FOREIGN] } },
+            backups: ['settings.json.backup-<DATE>', 'settings.json.backup-<DATE>.1'],
+            firstBackupStillHoldsThePreInstallBytes: true,
+            aBackupHoldsThePreRemovalBytes: true,
+          },
         ),
       );
     }
@@ -1010,6 +1026,71 @@ export async function run(ctx) {
             stderr: '',
             settingsByteIdentical: true,
             backupsAdded: 0,
+          },
+        ),
+      );
+    }
+
+    // --------------------- state 5 (J65-18, #129): a user's hook INSIDE one of our blocks
+    //
+    // `--install-hooks` writes `{matcher, hooks: [ours]}` blocks; a user who adds their own
+    // command to one of those blocks — the natural edit in `/hooks` — had it deleted by
+    // `--remove-hooks`, which decided ownership per BLOCK (any hook ours → the block goes) right
+    // after printing "Existing hooks are left byte-for-byte". Ownership is per COMMAND OBJECT
+    // now: ours leave, the user's stays, and the block stays with it. The seven-entries count
+    // on the plan's first line counts the objects that leave, so it is still 7 here.
+    {
+      const homes = seeded('shared-block');
+      const USER_HOOK = { type: 'command', command: 'notify-send user-hook' };
+      for (const side of ['py', 'node']) {
+        const doc = JSON.parse(readFileSync(settings(homes[side]), 'utf8'));
+        const block = doc.hooks.SessionStart[0];
+        if (!block.hooks.some((hook) => 'bantamkit' in hook)) {
+          throw new Error(`hooks/${id}/shared-block: the ${side} seed's SessionStart[0] is not ours: ${JSON.stringify(block)}`);
+        }
+        block.hooks.push({ ...USER_HOOK });
+        writeFile(settings(homes[side]), `${JSON.stringify(doc, null, 2)}\n`);
+      }
+      const py = runPy(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.py });
+      const nd = runNode(ctx, { argv: ['--remove-hooks', '--yes'], cwd, home: homes.node });
+      cases.push({
+        name: 'remove-hooks-shared-block: stdout, stderr and exit — the plan still counts 7 objects',
+        kind: 'json',
+        expected: { stdout: mask(py.stdout, homes.py), stderr: mask(py.stderr, homes.py), exit: py.exit },
+        actual: { stdout: mask(nd.stdout, homes.node), stderr: mask(nd.stderr, homes.node), exit: nd.exit },
+      });
+      cases.push({
+        name: 'remove-hooks-shared-block: the settings.json left behind, byte for byte',
+        kind: 'bytes',
+        expected: readFileSync(settings(homes.py), 'utf8'),
+        actual: readFileSync(settings(homes.node), 'utf8'),
+      });
+      const outcome = (side, r, h) => {
+        const doc = JSON.parse(readFileSync(settings(h), 'utf8'));
+        const hooks = Object.values(doc.hooks).flatMap((entries) => entries.flatMap((entry) => entry.hooks ?? []));
+        return {
+          exit: r.exit,
+          planFirstLine: mask(r.stderr, h).split('\n')[0],
+          userHookSurvives: hooks.some((hook) => hook.command === USER_HOOK.command),
+          markersLeft: hooks.filter((hook) => 'bantamkit' in hook).length,
+          sessionStart: doc.hooks.SessionStart,
+          foreignSurvives: JSON.stringify(doc.hooks.PreToolUse) === JSON.stringify([FOREIGN]),
+          events: Object.keys(doc.hooks),
+        };
+      };
+      cases.push(
+        ...literalCases(
+          outcome('py', py, homes.py),
+          outcome('node', nd, homes.node),
+          "remove-hooks-shared-block: the user's hook survived in its block and only ours left, against a literal",
+          {
+            exit: 0,
+            planFirstLine: 'bantamkit would remove 7 hook entries from <HOME>/.claude/settings.json',
+            userHookSurvives: true,
+            markersLeft: 0,
+            sessionStart: [{ matcher: 'startup|resume|clear|compact', hooks: [USER_HOOK] }],
+            foreignSurvives: true,
+            events: ['PreToolUse', 'SessionStart'],
           },
         ),
       );

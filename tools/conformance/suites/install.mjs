@@ -35,7 +35,8 @@
  * that reaches a case is the scratch directory the fixtures were built in, and that is
  * identical on both sides by construction.
  */
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -581,6 +582,270 @@ export async function run(ctx) {
   });
 
   // ------------------------------------------------------------------------------- notes
+
+  // =============================================== `--install cursor` OVER A HOST FILE (J65-18)
+  //
+  // #118, #136, #138: what the three file-writing hosts' writer does to SOMEBODY ELSE'S bytes.
+  // Driven as PROCESSES (`cli_ref.py` / `dist/cli.js`) into a throwaway HOME per side, the way
+  // `hooks.mjs` drives `--install-hooks`; the one ruled string — the recorded command, which
+  // names each runtime's own interpreter — is masked out of the written file before the bytes
+  // are compared, and everything the ruling does not license is pinned per side.
+  {
+    const CLI_REF = join(here, 'ref', 'cli_ref.py');
+    const CLI = join(ctx.runtimeTs, 'dist', 'cli.js');
+    const SCRUBBED = ['BANTAMKIT_MEMORY_DIR', 'BANTAMKIT_ASSETS', 'COLUMNS', 'LINES'];
+    const dec = (buf) => new TextDecoder('utf-8', { fatal: false }).decode(buf);
+    const unb64 = (b64) => Buffer.from(b64 ?? '', 'base64');
+    const runNode = ({ argv, cwd, home }) => {
+      const env = { ...process.env, HOME: home, USERPROFILE: home };
+      for (const key of SCRUBBED) delete env[key];
+      const r = spawnSync(process.execPath, [CLI, ...argv], { cwd, env, input: '', timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
+      if (r.error) throw r.error;
+      return { stdout: r.stdout, stderr: r.stderr, exit: r.status };
+    };
+    const runPy = ({ argv, cwd, home }) => {
+      const env = { HOME: home, USERPROFILE: home };
+      for (const key of SCRUBBED) env[key] = null;
+      const answer = ctx.runPython(CLI_REF, { argv, cwd, env, timeout: 120, stdin: '' });
+      if (answer.error) throw new Error(`cli_ref.py: ${answer.error}`);
+      return { stdout: unb64(answer.stdout), stderr: unb64(answer.stderr), exit: answer.exit };
+    };
+    const run = { py: runPy, node: runNode };
+    const hostRoot = join(root, 'host-file');
+    const cwd = join(hostRoot, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const homes = (id) => {
+      const out = { py: join(hostRoot, id, 'py'), node: join(hostRoot, id, 'node') };
+      for (const h of Object.values(out)) mkdirSync(join(h, '.cursor'), { recursive: true });
+      return out;
+    };
+    const config = (h) => join(h, '.cursor', 'mcp.json');
+    const seedBoth = (hs, text) => {
+      for (const h of Object.values(hs)) writeFileSync(config(h), text, 'utf8');
+    };
+    const mask = (text, h) => text.split(h).join('<HOME>');
+    /** The written file with the one ruled object — our own entry — replaced by a marker. */
+    const maskedDoc = (h) => {
+      const text = readFileSync(config(h), 'utf8');
+      const masked = text.replace(/    "bantamkit": \{\n[\s\S]*?\n    \}/, '    "bantamkit": <ENTRY>');
+      if (masked === text) throw new Error(`install/host-file: no bantamkit entry to mask in ${config(h)}:\n${text}`);
+      return masked;
+    };
+    const backupsIn = (h) => readdirSync(join(h, '.cursor')).filter((n) => n.includes('.backup-')).sort();
+    const dated = (name) => name.replace(/\d{4}-\d{2}-\d{2}/, '<DATE>');
+    /** THE REDIRECT, from the runtime's own report: nothing is read until it names the throwaway home. */
+    const assertRedirect = (id, side, r, h) => {
+      const text = dec(r.stdout) + dec(r.stderr);
+      if (!text.includes(h)) throw new Error(`install/${id}: the ${side} run did not name ${h}:\n${text}`);
+    };
+    const both = (id, hs, argv) => {
+      const out = {};
+      for (const side of ['py', 'node']) {
+        out[side] = run[side]({ argv, cwd, home: hs[side] });
+        assertRedirect(id, side, out[side], hs[side]);
+      }
+      return out;
+    };
+
+    // ---- #118: every foreign byte that is DATA comes back — big int, float spelling, key order
+    {
+      const id = 'install-foreign-bytes';
+      const hs = homes(id);
+      seedBoth(
+        hs,
+        '{"zzz": 1, "mcpServers": {"other": {"command": "x", "port": 12345678901234567890, "ratio": 1.0, "e": 1e5, "env": {"K": "ไทย 🎉"}}}, "9": "int-like key"}\n',
+      );
+      const r = both(id, hs, ['--install', 'cursor']);
+      cases.push({
+        name: 'install-foreign-bytes: the written mcp.json, byte for byte, with the ruled entry masked',
+        kind: 'bytes',
+        expected: maskedDoc(hs.py),
+        actual: maskedDoc(hs.node),
+      });
+      const kept = (h, exit) => {
+        const text = readFileSync(config(h), 'utf8');
+        let parses = true;
+        try {
+          JSON.parse(text);
+        } catch {
+          parses = false;
+        }
+        return {
+          exit,
+          parses,
+          bigInt: text.includes('"port": 12345678901234567890'),
+          floatSpelling: text.includes('"ratio": 1.0'),
+          exponentAsPythonSpellsIt: text.includes('"e": 100000.0'),
+          // Off the TEXT: `Object.keys(JSON.parse(...))` would itself put `"9"` first — the
+          // reordering this case exists to rule out — on both sides alike.
+          keyOrder: [...text.matchAll(/^ {2}"([^"]+)":/gm)].map((m) => m[1]),
+          backups: backupsIn(h).map(dated),
+        };
+      };
+      cases.push(
+        ...literalCases(kept(hs.py, r.py.exit), kept(hs.node, r.node.exit), 'install-foreign-bytes: numbers, key order and the backup, against a literal', {
+          exit: 0,
+          parses: true,
+          bigInt: true,
+          floatSpelling: true,
+          exponentAsPythonSpellsIt: true,
+          keyOrder: ['zzz', 'mcpServers', '9'],
+          backups: ['mcp.json.backup-<DATE>'],
+        }),
+      );
+    }
+
+    // ---- #118: a number JSON cannot carry is refused by name, and nothing is written
+    {
+      const id = 'install-non-finite';
+      const hs = homes(id);
+      const text = '{"mcpServers": {"other": {"command": "x", "huge": 1e400}}}\n';
+      seedBoth(hs, text);
+      const r = both(id, hs, ['--install', 'cursor']);
+      cases.push({
+        name: 'install-non-finite: the same refusal, on the same stream, with the same exit code',
+        kind: 'json',
+        expected: { stdout: mask(dec(r.py.stdout), hs.py), stderr: mask(dec(r.py.stderr), hs.py), exit: r.py.exit },
+        actual: { stdout: mask(dec(r.node.stdout), hs.node), stderr: mask(dec(r.node.stderr), hs.node), exit: r.node.exit },
+      });
+      const refused = (h, out) => ({
+        exit: out.exit,
+        stdout: dec(out.stdout),
+        stderr: mask(dec(out.stderr), h),
+        fileByteIdentical: readFileSync(config(h), 'utf8') === text,
+        backups: backupsIn(h),
+      });
+      cases.push(
+        ...literalCases(refused(hs.py, r.py), refused(hs.node, r.node), 'install-non-finite: it REFUSED by name and wrote nothing, against a literal', {
+          exit: 1,
+          stdout: '',
+          stderr: 'error: <HOME>/.cursor/mcp.json has a number at mcpServers.other.huge that JSON cannot carry (Infinity); refusing to touch it\n',
+          fileByteIdentical: true,
+          backups: [],
+        }),
+      );
+    }
+
+    // ---- #118: the parse error is CPython's sentence on BOTH sides now (the cli.mjs ruling retired)
+    {
+      const id = 'install-broken-json';
+      const hs = homes(id);
+      const text = '{ "mcpServers": { broken\n';
+      seedBoth(hs, text);
+      const r = both(id, hs, ['--install', 'cursor']);
+      const refused = (h, out) => ({
+        exit: out.exit,
+        stdout: dec(out.stdout),
+        stderr: mask(dec(out.stderr), h),
+        fileByteIdentical: readFileSync(config(h), 'utf8') === text,
+        backups: backupsIn(h),
+      });
+      cases.push(
+        ...literalCases(refused(hs.py, r.py), refused(hs.node, r.node), "install-broken-json: CPython's message, line and column, from both, against a literal", {
+          exit: 1,
+          stdout: '',
+          stderr:
+            'error: <HOME>/.cursor/mcp.json is not valid JSON, so this refuses to touch it: Expecting property name enclosed in double quotes (line 1, column 19)\n',
+          fileByteIdentical: true,
+          backups: [],
+        }),
+      );
+    }
+
+    // ---- #136: a symlinked host file is written THROUGH; the link stays a link
+    if (process.platform === 'win32') {
+      notes.push('install-symlink: NOT MEASURED HERE — symlinks need a privilege on Windows; the property is held by each runtime’s own suite where it can make one');
+    } else {
+      const id = 'install-symlink';
+      const hs = homes(id);
+      const original = '{"mcpServers": {}}\n';
+      const target = (h) => join(h, 'dotfiles', 'cursor.json');
+      for (const h of Object.values(hs)) {
+        mkdirSync(join(h, 'dotfiles'));
+        writeFileSync(target(h), original, 'utf8');
+        symlinkSync(target(h), config(h));
+      }
+      const r = both(id, hs, ['--install', 'cursor']);
+      cases.push({
+        name: 'install-symlink: the dotfiles target, byte for byte, with the ruled entry masked',
+        kind: 'bytes',
+        expected: maskedDoc(hs.py),
+        actual: maskedDoc(hs.node),
+      });
+      const through = (h, exit) => {
+        const copies = backupsIn(h);
+        return {
+          exit,
+          stillALink: lstatSync(config(h)).isSymbolicLink(),
+          targetHasTheEntry: 'bantamkit' in JSON.parse(readFileSync(target(h), 'utf8')).mcpServers,
+          noDetachedFileLeftBeside: !existsSync(`${config(h)}.bantamkit-tmp`),
+          backups: copies.map(dated),
+          backupIsARegularFileHoldingTheOriginal:
+            copies.length === 1 && !lstatSync(join(h, '.cursor', copies[0])).isSymbolicLink() && readFileSync(join(h, '.cursor', copies[0]), 'utf8') === original,
+        };
+      };
+      cases.push(
+        ...literalCases(through(hs.py, r.py.exit), through(hs.node, r.node.exit), 'install-symlink: written through, the link kept, against a literal', {
+          exit: 0,
+          stillALink: true,
+          targetHasTheEntry: true,
+          noDetachedFileLeftBeside: true,
+          backups: ['mcp.json.backup-<DATE>'],
+          backupIsARegularFileHoldingTheOriginal: true,
+        }),
+      );
+    }
+
+    // ---- #138: two writes on one day, two backups; the first still holds the original
+    {
+      const id = 'install-twice-same-day';
+      const hs = homes(id);
+      const original = '{"mcpServers": {"mine": {"command": "ORIGINAL"}}}\n';
+      seedBoth(hs, original);
+      both(`${id}/first`, hs, ['--install', 'cursor']);
+      const afterFirst = {};
+      for (const side of ['py', 'node']) {
+        // The user's same-day edit from the issue: the entry now differs, so `--force` writes.
+        const doc = JSON.parse(readFileSync(config(hs[side]), 'utf8'));
+        doc.mcpServers.bantamkit.args.push('--k', '4');
+        writeFileSync(config(hs[side]), JSON.stringify(doc), 'utf8');
+        afterFirst[side] = readFileSync(config(hs[side]), 'utf8');
+      }
+      const r = both(`${id}/second`, hs, ['--install', 'cursor', '--force']);
+      const maskStdout = (out, h) =>
+        mask(dec(out.stdout), h)
+          .split('\n')
+          .filter((line) => !line.startsWith('  command: '))
+          .join('\n');
+      cases.push({
+        name: 'install-twice-same-day: the second report, with the ruled command line removed',
+        kind: 'bytes',
+        expected: maskStdout(r.py, hs.py),
+        actual: maskStdout(r.node, hs.node),
+      });
+      const kept = (side, exit) => {
+        const h = hs[side];
+        const copies = backupsIn(h);
+        const read = (name) => readFileSync(join(h, '.cursor', name), 'utf8');
+        return {
+          exit,
+          backups: copies.map(dated),
+          firstBackupStillHoldsTheOriginal: copies.length > 0 && read(copies[0]) === original,
+          secondBackupHoldsTheFileBeforeTheSecondWrite: copies.length > 1 && read(copies[1]) === afterFirst[side],
+          reportNamesTheSecondBackup: mask(dec(r[side].stdout), h).includes('  backup : <HOME>/.cursor/mcp.json.backup-') && /\.backup-\d{4}-\d{2}-\d{2}\.1\n/.test(dec(r[side].stdout)),
+        };
+      };
+      cases.push(
+        ...literalCases(kept('py', r.py.exit), kept('node', r.node.exit), 'install-twice-same-day: the earlier backup was never overwritten, against a literal', {
+          exit: 0,
+          backups: ['mcp.json.backup-<DATE>', 'mcp.json.backup-<DATE>.1'],
+          firstBackupStillHoldsTheOriginal: true,
+          secondBackupHoldsTheFileBeforeTheSecondWrite: true,
+          reportNamesTheSecondBackup: true,
+        }),
+      );
+    }
+  }
 
   notes.push(
     `${scenarios.length} matched installs built under ${root}; every origin path is shared by the two halves, so every sentence is compared with its path in it`,

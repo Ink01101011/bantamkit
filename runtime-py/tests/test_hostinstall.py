@@ -8,6 +8,7 @@ nothing else, which is what makes the redirection total.
 
 import json
 import sys
+from datetime import date
 
 import pytest
 
@@ -373,3 +374,108 @@ def test_a_path_with_a_space_survives_on_windows(home, tmp_path, monkeypatch):
     hostinstall.install("claude", spaced, [])
 
     assert spaced in seen.read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------ job65: #118, #136, #138
+
+symlinks_need_a_privilege_on_windows = pytest.mark.skipif(
+    sys.platform == "win32", reason="os.symlink needs a privilege on Windows"
+)
+
+
+def test_118_foreign_numbers_and_key_order_survive_the_write(home):
+    """#118: every number and every key of somebody else's entry comes back as it went in."""
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '{"zzz": 1, "mcpServers": {"other": {"port": 12345678901234567890, "ratio": 1.0, '
+        '"e": 1e5}}, "9": "int-like key"}\n',
+        encoding="utf-8",
+    )
+
+    hostinstall.install("cursor", CMD, [])
+
+    text = path.read_text(encoding="utf-8")
+    assert '"port": 12345678901234567890' in text
+    assert '"ratio": 1.0' in text
+    assert '"e": 100000.0' in text
+    assert list(json.loads(text)) == ["zzz", "mcpServers", "9"]
+    assert json.loads(text)["mcpServers"]["bantamkit"]["command"] == CMD
+
+
+@pytest.mark.parametrize(
+    "literal, spelled",
+    [("1e400", "Infinity"), ("-1e400", "-Infinity"), ("NaN", "NaN"), ("Infinity", "Infinity")],
+)
+def test_118_a_number_json_cannot_carry_is_refused_and_the_file_is_untouched(
+    home, literal, spelled
+):
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    before = f'{{"mcpServers": {{"other": {{"command": "x", "huge": {literal}}}}}}}\n'.encode()
+    path.write_bytes(before)
+
+    with pytest.raises(hostinstall.InstallError) as caught:
+        hostinstall.install("cursor", CMD, [])
+
+    assert str(caught.value) == (
+        f"{path} has a number at mcpServers.other.huge that JSON cannot carry ({spelled}); "
+        "refusing to touch it"
+    )
+    assert path.read_bytes() == before
+    assert list(path.parent.glob("*.backup-*")) == []
+
+
+def test_118_a_non_finite_number_inside_a_list_is_named_by_index(home):
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_text('{"mcpServers": {}, "list": [0, [1e400]]}\n', encoding="utf-8")
+
+    with pytest.raises(hostinstall.InstallError) as caught:
+        hostinstall.install("cursor", CMD, [])
+
+    assert "has a number at list[1][0] that JSON cannot carry (Infinity)" in str(caught.value)
+
+
+@symlinks_need_a_privilege_on_windows
+def test_136_a_symlinked_config_is_written_through_and_stays_a_link(home):
+    dotfiles = home / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "cursor.json"
+    original = b'{"mcpServers": {}}\n'
+    target.write_bytes(original)
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.symlink_to(target)
+
+    report = hostinstall.install("cursor", CMD, [])
+
+    assert path.is_symlink(), "the link was replaced by a regular file"
+    assert json.loads(target.read_text(encoding="utf-8"))["mcpServers"]["bantamkit"] == {
+        "command": CMD,
+        "args": [],
+    }
+    assert f"  file   : {path}" in report
+    backups = list(path.parent.glob("*.backup-*"))
+    assert len(backups) == 1
+    assert not backups[0].is_symlink()
+    assert backups[0].read_bytes() == original
+
+
+def test_138_a_second_same_day_write_never_overwrites_the_earlier_backup(home):
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    original = b'{"mcpServers": {"mine": {"command": "ORIGINAL"}}}\n'
+    path.write_bytes(original)
+    stamp = date.today().isoformat()
+
+    first = hostinstall.install("cursor", CMD, [])
+    after_first = path.read_bytes()
+    second = hostinstall.install("cursor", "NEW", [], force=True)
+
+    names = sorted(p.name for p in path.parent.glob("*.backup-*"))
+    assert names == [f"mcp.json.backup-{stamp}", f"mcp.json.backup-{stamp}.1"]
+    assert (path.parent / names[0]).read_bytes() == original
+    assert (path.parent / names[1]).read_bytes() == after_first
+    assert f"  backup : {path}.backup-{stamp}\n" in first + "\n"
+    assert f"  backup : {path}.backup-{stamp}.1" in second

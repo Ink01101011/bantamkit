@@ -117,7 +117,15 @@ even created:
 `UserPromptSubmit`, `PreCompact`, `PostCompact`, `Stop`, in that order, which is the order
 they take on disk — each with `timeout: 10`, each naming **one** command, because the event
 arrives on stdin and never in argv. Existing hooks are left byte for byte; only entries
-naming bantamkit are replaced. The command is the interpreter and entry point of the install
+naming bantamkit are replaced — and since job65 (#129) "entry" means bantamkit's own
+**command object**, not the matcher block around it: a command you added to one of our
+`{matcher, hooks: [...]}` blocks stays in that block through a re-install and through
+`--remove-hooks`, and a block is dropped only when taking ours out leaves it empty. (The
+file is re-serialised by the same writer as `--install`: key order, big integers and the
+int/float split of every number survive, non-ASCII is `\uXXXX`-escaped so both runtimes
+write the same bytes, and a number JSON cannot carry — `1e400`, `NaN` — is refused by name
+before anything is written; see `install.md`, *Connect to a host*.) The command is the
+interpreter and entry point of the install
 that should run, by absolute path, so it differs per runtime and is meant to:
 `<absolute node> <absolute dist/cli.js> --hook` on the port,
 `<absolute python> -m bantamkit.mcpserver --hook` on the reference. That is a ruled divergence
@@ -183,11 +191,20 @@ removal copies the file to `<path>.backup-<YYYY-MM-DD>` before it writes. That c
 only reason the un-gated removal of 2026-09-20 could be undone: the repaired
 `~/.claude/settings.json` is byte-identical to `~/.claude/settings.json.backup-2026-09-20`.
 Measured 2026-09-21 on both runtimes, the backup holds the PRE-REMOVAL bytes exactly — sha256
-of the backup equals sha256 of the file as it stood before the removal ran. **It is one file
-per day**, so a second removal on the same day overwrites the first copy instead of adding
-one. That is why a COUNT of backup files is not evidence that a backup was taken: J62-20
-measured both `backups: 1` and `backupsAdded: 1` surviving the backup being deleted outright,
-and the conformance case therefore pins the backup's CONTENTS.
+of the backup equals sha256 of the file as it stood before the removal ran. **A backup is
+never overwritten** (job65, #138): the first write of a day takes `<path>.backup-<YYYY-MM-DD>`,
+the next ones on the same day take `<path>.backup-<YYYY-MM-DD>.1`, `.2`, … — the first free
+name — and the plan's `backup :` line names the one the write will use. Until job65 it was one
+file per day on purpose ("rather than growing a pile nobody prunes"), which meant an install
+and a removal on one day left a single copy holding the install's OUTPUT, so the documented
+undo restored the wrong state; the issue outranked that pin. A COUNT of backup files is still
+not evidence that a backup was taken: J62-20 measured both `backups: 1` and `backupsAdded: 1`
+surviving the backup being deleted outright, and the conformance case therefore pins each
+backup's CONTENTS — the first still holds the pre-install bytes, the second the pre-removal
+bytes (`remove-hooks-yes: only ours came out, and a backup was taken, against a literal`).
+The file is written THROUGH a symlink (#136): `~/.claude/settings.json` kept as a link into a
+dotfiles directory stays a link and the target gets the entries; the backup is a regular file
+beside the link.
 
 **The gate.** `node tools/conformance/run.mjs --suite hooks` prints **81 cases, 7
 ruled-different, 0 failures** (2026-09-21; it printed 69 when this paragraph was written and
