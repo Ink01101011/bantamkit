@@ -80,17 +80,47 @@ export function shlexJoin(command: readonly string[]): string {
  * batch file without a shell. Arguments are quoted because `cmd.exe` gets a string.
  */
 export function runInstaller(command: readonly string[]): [number, string] {
-  const [program, ...args] = command;
-  const win = process.platform === 'win32';
-  const quoted = win ? args.map((a) => (/[\s"^&|<>]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : args;
-  const done = spawnSync(program ?? '', quoted, { encoding: 'utf8', shell: win });
+  const done = spawnCommand(command);
   if (done.error) {
     // A missing `npm` is not a stack trace: it is a command that failed, and `COMMAND_FAILED`
     // is the sentence that says so and hands back what went wrong. 127 is the shell's own
     // code for "command not found", so the number means something to the person reading it.
     return [127, done.error.message];
   }
-  return [done.status ?? 1, `${done.stdout ?? ''}${done.stderr ?? ''}`];
+  return [done.status ?? 1, `${done.stdout}${done.stderr}`];
+}
+
+/** What one spawned command came back with: both streams apart, the status, and any spawn error. */
+export interface Spawned {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly error: (Error & { code?: string }) | null;
+}
+
+/**
+ * One argv, spawned and captured, with the Windows shim handling `runInstaller` established
+ * (J65-19 moved it here so `--update`'s version check could spawn npm through the same rule).
+ *
+ * `timeoutMs` is `spawnSync`'s own deadline: the child is killed when it passes, and the result
+ * carries an `error` whose `code` is `ETIMEDOUT` — the one fact `selfupdate.fetchIndex` turns
+ * into its timeout refusal. No deadline when it is omitted, which is what an installer gets.
+ */
+export function spawnCommand(command: readonly string[], timeoutMs?: number): Spawned {
+  const [program, ...args] = command;
+  const win = process.platform === 'win32';
+  const quoted = win ? args.map((a) => (/[\s"^&|<>]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : args;
+  const done = spawnSync(program ?? '', quoted, {
+    encoding: 'utf8',
+    shell: win,
+    ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+  });
+  return {
+    status: done.status,
+    stdout: done.stdout ?? '',
+    stderr: done.stderr ?? '',
+    error: done.error ?? null,
+  };
 }
 
 /**

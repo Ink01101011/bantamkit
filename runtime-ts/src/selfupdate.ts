@@ -11,13 +11,20 @@
  * EXACTLY THREE THINGS DIFFER FROM THE REFERENCE, and each is a genuinely different object
  * rather than a different spelling of one object:
  *
- *   1. THE URL AND THE JSON PATH. PyPI answers `pypi.org/pypi/bantamkit/json` and the version
- *      sits at `info.version`; the npm registry answers `registry.npmjs.org/bantamkit-mcp/
- *      latest` and it sits at the top level as `version`. Measured 2026-09-11 against the real
- *      registry: the `/latest` document is the manifest of the `latest` dist-tag, 26 keys, and
- *      `version` is `0.30.0`.
- *   2. THE COMMAND. `pip install --upgrade` there; `npm install` here, and WHICH `npm install`
- *      is a measured question — see `upgradeCommand`.
+ *   1. THE QUESTION ASKED OF THE INDEX, AND THE JSON PATH. Until J65-19 (#135) each runtime
+ *      fetched one hard-coded URL itself — `pypi.org/pypi/bantamkit/json` with the version at
+ *      `info.version`, `registry.npmjs.org/bantamkit-mcp/latest` with it at the top level —
+ *      so `npm_config_registry`, `.npmrc` and a mandatory proxy were honoured by the
+ *      `npm install` this flag then ran and ignored by the version check in front of it.
+ *      Now each side asks ITS OWN PACKAGE MANAGER what the index holds, under whatever
+ *      registry, proxy and auth config that manager already reads: `npm view bantamkit-mcp@latest
+ *      --json` here (the manifest of the `latest` dist-tag, `version` at the top level;
+ *      measured against a loopback registry, `test/selfupdate.test.mjs`), and a `pip install
+ *      --dry-run --report -` there (the version at `install[0].metadata.version`). See
+ *      `indexCommand` and `fetchIndex`.
+ *   2. THE COMMAND. `pip install --upgrade bantamkit==<latest>` there; `npm install
+ *      bantamkit-mcp@<latest>` here, and WHICH `npm install` is a measured question — see
+ *      `upgradeCommand`. Both name the version they compared (J65-19, #128), never `latest`.
  *   3. THE FOUR `ROUTES` SENTENCES, which name those commands and the things they update.
  *      `ephemeral`'s is not a translation of the reference's and must not be made into one:
  *      see the note on that row.
@@ -45,7 +52,16 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
-import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
+import {
+  compareVersions,
+  keptCli,
+  keptManifest,
+  keptPrefix,
+  PACKAGE,
+  runInstaller,
+  shlexJoin,
+  spawnCommand,
+} from './npminstall.js';
 import { KEY as RECORD_KEY, loadRecord, recordPath, SOURCE_RECORD } from './updatecheck.js';
 
 // `PACKAGE`, `shlexJoin` and `runInstaller` moved to `npminstall.ts` in job51 so `--install` can
@@ -63,13 +79,39 @@ export { compareVersions, PACKAGE, runInstaller, shlexJoin };
 export const PROGRAM = 'bantamkit-mcp';
 
 /**
- * The one URL this toolbox ever fetches. Divergent by construction (`INDEX_URL`).
+ * The command that asks the index what `latest` is — npm itself, never a URL of this module's
+ * own. Divergent by construction (the reference asks pip).
  *
- * `/latest` and not the full packument: the packument carries every version ever published and
- * grows without bound, and the question here is one string. Measured 2026-09-11 — this document
- * is 26 keys and carries `version` at the top level.
+ * WHY npm AND NOT `fetch` (J65-19, #135). The version check and the `npm install` that follows
+ * it must agree about WHICH registry they mean, and only npm knows: `npm_config_registry`, the
+ * project and user `.npmrc`, `proxy`/`https-proxy` and the `HTTPS_PROXY` environment, auth
+ * tokens for a private mirror, `strict-ssl`, `cafile`. Measured 2026-10-13 (#135): with
+ * `npm_config_registry=http://127.0.0.1:4873/` and `~/.npmrc registry=` set, the old `fetch`
+ * still asked `https://registry.npmjs.org/bantamkit-mcp/latest`. Node's own `fetch` cannot
+ * even honour `HTTPS_PROXY` without a dependency this toolbox refuses to add, so reading the
+ * registry out of npm's config and fetching it here would have fixed half the report.
+ *
+ * `@latest` resolved by npm, `--json` so the answer is the manifest of that dist-tag with
+ * `version` at the top level — the same document shape the old URL answered, measured against
+ * a loopback registry in `test/selfupdate.test.mjs`, so `latestFromIndexPayload` is unchanged.
+ * `--fetch-retries=0` because a registry that refuses the connection takes npm 70 seconds
+ * under its default retry schedule (measured, npm 11.6.2), which is seven times this flag's
+ * deadline: the operator would read "did not answer within 10 seconds" where the truth is
+ * `ECONNREFUSED`, and that truth is what `UNREACHABLE` is for.
+ *
+ * `--prefix` / `--global` MIRROR `upgradeCommand` EXACTLY, because npm reads the project
+ * `.npmrc` relative to the prefix it is given: a `view` asked from the operator's cwd and an
+ * `install` pointed at the kept tree could read two different `registry=` lines, which is the
+ * disagreement #135 is about.
  */
-export const INDEX_URL = `https://registry.npmjs.org/${PACKAGE}/latest`;
+export function indexCommand(environment: Environment): string[] {
+  return ['npm', 'view', ...npmLocation(environment), `${PACKAGE}@latest`, '--json', '--fetch-retries=0'];
+}
+
+/** The two words that point npm at the tree `--update` is about: `--global`, or `--prefix <root>`. */
+function npmLocation(environment: Environment): string[] {
+  return environment.global ? ['--global'] : ['--prefix', environment.root];
+}
 
 /**
  * Explicit, and short enough that a person who typed the flag does not think it hung.
@@ -124,9 +166,14 @@ export const RESTART =
 // J46-4 defect. Exit 1 and not 2, because argparse already owns 2 for a usage error and
 // `--update` is not one.
 
+/**
+ * `{article}` is `a` or `an` by the shape word's first letter (`article`): "a ephemeral
+ * install" shipped in every release up to 0.35.7 (#177), because the template carried the
+ * article and the shape was substituted after it.
+ */
 export const NO_ROUTE =
-  '{program} {installed} is installed and the package index has {latest}, but this is a ' +
-  '{shape} install, which --update will not touch. {route}';
+  '{program} {installed} is installed and the package index has {latest}, but this is ' +
+  '{article} {shape} install, which --update will not touch. {route}';
 
 export const TIMED_OUT =
   'the package index did not answer within {timeout} seconds; --update needs the network, ' +
@@ -151,6 +198,24 @@ export const COMMAND_FAILED =
   '{output}';
 
 /**
+ * The installer exited 0 and the install does not report the version it was told to install
+ * (J65-19, #128). The same shape as `COMMAND_FAILED` — the command on line 1, the installer's
+ * own words last — because it is the same kind of failure read off the disk instead of off
+ * the exit code. Measured 2026-10-13 (#128): with the index stubbed to 9.9.9 and an `npm`
+ * that recorded its argv and changed nothing, 0.35.7 printed `updated bantamkit-mcp from 0.35.7
+ * to 9.9.9.` and exited 0 with 0.35.7 still on disk. `{found}` is the version the manifest
+ * reports now, or `NO_INSTALLED_VERSION` when there is no readable manifest at all.
+ */
+export const NOT_INSTALLED =
+  'the update command exited 0 but did not install {latest}: {command}\n' +
+  '{program} now reports {found}, not {latest}; the tree the command names did not take the update.\n' +
+  '{printed}\n' +
+  '{output}';
+
+/** What `{found}` reads when no manifest could be read back after the installer ran. */
+export const NO_INSTALLED_VERSION = 'no readable version';
+
+/**
  * The install shape itself could not be derived — `identity.Undetermined`, which is what an
  * origin that is neither an index nor a path on this machine raises (`git+https://…`). That
  * exception already carries the operator's next step, so this sentence quotes it rather than
@@ -173,7 +238,16 @@ export const NO_VERSION_FIELD = 'the response carries no version string';
  * sixth word. Not divergent: it names no package manager, so it is the reference's sentence.
  */
 export const NO_RECORDED_ROUTE =
-  'There is no recorded update route for a {shape} install, so --update will not guess one.';
+  'There is no recorded update route for {article} {shape} install, so --update will not guess one.';
+
+/**
+ * `a` or `an` for the word that follows, by its first letter — the rule English applies to
+ * `ephemeral` and the reference's `_article` applies byte for byte. A letter test and not a
+ * table, because `INSTALL_SHAPES` can grow a word this file has never seen.
+ */
+export function article(word: string): string {
+  return /^[aeiou]/i.test(word) ? 'an' : 'a';
+}
 
 /**
  * Per shape, what the real update route is — the answer to "then how DO I update this?".
@@ -288,6 +362,13 @@ export interface Origin {
 export interface Environment {
   readonly root: string;
   readonly global: boolean;
+  /**
+   * Whether the prefix tree's own `package.json` pins this package EXACTLY (`"0.35.7"`, not
+   * `"^0.35.7"`). npm rewrites an exact pin to a caret range on `npm install <pkg>@<v>` unless
+   * told `--save-exact` (observed in #128), so `upgradeCommand` carries the flag when the pin
+   * was exact and the operator's record keeps its shape. Absent or `false` otherwise.
+   */
+  readonly exact?: boolean;
 }
 
 export function installEnvironment(
@@ -298,16 +379,68 @@ export function installEnvironment(
     if (basename(here) === 'node_modules') {
       const root = dirname(here);
       let owned = false;
+      let exact = false;
       try {
-        readFileSync(join(root, 'package.json'));
+        const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as unknown;
         owned = true;
+        exact = pinsExactly(manifest);
       } catch {
         owned = false;
       }
-      return { root, global: !owned };
+      return { root, global: !owned, exact };
     }
     const parent = dirname(here);
-    if (parent === here) return { root: '', global: true };
+    if (parent === here) return { root: '', global: true, exact: false };
+    here = parent;
+  }
+}
+
+/** Does this manifest pin `PACKAGE` to one version — a spec starting with a digit — in any dependency table? */
+function pinsExactly(manifest: unknown): boolean {
+  if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) return false;
+  for (const table of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+    const deps = (manifest as Record<string, unknown>)[table];
+    if (typeof deps !== 'object' || deps === null) continue;
+    const spec = (deps as Record<string, unknown>)[PACKAGE];
+    if (typeof spec === 'string' && /^\d/.test(spec.trim())) return true;
+  }
+  return false;
+}
+
+/**
+ * The version the tree `--update` just pointed npm at reports NOW, read off its manifest, or
+ * `null` when there is no readable one. The default `installedVersion` seam (J65-19, #128):
+ * what the success line is allowed to say is what this returns, never what the index said.
+ */
+export function readInstalledVersion(environment: Environment): string | null {
+  if (environment.root === '') return null;
+  try {
+    const manifest = JSON.parse(
+      readFileSync(join(environment.root, 'node_modules', PACKAGE, 'package.json'), 'utf8'),
+    ) as { version?: unknown };
+    return typeof manifest.version === 'string' && manifest.version.trim() !== '' ? manifest.version.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The package root above a running `dist/` — the directory whose `package.json` is the one this
+ * build reads its version from — or `packageDirectory` itself when no manifest sits above it.
+ * The `checkout` route names "a source tree", and `<tree>/dist` is that tree's build output, not
+ * the tree (#177): `cli.ts` hands in `dirname(import.meta.url)`, which is `dist/`.
+ */
+export function packageRoot(packageDirectory: string): string {
+  let here = resolve(packageDirectory);
+  for (;;) {
+    try {
+      readFileSync(join(here, 'package.json'));
+      return here;
+    } catch {
+      /* not here; look one level up */
+    }
+    const parent = dirname(here);
+    if (parent === here) return packageDirectory;
     here = parent;
   }
 }
@@ -355,59 +488,56 @@ export function latestFromIndexPayload(text: string): string {
   return version;
 }
 
-/** The User-Agent's version half, or nothing. A header, never an output — never a refusal. */
-function packageVersion(): string {
-  try {
-    const manifest = JSON.parse(
-      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-    ) as { version?: unknown };
-    return typeof manifest.version === 'string' ? manifest.version : '0';
-  } catch {
-    return '0';
-  }
-}
-
 /**
- * The ONLY network call in this runtime. One request, one timeout, two failure words.
+ * The ONLY path to the network in this runtime, and it goes through npm. One command, one
+ * deadline, two failure words.
  *
- * THE PLATFORM'S `fetch`, NOT A DEPENDENCY. `package.json` declares exactly one runtime
- * dependency and the pure-node `npx` install is a standing ruling, so the HTTP client is the
- * one Node ships (>= 18, and `engines` already requires >= 20) and the deadline is
- * `AbortSignal.timeout`, which is the same object the abort arrives as.
+ * NOT THE PLATFORM'S `fetch` ANY MORE (J65-19, #135): see `indexCommand` for why the question
+ * is asked of npm. No new dependency either — `spawnCommand` is the spawner `--install` and the
+ * installer below already use. The deadline is `spawnSync`'s own `timeout`: npm is killed when
+ * it passes and the result carries `ETIMEDOUT`, which is the one fact that becomes
+ * `IndexTimeout`. Measured in `test/selfupdate.test.mjs` with a command that sleeps.
  *
- * THE CONTRACT WITH `update` IS THE EXCEPTION TYPE — see `IndexTimeout`. Measured on Node
- * v25.2.1 against a local socket that accepts and never answers: the rejection is a
- * `DOMException` named `TimeoutError`. Everything else is a `TypeError: fetch failed` whose
- * `cause` carries the sentence worth printing — `connect ECONNREFUSED 127.0.0.1:49999`,
- * `getaddrinfo ENOTFOUND …` — so the cause's message is what `UNREACHABLE` interpolates and
- * the bare "fetch failed" never reaches an operator.
+ * THE CONTRACT WITH `update` IS THE EXCEPTION TYPE — see `IndexTimeout`. Everything that is
+ * not the deadline is a plain `Error` whose message is the sentence worth printing: with
+ * `--json`, npm writes its failure to STDOUT as `{"error": {"code", "summary", "detail"}}`
+ * (measured, npm 11.6.2: `E404` for a package the mirror does not carry, `ECONNREFUSED` with
+ * `request to http://127.0.0.1:1/bantamkit-mcp failed, reason: connect ECONNREFUSED` for a
+ * dead one), so `summary` is taken first — it names the URL npm actually asked, which is the
+ * configured registry and the thing an operator behind a mirror needs to see — then `code`,
+ * then the first line npm wrote to stderr, then the bare exit status. A missing `npm` is the
+ * spawn error's own message (`spawnSync npm ENOENT`).
  *
- * A non-2xx is an `Error` and not a timeout, the way the reference turns `HTTPError` into a
- * plain `OSError`; and the body is decoded leniently, because a body that is not UTF-8 is not
- * a version either and should be refused BY NAME in `latestFromIndexPayload`.
+ * Nothing here parses a version: a body that is not the manifest is not a version either and
+ * is refused BY NAME in `latestFromIndexPayload`, through the real parser.
  */
 export async function fetchIndex(
-  url: string = INDEX_URL,
+  command: readonly string[],
   timeout: number = DEFAULT_TIMEOUT_SECONDS,
 ): Promise<string> {
-  const deadline = AbortSignal.timeout(Math.max(1, Math.round(timeout * 1000)));
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json', 'User-Agent': `${PROGRAM}/${packageVersion()}` },
-      signal: deadline,
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}`.trimEnd());
-    }
-    const raw = await response.arrayBuffer();
-    return new TextDecoder('utf-8').decode(raw);
-  } catch (e) {
-    if (e instanceof IndexTimeout) throw e;
-    if (e instanceof Error && e.name === 'TimeoutError') throw new IndexTimeout(e.message);
-    const cause = (e as { cause?: unknown }).cause;
-    const detail = cause instanceof Error && cause.message !== '' ? cause.message : null;
-    throw new Error(detail ?? (e instanceof Error ? e.message : String(e)));
+  const done = spawnCommand(command, Math.max(1, Math.round(timeout * 1000)));
+  if (done.error !== null) {
+    if (done.error.code === 'ETIMEDOUT') throw new IndexTimeout(done.error.message);
+    throw new Error(done.error.message);
   }
+  if (done.status !== 0) throw new Error(npmFailureReason(done));
+  return done.stdout;
+}
+
+/** The one line of an npm failure worth printing, in the order `fetchIndex`'s docstring gives. */
+function npmFailureReason(done: { status: number | null; stdout: string; stderr: string }): string {
+  try {
+    const parsed = JSON.parse(done.stdout) as { error?: { code?: unknown; summary?: unknown } };
+    const error = parsed?.error;
+    if (typeof error === 'object' && error !== null) {
+      if (typeof error.summary === 'string' && error.summary.trim() !== '') return error.summary.trim();
+      if (typeof error.code === 'string' && error.code.trim() !== '') return error.code.trim();
+    }
+  } catch {
+    /* not npm's JSON error shape; fall through to stderr */
+  }
+  const line = done.stderr.split('\n').map((l) => l.trim()).find((l) => l !== '');
+  return line ?? `exit ${done.status ?? 'unknown'}`;
 }
 
 /**
@@ -422,14 +552,22 @@ export async function fetchIndex(
  * no `package.json` beside `node_modules`, `npm install --prefix` prunes every sibling package.
  * Both arms are the rows `README.md#updating` already documents.
  *
- * `@latest` IS NOT DECORATION. `npm install <pkg>` in a tree that already declares `<pkg>`
- * satisfies the existing range rather than moving it, which is a command that exits 0 having
- * changed nothing — the J46-4 defect, arrived at through npm's semantics rather than through
- * this code's.
+ * `@<latest>` AND NOT `@latest` (J65-19, #128). A bare `npm install <pkg>` in a tree that
+ * already declares `<pkg>` satisfies the existing range rather than moving it — a command that
+ * exits 0 having changed nothing, the J46-4 defect through npm's semantics. `@latest` fixed that
+ * and left a second hole: npm resolves the dist-tag AGAIN, at install time, against whatever
+ * registry it is configured for, so a mirror behind the index, or a tag moved between the two
+ * calls, installs something other than the version line 1 of the report compared — and the
+ * success line was printed from the compared number regardless. The spec now names the version
+ * this flag compared, and `update` reads the manifest back before it says `updated`.
+ *
+ * `--save-exact` WHEN THE PIN WAS EXACT: npm rewrites `"0.35.7"` to `"^0.35.7"` on this
+ * command unless told otherwise (observed in #128), and an operator who pinned exactly did so
+ * on purpose. The kept install `--install` makes carries npm's own caret, so it keeps it.
  */
-export function upgradeCommand(environment: Environment): string[] {
-  if (environment.global) return ['npm', 'install', '--global', `${PACKAGE}@latest`];
-  return ['npm', 'install', '--prefix', environment.root, `${PACKAGE}@latest`];
+export function upgradeCommand(environment: Environment, latest: string): string[] {
+  const exact = environment.exact === true && !environment.global ? ['--save-exact'] : [];
+  return ['npm', 'install', ...npmLocation(environment), ...exact, `${PACKAGE}@${latest}`];
 }
 
 
@@ -446,9 +584,15 @@ export function seconds(timeout: number): string {
 }
 
 export interface UpdateOptions {
-  readonly fetch?: (url: string, timeout: number) => Promise<string> | string;
+  /** The index request: handed the command `indexCommand` built and the timeout, answers the body. */
+  readonly fetch?: (command: string[], timeout: number) => Promise<string> | string;
   readonly installer?: (command: string[]) => [number, string];
-  readonly url?: string;
+  /**
+   * What the tree reports AFTER the installer exited 0 — `readInstalledVersion` by default. A
+   * seam so a test can hand in the manifest npm would have written without an npm, and the
+   * `--update` conformance arms can drive the verify failure on both runtimes.
+   */
+  readonly installedVersion?: (environment: Environment) => string | null;
   readonly timeout?: number;
   readonly environment?: Environment;
   /**
@@ -585,13 +729,13 @@ export async function update(
 ): Promise<string> {
   const ask = options.fetch ?? fetchIndex;
   const installer = options.installer ?? runInstaller;
-  const url = options.url ?? INDEX_URL;
+  const installedVersion = options.installedVersion ?? readInstalledVersion;
   const timeout = options.timeout ?? DEFAULT_TIMEOUT_SECONDS;
   const environment = options.environment ?? installEnvironment();
 
   let body: string;
   try {
-    body = await ask(url, timeout);
+    body = await ask(indexCommand(environment), timeout);
   } catch (e) {
     // ORDER IS LOAD-BEARING: `IndexTimeout` IS an `Error`, exactly as `TimeoutError` IS an
     // `OSError` in the reference. Swap these two and every timeout reads as "could not be
@@ -618,7 +762,7 @@ export async function update(
   if (order === 0) return `${header}\n${UP_TO_DATE}`;
   if (order > 0) return `${header}\n${AHEAD}`;
 
-  const command = upgradeCommand(environment);
+  const command = upgradeCommand(environment, latest);
   const rendered = shlexJoin(command);
 
   if (origin.shape !== 'registry') {
@@ -631,6 +775,7 @@ export async function update(
         program: PROGRAM,
         installed,
         latest,
+        article: article(origin.shape),
         shape: origin.shape,
         route: fill(route, {
           source: origin.source,
@@ -638,6 +783,7 @@ export async function update(
           command: rendered,
           installed,
           latest,
+          article: article(origin.shape),
           shape: origin.shape,
         }),
       }),
@@ -653,6 +799,25 @@ export async function update(
         command: rendered,
         program: PROGRAM,
         installed,
+        printed: PRINTED,
+        output: printed,
+      }),
+    );
+  }
+  // THE SUCCESS LINE IS READ OFF THE DISK, NOT OFF THE INDEX (J65-19, #128). An installer that
+  // exited 0 has said nothing about which version it left behind: npm resolves its own spec,
+  // against its own registry, and `npm install` in a tree that already satisfies the range is
+  // a no-op that exits 0. So the tree's manifest is read back and compared with the version
+  // this flag compared, by the same comparator — `0.30` and `0.30.0` are one release — and a
+  // mismatch, or no readable manifest at all, is a refusal carrying the installer's words.
+  const found = installedVersion(environment);
+  if (found === null || compareVersions(found, latest) !== 0) {
+    throw new UpdateRefused(
+      fill(NOT_INSTALLED, {
+        latest,
+        command: rendered,
+        program: PROGRAM,
+        found: found ?? NO_INSTALLED_VERSION,
         printed: PRINTED,
         output: printed,
       }),
@@ -714,9 +879,11 @@ export async function runUpdate(
   }
   // `source` is `null` for the shapes that HAVE no recorded origin rather than for one whose
   // path could not be read — `registry`, where the route is this flag itself, and `checkout`,
-  // whose tree IS the thing to update. The running package directory is not a guess: it is
-  // where the code being executed lives, and it is the tree the route says to `git pull`.
-  let origin: Origin = { shape, source: recorded ?? packageDirectory };
+  // whose tree IS the thing to update. The running package's ROOT is not a guess: it is the
+  // directory whose manifest this build reads its version from, and it is the tree the route
+  // says to `git pull`. `packageDirectory` itself is `dist/` — the build output the route says
+  // a pull alone does not change — which is why it is walked up from (#177).
+  let origin: Origin = { shape, source: recorded ?? packageRoot(packageDirectory) };
   let current = installed;
   let chosen = options;
   // J51-5: an `npx` cache WITH a kept install updates the kept install — its version is the one

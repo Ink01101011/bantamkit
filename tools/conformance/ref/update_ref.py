@@ -2,17 +2,25 @@
 
 WHY THIS IS NOT `cli_ref.py`. The `cli` suite compares two PROCESSES, and every other argv
 line it drives is decided entirely by bytes the harness controls. `--update` is not: the
-answer depends on what a package index says, and there is no environment variable on either
-runtime that redirects the lookup. There is deliberately no such variable — an env var that
-repoints an updater's registry is a real surface with a real hazard, and inventing one so a
-test could reach it would be building a product feature for the gate.
+answer depends on what a package index says. Until J65-19 there was no environment variable
+on either runtime that redirected the lookup, deliberately — an env var that repoints an
+updater's registry is a real surface with a real hazard, and inventing one so a test could
+reach it would have been building a product feature for the gate. SINCE J65-19 (#135) each
+runtime asks its own package manager, so the package manager's OWN config (`PIP_INDEX_URL`,
+`npm_config_registry`, `.npmrc`, `pip.conf`) redirects the lookup — the same config the
+install that follows has always honoured — and the `cli` suite now ALSO drives both flags as
+real processes with the package manager stubbed (`update-registry/…`). This script keeps
+the in-process half.
 
-So this reaches the two seams the implementers built INTO the flag instead: `fetch` and
-`installer`, both keyword arguments of `selfupdate.update` with real defaults. Every arm
-below is therefore reachable with NO NETWORK and with NO INSTALLER EVER RUN — the command
-is captured and handed back as data, which is the only way a conformance case can compare
-`pip install --upgrade bantamkit` against `npm install --global bantamkit-mcp@latest`
-without one of the two actually happening to the machine running the suite.
+So this reaches the three seams the implementers built INTO the flag: `fetch`, `installer`
+and `installed_version`, all keyword arguments of `selfupdate.update` with real defaults.
+Every arm below is therefore reachable with NO NETWORK and with NO INSTALLER EVER RUN — the
+command is captured and handed back as data, which is the only way a conformance case can
+compare `pip install --upgrade bantamkit==0.31.0` against `npm install --global
+bantamkit-mcp@0.31.0` without one of the two actually happening to the machine running the
+suite. `installed_version` answers the arm's `after` when the arm carries one (`null` for
+"nothing readable"), else the compared version — the honest default, because a stub
+installer writes nothing and every success arm would otherwise refuse for the right reason.
 
 WHAT THIS DID NOT COVER UNTIL J51-6, KEPT AS THE RECORD. The dispatch in
 `mcpserver._run_update` — which stream each outcome is written to and whether the process
@@ -38,10 +46,10 @@ measurement.
         -> {"dispatch": {id: {"exit": int, "stdout": b64, "stderr": b64, "command": str|None}}}
 
 THE INDEX DOCUMENT IS BUILT ON THIS SIDE, and that is the declared divergence rather than a
-convenience. PyPI answers `{"info": {"version": …}}` and the npm registry answers
-`{"version": …}` at the top level; each side is handed a document its own registry would
-actually return, so what the arms compare is that the same SITUATION produces the same
-sentence. An arm that wants the same BYTES on both sides — every garbage arm — passes
+convenience. pip's installation report answers `{"install": [{"metadata": {"version": …}}]}`
+and `npm view --json` answers `{"version": …}` at the top level; each side is handed a
+document its own package manager would actually return, so what the arms compare is that
+the same SITUATION produces the same sentence. An arm that wants the same BYTES on both sides — every garbage arm — passes
 `body` instead, and then neither side gets to interpret a shape the other could not see.
 
     {"arms": [...], "compare": [[installed, latest], ...]}
@@ -80,21 +88,32 @@ else:
 
 
 def index_document(version: str) -> str:
-    """What PyPI would answer for that version. The port builds the npm shape instead."""
-    return json.dumps({"info": {"version": version}})
+    """What pip's `--report -` answers for that version. The port builds the npm shape instead."""
+    return json.dumps({"install": [{"metadata": {"version": version}}]})
+
+
+def landed(arm: dict):
+    """The `installed_version` seam for one arm: `after` when the arm carries the key, else
+    the compared version — see the module docstring."""
+    if "after" in arm:
+        return lambda: arm["after"]
+    # Trimmed: a version the index padded with spaces (`behind-whitespace-version`) lands on
+    # disk as the version, and the arm is a SUCCESS arm — measured under a skip-the-verify
+    # mutation, where an untrimmed default turned it into a refusal on both sides unnoticed.
+    return lambda: str(arm.get("latest", "")).strip()
 
 
 def run_arm(arm: dict) -> dict:
     """One arm: the report or the refusal, plus what the two seams were actually handed.
 
     `seen` is not decoration. It is how the case pins that the caller's timeout reaches the
-    fetch and that the flag asks its OWN index URL — two facts the report text cannot show,
-    and the second of which is the divergence this whole unit is pricing.
+    fetch and that the flag asks its OWN package manager — two facts the report text cannot
+    show, and the second of which is the divergence this whole unit is pricing.
     """
-    seen: dict = {"url": None, "timeout": None, "command": None}
+    seen: dict = {"request": None, "timeout": None, "command": None}
 
-    def fetch(url: str, timeout: float) -> str:
-        seen["url"] = url
+    def fetch(request: list[str], timeout: float) -> str:
+        seen["request"] = shlex.join(request)
         seen["timeout"] = timeout
         failure = arm.get("raise")
         if failure == "timeout":
@@ -110,7 +129,7 @@ def run_arm(arm: dict) -> dict:
         spec = arm.get("installer") or {}
         return int(spec.get("code", 0)), str(spec.get("output", ""))
 
-    kwargs: dict = {"fetch": fetch, "installer": installer}
+    kwargs: dict = {"fetch": fetch, "installer": installer, "installed_version": landed(arm)}
     if arm.get("timeout") is not None:
         kwargs["timeout"] = float(arm["timeout"])
     try:
@@ -142,6 +161,9 @@ def constants() -> dict:
         "UNREACHABLE",
         "NOT_A_VERSION",
         "COMMAND_FAILED",
+        "NOT_INSTALLED",
+        "NO_INSTALLED_VERSION",
+        "NO_RECORDED_ROUTE",
         "SHAPE_UNKNOWN",
         "NOT_JSON",
         "NO_VERSION_FIELD",
@@ -164,7 +186,7 @@ def absent(payload: dict) -> dict:
     return {
         "gone": IMPORT_ERROR,
         "arms": {
-            str(arm["id"]): {"ok": None, "text": gone_text, "url": None, "timeout": None, "command": None}
+            str(arm["id"]): {"ok": None, "text": gone_text, "request": None, "timeout": None, "command": None}
             for arm in arms
         },
         "compare": [None for _ in payload.get("compare", [])],
@@ -189,7 +211,7 @@ def run_dispatch_arm(arm: dict) -> dict:
 
     seen: dict = {"command": None}
 
-    def fetch(url: str, timeout: float) -> str:
+    def fetch(request: list[str], timeout: float) -> str:
         failure = arm.get("raise")
         if failure == "unreachable":
             raise OSError(arm.get("reason", "unreachable"))
@@ -221,7 +243,7 @@ def run_dispatch_arm(arm: dict) -> dict:
         mcpserver.current_install = install  # type: ignore[assignment]
         mcpserver._version = lambda: str(arm["installed"])  # type: ignore[assignment]
         selfupdate.update = lambda installed, origin, **_k: real_update(  # type: ignore[assignment]
-            installed, origin, fetch=fetch, installer=installer
+            installed, origin, fetch=fetch, installer=installer, installed_version=landed(arm)
         )
         os.environ["HOME"] = str(arm["home"])
         os.environ["USERPROFILE"] = str(arm["home"])
@@ -284,9 +306,10 @@ def main() -> None:
         ],
         "constants": constants(),
         # The divergence that produces no opcode in any report, pinned as a per-side literal
-        # because no differential can see it: the URL asked, and the document shape read.
+        # because no differential can see it: the command asked, and the document shape read.
+        # The interpreter is masked by the suite (`pipCommandOf`), as for the upgrade command.
         "index": {
-            "url": selfupdate.INDEX_URL,
+            "command": shlex.join(selfupdate.index_command()),
             "document": index_document("0.31.0"),
             "timeout": selfupdate.DEFAULT_TIMEOUT_SECONDS,
         },
