@@ -24,6 +24,7 @@ from bantamkit.mcpreport import (
     HostCall,
     build_report,
     default_host_log_root,
+    escape_ascii,
     join,
     parse_host_line,
     parse_timestamp,
@@ -430,6 +431,47 @@ def test_the_report_is_deterministic_and_reads_no_clock(tmp_path):
     assert "\r" not in first
     assert first.encode("ascii")  # raises if any byte is not ASCII
     assert first.endswith("\n")
+
+
+def test_escape_ascii_spells_every_non_printable_code_unit_and_touches_nothing_else():
+    """Thai is three BMP escapes; the emoji is OUTSIDE the BMP and becomes its surrogate
+    pair, which is what the Node half's `charCodeAt` yields for free. A backslash is left
+    alone -- a Windows path must read as typed -- and LF / DEL are escaped because they are
+    not printable."""
+    assert escape_ascii("a/แคช-😀\\b\n\x7f~ ") == (
+        "a/\\u0e41\\u0e04\\u0e0a-\\ud83d\\ude00\\b\\u000a\\u007f~ "
+    )
+    assert escape_ascii("/Users/x/proj") == "/Users/x/proj"
+
+
+def test_the_two_input_paths_are_escaped_so_the_report_is_ascii_whatever_they_hold(tmp_path):
+    """`docs/mcpreport.md` promises ASCII and the two echoed paths were the one hole (#187).
+
+    THE MUTATION THAT REDDENS THIS: print `host.root` / `events.path` verbatim again. The
+    Thai root reaches stdout and `encode("ascii")` raises.
+    """
+    root = tmp_path / "แคช-😀" / "hostlogs"
+    _host(root, "-Users-x-proj", "a.jsonl", _call("memory_save", SESSION_A, 0, 20))
+    events = _events(
+        tmp_path / "store-ชื่อ" / "events" / "mcp.jsonl", [(10, "memory_save", "saved")]
+    )
+
+    text = _report(root, events)
+
+    assert text.encode("ascii")  # raises if any byte is not ASCII
+    assert "แคช" not in text and "ชื่อ" not in text
+    assert _field(text, "host-log-root") == escape_ascii(str(root))
+    assert _field(text, "host-log-root").endswith("\\u0e41\\u0e04\\u0e0a-\\ud83d\\ude00/hostlogs")
+    assert _field(text, "event-log") == escape_ascii(str(events))
+    assert "store-\\u0e0a\\u0e37\\u0e48\\u0e2d/events/mcp.jsonl" in _field(text, "event-log")
+
+    # Both other arms carry a path too, and both are the same two lines.
+    absent = tmp_path / "ไม่มี"
+    missing = _report(absent, tmp_path / "store-ชื่อ" / "events" / "nope.jsonl")
+    assert missing.encode("ascii")
+    assert _field(missing, "host-log-root") == f"not found at {escape_ascii(str(absent))}"
+    assert _field(missing, "event-log").startswith("not found at ")
+    assert "store-\\u0e0a\\u0e37\\u0e48\\u0e2d/events/nope.jsonl" in _field(missing, "event-log")
 
 
 def test_the_window_is_a_reported_input_not_a_hidden_constant(tmp_path):

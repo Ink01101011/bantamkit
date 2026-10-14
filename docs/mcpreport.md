@@ -145,6 +145,15 @@ host message because after parsing no host message exists. `error` records are
 Plain text on **stdout**, UTF-8, **LF only**, ASCII, ending in a newline. Sections in
 this order, every line exactly as spelled. Absent list bodies print `(none)`.
 
+**ASCII includes the two paths.** `host-log-root` and `event-log` echo an input, and an
+input can be named anything (#187: a root named `แคช-😀` reached stdout verbatim). Every
+UTF-16 code unit of a path outside printable ASCII (0x20–0x7E) is written as `\uXXXX`,
+lowercase hex, one escape per code unit — so a character outside the BMP is its surrogate
+pair, `\ud83d\ude00` — and nothing else in the path is touched: a backslash stays a
+backslash, so a Windows path reads as typed. Both runtimes spell the same bytes
+(`escape_ascii` / `escapeAscii`), and the `non-ascii-paths` bed checks each side's bytes
+are ASCII as a precondition, not only that the two agree.
+
 ```
 bantamkit mcp report v1
 
@@ -242,7 +251,9 @@ Timestamps use the event log's formatter — `YYYY-MM-DDTHH:MM:SS.mmmZ`, byte-id
 
 Both absolute paths that appear (`host-log-root`, `event-log`) are **inputs**, resolved
 identically by both runtimes from the same environment — unlike `--assets-root`'s line 1,
-they are not runtime-dependent and are not ruled.
+they are not runtime-dependent and are not ruled. They are the only bytes in the report
+that come from outside a closed vocabulary, which is why they are the only bytes that are
+escaped (above).
 
 ## The surface
 
@@ -315,10 +326,14 @@ Two things the flag moved that were not in that list, both measured after it lan
 
 `tools/conformance/suites/mcpreport.mjs` runs `bantamkit-mcp --mcp-report` as a **process**
 on both sides over one synthetic fixture pair and compares the whole of stdout, stderr and
-the exit code — **unmasked**, because the report reads no clock. Eight beds: the
+the exit code — **unmasked**, because the report reads no clock. Ten beds: the
 everything-at-once report, one each for matched / ambiguous / unmatched-both-directions,
-the missing host root, `event-log: off`, `event-log: not found`, and the literal-path arm
-of `BANTAMKIT_EVENT_LOG`, plus a determinism case that runs the same argv twice.
+the missing host root, `event-log: off`, `event-log: not found`, the literal-path arm
+of `BANTAMKIT_EVENT_LOG`, both input paths named outside ASCII (#187), and one session of
+**130,000 calls** generated at run time by the suite and never checked in (#130) — plus a
+determinism case that runs the same argv twice. The last two also carry preconditions on
+each side's bytes (ASCII; exit 0 and an empty stderr), because two runtimes that both
+crashed, or both printed the Thai, would compare equal.
 
 The matched bed carries **three** pairs of one `(tool, outcome)` rather than one, and that
 is the only place `p50` is non-vacuous: with a single duration per bucket the lower median
@@ -372,6 +387,7 @@ failure named. The Node half owes the same list.
 | the same field, populated on the `call-fail` arm | `test_no_host_message_survives_parsing_at_all` | `assert 100 <= 64` — the structural guard, with no sentinel needed |
 | return `missing = null` for an absent root instead of `"not-found"` | `…a_missing_host_log_says_not_found_and_still_reports_source_b` | the `not found at` line is gone and the report reads like a clean run |
 | glob `mcp-logs-*` instead of naming `mcp-logs-bantamkit` | `…only_the_bantamkit_directory_is_read_never_a_sibling_servers` | the sibling server's call is counted |
+| `escape_ascii` returns its input (#187) | `…the_two_input_paths_are_escaped_so_the_report_is_ascii_whatever_they_hold` and the `escape_ascii` literal | `UnicodeEncodeError: 'ascii' codec can't encode characters` — 2 of 37 nodes, and the conformance suite stops at `non-ascii-paths: the reference printed a byte outside ASCII` |
 
 Two nodes exist specifically so the ambiguity rule cannot be satisfied by always
 answering "ambiguous":
@@ -391,6 +407,8 @@ suite — where the Python half is unmutated, so a mutation shows up as a byte d
 | give the parsed record a `message` field and print it under `[host-errors]` | `a leaked argument value in the host's error text is nowhere in the report` | `AssertionError: the leaked path is in the report` | 5 of 25 |
 | the same field, populated on the `call-fail` arm | `no host message survives parsing at all` | `AssertionError: message is 99 characters long` — the structural guard, no sentinel needed | 0 (nothing prints it) |
 | the arithmetic mean instead of the lower median | `p50 is an element of the input, so no float is ever formatted` | `memory_save saved n=4 min=10 p50=25.25 max=41` | 1 of 25 — and **only** after the matched bed grew from one duration to three |
+| `Math.min(...anchors)` back in `render` (#130) | `one session of 130,000 calls is reported, not a RangeError` | `RangeError: Maximum call stack size exceeded`, 1 of 23 nodes | the suite stops at its `busy-130k` precondition (`exits 0 / 1`) before any case is built: 1 failure |
+| print `host.root` / `events.path` verbatim (#187) | `the two input paths are escaped, so the report is ASCII whatever they hold` | the ASCII assertion and the `escapeAscii` literal, 2 of 23 nodes | the suite stops at `non-ascii-paths: the port printed a byte outside ASCII`: 1 failure |
 
 ## Notes for the Node half
 
@@ -401,7 +419,9 @@ suite — where the Python half is unmutated, so a mutation shows up as a byte d
 * Read files with `readFileSync(p, 'utf8')` and split on `\n`; blank lines are skipped
   and not counted.
 * The connected-component pass must be iterative, not recursive — a busy day is
-  thousands of calls.
+  thousands of calls. And nothing derived from the host log may be **spread into a call**:
+  `Math.min(...anchors)` over one session's 130,000 calls is `RangeError: Maximum call
+  stack size exceeded` (#130, measured), where Python's `min()` iterates. Loop instead.
 * `sorted(values)[(n - 1) // 2]` for `p50`; JavaScript's `Array.prototype.sort` is
   lexicographic by default, so pass a numeric comparator.
 * `join()` on `,` for `tools=`, with no space.

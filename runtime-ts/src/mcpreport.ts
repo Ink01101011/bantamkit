@@ -268,6 +268,54 @@ export function anchorMs(call: HostCall): number {
   return call.startMs !== null ? call.startMs : (call.endMs ?? 0);
 }
 
+/**
+ * `min()` / `max()` over a non-empty list, as a LOOP, and `list.extend` as a loop too.
+ *
+ * `Math.min(...values)` and `out.push(...lines)` spread a list into CALL ARGUMENTS, and V8
+ * caps those at the stack. Measured 2026-10-14 (#130): one session of 130,000 calls — 32 MB
+ * of host log, a legal busy day — ended `--mcp-report` with `RangeError: Maximum call stack
+ * size exceeded` on this side where the reference answered the same log in 1.4 s. The host
+ * log is UNBOUNDED by contract (`docs/mcpreport.md`: the host never rotates it), so nothing
+ * derived from it — a session's anchors, a bucket's durations, one line per session — may be
+ * spread into a call. `[...items]` in an array literal is iteration, not a call, and stays.
+ */
+function minOf(values: readonly number[]): number {
+  let best = values[0]!;
+  for (let i = 1; i < values.length; i += 1) if (values[i]! < best) best = values[i]!;
+  return best;
+}
+
+function maxOf(values: readonly number[]): number {
+  let best = values[0]!;
+  for (let i = 1; i < values.length; i += 1) if (values[i]! > best) best = values[i]!;
+  return best;
+}
+
+function extend(out: string[], lines: readonly string[]): void {
+  for (const line of lines) out.push(line);
+}
+
+/**
+ * The two input paths, spelled in ASCII.
+ *
+ * `docs/mcpreport.md` promises an ASCII report, and the two paths it echoes are the only
+ * bytes in it that come from outside a closed vocabulary. Measured 2026-10-13 (#187): a root
+ * named `แคช-😀` reached stdout verbatim. Every UTF-16 code unit outside printable ASCII
+ * (0x20–0x7E) becomes `\uXXXX`, lowercase hex — one escape per code unit, so a character
+ * outside the BMP is two — and nothing else is touched: a backslash stays a backslash, so a
+ * Windows path reads as typed. The reference walks code points and splits astral ones into
+ * surrogates by hand; the two spell the same bytes.
+ */
+export function escapeAscii(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0x20 && unit <= 0x7e) out += text[i];
+    else out += `\\u${unit.toString(16).padStart(4, '0')}`;
+  }
+  return out;
+}
+
 /** `sorted(key=...)` over tuples of numbers and strings — Python's, so codepoint order. */
 function byKey<T>(items: readonly T[], key: (item: T) => (number | string)[]): T[] {
   return [...items].sort((a, b) => {
@@ -611,8 +659,8 @@ function candidates(event: Event, calls: readonly HostCall[], windowMs: number):
     if (call.tool !== event.tool) continue;
     const ends = [call.startMs, call.endMs].filter((t): t is number => t !== null);
     if (ends.length === 0) continue;
-    const lo = Math.min(...ends) - windowMs;
-    const hi = Math.max(...ends) + windowMs;
+    const lo = minOf(ends) - windowMs;
+    const hi = maxOf(ends) + windowMs;
     if (lo <= event.tsMs && event.tsMs <= hi) out.push(index);
   }
   return out;
@@ -737,9 +785,9 @@ export function render(host: HostScan, events: EventScan, joined: Join): string 
       `host-log-root: unknown on this platform (${host.platform}); set ${HOST_LOG_ROOT_ENV}`,
     );
   } else if (host.missing === 'not-found') {
-    out.push(`host-log-root: not found at ${host.root}`);
+    out.push(`host-log-root: not found at ${escapeAscii(host.root ?? '')}`);
   } else {
-    out.push(`host-log-root: ${host.root}`);
+    out.push(`host-log-root: ${escapeAscii(host.root ?? '')}`);
   }
   out.push(
     `host-log-dirs: ${host.dirs}`,
@@ -753,8 +801,9 @@ export function render(host: HostScan, events: EventScan, joined: Join): string 
     `host-calls-orphan-completion: ${host.orphanCompletions}`,
   );
   if (events.missing === 'off') out.push('event-log: off (BANTAMKIT_EVENT_LOG unset or off)');
-  else if (events.missing === 'not-found') out.push(`event-log: not found at ${events.path}`);
-  else out.push(`event-log: ${events.path}`);
+  else if (events.missing === 'not-found') {
+    out.push(`event-log: not found at ${escapeAscii(events.path ?? '')}`);
+  } else out.push(`event-log: ${escapeAscii(events.path ?? '')}`);
   out.push(
     `event-records: ${events.records}`,
     `event-records-unreadable: ${events.unreadable}`,
@@ -773,8 +822,9 @@ export function render(host: HostScan, events: EventScan, joined: Join): string 
     `unmatched-calls: ${joined.unmatchedCalls.length}`,
     `attributed-events: ${joined.matched.length} of ${events.events.length}`,
   );
-  out.push(
-    ...linesOrNone(
+  extend(
+    out,
+    linesOrNone(
       joined.ambiguousGroups.map(([e, c]) => `ambiguous-group: events=${e} calls=${c}`),
     ),
   );
@@ -792,12 +842,13 @@ export function render(host: HostScan, events: EventScan, joined: Join): string 
     }
   }
   out.push('', '[durations]', 'matched pairs only; ms from the host, outcome from bantamkit');
-  out.push(
-    ...linesOrNone(
+  extend(
+    out,
+    linesOrNone(
       byKey([...buckets.values()], (b) => [b.tool, b.outcome]).map(
         ({ tool, outcome, values }) =>
-          `${tool} ${outcome} n=${values.length} min=${Math.min(...values)}` +
-          ` p50=${p50(values)} max=${Math.max(...values)}`,
+          `${tool} ${outcome} n=${values.length} min=${minOf(values)}` +
+          ` p50=${p50(values)} max=${maxOf(values)}`,
       ),
     ),
   );
@@ -814,12 +865,13 @@ export function render(host: HostScan, events: EventScan, joined: Join): string 
     attributed.set(call.session, (attributed.get(call.session) ?? 0) + 1);
   }
   const orderedSessions = byKey([...perSession.entries()], ([name, calls]) => [
-    Math.min(...calls.map(anchorMs)),
+    minOf(calls.map(anchorMs)),
     name,
   ]);
   out.push('', '[sessions]');
-  out.push(
-    ...linesOrNone(
+  extend(
+    out,
+    linesOrNone(
       orderedSessions.map(([name, calls]) => {
         const anchors = calls.map(anchorMs);
         const tools = [...new Set(calls.map((c) => c.tool))].sort(cmpCodepoint);
@@ -828,8 +880,8 @@ export function render(host: HostScan, events: EventScan, joined: Join): string 
           ` ok=${calls.filter((c) => c.ok === true).length}` +
           ` fail=${calls.filter((c) => c.ok === false).length}` +
           ` incomplete=${calls.filter((c) => c.ok === null).length}` +
-          ` first=${formatTimestamp(Math.min(...anchors))}` +
-          ` last=${formatTimestamp(Math.max(...anchors))}` +
+          ` first=${formatTimestamp(minOf(anchors))}` +
+          ` last=${formatTimestamp(maxOf(anchors))}` +
           ` attributed=${attributed.get(name) ?? 0}` +
           ` tools=${tools.join(',')}`
         );
@@ -852,7 +904,7 @@ export function render(host: HostScan, events: EventScan, joined: Join): string 
         ` later-same-tool=${later.filter((c) => c.tool === event.tool).length}`,
     );
   }
-  out.push(...linesOrNone(follow));
+  extend(out, linesOrNone(follow));
 
   // --- the host's errors, counted and never quoted.
   out.push(
