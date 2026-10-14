@@ -36,6 +36,12 @@ export interface FieldSpec {
   readonly optional: boolean;
   /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
   readonly le?: bigint;
+  /**
+   * `Field(ge=...)`: an inclusive floor, checked the same way. On a `dictInt` it binds the
+   * VALUES — `dict[str, Annotated[int, Field(ge=0)]]` on the reference — so the frame's
+   * location is `usage.<key>`, as the type frame's is.
+   */
+  readonly ge?: bigint;
 }
 
 export interface ArgModel {
@@ -45,7 +51,7 @@ export interface ArgModel {
 }
 
 const req = (name: string, kind: FieldSpec['kind']): FieldSpec => ({ name, kind, optional: false });
-const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint } = {}): FieldSpec => ({
+const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint; ge?: bigint } = {}): FieldSpec => ({
   name,
   kind,
   optional: true,
@@ -71,6 +77,16 @@ const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint } = {})
  * register a tool.
  */
 export const OFFSET_MAXIMUM = 9007199254740991n;
+
+/**
+ * `assets/tools/skill_audit.json` `budget.maximum` — the same `Number.MAX_SAFE_INTEGER` as
+ * `OFFSET_MAXIMUM`, spelled as its own constant because it is tied to a different asset
+ * and would stay where it is if the other ever moved. Bound on the reference as
+ * `Annotated[int, Field(le=SKILL_BUDGET_MAXIMUM)]` (#133, job65): until then the manifest
+ * advertised a ceiling neither runtime enforced, and `budget: 2**53` was audited as if it
+ * were a number a catalogue could be measured against.
+ */
+export const SKILL_BUDGET_MAXIMUM = 9007199254740991n;
 
 /**
  * One model per handler, mirroring `build_server`'s closures signature for signature.
@@ -125,9 +141,10 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   bantamkit_status: { model: 'bantamkit_statusArguments', fields: [] },
   // `reserve: int | None = None` on the reference, so it is the same lax `int` as `k`:
   // `'2'`, `True` and `3.0` validate, `'2.5'` is `int_parsing`, `2.5` is `int_from_float`,
-  // and an explicit `null` is the default. The manifest's `minimum: 0` is advisory to the
-  // client; nothing here floors it — a negative value reaches `MemoryStore.compact`, whose
-  // `max(0, min(reserve, budget // 2))` is the only clamp on either side (6b966e5).
+  // and an explicit `null` is the default. Nothing here floors it — a negative value
+  // reaches `MemoryStore.compact`, whose `max(0, min(reserve, budget // 2))` is the only
+  // clamp on either side (6b966e5) — and since #133 (job65) the manifest no longer
+  // advertises a `minimum` it does not enforce: the clamp is stated in the description.
   memory_compact: { model: 'memory_compactArguments', fields: [opt('reserve', 'int')] },
   // `bantamkit_read(path: str, part: str | None = None, offset: int | None = None,
   // limit: int | None = None)` on the reference (job43). `path` and `part` are the strict
@@ -145,16 +162,19 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
     model: 'bantamkit_readArguments',
     fields: [req('path', 'str'), opt('part', 'str'), opt('offset', 'int', { le: OFFSET_MAXIMUM }), opt('limit', 'int')],
   },
-  // `skill_audit(root: str, enabled: list[str] | None = None, usage: dict[str, int] | None =
-  // None, check: str | None = None, budget: int | None = None)` on the reference (job44).
-  // `usage` is the only `dict[str, int]` on the surface and the reason `dictInt` exists:
-  // pydantic validates a typed dict's VALUES, so `{'a': 'x'}` is `usage.a` / `int_parsing`
-  // where `handoff_patch`'s `dict[str, Any]` takes anything. `budget` carries no `le`,
-  // because the reference binds none — the manifest's `maximum` is advisory to the client,
-  // and the handler's own refusal is the negative one. `versions` is the only
-  // `dict[str, str]`, and the reason `dictStr` exists beside it: a `str` field is STRICT even
-  // in lax mode, so `{'a': 1}` is `versions.a` / `string_type` where the same value under
-  // `usage` would validate.
+  // `skill_audit(root: str, enabled: list[str] | None = None, usage: dict[str,
+  // Annotated[int, Field(ge=0)]] | None = None, check: str | None = None, budget:
+  // Annotated[int, Field(le=SKILL_BUDGET_MAXIMUM)] | None = None)` on the reference (job44;
+  // the two bounds since #133, job65). `usage` is the only `dict[str, int]` on the surface
+  // and the reason `dictInt` exists: pydantic validates a typed dict's VALUES, so `{'a':
+  // 'x'}` is `usage.a` / `int_parsing` and `{'a': -1}` is `usage.a` /
+  // `greater_than_equal`, where `handoff_patch`'s `dict[str, Any]` takes anything. `budget`'s
+  // ceiling is the manifest's `maximum`, bound the way `bantamkit_read`'s `offset` is;
+  // its floor is still the handler's own refusal (`budget must not be negative`), which
+  // the manifest's `minimum: 0` describes and this table does not pre-empt. `versions` is
+  // the only `dict[str, str]`, and the reason `dictStr` exists beside it: a `str` field is
+  // STRICT even in lax mode, so `{'a': 1}` is `versions.a` / `string_type` where the same
+  // value under `usage` would validate.
   // `dry_run: bool | None = None` on the reference (job45 row 5). LAX bool, and every arm
   // below was MEASURED against the real stdio server, not read off pydantic's docs
   // (`scratchpad` probe, 33 inputs): `0`/`1` and `0.0`/`1.0` coerce; any OTHER integral
@@ -194,9 +214,9 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
     fields: [
       req('root', 'str'),
       opt('enabled', 'listStr'),
-      opt('usage', 'dictInt'),
+      opt('usage', 'dictInt', { ge: 0n }),
       opt('check', 'str'),
-      opt('budget', 'int'),
+      opt('budget', 'int', { le: SKILL_BUDGET_MAXIMUM }),
       opt('versions', 'dictStr'),
     ],
   },
@@ -323,7 +343,7 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
       const bad: RawError[] = [];
       const coerced = new Map<string, PyValue>();
       for (const [key, item] of value.v) {
-        const checked = checkInt(`${spec.name}.${key}`, item);
+        const checked = checkBoundedInt(spec, `${spec.name}.${key}`, item);
         if ('value' in checked) coerced.set(key, checked.value);
         else bad.push(checked);
       }
@@ -400,22 +420,36 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
       return wrongType();
     }
     case 'int': {
-      const checked = checkInt(spec.name, value);
-      if (!('value' in checked)) return [checked];
-      // `less_than_equal` names the ORIGINAL input, as every constraint error does.
-      if (spec.le !== undefined && checked.value.t === 'int' && checked.value.v > spec.le) {
-        return [
-          {
-            loc: spec.name,
-            type: 'less_than_equal',
-            msg: `Input should be less than or equal to ${spec.le}`,
-            input: value,
-          },
-        ];
-      }
-      return checked;
+      const checked = checkBoundedInt(spec, spec.name, value);
+      return 'value' in checked ? checked : [checked];
     }
   }
+}
+
+/**
+ * The lax int parse, then the field's `ge`/`le` bounds on what it parsed.
+ *
+ * A constraint frame names the ORIGINAL input, as every pydantic constraint error does:
+ * `usage: {'a': '-1'}` is `greater_than_equal` with `input_value='-1', input_type=str`, the
+ * string the client sent and not the `-1` it parsed to. Measured against pydantic 2.13 on
+ * `dict[str, Annotated[int, Field(ge=0)]]` and `Annotated[int, Field(le=2**53-1)]`,
+ * 2026-10-15 (job65 J65-13 note, §3), and compared over stdio by `suites/wire.mjs`.
+ */
+function checkBoundedInt(spec: FieldSpec, loc: string, value: PyValue): { value: PyValue } | RawError {
+  const checked = checkInt(loc, value);
+  if (!('value' in checked) || checked.value.t !== 'int') return checked;
+  if (spec.ge !== undefined && checked.value.v < spec.ge) {
+    return {
+      loc,
+      type: 'greater_than_equal',
+      msg: `Input should be greater than or equal to ${spec.ge}`,
+      input: value,
+    };
+  }
+  if (spec.le !== undefined && checked.value.v > spec.le) {
+    return { loc, type: 'less_than_equal', msg: `Input should be less than or equal to ${spec.le}`, input: value };
+  }
+  return checked;
 }
 
 function checkInt(loc: string, value: PyValue): { value: PyValue } | RawError {

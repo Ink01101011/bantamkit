@@ -1790,3 +1790,53 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   assert.ok(footer.startsWith(`${FOOTER_HEAD}2): the memory index is `), footer);
   assert.equal(stderr, '');
 });
+
+// ------------------------------------------------------ #133 (job65): skill_audit's two bounds
+
+test('#133: skill_audit refuses a negative usage count and a budget past 2^53 in the reference frames', async () => {
+  // Per-side literals, beside the differential in `tools/conformance/suites/wire.mjs`: the
+  // manifest advertised `usage` values `minimum: 0` and `budget.maximum: 9007199254740991`
+  // and neither runtime enforced either until this job. The frames below were measured on
+  // pydantic 2.13 (`dict[str, Annotated[int, Field(ge=0)]]`, `Annotated[int, Field(le=...)]`)
+  // and name the ORIGINAL input — the string `'-1'`, not the `-1` it parsed to.
+  const { ARG_MODELS, SKILL_BUDGET_MAXIMUM, validateArguments } = await import('../dist/mcp/pyargs.js');
+  const { fromJs, parseJson } = await import('../dist/pyjson.js');
+  assert.equal(SKILL_BUDGET_MAXIMUM, 9007199254740991n);
+  const refusal = (args) => {
+    try {
+      validateArguments(ARG_MODELS.skill_audit, args);
+    } catch (error) {
+      return error.detail;
+    }
+    return 'accepted';
+  };
+  assert.equal(
+    refusal(fromJs({ root: 'x', usage: { 'solo-check': -1 } })),
+    '1 validation error for skill_auditArguments\n' +
+      'usage.solo-check\n' +
+      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]\n' +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal',
+  );
+  assert.equal(
+    refusal(fromJs({ root: 'x', usage: { a: '-1', b: 2, c: -3 } })),
+    '2 validation errors for skill_auditArguments\n' +
+      'usage.a\n' +
+      "  Input should be greater than or equal to 0 [type=greater_than_equal, input_value='-1', input_type=str]\n" +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal\n' +
+      'usage.c\n' +
+      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-3, input_type=int]\n' +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal',
+  );
+  // 2^53 is exact in JSON text; `parseJson` keeps it as a bigint so the frame prints it whole.
+  assert.equal(
+    refusal(parseJson('{"root": "x", "budget": 9007199254740992}')),
+    '1 validation error for skill_auditArguments\n' +
+      'budget\n' +
+      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740992, input_type=int]\n' +
+      '    For further information visit https://errors.pydantic.dev/2.13/v/less_than_equal',
+  );
+  // The floor of `usage` and the ceiling of `budget` are inclusive; a negative budget is
+  // the HANDLER's refusal (`budget must not be negative`), not this table's.
+  assert.equal(refusal(fromJs({ root: 'x', usage: { 'solo-check': 0 }, budget: 9007199254740991 })), 'accepted');
+  assert.equal(refusal(fromJs({ root: 'x', budget: -1 })), 'accepted');
+});

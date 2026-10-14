@@ -1071,6 +1071,12 @@ _NO_JSON_UNWRAP = frozenset({"bantamkit_read"})
 # server will not import" rather than "the server refuses to register a tool".
 OFFSET_MAXIMUM = 9007199254740991
 
+#: `assets/tools/skill_audit.json` `budget.maximum`: the same `2**53 - 1` as `OFFSET_MAXIMUM`,
+#: as its own name because it is tied to a different asset. Bound in `skill_audit`'s
+#: signature as `Field(le=SKILL_BUDGET_MAXIMUM)` (#133, job65); the port's
+#: `SKILL_BUDGET_MAXIMUM` in `runtime-ts/src/mcp/pyargs.ts` is the same number.
+SKILL_BUDGET_MAXIMUM = 9007199254740991
+
 
 @dataclass
 class _DocumentCache:
@@ -1395,7 +1401,13 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
 
     def memory_recall(query: str, k: int | None = None) -> str:
         if k is not None:
-            k = max(1, min(k, 5))  # the advertised schema's bounds; clients may ignore it
+            # Clamped, not refused, and the manifest says so: `assets/tools/memory_recall.json`
+            # used to advertise `minimum: 1, maximum: 5` on `k` while this line and the
+            # store's RB-P1 floor quietly took any integer — #133 (job65) reconciled the
+            # schema to the behaviour rather than the other way round, because the floor is
+            # a documented feature and a cap that refused `k: 10` would trade a friendlier
+            # answer for a stricter one. The description now states the clamp.
+            k = max(1, min(k, 5))
         with _record_raise(log, "memory_recall"):
             outcome = memory.recall_outcome(query, k)
         detail = {
@@ -1421,9 +1433,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         `nothing-archived` otherwise), never a match on the reply.
         """
         # No floor here: `MemoryStore.compact` clamps `reserve` to `[0, budget // 2]`
-        # itself, so a negative value from a client that ignored the schema is already
-        # handled where the arithmetic lives, and a second clamp would be a second thing
-        # to keep equal across the two runtimes.
+        # itself, so a negative value is already handled where the arithmetic lives, and a
+        # second clamp would be a second thing to keep equal across the two runtimes. The
+        # manifest no longer advertises a `minimum` this does not enforce (#133, job65);
+        # its description states the clamp instead.
         with _record_raise(log, "memory_compact"):
             outcome = memory.compact_outcome(reserve)
         log.record(
@@ -1667,12 +1680,23 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     def skill_audit(
         root: str,
         enabled: list[str] | None = None,
-        usage: dict[str, int] | None = None,
+        usage: dict[str, Annotated[int, Field(ge=0)]] | None = None,
         check: str | None = None,
-        budget: int | None = None,
+        budget: Annotated[int, Field(le=SKILL_BUDGET_MAXIMUM)] | None = None,
         versions: dict[str, str] | None = None,
     ) -> str:
         """The catalogue auditor on the MCP surface: `skillaudit` measures, this serves it.
+
+        TWO BOUNDS ARE IN THE SIGNATURE (#133, job65), because the manifest advertised them
+        and nothing enforced them: `usage` values carry `minimum: 0` and `budget` carries
+        `maximum: 9007199254740991` in `assets/tools/skill_audit.json`, and until this job
+        `usage: {"x": -1}` was audited (a negative call count is not a measurement) and
+        `budget: 2**53` was compared against the catalogue as if it were a number a host
+        could hold. Both are now pydantic's frames — `greater_than_equal` at `usage.<key>`,
+        `less_than_equal` at `budget` — the same refusal a wrong type gets, and the port
+        reproduces the sentence (`runtime-ts/src/mcp/pyargs.ts`). `budget`'s FLOOR stays
+        the handler's: `skillaudit.audit` refuses a negative budget with its own sentence,
+        and a `ge=0` here would pre-empt a refusal the suite pins.
 
         THE REPLY IS A JSON DOCUMENT AND NOT PROSE, which is the one thing that makes this
         handler shaped differently from `bantamkit_read` next door. The reader answers a

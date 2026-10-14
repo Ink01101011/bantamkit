@@ -339,3 +339,85 @@ def test_plan_does_not_mutate_its_input():
     before = [dict(node) for node in given]
     plan(given)
     assert given == before
+
+
+# ---------------------------------------------------------------------------
+# #127 (job65): a node off the advertised item schema is refused by position, never
+# coerced. The four sentences are pinned HERE as literals because the conformance
+# differential cannot see a sentence both runtimes copied; the Node twin is in
+# `runtime-ts/test/workplan.test.mjs`.
+# ---------------------------------------------------------------------------
+
+
+def test_a_string_depends_on_is_refused_not_iterated_character_by_character():
+    # Before the check, `list("bb")` made this an edge `a -> b` and the refusal named a
+    # node nobody declared; with a one-letter id it would have silently planned.
+    result = plan([{"id": "a", "depends_on": "bb"}, {"id": "bb", "depends_on": []}])
+    assert result == {"result": "error", "reason": "nodes[0].depends_on must be a list of strings"}
+
+
+def test_a_depends_on_holding_a_non_string_is_refused_by_the_same_sentence():
+    result = plan([{"id": "a", "depends_on": []}, {"id": "b", "depends_on": ["a", 2]}])
+    assert result == {"result": "error", "reason": "nodes[1].depends_on must be a list of strings"}
+
+
+def test_a_string_priority_is_refused_not_a_type_error_at_the_sort():
+    result = plan([{"id": "a", "depends_on": [], "priority": "3"}])
+    assert result == {"result": "error", "reason": "nodes[0].priority must be an integer"}
+
+
+def test_a_bool_priority_is_refused_although_cpython_calls_it_an_int():
+    result = plan([{"id": "a", "depends_on": [], "priority": True}])
+    assert result == {"result": "error", "reason": "nodes[0].priority must be an integer"}
+
+
+def test_a_fractional_priority_is_refused_and_an_integral_float_is_an_integer():
+    # JSON Schema's `integer` admits `3.0`; the port cannot tell `3.0` from `3` once the
+    # value is a JS number, so the reference admits it too and the two agree.
+    assert plan([{"id": "a", "depends_on": [], "priority": 2.5}]) == {
+        "result": "error",
+        "reason": "nodes[0].priority must be an integer",
+    }
+    integral = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": [], "priority": 3.0}]
+    assert plan(integral) == {
+        "batches": [["b", "a"]],
+        "sequence": ["b", "a"],
+        "width": 2,
+    }
+
+
+def test_a_non_string_id_is_refused_so_5_and_the_string_5_cannot_collide():
+    result = plan([{"id": 5, "depends_on": []}, {"id": "5", "depends_on": []}])
+    assert result == {"result": "error", "reason": "nodes[0].id must be a string"}
+
+
+def test_a_node_that_is_not_an_object_is_refused_by_position():
+    result = plan([{"id": "a", "depends_on": []}, "b"])
+    assert result == {"result": "error", "reason": "nodes[1] must be an object"}
+
+
+def test_shape_is_checked_before_the_graph_so_a_shape_fault_outranks_a_duplicate():
+    # Both faults at once: the duplicate id would be named second, so the shape is.
+    result = plan([{"id": "a", "depends_on": [], "priority": "x"}, {"id": "a", "depends_on": []}])
+    assert result == {"result": "error", "reason": "nodes[0].priority must be an integer"}
+
+
+def test_shape_is_checked_across_every_node_before_any_graph_refusal():
+    # The duplicate sits at index 1 and the bad shape at index 2: the shape pass covers the
+    # whole list first, so the shape is still what is named.
+    result = plan([{"id": "a"}, {"id": "a"}, {"id": "c", "depends_on": "a"}])
+    assert result == {"result": "error", "reason": "nodes[2].depends_on must be a list of strings"}
+
+
+def test_a_null_depends_on_and_a_null_priority_are_the_defaults_not_contradictions():
+    result = plan([{"id": "a", "depends_on": None, "priority": None}])
+    assert result == {"batches": [["a"]], "sequence": ["a"], "width": 1}
+
+
+def test_a_node_with_no_id_is_still_the_key_error_the_tool_always_raised():
+    # Pinned by `tools/conformance/suites/workplan.mjs` `tool/no-id`: the envelope reads
+    # `Error executing tool work_plan: 'id'` on both sides, and #127 did not ask to move it.
+    import pytest
+
+    with pytest.raises(KeyError):
+        plan([{"depends_on": []}])

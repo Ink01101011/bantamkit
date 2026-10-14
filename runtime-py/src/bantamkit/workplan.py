@@ -70,12 +70,66 @@ def _cycle_path(order: list[str], deps: dict[str, list[str]], pending: set[str])
         current = nxt
 
 
+def _is_integer(value: Any) -> bool:
+    """`integer` as JSON Schema reads it: an int that is not a bool, or a float with no fraction.
+
+    `3.0` is an integer under draft 2020-12 ("a number with a zero fractional part"), and
+    the port's decoder cannot tell `3.0` from `3` once the value is a JS number, so the two
+    runtimes agree only if the reference accepts it too. `True` is an `int` to CPython and
+    not to the schema, so it is excluded by name.
+    """
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int) or (isinstance(value, float) and value.is_integer())
+
+
+def _shape_refusal(nodes: list[Any]) -> str | None:
+    """The first node that contradicts `assets/tools/work_plan.json`'s item schema, by position.
+
+    #127 (job65): both runtimes used to take `list[dict[str, Any]]` and read the three
+    keys off raw objects, so a string `depends_on` was iterated character by character
+    here (`"bb"` became an edge to `b`) and a string `priority` escaped as a `TypeError`
+    at the sort; the port coerced instead and planned `a` beside the `b` it depended on.
+    Neither was the advertised contract. Now the shape is checked BEFORE the graph is
+    read, in input order and field order (`id`, `depends_on`, `priority`), and the first
+    contradiction is refused in the `{result, reason}` shape the three graph refusals use —
+    one sentence per field, naming the node by its index in `nodes` (the one name every
+    node has, string id or not, duplicate or not):
+
+        nodes[<i>] must be an object
+        nodes[<i>].id must be a string
+        nodes[<i>].depends_on must be a list of strings
+        nodes[<i>].priority must be an integer
+
+    What is NOT a contradiction, because the surface already pinned it before this check
+    existed: an absent or `null` `depends_on` is no dependencies, an absent or `null`
+    `priority` is 0, and a node with no `id` at all is still the `KeyError` the tool has
+    always raised (`tools/conformance/suites/workplan.mjs`, `tool/no-id`). `node["id"]` is
+    read first for exactly that reason.
+    """
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            return f"nodes[{index}] must be an object"
+        if not isinstance(node["id"], str):
+            return f"nodes[{index}].id must be a string"
+        depends_on = node.get("depends_on")
+        if depends_on is not None and not (
+            isinstance(depends_on, list) and all(isinstance(dep, str) for dep in depends_on)
+        ):
+            return f"nodes[{index}].depends_on must be a list of strings"
+        priority = node.get("priority")
+        if priority is not None and not _is_integer(priority):
+            return f"nodes[{index}].priority must be an integer"
+    return None
+
+
 def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     """Batch a dependency graph into the levels that may run in parallel.
 
     nodes: [{"id": str, "depends_on": list[str], "priority": int}] — `depends_on`
     defaults to empty and `priority` defaults to 0, because the shift-work checkpoint
-    schema has no priority field and this design does not add one.
+    schema has no priority field and this design does not add one. A node whose fields
+    contradict those types is refused by `_shape_refusal` before the graph is read.
 
     Returns either
 
@@ -98,12 +152,17 @@ def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     ANSWER, not a refusal — the same reasoning `shiftwork.clock_in` already applies when
     its all-terminal test reports success instead of escalating on a dangling cursor.
 
-    The three refusals are checked in a fixed order — duplicate id, then unknown
-    dependency, then cycle — so a graph carrying two faults always names the same one.
-    The later checks would be meaningless on the earlier faults' input anyway: a
-    duplicate id makes "which node declares this" ambiguous, and an edge into a node
-    that does not exist is not a cycle.
+    The four refusals are checked in a fixed order — a node's shape, then duplicate id,
+    then unknown dependency, then cycle — so a graph carrying two faults always names
+    the same one. The later checks would be meaningless on the earlier faults' input
+    anyway: a non-string id cannot be compared for duplicates, a duplicate id makes
+    "which node declares this" ambiguous, and an edge into a node that does not exist is
+    not a cycle.
     """
+    shape = _shape_refusal(nodes)
+    if shape is not None:
+        return {"result": "error", "reason": shape}
+
     order: list[str] = []
     deps: dict[str, list[str]] = {}
     priority: dict[str, int] = {}
@@ -114,7 +173,8 @@ def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
             return {"result": "error", "reason": f"duplicate node id {node_id}"}
         order.append(node_id)
         deps[node_id] = list(node.get("depends_on") or [])
-        priority[node_id] = node.get("priority", 0)
+        given = node.get("priority")
+        priority[node_id] = 0 if given is None else int(given)
 
     for node_id in order:
         for dep in deps[node_id]:

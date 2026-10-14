@@ -230,7 +230,14 @@ def test_the_asset_serves_both_surfaces_and_is_shaped_like_memory_recall():
     assert asset["parameters"]["type"] == "object"
     assert "required" not in asset["parameters"]
     assert asset["parameters"]["properties"]["reserve"]["type"] == "integer"
-    assert asset["parameters"]["properties"]["reserve"]["minimum"] == 0
+    # Until job65 (#133) this line pinned `minimum: 0` on `reserve` — a bound the asset
+    # advertised and neither runtime enforced (both clamp a negative to 0 in
+    # `MemoryStore.compact`). The issue outranks the pin: the bound left the schema and the
+    # clamp is stated in the description, so what is pinned now is that no bound is
+    # advertised AND the sentence that replaced it is served.
+    reserve = asset["parameters"]["properties"]["reserve"]
+    assert "minimum" not in reserve
+    assert "a negative value counts as 0" in reserve["description"]
     assert asset["output_schema"] == {**recall["output_schema"], "title": "memory_compactOutput"}
     assert "memory_save" in asset["description"]
     assert "never" in asset["description"] or "Nothing is deleted" in asset["description"]

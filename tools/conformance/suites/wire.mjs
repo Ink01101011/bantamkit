@@ -384,7 +384,7 @@ export async function run(ctx) {
     callTool(3, 'memory_save', { type: 'project', name: 'Wire_Case One', description: 'the wire, byte for byte — ทดสอบ', body: 'a fact with an em dash — and a DEL \u007f', links: ['other-fact'] }),
     callTool(4, 'memory_recall', { query: 'wire byte' }),
     // SIX facts sharing one token, so the RECALL BUDGET is observable: the default is 3, the
-    // advertised ceiling is 5, and `k` is clamped to it. With fewer facts than the budget
+    // ceiling is 5 (stated in `k`'s description since #133), and `k` is clamped to it. With fewer facts than the budget
     // every setting returns the same list and the clamp is unmeasurable — which is exactly
     // how a mutation that deleted it survived the first sweep.
     callTool(5, 'memory_save', { type: 'project', name: 'budget-a', description: 'budget probe alpha', body: 'a' }),
@@ -400,6 +400,11 @@ export async function run(ctx) {
     callTool(15, 'memory_save', { type: 'bogus', name: 'x', description: 'd', body: 'b' }),
     callTool(16, 'memory_save', { type: 'project', name: 'wire-case-one', description: 'the wire, byte for byte — ทดสอบ', body: 'updated' }),
     callTool(17, 'memory_recall', { query: 'nothing like this exists' }),
+    // #133 (job65): `k` below the floor. The manifest no longer advertises `minimum: 1` /
+    // `maximum: 5` on `k` — neither runtime ever refused outside them, both clamp — so the
+    // description states the clamp and these two, with `k: 99` above, are the clamp compared.
+    callTool(18, 'memory_recall', { query: 'budget probe', k: 0 }),
+    callTool(19, 'memory_recall', { query: 'budget probe', k: -1 }),
   ]);
 
   // PRODUCTION SHAPE: no `--store`, so `Memory.layered` runs and recall lines carry `[project] `.
@@ -690,7 +695,7 @@ export async function run(ctx) {
    * the budget itself), `9999` (capped at half the budget, 160, which the three survivors'
    * lines reach by equality, so two more leave — `compact-b` and `-c`, the first two names
    * among five equally-stale facts — and the archive holds `-a`, `-b`, `-c`), a negative
-   * (clamped to 0 by `MemoryStore.compact` on both sides — the manifest's `minimum: 0` is advisory to the client),
+   * (clamped to 0 by `MemoryStore.compact` on both sides — since #133 the manifest advertises no `minimum` and its description states the clamp),
    * `2.5` (`int_from_float`), `'notanint'` (`int_parsing`), `true` (lax `int`, so 1),
    * `null` (the default), `'3.0'` (lax again), no `arguments` at all, and an extra key.
    *
@@ -891,6 +896,18 @@ export async function run(ctx) {
     callTool(21, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, versions: { 'dup-kit@kit-market': '9.9.9' } }),
     callTool(22, 'skill_audit', { root: SKILL_CACHE, versions: { 'hash-kit@kit-market': 1 } }),
     callTool(23, 'skill_audit', { root: '' }),
+    // #133 (job65): the two bounds the manifest advertised and nothing enforced. `usage`
+    // values carry `minimum: 0` and `budget` carries `maximum: 9007199254740991`; both are
+    // bound in the reference's signature now and reproduced by the port, so a negative
+    // count is `greater_than_equal` at `usage.<key>` — naming the ORIGINAL input, the
+    // string `'-1'` where a string was sent — and 2^53 is `less_than_equal` at `budget`,
+    // with the three frames of id 25 in model-field order. 2^53 is exact in JSON text and
+    // `JSON.stringify` writes it whole. Id 26 sits AT the ceiling and is audited; id 27 is
+    // the negative budget, which stays the HANDLER's own sentence (id 13 above), not a frame.
+    callTool(24, 'skill_audit', { root: SKILL_CACHE, usage: { 'solo-check': -1 } }),
+    callTool(25, 'skill_audit', { root: SKILL_CACHE, usage: { a: '-1', b: 2, 'trigger-kit:deadlock-hunt': -3 }, budget: 9007199254740992 }),
+    callTool(26, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 9007199254740991 }),
+    callTool(27, 'skill_audit', { root: SKILL_CACHE, usage: { 'solo-check': 0 }, budget: -1 }),
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
@@ -1418,10 +1435,14 @@ export async function run(ctx) {
      * which the host can see — and `refused` carries an empty object. The five
      * argument-shaped calls record nothing at all, because pydantic (and `validateArguments`
      * here) refuses before the handler is entered, so the record COUNT is part of what is
-     * compared: 17 records for 22 calls, with the two `usage`-coercion calls and the two
-     * `versions` calls among the seventeen — a lax int is not a refusal, and neither is a
+     * compared: 19 records for 26 calls, with the two `usage`-coercion calls and the two
+     * `versions` calls among the nineteen — a lax int is not a refusal, and neither is a
      * `versions` entry naming a directory this root does not hold. The empty root IS one, and
-     * it is recorded, because the module refuses it rather than the model doing so.
+     * it is recorded, because the module refuses it rather than the model doing so. Since
+     * #133 (job65) ids 24 and 25 — a negative `usage` count, a `budget` past 2^53 — are
+     * model refusals and record nothing, id 26 (`budget` AT the ceiling) is `audited` and
+     * id 27 (negative `budget`) is the handler's `refused`: 17 + 2 = 19, MEASURED off this
+     * case's own failure after the four calls were added.
      */
     const auditLog = results.get('skill-audit');
     cases.push({
@@ -1437,9 +1458,9 @@ export async function run(ctx) {
       actual: outcomesOf(auditLog.node.eventlog),
     });
     cases.push({
-      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 17 records for 22 calls',
+      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 19 records for 26 calls',
       kind: 'json',
-      expected: { outcomes: ['audited', 'refused'], records: 17 },
+      expected: { outcomes: ['audited', 'refused'], records: 19 },
       actual: {
         outcomes: [...new Set(outcomesOf(auditLog.node.eventlog).map(([, outcome]) => outcome))].sort(),
         records: outcomesOf(auditLog.node.eventlog).length,

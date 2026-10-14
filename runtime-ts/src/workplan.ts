@@ -56,6 +56,55 @@ export type PlanResult = PlanOk | PlanError;
 const refuse = (reason: string): PlanError => ({ result: 'error', reason });
 
 /**
+ * `integer` as JSON Schema reads it: a number with no fractional part. `3.0` IS one under
+ * draft 2020-12, and by the time a wire value is a JS number `3.0` and `3` are the same
+ * value anyway, so the reference accepts it too (`workplan.py`, `_is_integer`) and the two
+ * runtimes agree. A `bigint` never reaches here from the wire (`toJs` narrows to `number`).
+ */
+const isInteger = (value: unknown): boolean => typeof value === 'number' && Number.isInteger(value);
+
+/**
+ * The first node that contradicts `assets/tools/work_plan.json`'s item schema, by position.
+ *
+ * #127 (job65). Until this check the port's `planNodes` COERCED: a string `depends_on`
+ * became `[]` — so `a` was planned beside the `b` it depended on — a string `priority`
+ * became 0, and a numeric id was stringified until `5` and `"5"` collided. The reference
+ * did none of those things and none of the right ones either; see `workplan.py`. Now both
+ * sides check the shape BEFORE the graph is read, in input order and field order (`id`,
+ * `depends_on`, `priority`), and refuse the first contradiction in the `{result, reason}`
+ * shape the graph refusals use. The node is named by its index in `nodes`, the one name
+ * every node has whatever its `id` is. The four sentences are pinned per side in
+ * `test/workplan.test.mjs`, because a sentence both runtimes copied is invisible to the
+ * differential.
+ *
+ * NOT a contradiction, because the surface pinned these before the check existed: an absent
+ * or `null` `depends_on` is no dependencies and an absent or `null` `priority` is 0. A node
+ * with no `id` at all is refused here as a non-string id; on the wire it never gets this
+ * far, because `planNodes` reproduces the reference's `KeyError` first.
+ */
+function readNodes(nodes: readonly unknown[]): PlanNode[] | PlanError {
+  const read: PlanNode[] = [];
+  for (const [index, raw] of nodes.entries()) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return refuse(`nodes[${index}] must be an object`);
+    const node = raw as Record<string, unknown>;
+    const id = node['id'];
+    if (typeof id !== 'string') return refuse(`nodes[${index}].id must be a string`);
+    const dependsOn = node['depends_on'];
+    if (dependsOn != null && !(Array.isArray(dependsOn) && dependsOn.every((dep) => typeof dep === 'string'))) {
+      return refuse(`nodes[${index}].depends_on must be a list of strings`);
+    }
+    const priority = node['priority'];
+    if (priority != null && !isInteger(priority)) return refuse(`nodes[${index}].priority must be an integer`);
+    read.push({
+      id,
+      depends_on: dependsOn == null ? [] : (dependsOn as string[]),
+      priority: priority == null ? 0 : (priority as number),
+    });
+  }
+  return read;
+}
+
+/**
  * Name the cycle that stopped Kahn, deterministically.
  *
  * Two runtimes left to their own devices will name two different — equally correct — cycles in the
@@ -97,10 +146,19 @@ function cyclePath(nodes: readonly PlanNode[], emitted: ReadonlySet<string>): st
  * with nothing left to do is the answer, the same reasoning `clock_in` applies when an all-terminal
  * checkpoint reports success rather than escalating on a dangling cursor.
  *
- * **The three refusals are checked in a fixed order** — duplicate id, then unknown dependency, then
- * cycle — because a graph can carry two faults at once and both runtimes have to name the same one.
+ * **The four refusals are checked in a fixed order** — a node's shape, then duplicate id, then
+ * unknown dependency, then cycle — because a graph can carry two faults at once and both runtimes
+ * have to name the same one.
+ *
+ * Takes `unknown[]` rather than `PlanNode[]` on purpose: the wire hands the server whatever the
+ * client sent inside each node, and the check that it IS a `PlanNode` lives here, beside the
+ * reference's (`workplan.py` checks the same shape in the same function), not in the caller.
  */
-export function plan(nodes: readonly PlanNode[]): PlanResult {
+export function plan(input: readonly unknown[]): PlanResult {
+  // 0 — the shape of every node, before any of it is read as a graph.
+  const nodes = readNodes(input);
+  if (!Array.isArray(nodes)) return nodes;
+
   // 1 — duplicate id. First in input order wins.
   const declared = new Set<string>();
   for (const node of nodes) {

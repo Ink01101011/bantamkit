@@ -63,7 +63,7 @@ import type { Memory } from '../memory/component.js';
 import { PyOSError, asPyOSError, pyReadText } from '../memory/pyfs.js';
 import { fromJs, parseJson, reprValue, toJs, type PyValue } from '../pyjson.js';
 import * as shiftwork from '../shiftwork.js';
-import { plan, type PlanNode } from '../workplan.js';
+import { plan } from '../workplan.js';
 import { buildIdentity, SERVER_NAME } from './identity.js';
 import { ARG_MODELS, PyValidationFailure, validateArguments } from './pyargs.js';
 import { sdkJson } from './sdkjson.js';
@@ -213,40 +213,31 @@ const asDict = (value: PyValue): Map<string, PyValue> => (value.t === 'dict' ? v
 const asText = (value: PyValue | undefined): string => (value && value.t === 'str' ? value.v : '');
 
 /**
- * `work_plan`'s `nodes` as `workplan.plan` takes them.
+ * `work_plan`'s `nodes` as `workplan.plan` takes them: the decoded objects, UNCHANGED.
  *
  * The reference's model is `list[dict[str, Any]]`, so pydantic guarantees a list of dicts
- * and NOTHING about what is inside one; `workplan.plan` then reads `node["id"]`,
- * `node.get("depends_on") or []` and `node.get("priority", 0)` off raw Python objects. This
- * reproduces those three reads and their defaults.
+ * and NOTHING about what is inside one; what is inside is checked by `workplan.plan` itself
+ * on both sides against the item schema `assets/tools/work_plan.json` advertises (#127,
+ * job65). Until that check existed THIS function was where the port diverged: it coerced a
+ * string `depends_on` to `[]`, a non-numeric `priority` to 0 and a numeric id to its
+ * `str()`, so `[{id: 'a', depends_on: 'b'}, {id: 'b', ...}]` was planned with `a` beside
+ * `b` here and `b` before `a` there. Nothing is reinterpreted here any more: `toJs` hands
+ * the planner the same value `json.loads` hands the reference, and a node that contradicts
+ * the schema comes back as the planner's own `{result: 'error', reason: 'nodes[<i>].<field>
+ * must be ...'}` — one sentence, both runtimes, compared over stdio by
+ * `tools/conformance/suites/workplan.mjs`.
  *
- * A NODE WITH NO `id` RAISES, and raising is the port: `node["id"]` is a `KeyError` on the
- * reference, whose `str()` is the key in single quotes, so the SDK's envelope reads
- * `Error executing tool work_plan: 'id'`. Defaulting it here would answer a plan over a
- * node the reference refused to look at.
- *
- * WHERE THE DYNAMIC HALF STOPS, said rather than hidden. Python keeps an id's own type and
- * this side stringifies it with `str()`'s spelling (`reprValue` for every non-`str`), so a
- * document mixing `5` and `"5"` is two nodes there and one here, and a non-numeric
- * `priority` is a `TypeError` there and a 0 here. Both need a node whose types contradict
- * `assets/tools/work_plan.json`, which nothing in the shift-work corpus produces; they are
- * named here because an unwritten difference is the one that is found later.
+ * A NODE WITH NO `id` STILL RAISES, and raising is the port: `node["id"]` is a `KeyError` on
+ * the reference, whose `str()` is the key in single quotes, so the SDK's envelope reads
+ * `Error executing tool work_plan: 'id'` (`tool/no-id` in the same suite). It is reproduced
+ * here, before the planner runs, because the planner's own answer to a missing id is the
+ * non-string-id sentence and the reference never reaches that line.
  */
-function planNodes(value: PyValue | undefined): PlanNode[] {
-  const pyText = (v: PyValue): string => (v.t === 'str' ? v.v : reprValue(v));
+function planNodes(value: PyValue | undefined): unknown[] {
   const items = value !== undefined && value.t === 'list' ? value.v : [];
   return items.map((item) => {
-    const node = item.t === 'dict' ? item.v : new Map<string, PyValue>();
-    const id = node.get('id');
-    if (id === undefined) throw new BantamError("'id'");
-    const declared = node.get('depends_on');
-    const priority = node.get('priority');
-    return {
-      id: pyText(id),
-      // `list(node.get("depends_on") or [])`: missing, `null` and `[]` are one case.
-      depends_on: declared !== undefined && declared.t === 'list' ? declared.v.map(pyText) : [],
-      priority: priority !== undefined && (priority.t === 'int' || priority.t === 'float') ? Number(priority.v) : 0,
-    };
+    if (item.t === 'dict' && !item.v.has('id')) throw new BantamError("'id'");
+    return toJs(item);
   });
 }
 
