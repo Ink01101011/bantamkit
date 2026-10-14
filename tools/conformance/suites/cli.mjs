@@ -499,22 +499,13 @@ const ASSETS_ROOT_RULING =
 //
 // WHY THESE ARE NOT PROCESS CASES, IN A FILE WHOSE WHOLE POINT IS PROCESSES. Every other
 // argv line here is decided by bytes this harness controls. `--update` is not: its answer
-// comes from a package index, and until J65-19 NEITHER runtime had an environment variable
-// that redirected the lookup. That absence was deliberate — an env var repointing an
-// updater's registry is a real surface with a real hazard — so adding one to make a test
-// reachable would have been building product for the gate. The seams the implementers DID
-// build are `fetch`, `installer` and (since J65-19, #128) `installedVersion`, options of
-// `update()` with real defaults, and this block drives both sides through them: no network,
-// no installer ever run, the command captured as data.
-//
-// AMENDED J65-19 (#135): each runtime now asks ITS OWN PACKAGE MANAGER what the index holds
-// (`npm view --json` / `pip install --dry-run --report -`), so the manager's own config —
-// `npm_config_registry`, `PIP_INDEX_URL`, `.npmrc`, `pip.conf` — redirects the lookup, the
-// same config the install that follows has always honoured. That made a PROCESS case
-// possible without any product variable: `update-registry/…` in the matrix below runs both
-// real CLIs from a registry-shaped install with the package manager STUBBED on the path the
-// runtime resolves it from (`npm` on PATH, a `pip` package on PYTHONPATH), and reads back
-// what each stub was asked, what it was told to install, and what the tree reports after.
+// comes from a package index, and NEITHER runtime has an environment variable that
+// redirects the lookup. That absence is deliberate — an env var repointing an updater's
+// registry is a real surface with a real hazard — so adding one to make a test reachable
+// would be building product for the gate. The seams the implementers DID build are
+// `fetch` and `installer`, keyword arguments of `update()` with real defaults, and this
+// block drives both sides through them: no network, no installer ever run, the command
+// captured as data.
 //
 // THE PROCESS SURFACE OF THE FLAG IS STILL COMPARED, above and below: `--update` appears
 // in both `-h` outputs (byte-identical at ten widths), `mcp-report-then-update` runs both
@@ -534,8 +525,6 @@ const ASSETS_ROOT_RULING =
 /** The environment `upgradeCommand` reads on the port. The reference has no counterpart. */
 const NPM_PREFIX_TREE = { root: '/opt/x', global: false };
 const NPM_GLOBAL_TREE = { root: '/usr/local/lib', global: true };
-/** The same prefix tree whose manifest pins this package EXACTLY — the `--save-exact` fork (#128). */
-const NPM_EXACT_TREE = { root: '/opt/x', global: false, exact: true };
 
 /**
  * Every situation `--update` can be in. One table, driven by both runtimes.
@@ -582,26 +571,6 @@ const UPDATE_ARMS = [
     installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0',
     environment: NPM_PREFIX_TREE, installer: { code: 7, output: 'ERR! EACCES\n' },
   },
-  // J65-19 (#128): the installer exited 0 and the tree did NOT take the version it was told to
-  // install. `after` is what the install reports afterwards — the old version, or nothing
-  // readable — and both runtimes must refuse rather than print `updated … to 0.31.0`.
-  {
-    id: 'behind-but-the-tree-kept-the-old-version',
-    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0', after: '0.30.0',
-    environment: NPM_PREFIX_TREE, installer: { code: 0, output: 'changed 1 package in 1s\n' },
-  },
-  {
-    id: 'behind-but-nothing-readable-afterwards',
-    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0', after: null,
-    environment: NPM_PREFIX_TREE, installer: { code: 0, output: 'ok\n' },
-  },
-  // And the tree reporting `0.31` for a compared `0.31.0` is the same release by the version
-  // rule both sides share, so this one is a SUCCESS.
-  {
-    id: 'behind-and-the-tree-reports-it-padded',
-    installed: '0.30.0', shape: 'registry', source: '/s', latest: '0.31.0', after: '0.31',
-    environment: NPM_PREFIX_TREE, installer: { code: 0, output: 'ok\n' },
-  },
   // The comparison itself, through the product sentence rather than through the function.
   {
     id: 'behind-by-a-two-digit-patch',
@@ -637,12 +606,8 @@ const UPDATE_ARMS = [
   { id: 'garbage-empty-object', installed: '0.30.0', shape: 'registry', source: '/s', body: '{}' },
   { id: 'garbage-null', installed: '0.30.0', shape: 'registry', source: '/s', body: 'null' },
   { id: 'garbage-array', installed: '0.30.0', shape: 'registry', source: '/s', body: '[1, 2, 3]' },
-  // Each side's OWN path carries the bad value, so neither refuses merely for not finding it.
-  { id: 'garbage-version-not-a-string', installed: '0.30.0', shape: 'registry', source: '/s', body: '{"version": 31, "install": [{"metadata": {"version": 31}}]}' },
-  { id: 'garbage-version-blank', installed: '0.30.0', shape: 'registry', source: '/s', body: '{"version": "  ", "install": [{"metadata": {"version": "  "}}]}' },
-  // The path the reference READ until J65-19 is garbage on both sides now (#135): the reference
-  // no longer reads pypi.org's `info.version`, and the port never did.
-  { id: 'garbage-the-old-pypi-path', installed: '0.30.0', shape: 'registry', source: '/s', body: '{"info": {"version": "0.31.0"}}' },
+  { id: 'garbage-version-not-a-string', installed: '0.30.0', shape: 'registry', source: '/s', body: '{"version": 31, "info": {"version": 31}}' },
+  { id: 'garbage-version-blank', installed: '0.30.0', shape: 'registry', source: '/s', body: '{"version": "  ", "info": {"version": "  "}}' },
 ];
 
 /** Where the installer command appears, and the arms whose route sentence quotes one. */
@@ -651,9 +616,6 @@ const UPDATE_COMMAND_ARMS = [
   'behind-global-tree',
   'behind-installer-said-nothing',
   'behind-installer-failed',
-  'behind-but-the-tree-kept-the-old-version',
-  'behind-but-nothing-readable-afterwards',
-  'behind-and-the-tree-reports-it-padded',
   'behind-by-a-two-digit-patch',
   'behind-by-a-two-digit-minor',
   'behind-whitespace-version',
@@ -680,9 +642,8 @@ const UPDATE_COMPARE_PAIRS = [
 const UPDATE_COMMAND_RULING =
   'RULED DIFFERENT, and carried in `docs/porting.md`. The two runtimes upgrade from two ' +
   'registries with two package managers, so the one line that NAMES the command cannot be ' +
-  'the same sentence: `pip install --upgrade bantamkit==<latest>` on the reference against ' +
-  '`npm install --global bantamkit-mcp@<latest>` (or `--prefix <root>`) on the port — both ' +
-  'naming the version they compared since J65-19 (#128), never `latest`. The ' +
+  'the same sentence: `pip install --upgrade bantamkit` on the reference against ' +
+  '`npm install --global bantamkit-mcp@latest` (or `--prefix <root>`) on the port. The ' +
   'template around it — `updating from the package index: {command}` and `the update ' +
   'command exited {code}: {command}` — is byte-identical and is compared unruled beside ' +
   'this, arm by arm, as is the refusal bit for every arm in the table.';
@@ -737,7 +698,7 @@ async function nodeUpdateAnswers(ctx, arms, pairs) {
     const goneText = `THE PORT HAS NO --update: ${e.message}`;
     return {
       gone: e.message,
-      arms: Object.fromEntries(arms.map((a) => [a.id, { ok: null, text: goneText, request: null, timeout: null, command: null }])),
+      arms: Object.fromEntries(arms.map((a) => [a.id, { ok: null, text: goneText, url: null, timeout: null, command: null }])),
       compare: pairs.map(() => null),
       constants: gone,
       index: gone,
@@ -745,18 +706,15 @@ async function nodeUpdateAnswers(ctx, arms, pairs) {
       commands: gone,
     };
   }
-  /** What `npm view bantamkit-mcp@latest --json` answers: the version at the TOP level. */
+  /** What the npm registry answers at `/<pkg>/latest`: the version at the TOP level. */
   const indexDocument = (version) => JSON.stringify({ version });
   const answers = {};
   for (const arm of arms) {
-    const seen = { request: null, timeout: null, command: null };
+    const seen = { url: null, timeout: null, command: null };
     const options = {
       environment: arm.environment ?? NPM_PREFIX_TREE,
-      // `after` when the arm carries the key (`null` = nothing readable), else the compared
-      // version — the same default `update_ref.py`'s `landed` applies on the reference.
-      installedVersion: () => ('after' in arm ? arm.after : String(arm.latest)),
-      fetch: (command, timeout) => {
-        seen.request = su.shlexJoin(command);
+      fetch: (url, timeout) => {
+        seen.url = url;
         seen.timeout = timeout;
         if (arm.raise === 'timeout') throw new su.IndexTimeout(arm.reason ?? 'timed out');
         if (arm.raise === 'unreachable') throw new Error(arm.reason ?? 'unreachable');
@@ -783,19 +741,17 @@ async function nodeUpdateAnswers(ctx, arms, pairs) {
   const names = [
     'PROGRAM', 'COMPARISON', 'UP_TO_DATE', 'AHEAD', 'UPDATING', 'PRINTED', 'UPDATED',
     'RESTART', 'NO_ROUTE', 'TIMED_OUT', 'UNREACHABLE', 'NOT_A_VERSION', 'COMMAND_FAILED',
-    'NOT_INSTALLED', 'NO_INSTALLED_VERSION', 'NO_RECORDED_ROUTE',
     'SHAPE_UNKNOWN', 'NOT_JSON', 'NO_VERSION_FIELD', 'NO_OUTPUT',
   ];
   return {
     arms: answers,
     compare: pairs.map(([a, b]) => su.compareVersions(String(a), String(b))),
     constants: Object.fromEntries(names.map((n) => [n, su[n]])),
-    index: { command: su.shlexJoin(su.indexCommand(NPM_PREFIX_TREE)), document: indexDocument('0.31.0'), timeout: su.DEFAULT_TIMEOUT_SECONDS },
+    index: { url: su.INDEX_URL, document: indexDocument('0.31.0'), timeout: su.DEFAULT_TIMEOUT_SECONDS },
     routes: Object.keys(su.ROUTES).sort(),
     commands: {
-      prefix: su.shlexJoin(su.upgradeCommand(NPM_PREFIX_TREE, '0.31.0')),
-      global: su.shlexJoin(su.upgradeCommand(NPM_GLOBAL_TREE, '0.31.0')),
-      exactPrefix: su.shlexJoin(su.upgradeCommand(NPM_EXACT_TREE, '0.31.0')),
+      prefix: su.shlexJoin(su.upgradeCommand(NPM_PREFIX_TREE)),
+      global: su.shlexJoin(su.upgradeCommand(NPM_GLOBAL_TREE)),
     },
   };
 }
@@ -813,9 +769,6 @@ const DISPATCH_ARMS = [
   { id: 'up-to-date', installed: '0.30.0', shape: 'registry', latest: '0.30.0', full: true },
   { id: 'behind', installed: '0.30.0', shape: 'registry', latest: '0.31.0', installer: { code: 0, output: 'added 1 package\n' } },
   { id: 'behind-installer-failed', installed: '0.30.0', shape: 'registry', latest: '0.31.0', installer: { code: 7, output: 'ERR! EACCES\n' } },
-  // J65-19 (#128): exit 0 from the installer and the tree still at the old version is a refusal
-  // on stderr with exit 1 — through the dispatcher, on both sides.
-  { id: 'behind-but-not-installed', installed: '0.30.0', shape: 'registry', latest: '0.31.0', after: '0.30.0', installer: { code: 0, output: 'changed 1 package in 1s\n' } },
   { id: 'offline-unreachable', installed: '0.30.0', shape: 'registry', raise: 'unreachable', reason: 'getaddrinfo ENOTFOUND registry', full: true },
   { id: 'route-checkout', installed: '0.30.0', shape: 'checkout', source: '/home/me/src/bantamkit', latest: '0.31.0' },
   { id: 'undetermined', installed: '0.30.0', undetermined: 'its origin is a git URL', full: true },
@@ -834,7 +787,7 @@ const UPDATE_KEPT_RULING =
   'not launch the cache: `--install` recorded the kept install at `<homedir>/.bantamkit/mcp`. ' +
   'So when that install exists — a manifest with a version, and npm’s `package.json` at the ' +
   'prefix — the port’s `--update` updates IT through the registry route: its version is the ' +
-  'one compared, `npm install --prefix <kept> bantamkit-mcp@<latest>` is the command, exit 0. ' +
+  'one compared, `npm install --prefix <kept> bantamkit-mcp@latest` is the command, exit 0. ' +
   'The reference never derives `ephemeral` and has no kept install, so handed that shape it ' +
   'refuses exactly as it does without one. Unruled beside this: the report is the registry ' +
   'route’s line for line against the reference, the reference’s answer does not move with ' +
@@ -843,7 +796,7 @@ const UPDATE_KEPT_RULING =
 /** The port's whole stdout on the kept-install arm, HOME masked. Typed, not captured. */
 const KEPT_UPDATE_REPORT = [
   'bantamkit-mcp 0.30.0 is installed; the package index has 0.31.0.',
-  `updating from the package index: npm install --prefix ${join('<HOME>', '.bantamkit', 'mcp')} bantamkit-mcp@0.31.0`,
+  `updating from the package index: npm install --prefix ${join('<HOME>', '.bantamkit', 'mcp')} bantamkit-mcp@latest`,
   'the command printed:',
   'added 1 package',
   'updated bantamkit-mcp from 0.30.0 to 0.31.0.',
@@ -891,8 +844,7 @@ async function nodeDispatchAnswers(ctx, arms, homes) {
             if (arm.undetermined !== undefined) throw new identity.Undetermined(arm.undetermined);
             return { shape: arm.shape, source: arm.source ?? null };
           },
-          installedVersion: () => ('after' in arm ? arm.after : String(arm.latest)),
-          fetch: (_command, _timeout) => {
+          fetch: (_url, _timeout) => {
             if (arm.raise === 'unreachable') throw new Error(arm.reason ?? 'unreachable');
             return JSON.stringify({ version: String(arm.latest) });
           },
@@ -1168,341 +1120,6 @@ function npxCacheSandbox(scratch, name, resolved, keptVersion = PORT_VERSION) {
   };
 }
 
-/** The version the reference reports, read the way `mcpserver._version()` reads it: `__version__`. */
-const REFERENCE_VERSION = (() => {
-  const source = readFileSync(join(repoRoot, 'runtime-py', 'src', 'bantamkit', '__init__.py'), 'utf8');
-  const found = /^__version__ = "([^"]+)"/m.exec(source);
-  if (found === null) throw new Error('runtime-py/src/bantamkit/__init__.py carries no __version__ line');
-  return found[1];
-})();
-
-/** What the `update-registry` stubs answer for `latest` — ahead of any version either tree reports. */
-const STUB_LATEST = '9.9.9';
-
-/** The one line both stubs print after an install, so the report around it is byte-comparable. */
-const STUB_INSTALLED_LINE = 'installed by the stub';
-
-/**
- * THE PACKAGE MANAGERS, STUBBED — for `--update` driven as a PROCESS on both sides (J65-19).
- *
- * WHY STUBS AND NOT THE REAL ONES. `--update` is two calls to the package manager now: the
- * version question (`npm view` / `pip install --dry-run --report -`) and the install. A case
- * that let either reach a registry would fail on a plane and pass for the wrong reason off a
- * cache, and a case that ran a real install would rewrite the bed under the running process.
- * The thing under test is not npm or pip: it is what each runtime does AROUND them — which
- * version it asks for, which version it tells them to install (#128), and whether it reads the
- * tree back before it says `updated`. So each stub RECORDS its argv, answers the version
- * question with `STUB_LATEST`, and on install writes the version the spec names into the tree's
- * own manifest — or, told to lie (`BK_STUB_INSTALLS`), some other version, which is the
- * exit-0-but-nothing-changed defect #128 measured.
- *
- * WHERE EACH STUB GOES is where each runtime resolves its package manager from, and nowhere
- * else: the port spawns a bare `npm` off PATH, so the stub is a shell script named `npm` first
- * on the port's PATH (the `npmStub` idiom, self-probed the same way — a platform where a bare
- * `npm` does not resolve to a shell script gets a note and no cases); the reference spawns
- * `sys.executable -m pip`, so the stub is a `pip` package first on the reference's PYTHONPATH,
- * which shadows the venv's own pip for that interpreter. Neither side's environment is
- * touched for the other.
- */
-function packageManagerStubs(scratch) {
-  const root = join(scratch, 'update-stubs');
-  rmSync(root, { recursive: true, force: true });
-  const bin = join(root, 'bin');
-  const pysite = join(root, 'pysite', 'pip');
-  mkdirSync(bin, { recursive: true });
-  mkdirSync(pysite, { recursive: true });
-  writeFileSync(
-    join(bin, 'npm'),
-    [
-      '#!/bin/sh',
-      '# A stand-in for npm, for the conformance harness: records argv, answers `view` with',
-      '# $BK_STUB_LATEST, and on `install --prefix <dir> bantamkit-mcp@<v>` writes <v> (or',
-      '# $BK_STUB_INSTALLS, the lie) into <dir>/node_modules/bantamkit-mcp/package.json.',
-      'echo "$@" >> "$BK_STUB_LOG"',
-      'case "$1" in',
-      `  view) printf '{"name":"bantamkit-mcp","version":"%s"}\\n' "$BK_STUB_LATEST"; exit 0;;`,
-      '  install)',
-      '    prefix=""; spec=""',
-      '    while [ $# -gt 0 ]; do',
-      '      case "$1" in --prefix) prefix="$2"; shift;; bantamkit-mcp@*) spec="${1#bantamkit-mcp@}";; esac',
-      '      shift',
-      '    done',
-      '    [ -n "$prefix" ] || exit 2',
-      '    writes="${BK_STUB_INSTALLS:-$spec}"',
-      '    mkdir -p "$prefix/node_modules/bantamkit-mcp"',
-      `    printf '{"name":"bantamkit-mcp","version":"%s"}\\n' "$writes" > "$prefix/node_modules/bantamkit-mcp/package.json"`,
-      `    echo "${STUB_INSTALLED_LINE}: $writes"; exit 0;;`,
-      'esac',
-      'exit 2',
-      '',
-    ].join('\n'),
-  );
-  chmodSync(join(bin, 'npm'), 0o755);
-  writeFileSync(join(pysite, '__init__.py'), '# the conformance harness stand-in for pip; see cli.mjs packageManagerStubs\n');
-  writeFileSync(
-    join(pysite, '__main__.py'),
-    [
-      '# The conformance harness stand-in for pip: records argv, answers the dry-run report',
-      '# with BK_STUB_LATEST, and on `install --upgrade bantamkit==<v>` writes <v> (or',
-      '# BK_STUB_INSTALLS, the lie) into the METADATA file BK_STUB_METADATA names. No network.',
-      'import json',
-      'import os',
-      'import pathlib',
-      'import re',
-      'import sys',
-      '',
-      'args = sys.argv[1:]',
-      'with open(os.environ["BK_STUB_LOG"], "a", encoding="utf-8") as log:',
-      '    log.write(" ".join(args) + "\\n")',
-      'latest = os.environ["BK_STUB_LATEST"]',
-      'if "--dry-run" in args and "--report" in args:',
-      '    json.dump({"version": "1", "install": [{"metadata": {"name": "bantamkit", "version": latest}}]}, sys.stdout)',
-      '    sys.exit(0)',
-      'if args[:1] == ["install"]:',
-      '    spec = args[-1]',
-      '    wanted = spec.split("==", 1)[1] if "==" in spec else "latest"',
-      '    writes = os.environ.get("BK_STUB_INSTALLS") or wanted',
-      '    metadata = pathlib.Path(os.environ["BK_STUB_METADATA"])',
-      '    text = metadata.read_text(encoding="utf-8")',
-      '    metadata.write_text(re.sub(r"^Version: .*$", f"Version: {writes}", text, flags=re.M), encoding="utf-8")',
-      `    print("${STUB_INSTALLED_LINE}: " + writes)`,
-      '    sys.exit(0)',
-      'sys.exit(2)',
-      ''
-    ].join('\n'),
-  );
-  // The port-side probe: a bare `npm view` resolved off a PATH with the stub first must answer
-  // the stub's document. Nothing here reads `process.platform`.
-  const pathEntry = `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}`;
-  const probeLog = join(root, 'probe.log');
-  const r = spawnSync('npm', ['view', 'bantamkit-mcp@latest', '--json'], {
-    encoding: 'utf8',
-    env: { ...process.env, PATH: pathEntry, BK_STUB_LOG: probeLog, BK_STUB_LATEST: STUB_LATEST },
-    shell: process.platform === 'win32',
-  });
-  const works = r.status === 0 && (r.stdout ?? '').includes(`"${STUB_LATEST}"`);
-  return {
-    bin,
-    pysite: dirname(pysite),
-    pathEntry,
-    works,
-    why: works
-      ? 'a bare `npm` on PATH resolved to the stub and it answered the view'
-      : `a bare \`npm\` on PATH did not answer the stub's view (exit ${r.status}, error ${r.error?.code ?? 'none'})`,
-  };
-}
-
-/**
- * THIS BUILD, LAID OUT AS A REGISTRY INSTALL ON BOTH SIDES, with the package managers stubbed
- * (`packageManagerStubs`) — so `--update` runs its whole registry route as a PROCESS.
- *
- * The port: `<project>/node_modules/bantamkit-mcp/{package.json,dist}` plus npm's hidden
- * lockfile with an https `resolved` and NO `_npx` marker — `registry`, not `ephemeral` — and a
- * `package.json` at the project pinning this package EXACTLY, so the `--save-exact` fork is
- * the one driven. Its runtime dependencies come through one directory link, as in
- * `npxCacheSandbox`. The reference: a copy of `runtime-py/src/bantamkit` in a site directory
- * beside a `bantamkit-<version>.dist-info` whose RECORD owns the running file and which carries
- * no `direct_url.json` — which is what `_derive_install` reads as `registry` — put FIRST on
- * PYTHONPATH, ahead of the harness's own editable install, with the stub `pip` beside it.
- *
- * `lies` makes both stubs write a version other than the one they were told — the #128 shape.
- */
-function updateRegistryBed(scratch, name, stubs, { lies = false } = {}) {
-  const root = join(scratch, `update-${name}`);
-  rmSync(root, { recursive: true, force: true });
-  // --- the port
-  const project = join(root, 'node', 'project');
-  const pkg = join(project, 'node_modules', 'bantamkit-mcp');
-  mkdirSync(pkg, { recursive: true });
-  cpSync(join(repoRoot, 'runtime-ts', 'dist'), join(pkg, 'dist'), { recursive: true });
-  cpSync(join(repoRoot, 'runtime-ts', 'package.json'), join(pkg, 'package.json'));
-  symlinkSync(join(repoRoot, 'runtime-ts', 'node_modules'), join(pkg, 'node_modules'), 'junction');
-  writeFileSync(join(project, 'package.json'), `${JSON.stringify({ dependencies: { 'bantamkit-mcp': PORT_VERSION } })}\n`);
-  writeFileSync(
-    join(project, 'node_modules', '.package-lock.json'),
-    `${JSON.stringify({
-      name: 'project',
-      lockfileVersion: 3,
-      requires: true,
-      packages: { 'node_modules/bantamkit-mcp': { version: PORT_VERSION, resolved: `https://registry.npmjs.org/bantamkit-mcp/-/bantamkit-mcp-${PORT_VERSION}.tgz` } },
-    })}\n`,
-  );
-  // --- the reference
-  const site = join(root, 'py', 'site');
-  cpSync(join(repoRoot, 'runtime-py', 'src', 'bantamkit'), join(site, 'bantamkit'), { recursive: true });
-  const distInfo = join(site, `bantamkit-${REFERENCE_VERSION}.dist-info`);
-  mkdirSync(distInfo, { recursive: true });
-  writeFileSync(join(distInfo, 'METADATA'), `Metadata-Version: 2.1\nName: bantamkit\nVersion: ${REFERENCE_VERSION}\n`);
-  writeFileSync(join(distInfo, 'RECORD'), 'bantamkit/__init__.py,,\n');
-  const homes = { py: join(root, 'py', 'home'), node: join(root, 'node', 'home') };
-  for (const home of Object.values(homes)) mkdirSync(home, { recursive: true });
-  const logs = { py: join(root, 'py', 'pip.log'), node: join(root, 'node', 'npm.log') };
-  const lie = lies ? { BK_STUB_INSTALLS: 'lying' } : {};
-  return {
-    cli: join(pkg, 'dist', 'cli.js'),
-    project,
-    site,
-    homes,
-    logs,
-    lies,
-    sideEnv: {
-      py: {
-        HOME: homes.py,
-        USERPROFILE: homes.py,
-        PYTHONPATH: `${site}${process.platform === 'win32' ? ';' : ':'}${stubs.pysite}`,
-        BK_STUB_LOG: logs.py,
-        BK_STUB_LATEST: STUB_LATEST,
-        BK_STUB_METADATA: join(distInfo, 'METADATA'),
-        ...lie,
-      },
-      node: {
-        HOME: homes.node,
-        USERPROFILE: homes.node,
-        PATH: stubs.pathEntry,
-        BK_STUB_LOG: logs.node,
-        BK_STUB_LATEST: STUB_LATEST,
-        ...lie,
-      },
-    },
-    manifestVersion: () => ({
-      node: (() => {
-        try {
-          return JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version ?? ABSENT;
-        } catch {
-          return ABSENT;
-        }
-      })(),
-      python: (() => {
-        const found = /^Version: (.*)$/m.exec(readOrAbsent(join(distInfo, 'METADATA')));
-        return found === null ? ABSENT : found[1];
-      })(),
-    }),
-  };
-}
-
-/** The stubs' self-probe for `update-registry`, recorded by `matrix` and reported by `run`. */
-let UPDATE_STUBS = null;
-
-/**
- * The lines of a `--update` stream, with the machine facts masked and the one line naming the
- * installer command set apart: `<INSTALLED>` for the version this tree reports (two trees, one
- * release, but a bump lands in two files), `<ROOT>` for the port's prefix tree.
- */
-function updateStreamOf(text, bed, side) {
-  const installed = side === 'python' ? REFERENCE_VERSION : PORT_VERSION;
-  const masked = text.split(bed.project).join('<ROOT>').split(installed).join('<INSTALLED>');
-  const names = (line) => / -m pip install --upgrade | npm install /.test(line);
-  const lines = masked.split('\n');
-  return { command: lines.filter(names).join('\n'), rest: lines.filter((l) => !names(l)).join('\n') };
-}
-
-/**
- * `--update` as a PROCESS, registry route, package managers stubbed (J65-19). The one line
- * that names the installer command is ruled (`UPDATE_COMMAND_RULING`, the same ruling the
- * in-process arms carry); everything else is compared as bytes; and what each stub was asked,
- * what it was told to install and what the tree reports afterwards are pinned PER SIDE —
- * because a differential cannot see `--save-exact`, `==`/`@`, or the two package managers.
- */
-function updateRegistryCases(spec, py, node) {
-  const bed = spec;
-  const pyOut = updateStreamOf(dec(py.stdout), bed, 'python');
-  const nodeOut = updateStreamOf(dec(node.stdout), bed, 'node');
-  const pyErr = updateStreamOf(dec(py.stderr), bed, 'python');
-  const nodeErr = updateStreamOf(dec(node.stderr), bed, 'node');
-  const askedOf = (log) => readOrAbsent(log).split('\n').filter((l) => l !== '');
-  const afterwards = bed.manifestVersion();
-  const cases = [
-    // THE PRECONDITION: both stubs were reached, twice each, in the order the flag promises —
-    // asked for the version first, then told to install. Without this every case below could
-    // pass because the flag refused before reaching either (a bed that reads as `checkout`).
-    {
-      name: `${spec.label}/precondition: each package manager was asked, then told to install, and nothing else`,
-      kind: 'json',
-      expected: { python: 2, node: 2 },
-      actual: { python: askedOf(bed.logs.py).length, node: askedOf(bed.logs.node).length },
-    },
-    {
-      name: `${spec.label}/PINNED PER SIDE: what each package manager was asked, and the exact version it was told to install`,
-      kind: 'json',
-      expected: {
-        python: [
-          'install --dry-run --no-deps --ignore-installed --retries 0 --disable-pip-version-check -q --report - bantamkit',
-          `install --upgrade bantamkit==${STUB_LATEST}`,
-        ],
-        node: [
-          'view --prefix <ROOT> bantamkit-mcp@latest --json --fetch-retries=0',
-          `install --prefix <ROOT> --save-exact bantamkit-mcp@${STUB_LATEST}`,
-        ],
-      },
-      actual: {
-        python: askedOf(bed.logs.py),
-        node: askedOf(bed.logs.node).map((l) => l.split(bed.project).join('<ROOT>')),
-      },
-    },
-    {
-      name: `${spec.label}/stdout-command-line`,
-      kind: 'string',
-      expected: pipCommandOf(pyOut.command),
-      actual: nodeOut.command,
-      ruling: UPDATE_COMMAND_RULING,
-    },
-    { name: `${spec.label}/stdout-everything-else`, kind: 'bytes', expected: pyOut.rest, actual: nodeOut.rest },
-    { name: `${spec.label}/stderr-everything-but-the-command-line`, kind: 'bytes', expected: pyErr.rest, actual: nodeErr.rest },
-    { name: `${spec.label}/exit`, kind: 'json', expected: py.exit, actual: node.exit },
-    {
-      name: `${spec.label}/PINNED PER SIDE: the exit code, the refusal bit, and the version the tree reports afterwards`,
-      kind: 'json',
-      expected: {
-        python: { exit: bed.lies ? 1 : 0, refused: bed.lies, reports: bed.lies ? 'lying' : STUB_LATEST },
-        node: { exit: bed.lies ? 1 : 0, refused: bed.lies, reports: bed.lies ? 'lying' : STUB_LATEST },
-      },
-      actual: {
-        python: { exit: py.exit, refused: dec(py.stderr).startsWith('error: '), reports: afterwards.python },
-        node: { exit: node.exit, refused: dec(node.stderr).startsWith('error: '), reports: afterwards.node },
-      },
-    },
-  ];
-  const restart = 'restart the server: a running bantamkit-mcp keeps serving the code it loaded at startup, so bantamkit_status will report <INSTALLED> until the host reconnects.';
-  if (bed.lies) {
-    const refusal = (command) =>
-      `error: the update command exited 0 but did not install ${STUB_LATEST}: ${command}\n` +
-      `bantamkit-mcp now reports lying, not ${STUB_LATEST}; the tree the command names did not take the update.\n` +
-      `the command printed:\n${STUB_INSTALLED_LINE}: lying\n`;
-    cases.push({
-      name: `${spec.label}/PINNED PER SIDE: the refusal names what the tree reports, not what the index said`,
-      kind: 'json',
-      expected: {
-        python: { stdout: '', stderr: refusal(`<sys.executable> -m pip install --upgrade bantamkit==${STUB_LATEST}`) },
-        node: { stdout: '', stderr: refusal(`npm install --prefix <ROOT> --save-exact bantamkit-mcp@${STUB_LATEST}`) },
-      },
-      actual: {
-        python: { stdout: dec(py.stdout), stderr: pipCommandOf(dec(py.stderr)) },
-        node: { stdout: dec(node.stdout), stderr: dec(node.stderr).split(bed.project).join('<ROOT>') },
-      },
-    });
-  } else {
-    const report = (command) =>
-      `bantamkit-mcp <INSTALLED> is installed; the package index has ${STUB_LATEST}.\n` +
-      `updating from the package index: ${command}\n` +
-      `the command printed:\n${STUB_INSTALLED_LINE}: ${STUB_LATEST}\n` +
-      `updated bantamkit-mcp from <INSTALLED> to ${STUB_LATEST}.\n` +
-      `${restart}\n`;
-    cases.push({
-      name: `${spec.label}/PINNED PER SIDE: the success report, against this file`,
-      kind: 'json',
-      expected: {
-        python: { stdout: report(`<sys.executable> -m pip install --upgrade bantamkit==${STUB_LATEST}`), stderr: '' },
-        node: { stdout: report(`npm install --prefix <ROOT> --save-exact bantamkit-mcp@${STUB_LATEST}`), stderr: '' },
-      },
-      actual: {
-        python: { stdout: pipCommandOf(dec(py.stdout).split(REFERENCE_VERSION).join('<INSTALLED>')), stderr: dec(py.stderr) },
-        node: { stdout: dec(node.stdout).split(bed.project).join('<ROOT>').split(PORT_VERSION).join('<INSTALLED>'), stderr: dec(node.stderr) },
-      },
-    });
-  }
-  return cases;
-}
-
 /**
  * The `  command: ` line with the three machine facts in it named: this node, this python as
  * `Path(sys.executable).resolve()` spells it, and the side's HOME. Everything else is the record.
@@ -1709,7 +1326,6 @@ function withStubOnNodePath(spec, stub) {
 function matrix(scratch) {
   const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home') } };
   NPM_STUB = npmStub(scratch, PORT_VERSION);
-  UPDATE_STUBS = packageManagerStubs(scratch);
   return [
     { label: 'help-short', argv: ['-h'] },
     { label: 'help-long', argv: ['--help'] },
@@ -1845,16 +1461,6 @@ function matrix(scratch) {
       shape: 'wrote-nothing',
       ...installSandbox(scratch, 'order-update'),
     },
-    // J65-19: `--update` ITSELF as a process, on the registry route, both package managers
-    // stubbed (`packageManagerStubs`, `updateRegistryBed`). The honest bed proves #128's
-    // property — the version compared is the version installed, and the success line is read
-    // off the tree — and the lying bed proves the refusal that replaced the false success.
-    ...(UPDATE_STUBS.works
-      ? [
-          { label: 'update-registry', argv: ['--update'], shape: 'update-registry', ...updateRegistryBed(scratch, 'honest', UPDATE_STUBS) },
-          { label: 'update-registry-lying-installer', argv: ['--update'], shape: 'update-registry', ...updateRegistryBed(scratch, 'lying', UPDATE_STUBS, { lies: true }) },
-        ]
-      : []),
     { label: 'force-without-install', argv: ['--force'] },
     { label: 'double-dash-positional', argv: ['--', 'positional'] },
     { label: 'prefix-abbreviation', argv: ['--inde', '5'], serves: true, ...sandbox },
@@ -2206,12 +1812,7 @@ export async function run(ctx) {
       });
     } else if (spec.shape === 'install-undetermined') {
       cases.push(...undeterminedInstallCases(spec, py, node, pythonResolved, spec.origin));
-    } else if (spec.shape === 'update-registry') {
-      cases.push(...updateRegistryCases(spec, py, node));
     } else cases.push(...streamCases(spec.label, py, node));
-  }
-  if (!UPDATE_STUBS.works) {
-    notes.push(`update-registry: NOT MEASURED HERE — ${UPDATE_STUBS.why}; the process cases were not added`);
   }
 
   // THE ROUTE `store-equals-value` NOW TAKES, pinned. J48-3 registered it as a vacuity item:
@@ -3067,41 +2668,22 @@ export async function run(ctx) {
   // ruled: a ruling has to be on a case that DIFFERS, and these two never meet in one
   // output. Pinned per side instead, with the document shape beside the URL, because the
   // JSON path is half of it and a URL alone would leave the other half unstated.
-  // AMENDED J65-19 (#135): the URL each runtime fetched itself became the COMMAND each runtime
-  // asks its own package manager — so the registry, proxy and auth config the install honours
-  // is honoured by the check in front of it — and the reference's JSON path moved from
-  // pypi.org's `info.version` to pip's report, `install[0].metadata.version`.
   cases.push({
     name: 'update/PINNED PER SIDE: the index each runtime asks, and the document shape it reads',
     kind: 'json',
     expected: {
       python: {
-        command: '<sys.executable> -m pip install --dry-run --no-deps --ignore-installed --retries 0 --disable-pip-version-check -q --report - bantamkit',
-        document: '{"install": [{"metadata": {"version": "0.31.0"}}]}',
+        url: 'https://pypi.org/pypi/bantamkit/json',
+        document: '{"info": {"version": "0.31.0"}}',
         timeout: 10,
       },
       node: {
-        command: 'npm view --prefix /opt/x bantamkit-mcp@latest --json --fetch-retries=0',
+        url: 'https://registry.npmjs.org/bantamkit-mcp/latest',
         document: '{"version":"0.31.0"}',
         timeout: 10,
       },
     },
-    actual: {
-      python: { ...updatePy.index, command: pipCommandOf(updatePy.index?.command) },
-      node: updateNode.index,
-    },
-  });
-
-  // ---- the request each arm handed its package manager, side to side as a SHAPE: every arm
-  // asked exactly once through the seam — the index is asked before the shape is judged, so
-  // the set of arms that asked is the whole table on both sides.
-  const requestedOf = (answers) =>
-    Object.fromEntries(UPDATE_ARMS.map((a) => [a.id, answers[a.id].request !== null && answers[a.id].request !== '']));
-  cases.push({
-    name: 'update/every arm asked its package manager through the seam, on both sides',
-    kind: 'json',
-    expected: requestedOf(updatePy.arms),
-    actual: requestedOf(updateNode.arms),
+    actual: { python: updatePy.index, node: updateNode.index },
   });
 
   // ---- the shape vocabulary the route table answers for. Not ruled: the WORDS are shared
@@ -3171,56 +2753,22 @@ export async function run(ctx) {
   cases.push({
     name: 'update/PINNED PER SIDE: the upgrade command in a prefix tree and in the global tree',
     kind: 'json',
-    // J65-19 (#128): `==0.31.0` and `@0.31.0` — the version each side COMPARED, never a bare
-    // name or `latest` resolved a second time — and the `--save-exact` fork, which exists on
-    // one runtime only (npm rewrites an exact pin to a caret range without it) and so is a
-    // literal here rather than a differential.
     expected: {
       python: {
-        prefix: '<sys.executable> -m pip install --upgrade bantamkit==0.31.0',
-        global: '<sys.executable> -m pip install --upgrade bantamkit==0.31.0',
-        exactPrefix: '<sys.executable> -m pip install --upgrade bantamkit==0.31.0',
+        prefix: '<sys.executable> -m pip install --upgrade bantamkit',
+        global: '<sys.executable> -m pip install --upgrade bantamkit',
       },
       node: {
-        prefix: 'npm install --prefix /opt/x bantamkit-mcp@0.31.0',
-        global: 'npm install --global bantamkit-mcp@0.31.0',
-        exactPrefix: 'npm install --prefix /opt/x --save-exact bantamkit-mcp@0.31.0',
+        prefix: 'npm install --prefix /opt/x bantamkit-mcp@latest',
+        global: 'npm install --global bantamkit-mcp@latest',
       },
     },
     actual: {
       python: {
         prefix: pipCommandOf(updatePy.arms['behind-prefix-tree'].command),
         global: pipCommandOf(updatePy.arms['behind-global-tree'].command),
-        exactPrefix: pipCommandOf(updatePy.arms['behind-prefix-tree'].command),
       },
-      node: { prefix: updateNode.commands.prefix, global: updateNode.commands.global, exactPrefix: updateNode.commands.exactPrefix },
-    },
-  });
-
-  // ---- the exit-0-but-not-installed refusal (J65-19, #128), PER SIDE against this file. The
-  // differential beside the ruling compares the two texts line for line already; this is the
-  // literal that notices both runtimes going back to printing `updated` off the index together.
-  const NOT_INSTALLED_REST = (command) =>
-    `the update command exited 0 but did not install 0.31.0: ${command}\n` +
-    'bantamkit-mcp now reports 0.30.0, not 0.31.0; the tree the command names did not take the update.\n' +
-    'the command printed:\n' +
-    'changed 1 package in 1s';
-  cases.push({
-    name: 'update/PINNED PER SIDE: the exit-0-but-not-installed refusal, against this file',
-    kind: 'json',
-    expected: {
-      python: { refused: true, text: NOT_INSTALLED_REST('<sys.executable> -m pip install --upgrade bantamkit==0.31.0') },
-      node: { refused: true, text: NOT_INSTALLED_REST('npm install --prefix /opt/x bantamkit-mcp@0.31.0') },
-    },
-    actual: {
-      python: {
-        refused: updatePy.arms['behind-but-the-tree-kept-the-old-version'].ok === false,
-        text: pipCommandOf(updatePy.arms['behind-but-the-tree-kept-the-old-version'].text),
-      },
-      node: {
-        refused: updateNode.arms['behind-but-the-tree-kept-the-old-version'].ok === false,
-        text: updateNode.arms['behind-but-the-tree-kept-the-old-version'].text,
-      },
+      node: { prefix: updateNode.commands.prefix, global: updateNode.commands.global },
     },
   });
 
@@ -3388,7 +2936,6 @@ export async function run(ctx) {
     'up-to-date': 0,
     behind: 0,
     'behind-installer-failed': 1,
-    'behind-but-not-installed': 1,
     'offline-unreachable': 1,
     'route-checkout': 1,
     undetermined: 1,

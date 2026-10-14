@@ -441,30 +441,6 @@ and was amended twice (2026-09-11 when the flag shipped; 2026-09-15 for job51's 
 route) before a review (J51-9b, F4) had it rewritten. From 0.34.0 the kept-install route runs
 `npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@latest` instead of refusing.
 
-Since job65 (J65-19, 2026-10-14; issues #128, #135, #177) the flag does three things it did not
-do in 0.35.7, on both runtimes:
-
-- **It asks the package manager, not a URL.** The version check is `npm view --prefix <root>
-  bantamkit-mcp@latest --json` (`pip install --dry-run --report -` on the Python side), so the
-  registry npm is configured for — `npm_config_registry`, `.npmrc`, a proxy, a private
-  mirror's token — is the registry the check asks. 0.35.7 asked `registry.npmjs.org` regardless
-  and only the install that followed honoured the config, which behind a mirror meant comparing
-  against one registry and installing from another.
-- **It installs the version it compared, and checks.** The command is `npm install --prefix
-  <root> bantamkit-mcp@<latest>` (`--save-exact` when the prefix's `package.json` pinned
-  exactly; `pip install --upgrade bantamkit==<latest>` on Python), and `updated … to <latest>`
-  is printed only after the tree's own manifest reports that version. An installer that exits 0
-  and leaves the old version refuses instead: `the update command exited 0 but did not install
-  <latest>: <command>` / `bantamkit-mcp now reports <old>, not <latest>; …`, exit 1. 0.35.7
-  installed `@latest` — resolved a second time, by npm, against its own registry — and printed
-  success from the number it had compared, which a stubbed index and a no-op npm turned into
-  `updated bantamkit-mcp from 0.35.7 to 9.9.9.` at exit 0 with 0.35.7 still on disk.
-- **The refusal reads `an ephemeral install`**, and a checkout's refusal names the source tree
-  (`…/runtime-ts`), not its `dist/`.
-
-The transcript below predates this: its command line reads `bantamkit-mcp@latest` where a run
-today prints `bantamkit-mcp@0.33.0`.
-
 The per-install update table is in
 [the npm package's README](../runtime-ts/README.md#updating); the measured failure it exists for
 is under [The failure the update table exists for](#the-failure-the-update-table-exists-for) below.
