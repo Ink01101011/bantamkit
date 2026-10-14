@@ -1270,6 +1270,7 @@ function preToolUseRead(run: HookRun, input: HookInput): void {
   } catch {
     return; // missing file: let Read produce its own error
   }
+  if (!st.isFile()) return; // a directory/device read has no file content to reuse
   const offset = ti['offset'];
   const limit = ti['limit'];
   // The transcript is the CONTEXT dimension: a subagent has its own transcript and has not
