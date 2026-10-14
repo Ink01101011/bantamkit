@@ -29,7 +29,16 @@ export class FactParseError extends Error {}
  */
 export type FactValue = string | PyScalar | null;
 
-/** `store.Fact`. `created` is `null` only before a Fact's first write. */
+/**
+ * `store.Fact`. `created` is `null` only before a Fact's first write.
+ *
+ * `source` is the file the Fact was READ FROM — set by `MemoryStore.facts` and by nothing
+ * else, absent on a Fact built in memory. `compact` moves THIS path (#122): before it moved
+ * `facts/<name>.md` derived from the frontmatter, so a hand-edited `stale.md` whose
+ * frontmatter said `name: fresh-one` archived the NEWEST fact and left the stale one live,
+ * and a `name: 7` raised for a `facts/7.md` that never existed. The reference's dataclass
+ * field is `compare=False`, so nothing here compares it either.
+ */
 export interface Fact {
   name: FactValue;
   description: FactValue;
@@ -38,6 +47,7 @@ export interface Fact {
   links: FactValue[];
   last_recalled: FactValue;
   created?: FactValue;
+  source?: string;
 }
 
 /** The frontmatter as it comes off disk — exactly the keys the file carries. */

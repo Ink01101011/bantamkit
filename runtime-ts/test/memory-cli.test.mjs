@@ -508,3 +508,25 @@ test('the package declares the second entry point and the tarball would carry it
   // half a manifest cannot promise. `npm pack --dry-run` is asserted in packaging.test.mjs.
   assert.ok(readFileSync(CLI, 'utf8').startsWith('#!/usr/bin/env node'), 'the bin has no shebang');
 });
+
+// ---- job65 (J65-2): `--reserve 0` is accepted, `-1` is the floor (#134) ----
+
+test('compact accepts --reserve 0 (the target is the budget) and refuses -1 with the _nonnegative sentence', () => {
+  const root = seed();
+  const status = run(['status', '--store', root]).stdout;
+  const index = Number(/index: (\d+) bytes/.exec(status)[1]);
+  const budget = index - 1;
+  const ok = run(['compact', '--store', root, '--budget', String(budget), '--reserve', '0']);
+  assert.equal(ok.exit, 0, ok.stderr);
+  assert.match(ok.stdout, new RegExp(`\\(budget ${budget}, target ${budget}, reserve 0, `));
+  const refused = run(['compact', '--store', root, '--reserve', '-1']);
+  assert.equal(refused.exit, 2);
+  assert.match(refused.stderr, /bantamkit-memory compact: error: argument --reserve: must be >= 0\n$/);
+  // The served description quotes the implemented default, worked at the default budget.
+  const asset = JSON.parse(readFileSync(join(packageRoot, '..', 'assets', 'tools', 'memory_compact.json'), 'utf8'));
+  const description = asset.parameters.properties.reserve.description;
+  for (const needle of ['2401 + 39 = 2440', '21560-byte target', '(90 * budget - 1) // 100']) {
+    assert.ok(description.includes(needle), needle);
+  }
+  rmSync(root, { recursive: true, force: true });
+});

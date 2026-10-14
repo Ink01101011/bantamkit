@@ -914,13 +914,20 @@ export class MemoryStore {
    * and the budget error to `lint: FAIL — …` on stderr with exit 1.
    */
   lint(): void {
-    for (const fact of this.facts()) {
+    const findings: string[] = [];
+    for (const fact of this.facts(findings)) {
       if (!(VALID_TYPES as readonly string[]).includes(pyText(fact.type))) {
         throw new MemoryValidationError(
           `fact '${pyText(fact.name)}' has invalid type '${pyText(fact.type)}'`,
         );
       }
     }
+    // The two hand-edit shapes every other op now TOLERATES (#121, #122) are named here,
+    // first one in file order, because lint is the one surface whose job is to say what an
+    // operator should fix: an unquoted timestamp that `facts` read as a string, and a file
+    // whose name is not the fact's. Neither is a reason for `recall` or `compact` to refuse
+    // the whole store, and both are a reason for `lint` to exit 1.
+    if (findings.length > 0) throw new MemoryValidationError(findings[0]!);
     this.checkIndexBudget();
   }
 
@@ -1013,9 +1020,13 @@ export class MemoryStore {
     // name, instead of surfacing as a `FileNotFoundError` out of the final write. `exist_ok`
     // semantics make it free for every store that is already there.
     this.ensureDirs();
-    const sizes = new Map<string, number>();
+    // Keyed by the FACT, not by `fact.name` (#122): two files can carry one name, and a map
+    // keyed by name collapsed them — `indexBefore` reported 88 bytes for a 134-byte index, and
+    // the second file's line was never subtracted. `byEviction` sorts a copy of this same
+    // array, so the objects are the keys on both sides of the loop.
+    const sizes = new Map<Fact, number>();
     for (const fact of facts) {
-      sizes.set(pyHashKey(fact.name), Buffer.byteLength(this.indexLine(fact), 'utf8'));
+      sizes.set(fact, Buffer.byteLength(this.indexLine(fact), 'utf8'));
     }
     const all = [...sizes.values()];
     if (reserve === null) {
@@ -1041,9 +1052,14 @@ export class MemoryStore {
     const archived: ArchivedFact[] = [];
     for (const fact of this.byEviction(facts)) {
       if (size <= target) break;
-      const path = this.factPath(fact.name);
+      // THE FILE THE FACT WAS READ FROM, not `facts/<name>.md` (#122). The two are the same
+      // path for every fact this store wrote; they part on a hand-edited file whose
+      // frontmatter names another fact, and there `factPath(fact.name)` moved the WRONG file
+      // — the newest fact, under the name of the stalest — or raised for a name no file
+      // carries. `lint` names the mismatch.
+      const path = fact.source ?? this.factPath(fact.name);
       pyReplace(path, pyJoin(this.root, 'archive', pyName(path)));
-      const bytes = sizes.get(pyHashKey(fact.name))!;
+      const bytes = sizes.get(fact)!;
       size -= bytes;
       archived.push({
         name: fact.name,
@@ -1471,8 +1487,30 @@ export class MemoryStore {
    * carried as a must-differ `ruling` case in the conformance suite so it is re-measured on
    * every run instead of asserted once and forgotten.
    */
-  private facts(): Fact[] {
+  /**
+   * `_facts`: every fact on disk, in `factPaths` order, with two hand-edit shapes tolerated.
+   *
+   * AN UNQUOTED TIMESTAMP IS READ AS ITS `str()` (#121). `yaml.safe_load` hands the reference
+   * a `datetime.date` for `created: 2026-01-01` and a `datetime.datetime` for the longer
+   * forms, while every file the store writes carries the quoted string. `recall` and `save`
+   * never minded, but `compact` sorts `(last_recalled or created, name)` and the sort raised
+   * `'<' not supported between instances of 'datetime.date' and 'str'` the moment one
+   * hand-edited file sat beside a written one — the only remedy the budget refusal names,
+   * dead on the store that named it. The scalar's `text` IS `str(value)` on the reference
+   * (`isoformat()` for a date, `isoformat(' ')` for a datetime), so both runtimes read the
+   * same string and the next write quotes it. Only timestamps are touched: an `int` or `bool`
+   * in these fields is left exactly as the scalar cases in `suites/store.mjs` pin it.
+   *
+   * `findings`, when given, collects one sentence per shape `lint` should name — the coerced
+   * timestamp, and a file whose name is not the fact's (#122) — without throwing, because
+   * every other caller tolerates both. `lint` is the only caller that passes an array.
+   */
+  private facts(findings?: string[]): Fact[] {
     const out: Fact[] = [];
+    const timestampText = (value: FactValue | FactValue[] | undefined): FactValue | FactValue[] | undefined =>
+      value instanceof PyScalar && (value.ord.kind === 'date' || value.ord.kind === 'datetime')
+        ? value.text
+        : value;
     for (const path of this.factPaths()) {
       const text = pyReadText(path); // outside the try, exactly as in the reference
       const file = basename(path);
@@ -1494,18 +1532,42 @@ export class MemoryStore {
       for (const key of ['name', 'description', 'type']) {
         if (!(key in meta)) throw malformed(`'${key}'`);
       }
-      const rawCreated = meta['created'] as FactValue | FactValue[] | undefined;
+      const name = meta['name'] as FactValue;
+      const stamps: Record<string, FactValue | FactValue[] | undefined> = {};
+      for (const key of ['created', 'last_recalled']) {
+        const raw = meta[key] as FactValue | FactValue[] | undefined;
+        const value = timestampText(raw);
+        if (findings !== undefined && value !== raw) {
+          findings.push(
+            `fact '${pyText(name)}' in ${file}: ${key} is the unquoted timestamp ${value}, ` +
+              `read as '${value}'; quote it`,
+          );
+        }
+        stamps[key] = value;
+      }
+      // `path.stem`, spelled the way `archived()` spells it.
+      const suffix = pySuffix(file);
+      const stem = suffix === '' ? file : file.slice(0, file.length - suffix.length);
+      if (findings !== undefined && stem !== pyText(name)) {
+        findings.push(
+          `fact '${pyText(name)}' in ${file}: the file name does not match the fact name; ` +
+            `rename the file to ${pyText(name)}.md or the fact to ${stem}`,
+        );
+      }
+      const rawCreated = stamps['created'];
       out.push({
-        name: meta['name'] as FactValue,
+        name,
         description: meta['description'] as FactValue,
         type: meta['type'] as FactValue,
         body: pyStrip(parts[2]!),
         links: pyList(meta['links'] as FactValue | FactValue[] | undefined),
-        last_recalled: (meta['last_recalled'] as FactValue) ?? null,
+        last_recalled: (stamps['last_recalled'] as FactValue) ?? null,
         // `or`, not `??`: every FALSY value falls back to the mtime, and that is now more
         // than the empty string — `created: 0`, `created: false` and `created: 0.0` are all
-        // falsy in Python too, while `created: 2026-08-23` is a truthy `date` and is kept.
+        // falsy in Python too, while `created: 2026-08-23` is a truthy `date` (now its text)
+        // and is kept.
         created: pyTruthy(rawCreated) ? (rawCreated as FactValue) : pyMtimeDate(path),
+        source: path,
       });
     }
     return out;

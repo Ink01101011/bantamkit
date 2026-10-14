@@ -513,6 +513,13 @@ Two things about that target matter, and both were measured defects:
   idempotence that follows from it. The two runtimes moved in the same job and
   are compared by `index-band` in `tools/conformance/suites/wire.mjs`.
 
+  **`reserve: 0` is accepted everywhere (job65, #134):** the target is then the
+  budget itself. The tool schema always said `minimum: 0`, but both CLIs refused
+  `--reserve 0` with `must be >= 1` until job65, and the served description still
+  quoted the pre-job46 default; now `--reserve` is `>= 0` on both CLIs, the
+  description quotes the formula above, and `compact-with-reserve-zero` in
+  `tools/conformance/suites/memorycli.mjs` pins the acceptance as a literal.
+
 **The eviction order is class first, then staleness:**
 `(0 if type != "feedback" else 1, last_recalled or created, name)`.
 
@@ -544,7 +551,14 @@ the same transaction `save` gets.
 
 `lint()` walks every fact, raising `MemoryValidationError` on malformed
 frontmatter or an invalid `type`, then re-checks the budget. Run it in CI over a
-committed store, or on startup.
+committed store, or on startup. Since job65 it also names two hand-edit shapes
+every other operation tolerates: an **unquoted timestamp** in `created` or
+`last_recalled` (`created: 2026-01-01`, a YAML date, which the store reads as the
+string `'2026-01-01'` and re-quotes on its next write — before #121 `compact`
+died on it with `'<' not supported between instances of 'datetime.date' and
+'str'`), and a **file whose name is not the fact's** (`stale.md` holding
+`name: fresh-one` — `compact` now archives the file it read, where before #122 it
+moved `facts/fresh-one.md`, the wrong fact).
 
 There is no automatic compression or summarization in v1. Archiving is the only
 lifecycle action that *reduces* a store, and the only one the model or a hook can

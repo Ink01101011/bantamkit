@@ -9,7 +9,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1223,4 +1223,96 @@ test('undegradedIndexCeiling is Python floor division, checked against exact int
   for (const budget of [1_000, 2_048, 4_096, 24_000, 100_000, 999_999, 1_000_003, 2 ** 31 - 1]) {
     assert.equal(undegradedIndexCeiling(budget), oracle(budget), `budget ${budget}`);
   }
+});
+
+// ---- job65 (J65-2): the two hand-edit shapes compact tolerates (#121, #122) ----
+//
+// Every file the store WRITES quotes `created`, names the file after the fact, and is one
+// the eviction sort can order. A file a hand reaches is none of those by guarantee, and until
+// job65 two such files each had their own failure on BOTH runtimes: an unquoted
+// `created: 2026-01-01` killed `compact` with `'<' not supported between instances of
+// 'datetime.date' and 'str'` (#121), and a `stale.md` whose frontmatter said `name: fresh-one`
+// made `compact` archive `facts/fresh-one.md` — the NEWEST fact — and report the stalest as
+// gone (#122). The fixtures below are written by hand ON PURPOSE. The Python twins are in
+// `runtime-py/tests/test_memory.py` under the same heading.
+
+const handFact = (root, filename, name, description, created, { body = 'b', lastRecalled = 'null' } = {}) =>
+  writeFileSync(
+    join(root, 'facts', filename),
+    `---\nname: ${name}\ndescription: ${description}\ntype: project\n` +
+      `created: ${created}\nlast_recalled: ${lastRecalled}\nlinks: []\n---\n\n${body}\n`,
+  );
+const indexBytes = (s) => Buffer.byteLength(s.indexText(), 'utf8');
+
+test('an unquoted created date is read as the quoted string and re-quoted on the next write (#121)', () => {
+  const root = fresh();
+  const s = store(root);
+  s.save('project', 'ok', 'a written fact', 'b');
+  handFact(root, 'hand-edit.md', 'hand-edit', 'hand edited fact', '2026-01-01');
+  handFact(root, 'dt.md', 'dt', 'a datetime', "'2026-10-11'", { lastRecalled: '2026-08-23T10:00:00Z' });
+  // lint is where the hand-edit is NAMED: file, field, what it was read as, and the fix.
+  assert.throws(
+    () => s.lint(),
+    (e) =>
+      e instanceof MemoryValidationError &&
+      e.message ===
+        "fact 'dt' in dt.md: last_recalled is the unquoted timestamp 2026-08-23 10:00:00+00:00, " +
+          "read as '2026-08-23 10:00:00+00:00'; quote it",
+  );
+  // A recall that stamps the fact writes the string back QUOTED, so the file heals.
+  s.recall('hand edited', null, true);
+  assert.match(read(join(root, 'facts', 'hand-edit.md')), /created: '2026-01-01'\n/);
+  s.recall('a datetime', null, true);
+  s.lint();
+});
+
+test('compact treats an unquoted created date like the quoted form (#121)', () => {
+  const root = fresh();
+  const s = store(root);
+  for (const [name, description] of [['f1', 'alpha apples'], ['f2', 'bravo bananas'], ['f3', 'charlie cherries']]) {
+    assert.equal(s.save('project', name, description, 'b').status, 'saved');
+  }
+  handFact(root, 'hand-edit.md', 'hand-edit', 'hand edited fact', '2026-01-01');
+  s.indexBudget = indexBytes(s) - 1; // exactly one line has to go
+  const result = s.compact(0);
+  assert.deepEqual(result.archived.map((f) => f.name), ['hand-edit']);
+  assert.ok(existsSync(join(root, 'archive', 'hand-edit.md')));
+  assert.deepEqual(s.recall('bravo bananas').map((f) => f.name), ['f2']);
+});
+
+test('compact archives the file a fact was read from, not facts/<name>.md (#122)', () => {
+  const root = fresh();
+  const s = store(root);
+  handFact(root, 'fresh-one.md', 'fresh-one', 'the newest fact', "'2026-10-01'", { body: 'NEW' });
+  handFact(root, 'keep-a.md', 'keep-a', 'keep this one', "'2026-10-02'");
+  handFact(root, 'stale.md', 'fresh-one', 'the stalest fact', "'2020-01-01'", { body: 'OLD' });
+  assert.throws(
+    () => s.lint(),
+    (e) =>
+      e instanceof MemoryValidationError &&
+      e.message ===
+        "fact 'fresh-one' in stale.md: the file name does not match the fact name; " +
+          'rename the file to fresh-one.md or the fact to stale',
+  );
+  s.indexBudget = indexBytes(s) - 1;
+  const result = s.compact(0);
+  assert.deepEqual(result.archived.map((f) => f.name), ['fresh-one']); // the frontmatter name
+  // The arithmetic counts FILES, not names: #122's report said "88 to 41" because two facts
+  // named `fresh-one` collapsed into one size.
+  assert.deepEqual([result.indexBefore, result.indexAfter], [134, 87]);
+  assert.deepEqual(readdirSync(join(root, 'archive')).sort(), ['stale.md']);
+  assert.match(read(join(root, 'archive', 'stale.md')), /\nOLD\n$/);
+  assert.match(read(join(root, 'facts', 'fresh-one.md')), /\nNEW\n$/);
+});
+
+test("compact with `name: 7` in seven.md moves seven.md instead of raising for facts/7.md (#122)", () => {
+  const root = fresh();
+  const s = store(root);
+  handFact(root, 'seven.md', '7', 'a numeric name', "'2020-01-01'", { body: 'OLD' });
+  handFact(root, 'keep-a.md', 'keep-a', 'keep this one', "'2026-10-02'");
+  s.indexBudget = indexBytes(s) - 1;
+  const result = s.compact(0);
+  assert.deepEqual(result.archived.map((f) => String(f.name)), ['7']);
+  assert.deepEqual(readdirSync(join(root, 'archive')).sort(), ['seven.md']);
+  assert.deepEqual(readdirSync(join(root, 'facts')).sort(), ['keep-a.md']);
 });

@@ -58,7 +58,7 @@
           "reserve": {
             "type": "integer",
             "minimum": 0,
-            "description": "Bytes of index headroom to free below the budget. Omit for the default: the size of the largest index line the store holds, capped at half the budget."
+            "description": "Bytes of index headroom to free below the budget: the target is `budget - reserve`, any value is capped at half the budget, and 0 compacts to the budget itself. Omit for the default: the room the degraded-index warning demands (the budget minus `(90 * budget - 1) // 100`) plus the size of the largest index line the store holds -- at the default 24000-byte budget with a 39-byte largest line that is 2401 + 39 = 2440, a 21560-byte target."
           }
         }
       },

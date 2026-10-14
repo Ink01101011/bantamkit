@@ -351,9 +351,9 @@ function manifest(root) {
 }
 
 /** A fact file's bytes, spelled out so a fixture is bytes and not a call into the product. */
-const factFile = (n, { description = `about ${n}`, type = 'project', created = '2026-08-01' } = {}) =>
+const factFile = (n, { description = `about ${n}`, type = 'project', created = '2026-08-01', body = `body of ${n}` } = {}) =>
   `---\nname: ${n}\ndescription: ${description}\ntype: ${type}\n` +
-  `created: '${created}'\nlast_recalled: null\nlinks: []\n---\n\nbody of ${n}\n`;
+  `created: '${created}'\nlast_recalled: null\nlinks: []\n---\n\n${body}\n`;
 
 /**
  * Four facts in which the two STALEST are `feedback`, so a purely temporal eviction order
@@ -406,6 +406,42 @@ const FOUR_FACTS = {
     'facts/beta.md': factFile('beta', { description: 'a reasonably long description of beta', created: '2026-08-02' }),
     'facts/gamma.md': factFile('gamma', { description: 'a reasonably long description of gamma', created: '2026-08-03' }),
     'facts/delta.md': factFile('delta', { description: 'a reasonably long description of delta', created: '2026-08-04' }),
+  },
+};
+
+/**
+ * Three hand-edit fixtures for #121 and #122 (job65). `factFile` quotes `created`, as the
+ * store does; these spell the frontmatter out because the whole point is what the store
+ * would never have written.
+ */
+const handFact = (name, description, created, body) =>
+  `---\nname: ${name}\ndescription: ${description}\ntype: project\n` +
+  `created: ${created}\nlast_recalled: null\nlinks: []\n---\n\n${body}\n`;
+/** Three written facts and one hand-edited `created: 2026-01-01` (unquoted, the stalest). */
+const UNQUOTED_DATE = {
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/f1.md': factFile('f1', { description: 'fact number one about topic one', created: '2026-10-11' }),
+    'facts/f2.md': factFile('f2', { description: 'fact number two about topic two', created: '2026-10-12' }),
+    'facts/f3.md': factFile('f3', { description: 'fact number three about topic three', created: '2026-10-13' }),
+    'facts/hand-edit.md': handFact('hand-edit', 'hand edited fact', '2026-01-01', 'body h'),
+  },
+};
+/** `stale.md` says `name: fresh-one` and is the stalest; `fresh-one.md` is the newest. */
+const MISNAMED_FILE = {
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/fresh-one.md': factFile('fresh-one', { description: 'the newest fact', created: '2026-10-01', body: 'NEW' }),
+    'facts/keep-a.md': factFile('keep-a', { description: 'keep this one', created: '2026-10-02' }),
+    'facts/stale.md': factFile('fresh-one', { description: 'the stalest fact', created: '2020-01-01', body: 'OLD' }),
+  },
+};
+/** `seven.md` says `name: 7`: no `facts/7.md` exists for the old move to find. */
+const NUMERIC_NAME = {
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/seven.md': factFile('7', { description: 'a numeric name', created: '2020-01-01', body: 'OLD' }),
+    'facts/keep-a.md': factFile('keep-a', { description: 'keep this one', created: '2026-10-02' }),
   },
 };
 
@@ -561,7 +597,11 @@ const ARGV_SHAPES = [
   ['budget-not-an-int', ['status', '--budget', 'notanint'], true],
   ['budget-zero', ['status', '--budget', '0'], true],
   ['budget-negative', ['status', '--budget', '-5'], true],
-  ['reserve-zero', ['compact', '--reserve', '0'], true],
+  // WAS `reserve-zero`, pinning `--reserve 0` REFUSED with `must be >= 1`. Issue #134 (job65)
+  // outranks that pin: the tool schema says `minimum: 0` and `memory_compact` takes 0, so
+  // both CLIs now accept it (`compact-with-reserve-zero` below) and the refusal shape moved
+  // to the first value that is still refused, with the new `_nonnegative` sentence.
+  ['reserve-negative', ['compact', '--reserve', '-1'], true],
   ['store-and-start', ['status', '--store', '/a', '--start', '/b'], true],
   ['ambiguous-abbreviation', ['status', '--st', '/a'], true],
   ['unrecognized-under-subcommand', ['status', '--nope'], true],
@@ -613,6 +653,55 @@ function scenarios(symlinksWork) {
     ['compact-archives-the-stalest', FOUR_FACTS, [['compact', '--store', '{BED}', '--budget', '200']],
       { remediation: 'restore one with: ' }],
     ['compact-with-reserve', FOUR_FACTS, [['compact', '--store', '{BED}', '--budget', '300', '--reserve', '150']]],
+    // `--reserve 0` is ACCEPTED and the target is the budget itself (#134, job65): the
+    // 258-byte index against a 200-byte budget archives exactly the one stalest line (65) and
+    // lands at 193. The exit code and the printed target are literals on each side below,
+    // because a both-sides return to `_positive` would refuse identically and the transcript
+    // differential would stay green. Mutation: `_positive` restored on both CLIs reddens
+    // `compact-with-reserve-zero/exit-codes` and `/step-1-stdout-literal`; see J65-2's note.
+    ['compact-with-reserve-zero', FOUR_FACTS,
+      [['compact', '--store', '{BED}', '--budget', '200', '--reserve', '0'], ['status', '--store', '{BED}', '--budget', '200']],
+      { remediation: 'restore one with: ', archived: ['alpha'], exits: [0, 0],
+        stdoutLines: { 1: ['compacted 1 fact(s)', 'index: 258 -> 193 bytes (budget 200, target 200, reserve 0, headroom 7)'] } }],
+
+    // ---- (#121, #122) the two hand-edit shapes compact now tolerates and lint names
+    //
+    // `created: 2026-01-01` UNQUOTED is a YAML date. Every file the store writes quotes it,
+    // so this only ever reaches a store by hand, and until job65 it killed `compact` on
+    // both runtimes (`'<' not supported between instances of 'datetime.date' and 'str'`,
+    // exit 1 with a traceback) while `recall`, `save` and `lint` all accepted the store:
+    // the one remedy the budget refusal names, dead on the store that named it. Both
+    // runtimes now read the date as its `str()` and sort it with the strings; the hand
+    // -edited fact is the stalest here and is the one that leaves. `archived` is a literal
+    // so a both-sides return to the crash (which would agree on exit 1 and an empty
+    // archive) stays red. The index is 216 bytes, so `--budget 215 --reserve 0` makes
+    // exactly one line go, and the eviction order alone decides which.
+    ['compact-with-an-unquoted-created-date', UNQUOTED_DATE,
+      [['compact', '--store', '{BED}', '--budget', '215', '--reserve', '0'], ['archived', '--store', '{BED}']],
+      { remediation: 'restore one with: ', archived: ['hand-edit'], exits: [0, 0] }],
+    // `lint` is where the shape is NAMED: file, field, what it was read as, and the fix.
+    // A typed sentence on each side, because the whole transcript is a differential.
+    ['lint-names-an-unquoted-timestamp', UNQUOTED_DATE, [['lint', '--store', '{BED}']],
+      { exits: [1], stderr: ["lint: FAIL — fact 'hand-edit' in hand-edit.md: created is the unquoted timestamp 2026-01-01, read as '2026-01-01'; quote it\n"] }],
+    // `stale.md` whose frontmatter says `name: fresh-one` — the stalest fact by date, in a
+    // file not named after it. Until job65 `compact` moved `facts/<name>.md`, i.e.
+    // `fresh-one.md`, the NEWEST fact, and reported the stalest as gone. Now it moves the
+    // file it read. The literals: `archive/` holds `stale` (not `fresh-one`), and
+    // `facts/fresh-one.md` still carries its NEW body. The index is 134 bytes (47 + 41 + 47;
+    // two lines share a name and are counted as two), so `--budget 133 --reserve 0` moves
+    // exactly the stalest line.
+    ['compact-archives-the-file-it-read-not-the-name', MISNAMED_FILE,
+      [['compact', '--store', '{BED}', '--budget', '133', '--reserve', '0']],
+      { remediation: 'restore one with: ', archived: ['stale'], exits: [0],
+        files: { 'facts/fresh-one.md': factFile('fresh-one', { description: 'the newest fact', created: '2026-10-01', body: 'NEW' }) } }],
+    // The variant that CRASHED: `name: 7` in `seven.md`. `facts/7.md` never existed, so the
+    // move raised `FileNotFoundError` on both sides; now `seven.md` is what moves. The index
+    // is 78 bytes (37 + 41), so `--budget 77 --reserve 0` moves exactly the stalest line.
+    ['compact-with-a-numeric-name-in-a-misnamed-file', NUMERIC_NAME,
+      [['compact', '--store', '{BED}', '--budget', '77', '--reserve', '0']],
+      { remediation: 'restore one with: ', archived: ['seven'], exits: [0] }],
+    ['lint-names-a-file-whose-name-is-not-the-facts', MISNAMED_FILE, [['lint', '--store', '{BED}']],
+      { exits: [1], stderr: ["lint: FAIL — fact 'fresh-one' in stale.md: the file name does not match the fact name; rename the file to fresh-one.md or the fact to stale\n"] }],
     // The occupied-destination reach: `archive/alpha.md` is already there when `compact` moves
     // `facts/alpha.md` on top of it, and nothing else here builds that state. Both sides now
     // `replace`, so this is a REGRESSION GUARD rather than a live difference — and only on
@@ -664,8 +753,9 @@ function scenarios(symlinksWork) {
     // sets a target of 99, and archiving BOTH project facts only gets the index to 124, so
     // `afb` — the stalest feedback fact — goes too and compaction still lands at or below the
     // target. A rule that let the index sit over budget forever would be a worse defect than
-    // the one being fixed. (`--reserve 0` is refused by both parsers, which `reserve-zero`
-    // above already pins; 1 is the smallest reserve this scenario can ask for.)
+    // the one being fixed. (`--reserve 0` was refused by both parsers when this was written;
+    // since job65 (#134) it is accepted and `compact-with-reserve-zero` pins that. 1 is kept
+    // here because the scenario is about the veto, not about the floor.)
     ['compact-archives-feedback-once-nothing-else-is-left', FEEDBACK_STALEST,
       [['compact', '--store', '{BED}', '--budget', '100', '--reserve', '1'], ['archived', '--store', '{BED}']],
       { remediation: 'restore one with: ', archived: ['afb', 'cpj', 'dpj'] }],
@@ -1239,6 +1329,23 @@ export async function run(ctx) {
           kind: 'json',
           expected: { python: expected, node: expected },
           actual: { python: fileText(beds.py, rel), node: fileText(beds.node, rel) },
+        });
+      }
+    }
+
+    if (extra.stdoutLines) {
+      // NAMED STDOUT LINES OF ONE STEP, AS LITERALS ON EACH SIDE — job65 (J65-2). The
+      // arithmetic line `compact` prints is where `--reserve 0` shows its target IS the
+      // budget; read out of the step's stdout and compared to typed text, scrubbed of the
+      // bed like the transcript and not substituted (no prog in it).
+      for (const [at, lines] of Object.entries(extra.stdoutLines)) {
+        const i = Number(at) - 1;
+        const firstLines = (r, side) => scrubBed(dec(r.stdout), beds[side]).split('\n').slice(0, lines.length);
+        cases.push({
+          name: `${label}/step-${at}-stdout-literal: the first ${lines.length} stdout lines, as a literal on each side`,
+          kind: 'json',
+          expected: { python: lines, node: lines },
+          actual: { python: firstLines(pyRuns[i], 'py'), node: firstLines(nodeRuns[i], 'node') },
         });
       }
     }

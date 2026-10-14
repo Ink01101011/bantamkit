@@ -283,7 +283,16 @@ test('a non-string name reaches the FILE PATH, and _stamp writes there', () => {
   }
 });
 
-test('a date in created round-trips through _stamp unquoted, and a falsy value falls back', () => {
+// AMENDED (job65, #121). This node pinned "a date in created round-trips through _stamp
+// UNQUOTED": the `datetime.date` stayed typed on the Fact and `safe_dump` wrote it back bare.
+// That typed value is what made `compact` die on both runtimes — the eviction sort compared it
+// with a string `created` and raised `'<' not supported between instances of 'datetime.date'
+// and 'str'` — so the issue, filed against the released contract, outranks the pin: `facts()`
+// now reads a YAML date or datetime as its `str()` and the next write QUOTES it, on both sides
+// (`tools/conformance/suites/store.mjs` scalar cases compare the trees; `memorycli.mjs`
+// `compact-with-an-unquoted-created-date` pins the archive as a literal). The falsy half is
+// unchanged. Old contract recorded in `.shiftwork/notes-job65/J65-2.md` §4.
+test('a date in created is read as its ISO string and round-trips through _stamp QUOTED; a falsy value falls back', () => {
   const root = bed({
     'dated.md': factFile({ name: 'dated', description: 'shared probe token', created: '2026-08-23' }),
     'zeroed.md': factFile({ name: 'zeroed', description: 'shared probe token', created: '0' }),
@@ -297,8 +306,9 @@ test('a date in created round-trips through _stamp unquoted, and a falsy value f
     // that it is NOT `0`.
     assert.notEqual(pyText(hits.find((f) => f.name === 'zeroed').created), '0');
     assert.match(pyText(hits.find((f) => f.name === 'zeroed').created), /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(typeof hits.find((f) => f.name === 'dated').created, 'string');
     store.recall('shared probe token', 3, true);
-    assert.match(readFileSync(join(root, 'facts', 'dated.md'), 'utf8'), /^created: 2026-08-23$/m);
+    assert.match(readFileSync(join(root, 'facts', 'dated.md'), 'utf8'), /^created: '2026-08-23'$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

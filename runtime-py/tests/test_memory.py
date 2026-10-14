@@ -1,5 +1,6 @@
 import io
 import itertools
+import json
 import os
 import re
 import subprocess
@@ -2900,3 +2901,154 @@ def test_zero_and_one_are_both_inside_the_accepted_range(store):
     _score_ladder(store)
     assert store.recall(_LADDER_QUERY, k=10, min_ratio=0.0)
     assert store.recall(_LADDER_QUERY, k=10, min_ratio=1.0)
+
+
+# ---- job65 (J65-2): the two hand-edit shapes compact tolerates, and `--reserve 0` ----
+#
+# Every file the store WRITES quotes `created`, names the file after the fact, and is one
+# the eviction sort can order. A file a hand reaches is none of those by guarantee, and
+# until job65 three such files each had their own failure on BOTH runtimes: an unquoted
+# `created: 2026-01-01` killed `compact` with `'<' not supported between instances of
+# 'datetime.date' and 'str'` (#121); a `stale.md` whose frontmatter said `name: fresh-one`
+# made `compact` archive `facts/fresh-one.md` — the NEWEST fact — and report the stalest as
+# gone (#122); and `--reserve 0`, which the tool schema allows, was refused by the CLI
+# with `must be >= 1` (#134). The fixtures below are written by hand ON PURPOSE.
+
+
+def _hand_fact(store, filename, name, description, created, *, body="b", last_recalled="null"):
+    """A fact file as a hand would write it: `created` and `last_recalled` spelled verbatim."""
+    (store.root / "facts" / filename).write_text(
+        f"---\nname: {name}\ndescription: {description}\ntype: project\n"
+        f"created: {created}\nlast_recalled: {last_recalled}\nlinks: []\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def _index_bytes(store):
+    return len(store.index_text().encode("utf-8"))
+
+
+def test_an_unquoted_created_date_is_read_as_the_quoted_string(tmp_path):
+    """#121: `yaml.safe_load` hands back a `datetime.date`; the Fact carries its `str()`."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "hand-edit.md", "hand-edit", "hand edited fact", "2026-01-01")
+    _hand_fact(
+        store, "dt.md", "dt", "a datetime", "'2026-10-11'", last_recalled="2026-08-23T10:00:00Z"
+    )
+    facts = {fact.name: fact for fact in store._facts()}
+    assert facts["hand-edit"].created == "2026-01-01"
+    assert isinstance(facts["hand-edit"].created, str)
+    # `str(datetime)` is `isoformat(' ')`, and `Z` is `+00:00` — the port's scalar text.
+    assert facts["dt"].last_recalled == "2026-08-23 10:00:00+00:00"
+    assert facts["hand-edit"].source == store.root / "facts" / "hand-edit.md"
+
+
+def test_compact_treats_an_unquoted_created_date_like_the_quoted_form(tmp_path):
+    """#121: the stalest fact by date leaves, whether or not its date was quoted."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    for name, description in (
+        ("f1", "alpha apples"),
+        ("f2", "bravo bananas"),
+        ("f3", "charlie cherries"),
+    ):
+        assert store.save("project", name, description, "b").status == "saved"
+    _hand_fact(store, "hand-edit.md", "hand-edit", "hand edited fact", "2026-01-01")
+    store.index_budget = _index_bytes(store) - 1  # exactly one line has to go
+    result = store.compact(reserve=0)
+    assert result.names == ["hand-edit"], result
+    assert (store.root / "archive" / "hand-edit.md").exists()
+    # The remedy the budget refusal names is alive again: the store recalls and saves.
+    assert [f.name for f in store.recall("bravo bananas")] == ["f2"]
+
+
+def test_lint_names_an_unquoted_timestamp_by_file_and_field(tmp_path):
+    """#121: lint is where the hand-edit is NAMED, with the fix; compact tolerates it."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    store.save("project", "ok", "a written fact", "b")
+    _hand_fact(store, "hand-edit.md", "hand-edit", "hand edited fact", "2026-01-01")
+    with pytest.raises(MemoryValidationError) as e:
+        store.lint()
+    assert str(e.value) == (
+        "fact 'hand-edit' in hand-edit.md: created is the unquoted timestamp 2026-01-01, "
+        "read as '2026-01-01'; quote it"
+    )
+    # The next write re-quotes it, so a recall that stamps the fact heals the file.
+    store.recall("hand edited", stamp=True)
+    healed = (store.root / "facts" / "hand-edit.md").read_text(encoding="utf-8")
+    assert "created: '2026-01-01'" in healed
+    store.lint()
+
+
+def test_compact_archives_the_file_a_fact_was_read_from_not_its_name(tmp_path):
+    """#122: `stale.md` says `name: fresh-one`; the stale FILE moves, the fresh one stays."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "fresh-one.md", "fresh-one", "the newest fact", "'2026-10-01'", body="NEW")
+    _hand_fact(store, "keep-a.md", "keep-a", "keep this one", "'2026-10-02'")
+    _hand_fact(store, "stale.md", "fresh-one", "the stalest fact", "'2020-01-01'", body="OLD")
+    store.index_budget = _index_bytes(store) - 1
+    result = store.compact(reserve=0)
+    assert result.names == ["fresh-one"]  # the frontmatter name, as always
+    # The arithmetic counts FILES, not names: 134 bytes before, 87 after (#122's report
+    # said "88 to 41" because two facts named `fresh-one` collapsed into one size).
+    assert (result.index_before, result.index_after) == (134, 87)
+    assert sorted(p.name for p in (store.root / "archive").iterdir()) == ["stale.md"]
+
+    def body(rel):
+        return (store.root / rel).read_text(encoding="utf-8").rstrip().rsplit("\n", 1)[-1]
+
+    assert body("archive/stale.md") == "OLD"
+    assert body("facts/fresh-one.md") == "NEW"
+
+
+def test_compact_with_a_numeric_name_in_a_misnamed_file_moves_that_file(tmp_path):
+    """#122's crashing variant: `name: 7` in `seven.md` used to raise for `facts/7.md`."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "seven.md", "7", "a numeric name", "'2020-01-01'", body="OLD")
+    _hand_fact(store, "keep-a.md", "keep-a", "keep this one", "'2026-10-02'")
+    store.index_budget = _index_bytes(store) - 1
+    result = store.compact(reserve=0)
+    assert [str(name) for name in result.names] == ["7"]
+    assert sorted(p.name for p in (store.root / "archive").iterdir()) == ["seven.md"]
+    assert sorted(p.name for p in (store.root / "facts").iterdir()) == ["keep-a.md"]
+
+
+def test_lint_names_a_file_whose_name_is_not_the_facts(tmp_path):
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "stale.md", "fresh-one", "the stalest fact", "'2020-01-01'")
+    with pytest.raises(MemoryValidationError) as e:
+        store.lint()
+    assert str(e.value) == (
+        "fact 'fresh-one' in stale.md: the file name does not match the fact name; "
+        "rename the file to fresh-one.md or the fact to stale"
+    )
+
+
+def test_compact_cli_accepts_reserve_zero_and_refuses_a_negative_one(tmp_path, capsys):
+    """#134: the tool schema says `minimum: 0`; the CLI agrees, and -1 is the floor."""
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 4)
+    budget = _index_bytes(store) - 1
+    code, out, _ = _run(
+        ["compact", "--store", str(store.root), "--budget", str(budget), "--reserve", "0"],
+        capsys,
+    )
+    assert code == 0
+    assert f"(budget {budget}, target {budget}, reserve 0, " in out, out
+    with pytest.raises(SystemExit) as e:
+        _run(["compact", "--store", str(store.root), "--reserve", "-1"], capsys)
+    assert e.value.code == 2
+    assert "argument --reserve: must be >= 0" in capsys.readouterr().err
+
+
+def test_the_served_reserve_description_quotes_the_default_the_code_computes(tmp_path):
+    """#134: the description's worked example is the store's own arithmetic, re-derived."""
+    repo = Path(bantamkit.__file__).parent.parent.parent.parent
+    asset = json.loads((repo / "assets/tools/memory_compact.json").read_text(encoding="utf-8"))
+    description = asset["parameters"]["properties"]["reserve"]["description"]
+    store = MemoryStore(tmp_path / "mem", index_budget=24000)
+    store.save("project", "one", "only fact here", "b")
+    assert _index_bytes(store) == 39
+    result = store.compact()
+    assert (result.reserve, result.target) == (2440, 21560)
+    for number in ("2401 + 39 = 2440", "21560-byte target", "(90 * budget - 1) // 100"):
+        assert number in description, description

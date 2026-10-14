@@ -96,6 +96,16 @@ def _positive(text: str) -> int:
     return value
 
 
+def _nonnegative(text: str) -> int:
+    """`--reserve 0` is a real request -- compact to the budget itself -- and the tool's
+    schema says `minimum: 0`, so the CLI accepts it too (#134). WAS `_positive`, which
+    refused 0 with `must be >= 1` on both CLIs while `memory_compact` took it."""
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return value
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=_PROG,
@@ -126,10 +136,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     compact = common(subs.add_parser("compact", help="archive the stalest facts"))
     compact.add_argument(
         "--reserve",
-        type=_positive,
+        type=_nonnegative,
         default=None,
         metavar="BYTES",
-        help="headroom to leave below the budget (default: the largest index line kept)",
+        # The default is `MemoryStore.compact`'s (job46): the sentence here quotes it
+        # rather than the pre-job46 "largest index line kept" it used to state (#134).
+        help=(
+            "headroom to leave below the budget (default: the budget minus its 90 percent "
+            "warning line, plus the largest index line kept; capped at half the budget)"
+        ),
     )
     common(subs.add_parser("archived", help="list what compaction has moved out"))
     archive = common(subs.add_parser("archive", help="move one named fact out"))

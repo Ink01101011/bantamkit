@@ -7,7 +7,7 @@ import os
 import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -185,6 +185,14 @@ class Fact:
     # ISO date the fact first landed. `None` only on a Fact built in memory before its
     # first write; every Fact read off disk carries one (see `_facts`).
     created: str | None = None
+    # The file this Fact was READ FROM, set by `_facts` and by nothing else; `None` on a
+    # Fact built in memory. `compact` moves THIS path (#122): before it moved
+    # `facts/<name>.md` derived from the frontmatter, so a hand-edited `stale.md` whose
+    # frontmatter said `name: fresh-one` archived the NEWEST fact and left the stale one
+    # live, and a `name: 7` raised `FileNotFoundError` for a `facts/7.md` that never
+    # existed. Excluded from `==`/`repr` so a Fact read off disk still equals the Fact
+    # that was saved.
+    source: Path | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -658,9 +666,18 @@ class MemoryStore:
         `_cmd_lint` already routes that to `lint: FAIL — ...` on stderr with exit 1
         (verified by running it), so the operator surface needed no change.
         """
-        for fact in self._facts():  # raises MemoryValidationError: unreadable, or malformed
+        findings: list[str] = []
+        # raises MemoryValidationError: unreadable, or malformed
+        for fact in self._facts(findings):
             if fact.type not in VALID_TYPES:
                 raise MemoryValidationError(f"fact '{fact.name}' has invalid type '{fact.type}'")
+        # The two hand-edit shapes every other op now TOLERATES (#121, #122) are named
+        # here, first one in file order, because lint is the one surface whose job is to
+        # say what an operator should fix: an unquoted timestamp that `_facts` read as a
+        # string, and a file whose name is not the fact's. Neither is a reason for `recall`
+        # or `compact` to refuse the whole store, and both are a reason for `lint` to exit 1.
+        if findings:
+            raise MemoryValidationError(findings[0])
         self._check_index_budget()
 
     def compact(self, reserve: int | None = None) -> CompactResult:
@@ -747,7 +764,11 @@ class MemoryStore:
         # `FileNotFoundError` out of the final write. `exist_ok=True` makes it free for
         # every store that is already there.
         self._ensure_dirs()
-        sizes = {fact.name: len(self._index_line(fact).encode()) for fact in facts}
+        # Keyed by the FACT, not by `fact.name` (#122): two files can carry one name, and a
+        # dict keyed by name collapsed them -- `index_before` reported 88 bytes for a
+        # 134-byte index, and the second file's line was never subtracted. `id()` is
+        # stable for the life of `facts`, which is the life of this call.
+        sizes = {id(fact): len(self._index_line(fact).encode()) for fact in facts}
         if reserve is None:
             # The default reserve is measured from the WARNING LINE, not from the budget.
             # One substitution, and it is the whole of `docs/porting.md` item 7: the
@@ -769,18 +790,23 @@ class MemoryStore:
         for fact in sorted(facts, key=self._eviction_key):
             if size <= target:
                 break
-            path = self._fact_path(fact.name)
+            # THE FILE THE FACT WAS READ FROM, not `facts/<name>.md` (#122). The two are the
+            # same path for every fact this store wrote; they part on a hand-edited file
+            # whose frontmatter names another fact, and there `_fact_path(fact.name)` moved
+            # the WRONG file -- the newest fact, under the name of the stalest -- or raised
+            # `FileNotFoundError` for a name no file carries. `lint` names the mismatch.
+            path = fact.source or self._fact_path(fact.name)
             # `os.replace`, not `os.rename`: the two agree on POSIX and differ on Windows,
             # where `rename` raises `FileExistsError` over an `archive/<name>.md` that is
             # already there. `runtime-ts` uses `pyReplace` here; this is the same call.
             path.replace(self.root / "archive" / path.name)
-            size -= sizes[fact.name]
+            size -= sizes[id(fact)]
             archived.append(
                 ArchivedFact(
                     name=fact.name,
                     type=fact.type,
                     description=fact.description,
-                    index_bytes=sizes[fact.name],
+                    index_bytes=sizes[id(fact)],
                     last_recalled=fact.last_recalled,
                     created=fact.created,
                 )
@@ -1239,7 +1265,26 @@ class MemoryStore:
             f"memory store is unreadable: {directory}: {because}; {consequence}"
         )
 
-    def _facts(self) -> list[Fact]:
+    def _facts(self, findings: list[str] | None = None) -> list[Fact]:
+        """Every fact on disk, in `_fact_paths` order, with two hand-edit shapes tolerated.
+
+        AN UNQUOTED TIMESTAMP IS READ AS ITS `str()` (#121). `yaml.safe_load` hands back a
+        `datetime.date` for `created: 2026-01-01` and a `datetime.datetime` for the longer
+        forms, while every file this store writes carries the quoted string. `recall` and
+        `save` never minded, but `compact` sorts `(last_recalled or created, name)` and
+        `sorted` raised `'<' not supported between instances of 'datetime.date' and 'str'`
+        the moment one hand-edited file sat beside a written one -- the only remedy the
+        budget refusal names, dead on the store that named it. `str(date)` is `isoformat()`
+        and `str(datetime)` is `isoformat(' ')`, the same text the port carries as a
+        scalar's `text`, so both runtimes read the same string and the next write quotes
+        it. Only timestamps are touched: an `int` or `bool` in these fields is left exactly
+        as the scalar cases in `tools/conformance/suites/store.mjs` pin it.
+
+        `findings`, when given, collects one sentence per shape `lint` should name -- the
+        coerced timestamp, and a file whose name is not the fact's (#122) -- without
+        raising, because every other caller tolerates both. `lint` is the only caller that
+        passes a list.
+        """
         facts = []
         for path in self._fact_paths():
             text = path.read_text(encoding="utf-8")
@@ -1250,15 +1295,33 @@ class MemoryStore:
                     raise MemoryValidationError(
                         f"malformed fact file {path.name}: frontmatter is not a mapping"
                     )
+                name = meta["name"]
+                stamps = {}
+                for key in ("created", "last_recalled"):
+                    value = meta.get(key)
+                    if isinstance(value, date):  # `datetime` is a `date`
+                        value = str(value)
+                        if findings is not None:
+                            findings.append(
+                                f"fact '{name}' in {path.name}: {key} is the unquoted "
+                                f"timestamp {value}, read as '{value}'; quote it"
+                            )
+                    stamps[key] = value
+                if findings is not None and path.stem != str(name):
+                    findings.append(
+                        f"fact '{name}' in {path.name}: the file name does not match the "
+                        f"fact name; rename the file to {name}.md or the fact to {path.stem}"
+                    )
                 facts.append(
                     Fact(
-                        name=meta["name"],
+                        name=name,
                         description=meta["description"],
                         type=meta["type"],
                         body=body.strip(),
                         links=list(meta.get("links") or []),
-                        last_recalled=meta.get("last_recalled"),
-                        created=meta.get("created") or _mtime_date(path),
+                        last_recalled=stamps["last_recalled"],
+                        created=stamps["created"] or _mtime_date(path),
+                        source=path,
                     )
                 )
             except (ValueError, KeyError, yaml.YAMLError) as e:
