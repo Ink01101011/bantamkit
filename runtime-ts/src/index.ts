@@ -27,11 +27,13 @@ export {
   absolutePath,
   bestMatch,
   iterErrors,
+  PyJsonSchemaRefusal,
   PyJsonSchemaUnsupported,
+  pyUrlNormalize,
   pyEqual,
   validate,
 } from './pyjsonschema.js';
-export type { PyValidationError } from './pyjsonschema.js';
+export type { Draft, PyValidationError } from './pyjsonschema.js';
 export { AssetNotFound, assetsRoot, loadSchema, loadSkill, loadTool, loadToolAsset } from './assets.js';
 export type { Tool } from './assets.js';
 export {

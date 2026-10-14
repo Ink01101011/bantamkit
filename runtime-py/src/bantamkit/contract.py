@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 
 import jsonschema
 import yaml
+from jsonschema.exceptions import _WrappedReferencingError
+from referencing.exceptions import NoSuchAnchor, PointerToNowhere
 
 from bantamkit.assets import AssetNotFound, assets_root
 from bantamkit.client import BantamError, Message
@@ -127,17 +130,141 @@ def extract_json(text: str) -> dict | list:
     return obj
 
 
+_REF_KEYWORDS = ("$ref", "$dynamicRef", "$recursiveRef")
+# The keywords whose value holds subschemas, in ANY dialect — the walk the pre-scan takes.
+# `runtime-ts/src/pyjsonschema.ts` (`subschemas`) is the same walk in the same order, which
+# is what makes the two refusal sentences name the same place.
+_WALK_SUBSCHEMA = frozenset(
+    {
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+_WALK_MAP = frozenset(
+    {"$defs", "definitions", "dependencies", "dependentSchemas", "patternProperties", "properties"}
+)
+_WALK_LIST = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+
+
+def _subschemas(schema: object, path: str = "") -> Iterator[tuple[str, dict]]:
+    """Every subschema of `schema`, root first, in document order, with its path.
+
+    Structural, not blind: a PROPERTY named `$ref` is not a reference, and this walk never
+    mistakes it for one.
+    """
+    if not isinstance(schema, dict):
+        return
+    yield path, schema
+    for k, v in schema.items():
+        at = k if path == "" else f"{path}/{k}"
+        if k == "items" and isinstance(v, list):
+            for i, x in enumerate(v):
+                yield from _subschemas(x, f"{at}/{i}")
+        elif k in _WALK_SUBSCHEMA:
+            yield from _subschemas(v, at)
+        elif k in _WALK_MAP and isinstance(v, dict):
+            for n, x in v.items():
+                yield from _subschemas(x, f"{at}/{n}")
+        elif k in _WALK_LIST and isinstance(v, list):
+            for i, x in enumerate(v):
+                yield from _subschemas(x, f"{at}/{i}")
+
+
+def _draft3_sentence(uri: str) -> str:
+    return (
+        f"the schema's $schema {json.dumps(uri)} names draft 3, which this validator does not "
+        "support (draft-04, draft-06, draft-07, 2019-09 and 2020-12 are)"
+    )
+
+
+def _names_draft3(uri: object) -> bool:
+    if not isinstance(uri, str):
+        return False
+    found = jsonschema.validators.validator_for({"$schema": uri}, default=None)
+    return found is jsonschema.Draft3Validator
+
+
+def _unsupported_schema(schema: dict) -> str | None:
+    """The one sentence BOTH runtimes answer for a schema the validator will not resolve.
+
+    `jsonschema` resolves a `$ref` against a base URI and a registry; the Node port resolves
+    it inside the one resource a caller schema is (`pyjsonschema.ts`, module header). So
+    that the two never disagree, the reference narrows itself to the same rule BEFORE
+    `jsonschema.validate` runs, eagerly and in document order: draft 3 anywhere, a reference
+    that is not fragment-only, an embedded `$id` (`id` under draft 4) beside any reference.
+    Each is answered as `{valid: false, feedback}` rather than raised — a model handed the
+    sentence can act on it (#125). A pointer to nowhere or an unknown anchor is found
+    lazily, from the `referencing` exceptions, in `schema_error`.
+    """
+    # `validator_for` on a non-string `$schema` raises (AttributeError) — both runtimes raise.
+    cls = jsonschema.validators.validator_for(schema)
+    if cls is jsonschema.Draft3Validator:
+        return _draft3_sentence(schema["$schema"])
+    id_key = "id" if cls is jsonschema.Draft4Validator else "$id"
+    refs: list[tuple[str, str]] = []
+    ids: list[str] = []
+    for path, sub in _subschemas(schema):
+        if path != "":
+            if _names_draft3(sub.get("$schema")):
+                return _draft3_sentence(sub["$schema"])
+            if isinstance(sub.get(id_key), str):
+                ids.append(path)
+        for k in _REF_KEYWORDS:
+            v = sub.get(k)
+            if isinstance(v, str):
+                refs.append((k, v))
+    for k, v in refs:
+        # `$recursiveRef`'s value is never read by the reference, so it is never judged.
+        if k != "$recursiveRef" and v != "" and not v.startswith("#"):
+            return (
+                f"the reference {json.dumps(v)} cannot be resolved: only references into this "
+                'schema ("#", "#/..." and "#name") are supported'
+            )
+    if refs and ids:
+        return (
+            f'the schema declares "{id_key}" at {ids[0]}; references are only resolved in a '
+            "schema with a single resource"
+        )
+    return None
+
+
 def schema_error(output: str, schema: dict) -> str | None:
-    """Return a pointed validation error for `output`, or None if it satisfies `schema`."""
+    """Return a pointed validation error for `output`, or None if it satisfies `schema`.
+
+    A schema the validator will not resolve (see `_unsupported_schema`) returns its one
+    sentence here too, so `validate_json` answers it instead of raising.
+    """
     try:
         data = extract_json(output)
     except ValueError as e:
         return parse_error_message(e)
+    if isinstance(schema, dict):
+        refusal = _unsupported_schema(schema)
+        if refusal is not None:
+            return refusal
     try:
         jsonschema.validate(data, schema)
     except jsonschema.ValidationError as e:
         where = "/".join(str(p) for p in e.absolute_path) or "root"
         return validation_error_message(where, e.message)
+    except _WrappedReferencingError as e:
+        wrapped = e._wrapped
+        if isinstance(wrapped, PointerToNowhere):
+            ref = json.dumps("#" + wrapped.ref)
+            return f"the reference {ref} points at nothing in this schema"
+        if isinstance(wrapped, NoSuchAnchor):
+            anchor = json.dumps("#" + wrapped.anchor)
+            return f"the reference {anchor} names no anchor in this schema"
+        raise
     return None
 
 

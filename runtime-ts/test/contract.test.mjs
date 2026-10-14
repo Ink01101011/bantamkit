@@ -461,11 +461,30 @@ test('pyRepr renders JSON values the way Python does', () => {
 
 // ------------------------------------------------------------------ the raised divergence
 
-test('an unresolvable construct raises rather than answering plausibly', () => {
-  assert.throws(() => contract.schemaError('{}', js({ $ref: '#/$defs/x' })), /jsonschema seam/);
-  assert.throws(
-    () => contract.schemaError('{}', js({ unevaluatedProperties: false })),
-    /jsonschema seam/,
+// AMENDED (job65, #125). This node pinned "`$ref` and `unevaluatedProperties` RAISE rather than
+// answering plausibly" — the port had no resolver and no annotation walker, so it refused the
+// keywords by name. The issue, filed against the released contract, outranks the pin: a local
+// `$ref` now resolves inside the one resource a caller schema is, `unevaluated*` walks the
+// evaluated keys, and both ANSWER what the CPython reference answers (`test/drafts.test.mjs`
+// carries the sentences; `tools/conformance/suites/validate.mjs` `drafts/` compares them). What
+// still raises is a schema that is not one: `check_schema` refuses `{"type": "nosuch"}` on both
+// sides, and that half of the old pin stands. Old contract recorded in
+// `.shiftwork/notes-job65/J65-3.md` §4.
+test('a local $ref and unevaluated* now ANSWER; a schema that is not one still raises', () => {
+  assert.equal(
+    contract.schemaError('{}', js({ $ref: '#/$defs/x', $defs: { x: { type: 'string' } } })),
+    "JSON does not match schema at 'root': {} is not of type 'string'",
+  );
+  assert.equal(contract.schemaError('{}', js({ unevaluatedProperties: false })), null);
+  assert.equal(
+    contract.schemaError('{"a": 1}', js({ unevaluatedProperties: false })),
+    "JSON does not match schema at 'root': Unevaluated properties are not allowed ('a' was unexpected)",
+  );
+  // A `$ref` with NO target is not a raise either: the reference finds the pointer to nowhere
+  // lazily (`referencing.exceptions.PointerToNowhere`) and `schema_error` answers its sentence.
+  assert.equal(
+    contract.schemaError('{}', js({ $ref: '#/$defs/x' })),
+    'the reference "#/$defs/x" points at nothing in this schema',
   );
   assert.throws(() => contract.schemaError('{}', js({ type: 'nosuch' })), /jsonschema seam/);
 });

@@ -142,9 +142,34 @@ the descent **inverts** preference via `heapq.nsmallest`, so inside `anyOf` / `o
 wrong one.
 
 `checkSchema` runs **before** validation, as `jsonschema.validate` does. It is the keyword
-*shape table* applied recursively — deliberately not the metaschema, which would need
-`$ref` / `$dynamicRef` support this validator does not implement. Measured over 50 malformed
-schemas: 50/50 refuse on both sides.
+*shape table* applied recursively and **gated by dialect** — deliberately not the metaschema,
+which is several documents wired together across resources, and one resource is all this
+validator resolves. Measured over 50 malformed schemas: 50/50 refuse on both sides; and over 28
+dialect-gated shapes, each refused under the dialect that knows the keyword and answered under
+one that does not (`check_schema/gated` in `tools/conformance/suites/validate.mjs`).
+
+**The dialect is read from `$schema`** (job65, #126), as `validator_for` reads it: drafts 4, 6,
+7, 2019-09 and 2020-12 each get their own keyword table and type checker, the URI is normalised
+the way `_utils.URIDict` normalises it (an unknown URI, like no `$schema`, is 2020-12), and a
+subschema re-dispatches on its own `$schema` as `Validator.evolve` does. Draft 3 is the one
+dialect BOTH runtimes refuse, with one sentence — a narrowing of the reference library, not a
+divergence between the two runtimes, and `contract.py` applies it before `jsonschema.validate`
+so the Python half says the same words.
+
+**`$ref` resolves inside the one resource a caller schema is** (job65, #125): `#`, a JSON
+pointer and a plain-name `$anchor`/`$dynamicAnchor` all resolve against the root document, and
+`unevaluatedItems`/`unevaluatedProperties` carry both walkers (`_utils` for 2020-12,
+`_legacy_keywords` for 2019-09). What is NOT resolved is a second resource: a reference with a
+scheme, host, path or query, or an embedded `$id` (`id` under draft 4) beside any reference, is
+refused **before** validation with one sentence both runtimes print, answered as
+`{valid: false, feedback}` rather than raised. The Python side narrows itself to the same rule
+in `contract._unsupported_schema`, eagerly — the reference would resolve an unreached remote
+`$ref` lazily and answer `valid`, and that is the price paid for the two never disagreeing. A
+pointer to nowhere or an unknown anchor stays lazy on both sides (`referencing`'s
+`PointerToNowhere`/`NoSuchAnchor`, caught and answered as the same sentence). Until job65 the
+port RAISED on `$ref`, `$dynamicRef`, `$recursiveRef` and `unevaluated*`, and the suite carried
+`ruling: $ref is not resolved`; that ruling is now the non-ruled case `$ref into #/$defs resolves
+on both sides`, and the whole surface is the `drafts/` matrix.
 
 One trade taken deliberately: `{"pattern": "("}` compiles eagerly, which closes the wrong
 answer at the cost of refusing Python-only regex syntax in branches that are never reached.
@@ -543,7 +568,9 @@ reference and the disagreement is with CPython rather than with Node. Found whil
 1. Windows index-budget arithmetic — 13537 bytes on disk against 13472 checked. (The port
    now reproduces it rather than avoiding it; the reference's arithmetic is still the one
    that is wrong, and it is still not fixed here.)
-2. `validate_json` lets `SchemaError` / `TypeError` / `_WrappedReferencingError` escape.
+2. `validate_json` lets `SchemaError` / `TypeError` escape. (`_WrappedReferencingError` no
+   longer reaches it: job65 answers a pointer to nowhere and an unknown anchor as a sentence,
+   and refuses a reference outside the one resource before `validate` runs.)
 3. `shiftwork._read_valid` does not catch `UnicodeDecodeError`.
 4. `_pinned_store`'s docstring states a false reason.
 5. A `pattern` regex divergence.

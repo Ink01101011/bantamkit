@@ -37,7 +37,7 @@ import { pyStrip } from './memory/factfile.js';
 import { pyReadText } from './memory/pyfs.js';
 import { resolveImplicitTag } from './memory/pyyaml.js';
 import { fromJs, PyValueError, rawDecode, type PyValue } from './pyjson.js';
-import { absolutePath, validate } from './pyjsonschema.js';
+import { absolutePath, PyJsonSchemaRefusal, validate, type PyValidationError } from './pyjsonschema.js';
 
 /**
  * `contract.REQUIRED_KEYS`, in Python's order — the order the error message lists them.
@@ -677,7 +677,17 @@ export function schemaError(output: string, schema: PyValue | unknown): string |
     throw e;
   }
   const asPy = isPyValue(schema) ? schema : fromJs(schema);
-  const error = validate(data, asPy);
+  let error: PyValidationError | null;
+  try {
+    error = validate(data, asPy);
+  } catch (e) {
+    // A schema the validator will not resolve — a reference outside the one resource, a
+    // draft-3 `$schema` — is ANSWERED with its sentence, not raised (#125). The Python side
+    // returns the same sentence from `_unsupported_schema` and from the `referencing`
+    // exceptions, so `validate_json` says `{"valid": false, "feedback": …}` on both.
+    if (e instanceof PyJsonSchemaRefusal) return e.message;
+    throw e;
+  }
   if (error === null) return null;
   const where = absolutePath(error).map(String).join('/') || 'root';
   return validationErrorMessage(where, error.message);
