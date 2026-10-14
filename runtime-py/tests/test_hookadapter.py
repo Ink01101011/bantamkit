@@ -911,6 +911,97 @@ def test_a_missing_file_lets_read_produce_its_own_error(tmp_path):
     assert not (home / ".bantamkit" / "hooks" / "ledger-probe-session.json").exists()
 
 
+def test_an_unchanged_file_is_refused_once_and_then_every_repeat_goes_through(tmp_path):
+    """#166 (job65, J65-4). The allowed retry used to write `refused: False` back, which
+    re-armed the gate: six reads went allow, deny, allow, deny, allow, deny while the
+    refusal told the model it "fires only once per unchanged file". The docs' sentence
+    holds now: one refusal, then every identical repeat goes through until an edit re-arms
+    it. RED on the pre-fix adapter at 64ae11d: `allow,deny,allow,deny,allow,deny`."""
+    home, cwd = _bed(tmp_path, "read-once")
+    target = cwd / "a.txt"
+    target.write_text("alpha", encoding="utf-8")
+    payload = _read_payload(target)
+
+    def read() -> str:
+        return "deny" if _run_hook(payload, home=home, cwd=cwd).stdout else "allow"
+
+    decisions = [read() for _ in range(6)]
+    target.write_text("alpha and then some", encoding="utf-8")
+    after_edit = [read() for _ in range(3)]
+
+    assert decisions == ["allow", "deny", "allow", "allow", "allow", "allow"], decisions
+    assert after_edit == ["allow", "deny", "allow"], after_edit
+    assert [line["action"] for line in _log_lines(home)] == [
+        "record",
+        "refuse",
+        *(["allow-after-refuse-or-change"] * 4),
+        "allow-after-refuse-or-change",  # the edit: a new signature is a new read
+        "refuse",
+        "allow-after-refuse-or-change",
+    ]
+    (record,) = _ledger(home)["reads"].values()
+    assert record["refused"] is True, "the refusal stays spent until the signature changes"
+    assert record["count"] == 9, "the count is cumulative across signature changes"
+
+
+def test_a_directory_is_never_ledgered_and_its_retry_is_never_refused(tmp_path):
+    """#190 (job65, J65-4). A directory stats fine, so it was ledgered and the second Read
+    refused with "use the content from that earlier read" -- content the host never
+    produced, because the first Read failed with EISDIR. Not a regular file: not
+    ledgered, like a missing path. RED at 64ae11d: the second run emitted a deny."""
+    home, cwd = _bed(tmp_path, "read-directory")
+    (cwd / "sub").mkdir()
+
+    first = _run_hook(_read_payload(cwd / "sub"), home=home, cwd=cwd)
+    second = _run_hook(_read_payload(cwd / "sub"), home=home, cwd=cwd)
+
+    assert first.returncode == 0 and second.returncode == 0
+    assert first.stdout == b"" and second.stdout == b"", "a directory read is never refused"
+    hooks = home / ".bantamkit" / "hooks"
+    assert not (hooks / "ledger-probe-session.json").exists(), "never ledgered"
+    # Like a missing path, nothing is logged either: the arm returns before its log line.
+    assert not (hooks / "hook-log.jsonl").exists()
+
+
+def test_parallel_reads_of_distinct_files_lose_no_ledger_entry(tmp_path):
+    """#167 (job65, J65-4). One hook PROCESS per tool call, and a parallel tool block fires
+    them at once: twenty processes each read the ledger, add one entry and write the whole
+    file back, and the last writer wins. Measured at 64ae11d over 20 files: 16 of 20
+    entries survived on this side, 6 of 20 on the port. The read-modify-write now runs
+    under `<ledger>.lock` and writes through a rename, so all 20 land and no lock is left."""
+    home, cwd = _bed(tmp_path, "read-parallel")
+    files = [cwd / f"p{i}.txt" for i in range(20)]
+    for i, f in enumerate(files):
+        f.write_text(f"{i}\n", encoding="utf-8")
+    env = _env(home)
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-m", "bantamkit.mcpserver", "--hook"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd),
+            env=env,
+        )
+        for _ in files
+    ]
+    bodies = [
+        json.dumps({"cwd": str(cwd), "session_id": "probe-session", **_read_payload(f)})
+        for f in files
+    ]
+    outs = [
+        p.communicate(input=b.encode("utf-8"), timeout=120)
+        for p, b in zip(procs, bodies, strict=True)
+    ]
+
+    assert [p.returncode for p in procs] == [0] * 20
+    assert all(out == b"" for out, _err in outs), "distinct files: nothing is refused"
+    assert len(_ledger(home)["reads"]) == 20, "every parallel read is ledgered"
+    hooks = home / ".bantamkit" / "hooks"
+    assert not (hooks / "ledger-probe-session.json.lock").exists(), "the lock is released"
+    assert [n for n in os.listdir(hooks) if n.endswith(".tmp")] == [], "no temp file is left"
+
+
 # --- 6. PostToolUse — the usage events log -----------------------------------------------
 
 

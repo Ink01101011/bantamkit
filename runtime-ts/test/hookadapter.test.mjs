@@ -24,8 +24,8 @@
  * and log land in the scratch) and a scratch cwd.
  */
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
@@ -154,4 +154,94 @@ test('--hook consumes stdin, so no argv-shaped payload is needed', () => {
   // second thing to keep in step with the host.
   const r = runCli(['--hook', 'SessionStart']);
   assert.equal(r.status, 2, 'a positional after --hook is an argv error, not a second spelling');
+});
+
+// ------------------------------------------------------- PreToolUse Read: the read ledger
+// (job65, J65-4). The in-process half of #166, #167 and #190; the conformance `hooks`
+// suite's `read-ledger` block is the process half, compared against the reference.
+
+const readPayload = (file, extra = {}) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'Read',
+  transcript_path: '/t/parent.jsonl',
+  tool_input: { file_path: file, ...extra },
+});
+const hookLog = (home) =>
+  readFileSync(join(home, '.bantamkit', 'hooks', 'hook-log.jsonl'), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+const ledgerOf = (home) => JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', 'ledger-probe-session.json'), 'utf8'));
+
+test('#166: an unchanged file is refused once, then every identical repeat goes through until an edit', () => {
+  // The allowed retry used to write `refused: false` back, which re-armed the gate: six
+  // reads went allow, deny, allow, deny, allow, deny while the refusal told the model it
+  // "fires only once per unchanged file". RED at 64ae11d: `allow,deny,allow,deny,allow,deny`.
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  const target = join(cwd, 'a.txt');
+  writeFileSync(target, 'alpha');
+  const read = () => (runHook(readPayload(target), { home, cwd }).stdout ? 'deny' : 'allow');
+  const decisions = Array.from({ length: 6 }, read);
+  writeFileSync(target, 'alpha and then some');
+  const afterEdit = Array.from({ length: 3 }, read);
+  assert.deepEqual(decisions, ['allow', 'deny', 'allow', 'allow', 'allow', 'allow']);
+  assert.deepEqual(afterEdit, ['allow', 'deny', 'allow']);
+  assert.deepEqual(
+    hookLog(home).map((l) => l.action),
+    ['record', 'refuse', ...Array(4).fill('allow-after-refuse-or-change'), 'allow-after-refuse-or-change', 'refuse', 'allow-after-refuse-or-change'],
+  );
+  const [record] = Object.values(ledgerOf(home).reads);
+  assert.equal(record.refused, true, 'the refusal stays spent until the signature changes');
+  assert.equal(record.count, 9, 'the count is cumulative across signature changes');
+});
+
+test('#190: a directory is never ledgered and its retry is never refused', () => {
+  // A directory stats fine, so it was ledgered and the second Read refused with "use the
+  // content from that earlier read" — content the host never produced, because the first
+  // Read failed with EISDIR. RED at 64ae11d: the second run emitted a deny.
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  const dir = join(cwd, 'sub');
+  mkdirSync(dir);
+  const first = runHook(readPayload(dir), { home, cwd });
+  const second = runHook(readPayload(dir), { home, cwd });
+  assert.equal(first.status, 0);
+  assert.equal(second.status, 0);
+  assert.equal(first.stdout, '');
+  assert.equal(second.stdout, '', 'a directory read is never refused');
+  const hooks = join(home, '.bantamkit', 'hooks');
+  assert.ok(!existsSync(join(hooks, 'ledger-probe-session.json')), 'never ledgered');
+  // Like a missing path, nothing is logged either: the arm returns before its log line.
+  assert.ok(!existsSync(join(hooks, 'hook-log.jsonl')));
+});
+
+test('#167: twenty parallel reads of twenty files lose no ledger entry', async () => {
+  // One hook PROCESS per tool call, and a parallel tool block fires them at once: twenty
+  // processes each read the ledger, add one entry and write the whole file back, and the
+  // last writer wins. Measured at 64ae11d over 20 files: 6 of 20 survived on this side,
+  // 16 of 20 on the reference. The read-modify-write now runs under `<ledger>.lock` and
+  // writes through a rename, so all 20 land, no lock is left, no temp file either.
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  const files = Array.from({ length: 20 }, (_, i) => join(cwd, `p${i}.txt`));
+  files.forEach((f, i) => writeFileSync(f, `${i}\n`));
+  const results = await Promise.all(
+    files.map(
+      (f) =>
+        new Promise((resolve) => {
+          const p = spawn(process.execPath, [CLI, '--hook'], { cwd, env: { ...process.env, HOME: home, USERPROFILE: home } });
+          let stdout = '';
+          p.stdout.on('data', (d) => (stdout += d));
+          p.on('close', (status) => resolve({ status, stdout }));
+          p.stdin.end(JSON.stringify({ cwd, session_id: 'probe-session', ...readPayload(f) }));
+        }),
+    ),
+  );
+  assert.deepEqual(results.map((r) => r.status), Array(20).fill(0));
+  assert.deepEqual(results.map((r) => r.stdout), Array(20).fill(''), 'distinct files: nothing is refused');
+  assert.equal(Object.keys(ledgerOf(home).reads).length, 20, 'every parallel read is ledgered');
+  const hooks = join(home, '.bantamkit', 'hooks');
+  assert.ok(!existsSync(join(hooks, 'ledger-probe-session.json.lock')), 'the lock is released');
+  assert.deepEqual(readdirSync(hooks).filter((n) => n.endsWith('.tmp')), [], 'no temp file is left');
 });

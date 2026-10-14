@@ -371,9 +371,70 @@ def _read_ledger(run: HookRun, session_id: Any) -> dict[str, Any]:
 
 
 def _write_ledger(run: HookRun, session_id: Any, ledger: dict[str, Any]) -> None:
+    """Temp-and-rename, never a bare truncating write (job65, J65-4, #167).
+
+    A reader that lands between a whole-file truncate and its write sees an empty ledger,
+    which `_read_ledger` reads as "nothing seen". `os.replace` is atomic on both platforms;
+    the name carries the pid so two writers never share a temp file.
+    """
     os.makedirs(run.state, exist_ok=True)
-    with open(_ledger_path(run, session_id), "w", encoding="utf-8") as fh:
+    file = _ledger_path(run, session_id)
+    tmp = f"{file}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(_dumps(ledger))
+    os.replace(tmp, file)
+
+
+#: How long a writer waits for the ledger lock before going ahead without it.
+_LEDGER_LOCK_WAIT_MS = 2000
+#: A lock file older than this was left by a hook process that died holding it.
+_LEDGER_LOCK_STALE_MS = 10_000
+#: The poll between two attempts at the lock.
+_LEDGER_LOCK_POLL_MS = 5
+
+
+def _update_ledger(run: HookRun, session_id: Any, update: Callable[[dict[str, Any]], bool]) -> None:
+    """One read-modify-write of the session ledger, under a lock (job65, J65-4, #167).
+
+    THE RACE THIS CLOSES IS MEASURED, not supposed: the host fires one hook PROCESS per tool
+    call and a parallel tool block fires them at once, so twenty Reads in one block are
+    twenty processes each doing read -> add one entry -> write the whole file, and the last
+    writer wins. Measured at 64ae11d over 20 distinct files: 16 of 20 entries survived on
+    this side, 6 of 20 on the port (`.shiftwork/notes-job65/J65-4.md`). An atomic write alone
+    cannot close it -- the lost entries are lost between the read and the write, not inside
+    the write -- so the whole read-modify-write runs under `<ledger>.lock`, taken with
+    `O_EXCL` (the one primitive both platforms and both runtimes share without a
+    dependency). A lock older than `_LEDGER_LOCK_STALE_MS` is a dead holder's and is
+    removed; a writer that cannot take the lock within `_LEDGER_LOCK_WAIT_MS` goes ahead
+    unlocked, because a hook that fails the tool call over its own cache is worse than a
+    lost entry. `update` returns whether the ledger changed; nothing is written when it did
+    not.
+    """
+    os.makedirs(run.state, exist_ok=True)
+    lock = f"{_ledger_path(run, session_id)}.lock"
+    deadline = time.monotonic() + _LEDGER_LOCK_WAIT_MS / 1000
+    held = False
+    while not held and time.monotonic() < deadline:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            held = True
+        except OSError:
+            try:
+                if time.time() - os.stat(lock).st_mtime > _LEDGER_LOCK_STALE_MS / 1000:
+                    os.unlink(lock)
+            except OSError:
+                pass  # the holder released it between the open and the stat: go round again
+            time.sleep(_LEDGER_LOCK_POLL_MS / 1000)
+    try:
+        ledger = _read_ledger(run, session_id)
+        if update(ledger):
+            _write_ledger(run, session_id, ledger)
+    finally:
+        if held:
+            try:
+                os.unlink(lock)
+            except OSError:
+                pass
 
 
 def _injected_seen(ledger: dict[str, Any], transcript: str) -> dict[str, Any]:
@@ -1305,7 +1366,15 @@ def _apply_registration_store_pin(run: HookRun, cwd: str) -> None:
 # reads because they never pass through bantamkit's Agent. A PreToolUse hook is the one
 # place that does see them. Keyed by transcript (a subagent has its own transcript and has
 # NOT seen the parent's read), by path+offset+limit, and by mtime+size so an edit re-arms
-# it. REFUSES ONCE: the second identical call goes through, so nothing can be hard-blocked.
+# it. REFUSES ONCE: the second identical call goes through, so nothing can be hard-blocked
+# -- and ONLY once (job65, J65-4, #166): the allowed retry used to write `refused: False`
+# back, which re-armed the gate and refused every other read (allow, deny, allow, deny, ...)
+# of a file the docs promise is "refused once". The record now keeps `refused: True` until
+# the signature changes, so the sequence is allow, deny, allow, allow, ... and an edit
+# re-arms. ONLY REGULAR FILES (#190): a directory stats fine, so it was ledgered and its
+# retry refused with "use the content from that earlier read" -- content the host never
+# produced, because the first Read failed with EISDIR. Anything that is not a regular file
+# is treated like a missing path: not ledgered, never refused, Read produces its own error.
 
 
 def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
@@ -1327,22 +1396,44 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
     # `_pre_compact` must filter on it and a path may itself contain the key's delimiter.
     transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
     key = f"{transcript}|{file}|{_js_str(offset)}|{_js_str(limit)}"
-    ledger = _read_ledger(run, payload.get("session_id"))
-    prev = ledger["reads"].get(key)
-    prev = prev if isinstance(prev, dict) else None
     sig = f"{_js_number(_mtime_ms(st))}|{st.st_size}"
-    if prev and prev.get("sig") == sig and not prev.get("refused"):
-        prev["refused"] = True
-        prev["count"] = int(prev.get("count") or 0) + 1
-        _write_ledger(run, payload.get("session_id"), ledger)
+    decision = {"action": "record", "refused_at": ""}
+
+    # The whole read-modify-write under the ledger lock (#167); the decision is emitted after.
+    def _apply(ledger: dict[str, Any]) -> bool:
+        prev = ledger["reads"].get(key)
+        prev = prev if isinstance(prev, dict) else None
+        if prev and prev.get("sig") == sig:
+            prev["count"] = int(prev.get("count") or 0) + 1
+            if not prev.get("refused"):
+                prev["refused"] = True
+                decision["action"] = "refuse"
+                decision["refused_at"] = _js_str(prev.get("at"))
+            else:
+                # refused once already; every later repeat goes through
+                decision["action"] = "allow-after-refuse-or-change"
+            return True
+        ledger["reads"][key] = {
+            "sig": sig,
+            "at": _stamp(),
+            "count": (int(prev.get("count") or 0) if prev else 0) + 1,
+            "refused": False,
+            "transcript": transcript,
+            "file": file,
+        }
+        decision["action"] = "allow-after-refuse-or-change" if prev else "record"
+        return True
+
+    _update_ledger(run, payload.get("session_id"), _apply)
+    if decision["action"] == "refuse":
         where = ""
         if offset is not None:
             tail = f", limit {_js_str(limit)}" if limit is not None else ""
             where = f" (offset {_js_str(offset)}{tail})"
         reason = (
             f"bantamkit filegraph: {file}{where} was already read in this context at "
-            f"{prev.get('at')} and is unchanged on disk (same mtime and size). Use the "
-            "content from that earlier read. If you genuinely need it again, repeat the "
+            f"{decision['refused_at']} and is unchanged on disk (same mtime and size). Use "
+            "the content from that earlier read. If you genuinely need it again, repeat the "
             "exact same call — this refusal fires only once per unchanged file."
         )
         _log(run, {"event": "PreToolUse", "action": "refuse", "file": file, "size": st.st_size})
@@ -1356,23 +1447,9 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
             }
         )
         return
-    ledger["reads"][key] = {
-        "sig": sig,
-        "at": _stamp(),
-        "count": (int(prev.get("count") or 0) if prev else 0) + 1,
-        "refused": False,
-        "transcript": transcript,
-        "file": file,
-    }
-    _write_ledger(run, payload.get("session_id"), ledger)
     _log(
         run,
-        {
-            "event": "PreToolUse",
-            "action": "allow-after-refuse-or-change" if prev else "record",
-            "file": file,
-            "size": st.st_size,
-        },
+        {"event": "PreToolUse", "action": decision["action"], "file": file, "size": st.st_size},
     )
 
 

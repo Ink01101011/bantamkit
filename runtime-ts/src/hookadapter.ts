@@ -342,9 +342,67 @@ function readLedger(run: HookRun, sessionId: string | undefined): Ledger {
   }
 }
 
+/**
+ * Temp-and-rename, never a bare `writeFileSync` (job65, J65-4, #167): a reader that lands
+ * between a whole-file truncate and its write sees an empty ledger, which `readLedger` reads
+ * as "nothing seen". The rename is atomic on both platforms; the name carries the pid so two
+ * writers never share a temp file.
+ */
 function writeLedger(run: HookRun, sessionId: string | undefined, ledger: Ledger): void {
   fs.mkdirSync(run.state, { recursive: true });
-  fs.writeFileSync(ledgerPath(run, sessionId), JSON.stringify(ledger));
+  const file = ledgerPath(run, sessionId);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(ledger));
+  fs.renameSync(tmp, file);
+}
+
+/** How long a writer waits for the ledger lock before going ahead without it. */
+const LEDGER_LOCK_WAIT_MS = 2000;
+/** A lock file older than this was left by a hook process that died holding it. */
+const LEDGER_LOCK_STALE_MS = 10_000;
+/** The poll between two attempts at the lock. */
+const LEDGER_LOCK_POLL_MS = 5;
+
+/**
+ * One read-modify-write of the session ledger, under a lock (job65, J65-4, #167).
+ *
+ * THE RACE THIS CLOSES IS MEASURED, not supposed: the host fires one hook PROCESS per tool
+ * call and a parallel tool block fires them at once, so twenty Reads in one block are twenty
+ * processes each doing read → add one entry → write the whole file, and the last writer wins.
+ * Measured at 64ae11d over 20 distinct files: 6 of 20 entries survived on this side, 16 of 20
+ * on the reference (`.shiftwork/notes-job65/J65-4.md`). An atomic write alone cannot close it
+ * — the lost entries are lost between the read and the write, not inside the write — so the
+ * whole read-modify-write runs under `<ledger>.lock`, taken with `O_EXCL` (the one primitive
+ * both platforms and both runtimes share without a dependency). A lock older than
+ * `LEDGER_LOCK_STALE_MS` is a dead holder's and is removed; a writer that cannot take the
+ * lock within `LEDGER_LOCK_WAIT_MS` goes ahead unlocked, because a hook that fails the tool
+ * call over its own cache is worse than a lost entry. `update` returns whether the ledger
+ * changed; nothing is written when it did not.
+ */
+function updateLedger(run: HookRun, sessionId: string | undefined, update: (ledger: Ledger) => boolean): void {
+  fs.mkdirSync(run.state, { recursive: true });
+  const lock = `${ledgerPath(run, sessionId)}.lock`;
+  const deadline = Date.now() + LEDGER_LOCK_WAIT_MS;
+  let held = false;
+  while (!held && Date.now() < deadline) {
+    try {
+      fs.closeSync(fs.openSync(lock, 'wx'));
+      held = true;
+    } catch {
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > LEDGER_LOCK_STALE_MS) fs.rmSync(lock, { force: true });
+      } catch {
+        /* the holder released it between the open and the stat: go round again */
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LEDGER_LOCK_POLL_MS);
+    }
+  }
+  try {
+    const ledger = readLedger(run, sessionId);
+    if (update(ledger)) writeLedger(run, sessionId, ledger);
+  } finally {
+    if (held) fs.rmSync(lock, { force: true });
+  }
 }
 
 // ------------------------------------- the host's auto-memory directory, and A's export
@@ -1259,7 +1317,15 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
 // because they never pass through bantamkit's Agent. A PreToolUse hook is the one place
 // that does see them. Keyed by transcript (a subagent has its own transcript and has NOT
 // seen the parent's read), by path+offset+limit, and by mtime+size so an edit re-arms it.
-// REFUSES ONCE: the second identical call goes through, so nothing can be hard-blocked.
+// REFUSES ONCE: the second identical call goes through, so nothing can be hard-blocked —
+// and ONLY once (job65, J65-4, #166): the allowed retry used to write `refused: false`
+// back, which re-armed the gate and refused every other read (allow, deny, allow, deny, …)
+// of a file the docs promise is "refused once". The record now keeps `refused: true` until
+// the signature changes, so the sequence is allow, deny, allow, allow, … and an edit re-arms.
+// ONLY REGULAR FILES (#190): a directory stats fine, so it was ledgered and its retry refused
+// with "use the content from that earlier read" — content the host never produced, because
+// the first Read failed with EISDIR. Anything that is not a regular file is treated like a
+// missing path: not ledgered, never refused, Read produces its own error.
 function preToolUseRead(run: HookRun, input: HookInput): void {
   const ti = input.tool_input ?? {};
   const file = typeof ti['file_path'] === 'string' ? ti['file_path'] : '';
@@ -1278,14 +1344,38 @@ function preToolUseRead(run: HookRun, input: HookInput): void {
   // `preCompact` must filter on it and a path may itself contain the key's delimiter.
   const transcript = String(input.transcript_path || input.session_id || '');
   const key = `${transcript}|${file}|${offset ?? ''}|${limit ?? ''}`;
-  const ledger = readLedger(run, input.session_id);
-  const prev = ledger.reads[key];
   const sig = `${st.mtimeMs}|${st.size}`;
-  if (prev && prev.sig === sig && !prev.refused) {
-    prev.refused = true;
-    prev.count += 1;
-    writeLedger(run, input.session_id, ledger);
-    const reason = `bantamkit filegraph: ${file}${offset != null ? ` (offset ${offset}${limit != null ? `, limit ${limit}` : ''})` : ''} was already read in this context at ${prev.at} and is unchanged on disk (same mtime and size). Use the content from that earlier read. If you genuinely need it again, repeat the exact same call — this refusal fires only once per unchanged file.`;
+  const decision: { action: 'record' | 'refuse' | 'allow-after-refuse-or-change'; refusedAt: string } = {
+    action: 'record',
+    refusedAt: '',
+  };
+  // The whole read-modify-write under the ledger lock (#167); the decision is emitted after.
+  updateLedger(run, input.session_id, (ledger) => {
+    const prev = ledger.reads[key];
+    if (prev && prev.sig === sig) {
+      prev.count += 1;
+      if (!prev.refused) {
+        prev.refused = true;
+        decision.action = 'refuse';
+        decision.refusedAt = prev.at;
+      } else {
+        decision.action = 'allow-after-refuse-or-change'; // refused once already; every later repeat goes through
+      }
+      return true;
+    }
+    ledger.reads[key] = {
+      sig,
+      at: new Date().toISOString(),
+      count: (prev ? prev.count : 0) + 1,
+      refused: false,
+      transcript,
+      file,
+    };
+    decision.action = prev ? 'allow-after-refuse-or-change' : 'record';
+    return true;
+  });
+  if (decision.action === 'refuse') {
+    const reason = `bantamkit filegraph: ${file}${offset != null ? ` (offset ${offset}${limit != null ? `, limit ${limit}` : ''})` : ''} was already read in this context at ${decision.refusedAt} and is unchanged on disk (same mtime and size). Use the content from that earlier read. If you genuinely need it again, repeat the exact same call — this refusal fires only once per unchanged file.`;
     log(run, { event: 'PreToolUse', action: 'refuse', file, size: st.size });
     emit({
       hookSpecificOutput: {
@@ -1296,21 +1386,7 @@ function preToolUseRead(run: HookRun, input: HookInput): void {
     });
     return;
   }
-  ledger.reads[key] = {
-    sig,
-    at: new Date().toISOString(),
-    count: (prev ? prev.count : 0) + 1,
-    refused: false,
-    transcript,
-    file,
-  };
-  writeLedger(run, input.session_id, ledger);
-  log(run, {
-    event: 'PreToolUse',
-    action: prev ? 'allow-after-refuse-or-change' : 'record',
-    file,
-    size: st.size,
-  });
+  log(run, { event: 'PreToolUse', action: decision.action, file, size: st.size });
 }
 
 // ---------------------------------------------- PostToolUse → the usage events log

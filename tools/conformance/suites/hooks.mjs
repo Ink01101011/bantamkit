@@ -66,7 +66,7 @@
  * hold this (`runtime-py/tests/test_hostinstall_hooks.py`, `runtime-ts/test/hostinstall-hooks.test.mjs`)
  * are the in-process half and stay; this block is the process half.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
@@ -2691,6 +2691,145 @@ export async function run(ctx) {
       kind: 'json',
       expected: masked(py),
       actual: masked(nd),
+    });
+  }
+
+  // ======================= read-ledger: refused once, regular files only, no lost entry
+  //
+  // job65, J65-4: #166, #190 and #167, the three defects of the `PreToolUse`/`Read` arm
+  // that no case compared. Each is an ABSOLUTE property, so each is pinned PER SIDE against
+  // a literal first and compared across sides after; a differential alone stays green when
+  // both sides lose the same entries, which at 64ae11d they did (6 of 20 kept on the port,
+  // 16 of 20 on the reference — different numbers, but a run on a quieter machine could
+  // agree). One bed, one sequence of payloads per side under its own throwaway home:
+  //   (a) #166: six identical reads of an unchanged file, then an edit, then three more —
+  //       allow, deny, allow, allow, allow, allow; allow, deny, allow. The docs say "refused
+  //       once"; the arm used to re-arm on the allowed retry and refuse every other read.
+  //   (b) #190: a Read whose `file_path` is a directory, twice — never ledgered, never
+  //       refused; the first Read fails in the host with EISDIR, so there is no earlier
+  //       content to point the model at.
+  //   (c) #167: twenty hook PROCESSES at once over twenty distinct files, the way a parallel
+  //       tool block fires them — the ledger gains exactly twenty entries, and neither the
+  //       lock nor a temp file is left behind.
+  // (c) spawns the reference directly (`<python> -m bantamkit.mcpserver --hook`, PYTHONPATH
+  // pinned at this checkout's `runtime-py/src` exactly as `cli_ref.py` pins it) because
+  // `ctx.runPython` is synchronous and twenty of them in turn would measure nothing.
+  // MUTATION EVIDENCE: `.shiftwork/notes-job65/J65-4.md` — each fix reverted on one side and
+  // on both, with the red counts.
+  {
+    const id = 'read-ledger';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(join(cwd, 'a-directory'), { recursive: true });
+    writeFileSync(join(cwd, 'a.txt'), 'alpha\n');
+    for (let i = 0; i < 20; i += 1) writeFileSync(join(cwd, `p${i}.txt`), `${i}\n`);
+    b.snapshot();
+    const session = 'read-ledger-session';
+    const transcript = '/t/parent.jsonl';
+    const payload = (file) => ({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Read',
+      cwd,
+      session_id: session,
+      transcript_path: transcript,
+      tool_input: { file_path: file },
+    });
+    const ledgerFile = (h) => join(h, '.bantamkit', 'hooks', `ledger-${session}.json`);
+    const readsOf = (h) => (existsSync(ledgerFile(h)) ? Object.keys(JSON.parse(readFileSync(ledgerFile(h), 'utf8')).reads ?? {}) : []);
+    const hookAsync = (side, h, file) =>
+      new Promise((resolve) => {
+        const env = { ...process.env, HOME: h, USERPROFILE: h };
+        for (const key of SCRUBBED) delete env[key];
+        const [exe, argv] =
+          side === 'py'
+            ? [String(ctx.python), ['-m', 'bantamkit.mcpserver', '--hook']]
+            : [process.execPath, [CLI, '--hook']];
+        if (side === 'py') env['PYTHONPATH'] = join(repoRoot, 'runtime-py', 'src');
+        const p = spawn(exe, argv, { cwd, env });
+        let stdout = '';
+        p.stdout.on('data', (d) => (stdout += d));
+        p.on('close', (exit) => resolve({ exit, stdout }));
+        p.stdin.end(JSON.stringify(payload(file)));
+      });
+    const sequence = async (side) => {
+      const h = home(id, side);
+      const decide = (file) => {
+        const r = runHook(ctx, side, { payload: payload(file), cwd, home: h });
+        return dec(r.stdout).includes('"permissionDecision":"deny"') ? 'deny' : 'allow';
+      };
+      const target = join(cwd, 'a.txt');
+      const decisions = [];
+      for (let i = 0; i < 6; i += 1) decisions.push(decide(target));
+      writeFileSync(target, 'alpha and then some\n');
+      const afterEdit = [];
+      for (let i = 0; i < 3; i += 1) afterEdit.push(decide(target));
+      const actions = runHook(ctx, side, { payload: { hook_event_name: 'nothing-at-all', cwd, session_id: session }, cwd, home: h })
+        .records.filter((r) => r['event'] === 'PreToolUse')
+        .map((r) => r['action']);
+      const record = JSON.parse(readFileSync(ledgerFile(h), 'utf8')).reads[`${transcript}|${target}||`];
+      // (b) the directory, twice
+      const dir = join(cwd, 'a-directory');
+      const directory = [decide(dir), decide(dir)];
+      const dirLedgered = readsOf(h).filter((k) => k.split('|')[1] === dir).length;
+      // (c) twenty at once
+      const before = readsOf(h).length;
+      const results = await Promise.all(Array.from({ length: 20 }, (_, i) => hookAsync(side, h, join(cwd, `p${i}.txt`))));
+      const hooksDir = join(h, '.bantamkit', 'hooks');
+      return {
+        decisions,
+        afterEdit,
+        actions,
+        record: { refused: record?.refused, count: record?.count },
+        directory,
+        dirLedgered,
+        parallel: {
+          exits: results.map((r) => r.exit),
+          denied: results.filter((r) => r.stdout.includes('"permissionDecision":"deny"')).length,
+          added: readsOf(h).length - before,
+          lockLeft: existsSync(`${ledgerFile(h)}.lock`),
+          tmpLeft: readdirSync(hooksDir).filter((n) => n.endsWith('.tmp')),
+        },
+      };
+    };
+    const py = await sequence('py');
+    b.restore();
+    const nd = await sequence('node');
+
+    cases.push(
+      ...literalCases(
+        { decisions: py.decisions, afterEdit: py.afterEdit, record: py.record },
+        { decisions: nd.decisions, afterEdit: nd.afterEdit, record: nd.record },
+        'read-ledger: PINNED PER SIDE (#166): an unchanged file is refused ONCE, every later repeat goes through, and an edit re-arms it',
+        {
+          decisions: ['allow', 'deny', 'allow', 'allow', 'allow', 'allow'],
+          afterEdit: ['allow', 'deny', 'allow'],
+          record: { refused: true, count: 9 },
+        },
+      ),
+      ...literalCases(
+        py.actions,
+        nd.actions,
+        'read-ledger: PINNED PER SIDE (#166): the log says record, refuse, then allow-after-refuse-or-change for every repeat, and refuse once more after the edit',
+        ['record', 'refuse', ...Array(4).fill('allow-after-refuse-or-change'), 'allow-after-refuse-or-change', 'refuse', 'allow-after-refuse-or-change'],
+      ),
+      ...literalCases(
+        { directory: py.directory, dirLedgered: py.dirLedgered },
+        { directory: nd.directory, dirLedgered: nd.dirLedgered },
+        'read-ledger: PINNED PER SIDE (#190): a Read of a directory is never ledgered and its retry is never refused',
+        { directory: ['allow', 'allow'], dirLedgered: 0 },
+      ),
+      ...literalCases(
+        py.parallel,
+        nd.parallel,
+        'read-ledger: PINNED PER SIDE (#167): twenty parallel hook processes over twenty files add exactly twenty entries and leave no lock or temp file',
+        { exits: Array(20).fill(0), denied: 0, added: 20, lockLeft: false, tmpLeft: [] },
+      ),
+    );
+    cases.push({
+      name: 'read-ledger: the whole sequence — decisions, log actions, the directory and the parallel block — is the same on both sides',
+      kind: 'json',
+      expected: py,
+      actual: nd,
     });
   }
 
