@@ -13,7 +13,7 @@ for _ in range(int(sys.argv[2])):
     for _ in range(random.randint(0, 2)):
         i = random.randrange(len(t))
         t = t[:i] + random.choice(['\t', '\t', ' \t', '\t ']) + t[i:] if random.random() < .6 else t.replace(' ', '\t', 1)
-    open(f'{bed}/p/.bantamkit/config.yaml', 'w').write(t)
+    open(f'{bed}/p/.bantamkit/config.yaml', 'w', encoding='utf-8').write(t)
     try: r = ['ok', [str(g) for g in load_grants(f'{bed}/p/.bantamkit/memory')]]
     except Exception as e: r = ['err', str(e)]
     out.append([t, r])
