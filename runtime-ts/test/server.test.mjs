@@ -37,6 +37,7 @@ import {
   UPDATE_CURRENT,
   UPDATE_NEVER,
   UPDATE_UNREADABLE,
+  updateCommand,
 } from '../dist/updatecheck.js';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1323,7 +1324,7 @@ test('the report carries the update line in every one of the five states, and no
     [STATE_NEVER]: [seedUpdateRecord(null), UPDATE_NEVER],
     [STATE_AVAILABLE]: [
       seedUpdateRecord('99.0.0'),
-      UPDATE_AVAILABLE.replace(/\{program\}/g, UPDATE_PROGRAM).replace('{installed}', installed).replace('{latest}', '99.0.0'),
+      UPDATE_AVAILABLE.replace(/\{program\}/g, UPDATE_PROGRAM).replace('{installed}', installed).replace('{latest}', '99.0.0').replace('{command}', updateCommand()), // job66/#171
     ],
     [STATE_CURRENT]: [
       seedUpdateRecord(installed),

@@ -61,6 +61,13 @@ no longer resolve — read `runtime-ts/src/hookadapter.ts` instead; and the deta
        npx bantamkit-mcp --hook                     # the npm install
        python -m bantamkit.mcpserver --hook         # the pip install
 
+   The pip spelling needs no `[mcp]` extra (job66, #173): `--hook`, `--statusline` and
+   `--mcp-report` build no server and import nothing from the MCP SDK, so a plain
+   `pip install bantamkit` runs them and the hook still exits 0. Until job66 the SDK check ran
+   before argv was parsed, and all three answered `exit 1, bantamkit-mcp needs the MCP extra`
+   on every event. Gated by `--suite hooks`, `no-mcp-extra: …`, which runs the reference with
+   `mcp` and `pydantic` made unimportable and keeps a bare server refusing as its control.
+
    Everything the rest of this page describes is true of both, except the stale-install line
    (see *The stale-install signal*), which is Node-only for the reason recorded in
    `docs/porting.md`'s divergence table.
@@ -615,7 +622,7 @@ line):
 
     [bantamkit] bantamkit-mcp 0.35.1 at /Users/…/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json
     is running; the package index has 0.36.0 — run
-    `node "/Users/…/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js" --update`, then reconnect the host.
+    `"/opt/homebrew/bin/node" "/Users/…/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js" --update`, then reconnect the host.
 
 **AMENDED 2026-09-26: the command is the kept install's own `cli.js`, run with node.** Until
 this the line said `bantamkit-mcp --update`, and `--install` puts that name only in
@@ -629,6 +636,21 @@ node's directory and asserts it reached the kept `cli.js` with `--update` (red o
 sentence, together with the sentence literal: 2 of 19). `bantamkit_status`'s own update line
 (`updatecheck`, both runtimes) still names the bare command; it is a separate, two-runtime
 sentence and is not changed here.
+
+**AMENDED 2026-10-15 (job66, #171): "needs no PATH" was true of the `cli.js` and false of
+`node`.** Handed to `/bin/sh` with `PATH=/usr/bin:/bin` — the PATH a host launched from a GUI
+gets — the printed `node "<cli.js>" --update` answered `exit 127, node: command not found`. The
+test above passed over it because it put node's own directory on PATH. The interpreter is now
+`process.execPath`, the absolute node running this hook (the one the registration launched),
+quoted like the `cli.js`; the test's PATH is `/usr/bin:/bin`, and `--suite hooks` runs the
+printed command the same way (`stale-install: the printed command runs from /bin/sh with
+PATH=/usr/bin:/bin (#171)`). In PowerShell a quoted first word is a string, so it takes `& ` in
+front; sh, bash, zsh and cmd run it as printed. The line's cap went from 500 to 1024 bytes,
+because it now carries three absolute paths and a cut line is a cut command.
+`bantamkit_status`'s update line is fixed the same way, in both runtimes: its `{command}` is
+`"<sys.executable>" -m bantamkit.mcpserver --update` on the reference and
+`"<process.execPath>" "<dist/cli.js>" --update` on the port (`docs/porting.md`, *the update
+command `bantamkit_status` prints*).
 
 **Nothing on the session's path reaches the network.** The line is decided from one file,
 `~/.bantamkit/update-check.json`, through the Node runtime's own `updatecheck` module —
@@ -714,7 +736,7 @@ and names no path, because a caller of that tool already knows which endpoint an
 This hook does not — the host may talk to any registered endpoint — so this line names the
 install it **actually compared**, `~/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json`,
 the kept install `--install` makes. No kept install means no line: there is nothing there to
-be stale. The line is capped at 500 bytes, like everything else this file injects, and it is
+be stale. The line is capped at 1024 bytes (500 until job66: it carries three absolute paths, and a cut line is a cut command), and it is
 appended **last**, after the toolbox line, because it is the one part of the block that asks
 for an action. "then reconnect the host" is measured reason 1 in `selfupdate.py`: a running
 server keeps serving the code it loaded at startup, so an updated install does nothing for

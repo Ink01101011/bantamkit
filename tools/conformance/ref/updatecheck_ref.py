@@ -146,6 +146,10 @@ def main() -> int:
                         updatecheck.SOURCE_RECORD,
                     ],
                     "STAMP": selfupdate.STAMP,
+                    # job66/#171: what `{command}` is filled with on this side, and the
+                    # interpreter the suite expects it to name.
+                    "UPDATE_COMMAND": updatecheck.update_command(),
+                    "EXECUTABLE": sys.executable,
                 },
                 "sentences": {
                     "never": updatecheck.UPDATE_NEVER,

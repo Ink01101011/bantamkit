@@ -2002,6 +2002,32 @@ export async function run(ctx) {
         spawnedNothing: nd.last['updateProbe'] !== 'spawned',
       },
     });
+    // job66/#171: THE PRINTED COMMAND RUNS WHERE THE LINE IS READ. A GUI-launched host's shell
+    // has `PATH=/usr/bin:/bin`, and the line used to print the bare `node`, which answered
+    // `exit 127, node: command not found` there. The kept `cli.js` is replaced by a stub that
+    // reports its argv, the printed command is handed to `/bin/sh` with ONLY that PATH, and it
+    // must reach the stub with `--update`. The interpreter half is pinned to `process.execPath`
+    // (the node that ran the hook), quoted. Per side because only the port emits the line.
+    if (process.platform === 'win32') {
+      notes.push('stale-install: the printed command was not run through /bin/sh (win32 has none)');
+    } else {
+      const command = /— run `([^`]+)`, then reconnect the host\./.exec(ndCtx.split('<HOME>').join(ndHome))?.[1] ?? '';
+      const stub = join(ndHome, '.bantamkit', 'mcp', 'node_modules', 'bantamkit-mcp', 'dist', 'cli.js');
+      writeFile(stub, 'console.log(JSON.stringify(process.argv.slice(2)));\n');
+      const sh = spawnSync('/bin/sh', ['-c', command], { env: { PATH: '/usr/bin:/bin', HOME: ndHome }, encoding: 'utf8' });
+      let argv = null;
+      try {
+        argv = JSON.parse(sh.stdout);
+      } catch {
+        argv = null;
+      }
+      cases.push({
+        name: 'stale-install: the printed command runs from /bin/sh with PATH=/usr/bin:/bin (#171) — the port',
+        kind: 'json',
+        expected: { startsWithExecPath: true, exit: 0, argv: ['--update'] },
+        actual: { startsWithExecPath: command.startsWith(`"${process.execPath}" `), exit: sh.status, argv },
+      });
+    }
   }
 
   // ============================== promptFingerprint.chars — the third code-unit/code-point cut
@@ -3203,6 +3229,57 @@ export async function run(ctx) {
         },
       ),
       { name: 'hook-header-fields: the injected and the indexed lines are the same on both sides', kind: 'json', expected: py, actual: nd },
+    );
+  }
+
+  // ===================================== #173: the host-registered arms run without the SDK
+  //
+  // ADDED BY job66 (J66-2). `--hook`, `--statusline` and `--mcp-report` are what a host runs
+  // on EVERY event, and none of them builds a server. The reference used to check for the MCP
+  // extra before parsing argv, so a plain `pip install bantamkit` answered all three with
+  // `exit 1, bantamkit-mcp needs the MCP extra` — a hook error on every event. The reference
+  // runs here with `mcp` AND `pydantic` made unimportable (`sys.modules[...] = None`, what a
+  // venv without the extra looks like to an import); the port has no extra and runs as is.
+  // THE CONTROL is the bare server on the same crippled reference: it must still refuse with
+  // the hint, which is what proves the block took — without it every case below could pass on
+  // a reference that quietly still had the SDK.
+  {
+    const id = 'no-mcp-extra';
+    const cwd = join(root, id, 'cwd');
+    mkdirSync(join(cwd, '.bantamkit', 'memory', 'facts'), { recursive: true });
+    const HINT = 'needs the MCP extra';
+    const WITHOUT_SDK =
+      "import runpy, sys; sys.modules['mcp'] = None; sys.modules['pydantic'] = None; " +
+      "runpy.run_module('bantamkit.mcpserver', run_name='__main__', alter_sys=True)";
+    const arms = [
+      { flag: '--hook', stdin: JSON.stringify({ hook_event_name: 'PostCompact', session_id: id, cwd }) },
+      { flag: '--statusline', stdin: '{}' },
+      { flag: '--mcp-report', stdin: '' },
+    ];
+    const runArm = (side, argv, stdin) => {
+      const h = home(id, side);
+      const env = { ...process.env, HOME: h, USERPROFILE: h };
+      for (const key of SCRUBBED) delete env[key];
+      const [exe, args] =
+        side === 'py' ? [String(ctx.python), ['-c', WITHOUT_SDK, ...argv]] : [process.execPath, [CLI, ...argv]];
+      if (side === 'py') env['PYTHONPATH'] = join(repoRoot, 'runtime-py', 'src');
+      const r = spawnSync(exe, args, { cwd, env, input: stdin, encoding: 'utf8', timeout: 120_000 });
+      return { exit: r.status, hint: String(r.stderr).includes(HINT) };
+    };
+    const answers = (side) => Object.fromEntries(arms.map((a) => [a.flag, runArm(side, [a.flag], a.stdin)]));
+    const py = answers('py');
+    const nd = answers('node');
+    const control = runArm('py', [], '');
+    cases.push({
+      name: 'no-mcp-extra: CONTROL — the crippled reference still refuses a bare server with the hint (#173)',
+      kind: 'json',
+      expected: { exit: 1, hint: true },
+      actual: control,
+    });
+    const ok = Object.fromEntries(arms.map((a) => [a.flag, { exit: 0, hint: false }]));
+    cases.push(
+      ...literalCases(py, nd, 'no-mcp-extra: --hook, --statusline and --mcp-report exit 0 without the SDK (#173)', ok),
+      { name: 'no-mcp-extra: the three host-registered arms, side to side', kind: 'json', expected: py, actual: nd },
     );
   }
 

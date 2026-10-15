@@ -119,6 +119,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,7 @@ __all__ = [
     "decide",
     "update_status",
     "update_line",
+    "update_command",
 ]
 
 #: The key of the record THIS runtime reads. Divergent by construction: `runtime-ts` reads
@@ -173,9 +175,16 @@ UPDATE_NEVER = "update: never checked."
 
 #: The whole point of the feature. `{latest}` and `{installed}` are BOTH here so the reader
 #: can falsify the claim, the same reason `selfupdate.COMPARISON` carries both.
+#:
+#: `{command}` is `update_command()` (job66/#171). WAS: `` `{program} --update` ``, the bare
+#: command, which a pip venv or an npm kept install puts on nobody's PATH -- so the sentence
+#: answered `command not found` from a GUI-launched host's shell. The TEMPLATE is still
+#: byte-identical across runtimes; what each runtime fills into `{command}` is its own
+#: interpreter and entry point (the `docs/porting.md` row *the update command names each
+#: runtime's own interpreter*).
 UPDATE_AVAILABLE = (
     "update: {program} {installed} is running; the package index has {latest} — run "
-    "`{program} --update`, then reconnect the host."
+    "`{command}`, then reconnect the host."
 )
 
 #: Names the date because the record may be months old.
@@ -347,11 +356,24 @@ def _checked_date(record: dict[str, Any], key: str) -> str | None:
     return found.group(1) if found else None
 
 
+def update_command() -> str:
+    """The command `UPDATE_AVAILABLE` tells the operator to run: THIS interpreter, absolute.
+
+    job66/#171. `sys.executable`, double-quoted, then `-m bantamkit.mcpserver --update` --
+    the interpreter that is running this server, so the command needs no PATH (a host
+    launched from a GUI gets `/usr/bin:/bin`) and runs the same install that answered. The
+    quotes hold a home directory with a space in it. The port fills in `process.execPath`
+    and its own `cli.js` instead.
+    """
+    return f'"{sys.executable}" -m bantamkit.mcpserver --update'
+
+
 def decide(
     installed: str,
     source: str,
     record: dict[str, Any] | None,
     key: str = KEY,
+    command: str | None = None,
 ) -> UpdateStatus:
     """The five-state decision, pure: no filesystem, no clock, no network, no TTL.
 
@@ -370,7 +392,12 @@ def decide(
     if order < 0:
         return UpdateStatus(
             STATE_AVAILABLE,
-            UPDATE_AVAILABLE.format(program=PROGRAM, installed=installed, latest=latest),
+            UPDATE_AVAILABLE.format(
+                program=PROGRAM,
+                installed=installed,
+                latest=latest,
+                command=update_command() if command is None else command,
+            ),
         )
     if order == 0:
         return UpdateStatus(
@@ -387,16 +414,18 @@ def update_status(
     installed: str,
     key: str = KEY,
     path: Path | None = None,
+    command: str | None = None,
 ) -> UpdateStatus:
     """Read the record and decide. The whole reader, in one call, for `bantamkit_status`."""
     source, record = load_record(path)
-    return decide(installed, source, record, key)
+    return decide(installed, source, record, key, command)
 
 
 def update_line(
     installed: str,
     key: str = KEY,
     path: Path | None = None,
+    command: str | None = None,
 ) -> str:
     """Exactly one of the five sentences. Always a line: there is no silent state here."""
-    return update_status(installed, key, path).line
+    return update_status(installed, key, path, command).line

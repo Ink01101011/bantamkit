@@ -175,6 +175,46 @@ def test_the_event_comes_from_stdin_and_never_from_argv(tmp_path):
     assert done.returncode == 2, done
 
 
+_WITHOUT_SDK = (
+    "import runpy, sys; sys.modules['mcp'] = None; sys.modules['pydantic'] = None; "
+    "runpy.run_module('bantamkit.mcpserver', run_name='__main__', alter_sys=True)"
+)
+
+
+@pytest.mark.parametrize(
+    ("flag", "stdin"),
+    [
+        ("--hook", b'{"hook_event_name": "PostCompact", "session_id": "s"}'),
+        ("--statusline", b"{}"),
+        ("--mcp-report", b""),
+    ],
+)
+def test_the_host_registered_arms_run_without_the_mcp_extra(tmp_path, flag, stdin):
+    """job66/#173: a plain `pip install bantamkit` has no `mcp` and no `pydantic`.
+
+    `--hook`, `--statusline` and `--mcp-report` build no server, so they must run there; the
+    SDK check used to sit before `_parse_args()` and answered all three `exit 1` with the
+    install hint on every host event. `sys.modules[...] = None` is what an absent package looks
+    like to an import. The bare server is the control: it still refuses, with the hint.
+    """
+    home, cwd = _bed(tmp_path, flag.strip("-"))
+    run = lambda argv, raw: subprocess.run(  # noqa: E731
+        [sys.executable, "-c", _WITHOUT_SDK, *argv],
+        capture_output=True,
+        cwd=str(cwd),
+        env=_env(home),
+        input=raw,
+        timeout=120,
+    )
+    done = run([flag], stdin)
+    assert done.returncode == 0, done.stderr
+    assert b"needs the MCP extra" not in done.stderr
+
+    control = run([], b"")
+    assert control.returncode == 1
+    assert b'needs the MCP extra: pip install "bantamkit[mcp]"' in control.stderr
+
+
 # --- 2. the contract --------------------------------------------------------------------
 
 

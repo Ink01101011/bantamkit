@@ -2736,9 +2736,16 @@ def main() -> None:
     Written through `sys.stderr.buffer`, like every other refusal in this file, so the line
     ends LF on Windows too and cannot drift from the port's `process.stderr.write`.
     """
-    if MCPServer is None:
-        raise SystemExit(_INSTALL_HINT)
     args = _parse_args()
+    # job66/#173: the SDK check sits AFTER the parse and is skipped for the arms that never
+    # build a server. `--hook`, `--statusline` and `--mcp-report` are registered with hosts
+    # and run on EVERY event; they import nothing from `mcp`, so a plain `pip install
+    # bantamkit` must run them (docs/hooks.md: the hook "exits 0 always"). WAS: the check ran
+    # before `_parse_args()`, so all three exited 1 with the install hint on every event.
+    if MCPServer is None and not (
+        args.assets_root or args.hook or args.mcp_report or args.statusline
+    ):
+        raise SystemExit(_INSTALL_HINT)
     try:
         _dispatch(args)
     except BantamError as e:

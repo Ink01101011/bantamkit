@@ -35,7 +35,7 @@
  * `0.10.0` is the pair that says so, and `test/updatecheck.test.mjs` both runs it and pins
  * structurally that nothing comparator-shaped is defined here.
  *
- * NO NEW DEPENDENCY: `node:fs`, `node:os` and `node:path`. The `str.format` substitution the
+ * NO NEW DEPENDENCY: `node:fs`, `node:os`, `node:path` and `node:url`. The `str.format` substitution the
  * reference gets from CPython is the four lines of `fill` below — `selfupdate.ts` has the same
  * four and cannot be imported for them, for the reason two paragraphs up.
  *
@@ -45,6 +45,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { compareVersions } from './npminstall.js';
 
@@ -89,7 +90,22 @@ export const UPDATE_NEVER = 'update: never checked.';
  */
 export const UPDATE_AVAILABLE =
   'update: {program} {installed} is running; the package index has {latest} — run ' +
-  '`{program} --update`, then reconnect the host.';
+  '`{command}`, then reconnect the host.';
+
+/**
+ * The command `UPDATE_AVAILABLE` tells the operator to run: THIS node, absolute (job66/#171).
+ *
+ * WAS: `` `{program} --update` ``, the bare command, which `--install` puts only in
+ * `<prefix>/node_modules/.bin` — on nobody's PATH — so the sentence answered `command not
+ * found` from a GUI-launched host's shell. `process.execPath` and this build's own `cli.js`
+ * (the sibling of this module in `dist/`), each double-quoted, need no PATH and hold a home
+ * directory with a space in it. The reference fills in `sys.executable -m bantamkit.mcpserver`
+ * instead; the TEMPLATE stays byte-identical and the filling is the `docs/porting.md` row
+ * *the update command names each runtime's own interpreter*.
+ */
+export function updateCommand(): string {
+  return `"${process.execPath}" "${fileURLToPath(new URL('./cli.js', import.meta.url))}" --update`;
+}
 
 /** Names the date because the record may be months old. */
 export const UPDATE_CURRENT = 'update: {program} {installed} is current as of {date}.';
@@ -319,6 +335,7 @@ export function decide(
   source: Source,
   record: Record<string, unknown> | null,
   key: string = KEY,
+  command: string = updateCommand(),
 ): UpdateStatus {
   if (source === SOURCE_ABSENT) return { state: STATE_NEVER, line: UPDATE_NEVER };
   if (source !== SOURCE_RECORD || record === null) {
@@ -333,7 +350,7 @@ export function decide(
   if (order < 0) {
     return {
       state: STATE_AVAILABLE,
-      line: fill(UPDATE_AVAILABLE, { program: PROGRAM, installed, latest }),
+      line: fill(UPDATE_AVAILABLE, { program: PROGRAM, installed, latest, command }),
     };
   }
   if (order === 0) {
@@ -353,9 +370,10 @@ export function updateStatus(
   installed: string,
   key: string = KEY,
   path: string = recordPath(),
+  command: string = updateCommand(),
 ): UpdateStatus {
   const { source, record } = loadRecord(path);
-  return decide(installed, source, record, key);
+  return decide(installed, source, record, key, command);
 }
 
 /** Exactly one of the five sentences. Always a line: there is no silent state here. */
@@ -363,6 +381,7 @@ export function updateLine(
   installed: string,
   key: string = KEY,
   path: string = recordPath(),
+  command: string = updateCommand(),
 ): string {
-  return updateStatus(installed, key, path).line;
+  return updateStatus(installed, key, path, command).line;
 }

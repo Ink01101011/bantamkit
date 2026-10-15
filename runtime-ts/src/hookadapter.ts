@@ -937,8 +937,14 @@ const UPDATE_TTL_MS = 24 * 60 * 60 * 1000;
  * nothing this file injects is unbounded. The sentence itself is 137 bytes plus two version
  * numbers; the one component that is not fixed is the operator's home path inside `{path}`, so
  * the cap is generous and exists to bound that, not to trim the sentence.
+ *
+ * AMENDED 2026-10-15 (job66/#171): 500 → 1024. The line now carries THREE absolute paths (the
+ * manifest, `process.execPath`, the kept `cli.js`), and a cap that cuts the line cuts the
+ * command the operator is told to run — a truncated command is worse than none. Measured: the
+ * conformance bed's home (a long `$TMPDIR` scratch path) put the line past 500 and the printed
+ * command was cut before its closing backtick. 1024 still bounds it.
  */
-const UPDATE_LINE_MAX = 500;
+const UPDATE_LINE_MAX = 1024;
 
 /**
  * THE SENTENCE. Only in the stale state, silent in the other four.
@@ -963,9 +969,16 @@ const UPDATE_LINE_MAX = 500;
  * machine it was measured on. `node "<cli>"` is what a host is already told to run
  * (`npminstall.keptCli`), needs no PATH and no `.cmd` shim on Windows, and the double quotes
  * hold a home directory with a space in it in zsh, bash, cmd and PowerShell alike.
+ *
+ * AMENDED 2026-10-15 (job66/#171): "needs no PATH" was true of `{cli}` and false of `node`.
+ * Run through `/bin/sh` with `PATH=/usr/bin:/bin` — a GUI-launched host's PATH — the bare
+ * `node` answered `exit 127, node: command not found`. `{node}` is `process.execPath`, the
+ * absolute interpreter running THIS hook (the one the hook registration launched), quoted
+ * like `{cli}`. A quoted first word is a string in PowerShell, which runs it with `& `
+ * in front; zsh, bash, sh and cmd run it as printed.
  */
 const UPDATE_LINE =
-  '[bantamkit] {program} {installed} at {path} is running; the package index has {latest} — run `node "{cli}" --update`, then reconnect the host.';
+  '[bantamkit] {program} {installed} at {path} is running; the package index has {latest} — run `"{node}" "{cli}" --update`, then reconnect the host.';
 
 /** `{name}` substitution. A missing key is left alone rather than rendered `undefined`. */
 function fillLine(template: string, values: Readonly<Record<string, string>>): string {
@@ -1031,6 +1044,7 @@ function updateSignal(run: HookRun): UpdateSignal {
           installed: kept.version,
           path: kept.path,
           cli: kept.cli,
+          node: process.execPath,
           latest,
         }),
         UPDATE_LINE_MAX,
