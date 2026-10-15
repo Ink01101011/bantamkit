@@ -1146,3 +1146,17 @@ test('Memory.recall passes the ratio through to the outcome', () => {
   assert.ok(mem.recall('alpha bravo charlie delta').includes('[weak]'));
   assert.ok(!mem.recall('alpha bravo charlie delta', null, 1.0).includes('[weak]'));
 });
+
+test('a grant naming a regular file says it is not a directory (#184)', () => {
+  // Mutation: drop the pyExists arm in loadGrants -> red ("does not exist").
+  const bed = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-grant-file-')));
+  const store = join(bed, 'proj', '.bantamkit', 'memory');
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(bed, 'afile'), 'x');
+  const config = join(bed, 'proj', '.bantamkit', 'config.yaml');
+  writeFileSync(config, 'extra_stores:\n  - ../../afile\n');
+  assert.throws(() => loadGrants(store), (e) =>
+    e instanceof MemoryValidationError &&
+    e.message === `granted store is not a directory: ${join(bed, 'afile')} (from ${config})`);
+  rmSync(bed, { recursive: true, force: true });
+});

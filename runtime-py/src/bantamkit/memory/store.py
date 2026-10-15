@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import os
 import re
+import secrets
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -164,6 +166,17 @@ _ARCHIVE_DESTINATION_UNREACHABLE = (
     "a destination that could not be stat'd is not a name that is already archived, "
     "and nothing has moved: the fact is still in facts/"
 )
+
+
+#: job65/#141, #123: the errnos that say a directory EXISTS and this process may not write
+#: into it. EACCES is the chmod case on every platform; EPERM is an immutable flag or a
+#: Windows ACL (where libuv's and CPython's translations both land on it); EROFS is a
+#: read-only mount. The class is the WHOLE test on the write path (`save`'s fact write) and
+#: HALF of it on the mkdir path (`_ensure_dirs`), where `self.root` must also be present:
+#: the mkdir errno alone is platform-specific for a MISSING root (cwd `/` is EROFS on macOS,
+#: ENOENT on Node, EACCES on Linux -- see `_ensure_dirs`), and all three of those are
+#: "not there", which keeps its sentence.
+NOT_WRITABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
 
 
 class MemoryValidationError(BantamError):
@@ -465,6 +478,21 @@ class MemoryStore:
         carrying the failing leaf, or that strerror, would be a divergence manufactured by
         mkdir's internals. `self.root` is the path the caller named and both sides agree on
         it, which is what lets one conformance case pin this line byte for byte.
+
+        AMENDED job65/#141: THE SENTENCE ABOVE IS NOW THE "NOT THERE" ARM ONLY. A store at
+        `chmod 000` (and a `--store` naming one) answered it too -- "the directory is not
+        there" about a directory that exists -- and sent the operator looking for a missing
+        path. The predicate gains a second arm that is STILL an outcome and not a bare errno:
+        the mkdir failed with one of `NOT_WRITABLE_ERRNOS` *and* `self.root` is a directory
+        that can be stat'd. Then the refusal is `memory store is not writable: <root>:
+        <strerror>; the directory exists but cannot be written to, so nothing was written`.
+        The three-platform divergence the paragraph above measured is a divergence about a
+        root that is NOT THERE, so it never reaches the new arm: cwd `/` fails the second
+        half on every platform and keeps the old sentence. The strerror is safe to print
+        here because the errno class is fixed by the first half -- `Permission denied`,
+        `Operation not permitted` or `Read-only file system` -- and `tools/conformance/
+        suites/store.mjs` compares it. The 555 shape, where the mkdir SUCCEEDS because the
+        directories exist and the fact write is what fails, is `save`'s arm of the same fix.
         """
         # Checked BEFORE the mkdir, per user ruling #2: this is the one moment that can
         # tell whether `.bantamkit` already existed. After the mkdir it unconditionally
@@ -483,6 +511,8 @@ class MemoryStore:
             (self.root / "facts").mkdir(parents=True, exist_ok=True)
             (self.root / "archive").mkdir(parents=True, exist_ok=True)
         except OSError as e:
+            if e.errno in NOT_WRITABLE_ERRNOS and self._present():
+                raise self._unwritable(e) from e
             raise MemoryValidationError(
                 f"memory store could not be created: {self.root}; the directory is not"
                 " there and this filesystem would not make it, so nothing was written"
@@ -491,6 +521,25 @@ class MemoryStore:
             ensure_bantamkit_gitignore(
                 bantamkit_dir, created=not bantamkit_dir_existed_before
             )
+
+    def _present(self) -> bool:
+        """Is `self.root` a directory that is there? "I was not allowed to look" is "there".
+
+        `Path.is_dir()` answers False for the `_IGNORED_ERRNOS` (ENOENT, ENOTDIR, ...) and
+        RAISES for EACCES on a parent. A root this process cannot even stat is not "not
+        there", and the mkdir errno that brought us here already says what it is.
+        """
+        try:
+            return self.root.is_dir()
+        except OSError:
+            return True
+
+    def _unwritable(self, error: OSError) -> MemoryValidationError:
+        """One sentence for a store that exists and refused a write (#141), never "not there"."""
+        return MemoryValidationError(
+            f"memory store is not writable: {self.root}: {error.strerror}; the directory"
+            " exists but cannot be written to, so nothing was written"
+        )
 
     # ---- ops ----
 
@@ -540,7 +589,16 @@ class MemoryStore:
         )
         path = self._fact_path(name)
         existed = path.read_text(encoding="utf-8") if path.exists() else None
-        self._write_fact(fact)
+        # #141, the 555 shape: `_ensure_dirs` found every directory already there, so the
+        # fact write is the first syscall this store makes that the mode refuses. Only the
+        # errno class that means "exists, not writable" is turned into the sentence; ENOSPC,
+        # ENAMETOOLONG and the rest still arrive as the `OSError` they always were.
+        try:
+            self._write_fact(fact)
+        except OSError as e:
+            if e.errno in NOT_WRITABLE_ERRNOS:
+                raise self._unwritable(e) from e
+            raise
         try:
             self._check_index_budget()
         except MemoryBudgetExceeded:
@@ -561,6 +619,9 @@ class MemoryStore:
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
     ) -> list[Fact]:
         """Top-`k` facts whose name+description share tokens with `query`.
+
+        A store this process cannot write to still answers (job65/#123): the
+        `last_recalled` stamp is best-effort. See `_stamp`.
 
         WAS: an unreadable store scored zero facts and returned `[]` — the same answer
         as a real miss, and `component.Memory` turned it into "no memories matched. Try
@@ -647,7 +708,8 @@ class MemoryStore:
         `stamp` dates the hit through `_stamp`, exactly as `recall` dates its hits, snapshot
         semantics included; nothing else on disk is touched, and a miss writes nothing.
         An unreadable store raises out of `_facts` here as it does out of `recall`, and
-        `component.Memory` treats the two the same way per layer.
+        `component.Memory` treats the two the same way per layer. The stamp is best-effort,
+        as in `recall` (#123).
         """
         for fact in self._snapshot if self._snapshot is not None else self._facts():
             if fact.name == name:
@@ -1284,11 +1346,19 @@ class MemoryStore:
         coerced timestamp, and a file whose name is not the fact's (#122) -- without
         raising, because every other caller tolerates both. `lint` is the only caller that
         passes a list.
+
+        THE READ IS INSIDE THE `try` (job65/#159). WAS: `read_text` sat above it, so a file
+        that is not UTF-8 raised a bare `UnicodeDecodeError` -- `'utf-8' codec can't decode
+        byte 0xff in position 117` -- naming no file, and the model was told one of five
+        files was bad without which. `UnicodeDecodeError` is a `ValueError`, so moving the
+        read down makes it `malformed fact file <name>: <that same text>`, the per-file
+        shape every other refusal here already has. An `OSError` from the same read is NOT
+        in the tuple and still escapes as itself: "could not be read" is not "malformed".
         """
         facts = []
         for path in self._fact_paths():
-            text = path.read_text(encoding="utf-8")
             try:
+                text = path.read_text(encoding="utf-8")
                 _, front, body = text.split("---\n", 2)
                 meta = yaml.safe_load(front)
                 if not isinstance(meta, dict):
@@ -1348,16 +1418,36 @@ class MemoryStore:
         survives on the pinned copy; nothing reads it but `_staleness_key` (through
         `_eviction_key`), and the
         pinned list dies with the scope.)
+
+        THE WRITE IS BEST-EFFORT (job65/#123). WAS: a store at `chmod 555` -- a shared
+        checkout, a read-only mount, a CI cache -- made `recall` raise `PermissionError`
+        out of this write AFTER the hits were computed, so a pure read was refused because
+        its bookkeeping could not land. NOW: an `OSError` from the write is swallowed here and
+        the hits are answered; the file keeps its old date and no temp is left (#161's
+        cleanup). Silent on purpose and for now: the property is "at most a degraded note",
+        and the note would have to be carried through `component.Memory`, which is another
+        unit's file in job65 -- recorded as an open question in its note. Every `OSError` is
+        best-effort, not only the permission class: a stamp that fails for ENOSPC has the
+        same standing, which is none against the read. What is NOT swallowed is the
+        `MemoryValidationError` the LISTING below raises inside a snapshot scope: that is a
+        store that stopped being readable, which is news, and the test that pins it
+        (`test_a_recall_pinned_before_the_store_broke_answers_but_never_dates_it`) still
+        holds. `fact.last_recalled` is set on the in-memory `Fact` first, as before.
         """
         fact.last_recalled = self._today()
         if self._snapshot is None:
-            self._write_fact(fact)
+            self._stamp_write(fact)
             return
         live = next((f for f in self._facts() if f.name == fact.name), None)
         if live is None:
             return
         live.last_recalled = fact.last_recalled
-        self._write_fact(live)
+        self._stamp_write(live)
+
+    def _stamp_write(self, fact: Fact) -> None:
+        """`_write_fact`, best-effort: an `OSError` leaves the old date on disk (#123)."""
+        with suppress(OSError):
+            self._write_fact(fact)
 
     def _fact_text(self, fact: Fact) -> str:
         """The exact bytes `_write_fact` would put on disk, without writing them.
@@ -1385,11 +1475,33 @@ class MemoryStore:
         )
 
     def _write_fact(self, fact: Fact) -> None:
+        """Write via a PER-WRITER temp file and `os.replace`, so a reader never sees a
+        half-written fact and two writers never share a temp (job65/#161).
+
+        WAS: `path.with_suffix(".md.tmp")`, one temp name per FACT, so two servers saving one
+        name at once raced on it -- the second `write_text` truncated the first's file and the
+        second `replace` found nothing (`[Errno 2] ... 'shared-name.md.tmp'`, 2 to 11 of 80
+        in the issue's and this unit's probes); and a write that died half-way (EFBIG under
+        `ulimit -f`, ENOSPC, SIGKILL) left `<name>.md.tmp` beside the facts. NOW: the same
+        shape `shiftwork.clock_out` and the hook ledger use (J65-1, J65-4):
+        `<name>.md.<pid>.<8 hex>.tmp`, opened with `x` (O_EXCL) so even a pid reuse cannot
+        share, renamed onto the fact, and unlinked on ANY failure before the error goes on
+        up. `_fact_paths` and `layers.count_facts` match `*.md`, so the temp is as invisible
+        to every listing as the old one was. Last writer still wins on the rename, which is
+        what "concurrent saves of one name all succeed" means. A SIGKILL between the open and
+        the unlink still leaves a temp; nothing in-process can promise otherwise.
+        """
         text = self._fact_text(fact)
         path = self._fact_path(fact.name)
-        tmp = path.with_suffix(".md.tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+        tmp = Path(f"{path}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            with tmp.open("x", encoding="utf-8") as fh:
+                fh.write(text)
+            tmp.replace(path)
+        except BaseException:
+            with suppress(OSError):
+                tmp.unlink()
+            raise
 
     def _rebuild_index(self) -> None:
         """Write `index.md` from the facts on disk. THE OP THE ORIGINAL DEFECT DESTROYED.

@@ -682,3 +682,21 @@ def test_a_facts_that_is_not_a_directory_is_unreadable_to_both_layers(tmp_path):
     with pytest.raises(MemoryValidationError) as linked_error:
         resolve_project_store(tmp_path / "companyB")
     assert str(linked / "facts") in str(linked_error.value)
+
+
+def test_a_grant_naming_a_regular_file_says_it_is_not_a_directory(tmp_path):
+    """#184: an existing file is not "does not exist".
+
+    Mutation: drop the `exists()` arm -> 1 red."""
+    store = tmp_path / "proj" / ".bantamkit" / "memory"
+    store.mkdir(parents=True)
+    (tmp_path / "afile").write_text("x", encoding="utf-8")
+    config = store.parent / "config.yaml"
+    config.write_text("extra_stores:\n  - ../../afile\n", encoding="utf-8")
+    with pytest.raises(MemoryValidationError) as e:
+        load_grants(store)
+    assert str(e.value) == f"granted store is not a directory: {tmp_path / 'afile'} (from {config})"
+    config.write_text("extra_stores:\n  - ../../missing\n", encoding="utf-8")
+    with pytest.raises(MemoryValidationError) as e:
+        load_grants(store)
+    assert str(e.value) == f"granted store does not exist: {tmp_path / 'missing'} (from {config})"

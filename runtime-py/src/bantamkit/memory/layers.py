@@ -227,6 +227,13 @@ def load_grants(project_store: str | Path) -> list[Path]:
     an existing directory — raises MemoryValidationError: a grant you wrote that
     is wrong is a mistake to surface at construction, not silently drop.
     Returned grant paths are fully resolved.
+
+    A listed path that EXISTS but is not a directory is its own sentence (job65/#184):
+    `granted store is not a directory: <path> (from <config>)`. WAS: `is_dir()` alone,
+    so a regular file was reported as "does not exist" — an existing file called
+    nonexistent, and the one row docs/memory.md lists as a distinct case was not one.
+    `exists()` here raises for EACCES exactly as `is_dir()` does, so an unstattable
+    grant is reported as it always was.
     """
     config_path = Path(project_store).parent / CONFIG_NAME
     if not config_path.exists():
@@ -250,8 +257,9 @@ def load_grants(project_store: str | Path) -> list[Path]:
     for entry in raw:
         resolved = (config_path.parent / entry).resolve()
         if not resolved.is_dir():
+            shape = "is not a directory" if resolved.exists() else "does not exist"
             raise MemoryValidationError(
-                f"granted store does not exist: {resolved} (from {config_path})"
+                f"granted store {shape}: {resolved} (from {config_path})"
             )
         grants.append(resolved)
     return grants

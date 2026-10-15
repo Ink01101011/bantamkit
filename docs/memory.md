@@ -35,6 +35,17 @@ memory store could not be created: <root>; the directory is not there and this
 filesystem would not make it, so nothing was written
 ```
 
+**Amended 2026-10-15 (job65, #141).** That sentence is now reserved for a root that
+is *not there*. A store that exists and refuses the write — a `chmod 000` root, a
+`chmod 555` store whose directories are all present, a read-only mount — answers
+instead, with the OS's own reason (`Permission denied`, `Operation not permitted` or
+`Read-only file system`):
+
+```
+memory store is not writable: <root>: Permission denied; the directory exists but
+cannot be written to, so nothing was written
+```
+
 The change is the fix for a startup crash: every GUI MCP host launches its child with
 cwd `/`, where the eager `mkdir` could not succeed, so the server died before it could
 answer anything. See [MCP](mcp.md#what-happens-if-you-set-nothing).
@@ -301,7 +312,9 @@ except MemoryValidationError as e:
 Scores every fact by how many lowercased alphanumeric tokens the query shares
 with `"{name} {description}"`, keeps those with a non-zero score, sorts by score
 then name, and returns the top `k` (default 3, or `k` passed per call). Every
-returned fact has `last_recalled` stamped with today's date — that stamp is what
+returned fact has `last_recalled` stamped with today's date (best-effort since job65,
+#123: a store this process cannot write to — `chmod 555`, a read-only mount, a CI
+cache — still answers its facts, and the file keeps its old date) — that stamp is what
 `compact()` later uses to decide what to drop, falling back to `created` for a
 fact nobody has recalled yet. **Amendment 2026-09-26 (job64, J64-1):** the
 hook's automatic `UserPromptSubmit` injection goes through the layered recall
@@ -558,7 +571,16 @@ string `'2026-01-01'` and re-quotes on its next write — before #121 `compact`
 died on it with `'<' not supported between instances of 'datetime.date' and
 'str'`), and a **file whose name is not the fact's** (`stale.md` holding
 `name: fresh-one` — `compact` now archives the file it read, where before #122 it
-moved `facts/fresh-one.md`, the wrong fact).
+moved `facts/fresh-one.md`, the wrong fact). A fact file that is **not UTF-8** is
+`malformed fact file <file>: 'utf-8' codec can't decode …` from every reader
+(#159); before, the bare decoder message named no file.
+
+Every fact write goes through a **per-writer** temp file,
+`<name>.md.<pid>.<8 hex>.tmp`, created exclusively, renamed onto the fact and
+removed if anything fails (#161). Before job65 every writer of a fact shared
+`<name>.md.tmp`, so two servers saving one name raced on it (`[Errno 2] … .md.tmp`)
+and a write that died half-way (ENOSPC, a file-size limit) left the temp behind.
+Listings match `*.md`, so a temp is never read as a fact.
 
 There is no automatic compression or summarization in v1. Archiving is the only
 lifecycle action that *reduces* a store, and the only one the model or a hook can
@@ -1145,7 +1167,9 @@ grants*. A config that exists but is wrong raises `MemoryValidationError` at
 `Memory.layered()` construction rather than being silently dropped — that
 covers unparsable YAML, a top-level value that is not a mapping, an
 `extra_stores` that is not a list of strings, a listed path that does not exist
-or is not a directory, and a `config.yaml` that is itself a directory.
+or is not a directory, and a `config.yaml` that is itself a directory. The two are
+distinct sentences (job65, #184): `granted store does not exist: <path> (from
+<config>)` and `granted store is not a directory: <path> (from <config>)`.
 
 The `<name>` in an `[extra:<name>]` prefix is the granted store's project
 directory — the parent of its `.bantamkit` — so the grant above shows up as

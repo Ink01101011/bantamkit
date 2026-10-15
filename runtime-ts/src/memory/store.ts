@@ -38,6 +38,8 @@
  * handed — the two branches Python takes when `_snapshot` is pinned have no reachable
  * caller here. Everything else about both functions is the reference's.
  */
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
 import { BantamError } from '../errors.js';
@@ -49,11 +51,13 @@ import {
   cmpCodepoint,
   matchesMd,
   pyExists,
+  pyIsDir,
   pyJoin,
   pyLexists,
   pyMkdirParents,
   pyMtimeDate,
   pyName,
+  pyNewlineOut,
   pyParent,
   pyParents,
   pyReadText,
@@ -61,9 +65,9 @@ import {
   pyScandirNames,
   pySuffix,
   pyUnlink,
-  pyWithSuffix,
   pyWriteText,
   PyOSError,
+  PyUnicodeDecodeError,
   sortedPathNames,
 } from './pyfs.js';
 
@@ -317,6 +321,14 @@ const FACT_UNREACHABLE =
 const ARCHIVE_DESTINATION_UNREACHABLE =
   "a destination that could not be stat'd is not a name that is already archived, " +
   'and nothing has moved: the fact is still in facts/';
+
+/**
+ * job65/#141, #123: the codes that say a directory EXISTS and this process may not write into
+ * it — `NOT_WRITABLE_ERRNOS` in the reference. EACCES is the chmod case everywhere, EPERM an
+ * immutable flag or a Windows ACL, EROFS a read-only mount. On the mkdir path it is only half
+ * the test (`ensureDirs` also needs the root to be there); see the reference's docstring.
+ */
+const NOT_WRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
 
 export class MemoryValidationError extends BantamError {}
 export class MemoryBudgetExceeded extends BantamError {}
@@ -716,6 +728,13 @@ export class MemoryStore {
    * the failing leaf, or that strerror, would be a divergence manufactured by mkdir's
    * internals. `this.root` is the path the caller named and both sides agree on it, which is
    * what lets one conformance case pin this line byte for byte.
+   *
+   * AMENDED job65/#141: THE SENTENCE ABOVE IS NOW THE "NOT THERE" ARM ONLY. A `chmod 000`
+   * store answered it too, about a directory that exists. The second arm is still an outcome:
+   * the mkdir failed with one of `NOT_WRITABLE_CODES` AND `this.root` is a directory that is
+   * there, and then the refusal is `memory store is not writable: <root>: <strerror>; the
+   * directory exists but cannot be written to, so nothing was written`. The cwd-`/` divergence
+   * measured above is about a root that is NOT there, so it never reaches this arm.
    */
   private ensureDirs(): void {
     // Checked BEFORE the mkdir below, per user ruling #2: this is the one moment that can
@@ -733,12 +752,31 @@ export class MemoryStore {
       pyMkdirParents(pyJoin(this.root, 'archive'));
     } catch (e) {
       if (!(e instanceof PyOSError)) throw e;
+      if (NOT_WRITABLE_CODES.has(e.code) && this.present()) throw this.unwritable(e);
       throw new MemoryValidationError(
         `memory store could not be created: ${this.root}; the directory is not` +
           ' there and this filesystem would not make it, so nothing was written',
       );
     }
     if (bantamkitDir !== null) ensureBantamkitGitignore(bantamkitDir, !bantamkitDirExistedBefore);
+  }
+
+  /** `_present`: is `this.root` a directory that is there? "Not allowed to look" is "there". */
+  private present(): boolean {
+    try {
+      return pyIsDir(this.root);
+    } catch (e) {
+      if (!(e instanceof PyOSError)) throw e;
+      return true;
+    }
+  }
+
+  /** `_unwritable`: one sentence for a store that exists and refused a write (#141). */
+  private unwritable(error: PyOSError): MemoryValidationError {
+    return new MemoryValidationError(
+      `memory store is not writable: ${this.root}: ${error.strerror}; the directory` +
+        ' exists but cannot be written to, so nothing was written',
+    );
   }
 
   // ---- ops ----
@@ -798,7 +836,14 @@ export class MemoryStore {
     };
     const path = this.factPath(name);
     const existed = pyExists(path) ? pyReadText(path) : null;
-    this.writeFact(fact);
+    // #141, the 555 shape: every directory was already there, so the fact write is the first
+    // syscall the mode refuses. Only the "exists, not writable" codes become the sentence.
+    try {
+      this.writeFact(fact);
+    } catch (e) {
+      if (e instanceof PyOSError && NOT_WRITABLE_CODES.has(e.code)) throw this.unwritable(e);
+      throw e;
+    }
     try {
       this.checkIndexBudget();
     } catch (e) {
@@ -1469,10 +1514,11 @@ export class MemoryStore {
   /**
    * Every fact on disk, parsed.
    *
-   * The `read_text` is OUTSIDE the try in the reference, so a fact file that is not UTF-8
-   * raises a bare `UnicodeDecodeError` rather than a `malformed fact file …` sentence. That
-   * ordering is reproduced: `pyReadText` raises `PyUnicodeDecodeError` with CPython's own
-   * message and it is not caught here.
+   * AMENDED job65/#159: the `read_text` is now INSIDE the reference's try, so a fact file that
+   * is not UTF-8 is `malformed fact file <name>: 'utf-8' codec can't decode …` — naming the
+   * file — instead of the bare decoder message. `pyReadText` raises `PyUnicodeDecodeError`
+   * with CPython's own text and it is wrapped here; a `PyOSError` from the read still escapes
+   * as itself, as in the reference (`OSError` is not in its `except`).
    *
    * RULING — THE MESSAGE TEXT FOR A MALFORMED FILE. `_facts` interpolates the exception into
    * `malformed fact file {name}: {e}`, and that reaches the model. Three of the four shapes
@@ -1512,10 +1558,17 @@ export class MemoryStore {
         ? value.text
         : value;
     for (const path of this.factPaths()) {
-      const text = pyReadText(path); // outside the try, exactly as in the reference
       const file = basename(path);
       const malformed = (reason: string): MemoryValidationError =>
         new MemoryValidationError(`malformed fact file ${file}: ${reason}`);
+      let text: string;
+      try {
+        text = pyReadText(path);
+      } catch (e) {
+        // #159: `UnicodeDecodeError` is a `ValueError`, which the reference's `except` names.
+        if (e instanceof PyUnicodeDecodeError) throw malformed(e.message);
+        throw e;
+      }
 
       const parts = pySplit(text, '---\n', 2);
       if (parts.length !== 3) {
@@ -1583,15 +1636,46 @@ export class MemoryStore {
    */
   private stamp(fact: Fact): void {
     fact.last_recalled = this.today();
-    this.writeFact(fact);
+    // job65/#123: BEST-EFFORT. A read-only store (chmod 555, a read-only mount, a CI cache)
+    // used to fail the whole recall here, after the hits were computed. A `PyOSError` from the
+    // write now leaves the old date on disk and the recall answers; see the reference's
+    // `_stamp` for why it is silent.
+    try {
+      this.writeFact(fact);
+    } catch (e) {
+      if (!(e instanceof PyOSError)) throw e;
+    }
   }
 
-  /** Write via `<name>.md.tmp` and `os.replace`, so a reader never sees a half-written fact. */
+  /**
+   * Write via a PER-WRITER temp and `os.replace`, so a reader never sees a half-written fact
+   * and two writers never share a temp (job65/#161).
+   *
+   * WAS `<name>.md.tmp`, one temp per FACT: two servers saving one name raced on it (the
+   * second `replace` found nothing — `[Errno 2] … 'shared-name.md.tmp'`), and a write that
+   * died half-way left the temp beside the facts. NOW the shape `clockOut` and the hook ledger
+   * use (J65-1, J65-4): `<name>.md.<pid>.<8 hex>.tmp`, created with `wx` (O_EXCL), renamed
+   * onto the fact, and unlinked on any failure before the error goes on up. `*.md` listings
+   * never see it.
+   */
   private writeFact(fact: Fact): void {
     const path = this.factPath(fact.name);
-    const tmp = pyWithSuffix(path, '.md.tmp');
-    pyWriteText(tmp, formatFact(fact));
-    pyReplace(tmp, path);
+    const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      try {
+        writeFileSync(tmp, pyNewlineOut(formatFact(fact)), { encoding: 'utf8', flag: 'wx' });
+      } catch (e) {
+        throw asPyOSError(e, tmp, undefined, 'crt');
+      }
+      pyReplace(tmp, path);
+    } catch (e) {
+      try {
+        pyUnlink(tmp);
+      } catch (cleanup) {
+        if (!(cleanup instanceof PyOSError)) throw cleanup;
+      }
+      throw e;
+    }
   }
 
   /**

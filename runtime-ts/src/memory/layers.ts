@@ -263,9 +263,10 @@ export function loadGrants(projectStore: string): string[] {
   for (const entry of raw.items) {
     const resolved = pyResolve(pyJoin(pyParent(configPath), entry.value));
     if (!pyIsDir(resolved)) {
-      throw new MemoryValidationError(
-        `granted store does not exist: ${resolved} (from ${configPath})`,
-      );
+      // job65/#184: a path that EXISTS but is not a directory is its own sentence; a regular
+      // file used to be called nonexistent. `pyExists` raises for EACCES exactly as `pyIsDir`.
+      const shape = pyExists(resolved) ? 'is not a directory' : 'does not exist';
+      throw new MemoryValidationError(`granted store ${shape}: ${resolved} (from ${configPath})`);
     }
     grants.push(resolved);
   }
