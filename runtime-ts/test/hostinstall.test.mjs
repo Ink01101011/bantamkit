@@ -188,14 +188,18 @@ test('claude is not written by us and has no path', async () => {
   });
 });
 
-test('the written JSON escapes non-ASCII so both runtimes write the same bytes', async () => {
-  // `dumpJson` reproduces `json.dumps`'s `ensure_ascii`, which the reference leaves at its
-  // default. A home directory with a non-ASCII name would otherwise split the two runtimes.
+test('#118: the written JSON keeps non-ASCII literal', async () => {
+  // AMENDED PIN (#118). This test was 'the written JSON escapes non-ASCII so both runtimes
+  // write the same bytes' and pinned `\\u0e01` ON PURPOSE: `ensure_ascii` was how the two
+  // runtimes stayed byte-identical. #118 (the repo owner's issue against the released
+  // contract) rules that an install leaves the user's text as they wrote it, so both runtimes
+  // now write `ensure_ascii=False` bytes and the parity moved to `install-host-text` in the
+  // install suite.
   await withHome(async (h) => {
     h.install('cursor', '/opt/ก/bantamkit-mcp', []);
     const raw = readFileSync(h.hostConfigPath('cursor'), 'utf8');
-    assert.ok(raw.includes('\\u0e01'));
-    assert.ok(!raw.includes('ก'));
+    assert.ok(raw.includes('ก'));
+    assert.ok(!raw.includes('\\u0e01'));
   });
 });
 
@@ -791,6 +795,74 @@ test('#118: the parse error names CPython’s message, line and column', async (
       (e) =>
         e.message ===
         `${path} is not valid JSON, so this refuses to touch it: Expecting property name enclosed in double quotes (line 1, column 19)`,
+    );
+  });
+});
+
+// #118, the remainder (J66-7): the host's TEXT survives, not just its values. `»` marks one
+// indent unit. The same two templates sit in `runtime-py/tests/test_hostinstall.py` (see the
+// comment there for what each of the five escape spellings pins), so a regression landing on
+// both sides is red on each.
+const HOST_TEXT_SEED =
+  '{\n»"mcpServers": {\n»»"other": {\n»»»"command": "x",\n' +
+  '»»»"env": {"K": "ไทย 🎉", "E": "\\u0e01", "L": "\\ud800", "B": "\\\\u0e01", ' +
+  '"D": "\\u007f", "S": "\\u2028"}\n»»}\n»},\n»"note": "สวัสดี"\n}\n';
+const HOST_TEXT_WRITTEN =
+  '{\n»"mcpServers": {\n»»"other": {\n»»»"command": "x",\n»»»"env": {\n' +
+  '»»»»"K": "ไทย 🎉",\n»»»»"E": "ก",\n»»»»"L": "\\ud800",\n»»»»"B": "\\\\u0e01",\n' +
+  '»»»»"D": "\x7f",\n»»»»"S": "\u2028"\n»»»}\n»»},\n' +
+  '»»"bantamkit": {\n»»»"command": "/opt/bantamkit/bin/bantamkit-mcp",\n»»»"args": []\n»»}\n' +
+  '»},\n»"note": "สวัสดี"\n}\n';
+
+for (const [label, unit] of [
+  ['four spaces', '    '],
+  ['a tab', '\t'],
+  ['two spaces', '  '],
+]) {
+  test(`#118: the host file keeps its text and its indent (${label})`, async () => {
+    await withHome(async (h) => {
+      const path = h.hostConfigPath('cursor');
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, HOST_TEXT_SEED.replaceAll('»', unit), 'utf8');
+
+      h.install('cursor', CMD, []);
+
+      assert.equal(readFileSync(path, 'utf8'), HOST_TEXT_WRITTEN.replaceAll('»', unit));
+    });
+  });
+}
+
+test('#118: a file with no indented line is written at two spaces', async () => {
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{"mcpServers": {}}', 'utf8');
+
+    h.install('cursor', CMD, []);
+
+    assert.equal(
+      readFileSync(path, 'utf8'),
+      `{\n  "mcpServers": {\n    "bantamkit": {\n      "command": "${CMD}",\n      "args": []\n    }\n  }\n}\n`,
+    );
+  });
+});
+
+// #118, review J66-12 B1: a host file whose lines end in a bare CR (classic Mac) keeps its
+// indent. The reference reads through universal newlines, so `\r` is a line break there; this
+// side splitting on `\n` alone saw one line and wrote two spaces. The same seed and literal sit
+// in `runtime-py/tests/test_hostinstall.py`, so a regression on both sides is red on each.
+test('#118: a CR-only host file keeps its indent', async () => {
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{\r    "mcpServers": {\r        "other": {"command": "x"}\r    }\r}\r', 'utf8');
+
+    h.install('cursor', CMD, []);
+
+    assert.equal(
+      readFileSync(path, 'utf8'),
+      '{\n    "mcpServers": {\n        "other": {\n            "command": "x"\n        },\n' +
+        `        "bantamkit": {\n            "command": "${CMD}",\n            "args": []\n        }\n    }\n}\n`,
     );
   });
 });

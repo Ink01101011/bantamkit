@@ -709,13 +709,20 @@ def test_the_three_flags_are_in_dash_h_with_their_ruled_sentences(tmp_path):
 
 
 def test_mcp_report_before_install_hooks_prints_a_report_and_writes_no_settings_file(tmp_path):
-    # DISPATCH ORDER IS REGISTRATION ORDER, the rule every flag on this parser follows.
+    # AMENDED by job66/#139, which outranks the pin: this argv used to print a report and
+    # silently drop `--install-hooks` at exit 0 (DISPATCH ORDER IS REGISTRATION ORDER). Two
+    # one-shot flags are now a usage error, so it exits 2 -- and still writes no settings file,
+    # which is the half of the old contract that survives.
     root = tmp_path / "home"
     root.mkdir()
 
     done = run_cli(["--mcp-report", "--install-hooks", "--yes"], root)
 
-    assert done.returncode == 0, done.stderr
+    assert done.returncode == 2, done.stderr
+    assert done.stderr.endswith(
+        "bantamkit-mcp: error: argument --install-hooks: not allowed with argument --mcp-report\n"
+    ), done.stderr
+    assert done.stdout == ""
     assert not (root / ".claude" / "settings.json").exists()
 
 
@@ -1100,6 +1107,24 @@ def test_129_a_block_that_holds_only_ours_is_dropped_whole(home):
     hostinstall.remove_hooks(tell=lambda _text: None, ask=lambda: True)
 
     assert read_json(path)["hooks"] == {}
+
+
+def test_118_install_hooks_keeps_the_settings_text_and_its_indent(home):
+    """#118 remainder (J66-7): `--install-hooks` shares `_write_config` with `--install`, so a
+    4-space settings file with Thai in it keeps both: no `\\uXXXX`, no re-indent to two."""
+    path = hostinstall.claude_settings_path()
+    seed(path, '{\n    "model": "opus",\n    "env": {"K": "ไทย 🎉", "E": "\\u0e01"}\n}\n')
+
+    hostinstall.install_hooks(tell=lambda _text: None, yes=True)
+
+    text = path.read_text(encoding="utf-8")
+    assert '"K": "ไทย 🎉"' in text
+    assert '"E": "ก"' in text
+    assert "\\u0e" not in text
+    assert text.startswith('{\n    "model": "opus",\n    "env": {\n        "K": ')
+    leads = {len(line) - len(line.lstrip(" ")) for line in text.split("\n")}
+    assert leads and all(n % 4 == 0 for n in leads), sorted(leads)
+    assert "hooks" in json.loads(text)
 
 
 @symlinks_need_a_privilege_on_windows

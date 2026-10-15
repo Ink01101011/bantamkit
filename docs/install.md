@@ -322,9 +322,17 @@ runtimes' own suites (`runtime-py/tests/test_hostinstall.py`, `runtime-ts/test/h
   both runtimes — the port through its own CPython-decoder port, `pyjson.parseJson`, never
   `JSON.parse` — so `12345678901234567890` stays that integer, `1.0` stays `1.0`, and key
   order survives (a JS object would move an integer-like key such as `"9"` to the front; a
-  `Map` does not). What does change: the file is re-indented at two spaces, and non-ASCII
-  text is written as `\uXXXX` escapes — deliberately, so both runtimes write identical bytes;
-  it is the same JSON to every host. A number JSON cannot carry — `1e400`, `-1e400`, `NaN`, a
+  `Map` does not). Since job66 (#118's remainder) the TEXT survives too: non-ASCII stays
+  literal UTF-8 (`"ไทย 🎉"` is written back as `"ไทย 🎉"`, not `"\u0e44..."`), and the file
+  keeps its own indent unit — read off its first indented line: a tab, or that many spaces;
+  two for a new file or one written all on one line. Both runtimes write
+  `json.dumps(…, indent=<unit>, ensure_ascii=False)`'s bytes, so they still agree byte for
+  byte (`install-host-text` in the install suite). Two spellings are normalised, because
+  that writer has one spelling per string: an escape you wrote for a printable character
+  (`"\u0e01"`) comes back as the character itself, and a lone surrogate (`"\ud800"`), which
+  UTF-8 cannot carry, stays escaped. (Until job66 the file was re-indented at two spaces and
+  every non-ASCII character escaped — that was how the two runtimes stayed byte-identical,
+  and #118 ruled the user's text outranks it.) Line endings are written as `\n`. A number JSON cannot carry — `1e400`, `-1e400`, `NaN`, a
   literal `Infinity` — is refused BEFORE anything is planned, with
   `<file> has a number at mcpServers.other.huge that JSON cannot carry (Infinity); refusing to touch it`
   (exit 1, nothing written, no backup), because writing it back as the bare word `Infinity`
@@ -403,6 +411,19 @@ no `--hook` in it, and left `~/.claude/settings.json` byte-identical with no bac
 Registering the server does not register the hooks, in either direction. What the entries do,
 what they cost, and the full consent gate are in [hooks.md](hooks.md).
 
+
+### One action per command line (job66, #139)
+
+`--assets-root`, `--hook`, `--mcp-report`, `--statusline`, `--update`, `--install`,
+`--install-hooks` and `--remove-hooks` each act and exit, so a command line takes **one** of
+them. Two together are a usage error on both runtimes — the usage block, then
+`bantamkit-mcp: error: argument --install: not allowed with argument --assets-root`, exit 2,
+nothing written. (Until 0.35.8 the first in registration order ran and the rest were dropped at
+exit 0.) The flag named after `argument` is the later of the two in `-h` order, not in your
+argv. A modifier given to a flag that does not read it is refused before anything acts, at
+exit 1: `--force` without `--install`, `--yes` without `--install-hooks`/`--remove-hooks`, and
+`--store`/`--start` with `--hook` (`--store is not meaningful with --hook`: the hook binds the
+store from the cwd in the host's event, never from argv).
 
 ### The Python route with no network
 
@@ -990,7 +1011,9 @@ client = OpenAICompatible(
 Skills, critique rubrics, tool schemas and eval tasks ship as data under
 `assets/`, not as Python. They are resolved in this order:
 
-1. `$BANTAMKIT_ASSETS` — if set, that directory is used, full stop.
+1. `$BANTAMKIT_ASSETS` — if set, that directory is used, full stop. It is not checked for
+   existence: `--assets-root` at a missing path prints that path and `0 files` at exit 0 on
+   both runtimes (job66, #140; the Node CLI used to die with an ENOENT stack).
 2. The packaged copy inside the installed package (`bantamkit/assets/`).
 3. The repo checkout, `<repo-root>/assets/` — what an editable install uses.
 

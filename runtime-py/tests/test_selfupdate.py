@@ -877,7 +877,7 @@ def test_the_record_written_here_is_the_one_updatecheck_reads_back(record_home):
 
     assert updatecheck.update_line("0.30.0") == (
         "update: bantamkit-mcp 0.30.0 is running; the package index has 0.31.0 — run "
-        "`bantamkit-mcp --update`, then reconnect the host."
+        f"`{updatecheck.update_command()}`, then reconnect the host."  # job66/#171
     )
     assert updatecheck.update_status("0.31.0").state == "current"
 

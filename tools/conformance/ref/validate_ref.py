@@ -30,12 +30,16 @@ bytes. Handing over a pre-parsed object would silently erase the int/float disti
     {"op": "iter_errors", "cases": [{"schema": b64_json_text, "instance": b64_json_text}]}
         -> {"results": [{"trace": [{"path": [...], "kw": str|None, "msg": b64}],
                          "best": {...}|None}]}
+
+    {"op": "asset_load", "root": str, "cases": [{"loader": "tool"|"schema"|"skill", "name": b64}]}
+        -> {"results": ["ok" | {"error": {"type": str, "message": b64}}]}
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import sys
 import warnings
@@ -44,6 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
 import jsonschema
+from bantamkit.assets import load_schema, load_skill, load_tool
 from bantamkit.contract import _pattern_unsupported, extract_json, load_contract, schema_error
 from jsonschema.exceptions import best_match
 
@@ -114,6 +119,23 @@ def main() -> None:
             json.dump(caught(e), sys.stdout)
             return
         json.dump({"data": {k: b64(v) for k, v in data.items()}}, sys.stdout)
+        return
+
+    if op == "asset_load":
+        # job66/#145: the three public loaders under a pack the suite built, one name per
+        # case. Only the verdict travels ("ok" or the raise): what a loader RETURNS is
+        # compared elsewhere, and here the property is which names are refused, and how.
+        os.environ["BANTAMKIT_ASSETS"] = payload["root"]
+        loaders = {"tool": load_tool, "schema": load_schema, "skill": load_skill}
+        results = []
+        for case in payload["cases"]:
+            try:
+                loaders[case["loader"]](unb64(case["name"]))
+            except BaseException as e:  # noqa: BLE001
+                results.append(caught(e))
+                continue
+            results.append("ok")
+        json.dump({"results": results}, sys.stdout)
         return
 
     if op == "pattern_dialect":

@@ -51,7 +51,7 @@
  * They are spelled here rather than derived, because deriving them from the same walk that
  * produced them would assert nothing.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -230,6 +230,31 @@ export async function run(ctx) {
   write('astral/nested/！b.jsonl', '');
   write('astral/nested/\u{1D11E}b.jsonl', '');
 
+  // #150: a leading UTF-8 BOM, on the FIRST line, before a record that is otherwise whole.
+  // The ruling is "unparsed on both sides": the host never writes a BOM, so a line carrying
+  // one is not the host's line and is named as an omission. Line 2 is a clean record, so the
+  // file still counts one request and the BOM is visible as exactly one `unparsed-line`.
+  const bomBed = join(bed, 'bom');
+  const rec = (requestId) =>
+    line({ type: 'assistant', sessionId: 's', requestId, timestamp: '2026-10-15T00:00:00.000Z', message: { usage: usage({ output_tokens: 1 }) } });
+  write('bom/-p/s.jsonl', `\uFEFF${rec('q1')}${rec('q2')}`);
+
+  // #151: one real transcript, a directory symlink to its own parent (a loop), and a symlink
+  // to the transcript FILE. The loop is skipped — neither walked nor read — and the file link
+  // is read, so it is the one `duplicate-request`. Following the loop counted the transcript
+  // once per level until ELOOP (33 on macOS). Windows may refuse to make a symlink without
+  // privilege; then the bed has no links and its cases are not built (a note says so).
+  const loopBed = join(bed, 'symlink-loop');
+  write('symlink-loop/-p/s.jsonl', rec('q1'));
+  let loopBuilt = true;
+  try {
+    symlinkSync('..', join(loopBed, '-p', 'up'), 'dir');
+    symlinkSync('s.jsonl', join(loopBed, '-p', 'alias.jsonl'), 'file');
+  } catch (err) {
+    loopBuilt = false;
+    notes.push(`symlink-loop bed not built (${err?.code ?? err}); #151 cases skipped on this host`);
+  }
+
   const rated = write('rated.json', RATED);
   const broken = write('broken.json', '{"schema_version": 1,');
   const missingTable = join(bed, 'no-such-table.json');
@@ -254,6 +279,8 @@ export async function run(ctx) {
     ['a corpus of nothing but omissions', { root: onlyOmissions }],
     ['the 2**53 ceiling', { root: ceiling }],
     ['the astral walk bed', { root: astral }],
+    ['a BOM before the first record (#150)', { root: bomBed }],
+    ...(loopBuilt ? [['a directory symlink loop and a file symlink (#151)', { root: loopBed }]] : []),
 
     // The four argument refusals.
     ['an empty root', { root: '' }],
@@ -312,6 +339,7 @@ export async function run(ctx) {
     ['the committed corpus', CORPUS],
     ['names that sort apart in UTF-16', astral],
     ['an empty tree', empty],
+    ...(loopBuilt ? [['a directory symlink loop (#151)', loopBed]] : []),
   ]) {
     const py = ctx.runPython(REF, { op: 'walk', root }).out.map(unb64);
     cases.push({
@@ -380,6 +408,35 @@ export async function run(ctx) {
       REFUSAL,
     ),
   );
+
+  // #150 and #151 as LITERALS, per side: both are absolute properties, and a differential is
+  // blind to the same regression landing in both runtimes (tolerating the BOM on both sides,
+  // or following the loop on both, would agree perfectly).
+  const countsOf = (doc) => ({
+    transcripts: doc.transcripts,
+    lines: doc.lines,
+    requests: doc.requests,
+    omissions: doc.omissions.map((o) => [o.subject, o.count, o.what]),
+  });
+  const ndRead = (root) => JSON.parse(tokenledger.asJson(tokenledger.read(root)));
+  cases.push(
+    ...literalCases(
+      countsOf(JSON.parse(unb64(at('a BOM before the first record (#150)').json))),
+      countsOf(ndRead(bomBed)),
+      'a leading BOM is one unparsed line on both sides (#150)',
+      { transcripts: 1, lines: 2, requests: 1, omissions: [['unparsed-line', 1, '-p/s.jsonl:1']] },
+    ),
+  );
+  if (loopBuilt) {
+    cases.push(
+      ...literalCases(
+        countsOf(JSON.parse(unb64(at('a directory symlink loop and a file symlink (#151)').json))),
+        countsOf(ndRead(loopBed)),
+        'a directory symlink is not followed, a file symlink is read (#151)',
+        { transcripts: 2, lines: 2, requests: 1, omissions: [['duplicate-request', 1, '-p/s.jsonl:1']] },
+      ),
+    );
+  }
 
   notes.push(
     `corpus: ${CORPUS_HEADLINE.transcripts} transcripts, ${CORPUS_HEADLINE.lines} lines, ` +

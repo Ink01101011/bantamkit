@@ -138,8 +138,51 @@ export class ArgumentTypeError extends Error {}
  * a second hand-written copy of a conversion rule is the defect this module was built from.
  */
 export function pyIntStrict(text: string): number {
-  if (!/^\s*[+-]?\d+(?:_\d+)*\s*$/.test(text)) throw new TypeError('not an int');
-  return Number(text.trim().replace(/_/g, ''));
+  // job66/#174: CPython's `int(str)`, measured on 3.12 rather than recalled. It first maps
+  // every NON-ASCII character through `_PyUnicode_TransformDecimalAndSpaceToASCII`: a Unicode
+  // decimal digit (category Nd, any script, astral included) becomes its ASCII digit and a
+  // Unicode space becomes ' '. ASCII passes through untouched, so the only ASCII whitespace
+  // the parser then skips is ` \t\n\v\f\r` — `int('3\x1c')` is a ValueError although
+  // `'\x1c'.isspace()` is true — and U+FEFF is not a space at all. Single underscores may sit
+  // BETWEEN digits only, and more than 4300 digits is a ValueError (`sys.int_info
+  // .default_max_str_digits`). WAS: `/^\s*[+-]?\d+(?:_\d+)*\s*$/` without the `u` flag —
+  // ASCII digits only, so `--k ٣` was exit 2 here and served on the reference, while JS
+  // `\s` admitted U+FEFF and refused U+0085, both the opposite of CPython.
+  let ascii = '';
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x80) ascii += ch;
+    else if (PY_UNICODE_SPACE.has(cp)) ascii += ' ';
+    else if (/\p{Nd}/u.test(ch)) ascii += String(ndValue(cp));
+    else throw new TypeError('not an int');
+  }
+  const match = /^[ \t\n\v\f\r]*([+-]?)([0-9]+(?:_[0-9]+)*)[ \t\n\v\f\r]*$/.exec(ascii);
+  if (match === null) throw new TypeError('not an int');
+  const digits = match[2]!.replace(/_/g, '');
+  if (digits.length > PY_INT_MAX_STR_DIGITS) throw new TypeError('not an int');
+  const value = Number(`${match[1]}${digits}`);
+  return value === 0 ? 0 : value; // `int('-0')` is 0, never JavaScript's -0
+}
+
+/** `sys.int_info.default_max_str_digits`: CPython refuses a longer decimal string. */
+const PY_INT_MAX_STR_DIGITS = 4300;
+
+/** The non-ASCII code points `str.isspace()` is true for (CPython 3.12, Unicode 15.0). */
+const PY_UNICODE_SPACE: ReadonlySet<number> = new Set([
+  0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008,
+  0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+]);
+
+/**
+ * `unicodedata.decimal(ch)` for a category-Nd code point. Unicode allocates every decimal
+ * digit set as ten contiguous code points from 0 to 9, and sets that touch are back to back
+ * (the five mathematical sets at U+1D7CE), so the value is the offset from the start of the
+ * contiguous Nd run, modulo ten.
+ */
+function ndValue(cp: number): number {
+  let start = cp;
+  while (start > 0 && /\p{Nd}/u.test(String.fromCodePoint(start - 1))) start -= 1;
+  return (cp - start) % 10;
 }
 
 /** `_get_action_name`: the name argparse puts after `argument `. */

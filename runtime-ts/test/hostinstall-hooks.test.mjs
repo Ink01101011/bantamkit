@@ -800,11 +800,19 @@ for (const [answer, removes] of [
 }
 
 test('--mcp-report --install-hooks prints a report and writes no settings file', () => {
-  // DISPATCH ORDER IS REGISTRATION ORDER, the rule every flag on this parser follows.
+  // AMENDED by job66/#139, which outranks the pin: this argv used to print a report and
+  // silently drop `--install-hooks` at exit 0 (DISPATCH ORDER IS REGISTRATION ORDER). Two
+  // one-shot flags are now a usage error, so it exits 2 — and still writes no settings file,
+  // which is the half of the old contract that survives.
   const root = mkdtempSync(join(tmpdir(), 'bk-hooks-cli-'));
   try {
     const r = runCli(['--mcp-report', '--install-hooks', '--yes'], root);
-    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(
+      r.stderr.endsWith('bantamkit-mcp: error: argument --install-hooks: not allowed with argument --mcp-report\n'),
+      r.stderr,
+    );
+    assert.equal(r.stdout, '');
     assert.equal(existsSync(join(root, '.claude', 'settings.json')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1002,6 +1010,26 @@ test('#129: a block that holds only ours is dropped whole', async () => {
     h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
     h.removeHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
     assert.deepEqual(readJson(path).hooks, {});
+  });
+});
+
+test('#118: --install-hooks keeps the settings text and its indent', async () => {
+  // #118 remainder (J66-7): `installHooks` shares `writeConfig` with `--install`, so a 4-space
+  // settings file with Thai in it keeps both: no `\uXXXX`, no re-indent to two.
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    seed(path, '{\n    "model": "opus",\n    "env": {"K": "ไทย 🎉", "E": "\\u0e01"}\n}\n');
+
+    h.installHooks({ ...CHECKOUT, tell: () => {}, yes: true });
+
+    const text = readFileSync(path, 'utf8');
+    assert.ok(text.includes('"K": "ไทย 🎉"'), text);
+    assert.ok(text.includes('"E": "ก"'), text);
+    assert.ok(!text.includes('\\u0e'), text);
+    assert.ok(text.startsWith('{\n    "model": "opus",\n    "env": {\n        "K": '), text);
+    const leads = new Set(text.split('\n').map((line) => line.length - line.replace(/^ +/, '').length));
+    assert.ok([...leads].every((n) => n % 4 === 0), [...leads].join(','));
+    assert.ok('hooks' in JSON.parse(text));
   });
 });
 

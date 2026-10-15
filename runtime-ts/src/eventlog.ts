@@ -132,13 +132,20 @@ export function formatTimestamp(epochMs: number): string {
  * by CODE POINT and JavaScript's default comparator by UTF-16 code UNIT, and those two
  * disagree above the BMP. Every key written today is ASCII; the comparator is what keeps
  * that a fact about the data instead of a difference between the runtimes.
+ *
+ * job66/#144: the DECLARED return type is `Uint8Array`, not `Buffer`. The value is still a
+ * `Buffer` (a `Uint8Array` subclass), so nothing changes at runtime, but `Buffer` is a name
+ * only `@types/node` defines, and this signature is reachable from the package entry point
+ * (`index.d.ts` re-exports it). Spelled `Buffer`, it made a strict consumer without
+ * `@types/node` fail `tsc` on `import ... from 'bantamkit-mcp'` with TS2591 — a dependency
+ * the package never declared. `test/packaging.test.mjs` type-checks such a consumer.
  */
 export function encodeRecord(
   epochMs: number,
   tool: string,
   outcome: string,
   detail: Readonly<Record<string, DetailValue>>,
-): Buffer {
+): Uint8Array {
   const sorted: Record<string, DetailValue> = {};
   for (const key of Object.keys(detail).sort(cmpCodepoint)) sorted[key] = detail[key]!;
   const record = { v: SCHEMA_VERSION, ts: formatTimestamp(epochMs), tool, outcome, detail: sorted };
@@ -290,7 +297,7 @@ export class EventLog {
    * than the cap is written whole rather than split — records here are a few hundred bytes
    * by construction, so that branch is a statement of intent, not a live path.
    */
-  private append(path: string, payload: Buffer): void {
+  private append(path: string, payload: Uint8Array): void {
     // job65/#154: `pyIsDir` raises for EACCES exactly as `Path.is_dir()` does, and that lands
     // in `record`'s catch as a lost record — the same verdict the reference reaches.
     if (this.requiresDir !== null && !pyIsDir(this.requiresDir)) return;

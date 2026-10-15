@@ -199,18 +199,20 @@ def test_claude_is_not_written_by_us_and_has_no_path(home):
         hostinstall.host_config_path("claude")
 
 
-def test_the_written_json_escapes_non_ascii_so_both_runtimes_write_the_same_bytes(home):
-    """`ensure_ascii` is left at its default ON PURPOSE.
-
-    `runtime-ts`'s `dumpJson` reproduces `json.dumps` including this, so a home directory
-    with a non-ASCII name — a Thai or Japanese Windows username — would otherwise make the
-    two runtimes write different bytes for the same install.
+def test_118_the_written_json_keeps_non_ascii_literal(home):
+    """AMENDED PIN (#118). This test was
+    `test_the_written_json_escapes_non_ascii_so_both_runtimes_write_the_same_bytes` and
+    pinned `"\\u0e01" in raw` ON PURPOSE: `ensure_ascii` at its default was how the two
+    runtimes stayed byte-identical. #118 (the repo owner's issue against the released
+    contract) rules that an install leaves the user's text as they wrote it, so both runtimes
+    now write `ensure_ascii=False` bytes and the parity moved to `install-host-text` in the
+    install suite.
     """
     hostinstall.install("cursor", "/opt/ก/bantamkit-mcp", [])
     raw = hostinstall.host_config_path("cursor").read_text(encoding="utf-8")
 
-    assert "\\u0e01" in raw
-    assert "ก" not in raw
+    assert "ก" in raw
+    assert "\\u0e01" not in raw
 
 
 # --- the five things review found that no test could see -----------------------------------
@@ -435,6 +437,71 @@ def test_118_a_non_finite_number_inside_a_list_is_named_by_index(home):
         hostinstall.install("cursor", CMD, [])
 
     assert "has a number at list[1][0] that JSON cannot carry (Infinity)" in str(caught.value)
+
+
+# #118, the remainder (J66-7): the host's TEXT survives, not just its values. `»` marks one
+# indent unit. The seed holds Thai and an emoji literally, plus five spellings that pin the
+# escape rule: an escaped Thai letter (comes back literal), a lone surrogate (stays escaped:
+# UTF-8 cannot carry it), an escaped backslash before `u0e01` (stays two characters), DEL and
+# U+2028 (literal, as `ensure_ascii=False` writes them). The same two templates sit in
+# `runtime-ts/test/hostinstall.test.mjs`, so a regression landing on both sides is red on each.
+HOST_TEXT_SEED = (
+    '{\n»"mcpServers": {\n»»"other": {\n»»»"command": "x",\n'
+    '»»»"env": {"K": "ไทย 🎉", "E": "\\u0e01", "L": "\\ud800", "B": "\\\\u0e01", '
+    '"D": "\\u007f", "S": "\\u2028"}\n»»}\n»},\n»"note": "สวัสดี"\n}\n'
+)
+HOST_TEXT_WRITTEN = (
+    '{\n»"mcpServers": {\n»»"other": {\n»»»"command": "x",\n»»»"env": {\n'
+    '»»»»"K": "ไทย 🎉",\n»»»»"E": "ก",\n»»»»"L": "\\ud800",\n»»»»"B": "\\\\u0e01",\n'
+    '»»»»"D": "\x7f",\n»»»»"S": "\u2028"\n»»»}\n»»},\n'
+    '»»"bantamkit": {\n»»»"command": "/opt/bantamkit/bin/bantamkit-mcp",\n»»»"args": []\n»»}\n'
+    '»},\n»"note": "สวัสดี"\n}\n'
+)
+
+
+@pytest.mark.parametrize("unit", ["    ", "\t", "  "], ids=["four-spaces", "tab", "two-spaces"])
+def test_118_the_host_file_keeps_its_text_and_its_indent(home, unit):
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_text(HOST_TEXT_SEED.replace("»", unit), encoding="utf-8")
+
+    hostinstall.install("cursor", CMD, [])
+
+    assert path.read_text(encoding="utf-8") == HOST_TEXT_WRITTEN.replace("»", unit)
+
+
+def test_118_a_file_with_no_indented_line_is_written_at_two_spaces(home):
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    hostinstall.install("cursor", CMD, [])
+
+    assert path.read_text(encoding="utf-8") == (
+        '{\n  "mcpServers": {\n    "bantamkit": {\n'
+        f'      "command": "{CMD}",\n      "args": []\n    }}\n  }}\n}}\n'
+    )
+
+
+def test_118_a_cr_only_host_file_keeps_its_indent(home):
+    """#118, review J66-12 B1: lines ending in a bare CR (classic Mac) still carry the indent.
+
+    `_detected_indent` reads through universal newlines, so `\r` is a line break and the
+    4-space unit is found. `runtime-ts` once split on `\n` alone and wrote two spaces; the same
+    seed and literal sit in `runtime-ts/test/hostinstall.test.mjs`, so a regression on both
+    sides is red on each.
+    """
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{\r    "mcpServers": {\r        "other": {"command": "x"}\r    }\r}\r')
+
+    hostinstall.install("cursor", CMD, [])
+
+    assert path.read_bytes().decode("utf-8") == (
+        '{\n    "mcpServers": {\n        "other": {\n            "command": "x"\n        },\n'
+        f'        "bantamkit": {{\n            "command": "{CMD}",\n'
+        '            "args": []\n        }\n    }\n}\n'
+    )
 
 
 @symlinks_need_a_privilege_on_windows

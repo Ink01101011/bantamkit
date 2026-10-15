@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -81,7 +82,7 @@ def test_the_five_sentences_are_these_bytes():
     assert updatecheck.UPDATE_NEVER == "update: never checked."
     assert updatecheck.UPDATE_AVAILABLE == (
         "update: {program} {installed} is running; the package index has {latest} — run "
-        "`{program} --update`, then reconnect the host."
+        "`{command}`, then reconnect the host."  # job66/#171: was `{program} --update`
     )
     assert updatecheck.UPDATE_CURRENT == "update: {program} {installed} is current as of {date}."
     assert updatecheck.UPDATE_AHEAD == (
@@ -106,8 +107,15 @@ def test_the_sentences_name_the_command_and_never_a_package():
         updatecheck.UPDATE_AHEAD,
         updatecheck.UPDATE_UNREADABLE,
     ):
+        # `{command}` is this runtime's own interpreter (job66/#171), pinned on its own in
+        # `test_the_update_command_is_this_interpreter_quoted`; the TEMPLATE is what the port
+        # copies, so the template is what may not name a package.
         rendered = sentence.format(
-            program=updatecheck.PROGRAM, installed="0.35.1", latest="0.36.0", date=DATE
+            program=updatecheck.PROGRAM,
+            installed="0.35.1",
+            latest="0.36.0",
+            date=DATE,
+            command="<command>",
         )
         assert "bantamkit-mcp" in rendered or "bantamkit" not in rendered
         assert selfupdate.DISTRIBUTION not in rendered.replace("bantamkit-mcp", "")
@@ -128,8 +136,26 @@ def test_running_behind_the_index_says_run_update_and_reconnect(home):
     assert status.state == STATE_AVAILABLE
     assert status.line == (
         "update: bantamkit-mcp 0.35.1 is running; the package index has 0.36.0 — run "
-        "`bantamkit-mcp --update`, then reconnect the host."
+        f"`\"{sys.executable}\" -m bantamkit.mcpserver --update`, then reconnect the host."
     )
+
+
+def test_the_update_command_is_this_interpreter_quoted():
+    """job66/#171: the bare `bantamkit-mcp --update` is on nobody's PATH under a GUI host.
+
+    The command names THIS interpreter, absolute and double-quoted, so it runs with
+    `PATH=/usr/bin:/bin`; an explicit `command` replaces it, which is how the conformance suite
+    compares the two runtimes' sentences.
+    """
+    assert updatecheck.update_command() == f'"{sys.executable}" -m bantamkit.mcpserver --update'
+    assert Path(sys.executable).is_absolute()
+    status = updatecheck.decide(
+        "0.35.1",
+        updatecheck.SOURCE_RECORD,
+        {"checked_at": "2026-09-19T00:00:00Z", "pypi": {"latest": "0.36.0"}},
+        command="X",
+    )
+    assert status.line.endswith("— run `X`, then reconnect the host.")
 
 
 def test_running_the_index_version_is_current_as_of_the_recorded_date(home):
@@ -271,7 +297,7 @@ def write_bytes_record(home: Path, raw: bytes) -> Path:
             "0.36.0",
             STATE_AVAILABLE,
             "update: bantamkit-mcp 0.35.1 is running; the package index has 0.36.0 — run "
-            "`bantamkit-mcp --update`, then reconnect the host.",
+            f"`\"{sys.executable}\" -m bantamkit.mcpserver --update`, then reconnect the host.",
         ),
         (
             "0.35.1",
@@ -596,7 +622,8 @@ def test_the_source_writes_nothing_and_reaches_no_network():
     network = {"urllib", "urllib.request", "urllib.error", "http", "http.client", "socket",
                "ssl", "requests", "httpx", "subprocess"}
     assert not (imported & network), imported & network
-    assert imported == {"__future__", "json", "re", "dataclasses", "pathlib", "typing",
+    # `sys` since job66/#171: `update_command()` reads `sys.executable`. Not a network module.
+    assert imported == {"__future__", "json", "re", "sys", "dataclasses", "pathlib", "typing",
                         "bantamkit.selfupdate"}
 
     called: set[str] = set()

@@ -50,6 +50,7 @@
  * `~/.bantamkit/update-check.json`. The reader arms do not need the redirection (they are handed
  * an explicit path) and get it anyway, because the cost is nothing and the failure is silent.
  */
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -77,18 +78,26 @@ const SENTENCES = {
   never: 'update: never checked.',
   available:
     'update: {program} {installed} is running; the package index has {latest} — run ' +
-    '`{program} --update`, then reconnect the host.',
+    '`{command}`, then reconnect the host.',
   current: 'update: {program} {installed} is current as of {date}.',
   ahead: 'update: {program} {installed} is ahead of the package index, which has {latest}.',
   unreadable: 'update: the update record could not be read.',
 };
 
-/** The five RENDERED lines, for the five arms named in `LINE_ARMS`. Hand-written, not filled. */
+/**
+ * The five RENDERED lines, for the five arms named in `LINE_ARMS`. Hand-written, not filled.
+ *
+ * `<command>` (job66/#171): each side's own `update_command()` / `updateCommand()` is replaced
+ * by this token in every line before anything compares it (`maskCommand` below), because the
+ * command names each runtime's own interpreter by design. The command itself is pinned per
+ * side, ruled side to side, and RUN from `/bin/sh` with `PATH=/usr/bin:/bin` further down.
+ */
+const COMMAND_TOKEN = '<command>';
 const LINES = {
   'never/absent': 'update: never checked.',
   'available/one-minor-behind':
     'update: bantamkit-mcp 0.35.1 is running; the package index has 0.36.0 — run ' +
-    '`bantamkit-mcp --update`, then reconnect the host.',
+    '`<command>`, then reconnect the host.',
   'current/exactly': 'update: bantamkit-mcp 0.36.0 is current as of 2026-09-19.',
   'ahead/one-minor': 'update: bantamkit-mcp 0.37.0 is ahead of the package index, which has 0.36.0.',
   'unreadable/not-json': 'update: the update record could not be read.',
@@ -569,6 +578,7 @@ async function nodeAnswers(ctx, paths, homes, defaultHome, defaultCwd) {
     return {
       constants: {
         PROGRAM: updatecheck.PROGRAM,
+        UPDATE_COMMAND: updatecheck.updateCommand(),
         KEY: updatecheck.KEY,
         RECORD_DIR: updatecheck.RECORD_DIR,
         RECORD_NAME: updatecheck.RECORD_NAME,
@@ -647,6 +657,83 @@ export async function run(ctx) {
 
   const cases = [];
   const notes = [];
+
+  // ------------------------------------------------- the update command (job66, #171)
+  //
+  // The `available` sentence tells the operator to run `{command}`, and each runtime fills it
+  // with ITS OWN absolute interpreter and entry point: the bare `bantamkit-mcp --update` it used
+  // to print is on nobody's PATH under a GUI-launched host (`/usr/bin:/bin`). So the command is
+  // (1) pinned per side to a literal built here from the interpreter each side runs under, (2)
+  // RULED different side to side (`docs/porting.md`, *the update command names each runtime's
+  // own interpreter*), and (3) RUN from `/bin/sh` with only `/usr/bin:/bin` on PATH, `--update`
+  // swapped for `-h` so nothing reaches a registry. Then every rendered line on both sides has
+  // its own command masked to `<command>`, and every comparison below runs on masked lines.
+  const commands = { py: py.constants.UPDATE_COMMAND, node: node.constants.UPDATE_COMMAND };
+  cases.push(
+    {
+      name: 'updatecheck: the update command against a literal — the reference (#171)',
+      kind: 'string',
+      expected: `"${py.constants.EXECUTABLE}" -m bantamkit.mcpserver --update`,
+      actual: commands.py,
+    },
+    {
+      name: 'updatecheck: the update command against a literal — the port (#171)',
+      kind: 'string',
+      expected: `"${process.execPath}" "${join(ctx.runtimeTs, 'dist', 'cli.js')}" --update`,
+      actual: commands.node,
+    },
+    ...literalCases(
+      /^"\//.test(commands.py) || /^"[A-Za-z]:\\/.test(commands.py),
+      /^"\//.test(commands.node) || /^"[A-Za-z]:\\/.test(commands.node),
+      'updatecheck: the update command starts with a quoted ABSOLUTE interpreter (#171)',
+      true,
+    ),
+    {
+      name: 'updatecheck: the update command — each runtime names its own interpreter and entry',
+      kind: 'string',
+      expected: commands.py,
+      actual: commands.node,
+      ruling:
+        'RULED DIFFERENT BY DESIGN — `docs/porting.md`, *the update command names each ' +
+        "runtime's own interpreter* (job66/#171). The reference prints `\"<sys.executable>\" -m " +
+        'bantamkit.mcpserver --update` and the port `"<process.execPath>" "<dist/cli.js>" ' +
+        '--update`: the command must run the install that answered, and that install is a ' +
+        'different program on each side. The sentence around it is byte-identical and is ' +
+        'compared, masked, everywhere below.',
+    },
+  );
+  if (process.platform === 'win32') {
+    notes.push('updatecheck: the update command was not run through /bin/sh (win32 has none)');
+  } else {
+    const runs = (command) => {
+      const r = spawnSync('/bin/sh', ['-c', command.replace(/ --update$/, ' -h')], {
+        env: { PATH: '/usr/bin:/bin', HOME: defaultHome.py, PYTHONPATH: join(ctx.repoRoot, 'runtime-py', 'src') },
+        encoding: 'utf8',
+        timeout: 120_000,
+      });
+      return { exit: r.status, usage: /usage:/i.test(r.stdout) };
+    };
+    cases.push(
+      ...literalCases(
+        runs(commands.py),
+        runs(commands.node),
+        'updatecheck: the update command runs from /bin/sh with PATH=/usr/bin:/bin (`-h` for `--update`) (#171)',
+        { exit: 0, usage: true },
+      ),
+    );
+  }
+  const maskCommand = (side, command) => {
+    const mask = (line) => (typeof line === 'string' ? line.split(command).join(COMMAND_TOKEN) : line);
+    for (const table of [...Object.values(side.answers), side.defaults]) {
+      for (const answer of Object.values(table)) {
+        answer.line = mask(answer.line);
+        answer.line_via_update_line = mask(answer.line_via_update_line);
+      }
+    }
+    side.default_path.line = mask(side.default_path.line);
+  };
+  maskCommand(py, commands.py);
+  maskCommand(node, commands.node);
 
   // ---------------------------------------------------------------- the shared vocabulary
 

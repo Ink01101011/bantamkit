@@ -324,7 +324,15 @@ recorded for model ''" and read as a missing price rather than a missing argumen
 about the CONTENT of the tree refuses: a transcript that will not decode, a line that will not
 parse and a record with no usage are omissions and are counted, because a ledger that refused
 over one of eight hundred transcripts would have said nothing about the other seven hundred
-and ninety-nine. The one content failure that DOES refuse is a token total above 2**53-1,
+and ninety-nine. A line that starts with a UTF-8 BOM is `unparsed-line` on both runtimes, the
+first line included (job66 #150: the port used to strip a first-line BOM and count the
+record). The host never writes one, so a line carrying one is not the host's line. A
+symlinked DIRECTORY under `root` is neither walked nor read (job66 #151, `skill_audit`'s
+rule): following `ln -s .. up` counted one transcript 33 times before ELOOP stopped it. A
+symlink to a transcript FILE is still read, because it cannot loop. A degraded server puts its
+footer inside the document as a `bantamkit_degraded` key, last, so the reply always parses
+(job66 #124; `docs/status.md`, *The footer*). The one content failure that DOES refuse is a
+token total above 2**53-1,
 which is exact in Python and rounded in JavaScript: the place the two runtimes would part
 company is a refusal, not a wrong number. Deterministic: the tool reads `root`, and `prices`
 or `$BANTAMKIT_PRICES` when a `model` is named.

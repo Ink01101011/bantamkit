@@ -243,7 +243,7 @@ const served = () => ({
 /** The sentence, spelled here independently of the constant so a silent edit to it goes red. */
 function expectedLine(home, installed, latest) {
   return `[bantamkit] ${PACKAGE} ${installed} at ${manifestFile(home)} is running; `
-    + `the package index has ${latest} — run \`node "${cliFile(home)}" --update\`, then reconnect the host.`;
+    + `the package index has ${latest} — run \`"${process.execPath}" "${cliFile(home)}" --update\`, then reconnect the host.`;
 }
 
 // The command the line prints must RUN. It used to print the bare `bantamkit-mcp --update`,
@@ -251,6 +251,11 @@ function expectedLine(home, installed, latest) {
 // the operator it was written for got `command not found` (2026-09-26). The kept install here
 // gets a `cli.js` that reports its argv; the printed command is handed to a shell with a PATH
 // holding nothing but node's own directory, and must reach that file with `--update`.
+//
+// AMENDED 2026-10-15 (job66/#171): the PATH is `/usr/bin:/bin` now, a GUI-launched host's, and
+// NOT node's own directory. With node's directory on PATH this test passed over a line that
+// printed the bare `node`, which answers `exit 127, node: command not found` exactly where the
+// line is read. The printed interpreter is `process.execPath`, so it needs no PATH at all.
 test('the stale line prints a command that runs from a shell with no bantamkit on PATH', async () => {
   const home = newHome();
   installKept(home, '0.35.1');
@@ -263,7 +268,7 @@ test('the stale line prints a command that runs from a shell with no bantamkit o
   assert.ok(m, `no command in the update line:\n${r.ctx}`);
   const out = await new Promise((done, fail) => {
     const child = spawn('/bin/sh', ['-c', m[1]], {
-      env: { PATH: dirname(process.execPath), HOME: home },
+      env: { PATH: '/usr/bin:/bin', HOME: home },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let text = '';

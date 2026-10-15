@@ -16,7 +16,7 @@
  * for a reason nobody caused.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -570,3 +570,71 @@ test('no free text argument reaches the event log', async () => {
     sessions: 1,
   });
 });
+
+// ------------------------------------------------------------- job66 J66-5 (#124 #150 #151)
+
+test('a leading BOM is an unparsed line and the next record still counts (#150)', () => {
+  // RED with the decoder's default `ignoreBOM: false`: the first-line BOM was stripped and the
+  // record counted (requests 2, omissions empty) where the reference reports it unparsed.
+  const one = record({ type: 'assistant', sessionId: 's', requestId: 'q1', message: { usage: usage({ output_tokens: 1 }) } });
+  const two = record({ type: 'assistant', sessionId: 's', requestId: 'q2', message: { usage: usage({ output_tokens: 1 }) } });
+  const ledger = read(corpus(`﻿${one}\n${two}\n`));
+  assert.deepEqual([ledger.transcripts, ledger.lines, ledger.requests], [1, 2, 1]);
+  assert.deepEqual(
+    ledger.omissions.map((o) => [o.subject, o.count, o.what]),
+    [['unparsed-line', 1, 'a.jsonl:1']],
+  );
+});
+
+test('a directory symlink is not followed and a file symlink is read (#151)', (t) => {
+  // A link to an ancestor used to be walked until ELOOP, the transcript counted once per level.
+  const root = join(room(), 'projects');
+  const proj = join(root, '-p');
+  mkdirSync(proj, { recursive: true });
+  writeFileSync(join(proj, 's.jsonl'), `${record({ type: 'assistant', sessionId: 's', requestId: 'q1', message: { usage: usage({ output_tokens: 1 }) } })}\n`);
+  try {
+    symlinkSync('..', join(proj, 'up'), 'dir');
+    symlinkSync('s.jsonl', join(proj, 'alias.jsonl'), 'file');
+  } catch (e) {
+    t.skip(`cannot make a symlink here: ${e.code}`);
+    return;
+  }
+  assert.deepEqual(walk(root).map(([, rel]) => rel), ['-p/alias.jsonl', '-p/s.jsonl']);
+  const ledger = read(root);
+  assert.deepEqual([ledger.transcripts, ledger.lines, ledger.requests], [2, 2, 1]);
+  assert.deepEqual(
+    ledger.omissions.map((o) => [o.subject, o.count, o.what]),
+    [['duplicate-request', 1, '-p/s.jsonl:1']],
+  );
+});
+
+for (const tool of ['token_ledger', 'skill_audit']) {
+  test(`a degraded ${tool} reply is still one JSON document (#124)`, async () => {
+    // RED with `notedJson` replaced by `noted` at the tool's success return: JSON.parse throws
+    // on the prose footer after the closing brace.
+    const dir = room();
+    mkdirSync(join(dir, 'store', 'facts'), { recursive: true });
+    mkdirSync(join(dir, 'store', 'archive'), { recursive: true });
+    const empty = join(dir, 'empty');
+    mkdirSync(empty);
+    const { memory, log } = make(dir);
+    const client = await connect(memory, log);
+    const answer = async () => {
+      const got = await client.callTool({ name: tool, arguments: { root: empty } });
+      return [got.isError === true, got.content[0].text, got.structuredContent?.result];
+    };
+    const [coolError, healthy] = await answer();
+    assert.equal(coolError, false);
+    assert.ok(!('bantamkit_degraded' in JSON.parse(healthy)));
+    // Degrade the server the way the status tests do: `facts/` becomes a file.
+    rmdirSync(join(dir, 'store', 'facts'));
+    writeFileSync(join(dir, 'store', 'facts'), 'not a directory');
+    const [hotError, degraded, structured] = await answer();
+    assert.equal(hotError, false);
+    const doc = JSON.parse(degraded);
+    assert.equal(Object.keys(doc).at(-1), 'bantamkit_degraded');
+    assert.ok(doc.bantamkit_degraded.startsWith('⚠️ bantamkit degraded (1):'), doc.bantamkit_degraded);
+    assert.ok(degraded.startsWith(`${healthy.slice(0, -2)},\n  "bantamkit_degraded": `));
+    assert.equal(structured, degraded);
+  });
+}

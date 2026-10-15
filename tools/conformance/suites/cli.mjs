@@ -274,6 +274,11 @@ function bedStreamCases(label, py, node, sides, shared = []) {
 }
 
 /** stdout, stderr and the exit code, for one argv line. The default shape. */
+/** The HOME a sandboxed spec gave one side (`installSandbox`'s `homes`). */
+function byLabelHome(label, specs, side) {
+  return specs.find((spec) => spec.label === label).homes[side];
+}
+
 function streamCases(label, py, node) {
   return [
     { name: `${label}/stdout`, kind: 'bytes', expected: py.stdout, actual: node.stdout },
@@ -1841,6 +1846,11 @@ function matrix(scratch) {
     // both sides, so an argv naming both prints the report and writes NOTHING. The port had
     // it earlier and wrote a file where the reference did not: one command line, two states
     // on the user's disk. Nothing in this matrix combined two early-return flags until now.
+    // AMENDED by job66/#139: the three argv lines below are no longer an ORDER question. Two
+    // one-shot flags are a usage error (exit 2) and a `--force` without `--install` is
+    // refused (exit 1) before anything acts, on both sides; "wrote nothing" still holds and
+    // is still the literal. What each line now answers is pinned per side in
+    // `one-shot/PINNED PER SIDE` after the matrix loop.
     {
       label: 'mcp-report-then-install',
       argv: ['--mcp-report', '--install', 'cursor'],
@@ -1871,6 +1881,33 @@ function matrix(scratch) {
         ]
       : []),
     { label: 'force-without-install', argv: ['--force'] },
+    // job66/#139: STACKED ONE-SHOT FLAGS, AND MODIFIERS ON A FLAG THAT DOES NOT READ THEM.
+    // Each used to run the first flag and drop the rest at exit 0 (`--install cursor
+    // --assets-root` printed the pack and wrote no config). Now: two one-shots are argparse's
+    // usage error at exit 2, naming the two earliest-registered flags given; `--store`,
+    // `--start`, `--yes` and `--force` beside `--hook` are refused at exit 1. Compared as
+    // bytes here and pinned per side after the loop.
+    { label: 'stacked-install-then-assets-root', argv: ['--install', 'cursor', '--assets-root'], shape: 'wrote-nothing', ...installSandbox(scratch, 'stacked-assets') },
+    { label: 'stacked-install-hooks-remove-hooks', argv: ['--install-hooks', '--remove-hooks', '--yes'], shape: 'wrote-nothing', ...installSandbox(scratch, 'stacked-hooks') },
+    { label: 'stacked-update-hook', argv: ['--update', '--hook'], ...sandbox },
+    { label: 'hook-with-store', argv: ['--hook', '--store', join(scratch, 'cli-hook-store')], ...sandbox },
+    { label: 'hook-with-start', argv: ['--hook', '--start', join(scratch, 'cli-cwd')], ...sandbox },
+    { label: 'hook-with-yes', argv: ['--hook', '--yes'], ...sandbox },
+    { label: 'hook-with-force', argv: ['--hook', '--force'], ...sandbox },
+    // job66/#140: `BANTAMKIT_ASSETS` at a path that is not there. The reference's `rglob`
+    // yields nothing, so it prints `<path>` / `0 files` at exit 0; the port died with a raw
+    // ENOENT stack. The path comes from the env, so line 1 IS comparable here, unlike
+    // `assets-root` above.
+    { label: 'assets-root-missing', argv: ['--assets-root'], env: { BANTAMKIT_ASSETS: join(scratch, 'cli-assets-nope') } },
+    // job66/#174: `type=int` is CPython's `int()`, which maps any Unicode Nd digit and any
+    // non-ASCII Unicode space to ASCII first. `-h` after the value makes each line print
+    // help when the value parses and a usage error when it does not, so nothing serves.
+    { label: 'k-arabic-indic-digit', argv: ['--k', '\u0663', '-h'] },
+    { label: 'k-astral-digit', argv: ['--k', '\u{1D7D1}', '-h'] },
+    { label: 'index-budget-unicode-spaces-and-underscore', argv: ['--index-budget', '\u2003\u0664_\u0660\u0669\u0666\u3000', '-h'] },
+    { label: 'k-bom-refused', argv: ['--k', '\ufeff3', '-h'] },
+    { label: 'k-ascii-separator-refused', argv: ['--k', '3\x1c', '-h'] },
+    { label: 'k-too-many-digits-refused', argv: ['--k', '1'.repeat(4301), '-h'] },
     { label: 'double-dash-positional', argv: ['--', 'positional'] },
     { label: 'prefix-abbreviation', argv: ['--inde', '5'], serves: true, ...sandbox },
     // `--inde` above is the ACCEPTING half of prefix abbreviation: it matches exactly one
@@ -2078,9 +2115,13 @@ export async function run(ctx) {
   let ambiguousPy = null;
   let ambiguousInstPy = null;
 
+  /** job66: every argv line's two answers, for the per-side one-shot literals after the loop. */
+  const answered = new Map();
+
   for (const spec of specs) {
     const py = runPy(ctx, spec);
     const node = runNode(spec);
+    answered.set(spec.label, { py, node });
     if (spec.label === 'ambiguous-abbreviation') ambiguousPy = py;
     if (spec.label === 'ambiguous-abbreviation-inst') ambiguousInstPy = py;
     if (spec.shape === 'wrote-nothing') {
@@ -2227,6 +2268,80 @@ export async function run(ctx) {
   }
   if (!UPDATE_STUBS.works) {
     notes.push(`update-registry: NOT MEASURED HERE — ${UPDATE_STUBS.why}; the process cases were not added`);
+  }
+
+  // job66 (#139, #140, #174): WHAT EACH NEW ARGV LINE ANSWERS, PER SIDE, against this file.
+  // The differential above is blind to a regression landing in both runtimes at once — both
+  // sides going back to "run the first flag, exit 0" would still compare identical — so the
+  // exit code and the LAST stderr line (or stdout for the accepting lines) are literals here.
+  {
+    const tail = (buf) => dec(buf).trimEnd().split('\n').pop();
+    const ONE_SHOT_PINS = {
+      'mcp-report-then-install': [2, 'bantamkit-mcp: error: argument --install: not allowed with argument --mcp-report'],
+      'mcp-report-then-update': [2, 'bantamkit-mcp: error: argument --update: not allowed with argument --mcp-report'],
+      'statusline-then-force': [1, '--force is only meaningful with --install'],
+      'stacked-install-then-assets-root': [2, 'bantamkit-mcp: error: argument --install: not allowed with argument --assets-root'],
+      'stacked-install-hooks-remove-hooks': [2, 'bantamkit-mcp: error: argument --remove-hooks: not allowed with argument --install-hooks'],
+      'stacked-update-hook': [2, 'bantamkit-mcp: error: argument --update: not allowed with argument --hook'],
+      'hook-with-store': [1, '--store is not meaningful with --hook'],
+      'hook-with-start': [1, '--start is not meaningful with --hook'],
+      'hook-with-yes': [1, '--yes is only meaningful with --install-hooks or --remove-hooks'],
+      'hook-with-force': [1, '--force is only meaningful with --install'],
+      'k-bom-refused': [2, "bantamkit-mcp: error: argument --k: invalid int value: '\\ufeff3'"],
+      'k-ascii-separator-refused': [2, "bantamkit-mcp: error: argument --k: invalid int value: '3\\x1c'"],
+    };
+    const expected = {};
+    const actual = {};
+    for (const [label, [exit, line]] of Object.entries(ONE_SHOT_PINS)) {
+      const { py, node } = answered.get(label);
+      expected[label] = { python: { exit, line }, node: { exit, line } };
+      actual[label] = { python: { exit: py.exit, line: tail(py.stderr) }, node: { exit: node.exit, line: tail(node.stderr) } };
+    }
+    cases.push({ name: 'one-shot/PINNED PER SIDE: each refusal, its exit and its sentence, against this file', kind: 'json', expected, actual });
+    const ACCEPTING = ['k-arabic-indic-digit', 'k-astral-digit', 'index-budget-unicode-spaces-and-underscore'];
+    cases.push({
+      name: 'int-parity/PINNED PER SIDE: a Unicode Nd digit and a Unicode space are int() values, so -h prints help at exit 0',
+      kind: 'json',
+      expected: Object.fromEntries(ACCEPTING.map((label) => [label, { python: [0, 'usage: bantamkit-mcp '], node: [0, 'usage: bantamkit-mcp '] }])),
+      actual: Object.fromEntries(
+        ACCEPTING.map((label) => {
+          const { py, node } = answered.get(label);
+          return [label, { python: [py.exit, dec(py.stdout).slice(0, 21)], node: [node.exit, dec(node.stdout).slice(0, 21)] }];
+        }),
+      ),
+    });
+    const tooMany = answered.get('k-too-many-digits-refused');
+    cases.push({
+      name: 'int-parity/PINNED PER SIDE: more than 4300 digits is not an int on either side',
+      kind: 'json',
+      expected: { python: [2, true], node: [2, true] },
+      actual: {
+        python: [tooMany.py.exit, tail(tooMany.py.stderr).startsWith('bantamkit-mcp: error: argument --k: invalid int value: ')],
+        node: [tooMany.node.exit, tail(tooMany.node.stderr).startsWith('bantamkit-mcp: error: argument --k: invalid int value: ')],
+      },
+    });
+    const missing = answered.get('assets-root-missing');
+    const nope = join(ctx.scratch, 'cli-assets-nope');
+    cases.push({
+      name: 'assets-root-missing/PINNED PER SIDE: the path, 0 files, exit 0, nothing on stderr',
+      kind: 'json',
+      expected: { python: [0, `${nope}\n0 files\n`, ''], node: [0, `${nope}\n0 files\n`, ''] },
+      actual: {
+        python: [missing.py.exit, dec(missing.py.stdout), dec(missing.py.stderr)],
+        node: [missing.node.exit, dec(missing.node.stdout), dec(missing.node.stderr)],
+      },
+    });
+    cases.push({
+      name: 'stacked-install-hooks-remove-hooks/PINNED PER SIDE: no settings file was written',
+      kind: 'json',
+      expected: { python: false, node: false },
+      actual: Object.fromEntries(
+        [['python', 'py'], ['node', 'node']].map(([side, key]) => [
+          side,
+          existsSync(join(byLabelHome('stacked-install-hooks-remove-hooks', specs, key), '.claude', 'settings.json')),
+        ]),
+      ),
+    });
   }
 
   // THE ROUTE `store-equals-value` NOW TAKES, pinned. J48-3 registered it as a vacuity item:

@@ -194,7 +194,10 @@ def test_the_report_carries_the_update_line_in_every_one_of_the_five_states(
     expected = {
         updatecheck.STATE_NEVER: updatecheck.UPDATE_NEVER,
         updatecheck.STATE_AVAILABLE: updatecheck.UPDATE_AVAILABLE.format(
-            program=updatecheck.PROGRAM, installed=installed, latest="99.0.0"
+            program=updatecheck.PROGRAM,
+            installed=installed,
+            latest="99.0.0",
+            command=updatecheck.update_command(),  # job66/#171
         ),
         updatecheck.STATE_CURRENT: updatecheck.UPDATE_CURRENT.format(
             program=updatecheck.PROGRAM, installed=installed, date="2026-09-19"

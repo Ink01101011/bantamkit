@@ -40,7 +40,7 @@
  * partial identity would agree with every other build that lost the same input.
  */
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { type Dirent, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -79,9 +79,31 @@ const unavailable = (reason: string): { unavailable: string } => ({ unavailable:
  */
 function walkFiles(root: string): string[][] {
   const found: string[][] = [];
+  // job66/#140: `rglob` over a root that is not a directory yields NOTHING — missing, a
+  // regular file, or a dangling link alike (`select_from` checks `is_dir()` first) — and it
+  // swallows `PermissionError` on any directory it cannot list. WAS: `readdirSync` threw, so
+  // `BANTAMKIT_ASSETS=<missing> --assets-root` died with a raw ENOENT stack where the
+  // reference prints `<path>` / `0 files` at exit 0. Measured on CPython 3.12:
+  // `list(Path("<missing>").rglob("*"))`, `<file>` and a mode-000 directory are all `[]`.
+  let rootIsDir = false;
+  try {
+    rootIsDir = statSync(root).isDirectory();
+  } catch {
+    rootIsDir = false;
+  }
+  if (!rootIsDir) return [];
+  const listing = (here: string): Dirent[] => {
+    try {
+      return readdirSync(here, { withFileTypes: true });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EPERM') return [];
+      throw e;
+    }
+  };
   const descend = (parts: string[]): void => {
     const here = parts.length === 0 ? root : join(root, ...parts);
-    for (const entry of readdirSync(here, { withFileTypes: true })) {
+    for (const entry of listing(here)) {
       const next = [...parts, entry.name];
       if (entry.isDirectory()) {
         descend(next);

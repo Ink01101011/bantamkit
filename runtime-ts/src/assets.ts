@@ -5,7 +5,7 @@
  * reference; where this file deviates the deviation is a comment, not an accident.
  */
 import { existsSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { BantamError } from './errors.js';
@@ -73,6 +73,31 @@ export function assetsRoot(): string {
 }
 
 /**
+ * job66/#145: the one path every loader below builds, and the containment check on it.
+ *
+ * `name` is a BARE asset name — `memory`, `shiftwork-checkpoint`, `memory_recall` — and
+ * nothing else. Before this, each loader joined `name` under its directory verbatim, so a
+ * caller passing user input could read any `.json`/`.md` on disk: `loadSchema('../../x')`
+ * parsed a file outside the pack, and `loadTool('../schemas/shiftwork-checkpoint')` returned
+ * a Tool whose three fields were all `undefined`. A name holding a path separator (`/` or
+ * `\`, either platform's), `..`, a drive colon or a NUL is refused BEFORE any filesystem
+ * access, and the joined path is then checked LEXICALLY to sit directly inside
+ * `<root>/<kind>s/` — lexically, not by `realpath`, because a pack is allowed to be a
+ * symlink farm and the check is about the name, not about the disk. The refusal is an
+ * `AssetNotFound`, so the MCP resource handler's existing `unknown skill asset: <name>`
+ * answer is unchanged; the sentence is the reference's, byte for byte
+ * (`runtime-py/src/bantamkit/assets.py::_asset_path`).
+ */
+function assetPath(kind: string, name: string, ext: string): string {
+  const dir = join(assetsRoot(), `${kind}s`);
+  const path = join(dir, `${name}${ext}`);
+  if (/[/\\:\0]/.test(name) || name.includes('..') || dirname(resolve(path)) !== resolve(dir)) {
+    throw new AssetNotFound(`${kind} asset name is not a bare name: ${name}`);
+  }
+  return path;
+}
+
+/**
  * Return one tool asset VERBATIM — every key, including the ones no surface uses.
  *
  * `loadTool` below narrows the same file to the three fields a model is shown. This
@@ -81,7 +106,7 @@ export function assetsRoot(): string {
  * and neither belongs on the agent-facing `Tool`.
  */
 export function loadToolAsset(name: string): Record<string, unknown> {
-  const path = join(assetsRoot(), 'tools', `${name}.json`);
+  const path = assetPath('tool', name, '.json');
   if (!existsSync(path)) {
     throw new AssetNotFound(`tool asset not found: ${path}`);
   }
@@ -107,7 +132,7 @@ export function loadTool(name: string): Tool {
 
 /** Return a JSON Schema asset (parsed) — e.g. the shift-work checkpoint contract. */
 export function loadSchema(name: string): Record<string, unknown> {
-  const path = join(assetsRoot(), 'schemas', `${name}.json`);
+  const path = assetPath('schema', name, '.json');
   if (!existsSync(path)) {
     throw new AssetNotFound(`schema asset not found: ${path}`);
   }
@@ -115,7 +140,7 @@ export function loadSchema(name: string): Record<string, unknown> {
 }
 
 export function loadSkill(name: string): string {
-  const path = join(assetsRoot(), 'skills', `${name}.md`);
+  const path = assetPath('skill', name, '.md');
   if (!existsSync(path)) {
     throw new AssetNotFound(`skill asset not found: ${path}`);
   }

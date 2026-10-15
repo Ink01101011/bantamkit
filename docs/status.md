@@ -101,7 +101,7 @@ One of exactly five sentences, byte-identical across the runtimes, named constan
 | state | the sentence |
 |---|---|
 | `never` | `update: never checked.` |
-| `available` | ``update: {program} {installed} is running; the package index has {latest} — run `{program} --update`, then reconnect the host.`` |
+| `available` | ``update: {program} {installed} is running; the package index has {latest} — run `{command}`, then reconnect the host.`` — `{command}` is the running interpreter, absolute and quoted (job66, #171; it was the bare `{program} --update`, on nobody's PATH under a GUI host): `"<sys.executable>" -m bantamkit.mcpserver --update` on the reference, `"<process.execPath>" "<dist/cli.js>" --update` on the port (`docs/porting.md`) |
 | `current` | `update: {program} {installed} is current as of {date}.` |
 | `ahead` | `update: {program} {installed} is ahead of the package index, which has {latest}.` |
 | `unreadable` | `update: the update record could not be read.` |
@@ -194,6 +194,12 @@ differently, because a JSON result has no margin to write in:
   `"bantamkit_degraded"` key carrying the same string, **last** in key order and present
   only when non-empty. All seven advertise `additionalProperties: true`, so a key that comes
   and goes is inside the contract they already declare.
+* **JSON-document replies** (`skill_audit`, `token_ledger`; job66 #124): the reply is one
+  JSON document rendered as text, so the footer goes INSIDE it as the same
+  `"bantamkit_degraded"` key, last, spliced in at the document's two-space indent. Every
+  byte before the key is the healthy reply's. Until job66 these two took the prose shape,
+  and a degraded reply stopped being parseable. Their refusals (`... failed: ...`) are
+  prose and keep the prose footer.
 * **`bantamkit_status` itself never carries the footer** — the report already lists every
   condition in full.
 

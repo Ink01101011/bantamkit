@@ -66,9 +66,13 @@ import {
   loadRecord,
   readRecord,
   recordPath,
+  updateCommand,
   updateLine,
   updateStatus,
 } from '../dist/updatecheck.js';
+
+/** job66/#171: the command the `available` line names — THIS node and this build's cli.js, quoted. */
+const COMMAND = `"${process.execPath}" "${join(dirname(dirname(fileURLToPath(import.meta.url))), 'dist', 'cli.js')}" --update`;
 
 const SRC = join(dirname(dirname(fileURLToPath(import.meta.url))), 'src', 'updatecheck.ts');
 
@@ -144,7 +148,7 @@ test('the five sentences are these bytes', () => {
   assert.equal(
     UPDATE_AVAILABLE,
     'update: {program} {installed} is running; the package index has {latest} — run ' +
-      '`{program} --update`, then reconnect the host.',
+      '`{command}`, then reconnect the host.', // job66/#171: was `{program} --update`
   );
   assert.equal(UPDATE_CURRENT, 'update: {program} {installed} is current as of {date}.');
   assert.equal(
@@ -195,7 +199,7 @@ test('running behind the index says run --update and reconnect', () => {
     assert.equal(
       status.line,
       'update: bantamkit-mcp 0.35.1 is running; the package index has 0.36.0 — run ' +
-        '`bantamkit-mcp --update`, then reconnect the host.',
+        `\`${COMMAND}\`, then reconnect the host.`,
     );
   });
 });
@@ -358,7 +362,7 @@ for (const [id, installed, latest, state, line] of [
     '0.36.0',
     STATE_AVAILABLE,
     'update: bantamkit-mcp 0.35.1 is running; the package index has 0.36.0 — run ' +
-      '`bantamkit-mcp --update`, then reconnect the host.',
+      `\`${COMMAND}\`, then reconnect the host.`,
   ],
   ['current', '0.35.1', '0.35.1', STATE_CURRENT, 'update: bantamkit-mcp 0.35.1 is current as of 2026-09-19.'],
   [
@@ -722,7 +726,8 @@ test('the source writes nothing and reaches no network', () => {
   const source = code(readFileSync(SRC, 'utf8'));
 
   const imported = [...source.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(imported.sort(), ['./npminstall.js', 'node:fs', 'node:os', 'node:path']);
+  // `node:url` since job66/#171: `updateCommand()` resolves this build's own `cli.js`.
+  assert.deepEqual(imported.sort(), ['./npminstall.js', 'node:fs', 'node:os', 'node:path', 'node:url']);
 
   for (const forbidden of [
     'fetch(',
@@ -758,4 +763,12 @@ test('the source writes nothing and reaches no network', () => {
 test('the states are five and named', () => {
   assert.deepEqual([...STATES], [STATE_NEVER, STATE_AVAILABLE, STATE_CURRENT, STATE_AHEAD, STATE_UNREADABLE]);
   assert.equal(new Set(STATES).size, 5);
+});
+
+test('the update command is this node and this build, absolute and quoted (job66/#171)', () => {
+  // The bare `bantamkit-mcp --update` is on nobody's PATH under a GUI-launched host.
+  assert.equal(updateCommand(), COMMAND);
+  assert.ok(isAbsolute(process.execPath));
+  const status = decide('0.35.1', 'record', { checked_at: '2026-09-19T00:00:00Z', npm: { latest: '0.36.0' } }, 'npm', 'X');
+  assert.ok(status.line.endsWith('— run `X`, then reconnect the host.'), status.line);
 });

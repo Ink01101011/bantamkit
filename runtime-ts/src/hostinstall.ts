@@ -12,9 +12,10 @@
  *      never `JSON.stringify`. Python writes `{"args": [], "command": "OLD"}` and
  *      `JSON.stringify` writes `{"args":[],"command":"OLD"}` — same object, different
  *      bytes, and the separators are the whole difference.
- *   2. The file is written with the same helper at `indent: 2`, which also reproduces
- *      `ensure_ascii`. A home directory with a non-ASCII name would otherwise make the two
- *      runtimes write different bytes for the same install.
+ *   2. The file is written through `hostJsonText`, which reproduces the reference's
+ *      `json.dumps(data, indent=<the file's own unit>, ensure_ascii=False)` (#118): the user's
+ *      Thai text stays Thai, their 4-space or tab indent stays theirs, and the two runtimes
+ *      still write identical bytes — `install-host-text` in the install suite compares them.
  *
  * WHAT IS RULED DIFFERENT, and it is one field: the COMMAND. This side records
  * `<absolute node> <absolute .../dist/cli.js>`; the reference records its own console script.
@@ -267,13 +268,74 @@ function writeConfig(path: string, data: PyValue): void {
   // before this line existed.
   const mode = existsSync(target) ? statSync(target).mode & 0o7777 : null;
   try {
-    writeFileSync(tmp, `${dumpJson(data, { indent: 2 })}\n`, 'utf8');
+    writeFileSync(tmp, `${hostJsonText(data, detectedIndent(target))}\n`, 'utf8');
     if (mode !== null) chmodSync(tmp, mode);
     renameSync(tmp, target);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw new InstallError(`cannot write ${path}: ${(e as Error).message}`);
   }
+}
+
+/**
+ * The indent unit the file already uses: a tab, or N spaces; two for a new file (#118).
+ *
+ * Read off the FIRST line that starts with whitespace and has something after it. A JSON
+ * string cannot hold a raw newline, so every line start is structural and that line is a
+ * depth-one member. A file with no such line (absent, empty, all on one line) gets two
+ * spaces, which is what this writer always used. The reference's `_detected_indent` applies
+ * the same rule to the same text.
+ *
+ * Lines break where Python's universal newlines break them — `\r\n`, a bare `\r`, or `\n` —
+ * because the reference reads through `Path.read_text`, which translates all three. Splitting
+ * on `\n` alone saw a classic-Mac (CR-only) file as one line, fell back to two spaces, and so
+ * wrote different bytes from the reference and lost the file's indent (#118, review J66-12 B1).
+ */
+function detectedIndent(path: string): string {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return '  ';
+  }
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    if ((line[0] !== ' ' && line[0] !== '\t') || !/[^ \t\r]/.test(line)) continue;
+    if (line[0] === '\t') return '\t';
+    return ' '.repeat(line.length - line.replace(/^ +/, '').length);
+  }
+  return '  ';
+}
+
+/**
+ * The host file's text: the user's indent unit, non-ASCII as literal UTF-8 (#118) — the
+ * bytes the reference's `json.dumps(data, indent=<unit>, ensure_ascii=False)` writes.
+ *
+ * Built from `dumpJson`'s `ensure_ascii` output at indent 2, which is already CPython's in
+ * every other respect, by two rewrites that cannot touch a string's meaning:
+ *   - indentation: every line start in that output is structural (a string holds no raw
+ *     newline), and its leading spaces are exactly 2 × depth, so they become unit × depth;
+ *   - escapes: each `\uXXXX` at 0x7f or above goes back to the character itself — a valid
+ *     surrogate PAIR as one astral character — which is what `ensure_ascii=False` writes
+ *     (it escapes only `"`, `\` and C0). A LONE surrogate stays escaped: UTF-8 cannot carry
+ *     it, and the reference writes it back the same way. A `\\` pair is consumed first, so
+ *     the text `ก` inside a string (an escaped backslash) is never mistaken for one.
+ */
+function hostJsonText(data: PyValue, indent: string): string {
+  const ascii = dumpJson(data, { indent: 2 });
+  const unescaped = ascii.replace(
+    /\\u(d[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})|\\u([0-9a-f]{4})|\\[^u]/g,
+    (whole, high?: string, low?: string, single?: string) => {
+      if (high !== undefined && low !== undefined) {
+        return String.fromCharCode(parseInt(high, 16), parseInt(low, 16));
+      }
+      if (single === undefined) return whole;
+      const unit = parseInt(single, 16);
+      if (unit < 0x7f || (unit >= 0xd800 && unit <= 0xdfff)) return whole;
+      return String.fromCharCode(unit);
+    },
+  );
+  if (indent === '  ') return unescaped;
+  return unescaped.replace(/^((?: {2})+)/gm, (lead: string) => indent.repeat(lead.length / 2));
 }
 
 /** `date.today().isoformat()` — the LOCAL date, which is what the reference takes. */
@@ -899,8 +961,8 @@ function removalPlan(path: string, events: readonly string[], entries: number): 
  *   5. dated backup, then one atomic write.
  *
  * The write itself is `writeConfig` — the same temp-file replace, the same carried mode, the
- * same `indent: 2` through `dumps` — so the bytes this leaves and the bytes `--install` leaves
- * are produced by one function (RULING Q3.5).
+ * same detected indent and literal non-ASCII through `hostJsonText` (#118) — so the bytes this
+ * leaves and the bytes `--install` leaves are produced by one function (RULING Q3.5).
  */
 export function installHooks(options: HookOptions = {}): string {
   const { command, args } = thisCommand(options);

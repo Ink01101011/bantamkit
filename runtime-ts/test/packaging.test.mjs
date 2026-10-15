@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -365,4 +365,48 @@ test('sync-assets never leaves the vendored pack absent while it runs', async ()
   // what this case was written against.
   assert.equal(seen.short, 0, `the witness was read half-written ${seen.short} times`);
   assert.deepEqual(read(witness), before, 'and it is byte-identical afterwards');
+});
+
+test('job66/#144: the published .d.ts type-checks in a strict consumer WITHOUT @types/node', () => {
+  // The package declares no dependency on `@types/node`, so nothing reachable from
+  // `index.d.ts` may name a Node-only global. `encodeRecord` returned `Buffer`, and a strict
+  // consumer with `types: []` failed `tsc` with TS2591 on `import ... from 'bantamkit-mcp'`.
+  // The consumer gets a COPY of `dist/` and `package.json`, and every installed package
+  // EXCEPT `@types` and `typescript`; `preserveSymlinks` keeps resolution inside it, so the
+  // `@types/node` in this package's own node_modules is unreachable.
+  const consumer = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-dts-consumer-')));
+  const mods = join(consumer, 'node_modules');
+  const pkg = join(mods, 'bantamkit-mcp');
+  mkdirSync(pkg, { recursive: true });
+  cpSync(join(packageRoot, 'dist'), join(pkg, 'dist'), { recursive: true });
+  cpSync(join(packageRoot, 'package.json'), join(pkg, 'package.json'));
+  for (const entry of readdirSync(join(packageRoot, 'node_modules'))) {
+    if (entry === '@types' || entry === 'typescript' || entry.startsWith('.')) continue;
+    symlinkSync(join(packageRoot, 'node_modules', entry), join(mods, entry), 'junction');
+  }
+  writeFileSync(join(consumer, 'package.json'), '{"type": "module"}');
+  writeFileSync(
+    join(consumer, 'use.ts'),
+    "import * as bk from 'bantamkit-mcp';\nexport const b: Uint8Array = bk.encodeRecord(1, 't', 'ok', {});\nexport const k = Object.keys(bk);\n",
+  );
+  writeFileSync(
+    join(consumer, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        noEmit: true,
+        module: 'nodenext',
+        moduleResolution: 'nodenext',
+        types: [],
+        lib: ['es2022'],
+        skipLibCheck: false,
+        preserveSymlinks: true,
+      },
+      files: ['use.ts'],
+    }),
+  );
+  const tsc = join(packageRoot, 'node_modules', 'typescript', 'bin', 'tsc');
+  const r = spawnSync(process.execPath, [tsc, '-p', consumer], { encoding: 'utf8' });
+  assert.equal(`${r.stdout}${r.stderr}`, '', 'tsc printed diagnostics');
+  assert.equal(r.status, 0);
 });

@@ -65,7 +65,7 @@ import {
   update,
   upgradeCommand,
 } from '../dist/selfupdate.js';
-import { updateLine, updateStatus } from '../dist/updatecheck.js';
+import { updateCommand, updateLine, updateStatus } from '../dist/updatecheck.js';
 import { INSTALL_SHAPES, currentInstall } from '../dist/mcp/identity.js';
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1251,7 +1251,7 @@ test('the record written here is the one updatecheck reads back', async () => {
   assert.equal(
     updateLine('0.30.0'),
     'update: bantamkit-mcp 0.30.0 is running; the package index has 0.31.0 — run ' +
-      '`bantamkit-mcp --update`, then reconnect the host.',
+      `\`${updateCommand()}\`, then reconnect the host.`, // job66/#171
   );
   assert.equal(updateStatus('0.31.0').state, 'current');
 });

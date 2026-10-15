@@ -148,6 +148,33 @@ const callTool = (id, name_, args) => rpc(id, 'tools/call', { name: name_, argum
 
 // ------------------------------------------------------------------------- the Node side
 
+/** job66/J66-3: how long a `hangup` session's server gets to leave on its own (`wire_ref.py` too). */
+const HANGUP_GRACE_MS = 20_000;
+/** job66/J66-3: how long a `burst` waits for its frames before moving on (`wire_ref.py` too). */
+const BURST_WAIT_MS = 10_000;
+/**
+ * job66/J66-3 (#148): `[line, code]` for each malformed frame of the `j66-3-malformed` session.
+ * Every one of these the SDKs used to DROP with no answer at all. Each is now answered `-32700`
+ * (not JSON; `NaN` is not JSON) or `-32600` (JSON, not a message), with `id: null`.
+ */
+const J66_3_MALFORMED = [
+  ['{not json', -32700],
+  ['[{"jsonrpc":"2.0","id":901,"method":"ping"}]', -32600],
+  ['[]', -32600],
+  ['42', -32600],
+  ['"a string"', -32600],
+  ['NaN', -32700],
+  ['{"jsonrpc":"2.0","id":5}', -32600],
+  ['{"id":6,"method":"ping"}', -32600],
+  ['{"jsonrpc":"2.0","id":"s","method":3}', -32600],
+  ['{"jsonrpc":"2.0","id":7,"method":"ping","params":[]}', -32600],
+  ['{"jsonrpc":"1.0","id":8,"method":"ping"}', -32600],
+  // A lone surrogate outside job65/#160's tools/call arguments: pydantic cannot read it, so
+  // neither side answers the ping. NaN inside params: pydantic reads it, JSON does not.
+  ['{"jsonrpc":"2.0","id":3,"method":"ping","params":{"_meta":{"x":"\\ud800"}}}', -32600],
+  ['{"jsonrpc":"2.0","id":4,"method":"ping","params":{"_meta":{"x":NaN}}}', -32700],
+];
+
 /**
  * Drive `dist/cli.js` with the same bytes, holding stdin open until every id has answered.
  *
@@ -192,6 +219,9 @@ function runNode(spec) {
       reject(new Error(`wire: node session ${spec.name} timed out\nstderr:\n${err}`));
     }, 60_000);
     let pending = null;
+    // job66/J66-3: a `burst` directive waits for a COUNT of frames, not an id — its answers
+    // may share an id (#146) or carry `id: null` (#148).
+    let pendingCount = null;
     child.stdout.on('data', (chunk) => {
       out += chunk.toString('utf8');
       let at;
@@ -210,6 +240,11 @@ function runNode(spec) {
         pending = null;
         resume();
       }
+      if (pendingCount !== null && frames.length >= pendingCount.count) {
+        const resume = pendingCount.resolve;
+        pendingCount = null;
+        resume();
+      }
       if ([...wanted].every((id) => seen.has(id))) child.stdin.end();
     });
     child.stderr.on('data', (chunk) => {
@@ -226,7 +261,7 @@ function runNode(spec) {
     // the store as it stood before it. One request at a time is the only shape in which the
     // two runtimes are being asked about the same state.
     void (async () => {
-      for (const line of spec.lines) {
+      for (const [index, line] of spec.lines.entries()) {
         if (child.exitCode !== null) break;
         let id = null;
         try {
@@ -238,11 +273,34 @@ function runNode(spec) {
             writeFileSync(parsed.path, Buffer.from(parsed.b64, 'base64'));
             continue;
           }
+          // job66/J66-3: `burst` writes its bytes in ONE write — several frames in flight at
+          // once, malformed ones included — and then waits for `frames` more stdout lines.
+          if (parsed && parsed.conformance === 'burst') {
+            const target = frames.length + parsed.frames;
+            child.stdin.write(Buffer.from(parsed.b64, 'base64'));
+            // Bounded: a server that stays SILENT (the 0.35.7 defect) must fail as named
+            // missing frames in the cases, not as a session that never ends.
+            if (frames.length < target) {
+              await Promise.race([
+                new Promise((resolve) => (pendingCount = { count: target, resolve })),
+                new Promise((resolve) => setTimeout(resolve, BURST_WAIT_MS)),
+              ]);
+              pendingCount = null;
+            }
+            continue;
+          }
           if (parsed.id !== undefined && parsed.id !== null) id = JSON.stringify(parsed.id);
         } catch {
           /* a deliberately malformed line still goes down the pipe */
         }
         child.stdin.write(`${line}\n`);
+        // job66/J66-3 (#181): a `hangup` session closes its read end of stdout right after its
+        // LAST line, holds stdin open, and records how the server leaves: on its own, or not.
+        if (spec.hangup && index === spec.lines.length - 1) {
+          child.stdout.destroy();
+          setTimeout(() => child.kill('SIGKILL'), HANGUP_GRACE_MS).unref();
+          return;
+        }
         if (id !== null && !seen.has(id)) {
           await new Promise((resolve) => {
             pending = { id, resolve };
@@ -344,6 +402,69 @@ export async function run(ctx) {
   };
 
   const cursorUnit = JSON.parse(readFileSync(REAL_CHECKPOINT, 'utf8')).plan.cursor;
+
+  // job66/J66-4 (#147): `[method, params]` the method's schema refuses, on both SDKs. Each is
+  // answered `-32602 Invalid request parameters` with `data: ""` by both servers; the port
+  // used to say `-32603` with the zod issue list (or, for a bad `_meta`, `-32600` id null).
+  const J66_4_REFUSED_PARAMS = [
+    ['tools/call', {}],
+    ['tools/call', { name: 'work_plan', arguments: 'notadict' }],
+    ['tools/call', { name: 5 }],
+    ['tools/call', undefined],
+    ['tools/call', { name: 'work_plan', arguments: [] }],
+    ['tools/call', { name: 'work_plan', arguments: {}, task: { ttl: 'x' } }],
+    ['tools/call', { name: 'work_plan', arguments: {}, _meta: 5 }],
+    ['tools/call', { name: 'work_plan', arguments: {}, _meta: { progressToken: 1.5 } }],
+    ['resources/read', {}],
+    ['resources/read', { uri: 5 }],
+    ['resources/read', { uri: null }],
+    ['tools/list', { cursor: 5 }],
+    ['resources/templates/list', { cursor: 1 }],
+    ['resources/list', { cursor: [] }],
+    ['prompts/get', {}],
+    ['prompts/get', { name: 'bantamkit_status', arguments: { a: 1 } }],
+    ['ping', { _meta: 5 }],
+    ['ping', { _meta: [] }],
+    ['ping', { _meta: { progressToken: null } }],
+    ['initialize', {}],
+  ];
+  // job66/J66-4 (#178): every method the servers answer, asked before `initialize`.
+  const J66_4_PREINIT = [
+    ['tools/call', { name: 'work_plan', arguments: { nodes: [] } }],
+    ['tools/list', undefined],
+    ['resources/list', undefined],
+    ['resources/templates/list', undefined],
+    ['resources/read', { uri: 'bantamkit://skills/memory' }],
+    ['prompts/list', undefined],
+    ['prompts/get', { name: 'bantamkit_status' }],
+  ];
+  // job66/J66-4 (#180): URIs no template takes: -32602 `Unknown resource: <uri>` on both.
+  const J66_4_UNKNOWN_URIS = [
+    'bantamkit://skills/..',
+    'bantamkit://skills/memory?x=1',
+    'bantamkit://skills/..%2F..%2Fpackage',
+    'bantamkit://skills/memory#frag',
+    'bantamkit://skills/a,b',
+    'bantamkit://skills/a&b',
+    'bantamkit://skills/%2E%2E',
+    'bantamkit://skills/..%5C..%5Cx',
+    'bantamkit://skills/\\x',
+    'bantamkit://skills/%00',
+    'bantamkit://skills/C:x',
+    'bantamkit://rubrics/%2Fetc%2Fpasswd',
+    'BANTAMKIT://skills/memory',
+    '',
+  ];
+  // ...and URIs a template takes that name no asset: -32603 with the DECODED name.
+  const J66_4_MATCHED_URIS = [
+    ['bantamkit://skills/a%2Fb', 'unknown skill asset: a/b'],
+    ['bantamkit://skills/a%2F..%2Fmemory', 'unknown skill asset: a/../memory'],
+    ['bantamkit://rubrics/x%2F..%2Fcode-quality', 'unknown rubric asset: x/../code-quality'],
+    ['bantamkit://skills/%FF', 'unknown skill asset: \ufffd'],
+    ['bantamkit://skills/memory%', 'unknown skill asset: memory%'],
+    ['bantamkit://skills/.', 'unknown skill asset: .'],
+    ['bantamkit://rubrics/code-quality%3F', 'unknown rubric asset: code-quality?'],
+  ];
 
   // ------------------------------------------------------------------------- sessions
 
@@ -534,6 +655,90 @@ export async function run(ctx) {
   ]);
 
   add('bad-params', [INIT(), INITIALIZED, rpc(2, 'tools/call', { name: 'memory_recall', arguments: 'notanobject' })]);
+
+  // job66/J66-3 (#146, #148, #181): the frames themselves. A `burst` directive writes several
+  // frames in ONE write and waits for a COUNT of answers, because these answers share an id
+  // or have none. `compareInBlock` sessions skip the per-id loop below (it keys by id, and
+  // would fold two answers into one) and are compared in the J66-3 block instead.
+  const burst = (frames, lines) =>
+    JSON.stringify({ conformance: 'burst', frames, b64: b64(lines.map((line) => `${line}\n`).join('')) });
+  add('j66-3-malformed', [
+    INIT(),
+    INITIALIZED,
+    burst(J66_3_MALFORMED.length, J66_3_MALFORMED.map(([line]) => line)),
+    // An id that is not a str and not an int makes a NOTIFICATION to the reference's
+    // pydantic union, so nothing is answered; a blank line is skipped. Zero frames expected,
+    // and the ping behind them proves nothing slipped out before it.
+    burst(0, ['{"jsonrpc":"2.0","id":null,"method":"ping"}', '{"jsonrpc":"2.0","id":1.0,"method":"ping"}', '{"jsonrpc":"2.0","id":true,"method":"ping"}', '']),
+    // A member pydantic has no field for is ignored there and `params: null` is no params;
+    // both are answered, not refused.
+    '{"jsonrpc":"2.0","id":10,"method":"ping","extra":1}',
+    '{"jsonrpc":"2.0","id":11,"method":"ping","params":null}',
+    rpc(12, 'ping'),
+  ], { compareInBlock: true });
+  // #148: an integer id past 2^53 is answered, and echoed EXACTLY — including on the path
+  // where the port splices an exact result in. Compared by the per-id loop as raw bytes too.
+  add('j66-3-bigid', [
+    INIT(),
+    INITIALIZED,
+    '{"jsonrpc":"2.0","id":123456789012345678901234567890,"method":"ping"}',
+    '{"jsonrpc":"2.0","id":-9007199254740993,"method":"ping"}',
+    '{"jsonrpc":"2.0","id":9007199254740993,"method":"tools/call","params":{"name":"validate_json","arguments":{"output":"{\\"a\\":1.0}","schema":{"type":"object"}}}}',
+    rpc('req-é', 'ping'),
+  ]);
+  // #146: two requests in flight under ONE id, each answered from its OWN arguments.
+  const J66_3_DUP = (schema) => callTool(50, 'validate_json', { output: '{"a":1}', schema });
+  add('j66-3-dup', [INIT(), INITIALIZED, burst(2, [J66_3_DUP({ type: 'object' }), J66_3_DUP({ type: 'string' })]), rpc(99, 'ping')], {
+    compareInBlock: true,
+  });
+  // #181: the host closes its read end of stdout while a ~6 MB answer is being written, and
+  // leaves stdin OPEN. The server must leave on its own: exit 0, nothing on stderr.
+  add('j66-3-hangup', [
+    INIT(),
+    INITIALIZED,
+    callTool(9, 'validate_json', { output: JSON.stringify({ x: 'y'.repeat(3 << 20) }), schema: { properties: { x: { maxLength: 1 } } } }),
+  ], { compareInBlock: true, hangup: true });
+
+  // job66/J66-4 (#147, #178, #180): the refusals made before a handler runs. All compared by
+  // the per-id loop (bytes too) AND pinned per side against a literal in the j66-4 block.
+  add('j66-4-params', [
+    INIT(),
+    INITIALIZED,
+    ...J66_4_REFUSED_PARAMS.map(([method, params], i) => rpc(10 + i, method, params)),
+    // pydantic's `X | None = None`: a null optional field is the field left out, so these are
+    // SERVED on both sides; `progressToken: true` is what lax `int` takes.
+    callTool(40, 'work_plan', null),
+    rpc(41, 'prompts/list', { cursor: null }),
+    rpc(42, 'ping', { _meta: null }),
+    rpc(43, 'ping', { _meta: { progressToken: true } }),
+    rpc(44, 'ping', { _meta: { progressToken: 2 } }),
+  ]);
+  // #178: nothing but `ping` before `initialize`; `-32601` for a method nobody serves is the
+  // `unknown-methods` ruling's business, so none is asked here.
+  add('j66-4-preinit', [
+    ...J66_4_PREINIT.map(([method, params], i) => rpc(2 + i, method, params)),
+    rpc(20, 'ping'),
+    INIT(),
+    INITIALIZED,
+    callTool(21, 'work_plan', { nodes: [] }),
+  ]);
+  // An `initialize` the schema refuses opens nothing.
+  add('j66-4-initbad', [rpc(1, 'initialize', {}), rpc(2, 'tools/list'), rpc(3, 'ping')]);
+  // `initialize` and a call in ONE write: the reference parks its reader while `initialize`
+  // runs, so the call behind it is served; the port's gate must open before the call's turn.
+  add('j66-4-init-burst', [
+    JSON.stringify({ conformance: 'burst', frames: 2, b64: b64(`${INIT()}\n${callTool(2, 'work_plan', { nodes: [] })}\n`) }),
+    INITIALIZED,
+    rpc(3, 'ping'),
+  ]);
+  // #180: `resources/read` on URIs no template takes, and on ones that match and name nothing.
+  add('j66-4-resources', [
+    INIT(),
+    INITIALIZED,
+    ...[...J66_4_UNKNOWN_URIS, ...J66_4_MATCHED_URIS.map(([uri]) => uri)].map((uri, i) => rpc(10 + i, 'resources/read', { uri })),
+    // Percent-decoding is the reference's: `%6Demory` IS the memory skill.
+    rpc(60, 'resources/read', { uri: 'bantamkit://skills/%6Demory' }),
+  ]);
 
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
   add('identity-pycache', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})], {
@@ -1076,6 +1281,23 @@ export async function run(ctx) {
     { argv: ['--store', store, '--index-budget', '100'], refMask: substituteMemoryProg },
   );
 
+  // job66/J66-5 (#124): `skill_audit` and `token_ledger` answer ONE JSON document, and stay one
+  // when the server is degraded — the footer arrives as a `bantamkit_degraded` key LAST in that
+  // document, not as prose after its closing brace. The same one-byte straddle as `status-*`
+  // (a 46-byte index: degraded at 51, healthy at 52). The refusal (#3 of each) is prose and
+  // keeps the prose footer. Pinned PER SIDE in the J66-5 block at the end of `run`.
+  const J66_5_LEDGER = join(repoRoot, 'tools', 'ledger', 'fixtures', 'token-ledger', 'projects');
+  const J66_5_LINES = [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'memory_save', { type: 'project', name: 'status-probe', description: 'a probe fact', body: 'body' }),
+    callTool(3, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024 }),
+    callTool(4, 'token_ledger', { root: J66_5_LEDGER }),
+    callTool(5, 'token_ledger', { root: '' }),
+  ];
+  add('j66-5-json-healthy', J66_5_LINES, { argv: ['--store', store, '--index-budget', '52'] });
+  add('j66-5-json-degraded', J66_5_LINES, { argv: ['--store', store, '--index-budget', '51'], refMask: substituteMemoryProg });
+
   // ---------------------------------------------------------------------- run them both
 
   const cases = [];
@@ -1093,7 +1315,8 @@ export async function run(ctx) {
     // is compared byte for byte in the `eventlog` block.
     'eventlog-identity',
     'unknown-methods',
-    'bad-params',
+    // 'bad-params' WAS here: ruled as "SDK lineage, no seam" until job66/J66-4 (#147) found
+    // the seam; its frames are now compared verbatim like any other session's.
     'negotiate-2024-10-07',
   ]);
 
@@ -1210,7 +1433,7 @@ export async function run(ctx) {
   };
   for (const spec of sessions) {
     const { python, node } = results.get(spec.name);
-    if (RULED_SESSIONS.has(spec.name)) continue;
+    if (RULED_SESSIONS.has(spec.name) || spec.compareInBlock) continue;
     const left = byId(python.frames);
     const right = byId(node.frames);
     /**
@@ -1264,6 +1487,167 @@ export async function run(ctx) {
       expected: maskRef(rawOf(left)),
       actual: mask(rawOf(right)),
     });
+  }
+
+  // --------------------------------------------- job66/J66-3: the frames themselves
+
+  /**
+   * #146, #148, #181, each compared side to side AND pinned against a literal per side,
+   * because a differential is blind to a regression landing in both runtimes at once (both
+   * were silent on every malformed frame at 0.35.7, and both crashed on a closed stdout).
+   */
+  {
+    const after = (side) => side.frames.slice(1); // everything after `initialize`'s answer
+    const idText = (line) => (/^\{"jsonrpc":"2\.0","id":(-?\d+|null|"(?:[^"\\]|\\.)*"),/.exec(line) ?? [, `<no id: ${line.slice(0, 60)}>`])[1];
+    const errorFrame = (code) =>
+      `{"jsonrpc":"2.0","id":null,"error":{"code":${code},"message":"${code === -32700 ? 'Parse error' : 'Invalid Request'}"}}`;
+    const malformedExpected = [
+      ...J66_3_MALFORMED.map(([, code]) => errorFrame(code)),
+      '{"jsonrpc":"2.0","id":10,"result":{}}',
+      '{"jsonrpc":"2.0","id":11,"result":{}}',
+      '{"jsonrpc":"2.0","id":12,"result":{}}',
+    ];
+    const malformed = results.get('j66-3-malformed');
+    cases.push({
+      name: 'j66-3: #148 malformed frames, every answer in order — side to side',
+      kind: 'json',
+      expected: after(malformed.python),
+      actual: after(malformed.node),
+    });
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #148 ${label} answers -32700/-32600 with id null, nothing for a non-id, and the rest (literal)`,
+        kind: 'json',
+        expected: malformedExpected,
+        actual: after(malformed[key]),
+      });
+    }
+
+    const bigid = results.get('j66-3-bigid');
+    const bigidExpected = ['123456789012345678901234567890', '-9007199254740993', '9007199254740993', '"req-é"'];
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #148 ${label} echoes every id past 2^53 exactly (literal)`,
+        kind: 'json',
+        expected: bigidExpected,
+        actual: after(bigid[key]).map(idText).sort((a, b) => bigidExpected.indexOf(a) - bigidExpected.indexOf(b)),
+      });
+    }
+
+    // The reference answers concurrently, so the ORDER of two same-id answers is scheduling;
+    // the SET of answers is the property. Each is reduced to its verdict, then sorted.
+    const dup = results.get('j66-3-dup');
+    const verdicts = (side) =>
+      after(side)
+        .filter((line) => idText(line) === '50')
+        .map((line) => {
+          const valid = JSON.parse(line)?.result?.structuredContent?.valid;
+          return `id 50 ${valid === true ? 'valid:true' : valid === false ? 'valid:false' : 'no verdict'}`;
+        })
+        .sort();
+    cases.push({
+      name: 'j66-3: #146 two requests in flight under one id — both answers, side to side, order aside',
+      kind: 'json',
+      expected: after(dup.python).map(canonical).sort(),
+      actual: after(dup.node).map(canonical).sort(),
+    });
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #146 ${label} answers each same-id request from its OWN arguments (literal)`,
+        kind: 'json',
+        expected: ['id 50 valid:false', 'id 50 valid:true'],
+        actual: verdicts(dup[key]),
+      });
+    }
+
+    const hangup = results.get('j66-3-hangup');
+    const leaving = (side) => ({ exit: side.exit, stderr: side.stderr });
+    cases.push({
+      name: 'j66-3: #181 stdout closed mid-answer, stdin open — how the server leaves, side to side',
+      kind: 'json',
+      expected: leaving(hangup.python),
+      actual: leaving(hangup.node),
+    });
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #181 ${label} leaves on its own, exit 0, nothing on stderr (literal)`,
+        kind: 'json',
+        expected: { exit: 0, stderr: '' },
+        actual: leaving(hangup[key]),
+      });
+    }
+  }
+
+  // --------------------------------------- job66/J66-4: refused before a handler runs
+
+  /**
+   * #147, #178, #180. The per-id loop above already compares every frame of the five
+   * `j66-4-*` sessions side to side, bytes included; these pin each side against a LITERAL,
+   * because the 0.35.7 port was wrong in a way a differential cannot see once both drift.
+   */
+  {
+    const byId = (side) => {
+      const map = new Map();
+      for (const line of side.frames) {
+        try {
+          map.set(JSON.stringify(JSON.parse(line).id), line);
+        } catch {
+          /* a non-frame is the per-id loop's failure to name */
+        }
+      }
+      return map;
+    };
+    const invalid = (id) => `{"jsonrpc":"2.0","id":${id},"error":{"code":-32602,"message":"Invalid request parameters","data":""}}`;
+    const served = (line) => (line === undefined ? 'missing' : JSON.parse(line).result !== undefined ? 'served' : line);
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const params = byId(results.get('j66-4-params')[key]);
+      cases.push({
+        name: `j66-4: #147 ${label} answers params its schema refuses -32602 "Invalid request parameters" (literal)`,
+        kind: 'json',
+        expected: J66_4_REFUSED_PARAMS.map((_, i) => invalid(10 + i)),
+        actual: J66_4_REFUSED_PARAMS.map((_, i) => params.get(String(10 + i)) ?? 'missing'),
+      });
+      cases.push({
+        name: `j66-4: #147 ${label} reads a null optional field as absent (literal)`,
+        kind: 'json',
+        expected: ['served', 'served', 'served', 'served', 'served'],
+        actual: ['40', '41', '42', '43', '44'].map((id) => served(params.get(id))),
+      });
+
+      const pre = byId(results.get('j66-4-preinit')[key]);
+      cases.push({
+        name: `j66-4: #178 ${label} refuses all but ping before initialize, then serves (literal)`,
+        kind: 'json',
+        expected: [...J66_4_PREINIT.map((_, i) => invalid(2 + i)), '{"jsonrpc":"2.0","id":20,"result":{}}', 'served'],
+        actual: [...J66_4_PREINIT.map((_, i) => pre.get(String(2 + i)) ?? 'missing'), pre.get('20') ?? 'missing', served(pre.get('21'))],
+      });
+      const bad = byId(results.get('j66-4-initbad')[key]);
+      const burst = byId(results.get('j66-4-init-burst')[key]);
+      cases.push({
+        name: `j66-4: #178 ${label}: a refused initialize opens nothing; one in the same write as a call does (literal)`,
+        kind: 'json',
+        expected: [invalid(1), invalid(2), '{"jsonrpc":"2.0","id":3,"result":{}}', 'served'],
+        actual: [bad.get('1') ?? 'missing', bad.get('2') ?? 'missing', bad.get('3') ?? 'missing', served(burst.get('2'))],
+      });
+
+      const res = byId(results.get('j66-4-resources')[key]);
+      const refusal = (code, message, uri) => JSON.stringify({ code, message, data: { uri } });
+      cases.push({
+        name: `j66-4: #180 ${label} answers a URI no template takes -32602 "Unknown resource: <uri>" (literal)`,
+        kind: 'json',
+        expected: J66_4_UNKNOWN_URIS.map((uri) => refusal(-32602, `Unknown resource: ${uri}`, uri)),
+        actual: J66_4_UNKNOWN_URIS.map((_, i) => JSON.stringify(JSON.parse(res.get(String(10 + i)) ?? '{}').error ?? 'missing')),
+      });
+      cases.push({
+        name: `j66-4: #180 ${label} decodes a matched name, and one naming no asset is -32603 (literal)`,
+        kind: 'json',
+        expected: [...J66_4_MATCHED_URIS.map(([uri, message]) => refusal(-32603, message, uri)), 'served'],
+        actual: [
+          ...J66_4_MATCHED_URIS.map((_, i) => JSON.stringify(JSON.parse(res.get(String(10 + J66_4_UNKNOWN_URIS.length + i)) ?? '{}').error ?? 'missing')),
+          served(res.get('60')),
+        ],
+      });
+    }
   }
 
   // ------------------------------------------- the one remedy the two installs spell apart
@@ -1793,7 +2177,7 @@ export async function run(ctx) {
       expected: py.mcp_sdk_version,
       actual: nd.mcp_sdk_version,
       ruling:
-        'RULED DIFFERENT. `mcp` 2.0.0 against `@modelcontextprotocol/sdk` 1.30.0 — two ' +
+        'RULED DIFFERENT. `mcp` 2.0.0 against `@modelcontextprotocol/sdk` 1.31.0 — two ' +
         'unrelated version lineages, and the field exists precisely so a caller can see which ' +
         'one answered. Reported as environment and kept OUT of `build_id`, exactly as the ' +
         'reference keeps it out. The case above is the one that has teeth: it asserts BOTH ' +
@@ -2355,7 +2739,7 @@ export async function run(ctx) {
       actual: errorsOf(node),
       ruling:
         'RULED DIFFERENT — SDK lineage, not reachable from this package. Both answer -32601 ' +
-        '"Method not found". `mcp` 2.0.0 attaches `data: "<method>"`; the TS SDK 1.30.0 builds ' +
+        '"Method not found". `mcp` 2.0.0 attaches `data: "<method>"`; the TS SDK 1.31.0 builds ' +
         'that response inside `Protocol._onrequest` before any handler exists, so there is no ' +
         'seam to add the field from. Registering a handler per method would only move the ' +
         'problem to the next unregistered method, which is unbounded.',
@@ -2365,18 +2749,16 @@ export async function run(ctx) {
   {
     const { python, node } = results.get('bad-params');
     const errorOf = (side) => frameOf(side, 2)?.error ?? null;
+    // Until job66/J66-4 this was a `ruling:` ("SDK lineage, the port has no seam"), and the
+    // ruling's own text was stale: the port answered -32603 with the zod issue list, not the
+    // -32602 it described. #147 (filed against the released contract) outranks the pin: the
+    // seam is the SDK's handler table (`guardRequests` in `src/mcp/server.ts`), and the two
+    // sides now give the SAME answer, so the case compares them instead of ruling them apart.
     cases.push({
-      name: 'tools/call with a non-object `arguments`: pydantic vs zod, on the ERROR channel',
+      name: 'tools/call with a non-object `arguments`: -32602 "Invalid request parameters" on both (#147)',
       kind: 'json',
       expected: errorOf(python),
       actual: errorOf(node),
-      ruling:
-        'RULED DIFFERENT — SDK lineage. Both refuse with -32602 before any bantamkit code runs; ' +
-        'the request never reaches a handler, so the port has no seam. Python says "Invalid ' +
-        'request parameters" with `data: ""`; the TS SDK says "Invalid tools/call request: ' +
-        '<zod issue list>". This is the ONE argument-shaped refusal the port cannot own — every ' +
-        'refusal inside a well-formed `arguments` object IS reproduced, in pydantic\'s words, ' +
-        'by `src/mcp/pyargs.ts`.',
     });
   }
 
@@ -2501,6 +2883,66 @@ export async function run(ctx) {
       { name: 'j65-9: PINNED PER SIDE (#155 #156 #160 #185 #186 #119) — the port', kind: 'json',
         expected: { ...expected, overBudgetFooter: Array(2).fill(footer('bantamkit-memory compact')) }, actual: nd },
     );
+  }
+
+  // job66/J66-5 (#124): PER SIDE, because a differential is blind to both runtimes appending
+  // the same prose footer after the document — which is exactly what both did at 0.35.7.
+  {
+    const FOOTER = '⚠️ bantamkit degraded (';
+    const shapeOf = (side) => {
+      const out = [];
+      for (const [tool, id] of [['skill_audit', 3], ['token_ledger', 4]]) {
+        const text = toolTextOf(side, id) ?? '';
+        let doc = null;
+        try {
+          doc = JSON.parse(text);
+        } catch {
+          out.push(`${tool} does not parse`);
+          continue;
+        }
+        const keys = Object.keys(doc);
+        const key = doc.bantamkit_degraded;
+        const mirrored = frameOf(side, id)?.result?.structuredContent?.result === text;
+        out.push(
+          `${tool} parses, ` +
+            (key === undefined
+              ? 'no bantamkit_degraded'
+              : `bantamkit_degraded ${keys.at(-1) === 'bantamkit_degraded' ? 'last' : 'NOT last'}` +
+                `${String(key).startsWith(FOOTER) ? ' carrying the footer' : ' WITHOUT the footer'}`) +
+            `${mirrored ? '' : ', structuredContent differs'}`,
+        );
+      }
+      return out;
+    };
+    for (const [label, key] of [
+      ['the reference', 'python'],
+      ['the port', 'node'],
+    ]) {
+      const hot = results.get('j66-5-json-degraded')[key];
+      const cool = results.get('j66-5-json-healthy')[key];
+      // The healthy document's bytes, up to its closing `\n}`, are where the degraded one starts.
+      const prefixKept = [3, 4].every((id) => {
+        const healthy = toolTextOf(cool, id) ?? '';
+        return healthy.endsWith('\n}') && (toolTextOf(hot, id) ?? '').startsWith(`${healthy.slice(0, -2)},\n  "bantamkit_degraded": `);
+      });
+      const refusal = toolTextOf(hot, 5) ?? '';
+      cases.push({
+        name: `j66-5: ${label} keeps skill_audit and token_ledger ONE JSON document when degraded (#124)`,
+        kind: 'json',
+        expected: {
+          degraded: ['skill_audit parses, bantamkit_degraded last carrying the footer', 'token_ledger parses, bantamkit_degraded last carrying the footer'],
+          healthy: ['skill_audit parses, no bantamkit_degraded', 'token_ledger parses, no bantamkit_degraded'],
+          healthyBytesArePrefix: true,
+          refusalIsProseWithFooter: true,
+        },
+        actual: {
+          degraded: shapeOf(hot),
+          healthy: shapeOf(cool),
+          healthyBytesArePrefix: prefixKept,
+          refusalIsProseWithFooter: refusal.includes('token_ledger') && refusal.includes(`\n\n${FOOTER}`),
+        },
+      });
+    }
   }
 
   return { cases, notes };

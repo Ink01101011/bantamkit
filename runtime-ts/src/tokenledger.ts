@@ -31,7 +31,7 @@
  * total`), never as a comparison afterwards: a `number` past 2**53 is already rounded, so the
  * check would be reading a value this side had got wrong.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { BantamError } from './errors.js';
@@ -168,8 +168,19 @@ export function walk(base: string): Array<[string, string]> {
         // exactly as it is there.
         isDirectory = false;
       }
-      if (isDirectory) visit(child, `${rel}/`);
-      else if (name.endsWith(TRANSCRIPT_SUFFIX)) found.push([child, rel]);
+      if (isDirectory) {
+        // #151: a symlinked directory is not a transcript tree. `statSync` follows the link,
+        // so a link to a directory lands in this arm and is skipped here: neither walked nor
+        // read. Following it walked a link to an ancestor until ELOOP and counted the one
+        // transcript beneath it once per level. `skill_audit`'s rule, and the reference's.
+        let link = false;
+        try {
+          link = lstatSync(child).isSymbolicLink();
+        } catch {
+          link = false;
+        }
+        if (!link) visit(child, `${rel}/`);
+      } else if (name.endsWith(TRANSCRIPT_SUFFIX)) found.push([child, rel]);
     }
   };
   visit(base, '');
@@ -181,7 +192,10 @@ export function walk(base: string): Array<[string, string]> {
  * raises, which would make an unreadable transcript a counted one on this side alone.
  */
 function readUtf8Strict(path: string): string {
-  const decoder = new TextDecoder('utf-8', { fatal: true });
+  // `ignoreBOM: true` KEEPS a leading U+FEFF (#150). The default strips it from the first line
+  // only, where `read_text(encoding="utf-8")` keeps it and `json.loads` refuses it; kept, the
+  // line is `unparsed-line` on both sides, as a BOM on any later line already was.
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   return decoder.decode(readFileSync(path));
 }
 

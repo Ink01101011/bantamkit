@@ -10,13 +10,13 @@
  *    The SDK exposes no hook for this — `ReadBuffer.readMessage` parses inside the buffer and
  *    the buffer is private — so the buffering is done here instead. It is thirty lines
  *    (`indexOf('\n')`, strip a trailing `\r`) and it keeps the LINE next to the parsed
- *    message, keyed by JSON-RPC id. A handler then re-reads its own arguments with
+ *    message, keyed PER MESSAGE (see 3). A handler then re-reads its own arguments with
  *    `pyjson.parseJson`, which tags `5.0` as a float and keeps an integer past 2^53 exact.
  *
  * 2. THE OUTGOING NUMBER LITERALS AND THE ENVELOPE ORDER. `serializeMessage` is
  *    `JSON.stringify(message) + '\n'`, which un-does the work above on the way out: the same
  *    `5.0` in a `structuredContent` leaves as `5`. So a tool handler registers the EXACT text
- *    of its result here, keyed by request id, and `send` splices it in. Everything else still
+ *    of its result here, keyed per message, and `send` splices it in. Everything else still
  *    goes through `JSON.stringify`, which is byte-for-byte what pydantic-core writes for
  *    strings, bools, nulls and safe integers.
  *
@@ -24,6 +24,30 @@
  *    order (`jsonrpc`, `id`, `result`) rather than the SDK's (`result`, `jsonrpc`, `id`). Key
  *    order is not observable to a conforming client, but it costs nothing here and it removes
  *    a difference from the list rather than adding a ruling to it.
+ *
+ * 3. ONE ENTRY PER MESSAGE, NOT PER ID (#146, #148). The side table used to be keyed by the
+ *    client's id, so two requests in flight under ONE id (JSON-RPC forbids it; a client can
+ *    still do it) shared one slot: the second line overwrote the first and both answers were
+ *    computed from the second request's arguments. And the SDK's schema refuses an integer id
+ *    past 2^53 (`JSON.parse` has already rounded it), so such a request got no answer at all.
+ *    Both are fixed the same way: every request is handed to the SDK under a TOKEN of this
+ *    file's own (`bantamkit-<n>`, unique per message), and the client's id is kept as the
+ *    exact TEXT it arrived as, read losslessly with `pyjson.parseJson`; `send` writes that
+ *    text back. The reference answers each request from its own arguments and echoes a big
+ *    id exactly, so this is the port catching up, not a choice. A `notifications/cancelled`
+ *    naming a client id is pointed at the newest token carrying it.
+ *
+ * 4. A FRAME THE SDK WOULD DROP IS ANSWERED (#148). A line that is not JSON is answered
+ *    `-32700 Parse error`, and JSON that is not a JSON-RPC message (a batch array, a bare
+ *    number, a message with no `jsonrpc`) `-32600 Invalid Request`, both with `id: null`
+ *    as JSON-RPC 2.0 section 5.1 requires, and both in the bytes `mcpstdio.py` writes. Before,
+ *    both went to `onerror` and the client waited forever. A blank line is still skipped.
+ *
+ * 5. A HOST THAT CLOSED ITS READ END ENDS THE SESSION QUIETLY (#181). `process.stdout` had no
+ *    `error` listener, so an EPIPE mid-answer was an unhandled `error` event: exit 1 and a
+ *    stack. It is now what stdin EOF already was, the host going away: the transport closes,
+ *    stdin is released, and the process exits 0 with nothing on stderr. Any OTHER write error
+ *    is rethrown and still crashes, because it is not that.
  *
  * NOTHING IN THIS FILE WRITES TO STDOUT EXCEPT `send`. That is the invariant the whole
  * package is under, and it is checked by `test/server.test.mjs`, which asserts that every
@@ -34,12 +58,52 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { PY_LINESEP } from '../memory/pyfs.js';
+import { parseJson } from '../pyjson.js';
 
 type Readable = NodeJS.ReadableStream;
 type Writable = NodeJS.WritableStream;
 
-/** A JSON-RPC id is a string or a number; the map key is its JSON text, which is total. */
-const idKey = (id: unknown): string => JSON.stringify(id ?? null);
+/**
+ * The two frames JSON-RPC 2.0 section 5.1 prescribes for a message no id can be read from,
+ * byte for byte what `mcpstdio.py` writes (`JSONRPCError(id=None, ...)` dumped by the SDK).
+ */
+export const PARSE_ERROR_FRAME = '{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}';
+export const INVALID_REQUEST_FRAME = '{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}';
+
+/** The write errors that mean the reader of stdout is gone, on POSIX and on Windows (libuv EOF). */
+const HOST_GONE = new Set(['EPIPE', 'ECONNRESET', 'EOF', 'ERR_STREAM_DESTROYED']);
+
+/** One request in flight: the client's id as it arrived, its line, and its exact result. */
+interface InFlight {
+  readonly idText: string;
+  readonly line: string;
+  exact?: string;
+  /** #147: the reference's per-method model refuses this request's `_meta` (see `consume`). */
+  paramsRefused?: boolean;
+}
+
+/**
+ * The client's id as the exact JSON text to echo, or `undefined` when it is not one a
+ * JSON-RPC id may be. A string is re-serialised (`JSON.stringify` is pydantic-core's string
+ * spelling); a number is read again LOSSLESSLY, because `JSON.parse` has already rounded an
+ * integer past 2^53 and cannot tell `1.0` from `1`. The reference's `RequestId` is a STRICT
+ * int or a str, so a float literal is no id at all there either.
+ */
+function clientIdText(line: string, id: unknown): string | undefined {
+  if (typeof id === 'string') return JSON.stringify(id);
+  if (typeof id !== 'number') return undefined;
+  try {
+    const frame = parseJson(line);
+    const value = frame.t === 'dict' ? frame.v.get('id') : undefined;
+    return value?.t === 'int' ? value.v.toString() : undefined;
+  } catch {
+    return Number.isSafeInteger(id) ? String(id) : undefined;
+  }
+}
+
+/** The JSON text of an id named INSIDE a message (a cancellation's `requestId`). */
+const namedIdText = (id: unknown): string | undefined =>
+  typeof id === 'string' ? JSON.stringify(id) : Number.isSafeInteger(id) ? String(id) : undefined;
 
 export class RawStdioTransport implements Transport {
   onclose?: () => void;
@@ -49,24 +113,46 @@ export class RawStdioTransport implements Transport {
 
   private buffer: Buffer = Buffer.alloc(0);
   private started = false;
-  private readonly rawLines = new Map<string, string>();
-  private readonly exactResults = new Map<string, string>();
+  private outputGone = false;
+  private sequence = 0;
+  /** Token (the id the SDK sees) -> the request it stands for. One entry per MESSAGE. */
+  private readonly inFlight = new Map<string, InFlight>();
+  /** Client id text -> the newest token carrying it, for `notifications/cancelled`. */
+  private readonly newest = new Map<string, string>();
   private readonly ondata = (chunk: Buffer): void => this.consume(chunk);
   private readonly onstreamerror = (error: Error): void => this.onerror?.(error);
+  private readonly onoutputerror = (error: NodeJS.ErrnoException): void => {
+    if (!HOST_GONE.has(error.code ?? '')) throw error;
+    if (this.outputGone) return;
+    this.outputGone = true;
+    // The host is gone, so nothing will ever read another answer: stop reading too, or a
+    // stdin the host left open would keep the process alive with nowhere to write.
+    (this.input as { destroy?: () => void }).destroy?.();
+    void this.close();
+  };
 
   constructor(
     private readonly input: Readable = process.stdin,
     private readonly output: Writable = process.stdout,
   ) {}
 
-  /** The verbatim request line that carried this id, or `undefined` if it is gone. */
+  /** The verbatim request line this message token stands for, or `undefined` if it is gone. */
   rawLineFor(id: unknown): string | undefined {
-    return this.rawLines.get(idKey(id));
+    return typeof id === 'string' ? this.inFlight.get(id)?.line : undefined;
   }
 
-  /** Register the exact JSON text to send as this request's `result`. */
+  /**
+   * #147: whether the reference would refuse this request's params on its `_meta` alone, a
+   * member the TS SDK checks in its ENVELOPE schema and the reference only per method.
+   */
+  paramsRefused(id: unknown): boolean {
+    return typeof id === 'string' && this.inFlight.get(id)?.paramsRefused === true;
+  }
+
+  /** Register the exact JSON text to send as this message's `result`. */
   setExactResult(id: unknown, json: string): void {
-    this.exactResults.set(idKey(id), json);
+    const entry = typeof id === 'string' ? this.inFlight.get(id) : undefined;
+    if (entry !== undefined) entry.exact = json;
   }
 
   async start(): Promise<void> {
@@ -74,6 +160,7 @@ export class RawStdioTransport implements Transport {
     this.started = true;
     this.input.on('data', this.ondata);
     this.input.on('error', this.onstreamerror);
+    this.output.on('error', this.onoutputerror);
   }
 
   async close(): Promise<void> {
@@ -81,14 +168,21 @@ export class RawStdioTransport implements Transport {
     this.input.off('error', this.onstreamerror);
     if (this.input.listenerCount('data') === 0) this.input.pause();
     this.buffer = Buffer.alloc(0);
-    this.rawLines.clear();
-    this.exactResults.clear();
+    this.inFlight.clear();
+    this.newest.clear();
     this.onclose?.();
   }
 
   send(message: JSONRPCMessage): Promise<void> {
+    return this.write(this.frame(message));
+  }
+
+  private write(text: string): Promise<void> {
     return new Promise((resolve) => {
-      const text = this.frame(message);
+      if (this.outputGone) {
+        resolve();
+        return;
+      }
       // `os.linesep`, because the reference's stdout is a TEXT stream. The Python SDK writes
       // its frames through `TextIOWrapper(sys.stdout.buffer)` with the default
       // `newline=None`, so on Windows every frame CPython emits ends `\r\n`. MEASURED, run
@@ -100,6 +194,11 @@ export class RawStdioTransport implements Transport {
     });
   }
 
+  /** Answer a line no id could be read from, in order with every other frame. */
+  private refuse(frame: string): void {
+    void this.write(frame);
+  }
+
   /**
    * One frame, in the reference's key order, with an exact `result` when one was registered.
    *
@@ -109,17 +208,17 @@ export class RawStdioTransport implements Transport {
    * that is meant to run for a session.
    */
   private frame(message: JSONRPCMessage): string {
-    const framed = message as { id?: unknown; result?: unknown; error?: unknown };
-    if (framed.id === undefined) return JSON.stringify(message);
-    const key = idKey(framed.id);
-    this.rawLines.delete(key);
-    const id = JSON.stringify(framed.id);
-    if ('result' in framed) {
-      const exact = this.exactResults.get(key);
-      this.exactResults.delete(key);
-      return `{"jsonrpc":"2.0","id":${id},"result":${exact ?? JSON.stringify(framed.result)}}`;
+    const framed = message as { id?: unknown; result?: unknown; error?: unknown; method?: unknown };
+    if (framed.id === undefined || 'method' in framed) return JSON.stringify(message);
+    const entry = typeof framed.id === 'string' ? this.inFlight.get(framed.id) : undefined;
+    if (entry !== undefined) {
+      this.inFlight.delete(framed.id as string);
+      if (this.newest.get(entry.idText) === framed.id) this.newest.delete(entry.idText);
     }
-    this.exactResults.delete(key);
+    const id = entry?.idText ?? JSON.stringify(framed.id);
+    if ('result' in framed) {
+      return `{"jsonrpc":"2.0","id":${id},"result":${entry?.exact ?? JSON.stringify(framed.result)}}`;
+    }
     if ('error' in framed) return `{"jsonrpc":"2.0","id":${id},"error":${JSON.stringify(framed.error)}}`;
     return JSON.stringify(message);
   }
@@ -132,16 +231,135 @@ export class RawStdioTransport implements Transport {
       const line = this.buffer.toString('utf8', 0, at).replace(/\r$/, '');
       this.buffer = this.buffer.subarray(at + 1);
       if (line.trim() === '') continue;
-      let message: JSONRPCMessage;
+      let parsed: unknown;
       try {
-        message = JSONRPCMessageSchema.parse(JSON.parse(line));
-      } catch (error) {
-        this.onerror?.(error as Error);
+        parsed = JSON.parse(line);
+      } catch {
+        this.refuse(PARSE_ERROR_FRAME);
         continue;
       }
-      const id = (message as { id?: unknown }).id;
-      if (id !== undefined) this.rawLines.set(idKey(id), line);
+      // A LONE SURROGATE is text `JSON.parse` keeps and pydantic's parser refuses, so the
+      // reference's SDK cannot read such a frame at all; `mcpstdio.py` answers it `-32600`
+      // (the standard library CAN read it). The one exception is job65/#160's: a `tools/call`
+      // carrying one in its arguments is refused BY NAME, which the server does here too.
+      if (LONE_ESCAPE.test(line) && holdsLoneSurrogate(parsed) && !refusedByName(line, parsed)) {
+        this.refuse(INVALID_REQUEST_FRAME);
+        continue;
+      }
+      // The reference's adapter is pydantic, which IGNORES a member it has no field for and
+      // takes `params: null` as no params; the TS SDK's schemas are strict and refuse both.
+      // Measured on both SDKs (J66-3 note): normalised here, so a frame the reference answers
+      // is not one the port calls an Invalid Request.
+      if (isObject(parsed)) {
+        for (const key of Object.keys(parsed)) if (!MESSAGE_KEYS.has(key)) delete parsed[key];
+        if (parsed['params'] === null) delete parsed['params'];
+      }
+      // A REQUEST (an object with an id and a method) travels under a token of this file's
+      // own; its client id is kept as text. Anything else goes to the SDK's schema unchanged.
+      let token: string | undefined;
+      let idText: string | undefined;
+      if (isObject(parsed) && 'id' in parsed && 'method' in parsed) {
+        idText = clientIdText(line, parsed['id']);
+        if (idText === undefined) {
+          // Not a str and not an int (`null`, `1.0`, `true`): the reference's `RequestId`
+          // refuses it, and its union then reads the frame as a NOTIFICATION with the id
+          // ignored, so nothing is answered. Measured; the port does the same.
+          delete parsed['id'];
+        } else {
+          token = `bantamkit-${++this.sequence}`;
+          parsed['id'] = token;
+        }
+      }
+      let message: JSONRPCMessage;
+      let paramsRefused = false;
+      try {
+        message = JSONRPCMessageSchema.parse(parsed);
+      } catch {
+        // #147: the TS SDK's envelope checks a request's `params._meta`; the reference's
+        // envelope takes any object as params and checks `_meta` with the METHOD's model,
+        // so `_meta: 5` is -32602 with the client's id there (and `_meta: null` or a
+        // `progressToken: true` is served), where this used to be -32600 with id null. A
+        // request the envelope takes once `_meta` is set aside travels on without it, and
+        // `server.ts`'s guard refuses it -32602 if the reference's model would have.
+        const params = token !== undefined && isObject(parsed) ? parsed['params'] : undefined;
+        const withoutMeta = isObject(params) && '_meta' in params ? withoutKey(parsed as Record<string, unknown>, params) : undefined;
+        const retry = withoutMeta === undefined ? undefined : JSONRPCMessageSchema.safeParse(withoutMeta);
+        if (retry === undefined || !retry.success) {
+          this.refuse(INVALID_REQUEST_FRAME);
+          continue;
+        }
+        message = retry.data;
+        paramsRefused = !referenceTakesMeta((params as Record<string, unknown>)['_meta']);
+      }
+      if (token !== undefined && idText !== undefined) {
+        this.inFlight.set(token, paramsRefused ? { idText, line, paramsRefused } : { idText, line });
+        this.newest.set(idText, token);
+      } else {
+        this.retarget(message);
+      }
       this.onmessage?.(message);
     }
   }
+
+  /** Point a `notifications/cancelled` at the token now standing for the id it names. */
+  private retarget(message: JSONRPCMessage): void {
+    const note = message as { method?: unknown; params?: { requestId?: unknown } };
+    if (note.method !== 'notifications/cancelled' || note.params === undefined) return;
+    const named = namedIdText(note.params.requestId);
+    const token = named === undefined ? undefined : this.newest.get(named);
+    if (token !== undefined) note.params.requestId = token;
+  }
+}
+
+/** Only a line spelling a surrogate escape can hold a lone surrogate (`mcpstdio._ESCAPE`). */
+const LONE_ESCAPE = /\\u[dD][89a-fA-F][0-9a-fA-F]{2}/;
+const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/** Whether any string in the value, member names included, holds a lone surrogate. */
+function holdsLoneSurrogate(value: unknown): boolean {
+  if (typeof value === 'string') return LONE.test(value);
+  if (Array.isArray(value)) return value.some(holdsLoneSurrogate);
+  if (isObject(value)) return Object.entries(value).some(([key, item]) => LONE.test(key) || holdsLoneSurrogate(item));
+  return false;
+}
+
+/**
+ * `mcpstdio.refusal_for`'s test, less the roster: a `tools/call` with a str or int id whose
+ * `arguments` object holds a lone surrogate goes on to the server, which refuses it by name
+ * (`pyargs.loneSurrogateArgument`). The reference also requires the tool to be one it
+ * serves; for an unserved name it answers `-32600` where the port answers `Unknown tool:`.
+ */
+function refusedByName(line: string, parsed: unknown): boolean {
+  if (!isObject(parsed) || parsed['method'] !== 'tools/call' || !('id' in parsed)) return false;
+  if (clientIdText(line, parsed['id']) === undefined) return false;
+  const params = parsed['params'];
+  return isObject(params) && typeof params['name'] === 'string' && isObject(params['arguments']) && holdsLoneSurrogate(params['arguments']);
+}
+
+/** The frame again with `params._meta` left out. */
+function withoutKey(frame: Record<string, unknown>, params: Record<string, unknown>): Record<string, unknown> {
+  const { _meta: _dropped, ...rest } = params;
+  return { ...frame, params: rest };
+}
+
+/**
+ * Whether `mcp_types.RequestParams.meta` (`RequestParamsMeta | None`, lax) takes this
+ * `_meta`: absent or `null`, or an open object whose `progressToken`, if any, is a str or
+ * what lax `int` takes — an integral number or a bool (`NotRequired`, so not `null`).
+ * Measured on the reference: `5`, `[]`, `{"progressToken": 1.5}`, `{"progressToken": null}`
+ * and `{"progressToken": {}}` are -32602; `null`, `{"progressToken": true}` and
+ * `{"progressToken": 2.0}` are served.
+ */
+function referenceTakesMeta(meta: unknown): boolean {
+  if (meta === undefined || meta === null) return true;
+  if (!isObject(meta)) return false;
+  const token = meta['progressToken'];
+  return token === undefined || typeof token === 'string' || typeof token === 'boolean' || Number.isInteger(token);
+}
+
+/** The members a JSON-RPC 2.0 message may carry; any other is dropped as pydantic drops it. */
+const MESSAGE_KEYS = new Set(['jsonrpc', 'id', 'method', 'params', 'result', 'error']);
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
