@@ -3,7 +3,7 @@
  *
  * A port of `runtime-py/src/bantamkit/mcpserver.py`'s `build_server`, across two unrelated
  * SDK lineages — Python runs `mcp` 2.0.0 (`from mcp.server import MCPServer`), this runs
- * `@modelcontextprotocol/sdk` 1.30.0. Where the two SDKs make a difference unavoidable it is
+ * `@modelcontextprotocol/sdk` 1.31.0. Where the two SDKs make a difference unavoidable it is
  * a `ruling` case in `tools/conformance/suites/wire.mjs`, carrying its reason and required to
  * KEEP differing — a ruling whose case quietly started matching fails the suite too. Where
  * they do not, this file takes the reference's answer even when the SDK offers an easier one.

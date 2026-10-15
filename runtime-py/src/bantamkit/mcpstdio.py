@@ -17,6 +17,23 @@ for a tool this server serves, whose arguments hold one. Every other line goes t
 byte for byte, as before -- including a lone surrogate anywhere else in a frame, which the SDK
 still drops (the malformed-frame class, not this one).
 
+TWO MORE FRAMES THE SDK DROPPED ARE ANSWERED (job66/#148). A line that is not JSON, or JSON
+that is not a JSON-RPC message (a batch array, a bare number, a request with no `jsonrpc`), went
+the same way: the reader's parse failed, the exception went to the session, nothing was sent.
+JSON-RPC 2.0 section 5.1 prescribes an answer with `id: null`, so the wrapper now asks the SDK's
+own adapter first and, where the SDK would drop the line, answers `-32700 Parse error` (the
+standard library's `json` cannot read it either) or `-32600 Invalid Request` (it can). The
+port writes the same two frames from `runtime-ts/src/mcp/transport.ts`; the `wire` suite
+compares them. A blank line still goes to the SDK and is still dropped, as the port skips it.
+
+A HOST THAT CLOSED ITS READ END ENDS THE SESSION QUIETLY (job66/#181). Measured before this
+change: a 3 MB answer written to a closed stdout raised `BrokenPipeError` out of the SDK's writer,
+and the process then HUNG until stdin closed -- the reader is a blocking `readline` on an anyio
+worker thread, which a cancelled task group must wait for -- and only then died, exit 1, with an
+exception-group traceback. Stdin is now read on a DAEMON thread, so a cancelled reader is
+abandoned rather than awaited, and the broken pipe is caught: exit 0, nothing on stderr, the
+same as the port and the same as stdin EOF.
+
 PRIVATE SDK NAMES, ON PURPOSE. `_claim_fd`, `_open_stdin_diversion`, `_UnownedTextWrapper`
 and `MCPServer._lowlevel_server` are not public API. They are what `stdio_server()` and
 `run_stdio_async()` themselves use, the SDK is upper-capped in `runtime-py/pyproject.toml`
@@ -26,13 +43,14 @@ child a handler spawns. A rename inside the cap fails at import or at first use,
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sys
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
-import anyio
 import mcp_types as types
 from mcp.server import stdio as _sdk_stdio
 from mcp.shared.message import SessionMessage
@@ -110,8 +128,87 @@ def refusal_for(line: str, tools: frozenset[str]) -> types.JSONRPCResponse | Non
     )
 
 
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"not JSON: {name}")
+
+
+def malformed_frame_error(line: str) -> types.JSONRPCError | None:
+    """The `id: null` error for a line the SDK's reader would drop, or `None` (#148).
+
+    `-32700` when the line is not JSON at all -- `NaN` and `Infinity` included, which
+    `json.loads` would otherwise accept and JSON does not -- and `-32600` when it is JSON
+    but not a message the SDK's own adapter accepts. A blank line is `None`: it is skipped,
+    not answered, on both runtimes.
+    """
+    if not line.strip():
+        return None
+    # pydantic's parser reads `NaN` and `Infinity` where JSON has none; the port's
+    # `JSON.parse` does not. Only a line spelling one can hold one, so only that line pays.
+    if ("NaN" in line or "Infinity" in line) and not _is_strict_json(line):
+        return _error(-32700, "Parse error")
+    try:
+        types.jsonrpc_message_adapter.validate_json(line, by_name=False)
+    except Exception:  # noqa: BLE001 - the SDK's reader catches exactly this broadly
+        pass
+    else:
+        return None
+    # A lone surrogate lands here too: `json` reads it, pydantic's parser does not.
+    if _is_strict_json(line):
+        return _error(-32600, "Invalid Request")
+    return _error(-32700, "Parse error")
+
+
+def _is_strict_json(line: str) -> bool:
+    try:
+        json.loads(line, parse_constant=_no_constant)
+    except ValueError:
+        return False
+    return True
+
+
+def _error(code: int, message: str) -> types.JSONRPCError:
+    error = types.ErrorData(code=code, message=message)
+    return types.JSONRPCError(jsonrpc="2.0", id=None, error=error)
+
+
+class _DaemonLines:
+    """The lines of a text stream, read on a DAEMON thread (#181).
+
+    `anyio.wrap_file` reads on a worker thread the task group has to wait for, so a session
+    whose stdout broke could not end until stdin did. A daemon thread is abandoned instead.
+    One line is read ahead at most: the thread blocks until the loop has taken the last one.
+    """
+
+    def __init__(self, text: Any) -> None:
+        self._text = text
+
+    def __aiter__(self) -> AsyncIterator[str]:
+        return self._lines()
+
+    async def _lines(self) -> AsyncIterator[str]:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1)
+
+        def pump() -> None:
+            try:
+                for line in self._text:
+                    asyncio.run_coroutine_threadsafe(queue.put(line), loop).result()
+            except (OSError, ValueError, RuntimeError):
+                pass  # the fd was released or the loop is gone: nobody is reading any more
+            finally:
+                try:
+                    asyncio.run_coroutine_threadsafe(queue.put(None), loop)
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=pump, name="bantamkit-stdin", daemon=True).start()
+        while (line := await queue.get()) is not None:
+            yield line
+
+
 class _Lines:
-    """The SDK's stdin, with the lone-surrogate `tools/call` frames answered and withheld."""
+    """The SDK's stdin, with the lone-surrogate `tools/call` frames answered and withheld,
+    and the frames the SDK would drop answered `-32700`/`-32600` (#148)."""
 
     def __init__(self, inner: Any, tools: frozenset[str]) -> None:
         self._inner = inner
@@ -123,7 +220,9 @@ class _Lines:
 
     async def _lines(self) -> AsyncIterator[str]:
         async for line in self._inner:
-            response = refusal_for(line, self._tools) if self.write_stream is not None else None
+            response: types.JSONRPCResponse | types.JSONRPCError | None = None
+            if self.write_stream is not None:
+                response = refusal_for(line, self._tools) or malformed_frame_error(line)
             if response is None:
                 yield line
             else:
@@ -136,11 +235,14 @@ async def serve_stdio(server: Any) -> None:
     buffer, release = _sdk_stdio._claim_fd(0, sys.stdin, "rb", _sdk_stdio._open_stdin_diversion)
     try:
         text = _sdk_stdio._UnownedTextWrapper(buffer, encoding="utf-8", errors="replace")
-        lines = _Lines(anyio.wrap_file(text), tools)
+        lines = _Lines(_DaemonLines(text), tools)
         async with _sdk_stdio.stdio_server(stdin=lines) as (read_stream, write_stream):  # type: ignore[arg-type]
             lines.write_stream = write_stream
             lowlevel = server._lowlevel_server
             await lowlevel.run(read_stream, write_stream, lowlevel.create_initialization_options())
+    except* (BrokenPipeError, ConnectionResetError):
+        # The host closed its read end (#181): the session is over, exactly as on stdin EOF.
+        pass
     finally:
         if release is not None:
             release()

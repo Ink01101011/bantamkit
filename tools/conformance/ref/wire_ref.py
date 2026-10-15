@@ -40,10 +40,15 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TIMEOUT_SECONDS = 60
+# job66/J66-3: how long a `hangup` session's server gets to leave on its own (wire.mjs too).
+HANGUP_GRACE_SECONDS = 20
+# job66/J66-3: how long a `burst` waits for its frames before moving on (wire.mjs too).
+BURST_WAIT_SECONDS = 10
 
 
 def _b64(text: str) -> str:
@@ -93,7 +98,13 @@ def _run_session(spec: dict) -> dict:
             pipe.put((tag, raw))
         pipe.put((tag, None))
 
-    threading.Thread(target=pump, args=(process.stdout, "out"), daemon=True).start()
+    # job66/J66-3 (#181): a `hangup` session closes its read end of stdout after its LAST
+    # line, so stdout has no pump thread there: a thread blocked in `readline` would hold the
+    # buffer's lock and turn the close into a wait for the whole answer. Its frames before the
+    # last line are read inline, by `pump_inline`, on this thread.
+    hangup = bool(spec.get("hangup"))
+    if not hangup:
+        threading.Thread(target=pump, args=(process.stdout, "out"), daemon=True).start()
     threading.Thread(target=pump, args=(process.stderr, "err"), daemon=True).start()
 
     assert process.stdin is not None
@@ -102,11 +113,26 @@ def _run_session(spec: dict) -> dict:
     seen: set[str] = set()
     closed = 0
 
-    def drain_until(target: str | None) -> None:
+    def record(text: str) -> None:
+        frames.append(text)
+        try:
+            seen.add(json.dumps(json.loads(text)["id"]))
+        except (ValueError, KeyError):
+            pass
+
+    def drain_until(target: str | None, count: int | None = None) -> None:
         nonlocal closed
+        # A burst is bounded: a server that stays SILENT (the 0.35.7 defect) must fail as
+        # named missing frames in the cases, not as a session that never ends.
+        deadline = None if count is None else time.monotonic() + BURST_WAIT_SECONDS
         while closed < 2 and (target is None or target not in seen):
+            if count is not None and len(frames) >= count:
+                return
+            wait = TIMEOUT_SECONDS if deadline is None else deadline - time.monotonic()
+            if wait <= 0:
+                return
             try:
-                tag, raw = pipe.get(timeout=TIMEOUT_SECONDS)
+                tag, raw = pipe.get(timeout=wait)
             except queue.Empty:  # pragma: no cover - a hang is a harness failure
                 return
             if raw is None:
@@ -116,15 +142,19 @@ def _run_session(spec: dict) -> dict:
             if tag == "err":
                 errors.append(text)
                 continue
-            frames.append(text)
-            try:
-                seen.add(json.dumps(json.loads(text)["id"]))
-            except (ValueError, KeyError):
-                pass
-            if target is None:
+            record(text)
+            if target is None and count is None:
                 return
 
-    for line in lines:
+    def pump_inline(target: str) -> None:
+        assert process.stdout is not None
+        while target not in seen:
+            raw = process.stdout.readline()
+            if not raw:
+                return
+            record(raw.decode("utf-8").rstrip("\n"))
+
+    for index, line in enumerate(lines):
         try:
             request = json.loads(line)
             # A HARNESS DIRECTIVE, not a request. `{"conformance": "write", "path": ...,
@@ -139,6 +169,14 @@ def _run_session(spec: dict) -> dict:
             if isinstance(request, dict) and request.get("conformance") == "write":
                 Path(request["path"]).write_bytes(base64.b64decode(request["b64"]))
                 continue
+            # job66/J66-3: `burst` writes its bytes in ONE write -- several frames in flight
+            # at once, malformed ones included -- then waits for `frames` more stdout lines.
+            if isinstance(request, dict) and request.get("conformance") == "burst":
+                target = len(frames) + request["frames"]
+                process.stdin.write(base64.b64decode(request["b64"]))
+                process.stdin.flush()
+                drain_until(None, count=target)
+                continue
             wants = json.dumps(request["id"]) if isinstance(request, dict) and request.get("id") is not None else None
         except (ValueError, KeyError):
             wants = None
@@ -147,9 +185,36 @@ def _run_session(spec: dict) -> dict:
             process.stdin.flush()
         except (BrokenPipeError, OSError):  # the server exited; the frames so far are the answer
             break
+        if hangup and index == len(lines) - 1:
+            assert process.stdout is not None
+            process.stdout.close()
+            break
         if wants is not None:
-            drain_until(wants)
-    if seen != wanted:
+            if hangup:
+                pump_inline(wants)
+            else:
+                drain_until(wants)
+    stayed = False
+    if hangup:
+        # stdin stays OPEN: the server has to leave on the broken stdout alone.
+        try:
+            process.wait(timeout=HANGUP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            stayed = True
+            process.kill()
+            process.wait()
+        # Every stderr byte, not the ones that happened to be pumped already: stderr is what
+        # this session is about, and a short read would pass a traceback as silence.
+        while closed < 1:
+            try:
+                tag, raw = pipe.get(timeout=TIMEOUT_SECONDS)
+            except queue.Empty:  # pragma: no cover
+                break
+            if raw is None:
+                closed += 1
+            else:
+                errors.append(raw.decode("utf-8").rstrip("\n"))
+    elif seen != wanted:
         drain_until(None)
 
     try:
@@ -174,7 +239,8 @@ def _run_session(spec: dict) -> dict:
         "name": spec["name"],
         "frames": [_b64(f) for f in frames],
         "stderr": _b64("\n".join(errors)),
-        "exit": process.returncode,
+        # A hangup server that had to be killed did not leave: `null`, as the Node driver says.
+        "exit": None if stayed else process.returncode,
     }
 
 

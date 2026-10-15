@@ -465,6 +465,29 @@ event log whose writes are failing — every *other* tool's result also carries 
 saying so, and never otherwise. Contract, conditions and the exact bytes both runtimes emit:
 [Status](status.md).
 
+## The frames themselves
+
+Both servers speak newline-delimited JSON-RPC 2.0 on stdio, and both answer the same frames
+the same way (`tools/conformance/suites/wire.mjs`, the `j66-3:` block, pins each side
+against a literal as well as against the other):
+
+- **A line that is not JSON** is answered `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`.
+  `NaN` and `Infinity` are not JSON. **JSON that is not a message** — a batch array (MCP
+  dropped batches), a bare value, an object without `jsonrpc`, a method that is not a string,
+  `params` that is not an object, a lone surrogate (`"\ud800"`) outside a `tools/call`'s
+  arguments — is answered the same way with `-32600` / `Invalid Request`. Through 0.35.8 both
+  servers dropped all of these and the client waited forever (#148). A blank line is
+  skipped. A lone surrogate inside a served tool's arguments is refused by name as a tool
+  error, as before (#160).
+- **An id that is not a string or an integer** (`null`, `1.0`, `true`) makes the frame a
+  notification, as the reference's SDK reads it: nothing is answered. A member JSON-RPC does
+  not define is ignored, and `"params": null` is no params.
+- **An integer id past 2^53** is answered and echoed exactly, digit for digit (#148).
+- **Two requests in flight under one id** — JSON-RPC forbids it; a client can still do it —
+  are each answered from their OWN arguments, both under that id (#146).
+- **A host that closes its end of stdout** ends the server the way stdin EOF does: exit 0,
+  nothing on stderr, even if stdin is left open (#181).
+
 ## Out of scope, deliberately
 
 No model runs server-side: critique scoring and structured *generation* stay

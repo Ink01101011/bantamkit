@@ -148,6 +148,33 @@ const callTool = (id, name_, args) => rpc(id, 'tools/call', { name: name_, argum
 
 // ------------------------------------------------------------------------- the Node side
 
+/** job66/J66-3: how long a `hangup` session's server gets to leave on its own (`wire_ref.py` too). */
+const HANGUP_GRACE_MS = 20_000;
+/** job66/J66-3: how long a `burst` waits for its frames before moving on (`wire_ref.py` too). */
+const BURST_WAIT_MS = 10_000;
+/**
+ * job66/J66-3 (#148): `[line, code]` for each malformed frame of the `j66-3-malformed` session.
+ * Every one of these the SDKs used to DROP with no answer at all. Each is now answered `-32700`
+ * (not JSON; `NaN` is not JSON) or `-32600` (JSON, not a message), with `id: null`.
+ */
+const J66_3_MALFORMED = [
+  ['{not json', -32700],
+  ['[{"jsonrpc":"2.0","id":901,"method":"ping"}]', -32600],
+  ['[]', -32600],
+  ['42', -32600],
+  ['"a string"', -32600],
+  ['NaN', -32700],
+  ['{"jsonrpc":"2.0","id":5}', -32600],
+  ['{"id":6,"method":"ping"}', -32600],
+  ['{"jsonrpc":"2.0","id":"s","method":3}', -32600],
+  ['{"jsonrpc":"2.0","id":7,"method":"ping","params":[]}', -32600],
+  ['{"jsonrpc":"1.0","id":8,"method":"ping"}', -32600],
+  // A lone surrogate outside job65/#160's tools/call arguments: pydantic cannot read it, so
+  // neither side answers the ping. NaN inside params: pydantic reads it, JSON does not.
+  ['{"jsonrpc":"2.0","id":3,"method":"ping","params":{"_meta":{"x":"\\ud800"}}}', -32600],
+  ['{"jsonrpc":"2.0","id":4,"method":"ping","params":{"_meta":{"x":NaN}}}', -32700],
+];
+
 /**
  * Drive `dist/cli.js` with the same bytes, holding stdin open until every id has answered.
  *
@@ -192,6 +219,9 @@ function runNode(spec) {
       reject(new Error(`wire: node session ${spec.name} timed out\nstderr:\n${err}`));
     }, 60_000);
     let pending = null;
+    // job66/J66-3: a `burst` directive waits for a COUNT of frames, not an id — its answers
+    // may share an id (#146) or carry `id: null` (#148).
+    let pendingCount = null;
     child.stdout.on('data', (chunk) => {
       out += chunk.toString('utf8');
       let at;
@@ -210,6 +240,11 @@ function runNode(spec) {
         pending = null;
         resume();
       }
+      if (pendingCount !== null && frames.length >= pendingCount.count) {
+        const resume = pendingCount.resolve;
+        pendingCount = null;
+        resume();
+      }
       if ([...wanted].every((id) => seen.has(id))) child.stdin.end();
     });
     child.stderr.on('data', (chunk) => {
@@ -226,7 +261,7 @@ function runNode(spec) {
     // the store as it stood before it. One request at a time is the only shape in which the
     // two runtimes are being asked about the same state.
     void (async () => {
-      for (const line of spec.lines) {
+      for (const [index, line] of spec.lines.entries()) {
         if (child.exitCode !== null) break;
         let id = null;
         try {
@@ -238,11 +273,34 @@ function runNode(spec) {
             writeFileSync(parsed.path, Buffer.from(parsed.b64, 'base64'));
             continue;
           }
+          // job66/J66-3: `burst` writes its bytes in ONE write — several frames in flight at
+          // once, malformed ones included — and then waits for `frames` more stdout lines.
+          if (parsed && parsed.conformance === 'burst') {
+            const target = frames.length + parsed.frames;
+            child.stdin.write(Buffer.from(parsed.b64, 'base64'));
+            // Bounded: a server that stays SILENT (the 0.35.7 defect) must fail as named
+            // missing frames in the cases, not as a session that never ends.
+            if (frames.length < target) {
+              await Promise.race([
+                new Promise((resolve) => (pendingCount = { count: target, resolve })),
+                new Promise((resolve) => setTimeout(resolve, BURST_WAIT_MS)),
+              ]);
+              pendingCount = null;
+            }
+            continue;
+          }
           if (parsed.id !== undefined && parsed.id !== null) id = JSON.stringify(parsed.id);
         } catch {
           /* a deliberately malformed line still goes down the pipe */
         }
         child.stdin.write(`${line}\n`);
+        // job66/J66-3 (#181): a `hangup` session closes its read end of stdout right after its
+        // LAST line, holds stdin open, and records how the server leaves: on its own, or not.
+        if (spec.hangup && index === spec.lines.length - 1) {
+          child.stdout.destroy();
+          setTimeout(() => child.kill('SIGKILL'), HANGUP_GRACE_MS).unref();
+          return;
+        }
         if (id !== null && !seen.has(id)) {
           await new Promise((resolve) => {
             pending = { id, resolve };
@@ -534,6 +592,49 @@ export async function run(ctx) {
   ]);
 
   add('bad-params', [INIT(), INITIALIZED, rpc(2, 'tools/call', { name: 'memory_recall', arguments: 'notanobject' })]);
+
+  // job66/J66-3 (#146, #148, #181): the frames themselves. A `burst` directive writes several
+  // frames in ONE write and waits for a COUNT of answers, because these answers share an id
+  // or have none. `compareInBlock` sessions skip the per-id loop below (it keys by id, and
+  // would fold two answers into one) and are compared in the J66-3 block instead.
+  const burst = (frames, lines) =>
+    JSON.stringify({ conformance: 'burst', frames, b64: b64(lines.map((line) => `${line}\n`).join('')) });
+  add('j66-3-malformed', [
+    INIT(),
+    INITIALIZED,
+    burst(J66_3_MALFORMED.length, J66_3_MALFORMED.map(([line]) => line)),
+    // An id that is not a str and not an int makes a NOTIFICATION to the reference's
+    // pydantic union, so nothing is answered; a blank line is skipped. Zero frames expected,
+    // and the ping behind them proves nothing slipped out before it.
+    burst(0, ['{"jsonrpc":"2.0","id":null,"method":"ping"}', '{"jsonrpc":"2.0","id":1.0,"method":"ping"}', '{"jsonrpc":"2.0","id":true,"method":"ping"}', '']),
+    // A member pydantic has no field for is ignored there and `params: null` is no params;
+    // both are answered, not refused.
+    '{"jsonrpc":"2.0","id":10,"method":"ping","extra":1}',
+    '{"jsonrpc":"2.0","id":11,"method":"ping","params":null}',
+    rpc(12, 'ping'),
+  ], { compareInBlock: true });
+  // #148: an integer id past 2^53 is answered, and echoed EXACTLY — including on the path
+  // where the port splices an exact result in. Compared by the per-id loop as raw bytes too.
+  add('j66-3-bigid', [
+    INIT(),
+    INITIALIZED,
+    '{"jsonrpc":"2.0","id":123456789012345678901234567890,"method":"ping"}',
+    '{"jsonrpc":"2.0","id":-9007199254740993,"method":"ping"}',
+    '{"jsonrpc":"2.0","id":9007199254740993,"method":"tools/call","params":{"name":"validate_json","arguments":{"output":"{\\"a\\":1.0}","schema":{"type":"object"}}}}',
+    rpc('req-é', 'ping'),
+  ]);
+  // #146: two requests in flight under ONE id, each answered from its OWN arguments.
+  const J66_3_DUP = (schema) => callTool(50, 'validate_json', { output: '{"a":1}', schema });
+  add('j66-3-dup', [INIT(), INITIALIZED, burst(2, [J66_3_DUP({ type: 'object' }), J66_3_DUP({ type: 'string' })]), rpc(99, 'ping')], {
+    compareInBlock: true,
+  });
+  // #181: the host closes its read end of stdout while a ~6 MB answer is being written, and
+  // leaves stdin OPEN. The server must leave on its own: exit 0, nothing on stderr.
+  add('j66-3-hangup', [
+    INIT(),
+    INITIALIZED,
+    callTool(9, 'validate_json', { output: JSON.stringify({ x: 'y'.repeat(3 << 20) }), schema: { properties: { x: { maxLength: 1 } } } }),
+  ], { compareInBlock: true, hangup: true });
 
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
   add('identity-pycache', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})], {
@@ -1227,7 +1328,7 @@ export async function run(ctx) {
   };
   for (const spec of sessions) {
     const { python, node } = results.get(spec.name);
-    if (RULED_SESSIONS.has(spec.name)) continue;
+    if (RULED_SESSIONS.has(spec.name) || spec.compareInBlock) continue;
     const left = byId(python.frames);
     const right = byId(node.frames);
     /**
@@ -1281,6 +1382,95 @@ export async function run(ctx) {
       expected: maskRef(rawOf(left)),
       actual: mask(rawOf(right)),
     });
+  }
+
+  // --------------------------------------------- job66/J66-3: the frames themselves
+
+  /**
+   * #146, #148, #181, each compared side to side AND pinned against a literal per side,
+   * because a differential is blind to a regression landing in both runtimes at once (both
+   * were silent on every malformed frame at 0.35.7, and both crashed on a closed stdout).
+   */
+  {
+    const after = (side) => side.frames.slice(1); // everything after `initialize`'s answer
+    const idText = (line) => (/^\{"jsonrpc":"2\.0","id":(-?\d+|null|"(?:[^"\\]|\\.)*"),/.exec(line) ?? [, `<no id: ${line.slice(0, 60)}>`])[1];
+    const errorFrame = (code) =>
+      `{"jsonrpc":"2.0","id":null,"error":{"code":${code},"message":"${code === -32700 ? 'Parse error' : 'Invalid Request'}"}}`;
+    const malformedExpected = [
+      ...J66_3_MALFORMED.map(([, code]) => errorFrame(code)),
+      '{"jsonrpc":"2.0","id":10,"result":{}}',
+      '{"jsonrpc":"2.0","id":11,"result":{}}',
+      '{"jsonrpc":"2.0","id":12,"result":{}}',
+    ];
+    const malformed = results.get('j66-3-malformed');
+    cases.push({
+      name: 'j66-3: #148 malformed frames, every answer in order — side to side',
+      kind: 'json',
+      expected: after(malformed.python),
+      actual: after(malformed.node),
+    });
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #148 ${label} answers -32700/-32600 with id null, nothing for a non-id, and the rest (literal)`,
+        kind: 'json',
+        expected: malformedExpected,
+        actual: after(malformed[key]),
+      });
+    }
+
+    const bigid = results.get('j66-3-bigid');
+    const bigidExpected = ['123456789012345678901234567890', '-9007199254740993', '9007199254740993', '"req-é"'];
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #148 ${label} echoes every id past 2^53 exactly (literal)`,
+        kind: 'json',
+        expected: bigidExpected,
+        actual: after(bigid[key]).map(idText).sort((a, b) => bigidExpected.indexOf(a) - bigidExpected.indexOf(b)),
+      });
+    }
+
+    // The reference answers concurrently, so the ORDER of two same-id answers is scheduling;
+    // the SET of answers is the property. Each is reduced to its verdict, then sorted.
+    const dup = results.get('j66-3-dup');
+    const verdicts = (side) =>
+      after(side)
+        .filter((line) => idText(line) === '50')
+        .map((line) => {
+          const valid = JSON.parse(line)?.result?.structuredContent?.valid;
+          return `id 50 ${valid === true ? 'valid:true' : valid === false ? 'valid:false' : 'no verdict'}`;
+        })
+        .sort();
+    cases.push({
+      name: 'j66-3: #146 two requests in flight under one id — both answers, side to side, order aside',
+      kind: 'json',
+      expected: after(dup.python).map(canonical).sort(),
+      actual: after(dup.node).map(canonical).sort(),
+    });
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #146 ${label} answers each same-id request from its OWN arguments (literal)`,
+        kind: 'json',
+        expected: ['id 50 valid:false', 'id 50 valid:true'],
+        actual: verdicts(dup[key]),
+      });
+    }
+
+    const hangup = results.get('j66-3-hangup');
+    const leaving = (side) => ({ exit: side.exit, stderr: side.stderr });
+    cases.push({
+      name: 'j66-3: #181 stdout closed mid-answer, stdin open — how the server leaves, side to side',
+      kind: 'json',
+      expected: leaving(hangup.python),
+      actual: leaving(hangup.node),
+    });
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      cases.push({
+        name: `j66-3: #181 ${label} leaves on its own, exit 0, nothing on stderr (literal)`,
+        kind: 'json',
+        expected: { exit: 0, stderr: '' },
+        actual: leaving(hangup[key]),
+      });
+    }
   }
 
   // ------------------------------------------- the one remedy the two installs spell apart
@@ -1810,7 +2000,7 @@ export async function run(ctx) {
       expected: py.mcp_sdk_version,
       actual: nd.mcp_sdk_version,
       ruling:
-        'RULED DIFFERENT. `mcp` 2.0.0 against `@modelcontextprotocol/sdk` 1.30.0 — two ' +
+        'RULED DIFFERENT. `mcp` 2.0.0 against `@modelcontextprotocol/sdk` 1.31.0 — two ' +
         'unrelated version lineages, and the field exists precisely so a caller can see which ' +
         'one answered. Reported as environment and kept OUT of `build_id`, exactly as the ' +
         'reference keeps it out. The case above is the one that has teeth: it asserts BOTH ' +
@@ -2372,7 +2562,7 @@ export async function run(ctx) {
       actual: errorsOf(node),
       ruling:
         'RULED DIFFERENT — SDK lineage, not reachable from this package. Both answer -32601 ' +
-        '"Method not found". `mcp` 2.0.0 attaches `data: "<method>"`; the TS SDK 1.30.0 builds ' +
+        '"Method not found". `mcp` 2.0.0 attaches `data: "<method>"`; the TS SDK 1.31.0 builds ' +
         'that response inside `Protocol._onrequest` before any handler exists, so there is no ' +
         'seam to add the field from. Registering a handler per method would only move the ' +
         'problem to the next unregistered method, which is unbounded.',
