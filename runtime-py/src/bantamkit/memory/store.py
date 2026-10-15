@@ -253,6 +253,9 @@ class SaveResult:
     status: str  # "saved" | "duplicate"
     name: str
     similar: str | None = None
+    # Every fact file the duplicate check could not read, as `{file, reason}` (#120, user
+    # ruling 2026-10-15): one bad file costs that file, not the save. `Memory` names them.
+    skipped: tuple[dict[str, str], ...] = ()
 
 
 @dataclass
@@ -618,12 +621,21 @@ class MemoryStore:
         existing = None
         # THE FIRST OF TWO READS, AND THE ONE THAT MAKES THIS OP SAFE. WAS: a blind
         # listing made this check pass vacuously and the save went on to have
-        # `_rebuild_index` rewrite `index.md` from the same nothing. NOW: an unreadable
-        # store raises `MemoryValidationError` from here, before `_write_fact` — so the
-        # save fails whole instead of half-way, and there is no state to roll back.
-        # Nothing below this line runs. Measured, not assumed:
+        # `_rebuild_index` rewrite `index.md` from the same nothing. NOW: a store whose
+        # `facts/` cannot be LISTED raises `MemoryValidationError` from here, before
+        # `_write_fact` — so the save fails whole instead of half-way, and there is no
+        # state to roll back. Measured, not assumed:
         # `test_a_listing_that_fails_stops_save_before_it_writes_anything`.
-        for fact in self._facts():
+        #
+        # ONE BAD FACT FILE COSTS THAT FILE, NOT THE SAVE (#120, user ruling 2026-10-15).
+        # WAS: one malformed file refused every save into the store, while recall had
+        # skipped it by name since #119 -- and on Node the eight YAML shapes the codec
+        # refuses by ruling made that a store Python could save into and Node could not.
+        # NOW: the file is skipped and named in `SaveResult.skipped`, exactly as recall
+        # names it. The one file a save never skips is the one it would WRITE: a file
+        # this runtime cannot read is never overwritten by a save (refused below).
+        skipped: list[dict[str, str]] = []
+        for fact in self._facts(skipped=skipped):
             if fact.name == name:
                 existing = fact
                 continue  # same name = update, not duplicate
@@ -631,7 +643,16 @@ class MemoryStore:
                 _jaccard(new_tokens, tokens(f"{fact.name} {fact.description}"))
                 >= DUPLICATE_JACCARD
             ):
-                return SaveResult(status="duplicate", name=name, similar=fact.name)
+                return SaveResult(
+                    status="duplicate", name=name, similar=fact.name, skipped=tuple(skipped)
+                )
+        target = f"{name}.md"
+        for s in skipped:
+            if s["file"] == target:
+                raise MemoryValidationError(
+                    f"{s['reason']}; saving '{name}' would overwrite that file, so "
+                    f"nothing was saved -- repair it or move it out of facts/ first"
+                )
 
         fact = Fact(
             name=name,
@@ -657,17 +678,19 @@ class MemoryStore:
             if e.errno in NOT_WRITABLE_ERRNOS:
                 raise self._unwritable(e) from e
             raise
+        # The index this save measures and writes is built from the facts it COULD read,
+        # the same tolerant listing as above: a skipped file has no line in it.
         try:
-            self._check_index_budget()
+            self._check_index_budget(tolerant=True)
         except MemoryBudgetExceeded:
             if existed is None:
                 path.unlink()
             else:
                 path.write_text(existed, encoding="utf-8")
-            self._rebuild_index()
+            self._rebuild_index(tolerant=True)
             raise
-        self._rebuild_index()
-        return SaveResult(status="saved", name=name)
+        self._rebuild_index(tolerant=True)
+        return SaveResult(status="saved", name=name, skipped=tuple(skipped))
 
     def recall(
         self,
@@ -1249,7 +1272,12 @@ class MemoryStore:
         the whole shape of the original defect and is why the raise lives in the read
         rather than in a guard on the write (see `_rebuild_index`).
         """
-        return "".join(self._index_line(fact) for fact in self._facts())
+        return self._index_text()
+
+    def _index_text(self, tolerant: bool = False) -> str:
+        """`index_text`; `tolerant` leaves out a fact file that cannot be read (#120, save only)."""
+        facts = self._facts(skipped=[]) if tolerant else self._facts()
+        return "".join(self._index_line(fact) for fact in facts)
 
     # ---- internals ----
 
@@ -1446,9 +1474,10 @@ class MemoryStore:
         is malformed or cannot be read is appended as `{file, reason}` -- the reason is the
         sentence this would have raised -- and every other file is still read. A `facts/`
         that cannot be LISTED still raises: that is a store nobody could read, not a fact.
-        `recall`, `lookup` and `readable_facts` pass it through; every other caller keeps
-        the strict read, because a save, a compaction or a lint over a store with a broken
-        file must not act as if the file were not there.
+        `recall`, `lookup`, `readable_facts` and -- since #120's ruling -- `save` pass it
+        through (a save names what it skipped and never overwrites a skipped file); every
+        other caller keeps the strict read, because a compaction or a lint over a store
+        with a broken file must not act as if the file were not there.
         """
         facts = []
         for path in self._fact_paths():
@@ -1615,7 +1644,7 @@ class MemoryStore:
                 tmp.unlink()
             raise
 
-    def _rebuild_index(self) -> None:
+    def _rebuild_index(self, tolerant: bool = False) -> None:
         """Write `index.md` from the facts on disk. THE OP THE ORIGINAL DEFECT DESTROYED.
 
         WAS: `index_text()` answered `""` for a store it could not list and this wrote
@@ -1627,9 +1656,9 @@ class MemoryStore:
         `compact()`, and it would leave `recall`, `lint` and `archived` still being lied
         to. The read is what was wrong and the read is where it is fixed.
         """
-        (self.root / "index.md").write_text(self.index_text(), encoding="utf-8")
+        (self.root / "index.md").write_text(self._index_text(tolerant), encoding="utf-8")
 
-    def _check_index_budget(self) -> None:
+    def _check_index_budget(self, tolerant: bool = False) -> None:
         """Raise `MemoryBudgetExceeded` if the index would not fit.
 
         WAS: an unreadable store measured 0 bytes and always fitted. NOW:
@@ -1643,7 +1672,7 @@ class MemoryStore:
         fact file. A caller that pre-reads with `_fact_paths` has not pre-read what
         this raises on.
         """
-        size = len(self.index_text().encode())
+        size = len(self._index_text(tolerant).encode())
         if size > self.index_budget:
             raise MemoryBudgetExceeded(
                 f"memory index is {size} bytes, budget is {self.index_budget}: "

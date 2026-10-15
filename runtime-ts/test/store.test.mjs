@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   INDEX_PRESSURE_PERCENT,
@@ -1411,4 +1411,43 @@ test('a write cut short by a file-size limit leaves no temp behind (#161)', { sk
   assert.match(r.stderr, /\[Errno 27\]/, "EFBIG (Node's strerror table has no EFBIG text, so the number is what is checked)");
   assert.deepEqual(readdirSync(join(root, 'facts')), ['seed.md']);
   rmSync(root, { recursive: true, force: true });
+});
+
+// #120's remainder, user ruling 2026-10-15: one bad fact file costs that file, not the save.
+// Mirrors `test_save_skips_an_unreadable_fact_file_by_name_and_never_overwrites_it`, plus the
+// shape only Node has: a file in one of the eight ruled YAML shapes (an anchor), which Python
+// reads and this codec refuses by name. Mutation: drop `skipped` from the save's listing -> red.
+test('#120 ruling: save skips an unreadable fact file by name and never overwrites it', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = join(mkdtempSync(join(tmpdir(), 'bk-j67-3-')), 'mem');
+  try {
+    const store = new MemoryStore(root, { today: () => TODAY });
+    store.save('project', 'healthy', 'about healthy things', 'b');
+    const write = (name, text) => writeFileSync(join(root, 'facts', name), text);
+    write('zz-bad.md', 'just text, no frontmatter\n');
+    const anchored = "---\nname: zz-anchored\ndescription: &a x\ntype: project\nlinks: []\n---\n\nb\n";
+    write('zz-anchored.md', anchored);
+    const why = 'malformed fact file zz-bad.md: not enough values to unpack (expected 3, got 1)';
+    const saved = store.save('project', 'fresh-fact', 'an unrelated subject', 'b');
+    assert.equal(saved.status, 'saved');
+    assert.deepEqual(saved.skipped.map((s) => s.file), ['zz-anchored.md', 'zz-bad.md']);
+    assert.equal(saved.skipped[1].reason, why);
+    assert.match(saved.skipped[0].reason, /^malformed fact file zz-anchored\.md: "&" starts an anchor/);
+    const index = readFileSync(join(root, 'index.md'), 'utf8');
+    assert.ok(index.includes('[[fresh-fact]]') && index.includes('[[healthy]]') && !index.includes('zz-'));
+    assert.throws(() => store.save('project', 'zz-bad', 'over the unreadable file', 'b'), {
+      message: `${why}; saving 'zz-bad' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`,
+    });
+    assert.equal(readFileSync(join(root, 'facts', 'zz-bad.md'), 'utf8'), 'just text, no frontmatter\n');
+    assert.equal(readFileSync(join(root, 'facts', 'zz-anchored.md'), 'utf8'), anchored);
+    assert.throws(() => store.indexText(), MemoryValidationError);
+    const reply = new Memory(root, { today: () => TODAY }).save('project', 'second-fact', 'another subject entirely', 'b');
+    assert.ok(reply.startsWith("saved 'second-fact'\n\n2 fact files could not be read and were skipped; the duplicate check read every other fact:\n[project] malformed fact file zz-anchored.md: "));
+    assert.ok(reply.endsWith(`\n[project] ${why}`));
+    // A healthy store's result keeps the shape it always had: no `skipped` key at all.
+    const clean = new MemoryStore(join(root, '..', 'clean'), { today: () => TODAY });
+    assert.deepEqual(clean.save('project', 'one', 'one subject', 'b'), { status: 'saved', name: 'one', similar: null });
+  } finally {
+    rmSync(dirname(root), { recursive: true, force: true });
+  }
 });

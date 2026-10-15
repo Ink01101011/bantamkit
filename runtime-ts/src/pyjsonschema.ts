@@ -335,6 +335,11 @@ function applicable(schema: Map<string, PyValue>, draft: Draft): Iterable<[strin
 }
 
 function iterErrors(instance: PyValue, schema: PyValue | boolean, ctx?: Ctx): PyValidationError[] {
+  if (ctx === undefined) {
+    // The exported entry (#176): the recursion below always passes a ctx and a real PyValue.
+    requirePyValue(instance, 'the instance', false);
+    requirePyValue(schema, 'the schema', true);
+  }
   const c = ctx ?? rootCtx(schema);
   if (schema === true) return [];
   if (schema === false) return [falseSchemaError(instance, c.draft)];
@@ -2266,6 +2271,34 @@ const ANCHOR_PATTERN: Record<2019 | 2020, RegExp> = {
 
 const knows = (draft: Draft, since: Draft): boolean => draft >= since;
 
+const PY_TAGS = new Set(['null', 'bool', 'int', 'float', 'str', 'list', 'dict']);
+
+/**
+ * What a module-api caller actually passed, when it is not a `PyValue` (#176).
+ *
+ * WAS: `validate({a: 1}, {type: 'object'})` read `.t` off a plain object and answered
+ * `the schema must be an object or a boolean, got undefined` — naming neither the argument's
+ * real type nor the fix. NOW: the entry points name the JS type they got and say how to
+ * convert it. `undefined` is still named `undefined`, because that IS what was passed.
+ */
+function jsKind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'a JS array';
+  if (value instanceof Map) return 'a Map';
+  if (typeof value === 'object') return 'a plain JS object';
+  if (typeof value === 'undefined') return 'undefined';
+  return `a JS ${typeof value}`;
+}
+
+/** Refuse anything that is not a tagged `PyValue` (JS booleans pass where `allowBoolean`). */
+function requirePyValue(value: unknown, where: string, allowBoolean: boolean): void {
+  if (allowBoolean && typeof value === 'boolean') return;
+  if (typeof value === 'object' && value !== null && PY_TAGS.has((value as { t?: unknown }).t as string)) return;
+  throw new PyJsonSchemaUnsupported(
+    `${where} must be a PyValue — convert a plain JS value with fromJs() — got ${jsKind(value)}`,
+  );
+}
+
 function refuse(where: string, expected: string, got: PyValue | boolean): never {
   const kind = typeof got === 'boolean' ? 'boolean' : got.t;
   throw new PyJsonSchemaUnsupported(`${where} must be ${expected}, got ${kind}`);
@@ -2468,6 +2501,8 @@ export function checkSchema(schema: PyValue | boolean, where = 'the schema', dra
  * `contract.schemaError` returns its sentence — and a `PyJsonSchemaUnsupported` is a raise.
  */
 export function validate(instance: PyValue, schema: PyValue): PyValidationError | null {
+  requirePyValue(instance, 'the instance', false);
+  requirePyValue(schema, 'the schema', false);
   const draft = dialectOf(schema, 2020);
   if (schema.t === 'dict') {
     refuseUnsupportedReferences(schema, draft);

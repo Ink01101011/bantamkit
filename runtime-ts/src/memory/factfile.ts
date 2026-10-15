@@ -98,7 +98,8 @@ export function decodeFactBytes(bytes: Uint8Array): string {
  * by either runtime is read identically by both. On macOS and Linux `os.linesep` is `\n`
  * and there is no divergence at all — the conformance suite measures byte identity there.
  */
-export function formatFact(fact: Fact): string {
+export function formatFact(fact: Fact | ParsedFact): string {
+  if (isParsed(fact)) fact = factOfParsed(fact);
   const front = safeDumpMapping([
     ['name', fact.name],
     ['description', fact.description],
@@ -108,6 +109,83 @@ export function formatFact(fact: Fact): string {
     ['links', fact.links],
   ]);
   return '---\n' + front + '---\n\n' + pyStrip(fact.body) + '\n';
+}
+
+/** What `parseFactText` returns: the frontmatter exactly as the file carries it, and the body. */
+export interface ParsedFact {
+  meta: FactMeta;
+  body: string;
+}
+
+/** `{meta, body}` and not a `Fact`: a `Fact` always carries `name`, a parse never does at the top. */
+function isParsed(fact: Fact | ParsedFact): fact is ParsedFact {
+  return typeof fact === 'object' && fact !== null && 'meta' in fact && !('name' in fact);
+}
+
+/**
+ * `parseFactText`'s result as the `Fact` the store would build from it (#176), so
+ * `formatFact(parseFactText(x))` writes the bytes a recall stamp writes back for `x`.
+ *
+ * WAS: `formatFact` took only a `Fact`, and handed `{meta, body}` it emitted `meta` as an
+ * unknown key and threw `cannot emit undefined for key name` — two exported functions whose
+ * shapes did not meet. NOW: the same mapping `_facts` makes — `name`, `description` and
+ * `type` are required (Python's `KeyError`, named here), `created` and `last_recalled` may
+ * be absent, and `links` is `list(meta.get("links") or [])`.
+ */
+function factOfParsed(parsed: ParsedFact): Fact {
+  const { meta, body } = parsed;
+  for (const key of ['name', 'description', 'type']) {
+    if (!(key in meta)) {
+      throw new FactParseError(
+        `formatFact: the frontmatter has no '${key}' key, and a fact must carry name, description and type`,
+      );
+    }
+  }
+  const one = (key: string): FactValue => meta[key] as FactValue;
+  return {
+    name: one('name'),
+    description: one('description'),
+    type: one('type'),
+    created: meta['created'] === undefined ? null : one('created'),
+    last_recalled: meta['last_recalled'] === undefined ? null : one('last_recalled'),
+    links: pyList(meta['links']),
+    body,
+  };
+}
+
+/**
+ * `bool(value)` for a frontmatter value.
+ *
+ * `_facts` asks it twice — `meta.get("links") or []` and `meta.get("created") or
+ * _mtime_date(path)` — and the answer is not "is it a non-empty string". A `PyScalar`
+ * carries Python's own answer (`0`, `0.0` and `false` are falsy; a `date` never is), an
+ * empty list is falsy, and `undefined` stands for the absent key.
+ */
+export function pyTruthy(value: FactValue | FactValue[] | undefined): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'string') return value !== '';
+  if (Array.isArray(value)) return value.length > 0;
+  return value.truthy;
+}
+
+/**
+ * `list(meta.get("links") or [])`.
+ *
+ * A string is iterated into its CHARACTERS, which the spread does over codepoints — the
+ * same faithful-not-tidy answer as before. What is new is the last arm: `list(7)` is a
+ * `TypeError` in Python and the `except (ValueError, KeyError, yaml.YAMLError)` in `_facts`
+ * does NOT catch it, so it escapes the store with CPython's own sentence rather than
+ * becoming `malformed fact file …`. That is reproduced, message and escape route both,
+ * because a caller that catches `MemoryValidationError` would swallow one and not the
+ * other. Not fixed in `runtime-py` (invariant 8) — registered.
+ */
+export function pyList(value: FactValue | FactValue[] | undefined): FactValue[] {
+  if (!pyTruthy(value)) return [];
+  if (Array.isArray(value)) return [...value];
+  if (typeof value === 'string') return [...value];
+  const e = new TypeError(`'${(value as PyScalar).pyType}' object is not iterable`);
+  e.name = 'TypeError';
+  throw e;
 }
 
 // ----------------------------------------------------------------------------- decode
@@ -157,7 +235,8 @@ export function pySplit(text: string, sep: string, maxsplit: number): string[] {
  * plus, since #120, the two shapes a human writes by hand that the emitter never does:
  * block scalars (`|`, `>`, every chomping and indentation indicator) and a one-line flow
  * sequence of scalars (`[a, 'b c', 2]`), each read exactly as PyYAML reads it, and blank
- * and comment lines between entries. Anything else RAISES instead of guessing: every
+ * and comment lines between entries — since job67 (#120 ruling) also between, before and after
+ * the items of a block sequence, and after a `key: ` that leaves its line empty. Anything else RAISES instead of guessing: every
  * indicator in `REFUSED_INDICATORS`, a nested or multi-line flow sequence, a tab in a
  * plain scalar. Before #120 most of those fell through to the plain-scalar scanner, so
  * `description: |` became the text `| hand edited block` and the first recall stamped
@@ -193,10 +272,18 @@ export function parseFrontmatter(front: string): FactMeta {
     }
     pos += key[0].length;
     let value: FactValue | FactValue[];
+    // `key: ` and `key: # c` hold nothing on their own line either, so a block sequence on
+    // the lines below is their value, as it is for a bare `key:` — PyYAML reads
+    // `links: \n- a` as `[a]`, and the port refused it (#120 ruling, block sequences).
+    const empty = /^ +(?:#[^\n]*)?(?=\n)/.exec(front.slice(pos));
+    if (front[pos] === ' ' && empty !== null) pos += empty[0].length;
     if (front[pos] === '\n') {
       pos += 1;
-      if (/^-(?: |\n|$)/.test(front.slice(pos))) {
-        [value, pos] = scanBlockSequence(front, pos);
+      // Blank and comment lines between `key:` and its first `- ` are stepped over, as
+      // PyYAML's scanner steps over them (#120 ruling: blank lines in a block sequence).
+      const gap = /^(?: *(?:#[^\n]*)?\n)*/.exec(front.slice(pos))![0].length;
+      if (/^-(?: |\n|$)/.test(front.slice(pos + gap))) {
+        [value, pos] = scanBlockSequence(front, pos + gap);
       } else {
         value = null; // `key:` with nothing after it is null in YAML
       }
@@ -548,6 +635,18 @@ function scanPlain(front: string, pos: number): [FactValue, number] {
     }
     const piece = cut.replace(/[ \t]+$/, '').replace(/^[ \t]+/, '');
     if (pieces.length > 0 && piece === '') {
+      // A continuation line that is only spaces, or spaces and a comment, ENDS the scalar
+      // when the next line holding anything else is not a continuation — PyYAML reads
+      // `- a\n  \n- b` and `x: a\n  # c\ny: b` that way (#120, user ruling 2026-10-15: the
+      // blank lines hand edits put inside a block sequence). The scalar ends at the last
+      // line that held content; the caller steps over the blank lines. A blank line followed
+      // by more continuation text folds in PyYAML and is still refused here, by name.
+      const rest = /^(?: *(?:#[^\n]*)?\n)*/.exec(front.slice(i))![0];
+      const after = i + rest.length;
+      if (after >= front.length || front[after] !== ' ') {
+        i -= 1; // back onto the `\n` that ended the last content line
+        break;
+      }
       throw new FactParseError('a blank line inside a plain scalar is outside this codec\'s language');
     }
     pieces.push(piece);
@@ -708,7 +807,13 @@ function unescape(front: string, at: number): [string, number] {
 function scanBlockSequence(front: string, pos: number): [FactValue[], number] {
   const items: FactValue[] = [];
   let i = pos;
-  while (i < front.length && front[i] === '-') {
+  for (;;) {
+    // A blank line, or one holding only a comment, between two items does not end the
+    // sequence — PyYAML reads `links:\n- a\n\n- b` as `[a, b]` (#120, user ruling
+    // 2026-10-15; it was refused by name until then). Only a `-` at column 0 continues it.
+    const gap = /^(?: *(?:#[^\n]*)?\n)*/.exec(front.slice(i))![0].length;
+    if (gap > 0 && front[i + gap] === '-') i += gap;
+    if (!(i < front.length && front[i] === '-')) break;
     if (front[i + 1] === '\n' || i + 1 === front.length) {
       // `- ` with nothing after it is a null item, which `list()` keeps and `represent_none`
       // writes back as `- null`. Python has no complaint about it, so neither does this.

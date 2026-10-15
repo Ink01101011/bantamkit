@@ -507,6 +507,21 @@ export async function run(ctx) {
       ['spaces before a quoted value', desc("  'x'")],
       ['a comment after a quoted value', desc("'x' #c")],
       ['a comment hard against a quoted value', desc("'x'#c")],
+      // job67 J67-3 (#120 remainder, user ruling 2026-10-15): blank lines inside a block
+      // sequence — the one ruled shape real hand edits produce — are READ now, as PyYAML
+      // reads them, and compared here instead of being refused by name.
+      ['block sequence, a blank line between items', blockLinks('- a\n\n- b')],
+      ['block sequence, a line of spaces between items', blockLinks('- a\n  \n- b')],
+      ['block sequence, a comment line between items', blockLinks('- a\n# c\n- b')],
+      ['block sequence, an indented comment line between items', blockLinks('- a\n  # c\n- b')],
+      ['block sequence, runs of blank and comment lines', blockLinks('- a\n\n \n# c\n\n- b\n\n- c')],
+      ['block sequence, a blank line before the first item', blockLinks('\n- a\n- b')],
+      ['block sequence, a comment line before the first item', blockLinks('# c\n- a')],
+      ['block sequence, a blank line after a block scalar item', blockLinks('- |\n  x\n\n- y')],
+      ['block sequence, a blank line then the next key', fm("name: linked\ndescription: d\nlinks:\n- a\n\n- b\n\ntype: project\ncreated: '2026-10-13'\nlast_recalled: null\n")],
+      ['block sequence after "links: " with a trailing space', fm("name: linked\ndescription: d\ntype: project\ncreated: '2026-10-13'\nlast_recalled: null\nlinks: \n- a\n- b\n")],
+      ['block sequence after "links:" and a comment', fm("name: linked\ndescription: d\ntype: project\ncreated: '2026-10-13'\nlast_recalled: null\nlinks: # c\n- a\n")],
+      ['a plain value, then a line of spaces, then the next key', fm("name: n\ndescription: d\n  \ntype: project\nlinks: []\n")],
     ];
     // 2. BOTH REFUSE.
     const bothRefuse = [
@@ -532,7 +547,10 @@ export async function run(ctx) {
       ['flow sequence, an empty entry', links('[a,, b]')],
       ['flow sequence, only a comma', links('[,]')],
     ];
-    // 3. NODE REFUSES, PYTHON READS — the deliberate difference.
+    // 3. NODE REFUSES, PYTHON READS — the deliberate difference, and BY USER RULING
+    // (2026-10-15, #120's remainder) THE FINAL ANSWER: the PyYAML scanner is not ported, so
+    // these eight stay refused by name. A store holding one still serves recall AND save on
+    // Node — the file is skipped and named (store.mjs, "#120 ruling: save skips").
     const ruled = [
       ['an anchor', desc('&a x')],
       ['a core-schema tag', desc('!!str 5')],
@@ -716,6 +734,110 @@ export async function run(ctx) {
       `#120 seeded corpus: ${read} of 1500 read alike, ${nodeOnlyRefusals} refused by node where python reads, ` +
         `${guesses.length} guesses`,
     );
+
+    // 5. job67 J67-3: A SECOND SEEDED CORPUS, block sequences only, with blank lines, lines of
+    // spaces and comment lines between, before and after the items (#120 ruling (b)). Here the
+    // property is the strong one: node never answers differently AND never refuses where
+    // python reads — every one of these shapes is in the language now. Its own LCG, so the
+    // first corpus's 1500 are untouched.
+    let seed2 = 6702;
+    const rnd2 = () => (seed2 = (seed2 * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const pick2 = (a) => a[Math.floor(rnd2() * a.length)];
+    const seqItems = ['a', 'b c', "'q'", '"d"', '12', '', '|\n  x', '>\n  y\n  z', 'a #c', 'x\n  cont', 'null', '2026-01-02'];
+    const gaps = ['', '', '\n', '  \n', '# c\n', '  # c\n', '\n\n', '   \n# x\n', ' \n  \n'];
+    const seqGenerated = [];
+    for (let k = 0; k < 1500; k += 1) {
+      let seq = pick2(gaps);
+      const n = 1 + Math.floor(rnd2() * 4);
+      for (let j = 0; j < n; j += 1) seq += `- ${pick2(seqItems)}\n${pick2(gaps)}`;
+      seqGenerated.push(
+        fm(`name: n\ndescription: d\n${pick2(['', "created: '2026-10-13'\n"])}links:${pick2(['', ' ', ' # c'])}\n${seq}${pick2(['type: project\n', '# t\ntype: project\n'])}`),
+      );
+    }
+    const pySeq = ctx.runPython(REF, { op: 'parse', texts_b64: seqGenerated.map(b64) }).parsed;
+    const seqGuesses = [];
+    const seqNodeOnly = [];
+    let seqRead = 0;
+    seqGenerated.forEach((text, k) => {
+      const nd = nodeParse(text);
+      const py = pySeq[k];
+      if (refuses(nd)) {
+        if (!refuses(py)) seqNodeOnly.push({ text, node: nd.error });
+        return;
+      }
+      if (refuses(py) || JSON.stringify(nd) !== JSON.stringify(py)) seqGuesses.push({ text, python: py, node: nd });
+      else seqRead += 1;
+    });
+    cases.push({
+      name: '#120 block-sequence corpus: of 1500, node never answers what python does not',
+      kind: 'json',
+      expected: [],
+      actual: seqGuesses.slice(0, 5),
+    });
+    cases.push({
+      name: '#120 block-sequence corpus: node never refuses one python reads (blank lines are in the language)',
+      kind: 'json',
+      expected: [],
+      actual: seqNodeOnly.slice(0, 5),
+    });
+    cases.push({
+      name: '#120 block-sequence corpus: python reads at least 1400 of them, so the two cases above are not vacuous',
+      kind: 'json',
+      expected: true,
+      actual: seqRead >= 1400,
+    });
+    notes.push(`#120 block-sequence corpus: ${seqRead} of 1500 read alike, ${seqNodeOnly.length} node-only refusals, ${seqGuesses.length} guesses`);
+    // The headline value, spelled, on both sides.
+    const blankIdx = readAlike.findIndex(([label]) => label === 'block sequence, a blank line between items');
+    for (const [side, of] of [['python', pyOf], ['node', (i) => nodeOf[i]]]) {
+      cases.push({
+        name: `#120 per side: ${side} reads links:\\n- a\\n\\n- b as a two-item list`,
+        kind: 'json',
+        expected: ['a', 'b'],
+        actual: of(blankIdx).meta?.links,
+      });
+    }
+
+    // 6. #176: `formatFact(parseFactText(x))` — the two exported codec functions meet. For
+    // every x node READS among the inputs above (the read-alike list and both corpora), the
+    // parse handed straight to `formatFact` writes exactly the bytes PyYAML's reference
+    // writes back for x (`reemit`). WAS: it threw `cannot emit undefined for key name`.
+    {
+      const pool = [...readAlike.map(([, t]) => t), ...generated, ...seqGenerated];
+      const pyRe = ctx.runPython(REF, { op: 'reemit', texts_b64: pool.map(b64) }).reemitted;
+      const misses = [];
+      let roundTripped = 0;
+      pool.forEach((text, k) => {
+        let parsed;
+        try {
+          parsed = factfile.parseFactText(text);
+        } catch {
+          return; // not accepted: outside this property
+        }
+        const re = pyRe[k];
+        let out;
+        try {
+          out = factfile.formatFact(parsed);
+        } catch (e) {
+          out = `${e.name}: ${e.message}`;
+        }
+        if (re.b64 === undefined || out !== unb64(re.b64)) misses.push({ text, python: re, node: out });
+        else roundTripped += 1;
+      });
+      cases.push({
+        name: '#176 per side: formatFact(parseFactText(x)) writes the reference\'s bytes for every x node reads',
+        kind: 'json',
+        expected: [],
+        actual: misses.slice(0, 5),
+      });
+      cases.push({
+        name: '#176 per side: the round trip covers at least 2000 inputs, so the case above is not vacuous',
+        kind: 'json',
+        expected: true,
+        actual: roundTripped >= 2000,
+      });
+      notes.push(`#176 round trip: ${roundTripped} inputs, ${misses.length} misses`);
+    }
   }
 
 

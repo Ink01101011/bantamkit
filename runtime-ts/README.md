@@ -35,7 +35,7 @@ on [its page](https://pypi.org/project/bantamkit/); run them here and you get no
 | [Memory stores are layered by default](#memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
 | [The asset pack](#the-asset-pack) | What ships in `assets/` and how it is found |
 | [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; concurrent writes, one hand-edit to avoid |
-| [Module API](#module-api) | The one entry point, all 139 exports it reaches, and the one break in `clockIn` |
+| [Module API](#module-api) | The one entry point, all 141 exports it reaches, and the one break in `clockIn` |
 | [Development](#development) | Build, test, conformance |
 | [Measurements and history](#measurements-and-history) | Where the measured numbers behind this page live |
 
@@ -432,7 +432,7 @@ refused by Node's resolver:
 
 | specifier | result |
 | --- | --- |
-| `bantamkit-mcp` | 139 value exports, 26 type-only exports |
+| `bantamkit-mcp` | 141 value exports, 28 type-only exports |
 | `bantamkit-mcp/dist/cli.js` | `ERR_PACKAGE_PATH_NOT_EXPORTED` |
 | `bantamkit-mcp/dist/shiftwork.js` | `ERR_PACKAGE_PATH_NOT_EXPORTED` |
 | `bantamkit-mcp/package.json` | `ERR_PACKAGE_PATH_NOT_EXPORTED` |
@@ -463,9 +463,9 @@ and `skipLibCheck: false` type-checks `import ... from 'bantamkit-mcp'` clean.
 | `errors.js` | The base error every other one extends | `BantamError` |
 | `contract.js` | The JSON-answer contract: load it, pull JSON out of a model reply, compose the retry feedback | `ContractParseError`, `extractJson`, `loadContract`, `parseContractDocument`, `parseErrorMessage`, `REQUIRED_KEYS`, `schemaError`, `schemaRetryFeedback`, `validationErrorMessage` |
 | `pyjson.js` | CPython `json` semantics over a `PyValue` tree — float repr and decode errors included | `dumpJson`, `fromJs`, `parseJson`, `PY_NONE`, `pyFloatRepr`, `PyJSONDecodeError`, `PyValueError`, `rawDecode`, `reprValue`, `toJs`<br>*types:* `DumpOptions`, `PyValue` |
-| `pyjsonschema.js` | The JSON Schema validator, with CPython `jsonschema`'s error ordering and best-match | `absolutePath`, `bestMatch`, `iterErrors`, `pyEqual`, `PyJsonSchemaUnsupported`, `validate`<br>*types:* `PyValidationError` |
+| `pyjsonschema.js` | The JSON Schema validator, with CPython `jsonschema`'s error ordering and best-match | `absolutePath`, `bestMatch`, `iterErrors`, `pyEqual`, `PyJsonSchemaRefusal`, `PyJsonSchemaUnsupported`, `pyUrlNormalize`, `validate`<br>*types:* `Draft`, `PyValidationError` |
 | `assets.js` | The vendored asset pack: schemas, skills and tool definitions | `AssetNotFound`, `assetsRoot`, `loadSchema`, `loadSkill`, `loadTool`, `loadToolAsset`<br>*types:* `Tool` |
-| `memory/factfile.js` | One fact file: frontmatter, parse, format | `decodeFactBytes`, `FactParseError`, `formatFact`, `parseFactText`, `parseFrontmatter`, `pySplit`, `pyStrip`, `todayLocal`<br>*types:* `Fact`, `FactMeta`, `FactValue` |
+| `memory/factfile.js` | One fact file: frontmatter, parse, format | `decodeFactBytes`, `FactParseError`, `formatFact`, `parseFactText`, `parseFrontmatter`, `pySplit`, `pyStrip`, `todayLocal`<br>*types:* `Fact`, `FactMeta`, `FactValue`, `ParsedFact` |
 | `memory/pyyaml.js` | The YAML subset PyYAML's safe loader and dumper accept | `constructPlain`, `PyScalar`, `resolveImplicitTag`, `safeDumpMapping`, `YamlConstructError`, `YamlEmitError`<br>*types:* `PyOrder`, `YamlScalar`, `YamlValue` |
 | `memory/layers.js` | Which stores a recall reads, and where the project store is | `countFacts`, `discoverProjectStore`, `loadGrants`, `MEMORY_DIR_ENV`, `PROJECT_STORE`, `resolveProjectStore`<br>*types:* `StoreBinding` |
 | `memory/component.js` | `Memory`, the save/recall/compact/dream component the server calls | `layerLabel`, `Memory`, `normalizeName`, `profileStore`<br>*types:* `CompactOutcome`, `DreamOutcome`, `MemoryOptions`, `RecallOutcome`, `SaveOutcome` |
@@ -474,13 +474,21 @@ and `skipLibCheck: false` type-checks `import ... from 'bantamkit-mcp'` clean.
 | `memory/store.js` | `MemoryStore`: the on-disk store, its budgets and its dedupe | `BANTAMKIT_GITIGNORE_TEXT`, `DEFAULT_INDEX_BUDGET`, `DUPLICATE_JACCARD`, `ensureBantamkitGitignore`, `jaccard`, `MemoryBudgetExceeded`, `MemoryStore`, `MemoryValidationError`, `pyCompareLt`, `pyEqualValue`, `pyHashKey`, `pyText`, `RECALL_MIN_SCORE_RATIO`, `sortScored`, `tokens`, `VALID_TYPES`<br>*types:* `MemoryStoreOptions`, `SaveResult`, `StoreInternals` |
 | `memory/pyfs.js` | CPython `pathlib` and `os.path` semantics over `node:fs`, error numbering included | `asPyOSError`, `cmpCodepoint`, `matchesMd`, `normcase`, `pyAppendText`, `pyCwd`, `pyDecodeUtf8`, `pyExists`, `pyExpanduser`, `pyHome`, `pyIsAbsolute`, `pyIsDir`, `pyIsFile`, `pyJoin`, `pyLexists`, `pyMkdirParents`, `pyMtimeDate`, `pyName`, `PyOSError`, `pyParent`, `pyParents`, `pyReadText`, `pyReplace`, `pyRepr`, `pyResolve`, `PyRuntimeError`, `pyScandirNames`, `pyStatIsDir`, `pySuffix`, `PyUnicodeDecodeError`, `pyUnlink`, `pyWithSuffix`, `pyWriteText`, `sortedPathNames`, `sortedPathParts`, `STRERROR_NAMES` |
 | `shiftwork.js` | The shift-work checkpoint tools | `clockIn`, `clockOut`, `HISTORY_RING_SIZE`, `SCHEMA_NAME`, `status`, `TERMINAL_UNIT_STATUS`, `timestamp`<br>*types:* `ClockOptions` |
-| **14 modules** | | **139 values, 26 types** |
+| **14 modules** | | **141 values, 28 types** |
 
 Two things that table is easy to misread. The `py*` names are not a Python bridge — they are
-this port's re-implementations of CPython semantics (`pyfs.js` alone is 36 of the 139), and
+this port's re-implementations of CPython semantics (`pyfs.js` alone is 36 of the 141), and
 they are exported because the conformance harness and the operator tooling call them, not
 because an application should. And `Function.length` is not the signature: `clockIn.length` is
 `1` because two of its three parameters have defaults.
+
+**Two seams take what the other half hands them (#176).** `formatFact` accepts what
+`parseFactText` returns — `formatFact(parseFactText(text))` writes the bytes a recall stamp
+writes back for that file (the store's own mapping: `name`, `description` and `type` required
+and named when missing, `links` defaulting to `[]`), where it used to throw
+`cannot emit undefined for key name`. `validate` and `iterErrors` take `PyValue`s, not plain JS
+values: handed `{a: 1}` they now say `the instance must be a PyValue — convert a plain JS value
+with fromJs() — got a plain JS object` instead of `got undefined`. Convert with `fromJs()`.
 
 **One export changed shape.** `clockIn` took a unit id as its **second positional parameter**,
 ahead of the options object:
@@ -508,8 +516,8 @@ printf '{"name":"c","private":true,"type":"module"}' > /tmp/bk/consumer/package.
 cd /tmp/bk/consumer && node -e "import('bantamkit-mcp').then((m) => console.log(Object.keys(m).length))"
 ```
 
-It prints `139`, with no `npm install` and nothing fetched: `dist/index.js` pulls in none of the
-server code, so the one runtime dependency is never reached. The 26 type-only exports are in the
+It prints `141`, with no `npm install` and nothing fetched: `dist/index.js` pulls in none of the
+server code, so the one runtime dependency is never reached. The 28 type-only exports are in the
 same tarball — from `/tmp/bk/consumer`:
 
 ```sh

@@ -192,6 +192,10 @@ const save = (type, name, description, body, links = []) => ({
 const recall = (query, k = null, stamp = true) => ({ op: 'recall', args: [b64(query), k, stamp] });
 const lookup = (name, stamp = true) => ({ op: 'lookup', args: [b64(name), stamp] });
 const indexText = () => ({ op: 'index_text' });
+const memorySave = (type, name, description, body, links = []) => ({
+  op: 'memory_save',
+  args: [b64(type), b64(name), b64(description), b64(body), links.map(b64)],
+});
 
 /** The Node side of one scenario, shaped exactly like `store_ref.py`'s answer. */
 function runNode(store, request) {
@@ -215,7 +219,15 @@ function runNode(store, request) {
       if (call.op === 'save') {
         const [type, name, description, body, links] = call.args;
         const r = s.save(unb64(type), unb64(name), unb64(description), unb64(body), links.map(unb64));
-        results.push({ status: r.status, name: b64(r.name), similar: nullable(r.similar) });
+        results.push({
+          status: r.status,
+          name: b64(r.name),
+          similar: nullable(r.similar),
+          // #120 ruling: present only when the save skipped a file, as in `store_ref.py`.
+          ...(r.skipped !== undefined
+            ? { skipped: r.skipped.map((x) => ({ file: b64(x.file), reason: b64(x.reason) })) }
+            : {}),
+        });
       } else if (call.op === 'recall') {
         const [query, k, stamp] = call.args;
         results.push(
@@ -252,6 +264,16 @@ function runNode(store, request) {
         );
       } else if (call.op === 'index_text') {
         results.push({ index_text: b64(s.indexText()) });
+      } else if (call.op === 'memory_save') {
+        // `Memory.saveOutcome` over the SAME root (#120 ruling), as `store_ref.py` runs it.
+        const mem = new request.component.Memory(request.root, {
+          today: () => request.today,
+          ...(request.index_budget === null ? {} : { indexBudget: request.index_budget }),
+          ...(request.k === null ? {} : { k: request.k }),
+        });
+        const [type, name, description, body, links] = call.args;
+        const out = mem.saveOutcome(unb64(type), unb64(name), unb64(description), unb64(body), links.map(unb64));
+        results.push({ reply: b64(out.reply), status: out.status });
       } else {
         throw new Error(`unknown call op ${call.op}`);
       }
@@ -778,6 +800,133 @@ export async function run(ctx) {
     });
   }
   notes.push(`${list.length} scenarios compared, ${ruled.length} ruled to differ in their answer`);
+
+  // job67 J67-3, #120's remainder by USER RULING (2026-10-15): ONE UNREADABLE FACT FILE COSTS
+  // THAT FILE, NOT THE SAVE. A save skips it, names it (`skipped`, and the closing paragraph of
+  // the reply), and lands; the one file it never skips is the one it would WRITE. Two stores:
+  //   A. a file BOTH runtimes refuse (truncated): every answer and the whole tree compared
+  //      side to side, plus a per-side literal, because a differential is blind to the old
+  //      refusal coming back in both;
+  //   B. a file only PYTHON reads (an anchor, one of the eight ruled codec shapes): Python
+  //      reads it and Node skips it, so the answers differ — `ruling:` over them — while the
+  //      refusal bit (did the save land?) and the written fact's bytes are compared UNRULED.
+  {
+    const component = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'component.js')).href);
+    // A file that is not there reads as null, so a side that refused the save fails ITS case
+    // instead of taking the whole suite down on an ENOENT.
+    const readOr = (path) => {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const runBoth = (tag, files, calls) => {
+      const roots = {};
+      for (const side of ['py', 'node']) {
+        roots[side] = join(ctx.scratch, `j67-3-${tag}`, side);
+        materialise(roots[side], { dirs: ['facts', 'archive'], files, mtimes: Object.fromEntries(Object.keys(files).map((f) => [f, 1755990000])) });
+        applyModes(roots[side], { dirs: ['facts', 'archive'], files }, true);
+      }
+      const request = (root) => ({ op: 'run', root, today: TODAY, index_budget: null, k: null, create: true, calls });
+      const py = scrub(ctx.runPython(REF, request(roots.py)).results, roots.py);
+      const nd = scrub(runNode(store, { ...request(roots.node), component }).results, roots.node);
+      return { py, nd, roots };
+    };
+    const decode = (results) =>
+      results.map((r) =>
+        r.error
+          ? { error: r.error.type, message: unb64(r.error.message) }
+          : r.index_text !== undefined
+            ? { index_text: unb64(r.index_text) }
+            : r.reply !== undefined
+            ? { reply: unb64(r.reply), status: r.status }
+            : {
+                status: r.status,
+                name: unb64(r.name),
+                similar: r.similar === null ? null : unb64(r.similar),
+                ...(r.skipped ? { skipped: r.skipped.map((x) => ({ file: unb64(x.file), reason: unb64(x.reason) })) } : {}),
+              },
+      );
+    const calls = [
+      save('project', 'fresh-fact', 'a brand new subject', 'body'),
+      save('project', 'zz-bad', 'writing over the file nobody can read', 'body'),
+      memorySave('project', 'second-fact', 'another unrelated subject', 'body'),
+      save('project', 'healthy', 'about healthy', 'body'), // a duplicate of `healthy`? no: same name, an update
+      indexText(),
+    ];
+
+    // A. a truncated file both runtimes refuse.
+    const bad = 'malformed fact file zz-bad.md: not enough values to unpack (expected 3, got 1)';
+    const a = runBoth('a', { 'facts/healthy.md': factFile('healthy'), 'facts/zz-bad.md': 'just text, no frontmatter\n' }, calls);
+    cases.push({ name: '#120 ruling: save skips an unreadable fact file — answers, side to side', kind: 'json', expected: a.py, actual: a.nd });
+    cases.push({ name: '#120 ruling: save skips an unreadable fact file — tree, side to side', kind: 'bytes', expected: manifest(a.roots.py), actual: manifest(a.roots.node) });
+    const skippedA = [{ file: 'zz-bad.md', reason: bad }];
+    const literalA = [
+      { status: 'saved', name: 'fresh-fact', similar: null, skipped: skippedA },
+      {
+        error: 'MemoryValidationError',
+        message: `${bad}; saving 'zz-bad' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`,
+      },
+      {
+        reply: `saved 'second-fact'\n\n1 fact file could not be read and was skipped; the duplicate check read every other fact:\n[project] ${bad}`,
+        status: 'saved',
+      },
+      { status: 'saved', name: 'healthy', similar: null, skipped: skippedA },
+      { error: 'MemoryValidationError', message: bad },
+    ];
+    for (const [side, got] of [['python', a.py], ['node', a.nd]]) {
+      cases.push({
+        name: `#120 ruling: PINNED PER SIDE — ${side} saves past an unreadable file, names it, never overwrites it, and index_text still refuses`,
+        kind: 'json',
+        expected: literalA,
+        actual: decode(got),
+      });
+    }
+    cases.push({
+      name: '#120 ruling: the unreadable file is byte-for-byte untouched on both sides',
+      kind: 'json',
+      expected: [true, true],
+      actual: [a.roots.py, a.roots.node].map((r) => readOr(join(r, 'facts', 'zz-bad.md')) === 'just text, no frontmatter\n'),
+    });
+
+    // B. an anchored description: PyYAML reads it, the port refuses it by ruling.
+    const anchored = factFile('zz-anchored', { description: '&a anchored subject' });
+    const b = runBoth('b', { 'facts/healthy.md': factFile('healthy'), 'facts/zz-anchored.md': anchored }, [
+      save('project', 'fresh-fact', 'a brand new subject', 'body'),
+      memorySave('project', 'second-fact', 'another unrelated subject', 'body'),
+    ]);
+    cases.push({
+      name: 'ruling: #120 save past a file only python reads — the answers',
+      kind: 'json',
+      expected: b.py,
+      actual: b.nd,
+      ruling:
+        'An anchored description is one of the eight YAML shapes PyYAML reads and the port refuses ' +
+        'by name (codec.mjs, "ruling: #120 node refuses where python reads"); the user ruled on ' +
+        '2026-10-15 that the scanner is not ported. So Python reads the file and Node skips it: ' +
+        'the save LANDS on both sides (compared unruled below), and only Node names the file as ' +
+        'skipped. The index each side rebuilds differs by that one line for the same reason. ' +
+        'Registered in docs/porting.md ("the YAML scanner cases").',
+    });
+    const landed = (results) => results.map((r) => r.status ?? 'refused');
+    cases.push({ name: '#120 ruling: save past a file only python reads — the save lands on both sides', kind: 'json', expected: landed(b.py), actual: landed(b.nd) });
+    cases.push({
+      name: '#120 ruling: save past a file only python reads — the fact written is the same bytes',
+      kind: 'bytes',
+      expected: readOr(join(b.roots.py, 'facts', 'fresh-fact.md')) ?? '<python wrote no fresh-fact.md>',
+      actual: readOr(join(b.roots.node, 'facts', 'fresh-fact.md')) ?? '<node wrote no fresh-fact.md>',
+    });
+    cases.push({
+      name: '#120 ruling: save past a file only python reads — the anchored file is untouched on both sides',
+      kind: 'json',
+      expected: [true, true],
+      actual: [b.roots.py, b.roots.node].map((r) => readOr(join(r, 'facts', 'zz-anchored.md')) === anchored),
+    });
+    const skippedFiles = (results) => decode(results).map((r) => (r.skipped ?? []).map((x) => x.file).concat(r.reply?.includes('[project] malformed fact file zz-anchored.md') ? ['reply names zz-anchored.md'] : []));
+    cases.push({ name: '#120 ruling: PINNED PER SIDE — python reads the anchored file, so it skips nothing', kind: 'json', expected: [[], []], actual: skippedFiles(b.py) });
+    cases.push({ name: '#120 ruling: PINNED PER SIDE — node skips the anchored file and names it', kind: 'json', expected: [['zz-anchored.md'], ['reply names zz-anchored.md']], actual: skippedFiles(b.nd) });
+  }
 
   // The five tag rulings above pin their WORDING, and a `ruling` case fails only when the
   // two sides MATCH — so a port that stopped refusing `<<` altogether would still "differ"

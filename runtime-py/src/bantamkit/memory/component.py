@@ -134,12 +134,15 @@ def _miss_line(name: str) -> str:
     return f"no fact named '{name}' in any layer bound here; matching by words instead:"
 
 
-def _skipped_note(skipped: list[dict[str, str]]) -> str:
+def _skipped_note(
+    skipped: list[dict[str, str]], rest: str = "every other fact was searched"
+) -> str:
     """The closing paragraph of a recall that left fact files out (job65/#119), or `""`.
 
     One bad file costs that file, and the answer SAYS which: the store's own sentence for
     each, labelled by layer, so the person knows what to repair and that the rest of the
-    store was searched.
+    store was searched. `rest` is what happened to the rest: a save (#120, user ruling
+    2026-10-15) says `the duplicate check read every other fact` instead.
     """
     if not skipped:
         return ""
@@ -148,8 +151,11 @@ def _skipped_note(skipped: list[dict[str, str]]) -> str:
     lines = [f"[{s['layer']}] {s['reason']}" for s in skipped]
     return (
         f"\n\n{count} {noun} could not be read and {'was' if count == 1 else 'were'} "
-        f"skipped; every other fact was searched:\n" + "\n".join(lines)
+        f"skipped; {rest}:\n" + "\n".join(lines)
     )
+
+
+_SAVE_SKIPPED_REST = "the duplicate check read every other fact"
 
 
 @dataclass(frozen=True)
@@ -381,7 +387,7 @@ class Memory:
             if (
                 isinstance(given, str)
                 and given != name
-                and self.store.lookup(name, stamp=False) is not None
+                and self.store.lookup(name, stamp=False, skipped=[]) is not None
             ):
                 return SaveOutcome(
                     reply=(
@@ -412,15 +418,20 @@ class Memory:
                 ),
                 status="refused-budget",
             )
+        # A fact file the save could not read is named, as recall names it (#120 ruling).
+        note = _skipped_note(
+            [{"layer": "project", **s} for s in result.skipped], _SAVE_SKIPPED_REST
+        )
         if result.status == "duplicate":
             return SaveOutcome(
                 reply=(
                     f"similar memory '{result.similar}' already exists — save under that "
                     f"SAME name to update it, or skip. Do not rename to force a copy."
-                ),
+                )
+                + note,
                 status="duplicate",
             )
-        return SaveOutcome(reply=f"saved '{result.name}'", status="saved")
+        return SaveOutcome(reply=f"saved '{result.name}'" + note, status="saved")
 
     def recall(
         self,

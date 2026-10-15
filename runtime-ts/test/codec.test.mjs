@@ -419,3 +419,46 @@ test('#120: YAML the codec does not implement raises a named FactParseError, nev
     assert.throws(() => p(v), FactParseError, JSON.stringify(v));
   }
 });
+
+// #120's remainder, user ruling 2026-10-15 (b): blank lines, lines of spaces and comment lines
+// inside a block sequence are read as PyYAML 6.0.3 reads them (each expected value below was
+// printed by `yaml.safe_load`). Mutation: remove the gap skip in `scanBlockSequence` -> red.
+test('#120 ruling: blank and comment lines inside a block sequence read as PyYAML reads them', async () => {
+  const { parseFrontmatter } = await import('../dist/memory/factfile.js');
+  const cases = [
+    ['links:\n- a\n\n- b\n', ['a', 'b']],
+    ['links:\n\n- a\n- b\n', ['a', 'b']],
+    ['links:\n# c\n- a\n', ['a']],
+    ['links:\n- a\n  \n# x\n- b\nname: n\n', ['a', 'b']],
+    ['links: \n- a\n', ['a']],
+    ['links: # c\n- a\n', ['a']],
+  ];
+  for (const [front, links] of cases) assert.deepEqual(parseFrontmatter(front).links, links, JSON.stringify(front));
+  // `links:\n- a\n\nname: n` ends the sequence at the key, as PyYAML does.
+  assert.deepEqual(parseFrontmatter('links:\n- a\n\nname: n\n'), { links: ['a'], name: 'n' });
+});
+
+// #176: the module-api seams meet. `formatFact(parseFactText(x))` writes x back for a file the
+// store wrote, and a frontmatter missing a required key is named, never "cannot emit undefined".
+test('#176: formatFact accepts parseFactText\'s {meta, body}', async () => {
+  const { formatFact, parseFactText } = await import('../dist/memory/factfile.js');
+  const text =
+    "---\nname: deploy-command\ndescription: how we deploy to production\ntype: project\n" +
+    "created: '2026-10-13'\nlast_recalled: '2026-10-13'\nlinks: []\n---\n\nRun make deploy from the repo root.\n";
+  assert.equal(formatFact(parseFactText(text)), text);
+  assert.throws(() => formatFact(parseFactText('---\nfoo: 1\n---\nb\n')), {
+    message: "formatFact: the frontmatter has no 'name' key, and a fact must carry name, description and type",
+  });
+});
+
+// #176: `validate()` handed a plain JS value names the JS type it got and how to convert it.
+test('#176: validate on a plain object names the real type, never "got undefined"', async () => {
+  const { validate, fromJs } = await import('../dist/index.js');
+  const say = (where, got) =>
+    `jsonschema seam: ${where} must be a PyValue — convert a plain JS value with fromJs() — got ${got}`;
+  assert.throws(() => validate({ a: 1 }, { type: 'object' }), { message: say('the instance', 'a plain JS object') });
+  assert.throws(() => validate(fromJs({ a: 1 }), { type: 'object' }), { message: say('the schema', 'a plain JS object') });
+  assert.throws(() => validate(fromJs(1), [1]), { message: say('the schema', 'a JS array') });
+  assert.throws(() => validate(fromJs(1), 'x'), { message: say('the schema', 'a JS string') });
+  assert.equal(validate(fromJs({ a: 1 }), fromJs({ type: 'object' })), null);
+});
