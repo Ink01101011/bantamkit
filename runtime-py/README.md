@@ -35,7 +35,7 @@ package is named where the two differ, but its own install, update and CLI comma
 | [Requirements](#requirements) | Python and dependencies |
 | [The asset pack](#the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
 | [The operator CLI: `python -m bantamkit.memory`](#the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
-| [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; pdf/.doc/.rtf, CLI name, `build_id` |
+| [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; pdf/.doc/.rtf, CLI name, `build_id`, YAML only PyYAML reads |
 | [Module API](#module-api) | `import bantamkit`: the library half, measured from the wheel |
 | [Development](#development) | Clone, test, lint, conformance |
 | [Documentation](#documentation) | The full docs on GitHub |
@@ -65,9 +65,8 @@ python -m venv <env>
 ```
 
 `--install` records the venv's console script by absolute path with `"args": []`, so no launch
-needs the network or your shell's PATH. Measured on macOS arm64 (served-tools: dated — the
-surface was twelve then), it served 12 tools under a GUI
-app's PATH, `/usr/bin:/bin:/usr/sbin:/sbin`; the Windows layout (`<env>\Scripts\`) was not.
+needs the network or your shell's PATH. Measured on macOS arm64, it served under a GUI app's
+PATH, `/usr/bin:/bin:/usr/sbin:/sbin`; the Windows layout (`<env>\Scripts\`) was not.
 
 **No network on the target? Carry a wheelhouse.** Download it on a machine with the **same OS,
 CPU architecture and Python minor version** (some wheels, such as `pydantic_core`, are built for
@@ -99,7 +98,8 @@ For Claude Code: `claude mcp add bantamkit -s user -- pipx run --spec "bantamkit
 `bantamkit-mcp --install <host>` (`claude`, `claude-desktop`, `copilot`, `cursor`) writes an
 entry pointing at the console script you ran. It never prompts, so it behaves the same in a
 terminal, CI or another agent. For the three JSON hosts it backs the file up as
-`<name>.backup-<date>`, keeps its permissions, and refuses a file that does not parse or a
+`<name>.backup-<date>` (a second write the same day takes `<name>.backup-<date>.1`, never
+overwriting a backup), keeps its permissions, and refuses a file that does not parse or a
 differing entry without `--force`.
 
 Every host has the same steps: **1** command, **2** file, **3** entry, **4** confirm, **5** undo
@@ -213,7 +213,8 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 
 Don't add `--store` by reflex: the default is layered, and the layering is most of the value.
 One-shot commands that print and exit: `--install {claude,claude-desktop,copilot,cursor}` (with
-`--force`), `--update`, `--assets-root`, `--mcp-report`, `--statusline`, `-h`. More:
+`--force`), `--install-hooks` / `--remove-hooks` (with `--yes`), `--hook`, `--update`,
+`--assets-root`, `--mcp-report`, `--statusline`, `-h`. More:
 [store binding](https://github.com/Ink01101011/bantamkit/blob/main/docs/mcp.md#which-memory-store-the-server-binds) ·
 [pinning](https://github.com/Ink01101011/bantamkit/blob/main/docs/memory.md#pinning-the-store-bantamkit_memory_dir) ·
 [event log](https://github.com/Ink01101011/bantamkit/blob/main/docs/eventlog.md#the-switch) ·
@@ -222,14 +223,16 @@ One-shot commands that print and exit: `--install {claude,claude-desktop,copilot
 ## Update
 
 ```bash
-<env>/bin/bantamkit-mcp --update       # a pip install from PyPI: runs pip install --upgrade bantamkit
+<env>/bin/bantamkit-mcp --update       # a pip install from PyPI: runs pip install --upgrade bantamkit==<latest>
 pip install -U "bantamkit[mcp]"        # the same, by hand
 pipx upgrade bantamkit                 # pipx
 uv tool upgrade bantamkit              # uv
 ```
 
-`--update` (`check the package index and update this install if it differs, then exit`) upgrades
-an install from PyPI with this interpreter's pip; it is the only network access here. An editable
+`--update` (`check the package index and update this install if it differs, then exit`) asks
+this interpreter's pip which version the index has (`pip install --dry-run --report -`, so pip's
+own index, proxy and credentials apply), installs exactly that version, and says `updated … to
+<latest>` only after the installed distribution reports it; it is the only network access here. An editable
 install, a local file or a source tree is refused with exit 1 and a sentence naming the manual
 route (for a clone, `git pull`). For a wheelhouse, repeat the download and install.
 
@@ -244,7 +247,7 @@ you**; a new version with an old `build_id` means an old process.
 | The host times out; the server never answers | A `pipx run` entry with a cold cache and no network. Use [Install once, run offline](#install-once-run-offline) |
 | `ENOENT` from the host | A GUI host does not read your shell rc, so `pipx` is not on its PATH. `--install` records an absolute path |
 | `bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"` | Install with the `[mcp]` extra |
-| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` |
+| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` (`.backup-<date>.1` and on for a later write the same day) |
 | `… is not valid JSON, so this refuses to touch it` | Fix the host's file by hand, then re-run |
 | `MCP server bantamkit already exists in user config` | `claude mcp remove bantamkit -s user`, then install again |
 | `pinned memory store must be an absolute path` or `pinned memory store is unreachable` | Give `BANTAMKIT_MEMORY_DIR` an absolute path that exists |
@@ -307,7 +310,7 @@ Full reference: [docs/memory.md → The operator CLI](https://github.com/Ink0110
 ## Where the Python and Node servers differ
 
 Both servers read and write the same on-disk store. Every feature lands in both in one change, and
-a conformance case compares their answers. Three differences are deliberate, each ruled in the
+a conformance case compares their answers. Four differences are deliberate, each ruled in the
 [divergence table](https://github.com/Ink01101011/bantamkit/blob/main/docs/porting.md#where-the-two-runtimes-deliberately-differ):
 
 - **pdf, `.doc` and `.rtf`:** this side's reader (`bantamkit.docread`) reads them, pdf with a
@@ -317,6 +320,11 @@ a conformance case compares their answers. Three differences are deliberate, eac
   text and errors alike.
 - **`build_id`** hashes the executing tree, so it differs by construction; `assets_digest` is
   identical, and that is the one that carries meaning.
+- **Hand-edited YAML that only this side reads.** A fact file's frontmatter is read by PyYAML
+  here. Eight shapes it accepts — an anchor, `!!str`, a flow mapping (empty or not), a nested
+  flow sequence, a flow-sequence pair, a flow sequence over two lines, an anchored sequence
+  item — are refused by name on the Node side, whose recall and save skip that file and say
+  so. Every fact the tools *write* is in a shape both sides read.
 
 ## Module API
 

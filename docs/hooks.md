@@ -563,9 +563,11 @@ not pinned at all. It is now, by seven mutants run through the file's own
 adapter's own `PreToolUse`/`Read` arm, so what is pinned is the property and not the on-disk
 shape. Rerun: `BANTAMKIT_HOOK_PATH=<47d1c12 copy> node --test runtime-ts/test/hooks.test.mjs`.
 
-There is no Python half of this adapter — it is pure Node by design (see the file header), so
-the two-runtime rule in `CLAUDE.md` does not apply to it and there is no conformance suite to
-pair with, unlike `tools/statusline`.
+The adapter has both halves: `runtime-ts/src/hookadapter.ts` (`bantamkit-mcp --hook`;
+`tools/hooks/bantamkit-hook.mjs` is a four-line shim onto it, kept because existing
+registrations name it) and `runtime-py/src/bantamkit/hookadapter.py` (`python -m
+bantamkit.mcpserver --hook`, since job62). `node tools/conformance/run.mjs --suite hooks`
+compares them as real processes.
 
 Every decision appends one line to `~/.bantamkit/hooks/hook-log.jsonl` — `event`, `action`,
 `bytes`, `ms` — so "it fires and it is cheap" is a number you can rerun:

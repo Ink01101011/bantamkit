@@ -1153,8 +1153,9 @@ test('when two keys are wrong the required one is the sentence', () => {
 test('an odd key still passes through beside the required pair', () => {
   const root = fresh();
   // `additionalProperties: true` is J50-7's deliberate choice — a refused key is friction,
-  // not safety. Two odd keys, one of them the OLD duration spelling, one a shape the schema
-  // never names.
+  // not safety — except the five keys the runtime writes itself (unit, role, status, ts,
+  // event), refused since job65 (#117). Two odd keys, one of them the OLD duration spelling,
+  // one a shape the schema never names.
   const path = writeCheckpoint(root);
   assert.equal(attempt(path, { tokens: 1, duration_ms: 2, duration: 88.2, wall: ['x', { y: 1 }] }).result, 'ok');
   const written = logLines(path).pop();

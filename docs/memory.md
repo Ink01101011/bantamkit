@@ -20,23 +20,17 @@ agent = Agent(client=client).use(
 print(agent.run("Which team owns the payments API? Check memory first.").output)
 ```
 
-This registers `memory_recall` and `memory_save` as tools. The store directory
-is created if missing.
-
-**AMENDED 2026-09-12 — job48 (`fix/job48-unwritable-cwd`), J48-4.** The second
-sentence is kept as the record of what this constructor did until this job, and it is
-no longer true. `Memory(store=...)` **designates** the directory and creates nothing;
-the first `save` (or `compact`) brings `facts/` and `archive/` into existence, and if
-the filesystem will not have them it refuses by name rather than raising an `OSError`
-at whoever is listening:
+This registers `memory_recall` and `memory_save` as tools. `Memory(store=...)`
+**designates** the directory and creates nothing; the first `save` (or `compact`)
+brings `facts/` and `archive/` into existence, and if the filesystem will not have
+them it refuses by name rather than raising an `OSError` at whoever is listening:
 
 ```
 memory store could not be created: <root>; the directory is not there and this
 filesystem would not make it, so nothing was written
 ```
 
-**Amended 2026-10-15 (job65, #141).** That sentence is now reserved for a root that
-is *not there*. A store that exists and refuses the write — a `chmod 000` root, a
+That sentence is reserved for a root that is *not there* (job65, #141). A store that exists and refuses the write — a `chmod 000` root, a
 `chmod 555` store whose directories are all present, a read-only mount — answers
 instead, with the OS's own reason (`Permission denied`, `Operation not permitted` or
 `Read-only file system`):
@@ -550,19 +544,25 @@ Two things about that target matter, and both were measured defects:
   `tools/conformance/suites/memorycli.mjs` pins the acceptance as a literal.
 
 **The eviction order is class first, then staleness:**
-`(0 if type != "feedback" else 1, last_recalled or created, name)`.
+`(1 if type in DURABLE_TYPES else 0, last_recalled or created, name)`, with
+`DURABLE_TYPES = ("feedback", "user")` (`runtime-py/src/bantamkit/memory/store.py`,
+`runtime-ts/src/memory/store.ts`).
 
-- **Every non-`feedback` fact is exhausted before any `feedback` fact is
-  archived.** A `feedback` fact is a standing instruction from the user — it
-  holds until revoked, and its worth does not decay with time-since-last-recall,
-  so a purely temporal key ranks that class exactly backwards: the better an
-  instruction has been internalised, the less anything recalls it, the staler it
-  looks, and the sooner it leaves the index that is loaded at session start.
-  Measured on a real project store (index 21698 of a 24000-byte budget): one
-  auto-compaction archived 15 facts and **6 of them were `feedback`**, three of
-  those loaded into that same session's startup profile.
+- **Every fact of another type is exhausted before any `feedback` or `user` fact
+  is archived.** A `feedback` fact is a standing instruction from the user and a
+  `user` fact is a durable fact about the user; both hold until revoked, and their
+  worth does not decay with time-since-last-recall, so a purely temporal key ranks
+  them exactly backwards: the better an instruction has been internalised, the
+  less anything recalls it, the staler it looks, and the sooner it leaves the
+  index that is loaded at session start. Measured on a real project store (index
+  21698 of a 24000-byte budget): one auto-compaction archived 15 facts and **6 of
+  them were `feedback`**. The two types share one rank, so between them the
+  staleness order decides. Measured on both runtimes over six facts — the oldest
+  a `user` fact from 2024, one `feedback`, four newer `project`/`reference` facts —
+  `compact` to a 200-byte budget archived the four and kept `fb` and `old-user`
+  (`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> compact`, #157).
 - **It is a priority, not a veto.** The budget still wins. If archiving every
-  non-`feedback` fact leaves the index above the target, `feedback` facts are
+  other fact leaves the index above the target, `feedback` and `user` facts are
   then archived by staleness, stalest first, and `compact()` still lands at or
   below the target.
 - **Within a class the staleness order is unchanged**, and the sort is stable. A
@@ -987,24 +987,16 @@ bounds the merged result and `index_budget` governs the project store.
 and its parents looking for an existing `.bantamkit/memory` directory and
 returns the nearest one — so a sub-package shares its repo's store. If nothing
 up the tree has one, it designates `<start>/.bantamkit/memory` without creating
-anything; `Memory.layered()` then creates that directory, the same way
-`Memory(store=...)` creates the store you name.
-
-**AMENDED 2026-09-12 — job48, J48-4.** Everything after the semicolon is a record of
-what happened until this job and is now false in both of its halves. `Memory.layered()`
-does **not** create the designated directory, and `Memory(store=...)` does **not**
-create the store you name — both build the project layer with `create=False`. The
-designation survives as a designation until a write needs the directory. What did not
-change is the resolution itself: the walk still returns the nearest *existing* store
-and still designates `<start>/.bantamkit/memory` when there is none, and
-`resolve_project_store` still carries the `origin` / `searched_from` / `state` the disk
-never held.
+anything. Neither `Memory.layered()` nor `Memory(store=...)` creates the directory
+either: both build the project layer with `create=False`, and the designation stays
+a designation until the first save needs the directory (job48). Starting a server
+creates nothing anywhere; `resolve_project_store` carries the `origin` /
+`searched_from` / `state` the disk does not hold.
 
 One consequence is worth stating because it is not a tidiness point: the walk keys on
-an *existing* directory, so a bare session that saved nothing used to leave one behind
-and thereby decide where the NEXT session bound. Measured at this commit on the same
-fixture — a bare start in `proj/sub`, then a real store created at `proj/` — the old
-code binds `proj/sub/.bantamkit/memory` and the new code binds `proj/.bantamkit/memory`.
+an *existing* directory, so a session that saved nothing does not decide where the NEXT
+session binds. A bare start in `proj/sub`, then a real store created at `proj/`, binds
+`proj/.bantamkit/memory`.
 
 The ancestor chain is resolved, but the returned store path is **not** resolved
 further: a symlinked store keeps its config beside the symlink, not beside the
@@ -1093,20 +1085,9 @@ included), a key absent leaves it alone, and a winning entry with no `env`
 means the walk even when a lower scope pins. Not covered: `${VAR}` expansion in
 `.mcp.json` values, which the host performs and the hook does not — such a pin
 is refused as relative, loudly, rather than resolved to the wrong store.
-Node-only by construction: there is no Python hook, so no conformance case.
-
-**AMENDED 2026-09-20 (job62, J62-9): that last sentence is FALSE now.** There is a
-Python hook — `python -m bantamkit.mcpserver --hook`, every arm, landed in J62-3
-and J62-3B as `runtime-py/src/bantamkit/hookadapter.py` — so the pin-reading
-paragraph above describes BOTH runtimes, and the registration walk, the
-refusals and the `warn` log line are ported rather than mirrored in prose.
-There are conformance cases now: `node tools/conformance/run.mjs --suite hooks`
-drives 42 of them as real processes over both runtimes (**AMENDED 2026-09-21,
-J62-21: 69, after J62-10's fourteen and J62-20's thirteen for
-`--remove-hooks`' consent gate**). What the paragraph above
-still gets right is the exclusion: `${VAR}` expansion in `.mcp.json` values is
-the host's, not the hook's, and a pin that needs it is refused as relative on
-both sides rather than resolved to the wrong store.
+Both runtimes carry the hook (`python -m bantamkit.mcpserver --hook` since job62), so
+this paragraph describes both, and `node tools/conformance/run.mjs --suite hooks`
+drives the pin, the refusals and the `warn` line as real processes over both.
 
 ### The host's own auto-memory is now written to, one way
 
@@ -1140,12 +1121,17 @@ and misleading in the two cases where nothing was searched at all. It now splits
 and, whenever the **project** layer itself holds nothing, the reply also names
 that store, how it came to be bound (`BANTAMKIT_MEMORY_DIR pinned it`; `bound by
 walking up from <start>, which has no store of its own`; `it is <start>'s own
-store, bound without the walk leaving that directory`; or `No memory store
-existed at or above <start>, so the empty <path> was created for this session`),
-and the remedy. That last one is the `designated` state, and it is reported from
-the binding rather than from disk because constructing the store creates the
-directory — a designated store and a store found empty are indistinguishable a
-moment later.
+store, bound without the walk leaving that directory`; or `No memory store existed
+at or above <start>, so <path> was designated for this session; nothing was created
+there.`), and the remedy. That last one is the `designated` state, reported from the
+binding. Measured on both runtimes in a directory with no store on any ancestor
+(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> recall`, #183):
+
+```
+no memories to search: nothing is saved in any layer bound here. No memory store existed at or above <tmp>/nostore, so <tmp>/nostore/.bantamkit/memory was designated for this session; nothing was created there. That is a binding, not a search result — if your facts are in another store, set BANTAMKIT_MEMORY_DIR to its absolute path and restart; otherwise save a memory to start this one.
+```
+
+and nothing exists at `<tmp>/nostore/.bantamkit` afterwards.
 
 The walk clause and the own-store clause are two sentences because the walk can
 terminate at step zero: a project whose own `.bantamkit/memory` merely holds
@@ -1153,31 +1139,12 @@ nothing must not be told it has no store of its own, which is the sentence that
 sends someone hunting a binding bug that is not there.
 
 The remedy normally ends `otherwise save a memory to start this one`. It does not
-when the bound store is `~/.bantamkit/memory`, because `Memory.layered` also
-appends that directory as the **profile** layer: a memory saved there answers for
-every project on the machine with no store of its own. The reply then says to give
-the project a store of its own instead. The underlying defect — that the project
-walk and the profile layer can bind the same directory — is not fixed here, and
-`test_a_save_into_the_bound_store_answers_for_an_unrelated_project` is the
-tripwire that fails on the day it is.
-
-**AMENDED 2026-09-11 (job47).** The paragraph above stands as the record of why this
-remedy is worded as it is. One sentence in it is now answered and one is now measured
-wrong. **Answered:** `Memory.layered` no longer binds one directory as two layers. When
-the walk lands on `~/.bantamkit/memory` the profile layer is not pushed at all, so the
-layer labels there are `['project']` and `dream` reports `no-profile-layer` instead of
-merging the store into itself — `_same_directory` in Python and `sameDirectory` in Node,
-both resolving in the kernel's order, gated by `tools/conformance/suites/dream.mjs`. The
-remedy's own wording does NOT change, and that is not luck: it is keyed on
-`_is_profile_store` / `isProfileStore`, a different predicate, which asks whether this
-store is *also* the machine-wide profile store for every OTHER project — still true, and
-still what the advice is about. **Measured wrong:** the tripwire did not fire.
-`test_a_save_into_the_bound_store_answers_for_an_unrelated_project` PASSED on the day the
-defect was fixed (`2841 passed, 4 skipped, 2 deselected, 3 xfailed`, 0 failures). It
-cannot fail, because what it asserts is the LEAK — project A's save answering for an
-unrelated project B — and the leak is unchanged and correct: both projects walk to the
-one store, which now answers as the `project` layer rather than as a duplicated `profile`
-layer. It never counted layers. Registered as `(oo)` in `docs/roadmap-toolbox.md`.
+when the bound store is `~/.bantamkit/memory`, which is also the machine-wide profile
+store: a memory saved there answers for every project on the machine with no store of
+its own, so the reply says to give the project a store of its own instead (keyed on
+`_is_profile_store` / `isProfileStore`). When the walk lands on `~/.bantamkit/memory`,
+`Memory.layered` binds it once, as the `project` layer, and pushes no separate profile
+layer (`_same_directory` / `sameDirectory`, gated by `tools/conformance/suites/dream.mjs`).
 
 The diagnosis stops as soon as the project store holds a fact, so a store you
 have started using is never described as empty from a stale binding.

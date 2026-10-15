@@ -40,42 +40,44 @@ surface rather than an addition to an existing list.
 
 Exactly six lines when healthy, `\n`-joined, no trailing newline:
 
-*(Captured from a live run at `0.35.1` — both runtimes, over stdio, `tools/call
-bantamkit_status` — when J57-5 regenerated this sample for the line the report gained in
-J57-3. The two captures are byte-identical except the `build` digest on line 2, which
-[porting.md](porting.md) already rules divergent. **Line 3 is re-captured and never
-hand-edited**: the tool count is a live claim this repo gates
+*(Captured from a live run of this tree at `1928ae0` (`0.35.9` content) — both runtimes, over
+stdio, `tools/call bantamkit_status`, in a scratch `HOME` against a two-fact project store
+(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> status`). The two captures are
+byte-identical except the `build` digest on line 2, which [porting.md](porting.md) already
+rules divergent; the scratch directory is shown as `<project>`. **Line 3 is re-captured and
+never hand-edited**: the tool count is a live claim this repo gates
 (`runtime-py/tests/test_served_tool_count_records.py`), so it tracks the surface rather than
 the capture date. Its current value is the one
 `test_the_status_tool_is_served_and_answers_active_on_a_healthy_server` asserts against a
-real server, and a marker would only hide it from the gate. **Line 6 is a real reading of
-this machine's own record**, which is why it says `current` and names a date: it is one of
-five sentences, and which one you see depends on what the record last held —
-`update: never checked.` on a machine that has none, which is what the degraded sample
-below shows.)*
+real server, and a marker would only hide it from the gate. **Line 6 reads the machine's
+own update record**: it is one of five sentences, and which one you see depends on what the
+record last held — a scratch `HOME` has no record, so it says `update: never checked.`)*
 
 ```
 bantamkit Active 🟢
-version 0.35.1, build sha256:29cdf998317a9675b58dd37c23b889cbf6b21cd8322b814367d4388e7da1c5cd
+version 0.35.9, build sha256:2fcd4006ffea34a2811181db6c1f7ca7fb3d5bb3d9c097bcec25f6c044e431e9
 serving 14 tools, 1 prompt, 2 resource templates
-memory: 66 facts in the project store, index 14594 of 24000 bytes
+memory: 2 facts in the project store, index 87 of 24000 bytes; bound to <project>/.bantamkit/memory
 event log: off
-update: bantamkit-mcp 0.35.1 is current as of 2026-09-19.
+update: never checked.
 ```
 
 When something is wrong, line 1 changes and a block is appended:
 
 ```
 bantamkit Degraded 🟠
-version 0.35.1, build sha256:29cd…
+version 0.35.9, build sha256:2fcd…
 serving 14 tools, 1 prompt, 2 resource templates
-memory: 12 facts in the project store, index 23900 of 24000 bytes
-event log: on
+memory: 2 facts in the project store, index 87 of 70 bytes; bound to <project>/.bantamkit/memory
+event log: off
 update: never checked.
-2 problems:
-- <condition sentence>
-- <condition sentence>
+1 problem:
+- the memory index is 87 bytes of a 70-byte budget, so it is full and every save is refused until it is compacted — archive or shorten facts with `bantamkit-memory compact`.
 ```
+
+(The same capture with `--index-budget 70`; the Node spelling of the remedy is shown, the
+reference names `python -m bantamkit.memory compact` — the `index-budget-low` row of
+[porting.md](porting.md).)
 
 Field by field:
 
@@ -88,6 +90,7 @@ Field by field:
 | 4 `facts` | `facts/*.md` in the **writable project store only** | `the project store could not be read` when it cannot be listed — never `0 facts` |
 | 4 `index` | `stat(<store>/index.md).st_size` | `0` when the file is absent, the literal `unreadable` on any other `OSError` |
 | 4 `budget` | `store.index_budget` | |
+| 4 `bound to` | `store.root` of the writable project layer | the absolute path of the store the line counts (job65, #142) — an ancestor's store or `~/.bantamkit/memory` picked up by the walk is named, not passed off as the project's own |
 | 5 | `log.enabled` | `on` / `off` |
 | 6 | `updatecheck.update_line(version)` | one of **five** sentences, read off `<homedir>/.bantamkit/update-check.json`. Never absent — there is no silent state. See below. |
 | problems | one `- ` line per condition, worst first | |
@@ -217,6 +220,12 @@ spells out the first one.
 | 3 | `index-budget-low` | `index.md` bytes × 100 ≥ 90 × `index_budget` | building a store at a large budget, then re-binding the same root at a small one |
 | 4 | `event-log-unwritable` | the log is on and `record` has already swallowed an `OSError` | `BANTAMKIT_EVENT_LOG` pointed under a regular file |
 | 5 | `install-source-missing` | this install records an origin path on this machine (`install_shape` is `local-file`, `linked` or `ephemeral`) and that path is **gone** — not merely unreadable | building a real `.dist-info` with a `direct_url.json` naming an archive that was never created, or a real `node_modules/.package-lock.json` with a `file:` `resolved` pointing at one |
+
+Row 3 has two sentences (job65, #186). In the 90 % band, below the budget: `the memory index is
+<size> bytes of a <budget>-byte budget, so the next save is close to being refused — archive or
+shorten facts with <command>.` At or over the budget, where no save that adds a byte can land:
+`…, so it is full and every save is refused until it is compacted — …`. Measured with
+`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> status 95` and `… status 70`.
 
 Rules that shaped the list:
 

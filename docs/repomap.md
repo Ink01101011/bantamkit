@@ -3,8 +3,15 @@
 A ranked listing of a source tree's definitions: which files matter to the file you are
 about to edit, and what each of them defines, truncated to a byte budget.
 
-Roadmap row 10. Shipped 2026-09-07 by job45 — `runtime-py/src/bantamkit/repomap.py`,
-`runtime-ts/src/repomap.ts`, and the `repo_map` MCP tool on both servers.
+Roadmap row 10. Shipped 2026-09-07 by job45 as `runtime-py/src/bantamkit/repomap.py`,
+`runtime-ts/src/repomap.ts` and a `repo_map` MCP tool on both servers.
+
+**The `repo_map` MCP tool is retired.** It left the served roster on 2026-09-12 by user
+ruling (job50 I5, `970879b`): `assets/tools/repo_map.json` claims `surfaces: []`, neither
+server lists it, and `tools/call repo_map` answers `Unknown tool: repo_map` on both
+(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> res`). The module stays a library
+in both runtimes and its parity is still gated (*The gate*, below); this page documents
+that library.
 
 ---
 
@@ -151,34 +158,13 @@ the identity. It is pinned instead by a conformance case over a tree holding two
 whose names differ only above the BMP (`🐔widget.py` and `！widget.py`) and whose scores
 tie to the last bit, so the comparator is the only thing that decides the order.
 
-## The `repo_map` tool
+## The retired tool's handler
 
-Served thirteenth on both servers; `assets/tools/repo_map.json` is the one description both
-read.
-
-| argument | |
-|---|---|
-| `root` | required. The directory to map |
-| `focus` | the files you are working on, relative to `root`, POSIX-separated. Excluded from the listing. A name that is not a scanned source is **ignored**, not refused |
-| `budget` | UTF-8 bytes of listing; default 4000 |
-
-Three refusals, all argument failures, both runtimes word for word:
-
-```
-root must not be empty; name the directory to map
-budget must not be negative; got <n>
-no such directory: <root>
-<root> is a file, not a directory to map
-```
-
-**Those checks live in the handler, not in the module**, and that is deliberate:
-`repo_map()` over a missing directory answers an **empty map** on both runtimes, which is
-right for a library and wrong for a tool — a caller who typed the path wrong would be told
-the tree holds no source.
-
-The event log records the decision (`mapped` / `refused`) and the five counts. It never
-records `root`, never a focus path and never a mapped path: those are the operator's, not
-decisions this handler made.
+The handler that served `repo_map` is still in both servers' source, unregistered. It
+refused four argument failures that `repo_map()` itself does not (`root must not be empty;
+name the directory to map`, `budget must not be negative; got <n>`, `no such directory:
+<root>`, `<root> is a file, not a directory to map`), because the library answers an
+**empty map** over a missing directory, which is right for a library and wrong for a tool.
 
 ## The gate
 

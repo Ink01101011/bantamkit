@@ -34,7 +34,7 @@ on [its page](https://pypi.org/project/bantamkit/); run them here and you get no
 | [The operator CLI: `bantamkit-memory`](#the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archive, restore |
 | [Memory stores are layered by default](#memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
 | [The asset pack](#the-asset-pack) | What ships in `assets/` and how it is found |
-| [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; concurrent writes, one hand-edit to avoid |
+| [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; concurrent writes, the YAML shapes only Python reads |
 | [Module API](#module-api) | The one entry point, all 141 exports it reaches, and the one break in `clockIn` |
 | [Development](#development) | Build, test, conformance |
 | [Measurements and history](#measurements-and-history) | Where the measured numbers behind this page live |
@@ -55,9 +55,7 @@ npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cur
 From 0.34.0 this runs `npm install --prefix ~/.bantamkit/mcp` once (Windows:
 `%USERPROFILE%\.bantamkit\mcp`, not measured) and records
 `<the node that ran it> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`, both absolute.
-No later launch needs npx, the registry or your PATH. Measured from the published 0.34.0
-(served-tools: dated — the surface was twelve then): install exit 0 in 8.14 s; the recorded
-command then served 12 tools in 0.09 s with the network cut.
+No later launch needs npx, the registry or your PATH.
 
 - **`@latest` matters:** without it npx may reuse an older cached resolve.
 - **It skips npm when the kept install already reports this version or a newer one.** It never
@@ -103,7 +101,8 @@ reports only its own handshake timeout.
 
 `--install <host>` (`claude`, `claude-desktop`, `copilot`, `cursor`) writes the entry. It never
 prompts, so it behaves the same in a terminal, in CI and inside another agent. For the three
-JSON hosts it backs the file up first as `<name>.backup-<date>`, keeps the file's permissions,
+JSON hosts it backs the file up first as `<name>.backup-<date>` (a second write the same day
+takes `<name>.backup-<date>.1`, and so on, never overwriting a backup), keeps the file's permissions,
 refuses a file that does not parse, and refuses an entry that differs unless you pass `--force`.
 
 Each host below has the same steps: **1** command, **2** file, **3** entry, **4** confirm,
@@ -212,11 +211,15 @@ npx -y bantamkit-mcp@latest --update
 ```
 
 `--update` — `check the package index and update this install if it differs, then exit` — asks
-the npm registry for `latest` and compares it with the installed version:
+npm for `latest` (`npm view bantamkit-mcp@latest`, so the registry, proxy and auth npm is
+configured for are the ones asked) and compares it with the installed version:
 
 - **Same version:** prints both numbers and `up to date.`
-- **Behind, on a registry install or a kept install from `--install` (0.34.0+):** runs the
-  matching row below and prints npm's output.
+- **Behind, on a registry install or a kept install from `--install` (0.34.0+):** installs
+  exactly the version it compared (`npm install --prefix <root> bantamkit-mcp@<latest>`, or
+  `--global`), prints npm's output, and says `updated … to <latest>` only after the installed
+  package reports that version; an installer that exits 0 and leaves the old one is a refusal,
+  exit 1.
 - **Behind, on any other shape** (a checkout, a linked tree, a local file, an npx cache with no
   kept install): refuses with exit 1 and names your row. It will not write a registry install
   into a tree you manage with `git`.
@@ -242,14 +245,13 @@ startup. In Claude Code: `/mcp` → reconnect. In Claude Desktop: a full restart
 **Verify with `bantamkit_status`, not the install log.** It reports the version and the
 `build_id` of *the code that is answering you*:
 
-*(A capture from 0.30.0. The version and build-digest bytes are left as a dated transcript
-rather than hand-edited to a number nobody ran; **line 3 is the exception and tracks the
-surface**, for the reason `docs/status.md` gives — the tool count is a live claim this repo
-gates against a running server, and a marker would only hide it from that gate.)*
+*(The first three lines of a capture from this tree's `dist/` at `0.35.9`; line 3 tracks the
+served surface, which this repo gates against a running server — `docs/status.md` has the
+whole report.)*
 
 ```
 bantamkit Active 🟢
-version 0.30.0, build sha256:4441619d…
+version 0.35.9, build sha256:2fcd4006…
 serving 14 tools, 1 prompt, 2 resource templates
 ```
 
@@ -267,13 +269,13 @@ dependency in a temp directory that will be deleted, and `npm update` cannot hel
 | The host times out; the server never answers | The entry uses `npx` with a registry spec and the network is down. Use [Install once, run offline](#install-once-run-offline) |
 | `ENOENT` from the host, or `env: node: No such file or directory` | A GUI host does not have your shell's PATH. `--install` records node by absolute path; see [Connect other MCP clients](#connect-other-mcp-clients) |
 | `npm error code ENOTCACHED` | `npx --offline` on a cache that has never seen that spec. Run it once online, or use the kept install |
-| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` |
+| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` (`.backup-<date>.1` and on for a later write the same day) |
 | `MCP server bantamkit already exists in user config` | `claude mcp remove bantamkit -s user`, then install again |
 | The server stopped launching after a node change | `npx -y bantamkit-mcp@latest --install <host> --force` with the node you have now |
 | Two machines with one config run different builds | [Silent version float](#silent-version-float): compare `build_id` |
 | `bantamkit_status` still shows the old version after an update | The host has not reconnected; restart the server |
 | Recall finds nothing, or the wrong store | Set `BANTAMKIT_MEMORY_DIR`; the reply names the store it searched |
-| `malformed fact file …` | A hand-edited fact has a bare non-string field; see [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) |
+| `1 fact file could not be read and was skipped` … `malformed fact file …` | A hand-edited fact uses YAML this port does not read; recall and save still work and name the file. See [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) |
 | `AssetNotFound: no assets directory found; set BANTAMKIT_ASSETS` | See [The asset pack](#the-asset-pack) |
 
 ## Configuration
@@ -295,7 +297,8 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `BANTAMKIT_PRICES` | Price table for the token ledger | `pricing/default.json` in the asset pack | `"env": {"BANTAMKIT_PRICES": "/abs/prices.json"}` |
 
 One-shot commands that print and exit: `--install {claude,claude-desktop,copilot,cursor}` (with
-`--force`), `--update`, `--assets-root`, `--mcp-report`, `--statusline`, `-h`. Typing
+`--force`), `--install-hooks` / `--remove-hooks` (with `--yes`), `--hook`, `--update`,
+`--assets-root`, `--mcp-report`, `--statusline`, `-h`. Typing
 `bantamkit-mcp` at a terminal with nothing after it prints the help and exits 0; a host launch
 down a pipe still starts the server, and `bantamkit-mcp --store /tmp/x` at a terminal still
 serves. `--which` belongs to the checkout launchers `tools/bantamkit-mcp` and
@@ -318,9 +321,8 @@ kept install from `--install`, which serves the version in `~/.bantamkit/mcp` un
 - **`runtime`** — `"node"` here, absent on the Python server. Its *presence* is the
   discriminator, and it is folded into `build_id` so the two lineages cannot collide.
 - **`assets_digest`** — sha256 over every byte of the asset pack, computed identically in both
-  runtimes and verified equal (`sha256:eb79f9e3…` over 91 files from Python and from Node,
-  `node tools/conformance/run.mjs --all`, 2026-09-15). Two
-  machines disagreeing here are serving different data.
+  runtimes (`sha256:e88d9730…` over 93 files from Python and from Node at `1928ae0`; it moves
+  whenever the pack does). Two machines disagreeing here are serving different data.
 - **`code_digest`** / **`build_id`** — over `dist/**/*.js` here and `*.py` on the Python side, so
   they must differ across runtimes and must match across two installs of one version. `build_id`
   differing between two teammates on the same version string is the float, caught.
@@ -382,9 +384,10 @@ eval fixtures — that lives at the **repository root** and is shared verbatim w
 npm cannot reach outside a package directory, so `scripts/sync-assets.mjs` vendors it into
 `runtime-ts/assets/` on `prepack`; that directory is generated and git-ignored.
 
-`build_identity` hashes **every byte of the whole tree**, not just the 20 files the tools read, so
-the pack ships whole — 91 files / 238,751 bytes on 2026-09-15 — or `assets_digest` and `build_id` change.
-`test/packaging.test.mjs` asserts that against what `npm pack` would put in the tarball.
+`build_identity` hashes **every byte of the whole tree**, not just the files the tools read, so
+the pack ships whole — 93 files / 250,847 bytes at `1928ae0` (`--assets-root` prints the
+count) — or `assets_digest` and `build_id` change. `test/packaging.test.mjs` asserts that
+against what `npm pack` would put in the tarball.
 
 `assetsRoot()` mirrors `runtime-py/src/bantamkit/assets.py` arm for arm:
 
@@ -400,21 +403,23 @@ feature lands in both in one change, and a conformance case compares their answe
 are deliberate and each is ruled in the
 [divergence table](https://github.com/Ink01101011/bantamkit/blob/main/docs/porting.md#where-the-two-runtimes-deliberately-differ):
 
-- **Concurrent writes are safe for the memory store and, since job65, for the checkpoint, in
-  both runtimes.** `index.md` is derived from `facts/`, so the last writer re-enumerates
-  everything and the index self-heals: 8 trials of two processes × 15 saves, zero
-  disagreements. A checkpoint is read-modify-write, and until job65 (#116) every writer shared
-  one temp file, so two concurrent clock-outs — on the same unit OR on two different units of
-  one wave — lost `ok` answers: 10 of 20 in 10 trials, on Node, on Python and across the two.
-  `shiftwork_clock_out` now holds `<checkpoint>.lock` (O_EXCL, the same protocol in both
-  runtimes) around the whole call and writes through a per-writer temp name: two clock-outs of
-  different units both land, and a second clock-out of the same unit is refused as not the
-  cursor unit. A writer that cannot take the lock within 5 s answers `result: error` and writes
-  nothing.
-- **Do not hand-edit a fact file's `name`, `description` or `type` to a bare non-string.**
-  `description: 2026` is a YAML integer. Python interpolates it and carries on; this port refuses
-  the whole store with `malformed fact file …`. Quote it: `description: '2026'`. Every fact the
-  tools *write* is quoted correctly (`src/memory/factfile.ts:257`).
+- **Concurrent writes are safe for the memory store and the checkpoint, in both runtimes.**
+  `index.md` is derived from `facts/`, so the last writer re-enumerates everything and the
+  index self-heals, and each fact is written through its own exclusive temp name
+  (`<name>.md.<pid>.<hex>.tmp`), so concurrent saves of one name all succeed and a failed
+  write leaves no temp behind (job65, #161). `shiftwork_clock_out` holds `<checkpoint>.lock`
+  (O_EXCL, the same protocol in both runtimes) around the whole call: two clock-outs of
+  different units both land, and a writer that cannot take the lock within 5 s answers
+  `result: error` and writes nothing (#116).
+- **Hand-edited YAML that only Python reads.** A fact file's frontmatter is read the way PyYAML
+  reads it — a bare `description: 2026` is the number 2026 on both runtimes, recalled as
+  `2026`. Eight shapes PyYAML accepts are refused by name on Node, because reading them means
+  porting PyYAML's scanner: an anchor, `!!str`, a flow mapping (empty or not), a nested flow
+  sequence, a flow-sequence pair, a flow sequence over two lines, and an anchored sequence
+  item. Neither recall nor save stops for one: both skip that file and say so —
+  `1 fact file could not be read and was skipped; …` then `[project] malformed fact file
+  <file>: …` — while Python reads it (job67, #120). A save never overwrites a file it cannot
+  read. Every fact the tools *write* is in a shape both runtimes read.
 
 ## Module API
 

@@ -54,9 +54,7 @@ npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cur
 From 0.34.0 this runs `npm install --prefix ~/.bantamkit/mcp` once and records
 `<the node that ran it> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`, both absolute.
 No later launch needs npx, the registry or your PATH, and it never downgrades a newer kept
-install. Measured from the published 0.34.0 (served-tools: dated — the surface was twelve
-then): install exit 0 in 8.14 s; the recorded command
-then served 12 tools in 0.09 s with the network cut.
+install.
 
 - **The recorded node is one version of node.** Switch away from it and re-run with `--force`.
 - **Replacing an old `npx` entry needs `--force`** (Claude Code: `claude mcp remove` first).
@@ -209,7 +207,8 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `--which` | Where a **checkout** launcher resolved its halves — only `tools/bantamkit-mcp` and `tools/bantamkit-mcp-node`, not the npm/PyPI package | — | `tools/bantamkit-mcp --which` |
 
 Don't add `--store` by reflex: the layering is most of the value. One-shot commands that print
-and exit: `--install {claude,claude-desktop,copilot,cursor}` (with `--force`), `--update`,
+and exit: `--install {claude,claude-desktop,copilot,cursor}` (with `--force`),
+[`--install-hooks` / `--remove-hooks`](docs/hooks.md) (with `--yes`), `--hook`, `--update`,
 `--assets-root`, [`--mcp-report`](docs/mcpreport.md), [`--statusline`](docs/statusline.md).
 More: [store binding](docs/mcp.md#which-memory-store-the-server-binds) ·
 [pinning](docs/memory.md#pinning-the-store-bantamkit_memory_dir) ·
@@ -226,8 +225,8 @@ git pull && npm ci --prefix runtime-ts && npm run build --prefix runtime-ts   # 
 ```
 
 `--update` (`check the package index and update this install if it differs, then exit`) patches a
-registry install or a kept install; any other shape it refuses with exit 1 and names the manual
-route. It is the only network access here, and only when you type it.
+registry install or a kept install to exactly the version it compared, and reports success only
+after the install says so; any other shape it refuses with exit 1 and names the manual route. It is the only network access here, and only when you type it.
 
 **Then restart the server in the host** (`/mcp` → reconnect in Claude Code; a full restart of
 Claude Desktop) — a running server keeps the code it started with. `bantamkit_status` prints the
@@ -241,7 +240,7 @@ means an old process. Per-install table: [npm README → Updating](runtime-ts/RE
 | The host times out; the server never answers | The entry uses `npx` with a registry spec and the network is down. Use [Install once, run offline](#install-once-run-offline-recommended) |
 | `ENOENT` from the host | A GUI host does not read your shell rc, so `npx`/`node` is not on its PATH. `--install` records absolute paths |
 | Connection closed at startup | Older builds crashed when a GUI host started them in `/`. Update; see [docs/mcp.md](docs/mcp.md#what-happens-if-you-set-nothing) |
-| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` |
+| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` (`.backup-<date>.1` and on for a later write the same day) |
 | `MCP server bantamkit already exists in user config` | `claude mcp remove bantamkit -s user`, then install again |
 | The server stopped launching after a node change | `npx -y bantamkit-mcp@latest --install <host> --force` with the node you have now |
 | Recall finds nothing, or the wrong store | Set `BANTAMKIT_MEMORY_DIR`; the reply names the store it searched ([the three states](docs/mcp.md#the-three-states-and-what-memory_recall-tells-the-model)) |
