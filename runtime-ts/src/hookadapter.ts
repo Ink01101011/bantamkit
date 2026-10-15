@@ -47,10 +47,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { BantamError } from './errors.js';
 import { Memory } from './memory/component.js';
+import type { RecallOutcome } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
 import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
 import type { Fact } from './memory/store.js';
+import { PyOSError, PyUnicodeDecodeError } from './memory/pyfs.js';
 import { keptCli, keptManifest, keptPrefix } from './npminstall.js';
 import {
   decide as decideUpdate,
@@ -564,6 +567,8 @@ interface NativeExport {
   bytes: number;
   indexBytes: number;
   skipped: string[];
+  /** Fact files that could not be read as a fact, left out of the export (#119). */
+  unparsed: SkippedFact[];
   /** Whether the host's index was there to append to. A never creates it. */
   index: 'present' | 'absent';
   error?: string;
@@ -659,6 +664,7 @@ function exportToNative(dir: string, store: string): NativeExport {
     bytes: 0,
     indexBytes: 0,
     skipped: [],
+    unparsed: [],
     index: 'absent',
   };
   const indexFile = path.join(dir, NATIVE_INDEX);
@@ -674,9 +680,12 @@ function exportToNative(dir: string, store: string): NativeExport {
   let named = seeded;
   const appended: string[] = [];
   try {
-    const { facts, indexLine } = new MemoryStore(store).internals();
+    const source = new MemoryStore(store);
+    const { indexLine } = source.internals();
+    const { facts, skipped } = tolerantFacts(source);
+    result.unparsed = skipped;
     const ranked = rankBySessionDropRule(
-      facts().map((fact, position) => ({
+      facts.map((fact, position) => ({
         fact,
         position,
         line: indexLine(fact),
@@ -755,6 +764,8 @@ interface CappedIndex {
   total: number;
   injected: number;
   dropped: string[];
+  /** Fact files that could not be read as a fact and were left out (#119). */
+  skipped: SkippedFact[];
   facts?: number;
 }
 
@@ -792,9 +803,11 @@ function rankBySessionDropRule(all: readonly IndexedFact[]): IndexedFact[] {
   );
 }
 
-function cappedIndex(root: string, header: (count: string) => string, max: number): CappedIndex {
-  const { facts, indexLine } = new MemoryStore(root).internals();
-  const all: IndexedFact[] = facts().map((fact, position) => ({
+function cappedIndex(root: string, header: (count: string, total: number) => string, max: number): CappedIndex {
+  const store = new MemoryStore(root);
+  const { indexLine } = store.internals();
+  const { facts, skipped } = tolerantFacts(store);
+  const all: IndexedFact[] = facts.map((fact, position) => ({
     fact,
     position,
     line: indexLine(fact),
@@ -818,14 +831,15 @@ function cappedIndex(root: string, header: (count: string) => string, max: numbe
       .replace(/\n$/, ''),
     max,
   );
-  const lines = [header(dropped.length ? `${shown.length} of ${all.length}` : String(all.length))];
+  const lines = [header(dropped.length ? `${shown.length} of ${all.length}` : String(all.length), all.length)];
   if (body) lines.push(body);
   if (dropped.length) {
     lines.push(
       `[${dropped.length} of ${all.length} not shown — the block is capped at ${max} bytes; kept by rule: ${SESSION_DROP_RULE}; ~/.bantamkit/hooks/hook-log.jsonl names the dropped; mcp__bantamkit__memory_recall reads any fact by name]`,
     );
   }
-  return { block: lines.join('\n'), total: all.length, injected: shown.length, dropped };
+  if (skipped.length) lines.push(skippedLine(skipped));
+  return { block: lines.join('\n'), total: all.length, injected: shown.length, dropped, skipped };
 }
 
 function countFacts(store: string): number {
@@ -835,6 +849,110 @@ function countFacts(store: string): number {
     return 0;
   }
 }
+
+// ------------------------------------------- one unreadable fact costs one fact (#119)
+// `MemoryStore.facts()` parses EVERY file and throws on the first it cannot read as a fact,
+// so before job65 one empty, truncated or non-UTF-8 file in the profile store blanked
+// SessionStart outright (the profile block was outside any try) and one in the project store
+// silenced every UserPromptSubmit injection. The hook's contract is "never loud" and the
+// memory doc's is "one bad neighbour cannot take down recall"; neither was true of one file.
+//
+// The store is NOT changed here (it is another unit's layer). The hook asks the store's OWN
+// parser, one file at a time, only after the whole-store parse has already failed: the
+// healthy path is the one call it always was. It does that by narrowing `factPaths` — the
+// single listing `facts()` walks, on both runtimes — on THIS store instance only, which the
+// hook constructed and nothing else holds. No second parser exists, so a file the hook keeps
+// is a file the store would have read, byte for byte the same `Fact`.
+
+/** One fact file left out, and the store's own sentence for why. */
+interface SkippedFact {
+  file: string;
+  reason: string;
+}
+
+/** The store members `tolerantFacts` narrows. `private` in TypeScript, plain at runtime. */
+interface FactListingSeam {
+  factPaths: () => string[];
+  facts: () => Fact[];
+}
+
+/** The errors `Memory.recallOutcome` already treats as "this layer could not be read". */
+function isFactReadError(e: unknown): boolean {
+  return e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError;
+}
+
+/**
+ * Every fact `store` can read, and the files it could not. Narrows the instance so that every
+ * later read through it (`recall`, `lookup`, `internals().facts`) skips the same files.
+ *
+ * A store whose `facts/` cannot be LISTED still throws, exactly as before: that is a layer
+ * that could not be read, not a fact, and the callers already have an answer for it.
+ */
+function tolerantFacts(store: MemoryStore): { facts: Fact[]; skipped: SkippedFact[] } {
+  const seam = store as unknown as FactListingSeam;
+  try {
+    return { facts: seam.facts(), skipped: [] };
+  } catch (e) {
+    if (!isFactReadError(e)) throw e;
+  }
+  const listed = seam.factPaths();
+  const kept: string[] = [];
+  const facts: Fact[] = [];
+  const skipped: SkippedFact[] = [];
+  let done = false;
+  try {
+    for (const file of listed) {
+      seam.factPaths = () => [file];
+      try {
+        facts.push(...seam.facts());
+        kept.push(file);
+      } catch (e) {
+        if (!isFactReadError(e)) throw e;
+        skipped.push({ file: path.basename(file), reason: message(e) });
+      }
+    }
+    done = true;
+  } finally {
+    if (done) seam.factPaths = () => [...kept];
+    else delete (seam as Partial<FactListingSeam>).factPaths; // back to the class's own listing
+  }
+  return { facts, skipped };
+}
+
+/**
+ * `tolerantFacts` over every layer `Memory.layered` bound, for the recall arm. A layer whose
+ * directory cannot be listed is left exactly as it was (the recall's own `unreadable` count
+ * still says so). Returns the files left out, labelled with the layer they were in.
+ */
+function quarantineLayers(m: Memory): Array<SkippedFact & { layer: string }> {
+  const layers = (m as unknown as { layers: Array<[string, MemoryStore, boolean]> }).layers;
+  const out: Array<SkippedFact & { layer: string }> = [];
+  for (const [label, store] of layers) {
+    try {
+      for (const s of tolerantFacts(store).skipped) out.push({ layer: label, ...s });
+    } catch (e) {
+      if (!isFactReadError(e)) throw e;
+    }
+  }
+  return out;
+}
+
+/** "1 fact" / "N facts" (#188). The noun follows the block's TOTAL, the last number shown. */
+function factNoun(total: number): string {
+  return total === 1 ? 'fact' : 'facts';
+}
+
+/** The block's footer when files were left out: their names, never their contents. */
+function skippedLine(skipped: readonly SkippedFact[]): string {
+  const n = skipped.length;
+  return capBytes(
+    `[${n} fact ${n === 1 ? 'file' : 'files'} not read — not a valid fact: ${skipped.map((s) => s.file).join(', ')}; ~/.bantamkit/hooks/hook-log.jsonl has the reason]`,
+    SKIPPED_LINE_MAX,
+  );
+}
+
+/** A footer naming many broken files is still bounded, like everything else this file injects. */
+const SKIPPED_LINE_MAX = 500;
 
 // ------------------------------------------------------- the stale-install signal
 // Reader 2 and Writer 1 of `docs/superpowers/specs/2026-09-19-stale-version-signal-design.md`.
@@ -1023,14 +1141,22 @@ function sessionStart(run: HookRun, input: HookInput): void {
   const cwd = input.cwd || process.cwd();
   const parts: string[] = [];
   const profileFacts = countFacts(run.profile);
-  let profile: CappedIndex = { block: '', total: 0, injected: 0, dropped: [] };
+  let profile: CappedIndex = { block: '', total: 0, injected: 0, dropped: [], skipped: [] };
+  // IN ITS OWN TRY (job65, #119): this block used to sit outside every try, so a profile store
+  // the hook could not read at all threw past the arm and the session got NO context — not the
+  // project block, not the toolbox line. One unreadable FILE is handled inside `cappedIndex`;
+  // this catch is for a store that cannot even be listed, and it costs the profile block only.
   if (profileFacts > 0) {
-    profile = cappedIndex(
-      run.profile,
-      (count) => `[bantamkit profile memory — ${count} facts learned across projects]`,
-      SESSION_INJECT_MAX,
-    );
-    parts.push(profile.block);
+    try {
+      profile = cappedIndex(
+        run.profile,
+        (count, total) => `[bantamkit profile memory — ${count} ${factNoun(total)} learned across projects]`,
+        SESSION_INJECT_MAX,
+      );
+      parts.push(profile.block);
+    } catch (e) {
+      log(run, { event: 'SessionStart', warn: `profile: ${message(e)}` });
+    }
   }
   // WHERE THE HOST'S OWN AUTO-MEMORY DIRECTORY IS, resolved ONCE per session and used twice:
   // it decides whether the project index has to be injected at all, and it is where A exports.
@@ -1053,7 +1179,11 @@ function sessionStart(run: HookRun, input: HookInput): void {
     const store = discoverProjectStore(cwd);
     if (path.resolve(store) !== path.resolve(run.profile) && countFacts(store) > 0) {
       if (native.dir === null) {
-        project = cappedIndex(store, (count) => `[bantamkit project memory — ${count} facts]`, SESSION_INJECT_MAX);
+        project = cappedIndex(
+          store,
+          (count, total) => `[bantamkit project memory — ${count} ${factNoun(total)}]`,
+          SESSION_INJECT_MAX,
+        );
         project.facts = countFacts(store);
         parts.push(project.block);
       } else {
@@ -1112,8 +1242,16 @@ function sessionStart(run: HookRun, input: HookInput): void {
     profileFacts,
     profileInjected: profile.injected,
     profileDropped: profile.dropped,
+    // #119: the files left out, by name and the store's reason — present only when non-empty,
+    // so a healthy session's record is the shape it always was.
+    ...(profile.skipped.length ? { profileSkipped: profile.skipped } : {}),
     ...(project
-      ? { projectFacts: project.facts, projectInjected: project.injected, projectDropped: project.dropped }
+      ? {
+          projectFacts: project.facts,
+          projectInjected: project.injected,
+          projectDropped: project.dropped,
+          ...(project.skipped.length ? { projectSkipped: project.skipped } : {}),
+        }
       : {}),
     dropRule: SESSION_DROP_RULE,
     // A — the host's auto-memory directory. `nativeBranch` / `nativeTried` are the one line
@@ -1131,6 +1269,7 @@ function sessionStart(run: HookRun, input: HookInput): void {
           nativeBytes: exported.bytes,
           nativeIndexBytes: exported.indexBytes,
           nativeSkipped: exported.skipped,
+          ...(exported.unparsed.length ? { nativeUnparsed: exported.unparsed } : {}),
           nativeIndex: exported.index,
           ...(exported.error ? { nativeError: exported.error } : {}),
         }
@@ -1223,9 +1362,29 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   // prompt, for up to three files — and the rules keyed on that date (compaction's
   // stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
   // reading this arm's traffic. An explicit `memory_recall` still stamps.
-  const o = m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false);
+  const ask = (): RecallOutcome => m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false);
+  // ONE UNREADABLE FACT COSTS THAT FACT (job65, #119). The healthy path is one recall, as
+  // before. Only when it failed — the project layer threw, or a read-only layer was counted
+  // `unreadable` and dropped whole — are the layers narrowed past the files they cannot read
+  // and the recall asked once more. A layer that cannot be LISTED is not narrowed and fails
+  // exactly as it did.
+  let skipped: Array<SkippedFact & { layer: string }> = [];
+  let o: RecallOutcome;
+  try {
+    o = ask();
+  } catch (e) {
+    if (!isFactReadError(e)) throw e;
+    skipped = quarantineLayers(m);
+    if (skipped.length === 0) throw e;
+    o = ask();
+  }
+  if (skipped.length === 0 && o.unreadable > 0) {
+    skipped = quarantineLayers(m);
+    if (skipped.length) o = ask();
+  }
+  const degraded = skipped.length ? { skipped } : {};
   if (o.status !== 'answered') {
-    log(run, { event: 'UserPromptSubmit', action: 'none', status: o.status, candidates: o.candidates });
+    log(run, { event: 'UserPromptSubmit', action: 'none', status: o.status, candidates: o.candidates, ...degraded });
     return;
   }
   // Only the HEADER line of each hit — `[layer] [name] (type) description`. The body costs
@@ -1233,7 +1392,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   // tells the model exactly which name to pass to memory_recall if it wants the body.
   const heads = o.reply.split('\n').filter((l) => RECALL_HEADER.test(l));
   if (heads.length === 0) {
-    log(run, { event: 'UserPromptSubmit', action: 'none', reason: 'no-headers' });
+    log(run, { event: 'UserPromptSubmit', action: 'none', reason: 'no-headers', ...degraded });
     return;
   }
   // WHAT THIS CONTEXT HAS ALREADY BEEN SHOWN IS NOT SHOWN AGAIN (job64, J64-2). Measured
@@ -1268,6 +1427,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
       session: input.session_id ?? null,
       prompt: promptFingerprint(prompt),
       suppressed,
+      ...degraded,
     });
     return;
   }
@@ -1307,6 +1467,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
     injected,
     dropped: fresh.length - injected.length,
     suppressed,
+    ...degraded,
   });
   emit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: ctx } });
 }
@@ -1337,6 +1498,19 @@ function preToolUseRead(run: HookRun, input: HookInput): void {
     return; // missing file: let Read produce its own error
   }
   if (!st.isFile()) return; // a directory/device read has no file content to reuse
+  // NOR A FILE THIS PROCESS MAY NOT READ (job65, #192). `isFile` closed the directory case of
+  // #190 but the ledger still recorded on PreToolUse, before the host's Read could fail: a
+  // `chmod 000` file was ledgered and its retry refused with "use the content from that
+  // earlier read" — content the host never produced. The hook runs as the same user as the
+  // host's Read, so `R_OK` here is the host's answer; a file that fails it is treated like a
+  // missing path: not ledgered, never refused. Chosen over moving the record to
+  // PostToolUse[Read] because it is one check in the arm that already decides, on both
+  // runtimes, and needs no second event to agree with the first (docs/hooks.md, PreToolUse).
+  try {
+    fs.accessSync(file, fs.constants.R_OK);
+  } catch {
+    return;
+  }
   const offset = ti['offset'];
   const limit = ti['limit'];
   // The transcript is the CONTEXT dimension: a subagent has its own transcript and has not
@@ -2342,7 +2516,7 @@ function stop(run: HookRun, input: HookInput): void {
   const saved =
     (ledger.saved || 0) > 0 ||
     /"name":\s*"mcp__bantamkit__memory_save"/.test(text) ||
-    /"file_path":"[^"]*[\\/]memory[\\/][^"]*\.md"/.test(text);
+    transcriptWroteMemory(text);
   if (toolUses < STOP_NUDGE_MIN_TOOL_CALLS || saved) {
     log(run, { event: 'Stop', action: 'pass', toolUses, saved });
     return;
@@ -2354,6 +2528,47 @@ function stop(run: HookRun, input: HookInput): void {
     decision: 'block',
     reason: `bantamkit: this session made ${toolUses} tool calls and saved no memory. Before stopping, decide whether anything durable was learned that is NOT derivable from the repo, git history, or docs — a correction or preference the user stated (feedback), a fact about ongoing work or a decision (project), a URL/ticket/dashboard (reference). If so, call mcp__bantamkit__memory_save for each (at most 3, description written as the words a future query would use). If nothing qualifies, stop with one line saying so. This nudge fires once per session.`,
   });
+}
+
+/** The native write tools whose `file_path` can put a fact into a `memory/` directory. */
+const SAVE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+/** The path shape of a native memory write: a `.md` under any `memory/` directory. */
+const SAVE_WRITE_PATH = /[\\/]memory[\\/][\s\S]*\.md$/;
+/** A line can only hold a native write if it names one of the tools; the rest are never parsed. */
+const SAVE_LINE_HINT = /"name":\s*"(?:Write|Edit|MultiEdit)"/;
+
+/**
+ * Did the transcript WRITE a native memory file (job65, #169)? Only a `tool_use` counts: a
+ * Write/Edit/MultiEdit whose `file_path` is a `.md` under a `memory/` directory. Before this a
+ * regex over the whole text took ANY `"file_path"` under `memory/` — a Read of
+ * `docs/memory/notes.md` included — as a save, and silenced the nudge. (A `memory_save` call
+ * is still recognised by its tool name, as it always was; that half was never the defect.)
+ *
+ * Lines are prefiltered on the tool names and only those are parsed, so a long transcript
+ * costs one regex per line and a `JSON.parse` only where a write could be. A line that does
+ * not parse is not a save.
+ */
+function transcriptWroteMemory(text: string): boolean {
+  for (const line of text.split('\n')) {
+    if (!SAVE_LINE_HINT.test(line)) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const msg = record && typeof record === 'object' ? (record as { message?: unknown }).message : undefined;
+    const content = msg && typeof msg === 'object' ? (msg as { content?: unknown }).content : undefined;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as { type?: unknown; name?: unknown; input?: unknown };
+      if (b.type !== 'tool_use' || typeof b.name !== 'string' || !SAVE_WRITE_TOOLS.has(b.name)) continue;
+      const fp = b.input && typeof b.input === 'object' ? (b.input as { file_path?: unknown }).file_path : undefined;
+      if (typeof fp === 'string' && SAVE_WRITE_PATH.test(fp)) return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------- dispatch
@@ -2381,7 +2596,15 @@ export async function runHook(): Promise<void> {
     const parsed: unknown = JSON.parse(raw || '{}');
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) input = parsed as HookInput;
   } catch {
-    log(run, { event: 'parse-error', raw: raw.slice(0, 200) });
+    // THE INPUT IS NOT LOGGED, AT ANY LENGTH (job65, #168): a truncated UserPromptSubmit event
+    // carries the user's prompt, and this line used to keep its first 200 characters. Its
+    // size and a SHA-256 digest are kept instead, the same fingerprint `promptFingerprint`
+    // gives a prompt that did parse, so a bad input can still be recognised twice.
+    log(run, {
+      event: 'parse-error',
+      bytes: Buffer.byteLength(raw),
+      sha256: createHash('sha256').update(raw, 'utf8').digest('hex'),
+    });
     return;
   }
   const ev = input.hook_event_name;

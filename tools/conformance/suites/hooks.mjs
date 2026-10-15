@@ -69,6 +69,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -2908,6 +2909,232 @@ export async function run(ctx) {
     );
     cases.push({
       name: 'read-ledger: the whole sequence — decisions, log actions, the directory and the parallel block — is the same on both sides',
+      kind: 'json',
+      expected: py,
+      actual: nd,
+    });
+  }
+
+  // ============ hook-degrade: one unreadable fact, "1 fact", no prompt in the log, saves only
+  //
+  // job65, J65-8: #119, #188, #168, #169 and #192, each an ABSOLUTE property, so each is
+  // pinned PER SIDE against a literal and then compared across sides (a differential alone is
+  // blind to a regression that lands in both runtimes at once):
+  //   (a) #188: a store of ONE fact says "1 fact", a store of two says "2 facts".
+  //   (b) #119: one empty and one non-UTF-8 file in the PROFILE store cost exactly those two
+  //       files — SessionStart still carries the healthy profile fact, the project block and
+  //       the toolbox line, and the block's footer and the log name both files. Before the fix
+  //       SessionStart printed 0 bytes (the profile block threw past the arm).
+  //   (c) #119: the same profile store under UserPromptSubmit still injects the healthy
+  //       profile fact (it used to be dropped with the whole layer, silently).
+  //   (d) #119: one truncated PROJECT fact — UserPromptSubmit used to print 0 bytes; it now
+  //       injects the healthy facts of both layers, and SessionStart's project block holds.
+  //   (e) #168: an unparseable stdin is logged as its byte length and sha256, never its text.
+  //   (f) #169: the Stop nudge is suppressed only by a real save — memory_save, or a
+  //       Write/Edit/MultiEdit of a `.md` under `memory/` — and NOT by a Read under `memory/`.
+  //   (g) #192: a regular file the hook may not read (chmod 000) is never ledgered and its
+  //       retry is never refused. Withheld as uid 0 (root reads a 000 file) and on win32
+  //       (the mode is advisory there), with a note, exactly as `shiftwork` withholds its
+  //       chmod sessions.
+  // MUTATION EVIDENCE: `.shiftwork/notes-job65/J65-8.md` — each fix reverted on both sides
+  // and on one, with the red counts.
+  {
+    const id = 'hook-degrade';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    const projectStore = join(cwd, '.bantamkit', 'memory');
+    seedStore(ctx, projectStore, [
+      { type: 'project', name: 'ok-fact', description: 'shared words project fact' },
+      { type: 'project', name: 'ok-other', description: 'release checklist steps, shared words' },
+    ]);
+    writeFileSync(join(cwd, 'locked.txt'), 'secret\n');
+    b.snapshot();
+    const chmodWithheld = process.platform === 'win32' || process.getuid?.() === 0;
+    const ctxOf = (r) => {
+      const text = dec(r.stdout);
+      return text ? JSON.parse(text).hookSpecificOutput?.additionalContext ?? '' : '';
+    };
+    const headerLines = (text) => text.split('\n').filter((l) => /^\[bantamkit (profile|project) memory/.test(l));
+    const files = (list) => (list ?? []).map((s) => (s.layer ? `${s.layer}:${s.file}` : s.file));
+    const names = (rec) => (rec?.injected ?? []).map((x) => x.name).sort();
+    const toolUse = (name, input = {}) =>
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input } ] } });
+    const sequence = (side) => {
+      const h = home(id, side);
+      const profileStore = join(h, '.bantamkit', 'memory');
+      seedStore(ctx, profileStore, [{ type: 'feedback', name: 'prof-ok', description: 'shared words profile fact' }]);
+      const hook = (payload) => runHook(ctx, side, { payload: { cwd, session_id: 'deg', ...payload }, cwd, home: h });
+      const ss = { hook_event_name: 'SessionStart', source: 'startup' };
+      const ups = (session) => ({ hook_event_name: 'UserPromptSubmit', prompt: 'shared words fact please', session_id: session });
+      // (a) healthy: one profile fact, two project facts
+      const healthy = ctxOf(hook(ss));
+      // (b) one empty and one non-UTF-8 profile fact
+      writeFileSync(join(profileStore, 'facts', 'broken.md'), '');
+      writeFileSync(join(profileStore, 'facts', 'latin.md'), Buffer.from([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0xfe, 0x0a]));
+      const s1 = hook(ss);
+      const s1ctx = ctxOf(s1);
+      // (c) the same, under UserPromptSubmit
+      const u1 = hook(ups('deg-u1'));
+      rmSync(join(profileStore, 'facts', 'broken.md'));
+      rmSync(join(profileStore, 'facts', 'latin.md'));
+      // (d) one truncated project fact
+      writeFileSync(join(projectStore, 'facts', 'zz-bad.md'), '---\nname: zz-bad\n');
+      const u2 = hook(ups('deg-u2'));
+      const s2 = hook(ss);
+      rmSync(join(projectStore, 'facts', 'zz-bad.md'));
+      // (e) a truncated event on stdin
+      const truncated = '{"hook_event_name":"UserPromptSubmit","prompt":"my secret password is hunter2 and';
+      const run = side === 'py' ? runPy : runNode;
+      const pe = run(ctx, { argv: ['--hook'], cwd, home: h, stdin: truncated });
+      const peRecord = readFileSync(HOOK_LOG(h), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1);
+      // (f) five transcripts of 30 Bash calls plus one more call each
+      const bash = Array.from({ length: 30 }, () => toolUse('Bash'));
+      const tails = {
+        none: [],
+        readUnderMemory: [toolUse('Read', { file_path: '/repo/docs/memory/notes.md' })],
+        grepUnderMemory: [toolUse('Grep', { pattern: 'x', path: '/repo/memory/', file_path: '/repo/memory/a.md' })],
+        writeUnderMemory: [toolUse('Write', { file_path: '/home/u/.claude/projects/p/memory/fact.md', content: 'x' })],
+        editUnderMemory: [toolUse('Edit', { file_path: 'C:\\\\u\\\\memory\\\\fact.md', old_string: 'a', new_string: 'b' })],
+        memorySave: [toolUse('mcp__bantamkit__memory_save', { name: 'n' })],
+      };
+      const stop = {};
+      for (const [label, tail] of Object.entries(tails)) {
+        const t = join(b.root, `t-${side}-${label}.jsonl`);
+        writeFileSync(t, [...bash, ...tail].join('\n') + '\n');
+        const r = hook({ hook_event_name: 'Stop', transcript_path: t, session_id: `stop-${label}` });
+        stop[label] = { action: r.last['action'], blocked: dec(r.stdout).includes('"decision":"block"') };
+      }
+      // (g) a chmod 000 file, read twice
+      let locked = null;
+      if (!chmodWithheld) {
+        const file = join(cwd, 'locked.txt');
+        chmodSync(file, 0o000);
+        try {
+          const pre = { hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: file }, session_id: 'locked' };
+          const decisions = [hook(pre), hook(pre)].map((r) =>
+            dec(r.stdout).includes('"permissionDecision":"deny"') ? 'deny' : 'allow',
+          );
+          const ledger = join(h, '.bantamkit', 'hooks', 'ledger-locked.json');
+          const ledgered = existsSync(ledger) ? Object.keys(JSON.parse(readFileSync(ledger, 'utf8')).reads ?? {}).length : 0;
+          locked = { decisions, ledgered };
+        } finally {
+          chmodSync(file, 0o644);
+        }
+      }
+      return {
+        headers: headerLines(healthy),
+        profileBroken: {
+          exit: s1.exit,
+          headers: headerLines(s1ctx),
+          hasProfileFact: s1ctx.includes('[[prof-ok]]'),
+          hasProjectFact: s1ctx.includes('[[ok-fact]]'),
+          hasToolbox: s1ctx.includes('[bantamkit] Toolbox is live'),
+          footer: s1ctx.split('\n').filter((l) => l.includes('not a valid fact')),
+          profileSkipped: files(s1.last['profileSkipped']),
+          reasons: (s1.last['profileSkipped'] ?? []).map((s) => s.reason),
+        },
+        promptProfileBroken: { exit: u1.exit, injected: names(u1.last), skipped: files(u1.last['skipped']) },
+        promptProjectBroken: { exit: u2.exit, injected: names(u2.last), skipped: files(u2.last['skipped']) },
+        sessionProjectBroken: {
+          headers: headerLines(ctxOf(s2)),
+          projectSkipped: files(s2.last['projectSkipped']),
+        },
+        parseError: { exit: pe.exit, record: Object.fromEntries(Object.entries(peRecord).filter(([k]) => k !== 'ts' && k !== 'ms')) },
+        stop,
+        locked,
+      };
+    };
+    const py = sequence('py');
+    b.restore();
+    const nd = sequence('node');
+
+    const truncated = '{"hook_event_name":"UserPromptSubmit","prompt":"my secret password is hunter2 and';
+    // The store's own reason sentences are compared across sides below, not pinned here: they
+    // are the store's wording (and #159 is changing one of them in another unit).
+    const withoutReasons = ({ reasons: _reasons, ...rest }) => rest;
+    cases.push(
+      ...literalCases(
+        py.headers,
+        nd.headers,
+        'hook-degrade: PINNED PER SIDE (#188): one fact is "1 fact", two are "2 facts"',
+        ['[bantamkit profile memory — 1 fact learned across projects]', '[bantamkit project memory — 2 facts]'],
+      ),
+      ...literalCases(
+        withoutReasons(py.profileBroken),
+        withoutReasons(nd.profileBroken),
+        'hook-degrade: PINNED PER SIDE (#119): an empty and a non-UTF-8 profile fact cost those two files; SessionStart keeps every other block and names both',
+        {
+          exit: 0,
+          headers: ['[bantamkit profile memory — 1 fact learned across projects]', '[bantamkit project memory — 2 facts]'],
+          hasProfileFact: true,
+          hasProjectFact: true,
+          hasToolbox: true,
+          footer: ['[2 fact files not read — not a valid fact: broken.md, latin.md; ~/.bantamkit/hooks/hook-log.jsonl has the reason]'],
+          profileSkipped: ['broken.md', 'latin.md'],
+        },
+      ),
+      ...literalCases(
+        py.promptProfileBroken,
+        nd.promptProfileBroken,
+        'hook-degrade: PINNED PER SIDE (#119): UserPromptSubmit still injects the healthy profile fact beside the broken ones, and logs which files it skipped',
+        { exit: 0, injected: ['ok-fact', 'ok-other', 'prof-ok'], skipped: ['profile:broken.md', 'profile:latin.md'] },
+      ),
+      ...literalCases(
+        { prompt: py.promptProjectBroken, session: py.sessionProjectBroken },
+        { prompt: nd.promptProjectBroken, session: nd.sessionProjectBroken },
+        'hook-degrade: PINNED PER SIDE (#119): one truncated project fact costs that fact — both hooks still inject the rest of both layers',
+        {
+          prompt: { exit: 0, injected: ['ok-fact', 'ok-other', 'prof-ok'], skipped: ['project:zz-bad.md'] },
+          session: {
+            headers: ['[bantamkit profile memory — 1 fact learned across projects]', '[bantamkit project memory — 2 facts]'],
+            projectSkipped: ['zz-bad.md'],
+          },
+        },
+      ),
+      ...literalCases(
+        py.parseError,
+        nd.parseError,
+        'hook-degrade: PINNED PER SIDE (#168): an unparseable stdin is logged as its byte length and sha256, and no text of it',
+        {
+          exit: 0,
+          record: {
+            event: 'parse-error',
+            bytes: Buffer.byteLength(truncated),
+            sha256: createHash('sha256').update(truncated, 'utf8').digest('hex'),
+          },
+        },
+      ),
+      ...literalCases(
+        py.stop,
+        nd.stop,
+        'hook-degrade: PINNED PER SIDE (#169): only a memory_save or a Write/Edit of memory/*.md silences the Stop nudge — a Read or a Grep under memory/ does not',
+        {
+          none: { action: 'nudge', blocked: true },
+          readUnderMemory: { action: 'nudge', blocked: true },
+          grepUnderMemory: { action: 'nudge', blocked: true },
+          writeUnderMemory: { action: 'pass', blocked: false },
+          editUnderMemory: { action: 'pass', blocked: false },
+          memorySave: { action: 'pass', blocked: false },
+        },
+      ),
+    );
+    if (chmodWithheld) {
+      notes.push(
+        'hook-degrade: the #192 chmod-000 cases were WITHHELD (uid 0 reads a mode-000 file, and win32 ' +
+          'modes are advisory), so 2 per-side literals did not run',
+      );
+    } else {
+      cases.push(
+        ...literalCases(
+          py.locked,
+          nd.locked,
+          'hook-degrade: PINNED PER SIDE (#192): a regular file the hook may not read is never ledgered, and its retry is never refused',
+          { decisions: ['allow', 'allow'], ledgered: 0 },
+        ),
+      );
+    }
+    cases.push({
+      name: 'hook-degrade: every probe — headers, skipped files and their reasons, injections, the parse-error record, the Stop arm, the unreadable Read — is the same on both sides',
       kind: 'json',
       expected: py,
       actual: nd,

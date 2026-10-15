@@ -272,7 +272,8 @@ def test_the_debt_a_directory_at_the_old_slug_is_not_the_answer(tmp_path):
     r = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
     assert r.record["nativeBranch"] == "unknown"
     ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "[bantamkit project memory — 1 facts]" in ctx
+    # AMENDED job65 (#188): this pinned "1 facts"; one fact is "1 fact" now.
+    assert "[bantamkit project memory — 1 fact]" in ctx
     assert r.record["projectInjected"] == 1
 
 

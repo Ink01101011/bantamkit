@@ -215,7 +215,8 @@ test('THE DEBT: a directory at the OLD slug is not the answer — the resolver d
   const r = runHook({ hook_event_name: 'SessionStart', source: 'startup' }, { home, cwd });
   assert.equal(r.record.nativeBranch, 'unknown');
   const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
-  assert.match(ctx, /\[bantamkit project memory — 1 facts\]/);
+  // AMENDED job65 (#188): this pinned "1 facts"; one fact is "1 fact" now.
+  assert.match(ctx, /\[bantamkit project memory — 1 fact\]/);
   assert.equal(r.record.projectInjected, 1);
 });
 

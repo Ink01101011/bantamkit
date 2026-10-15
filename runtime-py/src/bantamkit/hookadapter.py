@@ -73,6 +73,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .client import BantamError
 from .memory.component import Memory
 from .memory.layers import discover_project_store, resolve_project_store
 from .memory.store import DURABLE_TYPES, Fact, MemoryStore, tokens
@@ -566,6 +567,8 @@ class NativeExport:
     bytes: int = 0
     index_bytes: int = 0
     skipped: list[str] = field(default_factory=list)
+    #: Fact files that could not be read as a fact, left out of the export (#119).
+    unparsed: list[dict[str, str]] = field(default_factory=list)
     #: Whether the host's index was there to append to. A never creates it.
     index: str = "absent"
     error: str | None = None
@@ -740,11 +743,9 @@ def _export_to_native(directory: str, store: str) -> NativeExport:
     appended: list[str] = []
     try:
         memory = MemoryStore(store, create=False)
+        facts, result.unparsed = _tolerant_facts(memory)
         ranked = _rank_by_session_drop_rule(
-            [
-                (fact, position, memory._index_line(fact))
-                for position, fact in enumerate(memory._facts())
-            ]
+            [(fact, position, memory._index_line(fact)) for position, fact in enumerate(facts)]
         )
         for fact, _position, _line in ranked:
             if result.exported >= NATIVE_EXPORT_MAX:
@@ -814,6 +815,8 @@ class CappedIndex:
     total: int
     injected: int
     dropped: list[str] = field(default_factory=list)
+    #: Fact files that could not be read as a fact and were left out (#119).
+    skipped: list[dict[str, str]] = field(default_factory=list)
     facts: int | None = None
 
 
@@ -849,7 +852,7 @@ def _rank_by_session_drop_rule(
     return ranked
 
 
-def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> CappedIndex:
+def _capped_index(root: str, header: Callable[[str, int], str], max_bytes: int) -> CappedIndex:
     """The index of `root` as ONE capped block.
 
     A header whose number is the number of fact lines IN the block, the fact lines that fit
@@ -867,8 +870,9 @@ def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> Ca
     so a reader who sees a bare number knows the block is whole.
     """
     store = MemoryStore(root, create=False)
+    facts, skipped = _tolerant_facts(store)
     all_facts: list[tuple[Fact, int, str]] = [
-        (fact, position, store._index_line(fact)) for position, fact in enumerate(store._facts())
+        (fact, position, store._index_line(fact)) for position, fact in enumerate(facts)
     ]
     ranked = _rank_by_session_drop_rule(all_facts)
 
@@ -883,7 +887,8 @@ def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> Ca
     shown = [entry for entry in all_facts if entry[1] in kept]
     dropped = [entry[0].name for entry in ranked if entry[1] not in kept]
     body = _cap_lines("".join(entry[2] for entry in shown).rstrip("\n"), max_bytes)
-    lines = [header(f"{len(shown)} of {len(all_facts)}" if dropped else str(len(all_facts)))]
+    count = f"{len(shown)} of {len(all_facts)}" if dropped else str(len(all_facts))
+    lines = [header(count, len(all_facts))]
     if body:
         lines.append(body)
     if dropped:
@@ -893,8 +898,14 @@ def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> Ca
             f"~/.bantamkit/hooks/hook-log.jsonl names the dropped; "
             f"mcp__bantamkit__memory_recall reads any fact by name]"
         )
+    if skipped:
+        lines.append(_skipped_line(skipped))
     return CappedIndex(
-        block="\n".join(lines), total=len(all_facts), injected=len(shown), dropped=dropped
+        block="\n".join(lines),
+        total=len(all_facts),
+        injected=len(shown),
+        dropped=dropped,
+        skipped=skipped,
     )
 
 
@@ -918,6 +929,91 @@ def _message(e: BaseException) -> str:
     return str(e) or e.__class__.__name__
 
 
+# ------------------------------------------- one unreadable fact costs one fact (#119)
+# `MemoryStore._facts()` parses EVERY file and raises on the first it cannot read as a fact,
+# so before job65 one empty, truncated or non-UTF-8 file in the profile store blanked
+# SessionStart outright (the profile block was outside any try) and one in the project store
+# silenced every UserPromptSubmit injection. The hook's contract is "never loud" and the
+# memory doc's is "one bad neighbour cannot take down recall"; neither was true of one file.
+#
+# The store is NOT changed here (it is another unit's layer). The hook asks the store's OWN
+# parser, one file at a time, only after the whole-store parse has already failed: the
+# healthy path is the one call it always was. It does that by narrowing `_fact_paths` -- the
+# single listing `_facts()` walks, on both runtimes -- on THIS store instance only, which the
+# hook constructed and nothing else holds. No second parser exists, so a file the hook keeps
+# is a file the store would have read, the same `Fact`.
+
+#: The errors `Memory.recall_outcome` already treats as "this layer could not be read".
+_FACT_READ_ERRORS = (BantamError, OSError, UnicodeDecodeError)
+
+#: A footer naming many broken files is still bounded, like everything else this injects.
+SKIPPED_LINE_MAX = 500
+
+
+def _tolerant_facts(store: MemoryStore) -> tuple[list[Fact], list[dict[str, str]]]:
+    """Every fact `store` can read, and the files it could not (`{file, reason}`).
+
+    Narrows the instance so that every later read through it (`recall`, `lookup`,
+    `_facts`) skips the same files. A store whose `facts/` cannot be LISTED still raises,
+    exactly as before: that is a layer that could not be read, not a fact.
+    """
+    try:
+        return store._facts(), []
+    except _FACT_READ_ERRORS:
+        pass
+    listed = store._fact_paths()
+    kept: list[Path] = []
+    facts: list[Fact] = []
+    skipped: list[dict[str, str]] = []
+    done = False
+    try:
+        for file in listed:
+            store._fact_paths = lambda file=file: [file]  # type: ignore[method-assign]
+            try:
+                facts.extend(store._facts())
+                kept.append(file)
+            except _FACT_READ_ERRORS as e:
+                skipped.append({"file": file.name, "reason": _message(e)})
+        done = True
+    finally:
+        if done:
+            store._fact_paths = lambda: list(kept)  # type: ignore[method-assign]
+        else:
+            del store._fact_paths  # back to the class's own listing
+    return facts, skipped
+
+
+def _quarantine_layers(m: Memory) -> list[dict[str, str]]:
+    """`_tolerant_facts` over every layer `Memory.layered` bound, for the recall arm.
+
+    A layer whose directory cannot be listed is left exactly as it was (the recall's own
+    `unreadable` count still says so). Returns the files left out, labelled by layer.
+    """
+    out: list[dict[str, str]] = []
+    for label, store, _writable in m._layers:
+        try:
+            out.extend({"layer": label, **s} for s in _tolerant_facts(store)[1])
+        except _FACT_READ_ERRORS:
+            pass
+    return out
+
+
+def _fact_noun(total: int) -> str:
+    """`1 fact` / `N facts` (#188). The noun follows the block's TOTAL, the last number."""
+    return "fact" if total == 1 else "facts"
+
+
+def _skipped_line(skipped: list[dict[str, str]]) -> str:
+    """The block's footer when files were left out: their names, never their contents."""
+    n = len(skipped)
+    names = ", ".join(s["file"] for s in skipped)
+    return _cap_bytes(
+        f"[{n} fact {'file' if n == 1 else 'files'} not read — not a valid fact: {names}; "
+        "~/.bantamkit/hooks/hook-log.jsonl has the reason]",
+        SKIPPED_LINE_MAX,
+    )
+
+
 # ---------------------------------------------------------------- SessionStart
 
 
@@ -926,13 +1022,24 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
     parts: list[str] = []
     profile_facts = _count_facts(run.profile)
     profile = CappedIndex(block="", total=0, injected=0, dropped=[])
+    # IN ITS OWN TRY (job65, #119): this block used to sit outside every try, so a profile
+    # store the hook could not read at all raised past the arm and the session got NO context
+    # -- not the project block, not the toolbox line. One unreadable FILE is handled inside
+    # `_capped_index`; this catch is for a store that cannot even be listed, and it costs the
+    # profile block only.
     if profile_facts > 0:
-        profile = _capped_index(
-            run.profile,
-            lambda count: f"[bantamkit profile memory — {count} facts learned across projects]",
-            SESSION_INJECT_MAX,
-        )
-        parts.append(profile.block)
+        try:
+            profile = _capped_index(
+                run.profile,
+                lambda count, total: (
+                    f"[bantamkit profile memory — {count} {_fact_noun(total)} "
+                    "learned across projects]"
+                ),
+                SESSION_INJECT_MAX,
+            )
+            parts.append(profile.block)
+        except Exception as e:  # noqa: BLE001 - a bad store is a log line, never a dead session
+            _log(run, {"event": "SessionStart", "warn": f"profile: {_message(e)}"})
     # WHERE THE HOST'S OWN AUTO-MEMORY DIRECTORY IS, resolved ONCE per session and used twice:
     # it decides whether the project index has to be injected at all, and it is where A
     # exports. SessionStart is the event because it is the one that already had to answer this
@@ -957,7 +1064,9 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             if native.dir is None:
                 project = _capped_index(
                     store,
-                    lambda count: f"[bantamkit project memory — {count} facts]",
+                    lambda count, total: (
+                        f"[bantamkit project memory — {count} {_fact_noun(total)}]"
+                    ),
                     SESSION_INJECT_MAX,
                 )
                 project.facts = _count_facts(store)
@@ -1017,11 +1126,15 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             "profileFacts": profile_facts,
             "profileInjected": profile.injected,
             "profileDropped": profile.dropped,
+            # #119: the files left out, by name and the store's reason -- present only when
+            # non-empty, so a healthy session's record is the shape it always was.
+            **({"profileSkipped": profile.skipped} if profile.skipped else {}),
             **(
                 {
                     "projectFacts": project.facts,
                     "projectInjected": project.injected,
                     "projectDropped": project.dropped,
+                    **({"projectSkipped": project.skipped} if project.skipped else {}),
                 }
                 if project
                 else {}
@@ -1042,6 +1155,7 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
                     "nativeBytes": exported.bytes,
                     "nativeIndexBytes": exported.index_bytes,
                     "nativeSkipped": exported.skipped,
+                    **({"nativeUnparsed": exported.unparsed} if exported.unparsed else {}),
                     "nativeIndex": exported.index,
                     **({"nativeError": exported.error} if exported.error else {}),
                 }
@@ -1126,7 +1240,24 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # prompt, for up to three files -- and the rules keyed on that date (compaction's
     # stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
     # reading this arm's traffic. An explicit `memory_recall` still stamps.
-    o = m.recall_outcome(prompt, 3, stamp=False)
+    # ONE UNREADABLE FACT COSTS THAT FACT (job65, #119). The healthy path is one recall, as
+    # before. Only when it failed -- the project layer raised, or a read-only layer was
+    # counted `unreadable` and dropped whole -- are the layers narrowed past the files they
+    # cannot read and the recall asked once more. A layer that cannot be LISTED is not
+    # narrowed and fails exactly as it did.
+    skipped: list[dict[str, str]] = []
+    try:
+        o = m.recall_outcome(prompt, 3, stamp=False)
+    except _FACT_READ_ERRORS:
+        skipped = _quarantine_layers(m)
+        if not skipped:
+            raise
+        o = m.recall_outcome(prompt, 3, stamp=False)
+    if not skipped and o.unreadable > 0:
+        skipped = _quarantine_layers(m)
+        if skipped:
+            o = m.recall_outcome(prompt, 3, stamp=False)
+    degraded: dict[str, Any] = {"skipped": skipped} if skipped else {}
     if o.status != "answered":
         _log(
             run,
@@ -1135,6 +1266,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
                 "action": "none",
                 "status": o.status,
                 "candidates": o.candidates,
+                **degraded,
             },
         )
         return
@@ -1143,7 +1275,10 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # the model exactly which name to pass to memory_recall if it wants the body.
     heads = [line for line in o.reply.split("\n") if RECALL_HEADER.match(line)]
     if not heads:
-        _log(run, {"event": "UserPromptSubmit", "action": "none", "reason": "no-headers"})
+        _log(
+            run,
+            {"event": "UserPromptSubmit", "action": "none", "reason": "no-headers", **degraded},
+        )
         return
     # WHAT THIS CONTEXT HAS ALREADY BEEN SHOWN IS NOT SHOWN AGAIN (job64, J64-2). Measured
     # 2026-09-25: 333 of 598 injections in a week repeated a name injected earlier in the
@@ -1177,6 +1312,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
                 "session": payload.get("session_id"),
                 "prompt": _prompt_fingerprint(prompt),
                 "suppressed": suppressed,
+                **degraded,
             },
         )
         return
@@ -1227,6 +1363,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
             "injected": injected,
             "dropped": len(fresh) - len(injected),
             "suppressed": suppressed,
+            **degraded,
         },
     )
     _emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}})
@@ -1389,6 +1526,16 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
         return  # missing file: let Read produce its own error
     if not stat.S_ISREG(st.st_mode):
         return  # a directory/device read has no file content to reuse
+    # NOR A FILE THIS PROCESS MAY NOT READ (job65, #192). `S_ISREG` closed the directory case
+    # of #190 but the ledger still recorded on PreToolUse, before the host's Read could fail:
+    # a `chmod 000` file was ledgered and its retry refused with "use the content from that
+    # earlier read" -- content the host never produced. The hook runs as the same user as the
+    # host's Read, so `R_OK` here is the host's answer; a file that fails it is treated like a
+    # missing path: not ledgered, never refused. Chosen over moving the record to
+    # PostToolUse[Read] because it is one check in the arm that already decides, on both
+    # runtimes, and needs no second event to agree with the first (docs/hooks.md).
+    if not os.access(file, os.R_OK):
+        return
     offset = ti.get("offset")
     limit = ti.get("limit")
     # The transcript is the CONTEXT dimension: a subagent has its own transcript and has not
@@ -2161,11 +2308,47 @@ def _maybe_dream(run: HookRun, payload: dict[str, Any]) -> None:
 
 _TOOL_USE = re.compile(r'"type":\s*"tool_use"')
 _SAVE_CALL = re.compile(r'"name":\s*"mcp__bantamkit__memory_save"')
-#: A write into any `memory/` directory, as the transcript spells a tool input. The class
-#: is backslash-or-slash, and it is spelled as a module constant because a backslash inside
-#: an f-string expression is a syntax error before CPython 3.12 and this package supports
-#: 3.11.
-_SAVE_WRITE = re.compile(r'"file_path":"[^"]*[\\/]memory[\\/][^"]*\.md"')
+#: The native write tools whose `file_path` can put a fact into a `memory/` directory.
+_SAVE_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
+#: The path shape of a native memory write: a `.md` under any `memory/` directory. The class
+#: is backslash-or-slash, spelled as a module constant because a backslash inside an f-string
+#: expression is a syntax error before CPython 3.12 and this package supports 3.11.
+_SAVE_WRITE_PATH = re.compile(r"[\\/]memory[\\/].*\.md\Z", re.DOTALL)
+#: A line can only hold a native write if it names one of the tools; the rest are not parsed.
+_SAVE_LINE_HINT = re.compile(r'"name":\s*"(?:Write|Edit|MultiEdit)"')
+
+
+def _transcript_wrote_memory(text: str) -> bool:
+    """Did the transcript WRITE a native memory file (job65, #169)? Only a `tool_use` counts.
+
+    A Write/Edit/MultiEdit whose `file_path` is a `.md` under a `memory/` directory. Before
+    this a regex over the whole text took ANY `"file_path"` under `memory/` -- a Read of
+    `docs/memory/notes.md` included -- as a save, and silenced the nudge. (A `memory_save`
+    call is still recognised by its tool name, as it always was; that half was never the
+    defect.) Lines are prefiltered on the tool names and only those parsed; a line that does
+    not parse is not a save.
+    """
+    for line in text.split("\n"):
+        if not _SAVE_LINE_HINT.search(line):
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        msg = record.get("message") if isinstance(record, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _SAVE_WRITE_TOOLS:
+                continue
+            ti = block.get("input")
+            fp = ti.get("file_path") if isinstance(ti, dict) else None
+            if isinstance(fp, str) and _SAVE_WRITE_PATH.search(fp):
+                return True
+    return False
 
 
 def _stop(run: HookRun, payload: dict[str, Any]) -> None:
@@ -2185,7 +2368,7 @@ def _stop(run: HookRun, payload: dict[str, Any]) -> None:
     saved = bool(
         int(ledger.get("saved") or 0) > 0
         or _SAVE_CALL.search(text)
-        or _SAVE_WRITE.search(text)
+        or _transcript_wrote_memory(text)
     )
     if tool_uses < STOP_NUDGE_MIN_TOOL_CALLS or saved:
         _log(run, {"event": "Stop", "action": "pass", "toolUses": tool_uses, "saved": saved})
@@ -2237,7 +2420,19 @@ def run_hook(stdin: Any = None) -> None:
         if isinstance(parsed, dict):
             payload = parsed
     except ValueError:
-        _log(run, {"event": "parse-error", "raw": raw[:200]})
+        # THE INPUT IS NOT LOGGED, AT ANY LENGTH (job65, #168): a truncated UserPromptSubmit
+        # event carries the user's prompt, and this line used to keep its first 200
+        # characters. Its size and a SHA-256 digest are kept instead, the same fingerprint
+        # `_prompt_fingerprint` gives a prompt that did parse.
+        data = raw.encode("utf-8", "surrogatepass")
+        _log(
+            run,
+            {
+                "event": "parse-error",
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            },
+        )
         return
     event = payload.get("hook_event_name")
     # Before ANY arm binds a store: the winning registration's `BANTAMKIT_MEMORY_DIR`,

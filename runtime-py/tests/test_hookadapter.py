@@ -39,6 +39,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SRC = Path(__file__).resolve().parents[1] / "src"
 
 
@@ -288,7 +290,9 @@ def test_the_profile_index_is_injected_with_a_header_that_counts_it(tmp_path):
     done = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
 
     ctx = json.loads(done.stdout.decode())["hookSpecificOutput"]["additionalContext"]
-    assert "[bantamkit profile memory — 1 facts learned across projects]" in ctx
+    # AMENDED job65 (#188): this pinned "1 facts". The issue is the newer ruling -- one fact
+    # is "1 fact" -- and both runtimes now say so (conformance `hook-degrade`).
+    assert "[bantamkit profile memory — 1 fact learned across projects]" in ctx
     assert "- [[measure-it]] (feedback) — every claim needs a rerunnable probe" in ctx
     assert _log_lines(home)[0]["profileFacts"] == 1
     assert _log_lines(home)[0]["profileInjected"] == 1
@@ -307,7 +311,8 @@ def test_a_project_store_beside_the_cwd_is_injected_too(tmp_path):
     done = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
 
     ctx = json.loads(done.stdout.decode())["hookSpecificOutput"]["additionalContext"]
-    assert "[bantamkit project memory — 1 facts]" in ctx
+    # AMENDED job65 (#188): this pinned "1 facts"; one fact is "1 fact" now.
+    assert "[bantamkit project memory — 1 fact]" in ctx
     assert "- [[the-project-fact]] (project) — what this checkout is for" in ctx
     line = _log_lines(home)[0]
     assert line["projectFacts"] == 1
@@ -1744,3 +1749,121 @@ def test_tokens_is_public_api_on_the_memory_store(tmp_path):
     assert hasattr(store_module, "tokens"), "the promoted name"
     assert store_module.tokens("Alpha-Beta gamma!") == {"alpha", "beta", "gamma"}
     assert not hasattr(store_module, "_tokens"), "the private spelling is gone, not aliased"
+
+
+# --- job65, J65-8: #119, #188, #168, #169, #192 ---------------------------------------------
+# The in-process half; the conformance `hooks` suite's `hook-degrade` block is the process
+# half, compared against the port. Each test names the pre-fix behaviour it was red on.
+
+
+def _session_ctx(done) -> str:
+    return json.loads(done.stdout.decode())["hookSpecificOutput"]["additionalContext"]
+
+
+def test_119_one_broken_profile_fact_costs_that_file_and_every_block_still_renders(tmp_path):
+    """RED before job65: SessionStart printed 0 bytes -- the profile block raised past the arm."""
+    home, cwd = _bed(tmp_path, "broken-profile")
+    profile = home / ".bantamkit" / "memory"
+    _save(profile, "feedback", "prof-ok", "shared words profile fact", "body")
+    _save(cwd / ".bantamkit" / "memory", "project", "ok-fact", "shared words project fact", "b")
+    (profile / "facts" / "broken.md").write_text("", encoding="utf-8")
+
+    done = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
+
+    assert done.returncode == 0, done.stderr
+    ctx = _session_ctx(done)
+    assert "[bantamkit profile memory — 1 fact learned across projects]" in ctx
+    assert "[[prof-ok]]" in ctx and "[[ok-fact]]" in ctx
+    assert "[bantamkit] Toolbox is live" in ctx
+    assert "[1 fact file not read — not a valid fact: broken.md;" in ctx
+    line = [x for x in _log_lines(home) if x["event"] == "SessionStart"][-1]
+    assert [s["file"] for s in line["profileSkipped"]] == ["broken.md"]
+    assert line["profileSkipped"][0]["reason"].startswith("malformed fact file broken.md")
+
+
+def test_119_one_broken_project_fact_does_not_silence_user_prompt_submit(tmp_path):
+    """RED before job65: UserPromptSubmit printed 0 bytes and logged an `error`."""
+    home, cwd = _bed(tmp_path, "broken-project")
+    _save(home / ".bantamkit" / "memory", "feedback", "prof-ok", "shared words profile fact", "b")
+    store = cwd / ".bantamkit" / "memory"
+    _save(store, "project", "ok-fact", "shared words project fact", "b")
+    (store / "facts" / "zz-bad.md").write_text("---\nname: zz-bad\n", encoding="utf-8")
+
+    done = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": "shared words fact please"},
+        home=home,
+        cwd=cwd,
+    )
+
+    assert done.returncode == 0, done.stderr
+    ctx = _session_ctx(done)
+    assert "[ok-fact]" in ctx and "[prof-ok]" in ctx
+    line = _log_lines(home)[-1]
+    assert line["action"] == "inject"
+    assert [(s["layer"], s["file"]) for s in line["skipped"]] == [("project", "zz-bad.md")]
+
+
+def test_168_an_unparseable_stdin_is_logged_as_size_and_digest_never_text(tmp_path):
+    """RED before job65: the record carried `raw`, the first 200 characters of the prompt."""
+    import hashlib
+
+    home, cwd = _bed(tmp_path, "parse-error")
+    raw = b'{"hook_event_name":"UserPromptSubmit","prompt":"my secret password is hunter2 and'
+
+    done = _run_hook(home=home, cwd=cwd, raw=raw)
+
+    assert done.returncode == 0 and done.stdout == b""
+    line = _log_lines(home)[-1]
+    assert {k: v for k, v in line.items() if k not in ("ts", "ms")} == {
+        "event": "parse-error",
+        "bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    assert b"hunter2" not in (home / ".bantamkit" / "hooks" / "hook-log.jsonl").read_bytes()
+
+
+def _tool_use(name: str, **tool_input) -> str:
+    message = {"content": [{"type": "tool_use", "name": name, "input": tool_input}]}
+    return json.dumps({"type": "assistant", "message": message})
+
+
+def test_169_a_read_under_memory_is_not_a_save_but_a_write_there_is(tmp_path):
+    """RED before job65: the Read below set `saved: true` and silenced the nudge."""
+    home, cwd = _bed(tmp_path, "stop-read")
+    bash = [_tool_use("Bash") for _ in range(30)]
+    outcomes = {}
+    tails = {
+        "read": _tool_use("Read", file_path="/repo/docs/memory/notes.md"),
+        "write": _tool_use("Write", file_path="/h/.claude/projects/p/memory/f.md", content="x"),
+        "multiedit": _tool_use("MultiEdit", file_path="/h/memory/f.md", edits=[]),
+    }
+    for label, tail in tails.items():
+        transcript = cwd / f"t-{label}.jsonl"
+        transcript.write_text("\n".join([*bash, tail]) + "\n", encoding="utf-8")
+        done = _stop(home, cwd, transcript, session_id=f"stop-{label}")
+        outcomes[label] = (_log_lines(home)[-1]["action"], done.stdout != b"")
+    assert outcomes == {
+        "read": ("nudge", True),
+        "write": ("pass", False),
+        "multiedit": ("pass", False),
+    }
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "getuid", lambda: -1)() == 0,
+    reason="root reads a mode-000 file, and win32 modes are advisory",
+)
+def test_192_a_file_the_hook_may_not_read_is_never_ledgered_or_refused(tmp_path):
+    """RED before job65: the second Read of a chmod-000 file was denied."""
+    home, cwd = _bed(tmp_path, "locked")
+    locked = cwd / "locked.txt"
+    locked.write_text("secret", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        payload = _read_payload(locked)
+        runs = [_run_hook(payload, home=home, cwd=cwd) for _ in range(2)]
+    finally:
+        locked.chmod(0o644)
+    assert [r.stdout for r in runs] == [b"", b""]
+    assert not (home / ".bantamkit" / "hooks" / "ledger-probe-session.json").exists()
+
