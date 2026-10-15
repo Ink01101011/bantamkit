@@ -195,6 +195,54 @@ export const DURABLE_TYPES = ['feedback', 'user'] as const;
 const NAME_RE = /^[a-z0-9][a-z0-9-]*\n?$/;
 const NAME_PATTERN = '^[a-z0-9][a-z0-9-]*$';
 
+/**
+ * THE LONGEST NAME A SAVE ACCEPTS (job65/#156): `NAME_MAX_CHARS` in the reference, the same
+ * number. The fact lands as `<name>.md` through `<name>.md.<pid>.<8 hex>.tmp` (#161), so the
+ * name leaves room for that suffix under the 255-byte file-name limit. WAS: no cap, and a
+ * 301-character name came back as a raw `[Errno 63] File name too long: '<absolute path>'`.
+ * `NAME_RE` admits ASCII only, so characters and bytes are one count.
+ */
+export const NAME_MAX_CHARS = 128;
+
+/**
+ * ONE LINE MEANS ONE LINE (job65/#155): the reference's `_NOT_ONE_LINE`, the same ranges —
+ * every C0/C1 control plus U+2028/U+2029. Refused in a saved `description`; in a fact file on
+ * disk each run of them is READ as one space (see `facts()`), so `index.md` and the hook's
+ * injected header can never gain a line nobody saved.
+ */
+const NOT_ONE_LINE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+
+/**
+ * A LONE SURROGATE IS NOT TEXT (job65/#160). JSON can carry `\ud800` on its own; no UTF-8
+ * file can hold it. This port used to write U+FFFD and say "saved"; the reference raised a
+ * `UnicodeEncodeError`. A JS string holds a pair as two code units, so a surrogate is lone
+ * when it is a high one not followed by a low one, or a low one not preceded by a high one.
+ */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+function codepoint(unit: string): string {
+  return `U+${unit.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
+}
+
+/** `U+XXXX` of the first lone surrogate in `text`, or `null` when it is all text. */
+export function loneSurrogate(text: string): string | null {
+  const found = LONE_SURROGATE.exec(text);
+  return found === null ? null : codepoint(found[0]);
+}
+
+function notOneLine(text: string): string | null {
+  NOT_ONE_LINE.lastIndex = 0;
+  const found = NOT_ONE_LINE.exec(text);
+  NOT_ONE_LINE.lastIndex = 0;
+  return found === null ? null : codepoint(found[0]);
+}
+
+/** One fact file left out of a tolerant read, and the store's own sentence for why (#119). */
+export interface SkippedFact {
+  file: string;
+  reason: string;
+}
+
 export const DUPLICATE_JACCARD = 0.5;
 
 // ---- the precision gate (roadmap #6) ---------------------------------------------
@@ -810,6 +858,26 @@ export class MemoryStore {
     if (pyStrip(description || '') === '') {
       throw new MemoryValidationError('description must be a non-empty line');
     }
+    if (name.length > NAME_MAX_CHARS) {
+      throw new MemoryValidationError(`invalid name: ${name.length} characters; must be at most ${NAME_MAX_CHARS}`);
+    }
+    const texts: Array<[string, unknown]> = [
+      ['description', description],
+      ['body', body],
+      ...links.map((link, i): [string, unknown] => [`links[${i}]`, link]),
+    ];
+    for (const [label, value] of texts) {
+      const bad = typeof value === 'string' ? loneSurrogate(value) : null;
+      if (bad !== null) {
+        throw new MemoryValidationError(
+          `${label} holds a lone surrogate (${bad}), which is not text and cannot be stored as UTF-8; nothing was saved`,
+        );
+      }
+    }
+    const broken = notOneLine(pyStrip(description));
+    if (broken !== null) {
+      throw new MemoryValidationError(`description must be one line; it holds the control character ${broken}`);
+    }
 
     const newTokens = tokens(`${name} ${description}`);
     let existing: Fact | null = null;
@@ -882,12 +950,18 @@ export class MemoryStore {
    * reference's `not 0.0 <= min_ratio <= 1.0` refuses it. That is a real mutant (M7b) and
    * it is killed on both sides.
    */
-  recall(query: string, k: number | null = null, stamp = true, minRatio = RECALL_MIN_SCORE_RATIO): Fact[] {
+  recall(
+    query: string,
+    k: number | null = null,
+    stamp = true,
+    minRatio = RECALL_MIN_SCORE_RATIO,
+    skipped?: SkippedFact[],
+  ): Fact[] {
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
     const limit = k ?? this.k;
     const q = tokens(query);
     let scored: Array<{ score: number; name: FactValue; fact: Fact }> = [];
-    for (const fact of this.facts()) {
+    for (const fact of this.facts(undefined, skipped)) {
       let score = 0;
       for (const t of tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) if (q.has(t)) score += 1;
       if (score > 0) scored.push({ score, name: fact.name, fact });
@@ -928,8 +1002,8 @@ export class MemoryStore {
    * order, which is the order `recall` breaks a tie in. `stamp` dates the hit through
    * `stamp()` exactly as `recall` dates its hits; a miss writes nothing.
    */
-  lookup(name: string, stamp = true): Fact | null {
-    for (const fact of this.facts()) {
+  lookup(name: string, stamp = true, skipped?: SkippedFact[]): Fact | null {
+    for (const fact of this.facts(undefined, skipped)) {
       if (typeof fact.name === 'string' && fact.name === name) {
         if (stamp) this.stamp(fact);
         return fact;
@@ -1345,6 +1419,19 @@ export class MemoryStore {
    * bytes `dream` MEASURES and the bytes the store WRITES are already one function. That is
    * the code-shape difference the Python half had to manufacture, not a behaviour one.
    */
+  /**
+   * Every fact this store can read, and `{file, reason}` for each file it could not.
+   *
+   * THE DECLARED TOLERANT LISTING (job65/#119), `readable_facts` in the reference. One empty,
+   * truncated, non-UTF-8 or unreadable fact file costs that file, not the store: the hook's
+   * SessionStart index and native export read through this, as `Memory.recallOutcome` reads
+   * through `recall(..., skipped)`. A `facts/` that cannot be listed still throws.
+   */
+  readableFacts(): { facts: Fact[]; skipped: SkippedFact[] } {
+    const skipped: SkippedFact[] = [];
+    return { facts: this.facts(undefined, skipped), skipped };
+  }
+
   internals(): StoreInternals {
     return {
       facts: () => this.facts(),
@@ -1551,13 +1638,36 @@ export class MemoryStore {
    * timestamp, and a file whose name is not the fact's (#122) — without throwing, because
    * every other caller tolerates both. `lint` is the only caller that passes an array.
    */
-  private facts(findings?: string[]): Fact[] {
+  /**
+   * `skipped`, when given, makes ONE BAD FILE COST THAT FILE (job65/#119): a file that is
+   * malformed or cannot be read is pushed as `{file, reason}` (the sentence this would have
+   * thrown) and every other file is still read. Only `recall`, `lookup` and `readableFacts`
+   * pass it; a save, a compaction or a lint keeps the strict read.
+   */
+  private facts(findings?: string[], skipped?: SkippedFact[]): Fact[] {
     const out: Fact[] = [];
+    for (const path of this.factPaths()) {
+      if (skipped === undefined) {
+        out.push(this.readFact(path, findings));
+        continue;
+      }
+      try {
+        out.push(this.readFact(path, findings));
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError)) throw e;
+        skipped.push({ file: basename(path), reason: e.message });
+      }
+    }
+    return out;
+  }
+
+  /** One fact file, parsed, or the `malformed fact file` sentence for it (see `facts`). */
+  private readFact(path: string, findings?: string[]): Fact {
     const timestampText = (value: FactValue | FactValue[] | undefined): FactValue | FactValue[] | undefined =>
       value instanceof PyScalar && (value.ord.kind === 'date' || value.ord.kind === 'datetime')
         ? value.text
         : value;
-    for (const path of this.factPaths()) {
+    {
       const file = basename(path);
       const malformed = (reason: string): MemoryValidationError =>
         new MemoryValidationError(`malformed fact file ${file}: ${reason}`);
@@ -1608,9 +1718,22 @@ export class MemoryStore {
         );
       }
       const rawCreated = stamps['created'];
-      out.push({
+      // #155: a description that is not one line is READ as one — each run of `NOT_ONE_LINE`
+      // is one space — and `lint` names it, like the other hand-edit shapes.
+      let description = meta['description'] as FactValue;
+      const broken = typeof description === 'string' ? notOneLine(description) : null;
+      if (broken !== null) {
+        description = (description as string).replace(NOT_ONE_LINE, ' ');
+        if (findings !== undefined) {
+          findings.push(
+            `fact '${pyText(name)}' in ${file}: the description is not one line ` +
+              `(it holds the control character ${broken}), read as '${description}'; make it one line`,
+          );
+        }
+      }
+      return {
         name,
-        description: meta['description'] as FactValue,
+        description,
         type: meta['type'] as FactValue,
         body: pyStrip(parts[2]!),
         links: pyList(meta['links'] as FactValue | FactValue[] | undefined),
@@ -1621,9 +1744,8 @@ export class MemoryStore {
         // and is kept.
         created: pyTruthy(rawCreated) ? (rawCreated as FactValue) : pyMtimeDate(path),
         source: path,
-      });
+      };
     }
-    return out;
   }
 
   /**

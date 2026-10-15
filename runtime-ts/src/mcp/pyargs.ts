@@ -7,12 +7,12 @@
  * ship a server whose recovery behaviour differs from the reference's on every mistyped
  * argument, and that is a product difference, not a cosmetic one.
  *
- * WHAT THE URL IS. `https://errors.pydantic.dev/2.13/v/<type>` names an entry in pydantic's
- * public error catalogue. This runtime has no pydantic; the URL is part of the sentence the
- * reference emits, reproduced because the sentence is the contract. `2.13` is therefore a
- * PIN on the reference, not a claim about this process — and it is compared against the
- * live server by `tools/conformance/suites/wire.mjs`, so the day the Python side bumps to
- * 2.14 the suite goes red here instead of the two runtimes drifting apart quietly.
+ * WHY THERE IS NO URL (job65/#185). pydantic ends each error with `For further information
+ * visit https://errors.pydantic.dev/<major.minor>/v/<type>`, naming whichever pydantic pip
+ * resolved. This port used to reproduce it with `2.13` hard-coded, and the reference printed
+ * `2.14` the day PyPI resolved 2.14 — the refusal texts differed by install date. The
+ * reference now sets `PYDANTIC_ERRORS_INCLUDE_URL=0` at import (`bantamkit.mcpserver`), so
+ * neither runtime prints the line; `tools/conformance/suites/wire.mjs` compares the two.
  *
  * EVERY RULE BELOW WAS MEASURED, not read off pydantic's documentation. The probes are in
  * `scratchpad/job38-n7/probe{4,7,8,9}.py` and each drove the real stdio server:
@@ -595,6 +595,49 @@ export class PyValidationFailure extends Error {
 }
 
 /**
+ * A LONE SURROGATE IN ANY STRING ARGUMENT IS REFUSED BY NAME (job65/#160), before any other
+ * check. JSON can spell `\ud800` on its own; no UTF-8 file or frame can carry it. This port
+ * used to accept it and write U+FFFD ("saved", data silently altered); the reference never
+ * answered at all, because the SDK's frame parser rejects the escape and drops the request.
+ * Both now answer `Error executing tool <name>: argument '<path>' holds a lone surrogate
+ * (U+XXXX), which is not text; nothing was done` — the reference from its stdio reader
+ * (`bantamkit.mcpstdio`), this port from here. `<path>` is the top-level argument, then
+ * `[i]` for a list item and `.key` for a dict member; the first in document order wins.
+ * Keys are not inspected: an unknown key is ignored by both sides anyway.
+ */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+export function loneSurrogateArgument(args: PyValue): string | null {
+  const walk = (value: PyValue, where: string): string | null => {
+    if (value.t === 'str') {
+      const found = LONE_SURROGATE.exec(value.v);
+      if (found === null) return null;
+      const unit = found[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+      return `argument '${where}' holds a lone surrogate (U+${unit}), which is not text; nothing was done`;
+    }
+    if (value.t === 'list') {
+      for (let i = 0; i < value.v.length; i += 1) {
+        const hit = walk(value.v[i]!, `${where}[${i}]`);
+        if (hit !== null) return hit;
+      }
+    }
+    if (value.t === 'dict') {
+      for (const [key, item] of value.v) {
+        const hit = walk(item, `${where}.${key}`);
+        if (hit !== null) return hit;
+      }
+    }
+    return null;
+  };
+  if (args.t !== 'dict') return null;
+  for (const [key, item] of args.v) {
+    const hit = walk(item, key);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+/**
  * `model.model_validate(arguments)` for one tool, or the exact `ValidationError` text.
  *
  * Unknown keys are IGNORED, because pydantic's default `model_config` ignores them and the
@@ -608,6 +651,8 @@ export class PyValidationFailure extends Error {
  * its `input_value` and not the string the wire held.
  */
 export function validateArguments(model: ArgModel, args: PyValue): Map<string, PyValue> {
+  const lone = loneSurrogateArgument(args);
+  if (lone !== null) throw new Error(lone);
   const unwrapped = preParseJson(model, args);
   const supplied = unwrapped.t === 'dict' ? unwrapped.v : new Map<string, PyValue>();
   const errors: RawError[] = [];
@@ -633,8 +678,7 @@ export function validateArguments(model: ArgModel, args: PyValue): Map<string, P
     .map(
       (e) =>
         `${e.loc}\n  ${e.msg} [type=${e.type}, input_value=${truncateRepr(reprValue(e.input))}, ` +
-        `input_type=${pyTypeName(e.input)}]\n    For further information visit ` +
-        `https://errors.pydantic.dev/2.13/v/${e.type}`,
+        `input_type=${pyTypeName(e.input)}]`,
     )
     .join('\n');
   throw new PyValidationFailure(`${head}\n${body}`);

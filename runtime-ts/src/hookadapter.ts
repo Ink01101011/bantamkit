@@ -47,13 +47,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { BantamError } from './errors.js';
 import { Memory } from './memory/component.js';
 import type { RecallOutcome } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
 import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
 import type { Fact } from './memory/store.js';
-import { PyOSError, PyUnicodeDecodeError } from './memory/pyfs.js';
 import { keptCli, keptManifest, keptPrefix } from './npminstall.js';
 import {
   decide as decideUpdate,
@@ -857,12 +855,12 @@ function countFacts(store: string): number {
 // silenced every UserPromptSubmit injection. The hook's contract is "never loud" and the
 // memory doc's is "one bad neighbour cannot take down recall"; neither was true of one file.
 //
-// The store is NOT changed here (it is another unit's layer). The hook asks the store's OWN
-// parser, one file at a time, only after the whole-store parse has already failed: the
-// healthy path is the one call it always was. It does that by narrowing `factPaths` — the
-// single listing `facts()` walks, on both runtimes — on THIS store instance only, which the
-// hook constructed and nothing else holds. No second parser exists, so a file the hook keeps
-// is a file the store would have read, byte for byte the same `Fact`.
+// The store DECLARES the tolerant read (job65/J65-9): `MemoryStore.readableFacts()` answers
+// every fact it can parse and `{file, reason}` for each file it cannot, and
+// `Memory.recallOutcome` reads every layer the same way and hands the left-out files back as
+// `RecallOutcome.skipped`. The hook used to get there by narrowing the store's private
+// `factPaths` on its own instance; it now asks the store, so a file the hook keeps is a file
+// the store read, through the one parser, with no seam the store does not declare.
 
 /** One fact file left out, and the store's own sentence for why. */
 interface SkippedFact {
@@ -870,71 +868,13 @@ interface SkippedFact {
   reason: string;
 }
 
-/** The store members `tolerantFacts` narrows. `private` in TypeScript, plain at runtime. */
-interface FactListingSeam {
-  factPaths: () => string[];
-  facts: () => Fact[];
-}
-
-/** The errors `Memory.recallOutcome` already treats as "this layer could not be read". */
-function isFactReadError(e: unknown): boolean {
-  return e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError;
-}
-
 /**
- * Every fact `store` can read, and the files it could not. Narrows the instance so that every
- * later read through it (`recall`, `lookup`, `internals().facts`) skips the same files.
- *
- * A store whose `facts/` cannot be LISTED still throws, exactly as before: that is a layer
- * that could not be read, not a fact, and the callers already have an answer for it.
+ * Every fact `store` can read, and the files it could not: `MemoryStore.readableFacts`. A
+ * store whose `facts/` cannot be LISTED still throws, exactly as before: that is a layer that
+ * could not be read, not a fact.
  */
 function tolerantFacts(store: MemoryStore): { facts: Fact[]; skipped: SkippedFact[] } {
-  const seam = store as unknown as FactListingSeam;
-  try {
-    return { facts: seam.facts(), skipped: [] };
-  } catch (e) {
-    if (!isFactReadError(e)) throw e;
-  }
-  const listed = seam.factPaths();
-  const kept: string[] = [];
-  const facts: Fact[] = [];
-  const skipped: SkippedFact[] = [];
-  let done = false;
-  try {
-    for (const file of listed) {
-      seam.factPaths = () => [file];
-      try {
-        facts.push(...seam.facts());
-        kept.push(file);
-      } catch (e) {
-        if (!isFactReadError(e)) throw e;
-        skipped.push({ file: path.basename(file), reason: message(e) });
-      }
-    }
-    done = true;
-  } finally {
-    if (done) seam.factPaths = () => [...kept];
-    else delete (seam as Partial<FactListingSeam>).factPaths; // back to the class's own listing
-  }
-  return { facts, skipped };
-}
-
-/**
- * `tolerantFacts` over every layer `Memory.layered` bound, for the recall arm. A layer whose
- * directory cannot be listed is left exactly as it was (the recall's own `unreadable` count
- * still says so). Returns the files left out, labelled with the layer they were in.
- */
-function quarantineLayers(m: Memory): Array<SkippedFact & { layer: string }> {
-  const layers = (m as unknown as { layers: Array<[string, MemoryStore, boolean]> }).layers;
-  const out: Array<SkippedFact & { layer: string }> = [];
-  for (const [label, store] of layers) {
-    try {
-      for (const s of tolerantFacts(store).skipped) out.push({ layer: label, ...s });
-    } catch (e) {
-      if (!isFactReadError(e)) throw e;
-    }
-  }
-  return out;
+  return store.readableFacts();
 }
 
 /** "1 fact" / "N facts" (#188). The noun follows the block's TOTAL, the last number shown. */
@@ -1363,25 +1303,11 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   // stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
   // reading this arm's traffic. An explicit `memory_recall` still stamps.
   const ask = (): RecallOutcome => m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false);
-  // ONE UNREADABLE FACT COSTS THAT FACT (job65, #119). The healthy path is one recall, as
-  // before. Only when it failed — the project layer threw, or a read-only layer was counted
-  // `unreadable` and dropped whole — are the layers narrowed past the files they cannot read
-  // and the recall asked once more. A layer that cannot be LISTED is not narrowed and fails
-  // exactly as it did.
-  let skipped: Array<SkippedFact & { layer: string }> = [];
-  let o: RecallOutcome;
-  try {
-    o = ask();
-  } catch (e) {
-    if (!isFactReadError(e)) throw e;
-    skipped = quarantineLayers(m);
-    if (skipped.length === 0) throw e;
-    o = ask();
-  }
-  if (skipped.length === 0 && o.unreadable > 0) {
-    skipped = quarantineLayers(m);
-    if (skipped.length) o = ask();
-  }
+  // ONE UNREADABLE FACT COSTS THAT FACT (job65, #119): the recall reads every layer past the
+  // files it cannot read and names them in `o.skipped`; one recall, healthy or not. A layer
+  // that cannot be LISTED fails exactly as it did.
+  const o: RecallOutcome = ask();
+  const skipped = o.skipped.map((s) => ({ ...s }));
   const degraded = skipped.length ? { skipped } : {};
   if (o.status !== 'answered') {
     log(run, { event: 'UserPromptSubmit', action: 'none', status: o.status, candidates: o.candidates, ...degraded });
@@ -1390,7 +1316,10 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   // Only the HEADER line of each hit — `[layer] [name] (type) description`. The body costs
   // ~1.5 KB a fact and would be re-sent on every later call; the header is ~150 B and
   // tells the model exactly which name to pass to memory_recall if it wants the body.
-  const heads = o.reply.split('\n').filter((l) => RECALL_HEADER.test(l));
+  // Read off `o.headers`, built from the parsed fields (job65, #155), never by filtering the
+  // reply's lines: a fact BODY line shaped like `[profile] [x] (feedback) ...` used to pass
+  // for a header and be injected as a memory nobody saved.
+  const heads = o.headers.filter((l) => RECALL_HEADER.test(l));
   if (heads.length === 0) {
     log(run, { event: 'UserPromptSubmit', action: 'none', reason: 'no-headers', ...degraded });
     return;

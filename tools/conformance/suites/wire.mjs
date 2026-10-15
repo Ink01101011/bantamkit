@@ -1036,6 +1036,46 @@ export async function run(ctx) {
     add(`negotiate-${version}`, [INIT(version)]);
   }
 
+  // ------------------------------------------------ job65 J65-9: memory strings and names
+  //
+  // #155 a description that is not one line, #156 a bent name onto another fact and an
+  // over-long name, #160 a lone surrogate in a tool argument (the reference used to drop the
+  // request and never answer), #185 no pydantic version URL in a refusal, #186 the over-budget
+  // footer, #119 one malformed fact costs that fact in `memory_recall`. Compared frame by frame
+  // like every session here, and pinned PER SIDE below against literals, because each is an
+  // absolute property and a differential is blind to a regression landing in both runtimes.
+  const factBytes = (name_, description) =>
+    `---\nname: ${name_}\ndescription: ${description}\ntype: project\ncreated: '2026-10-01'\n` +
+    `last_recalled: null\nlinks: []\n---\n\nbody of ${name_}\n`;
+  const writeLine = (path, text) => JSON.stringify({ conformance: 'write', path, b64: b64(text) });
+  add('j65-9-strings', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'memory_save', { type: 'project', name: 'deploy-command', description: 'how we deploy', body: 'OLD BODY' }),
+    callTool(3, 'memory_save', { type: 'project', name: 'Deploy Command', description: 'something else entirely', body: 'NEW BODY' }),
+    callTool(4, 'memory_save', { type: 'project', name: 'a'.repeat(129), description: 'long name fact', body: 'b' }),
+    callTool(5, 'memory_save', { type: 'project', name: 'nl-desc', description: 'line one\nline two', body: 'b' }),
+    callTool(6, 'memory_save', { type: 'project', name: 'sur', description: 'lone surrogate \ud800 desc', body: 'b' }),
+    callTool(7, 'memory_recall', { query: 'lone \udc00 surrogate' }),
+    callTool(8, 'memory_save', { type: 'project', name: 'n', description: 'd' }),
+    writeLine(join(store, 'facts', 'zz-bad.md'), '---\nname: zz-bad\n'),
+    callTool(9, 'memory_recall', { query: 'deploy' }),
+  ]);
+  add(
+    'j65-9-over-budget',
+    [
+      INIT(),
+      INITIALIZED,
+      // The first save makes `facts/`, then six facts are written past the budget by hand.
+      callTool(2, 'memory_save', { type: 'project', name: 'seed', description: 's', body: 's' }),
+      ...Array.from({ length: 6 }, (_, i) => writeLine(join(store, 'facts', `f${i}.md`), factBytes(`f${i}`, `fact number ${i} here`))),
+      callTool(3, 'memory_save', { type: 'project', name: 'x', description: 'x', body: 'x' }),
+    ],
+    // `refMask`: the footer names each install's own compaction command, the ruled
+    // `index-budget-low` difference `status-degraded` documents; the literals below pin both.
+    { argv: ['--store', store, '--index-budget', '100'], refMask: substituteMemoryProg },
+  );
+
   // ---------------------------------------------------------------------- run them both
 
   const cases = [];
@@ -2417,6 +2457,52 @@ export async function run(ctx) {
   }
 
   notes.push(`${sessions.length} sessions, both runtimes, over identical paths under ${scratch}`);
+  // ------------------------------------------------ job65 J65-9: the per-side literals
+  {
+    const { python, node } = results.get('j65-9-strings');
+    const over = results.get('j65-9-over-budget');
+    const texts = (side, overSide) => ({
+      bentNameOntoAFact: toolTextOf(side, 3),
+      overLongName: toolTextOf(side, 4),
+      notOneLine: toolTextOf(side, 5),
+      loneSurrogateSave: toolTextOf(side, 6),
+      loneSurrogateRecall: toolTextOf(side, 7),
+      pydanticUrl: (toolTextOf(side, 8) ?? '').includes('errors.pydantic.dev'),
+      recallPastABadFact: toolTextOf(side, 9),
+      overBudgetFooter: remedySentences(overSide.frames),
+    });
+    const expected = {
+      bentNameOntoAFact:
+        "similar memory 'deploy-command' already exists — save under that SAME name to update it, or skip. Do not rename to force a copy.",
+      overLongName: 'error: invalid name: 129 characters; must be at most 128',
+      notOneLine: 'error: description must be one line; it holds the control character U+000A',
+      loneSurrogateSave:
+        "Error executing tool memory_save: argument 'description' holds a lone surrogate (U+D800), which is not text; nothing was done",
+      loneSurrogateRecall:
+        "Error executing tool memory_recall: argument 'query' holds a lone surrogate (U+DC00), which is not text; nothing was done",
+      pydanticUrl: false,
+      recallPastABadFact:
+        '[deploy-command] (project) how we deploy\nOLD BODY\n\n' +
+        '1 fact file could not be read and was skipped; every other fact was searched:\n' +
+        '[project] malformed fact file zz-bad.md: not enough values to unpack (expected 3, got 2)',
+      overBudgetFooter: [],
+    };
+    const py = texts(python, over.python);
+    const nd = texts(node, over.node);
+    // The footer names each install's own compaction command (the ruled `index-budget-low`
+    // difference above); everything else in it is pinned, the command per side.
+    const footer = (command) =>
+      `the memory index is 279 bytes of a 100-byte budget, so it is full and every save is refused until it is compacted — archive or shorten facts with \`${command}\`. Call \`bantamkit_status\` for the full report.`;
+    cases.push(
+      // Two copies, both in the refused save's frame: a budget refusal is a NORMAL `str`
+      // reply, so the footer is in `content[0].text` and again in `structuredContent.result`.
+      { name: 'j65-9: PINNED PER SIDE (#155 #156 #160 #185 #186 #119) — the reference', kind: 'json',
+        expected: { ...expected, overBudgetFooter: Array(2).fill(footer('python -m bantamkit.memory compact')) }, actual: py },
+      { name: 'j65-9: PINNED PER SIDE (#155 #156 #160 #185 #186 #119) — the port', kind: 'json',
+        expected: { ...expected, overBudgetFooter: Array(2).fill(footer('bantamkit-memory compact')) }, actual: nd },
+    );
+  }
+
   return { cases, notes };
 }
 

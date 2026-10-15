@@ -437,6 +437,22 @@ than raising:
 - `type` must be one of the four; `name` must match the slug pattern;
   `description` must be non-empty. Otherwise `MemoryValidationError`, surfaced
   to the agent as `error: ...` so it can retry with fixed arguments.
+- **Amended job65 (J65-9).** `name` is at most 128 characters (`invalid name: <n>
+  characters; must be at most 128`, #156 — it used to reach the OS as a raw
+  `File name too long` naming the absolute path). `description` must be ONE line: a
+  C0/C1 control character or U+2028/U+2029 after the strip is refused
+  (`description must be one line; it holds the control character U+000A`, #155),
+  because the index and the hook's injected header print it as one line. A hand-edited
+  fact file holding one is READ with each run of them as one space, and `lint` names it.
+  A lone surrogate in `description`, `body` or a link is refused by name (#160); over
+  MCP the same character in any tool argument is refused before the tool runs, on both
+  runtimes, as `Error executing tool <name>: argument '<path>' holds a lone surrogate
+  (U+XXXX), which is not text; nothing was done` — the reference used to drop such a
+  request without ever answering.
+- **A spelling is not a name (#156).** The component still bends a model's
+  `Deploy_Command` to `deploy-command` and answers `saved 'deploy-command'`. But when the
+  name had to be bent AND the slug is already a fact, the reply is the duplicate nudge
+  naming it and nothing is written: only the exact slug updates a fact.
 - Saving under an existing `name` is an **update**, never a duplicate.
 
 ## Dedupe: what a "duplicate" reply means
@@ -1238,7 +1254,13 @@ Read-only means read-only. Recall never stamps `last_recalled` on a grant or
 profile fact and never creates a missing grant or profile directory — a missing
 one simply contributes nothing. A corrupt grant or profile layer is skipped so
 one bad neighbour cannot take down recall; a corrupt *project* layer still
-raises, exactly as in v1.
+raises, exactly as in v1. **Amended job65 (#119, J65-9):** "corrupt" now means a layer
+whose `facts/` cannot be LISTED. One empty, truncated, non-UTF-8 or unreadable fact file
+costs that file only, in any layer: recall searches every other fact and closes with
+`N fact file(s) could not be read and was/were skipped; every other fact was searched:`
+and one `[layer] <the store's sentence>` line per file. `MemoryStore.readable_facts()`
+(`readableFacts()`) is the declared listing behind it, and the hooks read through it
+too. Save, compact, lint and the index keep the strict read.
 
 ### Writing stays in the project
 

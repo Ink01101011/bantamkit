@@ -278,12 +278,16 @@ export function indexPressureCondition(memory: Memory): Condition | null {
   // rounded their own float could land on opposite sides of the line for the same store,
   // and this comparison is the whole reason they cannot.
   if (size === null || size * 100 < INDEX_PRESSURE_PERCENT * budget) return null;
+  // AT OR OVER THE BUDGET IS NOT "CLOSE" (job65/#186): the reply that carried the budget
+  // refusal used to close with "the next save is close to being refused". At `size >= budget`
+  // no save that adds a byte can land, so the sentence says so; the 90 % band keeps its words.
+  const consequence =
+    size >= budget ? 'so it is full and every save is refused until it is compacted' : 'so the next save is close to being refused';
   return {
     key: 'index-budget-low',
     sentence:
-      `the memory index is ${size} bytes of a ${budget}-byte budget, so the next save ` +
-      'is close to being refused — archive or shorten facts with ' +
-      '`bantamkit-memory compact`.',
+      `the memory index is ${size} bytes of a ${budget}-byte budget, ${consequence} — ` +
+      'archive or shorten facts with `bantamkit-memory compact`.',
   };
 }
 

@@ -77,6 +77,13 @@ class RecallOutcome:
     reply, `miss` when the query was shaped like a name, no layer held it, and the reply
     leads with the line that says so, `None` for every other query — the walk that has
     always run, unchanged.
+
+    `skipped` (job65/#119) is every fact file a layer this walk READ could not read as a
+    fact, as `{layer, file, reason}`; the reply names them in a closing paragraph
+    (`_skipped_note`). `headers` (job65/#155) is the header line of each fact in the reply,
+    in reply order, BUILT FROM THE PARSED FIELDS: a caller that wants only the headers (the
+    hook's UserPromptSubmit arm) reads these instead of filtering the reply's lines, so a
+    body line shaped like a header can never pass for one.
     """
 
     reply: str
@@ -89,6 +96,8 @@ class RecallOutcome:
     source: str | None = None
     unreadable: int = 0
     lookup: str | None = None
+    skipped: tuple[dict[str, str], ...] = ()
+    headers: tuple[str, ...] = ()
 
 
 def normalize_name(name: str) -> str:
@@ -123,6 +132,24 @@ def _is_name_shaped(query: str) -> bool:
 
 def _miss_line(name: str) -> str:
     return f"no fact named '{name}' in any layer bound here; matching by words instead:"
+
+
+def _skipped_note(skipped: list[dict[str, str]]) -> str:
+    """The closing paragraph of a recall that left fact files out (job65/#119), or `""`.
+
+    One bad file costs that file, and the answer SAYS which: the store's own sentence for
+    each, labelled by layer, so the person knows what to repair and that the rest of the
+    store was searched.
+    """
+    if not skipped:
+        return ""
+    count = len(skipped)
+    noun = "fact file" if count == 1 else "fact files"
+    lines = [f"[{s['layer']}] {s['reason']}" for s in skipped]
+    return (
+        f"\n\n{count} {noun} could not be read and {'was' if count == 1 else 'were'} "
+        f"skipped; every other fact was searched:\n" + "\n".join(lines)
+    )
 
 
 @dataclass(frozen=True)
@@ -339,9 +366,30 @@ class Memory:
         `save()` above still answers `str`, and `assets/tools/memory_save.json` still
         advertises `str`.
         """
+        given = name
         name = normalize_name(name)
         links = [normalize_name(link) for link in links or []]
         try:
+            # A SPELLING IS NOT A NAME (job65/#156). The normalisation exists so a model's
+            # invented `deploy_command` lands as `deploy-command` instead of burning turns on
+            # retries -- and the reply already names the slug it was saved under. What it
+            # must never do is land ON ANOTHER FACT: "Deploy Command" with a new body used to
+            # replace `deploy-command` silently, an update nobody asked for that skipped the
+            # duplicate nudge. So when the name had to be bent AND the bent name is a fact
+            # already, the answer is the nudge, naming the fact, and nothing is written. The
+            # exact slug is the one spelling that updates.
+            if (
+                isinstance(given, str)
+                and given != name
+                and self.store.lookup(name, stamp=False) is not None
+            ):
+                return SaveOutcome(
+                    reply=(
+                        f"similar memory '{name}' already exists — save under that "
+                        f"SAME name to update it, or skip. Do not rename to force a copy."
+                    ),
+                    status="duplicate",
+                )
             result = self.store.save(type, name, description, body, tuple(links))
         except MemoryValidationError as e:
             return SaveOutcome(reply=f"error: {e}", status="refused-validation")
@@ -473,17 +521,29 @@ class Memory:
         reached = 0
         unreadable = 0
         candidates = 0
+        skipped: list[dict[str, str]] = []
         for label, store, writable in self._layers:
             if len(picked) >= budget:
                 break  # budget spent: later (read-only) layers are never even read
             reached += 1
+            # ONE BAD FILE COSTS THAT FILE (job65/#119): the layer is scored over every fact
+            # it CAN read, and the rest are named. Only a layer that cannot be listed at all
+            # is still the error (project) or the `unreadable` count (read-only) below.
+            left_out: list[dict[str, str]] = []
             try:
-                facts = store.recall(query, budget, stamp=writable and stamp, min_ratio=min_ratio)
+                facts = store.recall(
+                    query,
+                    budget,
+                    stamp=writable and stamp,
+                    min_ratio=min_ratio,
+                    skipped=left_out,
+                )
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in v1
                 unreadable += 1
                 continue  # a corrupt grant/profile layer must not take down recall
+            skipped.extend({"layer": label, **s} for s in left_out)
             try:
                 candidates += count_facts(store.root)
             except OSError:
@@ -503,15 +563,20 @@ class Memory:
             "candidates": candidates,
             "unreadable": unreadable,
             "lookup": lookup,
+            "skipped": tuple(skipped),
         }
         lead = f"{_miss_line(name)}\n\n" if lookup == "miss" else ""
+        note = _skipped_note(skipped)
         if not picked:
             status, reply = self._nothing_to_report()
-            return RecallOutcome(reply=lead + reply, status=status, **counts)
+            return RecallOutcome(reply=lead + reply + note, status=status, **counts)
         return RecallOutcome(
-            reply=lead + "\n\n".join(self._format(label, fact) for label, fact in picked),
+            reply=lead
+            + "\n\n".join(self._format(label, fact) for label, fact in picked)
+            + note,
             status="answered",
             source=picked[0][0].split(":", 1)[0],
+            headers=tuple(self._header(label, fact) for label, fact in picked),
             **counts,
         )
 
@@ -528,22 +593,25 @@ class Memory:
         reached = 0
         unreadable = 0
         candidates = 0
+        skipped: list[dict[str, str]] = []
         for label, store, writable in self._layers:
             reached += 1
+            left_out: list[dict[str, str]] = []
             try:
-                fact = store.lookup(name, stamp=writable and stamp)
+                fact = store.lookup(name, stamp=writable and stamp, skipped=left_out)
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in the scoring walk
                 unreadable += 1
                 continue
+            skipped.extend({"layer": label, **s} for s in left_out)
             try:
                 candidates += count_facts(store.root)
             except OSError:
                 pass  # it listed a moment ago; a race must not fail the recall for a log field
             if fact is not None:
                 return RecallOutcome(
-                    reply=self._format(label, fact),
+                    reply=self._format(label, fact) + _skipped_note(skipped),
                     status="answered",
                     source=label.split(":", 1)[0],
                     budget=budget,
@@ -553,6 +621,8 @@ class Memory:
                     candidates=candidates,
                     unreadable=unreadable,
                     lookup="hit",
+                    skipped=tuple(skipped),
+                    headers=(self._header(label, fact),),
                 )
         return None
 
@@ -945,6 +1015,10 @@ class Memory:
     _save = save
     _recall = recall
 
-    def _format(self, label: str, fact: Fact) -> str:
+    def _header(self, label: str, fact: Fact) -> str:
+        """`[layer] [name] (type) description`, from the parsed fields (job65/#155)."""
         tag = f"[{label}] " if self._show_layers else ""
-        return f"{tag}[{fact.name}] ({fact.type}) {fact.description}\n{fact.body}"
+        return f"{tag}[{fact.name}] ({fact.type}) {fact.description}"
+
+    def _format(self, label: str, fact: Fact) -> str:
+        return f"{self._header(label, fact)}\n{fact.body}"

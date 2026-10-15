@@ -554,7 +554,12 @@ def test_layered_budget_allows_later_layers_to_contribute_on_overlap(tmp_path, f
 
 
 def test_corrupt_project_layer_raises_on_recall(tmp_path, fake_home):
-    """Corrupt project layer (malformed facts) raises MemoryValidationError on recall."""
+    """AMENDED job65 (#119): one malformed project fact costs that fact, and is NAMED.
+
+    WAS: the whole recall raised `MemoryValidationError` -- exactly the defect #119 reports
+    ("fails the recall on one bad project fact"). The issue is the newer ruling. A project
+    store that cannot be LISTED still raises (`test_memory.py` pins that).
+    """
     project = tmp_path / "companyA"
     project.mkdir()
     project_store = project / ".bantamkit" / "memory"
@@ -564,19 +569,20 @@ def test_corrupt_project_layer_raises_on_recall(tmp_path, fake_home):
         "no frontmatter here at all", encoding="utf-8"
     )
 
-    with pytest.raises(MemoryValidationError):
-        Memory.layered(start=project)._recall("test")
+    out = Memory.layered(start=project)._recall("test")
+    assert "1 fact file could not be read and was skipped" in out
+    assert "[project] malformed fact file broken.md:" in out
 
 
 def test_v1_corrupt_layer_raises_on_recall(tmp_path):
-    """Corrupt layer in v1 mode also raises MemoryValidationError on recall."""
+    """AMENDED job65 (#119): in v1 mode too, one malformed fact costs that fact, named."""
     store_path = tmp_path / "m"
     (store_path / "facts").mkdir(parents=True)
     (store_path / "facts" / "broken.md").write_text("no frontmatter here at all", encoding="utf-8")
 
     mem = Memory(store=store_path)
-    with pytest.raises(MemoryValidationError):
-        mem._recall("test")
+    out = mem._recall("test")
+    assert "malformed fact file broken.md:" in out
 
 
 def test_layered_short_circuits_and_does_not_query_profile_when_budget_filled(

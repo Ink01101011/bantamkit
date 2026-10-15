@@ -73,7 +73,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .client import BantamError
 from .memory.component import Memory
 from .memory.layers import discover_project_store, resolve_project_store
 from .memory.store import DURABLE_TYPES, Fact, MemoryStore, tokens
@@ -936,15 +935,12 @@ def _message(e: BaseException) -> str:
 # silenced every UserPromptSubmit injection. The hook's contract is "never loud" and the
 # memory doc's is "one bad neighbour cannot take down recall"; neither was true of one file.
 #
-# The store is NOT changed here (it is another unit's layer). The hook asks the store's OWN
-# parser, one file at a time, only after the whole-store parse has already failed: the
-# healthy path is the one call it always was. It does that by narrowing `_fact_paths` -- the
-# single listing `_facts()` walks, on both runtimes -- on THIS store instance only, which the
-# hook constructed and nothing else holds. No second parser exists, so a file the hook keeps
-# is a file the store would have read, the same `Fact`.
-
-#: The errors `Memory.recall_outcome` already treats as "this layer could not be read".
-_FACT_READ_ERRORS = (BantamError, OSError, UnicodeDecodeError)
+# The store DECLARES the tolerant read (job65/J65-9): `MemoryStore.readable_facts()` answers
+# every fact it can parse and `{file, reason}` for each file it cannot, and
+# `Memory.recall_outcome` reads every layer the same way and hands the left-out files back as
+# `RecallOutcome.skipped`. The hook used to get there by narrowing the store's private
+# `_fact_paths` on its own instance; it now asks the store, so a file the hook keeps is a file
+# the store read, through the one parser, with no seam the store does not declare.
 
 #: A footer naming many broken files is still bounded, like everything else this injects.
 SKIPPED_LINE_MAX = 500
@@ -953,49 +949,10 @@ SKIPPED_LINE_MAX = 500
 def _tolerant_facts(store: MemoryStore) -> tuple[list[Fact], list[dict[str, str]]]:
     """Every fact `store` can read, and the files it could not (`{file, reason}`).
 
-    Narrows the instance so that every later read through it (`recall`, `lookup`,
-    `_facts`) skips the same files. A store whose `facts/` cannot be LISTED still raises,
+    `MemoryStore.readable_facts`. A store whose `facts/` cannot be LISTED still raises,
     exactly as before: that is a layer that could not be read, not a fact.
     """
-    try:
-        return store._facts(), []
-    except _FACT_READ_ERRORS:
-        pass
-    listed = store._fact_paths()
-    kept: list[Path] = []
-    facts: list[Fact] = []
-    skipped: list[dict[str, str]] = []
-    done = False
-    try:
-        for file in listed:
-            store._fact_paths = lambda file=file: [file]  # type: ignore[method-assign]
-            try:
-                facts.extend(store._facts())
-                kept.append(file)
-            except _FACT_READ_ERRORS as e:
-                skipped.append({"file": file.name, "reason": _message(e)})
-        done = True
-    finally:
-        if done:
-            store._fact_paths = lambda: list(kept)  # type: ignore[method-assign]
-        else:
-            del store._fact_paths  # back to the class's own listing
-    return facts, skipped
-
-
-def _quarantine_layers(m: Memory) -> list[dict[str, str]]:
-    """`_tolerant_facts` over every layer `Memory.layered` bound, for the recall arm.
-
-    A layer whose directory cannot be listed is left exactly as it was (the recall's own
-    `unreadable` count still says so). Returns the files left out, labelled by layer.
-    """
-    out: list[dict[str, str]] = []
-    for label, store, _writable in m._layers:
-        try:
-            out.extend({"layer": label, **s} for s in _tolerant_facts(store)[1])
-        except _FACT_READ_ERRORS:
-            pass
-    return out
+    return store.readable_facts()
 
 
 def _fact_noun(total: int) -> str:
@@ -1240,23 +1197,11 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # prompt, for up to three files -- and the rules keyed on that date (compaction's
     # stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
     # reading this arm's traffic. An explicit `memory_recall` still stamps.
-    # ONE UNREADABLE FACT COSTS THAT FACT (job65, #119). The healthy path is one recall, as
-    # before. Only when it failed -- the project layer raised, or a read-only layer was
-    # counted `unreadable` and dropped whole -- are the layers narrowed past the files they
-    # cannot read and the recall asked once more. A layer that cannot be LISTED is not
-    # narrowed and fails exactly as it did.
-    skipped: list[dict[str, str]] = []
-    try:
-        o = m.recall_outcome(prompt, 3, stamp=False)
-    except _FACT_READ_ERRORS:
-        skipped = _quarantine_layers(m)
-        if not skipped:
-            raise
-        o = m.recall_outcome(prompt, 3, stamp=False)
-    if not skipped and o.unreadable > 0:
-        skipped = _quarantine_layers(m)
-        if skipped:
-            o = m.recall_outcome(prompt, 3, stamp=False)
+    # ONE UNREADABLE FACT COSTS THAT FACT (job65, #119): the recall reads every layer past
+    # the files it cannot read and names them in `o.skipped`; one recall, healthy or not. A
+    # layer that cannot be LISTED fails exactly as it did.
+    o = m.recall_outcome(prompt, 3, stamp=False)
+    skipped = [dict(s) for s in o.skipped]
     degraded: dict[str, Any] = {"skipped": skipped} if skipped else {}
     if o.status != "answered":
         _log(
@@ -1273,7 +1218,10 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # Only the HEADER line of each hit -- `[layer] [name] (type) description`. The body costs
     # ~1.5 KB a fact and would be re-sent on every later call; the header is ~150 B and tells
     # the model exactly which name to pass to memory_recall if it wants the body.
-    heads = [line for line in o.reply.split("\n") if RECALL_HEADER.match(line)]
+    # Read off `o.headers`, built from the parsed fields (job65, #155), never by filtering the
+    # reply's lines: a fact BODY line shaped like `[profile] [x] (feedback) ...` used to pass
+    # for a header and be injected as a memory nobody saved.
+    heads = [line for line in o.headers if RECALL_HEADER.match(line)]
     if not heads:
         _log(
             run,

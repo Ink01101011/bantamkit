@@ -350,8 +350,8 @@ test('memory_compact refuses a non-integer reserve in pydantic\'s words', async 
     refused.content[0].text,
     'Error executing tool memory_compact: 1 validation error for memory_compactArguments\n' +
       'reserve\n' +
-      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
+      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]",
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
 });
 
@@ -673,10 +673,10 @@ test('bantamkit_read refuses a non-string path and a non-integer limit in pydant
     'Error executing tool bantamkit_read: 2 validation errors for bantamkit_readArguments\n' +
       'path\n' +
       '  Input should be a valid string [type=string_type, input_value=123, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type\n' +
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
       'limit\n' +
-      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
+      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]",
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
 });
 
@@ -719,8 +719,8 @@ test('bantamkit_read: an offset past 2^53 is refused by the schema and the bound
     refused.content[0].text,
     'Error executing tool bantamkit_read: 1 validation error for bantamkit_readArguments\n' +
       'offset\n' +
-      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740993, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/less_than_equal',
+      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740993, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.equal(
     await readOne({ path, part: 'Sales', offset: 9007199254740991 }),
@@ -1072,25 +1072,25 @@ test('an argument of the wrong type is refused in the reference runtime’s own 
     text(2),
     'Error executing tool memory_recall: 1 validation error for memory_recallArguments\n' +
       'query\n' +
-      '  Input should be a valid string [type=string_type, input_value=123, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type',
+      '  Input should be a valid string [type=string_type, input_value=123, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.equal(
     text(3),
     'Error executing tool memory_recall: 1 validation error for memory_recallArguments\n' +
       'query\n' +
-      '  Field required [type=missing, input_value={}, input_type=dict]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/missing',
+      '  Field required [type=missing, input_value={}, input_type=dict]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.equal(
     text(4),
     'Error executing tool memory_save: 2 validation errors for memory_saveArguments\n' +
       'links.0\n' +
       '  Input should be a valid string [type=string_type, input_value=1, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type\n' +
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
       'links.2\n' +
-      '  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type',
+      '  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.match(text(5), /int_from_float/);
   assert.match(text(6), /Input should be a valid dictionary \[type=dict_type, input_value='notadict', input_type=str\]/);
@@ -1821,26 +1821,26 @@ test('#133: skill_audit refuses a negative usage count and a budget past 2^53 in
     refusal(fromJs({ root: 'x', usage: { 'solo-check': -1 } })),
     '1 validation error for skill_auditArguments\n' +
       'usage.solo-check\n' +
-      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal',
+      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.equal(
     refusal(fromJs({ root: 'x', usage: { a: '-1', b: 2, c: -3 } })),
     '2 validation errors for skill_auditArguments\n' +
       'usage.a\n' +
       "  Input should be greater than or equal to 0 [type=greater_than_equal, input_value='-1', input_type=str]\n" +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal\n' +
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
       'usage.c\n' +
-      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-3, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/greater_than_equal',
+      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-3, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   // 2^53 is exact in JSON text; `parseJson` keeps it as a bigint so the frame prints it whole.
   assert.equal(
     refusal(parseJson('{"root": "x", "budget": 9007199254740992}')),
     '1 validation error for skill_auditArguments\n' +
       'budget\n' +
-      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740992, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/less_than_equal',
+      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740992, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   // The floor of `usage` and the ceiling of `budget` are inclusive; a negative budget is
   // the HANDLER's refusal (`budget must not be negative`), not this table's.

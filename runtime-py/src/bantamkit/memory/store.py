@@ -24,6 +24,46 @@ VALID_TYPES = {"user", "feedback", "project", "reference"}
 # `in` on a tuple is `==` per element where `in` on a set hashes and can raise.
 DURABLE_TYPES = ("feedback", "user")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+# THE LONGEST NAME A SAVE ACCEPTS (job65/#156). The fact lands as `<name>.md` and is written
+# through `<name>.md.<pid>.<8 hex>.tmp` (#161), so a name has to leave room for that suffix
+# under the 255-byte file-name limit every supported filesystem has. WAS: no cap, and a
+# 301-character name reached the OS and came back as a raw `[Errno 63] File name too long:
+# '<absolute path>'`. 128 is well under the limit and far above any name a fact needs; the
+# names are ASCII by `NAME_RE`, so characters and bytes are one count. Spelled once more in
+# the port.
+NAME_MAX_CHARS = 128
+
+# ONE LINE MEANS ONE LINE (job65/#155): a `description` is printed into `index.md` and into
+# the hook's injected header, one line per fact, so a character that ends a line there forges
+# a line nobody saved. Every C0/C1 control (that is `\n`, `\r`, `\t`, `\v`, `\f`, `\x1c`-`\x1e`,
+# `\x85` and the rest) plus U+2028/U+2029, which `str.splitlines` also breaks on. Refused
+# at save; in a fact file on disk each run of them is READ as one space (see `_facts`).
+# Spelled once more in the port, as the same ranges.
+_NOT_ONE_LINE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+# A LONE SURROGATE IS NOT TEXT (job65/#160). JSON can carry `\ud800` on its own and both
+# parsers hand it back as a string, but no UTF-8 file can hold it: CPython refused the write
+# with a `UnicodeEncodeError`, and the port wrote U+FFFD and said "saved". Any code point in
+# the surrogate block that survives in a Python `str` is lone (a pair is one code point).
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _codepoint(ch: str) -> str:
+    return f"U+{ord(ch):04X}"
+
+
+def lone_surrogate(text: str) -> str | None:
+    """`U+XXXX` of the first lone surrogate in `text`, or `None` when it is all text."""
+    found = _LONE_SURROGATE.search(text)
+    return None if found is None else _codepoint(found.group()[0])
+
+
+def _not_one_line(text: str) -> str | None:
+    """`U+XXXX` of the first character that keeps `text` from being one line, or `None`."""
+    found = _NOT_ONE_LINE.search(text)
+    return None if found is None else _codepoint(found.group()[0])
+
 DUPLICATE_JACCARD = 0.5
 
 # ---- the precision gate (roadmap #6) ---------------------------------------------
@@ -555,6 +595,24 @@ class MemoryStore:
             raise MemoryValidationError(f"invalid name '{name}'; must match {NAME_RE.pattern}")
         if not (description or "").strip():
             raise MemoryValidationError("description must be a non-empty line")
+        if len(name) > NAME_MAX_CHARS:
+            raise MemoryValidationError(
+                f"invalid name: {len(name)} characters; must be at most {NAME_MAX_CHARS}"
+            )
+        for label, value in (
+            ("description", description),
+            ("body", body),
+            *((f"links[{i}]", link) for i, link in enumerate(links)),
+        ):
+            if isinstance(value, str) and (bad := lone_surrogate(value)):
+                raise MemoryValidationError(
+                    f"{label} holds a lone surrogate ({bad}), which is not text and cannot "
+                    f"be stored as UTF-8; nothing was saved"
+                )
+        if bad := _not_one_line(description.strip()):
+            raise MemoryValidationError(
+                f"description must be one line; it holds the control character {bad}"
+            )
 
         new_tokens = tokens(f"{name} {description}")
         existing = None
@@ -617,8 +675,13 @@ class MemoryStore:
         k: int | None = None,
         stamp: bool = True,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
+        skipped: list[dict[str, str]] | None = None,
     ) -> list[Fact]:
         """Top-`k` facts whose name+description share tokens with `query`.
+
+        `skipped` (job65/#119): when a list is passed, a fact file that cannot be read as a
+        fact is appended to it as `{file, reason}` and the rest of the store is still
+        scored -- see `_facts`. Without it the read is strict, as it always was.
 
         A store this process cannot write to still answers (job65/#123): the
         `last_recalled` stamp is best-effort. See `_stamp`.
@@ -670,7 +733,8 @@ class MemoryStore:
         k = k if k is not None else self.k
         q = tokens(query)
         scored = []
-        for fact in self._snapshot if self._snapshot is not None else self._facts():
+        pool = self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
+        for fact in pool:
             score = len(q & tokens(f"{fact.name} {fact.description}"))
             if score > 0:
                 scored.append((score, fact))
@@ -687,7 +751,9 @@ class MemoryStore:
                 self._stamp(fact)
         return hits
 
-    def lookup(self, name: str, stamp: bool = True) -> Fact | None:
+    def lookup(
+        self, name: str, stamp: bool = True, skipped: list[dict[str, str]] | None = None
+    ) -> Fact | None:
         """The fact whose `name` field is exactly `name`, or `None`; no scoring, no ranking.
 
         WHY THIS EXISTS (job64, J64-4): `component.Memory` walks the layers looking for a
@@ -709,14 +775,26 @@ class MemoryStore:
         semantics included; nothing else on disk is touched, and a miss writes nothing.
         An unreadable store raises out of `_facts` here as it does out of `recall`, and
         `component.Memory` treats the two the same way per layer. The stamp is best-effort,
-        as in `recall` (#123).
+        as in `recall` (#123). `skipped` is `recall`'s (#119).
         """
-        for fact in self._snapshot if self._snapshot is not None else self._facts():
+        pool = self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
+        for fact in pool:
             if fact.name == name:
                 if stamp:
                     self._stamp(fact)
                 return fact
         return None
+
+    def readable_facts(self) -> tuple[list[Fact], list[dict[str, str]]]:
+        """Every fact this store can read, and `{file, reason}` for each file it could not.
+
+        THE DECLARED TOLERANT LISTING (job65/#119). One empty, truncated, non-UTF-8 or
+        unreadable fact file costs that file, not the store: the hook's SessionStart index
+        and native export read through this, as `Memory.recall_outcome` reads through
+        `recall(..., skipped=...)`. A `facts/` that cannot be listed still raises.
+        """
+        skipped: list[dict[str, str]] = []
+        return self._facts(skipped=skipped), skipped
 
     def lint(self) -> None:
         """Every fact parses and carries a valid type, and the index fits its budget.
@@ -1327,7 +1405,9 @@ class MemoryStore:
             f"memory store is unreadable: {directory}: {because}; {consequence}"
         )
 
-    def _facts(self, findings: list[str] | None = None) -> list[Fact]:
+    def _facts(
+        self, findings: list[str] | None = None, skipped: list[dict[str, str]] | None = None
+    ) -> list[Fact]:
         """Every fact on disk, in `_fact_paths` order, with two hand-edit shapes tolerated.
 
         AN UNQUOTED TIMESTAMP IS READ AS ITS `str()` (#121). `yaml.safe_load` hands back a
@@ -1354,49 +1434,81 @@ class MemoryStore:
         read down makes it `malformed fact file <name>: <that same text>`, the per-file
         shape every other refusal here already has. An `OSError` from the same read is NOT
         in the tuple and still escapes as itself: "could not be read" is not "malformed".
+
+        A DESCRIPTION THAT IS NOT ONE LINE IS READ AS ONE (job65/#155): `save` refuses one,
+        and a hand-edited file holding one used to print a second line into `index.md` and
+        into the hook's injected header -- a project store forging a `[profile]` feedback
+        line. Each run of the characters `_NOT_ONE_LINE` names is read as one space, so the
+        fact stays readable and every line built from it is one line; `lint` names it
+        (`findings`), like the other two hand-edit shapes.
+
+        `skipped`, when given, makes ONE BAD FILE COST THAT FILE (job65/#119): a file that
+        is malformed or cannot be read is appended as `{file, reason}` -- the reason is the
+        sentence this would have raised -- and every other file is still read. A `facts/`
+        that cannot be LISTED still raises: that is a store nobody could read, not a fact.
+        `recall`, `lookup` and `readable_facts` pass it through; every other caller keeps
+        the strict read, because a save, a compaction or a lint over a store with a broken
+        file must not act as if the file were not there.
         """
         facts = []
         for path in self._fact_paths():
+            if skipped is None:
+                facts.append(self._read_fact(path, findings))
+                continue
             try:
-                text = path.read_text(encoding="utf-8")
-                _, front, body = text.split("---\n", 2)
-                meta = yaml.safe_load(front)
-                if not isinstance(meta, dict):
-                    raise MemoryValidationError(
-                        f"malformed fact file {path.name}: frontmatter is not a mapping"
-                    )
-                name = meta["name"]
-                stamps = {}
-                for key in ("created", "last_recalled"):
-                    value = meta.get(key)
-                    if isinstance(value, date):  # `datetime` is a `date`
-                        value = str(value)
-                        if findings is not None:
-                            findings.append(
-                                f"fact '{name}' in {path.name}: {key} is the unquoted "
-                                f"timestamp {value}, read as '{value}'; quote it"
-                            )
-                    stamps[key] = value
-                if findings is not None and path.stem != str(name):
-                    findings.append(
-                        f"fact '{name}' in {path.name}: the file name does not match the "
-                        f"fact name; rename the file to {name}.md or the fact to {path.stem}"
-                    )
-                facts.append(
-                    Fact(
-                        name=name,
-                        description=meta["description"],
-                        type=meta["type"],
-                        body=body.strip(),
-                        links=list(meta.get("links") or []),
-                        last_recalled=stamps["last_recalled"],
-                        created=stamps["created"] or _mtime_date(path),
-                        source=path,
-                    )
-                )
-            except (ValueError, KeyError, yaml.YAMLError) as e:
-                raise MemoryValidationError(f"malformed fact file {path.name}: {e}") from e
+                facts.append(self._read_fact(path, findings))
+            except (BantamError, OSError) as e:
+                skipped.append({"file": path.name, "reason": str(e)})
         return facts
+
+    def _read_fact(self, path: Path, findings: list[str] | None) -> Fact:
+        """One fact file, parsed, or the `malformed fact file` sentence for it (see `_facts`)."""
+        try:
+            text = path.read_text(encoding="utf-8")
+            _, front, body = text.split("---\n", 2)
+            meta = yaml.safe_load(front)
+            if not isinstance(meta, dict):
+                raise MemoryValidationError(
+                    f"malformed fact file {path.name}: frontmatter is not a mapping"
+                )
+            name = meta["name"]
+            stamps = {}
+            for key in ("created", "last_recalled"):
+                value = meta.get(key)
+                if isinstance(value, date):  # `datetime` is a `date`
+                    value = str(value)
+                    if findings is not None:
+                        findings.append(
+                            f"fact '{name}' in {path.name}: {key} is the unquoted "
+                            f"timestamp {value}, read as '{value}'; quote it"
+                        )
+                stamps[key] = value
+            if findings is not None and path.stem != str(name):
+                findings.append(
+                    f"fact '{name}' in {path.name}: the file name does not match the "
+                    f"fact name; rename the file to {name}.md or the fact to {path.stem}"
+                )
+            description = meta["description"]
+            if isinstance(description, str) and (bad := _not_one_line(description)):
+                description = _NOT_ONE_LINE.sub(" ", description)
+                if findings is not None:
+                    findings.append(
+                        f"fact '{name}' in {path.name}: the description is not one line "
+                        f"(it holds the control character {bad}), read as '{description}'; "
+                        f"make it one line"
+                    )
+            return Fact(
+                name=name,
+                description=description,
+                type=meta["type"],
+                body=body.strip(),
+                links=list(meta.get("links") or []),
+                last_recalled=stamps["last_recalled"],
+                created=stamps["created"] or _mtime_date(path),
+                source=path,
+            )
+        except (ValueError, KeyError, yaml.YAMLError) as e:
+            raise MemoryValidationError(f"malformed fact file {path.name}: {e}") from e
 
     def _stamp(self, fact: Fact) -> None:
         """Date the recall without ever writing pinned content back.

@@ -67,6 +67,17 @@ except ImportError:  # surfaced as a clear SystemExit in main()
 
 _INSTALL_HINT = 'bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"'
 
+# NO PYDANTIC VERSION IN A REFUSAL (job65/#185). An argument the tool's model refuses reaches
+# the client as pydantic's own `ValidationError` text, which ends every error with `For further
+# information visit https://errors.pydantic.dev/<major.minor>/v/<type>` -- the version of
+# whichever pydantic pip resolved, which this package does not pin. The port reproduces the
+# sentence and could only hard-code one version (`2.13`), so the two refusal texts drifted
+# apart the day PyPI resolved 2.14. pydantic-core reads this variable once, the first time it
+# FORMATS an error, so it is set at import, before this server can format one; both runtimes
+# now print the sentence without the URL line. Forced, not `setdefault`: an operator's own
+# setting would split the two runtimes' text again.
+os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
+
 SERVER_NAME = "bantamkit"
 
 
@@ -790,11 +801,19 @@ def _index_pressure_condition(memory: Memory) -> Condition | None:
     budget = memory.store.index_budget
     if size is None or size * 100 < INDEX_PRESSURE_PERCENT * budget:
         return None
+    # AT OR OVER THE BUDGET IS NOT "CLOSE" (job65/#186). The same reply that carried the
+    # budget refusal ("Nothing was saved and retrying will not help") used to close with
+    # "the next save is close to being refused". At `size >= budget` no save that adds a
+    # byte can land, so the sentence says that; below it, the 90 % band keeps its words.
+    consequence = (
+        "so it is full and every save is refused until it is compacted"
+        if size >= budget
+        else "so the next save is close to being refused"
+    )
     return Condition(
         "index-budget-low",
-        f"the memory index is {size} bytes of a {budget}-byte budget, so the next save "
-        "is close to being refused — archive or shorten facts with "
-        "`python -m bantamkit.memory compact`.",
+        f"the memory index is {size} bytes of a {budget}-byte budget, {consequence} — "
+        "archive or shorten facts with `python -m bantamkit.memory compact`.",
     )
 
 
@@ -2779,7 +2798,12 @@ def _dispatch(args: argparse.Namespace) -> None:
         _build_parser().print_help()
         return
     server = build_server(_build_memory(args))
-    asyncio.run(server.run_stdio_async())
+    # `serve_stdio` is `server.run_stdio_async()` with the stdin reader wrapped so a
+    # `tools/call` carrying a lone surrogate is ANSWERED by name instead of dropped by the
+    # SDK's frame parser (job65/#160); see `bantamkit.mcpstdio`.
+    from bantamkit.mcpstdio import serve_stdio  # imports the SDK, which main() has checked
+
+    asyncio.run(serve_stdio(server))
 
 
 # `python -m bantamkit.mcpserver` is the invocation a host config reaches for when the

@@ -49,6 +49,7 @@ import {
   pyHashKey,
   pyText,
   RECALL_MIN_SCORE_RATIO,
+  type SkippedFact,
 } from './store.js';
 import { dream as runDream, formatFixed3, SUPERSEDED_HEADING } from './dream.js';
 import type { DreamResult } from './dream.js';
@@ -68,6 +69,24 @@ const isNameShaped = (query: string): boolean => query.includes('-') && NAME_SHA
 
 const missLine = (name: string): string =>
   `no fact named '${name}' in any layer bound here; matching by words instead:`;
+
+type SkippedInLayer = { layer: string; file: string; reason: string };
+
+/**
+ * The closing paragraph of a recall that left fact files out (job65/#119), or `''`: the
+ * store's own sentence for each, labelled by layer, so the person knows what to repair and
+ * that the rest was searched. `_skipped_note` in the reference.
+ */
+function skippedNote(skipped: readonly SkippedInLayer[]): string {
+  if (skipped.length === 0) return '';
+  const count = skipped.length;
+  const noun = count === 1 ? 'fact file' : 'fact files';
+  return (
+    `\n\n${count} ${noun} could not be read and ${count === 1 ? 'was' : 'were'} skipped; ` +
+    `every other fact was searched:\n` +
+    skipped.map((s) => `[${s.layer}] ${s.reason}`).join('\n')
+  );
+}
 
 /**
  * The model's spelling adapted to the store's contract: lowercase, `_`/space -> `-`.
@@ -243,6 +262,17 @@ export interface RecallOutcome {
    * that says so, `null` for every other query — the walk that has always run, unchanged.
    */
   readonly lookup: string | null;
+  /**
+   * Every fact file a layer this walk READ could not read as a fact (job65/#119), as
+   * `{layer, file, reason}`; the reply names them in a closing paragraph (`skippedNote`).
+   */
+  readonly skipped: ReadonlyArray<{ layer: string; file: string; reason: string }>;
+  /**
+   * The header line of each fact in the reply, in reply order, BUILT FROM THE PARSED FIELDS
+   * (job65/#155). The hook reads these instead of filtering the reply's lines, so a body line
+   * shaped like a header can never pass for one.
+   */
+  readonly headers: readonly string[];
 }
 
 /**
@@ -404,6 +434,18 @@ export class Memory {
     const normalizedLinks = (links ?? []).map((link) => normalizeName(link));
     let result;
     try {
+      // A SPELLING IS NOT A NAME (job65/#156): a name that had to be bent never lands ON
+      // ANOTHER FACT. "Deploy Command" used to replace `deploy-command` silently; now, when
+      // the bent name is a fact already, the answer is the duplicate nudge naming it and
+      // nothing is written. The exact slug is the one spelling that updates. See the reference.
+      if (typeof name === 'string' && name !== normalized && this.store.lookup(normalized, false) !== null) {
+        return {
+          reply:
+            `similar memory '${normalized}' already exists — save under that SAME ` +
+            'name to update it, or skip. Do not rename to force a copy.',
+          status: 'duplicate',
+        };
+      }
       result = this.store.save(type, normalized, description, body, normalizedLinks);
     } catch (e) {
       if (e instanceof MemoryValidationError) {
@@ -524,12 +566,16 @@ export class Memory {
     let reached = 0;
     let unreadable = 0;
     let candidates = 0;
+    const skipped: SkippedInLayer[] = [];
     for (const [label, store, writable] of this.layers) {
       if (picked.length >= budget) break; // budget spent: later layers are never even read
       reached += 1;
+      // ONE BAD FILE COSTS THAT FILE (job65/#119): the layer is scored over every fact it CAN
+      // read and the rest are named. Only a layer that cannot be listed is still the error.
+      const leftOut: SkippedFact[] = [];
       let facts: Fact[];
       try {
-        facts = store.recall(query, budget, writable && stamp, minRatio);
+        facts = store.recall(query, budget, writable && stamp, minRatio, leftOut);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
           throw e;
@@ -538,6 +584,7 @@ export class Memory {
         unreadable += 1;
         continue; // a corrupt grant/profile layer must not take down recall
       }
+      for (const s of leftOut) skipped.push({ layer: label, ...s });
       try {
         candidates += countFacts(store.root);
       } catch (e) {
@@ -562,16 +609,19 @@ export class Memory {
       candidates,
       unreadable,
       lookup,
+      skipped,
     };
     const lead = lookup === 'miss' ? `${missLine(name)}\n\n` : '';
+    const note = skippedNote(skipped);
     if (picked.length === 0) {
       const [status, reply] = this.nothingToReport();
-      return { reply: lead + reply, status, source: null, ...counts };
+      return { reply: lead + reply + note, status, source: null, headers: [], ...counts };
     }
     return {
-      reply: lead + picked.map(([label, fact]) => this.format(label, fact)).join('\n\n'),
+      reply: lead + picked.map(([label, fact]) => this.format(label, fact)).join('\n\n') + note,
       status: 'answered',
       source: picked[0]![0].split(':', 1)[0]!,
+      headers: picked.map(([label, fact]) => this.header(label, fact)),
       ...counts,
     };
   }
@@ -590,11 +640,13 @@ export class Memory {
     let reached = 0;
     let unreadable = 0;
     let candidates = 0;
+    const skipped: SkippedInLayer[] = [];
     for (const [label, store, writable] of this.layers) {
       reached += 1;
+      const leftOut: SkippedFact[] = [];
       let fact: Fact | null;
       try {
-        fact = store.lookup(name, writable && stamp);
+        fact = store.lookup(name, writable && stamp, leftOut);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
           throw e;
@@ -603,6 +655,7 @@ export class Memory {
         unreadable += 1;
         continue;
       }
+      for (const s of leftOut) skipped.push({ layer: label, ...s });
       try {
         candidates += countFacts(store.root);
       } catch (e) {
@@ -611,7 +664,7 @@ export class Memory {
       }
       if (fact !== null) {
         return {
-          reply: this.format(label, fact),
+          reply: this.format(label, fact) + skippedNote(skipped),
           status: 'answered',
           source: label.split(':', 1)[0]!,
           budget,
@@ -621,6 +674,8 @@ export class Memory {
           candidates,
           unreadable,
           lookup: 'hit',
+          skipped,
+          headers: [this.header(label, fact)],
         };
       }
     }
@@ -1030,11 +1085,16 @@ export class Memory {
     return `${where} ${remedy}; otherwise save a memory to start this one.`;
   }
 
-  private format(label: string, fact: Fact): string {
+  /** `[layer] [name] (type) description`, from the parsed fields (job65/#155). */
+  private header(label: string, fact: Fact): string {
     // `pyText` for the three interpolated fields, not template-literal coercion: a
     // hand-edited `name:` with nothing after it is `None` in Python's sentence and would be
     // `null` in this one. The store already reproduces it in the index line and on disk.
     const tag = this.showLayers ? `[${label}] ` : '';
-    return `${tag}[${pyText(fact.name)}] (${pyText(fact.type)}) ${pyText(fact.description)}\n${fact.body}`;
+    return `${tag}[${pyText(fact.name)}] (${pyText(fact.type)}) ${pyText(fact.description)}`;
+  }
+
+  private format(label: string, fact: Fact): string {
+    return `${this.header(label, fact)}\n${fact.body}`;
   }
 }

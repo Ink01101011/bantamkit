@@ -1053,9 +1053,14 @@ test('a corrupt read-only layer is skipped; the project layer failing is a real 
   sandboxed(home, () => {
     assert.match(Memory.layered(project, frozen()).recall('shared'), /^\[project\] \[a\] /);
     writeFileSync(join(store, 'facts', 'broken.md'), 'no frontmatter at all\n');
-    assert.throws(() => Memory.layered(project, frozen()).recall('shared'), MemoryValidationError);
+    // AMENDED job65 (#119): this pinned `assert.throws(..., MemoryValidationError)` — the
+    // defect #119 reports ("fails the recall on one bad project fact"). One malformed fact
+    // now costs that fact and is NAMED; a project store that cannot be LISTED still throws.
+    const reply = Memory.layered(project, frozen()).recall('shared');
+    assert.match(reply, /^\[project\] \[a\] /);
+    assert.match(reply, /\n\[project\] malformed fact file broken\.md: /);
   });
-  t.diagnostic('the grant raised inside recall and was skipped; the project layer was not');
+  t.diagnostic('one bad file in either layer costs that file; the rest still answer');
 });
 
 // ------------------------------------- roadmap #6: the precision gate, from the component
