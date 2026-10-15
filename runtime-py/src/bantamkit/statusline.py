@@ -139,7 +139,10 @@ OUTCOMES = frozenset(
 ADVERSE = ("raised", "refused-budget", "empty-unreadable-layer")
 
 #: The host's log validates tool names with exactly this and so does `mcpreport.py`.
-_TOOL = re.compile(r"^[a-z0-9_]{1,64}$")
+#: `\Z`, not `$`: Python's `$` also matches before a trailing newline, so `"x\n"` passed and
+#: rendered a two-line status line where the port (JS `$`) dropped the record (register
+#: (nnnn), fixed in job67 J67-9; `tools/conformance/suites/statusline.mjs`, `newline-tool`).
+_TOOL = re.compile(r"^[a-z0-9_]{1,64}\Z")
 
 #: U+1F7E2 / U+1F7E0 are the same two `docs/status.md` pins; U+26AA is this file's.
 ACTIVE = "bantamkit Active 🟢"

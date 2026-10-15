@@ -99,7 +99,10 @@ REPORT_VERSION = 1
 #: an `escalate` followed by nine more calls are different facts about the same word.
 FOLLOW_UP_OUTCOMES = ("escalate", "raised", "refused-budget", "refused-validation")
 
-_TOOL_TOKEN = re.compile(r"^[a-z0-9_]{1,64}$")
+#: `\Z`, not `$` (register (nnnn), job67 J67-9): an event-log `tool` of `"x\n"` is not a tool
+#: name, and `$` let it through on this side while `statusline.py` and the port dropped it.
+#: Both runtimes now refuse it (`tools/conformance/suites/mcpreport.mjs`, `newline-tool`).
+_TOOL_TOKEN = re.compile(r"^[a-z0-9_]{1,64}\Z")
 _SESSION_TOKEN = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 # The closed set. Each pattern deliberately stops before any free text: the `failed

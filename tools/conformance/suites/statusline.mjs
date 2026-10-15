@@ -88,6 +88,16 @@ const WIDTH_LITERALS = {
   'width-at-81': `bantamkit Degraded \u{1F7E0} \u00b7 1 event \u00b7 1 problem \u00b7 ${'t'.repeat(26)}\u2026 raised`,
 };
 
+/**
+ * Register (nnnn), job67 J67-9: an event-log `tool` of `"x\n"`. Python's `$` matched before the
+ * trailing newline, so the reference rendered `x\n empty-unreadable-layer` across two lines
+ * where the port dropped the record. Both now drop it, and the line is the healthy one.
+ * Per side, typed here: a reference reverted to `$` reddens its literal and the differential.
+ */
+const NEWLINE_LITERALS = {
+  'newline-tool': 'bantamkit Active \u{1F7E2} \u00b7 1 event \u00b7 memory_save saved',
+};
+
 // ------------------------------------------------------------------------------ fixture
 
 /** One record, spelled the way `docs/eventlog.md` spells it. */
@@ -176,6 +186,10 @@ function fixture(scratch) {
   log('width-at-80', record('t'.repeat(27), 'raised'));
   log('width-at-81', record('t'.repeat(28), 'raised'));
 
+  // (nnnn): a tool name with a trailing newline, adverse, LAST, so a side that admitted it
+  // would name it as the problem rather than merely miscount.
+  log('newline-tool', record('memory_save', 'saved') + record('x\n', 'empty-unreadable-layer'));
+
   mkdirSync(join(root, 'cwd'), { recursive: true });
   mkdirSync(join(root, 'home'), { recursive: true });
   return root;
@@ -257,6 +271,7 @@ function specs(root) {
     bed('window-over-a-big-file', at('window-over-a-big-file')),
     bed('rotation', at('rotation')),
     ...Object.keys(WIDTH_LITERALS).map((label) => bed(label, at(label))),
+    ...Object.keys(NEWLINE_LITERALS).map((label) => bed(label, at(label))),
   ];
 }
 
@@ -306,7 +321,7 @@ export async function run(ctx) {
     { name: 'width/py-widest-line-fits', kind: 'json', expected: true, actual: widest(rendered) <= WIDTH },
     { name: 'width/node-widest-line-fits', kind: 'json', expected: true, actual: widest(nodeLines) <= WIDTH },
   );
-  for (const [label, literal] of Object.entries(WIDTH_LITERALS)) {
+  for (const [label, literal] of Object.entries({ ...WIDTH_LITERALS, ...NEWLINE_LITERALS })) {
     cases.push(
       { name: `${label}/py-literal`, kind: 'json', expected: literal, actual: rendered.get(label) },
       { name: `${label}/node-literal`, kind: 'json', expected: literal, actual: nodeLines.get(label) },
