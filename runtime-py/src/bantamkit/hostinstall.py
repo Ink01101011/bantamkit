@@ -40,6 +40,7 @@ import json
 import math
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -219,13 +220,7 @@ def _write_config(path: Path, data: dict) -> None:
     # API keys in per-server `env` blocks, and a user who chmod'ed theirs to 0600 had it come
     # back 0644 because a fresh temp file gets the process umask. Measured on both runtimes.
     mode = target.stat().st_mode & 0o7777 if target.exists() else None
-    # `ensure_ascii` is left at its DEFAULT, which escapes non-ASCII as `\uXXXX`. That is not
-    # a style choice: `runtime-ts`'s `dumpJson` reproduces `json.dumps` including this, and a
-    # home directory with a non-ASCII name — a Thai or Japanese Windows username, say — would
-    # otherwise make the two runtimes write different bytes for the same install. Escaped
-    # JSON is still JSON and every host parses it; two runtimes disagreeing is the thing that
-    # costs something.
-    payload = json.dumps(data, indent=2) + "\n"
+    payload = _dump_host_json(data, _detected_indent(target)) + "\n"
     try:
         tmp.write_text(payload, encoding="utf-8")
         if mode is not None:
@@ -234,6 +229,45 @@ def _write_config(path: Path, data: dict) -> None:
     except OSError as exc:
         tmp.unlink(missing_ok=True)
         raise InstallError(f"cannot write {path}: {exc}") from None
+
+
+def _detected_indent(path: Path) -> str:
+    """The indent unit the file already uses: a tab, or N spaces; two for a new file (#118).
+
+    The unit is read off the FIRST line that starts with whitespace and has something after
+    it. A JSON string cannot hold a raw newline, so every line start is structural and that
+    line is a depth-one member. A file with no such line (absent, empty, all on one line)
+    gets two spaces, which is what this writer always used. `runtime-ts`'s `detectedIndent`
+    applies the same rule to the same text.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "  "
+    for line in text.split("\n"):
+        if line[:1] not in (" ", "\t") or not line.strip(" \t\r"):
+            continue
+        if line[0] == "\t":
+            return "\t"
+        return " " * (len(line) - len(line.lstrip(" ")))
+    return "  "
+
+
+# A lone surrogate is all `ensure_ascii=False` leaves unencodable: `"\ud800"` in the host file
+# decodes to one, and UTF-8 cannot carry it. It goes back out as the escape it came in as.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _dump_host_json(data: dict, indent: str) -> str:
+    """The host file's text: the user's indent unit, non-ASCII as literal UTF-8 (#118).
+
+    `ensure_ascii=False` escapes only `"`, `\\` and C0 controls; everything else, DEL and
+    U+2028 included, is written as itself, so `"ไทย 🎉"` stays `"ไทย 🎉"` rather than coming
+    back as `\\u0e44...`. `runtime-ts` reaches the same bytes from `dumpJson`'s ASCII output
+    (`hostJsonText`), and `tools/conformance/suites/install.mjs` compares the two.
+    """
+    text = json.dumps(data, indent=indent, ensure_ascii=False)
+    return _LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text)
 
 
 def _backup_target(path: Path) -> Path:
@@ -743,8 +777,8 @@ def install_hooks(
       5. dated backup, then one atomic write.
 
     The write itself is `_write_config` — the same temp-file replace, the same carried mode,
-    the same `indent=2` and default `ensure_ascii` — so the bytes this leaves and the bytes
-    `--install` leaves are produced by one function (RULING Q3.5).
+    the same detected indent and literal non-ASCII through `_dump_host_json` (#118) — so the
+    bytes this leaves and the bytes `--install` leaves are produced by one function (RULING Q3.5).
     """
     command, extra = this_command()
     rendered = hook_command(command, extra)

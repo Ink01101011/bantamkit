@@ -1109,6 +1109,24 @@ def test_129_a_block_that_holds_only_ours_is_dropped_whole(home):
     assert read_json(path)["hooks"] == {}
 
 
+def test_118_install_hooks_keeps_the_settings_text_and_its_indent(home):
+    """#118 remainder (J66-7): `--install-hooks` shares `_write_config` with `--install`, so a
+    4-space settings file with Thai in it keeps both: no `\\uXXXX`, no re-indent to two."""
+    path = hostinstall.claude_settings_path()
+    seed(path, '{\n    "model": "opus",\n    "env": {"K": "ไทย 🎉", "E": "\\u0e01"}\n}\n')
+
+    hostinstall.install_hooks(tell=lambda _text: None, yes=True)
+
+    text = path.read_text(encoding="utf-8")
+    assert '"K": "ไทย 🎉"' in text
+    assert '"E": "ก"' in text
+    assert "\\u0e" not in text
+    assert text.startswith('{\n    "model": "opus",\n    "env": {\n        "K": ')
+    leads = {len(line) - len(line.lstrip(" ")) for line in text.split("\n")}
+    assert leads and all(n % 4 == 0 for n in leads), sorted(leads)
+    assert "hooks" in json.loads(text)
+
+
 @symlinks_need_a_privilege_on_windows
 def test_136_a_symlinked_settings_file_is_written_through_and_stays_a_link(home):
     dotfiles = home / "dotfiles"

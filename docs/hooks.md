@@ -129,8 +129,8 @@ naming bantamkit are replaced — and since job65 (#129) "entry" means bantamkit
 `{matcher, hooks: [...]}` blocks stays in that block through a re-install and through
 `--remove-hooks`, and a block is dropped only when taking ours out leaves it empty. (The
 file is re-serialised by the same writer as `--install`: key order, big integers and the
-int/float split of every number survive, non-ASCII is `\uXXXX`-escaped so both runtimes
-write the same bytes, and a number JSON cannot carry — `1e400`, `NaN` — is refused by name
+int/float split of every number survive, non-ASCII stays literal UTF-8 and the file keeps
+its own indent unit (#118), both runtimes still writing the same bytes, and a number JSON cannot carry — `1e400`, `NaN` — is refused by name
 before anything is written; see `install.md`, *Connect to a host*.) The command is the
 interpreter and entry point of the install
 that should run, by absolute path, so it differs per runtime and is meant to:

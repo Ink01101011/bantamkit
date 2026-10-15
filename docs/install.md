@@ -322,9 +322,17 @@ runtimes' own suites (`runtime-py/tests/test_hostinstall.py`, `runtime-ts/test/h
   both runtimes — the port through its own CPython-decoder port, `pyjson.parseJson`, never
   `JSON.parse` — so `12345678901234567890` stays that integer, `1.0` stays `1.0`, and key
   order survives (a JS object would move an integer-like key such as `"9"` to the front; a
-  `Map` does not). What does change: the file is re-indented at two spaces, and non-ASCII
-  text is written as `\uXXXX` escapes — deliberately, so both runtimes write identical bytes;
-  it is the same JSON to every host. A number JSON cannot carry — `1e400`, `-1e400`, `NaN`, a
+  `Map` does not). Since job66 (#118's remainder) the TEXT survives too: non-ASCII stays
+  literal UTF-8 (`"ไทย 🎉"` is written back as `"ไทย 🎉"`, not `"\u0e44..."`), and the file
+  keeps its own indent unit — read off its first indented line: a tab, or that many spaces;
+  two for a new file or one written all on one line. Both runtimes write
+  `json.dumps(…, indent=<unit>, ensure_ascii=False)`'s bytes, so they still agree byte for
+  byte (`install-host-text` in the install suite). Two spellings are normalised, because
+  that writer has one spelling per string: an escape you wrote for a printable character
+  (`"\u0e01"`) comes back as the character itself, and a lone surrogate (`"\ud800"`), which
+  UTF-8 cannot carry, stays escaped. (Until job66 the file was re-indented at two spaces and
+  every non-ASCII character escaped — that was how the two runtimes stayed byte-identical,
+  and #118 ruled the user's text outranks it.) Line endings are written as `\n`. A number JSON cannot carry — `1e400`, `-1e400`, `NaN`, a
   literal `Infinity` — is refused BEFORE anything is planned, with
   `<file> has a number at mcpServers.other.huge that JSON cannot carry (Infinity); refusing to touch it`
   (exit 1, nothing written, no backup), because writing it back as the bare word `Infinity`

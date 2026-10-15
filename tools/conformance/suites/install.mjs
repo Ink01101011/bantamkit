@@ -695,6 +695,66 @@ export async function run(ctx) {
       );
     }
 
+    // ---- #118, the remainder (J66-7): the host's TEXT survives — literal UTF-8, its own indent
+    //
+    // An install that adds one key leaves every other byte spelled as the user wrote it: Thai
+    // and an emoji stay literal (no `\uXXXX`), the file keeps its indent unit (4 spaces, a tab),
+    // and five escape spellings land the way `ensure_ascii=False` writes them — an escaped Thai
+    // letter comes back literal, a lone surrogate stays escaped (UTF-8 cannot carry it), an
+    // escaped backslash before `u0e01` stays two characters, DEL and U+2028 are literal. Bytes
+    // side to side (the ruled command masked), and the masked text against a LITERAL per side,
+    // because a regression landing in both runtimes at once keeps the side-to-side compare green.
+    // `--install-hooks` shares the writer, so the settings file gets the same two checks.
+    {
+      const SEED =
+        '{\n»"mcpServers": {\n»»"other": {\n»»»"command": "x",\n' +
+        '»»»"env": {"K": "ไทย 🎉", "E": "\\u0e01", "L": "\\ud800", "B": "\\\\u0e01", ' +
+        '"D": "\\u007f", "S": "\\u2028"}\n»»}\n»},\n»"note": "สวัสดี"\n}\n';
+      const OTHER =
+        '»»"other": {\n»»»"command": "x",\n»»»"env": {\n' +
+        '»»»»"K": "ไทย 🎉",\n»»»»"E": "ก",\n»»»»"L": "\\ud800",\n»»»»"B": "\\\\u0e01",\n' +
+        '»»»»"D": "\x7f",\n»»»»"S": "\u2028"\n»»»}\n»»}';
+      const WRITTEN = `{\n»"mcpServers": {\n${OTHER},\n»»"bantamkit": <ENTRY>\n»},\n»"note": "สวัสดี"\n}\n`;
+      const maskEntry = (text) => text.replace(/^([ \t]+)"bantamkit": \{\n[\s\S]*?\n\1\}/m, '$1"bantamkit": <ENTRY>');
+      for (const [label, unit] of [
+        ['4 spaces', '    '],
+        ['a tab', '\t'],
+      ]) {
+        const id = `install-host-text (${label})`;
+        const hs = homes(`install-host-text-${unit === '\t' ? 'tab' : 'spaces'}`);
+        seedBoth(hs, SEED.replaceAll('»', unit));
+        both(id, hs, ['--install', 'cursor']);
+        const written = { py: maskEntry(readFileSync(config(hs.py), 'utf8')), node: maskEntry(readFileSync(config(hs.node), 'utf8')) };
+        cases.push({ name: `${id}: the written mcp.json, byte for byte, with the ruled entry masked`, kind: 'bytes', expected: written.py, actual: written.node });
+        cases.push(...literalCases(written.py, written.node, `${id}: the written mcp.json against a literal`, WRITTEN.replaceAll('»', unit), 'bytes'));
+      }
+      {
+        const id = 'install-host-text (--install-hooks, 4 spaces)';
+        const hs = homes('install-host-text-hooks');
+        const settings = (h) => join(h, '.claude', 'settings.json');
+        for (const h of Object.values(hs)) {
+          mkdirSync(join(h, '.claude'), { recursive: true });
+          writeFileSync(settings(h), SEED.replaceAll('»', '    '), 'utf8');
+        }
+        both(id, hs, ['--install-hooks', '--yes']);
+        // The ruled string here is the hook COMMAND (each runtime's own interpreter).
+        const maskHook = (text) => text.replace(/"command": "[^"\n]*--hook"/g, '"command": <HOOK>');
+        const written = { py: maskHook(readFileSync(settings(hs.py), 'utf8')), node: maskHook(readFileSync(settings(hs.node), 'utf8')) };
+        cases.push({ name: `${id}: the written settings.json, byte for byte, with the ruled hook command masked`, kind: 'bytes', expected: written.py, actual: written.node });
+        // Everything before the `hooks` key we added is the user's, and must read back verbatim.
+        const head = (text) => text.slice(0, text.indexOf(',\n    "hooks": {'));
+        cases.push(
+          ...literalCases(
+            head(written.py),
+            head(written.node),
+            `${id}: the user's part of settings.json against a literal`,
+            `{\n    "mcpServers": {\n${OTHER.replaceAll('»', '    ')}\n    },\n    "note": "สวัสดี"`,
+            'bytes',
+          ),
+        );
+      }
+    }
+
     // ---- #118: a number JSON cannot carry is refused by name, and nothing is written
     {
       const id = 'install-non-finite';

@@ -1013,6 +1013,26 @@ test('#129: a block that holds only ours is dropped whole', async () => {
   });
 });
 
+test('#118: --install-hooks keeps the settings text and its indent', async () => {
+  // #118 remainder (J66-7): `installHooks` shares `writeConfig` with `--install`, so a 4-space
+  // settings file with Thai in it keeps both: no `\uXXXX`, no re-indent to two.
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    seed(path, '{\n    "model": "opus",\n    "env": {"K": "ไทย 🎉", "E": "\\u0e01"}\n}\n');
+
+    h.installHooks({ ...CHECKOUT, tell: () => {}, yes: true });
+
+    const text = readFileSync(path, 'utf8');
+    assert.ok(text.includes('"K": "ไทย 🎉"'), text);
+    assert.ok(text.includes('"E": "ก"'), text);
+    assert.ok(!text.includes('\\u0e'), text);
+    assert.ok(text.startsWith('{\n    "model": "opus",\n    "env": {\n        "K": '), text);
+    const leads = new Set(text.split('\n').map((line) => line.length - line.replace(/^ +/, '').length));
+    assert.ok([...leads].every((n) => n % 4 === 0), [...leads].join(','));
+    assert.ok('hooks' in JSON.parse(text));
+  });
+});
+
 test('#136: a symlinked settings file is written through and stays a link', symlinksNeedAPrivilegeOnWindows, async () => {
   await withHome(async (h, root) => {
     const { symlinkSync, lstatSync } = await import('node:fs');
