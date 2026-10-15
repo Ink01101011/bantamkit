@@ -104,7 +104,7 @@ export const FOLLOW_UP_OUTCOMES: readonly string[] = [
 ];
 
 /**
- * EVERY `$` HERE IS SPELLED `\n?$`, AND THAT IS NOT DECORATION.
+ * EVERY `$` HERE IS SPELLED `\n?$`, AND THAT IS NOT DECORATION — EXCEPT `TOOL_TOKEN`.
  *
  * Python's `$` matches at the end of the string OR just before a newline that ends it;
  * JavaScript's `$` without the `m` flag matches only at the very end. The reference
@@ -112,8 +112,13 @@ export const FOLLOW_UP_OUTCOMES: readonly string[] = [
  * and a port that anchored strictly would classify the same host line differently. `.` is
  * left alone: it excludes `\n` in both languages, which is what keeps a message with an
  * embedded newline out of the capture on both sides.
+ *
+ * `TOOL_TOKEN` is anchored strictly on purpose (register (nnnn), job67 J67-9): a tool name
+ * with a trailing newline is not a tool name, and the status line already dropped it on this
+ * side. The reference now spells it `\Z`, so both runtimes refuse `"memory_save\n"` as an
+ * event-log `tool` (`tools/conformance/suites/mcpreport.mjs`, the `newline-tool` bed).
  */
-const TOOL_TOKEN = /^[a-z0-9_]{1,64}\n?$/;
+const TOOL_TOKEN = /^[a-z0-9_]{1,64}$/;
 const SESSION_TOKEN = /^[A-Za-z0-9-]{1,64}\n?$/;
 const OUTCOME_TOKEN = /^[a-z-]{1,32}\n?$/;
 

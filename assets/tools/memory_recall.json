@@ -1,5 +1,6 @@
 {
   "name": "memory_recall",
+  "title": "Recall memories",
   "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone.",
   "surfaces": [
     "agent",
@@ -19,7 +20,8 @@
         "type": "integer",
         "description": "Facts wanted, clamped to 1..5. Raised to the store default of 3 when smaller; never lowered below it."
       }
-    }
+    },
+    "additionalProperties": false
   },
   "output_schema": {
     "properties": {
@@ -33,5 +35,9 @@
     ],
     "type": "object",
     "title": "memory_recallOutput"
+  },
+  "annotations": {
+    "readOnlyHint": false,
+    "openWorldHint": false
   }
 }

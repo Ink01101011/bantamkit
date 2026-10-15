@@ -740,6 +740,83 @@ export async function run(ctx) {
     rpc(60, 'resources/read', { uri: 'bantamkit://skills/%6Demory' }),
   ]);
 
+  // job67/J67-1 (#133, user ruling 2026-10-15): every served tool refuses an unknown
+  // top-level argument key by name, before anything runs. One call per tool with otherwise
+  // well-formed arguments plus `bogus`, then the edges. Compared by the per-id loop (bytes
+  // too) AND pinned per side against a literal in the j67-1 block below.
+  const J67_1_CALLS = {
+    memory_save: { type: 'project', name: 'j67-unknown-args', description: 'an unknown key refused', body: 'b', bogus: 1 },
+    memory_recall: { query: 'a', bogus: 1 },
+    validate_json: { output: '{}', schema: { type: 'object' }, bogus: 1 },
+    shiftwork_clock_in: { checkpoint, bogus: 1 },
+    shiftwork_clock_out: {
+      checkpoint,
+      unit_id: cursorUnit,
+      status: 'done',
+      handoff_patch: {},
+      history_entry: { unit: cursorUnit, outcome: 'never written' },
+      bogus: 1,
+    },
+    shiftwork_status: { checkpoint, bogus: 1 },
+    build_identity: { bogus: 1 },
+    bantamkit_status: { bogus: 1 },
+    memory_compact: { reserve: 0, bogus: 1 },
+    skill_audit: { root: SKILL_FIXTURE, bogus: 1 },
+    memory_dream: { dry_run: true, bogus: 1 },
+    token_ledger: { root: docs, bogus: 1 },
+    work_plan: { nodes: [], bogus: 1 },
+    shiftwork_plan: { checkpoint, bogus: 1 },
+  };
+  add('j67-1-unknown-args', [
+    INIT(),
+    INITIALIZED,
+    ...Object.entries(J67_1_CALLS).map(([tool, args], i) => callTool(10 + i, tool, args)),
+    // Nothing was done: the refused save left no fact to recall, and the refused `done`
+    // clock_out left the cursor where it was (served, it would have advanced it).
+    callTool(30, 'memory_recall', { query: 'j67-unknown-args an unknown key refused' }),
+    callTool(31, 'shiftwork_status', { checkpoint }),
+    // The FIRST unknown key in arrival order is named.
+    callTool(32, 'memory_recall', { query: 'a', zz: 1, aa: 2 }),
+    // An unknown key outranks a type error on a known one...
+    callTool(33, 'memory_recall', { query: 123, bogus: 1 }),
+    // ...and a lone surrogate (#160) outranks an unknown key, even in that key's value.
+    callTool(34, 'memory_recall', { query: 'a', bogus: '\ud800' }),
+    // `_meta` lives in params, not arguments, and is untouched...
+    rpc(35, 'tools/call', { name: 'memory_recall', arguments: { query: 'a' }, _meta: { progressToken: 'j67' } }),
+    // ...while a `_meta` INSIDE arguments is just another unknown argument.
+    callTool(36, 'memory_recall', { query: 'a', _meta: { progressToken: 'j67' } }),
+    // Case matters, and a name off Object.prototype is no field either.
+    callTool(37, 'memory_recall', { Query: 'a' }),
+    callTool(38, 'memory_recall', { query: 'a', constructor: 1 }),
+    // The unitId trap the issue names.
+    callTool(39, 'shiftwork_clock_in', { checkpoint, unitId: cursorUnit }),
+  ]);
+
+  // job67/J67-2 (#182): every served tool's `title` and `annotations`, with the event log off
+  // (the default) and on. Since J67-9 (user ruling (b) on #182 Q1) the log moves no hint, so
+  // both sessions must advertise the asset's hints unchanged.
+  // (#198, user ruling 2026-10-15): `prompts/get` with a name no prompt has is -32602 with
+  // the sentence and `data: null` on both sides. Compared by the per-id loop (raw bytes too
+  // for the prompt frames; `tools/list` is canonical there, its key order being ruled) AND
+  // pinned per side against the literals in the j67-2 block below.
+  add('j67-2-annotations', [
+    INIT(),
+    INITIALIZED,
+    rpc(2, 'tools/list'),
+    rpc(3, 'prompts/get', { name: 'nosuch' }),
+    rpc(4, 'prompts/get', { name: '' }),
+    rpc(5, 'prompts/get', { name: 'bantamkit_status ' }),
+    rpc(6, 'prompts/get', { name: 'BANTAMKIT_STATUS' }),
+    rpc(7, 'prompts/get', { name: 'bantamkit_status' }),
+  ], {
+    // id 7's report carries `build_id`, which fingerprints two different trees (ruled in
+    // docs/porting.md); the same single mask the status sessions use.
+    mask: (t) => t.replace(/build sha256:[0-9a-f]{64}/g, 'build sha256:<masked>'),
+  });
+  add('j67-2-annotations-log', [INIT(), INITIALIZED, rpc(2, 'tools/list')], {
+    env: { ...baseEnv, [EVENT_LOG_ENV]: '1' },
+  });
+
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
   add('identity-pycache', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})], {
     env: { ...baseEnv, BANTAMKIT_ASSETS: PYCACHE_ASSETS },
@@ -1647,6 +1724,186 @@ export async function run(ctx) {
           served(res.get('60')),
         ],
       });
+    }
+  }
+
+  // ----------------------------- job67/J67-1: an unknown top-level argument, refused by name
+
+  /**
+   * #133 (user ruling 2026-10-15). The per-id loop compares every `j67-1-unknown-args` frame
+   * side to side; these pin each side against a LITERAL, one case per served tool, because
+   * the two runtimes IGNORED an unknown key in lockstep through 0.35.9 and a differential
+   * passed the whole time. `known` is read off the asset on disk, so the sentence is tied to
+   * the advertised schema rather than to either runtime's argument table.
+   */
+  {
+    const assetKeys = (tool) =>
+      Object.keys(JSON.parse(readFileSync(join(ASSETS, 'tools', `${tool}.json`), 'utf8')).parameters.properties);
+    const refusal = (tool, key, known = assetKeys(tool)) => ({
+      content: [{ text: `Error executing tool ${tool}: unknown argument '${key}'; known: ${known.length === 0 ? '(none)' : known.join(', ')}`, type: 'text' }],
+      isError: true,
+    });
+    const resultOf = (side, id) => frameOf(side, id)?.result ?? 'missing';
+    const { python: pyAds, node: nodeAds } = results.get('advertisement');
+    const looseOf = (side) =>
+      Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, t.inputSchema?.additionalProperties ?? 'absent']));
+    const tools = Object.keys(J67_1_CALLS);
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const side = results.get('j67-1-unknown-args')[key];
+      tools.forEach((tool, i) => {
+        cases.push({
+          name: `j67-1: #133 ${label} refuses ${tool}(bogus=1) by name, nothing done (literal)`,
+          kind: 'json',
+          expected: refusal(tool, 'bogus'),
+          actual: resultOf(side, 10 + i),
+        });
+      });
+      cases.push({
+        name: `j67-1: #133 ${label}: the refused save wrote nothing and the refused clock_out moved nothing (literal)`,
+        kind: 'json',
+        expected: { recall: 'no memories to search: nothing is saved in any layer bound here.', cursor: cursorUnit },
+        actual: {
+          recall: toolTextOf(side, 30)?.split(' The project store ')[0] ?? 'missing',
+          cursor: frameOf(side, 31)?.result?.structuredContent?.cursor ?? 'missing',
+        },
+      });
+      cases.push({
+        name: `j67-1: #133 ${label}: first unknown key in arrival order, before a type error, after a lone surrogate (literal)`,
+        kind: 'json',
+        expected: [
+          refusal('memory_recall', 'zz'),
+          refusal('memory_recall', 'bogus'),
+          {
+            content: [{ text: "Error executing tool memory_recall: argument 'bogus' holds a lone surrogate (U+D800), which is not text; nothing was done", type: 'text' }],
+            isError: true,
+          },
+          refusal('memory_recall', '_meta'),
+          refusal('memory_recall', 'Query'),
+          refusal('memory_recall', 'constructor'),
+          refusal('shiftwork_clock_in', 'unitId'),
+        ],
+        actual: [32, 33, 34, 36, 37, 38, 39].map((id) => resultOf(side, id)),
+      });
+      cases.push({
+        name: `j67-1: #133 ${label} serves a call whose _meta rides in params (literal)`,
+        kind: 'json',
+        expected: false,
+        actual: frameOf(side, 35)?.result?.isError ?? 'missing',
+      });
+    }
+    cases.push({
+      name: 'j67-1: #133 every served inputSchema advertises additionalProperties false, on each side (literal)',
+      kind: 'json',
+      expected: { python: Object.fromEntries(tools.map((t) => [t, false])), node: Object.fromEntries(tools.map((t) => [t, false])) },
+      actual: { python: looseOf(pyAds), node: looseOf(nodeAds) },
+    });
+  }
+
+  // ------------------------------------- job67/J67-2: tool titles and annotations; prompts/get
+
+  /**
+   * #182 and #198. The per-id loop compares the two `tools/list` answers and the five
+   * `prompts/get` frames side to side; these pin each side against a LITERAL written here,
+   * not read off the assets, so an asset that flips a hint is a red on both sides rather than
+   * a new truth both agree on. `readOnlyHint: true` is claimed by the eight tools that write
+   * nothing. J67-2 overlaid three writer hints on them while `BANTAMKIT_EVENT_LOG` was on; the
+   * user ruled (#182 Q1, option (b), 2026-10-15) that the opt-in log is not a side effect for
+   * annotations, J67-9 removed the overlay in both runtimes, and the log-on literal below moved
+   * from the overlay to the asset's hints, citing that ruling. Per-tool reasons:
+   * `.shiftwork/notes-job67/J67-2.md`; the ruling: `.shiftwork/notes-job67/J67-9.md`.
+   */
+  {
+    const RO = { openWorldHint: false, readOnlyHint: true };
+    const J67_2_SURFACE = {
+      memory_save: ['Save a memory', { destructiveHint: true, openWorldHint: false, readOnlyHint: false }],
+      memory_recall: ['Recall memories', { openWorldHint: false, readOnlyHint: false }],
+      validate_json: ['Validate JSON against a schema', RO],
+      shiftwork_clock_in: ['Shift work: clock in', { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false }],
+      shiftwork_clock_out: ['Shift work: clock out', { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false }],
+      shiftwork_status: ['Shift work: status', RO],
+      build_identity: ['Build identity', RO],
+      bantamkit_status: ['bantamkit status', RO],
+      memory_compact: ['Compact the memory store', { destructiveHint: true, openWorldHint: false, readOnlyHint: false }],
+      skill_audit: ['Audit the skill catalogue', RO],
+      memory_dream: ['Dream: consolidate the memory store', { destructiveHint: true, openWorldHint: false, readOnlyHint: false }],
+      token_ledger: ['Token ledger', RO],
+      work_plan: ['Work plan: batch a dependency graph', RO],
+      shiftwork_plan: ['Shift work: plan', RO],
+    };
+    const advertised = (side) =>
+      Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, [t.title ?? 'absent', t.annotations ?? 'absent']]));
+    const expectedOff = J67_2_SURFACE;
+    // #182 Q1 ruling (b): the same literal with the log on. Until J67-9 this was the overlay.
+    const expectedOn = J67_2_SURFACE;
+    const promptRefusal = (id, name) =>
+      `{"jsonrpc":"2.0","id":${id},"error":{"code":-32602,"message":${JSON.stringify(`Unknown prompt: ${name}`)},"data":null}}`;
+    const promptLines = (side) => [3, 4, 5, 6].map((id) => side.frames.find((f) => f.startsWith(`{"jsonrpc":"2.0","id":${id},`)) ?? 'missing');
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const off = results.get('j67-2-annotations')[key];
+      const on = results.get('j67-2-annotations-log')[key];
+      cases.push({
+        name: `j67-2: #182 ${label} advertises each tool's title and hints, event log off (literal)`,
+        kind: 'json',
+        expected: expectedOff,
+        actual: advertised(off),
+      });
+      cases.push({
+        name: `j67-2: #182 Q1 ruling (b) ${label} advertises each tool's title and the asset's hints, event log on (literal)`,
+        kind: 'json',
+        expected: expectedOn,
+        actual: advertised(on),
+      });
+      cases.push({
+        name: `j67-2: #198 ${label} refuses an unknown prompt name -32602 with data null (literal)`,
+        kind: 'json',
+        expected: [
+          promptRefusal(3, 'nosuch'),
+          promptRefusal(4, ''),
+          promptRefusal(5, 'bantamkit_status '),
+          promptRefusal(6, 'BANTAMKIT_STATUS'),
+        ],
+        actual: promptLines(off),
+      });
+      cases.push({
+        name: `j67-2: #198 ${label} still serves the registered prompt (literal)`,
+        kind: 'json',
+        expected: 'user',
+        actual: frameOf(off, 7)?.result?.messages?.[0]?.role ?? 'missing',
+      });
+    }
+  }
+
+  // ------------------------------- job67/J67-9: the event log moves no annotation; degraded key
+
+  /**
+   * #182 Q1 ruling (b), 2026-10-15: `BANTAMKIT_EVENT_LOG` is not a side effect for annotations,
+   * so a side's whole `tools/list` result is the same with the log on as with it off. Pinned
+   * per side (a differential between the two sides is blind to a switch reinstated in both).
+   *
+   * (llll), user ruling on J67-7 Q1: the served `skill_audit` and `token_ledger` descriptions
+   * name the `bantamkit_degraded` key their result can carry, as docs/ledger.md,
+   * docs/skill-audit.md and docs/status.md do. Pinned per side as a literal substring.
+   */
+  {
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const off = results.get('j67-2-annotations')[key];
+      const on = results.get('j67-2-annotations-log')[key];
+      cases.push({
+        name: `j67-9: #182 Q1 ruling (b) ${label} serves the same tools/list with and without BANTAMKIT_EVENT_LOG`,
+        kind: 'json',
+        expected: frameOf(off, 2)?.result ?? 'missing',
+        actual: frameOf(on, 2)?.result ?? 'missing',
+      });
+      const tools = frameOf(off, 2)?.result?.tools ?? [];
+      for (const tool of ['skill_audit', 'token_ledger']) {
+        const description = tools.find((t) => t.name === tool)?.description ?? '';
+        cases.push({
+          name: `j67-9: (llll) ${label} serves a ${tool} description that names bantamkit_degraded (literal)`,
+          kind: 'json',
+          expected: true,
+          actual: description.includes('`bantamkit_degraded`'),
+        });
+      }
     }
   }
 
@@ -2801,8 +3058,8 @@ export async function run(ctx) {
       ruling:
         'RULED DIFFERENT — key order only, inside `mcp` 2.0.0\'s outbound serializer, and the ' +
         'CONTENT is proven identical by the `advertisement: id 2` case above, which sorts keys ' +
-        'and passes. Measured, three levels: the tool entry arrives as `description, ' +
-        'inputSchema, name, outputSchema` where the pydantic model dumps `name, title, ' +
+        'and passes. Measured, three levels: the tool entry arrives as `annotations, description, ' +
+        'inputSchema, name, outputSchema, title` (sorted; the first and last since #182) where the pydantic model dumps `name, title, ' +
         'description, inputSchema, ...`; `memory_save` and `memory_recall` arrive with ' +
         '`inputSchema` as `properties, required, type` where their manifests say `type, ' +
         'required, properties`; `memory_compact` arrives as `properties, type` where its ' +

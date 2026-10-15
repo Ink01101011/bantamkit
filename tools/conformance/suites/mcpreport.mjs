@@ -209,6 +209,14 @@ function fixture(scratch) {
 
   busyFixture(join(root, 'busy'));
 
+  // Register (nnnn), job67 J67-9: an event-log record whose `tool` is `"memory_save\n"`. The
+  // reference's `$` admitted it and so did the port's `\n?$` mirror; both now refuse it, so
+  // the bed's one well-formed record is the only event either side counts.
+  write(
+    join(root, 'newline-tool', 'store', 'events', 'mcp.jsonl'),
+    event(10, 'memory_save', 'saved') + event(20, 'memory_save\n', 'saved'),
+  );
+
   // An empty store: the directory is there, the event log is not.
   mkdirSync(join(root, 'empty-store'), { recursive: true });
   mkdirSync(join(root, 'cwd'), { recursive: true });
@@ -367,6 +375,12 @@ export async function run(ctx) {
       env: { BANTAMKIT_HOST_LOG_ROOT: join(root, 'แคช-😀', 'hostlogs'), BANTAMKIT_EVENT_LOG: 'on' },
     },
     {
+      // (nnnn): a trailing-newline tool name is not an event on either side.
+      label: 'newline-tool',
+      argv: ['--mcp-report', '--store', bed('newline-tool').store],
+      env: { BANTAMKIT_HOST_LOG_ROOT: join(root, 'no-such-root'), BANTAMKIT_EVENT_LOG: 'on' },
+    },
+    {
       // One session of 130,000 calls (#130), generated at run time by `busyFixture`.
       label: 'busy-130k',
       argv: ['--mcp-report', '--store', bed('busy').store],
@@ -411,6 +425,25 @@ export async function run(ctx) {
     expected: runPy(ctx, again).stdout,
     actual: runNode(again).stdout,
   });
+
+  // (nnnn), job67 J67-9: per side, typed here. A differential is blind to both sides admitting
+  // the newline tool again, so each side's two event counters are pinned to the one record.
+  {
+    const nl = answers.get('newline-tool');
+    const counters = (buf) =>
+      buf
+        .toString('utf8')
+        .split('\n')
+        .filter((l) => l.startsWith('unmatched-events: ') || l.startsWith('attributed-events: '));
+    for (const [label, side] of [['the reference', nl.py], ['the port', nl.node]]) {
+      cases.push({
+        name: `newline-tool/${label} counts only the well-formed event (literal)`,
+        kind: 'json',
+        expected: ['unmatched-events: 1', 'attributed-events: 0 of 1'],
+        actual: counters(side.stdout),
+      });
+    }
+  }
 
   // ------------------------------------------------------------------------- the notes
 

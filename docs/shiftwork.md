@@ -583,9 +583,7 @@ requires every `ready` unit beyond the cursor to be accepted by a bare
 `shiftwork_clock_out` — which a never-briefed unit correctly is **not**. Deleting
 a sentence there instead of rewriting it makes the suite demand the wrong thing.
 Editing that asset is not free either: it moves the pack's `assets_digest`, which
-[porting.md](porting.md) quotes as a literal (`sha256:9e66e89a…` over 93 files,
-remeasured 2026-09-20 — that row is on its third literal, because the pack keeps
-moving under it) and `tools/conformance/suites/wire.mjs` compares across runtimes.
+`build_identity` reports and `tools/conformance/suites/wire.mjs` compares across runtimes.
 
 **The satisfied rule.** A unit whose status is `done` or `dropped` is
 *satisfied*: it is removed from the graph, and every edge pointing at it is
@@ -596,8 +594,12 @@ graph. So the batch view narrows as a job progresses, which is what makes
 Every unit has priority `0`, because the checkpoint schema has no priority
 field — so order inside a batch is `plan.units` order.
 
-**Three refusals, one sentence each, checked in this order.** They are the same
-sentences on both tools and in both runtimes:
+**Refusals, one sentence each, checked in this order.** They are the same
+sentences in both runtimes. `work_plan` first checks each node's shape, by index, in input
+order and field order (job65, #127) — `nodes[<i>] must be an object`, `nodes[<i>].id must be
+a string`, `nodes[<i>].depends_on must be a list of strings`, `nodes[<i>].priority must be an
+integer` — so a string `depends_on` is no longer read character by character. Then the three
+graph refusals, shared by both tools:
 
 1. `duplicate node id <id>`
 2. `node <id> depends on <dep>, which no node declares`
@@ -689,7 +691,7 @@ the caller's next move is to pick from it. It can never be empty there: the
 all-terminal check above it has already answered `success` for a plan with no
 non-terminal unit, so no sentence is written for a case that cannot be reached.
 A refusal from the batch view *itself* — a cycle, an unknown dependency, an
-unreadable file — passes through verbatim, in the three sentences listed above,
+unreadable file — passes through verbatim, in its own sentence,
 on both paths since job65: the default call no longer briefs the cursor unit of
 a graph that cannot batch (the named call refused it; that is #164's title).
 
@@ -791,23 +793,22 @@ this repository gitignores, so it is quoted here rather than cited: a path no
 reader can open is not evidence. The same dispatch is now
 `shiftwork_clock_in(checkpoint, unit_id="U3")`, and nothing edits the file.
 
-**The gate.** Seven conformance sessions in
-`tools/conformance/suites/shiftwork.mjs` compare the two runtimes over this
-surface — the disagreement state, the wave, both refusals, the default path and
-the dangling cursor. They are built on documents whose plan order and graph
-order *disagree*, and the suite prints what they pin: 43 per-side cases over
-those 7 sessions, on top of the differential rows, because the differential
-alone is blind to a sentence paraphrased on both sides. The corpus gap that hid
-the defect is worth naming, because it is the shape a future case must avoid:
-every checkpoint already in the suite declares its units in dependency order, so
-`cursor` equals `ready[0]` at every step, and `clock_in(unit_id)` could only
-ever have been handed the unit `clock_in()` would have picked anyway. A case
-that asserts each field against itself cannot see this class of bug; the one
-that does asserts the two fields against *each other*.
+**The gate.** Conformance sessions in `tools/conformance/suites/shiftwork.mjs` compare
+the two runtimes over this surface — the disagreement state, the wave, both refusals, the
+default path and the dangling cursor. They are built on documents whose plan order and
+graph order *disagree*, and the suite prints what they pin as per-side cases on top of the
+differential rows, because the differential alone is blind to a sentence paraphrased on
+both sides. The corpus gap that hid the defect is worth naming, because it is the shape a
+future case must avoid: a checkpoint whose units are declared in dependency order has
+`cursor` equal to `ready[0]` at every step, so `clock_in(unit_id)` could only ever be handed
+the unit `clock_in()` would have picked anyway. A case that asserts each field against
+itself cannot see this class of bug; the one that does asserts the two fields against
+*each other*.
 
 ```
-node tools/conformance/run.mjs --suite shiftwork
-PASS: 1697 cases, 1105 byte-identical, 0 exact-string, 592 structural, 1 ruled-different, 0 failures
+TMPDIR=<clean> node tools/conformance/run.mjs --suite shiftwork     # at 1928ae0
+note: [shiftwork] job60/D1-D3 (J60-4): `clock_in(unit_id)` is pinned by 67 per-side cases over 11 sessions ...
+PASS: 2071 cases, 1303 byte-identical, 0 exact-string, 768 structural, 1 ruled-different, 0 failures
 ```
 
 Both runtimes agreed on every new case, so job60 adds no row to

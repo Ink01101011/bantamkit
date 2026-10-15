@@ -1410,6 +1410,30 @@ def _configured_index_budget(run: HookRun, cwd: str) -> tuple[float | None, str 
     return _index_budget_from_args(entry.get("args")), scope
 
 
+def _store_from_args(args: Any) -> str | None:
+    """The `--store X` / `--store=X` a registration's `args` launches the server with (#170).
+
+    The server reads `--store` off its own argv and it OUTRANKS `BANTAMKIT_MEMORY_DIR` there,
+    so a registration pinning that way had the server serving X while this hook walked from
+    cwd -- the J50-1 split through the other spelling. The LAST occurrence decides, as argparse
+    keeps the last. A relative X is joined (by the caller) to the cwd the registration was
+    looked up for, which is the directory the host launches the server in. An empty value, or
+    a `--store` with nothing after it, is a command line the server refuses to start on: it
+    pins nothing here, and the `env` rule decides. Not followed: `--start`, and an abbreviated
+    `--sto X` (argparse would take it; no registration on this machine spells either).
+    """
+    if not isinstance(args, list):
+        return None
+    last = ""
+    for i, a in enumerate(args):
+        if a == "--store":
+            value = args[i + 1] if i + 1 < len(args) else None
+            last = value if isinstance(value, str) else ""
+        elif isinstance(a, str) and a.startswith("--store="):
+            last = a[len("--store=") :]
+    return last or None
+
+
 def _apply_registration_store_pin(run: HookRun, cwd: str) -> None:
     """The winning registration's `BANTAMKIT_MEMORY_DIR`, applied to THIS process (J50-1).
 
@@ -1433,8 +1457,17 @@ def _apply_registration_store_pin(run: HookRun, cwd: str) -> None:
     is what the server inherits too. The whole-entry rule applies exactly as it does to
     `--index-budget`: a winning entry with no `env` means the walk, even when a lower scope
     pins.
+
+    AMENDED 2026-10-15 (job67, J67-5, #170): `args: [..., "--store", X]` IS A PIN TOO, and it
+    outranks `env` exactly as `--store` outranks `BANTAMKIT_MEMORY_DIR` on the server. See
+    `_store_from_args` and the Node counterpart's comment for the rules.
     """
     entry, scope = _winning_registration(run, cwd)
+    pinned = _store_from_args(entry.get("args")) if entry else None
+    if pinned is not None:
+        os.environ["BANTAMKIT_MEMORY_DIR"] = os.path.abspath(os.path.join(cwd, pinned))
+        run.store_scope = scope
+        return
     env = entry.get("env") if entry else None
     if not isinstance(env, dict) or "BANTAMKIT_MEMORY_DIR" not in env:
         return

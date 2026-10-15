@@ -1,38 +1,79 @@
 # bantamkit — memory MCP server for Claude Code, Cursor, VS Code Copilot and Claude Desktop
 
-bantamkit is an **MCP server** that gives coding agents a per-person **memory** store, JSON
-Schema validation and shift-work tools. It works with **Claude Code**, **Claude Desktop**,
-**Cursor**, **GitHub Copilot in VS Code** and any stdio MCP client. Install it from **npm**
-(`npx bantamkit-mcp`, pure Node) or **PyPI** (`pip install "bantamkit[mcp]"`); after one install
-it starts **offline**.
+[![npm version](https://img.shields.io/npm/v/bantamkit-mcp?logo=npm&label=npm)](https://www.npmjs.com/package/bantamkit-mcp)
+[![PyPI version](https://img.shields.io/pypi/v/bantamkit?logo=pypi&logoColor=white&label=PyPI)](https://pypi.org/project/bantamkit/)
+[![Python versions](https://img.shields.io/pypi/pyversions/bantamkit?logo=python&logoColor=white)](https://pypi.org/project/bantamkit/)
+[![Node version](https://img.shields.io/node/v/bantamkit-mcp?logo=node.js&logoColor=white)](https://www.npmjs.com/package/bantamkit-mcp)
+[![License: MIT](https://img.shields.io/github/license/Ink01101011/bantamkit)](https://github.com/Ink01101011/bantamkit/blob/main/LICENSE)
+[![npm downloads](https://img.shields.io/npm/dm/bantamkit-mcp?label=npm%20downloads)](https://npm-stat.com/charts.html?package=bantamkit-mcp)
+[![PyPI downloads](https://img.shields.io/pypi/dm/bantamkit?label=PyPI%20downloads)](https://pypistats.org/packages/bantamkit)
 
-It is also a Python library that lifts small-model agents (~1B–8B, any OpenAI-compatible
-endpoint): malformed output, unreviewed answers, forgotten context and runaway loops are
-absorbed by code, and a bundled eval suite measures the uplift.
+**Give your coding agent a memory that outlasts the session.** bantamkit is an MCP server: the
+agent saves what is worth keeping — a preference you stated, a decision, the fix that worked —
+and recalls it next session instead of asking you again. It works with **Claude Code**, **Claude
+Desktop**, **Cursor**, **GitHub Copilot in VS Code** and any stdio MCP client. Install it once
+from **npm** or **PyPI**; after that it starts **offline**.
 
-## Contents
+## 🚀 Quick start
+
+```bash
+npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cursor
+```
+
+Then restart the host (in Claude Code, open a new session) and ask the agent to call
+`bantamkit_status`. Prefer Python? `pip install "bantamkit[mcp]"` into a venv you keep, then
+`bantamkit-mcp --install claude`. Every route and host is below.
+
+## ✨ What you get
+
+- **Memory that persists.** Facts are plain Markdown files under `.bantamkit/memory`, deduped
+  and held to a byte budget. `memory_save` and `memory_recall` do the work; `memory_compact` and
+  `memory_dream` keep the store tidy.
+- **Layered by default.** Recall reads the project store, any stores you grant in
+  `.bantamkit/config.yaml`, and your profile store `~/.bantamkit/memory`. Saves go to the
+  project store.
+- **One command per host.** `--install` writes the entry for Claude Code, Claude Desktop, Cursor
+  or VS Code Copilot, backs up any file it edits, and never prompts.
+- **Offline after one install.** Both install routes record the server by absolute path, so no
+  launch needs the network or your shell's PATH.
+- **Claude Code hooks, if you want them.** `--install-hooks` puts the memory index in front of
+  each new session, surfaces matching facts on each prompt, and nudges a save at the end of a
+  long session that saved nothing ([docs/hooks.md](docs/hooks.md)).
+- **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
+  a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
+  [the fourteen tools](#-what-it-serves).
+- **Two runtimes, one store.** Pure Node on npm and Python on PyPI read and write the same
+  files, and every surface is compared between both runtimes by a conformance suite
+  (`node tools/conformance/run.mjs --all`).
+- **A Python library for small models, too.** `pip install bantamkit` lifts small-model agents
+  (~1B–8B, any OpenAI-compatible endpoint): malformed output, unreviewed answers, forgotten
+  context and runaway loops are absorbed by code, and a bundled eval suite measures the uplift.
+
+## 📑 Contents
 
 | Topic | What you'll find |
 |---|---|
-| [Install the MCP server](#install-the-mcp-server) | Three ways to set it up — pick one |
+| [Install the MCP server](#-install-the-mcp-server) | Three ways to set it up — pick one |
 | [Install once, run offline (recommended)](#install-once-run-offline-recommended) | One command; later launches need no network |
 | [Run with npx at every launch](#run-with-npx-at-every-launch) | The online form, and why it hangs offline |
 | [Install with Python (PyPI)](#install-with-python-pypi) | A venv you keep; a wheelhouse for no-network machines |
-| [Connect to a host](#connect-to-a-host) | The same five steps for every host |
+| [Connect to a host](#-connect-to-a-host) | The same five steps for every host |
 | [Connect to Claude Code](#connect-to-claude-code) | `--install claude`, `claude mcp list`, `claude mcp remove` |
 | [Connect to Claude Desktop](#connect-to-claude-desktop) | `claude_desktop_config.json` per OS |
 | [Connect to Cursor](#connect-to-cursor) | `~/.cursor/mcp.json` |
 | [Connect to VS Code (GitHub Copilot)](#connect-to-vs-code-github-copilot) | `mcp.json` with the `servers` key |
 | [Connect other MCP clients](#connect-other-mcp-clients) | Codex and any stdio host |
-| [Configuration](#configuration) | Every flag and environment variable, with its default |
-| [Update](#update) | `--update`, then restart the server |
-| [Troubleshooting](#troubleshooting) | Timeouts, Connection closed, refusals, the wrong store |
-| [Use it as a Python library](#use-it-as-a-python-library) | `pip install bantamkit` and a minimal agent |
-| [Recommended defaults](#recommended-defaults) | Which components to attach, measured on four models |
-| [Documentation](#documentation) | Every page under `docs/` |
-| [Repo layout](#repo-layout) | What lives where |
+| [Configuration](#-configuration) | Every flag and environment variable, with its default |
+| [Update](#-update) | `--update`, then restart the server |
+| [Troubleshooting](#-troubleshooting) | Timeouts, Connection closed, refusals, the wrong store |
+| [What it serves](#-what-it-serves) | 14 tools, one prompt, two resource templates |
+| [Use it as a Python library](#-use-it-as-a-python-library) | `pip install bantamkit` and a minimal agent |
+| [Recommended defaults](#-recommended-defaults) | Which components to attach, measured on four models |
+| [Documentation](#-documentation) | Every page under `docs/` |
+| [Repo layout](#-repo-layout) | What lives where |
 
-## Install the MCP server
+<a id="install-the-mcp-server"></a>
+## 📥 Install the MCP server
 
 Two implementations of one server — Node on npm, Python on PyPI — share one memory store on
 disk. To just try it:
@@ -51,17 +92,15 @@ network. Pick **one** of the three ways below.
 npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cursor
 ```
 
-From 0.34.0 this runs `npm install --prefix ~/.bantamkit/mcp` once and records
+This runs `npm install --prefix ~/.bantamkit/mcp` once and records
 `<the node that ran it> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js`, both absolute.
 No later launch needs npx, the registry or your PATH, and it never downgrades a newer kept
-install. Measured from the published 0.34.0 (served-tools: dated — the surface was twelve
-then): install exit 0 in 8.14 s; the recorded command
-then served 12 tools in 0.09 s with the network cut.
+install.
 
 - **The recorded node is one version of node.** Switch away from it and re-run with `--force`.
 - **Replacing an old `npx` entry needs `--force`** (Claude Code: `claude mcp remove` first).
 - **Installing into another host while offline:** plain `npx -y` hangs before bantamkit starts.
-  Use `npx --offline -y bantamkit-mcp@0.34.0 --install <host>`, or the kept install's own CLI:
+  Use `npx --offline -y bantamkit-mcp@<version> --install <host>`, or the kept install's own CLI:
   `<node> ~/.bantamkit/mcp/node_modules/bantamkit-mcp/dist/cli.js --install <host>`.
 
 Measurements: [docs/install.md → MCP server: measured install detail](docs/install.md#mcp-server-measured-install-detail).
@@ -73,10 +112,10 @@ Measurements: [docs/install.md → MCP server: measured install detail](docs/ins
 ```
 
 This asks the registry on **every** launch. Offline it fails silently: with a warm cache,
-`npx -y bantamkit-mcp`, `npx -y bantamkit-mcp@latest` and `npx -y bantamkit-mcp@0.33.0` each hung
-to the 45 s bound with 0 bytes on stdout, and the host reports only its own handshake timeout.
+`npx -y bantamkit-mcp`, `npx -y bantamkit-mcp@latest` and a pinned version each hung to the 45 s
+bound with 0 bytes on stdout, and the host reports only its own handshake timeout.
 `npx` also caches what `latest` resolved to, so add `@latest` or pin a version
-([why](runtime-ts/README.md#silent-version-float)).
+([why](runtime-ts/README.md#-silent-version-float)).
 
 ### Install with Python (PyPI)
 
@@ -90,7 +129,7 @@ needs the network. With no network at all, `pip download` a wheelhouse on a mach
 same OS, CPU architecture and Python version, then `pip install --no-index --find-links`:
 [steps](runtime-py/README.md#install-once-run-offline).
 
-## Connect to a host
+## 🔌 Connect to a host
 
 `--install <host>` (`claude`, `claude-desktop`, `copilot`, `cursor`) writes the entry. It backs
 the file up first, refuses an entry that differs unless you pass `--force`, and never prompts —
@@ -186,10 +225,10 @@ stdin it prints `usage: bantamkit-mcp …` and exits 0.
 
 Any stdio MCP client runs the same `command`/`args`; nothing is host-specific. Codex and a
 generic JSON config: [docs/mcp.md → Client setup](docs/mcp.md#client-setup). Hand-written forms
-for every host: [npm README](runtime-ts/README.md#connect-to-a-host) ·
-[Python README](runtime-py/README.md#connect-it-to-a-host).
+for every host: [npm README](runtime-ts/README.md#-connect-to-a-host) ·
+[Python README](runtime-py/README.md#-connect-it-to-a-host).
 
-## Configuration
+## 🔧 Configuration
 
 Flags go in the entry's `args`; environment variables in its `env` block (or
 `claude mcp add -e NAME=value`). Both runtimes print the same `--help`.
@@ -209,16 +248,17 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `--which` | Where a **checkout** launcher resolved its halves — only `tools/bantamkit-mcp` and `tools/bantamkit-mcp-node`, not the npm/PyPI package | — | `tools/bantamkit-mcp --which` |
 
 Don't add `--store` by reflex: the layering is most of the value. One-shot commands that print
-and exit: `--install {claude,claude-desktop,copilot,cursor}` (with `--force`), `--update`,
+and exit: `--install {claude,claude-desktop,copilot,cursor}` (with `--force`),
+[`--install-hooks` / `--remove-hooks`](docs/hooks.md) (with `--yes`), `--hook`, `--update`,
 `--assets-root`, [`--mcp-report`](docs/mcpreport.md), [`--statusline`](docs/statusline.md).
 More: [store binding](docs/mcp.md#which-memory-store-the-server-binds) ·
 [pinning](docs/memory.md#pinning-the-store-bantamkit_memory_dir) ·
 [event log](docs/eventlog.md#the-switch) · [prices](docs/ledger.md).
 
-## Update
+## 🔄 Update
 
 ```bash
-npx -y bantamkit-mcp@latest --update        # 0.34.0+: patches the kept install at ~/.bantamkit/mcp
+npx -y bantamkit-mcp@latest --update        # patches the kept install at ~/.bantamkit/mcp
 npx -y bantamkit-mcp@latest --assets-root   # npx CACHES; without @latest you get an old resolve
 npm i -g bantamkit-mcp@latest               # global npm install
 pip install -U "bantamkit[mcp]"             # PyPI (pipx upgrade bantamkit · uv tool upgrade bantamkit)
@@ -226,27 +266,50 @@ git pull && npm ci --prefix runtime-ts && npm run build --prefix runtime-ts   # 
 ```
 
 `--update` (`check the package index and update this install if it differs, then exit`) patches a
-registry install or a kept install; any other shape it refuses with exit 1 and names the manual
-route. It is the only network access here, and only when you type it.
+registry install or a kept install to exactly the version it compared, and reports success only
+after the install says so; any other shape it refuses with exit 1 and names the manual route.
+It is the only network access here, and only when you type it.
 
 **Then restart the server in the host** (`/mcp` → reconnect in Claude Code; a full restart of
 Claude Desktop) — a running server keeps the code it started with. `bantamkit_status` prints the
 version **and the `build_id` of the code answering you**; a new version with an old `build_id`
-means an old process. Per-install table: [npm README → Updating](runtime-ts/README.md#updating).
+means an old process. Per-install table: [npm README → Updating](runtime-ts/README.md#-updating).
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | The host times out; the server never answers | The entry uses `npx` with a registry spec and the network is down. Use [Install once, run offline](#install-once-run-offline-recommended) |
 | `ENOENT` from the host | A GUI host does not read your shell rc, so `npx`/`node` is not on its PATH. `--install` records absolute paths |
 | Connection closed at startup | Older builds crashed when a GUI host started them in `/`. Update; see [docs/mcp.md](docs/mcp.md#what-happens-if-you-set-nothing) |
-| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` |
+| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` (`.backup-<date>.1` and on for a later write the same day) |
 | `MCP server bantamkit already exists in user config` | `claude mcp remove bantamkit -s user`, then install again |
 | The server stopped launching after a node change | `npx -y bantamkit-mcp@latest --install <host> --force` with the node you have now |
 | Recall finds nothing, or the wrong store | Set `BANTAMKIT_MEMORY_DIR`; the reply names the store it searched ([the three states](docs/mcp.md#the-three-states-and-what-memory_recall-tells-the-model)) |
 
-## Use it as a Python library
+## 🧰 What it serves
+
+Both servers serve the same 14 tools, the `bantamkit_status` prompt and two resource templates
+(`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
+
+| Tool | What it does |
+|---|---|
+| `memory_save` | store one durable fact, deduped and budgeted |
+| `memory_recall` | retrieve facts matching a query |
+| `memory_compact` | archive the stalest facts to fit the index budget |
+| `memory_dream` | consolidate facts the project and profile layers hold under the same name |
+| `validate_json` | validate a document against a JSON Schema |
+| `skill_audit` | audit a skill catalogue for findings |
+| `shiftwork_clock_in` | open a unit of work and get its brief |
+| `shiftwork_clock_out` | close a unit with status and accounting |
+| `shiftwork_status` | read-only progress summary of a checkpoint |
+| `shiftwork_plan` | read-only: which units of a checkpoint its `depends_on` graph permits to run at once. Never moves the cursor |
+| `work_plan` | turn any `{id, depends_on, priority}` graph into the batches that may run in parallel, plus the widest fan-out |
+| `token_ledger` | what a session cost, read off the host's transcripts |
+| `bantamkit_status` | is bantamkit working, and which build: version, `build_id`, store health against its budget |
+| `build_identity` | report the fingerprint of the source on disk, not the executing code — useful when a machine carries two installs under one name |
+
+## 🐍 Use it as a Python library
 
 ```bash
 pip install bantamkit
@@ -282,7 +345,8 @@ result = agent.run("What does a widget cost? Remember it for next time.")
 print(result.output, result.usage.total)
 ```
 
-## Recommended defaults
+<a id="recommended-defaults"></a>
+## 📊 Recommended defaults
 
 Measured on the bundled 22-task suite across four models, 528 runs each. Numbers and caveats:
 [docs/usage.md → Recommended defaults](docs/usage.md#recommended-defaults).
@@ -295,7 +359,7 @@ Measured on the bundled 22-task suite across four models, 528 runs each. Numbers
 - **`full` (memory + schema + grounded critique) is a 4b-reference result** — 66/66 there only.
 - **Prefer `GroundedCritiqueGate` over `CritiqueGate` when the agent has tools** — same 4b scope.
 
-## Documentation
+## 📚 Documentation
 
 | Page | Covers |
 |---|---|
@@ -309,12 +373,16 @@ Measured on the bundled 22-task suite across four models, 528 runs each. Numbers
 | [Event log](docs/eventlog.md) | The JSONL outcome log, its vocabulary and the 1 MiB cap |
 | [MCP report](docs/mcpreport.md) | `--mcp-report`: the host's MCP log joined with the event log |
 | [Status line](docs/statusline.md) | `bantamkit-mcp --statusline` and the Claude Code `statusLine` adapter |
+| [Hooks](docs/hooks.md) | `--install-hooks`: what each Claude Code hook entry does and what it costs |
+| [Status](docs/status.md) | `bantamkit_status`, line by line, and the degraded footer |
+| [Token ledger](docs/ledger.md) | `token_ledger`: what a session cost, and the price table |
+| [Skill audit](docs/skill-audit.md) | `skill_audit`: what the skill catalogue costs every session |
 | [Shift-work](docs/shiftwork.md) | Checkpoint contract and clock-in/clock-out driver (experimental) |
 | [Porting](docs/porting.md) | The Node port, `PyScalar`, and where the two runtimes deliberately differ |
 | [Conformance](docs/conformance.md) | The two-runtime diff harness and what a `ruling:` pins |
 | [Releasing to npm](docs/release-npm.md) | What ships and the pre-publish checklist |
 
-## Repo layout
+## 📁 Repo layout
 
 | Path | What |
 |---|---|

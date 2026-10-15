@@ -77,13 +77,13 @@ type SkippedInLayer = { layer: string; file: string; reason: string };
  * store's own sentence for each, labelled by layer, so the person knows what to repair and
  * that the rest was searched. `_skipped_note` in the reference.
  */
-function skippedNote(skipped: readonly SkippedInLayer[]): string {
+function skippedNote(skipped: readonly SkippedInLayer[], rest = 'every other fact was searched'): string {
   if (skipped.length === 0) return '';
   const count = skipped.length;
   const noun = count === 1 ? 'fact file' : 'fact files';
   return (
     `\n\n${count} ${noun} could not be read and ${count === 1 ? 'was' : 'were'} skipped; ` +
-    `every other fact was searched:\n` +
+    `${rest}:\n` +
     skipped.map((s) => `[${s.layer}] ${s.reason}`).join('\n')
   );
 }
@@ -438,7 +438,7 @@ export class Memory {
       // ANOTHER FACT. "Deploy Command" used to replace `deploy-command` silently; now, when
       // the bent name is a fact already, the answer is the duplicate nudge naming it and
       // nothing is written. The exact slug is the one spelling that updates. See the reference.
-      if (typeof name === 'string' && name !== normalized && this.store.lookup(normalized, false) !== null) {
+      if (typeof name === 'string' && name !== normalized && this.store.lookup(normalized, false, []) !== null) {
         return {
           reply:
             `similar memory '${normalized}' already exists — save under that SAME ` +
@@ -469,15 +469,21 @@ export class Memory {
       }
       throw e;
     }
+    // A fact file the save could not read is named, as recall names it (#120 ruling).
+    const note = skippedNote(
+      (result.skipped ?? []).map((s) => ({ layer: 'project', ...s })),
+      'the duplicate check read every other fact',
+    );
     if (result.status === 'duplicate') {
       return {
         reply:
           `similar memory '${result.similar}' already exists — save under that SAME ` +
-          'name to update it, or skip. Do not rename to force a copy.',
+          'name to update it, or skip. Do not rename to force a copy.' +
+          note,
         status: 'duplicate',
       };
     }
-    return { reply: `saved '${result.name}'`, status: 'saved' };
+    return { reply: `saved '${result.name}'${note}`, status: 'saved' };
   }
 
   /**

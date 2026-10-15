@@ -1,5 +1,6 @@
 {
   "name": "memory_save",
+  "title": "Save a memory",
   "description": "Save ONE durable fact to persistent memory. Use only for facts needed in a future session; never for things derivable from the repo or one-off state.",
   "surfaces": [
     "agent",
@@ -43,7 +44,8 @@
         },
         "description": "names of related memories"
       }
-    }
+    },
+    "additionalProperties": false
   },
   "output_schema": {
     "properties": {
@@ -57,5 +59,10 @@
     ],
     "type": "object",
     "title": "memory_saveOutput"
+  },
+  "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "openWorldHint": false
   }
 }

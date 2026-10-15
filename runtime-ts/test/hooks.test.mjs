@@ -34,7 +34,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(packageRoot);
@@ -837,6 +837,101 @@ test('a pin the server would refuse does not crash the hook, and the log carries
   const rec = hookLog(home, 'SessionStart').find((l) => l.warn);
   assert.ok(rec, 'the refusal is logged');
   assert.match(rec.warn, /pinned memory store is unreachable/);
+});
+
+// #170 (job67, J67-5): `args: [..., "--store", X]` is a pin too, and it outranks `env` exactly
+// as `--store` outranks `BANTAMKIT_MEMORY_DIR` on the server. Before the fix every args
+// spelling injected the walk's store; the conformance `hooks` suite's `store-pin-args` block
+// compares the same spellings across both runtimes.
+test('#170: a winning entry pinning via args --store X / --store=X binds X, and outranks its env pin', async () => {
+  const cwd = newCwd();
+  await storeWithFact(join(cwd, '.bantamkit', 'memory'), 'walk-fact');
+  const argsStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'args-fact');
+  const envStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'env-fact');
+  for (const spec of [
+    ['--store', argsStore],
+    [`--store=${argsStore}`],
+    { args: ['--store', argsStore], env: { BANTAMKIT_MEMORY_DIR: envStore } },
+    ['--store', envStore, `--store=${argsStore}`],
+  ]) {
+    const home = newHome();
+    claudeJsonScopes(home, { cwd, local: spec });
+    const s = sessionStart({ cwd, home });
+    assert.equal(s.status, 0, s.stderr);
+    assert.match(s.stdout, /args-fact/, `SessionStart binds the --store the server serves: ${JSON.stringify(spec)}`);
+    for (const wrong of ['walk-fact', 'env-fact']) assert.doesNotMatch(s.stdout, new RegExp(wrong));
+    assert.equal(hookLog(home, 'SessionStart')[0].storeScope, 'local');
+    const u = promptAboutTheLadder({ cwd, home });
+    assert.equal(u.status, 0, u.stderr);
+    assert.match(u.stdout, /args-fact/);
+    for (const wrong of ['walk-fact', 'env-fact']) assert.doesNotMatch(u.stdout, new RegExp(wrong));
+  }
+});
+
+test('#170: a relative --store resolves against the session cwd; an empty --store= pins nothing', async () => {
+  const cwd = newCwd();
+  await storeWithFact(join(cwd, '.bantamkit', 'memory'), 'walk-fact');
+  await storeWithFact(join(cwd, 'rel', 'store'), 'rel-fact');
+  const envStore = await storeWithFact(join(scratch, `pinned-${n++}`), 'env-fact');
+  const relHome = newHome();
+  claudeJsonScopes(relHome, { cwd, user: ['--store', join('rel', 'store')] });
+  const r = sessionStart({ cwd, home: relHome });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /rel-fact/);
+  assert.doesNotMatch(r.stdout, /walk-fact/);
+  const emptyHome = newHome();
+  claudeJsonScopes(emptyHome, { cwd, user: { args: ['--store='], env: { BANTAMKIT_MEMORY_DIR: envStore } } });
+  const e = sessionStart({ cwd, home: emptyHome });
+  assert.equal(e.status, 0, e.stderr);
+  assert.match(e.stdout, /env-fact/, 'a --store the server would refuse to start on is not a pin; the env rule decides');
+});
+
+// #172 (job67, J67-5): the registered hook command is `bantamkit-mcp --hook`, i.e. `dist/cli.js`,
+// and `cli.ts` imported the MCP server and transport statically — the SDK and its schema library,
+// ~50 ms of a ~90 ms cold run on Node 25, paid on every tool call by a process that never opens
+// a transport. They are imported lazily on the serving path now. This pins it: a resolve hook
+// that refuses any `@modelcontextprotocol/sdk` specifier, armed (the control: the serving path
+// dies on it), and the three host-registered one-shot flags must not touch it.
+test('#172: --hook, --statusline and --mcp-report never load the MCP SDK; only the serving path does', async (t) => {
+  const { registerHooks } = await import('node:module');
+  if (typeof registerHooks !== 'function') {
+    t.skip('module.registerHooks needs Node >= 22.15');
+    return;
+  }
+  const blocker = join(scratch, 'block-sdk.mjs');
+  writeFileSync(
+    blocker,
+    "import { registerHooks } from 'node:module';\n" +
+      'registerHooks({ resolve(spec, ctx, next) {\n' +
+      "  if (spec.startsWith('@modelcontextprotocol/sdk')) throw new Error(`BLOCKED-SDK ${spec}`);\n" +
+      '  return next(spec, ctx);\n' +
+      '} });\n',
+  );
+  const cli = join(packageRoot, 'dist', 'cli.js');
+  const home = newHome();
+  const cwd = newCwd();
+  const run = (args, input = '') =>
+    spawnSync(process.execPath, ['--import', pathToFileURL(blocker).href, cli, ...args], {
+      input,
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home, USERPROFILE: home, BANTAMKIT_MEMORY_DIR: '' },
+    });
+  const serve = run([]);
+  assert.notEqual(serve.status, 0, 'CONTROL: the serving path loads the SDK, so the blocker must stop it');
+  assert.match(serve.stderr, /BLOCKED-SDK/, 'CONTROL: and it is the blocker that stopped it');
+  const hook = run(['--hook'], JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {}, tool_response: {}, cwd, session_id: 'sdk' }));
+  assert.equal(hook.status, 0, hook.stderr);
+  assert.doesNotMatch(hook.stderr, /BLOCKED-SDK/);
+  const prompt = run(['--hook'], JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'walk me through the release ladder', cwd, session_id: 'sdk' }));
+  assert.equal(prompt.status, 0, prompt.stderr);
+  assert.ok(!hookLog(home).some((r) => r.event === 'error'), JSON.stringify(hookLog(home)));
+  for (const flag of ['--statusline', '--mcp-report']) {
+    const r = run([flag]);
+    assert.equal(r.status, 0, `${flag}: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /BLOCKED-SDK/);
+    assert.ok(r.stdout.length > 0, `${flag} printed`);
+  }
 });
 
 // ------------------------------------ the session header counts what ARRIVED (J50-2E)

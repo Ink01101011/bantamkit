@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "bantamkit"
 dynamic = ["version"]
-description = "Memory MCP server for Claude Code, Cursor, VS Code Copilot and Claude Desktop, plus a Python library that lifts small-model agents. Install once, run offline."
+description = "Persistent memory for coding agents: an MCP server for Claude Code, Claude Desktop, Cursor and VS Code Copilot, plus a Python library that lifts small-model agents. Install once, run offline."
 readme = "README.md"
 requires-python = ">=3.11"
-# J52-4, 2026-09-15. The same keyword set as `runtime-ts/package.json`, so both registries
-# are searched by the same words. Every one names something the package does.
+# J52-4, 2026-09-15; widened J67-6, 2026-10-15. The same keyword set as `runtime-ts/package.json`,
+# so both registries are searched by the same words. Every one names something the package does.
 keywords = [
     "mcp",
     "mcp-server",
@@ -19,15 +19,23 @@ keywords = [
     "claude-desktop",
     "cursor",
     "copilot",
+    "github-copilot",
     "vscode",
     "agent",
+    "ai-agents",
     "memory",
+    "agent-memory",
+    "persistent-memory",
+    "claude-code-hooks",
     "json-schema",
+    "token-usage",
     "llm",
 ]
 # Python versions are the CI matrix in .github/workflows/ci.yml. No License classifier:
 # PEP 639 forbids one beside the `license` expression below.
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",

@@ -360,7 +360,7 @@ One JSON object per line, UTF-8, terminated by a single `\n`.
 | `ts` | string | UTC, `YYYY-MM-DDTHH:MM:SS.mmmZ`. Byte-identical to JavaScript's `new Date(ms).toISOString()`. |
 | `tool` | string | one of the fourteen served tools (a log written before job50 I5 retired them may also carry `bantamkit_read` or `repo_map`). The **join key** to the host's log, not the payload. |
 | `outcome` | string | the decision. Closed vocabulary, below. |
-| `detail` | object | metadata: counts, and one string — `bantamkit_read`'s `kind`, a container name from `docread`'s closed set. Always present; `{}` when empty. |
+| `detail` | object | metadata: counts, booleans, and one string — `memory_recall`'s `source`, a layer kind from a closed set. Always present; `{}` when empty. |
 
 **Key order is part of the contract**: `v`, `ts`, `tool`, `outcome`, `detail`, in that
 order. Inside `detail` the keys are **sorted lexicographically**, so neither runtime needs
@@ -384,11 +384,13 @@ Python needs `ensure_ascii=False`). No value written today is non-ASCII.
 | `skill_audit` | `audited`, `refused` | on `audited`: `skills`, `bytes`, `findings`, `omissions` (all counts); nothing on `refused` |
 | `token_ledger` | `read`, `refused` | on `read`: `transcripts`, `lines`, `requests`, `sessions` (all counts); nothing on `refused`. Never the root, never a session id, never a `cwd`, never a model name — and never a TOKEN COUNT either: the numbers are the reply, and this log records what the server DID |
 | `validate_json` | `valid`, `invalid` | — |
-| `bantamkit_read` | `manifest`, `page`, `refused-unreadable`, `refused-unknown-part`, `refused-offset` | `kind` (a string: the container kind `extract` identified), `parts` (count); on `manifest` also `rows` (all parts) and `bytes` (`text_bytes`); on `page` also `rows` and `bytes` OF THE PAGE; nothing on `refused-unreadable`, where `extract` raised before a kind was known. Never the path, never a part name |
 | `shiftwork_clock_in` | `brief`, `escalate`, `success`, `error` | — |
 | `shiftwork_clock_out` | `ok`, `error` | — |
 | `shiftwork_status` | `status`, `error` | — |
+| `shiftwork_plan` | `plan`, `error` | — |
+| `work_plan` | `plan`, `error` | — |
 | `build_identity` | `complete`, `partial` | `unavailable` (a count) |
+| `bantamkit_status` | none: it records only `raised` | — |
 | *any* | `raised` | `type` — the exception **class name** |
 
 `type` is the class name **CPython** would print — `type(exc).__name__` — which for an
@@ -437,13 +439,11 @@ derived field is a second thing to keep true.
 ## Metadata only
 
 Never a tool argument's value, never a memory body, never a validated output, never a
-query string, never a document row. Six of the fourteen tools take unbounded free text
-and six take absolute paths (the four shift-work tools' `checkpoint`, `skill_audit`'s
-`root`, and `token_ledger`'s `root` and `prices`; until job50 I5 retired them,
-`bantamkit_read`'s `path` and `repo_map`'s `root` and `focus` made it seven of fourteen —
-served-tools: dated); each record carries counts and tokens from a closed set, never the
-path, never a part name, never a skill id, never a mapped file, never a session id, never a
-model name — `eventlog.py:33`, `eventlog.ts:35`). Every value written is an ASCII token from the closed vocabulary
+query string. Six of the fourteen tools take unbounded free text and six take absolute
+paths (the four shift-work tools' `checkpoint`, `skill_audit`'s `root`, and
+`token_ledger`'s `root` and `prices`); each record carries counts and tokens from a closed
+set, never the path, never a skill id, never a session id, never a model name
+(`eventlog.py:33`, `eventlog.ts:35`). Every value written is an ASCII token from the closed vocabulary
 above, an `int`, or a `bool` —
 `test_eventlog.py::test_the_only_values_written_are_from_a_closed_set` enforces exactly
 that, so a future field carrying borrowed text fails without anyone having to think of a

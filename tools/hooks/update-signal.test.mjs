@@ -23,9 +23,14 @@
  * and `probe()` below are the ONLY two ways this file starts either program, and both assert
  * the redirection before they spawn anything.
  *
- * NOTHING HERE REACHES A REAL REGISTRY EITHER. Both registry URLs are seams, and the default
- * for every run below is `127.0.0.1:1` — a refused connection, immediately — so a test that
- * means to exercise the network has to say so by pointing at the local server this file starts.
+ * NOTHING HERE REACHES A REAL REGISTRY EITHER. Since #201 (job67 J67-9) the probe asks the
+ * package managers, so the seams are the managers' OWN config: `npm_config_registry` for the real
+ * npm, and `PIP_INDEX_URL` for a stub `pip` this file puts on `PYTHONPATH` (a real pip would need
+ * an index serving wheels; the stub reads the same variable pip does and asks the local server).
+ * The default for every run below is `127.0.0.1:1` — a refused connection, immediately — so a
+ * test that means to exercise the network has to say so by pointing at the local server this file
+ * starts. The two retired URL seams (`BANTAMKIT_UPDATE_NPM_URL` / `_PYPI_URL`) are still pointed
+ * at that refused port, so a probe that regressed to fetching by URL cannot reach a real index.
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -39,6 +44,9 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** The config each manager reads its index from: the seams, by registry key. */
+const SEAM = { npm: 'npm_config_registry', pypi: 'PIP_INDEX_URL' };
 const HOOK = join(HERE, 'bantamkit-hook.mjs');
 const PROBE = join(HERE, 'update-probe.mjs');
 const PACKAGE = 'bantamkit-mcp';
@@ -59,6 +67,31 @@ const BLACKHOLE = 'http://192.0.2.1:8080/';
 // ...`. Without this the paths the hook PRINTS would not equal the paths this file builds.
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'bk-update-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+
+/**
+ * A `pip` that answers `-m pip install --dry-run … --report -` the way pip does, from an index
+ * at `PIP_INDEX_URL` (`<url>/bantamkit/` serving PyPI's JSON). It writes its argv to
+ * `BK_TEST_PIP_ARGV` when set, so a test can see the command `bantamkit.selfupdate` built.
+ * On `PYTHONPATH`, ahead of site-packages, so `-m pip` finds it and never the real one.
+ */
+const PIP_STUB = join(scratch, 'pip-stub');
+mkdirSync(join(PIP_STUB, 'pip'), { recursive: true });
+writeFileSync(join(PIP_STUB, 'pip', '__init__.py'), '', 'utf8');
+writeFileSync(join(PIP_STUB, 'pip', '__main__.py'), [
+  'import json, os, sys, urllib.request',
+  'if os.environ.get("BK_TEST_PIP_ARGV"):',
+  '    with open(os.environ["BK_TEST_PIP_ARGV"], "w", encoding="utf-8") as fh:',
+  '        json.dump(sys.argv[1:], fh)',
+  'url = os.environ.get("PIP_INDEX_URL", "").rstrip("/") + "/bantamkit/"',
+  'try:',
+  '    with urllib.request.urlopen(url, timeout=60) as r:',
+  '        version = json.loads(r.read().decode("utf-8"))["info"]["version"]',
+  'except Exception as exc:',
+  '    sys.stderr.write(f"ERROR: stub pip: {exc}\\n")',
+  '    sys.exit(1)',
+  'sys.stdout.write(json.dumps({"version": "1", "install": [{"metadata": {"name": "bantamkit", "version": version}}]}))',
+  '',
+].join('\n'), 'utf8');
 
 let counter = 0;
 
@@ -119,6 +152,11 @@ function environment(home, extra) {
     USERPROFILE: home,
     BANTAMKIT_UPDATE_NPM_URL: REFUSED,
     BANTAMKIT_UPDATE_PYPI_URL: REFUSED,
+    [SEAM.npm]: REFUSED,
+    [SEAM.pypi]: REFUSED,
+    // npm's cache and logs land under the scratch tree, never the scratch HOME the tests list.
+    npm_config_cache: join(scratch, 'npm-cache'),
+    PYTHONPATH: PIP_STUB,
     ...extra,
   };
   assert.equal(env.HOME, home, 'HOME must point at the scratch home');
@@ -209,16 +247,27 @@ async function waitFor(fn, budgetMs = 15000) {
 let origin = '';
 let npmHits = 0;
 let pypiHits = 0;
+let mirrorHits = 0;
 const SERVED = '9.9.9';
+const MIRROR = '7.7.7';
 let server;
 
 before(async () => {
   server = createServer((req, res) => {
-    if (req.url.startsWith('/npm')) {
-      npmHits += 1;
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ name: PACKAGE, version: SERVED }));
-      return;
+    // `npm view <pkg>@latest` asks `<registry>/<pkg>` for the packument and resolves the tag.
+    // `/mirror/` is a second registry serving another version, for the #201 test below.
+    for (const [prefix, version] of [['/npm/', SERVED], ['/mirror/', MIRROR]]) {
+      if (req.url.startsWith(prefix)) {
+        if (prefix === '/npm/') npmHits += 1;
+        else mirrorHits += 1;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          name: PACKAGE,
+          'dist-tags': { latest: version },
+          versions: { [version]: { name: PACKAGE, version, dist: { tarball: `${origin}${prefix}${PACKAGE}-${version}.tgz` } } },
+        }));
+        return;
+      }
     }
     if (req.url.startsWith('/pypi')) {
       pypiHits += 1;
@@ -234,8 +283,8 @@ before(async () => {
 after(() => server && server.close());
 
 const served = () => ({
-  BANTAMKIT_UPDATE_NPM_URL: `${origin}/npm`,
-  BANTAMKIT_UPDATE_PYPI_URL: `${origin}/pypi`,
+  [SEAM.npm]: `${origin}/npm/`,
+  [SEAM.pypi]: `${origin}/pypi`,
 });
 
 // ---------------------------------------------------------------- the line, five states ----
@@ -348,6 +397,29 @@ test('the probe writes the record both readers expect, byte for byte', async () 
   assert.ok(npmHits > 0 && pypiHits > 0, 'both registries were asked');
 });
 
+// #201 (job67 J67-9): the record and `--update` read the SAME index. Until 0.36.0 the probe
+// fetched `registry.npmjs.org` by URL whatever npm was configured for, so an operator behind a
+// mirror got a SessionStart line about the public index. Here npm is configured for a loopback
+// mirror serving a version the default seam never serves, and the record must carry IT; the
+// PyPI half is asked through `bantamkit.selfupdate.index_command()`, whose argv the stub saw.
+test('#201: the probe asks the registry npm is configured for, and pip through index_command', async () => {
+  const home = newHome();
+  const argv = join(scratch, `pip-argv-${counter++}.json`);
+  const before = mirrorHits;
+  await probe(home, { ...served(), [SEAM.npm]: `${origin}/mirror/`, BK_TEST_PIP_ARGV: argv });
+
+  const parsed = JSON.parse(readFileSync(recordFile(home), 'utf8'));
+  assert.equal(parsed.npm?.latest, MIRROR, 'the record does not carry the configured registry\'s version');
+  assert.ok(mirrorHits > before, 'npm never asked the configured registry');
+  assert.equal(parsed.pypi?.latest, SERVED);
+  assert.deepEqual(
+    JSON.parse(readFileSync(argv, 'utf8')),
+    ['install', '--dry-run', '--no-deps', '--ignore-installed', '--retries', '0',
+      '--disable-pip-version-check', '-q', '--report', '-', 'bantamkit'],
+    'pip was not asked with bantamkit.selfupdate.index_command()',
+  );
+});
+
 /** `YYYY-MM-DDTHH:MM:SSZ` — `selfupdate.STAMP` on both sides. */
 const STAMP_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
@@ -371,7 +443,7 @@ for (const [answered, failed] of [['npm', 'pypi'], ['pypi', 'npm']]) {
 
     await probe(home, {
       ...served(),
-      [`BANTAMKIT_UPDATE_${failed.toUpperCase()}_URL`]: REFUSED,
+      [SEAM[failed]]: REFUSED,
     });
 
     const parsed = JSON.parse(readFileSync(recordFile(home), 'utf8'));
@@ -394,9 +466,9 @@ test('a partial probe leaves the record DUE, so the next session retries the hal
   installKept(home, '0.35.1');
   writeRecord(home, record('0.30.0', 25 * 3600_000));
 
-  await probe(home, { ...served(), BANTAMKIT_UPDATE_PYPI_URL: REFUSED });
+  await probe(home, { ...served(), [SEAM.pypi]: REFUSED });
 
-  const after = await sessionStart({ home, env: { ...served(), BANTAMKIT_UPDATE_PYPI_URL: REFUSED } });
+  const after = await sessionStart({ home, env: { ...served(), [SEAM.pypi]: REFUSED } });
   assert.equal(after.log.updateProbe, 'spawned', 'the record was treated as fresh after a partial probe');
 });
 
@@ -423,8 +495,8 @@ test('the probe leaves the previous record byte-identical when both registries f
   writeFileSync(recordFile(home), before);
 
   await probe(home, {
-    BANTAMKIT_UPDATE_NPM_URL: BLACKHOLE,
-    BANTAMKIT_UPDATE_PYPI_URL: BLACKHOLE,
+    [SEAM.npm]: BLACKHOLE,
+    [SEAM.pypi]: BLACKHOLE,
     BANTAMKIT_UPDATE_TIMEOUT_MS: '300',
   });
 
@@ -482,7 +554,7 @@ test('SessionStart returns without waiting for the probe it spawned', async () =
   // No record at all: the TTL cannot suppress, so a probe IS spawned on this run. Both URLs
   // point into the black hole with the REAL 10 s timeout — no timeout seam here on purpose, so
   // a hook that waited would have to wait the full bound.
-  const r = await sessionStart({ home, env: { BANTAMKIT_UPDATE_NPM_URL: BLACKHOLE, BANTAMKIT_UPDATE_PYPI_URL: BLACKHOLE } });
+  const r = await sessionStart({ home, env: { [SEAM.npm]: BLACKHOLE, [SEAM.pypi]: BLACKHOLE } });
 
   assert.equal(r.log.updateProbe, 'spawned', 'nothing was spawned, so nothing was detached');
   console.log(`      measured: SessionStart returned in ${r.elapsed} ms against a 10000 ms probe`);
@@ -500,8 +572,8 @@ test('the black hole really hangs, so the timing above measures detachment', asy
   const child = spawn(process.execPath, [PROBE], {
     stdio: 'ignore',
     env: environment(home, {
-      BANTAMKIT_UPDATE_NPM_URL: BLACKHOLE,
-      BANTAMKIT_UPDATE_PYPI_URL: BLACKHOLE,
+      [SEAM.npm]: BLACKHOLE,
+      [SEAM.pypi]: BLACKHOLE,
       BANTAMKIT_UPDATE_TIMEOUT_MS: '2000',
     }),
   });

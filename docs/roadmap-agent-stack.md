@@ -38,7 +38,7 @@ declares exactly ONE runtime dependency — measured just now:
 
 ```
 $ node -e "console.log(require('./runtime-ts/package.json').dependencies)"
-{ '@modelcontextprotocol/sdk': '1.30.0' }
+{ '@modelcontextprotocol/sdk': '1.31.0' }
 ```
 
 Embeddings therefore cannot arrive as a library. The only routes are (a) a vendored pure-JS

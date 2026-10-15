@@ -19,7 +19,7 @@ bin       bantamkit-mcp     -> dist/cli.js        the MCP server, what a host la
           bantamkit-memory  -> dist/memory/cli.js the memory lifecycle CLI
 files     dist, assets      plus README.md, LICENSE and package.json, which npm packs
                             unconditionally
-deps      @modelcontextprotocol/sdk  pinned exactly 1.30.0
+deps      @modelcontextprotocol/sdk  pinned exactly 1.31.0
 ```
 
 One runtime dependency, pinned exactly. `devDependencies` do not ship.

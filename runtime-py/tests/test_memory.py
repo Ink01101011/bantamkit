@@ -3219,10 +3219,53 @@ def test_a_fact_file_that_is_not_utf8_is_named(tmp_path):
     store = _three_facts(tmp_path)
     with open(store.root / "facts" / "fact-1.md", "ab") as fh:
         fh.write(b"\xff\xfe")
-    for call in (lambda: store.recall("w0a"), store.index_text, store.lint,
-                 lambda: store.save("project", "x", "an unrelated subject", "b")):
+    for call in (lambda: store.recall("w0a"), store.index_text, store.lint):
         with pytest.raises(MemoryValidationError) as e:
             call()
         assert str(e.value).startswith(
             "malformed fact file fact-1.md: 'utf-8' codec can't decode byte 0xff"
         )
+    # AMENDED by #120's ruling (user, 2026-10-15): `save` used to RAISE this sentence; it now
+    # skips the file and names it with the SAME sentence in `skipped`, so #159's property --
+    # the file is named, with the decoder's own text -- still holds for every reader.
+    saved = store.save("project", "x", "an unrelated subject", "b")
+    assert saved.status == "saved"
+    assert [s["file"] for s in saved.skipped] == ["fact-1.md"]
+    assert saved.skipped[0]["reason"].startswith(
+        "malformed fact file fact-1.md: 'utf-8' codec can't decode byte 0xff"
+    )
+
+
+def test_save_skips_an_unreadable_fact_file_by_name_and_never_overwrites_it(tmp_path):
+    """#120's remainder, user ruling 2026-10-15: one bad fact file costs that file, not the save.
+
+    The save lands and names the file it skipped (`SaveResult.skipped`, the store's own
+    sentence); the index it rebuilds holds every fact it could read; the bad file is never
+    overwritten -- a save under its name is refused with that sentence -- and the strict
+    readers (`index_text`) still refuse. Mutation: drop `skipped=skipped` from the save's
+    listing -> this test red (the save raises).
+    """
+    from bantamkit.memory import Memory
+
+    store = _three_facts(tmp_path)
+    bad = store.root / "facts" / "zz-bad.md"
+    bad.write_text("just text, no frontmatter\n", encoding="utf-8")
+    why = "malformed fact file zz-bad.md: not enough values to unpack (expected 3, got 1)"
+    saved = store.save("project", "fresh-fact", "an unrelated subject", "b")
+    assert (saved.status, saved.skipped) == ("saved", ({"file": "zz-bad.md", "reason": why},))
+    index = (store.root / "index.md").read_text(encoding="utf-8")
+    assert "[[fresh-fact]]" in index and "[[fact-0]]" in index and "zz-bad" not in index
+    with pytest.raises(MemoryValidationError) as e:
+        store.save("project", "zz-bad", "over the unreadable file", "b")
+    assert str(e.value) == (
+        f"{why}; saving 'zz-bad' would overwrite that file, so nothing was saved -- "
+        "repair it or move it out of facts/ first"
+    )
+    assert bad.read_text(encoding="utf-8") == "just text, no frontmatter\n"
+    with pytest.raises(MemoryValidationError):
+        store.index_text()
+    reply = Memory(store.root).save("project", "second-fact", "another subject entirely", "b")
+    assert reply == (
+        "saved 'second-fact'\n\n1 fact file could not be read and was skipped; "
+        f"the duplicate check read every other fact:\n[project] {why}"
+    )

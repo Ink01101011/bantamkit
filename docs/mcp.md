@@ -9,36 +9,72 @@ same stores the library would, under your own home and project directories.
 
 ## Install
 
-The MCP dependency is an optional extra; the core library never needs it:
+Two packages serve the same tools from the same stores: **npm** `bantamkit-mcp` (pure Node)
+and **PyPI** `bantamkit[mcp]` (the MCP dependency is an optional extra; the core library never
+needs it). The recommended route installs once and then launches offline:
 
 ```bash
-.venv/bin/pip install -e "runtime-py[mcp]"        # from a clone
-pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v0.4.0#subdirectory=runtime-py"
+npx -y bantamkit-mcp@latest --install claude   # or claude-desktop, copilot, cursor
 ```
 
-(SSH form works the same — see [Install → Pinned install](install.md#pinned-install-from-a-tag).)
+The Python route is `pip install "bantamkit[mcp]"` into a venv you keep, then
+`bantamkit-mcp --install <host>` from that venv. Every route, what `--install` writes and the
+update commands: [Install](install.md), the [npm package's README](../runtime-ts/README.md)
+and the [PyPI package's README](../runtime-py/README.md).
 
 ## What's exposed
+
+Fourteen tools, listed here in the order both servers answer `tools/list`
+(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> list` prints the roster; the two
+agree name for name, title for title):
 
 | Tool | Does |
 |---|---|
 | `memory_save` | Save one durable fact to the writable project store — identical semantics to the library component, including the duplicate nudge and budget errors |
-| `memory_recall` | Search across layers: project store (writable), configured read-only grants, read-only `~/.bantamkit/memory` profile |
-| `memory_compact` | Archive the stalest facts of the writable project store to free index room after a budget refusal — nothing is deleted, the reply names every fact that moved, and the operator can `restore` any by name. Grants and the profile layer are never touched. See [Memory → Lifecycle](memory.md#the-ops) |
-| `validate_json` | Validate output text against a JSON Schema; returns `{valid, feedback}` where `feedback` is the same pointed revision message the eval's `SchemaGate` issues — feed it back to your model and retry |
-| `shiftwork_clock_in` | Validate a shift-work checkpoint and return the cursor unit's brief — see [Shift-work tools](#shift-work-tools) |
-| `shiftwork_clock_out` | Record a finished unit: validate-whole, atomic write, append an accounting line |
+| `memory_recall` | Search across layers: project store (writable), configured read-only grants, read-only `~/.bantamkit/memory` profile. Never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone |
+| `validate_json` | Validate output text against a JSON Schema (draft-04, -06, -07, 2019-09 or 2020-12); returns `{valid, feedback}` — feed `feedback` back to your model and retry. Feedback quotes at most 200 codepoints of an offending value, then `…(N more)` (#153): a 1 MiB string against `maxLength: 10` answers 309 characters on both runtimes (`… J67-7-probe.mjs <node\|py> clip`) |
+| `shiftwork_clock_in` | Validate a shift-work checkpoint and return the brief of the cursor unit, or of a named ready unit — see [Shift-work tools](#shift-work-tools) |
+| `shiftwork_clock_out` | Record a finished unit: validate-whole, atomic write under a lock, append an accounting line |
 | `shiftwork_status` | Read-only progress summary of a checkpoint |
-| `shiftwork_plan` | Read-only batch view of a checkpoint: which units its `depends_on` graph permits to run at once. Echoes the cursor unchanged and never mutates — see [Shift-work tools](#shift-work-tools) |
-| `work_plan` | The same batcher over any `{id, depends_on, priority}` graph handed to it. Takes no path and opens no file |
+| `build_identity` | Which build is answering: `build_id`, a content fingerprint of the running source and the asset pack it loads, plus `assets_digest` and the paths it was computed over. Takes no arguments |
 | `bantamkit_status` | Is bantamkit working, and which bantamkit — one short report a person can read in the transcript. Also a **prompt** of the same name, so an operator can invoke it themselves. See [Status](status.md) |
-| `bantamkit_read` | Read a document through a program rather than its raw bytes: the manifest first (kind, parts, row counts, omissions), then rows a page at a time. See [Reader](docread.md) |
+| `memory_compact` | Archive the stalest facts of the writable project store to free index room after a budget refusal — nothing is deleted, the reply names every fact that moved, and the operator can `restore` any by name. `feedback` and `user` facts go last. Grants and the profile layer are never touched. See [Memory → Lifecycle](memory.md#the-ops) |
 | `skill_audit` | Price the skill catalogue every session pays for and name the collisions in it. See [Skill audit](skill-audit.md) |
-| `memory_dream` | Consolidate what the project layer and the machine-wide profile layer hold under the SAME name: identical copies collapse, a diverged pair is UNIONED so no claim from either is lost, and a relative date is annotated against that fact's own mtime. Defaults to a DRY RUN; the consumed profile copy is archived, never deleted. A correctness pass, not a token saving — see [Memory → Consolidation across layers](memory.md#consolidation-across-layers-dream) |
-| `repo_map` | A ranked map of a source tree: every file's definitions, ordered by how central that file is to the files named in `focus`, truncated to a byte budget. Call it before working on a file to find the OTHER files that matter to it — the ports, the callers, the module it reaches through a private helper. A PRECISION pass and **not** a token saving: this feature's build gate was refuted by measurement (discovery is 0.114 % of real prompt tokens, because 97.8 % of the bill is `cache_read`). The budget is UTF-8 BYTES, not tokens. Nothing unreadable is dropped silently — every unread file is a named, counted omission and the footer is not charged to the budget. See [The repo map](repomap.md) |
+| `memory_dream` | Consolidate what the project layer and the machine-wide profile layer hold under the SAME name: identical copies collapse, a diverged pair is UNIONED so no claim from either is lost, and a relative date is annotated against that fact's own mtime. Defaults to a DRY RUN; the consumed profile copy is archived, never deleted. See [Memory → Consolidation across layers](memory.md#consolidation-across-layers-dream) |
+| `token_ledger` | What a session actually cost, read off the host's own transcripts: one JSON document of the four token classes per session, counted per `requestId`. See [Ledger](ledger.md) |
+| `work_plan` | The dependency batcher over any `{id, depends_on, priority}` graph handed to it. Takes no path and opens no file |
+| `shiftwork_plan` | Read-only batch view of a checkpoint: which units its `depends_on` graph permits to run at once. Echoes the cursor unchanged and never mutates — see [Shift-work tools](#shift-work-tools) |
 
-The `memory_save`/`memory_recall` input schemas are the asset pack's
-`assets/tools/*.json` verbatim — the same contract agents see in-process.
+`bantamkit_read` and `repo_map` are not served: both left the roster on 2026-09-12 (job50
+I5, user ruling) and answer `Unknown tool: <name>` on both servers. The reader and the repo
+map remain libraries ([Reader](docread.md), [The repo map](repomap.md)).
+
+Every served tool's description, input schema, `title` and annotations are its asset
+`assets/tools/<name>.json`, the same file in both runtimes.
+
+**An argument a tool does not take is refused by name.** Every served tool's input schema
+says `"additionalProperties": false` at its top level, and both servers hold a call to it: a
+key the schema does not name answers `isError: true` with
+`Error executing tool <name>: unknown argument '<key>'; known: <the schema's keys, in order>`
+(`known: (none)` for a tool that takes no argument), naming the first unknown key in the
+order it arrived, and nothing runs. It is checked after a lone surrogate (#160) and before
+any type check on a known key. `_meta` rides in the call's `params`, not in `arguments`, and
+is untouched. Through 0.35.9 both servers ignored such a key, so `unitId` for `unit_id` ran
+the call as if the argument had never been sent (#133; `tools/conformance/suites/wire.mjs`,
+the `j67-1:` block, pins each tool on each side).
+
+**Every tool has a `title` and MCP 2025-06-18 `annotations`** (#182), from its asset.
+`readOnlyHint: true` is claimed only by the eight tools that write nothing at all —
+`validate_json`, `shiftwork_status`, `shiftwork_plan`, `work_plan`, `build_identity`,
+`bantamkit_status`, `skill_audit`, `token_ledger` — whatever the environment. The opt-in
+[event log](eventlog.md) (`BANTAMKIT_EVENT_LOG`) is a diagnostic, not a side effect a hint
+describes, so setting it changes no hint (user ruling on #182; until J67-9 the eight turned into
+`readOnlyHint: false, destructiveHint: false, idempotentHint: false` while it was on).
+`memory_recall` is never read-only (it stamps `last_recalled` on the facts it returns), nor is
+`shiftwork_clock_in` (it appends a brief line). `openWorldHint` is `false` on all fourteen:
+none reaches past the local filesystem. Both servers advertise the same hints, log on or off
+(the `j67-2:` block of `wire.mjs` pins each tool on each side, and the `j67-9:` block pins
+`tools/list` identical with and without the log on each side).
 
 ## Shift-work tools
 
@@ -50,40 +86,55 @@ full-schema-validates the checkpoint against
 `assets/schemas/shiftwork-checkpoint.json` with the same `schema_error`
 engine sessions use under the driver.
 
-**`shiftwork_clock_in(checkpoint)`** — returns one of:
+**`shiftwork_clock_in(checkpoint, unit_id=None)`** — returns one of:
 
 - `{"result": "brief", "unit", "role", "invariants", "handoff", "do_not",
-  "files"}` — the cursor unit's brief; hand it to the spawned agent
-  verbatim. `invariants` = `job.constraints`, `files` = `state.artifacts`.
+  "files"}` — the brief; hand it to the spawned agent verbatim. `invariants` =
+  `job.constraints`, `files` = `state.artifacts`. With no `unit_id` it is the cursor
+  unit's brief; with one it is that unit's. Either way the unit must be in `ready`, the
+  list `shiftwork_plan` publishes for the same bytes, or the answer is
+  `{"result": "error", "reason": "unit <id> is not ready; ready is <list>"}` (since job65,
+  #164, the default call is held to the same test). That is how a wave is dispatched: one
+  `clock_in` per ready unit. A `brief` answer appends one
+  `{"event": "brief", ts, unit, role}` line to `<checkpoint>.log.jsonl` (best-effort) and
+  never writes `plan.cursor`.
 - `{"result": "escalate", "reason", ...}` — `handoff.open_questions` is
-  non-empty (or the cursor dangles): stop and ask the user. Mirrors the
-  driver's ESCALATE exit.
+  non-empty, or the default call's cursor names no unit: stop and ask the user. Mirrors
+  the driver's ESCALATE exit.
 - `{"result": "success", "reason"}` — every unit is `done`/`dropped`; the
   job is over. Mirrors the driver's SUCCESS exit.
 - `{"result": "error", "reason"}` — the checkpoint is unreadable or fails
-  the schema.
+  the schema, the unit is not ready, or the graph cannot batch (a cycle or an unknown
+  dependency, in the batch view's own sentence).
 
 Refusals are structured results, never raised errors — the orchestrator
 branches on `result`.
 
 **`shiftwork_clock_out(checkpoint, unit_id, status, handoff_patch,
-history_entry, accounting=None)`** — applies a unit's outcome: sets the
-unit's `status` (schema enum: `todo | in_progress | done | blocked |
-dropped`), advances `plan.cursor` to the first non-terminal unit,
-shallow-merges `handoff_patch` into `handoff`, pushes `history_entry`
-(requires `unit` + `outcome`; extra keys legal) onto the 5-entry ring.
-The **entire mutated document is validated before writing**; the write is
-atomic (temp file + rename). Any failure returns `{"result": "error"}` and
-writes nothing — the prior bytes survive.
+history_entry, accounting=None)`** — applies a unit's outcome. `unit_id` must be the cursor
+unit **or** a unit briefed since its own last clock-out; the runtime reads that off
+`<checkpoint>.log.jsonl`, never off the caller, so a wave clocks out in whatever order it
+finishes. Anything else is refused with `unit <id> is not the cursor unit <cursor>`, the
+sentence kept byte for byte from before job60. The call sets the unit's `status` (schema
+enum: `todo | in_progress | done | blocked | dropped`), shallow-merges `handoff_patch` into
+`handoff`, pushes `history_entry` (requires `unit` + `outcome`; extra keys legal) onto the
+5-entry ring, and advances `plan.cursor` to `ready[0]` of the batch view recomputed on the
+mutated document (the first remaining non-terminal unit in `plan.units` order only when the
+graph cannot batch). The **entire mutated document is validated before writing**, the whole
+call holds `<checkpoint>.lock`, and any failure returns `{"result": "error"}` and writes
+nothing.
 
-Every successful clock-out appends one line to `<checkpoint>.log.jsonl`
-beside the checkpoint: `{ts, unit, role, status}` plus whatever you pass
-in `accounting` (`tokens` and `duration_ms` are required, `model` is the
-model actually used; what each key means is defined in
-[shiftwork.md](shiftwork.md#orchestrator-flavor)). Same shape as the driver's per-session log, so
-driver-flavor and MCP-flavor runs compare on one format and the history
-ring's 5-entry cap never loses measurement data. The log is append-only
-and never read by the tools.
+Every successful clock-out appends one line to `<checkpoint>.log.jsonl` and then renames the
+checkpoint into place (log-then-commit): `{ts, unit, role, status, briefed}` plus whatever you
+pass in `accounting`. `tokens` and `duration_ms` are required and `model` is the model
+actually used; where `job.roles` names the unit's role, a `model` off that list, or none, is
+refused before anything is written. The five keys the runtime writes — `unit`, `role`,
+`status`, `ts`, `event` — cannot be set by `accounting` (#117), and `briefed` is the
+runtime's own measurement. A commit that fails after its line landed appends an
+`{"event": "uncommitted", ...}` line, which hands the brief back so the retry is accepted
+(#162). **The log is read by the tools**: it is what lets a briefed non-cursor unit clock
+out. Every key, and how a reader tells the line kinds apart:
+[shiftwork.md → Orchestrator flavor](shiftwork.md#orchestrator-flavor).
 
 **`shiftwork_status(checkpoint)`** — read-only:
 `{"result": "status", "cursor", "units": {status: count}, "open_questions":
@@ -94,22 +145,24 @@ and never read by the tools.
 Which units the checkpoint's `depends_on` graph permits to run at once;
 `ready` is `batches[0]` and `width` is the widest fan-out. Units with
 status `done` or `dropped` are satisfied and drop out of the graph. The
-cursor is echoed **unchanged** — this tool reports, it does not dispatch,
-and cursor advance is still v1-linear.
+cursor is echoed **unchanged**; `ready` is the list `clock_in` holds a unit to, and
+`ready[0]` is where `clock_out` moves the cursor.
 
 **`work_plan(nodes)`** — read-only, and the only tool here that takes no
 path: `nodes` is a list of `{id, depends_on, priority}` and the answer is
-`{"result": "plan", "batches", "sequence", "width"}`. Three refusals,
-one sentence each, shared with `shiftwork_plan` —
-`duplicate node id <id>`, `node <id> depends on <dep>, which no node
+`{"result": "plan", "batches", "sequence", "width"}`. A node that contradicts that shape is
+refused first, by index (`nodes[<i>] must be an object`, `nodes[<i>].id must be a string`,
+`nodes[<i>].depends_on must be a list of strings`, `nodes[<i>].priority must be an
+integer`; #127); then three graph refusals, one sentence each, shared with
+`shiftwork_plan` — `duplicate node id <id>`, `node <id> depends on <dep>, which no node
 declares`, `the graph has a cycle: <a> -> <b> -> <a>`. Empty `nodes` is an
 answer, not a refusal. Full semantics, with a measured worked example:
 [shiftwork.md → The batch view](shiftwork.md#the-batch-view-shiftwork_plan-and-work_plan).
 
 No lock tool, deliberately: this topology has one orchestrator by
-construction. The driver's `driver.lock` guards cross-process races;
-clock_out's validate-before-write means a concurrent driver run fails
-validation-visibly instead of corrupting.
+construction. `shiftwork_clock_out` takes `<checkpoint>.lock` itself, so a wave's
+clock-outs from several processes land one after another, and the driver's
+`driver.lock` guards the driver's own runs.
 
 ### Scopes
 
@@ -117,12 +170,8 @@ validation-visibly instead of corrupting.
   `tools/bantamkit-mcp` — every bantamkit session sees the tools with zero
   setup, **including a session running in a `git worktree`**. See
   [The endpoint has to exist in a worktree too](#the-endpoint-has-to-exist-in-a-worktree-too).
-- **User scope (every other project):** register the server once against a
-  [pinned install](install.md#pinned-install-from-a-tag):
-
-  ```bash
-  claude mcp add bantamkit --scope user -- /path/to/pinned-venv/bin/bantamkit-mcp
-  ```
+- **User scope (every other project):** `npx -y bantamkit-mcp@latest --install claude`
+  registers the kept install at user scope (see [Install](#install)).
 
   Checkpoint path convention for arbitrary projects:
   `.shiftwork/checkpoint.json` in the target repo (the log lands beside
@@ -132,8 +181,8 @@ validation-visibly instead of corrupting.
 ### The endpoint has to exist in a worktree too
 
 A relative `command` in `.mcp.json` is resolved against the **project
-directory**, so the tracked file means a different path in every checkout. It
-used to name `.venv/bin/bantamkit-mcp`, and a `git worktree` has no `.venv`:
+directory**, so the tracked file means a different path in every checkout. A `git
+worktree` has no `.venv`, so an endpoint that named `.venv/bin/bantamkit-mcp` failed there:
 
 ```
 canonical checkout : bantamkit: .venv/bin/bantamkit-mcp - ✔ Connected
@@ -210,37 +259,22 @@ have imported, the number of `.py` files on disk in it, and a content digest —
 never against a version string, which has already lied here (`RB-P45`). An
 endpoint answering from a *different* checkout's source is red there.
 
-> **Deleted 2026-08-24.** This section used to read `python
-> tools/mcpreach/mcpreach.py check`, with a five-value exit-code interface under
-> it (`0` REACHABLE, `1` UNREACHABLE, `2` FOREIGN, `3` UNDECLARED, `4` NO_ENV).
-> That program has never been added on any ref of this repository —
-> `git log --all --diff-filter=A -- '*mcpreach*'` is empty — and `docs/eval.md`
-> records the decision not to ship it with `RB-P96`, because the half-built
-> checker "had never been seen to fire". The pointer was not inert: running the
-> documented command exited `2`, which this page documented as `FOREIGN`, so a
-> missing file and a silent wrong-checkout server were the same number to
-> anything scripting the interface. `runtime-py/tests/test_doc_commands_gate.py`
-> is now red if any fenced shell block in this repository names a `tools/`
-> program that is not in the tree.
+`runtime-py/tests/test_doc_commands_gate.py` is red if any fenced shell block in this
+repository names a `tools/` program that is not in the tree.
 
 ### One name, two endpoints
 
-Registering both scopes means **one name resolves to two different builds**:
-user scope is a *pinned* install, frozen at whatever `main` was on the day it
-was installed; project scope is the repo's *editable* `.venv`, which tracks
-HEAD. `claude mcp list` prints `[Conflicting scopes]` and then connects you to
-one of them without saying which build you got.
+Registering both scopes means **one name can resolve to two different builds**: the user
+scope's kept install is frozen at whatever version it last installed, while project scope in
+this repository runs the checkout's source. `claude mcp list` prints `[Conflicting scopes]`
+and then connects you to one of them without saying which build you got.
 
 > **The rule.** When the same tool is reachable by more than one endpoint,
 > something must notice when they stop being the same tool. A silent
 > disagreement between two builds under one name is indistinguishable from a
 > bug in whichever one you happened to reach.
 
-Measured on 2026-08-20: the two endpoints on the author's machine had been
-**twelve minor versions apart for eleven days** — user scope pinned at
-`v0.13.0` (`9436cf7`), project scope at `0.25.0` — so every session whose cwd
-was outside this repo ran a build carrying the `RB-P1` k-floor defect, and
-nothing anywhere noticed. The mechanism that would have noticed is:
+The mechanism that notices:
 
 ```bash
 python tools/mcpdrift/mcpdrift.py check          # from the project directory
@@ -269,6 +303,11 @@ It needs a live registration, so it **cannot run on CI** and no node pretends
 to. `runtime-py/tests/test_mcpdrift.py` guards the checker's logic on synthetic
 MCP servers it writes itself; the checker guards the machine, run deliberately.
 
+### Resources and the prompt
+
+Two resource templates and one prompt, `bantamkit_status`, on both servers
+(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> res`):
+
 | Resource | Serves |
 |---|---|
 | `bantamkit://skills/{name}` | Skill markdown (e.g. `bantamkit://skills/memory`). A skill paired with a tool this server does not serve is refused, not handed out: `file-graph` is the eval agent's snippet for `file_graph`, whose asset claims `surfaces: ["agent"]`, so reading it answers `skill asset file-graph is not served here: it pairs with tool file_graph, whose asset claims surfaces ['agent'], not mcp` — a client never receives an instruction naming a tool it cannot call. |
@@ -279,25 +318,35 @@ clients get when-to-save/when-to-recall guidance automatically.
 
 ## Flags
 
+Both servers print the same `-h`, byte for byte (`COLUMNS=100 node runtime-ts/dist/cli.js -h`
+against `COLUMNS=100 .venv/bin/python -m bantamkit.mcpserver -h`, in a scratch `HOME`).
+
 | Flag | Default | Meaning |
 |---|---|---|
-| `--k N` | 3 | Default recall budget |
-| `--start DIR` | cwd | Where project-store discovery starts (walks up to find `.bantamkit/memory`) |
-| `--store PATH` | off | Use a single store at PATH; disables layering. Mutually exclusive with `--start` |
+| `--k K` | 3 | Default recall budget |
+| `--index-budget BYTES` | 24000 | Memory index byte budget |
+| `--start START` | cwd | Where project-store discovery starts (walks up to find `.bantamkit/memory`) |
+| `--store STORE` | off | Use a single store at STORE; disables layering. Mutually exclusive with `--start` |
+
+One-shot flags print and exit instead of serving: `--assets-root`, `--hook` (one Claude Code
+hook event on stdin), `--mcp-report`, `--statusline`, `--update`, `--install
+{claude,claude-desktop,copilot,cursor}` (with `--force`), `--install-hooks` /
+`--remove-hooks` (with `--yes`), and `-h`. See [Install](install.md), [Hooks](hooks.md) and
+[Status line](statusline.md).
 
 ## Client setup
 
-**Claude Code:**
+**Claude Code, Claude Desktop, Copilot in VS Code, Cursor:** `--install <host>` writes the
+entry (`npx -y bantamkit-mcp@latest --install claude`, or `bantamkit-mcp --install claude`
+from a Python venv). It records the interpreter and entry point by absolute path, so a GUI
+host that does not read your shell rc still finds them.
 
-```bash
-claude mcp add bantamkit -- /path/to/.venv/bin/bantamkit-mcp
-```
-
-**Codex** (`~/.codex/config.toml`):
+**Codex** (`~/.codex/config.toml`), or any host `--install` does not know:
 
 ```toml
 [mcp_servers.bantamkit]
-command = "/path/to/.venv/bin/bantamkit-mcp"
+command = "npx"
+args = ["-y", "bantamkit-mcp"]
 ```
 
 **Generic stdio config (JSON):**
@@ -306,17 +355,17 @@ command = "/path/to/.venv/bin/bantamkit-mcp"
 {
   "mcpServers": {
     "bantamkit": {
-      "command": "/path/to/.venv/bin/bantamkit-mcp",
-      "args": ["--k", "3"]
+      "command": "npx",
+      "args": ["-y", "bantamkit-mcp", "--k", "3"]
     }
   }
 }
 ```
 
-Point `command` at the venv where you installed the `[mcp]` extra. The server
-resolves its project store from the client's working directory — run your
-client from the project root, pass `--start /path/to/project`, or pin the store
-outright as below.
+An `npx` entry asks the registry at every launch and hangs offline; the kept install from
+`--install` does not ([Install](install.md)). The server resolves its project store from the
+client's working directory — run your client from the project root, pass `--start
+/path/to/project`, or pin the store outright as below.
 
 ## Which memory store the server binds
 
@@ -333,7 +382,8 @@ mean.
 {
   "mcpServers": {
     "bantamkit": {
-      "command": "/path/to/.venv/bin/bantamkit-mcp",
+      "command": "npx",
+      "args": ["-y", "bantamkit-mcp"],
       "env": { "BANTAMKIT_MEMORY_DIR": "/abs/path/to/project/.bantamkit/memory" }
     }
   }
@@ -342,7 +392,7 @@ mean.
 
 ```bash
 claude mcp add bantamkit -e BANTAMKIT_MEMORY_DIR=/abs/path/to/project/.bantamkit/memory \
-  -- /path/to/.venv/bin/bantamkit-mcp
+  -- npx -y bantamkit-mcp
 ```
 
 A pin that names nothing, names a file, or is relative **raises at startup**
@@ -353,60 +403,32 @@ for you. Full precedence table and failure modes: [Memory](memory.md#pinning-the
 ### What happens if you set nothing
 
 The server walks up from cwd (or `--start`) and binds the **nearest existing**
-`.bantamkit/memory`. If nothing up the tree has one, it creates
-`<start>/.bantamkit/memory` and that store is empty. Both outcomes are silent,
-and for a project with no store of its own the nearest existing one is very often
-`~/.bantamkit/memory` — a store you may never have put anything in.
+`.bantamkit/memory`. If nothing up the tree has one, `<start>/.bantamkit/memory` is
+**designated** and stays absent until the first save brings it into existence — or refuses
+by name if the filesystem will not have it. Starting the server creates nothing anywhere,
+which is what lets a GUI host launch it with cwd `/` (job48). For a project with no store of
+its own the nearest existing one is very often `~/.bantamkit/memory` — a store you may never
+have put anything in — and nothing says so until you ask: `bantamkit_status` names the bound
+store on its fourth line (`; bound to <path>`), and an empty recall names it too.
 
-**AMENDED 2026-09-12 — job48 (`fix/job48-unwritable-cwd`), J48-4.** The paragraph
-above is kept as the record of what this server did until this job, and its second
-sentence is no longer true: **it does not create.** The project memory layer is now
-built lazily (`Memory.__init__` / the `Memory` constructor, `create=False`), so when
-nothing up the tree has a store, `<start>/.bantamkit/memory` is **designated** and
-stays absent until the first save brings it into existence — or refuses by name if
-the filesystem will not have it. Starting the server creates nothing anywhere.
-
-The reason is the defect this job closed: every GUI MCP host launches its child with
-cwd `/`, an eager `mkdir` there is a **startup crash**, and the host saw only
-`CONNECTION_CLOSED`. Measured before and after on this machine, from a directory
-nothing can be created in: before, `PermissionError: [Errno 13] Permission denied:
-'<cwd>/.bantamkit'` and exit 1; after, exit 0, one answered `initialize` frame, and
-nothing left in the directory.
-
-**A second consequence, and it is the one to know about.** The walk looks for an
-*existing* `.bantamkit/memory`, so what the old behaviour created, the next session
-found. A bare start in `proj/sub` used to leave a store there, and a later session in
-`proj/sub` bound **that** store even after you created a real one at `proj/`.
-Measured on both paths at this commit: same fixture, the old code binds
-`proj/sub/.bantamkit/memory`, the new code binds `proj/.bantamkit/memory`. The rule in
-the sentence above — nearest *existing* — is unchanged; what changed is that a session
-which saved nothing no longer votes on where the next one binds.
+Because the walk looks for an *existing* store, a session that saved nothing does not decide
+where the next one binds: a bare start in `proj/sub`, then a real store created at `proj/`,
+binds `proj/.bantamkit/memory`.
 
 ### The three states, and what `memory_recall` tells the model
 
-A recall that returns nothing used to say the same sentence in all three cases,
-which asks a person to rephrase a question against a filing cabinet that may not
-exist. The reply now names the situation:
+A recall that returns nothing names the situation:
 
 | State | How it arises | A recall with no hits replies |
 |---|---|---|
 | **populated** | the bound store holds facts | `no memories matched. Try different words, or proceed without.` |
 | **empty** | the bound store exists and holds nothing — the walk climbed past your project, the walk stopped in your project's own empty store, or the pin points at a fresh store | `no memories to search: nothing is saved in any layer bound here.` then the store's path, how it was bound (**pinned**, **bound by walking up from** `<start>` — only when the walk really climbed — or `<start>`'s **own** store), and the remedy |
-| **designated** | no `.bantamkit/memory` existed at or above `<start>`, so an empty one was created for this session | `no memories to search: …` then `No memory store existed at or above <start>, so the empty <path> was created for this session.` and the remedy |
-
-**AMENDED 2026-09-12 — job48, J48-4.** The **designated** row above is a record of the
-reply this server gave until this job, quoted verbatim, and both halves of it are now
-false: nothing is created, so nothing is empty-and-created. The row as it reads today:
-
-| State | How it arises | A recall with no hits replies |
-|---|---|---|
 | **designated** | no `.bantamkit/memory` existed at or above `<start>`, so one was **named** for this session and **not created** | `no memories to search: …` then `No memory store existed at or above <start>, so <path> was designated for this session; nothing was created there.` and the remedy |
 
-The remedy after it — *otherwise save a memory to start this one* — is now literally
-true: the save is what brings the directory into existence. The sentence is produced
-byte for byte by both runtimes (verified by running both at this commit, not by
-comparing source), and it is pinned per side, as a literal typed into the suite rather
-than as a differential, by `tools/conformance/suites/recall-strings.mjs`.
+Measured on both runtimes from a directory with no store on any ancestor
+(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> recall`), and nothing exists there
+afterwards. The sentence is pinned per side, as a literal, by
+`tools/conformance/suites/recall-strings.mjs`.
 
 The remedy sentence is the same in the last two: *set `BANTAMKIT_MEMORY_DIR` to
 the absolute path of the store your facts are in and restart; otherwise save a
@@ -429,16 +451,14 @@ your **configuration**. The diagnosis is dropped the moment the project store
 holds a fact, so a store you have started using never keeps being described as
 empty.
 
-**AMENDED 2026-09-26 — job64, J64-4: a query that is a fact's NAME.** A query that,
-trimmed, is a legal fact name carrying a hyphen (`deploy-command`, not `deploy`) is
-looked up by name in every bound layer before any word matching; the first layer that
-holds it answers with that one fact. When no layer holds it, the reply is prefixed with
-one line — `no fact named '<name>' in any layer bound here; matching by words instead:`
-and a blank line — and continues, byte for byte, with whichever reply above the word
-search would have given (hits, or one of the states). The tool description changed with
-it: it no longer says "Returns at most k matching facts", which RB-P1's floor made false
-(`k` below the store default of 3 is raised to 3, never honoured below it — ruled to stay
-2026-09-25); `k` now carries its own description saying so. Details and the pins:
+**A query that is a fact's NAME.** A query that, trimmed, is a legal fact name carrying a
+hyphen (`deploy-command`, not `deploy`) is looked up by name in every bound layer before any
+word matching; the first layer that holds it answers with that one fact (job64). When no
+layer holds it, the reply is prefixed with one line —
+`no fact named '<name>' in any layer bound here; matching by words instead:` and a blank
+line — and continues, byte for byte, with whichever reply above the word search would have
+given. `k` below the store default of 3 is raised to 3, never honoured below it (ruled
+2026-09-25); the `k` argument's own description says so. Details and the pins:
 [memory.md](memory.md), *Recall across layers*.
 
 ## Recording what this log cannot see
@@ -506,9 +526,13 @@ against a literal as well as against the other):
   `bantamkit://skills/..%2F..%2Fpackage`). A name that matches but names no asset is still
   `-32603` / `unknown skill asset: <name>`. Through 0.35.8 the Node server matched the raw
   text and said `-32603` for all of these; neither server ever read outside the pack (#180).
+- **`prompts/get` with a name no prompt has** is `-32602` / `Unknown prompt: <name>` with
+  `data: null`. Through 0.35.9 the Python server said `code: 0`, its SDK's
+  default for an exception nobody mapped (#198, user ruling 2026-10-15).
 
 ## Out of scope, deliberately
 
 No model runs server-side: critique scoring and structured *generation* stay
-in your client, which already holds a model. No HTTP transport, no shared
-stores, no locking — see the design spec for reasoning.
+in your client, which already holds a model. No HTTP transport and no shared
+stores. The only lock is the checkpoint's, taken by `shiftwork_clock_out`; memory
+writes take none (`index.md` is re-derived from `facts/` by whichever writer is last).

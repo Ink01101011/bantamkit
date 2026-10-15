@@ -1907,3 +1907,74 @@ def test_192_a_file_the_hook_may_not_read_is_never_ledgered_or_refused(tmp_path)
     assert [r.stdout for r in runs] == [b"", b""]
     assert not (home / ".bantamkit" / "hooks" / "ledger-probe-session.json").exists()
 
+
+# ---------------------------------------------- #170: the args --store pin (job67, J67-5)
+# The server reads `--store` off its argv and it outranks `BANTAMKIT_MEMORY_DIR` there; the hook
+# read the winning entry's `env` only, so every args spelling had it injecting from the walk's
+# store while the server served X. The conformance `hooks` suite's `store-pin-args` block
+# compares the same spellings across both runtimes.
+
+
+def _ladder_store(store: Path, name: str) -> Path:
+    _save(store, "project", name, f"{name} explains the release ladder", "body")
+    return store
+
+
+def _user_entry(home: Path, entry: dict) -> None:
+    (home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"bantamkit": {"command": "npx", **entry}}}), encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["space", "equals", "outranks-env", "last-wins"],
+)
+def test_170_args_store_pin_binds_x_and_outranks_env(tmp_path, spelling):
+    home, cwd = _bed(tmp_path, spelling)
+    _ladder_store(cwd / ".bantamkit" / "memory", "walk-fact")
+    args_store = _ladder_store(tmp_path / "pinned-args", "args-fact")
+    env_store = _ladder_store(tmp_path / "pinned-env", "env-fact")
+    entry = {
+        "space": {"args": ["--store", str(args_store)]},
+        "equals": {"args": [f"--store={args_store}"]},
+        "outranks-env": {
+            "args": ["--store", str(args_store)],
+            "env": {"BANTAMKIT_MEMORY_DIR": str(env_store)},
+        },
+        "last-wins": {"args": ["--store", str(env_store), f"--store={args_store}"]},
+    }[spelling]
+    _user_entry(home, entry)
+    s = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
+    assert s.returncode == 0, s.stderr
+    out = s.stdout.decode("utf-8")
+    assert "args-fact" in out
+    assert "walk-fact" not in out and "env-fact" not in out
+    rec = [r for r in _log_lines(home) if r.get("event") == "SessionStart"][-1]
+    assert rec["storeScope"] == "user"
+    u = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": "walk me through the release ladder"},
+        home=home,
+        cwd=cwd,
+    )
+    assert u.returncode == 0, u.stderr
+    out = u.stdout.decode("utf-8")
+    assert "args-fact" in out
+    assert "walk-fact" not in out and "env-fact" not in out
+
+
+def test_170_relative_store_resolves_against_cwd_and_empty_store_pins_nothing(tmp_path):
+    home, cwd = _bed(tmp_path, "rel")
+    _ladder_store(cwd / ".bantamkit" / "memory", "walk-fact")
+    _ladder_store(cwd / "rel" / "store", "rel-fact")
+    env_store = _ladder_store(tmp_path / "pinned-env", "env-fact")
+    _user_entry(home, {"args": ["--store", os.path.join("rel", "store")]})
+    r = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
+    assert r.returncode == 0, r.stderr
+    assert "rel-fact" in r.stdout.decode("utf-8")
+    assert "walk-fact" not in r.stdout.decode("utf-8")
+    home2, _ = _bed(tmp_path, "empty")
+    _user_entry(home2, {"args": ["--store="], "env": {"BANTAMKIT_MEMORY_DIR": str(env_store)}})
+    e = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home2, cwd=cwd)
+    assert e.returncode == 0, e.stderr
+    assert "env-fact" in e.stdout.decode("utf-8")

@@ -132,8 +132,8 @@ const SERVED: ReadonlySet<string> = new Set<string>(MCP_TOOLS);
 /**
  * The advertisement for one tool, out of its manifest, with the surface checked.
  *
- * Key order is `description, inputSchema, name, outputSchema` because that is the order the
- * reference's pydantic `Tool` model dumps in, and the nested schemas keep the manifest's own
+ * Key order is `annotations, description, inputSchema, name, outputSchema, title` because that
+ * is the order the reference's wire carries a tool entry in (sorted), and the nested schemas keep the manifest's own
  * key order because both runtimes preserve insertion order in a JSON object.
  *
  * `output_schema` is advertised VERBATIM and is not derived from anything this file knows.
@@ -152,12 +152,30 @@ export function fromManifest(name: string): Record<string, unknown> {
       `tool asset '${name}' does not claim the mcp surface: [${surfaces.map((s) => `'${s}'`).join(', ')}]`,
     );
   }
+  // `title` and `annotations` (#182, job67) come from the asset like the description, and
+  // land where the reference's sorted dump puts them: `annotations` first, `title` last. An
+  // asset without them advertises neither key, as the reference's `None` does. The hints are
+  // the asset's whatever the environment: the opt-in event log (`BANTAMKIT_EVENT_LOG`) is a
+  // diagnostic, not a side effect a hint describes (user ruling (b) on #182 Q1, job67 J67-9).
+  const hints = sortedAnnotations(asset);
   return {
+    ...(hints === null ? {} : { annotations: hints }),
     description: asset['description'],
     inputSchema: asset['parameters'],
     name: asset['name'],
     outputSchema: asset['output_schema'],
+    ...(asset['title'] === undefined ? {} : { title: asset['title'] }),
   };
+}
+
+/**
+ * The asset's `annotations`, keys sorted as the reference's dump sorts them; `null` for an
+ * asset that carries none. Nothing at runtime moves a hint (#182 Q1 ruling (b)).
+ */
+export function sortedAnnotations(asset: Record<string, unknown>): Record<string, unknown> | null {
+  const raw = asset['annotations'] as Record<string, unknown> | undefined;
+  if (raw === undefined) return null;
+  return Object.fromEntries(Object.keys(raw).sort().map((k) => [k, raw[k]]));
 }
 
 /**

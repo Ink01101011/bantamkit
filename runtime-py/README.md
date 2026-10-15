@@ -1,46 +1,86 @@
 # bantamkit — memory MCP server for Claude Code, Cursor, VS Code Copilot and Claude Desktop (Python)
 
-**bantamkit** is a Python **MCP server** on **PyPI** that gives coding agents a per-person
-**memory** store, JSON Schema validation, shift-work accounting, a token ledger and a
-skill-catalogue auditor. It works with **Claude Code**, **Claude Desktop**, **Cursor**, **GitHub
-Copilot in VS Code** and any stdio MCP client. Install it with `pip install "bantamkit[mcp]"`;
-after one install it starts **offline**.
+[![npm version](https://img.shields.io/npm/v/bantamkit-mcp?logo=npm&label=npm)](https://www.npmjs.com/package/bantamkit-mcp)
+[![PyPI version](https://img.shields.io/pypi/v/bantamkit?logo=pypi&logoColor=white&label=PyPI)](https://pypi.org/project/bantamkit/)
+[![Python versions](https://img.shields.io/pypi/pyversions/bantamkit?logo=python&logoColor=white)](https://pypi.org/project/bantamkit/)
+[![Node version](https://img.shields.io/node/v/bantamkit-mcp?logo=node.js&logoColor=white)](https://www.npmjs.com/package/bantamkit-mcp)
+[![License: MIT](https://img.shields.io/github/license/Ink01101011/bantamkit)](https://github.com/Ink01101011/bantamkit/blob/main/LICENSE)
+[![npm downloads](https://img.shields.io/npm/dm/bantamkit-mcp?label=npm%20downloads)](https://npm-stat.com/charts.html?package=bantamkit-mcp)
+[![PyPI downloads](https://img.shields.io/pypi/dm/bantamkit?label=PyPI%20downloads)](https://pypistats.org/packages/bantamkit)
 
-The same server in pure Node is on **npm** as
-[`bantamkit-mcp`](https://www.npmjs.com/package/bantamkit-mcp). The two share a memory store on
-disk and a conformance suite holds them to the same answers, so install whichever your host makes
-easy.
+**Give your coding agent a memory that outlasts the session.** bantamkit is a Python MCP server:
+the agent saves what is worth keeping — a preference you stated, a decision, the fix that worked
+— and recalls it next session instead of asking you again. It works with **Claude Code**,
+**Claude Desktop**, **Cursor**, **GitHub Copilot in VS Code** and any stdio MCP client. Install it
+with `pip install "bantamkit[mcp]"`; after one install it starts **offline**.
 
-**This page is the PyPI package's.** Every command on it runs `bantamkit` from PyPI. The npm
-package is named where the two differ, but its own install, update and CLI commands live on
-[its page](https://www.npmjs.com/package/bantamkit-mcp); run them here and you get nothing.
+**This page is the PyPI package's.** Every command on it runs `bantamkit` from PyPI. The same
+server in pure Node is on npm as [`bantamkit-mcp`](https://www.npmjs.com/package/bantamkit-mcp);
+it is named where the two differ, but its own install, update and CLI commands live on its page;
+run them here and you get nothing.
 
-## Contents
+## 🚀 Quick start
+
+```bash
+python -m venv <env>
+<env>/bin/pip install "bantamkit[mcp]"
+<env>/bin/bantamkit-mcp --install claude     # or claude-desktop, copilot, cursor
+```
+
+Then restart the host (in Claude Code, open a new session) and ask the agent to call
+`bantamkit_status`. Every route and host is below.
+
+## ✨ What you get
+
+- **Memory that persists.** Facts are plain Markdown files under `.bantamkit/memory`, deduped
+  and held to a byte budget. `memory_save` and `memory_recall` do the work; `memory_compact` and
+  `memory_dream` keep the store tidy.
+- **Layered by default.** Recall reads the project store, any stores you grant in
+  `.bantamkit/config.yaml`, and your profile store `~/.bantamkit/memory`. Saves go to the
+  project store.
+- **One command per host.** `--install` writes the entry for Claude Code, Claude Desktop, Cursor
+  or VS Code Copilot, backs up any file it edits, and never prompts.
+- **Offline after one install.** `--install` records the venv's console script by absolute path,
+  so no launch needs the network or your shell's PATH.
+- **Claude Code hooks, if you want them.** `--install-hooks` puts the memory index in front of
+  each new session, surfaces matching facts on each prompt, and nudges a save at the end of a
+  long session that saved nothing
+  ([docs/hooks.md](https://github.com/Ink01101011/bantamkit/blob/main/docs/hooks.md)).
+- **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
+  a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
+  [the fourteen tools](#-what-it-serves).
+- **Same answers as the Node server.** The two share a memory store on disk, and every surface
+  is compared between both runtimes by a conformance suite (`node tools/conformance/run.mjs
+  --all` in the repository), so install whichever your host makes easy.
+- **A Python library for small models, too.** `import bantamkit` lifts small-model agents
+  (~1B–8B, any OpenAI-compatible endpoint) — see [Module API](#-module-api).
+
+## 📑 Contents
 
 | Topic | What you'll find |
 |---|---|
-| [Install the MCP server](#install-the-mcp-server) | Try it; the `[mcp]` extra |
+| [Install the MCP server](#-install-the-mcp-server) | Try it; the `[mcp]` extra |
 | [Install once, run offline](#install-once-run-offline) | A kept venv, or a wheelhouse |
 | [Run with pipx at every launch](#run-with-pipx-at-every-launch) | The online form |
-| [Connect it to a host](#connect-it-to-a-host) | The same five steps per host |
+| [Connect it to a host](#-connect-it-to-a-host) | The same five steps per host |
 | [Connect to Claude Code](#connect-to-claude-code) | `--install claude`, `claude mcp remove` |
 | [Connect to Claude Desktop](#connect-to-claude-desktop) | `claude_desktop_config.json` per OS |
 | [Connect to Cursor](#connect-to-cursor) | `~/.cursor/mcp.json` |
 | [Connect to VS Code (GitHub Copilot)](#connect-to-vs-code-github-copilot) | `mcp.json`, `servers` key |
 | [Connect other MCP clients](#connect-other-mcp-clients) | Any stdio host |
-| [Configuration](#configuration) | Every flag and variable, with its default |
-| [Update](#update) | `--update`, pipx, uv, then restart |
-| [Troubleshooting](#troubleshooting) | Timeouts, refusals, the wrong store |
-| [What it serves](#what-it-serves) | 14 tools, one prompt, two resource templates |
-| [Requirements](#requirements) | Python and dependencies |
-| [The asset pack](#the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
-| [The operator CLI: `python -m bantamkit.memory`](#the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
-| [Where the Python and Node servers differ](#where-the-python-and-node-servers-differ) | One store; pdf/.doc/.rtf, CLI name, `build_id` |
-| [Module API](#module-api) | `import bantamkit`: the library half, measured from the wheel |
-| [Development](#development) | Clone, test, lint, conformance |
-| [Documentation](#documentation) | The full docs on GitHub |
+| [Configuration](#-configuration) | Every flag and variable, with its default |
+| [Update](#-update) | `--update`, pipx, uv, then restart |
+| [Troubleshooting](#-troubleshooting) | Timeouts, refusals, the wrong store |
+| [What it serves](#-what-it-serves) | 14 tools, one prompt, two resource templates |
+| [Requirements](#-requirements) | Python and dependencies |
+| [The asset pack](#-the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
+| [The operator CLI: `python -m bantamkit.memory`](#-the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
+| [Where the Python and Node servers differ](#-where-the-python-and-node-servers-differ) | One store; pdf/.doc/.rtf, CLI name, `build_id`, YAML only PyYAML reads |
+| [Module API](#-module-api) | `import bantamkit`: the library half, measured from the wheel |
+| [Development](#-development) | Clone, test, lint, conformance |
+| [Documentation](#-documentation) | The full docs on GitHub |
 
-## Install the MCP server
+## 📥 Install the MCP server
 
 To try it:
 
@@ -65,9 +105,8 @@ python -m venv <env>
 ```
 
 `--install` records the venv's console script by absolute path with `"args": []`, so no launch
-needs the network or your shell's PATH. Measured on macOS arm64 (served-tools: dated — the
-surface was twelve then), it served 12 tools under a GUI
-app's PATH, `/usr/bin:/bin:/usr/sbin:/sbin`; the Windows layout (`<env>\Scripts\`) was not.
+needs the network or your shell's PATH. Measured on macOS arm64, it served under a GUI app's
+PATH, `/usr/bin:/bin:/usr/sbin:/sbin`; the Windows layout (`<env>\Scripts\`) was not.
 
 **No network on the target? Carry a wheelhouse.** Download it on a machine with the **same OS,
 CPU architecture and Python minor version** (some wheels, such as `pydantic_core`, are built for
@@ -94,12 +133,13 @@ exited 1 on a cold pipx home and 0 after one online run
 ([measured](https://github.com/Ink01101011/bantamkit/blob/main/docs/install.md#pipx-run-launches-online-and-is-offline-only-while-pipxs-cache-lasts)).
 For Claude Code: `claude mcp add bantamkit -s user -- pipx run --spec "bantamkit[mcp]" bantamkit-mcp`.
 
-## Connect it to a host
+## 🔌 Connect it to a host
 
 `bantamkit-mcp --install <host>` (`claude`, `claude-desktop`, `copilot`, `cursor`) writes an
 entry pointing at the console script you ran. It never prompts, so it behaves the same in a
 terminal, CI or another agent. For the three JSON hosts it backs the file up as
-`<name>.backup-<date>`, keeps its permissions, and refuses a file that does not parse or a
+`<name>.backup-<date>` (a second write the same day takes `<name>.backup-<date>.1`, never
+overwriting a backup), keeps its permissions, and refuses a file that does not parse or a
 differing entry without `--force`.
 
 Every host has the same steps: **1** command, **2** file, **3** entry, **4** confirm, **5** undo
@@ -193,7 +233,7 @@ Any stdio MCP host runs the same `command`/`args` and talks JSON-RPC on stdin an
 here is host-specific. Codex and a generic JSON config:
 [docs/mcp.md → Client setup](https://github.com/Ink01101011/bantamkit/blob/main/docs/mcp.md#client-setup).
 
-## Configuration
+## 🔧 Configuration
 
 Flags go in the entry's `args`; environment variables in its `env` block (or
 `claude mcp add -e NAME=value`). Both runtimes print the same `--help`.
@@ -213,23 +253,26 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 
 Don't add `--store` by reflex: the default is layered, and the layering is most of the value.
 One-shot commands that print and exit: `--install {claude,claude-desktop,copilot,cursor}` (with
-`--force`), `--update`, `--assets-root`, `--mcp-report`, `--statusline`, `-h`. More:
+`--force`), `--install-hooks` / `--remove-hooks` (with `--yes`), `--hook`, `--update`,
+`--assets-root`, `--mcp-report`, `--statusline`, `-h`. More:
 [store binding](https://github.com/Ink01101011/bantamkit/blob/main/docs/mcp.md#which-memory-store-the-server-binds) ·
 [pinning](https://github.com/Ink01101011/bantamkit/blob/main/docs/memory.md#pinning-the-store-bantamkit_memory_dir) ·
 [event log](https://github.com/Ink01101011/bantamkit/blob/main/docs/eventlog.md#the-switch) ·
 [prices](https://github.com/Ink01101011/bantamkit/blob/main/docs/ledger.md).
 
-## Update
+## 🔄 Update
 
 ```bash
-<env>/bin/bantamkit-mcp --update       # a pip install from PyPI: runs pip install --upgrade bantamkit
+<env>/bin/bantamkit-mcp --update       # a pip install from PyPI: runs pip install --upgrade bantamkit==<latest>
 pip install -U "bantamkit[mcp]"        # the same, by hand
 pipx upgrade bantamkit                 # pipx
 uv tool upgrade bantamkit              # uv
 ```
 
-`--update` (`check the package index and update this install if it differs, then exit`) upgrades
-an install from PyPI with this interpreter's pip; it is the only network access here. An editable
+`--update` (`check the package index and update this install if it differs, then exit`) asks
+this interpreter's pip which version the index has (`pip install --dry-run --report -`, so pip's
+own index, proxy and credentials apply), installs exactly that version, and says `updated … to
+<latest>` only after the installed distribution reports it; it is the only network access here. An editable
 install, a local file or a source tree is refused with exit 1 and a sentence naming the manual
 route (for a clone, `git pull`). For a wheelhouse, repeat the download and install.
 
@@ -237,21 +280,21 @@ route (for a clone, `git pull`). For a wheelhouse, repeat the download and insta
 Desktop). `bantamkit_status` prints the version **and the `build_id` of the code answering
 you**; a new version with an old `build_id` means an old process.
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | The host times out; the server never answers | A `pipx run` entry with a cold cache and no network. Use [Install once, run offline](#install-once-run-offline) |
 | `ENOENT` from the host | A GUI host does not read your shell rc, so `pipx` is not on its PATH. `--install` records an absolute path |
 | `bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"` | Install with the `[mcp]` extra |
-| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` |
+| `already has a bantamkit entry with different settings … re-run with --force to replace it` | Re-run with `--force`; the old file is kept as `.backup-<date>` (`.backup-<date>.1` and on for a later write the same day) |
 | `… is not valid JSON, so this refuses to touch it` | Fix the host's file by hand, then re-run |
 | `MCP server bantamkit already exists in user config` | `claude mcp remove bantamkit -s user`, then install again |
 | `pinned memory store must be an absolute path` or `pinned memory store is unreachable` | Give `BANTAMKIT_MEMORY_DIR` an absolute path that exists |
 | Recall finds nothing, or the wrong store | Set `BANTAMKIT_MEMORY_DIR`; the reply names the store it searched ([the three states](https://github.com/Ink01101011/bantamkit/blob/main/docs/mcp.md#the-three-states-and-what-memory_recall-tells-the-model)) |
-| `AssetNotFound: no assets directory found; set BANTAMKIT_ASSETS` | See [The asset pack](#the-asset-pack) |
+| `AssetNotFound: no assets directory found; set BANTAMKIT_ASSETS` | See [The asset pack](#-the-asset-pack) |
 
-## What it serves
+## 🧰 What it serves
 
 It serves 14 tools, the `bantamkit_status` prompt and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
@@ -266,29 +309,29 @@ It serves 14 tools, the `bantamkit_status` prompt and two resource templates
 | `skill_audit` | audit a skill catalogue for findings |
 | `shiftwork_clock_in` | open a unit of work and get its brief |
 | `shiftwork_clock_out` | close a unit with status and accounting |
-| `shiftwork_status` | report the open cursor |
+| `shiftwork_status` | read-only progress summary of a checkpoint |
 | `shiftwork_plan` | read-only: which units of a checkpoint its `depends_on` graph permits to run at once. Never moves the cursor |
 | `work_plan` | turn any `{id, depends_on, priority}` graph into the batches that may run in parallel, plus the widest fan-out |
 | `token_ledger` | what a session cost, read off the host's transcripts |
-| `bantamkit_status` | report store health against its budget |
+| `bantamkit_status` | is bantamkit working, and which build: version, `build_id`, store health against its budget |
 | `build_identity` | report the fingerprint of the source on disk, not the executing code — useful when a machine carries two installs under one name |
 
-The document reader `bantamkit_read` left the served tools in job50 (2026-09-12) and stays in the
-library as `bantamkit.docread`.
+The document reader `bantamkit_read` is no longer served; it stays in the library as
+`bantamkit.docread`.
 
-## Requirements
+## 📋 Requirements
 
 Python 3.11 or newer. Three runtime dependencies — `httpx`, `jsonschema`, `pyyaml` — plus `mcp`
 under the `[mcp]` extra.
 
-## The asset pack
+## 📦 The asset pack
 
 Contracts, schemas, eval tasks, rubrics and tool manifests ship inside the package.
 `bantamkit-mcp --assets-root` prints the resolved directory and its file count, and
 `BANTAMKIT_ASSETS` overrides it. A build that cannot find the pack fails instead of shipping
-without it — deliberately, because the silent version shipped once.
+without it.
 
-## The operator CLI: `python -m bantamkit.memory`
+## 🧹 The operator CLI: `python -m bantamkit.memory`
 
 Store maintenance, not served over MCP:
 
@@ -304,10 +347,10 @@ python -m bantamkit.memory restore <name>
 `archive` moves a fact out without deleting it; `restore` brings it back by name.
 Full reference: [docs/memory.md → The operator CLI](https://github.com/Ink01101011/bantamkit/blob/main/docs/memory.md#the-operator-cli).
 
-## Where the Python and Node servers differ
+## 🔀 Where the Python and Node servers differ
 
 Both servers read and write the same on-disk store. Every feature lands in both in one change, and
-a conformance case compares their answers. Three differences are deliberate, each ruled in the
+a conformance case compares their answers. Four differences are deliberate, each ruled in the
 [divergence table](https://github.com/Ink01101011/bantamkit/blob/main/docs/porting.md#where-the-two-runtimes-deliberately-differ):
 
 - **pdf, `.doc` and `.rtf`:** this side's reader (`bantamkit.docread`) reads them, pdf with a
@@ -317,20 +360,25 @@ a conformance case compares their answers. Three differences are deliberate, eac
   text and errors alike.
 - **`build_id`** hashes the executing tree, so it differs by construction; `assets_digest` is
   identical, and that is the one that carries meaning.
+- **Hand-edited YAML that only this side reads.** A fact file's frontmatter is read by PyYAML
+  here. Eight shapes it accepts — an anchor, `!!str`, a flow mapping (empty or not), a nested
+  flow sequence, a flow-sequence pair, a flow sequence over two lines, an anchored sequence
+  item — are refused by name on the Node side, whose recall and save skip that file and say
+  so. Every fact the tools *write* is in a shape both sides read.
 
-## Module API
+## 🧩 Module API
 
 The package is a server first, but it is importable too: `import bantamkit` is a supported call,
 and the names behind it are part of what is published.
 
 Everything in this section was measured against the **wheel**, not the source tree: a
-`bantamkit-0.35.3-py3-none-any.whl` built with `pip wheel --no-deps --no-build-isolation`,
-installed into a throwaway venv with `--no-index --no-deps`, and imported from a working
-directory outside the checkout (2026-09-21). A name that only exists in `src/` is not API; this
+`bantamkit-0.35.9-py3-none-any.whl` built from this tree with `pip wheel --no-deps
+--no-build-isolation`, installed into a throwaway venv, and imported from a working directory
+outside the checkout (2026-10-15). A name that only exists in `src/` is not API; this
 is what an importer gets.
 
-**There is no `exports` map in Python, so nothing is sealed.** The wheel carries **31** modules
-and every one is deep-importable — `from bantamkit.mcpserver import main` resolves, and so does
+**There is no `exports` map in Python, so nothing is sealed.** Every module in the wheel is
+deep-importable — `from bantamkit.mcpserver import main` resolves, and so does
 `from bantamkit.memory import MemoryStore`. That is the opposite of the npm package, which
 declares a single `.` entry point and refuses every deep import with
 `ERR_PACKAGE_PATH_NOT_EXPORTED`. Only the names below are *intended* as API; the rest are
@@ -357,7 +405,7 @@ as a side effect of the package's own imports (`agent`, `assets`, `budget`, `cli
 **This is not the npm package's export surface.** Both runtimes serve the same fourteen MCP
 tools, but what each one exports *to an importer* is a different product: here it is the
 agent/critique/eval library above; there it is the memory store, the asset pack, the event log,
-the shift-work tools and a set of CPython-semantics shims — 139 values behind one entry point. Of
+the shift-work tools and a set of CPython-semantics shims — 141 values behind one entry point. Of
 these 30 names exactly **three** are spelled the same on the npm side (`BantamError`, `Memory`,
 `MemoryStore`), and a spelling is not a promise about behaviour. A parity claim about the MCP
 tools is not a parity claim about these.
@@ -411,7 +459,7 @@ It prints `45`. The 30 values alone, without the submodules:
 Both numbers move whenever `src/bantamkit/__init__.py` does, which is why they are quoted with
 the command that prints them rather than kept in prose.
 
-## Development
+## 🧪 Development
 
 ```bash
 git clone https://github.com/Ink01101011/bantamkit
@@ -427,7 +475,7 @@ The cross-runtime gate needs Node:
 node tools/conformance/run.mjs --all
 ```
 
-## Documentation
+## 📚 Documentation
 
 | Page | Covers |
 |---|---|

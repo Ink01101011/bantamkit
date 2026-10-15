@@ -44,7 +44,7 @@ import { basename } from 'node:path';
 
 import { BantamError } from '../errors.js';
 import type { Fact, FactValue } from './factfile.js';
-import { formatFact, parseFrontmatter, pySplit, pyStrip, todayLocal } from './factfile.js';
+import { formatFact, parseFrontmatter, pyList, pySplit, pyStrip, pyTruthy, todayLocal } from './factfile.js';
 import { PyScalar } from './pyyaml.js';
 import {
   asPyOSError,
@@ -386,6 +386,12 @@ export interface SaveResult {
   name: string;
   /** `SaveResult.similar` is the OTHER fact's `name` field, verbatim — see `pyText`. */
   similar: FactValue;
+  /**
+   * Every fact file the duplicate check could not read (#120, user ruling 2026-10-15): one
+   * bad file costs that file, not the save. `Memory` names them. ABSENT when none was
+   * skipped, so the result of every save over a healthy store keeps the shape it always had.
+   */
+  skipped?: SkippedFact[];
 }
 
 /** What one archived fact WAS, kept after its file has left `facts/`. */
@@ -676,40 +682,8 @@ export function sortScored<T extends { score: number; name: FactValue }>(scored:
   return a;
 }
 
-/**
- * `bool(value)` for a frontmatter value.
- *
- * `_facts` asks it twice — `meta.get("links") or []` and `meta.get("created") or
- * _mtime_date(path)` — and the answer is not "is it a non-empty string". A `PyScalar`
- * carries Python's own answer (`0`, `0.0` and `false` are falsy; a `date` never is), an
- * empty list is falsy, and `undefined` stands for the absent key.
- */
-function pyTruthy(value: FactValue | FactValue[] | undefined): boolean {
-  if (value === undefined || value === null) return false;
-  if (typeof value === 'string') return value !== '';
-  if (Array.isArray(value)) return value.length > 0;
-  return value.truthy;
-}
-
-/**
- * `list(meta.get("links") or [])`.
- *
- * A string is iterated into its CHARACTERS, which the spread does over codepoints — the
- * same faithful-not-tidy answer as before. What is new is the last arm: `list(7)` is a
- * `TypeError` in Python and the `except (ValueError, KeyError, yaml.YAMLError)` in `_facts`
- * does NOT catch it, so it escapes the store with CPython's own sentence rather than
- * becoming `malformed fact file …`. That is reproduced, message and escape route both,
- * because a caller that catches `MemoryValidationError` would swallow one and not the
- * other. Not fixed in `runtime-py` (invariant 8) — registered.
- */
-function pyList(value: FactValue | FactValue[] | undefined): FactValue[] {
-  if (!pyTruthy(value)) return [];
-  if (Array.isArray(value)) return [...value];
-  if (typeof value === 'string') return [...value];
-  const e = new TypeError(`'${(value as PyScalar).pyType}' object is not iterable`);
-  e.name = 'TypeError';
-  throw e;
-}
+// `pyTruthy` and `pyList` live in `factfile.ts` since #176: `formatFact` maps a parsed
+// `{meta, body}` the way `_facts` does, through the same two functions.
 
 /**
  * `isinstance(yaml.safe_load(front), dict)` — the QUESTION, not a second YAML parser.
@@ -881,13 +855,30 @@ export class MemoryStore {
 
     const newTokens = tokens(`${name} ${description}`);
     let existing: Fact | null = null;
-    for (const fact of this.facts()) {
+    // ONE BAD FACT FILE COSTS THAT FILE, NOT THE SAVE (#120, user ruling 2026-10-15). WAS:
+    // one file this codec refuses — including the eight YAML shapes PyYAML reads and this
+    // port refuses by ruling — refused every save into a store Python could save into. NOW:
+    // it is skipped and named in `skipped`, as recall names it since #119. A `facts/` that
+    // cannot be LISTED still raises here, before anything is written. The one file a save
+    // never skips is the one it would WRITE: a file this runtime cannot read is never
+    // overwritten by a save (refused below). See the reference.
+    const skipped: SkippedFact[] = [];
+    for (const fact of this.facts(undefined, skipped)) {
       if (fact.name === name) {
         existing = fact; // same name = update, not duplicate
         continue;
       }
       if (jaccard(newTokens, tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) >= DUPLICATE_JACCARD) {
-        return { status: 'duplicate', name, similar: fact.name };
+        return { status: 'duplicate', name, similar: fact.name, ...(skipped.length > 0 ? { skipped } : {}) };
+      }
+    }
+    const target = `${name}.md`;
+    for (const s of skipped) {
+      if (s.file === target) {
+        throw new MemoryValidationError(
+          `${s.reason}; saving '${name}' would overwrite that file, so nothing was saved ` +
+            '-- repair it or move it out of facts/ first',
+        );
       }
     }
 
@@ -912,17 +903,19 @@ export class MemoryStore {
       if (e instanceof PyOSError && NOT_WRITABLE_CODES.has(e.code)) throw this.unwritable(e);
       throw e;
     }
+    // The index this save measures and writes is built from the facts it COULD read, the
+    // same tolerant listing as above: a skipped file has no line in it.
     try {
-      this.checkIndexBudget();
+      this.checkIndexBudget(true);
     } catch (e) {
       if (!(e instanceof MemoryBudgetExceeded)) throw e;
       if (existed === null) pyUnlink(path);
       else pyWriteText(path, existed);
-      this.rebuildIndex();
+      this.rebuildIndex(true);
       throw e;
     }
-    this.rebuildIndex();
-    return { status: 'saved', name, similar: null };
+    this.rebuildIndex(true);
+    return { status: 'saved', name, similar: null, ...(skipped.length > 0 ? { skipped } : {}) };
   }
 
   /**
@@ -1402,7 +1395,13 @@ export class MemoryStore {
    * Registered as a runtime-py defect, not fixed here (invariant 8).
    */
   indexText(): string {
-    return this.facts().map((fact) => this.indexLine(fact)).join('');
+    return this.indexTextOf(false);
+  }
+
+  /** `_index_text`: `tolerant` leaves out a fact file that cannot be read (#120, save only). */
+  private indexTextOf(tolerant: boolean): string {
+    const facts = tolerant ? this.facts(undefined, []) : this.facts();
+    return facts.map((fact) => this.indexLine(fact)).join('');
   }
 
   /**
@@ -1807,8 +1806,8 @@ export class MemoryStore {
    * tell a wipe from a legitimate `compact()`, and it would leave every reader still being
    * lied to. The read was wrong and the read is where it is fixed.
    */
-  private rebuildIndex(): void {
-    pyWriteText(pyJoin(this.root, 'index.md'), this.indexText());
+  private rebuildIndex(tolerant = false): void {
+    pyWriteText(pyJoin(this.root, 'index.md'), this.indexTextOf(tolerant));
   }
 
   /**
@@ -1819,8 +1818,8 @@ export class MemoryStore {
    * raises `MemoryValidationError` from in here — a DIFFERENT error from the budget one, and
    * `save`'s rollback below is written to re-throw it untouched.
    */
-  private checkIndexBudget(): void {
-    const size = Buffer.byteLength(this.indexText(), 'utf8');
+  private checkIndexBudget(tolerant = false): void {
+    const size = Buffer.byteLength(this.indexTextOf(tolerant), 'utf8');
     if (size > this.indexBudget) {
       throw new MemoryBudgetExceeded(
         `memory index is ${size} bytes, budget is ${this.indexBudget}: ` +

@@ -595,8 +595,10 @@ def _accounting_refusal(unit_id: str, unit: dict, accounting: dict | None) -> st
       both call signatures default it to null). A null line is not an audit record, and
       the role gate already refuses a constrained role that reports no model.
     * ODD KEYS PASS. `additionalProperties: true` — a key the schema does not name is
-      written verbatim (a refused key is friction, not safety). Only the NAMED keys have
-      a type, and only `tokens` and `duration_ms` are required.
+      written verbatim (a refused key is friction, not safety), EXCEPT the five the
+      runtime writes itself (`unit`, `role`, `status`, `ts`, `event`), which
+      `_reserved_refusal` refuses before anything is written (job65, #117). Only the
+      NAMED keys have a type, and only `tokens` and `duration_ms` are required.
     * NO SHAPE, NO LINE (J50-9A). When the pack cannot supply the shape the line is
       refused with `ACCOUNTING_SHAPE_UNREADABLE`, in this same place, writing nothing —
       not skipped. Skipping is the fail-open this file has already had once: job47's

@@ -46,7 +46,7 @@ export {
   pyStrip,
   todayLocal,
 } from './memory/factfile.js';
-export type { Fact, FactMeta, FactValue } from './memory/factfile.js';
+export type { Fact, FactMeta, FactValue, ParsedFact } from './memory/factfile.js';
 export {
   constructPlain,
   PyScalar,

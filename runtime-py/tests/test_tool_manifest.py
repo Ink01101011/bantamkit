@@ -82,11 +82,23 @@ def _served_listing(tmp_path, pack: Path | None = None) -> tuple[list[str], dict
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 listing = await session.list_tools()
+                # `title` and `annotations` (#182, job67) ride along when the tool carries
+                # them, so the golden below declares them like every other served field.
                 return [tool.name for tool in listing.tools], {
                     tool.name: {
                         "description": tool.description,
                         "inputSchema": tool.input_schema,
                         "outputSchema": tool.output_schema,
+                        **({} if tool.title is None else {"title": tool.title}),
+                        **(
+                            {}
+                            if tool.annotations is None
+                            else {
+                                "annotations": tool.annotations.model_dump(
+                                    by_alias=True, exclude_none=True
+                                )
+                            }
+                        ),
                     }
                     for tool in listing.tools
                 }
@@ -95,7 +107,7 @@ def _served_listing(tmp_path, pack: Path | None = None) -> tuple[list[str], dict
 
 
 def _served_tools(tmp_path) -> dict[str, dict]:
-    """`{name: {description, inputSchema, outputSchema}}` as advertised over stdio."""
+    """`{name: {description, inputSchema, outputSchema, title, annotations}}` over stdio."""
     return _served_listing(tmp_path)[1]
 
 
@@ -161,6 +173,8 @@ def test_each_asset_advertises_what_the_server_actually_advertises(tmp_path):
         assert asset["description"] == wire["description"], name
         assert asset["parameters"] == wire["inputSchema"], name
         assert asset["output_schema"] == wire["outputSchema"], name
+        assert asset["title"] == wire["title"], name
+        assert asset["annotations"] == wire["annotations"], name
 
 
 #: The largest description a host will show whole. Claude Code truncates a tool
@@ -481,6 +495,9 @@ def test_the_advertised_surface_is_read_from_the_asset_pack_at_startup(tmp_path)
             "description": description,
             "inputSchema": parameters,
             "outputSchema": output_schema,
+            # Not mutated, but served (#182): the expectation is the whole advertisement.
+            "title": asset["title"],
+            "annotations": asset["annotations"],
         }
 
     assert sorted(expected) == sorted(_golden()["tools"])  # the mutation covered all ten

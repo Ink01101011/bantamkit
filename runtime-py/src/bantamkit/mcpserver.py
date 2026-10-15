@@ -57,9 +57,15 @@ try:
     from mcp.server.mcpserver.exceptions import ResourceError
     from mcp.server.mcpserver.tools import Tool as SDKTool
     from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
+    from mcp.shared.exceptions import MCPError
+    from mcp.types import INVALID_PARAMS, ErrorData, ToolAnnotations
     from pydantic import Field
 except ImportError:  # surfaced as a clear SystemExit in main()
     MCPServer = None  # type: ignore[assignment]
+    MCPError = None  # type: ignore[assignment,misc]
+    INVALID_PARAMS = -32602
+    ErrorData = None  # type: ignore[assignment,misc]
+    ToolAnnotations = None  # type: ignore[assignment,misc]
     Field = None  # type: ignore[assignment]
     FuncMetadata = object  # type: ignore[assignment,misc]
     ResourceError = None  # type: ignore[assignment]
@@ -1059,6 +1065,30 @@ class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
 
     unwrap_json: bool = True
 
+    def validate_arguments(self, arguments_to_validate: dict[str, Any]) -> dict[str, Any]:
+        """Refuse an unknown top-level key by name, then validate as the SDK does (#133).
+
+        User ruling 2026-10-15: every served tool refuses an argument key its schema does not
+        name, and every served asset advertises `additionalProperties: false` at the top
+        level. Until 0.36.0 pydantic's default `extra="ignore"` dropped such a key, so
+        `unitId` for `unit_id` ran the call as if the argument had never been sent. The
+        sentence is `unknown argument '<key>'; known: <fields in schema order>` (`(none)`
+        for a tool that takes no argument), naming the first unknown key in arrival order;
+        `Tool.run` prefixes `Error executing tool <name>: ` and answers `isError: true`,
+        exactly as for a pydantic refusal, and the handler never runs. NOT `extra="forbid"`:
+        that would be pydantic's `extra_forbidden` frame listing EVERY unknown key after the
+        type errors, and the port would have to reproduce it. The port says the same sentence
+        from `unknownArgument` in `runtime-ts/src/mcp/pyargs.ts`. A lone surrogate is refused
+        before this, by `bantamkit.mcpstdio`, on both sides.
+        """
+        known = [field.alias or name for name, field in self.arg_model.model_fields.items()]
+        for key in arguments_to_validate:
+            if key not in known:
+                raise ValueError(
+                    f"unknown argument '{key}'; known: {', '.join(known) if known else '(none)'}"
+                )
+        return super().validate_arguments(arguments_to_validate)
+
     def pre_parse_json(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.unwrap_json:
             return data
@@ -1232,7 +1262,18 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
         raise BantamError(
             f"tool asset {name!r} does not claim the mcp surface: {asset['surfaces']}"
         )
-    tool = SDKTool.from_function(fn, name=asset["name"], description=asset["description"])
+    # `title` and `annotations` (#182) are advertised from the asset like the description,
+    # whatever the environment. The opt-in event log (`BANTAMKIT_EVENT_LOG`) is a diagnostic,
+    # not a side effect a hint describes (user ruling (b) on #182 Q1, job67 J67-9), so a
+    # read-only tool is `readOnlyHint: true` with the log on or off; the port does the same.
+    hints = asset.get("annotations")
+    tool = SDKTool.from_function(
+        fn,
+        name=asset["name"],
+        title=asset.get("title"),
+        description=asset["description"],
+        annotations=None if hints is None else ToolAnnotations.model_validate(hints),
+    )
     return tool.model_copy(
         update={
             "parameters": asset["parameters"],
@@ -1977,6 +2018,29 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     # IT CARRIES THE ANSWER, not an instruction to go and get it. `prompts/get` runs
     # server-side, so the report is already in the message the host inserts: the operator
     # sees it with no tool round trip, and it is true as of the moment they asked.
+    # AN UNKNOWN PROMPT NAME IS INVALID PARAMS (#198, user ruling 2026-10-15). The SDK's
+    # `get_prompt` raises a bare `ValueError("Unknown prompt: <name>")`, which its dispatcher
+    # answers with `code: 0` — a default nobody chose, and not the port's `-32602`. One prompt
+    # is registered, so the name is checked here and refused with the same sentence as an
+    # `MCPError`, which the dispatcher passes through with its own code. `_handle_get_prompt`
+    # reaches `self.get_prompt` at call time, so the instance attribute is what answers.
+    # `data` is SET to `None` rather than left out: stdio serialises with `exclude_unset`,
+    # so an explicit `None` is the `"data": null` the port's frame carries, byte for byte,
+    # and `MCPError(code, message)` alone would drop the key.
+    sdk_get_prompt = server.get_prompt
+
+    async def get_prompt(
+        name: str, arguments: dict[str, Any] | None = None, context: Any = None
+    ) -> Any:
+        if name != STATUS_NAME:
+            message = f"Unknown prompt: {name}"
+            refusal = MCPError(INVALID_PARAMS, message)
+            refusal.error = ErrorData(code=INVALID_PARAMS, message=message, data=None)
+            raise refusal
+        return await sdk_get_prompt(name, arguments, context)
+
+    server.get_prompt = get_prompt  # type: ignore[method-assign]
+
     @server.prompt(
         name=STATUS_NAME,
         title="bantamkit status",

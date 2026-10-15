@@ -1,5 +1,6 @@
 {
   "name": "shiftwork_clock_out",
+  "title": "Shift work: clock out",
   "description": "Shift-work clock-out: record a finished unit — set its status, advance plan.cursor, merge handoff_patch, push history_entry onto the 5-entry ring — validating the whole mutated document against the checkpoint schema BEFORE an atomic write (a failure writes nothing and returns result=error). `unit_id` must be `plan.cursor` — which needs no brief, clocking out with briefed=false — OR a unit briefed since its own last clock-out; any other id keeps its refusal (`unit X is not the cursor unit Y`). plan.cursor then advances to the head of the ready batch recomputed on the mutated document, falling back to plan.units order over the remaining non-terminal units when the graph cannot batch (cycle or unknown dependency), and to unit_id when none remain. `handoff_patch` and `history_entry` are both required arguments: `handoff_patch` is shallow-merged into `handoff` and takes only its four keys (pass `{}` to leave it unchanged); `history_entry` needs `unit` and `outcome`; `status` is one of the five unit statuses — a value outside these shapes is refused by the schema check, nothing written. Every success appends one accounting line (unit, role, status, ts, briefed, plus your accounting fields, e.g. tokens/duration_ms/model) to <checkpoint>.log.jsonl, beside the brief lines clock_in writes (a brief line carries `event` and no `status`). `accounting` is optional: null, the default, logs a line with no cost figures at all; a non-null line must fit the accounting shape below. `briefed` is written by the runtime, never taken from you: true when a brief was issued for this unit since its LAST clock-out (not ever), so a unit re-run after a blocked clock-out reads false. If job.roles names this unit's role, accounting.model must be one of that role's model identifiers, spelled exactly, or nothing is written — see the `model` property below.",
   "surfaces": [
     "mcp"
@@ -140,11 +141,18 @@
       "history_entry"
     ],
     "type": "object",
-    "title": "shiftwork_clock_outArguments"
+    "title": "shiftwork_clock_outArguments",
+    "additionalProperties": false
   },
   "output_schema": {
     "type": "object",
     "additionalProperties": true,
     "title": "shiftwork_clock_outDictOutput"
+  },
+  "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": false,
+    "openWorldHint": false
   }
 }

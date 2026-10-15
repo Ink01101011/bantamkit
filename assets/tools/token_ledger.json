@@ -1,6 +1,7 @@
 {
   "name": "token_ledger",
-  "description": "What a session actually cost, read off the host's own transcripts. Walks `root` for `*.jsonl` transcripts — the host writes `<cwd-slug>/<session>.jsonl` and `<cwd-slug>/<session>/subagents/*.jsonl` beneath `~/.claude/projects` — and answers ONE JSON document: `root`, `transcripts`, `lines`, `requests` (distinct API requests), `totals` (the four classes: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`), `sessions` (one row each), `omissions`, and `cost` only when `model` is given. Call it to answer 'what did this work cost' from the API's own `usage` blocks — nothing here is estimated. Point `root` at ONE project's slug directory, not the whole projects tree: there is no time window and no summary mode, so a whole-corpus call answers a row per session ever recorded and blows the host's tool-result cap. The four classes are reported and priced separately because on a real prompt 98.1 % of the tokens were `cache_read`. Counting is per `requestId`, never per line: one response is written as several records with the same `usage`, so the dedupe spans the whole walk and every later copy is a `duplicate-request` omission. A subagent's transcript carries its PARENT's `sessionId`, so its cost lands in the parent row as `sidechain_requests`. `lines` equals `requests` plus the sum of every omission's `count`, always. An omission is `{subject, count, what}`; `what` names the first site as `<relpath>:<line>` plus `and N more`. `cost` needs a rate: the shipped price table has none, so `{\"unavailable\": \"no rate recorded for model ...\"}` is the NORMAL answer, not an error; a rate enters through `$BANTAMKIT_PRICES` or `prices`. Refused with their own sentence: an EMPTY `root`, a `root` that is missing or is a file, an EMPTY `model`, and a token total above 2**53-1. The record rule and the nine omission subjects: docs/ledger.md.",
+  "title": "Token ledger",
+  "description": "What a session actually cost, read off the host's own transcripts. Walks `root` for `*.jsonl` transcripts — the host writes `<cwd-slug>/<session>.jsonl` and `<cwd-slug>/<session>/subagents/*.jsonl` beneath `~/.claude/projects` — and answers ONE JSON document: `root`, `transcripts`, `lines`, `requests` (distinct API requests), `totals` (the four classes: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`), `sessions` (one row each), `omissions`, and `cost` only when `model` is given. A degraded server adds the footer as its last key, `bantamkit_degraded`. Call it to answer 'what did this work cost' from the API's own `usage` blocks; nothing is estimated. Point `root` at ONE project's slug directory: there is no time window or summary mode, so a whole-corpus call answers a row per session ever recorded and blows the host's tool-result cap. The four classes are priced separately: on a real prompt 98.1 % of the tokens were `cache_read`. Counting is per `requestId`, never per line: one response is written as several records with the same `usage`, so the dedupe spans the whole walk and every later copy is a `duplicate-request` omission. A subagent's transcript carries its PARENT's `sessionId`, so its cost lands in the parent row as `sidechain_requests`. `lines` equals `requests` plus the sum of every omission's `count`, always. An omission is `{subject, count, what}`; `what` names the first site as `<relpath>:<line>` plus `and N more`. `cost` needs a rate: the shipped price table has none, so `{\"unavailable\": \"no rate recorded for model ...\"}` is the NORMAL answer, not an error; a rate enters through `$BANTAMKIT_PRICES` or `prices`. Refused with their own sentence: an EMPTY `root`, a `root` that is missing or is a file, an EMPTY `model`, and a token total above 2**53-1. The record rule and the nine omission subjects: docs/ledger.md.",
   "surfaces": [
     "mcp"
   ],
@@ -22,7 +23,8 @@
         "type": "string",
         "description": "Price table to read instead of `$BANTAMKIT_PRICES` or the shipped one; only consulted when `model` is given. A malformed table is a configuration fault and stops with its own sentence, rather than being reported as an unpriced model"
       }
-    }
+    },
+    "additionalProperties": false
   },
   "output_schema": {
     "properties": {
@@ -36,5 +38,9 @@
     ],
     "type": "object",
     "title": "token_ledgerOutput"
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "openWorldHint": false
   }
 }

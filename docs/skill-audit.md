@@ -107,8 +107,9 @@ that IS here loses and is named in a `stale-version` record. That is the same di
 Until 2026-09-12 the served description was 8,161 characters, and Claude Code truncates a
 tool description at 2,048 — mid-sentence, without an error, keeping the input schema. What
 was cut was the half that says when to call the tool and how to read its answer, so the
-description is now 1,826 characters and earns the call; the reference material it carried
-lives here (job50, J50-3; the register row is J49-B4).
+description was cut to 1,826 characters and earns the call; the reference material it carried
+lives here (job50, J50-3; the register row is J49-B4). It is 1,899 since job67 (J67-9) named the
+`bantamkit_degraded` key in it, under the 1,900 the packaging budget enforces.
 
 **Identity comes from the path.** `<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md`
 relative to `root`; any other shape is a skill outside a plugin, identified by its directory

@@ -118,8 +118,16 @@ def run_calls(request: dict) -> dict:
                 # `similar` is the OTHER fact's `name` field verbatim, and `_facts` puts
                 # whatever the YAML resolved to in there — an `int` for `name: 7`. `str()`
                 # for the same reason `fact_json` uses it.
-                results.append({"status": r.status, "name": b64(r.name),
-                                "similar": None if r.similar is None else b64(str(r.similar))})
+                result = {"status": r.status, "name": b64(r.name),
+                          "similar": None if r.similar is None else b64(str(r.similar))}
+                # `skipped` (#120, user ruling 2026-10-15): the fact files the save could
+                # not read and left out, each with the store's own sentence for why. Only
+                # present when one was, so every result recorded before #120 is unchanged.
+                if r.skipped:
+                    result["skipped"] = [
+                        {"file": b64(x["file"]), "reason": b64(x["reason"])} for x in r.skipped
+                    ]
+                results.append(result)
             elif op == "recall":
                 query, k, stamp = call["args"]
                 hits = store.recall(unb64(query), k, stamp)
@@ -131,6 +139,19 @@ def run_calls(request: dict) -> dict:
                 results.append(None if found is None else fact_json(found))
             elif op == "index_text":
                 results.append({"index_text": b64(store.index_text())})
+            elif op == "memory_save":
+                # `Memory.save_outcome` over the SAME root (#120 ruling): the reply the model
+                # reads, which names every fact file the save skipped.
+                from bantamkit.memory.component import Memory
+
+                mem = Memory(request["root"], **kwargs)
+                mem.store._today = lambda: today
+                type_, name, description, body, links = call["args"]
+                out = mem.save_outcome(
+                    unb64(type_), unb64(name), unb64(description), unb64(body),
+                    [unb64(x) for x in links],
+                )
+                results.append({"reply": b64(out.reply), "status": out.status})
             else:
                 raise ValueError(f"unknown call op {op!r}")
         except BaseException as e:  # noqa: BLE001 — every failure is part of the comparison

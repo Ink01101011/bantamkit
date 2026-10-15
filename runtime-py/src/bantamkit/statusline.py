@@ -139,7 +139,10 @@ OUTCOMES = frozenset(
 ADVERSE = ("raised", "refused-budget", "empty-unreadable-layer")
 
 #: The host's log validates tool names with exactly this and so does `mcpreport.py`.
-_TOOL = re.compile(r"^[a-z0-9_]{1,64}$")
+#: `\Z`, not `$`: Python's `$` also matches before a trailing newline, so `"x\n"` passed and
+#: rendered a two-line status line where the port (JS `$`) dropped the record (register
+#: (nnnn), fixed in job67 J67-9; `tools/conformance/suites/statusline.mjs`, `newline-tool`).
+_TOOL = re.compile(r"^[a-z0-9_]{1,64}\Z")
 
 #: U+1F7E2 / U+1F7E0 are the same two `docs/status.md` pins; U+26AA is this file's.
 ACTIVE = "bantamkit Active 🟢"
@@ -148,6 +151,31 @@ UNKNOWN = "bantamkit Unknown ⚪"
 
 #: The separator. One space, U+00B7, one space.
 SEP = " · "
+
+#: The widest the line may be, in terminal columns (#189).
+#:
+#: Status bars are commonly ~80 columns. Every fixed part, every count (bounded by
+#: `WINDOW`) and every outcome (a closed vocabulary) fits well inside it; the one part that
+#: does not is the tool name, which `_TOOL` lets run to 64 characters. When the line would
+#: be wider, `render` shortens the TOOL -- never the outcome, the part an operator acts on
+#: -- and marks the cut with `ELLIPSIS`. A line that already fits is never touched.
+WIDTH = 80
+
+#: U+2026, one column: the mark a shortened tool name ends in.
+ELLIPSIS = "\u2026"
+
+#: The three state emoji: East-Asian Wide, two columns each. Every other character is one.
+_WIDE = frozenset({0x1F7E2, 0x1F7E0, 0x26AA})
+
+
+def columns(line: str) -> int:
+    """Terminal columns of a rendered line.
+
+    Not a general width function: the line can only hold ASCII, U+00B7, U+2026 and the
+    three emoji, so the three are the whole wide set.
+    """
+    return sum(2 if ord(ch) in _WIDE else 1 for ch in line)
+
 
 #: Every reason the UNKNOWN state can carry. A closed set, like `OUTCOMES`.
 OFF = "event log off"
@@ -291,11 +319,17 @@ def render(reading: Reading) -> str:
     if reading.state == "unknown":
         return f"{UNKNOWN}{SEP}{reading.reason}"
     events = f"{reading.events} event" + ("" if reading.events == 1 else "s")
-    named = f"{reading.tool} {reading.outcome}"
+    head = f"{ACTIVE}{SEP}{events}{SEP}"
     if reading.state == "degraded":
         problems = f"{reading.problems} problem" + ("" if reading.problems == 1 else "s")
-        return f"{DEGRADED}{SEP}{events}{SEP}{problems}{SEP}{named}"
-    return f"{ACTIVE}{SEP}{events}{SEP}{named}"
+        head = f"{DEGRADED}{SEP}{events}{SEP}{problems}{SEP}"
+    line = f"{head}{reading.tool} {reading.outcome}"
+    over = columns(line) - WIDTH
+    if over <= 0:
+        return line
+    # Tool names are ASCII by `_TOOL`, so one character is one column here.
+    keep = max(0, len(reading.tool) - over - len(ELLIPSIS))
+    return f"{head}{reading.tool[:keep]}{ELLIPSIS} {reading.outcome}"
 
 
 def status_line(
