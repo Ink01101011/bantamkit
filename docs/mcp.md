@@ -66,13 +66,15 @@ the `j67-1:` block, pins each tool on each side).
 **Every tool has a `title` and MCP 2025-06-18 `annotations`** (#182), from its asset.
 `readOnlyHint: true` is claimed only by the eight tools that write nothing at all —
 `validate_json`, `shiftwork_status`, `shiftwork_plan`, `work_plan`, `build_identity`,
-`bantamkit_status`, `skill_audit`, `token_ledger` — and only while the event log is off: with
-`BANTAMKIT_EVENT_LOG` set, every handler appends a record, so those eight are advertised as
-`readOnlyHint: false, destructiveHint: false, idempotentHint: false` instead. `memory_recall`
-is never read-only (it stamps `last_recalled` on the facts it returns), nor is
+`bantamkit_status`, `skill_audit`, `token_ledger` — whatever the environment. The opt-in
+[event log](eventlog.md) (`BANTAMKIT_EVENT_LOG`) is a diagnostic, not a side effect a hint
+describes, so setting it changes no hint (user ruling on #182; until J67-9 the eight turned into
+`readOnlyHint: false, destructiveHint: false, idempotentHint: false` while it was on).
+`memory_recall` is never read-only (it stamps `last_recalled` on the facts it returns), nor is
 `shiftwork_clock_in` (it appends a brief line). `openWorldHint` is `false` on all fourteen:
-none reaches past the local filesystem. Both servers advertise the same hints (the `j67-2:`
-block of `wire.mjs` pins each tool on each side, log off and on).
+none reaches past the local filesystem. Both servers advertise the same hints, log on or off
+(the `j67-2:` block of `wire.mjs` pins each tool on each side, and the `j67-9:` block pins
+`tools/list` identical with and without the log on each side).
 
 ## Shift-work tools
 

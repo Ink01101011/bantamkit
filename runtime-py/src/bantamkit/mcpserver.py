@@ -1224,33 +1224,7 @@ def _document_key(path: str) -> tuple[str, int, int] | None:
         return None
 
 
-#: The three hints a read-only tool's advertisement turns into while the event log is ON.
-#:
-#: #182 (job67). `readOnlyHint: true` in an asset means the tool never writes anything on any
-#: path — and that holds only while `BANTAMKIT_EVENT_LOG` is unset: every served handler
-#: appends a record to `<store>/events/mcp.jsonl` when the log is on (`bantamkit_status`
-#: on its raise path only). So a server whose log is on advertises those tools as writers,
-#: append-only (`destructiveHint: false`) and not idempotent (each call adds a line). The
-#: port's `EVENT_LOG_HINTS` in `runtime-ts/src/mcp/server.ts` is the same three keys.
-EVENT_LOG_HINTS = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
-
-
-def served_annotations(asset: dict[str, Any], event_log_on: bool) -> dict[str, Any] | None:
-    """The `annotations` a tool is advertised with: the asset's, adjusted for the event log.
-
-    `None` for an asset that carries none. A read-only tool keeps its asset hints while the
-    log is off and takes `EVENT_LOG_HINTS` over them while it is on; a writer's hints are
-    the asset's either way, because the log adds nothing a writer did not already admit.
-    """
-    hints = asset.get("annotations")
-    if hints is None:
-        return None
-    if event_log_on and hints.get("readOnlyHint") is True:
-        return {**hints, **EVENT_LOG_HINTS}
-    return dict(hints)
-
-
-def _from_manifest(fn: Callable[..., Any], name: str, event_log_on: bool = False) -> Any:
+def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
 
     The asset pack under `assets/tools/` is the tool contract for every runtime that
@@ -1288,9 +1262,11 @@ def _from_manifest(fn: Callable[..., Any], name: str, event_log_on: bool = False
         raise BantamError(
             f"tool asset {name!r} does not claim the mcp surface: {asset['surfaces']}"
         )
-    # `title` and `annotations` (#182) are advertised from the asset like the description;
-    # `served_annotations` is the one place the event log's state moves a hint.
-    hints = served_annotations(asset, event_log_on)
+    # `title` and `annotations` (#182) are advertised from the asset like the description,
+    # whatever the environment. The opt-in event log (`BANTAMKIT_EVENT_LOG`) is a diagnostic,
+    # not a side effect a hint describes (user ruling (b) on #182 Q1, job67 J67-9), so a
+    # read-only tool is `readOnlyHint: true` with the log on or off; the port does the same.
+    hints = asset.get("annotations")
     tool = SDKTool.from_function(
         fn,
         name=asset["name"],
@@ -2007,20 +1983,20 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     # refused by `_from_manifest` at startup. The handlers below are DORMANT, not gone:
     # a roster decision, not a deletion of working code.
     tools = [
-        _from_manifest(memory_save, "memory_save", log.enabled),
-        _from_manifest(memory_recall, "memory_recall", log.enabled),
-        _from_manifest(validate_json, "validate_json", log.enabled),
-        _from_manifest(shiftwork_clock_in, "shiftwork_clock_in", log.enabled),
-        _from_manifest(shiftwork_clock_out, "shiftwork_clock_out", log.enabled),
-        _from_manifest(shiftwork_status, "shiftwork_status", log.enabled),
-        _from_manifest(build_identity_tool, "build_identity", log.enabled),
-        _from_manifest(bantamkit_status, "bantamkit_status", log.enabled),
-        _from_manifest(memory_compact, "memory_compact", log.enabled),
-        _from_manifest(skill_audit, "skill_audit", log.enabled),
-        _from_manifest(memory_dream, "memory_dream", log.enabled),
-        _from_manifest(token_ledger, "token_ledger", log.enabled),
-        _from_manifest(work_plan, "work_plan", log.enabled),
-        _from_manifest(shiftwork_plan, "shiftwork_plan", log.enabled),
+        _from_manifest(memory_save, "memory_save"),
+        _from_manifest(memory_recall, "memory_recall"),
+        _from_manifest(validate_json, "validate_json"),
+        _from_manifest(shiftwork_clock_in, "shiftwork_clock_in"),
+        _from_manifest(shiftwork_clock_out, "shiftwork_clock_out"),
+        _from_manifest(shiftwork_status, "shiftwork_status"),
+        _from_manifest(build_identity_tool, "build_identity"),
+        _from_manifest(bantamkit_status, "bantamkit_status"),
+        _from_manifest(memory_compact, "memory_compact"),
+        _from_manifest(skill_audit, "skill_audit"),
+        _from_manifest(memory_dream, "memory_dream"),
+        _from_manifest(token_ledger, "token_ledger"),
+        _from_manifest(work_plan, "work_plan"),
+        _from_manifest(shiftwork_plan, "shiftwork_plan"),
     ]
 
     server = MCPServer(

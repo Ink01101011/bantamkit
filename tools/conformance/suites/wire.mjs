@@ -793,7 +793,8 @@ export async function run(ctx) {
   ]);
 
   // job67/J67-2 (#182): every served tool's `title` and `annotations`, with the event log off
-  // (the default) and on, where the eight read-only tools turn into append-only writers.
+  // (the default) and on. Since J67-9 (user ruling (b) on #182 Q1) the log moves no hint, so
+  // both sessions must advertise the asset's hints unchanged.
   // (#198, user ruling 2026-10-15): `prompts/get` with a name no prompt has is -32602 with
   // the sentence and `data: null` on both sides. Compared by the per-id loop (raw bytes too
   // for the prompt frames; `tools/list` is canonical there, its key order being ruled) AND
@@ -1804,13 +1805,15 @@ export async function run(ctx) {
    * #182 and #198. The per-id loop compares the two `tools/list` answers and the five
    * `prompts/get` frames side to side; these pin each side against a LITERAL written here,
    * not read off the assets, so an asset that flips a hint is a red on both sides rather than
-   * a new truth both agree on. `readOnlyHint: true` is claimed only by the eight tools that
-   * write nothing while the event log is off; with it on, each takes the three-key overlay
-   * (`EVENT_LOG_HINTS` in both runtimes). Per-tool reasons: `.shiftwork/notes-job67/J67-2.md`.
+   * a new truth both agree on. `readOnlyHint: true` is claimed by the eight tools that write
+   * nothing. J67-2 overlaid three writer hints on them while `BANTAMKIT_EVENT_LOG` was on; the
+   * user ruled (#182 Q1, option (b), 2026-10-15) that the opt-in log is not a side effect for
+   * annotations, J67-9 removed the overlay in both runtimes, and the log-on literal below moved
+   * from the overlay to the asset's hints, citing that ruling. Per-tool reasons:
+   * `.shiftwork/notes-job67/J67-2.md`; the ruling: `.shiftwork/notes-job67/J67-9.md`.
    */
   {
     const RO = { openWorldHint: false, readOnlyHint: true };
-    const LOGGED = { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false };
     const J67_2_SURFACE = {
       memory_save: ['Save a memory', { destructiveHint: true, openWorldHint: false, readOnlyHint: false }],
       memory_recall: ['Recall memories', { openWorldHint: false, readOnlyHint: false }],
@@ -1830,9 +1833,8 @@ export async function run(ctx) {
     const advertised = (side) =>
       Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, [t.title ?? 'absent', t.annotations ?? 'absent']]));
     const expectedOff = J67_2_SURFACE;
-    const expectedOn = Object.fromEntries(
-      Object.entries(J67_2_SURFACE).map(([tool, [title, hints]]) => [tool, [title, hints.readOnlyHint ? LOGGED : hints]]),
-    );
+    // #182 Q1 ruling (b): the same literal with the log on. Until J67-9 this was the overlay.
+    const expectedOn = J67_2_SURFACE;
     const promptRefusal = (id, name) =>
       `{"jsonrpc":"2.0","id":${id},"error":{"code":-32602,"message":${JSON.stringify(`Unknown prompt: ${name}`)},"data":null}}`;
     const promptLines = (side) => [3, 4, 5, 6].map((id) => side.frames.find((f) => f.startsWith(`{"jsonrpc":"2.0","id":${id},`)) ?? 'missing');
@@ -1846,7 +1848,7 @@ export async function run(ctx) {
         actual: advertised(off),
       });
       cases.push({
-        name: `j67-2: #182 ${label} advertises the read-only tools as append-only writers, event log on (literal)`,
+        name: `j67-2: #182 Q1 ruling (b) ${label} advertises each tool's title and the asset's hints, event log on (literal)`,
         kind: 'json',
         expected: expectedOn,
         actual: advertised(on),
@@ -1868,6 +1870,40 @@ export async function run(ctx) {
         expected: 'user',
         actual: frameOf(off, 7)?.result?.messages?.[0]?.role ?? 'missing',
       });
+    }
+  }
+
+  // ------------------------------- job67/J67-9: the event log moves no annotation; degraded key
+
+  /**
+   * #182 Q1 ruling (b), 2026-10-15: `BANTAMKIT_EVENT_LOG` is not a side effect for annotations,
+   * so a side's whole `tools/list` result is the same with the log on as with it off. Pinned
+   * per side (a differential between the two sides is blind to a switch reinstated in both).
+   *
+   * (llll), user ruling on J67-7 Q1: the served `skill_audit` and `token_ledger` descriptions
+   * name the `bantamkit_degraded` key their result can carry, as docs/ledger.md,
+   * docs/skill-audit.md and docs/status.md do. Pinned per side as a literal substring.
+   */
+  {
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const off = results.get('j67-2-annotations')[key];
+      const on = results.get('j67-2-annotations-log')[key];
+      cases.push({
+        name: `j67-9: #182 Q1 ruling (b) ${label} serves the same tools/list with and without BANTAMKIT_EVENT_LOG`,
+        kind: 'json',
+        expected: frameOf(off, 2)?.result ?? 'missing',
+        actual: frameOf(on, 2)?.result ?? 'missing',
+      });
+      const tools = frameOf(off, 2)?.result?.tools ?? [];
+      for (const tool of ['skill_audit', 'token_ledger']) {
+        const description = tools.find((t) => t.name === tool)?.description ?? '';
+        cases.push({
+          name: `j67-9: (llll) ${label} serves a ${tool} description that names bantamkit_degraded (literal)`,
+          kind: 'json',
+          expected: true,
+          actual: description.includes('`bantamkit_degraded`'),
+        });
+      }
     }
   }
 

@@ -282,9 +282,10 @@ two runtimes reading one file cannot see a rate pasted into it.
 
 Until 2026-09-12 the served description was 5,985 characters, and Claude Code truncates a
 tool description at 2,048 — mid-sentence, without an error, keeping the input schema. The
-description is now 1,883 characters and says the one thing a caller must know first — narrow
+description was cut to 1,883 characters and says the one thing a caller must know first — narrow
 `root` — while the reference material it carried lives here (job50, J50-3; register rows
-J49-B4 and J49-B8).
+J49-B4 and J49-B8). It is 1,897 since job67 (J67-9) named the `bantamkit_degraded` key in it and
+tightened two sentences to stay under the 1,900 the packaging budget enforces.
 
 **Narrow `root`; there is no summary mode.** A whole-corpus call answers a row per session
 ever recorded — about 83 kB on this machine (J49-B8) — and blows the host's tool-result
