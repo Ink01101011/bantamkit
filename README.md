@@ -43,8 +43,8 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
   [the fourteen tools](#-what-it-serves).
 - **Two runtimes, one store.** Pure Node on npm and Python on PyPI read and write the same
-  files, and a conformance suite compares their answers case by case (14,865 cases and 0
-  failures on 2026-10-15).
+  files, and every surface is compared between both runtimes by a conformance suite
+  (`node tools/conformance/run.mjs --all`).
 - **A Python library for small models, too.** `pip install bantamkit` lifts small-model agents
   (~1B–8B, any OpenAI-compatible endpoint): malformed output, unreviewed answers, forgotten
   context and runaway loops are absorbed by code, and a bundled eval suite measures the uplift.

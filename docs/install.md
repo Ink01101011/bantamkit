@@ -583,7 +583,8 @@ of this package, and it is stable across every run above.
   **37.8 MB** for the whole cache including npm's content-addressable store (this read 37.7 until
   2026-08-25; all four cold runs that day printed 37.8).
 - `bantamkit-mcp` itself is **0.9 MB** of that (1.2 MB allocated). The rest is
-  `@modelcontextprotocol/sdk@1.30.0`'s dependency tree, which pulls in `express`, `cors`,
+  `@modelcontextprotocol/sdk@1.30.0`'s dependency tree (historical: the SDK that was pinned on
+  2026-08-25; `runtime-ts/package.json` pins the one shipped today), which pulls in `express`, `cors`,
   `body-parser`, `ajv`, `eventsource`, `hono` and `express-rate-limit` — the SDK's HTTP
   transport, none of which this stdio server uses. The package declares exactly one runtime
   dependency.

@@ -49,8 +49,9 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   [the fourteen tools](#-what-it-serves).
 - **Same answers as the Python server.** The Python server serves the same fourteen tools,
   `bantamkit_status` prompt and two resource templates, and reads and writes the same memory
-  store. A conformance suite compares the two frame by frame (14,865 cases and 0 failures on
-  2026-10-15), and every intentional difference is written down as a ruling.
+  store. Every surface is compared between both runtimes by a conformance suite
+  (`node tools/conformance/run.mjs --all` in the repository), and every intentional difference
+  is written down as a ruling.
 
 ## 📑 Contents
 

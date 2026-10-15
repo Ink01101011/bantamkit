@@ -38,11 +38,13 @@
   "_variants": {
 
     // ------------------------------------------ K. a kept install, no npx (RECOMMENDED)
-    // What `npx -y bantamkit-mcp@latest --install <host>` writes from bantamkit-mcp 0.34.0.
-    // 0.34.0 was not yet on npm on 2026-09-15; until it is, that command installs 0.33.0,
-    // which still writes form A. To make this form by hand today:
+    // What `npx -y bantamkit-mcp@latest --install <host>` writes (every release since 0.34.0):
+    // it runs `npm install --prefix ~/.bantamkit/mcp` once and records the node that ran it
+    // and the kept `cli.js`, both absolute. That is the route the READMEs give; run it rather
+    // than writing this entry by hand. npx and the install use whatever registry npm is
+    // configured for (`npm_config_registry`, `.npmrc`, a mirror; docs/install.md). By hand:
     //
-    //     npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@0.33.0
+    //     npm install --prefix ~/.bantamkit/mcp bantamkit-mcp@latest
     //     node -p process.execPath          # paste the result as "command"
     //
     // A JSON file cannot expand `~`, so both paths are spelled out in full.

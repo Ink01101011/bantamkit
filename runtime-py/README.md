@@ -49,9 +49,9 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
   [the fourteen tools](#-what-it-serves).
-- **Same answers as the Node server.** The two share a memory store on disk, and a conformance
-  suite compares their answers case by case (14,865 cases and 0 failures on 2026-10-15), so
-  install whichever your host makes easy.
+- **Same answers as the Node server.** The two share a memory store on disk, and every surface
+  is compared between both runtimes by a conformance suite (`node tools/conformance/run.mjs
+  --all` in the repository), so install whichever your host makes easy.
 - **A Python library for small models, too.** `import bantamkit` lifts small-model agents
   (~1B–8B, any OpenAI-compatible endpoint) — see [Module API](#-module-api).
 
