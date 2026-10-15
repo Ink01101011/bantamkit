@@ -1545,3 +1545,84 @@ back as the character. A file whose first indented line is odd (3 spaces) gets t
 <!-- provenance: value=14683 cases, 2828 byte-identical, 8377 exact-string, 3478 structural, 171 ruled-different, 0 failures; commit=2455ed0; command=TMPDIR=<cleantmp> node tools/conformance/run.mjs --all -->
 
 **Verdict: BLOCKED** on (dddd) alone. Every other row above is deferred, not blocking.
+
+## Registered 2026-10-15 — the closing review of job67, milestone 0.36.0 (J67-8), branch `feat/job67-0.36.0`
+
+**Why this section exists.** The unit notes are `.shiftwork/notes-job67/J67-{1..8}.md`. They are force-added
+to the branch, but `.shiftwork/` is gitignored, so this section is the copy a clone can rely on. Base `4bab744`
+(0.35.9). The reviewed head is `389acac`. The commits are de96152 (J67-4), 6c5ef93 (J67-3), 09c378c (J67-5),
+5f11f4e (J67-1), 1928ae0 (J67-2), f2739a3 (J67-7) and 389acac (J67-6).
+
+**What moved, and what is owed.** `git diff --stat 4bab744..389acac -- assets runtime-py/src runtime-ts/src`
+shows 30 files changed in both runtimes, so **release 0.36.0 is owed** (user ruling: 0.36.0, a separate job after
+merge). No tool description changed, and `bantamkit-mcp -h` is byte-identical across the runtimes at
+COLUMNS=80 and 100 and unchanged since 0.35.9. The served sentences that changed are listed in `J67-8.md` section 4.
+
+**Verdicts (the 13 issues of milestone 0.36.0 plus #201).** FIXED 13 (#120 #133 #149 #157 #170 #172 #175 #176
+#179 #182 #183 #189 #198). SCHEDULED 1: #201, OPEN, assigned to J67-9 by the user's ruling. NOT FULLY FIXED 0.
+The per-issue table is in `J67-8.md` section 3.
+
+### CLOSED by this job, listed so it is not re-registered
+
+- **(uuu)** CLOSED by `5f11f4e` (#133). Every served tool refuses an unknown top-level key by name on both runtimes.
+- **(vvv)** and **(dddd)** CLOSED by J66-13 `4c9a6f9` (#118). J67-8 re-probed a CR-only `~/.cursor/mcp.json`
+  through `--install cursor` on both runtimes: both kept the 4-space indent, and only the launcher args differ.
+- **(yyy)** CLOSED by `6c5ef93` (#120 remainder, user ruling). Save skips an unreadable file by name. Blank lines
+  in a block sequence are read. The eight ruled shapes are the final answer.
+- **(eeee) item 3** CLOSED by `1928ae0` (#198). Python's `prompts/get` with an unknown name answers `-32602`,
+  `data: null`, the port's frame byte for byte. Items 1, 2, 4 and 5 stay open.
+- **(bbbb)** CLOSED by `f2739a3`, every bullet (J67-7 section 2).
+- **(llll)** bullets 1 and 3 CLOSED by `f2739a3`. Bullet 2 (`bantamkit_degraded` in the served descriptions) is
+  scheduled in J67-9 by user ruling. Bullets 4-6 stay open.
+- **(aaaa)** bullet 6 (`update-probe.mjs` fetches by URL) is now issue #201, scheduled in J67-9.
+
+### OPEN — left by this job
+
+**(mmmm) A recall's `last_recalled` stamp rewrites the fact file from its parsed fields, so a hand-written
+frontmatter key or comment is lost — on both runtimes.** Probe:
+`bash .shiftwork/notes-job67/J67-8-stamp-probe.sh "$PWD"`. A fact with `# owner: ops team`
+and `priority: high` in its frontmatter comes back from one `recall` without either line on Node and Python. The
+write is atomic on both sides (per-writer temp + replace: `store.py` `_write_fact`, `store.ts` `writeFact`). This
+predates job67 and is not documented. It bears on the J67-9 amendment that sets `memory_recall`
+`destructiveHint: false` once the write is proven atomic: atomic is not the same as non-destructive.
+
+**(nnnn) Python's tool-name regexes admit a trailing newline; Node's do not.** `statusline.py:142` `_TOOL` and
+`mcpreport.py:102` `_TOOL_TOKEN` are `^[a-z0-9_]{1,64}$`, and Python's `$` matches before a final `\n`. An event
+record with `"tool": "x\n"` is dropped by Node's `--statusline` and rendered by Python's, as a TWO-line status
+line: `bantamkit Degraded 🟠 · 2 events · 1 problem · x\n empty-unreadable-layer`. The Node line is
+`bantamkit Active 🟢 · 1 event · memory_save saved`. Probe: `node .shiftwork/notes-job67/J67-8-nl-tool.mjs "$PWD"`. This
+predates job67 (the same regex is at `4bab744`) and is the same class as (aaaa)'s `NAME_RE` bullet. The fix is
+`\Z` or `fullmatch` on the reference, plus a case in `statusline.mjs`/`mcpreport.mjs`.
+
+**(oooo) Follow-ups the units raised and this review did not block on.**
+- J67-3 Q1: a plain scalar with a blank line FOLLOWED by more continuation text (`description: a\n\n  more`) is
+  folded by PyYAML and refused by name on Node. It is outside #120's ruling. Port the fold, or rule it.
+- J67-3 Q2: over a store holding one of the eight ruled shapes, each runtime's save rebuilds `index.md` with or
+  without that line, so the index flips with whichever runtime saved last. This is ruled (porting.md,
+  `store.mjs`), and the index is derived. Accepted as ruled.
+- J67-5 Q1: under an args `--store X` pin the hook still layers the profile store, while the server with
+  `--store` serves X alone. This is documented in docs/hooks.md and needs a ruling.
+- J67-5 Q2: `--start X` and an abbreviated `--sto X` in a registration's args are not followed.
+- J67-5 Q3: the Python hook costs ~410 ms per call against Node's ~33-38 ms, because `bantamkit.mcpserver`
+  imports `mcp`/`pydantic` at module level. This is documented in docs/hooks.md ("The Python hook is ten times
+  the Node one").
+- J67-5 Q4: a missing args-pinned `--store` directory is refused by the hook with a sentence that names
+  `BANTAMKIT_MEMORY_DIR`, because the pin is fed through it. The operator wrote `--store`, so the sentence names
+  the wrong knob.
+- J67-6 Q1: the npm page's emoji-heading anchors and the raw `<a id="updating">` /
+  `<a id="silent-version-float">` are unmeasured, because npmjs.com 403s curl. Check them on the live page after
+  the 0.36.0 publish. No served sentence carries a README fragment (`git grep` over `runtime-*/src` and
+  `assets`), so only readers' deep links are at stake.
+- `runtime-ts/README.md:385,449` quote `sha256:e88d9730…` and 93 files / 250,847 bytes, dated "at `1928ae0`".
+  They stay true as dated figures after J67-9 moves the asset bytes. Refreshing them is optional.
+
+**Gates, re-derived by this review at `389acac`, from `rm -rf runtime-ts/dist && npm run build`, clean `TMPDIR`:**
+
+<!-- provenance: value=PASS: 14865 cases, 2861 byte-identical, 8411 exact-string, 3593 structural, 172 ruled-different, 0 failures; commit=389acac; command=TMPDIR=<cleantmp> node tools/conformance/run.mjs --all -->
+<!-- provenance: value=3499 passed, 58 skipped, 2 deselected, 3 xfailed in 240.77s; commit=389acac; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=tests 1460, pass 1413, fail 0, skipped 47; commit=389acac; command=cd runtime-ts && npm test -->
+<!-- provenance: value=tests 19, pass 19, fail 0; commit=389acac; command=node --test 'tools/hooks/*.test.mjs' -->
+<!-- provenance: value=All checks passed!; commit=389acac; command=.venv/bin/ruff check runtime-py tools -->
+
+**Verdict: MERGEABLE.** No blocker. (mmmm) is a question about a J67-9 amendment, not about this job's
+diffs.
