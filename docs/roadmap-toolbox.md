@@ -1626,3 +1626,24 @@ predates job67 (the same regex is at `4bab744`) and is the same class as (aaaa)'
 
 **Verdict: MERGEABLE.** No blocker. (mmmm) is a question about a J67-9 amendment, not about this job's
 diffs.
+
+### Closed by J67-9 (2026-10-15, after the review; the user's rulings on the review's questions)
+
+- **(nnnn)** CLOSED by `4301c2e`: a tool name ending in a newline is not a tool on either runtime (`statusline.py`,
+  `mcpreport.py` end in `\Z`; Node's `mcpreport.ts` tightened to match), `newline-tool` case per side in the
+  statusline and mcpreport suites.
+- **(llll)** bullet 2 CLOSED by `ff73a7a`: the `skill_audit` and `token_ledger` served descriptions name
+  `bantamkit_degraded` (1,899 and 1,897 characters; the 1,900 budget is unchanged).
+- **(aaaa)** bullet 6 CLOSED as issue #201 by `cb571a9`: `update-probe.mjs` asks npm and pip through `selfupdate`'s
+  own index commands, so the stale-install record and `--update` read the same index.
+- **#182 Q1** ruled (b): the event log is not a side effect for annotations; the env switch is gone (`ff73a7a`).
+- **(mmmm)** stays OPEN by ruling: `memory_recall` keeps the default `destructiveHint` in 0.36.0 because the stamp
+  still drops hand-written frontmatter keys. The root fix is #199 (milestone 0.37.0-beta), whose plan
+  (`docs/superpowers/plans/2026-10-15-recall-by-meaning.md`, branch `design/199-recall-by-meaning`) removes the stamp
+  write and keeps unknown keys on every rewrite.
+- Follow-up, not blocking: the other `\n?$` patterns in `runtime-ts/src/mcpreport.ts` (session, outcome and host-line
+  tokens) still mirror Python's trailing-newline acceptance; tighten them both sides in a later job.
+
+<!-- provenance: value=PASS: 14881 cases, 2865 byte-identical, 8411 exact-string, 3605 structural, 172 ruled-different, 0 failures; commit=3d70337; command=TMPDIR=<cleantmp> node tools/conformance/run.mjs --all -->
+<!-- provenance: value=3499 passed, 58 skipped, 2 deselected, 3 xfailed; commit=3d70337; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=tests 1460, pass 1413, fail 0, skipped 47; commit=3d70337; command=cd runtime-ts && npm test -->
