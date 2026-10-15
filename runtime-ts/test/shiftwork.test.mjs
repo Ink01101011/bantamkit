@@ -24,7 +24,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const dist = new URL('../dist/', import.meta.url);
-const { clockIn, clockOut, planBatches, status, HISTORY_RING_SIZE } = await import(new URL('shiftwork.js', dist));
+const { clockIn, clockOut, planBatches, status, HISTORY_RING_SIZE, RESERVED_LEDGER_KEYS } = await import(new URL('shiftwork.js', dist));
 const { dumpJson, fromJs, parseJson, toJs } = await import(new URL('pyjson.js', dist));
 const { pyNewlineOut, pyReadText, pyReplace, pyRepr, pySuffix, PyUnicodeDecodeError } =
   await import(new URL('memory/pyfs.js', dist));
@@ -290,16 +290,20 @@ test('the log line is sort_keys=True, one line, appended, and read back only by 
   assert.equal(read(`${path}.log.jsonl`).split('\n').filter(Boolean).length, 2, 'append, not truncate');
 });
 
-test('accounting can OVERRIDE the four keys the record starts with', () => {
+test('#117: accounting can NOT override the keys the record starts with — refused, nothing written', () => {
+  // Until job65 this test was `accounting can OVERRIDE the four keys the record starts with`
+  // and pinned the line `{"role": "planner", "ts": "whenever", ...}` on disk. Issue #117 ruled
+  // that a defect: the same override with `unit` and `event` forged a brief of another unit.
   const root = fresh();
   const path = writeCheckpoint(root);
-  // `tokens` + `duration_ms` because the line is a real accounting line since job50/F5; the
-  // two OVERRIDING keys are still the point of the test.
-  clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ts: 'whenever', role: 'planner', tokens: 1, duration_ms: 2 }, { now: 1755930000 });
-  assert.equal(
-    text(`${path}.log.jsonl`),
-    disk('{"briefed": false, "duration_ms": 2, "role": "planner", "status": "done", "tokens": 1, "ts": "whenever", "unit": "N1"}\n'),
-  );
+  const before = bytes(path);
+  const answer = js(clockOut(path, 'N1', 'done', {}, OK_ENTRY, { ts: 'whenever', role: 'planner', tokens: 1, duration_ms: 2 }, { now: 1755930000 }));
+  assert.deepEqual(answer, {
+    result: 'error',
+    reason: "unit N1 in role implementer reported an accounting line that sets the runtime's own keys: role, ts",
+  });
+  assert.deepEqual(bytes(path), before);
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -2006,9 +2010,10 @@ test('a graph that cannot batch: clock_in passes the core refusal through, clock
   // The ledger already holds P's accounting line, so ABSENCE is not the test here: what the
   // refusal must not have appended is a BRIEF line.
   assert.deepEqual(logLines(path).filter((l) => l.event === 'brief'), [], 'the refusal issued no brief');
-  // With no unit_id the cursor unit is still briefed: the batch view is consulted only for
-  // a selection, so a cyclic checkpoint does not lose the default path.
-  assert.equal(js(clockIn(path, null, { now: 3 })).unit.id, 'Q');
+  // job65/#164: with no unit_id the cursor unit meets the SAME graph refusal — the two paths
+  // are one path. (Until job65 this line asserted the default path still briefed `Q` here.)
+  assert.deepEqual(js(clockIn(path, null, { now: 3 })), refusal);
+  assert.deepEqual(logLines(path).filter((l) => l.event === 'brief'), [], 'and still no brief line');
   // Q done satisfies R's edge, so the graph answers again and the run ends normally.
   assert.equal(finish(path, 'Q', 4).cursor, 'R');
   assert.equal(finish(path, 'R', 5).cursor, 'R', 'nothing left: the cursor holds on the last unit');
@@ -2373,5 +2378,138 @@ test('#116: two processes clocking out different units at one instant both land'
     assert.deepEqual(onDisk, { A: 'done', B: 'done' });
     assert.deepEqual(j65Leftovers(dir), []);
   }
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------- job65 / J65-5: #117 #162 #164
+
+const j65Graph = (units, cursor) => j65Doc(units.map(([id, deps, status]) => ({ ...j65Unit(id), depends_on: deps, status })), cursor);
+const j65Line = (path, unit, accounting) => js(clockOut(path, unit, 'done', {}, { unit, outcome: 'x' }, accounting, { now: 1 }));
+const J65_FORGED = { tokens: 1, duration_ms: 1, unit: 'C', event: 'brief', status: 'nope', ts: 'yesterday' };
+const J65_FORGED_SENTENCE =
+  "unit A in role implementer reported an accounting line that sets the runtime's own keys: unit, status, ts, event";
+
+test('#117: accounting cannot forge a ledger line — the issue\'s three-step repro, step 3 stays refused', () => {
+  // Before: A's line was written as {"unit": "C", "event": "brief", ...}, `briefed("C")` read it
+  // as a brief, and clock_out("C") landed with B still todo. Mutation: drop the
+  // `reservedRefusal` call and step 2 answers ok, step 3 ok, this test red.
+  const root = fresh();
+  const path = join(root, 'cp.json');
+  writeFileSync(path, JSON.stringify(j65Graph([['A', [], 'todo'], ['B', [], 'todo'], ['C', ['A', 'B'], 'todo']], 'A')), 'utf8');
+  const before = bytes(path);
+  assert.deepEqual(j65Out(path, 'C'), { result: 'error', reason: 'unit C is not the cursor unit A' });
+  assert.deepEqual(j65Line(path, 'A', J65_FORGED), { result: 'error', reason: J65_FORGED_SENTENCE });
+  assert.deepEqual(bytes(path), before);
+  assert.equal(existsSync(`${path}.log.jsonl`), false);
+  assert.deepEqual(j65Out(path, 'C'), { result: 'error', reason: 'unit C is not the cursor unit A' });
+  const statuses = Object.fromEntries(JSON.parse(text(path)).plan.units.map((u) => [u.id, u.status]));
+  assert.deepEqual(statuses, { A: 'todo', B: 'todo', C: 'todo' });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#117: each reserved key alone is refused, named in the runtime\'s order, after the shape check', () => {
+  const root = fresh();
+  for (const key of ['unit', 'role', 'status', 'ts', 'event']) {
+    const path = join(root, `${key}.json`);
+    j65Write(path, [j65Unit('A')]);
+    assert.deepEqual(j65Line(path, 'A', { tokens: 1, duration_ms: 1, [key]: 'x' }), {
+      result: 'error',
+      reason: `unit A in role implementer reported an accounting line that sets the runtime's own keys: ${key}`,
+    });
+    assert.equal(existsSync(`${path}.log.jsonl`), false);
+  }
+  // the caller's order (reversed) does not reach the sentence
+  const path = join(root, 'order.json');
+  j65Write(path, [j65Unit('A')]);
+  const reversed = { event: 'e', ts: 't', status: 's', role: 'r', unit: 'u', duration_ms: 1, tokens: 1 };
+  assert.ok(j65Line(path, 'A', reversed).reason.endsWith('keys: unit, role, status, ts, event'));
+  assert.deepEqual([...RESERVED_LEDGER_KEYS], ['unit', 'role', 'status', 'ts', 'event']);
+  // the shape check (F5) is still first: a line short of `tokens` meets ITS sentence
+  assert.match(j65Line(path, 'A', { unit: 'C', duration_ms: 1 }).reason, /the schema refuses/);
+  // and `briefed` is NOT reserved: F6's overwrite stays (pinned above by
+  // '`briefed` is MEASURED off the ledger — a self-reported `briefed: true` is overwritten, not refused')
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#162: a clock-out whose commit failed leaves the unit briefed, so the retry is accepted', (t) => {
+  // The issue's shape: a briefed NON-cursor unit (the cursor unit is accepted on retry
+  // regardless). Before: the orphan line spent the brief and the retry answered
+  // `unit B is not the cursor unit A`. Mutation: drop the `recordEvent(..., UNCOMMITTED_EVENT,
+  // ...)` call in the commit-failure arm and the retry is refused again.
+  const root = fresh();
+  const inner = join(root, 'w');
+  mkdirSync(inner);
+  const path = join(inner, 'cp.json');
+  j65Write(path, [j65Unit('A'), j65Unit('B')]);
+  assert.equal(js(clockIn(path, 'B', { now: 1 })).result, 'brief');
+  const before = bytes(path);
+  if (!withUnwritable(inner, t, 'whether a failed commit hands the brief back (#162)')) {
+    rmSync(root, { recursive: true, force: true });
+    return;
+  }
+  let answer;
+  try {
+    answer = j65Out(path, 'B', { now: 2 });
+  } finally {
+    chmodSync(inner, 0o755);
+  }
+  assert.equal(answer.result, 'error');
+  assert.ok(answer.reason.startsWith('checkpoint unwritable, last log line uncommitted: [Errno 13]'), answer.reason);
+  assert.deepEqual(bytes(path), before);
+  assert.deepEqual(
+    logLines(path).map((l) => [l.event ?? null, l.unit]),
+    [['brief', 'B'], [null, 'B'], ['uncommitted', 'B']],
+  );
+  const retry = j65Out(path, 'B', { now: 3 });
+  assert.equal(retry.result, 'ok', JSON.stringify(retry));
+  assert.equal(retry.cursor, 'A');
+  assert.equal(logLines(path).at(-1).briefed, true);
+  // and the retry SPENT it: a third clock-out meets the unwidened sentence
+  assert.deepEqual(j65Out(path, 'B', { now: 4 }), { result: 'error', reason: 'unit B is not the cursor unit A' });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#162: the uncommitted marker annuls only the accounting line it follows', () => {
+  // The rule read off hand-written ledgers through `clockOut`'s gate: B is never the cursor,
+  // so `ok` here means `briefed` answered true and `error` means false.
+  const root = fresh();
+  const B = '{"event": "brief", "unit": "B"}';
+  const O = '{"status": "done", "unit": "B"}';
+  const U = '{"event": "uncommitted", "unit": "B"}';
+  const flag = (lines, i) => {
+    const path = join(root, `${i}.json`);
+    j65Write(path, [j65Unit('A'), j65Unit('B')]);
+    writeFileSync(`${path}.log.jsonl`, lines.map((l) => `${l}\n`).join(''), 'utf8');
+    return j65Out(path, 'B').result === 'ok';
+  };
+  assert.equal(flag([B, O, U], 0), true);
+  assert.equal(flag([O, U], 1), false, 'never briefed: nothing to hand back');
+  assert.equal(flag([B, O, U, O], 2), false, 'the retry spent it');
+  assert.equal(flag([B, O, O, U], 3), false, 'the marker annuls the SECOND line, which was unbriefed');
+  assert.equal(flag([B, O, U, U], 4), true, 'a second marker restores the same state, no further');
+  assert.equal(flag([U], 5), false, 'inert');
+  assert.equal(flag([B, '{"status": "blocked", "unit": "B"}', O], 6), false, "F6's inline re-run, unchanged");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('#164: default clock_in refuses a done cursor unit and a cursor unit whose dependency has not run', () => {
+  // Mutation: restore the `if (named) { ... }` around the readiness test and both are briefs.
+  const root = fresh();
+  const done = join(root, 'done.json');
+  writeFileSync(done, JSON.stringify(j65Graph([['A', [], 'done'], ['B', [], 'todo']], 'A')), 'utf8');
+  const before = bytes(done);
+  assert.deepEqual(js(clockIn(done, null, { now: 1 })), { result: 'error', reason: 'unit A is not ready; ready is B' });
+  assert.deepEqual(js(clockIn(done, null, { now: 1 })), js(clockIn(done, 'A', { now: 1 })), 'one test, one sentence');
+  assert.equal(existsSync(`${done}.log.jsonl`), false, 'no brief line');
+  assert.deepEqual(bytes(done), before, 'no cursor move');
+  assert.equal(js(clockIn(done, 'B', { now: 1 })).unit.id, 'B', 'the ready unit still proceeds');
+  const dep = join(root, 'dep.json');
+  writeFileSync(dep, JSON.stringify(j65Graph([['A', [], 'todo'], ['B', ['A'], 'todo']], 'B')), 'utf8');
+  assert.deepEqual(js(clockIn(dep, null, { now: 1 })), { result: 'error', reason: 'unit B is not ready; ready is A' });
+  assert.deepEqual(js(clockIn(dep, 'B', { now: 1 })), { result: 'error', reason: 'unit B is not ready; ready is A' });
+  // the dangling-cursor escalate stays ABOVE the graph, with its sentence
+  const ghost = join(root, 'ghost.json');
+  writeFileSync(ghost, JSON.stringify(j65Graph([['A', [], 'todo'], ['B', ['C'], 'todo'], ['C', ['B'], 'todo']], 'GHOST')), 'utf8');
+  assert.deepEqual(js(clockIn(ghost, null, { now: 1 })), { result: 'escalate', reason: 'cursor GHOST names no unit' });
   rmSync(root, { recursive: true, force: true });
 });

@@ -366,7 +366,10 @@ def test_clock_out_commit_failure_keeps_prior_bytes_and_the_orphan_log_line(
     """Log-then-commit, leg two: a failed rename loses the commit, never the accounting.
 
     The orphan line is the documented recovery semantic — re-reading the
-    checkpoint shows its unit still non-terminal at the cursor.
+    checkpoint shows its unit still non-terminal at the cursor. AMENDED job65/#162:
+    the orphan line is followed by an `uncommitted` marker line (the old pin was
+    `len(lines) == 1`), which is what lets `_briefed` hand the brief back — see
+    `test_j65_5_failed_commit_leaves_the_unit_briefed_so_the_retry_is_accepted`.
     """
     path = write_checkpoint(tmp_path, example)
     before = path.read_bytes()
@@ -380,7 +383,14 @@ def test_clock_out_commit_failure_keeps_prior_bytes_and_the_orphan_log_line(
     assert "uncommitted" in r["reason"]
     assert path.read_bytes() == before  # atomicity: the prior checkpoint survives
     lines = read_log(path)
-    assert len(lines) == 1 and lines[0]["unit"] == "U3"  # the accounting line landed
+    assert len(lines) == 2 and lines[0]["unit"] == "U3"  # the accounting line landed
+    assert "status" in lines[0] and lines[0].get("event") is None
+    assert lines[1] == {  # #162: and the marker that says it did not count
+        "event": "uncommitted",
+        "role": "implementer",
+        "ts": lines[1]["ts"],
+        "unit": "U3",
+    }
     assert not Path(str(path) + ".tmp").exists()  # the temp file is cleaned up
     assert ops.clock_in(str(path))["unit"]["id"] == "U3"  # the orphan is detectable
 
@@ -2731,3 +2741,183 @@ def test_j65_two_clock_outs_of_different_units_at_one_instant_both_land(tmp_path
         }
         assert on_disk == {"A": "done", "B": "done"}
         assert _j65_leftovers(root) == []
+
+
+# ---------------------------------------------------------- job65 / J65-5: #117 #162 #164
+
+
+def _j65_graph(units, cursor):
+    """`[(id, [deps], status), ...]` -> a document; `_j65_unit` with a graph and a status."""
+    out = []
+    for unit_id, deps, status in units:
+        unit = _j65_unit(unit_id)
+        unit["depends_on"] = list(deps)
+        unit["status"] = status
+        out.append(unit)
+    return _j65_doc(out, cursor)
+
+
+J65_FORGED = {"tokens": 1, "duration_ms": 1, "unit": "C", "event": "brief"}
+J65_FORGED.update({"status": "nope", "ts": "yesterday"})
+J65_FORGED_SENTENCE = (
+    "unit A in role implementer reported an accounting line that sets the runtime's own "
+    "keys: unit, status, ts, event"
+)
+
+
+def test_j65_5_accounting_cannot_forge_a_ledger_line_the_issue_117_three_step_repro(tmp_path):
+    """#117, the issue's repro: step 3 must stay refused. Before: A's accounting line was
+    written as `{"unit": "C", "event": "brief", ...}`, `_briefed("C")` read it as a brief,
+    and `clock_out("C")` landed with B still todo (A=done B=todo C=done). Mutation: drop the
+    `_reserved_refusal` call and step 2 answers ok, step 3 ok, and this test is red."""
+    path = tmp_path / "cp.json"
+    units = [("A", [], "todo"), ("B", [], "todo"), ("C", ["A", "B"], "todo")]
+    path.write_text(json.dumps(_j65_graph(units, "A")), encoding="utf-8")
+    before = path.read_bytes()
+    assert _j65_out(path, "C") == {"result": "error", "reason": "unit C is not the cursor unit A"}
+    forged = ops.clock_out(str(path), "A", "done", {}, {"unit": "A", "outcome": "x"}, J65_FORGED)
+    assert forged == {"result": "error", "reason": J65_FORGED_SENTENCE}
+    assert path.read_bytes() == before and read_log(path) == []  # nothing written anywhere
+    assert _j65_out(path, "C") == {"result": "error", "reason": "unit C is not the cursor unit A"}
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    statuses = {u["id"]: u["status"] for u in on_disk["plan"]["units"]}
+    assert statuses == {"A": "todo", "B": "todo", "C": "todo"}
+
+
+@pytest.mark.parametrize("key", ["unit", "role", "status", "ts", "event"])
+def test_j65_5_each_reserved_key_alone_is_refused_and_briefed_is_still_overwritten(tmp_path, key):
+    """Each of the five alone; the sentence names the one key. `briefed` is NOT one of them:
+    F6's overwrite stays (`test_briefed_is_measured_by_the_runtime_not_reported_by_the_
+    orchestrator` above pins it) — #117 lists exactly these five."""
+    path = tmp_path / "cp.json"
+    _j65_write(path, [_j65_unit("A")])
+    line = {"tokens": 1, "duration_ms": 1, key: "x"}
+    assert ops.clock_out(str(path), "A", "done", {}, {"unit": "A", "outcome": "x"}, line) == {
+        "result": "error",
+        "reason": (
+            "unit A in role implementer reported an accounting line that sets the "
+            f"runtime's own keys: {key}"
+        ),
+    }
+    assert read_log(path) == []
+
+
+def test_j65_5_the_reserved_keys_are_named_in_the_runtimes_order_not_the_callers(tmp_path):
+    """One sentence for one line on both runtimes: the order is `RESERVED_LEDGER_KEYS`', so a
+    caller's dict order (here reversed) cannot make the two sides spell it differently."""
+    path = tmp_path / "cp.json"
+    _j65_write(path, [_j65_unit("A")])
+    line = {"event": "e", "ts": "t", "status": "s", "role": "r", "unit": "u"}
+    line.update({"duration_ms": 1, "tokens": 1})
+    r = ops.clock_out(str(path), "A", "done", {}, {"unit": "A", "outcome": "x"}, line)
+    assert r["reason"].endswith("keys: unit, role, status, ts, event"), r
+    assert ops.RESERVED_LEDGER_KEYS == ("unit", "role", "status", "ts", "event")
+
+
+def test_j65_5_the_reserved_check_runs_after_the_shape_check_and_before_any_mutation(tmp_path):
+    """Order: a line missing `tokens` AND setting `unit` meets the F5 shape sentence, not this
+    one — the newest gate is last, so no existing sentence moved."""
+    path = tmp_path / "cp.json"
+    _j65_write(path, [_j65_unit("A")])
+    short = {"unit": "C", "duration_ms": 1}
+    r = ops.clock_out(str(path), "A", "done", {}, {"unit": "A", "outcome": "x"}, short)
+    assert r["result"] == "error" and "the schema refuses" in r["reason"], r
+
+
+def test_j65_5_failed_commit_leaves_the_unit_briefed_so_the_retry_is_accepted(
+    tmp_path, monkeypatch
+):
+    """#162, the issue's shape: a briefed NON-cursor unit (the cursor unit is accepted on retry
+    regardless, so it cannot show this). Before: the orphan accounting line spent the brief
+    and the retry answered `unit B is not the cursor unit A`. Mutation: drop the
+    `_record_event(..., UNCOMMITTED_EVENT, ...)` call in the commit-failure arm and the
+    retry is refused again."""
+    path = tmp_path / "cp.json"
+    _j65_write(path, [_j65_unit("A"), _j65_unit("B")])
+    assert ops.clock_in(str(path), "B")["result"] == "brief"
+    before = path.read_bytes()
+
+    def refuse(self, target):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "replace", refuse)
+    r = _j65_out(path, "B")
+    monkeypatch.undo()
+    assert r["result"] == "error", r
+    assert r["reason"].startswith("checkpoint unwritable, last log line uncommitted: "), r
+    assert path.read_bytes() == before
+    assert [(line.get("event"), line["unit"]) for line in read_log(path)] == [
+        ("brief", "B"),
+        (None, "B"),
+        ("uncommitted", "B"),
+    ]
+    assert ops._briefed(Path(str(path) + ".log.jsonl"), "B") is True  # the brief is handed back
+    retry = _j65_out(path, "B")
+    assert retry["result"] == "ok" and retry["unit"] == "B" and retry["cursor"] == "A", retry
+    assert read_log(path)[-1]["briefed"] is True
+    assert ops._briefed(Path(str(path) + ".log.jsonl"), "B") is False  # and the retry spent it
+
+
+def test_j65_5_the_uncommitted_marker_annuls_only_the_line_it_follows(tmp_path):
+    """The rule, read straight off a hand-written ledger: an `uncommitted` line restores the
+    flag to what it was before the accounting line above it — and no further. A never-briefed
+    unit whose commit failed is still `false`; the blocked-then-inline re-run F6 exists for
+    is still `false` (the ruling kept); a marker with no accounting line above it is inert."""
+    log = tmp_path / "x.log.jsonl"
+    def flag(lines):
+        log.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+        return ops._briefed(log, "B")
+    B = {"event": "brief", "unit": "B"}
+    O = {"status": "done", "unit": "B"}  # noqa: E741 - the ledger shorthand B/O/U
+    U = {"event": "uncommitted", "unit": "B"}
+    assert flag([B, O, U]) is True
+    assert flag([O, U]) is False  # never briefed: nothing to hand back
+    assert flag([B, O, U, O]) is False  # the retry spent it
+    assert flag([B, O, O, U]) is False  # the marker annuls the SECOND line, which was unbriefed
+    assert flag([B, O, U, U]) is True  # a second marker restores the same state, no further
+    assert flag([U]) is False  # inert
+    blocked = {"status": "blocked", "unit": "B"}
+    assert flag([B, blocked, O]) is False  # F6's inline re-run, unchanged
+
+
+def test_j65_5_default_clock_in_refuses_a_done_cursor_unit(tmp_path):
+    """#164, first shape: the cursor on a `done` unit (a hand edit) was briefed with
+    `"status": "done"` in the brief. Now the same sentence `clock_in(unit_id)` gives, because
+    a terminal unit is not in `ready`. Mutation: restore `if unit_id is None: ... else:` around
+    the readiness test and this is a brief again."""
+    path = tmp_path / "cp.json"
+    units = [("A", [], "done"), ("B", [], "todo")]
+    path.write_text(json.dumps(_j65_graph(units, "A")), encoding="utf-8")
+    before = path.read_bytes()
+    not_ready = {"result": "error", "reason": "unit A is not ready; ready is B"}
+    assert ops.clock_in(str(path)) == not_ready
+    assert ops.clock_in(str(path)) == ops.clock_in(str(path), "A")  # one test, one sentence
+    assert read_log(path) == [] and path.read_bytes() == before  # no brief line, no cursor move
+    assert ops.clock_in(str(path), "B")["unit"]["id"] == "B"  # the ready unit still proceeds
+
+
+def test_j65_5_default_clock_in_refuses_a_cursor_unit_whose_dependency_has_not_run(tmp_path):
+    """#164, second shape: the cursor on B with B's dependency A still todo (a re-plan)."""
+    path = tmp_path / "cp.json"
+    units = [("A", [], "todo"), ("B", ["A"], "todo")]
+    path.write_text(json.dumps(_j65_graph(units, "B")), encoding="utf-8")
+    not_ready = {"result": "error", "reason": "unit B is not ready; ready is A"}
+    assert ops.clock_in(str(path)) == not_ready
+    assert ops.clock_in(str(path), "B") == not_ready
+    assert read_log(path) == []
+
+
+def test_j65_5_default_clock_in_passes_a_graph_refusal_through_like_the_named_path(tmp_path):
+    """The two paths are one path: on a graph that cannot batch the default call answers the
+    core's sentence verbatim, as the named call already did (job61/(b)) — the old pin said the
+    default path "never reads the graph and still briefs", which is a cursor unit the named
+    path refuses, i.e. #164's title. The dangling-cursor escalate stays ABOVE the graph."""
+    path = tmp_path / "cp.json"
+    units = [("A", [], "todo"), ("B", ["C"], "todo"), ("C", ["B"], "todo")]
+    path.write_text(json.dumps(_j65_graph(units, "A")), encoding="utf-8")
+    cycle = {"result": "error", "reason": "the graph has a cycle: B -> C -> B"}
+    assert ops.clock_in(str(path)) == cycle and ops.clock_in(str(path), "A") == cycle
+    assert read_log(path) == []
+    assert _j65_out(path, "A")["result"] == "ok"  # clock_out still RECORDS on a broken graph
+    path.write_text(json.dumps(_j65_graph(units, "GHOST")), encoding="utf-8")
+    assert ops.clock_in(str(path)) == {"result": "escalate", "reason": "cursor GHOST names no unit"}
