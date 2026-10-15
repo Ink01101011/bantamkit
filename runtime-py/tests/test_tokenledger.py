@@ -615,3 +615,92 @@ def test_no_free_text_argument_reaches_the_event_log(tmp_path):
         "requests": 1,
         "sessions": 1,
     }
+
+
+# ------------------------------------------------------------- job66 J66-5 (#124 #150 #151)
+
+
+def test_a_leading_bom_is_an_unparsed_line_and_the_next_record_still_counts(tmp_path):
+    """#150: a BOM is `unparsed-line` on both runtimes, on the first line as on any other.
+
+    The port used to strip a first-line BOM (`TextDecoder`'s default) and count the record;
+    this side never did. The ruling is the reference's: the host never writes a BOM, so a line
+    carrying one is not the host's line. RED under `encoding="utf-8-sig"` (the other choice):
+    requests 2, omissions empty.
+    """
+    root = tmp_path / "projects"
+    root.mkdir()
+    one = record(
+        type="assistant", sessionId="s", requestId="q1", message={"usage": usage(output_tokens=1)}
+    )
+    two = record(
+        type="assistant", sessionId="s", requestId="q2", message={"usage": usage(output_tokens=1)}
+    )
+    (root / "a.jsonl").write_text("﻿" + one + "\n" + two + "\n", encoding="utf-8")
+    ledger = tokenledger.read(root)
+    assert (ledger.transcripts, ledger.lines, ledger.requests) == (1, 2, 1)
+    assert [(o.subject, o.count, o.what) for o in ledger.omissions] == [
+        ("unparsed-line", 1, "a.jsonl:1")
+    ]
+
+
+def test_a_directory_symlink_is_not_followed_and_a_file_symlink_is_read(tmp_path):
+    """#151: a link to an ancestor used to be walked until ELOOP, one count per level (33).
+
+    Now a symlinked directory is neither walked nor read -- `skill_audit`'s rule -- and a
+    symlink to a FILE is still read, so it is the one `duplicate-request` here.
+    """
+    root = tmp_path / "projects"
+    proj = root / "-p"
+    proj.mkdir(parents=True)
+    rec = record(
+        type="assistant", sessionId="s", requestId="q1", message={"usage": usage(output_tokens=1)}
+    )
+    (proj / "s.jsonl").write_text(rec + "\n", encoding="utf-8")
+    try:
+        (proj / "up").symlink_to("..", target_is_directory=True)
+        (proj / "alias.jsonl").symlink_to("s.jsonl")
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"cannot make a symlink here: {exc}")
+    assert [rel for _, rel in tokenledger._walk(root)] == ["-p/alias.jsonl", "-p/s.jsonl"]
+    ledger = tokenledger.read(root)
+    assert (ledger.transcripts, ledger.lines, ledger.requests) == (2, 2, 1)
+    assert [(o.subject, o.count, o.what) for o in ledger.omissions] == [
+        ("duplicate-request", 1, "-p/s.jsonl:1")
+    ]
+
+
+@pytest.mark.parametrize("tool", ["token_ledger", "skill_audit"])
+def test_a_degraded_reply_is_still_one_json_document(tmp_path, tool):
+    """#124: the footer rides as a `bantamkit_degraded` key LAST in the document, never as
+    prose after its closing brace, and the healthy reply's bytes are where it starts.
+
+    RED with `_noted_json` replaced by `_noted` at the tool's success return: `json.loads`
+    raises `Extra data` on the degraded reply.
+    """
+    store = tmp_path / "store"
+    (store / "facts").mkdir(parents=True)
+    (store / "archive").mkdir()
+    server, _ = make(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    async def answer():
+        async with Client(server) as c:
+            got = await c.call_tool(tool, {"root": str(empty)})
+            return got.is_error, got.content[0].text
+
+    is_error, healthy = asyncio.run(answer())
+    assert not is_error
+    assert "bantamkit_degraded" not in json.loads(healthy)
+
+    # Degrade the server the way `test_status_surface` does: `facts/` becomes a file.
+    (store / "facts").rmdir()
+    (store / "facts").write_text("not a directory", encoding="utf-8")
+
+    is_error, degraded = asyncio.run(answer())
+    assert not is_error
+    doc = json.loads(degraded)
+    assert list(doc)[-1] == "bantamkit_degraded"
+    assert doc["bantamkit_degraded"].startswith("⚠️ bantamkit degraded (1):")
+    assert degraded.startswith(healthy[:-2] + ',\n  "bantamkit_degraded": ')

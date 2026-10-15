@@ -533,6 +533,22 @@ function runTool(
     return { t: 'dict', v: out };
   };
 
+  /**
+   * A reply that is ONE JSON DOCUMENT rendered as text (`skill_audit`, `token_ledger`), plus
+   * the footer if there is one, as a `bantamkit_degraded` key LAST in that document (#124).
+   *
+   * `noted` would append a sentence after the closing brace and the reply would stop parsing.
+   * The key is spliced into the text rather than the document being re-parsed, so every byte
+   * of a degraded reply before the key is the healthy reply's: `asJson` is
+   * `JSON.stringify(dict, null, 2)` of a non-empty object, so it always ends `\n}`, and the key
+   * goes in at that two-space indent, exactly where `json.dumps(indent=2)` would put it.
+   */
+  const notedJson = (document: string): string => {
+    const line = notice();
+    if (line === '') return document;
+    return `${document.slice(0, -2)},\n  "bantamkit_degraded": ${JSON.stringify(line)}\n}`;
+  };
+
   switch (name) {
     case 'memory_save': {
       const links = args.get('links');
@@ -892,7 +908,7 @@ function runTool(
           findings: result.findings.length,
           omissions: result.omissions.length,
         });
-        return { value: { t: 'str', v: noted(result.asJson()) }, wrapped: true };
+        return { value: { t: 'str', v: notedJson(result.asJson()) }, wrapped: true };
       });
     }
     case 'repo_map': {
@@ -1005,7 +1021,7 @@ function runTool(
           requests: result.requests,
           sessions: result.sessions.length,
         });
-        return { value: { t: 'str', v: noted(tokenledger.asJson(result)) }, wrapped: true };
+        return { value: { t: 'str', v: notedJson(tokenledger.asJson(result)) }, wrapped: true };
       });
     }
     case 'work_plan':

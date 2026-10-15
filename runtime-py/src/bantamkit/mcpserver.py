@@ -1405,6 +1405,23 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         notice = _notice()
         return {**answer, "bantamkit_degraded": notice} if notice else answer
 
+    def _noted_json(document: str) -> str:
+        """A reply that is ONE JSON DOCUMENT rendered as text (`skill_audit`, `token_ledger`),
+        plus the footer if there is one, as a `bantamkit_degraded` key LAST in it (#124).
+
+        `_noted` would append a sentence after the closing brace and the reply would stop
+        parsing. The key is spliced into the text rather than the document being re-parsed,
+        so every byte of a degraded reply before the key is the healthy reply's: `as_json`
+        is `json.dumps(dict, indent=2, ensure_ascii=False)` of a non-empty dict, so it always
+        ends `\\n}`, and the key goes in at that two-space indent, where `json.dumps` would
+        have put it.
+        """
+        notice = _notice()
+        if not notice:
+            return document
+        key = json.dumps(notice, ensure_ascii=False)
+        return f'{document[:-2]},\n  "bantamkit_degraded": {key}\n}}'
+
     def memory_save(
         type: str, name: str, description: str, body: str, links: list[str] | None = None
     ) -> str:
@@ -1772,7 +1789,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                     "omissions": len(result.omissions),
                 },
             )
-            return _noted(result.as_json())
+            return _noted_json(result.as_json())
 
     def repo_map(
         root: str,
@@ -1903,7 +1920,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                     "sessions": len(result.sessions),
                 },
             )
-            return _noted(result.as_json())
+            return _noted_json(result.as_json())
 
     # The served surface, in one place, read out of the asset pack. Adding a tool here
     # without an asset raises AssetNotFound at startup — the manifest cannot drift behind

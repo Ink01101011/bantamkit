@@ -69,6 +69,16 @@ THE PARITY HAZARDS, EACH PINNED
   same measured hole.
 - **A bare `Infinity`.** `json.loads` accepts the token and `JSON.parse` throws. The line
   decoder closes it, so a transcript carrying one is `unparsed-line` on both sides.
+- **A leading UTF-8 BOM** (#150). `read_text(encoding="utf-8")` keeps U+FEFF and `json.loads`
+  refuses it, while a default `TextDecoder` strips it from the FIRST line only. The port decodes
+  with `ignoreBOM: true`, so a BOM is `unparsed-line` on both sides, on any line. Tolerating it
+  instead was the other choice and was not taken: the host never writes one, RFC 8259 forbids
+  adding one, and a line that is not what the host writes is exactly what an omission names.
+- **Directory symlinks** (#151). `Path.is_dir()` and `statSync` both FOLLOW a link, so a link
+  to an ancestor was walked until the OS refused it (ELOOP, ~32 levels on macOS) and the one
+  transcript beneath it was counted once per level. A symlinked directory is now neither
+  descended into nor read, on both sides -- `skill_audit`'s rule (`os.walk`'s
+  `followlinks=False`). A symlink to a FILE is still read: it cannot loop.
 
 THE COST IS THE REFUSAL, AND THAT IS THE NORMAL ANSWER
 ------------------------------------------------------
@@ -261,6 +271,12 @@ class _Accumulator:
             self.tokens = {cls: 0 for cls in TOKEN_CLASSES}
 
 
+def _is_junction(path: Path) -> bool:
+    """`Path.is_junction()` where it exists (3.12+); before it, no junction is named."""
+    probe = getattr(path, "is_junction", None)
+    return bool(probe()) if probe is not None else False
+
+
 def _walk(base: Path) -> list[tuple[Path, str]]:
     """Every `*.jsonl` under `base`, in one deterministic order, each with the name it is called by.
 
@@ -285,7 +301,12 @@ def _walk(base: Path) -> list[tuple[Path, str]]:
             child = directory / name
             rel = f"{prefix}{name}"
             if child.is_dir():
-                visit(child, f"{rel}/")
+                # #151: a symlinked directory is not a transcript tree. `is_dir()` follows the
+                # link, so a link to a directory lands in this arm and is skipped here: neither
+                # walked nor read. Node's `lstatSync` calls a Windows junction a symbolic link,
+                # so a junction is skipped too where this Python can name one.
+                if not (child.is_symlink() or _is_junction(child)):
+                    visit(child, f"{rel}/")
             elif name.endswith(TRANSCRIPT_SUFFIX):
                 found.append((child, rel))
 

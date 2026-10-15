@@ -1076,6 +1076,23 @@ export async function run(ctx) {
     { argv: ['--store', store, '--index-budget', '100'], refMask: substituteMemoryProg },
   );
 
+  // job66/J66-5 (#124): `skill_audit` and `token_ledger` answer ONE JSON document, and stay one
+  // when the server is degraded — the footer arrives as a `bantamkit_degraded` key LAST in that
+  // document, not as prose after its closing brace. The same one-byte straddle as `status-*`
+  // (a 46-byte index: degraded at 51, healthy at 52). The refusal (#3 of each) is prose and
+  // keeps the prose footer. Pinned PER SIDE in the J66-5 block at the end of `run`.
+  const J66_5_LEDGER = join(repoRoot, 'tools', 'ledger', 'fixtures', 'token-ledger', 'projects');
+  const J66_5_LINES = [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'memory_save', { type: 'project', name: 'status-probe', description: 'a probe fact', body: 'body' }),
+    callTool(3, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 1024 }),
+    callTool(4, 'token_ledger', { root: J66_5_LEDGER }),
+    callTool(5, 'token_ledger', { root: '' }),
+  ];
+  add('j66-5-json-healthy', J66_5_LINES, { argv: ['--store', store, '--index-budget', '52'] });
+  add('j66-5-json-degraded', J66_5_LINES, { argv: ['--store', store, '--index-budget', '51'], refMask: substituteMemoryProg });
+
   // ---------------------------------------------------------------------- run them both
 
   const cases = [];
@@ -2501,6 +2518,66 @@ export async function run(ctx) {
       { name: 'j65-9: PINNED PER SIDE (#155 #156 #160 #185 #186 #119) — the port', kind: 'json',
         expected: { ...expected, overBudgetFooter: Array(2).fill(footer('bantamkit-memory compact')) }, actual: nd },
     );
+  }
+
+  // job66/J66-5 (#124): PER SIDE, because a differential is blind to both runtimes appending
+  // the same prose footer after the document — which is exactly what both did at 0.35.7.
+  {
+    const FOOTER = '⚠️ bantamkit degraded (';
+    const shapeOf = (side) => {
+      const out = [];
+      for (const [tool, id] of [['skill_audit', 3], ['token_ledger', 4]]) {
+        const text = toolTextOf(side, id) ?? '';
+        let doc = null;
+        try {
+          doc = JSON.parse(text);
+        } catch {
+          out.push(`${tool} does not parse`);
+          continue;
+        }
+        const keys = Object.keys(doc);
+        const key = doc.bantamkit_degraded;
+        const mirrored = frameOf(side, id)?.result?.structuredContent?.result === text;
+        out.push(
+          `${tool} parses, ` +
+            (key === undefined
+              ? 'no bantamkit_degraded'
+              : `bantamkit_degraded ${keys.at(-1) === 'bantamkit_degraded' ? 'last' : 'NOT last'}` +
+                `${String(key).startsWith(FOOTER) ? ' carrying the footer' : ' WITHOUT the footer'}`) +
+            `${mirrored ? '' : ', structuredContent differs'}`,
+        );
+      }
+      return out;
+    };
+    for (const [label, key] of [
+      ['the reference', 'python'],
+      ['the port', 'node'],
+    ]) {
+      const hot = results.get('j66-5-json-degraded')[key];
+      const cool = results.get('j66-5-json-healthy')[key];
+      // The healthy document's bytes, up to its closing `\n}`, are where the degraded one starts.
+      const prefixKept = [3, 4].every((id) => {
+        const healthy = toolTextOf(cool, id) ?? '';
+        return healthy.endsWith('\n}') && (toolTextOf(hot, id) ?? '').startsWith(`${healthy.slice(0, -2)},\n  "bantamkit_degraded": `);
+      });
+      const refusal = toolTextOf(hot, 5) ?? '';
+      cases.push({
+        name: `j66-5: ${label} keeps skill_audit and token_ledger ONE JSON document when degraded (#124)`,
+        kind: 'json',
+        expected: {
+          degraded: ['skill_audit parses, bantamkit_degraded last carrying the footer', 'token_ledger parses, bantamkit_degraded last carrying the footer'],
+          healthy: ['skill_audit parses, no bantamkit_degraded', 'token_ledger parses, no bantamkit_degraded'],
+          healthyBytesArePrefix: true,
+          refusalIsProseWithFooter: true,
+        },
+        actual: {
+          degraded: shapeOf(hot),
+          healthy: shapeOf(cool),
+          healthyBytesArePrefix: prefixKept,
+          refusalIsProseWithFooter: refusal.includes('token_ledger') && refusal.includes(`\n\n${FOOTER}`),
+        },
+      });
+    }
   }
 
   return { cases, notes };

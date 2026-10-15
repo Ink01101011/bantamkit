@@ -194,6 +194,12 @@ differently, because a JSON result has no margin to write in:
   `"bantamkit_degraded"` key carrying the same string, **last** in key order and present
   only when non-empty. All seven advertise `additionalProperties: true`, so a key that comes
   and goes is inside the contract they already declare.
+* **JSON-document replies** (`skill_audit`, `token_ledger`; job66 #124): the reply is one
+  JSON document rendered as text, so the footer goes INSIDE it as the same
+  `"bantamkit_degraded"` key, last, spliced in at the document's two-space indent. Every
+  byte before the key is the healthy reply's. Until job66 these two took the prose shape,
+  and a degraded reply stopped being parseable. Their refusals (`... failed: ...`) are
+  prose and keep the prose footer.
 * **`bantamkit_status` itself never carries the footer** — the report already lists every
   condition in full.
 

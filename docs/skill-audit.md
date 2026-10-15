@@ -164,7 +164,9 @@ would otherwise resolve to the server's own working directory. Nothing about the
 the tree refuses. Deterministic: the tool reads nothing but `root`; `usage` is the caller's
 own count (`node tools/ledger/tool-usage.mjs --group skill --json`), `enabled` and
 `versions` are host truth the caller supplies, never read from the host's transcripts,
-settings or plugin registry.
+settings or plugin registry. The reply is ONE JSON document even on a degraded server: the
+footer arrives as a `bantamkit_degraded` key, last, never as prose after the closing brace
+(job66 #124; `docs/status.md`, *The footer*).
 
 ## First run — 2026-09-05, this machine
 
