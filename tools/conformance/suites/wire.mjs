@@ -403,6 +403,69 @@ export async function run(ctx) {
 
   const cursorUnit = JSON.parse(readFileSync(REAL_CHECKPOINT, 'utf8')).plan.cursor;
 
+  // job66/J66-4 (#147): `[method, params]` the method's schema refuses, on both SDKs. Each is
+  // answered `-32602 Invalid request parameters` with `data: ""` by both servers; the port
+  // used to say `-32603` with the zod issue list (or, for a bad `_meta`, `-32600` id null).
+  const J66_4_REFUSED_PARAMS = [
+    ['tools/call', {}],
+    ['tools/call', { name: 'work_plan', arguments: 'notadict' }],
+    ['tools/call', { name: 5 }],
+    ['tools/call', undefined],
+    ['tools/call', { name: 'work_plan', arguments: [] }],
+    ['tools/call', { name: 'work_plan', arguments: {}, task: { ttl: 'x' } }],
+    ['tools/call', { name: 'work_plan', arguments: {}, _meta: 5 }],
+    ['tools/call', { name: 'work_plan', arguments: {}, _meta: { progressToken: 1.5 } }],
+    ['resources/read', {}],
+    ['resources/read', { uri: 5 }],
+    ['resources/read', { uri: null }],
+    ['tools/list', { cursor: 5 }],
+    ['resources/templates/list', { cursor: 1 }],
+    ['resources/list', { cursor: [] }],
+    ['prompts/get', {}],
+    ['prompts/get', { name: 'bantamkit_status', arguments: { a: 1 } }],
+    ['ping', { _meta: 5 }],
+    ['ping', { _meta: [] }],
+    ['ping', { _meta: { progressToken: null } }],
+    ['initialize', {}],
+  ];
+  // job66/J66-4 (#178): every method the servers answer, asked before `initialize`.
+  const J66_4_PREINIT = [
+    ['tools/call', { name: 'work_plan', arguments: { nodes: [] } }],
+    ['tools/list', undefined],
+    ['resources/list', undefined],
+    ['resources/templates/list', undefined],
+    ['resources/read', { uri: 'bantamkit://skills/memory' }],
+    ['prompts/list', undefined],
+    ['prompts/get', { name: 'bantamkit_status' }],
+  ];
+  // job66/J66-4 (#180): URIs no template takes: -32602 `Unknown resource: <uri>` on both.
+  const J66_4_UNKNOWN_URIS = [
+    'bantamkit://skills/..',
+    'bantamkit://skills/memory?x=1',
+    'bantamkit://skills/..%2F..%2Fpackage',
+    'bantamkit://skills/memory#frag',
+    'bantamkit://skills/a,b',
+    'bantamkit://skills/a&b',
+    'bantamkit://skills/%2E%2E',
+    'bantamkit://skills/..%5C..%5Cx',
+    'bantamkit://skills/\\x',
+    'bantamkit://skills/%00',
+    'bantamkit://skills/C:x',
+    'bantamkit://rubrics/%2Fetc%2Fpasswd',
+    'BANTAMKIT://skills/memory',
+    '',
+  ];
+  // ...and URIs a template takes that name no asset: -32603 with the DECODED name.
+  const J66_4_MATCHED_URIS = [
+    ['bantamkit://skills/a%2Fb', 'unknown skill asset: a/b'],
+    ['bantamkit://skills/a%2F..%2Fmemory', 'unknown skill asset: a/../memory'],
+    ['bantamkit://rubrics/x%2F..%2Fcode-quality', 'unknown rubric asset: x/../code-quality'],
+    ['bantamkit://skills/%FF', 'unknown skill asset: \ufffd'],
+    ['bantamkit://skills/memory%', 'unknown skill asset: memory%'],
+    ['bantamkit://skills/.', 'unknown skill asset: .'],
+    ['bantamkit://rubrics/code-quality%3F', 'unknown rubric asset: code-quality?'],
+  ];
+
   // ------------------------------------------------------------------------- sessions
 
   const sessions = [];
@@ -635,6 +698,47 @@ export async function run(ctx) {
     INITIALIZED,
     callTool(9, 'validate_json', { output: JSON.stringify({ x: 'y'.repeat(3 << 20) }), schema: { properties: { x: { maxLength: 1 } } } }),
   ], { compareInBlock: true, hangup: true });
+
+  // job66/J66-4 (#147, #178, #180): the refusals made before a handler runs. All compared by
+  // the per-id loop (bytes too) AND pinned per side against a literal in the j66-4 block.
+  add('j66-4-params', [
+    INIT(),
+    INITIALIZED,
+    ...J66_4_REFUSED_PARAMS.map(([method, params], i) => rpc(10 + i, method, params)),
+    // pydantic's `X | None = None`: a null optional field is the field left out, so these are
+    // SERVED on both sides; `progressToken: true` is what lax `int` takes.
+    callTool(40, 'work_plan', null),
+    rpc(41, 'prompts/list', { cursor: null }),
+    rpc(42, 'ping', { _meta: null }),
+    rpc(43, 'ping', { _meta: { progressToken: true } }),
+    rpc(44, 'ping', { _meta: { progressToken: 2 } }),
+  ]);
+  // #178: nothing but `ping` before `initialize`; `-32601` for a method nobody serves is the
+  // `unknown-methods` ruling's business, so none is asked here.
+  add('j66-4-preinit', [
+    ...J66_4_PREINIT.map(([method, params], i) => rpc(2 + i, method, params)),
+    rpc(20, 'ping'),
+    INIT(),
+    INITIALIZED,
+    callTool(21, 'work_plan', { nodes: [] }),
+  ]);
+  // An `initialize` the schema refuses opens nothing.
+  add('j66-4-initbad', [rpc(1, 'initialize', {}), rpc(2, 'tools/list'), rpc(3, 'ping')]);
+  // `initialize` and a call in ONE write: the reference parks its reader while `initialize`
+  // runs, so the call behind it is served; the port's gate must open before the call's turn.
+  add('j66-4-init-burst', [
+    JSON.stringify({ conformance: 'burst', frames: 2, b64: b64(`${INIT()}\n${callTool(2, 'work_plan', { nodes: [] })}\n`) }),
+    INITIALIZED,
+    rpc(3, 'ping'),
+  ]);
+  // #180: `resources/read` on URIs no template takes, and on ones that match and name nothing.
+  add('j66-4-resources', [
+    INIT(),
+    INITIALIZED,
+    ...[...J66_4_UNKNOWN_URIS, ...J66_4_MATCHED_URIS.map(([uri]) => uri)].map((uri, i) => rpc(10 + i, 'resources/read', { uri })),
+    // Percent-decoding is the reference's: `%6Demory` IS the memory skill.
+    rpc(60, 'resources/read', { uri: 'bantamkit://skills/%6Demory' }),
+  ]);
 
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
   add('identity-pycache', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})], {
@@ -1211,7 +1315,8 @@ export async function run(ctx) {
     // is compared byte for byte in the `eventlog` block.
     'eventlog-identity',
     'unknown-methods',
-    'bad-params',
+    // 'bad-params' WAS here: ruled as "SDK lineage, no seam" until job66/J66-4 (#147) found
+    // the seam; its frames are now compared verbatim like any other session's.
     'negotiate-2024-10-07',
   ]);
 
@@ -1469,6 +1574,78 @@ export async function run(ctx) {
         kind: 'json',
         expected: { exit: 0, stderr: '' },
         actual: leaving(hangup[key]),
+      });
+    }
+  }
+
+  // --------------------------------------- job66/J66-4: refused before a handler runs
+
+  /**
+   * #147, #178, #180. The per-id loop above already compares every frame of the five
+   * `j66-4-*` sessions side to side, bytes included; these pin each side against a LITERAL,
+   * because the 0.35.7 port was wrong in a way a differential cannot see once both drift.
+   */
+  {
+    const byId = (side) => {
+      const map = new Map();
+      for (const line of side.frames) {
+        try {
+          map.set(JSON.stringify(JSON.parse(line).id), line);
+        } catch {
+          /* a non-frame is the per-id loop's failure to name */
+        }
+      }
+      return map;
+    };
+    const invalid = (id) => `{"jsonrpc":"2.0","id":${id},"error":{"code":-32602,"message":"Invalid request parameters","data":""}}`;
+    const served = (line) => (line === undefined ? 'missing' : JSON.parse(line).result !== undefined ? 'served' : line);
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const params = byId(results.get('j66-4-params')[key]);
+      cases.push({
+        name: `j66-4: #147 ${label} answers params its schema refuses -32602 "Invalid request parameters" (literal)`,
+        kind: 'json',
+        expected: J66_4_REFUSED_PARAMS.map((_, i) => invalid(10 + i)),
+        actual: J66_4_REFUSED_PARAMS.map((_, i) => params.get(String(10 + i)) ?? 'missing'),
+      });
+      cases.push({
+        name: `j66-4: #147 ${label} reads a null optional field as absent (literal)`,
+        kind: 'json',
+        expected: ['served', 'served', 'served', 'served', 'served'],
+        actual: ['40', '41', '42', '43', '44'].map((id) => served(params.get(id))),
+      });
+
+      const pre = byId(results.get('j66-4-preinit')[key]);
+      cases.push({
+        name: `j66-4: #178 ${label} refuses all but ping before initialize, then serves (literal)`,
+        kind: 'json',
+        expected: [...J66_4_PREINIT.map((_, i) => invalid(2 + i)), '{"jsonrpc":"2.0","id":20,"result":{}}', 'served'],
+        actual: [...J66_4_PREINIT.map((_, i) => pre.get(String(2 + i)) ?? 'missing'), pre.get('20') ?? 'missing', served(pre.get('21'))],
+      });
+      const bad = byId(results.get('j66-4-initbad')[key]);
+      const burst = byId(results.get('j66-4-init-burst')[key]);
+      cases.push({
+        name: `j66-4: #178 ${label}: a refused initialize opens nothing; one in the same write as a call does (literal)`,
+        kind: 'json',
+        expected: [invalid(1), invalid(2), '{"jsonrpc":"2.0","id":3,"result":{}}', 'served'],
+        actual: [bad.get('1') ?? 'missing', bad.get('2') ?? 'missing', bad.get('3') ?? 'missing', served(burst.get('2'))],
+      });
+
+      const res = byId(results.get('j66-4-resources')[key]);
+      const refusal = (code, message, uri) => JSON.stringify({ code, message, data: { uri } });
+      cases.push({
+        name: `j66-4: #180 ${label} answers a URI no template takes -32602 "Unknown resource: <uri>" (literal)`,
+        kind: 'json',
+        expected: J66_4_UNKNOWN_URIS.map((uri) => refusal(-32602, `Unknown resource: ${uri}`, uri)),
+        actual: J66_4_UNKNOWN_URIS.map((_, i) => JSON.stringify(JSON.parse(res.get(String(10 + i)) ?? '{}').error ?? 'missing')),
+      });
+      cases.push({
+        name: `j66-4: #180 ${label} decodes a matched name, and one naming no asset is -32603 (literal)`,
+        kind: 'json',
+        expected: [...J66_4_MATCHED_URIS.map(([uri, message]) => refusal(-32603, message, uri)), 'served'],
+        actual: [
+          ...J66_4_MATCHED_URIS.map((_, i) => JSON.stringify(JSON.parse(res.get(String(10 + J66_4_UNKNOWN_URIS.length + i)) ?? '{}').error ?? 'missing')),
+          served(res.get('60')),
+        ],
       });
     }
   }
@@ -2572,18 +2749,16 @@ export async function run(ctx) {
   {
     const { python, node } = results.get('bad-params');
     const errorOf = (side) => frameOf(side, 2)?.error ?? null;
+    // Until job66/J66-4 this was a `ruling:` ("SDK lineage, the port has no seam"), and the
+    // ruling's own text was stale: the port answered -32603 with the zod issue list, not the
+    // -32602 it described. #147 (filed against the released contract) outranks the pin: the
+    // seam is the SDK's handler table (`guardRequests` in `src/mcp/server.ts`), and the two
+    // sides now give the SAME answer, so the case compares them instead of ruling them apart.
     cases.push({
-      name: 'tools/call with a non-object `arguments`: pydantic vs zod, on the ERROR channel',
+      name: 'tools/call with a non-object `arguments`: -32602 "Invalid request parameters" on both (#147)',
       kind: 'json',
       expected: errorOf(python),
       actual: errorOf(node),
-      ruling:
-        'RULED DIFFERENT — SDK lineage. Both refuse with -32602 before any bantamkit code runs; ' +
-        'the request never reaches a handler, so the port has no seam. Python says "Invalid ' +
-        'request parameters" with `data: ""`; the TS SDK says "Invalid tools/call request: ' +
-        '<zod issue list>". This is the ONE argument-shaped refusal the port cannot own — every ' +
-        'refusal inside a well-formed `arguments` object IS reproduced, in pydantic\'s words, ' +
-        'by `src/mcp/pyargs.ts`.',
     });
   }
 

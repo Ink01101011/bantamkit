@@ -468,7 +468,7 @@ saying so, and never otherwise. Contract, conditions and the exact bytes both ru
 ## The frames themselves
 
 Both servers speak newline-delimited JSON-RPC 2.0 on stdio, and both answer the same frames
-the same way (`tools/conformance/suites/wire.mjs`, the `j66-3:` block, pins each side
+the same way (`tools/conformance/suites/wire.mjs`, the `j66-3:` and `j66-4:` blocks, pin each side
 against a literal as well as against the other):
 
 - **A line that is not JSON** is answered `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`.
@@ -487,6 +487,25 @@ against a literal as well as against the other):
   are each answered from their OWN arguments, both under that id (#146).
 - **A host that closes its end of stdout** ends the server the way stdin EOF does: exit 0,
   nothing on stderr, even if stdin is left open (#181).
+- **Params a method's schema refuses** — `tools/call` with no `name` or a non-object
+  `arguments`, `resources/read` with no `uri`, a `cursor` that is not a string, a `_meta` that
+  is not an object — are answered
+  `{"jsonrpc":"2.0","id":<id>,"error":{"code":-32602,"message":"Invalid request parameters","data":""}}`,
+  the reference SDK's own sentence. Through 0.35.8 the Node server said `-32603` with the zod
+  issue list as the message (#147). A `null` in an optional field (`"arguments": null`,
+  `"cursor": null`, `"_meta": null`) is the field left out, as the reference reads it.
+- **Before `initialize`** only `ping` is served. Every other method the server answers gets
+  the same `-32602` until an `initialize` has been accepted (its answer, not the
+  `notifications/initialized` after it); a method it does not answer is `-32601` either way.
+  Through 0.35.8 the Node server served a `tools/call` with no handshake at all (#178).
+- **`resources/read` on a URI no template takes** is `-32602` /
+  `Unknown resource: <uri>` with `data: {"uri": <uri>}`. A template's `{name}` is one
+  segment: a `/ ? # & ,` in it is no match (`bantamkit://skills/memory?x=1`), it is
+  percent-decoded (`%6Demory` is `memory`), and a decoded name that climbs with `..`, is
+  absolute or holds a NUL is no match either (`bantamkit://skills/..`,
+  `bantamkit://skills/..%2F..%2Fpackage`). A name that matches but names no asset is still
+  `-32603` / `unknown skill asset: <name>`. Through 0.35.8 the Node server matched the raw
+  text and said `-32603` for all of these; neither server ever read outside the pack (#180).
 
 ## Out of scope, deliberately
 

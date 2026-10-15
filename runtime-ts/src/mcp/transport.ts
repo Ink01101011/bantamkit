@@ -78,6 +78,8 @@ interface InFlight {
   readonly idText: string;
   readonly line: string;
   exact?: string;
+  /** #147: the reference's per-method model refuses this request's `_meta` (see `consume`). */
+  paramsRefused?: boolean;
 }
 
 /**
@@ -137,6 +139,14 @@ export class RawStdioTransport implements Transport {
   /** The verbatim request line this message token stands for, or `undefined` if it is gone. */
   rawLineFor(id: unknown): string | undefined {
     return typeof id === 'string' ? this.inFlight.get(id)?.line : undefined;
+  }
+
+  /**
+   * #147: whether the reference would refuse this request's params on its `_meta` alone, a
+   * member the TS SDK checks in its ENVELOPE schema and the reference only per method.
+   */
+  paramsRefused(id: unknown): boolean {
+    return typeof id === 'string' && this.inFlight.get(id)?.paramsRefused === true;
   }
 
   /** Register the exact JSON text to send as this message's `result`. */
@@ -261,14 +271,28 @@ export class RawStdioTransport implements Transport {
         }
       }
       let message: JSONRPCMessage;
+      let paramsRefused = false;
       try {
         message = JSONRPCMessageSchema.parse(parsed);
       } catch {
-        this.refuse(INVALID_REQUEST_FRAME);
-        continue;
+        // #147: the TS SDK's envelope checks a request's `params._meta`; the reference's
+        // envelope takes any object as params and checks `_meta` with the METHOD's model,
+        // so `_meta: 5` is -32602 with the client's id there (and `_meta: null` or a
+        // `progressToken: true` is served), where this used to be -32600 with id null. A
+        // request the envelope takes once `_meta` is set aside travels on without it, and
+        // `server.ts`'s guard refuses it -32602 if the reference's model would have.
+        const params = token !== undefined && isObject(parsed) ? parsed['params'] : undefined;
+        const withoutMeta = isObject(params) && '_meta' in params ? withoutKey(parsed as Record<string, unknown>, params) : undefined;
+        const retry = withoutMeta === undefined ? undefined : JSONRPCMessageSchema.safeParse(withoutMeta);
+        if (retry === undefined || !retry.success) {
+          this.refuse(INVALID_REQUEST_FRAME);
+          continue;
+        }
+        message = retry.data;
+        paramsRefused = !referenceTakesMeta((params as Record<string, unknown>)['_meta']);
       }
       if (token !== undefined && idText !== undefined) {
-        this.inFlight.set(token, { idText, line });
+        this.inFlight.set(token, paramsRefused ? { idText, line, paramsRefused } : { idText, line });
         this.newest.set(idText, token);
       } else {
         this.retarget(message);
@@ -310,6 +334,27 @@ function refusedByName(line: string, parsed: unknown): boolean {
   if (clientIdText(line, parsed['id']) === undefined) return false;
   const params = parsed['params'];
   return isObject(params) && typeof params['name'] === 'string' && isObject(params['arguments']) && holdsLoneSurrogate(params['arguments']);
+}
+
+/** The frame again with `params._meta` left out. */
+function withoutKey(frame: Record<string, unknown>, params: Record<string, unknown>): Record<string, unknown> {
+  const { _meta: _dropped, ...rest } = params;
+  return { ...frame, params: rest };
+}
+
+/**
+ * Whether `mcp_types.RequestParams.meta` (`RequestParamsMeta | None`, lax) takes this
+ * `_meta`: absent or `null`, or an open object whose `progressToken`, if any, is a str or
+ * what lax `int` takes — an integral number or a bool (`NotRequired`, so not `null`).
+ * Measured on the reference: `5`, `[]`, `{"progressToken": 1.5}`, `{"progressToken": null}`
+ * and `{"progressToken": {}}` are -32602; `null`, `{"progressToken": true}` and
+ * `{"progressToken": 2.0}` are served.
+ */
+function referenceTakesMeta(meta: unknown): boolean {
+  if (meta === undefined || meta === null) return true;
+  if (!isObject(meta)) return false;
+  const token = meta['progressToken'];
+  return token === undefined || typeof token === 'string' || typeof token === 'boolean' || Number.isInteger(token);
 }
 
 /** The members a JSON-RPC 2.0 message may carry; any other is dropped as pydantic drops it. */

@@ -27,7 +27,7 @@
  * part of the wire and no asset carries it.
  */
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -35,10 +35,12 @@ import {
   CallToolRequestSchema,
   ErrorCode,
   GetPromptRequestSchema,
+  InitializeRequestSchema,
   ListPromptsRequestSchema,
   ListResourceTemplatesRequestSchema,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  PingRequestSchema,
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
@@ -1188,7 +1190,8 @@ export function buildServer(
 
   server.setRequestHandler(ReadResourceRequestSchema, (request) => {
     const uri = request.params.uri;
-    const skill = /^bantamkit:\/\/skills\/([^/]*)$/.exec(uri);
+    const skillName = templateName(uri, 'bantamkit://skills/');
+    const skill = skillName === null ? null : [uri, skillName];
     if (skill) {
       // A skill that pairs with a tool is served on that tool's surfaces and no other. The
       // pairing is the one the reference's `filegraph.py` spells — `load_tool("file_graph")`
@@ -1219,9 +1222,14 @@ export function buildServer(
       }
       return { contents: [{ mimeType: 'text/plain', text, uri }] };
     }
-    const rubric = /^bantamkit:\/\/rubrics\/([^/]*)$/.exec(uri);
+    const rubricName = templateName(uri, 'bantamkit://rubrics/');
+    const rubric = rubricName === null ? null : [uri, rubricName];
     if (rubric) {
-      const path = join(assetsRoot(), 'rubrics', `${rubric[1]}.yaml`);
+      // Joined as TEXT, not with `path.join`: `join` folds `x/../y` lexically, and the
+      // reference's `Path / f"{name}.yaml"` does not, so `x%2F..%2Fcode-quality` (no
+      // traversal ABOVE the start, so the security check passes it) would read
+      // `code-quality.yaml` here and nothing there. The kernel resolves `x/..` on both.
+      const path = `${join(assetsRoot(), 'rubrics')}${sep}${rubric[1]}.yaml`;
       let text: string;
       try {
         text = pyReadText(path);
@@ -1230,11 +1238,8 @@ export function buildServer(
       }
       return { contents: [{ mimeType: 'text/plain', text, uri }] };
     }
-    // The template variable matches ONE segment and MAY BE EMPTY — measured: the reference
-    // answers `bantamkit://skills/` with -32603 `unknown skill asset: `, not with "unknown
-    // resource", so `[^/]*` and not `[^/]+`. A traversal is still not a match at all,
-    // because `bantamkit://skills/../../etc/passwd` has separators in it, and the reference
-    // answers that one -32602.
+    // No template took the URI (`templateName` says how the reference decides), so the
+    // reference's `ResourceNotFoundError`: -32602 `Unknown resource: <uri>` (#180).
     throw rpcError(ErrorCode.InvalidParams, `Unknown resource: ${uri}`, { uri });
   });
 
@@ -1287,15 +1292,142 @@ export function buildServer(
     };
   });
 
+  guardRequests(server, wire);
   return server;
 }
+
+/**
+ * The reference's ONE answer to a request it will not hand to a handler, byte for byte:
+ * `mcp` 2.0.0's `ServerRunner._on_request` raises `MCPError(INVALID_PARAMS, "Invalid request
+ * parameters", data="")` both for params its pydantic model refuses and for a served method
+ * asked before `initialize` was accepted ("pinned compat: the same error shape the union
+ * validation produced"). No pydantic or zod text reaches the wire.
+ */
+const invalidParams = (): Error => rpcError(ErrorCode.InvalidParams, 'Invalid request parameters', '');
+
+/** The request schema of every method this server answers; `guardRequests` refuses a gap. */
+const REQUEST_SCHEMAS = new Map<string, { safeParse(value: unknown): { success: boolean } }>(
+  [
+    InitializeRequestSchema,
+    PingRequestSchema,
+    ListToolsRequestSchema,
+    CallToolRequestSchema,
+    ListResourcesRequestSchema,
+    ListResourceTemplatesRequestSchema,
+    ReadResourceRequestSchema,
+    ListPromptsRequestSchema,
+    GetPromptRequestSchema,
+  ].map((schema) => [schema.shape.method.value, schema]),
+);
+
+/** Only `ping` may be asked before `initialize` (`runner._INIT_EXEMPT`). */
+const INIT_EXEMPT = new Set(['ping']);
+
+/**
+ * #147 AND #178: the two refusals the reference makes before a handler runs, put in front of
+ * every handler the SDK holds.
+ *
+ * #147. The TS SDK parses a request's params INSIDE the handler it registered, so a refusal
+ * left as a thrown zod error: -32603 Internal error with the issue list pretty-printed as the
+ * message (`tools/call` with `params: {}`, `arguments: "notadict"`, `resources/read` with no
+ * `uri`, ...). The reference answers all of them -32602 with a short message. The schema is
+ * the SDK's own, checked here first, so what is refused does not change — only how.
+ *
+ * #178. The TS SDK has no initialization gate: a `tools/call` with no `initialize` before it
+ * was served. The reference refuses every method it serves, except `ping`, until an
+ * `initialize` has been ACCEPTED (its answer, not `notifications/initialized`), with the same
+ * -32602; a method it does not serve is -32601 either way, which the SDK already says because
+ * an unserved method never reaches this table. The gate opens SYNCHRONOUSLY when a valid
+ * `initialize` reaches its handler: the reference parks its read loop while `initialize` runs,
+ * so a request written in the same chunk behind it is served, and here the next handler call
+ * is a later microtask in arrival order. `_oninitialize` cannot refuse a valid request (it
+ * negotiates down to its own latest version), so opening before it returns is not optimism.
+ *
+ * THE SEAM IS THE SDK'S HANDLER TABLE, `Protocol._requestHandlers`: TypeScript-private, and
+ * the only place that sees `initialize` and `ping`, which the SDK registers itself. Pinned to
+ * the capped SDK, and checked here: a table that is not a Map, or a handler with no schema
+ * in `REQUEST_SCHEMAS`, stops the server at startup rather than serving it unguarded.
+ */
+function guardRequests(server: Server, wire: RawStdioTransport): void {
+  type Handler = (request: { method: string; params?: unknown }, extra: { requestId?: unknown }) => unknown;
+  const table = (server as unknown as { _requestHandlers?: unknown })._requestHandlers;
+  if (!(table instanceof Map)) {
+    throw new Error('the MCP SDK keeps no _requestHandlers map: the #147/#178 request guard has no seam');
+  }
+  const handlers = table as Map<string, Handler>;
+  let accepted = false;
+  for (const [method, handler] of [...handlers]) {
+    const schema = REQUEST_SCHEMAS.get(method);
+    if (schema === undefined) throw new Error(`no request schema for served method ${method}: the #147 guard would skip it`);
+    handlers.set(method, (request, extra) => {
+      // pydantic's optional fields (`cursor`, `arguments`, `_meta`, ...) are `X | None =
+      // None`, so `null` is the same as absent there; zod's `.optional()` refuses it. A
+      // REQUIRED field (`name`, `uri`) is still refused once its `null` is set aside.
+      const params = request.params;
+      if (params !== null && typeof params === 'object' && !Array.isArray(params)) {
+        for (const [key, value] of Object.entries(params)) if (value === null) delete (params as Record<string, unknown>)[key];
+      }
+      // `?.`: the in-memory test harnesses hand `buildServer` a two-method stub for `wire`.
+      if (wire.paramsRefused?.(extra.requestId) === true || !schema.safeParse(request).success) throw invalidParams();
+      if (method === 'initialize') accepted = true;
+      else if (!accepted && !INIT_EXEMPT.has(method)) throw invalidParams();
+      return handler(request, extra);
+    });
+  }
+}
+
+/**
+ * `mcp` 2.0.0's `ResourceTemplate.matches` for a template `<prefix>{name}`: the decoded
+ * name, or `null` when the reference's resource manager would answer `Unknown resource`
+ * (#180). Three steps, each measured against the running reference:
+ *
+ * - `UriTemplate.match`: a URI past 65 536 code points is no match; the literal prefix must
+ *   be there; a simple `{name}` stops at `/ ? # & ,`, so a tail holding any of them is no
+ *   match (`memory?x=1`, `memory#frag`, `a/b`). The empty tail matches (`bantamkit://skills/`
+ *   is -32603 `unknown skill asset: ` on both sides).
+ * - `urllib.parse.unquote`: `%XX` runs decoded as UTF-8 with replacement, so `%6Demory` IS
+ *   `memory` and `..%2F..%2Fpackage` is `../../package`.
+ * - `ResourceSecurity`'s default policy on the decoded value: a NUL, a `..` that climbs
+ *   above the start (`/` and `\` both separators), or an absolute path (`/x`, `\x`, `C:`)
+ *   raises `ResourceSecurityError`, which the manager turns into `Unknown resource`.
+ *
+ * Before this the port matched `[^/]*` on the RAW text and answered -32603 `unknown skill
+ * asset: ..` for all three of the issue's URIs; neither side ever read outside the pack.
+ */
+function templateName(uri: string, prefix: string): string | null {
+  if ([...uri].length > 65_536 || !uri.startsWith(prefix)) return null;
+  const raw = uri.slice(prefix.length);
+  if (/[/?#&,]/.test(raw)) return null;
+  const name = raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) =>
+    new TextDecoder('utf-8').decode(Uint8Array.from(run.split('%').slice(1), (h) => parseInt(h, 16))),
+  );
+  if (name.includes('\0') || climbs(name) || isAbsolutePath(name)) return null;
+  return name;
+}
+
+/** `mcp.shared.path_security.contains_path_traversal`: does a `..` climb above the start? */
+function climbs(value: string): boolean {
+  let depth = 0;
+  for (const part of value.replace(/\\/g, '/').split('/')) {
+    if (part === '..') {
+      depth -= 1;
+      if (depth < 0) return true;
+    } else if (part !== '' && part !== '.') depth += 1;
+  }
+  return false;
+}
+
+/** `mcp.shared.path_security.is_absolute_path`: POSIX, UNC/root-relative, or a drive letter. */
+const isAbsolutePath = (value: string): boolean =>
+  value !== '' && (value[0] === '/' || value[0] === '\\' || /^[A-Za-z]:/.test(value));
 
 /** `params.arguments` out of the raw request line, with every number literal intact. */
 function argumentsFrom(line: string): PyValue {
   try {
     const params = asDict(parseJson(line)).get('params');
     const args = params === undefined ? undefined : asDict(params).get('arguments');
-    return args ?? { t: 'dict', v: new Map() };
+    // `arguments: null` is no arguments (pydantic's `dict | None = None`, #147).
+    return args === undefined || args.t === 'null' ? { t: 'dict', v: new Map() } : args;
   } catch {
     // Unreachable over a line the SDK already parsed; a re-parse failure must not be the
     // thing that decides a tool call, so it falls back to the parsed view.
