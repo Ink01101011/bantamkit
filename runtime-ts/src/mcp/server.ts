@@ -132,8 +132,8 @@ const SERVED: ReadonlySet<string> = new Set<string>(MCP_TOOLS);
 /**
  * The advertisement for one tool, out of its manifest, with the surface checked.
  *
- * Key order is `description, inputSchema, name, outputSchema` because that is the order the
- * reference's pydantic `Tool` model dumps in, and the nested schemas keep the manifest's own
+ * Key order is `annotations, description, inputSchema, name, outputSchema, title` because that
+ * is the order the reference's wire carries a tool entry in (sorted), and the nested schemas keep the manifest's own
  * key order because both runtimes preserve insertion order in a JSON object.
  *
  * `output_schema` is advertised VERBATIM and is not derived from anything this file knows.
@@ -144,7 +144,7 @@ const SERVED: ReadonlySet<string> = new Set<string>(MCP_TOOLS);
  * comparable across the two runtimes. A cosmetic title is not worth breaking the instrument
  * that detects drift. Registered here, not fixed here; `runtime-py` is the reference.
  */
-export function fromManifest(name: string): Record<string, unknown> {
+export function fromManifest(name: string, eventLogOn = false): Record<string, unknown> {
   const asset = loadToolAsset(name);
   const surfaces = (asset['surfaces'] ?? []) as string[];
   if (!surfaces.includes('mcp')) {
@@ -152,12 +152,42 @@ export function fromManifest(name: string): Record<string, unknown> {
       `tool asset '${name}' does not claim the mcp surface: [${surfaces.map((s) => `'${s}'`).join(', ')}]`,
     );
   }
+  // `title` and `annotations` (#182, job67) come from the asset like the description, and
+  // land where the reference's sorted dump puts them: `annotations` first, `title` last. An
+  // asset without them advertises neither key, as the reference's `None` does.
+  const hints = servedAnnotations(asset, eventLogOn);
   return {
+    ...(hints === null ? {} : { annotations: hints }),
     description: asset['description'],
     inputSchema: asset['parameters'],
     name: asset['name'],
     outputSchema: asset['output_schema'],
+    ...(asset['title'] === undefined ? {} : { title: asset['title'] }),
   };
+}
+
+/**
+ * The three hints a read-only tool's advertisement turns into while the event log is ON.
+ *
+ * #182 (job67). `readOnlyHint: true` in an asset means the tool never writes anything on any
+ * path, and that holds only while `BANTAMKIT_EVENT_LOG` is unset: every served handler appends
+ * a record to `<store>/events/mcp.jsonl` when the log is on (`bantamkit_status` on its raise
+ * path only). So a server whose log is on advertises those tools as writers, append-only
+ * (`destructiveHint: false`) and not idempotent (each call adds a line). The reference's
+ * `EVENT_LOG_HINTS` in `mcpserver.py` is the same three keys.
+ */
+export const EVENT_LOG_HINTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false } as const;
+
+/**
+ * The `annotations` a tool is advertised with: the asset's, adjusted for the event log, keys
+ * sorted as the reference's dump sorts them. `null` for an asset that carries none.
+ */
+export function servedAnnotations(asset: Record<string, unknown>, eventLogOn: boolean): Record<string, unknown> | null {
+  const raw = asset['annotations'] as Record<string, unknown> | undefined;
+  if (raw === undefined) return null;
+  const hints: Record<string, unknown> =
+    eventLogOn && raw['readOnlyHint'] === true ? { ...raw, ...EVENT_LOG_HINTS } : { ...raw };
+  return Object.fromEntries(Object.keys(hints).sort().map((k) => [k, hints[k]]));
 }
 
 /**
@@ -1120,7 +1150,7 @@ export function buildServer(
   // Startup, not call time: a tool without a manifest, or with the wrong surface, must stop
   // the process before a client ever sees a `tools/list`. The reference gets this from
   // `MCPServer(..., tools=[...])`; here it is one eager pass.
-  const advertised = MCP_TOOLS.map((name) => fromManifest(name));
+  const advertised = MCP_TOOLS.map((name) => fromManifest(name, log.enabled));
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: advertised }));
   server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: [] }));

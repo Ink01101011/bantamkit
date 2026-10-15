@@ -1,5 +1,6 @@
 {
   "name": "work_plan",
+  "title": "Work plan: batch a dependency graph",
   "description": "Work plan: turn a dependency graph into the batches that may run in parallel. Takes `nodes`, each `{id, depends_on, priority}` — `depends_on` absent or null means none, `priority` defaults to 0 — and answers `{\"result\": \"plan\", \"batches\", \"sequence\", \"width\"}`: batch k holds every node whose dependencies all appear in batches below k, `sequence` is those batches flattened in order, and `width` is the largest batch length — the widest fan-out, which is the number an orchestrator needs to decide whether it can afford the batch. Order inside a batch is priority descending, then the order the nodes were given; both halves are contract, because determinism inside a batch is what two implementations are held to. Empty `nodes` is an ANSWER, not a refusal: no batches, no sequence, width 0. Four refusals, checked in this order and one sentence each: `nodes[<i>].<field> must be ...` for a node whose `id` is not a string, whose `depends_on` is not a list of strings or whose `priority` is not an integer (named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. It reports what the graph permits and decides nothing about what may actually be dispatched together — `depends_on` encodes logical order, not file contention, so a batch this tool calls parallel may still hold work that writes one file. Pure computation over the nodes it was handed: it opens no file and takes no path. Never mutates.",
   "surfaces": [
     "mcp"
@@ -52,5 +53,9 @@
     "type": "object",
     "additionalProperties": true,
     "title": "work_planDictOutput"
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "openWorldHint": false
   }
 }

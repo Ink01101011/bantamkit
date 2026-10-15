@@ -57,9 +57,15 @@ try:
     from mcp.server.mcpserver.exceptions import ResourceError
     from mcp.server.mcpserver.tools import Tool as SDKTool
     from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
+    from mcp.shared.exceptions import MCPError
+    from mcp.types import INVALID_PARAMS, ErrorData, ToolAnnotations
     from pydantic import Field
 except ImportError:  # surfaced as a clear SystemExit in main()
     MCPServer = None  # type: ignore[assignment]
+    MCPError = None  # type: ignore[assignment,misc]
+    INVALID_PARAMS = -32602
+    ErrorData = None  # type: ignore[assignment,misc]
+    ToolAnnotations = None  # type: ignore[assignment,misc]
     Field = None  # type: ignore[assignment]
     FuncMetadata = object  # type: ignore[assignment,misc]
     ResourceError = None  # type: ignore[assignment]
@@ -1218,7 +1224,33 @@ def _document_key(path: str) -> tuple[str, int, int] | None:
         return None
 
 
-def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
+#: The three hints a read-only tool's advertisement turns into while the event log is ON.
+#:
+#: #182 (job67). `readOnlyHint: true` in an asset means the tool never writes anything on any
+#: path — and that holds only while `BANTAMKIT_EVENT_LOG` is unset: every served handler
+#: appends a record to `<store>/events/mcp.jsonl` when the log is on (`bantamkit_status`
+#: on its raise path only). So a server whose log is on advertises those tools as writers,
+#: append-only (`destructiveHint: false`) and not idempotent (each call adds a line). The
+#: port's `EVENT_LOG_HINTS` in `runtime-ts/src/mcp/server.ts` is the same three keys.
+EVENT_LOG_HINTS = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+
+
+def served_annotations(asset: dict[str, Any], event_log_on: bool) -> dict[str, Any] | None:
+    """The `annotations` a tool is advertised with: the asset's, adjusted for the event log.
+
+    `None` for an asset that carries none. A read-only tool keeps its asset hints while the
+    log is off and takes `EVENT_LOG_HINTS` over them while it is on; a writer's hints are
+    the asset's either way, because the log adds nothing a writer did not already admit.
+    """
+    hints = asset.get("annotations")
+    if hints is None:
+        return None
+    if event_log_on and hints.get("readOnlyHint") is True:
+        return {**hints, **EVENT_LOG_HINTS}
+    return dict(hints)
+
+
+def _from_manifest(fn: Callable[..., Any], name: str, event_log_on: bool = False) -> Any:
     """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
 
     The asset pack under `assets/tools/` is the tool contract for every runtime that
@@ -1256,7 +1288,16 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
         raise BantamError(
             f"tool asset {name!r} does not claim the mcp surface: {asset['surfaces']}"
         )
-    tool = SDKTool.from_function(fn, name=asset["name"], description=asset["description"])
+    # `title` and `annotations` (#182) are advertised from the asset like the description;
+    # `served_annotations` is the one place the event log's state moves a hint.
+    hints = served_annotations(asset, event_log_on)
+    tool = SDKTool.from_function(
+        fn,
+        name=asset["name"],
+        title=asset.get("title"),
+        description=asset["description"],
+        annotations=None if hints is None else ToolAnnotations.model_validate(hints),
+    )
     return tool.model_copy(
         update={
             "parameters": asset["parameters"],
@@ -1966,20 +2007,20 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     # refused by `_from_manifest` at startup. The handlers below are DORMANT, not gone:
     # a roster decision, not a deletion of working code.
     tools = [
-        _from_manifest(memory_save, "memory_save"),
-        _from_manifest(memory_recall, "memory_recall"),
-        _from_manifest(validate_json, "validate_json"),
-        _from_manifest(shiftwork_clock_in, "shiftwork_clock_in"),
-        _from_manifest(shiftwork_clock_out, "shiftwork_clock_out"),
-        _from_manifest(shiftwork_status, "shiftwork_status"),
-        _from_manifest(build_identity_tool, "build_identity"),
-        _from_manifest(bantamkit_status, "bantamkit_status"),
-        _from_manifest(memory_compact, "memory_compact"),
-        _from_manifest(skill_audit, "skill_audit"),
-        _from_manifest(memory_dream, "memory_dream"),
-        _from_manifest(token_ledger, "token_ledger"),
-        _from_manifest(work_plan, "work_plan"),
-        _from_manifest(shiftwork_plan, "shiftwork_plan"),
+        _from_manifest(memory_save, "memory_save", log.enabled),
+        _from_manifest(memory_recall, "memory_recall", log.enabled),
+        _from_manifest(validate_json, "validate_json", log.enabled),
+        _from_manifest(shiftwork_clock_in, "shiftwork_clock_in", log.enabled),
+        _from_manifest(shiftwork_clock_out, "shiftwork_clock_out", log.enabled),
+        _from_manifest(shiftwork_status, "shiftwork_status", log.enabled),
+        _from_manifest(build_identity_tool, "build_identity", log.enabled),
+        _from_manifest(bantamkit_status, "bantamkit_status", log.enabled),
+        _from_manifest(memory_compact, "memory_compact", log.enabled),
+        _from_manifest(skill_audit, "skill_audit", log.enabled),
+        _from_manifest(memory_dream, "memory_dream", log.enabled),
+        _from_manifest(token_ledger, "token_ledger", log.enabled),
+        _from_manifest(work_plan, "work_plan", log.enabled),
+        _from_manifest(shiftwork_plan, "shiftwork_plan", log.enabled),
     ]
 
     server = MCPServer(
@@ -2001,6 +2042,29 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     # IT CARRIES THE ANSWER, not an instruction to go and get it. `prompts/get` runs
     # server-side, so the report is already in the message the host inserts: the operator
     # sees it with no tool round trip, and it is true as of the moment they asked.
+    # AN UNKNOWN PROMPT NAME IS INVALID PARAMS (#198, user ruling 2026-10-15). The SDK's
+    # `get_prompt` raises a bare `ValueError("Unknown prompt: <name>")`, which its dispatcher
+    # answers with `code: 0` — a default nobody chose, and not the port's `-32602`. One prompt
+    # is registered, so the name is checked here and refused with the same sentence as an
+    # `MCPError`, which the dispatcher passes through with its own code. `_handle_get_prompt`
+    # reaches `self.get_prompt` at call time, so the instance attribute is what answers.
+    # `data` is SET to `None` rather than left out: stdio serialises with `exclude_unset`,
+    # so an explicit `None` is the `"data": null` the port's frame carries, byte for byte,
+    # and `MCPError(code, message)` alone would drop the key.
+    sdk_get_prompt = server.get_prompt
+
+    async def get_prompt(
+        name: str, arguments: dict[str, Any] | None = None, context: Any = None
+    ) -> Any:
+        if name != STATUS_NAME:
+            message = f"Unknown prompt: {name}"
+            refusal = MCPError(INVALID_PARAMS, message)
+            refusal.error = ErrorData(code=INVALID_PARAMS, message=message, data=None)
+            raise refusal
+        return await sdk_get_prompt(name, arguments, context)
+
+    server.get_prompt = get_prompt  # type: ignore[method-assign]
+
     @server.prompt(
         name=STATUS_NAME,
         title="bantamkit status",

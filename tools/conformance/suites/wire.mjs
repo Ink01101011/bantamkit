@@ -792,6 +792,30 @@ export async function run(ctx) {
     callTool(39, 'shiftwork_clock_in', { checkpoint, unitId: cursorUnit }),
   ]);
 
+  // job67/J67-2 (#182): every served tool's `title` and `annotations`, with the event log off
+  // (the default) and on, where the eight read-only tools turn into append-only writers.
+  // (#198, user ruling 2026-10-15): `prompts/get` with a name no prompt has is -32602 with
+  // the sentence and `data: null` on both sides. Compared by the per-id loop (raw bytes too
+  // for the prompt frames; `tools/list` is canonical there, its key order being ruled) AND
+  // pinned per side against the literals in the j67-2 block below.
+  add('j67-2-annotations', [
+    INIT(),
+    INITIALIZED,
+    rpc(2, 'tools/list'),
+    rpc(3, 'prompts/get', { name: 'nosuch' }),
+    rpc(4, 'prompts/get', { name: '' }),
+    rpc(5, 'prompts/get', { name: 'bantamkit_status ' }),
+    rpc(6, 'prompts/get', { name: 'BANTAMKIT_STATUS' }),
+    rpc(7, 'prompts/get', { name: 'bantamkit_status' }),
+  ], {
+    // id 7's report carries `build_id`, which fingerprints two different trees (ruled in
+    // docs/porting.md); the same single mask the status sessions use.
+    mask: (t) => t.replace(/build sha256:[0-9a-f]{64}/g, 'build sha256:<masked>'),
+  });
+  add('j67-2-annotations-log', [INIT(), INITIALIZED, rpc(2, 'tools/list')], {
+    env: { ...baseEnv, [EVENT_LOG_ENV]: '1' },
+  });
+
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
   add('identity-pycache', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})], {
     env: { ...baseEnv, BANTAMKIT_ASSETS: PYCACHE_ASSETS },
@@ -1772,6 +1796,79 @@ export async function run(ctx) {
       expected: { python: Object.fromEntries(tools.map((t) => [t, false])), node: Object.fromEntries(tools.map((t) => [t, false])) },
       actual: { python: looseOf(pyAds), node: looseOf(nodeAds) },
     });
+  }
+
+  // ------------------------------------- job67/J67-2: tool titles and annotations; prompts/get
+
+  /**
+   * #182 and #198. The per-id loop compares the two `tools/list` answers and the five
+   * `prompts/get` frames side to side; these pin each side against a LITERAL written here,
+   * not read off the assets, so an asset that flips a hint is a red on both sides rather than
+   * a new truth both agree on. `readOnlyHint: true` is claimed only by the eight tools that
+   * write nothing while the event log is off; with it on, each takes the three-key overlay
+   * (`EVENT_LOG_HINTS` in both runtimes). Per-tool reasons: `.shiftwork/notes-job67/J67-2.md`.
+   */
+  {
+    const RO = { openWorldHint: false, readOnlyHint: true };
+    const LOGGED = { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false };
+    const J67_2_SURFACE = {
+      memory_save: ['Save a memory', { destructiveHint: true, openWorldHint: false, readOnlyHint: false }],
+      memory_recall: ['Recall memories', { openWorldHint: false, readOnlyHint: false }],
+      validate_json: ['Validate JSON against a schema', RO],
+      shiftwork_clock_in: ['Shift work: clock in', { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false }],
+      shiftwork_clock_out: ['Shift work: clock out', { destructiveHint: true, idempotentHint: false, openWorldHint: false, readOnlyHint: false }],
+      shiftwork_status: ['Shift work: status', RO],
+      build_identity: ['Build identity', RO],
+      bantamkit_status: ['bantamkit status', RO],
+      memory_compact: ['Compact the memory store', { destructiveHint: true, openWorldHint: false, readOnlyHint: false }],
+      skill_audit: ['Audit the skill catalogue', RO],
+      memory_dream: ['Dream: consolidate the memory store', { destructiveHint: true, openWorldHint: false, readOnlyHint: false }],
+      token_ledger: ['Token ledger', RO],
+      work_plan: ['Work plan: batch a dependency graph', RO],
+      shiftwork_plan: ['Shift work: plan', RO],
+    };
+    const advertised = (side) =>
+      Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, [t.title ?? 'absent', t.annotations ?? 'absent']]));
+    const expectedOff = J67_2_SURFACE;
+    const expectedOn = Object.fromEntries(
+      Object.entries(J67_2_SURFACE).map(([tool, [title, hints]]) => [tool, [title, hints.readOnlyHint ? LOGGED : hints]]),
+    );
+    const promptRefusal = (id, name) =>
+      `{"jsonrpc":"2.0","id":${id},"error":{"code":-32602,"message":${JSON.stringify(`Unknown prompt: ${name}`)},"data":null}}`;
+    const promptLines = (side) => [3, 4, 5, 6].map((id) => side.frames.find((f) => f.startsWith(`{"jsonrpc":"2.0","id":${id},`)) ?? 'missing');
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const off = results.get('j67-2-annotations')[key];
+      const on = results.get('j67-2-annotations-log')[key];
+      cases.push({
+        name: `j67-2: #182 ${label} advertises each tool's title and hints, event log off (literal)`,
+        kind: 'json',
+        expected: expectedOff,
+        actual: advertised(off),
+      });
+      cases.push({
+        name: `j67-2: #182 ${label} advertises the read-only tools as append-only writers, event log on (literal)`,
+        kind: 'json',
+        expected: expectedOn,
+        actual: advertised(on),
+      });
+      cases.push({
+        name: `j67-2: #198 ${label} refuses an unknown prompt name -32602 with data null (literal)`,
+        kind: 'json',
+        expected: [
+          promptRefusal(3, 'nosuch'),
+          promptRefusal(4, ''),
+          promptRefusal(5, 'bantamkit_status '),
+          promptRefusal(6, 'BANTAMKIT_STATUS'),
+        ],
+        actual: promptLines(off),
+      });
+      cases.push({
+        name: `j67-2: #198 ${label} still serves the registered prompt (literal)`,
+        kind: 'json',
+        expected: 'user',
+        actual: frameOf(off, 7)?.result?.messages?.[0]?.role ?? 'missing',
+      });
+    }
   }
 
   // ------------------------------------------- the one remedy the two installs spell apart
@@ -2925,8 +3022,8 @@ export async function run(ctx) {
       ruling:
         'RULED DIFFERENT — key order only, inside `mcp` 2.0.0\'s outbound serializer, and the ' +
         'CONTENT is proven identical by the `advertisement: id 2` case above, which sorts keys ' +
-        'and passes. Measured, three levels: the tool entry arrives as `description, ' +
-        'inputSchema, name, outputSchema` where the pydantic model dumps `name, title, ' +
+        'and passes. Measured, three levels: the tool entry arrives as `annotations, description, ' +
+        'inputSchema, name, outputSchema, title` (sorted; the first and last since #182) where the pydantic model dumps `name, title, ' +
         'description, inputSchema, ...`; `memory_save` and `memory_recall` arrive with ' +
         '`inputSchema` as `properties, required, type` where their manifests say `type, ' +
         'required, properties`; `memory_compact` arrives as `properties, type` where its ' +

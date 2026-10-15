@@ -1,5 +1,6 @@
 {
   "name": "validate_json",
+  "title": "Validate JSON against a schema",
   "description": "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; when invalid, feed the feedback back to the model and retry. The output may be any JSON value; otherwise the first fenced block, or the first object or array in the text, is used. $schema selects draft-04, draft-06, draft-07, 2019-09 or 2020-12 (default); $ref resolves only inside the one schema (\"#\", \"#/...\", \"#name\"), so a remote reference or an embedded $id is refused. pattern is Python re syntax, without inline flags, look-behind, backreferences, atomic or possessive groups, conditional groups or \\N{...}; a document's patterns get 500 ms in total.",
   "surfaces": [
     "mcp"
@@ -28,5 +29,9 @@
     "type": "object",
     "additionalProperties": true,
     "title": "validate_jsonDictOutput"
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "openWorldHint": false
   }
 }

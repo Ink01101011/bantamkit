@@ -33,12 +33,19 @@ def test_tool_assets_are_valid():
     The assertion is EXACT (`==`, not `>=`) for the same reason it always was: a manifest
     an implementer cannot read to completion is not a manifest, and an unannounced key is
     a contract change that no port would learn about until it diverged.
+
+    SEVEN KEYS FOR A SERVED TOOL since job67 (#182): an asset claiming `mcp` also carries
+    the `title` and `annotations` its `tools/list` entry advertises. An agent-only or
+    retired asset keeps exactly the five, so neither key can leak onto a surface that does
+    not serve it unannounced. Still exact on both branches.
     """
     tool_files = sorted((assets_root() / "tools").glob("*.json"))
     assert {f.stem for f in tool_files} >= {"memory_save", "memory_recall"}
     for f in tool_files:
         data = json.loads(f.read_text(encoding="utf-8"))
-        assert set(data) == {"name", "description", "surfaces", "parameters", "output_schema"}
+        base = {"name", "description", "surfaces", "parameters", "output_schema"}
+        served = "mcp" in data.get("surfaces", [])
+        assert set(data) == (base | {"title", "annotations"} if served else base), f.stem
         assert data["name"] == f.stem
         jsonschema.Draft202012Validator.check_schema(data["parameters"])
 

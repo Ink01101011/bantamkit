@@ -51,6 +51,17 @@ is untouched. Through 0.35.9 both servers ignored such a key, so `unitId` for `u
 the call as if the argument had never been sent (#133; `tools/conformance/suites/wire.mjs`,
 the `j67-1:` block, pins each tool on each side).
 
+**Every tool has a `title` and MCP 2025-06-18 `annotations`** (#182), from its asset.
+`readOnlyHint: true` is claimed only by the eight tools that write nothing at all —
+`validate_json`, `shiftwork_status`, `shiftwork_plan`, `work_plan`, `build_identity`,
+`bantamkit_status`, `skill_audit`, `token_ledger` — and only while the event log is off: with
+`BANTAMKIT_EVENT_LOG` set, every handler appends a record, so those eight are advertised as
+`readOnlyHint: false, destructiveHint: false, idempotentHint: false` instead. `memory_recall`
+is never read-only (it stamps `last_recalled` on the facts it returns), nor is
+`shiftwork_clock_in` (it appends a brief line). `openWorldHint` is `false` on all fourteen:
+none reaches past the local filesystem. Both servers advertise the same hints (the `j67-2:`
+block of `wire.mjs` pins each tool on each side, log off and on).
+
 ## Shift-work tools
 
 The [shift-work](shiftwork.md) driver spawns sessions from outside; these
@@ -517,6 +528,9 @@ against a literal as well as against the other):
   `bantamkit://skills/..%2F..%2Fpackage`). A name that matches but names no asset is still
   `-32603` / `unknown skill asset: <name>`. Through 0.35.8 the Node server matched the raw
   text and said `-32603` for all of these; neither server ever read outside the pack (#180).
+- **`prompts/get` with a name no prompt has** is `-32602` / `Unknown prompt: <name>` with
+  `data: null`. Through 0.35.9 the Python server said `code: 0`, its SDK's
+  default for an exception nobody mapped (#198, user ruling 2026-10-15).
 
 ## Out of scope, deliberately
 
