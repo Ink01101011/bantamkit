@@ -1003,8 +1003,19 @@ export async function run(ctx) {
     actual: gatedBits.node,
   });
 
+  // AMENDED (job65 J65-7, #131). Until this job this was `ruling: a Python-only regex in a
+  // branch that never fires`: `checkSchema` compiled `pattern` as a JS RegExp, so `(?P<x>a)` —
+  // valid `re` — raised here while Python answered `(valid)`. The issue, filed against the
+  // released contract, outranks the pin: the port now parses `re`'s grammar, so the two MATCH
+  // and the ruling went `STALE RULING`. The old ruling's text, for the record: "THE PRICE OF
+  // CHECKING `pattern` EAGERLY, stated rather than hidden. `check_schema` compiles every
+  // `pattern` (the metaschema's `"format": "regex"`), which is how `{"pattern": "("}` became a
+  // refusal on both sides instead of `{"valid": true}` here. The same eagerness makes this
+  // port refuse `(?P<x>…)` — valid `re`, invalid `RegExp` — even though the instance has no
+  // `s` and the keyword would never have fired. Python answers `(valid)`. … Porting
+  // `sre_compile` is what would close it."
   cases.push({
-    name: 'ruling: a Python-only regex in a branch that never fires',
+    name: 'a Python-only regex in a branch that never fires answers on both sides (#131; was a ruling until job65)',
     kind: 'string',
     expected: answer(
       ctx.runPython(REF, {
@@ -1021,16 +1032,6 @@ export async function run(ctx) {
         return `${e.name}: ${e.message}`;
       }
     })(),
-    ruling:
-      'THE PRICE OF CHECKING `pattern` EAGERLY, stated rather than hidden. `check_schema` ' +
-      "compiles every `pattern` (the metaschema's `\"format\": \"regex\"`), which is how " +
-      '`{"pattern": "("}` became a refusal on both sides instead of `{"valid": true}` here. ' +
-      "The same eagerness makes this port refuse `(?P<x>…)` — valid `re`, invalid `RegExp` — " +
-      'even though the instance has no `s` and the keyword would never have fired. Python ' +
-      'answers `(valid)`. This is the SAME divergence as the `python re and JS RegExp` ruling ' +
-      'below, moved earlier; the trade taken is that a refusal in an unreached branch beats ' +
-      'answering `{"valid": true}` for a pattern that is not one. Porting `sre_compile` is ' +
-      'what would close it.',
   });
 
   // AMENDED (job65, #125). Until this job the case here was `ruling: $ref is not resolved`: the
@@ -1094,19 +1095,243 @@ export async function run(ctx) {
     op: 'schema_error',
     cases: [{ schema: b64(REGEX_SCHEMA), output: b64(REGEX_OUTPUT) }],
   }).results[0];
+  // AMENDED (job65 J65-7, #131). Until this job this was `ruling: python re and JS RegExp are
+  // different languages`, pinning that the port's `\d` was ASCII. The issue outranks the pin:
+  // the port translates `re`'s classes, the two MATCH, and the ruling went `STALE RULING`. The
+  // old ruling's text, for the record: "Python's `\d` matches every Unicode decimal digit and
+  // JS's matches [0-9], so Thai digits satisfy the pattern in Python and fail it here. `$`
+  // before a trailing newline, `(?P<name>…)`, `\A` and `\Z` diverge too. … Fixing this means
+  // porting `sre_compile`, which is a larger surface than the whole validator." The whole
+  // dialect is now measured below under `pattern/`.
   cases.push({
-    name: 'ruling: python re and JS RegExp are different languages',
+    name: 'python re digits are Unicode on both sides (#131; was `ruling: python re and JS RegExp are different languages` until job65)',
     kind: 'string',
     expected: answer(pyRegex),
     actual: nodeAnswer(contract.schemaError(REGEX_OUTPUT.replace('\\u0e51\\u0e52\\u0e53', '๑๒๓'), pyjson.parseJson(REGEX_SCHEMA))),
-    ruling:
-      "Python's `\\d` matches every Unicode decimal digit and JS's matches [0-9], so Thai " +
-      'digits satisfy the pattern in Python and fail it here. `$` before a trailing newline, ' +
-      '`(?P<name>…)`, `\\A` and `\\Z` diverge too. The asset pack holds exactly ONE `pattern` ' +
-      '(`assets/tools/memory_save.json`) and it is inside the common core; a caller-supplied ' +
-      'pattern is not guaranteed to be. Fixing this means porting `sre_compile`, which is a ' +
-      'larger surface than the whole validator.',
   });
+
+  // ======================================================= job65 J65-7: #131 #132 #152 #153
+  //
+  // THE PROPERTIES. (#131) the `pattern` dialect is Python's `re` on both sides: the port
+  // parses `re`'s grammar and translates it, and a construct it cannot translate faithfully is
+  // refused with ONE sentence by both, never answered differently. (#132) a document's patterns
+  // run against a shared 500 ms budget and a pattern past it is refused with one sentence. (#152)
+  // a top-level scalar is a JSON document. (#153) feedback quotes at most 200 codepoints of an
+  // offending value and at most 1000 of the sentence, with a `…(N more)` tail.
+  const pyjsonschema = await import(nodeUrl('pyjsonschema'));
+
+  // ---- the dialect itself: a seeded corpus of patterns, per pattern a row of search bits ---
+  const DIALECT_TOKENS = [
+    'a', 'b', 'c', '\n', 'ไ', '๑', '_', '-', ' ', 'Z', '.', '^', '$', '|', '(', ')', '(?:', '(?P<n>', '(?P<m>',
+    '(?P=n)', '(?=', '(?!', '(?<=', '(?<!', '(?#c)', '(?i)', '(?u)', '(?a)', '(?x)', '(?i:', '(?-i:', '(?>',
+    '(?(1)', '(?(n)', '(?P', '(?<n>', '(?L)', '(?au)', '[', ']', '[^', '[]', '*', '+', '?', '{', '}', '{2}',
+    '{1,3}', '{,2}', '{3,1}', '{1,}', ',', '\\d', '\\D', '\\w', '\\W', '\\s', '\\S', '\\b', '\\B', '\\A', '\\Z',
+    '\\1', '\\0', '\\12', '\\101', '\\400', '\\8', '\\x41', '\\x4', '\\u0e51', '\\U0001F600', '\\U00110000',
+    '\\N{DIGIT ONE}', '\\q', '\\-', '\\.', '\\]', '\\\\', '\\', '*+', '++', '??', '#', '\\a', '\\v', '\\t',
+    '&&', '--', '/', '😀', '{0}', '(a)', '(?:b|c)', '[a-c]', '[^\\d]', '[\\w-]', '[\\s\\S]', '[ไ-๑]', '(ab|)',
+    '[]a]', '[a-]', '[\\b]',
+  ];
+  const DIALECT_STRINGS = [
+    '', 'a', 'ab', 'aab', 'abc', 'a\n', '\n', 'ไทย', '๑๒๓', '123', 'a b', 'A', 'a_b-c', '😀', '\x1c',
+    '﻿', '\r', '{', 'abcZ', 'b', 'aa', ' ', '\x08', '\x07', '-', 'c\n', 'Z', '}', ',', '\\', '#', '&&',
+  ];
+  let seed = 0x6a3507; // mulberry32: the corpus is the same on every run, so a red is rerunnable
+  const rand = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const dialectPatterns = [];
+  const seenPatterns = new Set();
+  while (dialectPatterns.length < 4000) {
+    let p = '';
+    const n = 1 + Math.floor(rand() * 7);
+    for (let i = 0; i < n; i += 1) p += DIALECT_TOKENS[Math.floor(rand() * DIALECT_TOKENS.length)];
+    if (seenPatterns.has(p)) continue;
+    seenPatterns.add(p);
+    dialectPatterns.push(p);
+  }
+  const pyDialect = ctx.runPython(REF, {
+    op: 'pattern_dialect',
+    patterns: dialectPatterns.map(b64),
+    strings: DIALECT_STRINGS.map(b64),
+  }).results;
+  const dialectCount = { error: 0, unsupported: 0, searched: 0 };
+  dialectPatterns.forEach((p, i) => {
+    let node;
+    try {
+      const t = pyjsonschema.translatePyPattern(p);
+      if (t.source === null) node = 'unsupported';
+      else {
+        const re = new RegExp(t.source, 'v');
+        node = DIALECT_STRINGS.map((x) => (re.test(x) ? '1' : '0')).join('');
+      }
+    } catch (e) {
+      node = e.name === 'PyReError' || e.name === 'PyJsonSchemaUnsupported' ? 'error' : `${e.name}: ${e.message}`;
+    }
+    const py = pyDialect[i];
+    dialectCount[py === 'error' || py === 'unsupported' ? py : 'searched'] += 1;
+    cases.push({ name: `pattern/dialect/${i} ${JSON.stringify(p)}`, kind: 'string', expected: py, actual: node });
+  });
+  notes.push(
+    `pattern dialect: ${dialectPatterns.length} seeded patterns x ${DIALECT_STRINGS.length} strings — ` +
+      `${dialectCount.searched} searched, ${dialectCount.error} refused by re, ${dialectCount.unsupported} outside the shared dialect`,
+  );
+
+  // ---- end to end through schema_error -------------------------------------------------------
+  const j7 = [];
+  const j7add = (name, schema, output) => j7.push({ name, schema: JSON.stringify(schema), output });
+  const sOf = (pattern) => ({ properties: { s: { pattern } } });
+  // #131's own five probes.
+  const ISSUE_131 = [
+    ['^\\d+$', '๑๒๓'],
+    ['^\\w+$', 'ไทย'],
+    ['^a$', 'a\n'],
+    ['c\\Z', 'abcZ'],
+    ['(?P<x>a)', 'a'],
+  ];
+  ISSUE_131.forEach(([p, x], i) => j7add(`issue131/${i}`, sOf(p), JSON.stringify({ s: x })));
+  // Every construct outside the shared dialect, in a branch the instance never reaches: the
+  // refusal is eager, like `check_schema`'s compile.
+  const UNSUPPORTED = [
+    '(?i)a', '(?i:a)', '(?-i:a)', '(?s).', '(?x) a', '(?a)\\w', '(?<=a)b', '(?<!a)b', '(a)\\1', '(?P<n>a)(?P=n)',
+    '(?>a)', 'a*+', 'a++', 'a?+', 'a{1,2}+', '(a)?(?(1)b|c)', '\\N{DIGIT ONE}', '\\N{NO SUCH NAME}', '[\\N{DIGIT ONE}]',
+  ];
+  UNSUPPORTED.forEach((p, i) => j7add(`unsupported/${i}`, sOf(p), '{"n": 1}'));
+  j7add('unsupported/patternProperties-key', { patternProperties: { '(?i)^a': {} } }, '{"n": 1}');
+  j7add('unsupported/global-u-is-the-default', sOf('(?u)^a$'), '{"s": "b"}');
+  // `patternProperties` keys are `"format": "regex"` from draft 6: a key `re` cannot compile
+  // is a SchemaError there even when no property meets it — the bit, compared below.
+  const PP_DRAFTS = [
+    'http://json-schema.org/draft-04/schema#',
+    'http://json-schema.org/draft-06/schema#',
+    'http://json-schema.org/draft-07/schema#',
+    'https://json-schema.org/draft/2019-09/schema',
+    'https://json-schema.org/draft/2020-12/schema',
+  ];
+  PP_DRAFTS.forEach((d, i) => j7add(`pp-key-compiles/${i}`, { $schema: d, patternProperties: { '(': {} } }, '{}'));
+  // #132: the budget, on the issue's pattern, through `pattern` and through `additionalProperties`.
+  const BOOM = 'a'.repeat(40) + '!';
+  j7add('budget/pattern', sOf('^(a+)+$'), JSON.stringify({ s: BOOM }));
+  j7add(
+    'budget/additionalProperties',
+    { patternProperties: { '^(a+)+$': {} }, additionalProperties: false },
+    JSON.stringify({ [BOOM]: 1 }),
+  );
+  const MANY = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, `v${i}`]));
+  j7add('budget/many-fast-searches', { patternProperties: { '^k\\d+$': { pattern: '^v\\d+$' } } }, JSON.stringify(MANY));
+  // #152: a top-level scalar is a JSON document.
+  j7add('scalar/string', { type: 'string' }, '"just a string"');
+  j7add('scalar/float', { type: 'number' }, '1.0');
+  j7add('scalar/null', { type: 'null' }, 'null');
+  j7add('scalar/true', { type: 'boolean' }, 'true');
+  j7add('scalar/wrong-type', { type: 'integer' }, '"x"');
+  j7add('scalar/fenced', { type: 'string' }, 'here:\n```json\n"x"\n```');
+  j7add('scalar/prose-is-still-not-json', {}, '42 is the answer');
+  j7add('scalar/string-holding-braces', { type: 'object' }, '"see {\\"a\\": 1}"');
+  // #153: the offending value, clipped.
+  j7add('clip/maxLength', { properties: { x: { maxLength: 10 } } }, JSON.stringify({ x: 'y'.repeat(100000) }));
+  j7add('clip/maxItems', { maxItems: 3 }, JSON.stringify(Array.from({ length: 5000 }, () => 1)));
+  j7add('clip/unexpected-key', { additionalProperties: false }, JSON.stringify({ ['k'.repeat(5000)]: 1 }));
+  j7add('clip/where', { additionalProperties: { type: 'string' } }, JSON.stringify({ ['w'.repeat(300)]: 1 }));
+  j7add('clip/short-is-untouched', { properties: { x: { maxLength: 1 } } }, JSON.stringify({ x: 'y'.repeat(150) }));
+
+  const pyJ7 = ctx.runPython(REF, {
+    op: 'schema_error',
+    cases: j7.map((c) => ({ schema: b64(c.schema), output: b64(c.output) })),
+  }).results;
+  // A raise renders as `RAISES` on both sides: the two libraries' exception WORDS are ruled
+  // elsewhere (`check_schema`); here the bit is the property.
+  const j7py = new Map();
+  const j7node = new Map();
+  j7.forEach((spec, i) => {
+    const py = pyJ7[i];
+    j7py.set(spec.name, typeof py === 'object' && py !== null ? 'RAISES' : answer(py));
+    let node;
+    try {
+      node = nodeAnswer(contract.schemaError(spec.output, pyjson.parseJson(spec.schema)));
+    } catch {
+      node = 'RAISES';
+    }
+    j7node.set(spec.name, node);
+    cases.push({ name: `pattern/schema_error/${spec.name}`, kind: 'string', expected: j7py.get(spec.name), actual: node });
+  });
+
+  // ---- the absolute half: literals on each side ----------------------------------------------
+  // A differential is blind to a regression that lands in BOTH runtimes (dropping the scalar
+  // arm, the clip, or the refusal from both is green above). These pin what the answer IS.
+  const refusal = (p) =>
+    `the pattern ${p} is not supported: this validator refuses inline flags, look-behind, ` +
+    'backreferences, atomic groups, possessive quantifiers, conditional groups and \\N{...} escapes';
+  const budget = (p) =>
+    `the pattern ${p} did not finish within the 500 ms this validator allows a document's patterns; ` +
+    'rewrite it so it cannot backtrack catastrophically, as (a+)+$ does';
+  const clipped = (text, limit) => {
+    const cps = [...text];
+    return cps.length <= limit ? text : `${cps.slice(0, limit).join('')}…(${cps.length - limit} more)`;
+  };
+  const J7_LITERALS = {
+    'issue131/0': '(valid)',
+    'issue131/1': '(valid)',
+    'issue131/2': '(valid)',
+    'issue131/3': "JSON does not match schema at 's': 'abcZ' does not match 'c\\\\Z'",
+    'issue131/4': '(valid)',
+    'unsupported/0': refusal("'(?i)a'"),
+    'unsupported/6': refusal("'(?<=a)b'"),
+    'unsupported/8': refusal("'(a)\\\\1'"),
+    'unsupported/10': refusal("'(?>a)'"),
+    'unsupported/11': refusal("'a*+'"),
+    'unsupported/15': refusal("'(a)?(?(1)b|c)'"),
+    'unsupported/17': refusal("'\\\\N{NO SUCH NAME}'"),
+    'unsupported/patternProperties-key': refusal("'(?i)^a'"),
+    'unsupported/global-u-is-the-default': "JSON does not match schema at 's': 'b' does not match '(?u)^a$'",
+    'budget/pattern': budget("'^(a+)+$'"),
+    'budget/additionalProperties': budget("'^(a+)+$'"),
+    'budget/many-fast-searches': '(valid)',
+    'scalar/string': '(valid)',
+    'scalar/float': '(valid)',
+    'scalar/null': '(valid)',
+    'scalar/true': '(valid)',
+    'scalar/wrong-type': "JSON does not match schema at 'root': 'x' is not of type 'integer'",
+    'scalar/fenced': '(valid)',
+    'scalar/prose-is-still-not-json': 'output was not parseable JSON: no JSON object found in output',
+    'scalar/string-holding-braces': `JSON does not match schema at 'root': 'see {"a": 1}' is not of type 'object'`,
+    'clip/maxLength': `JSON does not match schema at 'x': ${clipped(`'${'y'.repeat(100000)}'`, 200)} is too long`,
+    'clip/maxItems': `JSON does not match schema at 'root': ${clipped(`[${Array(5000).fill('1').join(', ')}]`, 200)} is too long`,
+    'clip/unexpected-key': `JSON does not match schema at 'root': ${clipped(`Additional properties are not allowed ('${'k'.repeat(5000)}' was unexpected)`, 1000)}`,
+    'clip/where': `JSON does not match schema at '${clipped('w'.repeat(300), 200)}': 1 is not of type 'string'`,
+    'clip/short-is-untouched': `JSON does not match schema at 'x': '${'y'.repeat(150)}' is too long`,
+  };
+  for (const [specName, sentence] of Object.entries(J7_LITERALS)) {
+    cases.push({
+      name: `pattern/schema_error/${specName}: the sentence, as a literal on each side`,
+      kind: 'json',
+      expected: { python: sentence, node: sentence },
+      actual: { python: j7py.get(specName) ?? null, node: j7node.get(specName) ?? null },
+    });
+  }
+  // Every refused construct answers the sentence — not a raise, not a verdict — on each side.
+  cases.push({
+    name: `pattern/unsupported: all ${UNSUPPORTED.length} constructs answer the one sentence on each side`,
+    kind: 'json',
+    expected: { python: UNSUPPORTED.map(() => true), node: UNSUPPORTED.map(() => true) },
+    actual: {
+      python: UNSUPPORTED.map((_, i) => (j7py.get(`unsupported/${i}`) ?? '').startsWith('the pattern ')),
+      node: UNSUPPORTED.map((_, i) => (j7node.get(`unsupported/${i}`) ?? '').startsWith('the pattern ')),
+    },
+  });
+  // The refusal bit for an uncompilable `patternProperties` key, per draft: data under draft 4.
+  cases.push({
+    name: 'pattern/pp-key-compiles: an uncompilable patternProperties key raises from draft 6, on each side',
+    kind: 'json',
+    expected: { python: [false, true, true, true, true], node: [false, true, true, true, true] },
+    actual: {
+      python: PP_DRAFTS.map((_, i) => j7py.get(`pp-key-compiles/${i}`) === 'RAISES'),
+      node: PP_DRAFTS.map((_, i) => j7node.get(`pp-key-compiles/${i}`) === 'RAISES'),
+    },
+  });
+  notes.push(`#131 #132 #152 #153: ${j7.length} schema_error cases, ${Object.keys(J7_LITERALS).length + 2} pinned as literals on each side`);
 
   return { cases, notes };
 }

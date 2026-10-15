@@ -36,8 +36,8 @@ import { BantamError } from './errors.js';
 import { pyStrip } from './memory/factfile.js';
 import { pyReadText } from './memory/pyfs.js';
 import { resolveImplicitTag } from './memory/pyyaml.js';
-import { fromJs, PyValueError, rawDecode, type PyValue } from './pyjson.js';
-import { absolutePath, PyJsonSchemaRefusal, validate, type PyValidationError } from './pyjsonschema.js';
+import { fromJs, parseJson, PyValueError, rawDecode, reprValue, type PyValue } from './pyjson.js';
+import { absolutePath, clipText, PyJsonSchemaRefusal, validate, type PyValidationError } from './pyjsonschema.js';
 
 /**
  * `contract.REQUIRED_KEYS`, in Python's order — the order the error message lists them.
@@ -627,7 +627,8 @@ export function toolFailed(tool: string, detail: unknown): string {
  * of prose, which is faithful and occasionally wrong in exactly Python's way. `raw_decode`
  * then stops at the end of that one value, which is why `{"a": 1} — anything else?` parses.
  */
-export function extractJson(text: string): PyValue {
+/** `_unfenced`: the text `extract_json` searches — stripped, and the first fence's body if any. */
+function unfenced(text: string): string {
   let body = pyStrip(text);
   // `re.DOTALL` — JS needs `[\s\S]`, and `\s*` after the opening fence is Python's `\s*`.
   const fence = /```(?:json)?[\s\S]*?```/.exec(body);
@@ -635,6 +636,11 @@ export function extractJson(text: string): PyValue {
     const inner = /```(?:json)?\s*([\s\S]*?)```/.exec(body);
     body = pyStrip(inner![1]!);
   }
+  return body;
+}
+
+export function extractJson(text: string): PyValue {
+  const body = unfenced(text);
   const startBrace = body.indexOf('{');
   const startBracket = body.indexOf('[');
   let start: number;
@@ -665,16 +671,24 @@ export function extractJson(text: string): PyValue {
  * loss.
  */
 export function schemaError(output: string, schema: PyValue | unknown): string | null {
+  const isValueError = (e: unknown): boolean =>
+    e instanceof Error && (e.name === 'PyValueError' || e.name === 'PyJSONDecodeError');
   let data: PyValue;
   try {
-    data = extractJson(output);
-  } catch (e) {
-    // `except ValueError` — and `json.JSONDecodeError` IS a `ValueError`, which is how
-    // CPython's decoder text reaches the model.
-    if (e instanceof Error && (e.name === 'PyValueError' || e.name === 'PyJSONDecodeError')) {
-      return parseErrorMessage(e);
+    // #152: a whole-text JSON document of any type first — `"x"`, `1.0` and `null` are JSON
+    // texts — and only then the object/array search `extract_json` does (`json.loads` then
+    // `extract_json` on the reference).
+    data = parseJson(unfenced(output));
+  } catch (whole) {
+    if (!isValueError(whole)) throw whole;
+    try {
+      data = extractJson(output);
+    } catch (e) {
+      // `except ValueError` — and `json.JSONDecodeError` IS a `ValueError`, which is how
+      // CPython's decoder text reaches the model.
+      if (isValueError(e)) return parseErrorMessage(e);
+      throw e;
     }
-    throw e;
   }
   const asPy = isPyValue(schema) ? schema : fromJs(schema);
   let error: PyValidationError | null;
@@ -690,7 +704,19 @@ export function schemaError(output: string, schema: PyValue | unknown): string |
   }
   if (error === null) return null;
   const where = absolutePath(error).map(String).join('/') || 'root';
-  return validationErrorMessage(where, error.message);
+  return validationErrorMessage(clipText(where), clipDetail(error.message, error.instance));
+}
+
+/**
+ * #153: the offending value quoted at most 200 codepoints, the sentence at most 1000 —
+ * `contract._clip_detail`. Every `repr` of the instance is clipped first, so a `maxLength`
+ * failure on a 1 MiB string still says `is too long`; the whole-sentence cap then bounds
+ * what a message quotes from PARTS of the instance (an unexpected property's name).
+ */
+function clipDetail(message: string, instance: PyValue): string {
+  const quoted = reprValue(instance);
+  if ([...quoted].length > 200) message = message.split(quoted).join(clipText(quoted));
+  return clipText(message, 1000);
 }
 
 function isPyValue(value: unknown): value is PyValue {

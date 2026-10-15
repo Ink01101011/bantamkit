@@ -171,12 +171,32 @@ port RAISED on `$ref`, `$dynamicRef`, `$recursiveRef` and `unevaluated*`, and th
 `ruling: $ref is not resolved`; that ruling is now the non-ruled case `$ref into #/$defs resolves
 on both sides`, and the whole surface is the `drafts/` matrix.
 
-One trade taken deliberately: `{"pattern": "("}` compiles eagerly, which closes the wrong
-answer at the cost of refusing Python-only regex syntax in branches that are never reached.
-Ruled, with a measured case both ways.
+**`pattern` is Python's `re`, on both sides** (job65, #131). `{"pattern": "("}` compiles
+eagerly, as the metaschema's `"format": "regex"` makes the reference do, and from draft 6 a
+`patternProperties` key does too. Until job65 the port compiled with `RegExp` (`u`, then a silent
+non-`u` fallback that read `\Z` as a literal `Z`), which disagreed on 5 of 5 of the issue's
+probes and was carried as two rulings. Now `pyjsonschema.translatePyPattern` parses `re._parser`'s
+grammar and re-emits a `v`-mode RegExp whose every construct means what it means in `re`: `\d`
+is `\p{Nd}`, `\w` is `[\p{L}\p{N}_]`, `\s` is the 29 codepoints `str.isspace()` names, `\b`/`\B`
+are look-arounds over that `\w` (`\B` never matches the empty string — CPython 3.11-3.13; 3.14
+changed it), `.` is `[^\n]`, `$` is `(?=\n?$)`, `\A`/`\Z` are the ends, `{,n}` and a `{` that is
+not a repeat are what `re` reads them as. Measured over every codepoint, the three classes are
+equal except for what Unicode 16 assigned after the reference's Unicode 15 (5,004 for `\w`, 80
+for `\d`). Constructs with no faithful translation — inline flags (`(?u)` alone is the default
+and passes), look-behind, backreferences, atomic groups, possessive quantifiers, conditional
+groups and `\N{...}` — are refused by BOTH runtimes before validation with one sentence,
+answered as `{valid: false, feedback}`; `contract._pattern_unsupported` finds them in
+`re._parser`'s tree. A narrowing of the reference, not a divergence between the runtimes, so no
+row in the table below. Measured: 80,000 random patterns over 36 strings, 0 disagreements on
+refused-by-`re` / refused-as-unsupported / the search bit per string; the suite carries a seeded
+4,000 of them as `pattern/dialect/*`.
 
-Regex classes are not the same alphabet: `\d` in Python matches any Unicode decimal digit, so
-the port uses `\p{Nd}` with the `u` flag.
+**A document's patterns share a 500 ms budget** (job65, #132): past it the answer is one
+sentence on both sides. The port stops a running search with `vm`'s timeout, so the event loop
+is blocked for at most the budget; the reference runs each search in a long-lived
+`python -I -S` child it can kill, because `re` holds the GIL for a whole search and no thread
+can interrupt it. Which side times out first on a borderline pattern is machine-dependent; a
+pattern that backtracks catastrophically times out on both.
 
 ### CPython's `listsort` — recall's tie-break can raise
 
@@ -590,7 +610,8 @@ reference and the disagreement is with CPython rather than with Node. Found whil
    and refuses a reference outside the one resource before `validate` runs.)
 3. `shiftwork._read_valid` does not catch `UnicodeDecodeError`.
 4. `_pinned_store`'s docstring states a false reason.
-5. A `pattern` regex divergence.
+5. A `pattern` regex divergence. (Closed by job65, #131: the port translates `re`'s grammar,
+   and the constructs it cannot translate are refused by both runtimes with one sentence.)
 6. `memory/store.py`'s `_rebuild_index` and `_write_fact` call `write_text` with
    `newline=None`, so on Windows the reference writes CRLF into `index.md` and into every
    fact file while the port writes LF. One layer BELOW the operator CLI's streams, which had

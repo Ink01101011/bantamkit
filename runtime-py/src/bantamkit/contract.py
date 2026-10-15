@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import builtins
+import contextvars
+import importlib
 import json
+import queue
 import re
+import subprocess
+import sys
+import threading
+import time
 from collections.abc import Iterator
+from re import _constants as _sre
+from re import _parser as _sre_parse
 
 import jsonschema
 import yaml
@@ -111,11 +121,17 @@ def validation_error_message(where: str, detail: str) -> str:
     return load_contract()["validation_error"].format(where=where, detail=detail)
 
 
-def extract_json(text: str) -> dict | list:
+def _unfenced(text: str) -> str:
+    """The text `extract_json` searches: stripped, and the first fenced block's body if any."""
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
+    return text
+
+
+def extract_json(text: str) -> dict | list:
+    text = _unfenced(text)
     start_brace = text.find("{")
     start_bracket = text.find("[")
     if start_brace == -1 and start_bracket == -1:
@@ -193,6 +209,217 @@ def _names_draft3(uri: object) -> bool:
     return found is jsonschema.Draft3Validator
 
 
+# ---- `pattern`: the dialect both runtimes share, and its clock (#131, #132) ----------------
+
+# The opcodes `re` parses that the Node port cannot translate faithfully: look-behind
+# (fixed-width here, any width in JS), backreferences (a JS backreference to a group that did
+# not take part matches the empty string; here it fails), atomic groups, possessive
+# quantifiers and conditional groups. Inline flags and `\N{...}` are found below.
+_UNSUPPORTED_OPS = frozenset(
+    {_sre.ATOMIC_GROUP, _sre.POSSESSIVE_REPEAT, _sre.GROUPREF, _sre.GROUPREF_EXISTS}
+)
+
+
+def _names_a_character(pattern: str) -> bool:
+    """`\\N{...}` anywhere: it parses to a plain LITERAL, so the tree cannot show it."""
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "\\":
+            if pattern[i + 1 : i + 2] == "N":
+                return True
+            i += 2
+        else:
+            i += 1
+    return False
+
+
+def _tree_unsupported(items: object) -> bool:
+    for op, av in items:  # type: ignore[attr-defined]
+        if op in _UNSUPPORTED_OPS:
+            return True
+        if op in (_sre.ASSERT, _sre.ASSERT_NOT):
+            direction, sub = av
+            if direction < 0 or _tree_unsupported(sub):
+                return True
+        elif op is _sre.SUBPATTERN:
+            _group, add_flags, del_flags, sub = av
+            if add_flags or del_flags or _tree_unsupported(sub):
+                return True
+        elif op in (_sre.MAX_REPEAT, _sre.MIN_REPEAT):
+            if _tree_unsupported(av[2]):
+                return True
+        elif op is _sre.BRANCH:
+            if any(_tree_unsupported(sub) for sub in av[1]):
+                return True
+    return False
+
+
+def _pattern_unsupported(pattern: str) -> bool:
+    """True when `re` parses `pattern` and it uses a construct outside the shared dialect.
+
+    A pattern `re` refuses is NOT this function's: it is left to `check_schema`, which raises
+    where it always raised. `runtime-ts/src/pyjsonschema.ts` (`translatePyPattern`) parses
+    with `re._parser`'s own grammar and marks the same constructs, which is what makes the
+    refusal one sentence on both runtimes rather than two verdicts.
+    """
+    # `\\N{...}` first, whatever else the pattern holds: the port has no Unicode name table,
+    # so it cannot tell a defined name from an undefined one, and neither side tries to.
+    if _names_a_character(pattern):
+        return True
+    try:
+        parsed = _sre_parse.parse(pattern)
+    except (re.error, OverflowError, ValueError, RecursionError):
+        return False
+    # `(?u)` is the default for a str pattern; any other global flag is refused.
+    if parsed.state.flags & ~re.UNICODE:
+        return True
+    return _tree_unsupported(parsed.data)
+
+
+def _clip(text: str, limit: int = 200) -> str:
+    """At most `limit` codepoints of `text`, then `…(N more)` (#153)."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…({len(text) - limit} more)"
+
+
+def _unsupported_pattern_sentence(pattern: str) -> str:
+    return (
+        f"the pattern {_clip(repr(pattern))} is not supported: this validator refuses inline "
+        "flags, look-behind, backreferences, atomic groups, possessive quantifiers, "
+        "conditional groups and \\N{...} escapes"
+    )
+
+
+PATTERN_BUDGET_MS = 500
+
+
+def _pattern_budget_sentence(pattern: str) -> str:
+    return (
+        f"the pattern {_clip(repr(pattern))} did not finish within the {PATTERN_BUDGET_MS} ms "
+        "this validator allows a document's patterns; rewrite it so it cannot backtrack "
+        "catastrophically, as (a+)+$ does"
+    )
+
+
+class _PatternRefusal(Exception):
+    """Raised out of `jsonschema` mid-validation; `schema_error` answers its sentence."""
+
+
+# The search runs in a child interpreter because `re` holds the GIL for the whole of a
+# search: a catastrophic pattern in a worker thread still stops the event loop that answers
+# `ping` (measured: 0 ticks of the main thread during a 372 ms search). A child can be killed;
+# a running `re.search` cannot be interrupted from another thread on any platform.
+_CHILD_SOURCE = """
+import json, re, sys
+for line in sys.stdin.buffer:
+    pattern, text = json.loads(line)
+    try:
+        out = "1" if re.search(pattern, text) else "0"
+    except Exception as e:
+        out = json.dumps([type(e).__name__, str(e)])
+    sys.stdout.write(out + "\\n")
+    sys.stdout.flush()
+"""
+
+
+class _PatternChild:
+    """One long-lived `python -I -S` that answers `re.search`, restarted after a timeout."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._lines: queue.Queue[bytes | None] = queue.Queue()
+
+    def _start(self) -> subprocess.Popen[bytes]:
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c", _CHILD_SOURCE],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        lines: queue.Queue[bytes | None] = queue.Queue()
+
+        def pump() -> None:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                lines.put(line)
+            lines.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
+        self._proc, self._lines = proc, lines
+        return proc
+
+    def _stop(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+
+    def search(self, pattern: str, text: str, timeout: float) -> bool | None:
+        """The search's truth, or None when it ran past `timeout` seconds (the child is killed)."""
+        with self._lock:
+            proc = self._proc if self._proc is not None and self._proc.poll() is None else None
+            if proc is None:
+                self._stop()
+                proc = self._start()
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps([pattern, text]).encode("ascii") + b"\n")
+            proc.stdin.flush()
+            try:
+                line = self._lines.get(timeout=timeout)
+            except queue.Empty:
+                self._stop()
+                return None
+            if line is None:
+                self._stop()
+                raise RuntimeError("the pattern child exited without answering")
+            answer = line.decode("ascii").strip()
+            if answer in ("0", "1"):
+                return answer == "1"
+            kind, message = json.loads(answer)
+            raise (re.error if kind == "error" else getattr(builtins, kind, RuntimeError))(message)
+
+
+_PATTERN_CHILD = _PatternChild()
+_PATTERN_CLOCK: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar(
+    "_PATTERN_CLOCK", default=None
+)
+
+
+class _BoundedRe:
+    """`jsonschema`'s `re`, with `search` charged to the running validation's clock.
+
+    Outside `schema_error` (no clock) it is `re` itself. Installed on the three `jsonschema`
+    modules that call `re.search` on a schema's pattern, so every keyword that searches —
+    `pattern`, `patternProperties`, `additionalProperties`, `unevaluatedProperties` — is
+    bounded without re-implementing any of them.
+    """
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(re, name)
+
+    def search(self, pattern: object, string: object, flags: int = 0) -> object:
+        clock = _PATTERN_CLOCK.get()
+        if clock is None or flags or not isinstance(pattern, str) or not isinstance(string, str):
+            return re.search(pattern, string, flags)  # type: ignore[arg-type]
+        remaining = PATTERN_BUDGET_MS / 1000 - clock[0]
+        if remaining <= 0:
+            raise _PatternRefusal(_pattern_budget_sentence(pattern))
+        started = time.monotonic()
+        try:
+            found = _PATTERN_CHILD.search(pattern, string, remaining)
+        finally:
+            clock[0] += time.monotonic() - started
+        if found is None:
+            raise _PatternRefusal(_pattern_budget_sentence(pattern))
+        return found
+
+
+for _module in ("jsonschema._keywords", "jsonschema._utils", "jsonschema._legacy_keywords"):
+    importlib.import_module(_module).re = _BoundedRe()  # type: ignore[attr-defined]
+
+
 def _unsupported_schema(schema: dict) -> str | None:
     """The one sentence BOTH runtimes answer for a schema the validator will not resolve.
 
@@ -234,6 +461,16 @@ def _unsupported_schema(schema: dict) -> str | None:
             f'the schema declares "{id_key}" at {ids[0]}; references are only resolved in a '
             "schema with a single resource"
         )
+    # #131: every `pattern` and `patternProperties` key, in document order.
+    for _path, sub in _subschemas(schema):
+        candidates = []
+        if isinstance(sub.get("pattern"), str):
+            candidates.append(sub["pattern"])
+        if isinstance(sub.get("patternProperties"), dict):
+            candidates.extend(sub["patternProperties"])
+        for candidate in candidates:
+            if isinstance(candidate, str) and _pattern_unsupported(candidate):
+                return _unsupported_pattern_sentence(candidate)
     return None
 
 
@@ -244,18 +481,26 @@ def schema_error(output: str, schema: dict) -> str | None:
     sentence here too, so `validate_json` answers it instead of raising.
     """
     try:
-        data = extract_json(output)
-    except ValueError as e:
-        return parse_error_message(e)
+        # #152: a whole-text JSON document of any type first — `"x"`, `1.0` and `null` are
+        # JSON texts — and only then the object/array search `extract_json` does.
+        data = json.loads(_unfenced(output))
+    except ValueError:
+        try:
+            data = extract_json(output)
+        except ValueError as e:
+            return parse_error_message(e)
     if isinstance(schema, dict):
         refusal = _unsupported_schema(schema)
         if refusal is not None:
             return refusal
+    token = _PATTERN_CLOCK.set([0.0])
     try:
         jsonschema.validate(data, schema)
+    except _PatternRefusal as e:
+        return str(e)
     except jsonschema.ValidationError as e:
         where = "/".join(str(p) for p in e.absolute_path) or "root"
-        return validation_error_message(where, e.message)
+        return validation_error_message(_clip(where), _clip_detail(e.message, e.instance))
     except _WrappedReferencingError as e:
         wrapped = e._wrapped
         if isinstance(wrapped, PointerToNowhere):
@@ -265,7 +510,22 @@ def schema_error(output: str, schema: dict) -> str | None:
             anchor = json.dumps("#" + wrapped.anchor)
             return f"the reference {anchor} names no anchor in this schema"
         raise
+    finally:
+        _PATTERN_CLOCK.reset(token)
     return None
+
+
+def _clip_detail(message: str, instance: object) -> str:
+    """#153: the offending value quoted at most 200 codepoints, the sentence at most 1000.
+
+    Every `repr` of the instance in the message is clipped first, so a `maxLength` failure on a
+    1 MiB string still says `is too long`; the whole sentence is then capped, which bounds the
+    values a message quotes that are PARTS of the instance (an unexpected property's name).
+    """
+    quoted = repr(instance)
+    if len(quoted) > 200:
+        message = message.replace(quoted, _clip(quoted))
+    return _clip(message, 1000)
 
 
 def render_evidence(messages: list[Message], budget: int = 4096) -> str:

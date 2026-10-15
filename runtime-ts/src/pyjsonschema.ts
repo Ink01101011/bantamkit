@@ -71,6 +71,8 @@
  * the WORDS differ. Registered and NOT fixed here: `validate_json` letting an exception out
  * on caller input is a `runtime-py` defect (invariant 8).
  */
+import vm from 'node:vm';
+
 import { cmpCodepoint } from './memory/pyfs.js';
 import { reprValue, type PyValue } from './pyjson.js';
 
@@ -410,30 +412,709 @@ function findAdditionalProperties(instance: Map<string, PyValue>, schema: PyValu
   return out;
 }
 
+// ------------------------------------------------------------- Python `re`, translated
+
 /**
- * `re.search(pattern, string)`.
+ * `re.search(pattern, string)` — the reference's dialect, translated, bounded (#131, #132).
  *
- * RULING. Python's `re` and JS's `RegExp` are different languages past the common core:
- * `\d` is Unicode-wide in Python and ASCII-only in JS, `$` matches before a trailing newline
- * in Python and not in JS, and `(?P<x>…)`/`\Z`/`\A` are Python-only syntax. The asset pack
- * holds exactly one `pattern` (`assets/tools/memory_save.json`), which is inside the common
- * core; a caller-supplied schema is not guaranteed to be. Carried as a ruled case rather
- * than fixed, because fixing it means porting `sre_compile`.
+ * THE DIALECT IS PYTHON'S. Until job65 this was `new RegExp(pattern, 'u')` with a silent
+ * fallback to a non-`u` RegExp, so the two runtimes disagreed on 5 of 5 of #131's probes:
+ * `\d`/`\w` are Unicode-wide in `re` and ASCII in JS, `$` matches before a final newline in
+ * `re`, `(?P<x>…)` refused here, and the fallback read `\Z` as a literal `Z`. JSON Schema
+ * recommends ECMA-262, but the product's contract is the reference's verdict, so the pattern
+ * is parsed the way `re._parser` parses it and re-emitted as a `v`-mode RegExp whose every
+ * construct means what it means in `re`:
+ *
+ *   - `\d` → `\p{Nd}`; `\w` → `[\p{L}\p{N}_]` (`str.isalnum() or "_"`); `\s` → the 29
+ *     codepoints `str.isspace()` names (JS's `\s` adds U+FEFF and drops U+001C-1F, U+0085);
+ *     `\b`/`\B` are look-arounds over that `\w`, and `\B` never matches the empty string
+ *     (`SRE_AT_UNI_NON_BOUNDARY`, CPython 3.11-3.13). Measured over every codepoint: the
+ *     three classes are equal except for the codepoints Unicode 16 assigned after the
+ *     reference's Unicode 15 (5,004 for `\w`, 80 for `\d`, 0 for `\s`).
+ *   - `.` → `[^\n]` (JS also stops at `\r`, U+2028, U+2029); `$` → `(?=\n?$)`; `\A` → `^`;
+ *     `\Z` → `$`; `(?P<n>…)` → a group; `{,n}` → `{0,n}`; a `{` that is not a repeat is a
+ *     literal; every literal is emitted as `\u{…}`, so no JS syntax rule can reach it.
+ *
+ * A pattern `re` itself refuses is a `PyReError` (what `re.error` is on the reference: the
+ * schema check raises it). Constructs with no faithful translation — inline flags,
+ * look-behind (fixed-width in `re`, any width in JS), backreferences (a JS backreference to
+ * a group that did not take part matches the empty string; `re`'s fails), atomic groups,
+ * possessive quantifiers, conditional groups and `\N{…}` (no Unicode name table here) — are
+ * parsed, so that a broken pattern is still an error, and then REFUSED on both runtimes with
+ * one sentence (`unsupportedPatternSentence`; `contract._pattern_unsupported` on the
+ * reference), never answered differently.
  */
-function reSearch(pattern: string, text: string): boolean {
-  let re: RegExp;
-  try {
-    re = new RegExp(pattern, 'u');
-  } catch {
-    try {
-      re = new RegExp(pattern);
-    } catch (e) {
-      throw new PyJsonSchemaUnsupported(
-        `pattern ${JSON.stringify(pattern)} is not a JS regular expression: ${(e as Error).message}`,
-      );
+export class PyReError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PyReError';
+  }
+}
+
+interface PyReTranslation {
+  /** The `v`-mode source, or `null` when the pattern uses a construct refused above. */
+  source: string | null;
+}
+
+const RE_SPECIAL = new Set([...'.\\[{()*+?^$|']);
+const RE_DIGITS = new Set([...'0123456789']);
+const RE_OCT = new Set([...'01234567']);
+const RE_HEX = new Set([...'0123456789abcdefABCDEF']);
+const RE_WHITESPACE = new Set([...' \t\n\r\v\f']);
+const RE_FLAGS: ReadonlyMap<string, number> = new Map([
+  ['i', 2], ['L', 4], ['m', 8], ['s', 16], ['x', 64], ['a', 256], ['t', 1], ['u', 32],
+]);
+const FLAG_UNICODE = 32;
+const FLAG_ASCII = 256;
+const FLAG_VERBOSE = 64;
+const TYPE_FLAGS = 4 | 32 | 256;
+const GLOBAL_FLAGS = 1 | 128;
+const MAXREPEAT = 4294967295n;
+const MAXGROUPS = 1073741823n;
+
+const u = (cp: number): string => `\\u{${cp.toString(16)}}`;
+const RE_WORD = '[\\p{L}\\p{N}_]';
+const RE_NOT_WORD = '[^\\p{L}\\p{N}_]';
+const RE_SPACE_ITEMS =
+  `${u(9)}-${u(13)}${u(0x1c)}-${u(0x20)}${u(0x85)}${u(0xa0)}${u(0x1680)}${u(0x2000)}-${u(0x200a)}` +
+  `${u(0x2028)}${u(0x2029)}${u(0x202f)}${u(0x205f)}${u(0x3000)}`;
+/** `\d \D \s \S \w \W` as a class member (a nested class where JS needs one). */
+const RE_CATEGORY_IN_CLASS: Record<string, string> = {
+  '\\d': '\\p{Nd}',
+  '\\D': '\\P{Nd}',
+  '\\w': RE_WORD,
+  '\\W': RE_NOT_WORD,
+  '\\s': `[${RE_SPACE_ITEMS}]`,
+  '\\S': `[^${RE_SPACE_ITEMS}]`,
+};
+const RE_AT: Record<string, string> = {
+  '\\A': '^',
+  '\\Z': '$',
+  '\\b': `(?:(?<=${RE_WORD})(?!${RE_WORD})|(?<!${RE_WORD})(?=${RE_WORD}))`,
+  '\\B': `(?:(?<=${RE_WORD})(?=${RE_WORD})|(?<!${RE_WORD})(?!${RE_WORD})(?!(?<![\\s\\S])(?![\\s\\S])))`,
+};
+const RE_ESCAPES: Record<string, number> = {
+  '\\a': 7, '\\b': 8, '\\f': 12, '\\n': 10, '\\r': 13, '\\t': 9, '\\v': 11, '\\\\': 92,
+};
+const XID_START = /^[\p{XID_Start}_]$/u;
+const XID_CONTINUE = /^\p{XID_Continue}$/u;
+
+/** `re._parser.Tokenizer` over codepoints: an escape is one two-character token. */
+class ReSource {
+  private readonly chars: string[];
+  private index = 0;
+  next: string | null = null;
+
+  constructor(pattern: string) {
+    this.chars = [...pattern];
+    this.advance();
+  }
+
+  private advance(): void {
+    let index = this.index;
+    if (index >= this.chars.length) {
+      this.next = null;
+      return;
+    }
+    let char = this.chars[index]!;
+    if (char === '\\') {
+      index += 1;
+      if (index >= this.chars.length) throw new PyReError('bad escape (end of pattern)');
+      char += this.chars[index]!;
+    }
+    this.index = index + 1;
+    this.next = char;
+  }
+
+  match(char: string): boolean {
+    if (char === this.next) {
+      this.advance();
+      return true;
+    }
+    return false;
+  }
+
+  get(): string | null {
+    const self = this.next;
+    this.advance();
+    return self;
+  }
+
+  getwhile(n: number, charset: Set<string>): string {
+    let result = '';
+    for (let i = 0; i < n; i += 1) {
+      const c = this.next;
+      if (c === null || !charset.has(c)) break;
+      result += c;
+      this.advance();
+    }
+    return result;
+  }
+
+  getuntil(terminator: string, name: string): string {
+    let result = '';
+    for (;;) {
+      const c = this.next;
+      this.advance();
+      if (c === null) {
+        if (!result) throw new PyReError(`missing ${name}`);
+        throw new PyReError(`missing ${terminator}, unterminated name`);
+      }
+      if (c === terminator) {
+        if (!result) throw new PyReError(`missing ${name}`);
+        break;
+      }
+      result += c;
+    }
+    return result;
+  }
+
+  tell(): number {
+    return this.index - (this.next === null ? 0 : [...this.next].length);
+  }
+
+  seek(index: number): void {
+    this.index = index;
+    this.advance();
+  }
+}
+
+/** `re._parser.State`, as far as validity needs it. */
+interface ReState {
+  flags: number;
+  groups: number;
+  groupdict: Map<string, number>;
+  closed: Set<number>;
+  lookbehindgroups: number | null;
+  /** Conditional-group numbers, checked against the group count once the pattern is read. */
+  grouprefs: number[];
+  unsupported: boolean;
+}
+
+type ReItemKind = 'at' | 'repeat' | 'atom';
+interface ReItem {
+  kind: ReItemKind;
+  src: string;
+}
+
+function checkGroupName(name: string): void {
+  const cps = [...name];
+  if (!(XID_START.test(cps[0]!) && cps.slice(1).every((c) => XID_CONTINUE.test(c)))) {
+    throw new PyReError(`bad character in group name ${JSON.stringify(name)}`);
+  }
+}
+
+function checkGroup(state: ReState, gid: number): boolean {
+  return gid < state.groups && state.closed.has(gid);
+}
+
+function checkLookbehindGroup(state: ReState, gid: number): void {
+  if (state.lookbehindgroups !== null) {
+    if (!checkGroup(state, gid)) throw new PyReError('cannot refer to an open group');
+    if (gid >= state.lookbehindgroups) {
+      throw new PyReError('cannot refer to group defined in the same lookbehind subpattern');
     }
   }
-  return re.test(text);
+}
+
+/** `_class_escape`: a literal codepoint, or a category's class-member source. */
+function classEscape(source: ReSource, escape: string): { lit: number } | { cat: string } {
+  const known = RE_ESCAPES[escape];
+  if (known !== undefined) return { lit: known };
+  const cat = RE_CATEGORY_IN_CLASS[escape];
+  if (cat !== undefined) return { cat };
+  return { lit: escapeLiteral(source, escape, true, null) };
+}
+
+/** The literal arms `_escape` and `_class_escape` share: `\x \u \U \N`, octal, an identity escape. */
+function escapeLiteral(source: ReSource, escape: string, inClass: boolean, state: ReState | null): number {
+  const c = escape.slice(1);
+  if (c === 'x' || c === 'u' || c === 'U') {
+    const width = c === 'x' ? 2 : c === 'u' ? 4 : 8;
+    const digits = source.getwhile(width, RE_HEX);
+    if (digits.length !== width) throw new PyReError(`incomplete escape ${escape}${digits}`);
+    const cp = parseInt(digits, 16);
+    if (cp > 0x10ffff) throw new PyReError(`bad escape ${escape}${digits}`);
+    return cp;
+  }
+  if (c === 'N') {
+    if (!source.match('{')) throw new PyReError('missing {');
+    source.getuntil('}', 'character name');
+    // No Unicode name table here: parsed so a broken one is still an error, then refused.
+    if (state !== null) state.unsupported = true;
+    else NAMED_IN_CLASS.hit = true;
+    return 0x3f;
+  }
+  if (inClass ? RE_OCT.has(c) : c === '0') {
+    const digits = c + source.getwhile(2, RE_OCT);
+    const cp = parseInt(digits, 8);
+    if (cp > 0o377) throw new PyReError(`octal escape value \\${digits} outside of range 0-0o377`);
+    return cp;
+  }
+  if (RE_DIGITS.has(c)) throw new PyReError(`bad escape ${escape}`);
+  if (/^[A-Za-z]$/.test(c)) throw new PyReError(`bad escape ${escape}`);
+  return c.codePointAt(0)!;
+}
+
+/** `\N{…}` inside a class has no state to mark; the class parser reads this flag back. */
+const NAMED_IN_CLASS = { hit: false };
+
+function parseClass(source: ReSource, state: ReState): string {
+  const items: string[] = [];
+  let count = 0;
+  const negate = source.match('^');
+  NAMED_IN_CLASS.hit = false;
+  for (;;) {
+    const self = source.get();
+    if (self === null) throw new PyReError('unterminated character set');
+    if (self === ']' && count > 0) break;
+    const code1 = self.startsWith('\\') ? classEscape(source, self) : { lit: self.codePointAt(0)! };
+    if (source.match('-')) {
+      const that = source.get();
+      if (that === null) throw new PyReError('unterminated character set');
+      if (that === ']') {
+        items.push('lit' in code1 ? u(code1.lit) : code1.cat, u(0x2d));
+        count += 2;
+        break;
+      }
+      const code2 = that.startsWith('\\') ? classEscape(source, that) : { lit: that.codePointAt(0)! };
+      if (!('lit' in code1) || !('lit' in code2) || code2.lit < code1.lit) {
+        throw new PyReError(`bad character range ${self}-${that}`);
+      }
+      items.push(`${u(code1.lit)}-${u(code2.lit)}`);
+    } else {
+      items.push('lit' in code1 ? u(code1.lit) : code1.cat);
+    }
+    count += 1;
+  }
+  if (NAMED_IN_CLASS.hit) state.unsupported = true;
+  return `[${negate ? '^' : ''}${items.join('')}]`;
+}
+
+/** `_parse_flags`. Returns `null` for global flags (`(?…)`), else the scoped pair. */
+function parseFlags(source: ReSource, state: ReState, first: string): [number, number] | null {
+  let char: string | null = first;
+  let add = 0;
+  let del = 0;
+  if (char !== '-') {
+    for (;;) {
+      const flag = RE_FLAGS.get(char!)!;
+      if (char === 'L') throw new PyReError("bad inline flag: cannot use 'L' flag with a str pattern");
+      add |= flag;
+      if (flag & TYPE_FLAGS && (add & TYPE_FLAGS) !== flag) {
+        throw new PyReError("bad inline flag: flags 'a', 'u' and 'L' are incompatible");
+      }
+      char = source.get();
+      if (char === null) throw new PyReError('missing -, : or )');
+      if (char === ')' || char === '-' || char === ':') break;
+      if (!RE_FLAGS.has(char)) throw new PyReError(/\p{L}/u.test(char) ? 'unknown flag' : 'missing -, : or )');
+    }
+  }
+  if (char === ')') {
+    state.flags |= add;
+    return null;
+  }
+  if (add & GLOBAL_FLAGS) throw new PyReError('bad inline flag: cannot turn on global flag');
+  if (char === '-') {
+    char = source.get();
+    if (char === null) throw new PyReError('missing flag');
+    if (!RE_FLAGS.has(char)) throw new PyReError(/\p{L}/u.test(char) ? 'unknown flag' : 'missing flag');
+    for (;;) {
+      const flag = RE_FLAGS.get(char!)!;
+      if (flag & TYPE_FLAGS) throw new PyReError("bad inline flag: cannot turn off flags 'a', 'u' and 'L'");
+      del |= flag;
+      char = source.get();
+      if (char === null) throw new PyReError('missing :');
+      if (char === ':') break;
+      if (!RE_FLAGS.has(char)) throw new PyReError(/\p{L}/u.test(char) ? 'unknown flag' : 'missing :');
+    }
+  }
+  if (del & GLOBAL_FLAGS) throw new PyReError('bad inline flag: cannot turn off global flag');
+  if (add & del) throw new PyReError('bad inline flag: flag turned on and off');
+  return [add, del];
+}
+
+/** `_parse_sub`: alternatives joined by `|`. */
+function parseSub(source: ReSource, state: ReState, verbose: boolean, nested: number): string {
+  const branches: string[] = [];
+  for (;;) {
+    branches.push(parseSeq(source, state, verbose, nested, nested === 0 && branches.length === 0));
+    if (!source.match('|')) break;
+    if (nested === 0) verbose = (state.flags & FLAG_VERBOSE) !== 0;
+  }
+  return branches.length === 1 ? branches[0]! : branches.join('|');
+}
+
+/** `_parse`: one branch. */
+function parseSeq(source: ReSource, state: ReState, verbose: boolean, nested: number, first: boolean): string {
+  const items: ReItem[] = [];
+  for (;;) {
+    const self = source.next;
+    if (self === null || self === '|' || self === ')') break;
+    source.get();
+    if (verbose) {
+      if (RE_WHITESPACE.has(self)) continue;
+      if (self === '#') {
+        for (;;) {
+          const c = source.get();
+          if (c === null || c === '\n') break;
+        }
+        continue;
+      }
+    }
+    if (self.startsWith('\\')) {
+      items.push(parseEscape(source, self, state));
+    } else if (!RE_SPECIAL.has(self)) {
+      items.push({ kind: 'atom', src: u(self.codePointAt(0)!) });
+    } else if (self === '[') {
+      items.push({ kind: 'atom', src: parseClass(source, state) });
+    } else if (self === '*' || self === '+' || self === '?' || self === '{') {
+      const here = source.tell();
+      let quant: string;
+      if (self === '{') {
+        if (source.next === '}') {
+          items.push({ kind: 'atom', src: u(0x7b) });
+          continue;
+        }
+        let lo = '';
+        let hi = '';
+        while (source.next !== null && RE_DIGITS.has(source.next)) lo += source.get();
+        if (source.match(',')) {
+          while (source.next !== null && RE_DIGITS.has(source.next)) hi += source.get();
+        } else {
+          hi = lo;
+        }
+        if (!source.match('}')) {
+          items.push({ kind: 'atom', src: u(0x7b) });
+          source.seek(here);
+          continue;
+        }
+        const min = lo ? BigInt(lo) : 0n;
+        const max = hi ? BigInt(hi) : MAXREPEAT;
+        if (lo && min >= MAXREPEAT) throw new PyJsonSchemaUnsupported('OverflowError: the repetition number is too large');
+        if (hi && max >= MAXREPEAT) throw new PyJsonSchemaUnsupported('OverflowError: the repetition number is too large');
+        if (hi && max < min) throw new PyReError('min repeat greater than max repeat');
+        quant = max === MAXREPEAT ? `{${min},}` : min === max ? `{${min}}` : `{${min},${max}}`;
+      } else {
+        quant = self;
+      }
+      const item = items[items.length - 1];
+      if (item === undefined || item.kind === 'at') throw new PyReError('nothing to repeat');
+      if (item.kind === 'repeat') throw new PyReError('multiple repeat');
+      if (source.match('?')) {
+        quant += '?';
+      } else if (source.match('+')) {
+        state.unsupported = true; // possessive
+      }
+      items[items.length - 1] = { kind: 'repeat', src: `(?:${item.src})${quant}` };
+    } else if (self === '.') {
+      items.push({ kind: 'atom', src: `[^${u(10)}]` });
+    } else if (self === '(') {
+      const item = parseGroup(source, state, verbose, nested, first && items.length === 0);
+      if (item === 'global-flags') {
+        verbose = (state.flags & FLAG_VERBOSE) !== 0;
+        continue;
+      }
+      if (item !== null) items.push(item);
+    } else if (self === '^') {
+      items.push({ kind: 'at', src: '^' });
+    } else if (self === '$') {
+      items.push({ kind: 'at', src: `(?=${u(10)}?$)` });
+    } else {
+      throw new PyReError(`unexpected ${self}`);
+    }
+  }
+  return items.map((i) => i.src).join('');
+}
+
+/** `_escape`, outside a class. */
+function parseEscape(source: ReSource, escape: string, state: ReState): ReItem {
+  const at = RE_AT[escape];
+  if (at !== undefined) return { kind: 'at', src: at };
+  const cat = RE_CATEGORY_IN_CLASS[escape];
+  if (cat !== undefined) return { kind: 'atom', src: escape === '\\d' ? '\\p{Nd}' : escape === '\\D' ? '\\P{Nd}' : cat };
+  const known = RE_ESCAPES[escape];
+  if (known !== undefined) return { kind: 'atom', src: u(known) };
+  const c = escape.slice(1);
+  if (c !== '0' && RE_DIGITS.has(c)) {
+    // An octal escape or a decimal group reference.
+    let digits = c;
+    if (source.next !== null && RE_DIGITS.has(source.next)) {
+      digits += source.get();
+      if (RE_OCT.has(digits[0]!) && RE_OCT.has(digits[1]!) && source.next !== null && RE_OCT.has(source.next)) {
+        digits += source.get();
+        const cp = parseInt(digits, 8);
+        if (cp > 0o377) throw new PyReError(`octal escape value \\${digits} outside of range 0-0o377`);
+        return { kind: 'atom', src: u(cp) };
+      }
+    }
+    const group = Number(digits);
+    if (group < state.groups) {
+      if (!checkGroup(state, group)) throw new PyReError('cannot refer to an open group');
+      checkLookbehindGroup(state, group);
+      state.unsupported = true; // a backreference
+      return { kind: 'atom', src: '(?:)' };
+    }
+    throw new PyReError(`invalid group reference ${group}`);
+  }
+  return { kind: 'atom', src: u(escapeLiteral(source, escape, false, state)) };
+}
+
+/** `(` … — a group, an assertion, a comment, flags, or a Python extension. */
+function parseGroup(
+  source: ReSource,
+  state: ReState,
+  verbose: boolean,
+  nested: number,
+  first: boolean,
+): ReItem | null | 'global-flags' {
+  let capture = true;
+  let name: string | null = null;
+  let subVerbose = verbose;
+  let wrap = (body: string): string => `(?:${body})`;
+  if (source.match('?')) {
+    const char = source.get();
+    if (char === null) throw new PyReError('unexpected end of pattern');
+    if (char === 'P') {
+      if (source.match('<')) {
+        name = source.getuntil('>', 'group name');
+        checkGroupName(name);
+      } else if (source.match('=')) {
+        const ref = source.getuntil(')', 'group name');
+        checkGroupName(ref);
+        const gid = state.groupdict.get(ref);
+        if (gid === undefined) throw new PyReError(`unknown group name ${JSON.stringify(ref)}`);
+        if (!checkGroup(state, gid)) throw new PyReError('cannot refer to an open group');
+        checkLookbehindGroup(state, gid);
+        state.unsupported = true; // a named backreference
+        return { kind: 'atom', src: '(?:)' };
+      } else {
+        const next = source.get();
+        if (next === null) throw new PyReError('unexpected end of pattern');
+        throw new PyReError(`unknown extension ?P${next}`);
+      }
+    } else if (char === ':') {
+      capture = false;
+    } else if (char === '#') {
+      for (;;) {
+        if (source.next === null) throw new PyReError('missing ), unterminated comment');
+        if (source.get() === ')') break;
+      }
+      return null;
+    } else if (char === '=' || char === '!' || char === '<') {
+      let dir = 1;
+      let kind = char;
+      let saved: number | null = null;
+      if (char === '<') {
+        const next = source.get();
+        if (next === null) throw new PyReError('unexpected end of pattern');
+        if (next !== '=' && next !== '!') throw new PyReError(`unknown extension ?<${next}`);
+        kind = next;
+        dir = -1;
+        saved = state.lookbehindgroups;
+        if (saved === null) state.lookbehindgroups = state.groups;
+        state.unsupported = true; // look-behind
+      }
+      const body = parseSub(source, state, verbose, nested + 1);
+      if (dir < 0 && saved === null) state.lookbehindgroups = null;
+      if (!source.match(')')) throw new PyReError('missing ), unterminated subpattern');
+      return { kind: 'atom', src: `(?${dir < 0 ? '<' : ''}${kind}${body})` };
+    } else if (char === '(') {
+      // A conditional group: parsed for validity, then refused.
+      const condname = source.getuntil(')', 'group name');
+      if (/^\d+$/.test(condname)) {
+        const big = BigInt(condname);
+        if (big === 0n) throw new PyReError('bad group number');
+        if (big >= MAXGROUPS) throw new PyReError(`invalid group reference ${big}`);
+        const gid = Number(big);
+        // A forward reference is legal here; `parse` checks it against the final count.
+        state.grouprefs.push(gid);
+        checkLookbehindGroup(state, gid);
+      } else {
+        checkGroupName(condname);
+        const gid = state.groupdict.get(condname);
+        if (gid === undefined) throw new PyReError(`unknown group name ${JSON.stringify(condname)}`);
+        checkLookbehindGroup(state, gid);
+      }
+      const yes = parseSeq(source, state, verbose, nested + 1, false);
+      if (source.match('|')) {
+        parseSeq(source, state, verbose, nested + 1, false);
+        if (source.next === '|') throw new PyReError('conditional backref with more than two branches');
+      }
+      if (!source.match(')')) throw new PyReError('missing ), unterminated subpattern');
+      state.unsupported = true;
+      return { kind: 'atom', src: `(?:${yes})` };
+    } else if (char === '>') {
+      capture = false;
+      state.unsupported = true; // an atomic group
+    } else if (RE_FLAGS.has(char) || char === '-') {
+      const flags = parseFlags(source, state, char);
+      if (flags === null) {
+        if (!first) throw new PyReError('global flags not at the start of the expression');
+        return 'global-flags';
+      }
+      const [add, del] = flags;
+      state.unsupported = true; // scoped inline flags
+      capture = false;
+      subVerbose = (verbose || (add & FLAG_VERBOSE) !== 0) && (del & FLAG_VERBOSE) === 0;
+    } else {
+      throw new PyReError(`unknown extension ?${char}`);
+    }
+  }
+  let group: number | null = null;
+  if (capture) {
+    group = state.groups;
+    state.groups += 1;
+    if (name !== null) {
+      const ogid = state.groupdict.get(name);
+      if (ogid !== undefined) {
+        throw new PyReError(`redefinition of group name ${JSON.stringify(name)} as group ${group}; was group ${ogid}`);
+      }
+      state.groupdict.set(name, group);
+    }
+    wrap = (body: string): string => `(${body})`;
+  }
+  const body = parseSub(source, state, subVerbose, nested + 1);
+  if (!source.match(')')) throw new PyReError('missing ), unterminated subpattern');
+  if (group !== null) state.closed.add(group);
+  return { kind: 'atom', src: wrap(body) };
+}
+
+/** A `\N` escape anywhere, an escaped backslash skipped — `contract._names_a_character`. */
+function namesACharacter(pattern: string): boolean {
+  for (let i = 0; i < pattern.length; i += 1) {
+    if (pattern[i] === '\\') {
+      if (pattern[i + 1] === 'N') return true;
+      i += 1;
+    }
+  }
+  return false;
+}
+
+/** `re._parser.parse(pattern)` + `fix_flags`, re-emitted for a `v`-mode RegExp. */
+export function translatePyPattern(pattern: string): PyReTranslation {
+  // `\N{…}` is refused before the parse, on both runtimes, whatever else the pattern holds:
+  // without a Unicode name table the port cannot tell a defined name from an undefined one.
+  if (namesACharacter(pattern)) return { source: null };
+  const source = new ReSource(pattern);
+  const state: ReState = {
+    flags: 0,
+    groups: 1,
+    groupdict: new Map(),
+    closed: new Set(),
+    lookbehindgroups: null,
+    grouprefs: [],
+    unsupported: false,
+  };
+  let body: string;
+  try {
+    body = parseSub(source, state, false, 0);
+  } catch (e) {
+    // A pattern nested past the JS stack is past anything `re` would be asked to compile.
+    if (e instanceof RangeError) throw new PyReError('pattern too deeply nested');
+    throw e;
+  }
+  if (source.next !== null) throw new PyReError('unbalanced parenthesis');
+  for (const g of state.grouprefs) if (g >= state.groups) throw new PyReError(`invalid group reference ${g}`);
+  if (state.flags & FLAG_ASCII && state.flags & FLAG_UNICODE) {
+    throw new PyJsonSchemaUnsupported('ValueError: ASCII and UNICODE flags are incompatible');
+  }
+  // `(?u)` alone is the default and changes nothing; every other global flag is refused.
+  if (state.flags & ~FLAG_UNICODE) state.unsupported = true;
+  return { source: state.unsupported ? null : body };
+}
+
+/** The sentence both runtimes answer for a pattern outside the shared dialect (#131). */
+export function unsupportedPatternSentence(pattern: string): string {
+  return (
+    `the pattern ${clipText(reprValue({ t: 'str', v: pattern }))} is not supported: this validator ` +
+    'refuses inline flags, look-behind, backreferences, atomic groups, possessive quantifiers, ' +
+    'conditional groups and \\N{...} escapes'
+  );
+}
+
+/** The milliseconds a document's patterns may spend, in total, before the validation is refused (#132). */
+export const PATTERN_BUDGET_MS = 500;
+
+/** The sentence both runtimes answer when a document's patterns run past the budget (#132). */
+export function patternBudgetSentence(pattern: string): string {
+  return (
+    `the pattern ${clipText(reprValue({ t: 'str', v: pattern }))} did not finish within the ` +
+    `${PATTERN_BUDGET_MS} ms this validator allows a document's patterns; rewrite it so it cannot ` +
+    'backtrack catastrophically, as (a+)+$ does'
+  );
+}
+
+/**
+ * At most `limit` codepoints of `text`, then `…(N more)` (#153). Codepoints, not UTF-16
+ * units, because `len()` on the reference counts codepoints.
+ */
+export function clipText(text: string, limit = 200): string {
+  const cps = [...text];
+  if (cps.length <= limit) return text;
+  return `${cps.slice(0, limit).join('')}…(${cps.length - limit} more)`;
+}
+
+const compiled = new Map<string, RegExp>();
+
+/** The `v`-mode RegExp for a supported pattern; `PyReError` for one `re` refuses. */
+function compilePyPattern(pattern: string): RegExp {
+  let re = compiled.get(pattern);
+  if (re !== undefined) return re;
+  let translation: PyReTranslation;
+  try {
+    translation = translatePyPattern(pattern);
+  } catch (e) {
+    if (e instanceof PyReError) {
+      throw new PyJsonSchemaUnsupported(`pattern ${JSON.stringify(pattern)} is not a regular expression: ${e.message}`);
+    }
+    throw e;
+  }
+  if (translation.source === null) throw new PyJsonSchemaRefusal(unsupportedPatternSentence(pattern));
+  try {
+    re = new RegExp(translation.source, 'v');
+  } catch (e) {
+    throw new PyJsonSchemaUnsupported(
+      `pattern ${JSON.stringify(pattern)} translated to a RegExp V8 will not compile: ${(e as Error).message}`,
+    );
+  }
+  if (compiled.size > 256) compiled.clear();
+  compiled.set(pattern, re);
+  return re;
+}
+
+/**
+ * The running validation's pattern clock. `validate` opens one; `reSearch` charges every
+ * search to it and refuses — `PyJsonSchemaRefusal`, so the answer is `{valid: false,
+ * feedback}` — once the total passes `PATTERN_BUDGET_MS`. A catastrophic search is stopped
+ * mid-run by `vm`'s timeout, which interrupts the RegExp engine itself; the server's event
+ * loop is blocked for at most the budget, so a `ping` sent behind it is answered within it.
+ */
+let patternClock: { spentMs: number } | null = null;
+let regexContext: vm.Context | null = null;
+const regexScript = new vm.Script('r.test(s)');
+
+function reSearch(pattern: string, text: string): boolean {
+  const re = compilePyPattern(pattern);
+  if (patternClock === null) return re.test(text);
+  const remaining = PATTERN_BUDGET_MS - patternClock.spentMs;
+  if (remaining <= 0) throw new PyJsonSchemaRefusal(patternBudgetSentence(pattern));
+  regexContext ??= vm.createContext(Object.create(null));
+  regexContext['r'] = re;
+  regexContext['s'] = text;
+  const started = performance.now();
+  try {
+    return regexScript.runInContext(regexContext, { timeout: Math.max(1, Math.ceil(remaining)) }) === true;
+  } catch (e) {
+    if ((e as { code?: string }).code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      throw new PyJsonSchemaRefusal(patternBudgetSentence(pattern));
+    }
+    throw e;
+  } finally {
+    patternClock.spentMs += performance.now() - started;
+    regexContext['r'] = undefined;
+    regexContext['s'] = undefined;
+  }
 }
 
 const sortedByStr = (names: string[]): string[] => [...names].sort(cmpCodepoint);
@@ -542,6 +1223,31 @@ function refuseUnsupportedReferences(schema: PyValue, draft: Draft): void {
       `the schema declares "${idKey}" at ${ids[0]}; references are only resolved in a schema ` +
         'with a single resource',
     );
+  }
+}
+
+/**
+ * The eager half of #131, run after the one-resource scan as `contract._unsupported_schema`
+ * runs it: every `pattern` and every `patternProperties` key, in document order, that `re`
+ * parses but this port cannot translate faithfully is refused with one sentence. A pattern
+ * `re` itself refuses is left to `checkSchema`, which raises where the reference raises.
+ */
+function refuseUnsupportedPatterns(schema: PyValue): void {
+  for (const [, sub] of subschemas(schema)) {
+    const candidates: string[] = [];
+    const pattern = sub.get('pattern');
+    if (pattern !== undefined && pattern.t === 'str') candidates.push(pattern.v);
+    const pp = sub.get('patternProperties');
+    if (pp !== undefined && pp.t === 'dict') candidates.push(...pp.v.keys());
+    for (const candidate of candidates) {
+      let translation: PyReTranslation;
+      try {
+        translation = translatePyPattern(candidate);
+      } catch {
+        continue;
+      }
+      if (translation.source === null) throw new PyJsonSchemaRefusal(unsupportedPatternSentence(candidate));
+    }
   }
 }
 
@@ -1629,6 +2335,10 @@ export function checkSchema(schema: PyValue | boolean, where = 'the schema', dra
     } else if (keyword in SUBSCHEMA_MAP) {
       if (!knows(d, SUBSCHEMA_MAP[keyword]!)) continue;
       if (value.t !== 'dict') refuse(at, 'an object', value);
+      // From draft 6 the metaschema says `"propertyNames": {"format": "regex"}` here, so a key
+      // `re` cannot compile is a SchemaError even when no property ever meets it (job65, #131;
+      // until then this port compiled a key only on first use and answered `valid` otherwise).
+      if (keyword === 'patternProperties' && d >= 6) for (const k of value.v.keys()) compilePyPattern(k);
       for (const [k, v] of value.v) subschema(v, `${at}/${k}`);
     } else if (keyword === 'dependencies') {
       // Each value is a schema or a `stringArray` (non-empty under draft 4). Still a SHAPE in
@@ -1691,17 +2401,11 @@ export function checkSchema(schema: PyValue | boolean, where = 'the schema', dra
       if (value.t !== 'str') refuse(at, 'a string', value);
       // `"format": "regex"` on `pattern` in the metaschema, and jsonschema's own format
       // checker compiles it — `{"pattern": "("}` is a SchemaError there, and was
-      // `{"valid": true}` here. `reSearch` already refuses a pattern it cannot compile;
-      // this only moves the refusal to where Python's is, which is before the instance.
-      //
-      // THE PRICE, measured and accepted: `re` accepts patterns `RegExp` does not
-      // (`(?P<x>…)`, `\A`, `\Z`), so a schema carrying one now refuses HERE even when the
-      // keyword would never have fired. Before, it refused only when it fired, and answered
-      // otherwise. Both are the same ruled divergence — see the `python re and JS RegExp`
-      // ruling — and a refusal in an unreached branch is a smaller error than `{"valid":
-      // true}` for a pattern that is not a pattern. Both directions are pinned as ruled
-      // cases in `tools/conformance/suites/validate.mjs`.
-      if (keyword === 'pattern') reSearch(value.v, '');
+      // `{"valid": true}` here. Compiling it here puts the refusal where Python's is, before
+      // the instance. Since job65 (#131) the compile is `re`'s grammar, not `RegExp`'s, so
+      // `(?P<x>…)`, `\A` and `\Z` compile on both sides and the old ruled price — a
+      // Python-only pattern refused here in a branch that never fired — is gone.
+      if (keyword === 'pattern') compilePyPattern(value.v);
     } else if (keyword === 'multipleOf') {
       if (value.t !== 'int' && value.t !== 'float') refuse(at, 'a number', value);
       if (value.t === 'int' ? value.v <= 0n : value.v <= 0) {
@@ -1765,9 +2469,18 @@ export function checkSchema(schema: PyValue | boolean, where = 'the schema', dra
  */
 export function validate(instance: PyValue, schema: PyValue): PyValidationError | null {
   const draft = dialectOf(schema, 2020);
-  if (schema.t === 'dict') refuseUnsupportedReferences(schema, draft);
+  if (schema.t === 'dict') {
+    refuseUnsupportedReferences(schema, draft);
+    refuseUnsupportedPatterns(schema);
+  }
   checkSchema(schema, 'the schema', draft);
-  return bestMatch(iterErrors(instance, schema, { root: schema, draft, rootDraft: draft }));
+  const outer = patternClock;
+  patternClock = { spentMs: 0 };
+  try {
+    return bestMatch(iterErrors(instance, schema, { root: schema, draft, rootDraft: draft }));
+  } finally {
+    patternClock = outer;
+  }
 }
 
 export { iterErrors };
