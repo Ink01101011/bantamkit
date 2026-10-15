@@ -87,7 +87,7 @@
         "anyOf": [
           {
             "type": "object",
-            "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged (a refused key is friction, not safety). Lines written before this schema existed may spell these differently; the schema governs new writes only.",
+            "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged, except the five the runtime writes itself — unit, role, status, ts, event — which are refused (result=error) before anything is written; a self-reported briefed is overwritten, not refused. Lines written before this schema existed may spell these differently; the schema governs new writes only.",
             "properties": {
               "tokens": {
                 "type": "integer",

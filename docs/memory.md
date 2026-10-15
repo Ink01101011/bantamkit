@@ -35,6 +35,17 @@ memory store could not be created: <root>; the directory is not there and this
 filesystem would not make it, so nothing was written
 ```
 
+**Amended 2026-10-15 (job65, #141).** That sentence is now reserved for a root that
+is *not there*. A store that exists and refuses the write — a `chmod 000` root, a
+`chmod 555` store whose directories are all present, a read-only mount — answers
+instead, with the OS's own reason (`Permission denied`, `Operation not permitted` or
+`Read-only file system`):
+
+```
+memory store is not writable: <root>: Permission denied; the directory exists but
+cannot be written to, so nothing was written
+```
+
 The change is the fix for a startup crash: every GUI MCP host launches its child with
 cwd `/`, where the eager `mkdir` could not succeed, so the server died before it could
 answer anything. See [MCP](mcp.md#what-happens-if-you-set-nothing).
@@ -301,7 +312,9 @@ except MemoryValidationError as e:
 Scores every fact by how many lowercased alphanumeric tokens the query shares
 with `"{name} {description}"`, keeps those with a non-zero score, sorts by score
 then name, and returns the top `k` (default 3, or `k` passed per call). Every
-returned fact has `last_recalled` stamped with today's date — that stamp is what
+returned fact has `last_recalled` stamped with today's date (best-effort since job65,
+#123: a store this process cannot write to — `chmod 555`, a read-only mount, a CI
+cache — still answers its facts, and the file keeps its old date) — that stamp is what
 `compact()` later uses to decide what to drop, falling back to `created` for a
 fact nobody has recalled yet. **Amendment 2026-09-26 (job64, J64-1):** the
 hook's automatic `UserPromptSubmit` injection goes through the layered recall
@@ -424,6 +437,22 @@ than raising:
 - `type` must be one of the four; `name` must match the slug pattern;
   `description` must be non-empty. Otherwise `MemoryValidationError`, surfaced
   to the agent as `error: ...` so it can retry with fixed arguments.
+- **Amended job65 (J65-9).** `name` is at most 128 characters (`invalid name: <n>
+  characters; must be at most 128`, #156 — it used to reach the OS as a raw
+  `File name too long` naming the absolute path). `description` must be ONE line: a
+  C0/C1 control character or U+2028/U+2029 after the strip is refused
+  (`description must be one line; it holds the control character U+000A`, #155),
+  because the index and the hook's injected header print it as one line. A hand-edited
+  fact file holding one is READ with each run of them as one space, and `lint` names it.
+  A lone surrogate in `description`, `body` or a link is refused by name (#160); over
+  MCP the same character in any tool argument is refused before the tool runs, on both
+  runtimes, as `Error executing tool <name>: argument '<path>' holds a lone surrogate
+  (U+XXXX), which is not text; nothing was done` — the reference used to drop such a
+  request without ever answering.
+- **A spelling is not a name (#156).** The component still bends a model's
+  `Deploy_Command` to `deploy-command` and answers `saved 'deploy-command'`. But when the
+  name had to be bent AND the slug is already a fact, the reply is the duplicate nudge
+  naming it and nothing is written: only the exact slug updates a fact.
 - Saving under an existing `name` is an **update**, never a duplicate.
 
 ## Dedupe: what a "duplicate" reply means
@@ -513,6 +542,13 @@ Two things about that target matter, and both were measured defects:
   idempotence that follows from it. The two runtimes moved in the same job and
   are compared by `index-band` in `tools/conformance/suites/wire.mjs`.
 
+  **`reserve: 0` is accepted everywhere (job65, #134):** the target is then the
+  budget itself. The tool schema always said `minimum: 0`, but both CLIs refused
+  `--reserve 0` with `must be >= 1` until job65, and the served description still
+  quoted the pre-job46 default; now `--reserve` is `>= 0` on both CLIs, the
+  description quotes the formula above, and `compact-with-reserve-zero` in
+  `tools/conformance/suites/memorycli.mjs` pins the acceptance as a literal.
+
 **The eviction order is class first, then staleness:**
 `(0 if type != "feedback" else 1, last_recalled or created, name)`.
 
@@ -544,7 +580,23 @@ the same transaction `save` gets.
 
 `lint()` walks every fact, raising `MemoryValidationError` on malformed
 frontmatter or an invalid `type`, then re-checks the budget. Run it in CI over a
-committed store, or on startup.
+committed store, or on startup. Since job65 it also names two hand-edit shapes
+every other operation tolerates: an **unquoted timestamp** in `created` or
+`last_recalled` (`created: 2026-01-01`, a YAML date, which the store reads as the
+string `'2026-01-01'` and re-quotes on its next write — before #121 `compact`
+died on it with `'<' not supported between instances of 'datetime.date' and
+'str'`), and a **file whose name is not the fact's** (`stale.md` holding
+`name: fresh-one` — `compact` now archives the file it read, where before #122 it
+moved `facts/fresh-one.md`, the wrong fact). A fact file that is **not UTF-8** is
+`malformed fact file <file>: 'utf-8' codec can't decode …` from every reader
+(#159); before, the bare decoder message named no file.
+
+Every fact write goes through a **per-writer** temp file,
+`<name>.md.<pid>.<8 hex>.tmp`, created exclusively, renamed onto the fact and
+removed if anything fails (#161). Before job65 every writer of a fact shared
+`<name>.md.tmp`, so two servers saving one name raced on it (`[Errno 2] … .md.tmp`)
+and a write that died half-way (ENOSPC, a file-size limit) left the temp behind.
+Listings match `*.md`, so a temp is never read as a fact.
 
 There is no automatic compression or summarization in v1. Archiving is the only
 lifecycle action that *reduces* a store, and the only one the model or a hook can
@@ -958,6 +1010,22 @@ The ancestor chain is resolved, but the returned store path is **not** resolved
 further: a symlinked store keeps its config beside the symlink, not beside the
 symlink's target. Grant paths, by contrast, are fully resolved.
 
+**job65, #142 — what the walk binds is now visible, and the walk itself is unchanged.**
+Two defects were filed against discovery and both are fixed: `bantamkit_status` line 4
+now ends `; bound to <store path>` (it named no path, so a store bound ABOVE the project
+was invisible), and `bantamkit-mcp --start <dir>` refuses a `<dir>` that is not there
+(`--start does not exist: <dir>`) or is not a directory (`--start is not a directory:
+<dir>`), exit 1, before a transport exists. It used to resolve the missing path, climb
+its nonexistent parents to the first real one, and bind whatever store sat above.
+**Decision: the walk does NOT stop at `$HOME`.** This page's stated contract is "walks it
+and its parents" to the filesystem root, and two documented behaviours depend on the walk
+reaching `~/.bantamkit/memory` itself (the no-duplicate-profile-layer rule and the
+"give this project a store of its own" remedy below). Stopping at `$HOME` would change
+which store a cwd outside the home binds, silently, for every such operator — the
+opposite of the issue's point. The fix is the visibility; the pin
+(`BANTAMKIT_MEMORY_DIR`) and `--store` stay the way to choose a store outright.
+`bantamkit-memory status --start` (the operator CLI) is not changed by this.
+
 ### Pinning the store: `BANTAMKIT_MEMORY_DIR`
 
 Discovery starts from cwd, and under an MCP host cwd is chosen by the **host**,
@@ -1131,7 +1199,22 @@ grants*. A config that exists but is wrong raises `MemoryValidationError` at
 `Memory.layered()` construction rather than being silently dropped — that
 covers unparsable YAML, a top-level value that is not a mapping, an
 `extra_stores` that is not a list of strings, a listed path that does not exist
-or is not a directory, and a `config.yaml` that is itself a directory.
+or is not a directory, and a `config.yaml` that is itself a directory. The two are
+distinct sentences (job65, #184): `granted store does not exist: <path> (from
+<config>)` and `granted store is not a directory: <path> (from <config>)`.
+
+**A tab where YAML would start a token is refused (job65, #158).** YAML indents with
+spaces, and PyYAML refuses every tab outside a quoted scalar or a comment — leading
+indentation, after `:` or `-`, inside `[ ]`, before a comment, trailing. The Node reader
+used to accept a tab as indentation and LAYER a tab-indented grant list that the Python
+server refused at startup. Both runtimes now refuse it in one sentence:
+`invalid memory config <config>: line <L>, column <C>: a tab cannot start a YAML token;
+indent with spaces` — Python rewrites PyYAML's own `found character '\t' that cannot start
+any token` from its mark, Node finds the same byte before its reader runs. A tab inside
+`'…'`/`"…"` or after ` #` is accepted on both. Where a document holds an earlier,
+different error, PyYAML reports that one first and Node still names the tab: both
+refuse, in different words (the existing reader ruling covers that wording).
+Gate: `node tools/conformance/run.mjs --suite store` (`j65-10: #158 …`).
 
 The `<name>` in an `[extra:<name>]` prefix is the granted store's project
 directory — the parent of its `.bantamkit` — so the grant above shows up as
@@ -1171,7 +1254,13 @@ Read-only means read-only. Recall never stamps `last_recalled` on a grant or
 profile fact and never creates a missing grant or profile directory — a missing
 one simply contributes nothing. A corrupt grant or profile layer is skipped so
 one bad neighbour cannot take down recall; a corrupt *project* layer still
-raises, exactly as in v1.
+raises, exactly as in v1. **Amended job65 (#119, J65-9):** "corrupt" now means a layer
+whose `facts/` cannot be LISTED. One empty, truncated, non-UTF-8 or unreadable fact file
+costs that file only, in any layer: recall searches every other fact and closes with
+`N fact file(s) could not be read and was/were skipped; every other fact was searched:`
+and one `[layer] <the store's sentence>` line per file. `MemoryStore.readable_facts()`
+(`readableFacts()`) is the declared listing behind it, and the hooks read through it
+too. Save, compact, lint and the index keep the strict read.
 
 ### Writing stays in the project
 

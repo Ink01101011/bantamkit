@@ -47,10 +47,18 @@
  * same place. That makes three refusal strings, not two, and the third is likewise a
  * per-side literal.
  *
- * WHAT IS NOT PORTED, DELIBERATELY. There is no lock (the MCP topology has one orchestrator
- * by construction), and log-then-commit ordering is preserved exactly: the accounting line is
- * appended BEFORE the atomic rename, so a partial failure can lose the commit but never the
- * accounting.
+ * WHAT IS NOT PORTED, DELIBERATELY. Log-then-commit ordering is preserved exactly: the
+ * accounting line is appended BEFORE the atomic rename, so a partial failure can lose the
+ * commit but never the accounting — and since job65 (#162) the orphan line is followed by an
+ * `{"event": "uncommitted"}` marker so `briefed` hands the brief back and the retry lands;
+ * since job65 (#117) a caller line that sets one of `RESERVED_LEDGER_KEYS` is refused before
+ * anything is written; and since job65 (#164) `clockIn()` with no `unitId` applies the same
+ * readiness test as `clockIn(unitId)`. "There is no lock" used to open this paragraph, with the
+ * reason that the MCP topology has one orchestrator by construction; job60's waves made that
+ * false and job65 (#116) measured it — two clock-outs of DIFFERENT units at one instant lost
+ * 10 of 20 `ok` answers in 10 trials, on each runtime and across them. Both runtimes now take
+ * `<checkpoint>.lock` around the whole read-modify-write (see `acquireLock`), the same
+ * O_EXCL protocol on both sides because the two share one checkpoint on disk.
  *
  * `depends_on` USED TO BE LISTED ABOVE, AND NO LONGER BELONGS THERE. `planBatches` below
  * READS `depends_on` and answers the batch view, so the module no longer ignores the field;
@@ -74,15 +82,17 @@
  */
 import { AssetNotFound, loadSchema, loadToolAsset } from './assets.js';
 import { schemaError } from './contract.js';
+import { randomBytes } from 'node:crypto';
+import { closeSync, openSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import {
+  asPyOSError,
   pyAppendText,
   pyJoin,
+  pyNewlineOut,
   PyOSError,
   pyReplace,
-  pySuffix,
+  pyResolve,
   pyUnlink,
-  pyWithSuffix,
-  pyWriteText,
   pyReadText,
   PyUnicodeDecodeError,
 } from './memory/pyfs.js';
@@ -113,6 +123,22 @@ export const HISTORY_RING_SIZE = 5;
  * thing it recorded with the same word the wire used. `BRIEF_EVENT` in `shiftwork.py`.
  */
 export const BRIEF_EVENT = 'brief';
+/**
+ * job65/#162: the `event` value of the line `clockOut` appends right after an accounting line
+ * whose COMMIT failed. Log-then-commit keeps the accounting; this marker says the line above
+ * it did not count, so `briefed` hands the brief back and the documented retry is accepted.
+ * `UNCOMMITTED_EVENT` in `shiftwork.py`.
+ */
+export const UNCOMMITTED_EVENT = 'uncommitted';
+/**
+ * job65/#117: the keys the runtime writes on every accounting line. A caller line that sets
+ * one is refused before anything is written — `record.set` over the base keys used to let
+ * `{"unit": "C", "event": "brief"}` turn A's clock-out into a forged brief of C that `briefed`
+ * then trusted. `briefed` is NOT here on purpose: F6 ruled a self-reported `briefed` is
+ * OVERWRITTEN by the measured value, pinned on both sides. `RESERVED_LEDGER_KEYS` in
+ * `shiftwork.py`, same order, because the sentence names them in this order.
+ */
+export const RESERVED_LEDGER_KEYS: readonly string[] = ['unit', 'role', 'status', 'ts', 'event'];
 
 type PyDict = Extract<PyValue, { t: 'dict' }>;
 type PyList = Extract<PyValue, { t: 'list' }>;
@@ -191,7 +217,13 @@ function readValid(path: string): ReadResult {
   try {
     raw = pyReadText(path);
   } catch (e) {
-    if (e instanceof PyOSError) return { document: null, refusal: errorResult(`checkpoint unreadable: ${e.message}`) };
+    // #163: `UnicodeDecodeError` is a ValueError, not an OSError, and it escaped every tool as
+    // a raised error while a missing file answered `result: error`. Same sentence head as the
+    // missing file: the bytes could not be read. The paragraph above that says it escapes in
+    // both runtimes is the history; it no longer does in either.
+    if (e instanceof PyOSError || e instanceof PyUnicodeDecodeError) {
+      return { document: null, refusal: errorResult(`checkpoint unreadable: ${e.message}`) };
+    }
     throw e;
   }
   let document: PyValue;
@@ -205,6 +237,17 @@ function readValid(path: string): ReadResult {
   }
   const problem = schemaError(raw, loadSchema(SCHEMA_NAME));
   if (problem !== null) return { document: null, refusal: errorResult(`checkpoint invalid: ${problem}`) };
+  // #165: the schema cannot say that unit ids are unique, so this is the only check, and it
+  // sits on the read every tool starts with: status, clock_in and clock_out now answer what
+  // `shiftwork_plan` already answered through the core. Before it, `findUnit` took the first
+  // match and a clock-out of the first `A` of two left a document no job could finish. The
+  // sentence is `workplan`'s, verbatim, so the plan view's answer does not move.
+  const seen = new Set<string>();
+  for (const unit of subList(subDict(document as PyDict, 'plan'), 'units').v) {
+    const id = text(field(unit as PyDict, 'id'));
+    if (seen.has(id)) return { document: null, refusal: errorResult(`duplicate node id ${id}`) };
+    seen.add(id);
+  }
   return { document: document as PyDict, refusal: null };
 }
 
@@ -237,7 +280,27 @@ export function timestamp(now: number): string {
 export interface ClockOptions {
   /** Seconds since the epoch, as `time.time()` returns them. */
   now?: number;
+  /**
+   * A TEST SEAM, like `now`: how long `clockOut` waits for `<checkpoint>.lock` before it
+   * refuses. The product value is `LOCK_WAIT_MS`; the Python side has no such option and its
+   * tests monkeypatch the module constant instead. Nothing on the wire reads it.
+   */
+  lockWaitMs?: number;
 }
+
+/**
+ * job65/#116: the checkpoint's read-modify-write runs under `<checkpoint>.lock`, taken with
+ * O_EXCL — the one primitive both platforms and both runtimes share without a dependency,
+ * and the shape `driver.lock` and the hook ledger's lock (J65-4, #167) already use, so a
+ * Python writer and a Node writer serialise against each other on the one file they share.
+ * One policy differs from the ledger's: a writer that cannot take the lock within
+ * `LOCK_WAIT_MS` is REFUSED, nothing written — never let through unlocked, because through
+ * is exactly the race #116 measured. A lock older than `LOCK_STALE_MS` is a dead holder's.
+ * The three numbers are `shiftwork.py`'s, verbatim.
+ */
+export const LOCK_WAIT_MS = 5000;
+export const LOCK_STALE_MS = 30_000;
+export const LOCK_POLL_MS = 5;
 
 // ------------------------------------------------------------------------ F6: the ledger
 
@@ -266,8 +329,17 @@ function logPath(path: string): string {
  * two write legs of `clockOut` already use, for the same reason.
  */
 function recordBrief(log: string, unitId: string, role: PyValue, now: number): void {
+  recordEvent(log, BRIEF_EVENT, unitId, role, now);
+}
+
+/**
+ * `_record_event`: one `{event, ts, unit, role}` line, best effort — the brief line (F6) and,
+ * since job65/#162, the `uncommitted` marker share this shape, so a reader tells every event
+ * line from an accounting line by the one key, `event`, never by `status`.
+ */
+function recordEvent(log: string, event: string, unitId: string, role: PyValue, now: number): void {
   const record = new Map<string, PyValue>([
-    ['event', str(BRIEF_EVENT)],
+    ['event', str(event)],
     ['ts', str(timestamp(now))],
     ['unit', str(unitId)],
     ['role', role],
@@ -290,11 +362,16 @@ const SPLITLINES = /\r\n|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]/;
  * `_briefed`: was a brief issued for `unitId` since its last clock-out? Read off the ledger.
  *
  * Walk the ledger in order, tracking only lines that name this unit: a brief line sets the
- * flag, an accounting line (any line that is not a brief event) clears it. The answer is the
+ * flag, an accounting line (any line that is not a brief event) clears it, and — since
+ * job65/#162 — an `uncommitted` line restores whatever the flag was before the accounting
+ * line it follows, because that line's commit failed and it did not count. The answer is the
  * flag at the end — so a clock-out CONSUMES the brief: brief, blocked, re-run without a
- * clock_in reads `false`; brief, blocked, clock_in, done reads `true`. Detectable false
- * negatives (a retried clock-out's duplicate line) beat undetectable false positives (an
- * inline re-run marked briefed because a brief was issued once, ever).
+ * clock_in reads `false`; brief, blocked, clock_in, done reads `true`; brief, uncommitted
+ * clock-out, retry reads `true`. Until job65 the retry read `false` by choice ("detectable
+ * false negatives beat undetectable false positives"); #162 measured that the orphan line also
+ * SPENT the brief, so a briefed non-cursor unit's retry was refused and the documented
+ * recovery did not exist. The inline re-run is still `false`: the marker is what now tells the
+ * two apart.
  *
  * Reads the ledger the way a reader must: a missing or unreadable log is `false`, a line
  * that is not JSON or not an object is skipped, never fatal. `record.get("unit") != unit_id`
@@ -313,6 +390,7 @@ function briefed(log: string, unitId: string): boolean {
     return false;
   }
   let flag = false;
+  let beforeLastAccounting = false;
   for (const line of content.split(SPLITLINES)) {
     let record: PyValue;
     try {
@@ -325,7 +403,13 @@ function briefed(log: string, unitId: string): boolean {
     const unit = record.v.get('unit');
     if (unit === undefined || unit.t !== 'str' || unit.v !== unitId) continue;
     const event = record.v.get('event');
-    flag = event !== undefined && event.t === 'str' && event.v === BRIEF_EVENT;
+    const name = event !== undefined && event.t === 'str' ? event.v : null;
+    if (name === BRIEF_EVENT) flag = true;
+    else if (name === UNCOMMITTED_EVENT) flag = beforeLastAccounting;
+    else {
+      beforeLastAccounting = flag;
+      flag = false;
+    }
   }
   return flag;
 }
@@ -389,13 +473,17 @@ function readyIds(view: PlanResult): string[] {
 /**
  * Validate the checkpoint and return a unit's brief, or a refusal.
  *
- * `unitId` OMITTED IS THE CURSOR UNIT, BYTE FOR BYTE WHAT IT WAS (J60/D1). Given, it is
- * briefed instead — IF the batch view says it is ready. That is the only new judgement, it
- * is taken LAST, and the three above it are untouched, so no existing refusal moves and no
- * caller that never passes a unit can see a difference. A unit that is not ready, including
- * an id naming no unit at all, is ONE refusal carrying the list the caller's next move is to
- * pick from; a batch view that refuses (cycle, unknown dependency) passes through verbatim,
- * in both directions, exactly as `planBatches` already passes `readValid`'s.
+ * `unitId` OMITTED SELECTS THE CURSOR UNIT (J60/D1), given, that unit — and EITHER WAY the
+ * selected unit is briefed only IF the batch view says it is ready (job65/#164). The readiness
+ * judgement is taken LAST, after the three above it, so no existing refusal moves. Until job65
+ * the default path skipped it — "byte for byte what it was" — and #164 measured what that
+ * exemption cost: a cursor left on a `done` unit by a hand edit, or on a unit whose
+ * dependency had not run by a re-plan, was briefed with no refusal and no warning, the exact
+ * hazard job60 closed for the named path. A unit that is not ready, including an id naming no
+ * unit at all and a terminal cursor unit (the batch view drops done/dropped units), is ONE
+ * refusal carrying the list the caller's next move is to pick from; a batch view that refuses
+ * (cycle, unknown dependency) passes through verbatim on both paths, exactly as `planBatches`
+ * already passes `readValid`'s.
  *
  * `ready` cannot be empty here: the all-terminal test above has already answered `success`
  * for a plan with no non-terminal unit, and a non-terminal unit that cannot batch is a
@@ -438,25 +526,25 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
     ]);
   }
   const cursor = text(field(subDict(doc, 'plan'), 'cursor'));
-  // D1: selection, and it is the LAST judgement. `selected` differs from `cursor` only on
-  // the new branch, so the dangling-cursor escalation below still says `cursor` truthfully:
-  // a `unitId` that reached `selected` came out of `ready`, whose ids are `plan.units`' own,
-  // and `findUnit` cannot fail for it.
-  let selected = cursor;
-  if (unitId !== null && unitId !== undefined) {
-    const view = batchView(doc);
-    if ('result' in view) return errorResult(view.reason);
-    const ready = readyIds(view);
-    // `", "` in BATCH order, not sorted: the order the caller would dispatch them in.
-    if (!ready.includes(unitId)) return errorResult(`unit ${unitId} is not ready; ready is ${ready.join(', ')}`);
-    selected = unitId;
-  }
+  // D1: selection, then ONE readiness test for both paths (#164). The dangling-cursor
+  // escalation stays above the graph and keeps its sentence; on the named path a `unitId`
+  // naming no unit falls through to the not-ready sentence, as before.
+  const named = unitId !== null && unitId !== undefined;
+  const selected = named ? unitId : cursor;
   const unit = findUnit(doc, selected);
-  if (unit === null) {
+  if (!named && unit === null) {
     return dict([
       ['result', str('escalate')],
       ['reason', str(`cursor ${cursor} names no unit`)],
     ]);
+  }
+  const view = batchView(doc);
+  if ('result' in view) return errorResult(view.reason);
+  const ready = readyIds(view);
+  // `", "` in BATCH order, not sorted: the order the caller would dispatch them in. A
+  // terminal cursor unit is not in `ready`, so it meets this same sentence.
+  if (unit === null || !ready.includes(selected)) {
+    return errorResult(`unit ${selected} is not ready; ready is ${ready.join(', ')}`);
   }
   // F6: the brief is issued, so say so in the ledger — best effort, and only on this branch:
   // a refusal above issued nothing and therefore records nothing. `pyJoin` is the same
@@ -694,6 +782,24 @@ function accountingRefusal(unitId: string, unit: PyDict, accounting: unknown): s
 }
 
 /**
+ * `_reserved_refusal` (#117): an accounting line that sets a key the runtime writes is refused,
+ * nothing written. `record.set` over the base keys let `{"unit": "C", "event": "brief"}` on A's
+ * clock-out write a line `briefed` read as a brief of C, and the next `clockOut("C")` was
+ * accepted although C was never briefed, was not the cursor, and had a dependency still `todo`
+ * (measured: A=done B=todo C=done). A refusal rather than a merge-under, because a line whose
+ * keys are dropped is a line the orchestrator believes it wrote. Runs after the shape check
+ * (`additionalProperties: true` lets these keys through it) and before any mutation. The keys
+ * are named in `RESERVED_LEDGER_KEYS` order so both runtimes spell one sentence for one line.
+ */
+function reservedRefusal(unitId: string, unit: PyDict, accounting: unknown): string | null {
+  if (accounting === null || accounting === undefined) return null;
+  const line = asPatch(accounting);
+  const present = RESERVED_LEDGER_KEYS.filter((key) => line.has(key));
+  if (present.length === 0) return null;
+  return `unit ${unitId} in role ${text(field(unit, 'role'))} reported an accounting line that sets the runtime's own keys: ${present.join(', ')}`;
+}
+
+/**
  * Apply the cursor unit's result, validate the WHOLE mutated document, write atomically.
  *
  * `unitId` must name the cursor unit OR a unit briefed since its own last clock-out
@@ -737,6 +843,100 @@ export function clockOut(
   options: ClockOptions = {},
 ): PyValue {
   const path = pyJoin(checkpoint);
+  const real = realTarget(path);
+  const lock = `${real}.lock`;
+  const { held, refusal: locked } = acquireLock(lock, options.lockWaitMs ?? LOCK_WAIT_MS);
+  if (locked !== null) return locked;
+  try {
+    return clockOutLocked(path, real, unitId, status, handoffPatch, historyEntry, accounting, options);
+  } finally {
+    if (held) {
+      try {
+        unlinkSync(lock);
+      } catch {
+        /* `contextlib.suppress(OSError)`: the release's own failure is not the story */
+      }
+    }
+  }
+}
+
+/**
+ * #137: the file the rename lands on — a symlinked checkpoint's TARGET, so the link stays a
+ * link and every other path to the same file sees the clock-out. Only the write side
+ * resolves: the read, the ledger and every sentence use the path as given.
+ */
+function realTarget(path: string): string {
+  try {
+    return pyResolve(path);
+  } catch {
+    return path; // a symlink loop, or a path the OS will not resolve — `Path.resolve`'s own arm
+  }
+}
+
+/**
+ * `_acquire_lock`: take `<checkpoint>.lock` with O_EXCL. Answers `{held, refusal}`.
+ *
+ * `held` is false without a refusal in exactly one case: the directory will not hold a lock
+ * file for a reason other than one existing (read-only, gone). The clock-out then goes on
+ * UNLOCKED, because the temp file that follows cannot be created there either and ITS
+ * refusal is the one that names the cause — the `readonly-directory-*` arms keep their
+ * sentences. A lock that exists is waited on; one older than `LOCK_STALE_MS` is a dead
+ * holder's and is removed; past the wait the clock-out is refused with nothing written, so
+ * the caller can retry — never let through, which is the race.
+ */
+function acquireLock(lock: string, waitMs: number): { held: boolean; refusal: PyValue | null } {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    let fd: number;
+    try {
+      fd = openSync(lock, 'wx', 0o644);
+    } catch (e) {
+      if ((e as { code?: string })?.code !== 'EEXIST') return { held: false, refusal: null };
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) unlinkSync(lock);
+      } catch {
+        /* released between the open and the stat: go round again */
+      }
+      if (Date.now() >= deadline) {
+        return { held: false, refusal: errorResult(`checkpoint locked by another clock-out, nothing written: ${lock}`) };
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LOCK_POLL_MS);
+      continue;
+    }
+    try {
+      writeSync(fd, `${process.pid}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    return { held: true, refusal: null };
+  }
+}
+
+/** `tmp.open("x", encoding="utf-8").write(text)` — O_EXCL, newline translation included. */
+function pyWriteTextExclusive(path: string, text: string): void {
+  try {
+    writeFileSync(path, pyNewlineOut(text), { encoding: 'utf8', flag: 'wx' });
+  } catch (e) {
+    throw asPyOSError(e, path, undefined, 'crt');
+  }
+}
+
+/** `str(OSError(e.errno, e.strerror, str(path)))`: the sentence with the checkpoint in the filename slot. */
+function atCheckpoint(e: PyOSError, path: string): string {
+  return new PyOSError(e.errno, e.code, e.strerror, path, null, e.winerror).message;
+}
+
+/** `clock_out`'s body, run under the lock its caller holds: mutate, validate, write. */
+function clockOutLocked(
+  path: string,
+  real: string,
+  unitId: string,
+  status: string,
+  handoffPatch: unknown,
+  historyEntry: unknown,
+  accounting: unknown,
+  options: ClockOptions,
+): PyValue {
   const { document, refusal } = readValid(path);
   if (refusal !== null) return refusal;
   const doc = document!;
@@ -757,6 +957,8 @@ export function clockOut(
   if (wrongModel !== null) return errorResult(wrongModel);
   const badLine = accountingRefusal(unitId, unit, accounting);
   if (badLine !== null) return errorResult(badLine);
+  const forged = reservedRefusal(unitId, unit, accounting);
+  if (forged !== null) return errorResult(forged);
 
   unit.v.set('status', str(status));
   // D3: the cursor follows the GRAPH, on the MUTATED document — the unit just finished is
@@ -783,9 +985,9 @@ export function clockOut(
   const problem = schemaError(dumpJson(doc), loadSchema(SCHEMA_NAME));
   if (problem !== null) return errorResult(`refused to write: ${problem}`);
 
-  // `record.update(accounting or {})`: the four keys the record starts with are OVERRIDABLE
-  // by the orchestrator's accounting, and `sort_keys=True` means the merge order never
-  // reaches the file anyway.
+  // `record.update(accounting or {})`: since #117 none of the four base keys (nor `event`)
+  // can be in the accounting — `reservedRefusal` above — and `sort_keys=True` means the
+  // merge order never reaches the file anyway.
   const record = new Map<string, PyValue>([
     ['ts', str(timestamp(options.now ?? Date.now() / 1000))],
     ['unit', str(unitId)],
@@ -806,10 +1008,17 @@ export function clockOut(
     return errorResult(`accounting log unwritable, checkpoint untouched: ${e.message}`);
   }
 
-  const tmp = pyWithSuffix(path, `${pySuffix(path)}.tmp`);
+  // #116: a PER-WRITER temp name, created exclusively — never `with_suffix(".tmp")`, which
+  // gave every writer of one checkpoint the same temp file (two renames of one file, so one
+  // `ok` answer with nothing of it on disk) and gave a suffix-less `checkpoint` the name of
+  // an unrelated sibling, `checkpoint.tmp`, which it overwrote and renamed away. #137: the
+  // rename lands on `real`, the link's target. The refusal names the checkpoint AS GIVEN and
+  // not the temp name: a random name in a sentence is not reproducible, and the file the
+  // caller could not write is, to the caller, the checkpoint.
+  const tmp = `${real}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   try {
-    pyWriteText(tmp, `${dumpJson(doc, { indent: 2 })}\n`);
-    pyReplace(tmp, path);
+    pyWriteTextExclusive(tmp, `${dumpJson(doc, { indent: 2 })}\n`);
+    pyReplace(tmp, real);
   } catch (e) {
     if (!(e instanceof PyOSError)) throw e;
     // `contextlib.suppress(OSError)` — the cleanup's own failure is not the story.
@@ -818,7 +1027,11 @@ export function clockOut(
     } catch (cleanup) {
       if (!(cleanup instanceof PyOSError)) throw cleanup;
     }
-    return errorResult(`checkpoint unwritable, last log line uncommitted: ${e.message}`);
+    // #162: the accounting line above is kept (log-then-commit: never lose the accounting)
+    // and MARKED: this line says it did not count, so `briefed` hands the brief back and the
+    // retry the sentence invites is accepted. Best effort, like the brief line.
+    recordEvent(log, UNCOMMITTED_EVENT, unitId, field(unit, 'role'), options.now ?? Date.now() / 1000);
+    return errorResult(`checkpoint unwritable, last log line uncommitted: ${atCheckpoint(e, path)}`);
   }
 
   return dict([

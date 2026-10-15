@@ -716,3 +716,128 @@ test('J54-3: a FAILED install that npm left a ~/.bantamkit behind still ignores 
     assert.equal(readFileSync(gitignore, 'utf8'), GITIGNORE_TEXT);
   });
 });
+
+// ------------------------------------------------------------ job65: #118, #136, #138
+
+const symlinksNeedAPrivilegeOnWindows = { skip: process.platform === 'win32' };
+
+test('#118: foreign numbers and key order survive the write', async () => {
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      '{"zzz": 1, "mcpServers": {"other": {"port": 12345678901234567890, "ratio": 1.0, "e": 1e5}}, "9": "int-like key"}\n',
+      'utf8',
+    );
+
+    h.install('cursor', CMD, []);
+
+    const text = readFileSync(path, 'utf8');
+    assert.ok(text.includes('"port": 12345678901234567890'), text);
+    assert.ok(text.includes('"ratio": 1.0'), text);
+    assert.ok(text.includes('"e": 100000.0'), text);
+    // Read off the TEXT: `Object.keys(JSON.parse(...))` would put the integer-like key first
+    // itself, which is the very reordering this test is here to rule out.
+    assert.deepEqual([...text.matchAll(/^ {2}"([^"]+)":/gm)].map((m) => m[1]), ['zzz', 'mcpServers', '9']);
+    assert.equal(JSON.parse(text).mcpServers.bantamkit.command, CMD);
+  });
+});
+
+for (const [literal, spelled] of [
+  ['1e400', 'Infinity'],
+  ['-1e400', '-Infinity'],
+  ['NaN', 'NaN'],
+  ['Infinity', 'Infinity'],
+]) {
+  test(`#118: a number JSON cannot carry (${literal}) is refused and the file is untouched`, async () => {
+    await withHome(async (h) => {
+      const path = h.hostConfigPath('cursor');
+      mkdirSync(dirname(path), { recursive: true });
+      const before = Buffer.from(`{"mcpServers": {"other": {"command": "x", "huge": ${literal}}}}\n`);
+      writeFileSync(path, before);
+
+      assert.throws(
+        () => h.install('cursor', CMD, []),
+        (e) =>
+          e instanceof h.InstallError &&
+          e.message === `${path} has a number at mcpServers.other.huge that JSON cannot carry (${spelled}); refusing to touch it`,
+      );
+      assert.deepEqual(readFileSync(path), before);
+      assert.deepEqual(backupsIn(path), []);
+    });
+  });
+}
+
+test('#118: a non-finite number inside a list is named by index', async () => {
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{"mcpServers": {}, "list": [0, [1e400]]}\n', 'utf8');
+    assert.throws(
+      () => h.install('cursor', CMD, []),
+      (e) => e.message.includes('has a number at list[1][0] that JSON cannot carry (Infinity)'),
+    );
+  });
+});
+
+test('#118: the parse error names CPython’s message, line and column', async () => {
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{ "mcpServers": { broken\n', 'utf8');
+    assert.throws(
+      () => h.install('cursor', CMD, []),
+      (e) =>
+        e.message ===
+        `${path} is not valid JSON, so this refuses to touch it: Expecting property name enclosed in double quotes (line 1, column 19)`,
+    );
+  });
+});
+
+test('#136: a symlinked config is written through and stays a link', symlinksNeedAPrivilegeOnWindows, async () => {
+  await withHome(async (h, root) => {
+    const { symlinkSync, lstatSync } = await import('node:fs');
+    const dotfiles = join(root, 'dotfiles');
+    mkdirSync(dotfiles);
+    const target = join(dotfiles, 'cursor.json');
+    const original = Buffer.from('{"mcpServers": {}}\n');
+    writeFileSync(target, original);
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path);
+
+    const report = h.install('cursor', CMD, []);
+
+    assert.ok(lstatSync(path).isSymbolicLink(), 'the link was replaced by a regular file');
+    assert.deepEqual(readJson(target).mcpServers.bantamkit, { command: CMD, args: [] });
+    assert.ok(report.includes(`  file   : ${path}`));
+    const backups = backupsIn(path);
+    assert.equal(backups.length, 1);
+    assert.ok(!lstatSync(join(dirname(path), backups[0])).isSymbolicLink());
+    assert.deepEqual(readFileSync(join(dirname(path), backups[0])), original);
+  });
+});
+
+test('#138: a second same-day write never overwrites the earlier backup', async () => {
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    const original = Buffer.from('{"mcpServers": {"mine": {"command": "ORIGINAL"}}}\n');
+    writeFileSync(path, original);
+    const pad = (n) => String(n).padStart(2, '0');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+    const first = h.install('cursor', CMD, []);
+    const afterFirst = readFileSync(path);
+    const second = h.install('cursor', 'NEW', [], true);
+
+    const names = backupsIn(path).sort();
+    assert.deepEqual(names, [`mcp.json.backup-${stamp}`, `mcp.json.backup-${stamp}.1`]);
+    assert.deepEqual(readFileSync(join(dirname(path), names[0])), original);
+    assert.deepEqual(readFileSync(join(dirname(path), names[1])), afterFirst);
+    assert.ok(`${first}\n`.includes(`  backup : ${path}.backup-${stamp}\n`), first);
+    assert.ok(second.includes(`  backup : ${path}.backup-${stamp}.1`), second);
+  });
+});

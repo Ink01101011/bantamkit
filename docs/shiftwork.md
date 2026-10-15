@@ -80,8 +80,25 @@ refused exactly as before.
    field decides clock-out vs escalate.
 8. **Atomic single-writer discipline.** Only the clocking-out session writes,
    via temp-file + rename. The reader validates `version` first and refuses
-   unknown majors. No separate checkpoint lock is needed: `driver.lock`
-   guarantees one driver, and sessions run sequentially.
+   unknown majors. Under the driver no separate checkpoint lock is needed:
+   `driver.lock` guarantees one driver, and sessions run sequentially. Under
+   the MCP tools that stopped being true with job60's waves, and job65 (#116)
+   measured the cost: two `shiftwork_clock_out` calls on DIFFERENT units at
+   one instant lost 10 of 20 `ok` answers in 10 trials, on both runtimes and
+   across them, because every writer used the one temp name
+   `<checkpoint>.tmp`. Since job65 the whole read-modify-write of
+   `shiftwork_clock_out` runs under `<checkpoint>.lock` (O_EXCL, the same
+   primitive as `driver.lock`, identical in Python and Node so the two
+   serialise against each other), the temp file is a per-writer name
+   (`<checkpoint>.<pid>.<random>.tmp`, created exclusively, so a suffix-less
+   `checkpoint` never touches a sibling called `checkpoint.tmp`), and the
+   rename lands on the checkpoint's resolved target, so a symlinked checkpoint
+   stays a link and its target carries the clock-out (#137). A writer that
+   cannot take the lock within 5 s answers `{"result": "error", "reason":
+   "checkpoint locked by another clock-out, nothing written: <lock>"}` and
+   writes nothing — it is never let through unlocked, because through is the
+   race; a lock older than 30 s is a dead holder's and is taken over. The
+   ledger (`<checkpoint>.log.jsonl`) is still keyed by the path AS GIVEN.
 
 `plan.units[].role` (planner | implementer | reviewer) exists purely so the
 driver can pick a model without reading a brief. Re-planning needs no special
@@ -168,6 +185,9 @@ an older server.
 | External `until_cmd` never met | Driver-level timeout, then escalation |
 | Reported model not on `job.roles[role]` (or absent) | Clock-out refuses before writing: no accounting line, no cursor advance, checkpoint byte-unchanged |
 | `job.roles[role]` present but not a list of model identifiers (job47) | Same refusal, same place, same three guarantees — an unreadable declaration allows no model |
+| `accounting` sets `unit`, `role`, `status`, `ts` or `event` (job65, #117) | Same refusal, same place, same three guarantees — the line would forge the runtime's own record |
+| Commit fails after the accounting line (read-only directory, locked target) (job65, #162) | `checkpoint unwritable, last log line uncommitted: …`; an `uncommitted` marker follows the orphan line, the brief is handed back, and the retry is accepted |
+| `plan.cursor` on a done/dropped unit or one whose dependencies have not run (job65, #164) | `clock_in()` refuses `unit <id> is not ready; ready is <…>` exactly as `clock_in(unit_id)` does; never briefed |
 
 ## The driver
 
@@ -264,7 +284,10 @@ The workflow, per unit:
    `{"event": "brief", ts, unit, role}` line to `<checkpoint>.log.jsonl` —
    best-effort, and only on that branch; see *Clock-in writes too* below.
    Since job60 it also takes an optional `unit_id`, which must name a unit
-   the graph says is ready — that is how a wave is dispatched; see
+   the graph says is ready — that is how a wave is dispatched; and since
+   job65 (#164) the cursor unit itself must be ready by the same test, so a
+   cursor left on a done unit or on a unit whose dependencies have not run
+   is refused, never briefed; see
    [Spending the width](#spending-the-width-clock_inunit_id-job60) below.
 3. Spawn the subagent with the returned brief verbatim, picking the model
    from the unit's `role`.
@@ -276,7 +299,19 @@ The workflow, per unit:
    `<checkpoint>.log.jsonl` and the checkpoint is renamed into place, in
    that order (log-then-commit) — a partial failure can lose the commit
    but never the accounting, and a log line whose commit failed is
-   detectable by re-reading the checkpoint.
+   detectable by re-reading the checkpoint and, since job65 (#162), by the
+   `{"event": "uncommitted", ts, unit, role}` line appended right after it,
+   which hands the brief back so the retry is accepted (before that line
+   the orphan spent the brief, and a briefed non-cursor unit's retry was
+   refused `unit B is not the cursor unit A`). The five keys the runtime
+   writes on that line — `unit`, `role`, `status`, `ts`, `event` — cannot be
+   set by `accounting` (job65, #117): a line that sets one is refused before
+   anything is written, with `unit A in role implementer reported an
+   accounting line that sets the runtime's own keys: unit, event`, because
+   `{"unit": "C", "event": "brief"}` on A's clock-out used to be written as a
+   brief of C that the next `clock_out(C)` then trusted. The whole call holds
+   `<checkpoint>.lock` (decision 8), so a wave's clock-outs from several
+   processes land one after another and every `ok` is on disk.
 
 Cursor advance was v1-linear until job60: clock-out moved the cursor to
 the first non-terminal unit in plan order and ignored `depends_on`, so a
@@ -335,7 +370,18 @@ before one clock-out (a relaunch after a crashed subagent) both count as
 `true`. `clock_out` never refuses **on it**: a unit that was never clocked
 in clocks out normally, with `briefed: false` — the field records, it does
 not gate, because the recovery practice is to recover the accounting,
-never to drop it.
+never to drop it. One more line kind since job65 (#162): when the commit
+fails after the accounting line landed, `clock_out` appends
+`{"event": "uncommitted", "ts": …, "unit": …, "role": …}` right after it,
+and the reader restores the flag to whatever it was before that orphan
+line — so brief → clock-out(uncommitted) → retry is `true`, while
+brief → clock-out(blocked) → inline re-run is still `false`. Until job65
+the retry read `false` by choice ("detectable false negatives beat
+undetectable false positives"), which also meant the orphan line SPENT the
+brief and a briefed non-cursor unit could not retry at all; the marker is
+what now tells the two shapes apart. A reader skipping event lines
+(`event` present, `status` absent) skips the marker too, and should treat
+the accounting line directly above an `uncommitted` line as not committed.
 
 **What an accounting line means (job50, F5).** Until this change
 `accounting` had no properties at all — `additionalProperties: true` and
@@ -360,7 +406,15 @@ it:
 | `tool_uses` | integer ≥ 0, optional | tool calls the subagent made, as the harness counts them — the denominator that makes `tokens` comparable across units of different size |
 | `note` | string, optional | free text for what the fields cannot say: an estimate, a retry, a second scope under the same unit id. Anything that is not a model identifier goes here, not in `model` |
 
-Any other key still passes through unchanged. Refusing unknown keys is
+Any other key still passes through unchanged — except the five the
+runtime writes itself, `unit`, `role`, `status`, `ts` and `event`, which
+since job65 (#117) are refused before anything is written (`… reported an
+accounting line that sets the runtime's own keys: unit, event`, the keys
+named in that fixed order whatever order the caller used): until then
+`record.update(accounting)` ran after the base keys, so a line could book
+its cost to another unit or forge a brief line the gate then trusted.
+`briefed` is deliberately not among the five — a self-reported `briefed`
+is overwritten, as above, not refused. Refusing *unknown* keys is still
 exactly the friction the `handoff.notes` change removed (F8), and the two
 rules must not pull against each other. `accounting: null` stays legal on
 the wire, as it always was, but a line with no numbers is not an audit
@@ -607,18 +661,24 @@ with no refusal and no warning. Since job60 the two orders are one order.
 **`clock_in` takes an optional `unit_id`.**
 
 ```
-shiftwork_clock_in(checkpoint)            # unchanged, byte for byte: the cursor unit
+shiftwork_clock_in(checkpoint)            # the cursor unit, IF the graph says it is ready (since job65)
 shiftwork_clock_in(checkpoint, unit_id)   # that unit, IF the graph says it is ready
 ```
 
-Omitting it is the whole prior contract, including its `escalate` when the
-cursor names no unit; the order of judgements above the selection is unmoved, so
-no existing refusal changed its place or its wording. Given, `unit_id` must name
-a member of `ready` — the same list `shiftwork_plan` publishes for the same
-bytes, recomputed on the document as read. **One** refusal covers both ways that
-can fail, because they are one property — the unit is not ready — and a
-`unit_id` that names no unit at all is the limiting case of it rather than a
-second thing to spell:
+Omitting it selects the cursor unit, including the `escalate` when the cursor
+names no unit; the order of judgements above the selection is unmoved, so no
+existing refusal changed its place or its wording. Until job65 the default path
+was "the whole prior contract, byte for byte" and skipped the readiness test;
+issue #164 measured what that exemption cost — a cursor left on a `done` unit
+by a hand edit, or on a unit whose dependency had not run by a re-plan, was
+briefed with no refusal and no warning, which is exactly the hazard this section
+opens with, closed for the named path only. **Either way the selected unit must
+be a member of `ready`** — the same list `shiftwork_plan` publishes for the same
+bytes, recomputed on the document as read; a done or dropped cursor unit is not
+in it, so it meets the same sentence as a unit with unmet dependencies. **One**
+refusal covers every way that can fail, because they are one property — the
+unit is not ready — and a `unit_id` that names no unit at all is the limiting
+case of it rather than a second thing to spell:
 
 ```json
 {"result": "error", "reason": "unit N3 is not ready; ready is N1, N2"}
@@ -629,12 +689,14 @@ the caller's next move is to pick from it. It can never be empty there: the
 all-terminal check above it has already answered `success` for a plan with no
 non-terminal unit, so no sentence is written for a case that cannot be reached.
 A refusal from the batch view *itself* — a cycle, an unknown dependency, an
-unreadable file — passes through verbatim, in the three sentences listed above.
+unreadable file — passes through verbatim, in the three sentences listed above,
+on both paths since job65: the default call no longer briefs the cursor unit of
+a graph that cannot batch (the named call refused it; that is #164's title).
 
 **A dangling `plan.cursor` is now escapable, and that is deliberate.** A pointer
 naming no unit still `escalate`s on the default path, with the sentence it has
 always had (`cursor <id> names no unit`) — that judgement sits above the
-selection and job60 did not move it. But naming a ready unit proceeds anyway, on
+selection and the graph, and neither job60 nor job65 moved it. But naming a ready unit proceeds anyway, on
 the same bytes, because the graph is readable whatever the pointer says: a
 broken pointer no longer stops a wave the graph permits. It is the one existing
 refusal this job made conditional without changing a word of it, so it is pinned

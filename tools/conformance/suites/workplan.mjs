@@ -229,7 +229,46 @@ const CORPUS = [
   ['refuse/dup-beats-unknown', [n('a'), n('a'), n('b', ['nowhere'])]],
   ['refuse/unknown-beats-cycle', [n('a', ['b']), n('b', ['a']), n('c', ['nowhere'])]],
   ['refuse/dup-beats-cycle', [n('a', ['b']), n('b', ['a']), n('a')]],
+
+  // ---- #127 (job65): the fourth refusal, a node off the advertised item schema. Checked
+  // BEFORE the graph is read, in input order and field order, and named by position. Each
+  // of these is also pinned per side in `SHAPE_REFUSALS` below, because a sentence both
+  // runtimes copied is invisible to the differential. `3.0` is deliberately absent: the
+  // corpus travels as JSON and `JSON.stringify(3.0)` is `3`, so the reference would never
+  // see the float — that arm is pinned in each side's own unit tests instead.
+  ['refuse/shape/string-depends_on', [n('a', 'b'), n('b')]],
+  ['refuse/shape/non-string-in-depends_on', [n('a'), n('b', ['a', 2])]],
+  ['refuse/shape/string-priority', [n('a', [], '3'), n('b', [], 1)]],
+  ['refuse/shape/bool-priority', [n('a', [], true)]],
+  ['refuse/shape/fractional-priority', [n('a', [], 2.5)]],
+  ['refuse/shape/int-id', [{ id: 5, depends_on: [] }, n('5')]],
+  ['refuse/shape/node-is-not-an-object', [n('a'), 'b']],
+  // Both faults at once: the shape at index 0 is named, not the duplicate at index 1 —
+  // and the whole list is read for shape before any graph refusal, so a duplicate at
+  // index 1 does not beat a shape fault at index 2 either.
+  ['refuse/shape/shape-beats-duplicate', [n('a', [], 'x'), n('a')]],
+  ['refuse/shape/shape-at-2-beats-duplicate-at-1', [n('a'), n('a'), n('c', 'a')]],
+  // NOT a contradiction: `null` for either optional field is the default, as absent is.
+  ['null-priority-is-zero', [n('a', [], 5), { id: 'b', depends_on: null, priority: null }]],
 ];
+
+/**
+ * The shape sentences, typed out once and asserted against EACH side. The differential
+ * above proves the two runtimes agree; this proves what they agree ON, so a mutation that
+ * made both of them coerce again (the pre-#127 behaviour, on both sides at once) is red
+ * here even though `core/` and `reason/` would stay green.
+ */
+const SHAPE_REFUSALS = new Map([
+  ['refuse/shape/string-depends_on', 'nodes[0].depends_on must be a list of strings'],
+  ['refuse/shape/non-string-in-depends_on', 'nodes[1].depends_on must be a list of strings'],
+  ['refuse/shape/string-priority', 'nodes[0].priority must be an integer'],
+  ['refuse/shape/bool-priority', 'nodes[0].priority must be an integer'],
+  ['refuse/shape/fractional-priority', 'nodes[0].priority must be an integer'],
+  ['refuse/shape/int-id', 'nodes[0].id must be a string'],
+  ['refuse/shape/node-is-not-an-object', 'nodes[1] must be an object'],
+  ['refuse/shape/shape-beats-duplicate', 'nodes[0].priority must be an integer'],
+  ['refuse/shape/shape-at-2-beats-duplicate-at-1', 'nodes[2].depends_on must be a list of strings'],
+]);
 
 // ================================================================= the checkpoint corpus
 
@@ -465,6 +504,21 @@ export async function run(ctx) {
         actual: actual.reason ?? `(no refusal: ${JSON.stringify(actual)})`,
       });
     }
+    // #127: the shape sentence as a LITERAL, once per side (see `SHAPE_REFUSALS`).
+    const literal = SHAPE_REFUSALS.get(caseName);
+    if (literal !== undefined) {
+      for (const [side, answer] of [
+        ['python', expected],
+        ['node', actual],
+      ]) {
+        cases.push({
+          name: `shape-literal/${caseName} — ${side}`,
+          kind: 'string',
+          expected: literal,
+          actual: answer?.reason ?? `(no refusal: ${JSON.stringify(answer)})`,
+        });
+      }
+    }
   });
 
   // -------------------------------------------------------------- shiftwork_plan, the module
@@ -609,6 +663,17 @@ export async function run(ctx) {
     ['no-id', callTool(15, 'work_plan', { nodes: [{ depends_on: [] }] })],
     ['shiftwork_plan-through-the-tool', callTool(16, 'shiftwork_plan', { checkpoint: templatePath })],
     ['shiftwork_plan-refusal', callTool(17, 'shiftwork_plan', { checkpoint: join(bed, 'nowhere', 'gone.json') })],
+    // #127 (job65), the three inputs the issue filed, over the real surface. Before the fix
+    // the port answered a PLAN over every one of them — `a` beside the `b` it depended on,
+    // `"3"` as priority 0, `5` and `"5"` as one node — while the reference refused the
+    // first by accident (it iterated the string), crashed on the second and planned the
+    // third. Now both answer the planner's own `{result: 'error', reason: 'nodes[<i>]...'}`.
+    ['shape-string-depends_on', callTool(18, 'work_plan', { nodes: [{ id: 'a', depends_on: 'b' }, { id: 'b', depends_on: [] }] })],
+    ['shape-string-priority', callTool(19, 'work_plan', { nodes: [{ id: 'a', depends_on: [], priority: '3' }, { id: 'b', depends_on: [], priority: 1 }] })],
+    ['shape-int-id', callTool(20, 'work_plan', { nodes: [{ id: 5, depends_on: [] }, { id: '5', depends_on: [] }] })],
+    // Past pydantic (`list[dict]` holds) and into the planner's shape pass: a bool priority,
+    // which CPython's `isinstance(True, int)` would otherwise have let through.
+    ['shape-bool-priority', callTool(21, 'work_plan', { nodes: [{ id: 'a', depends_on: [], priority: true }] })],
   ];
 
   const session = {

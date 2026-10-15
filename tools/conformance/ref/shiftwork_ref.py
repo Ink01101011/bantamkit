@@ -36,6 +36,15 @@ A call is one of
      "accounting": b64_json_text|null, "chmod": int|null}
     {"fn": "chmod", "path": str, "mode": int}          # set up a write failure
     {"fn": "mkdir", "path": str}                       # plant a directory in the way
+    {"fn": "plant", "path": str, "content": b64}       # plant a FILE (job65: a sibling, a lock)
+    {"fn": "symlink", "link": str, "target": str}      # job65/#137: a link beside the file
+    {"fn": "probe", "path": str}                       # job65: what is at a path now — its
+        # `result` is {"kind": "symlink"|"file"|"dir"|"absent", "bytes": b64|null}, so a
+        # per-side case can pin a sibling's bytes or a link staying a link.
+
+Since job65 (#116) `tmp_left` is a LISTING, not one `.exists()`: the temp name is per writer
+(`<checkpoint>.<pid>.<random>.tmp`) and cannot be predicted, so the step reports whether ANY
+`*.tmp` or `*.lock` entry is in the directory after the call.
 
 A session case may also carry `"assets": <dir>`, which sets `BANTAMKIT_ASSETS` for that
 case's calls and puts the environment back afterwards. Both runtimes honour that override
@@ -97,6 +106,14 @@ class _FrozenTime:
 
 CLOCK = _FrozenTime()
 shiftwork.time = CLOCK  # harness-side only; runtime-py on disk is untouched
+
+
+def leftovers(root: Path) -> bool:
+    """Any `*.tmp` / `*.lock` entry in the directory — the Node runner asks the same."""
+    try:
+        return any(p.name.endswith((".tmp", ".lock")) for p in root.iterdir())
+    except OSError:
+        return False
 
 
 def read_bytes(path: Path) -> str | None:
@@ -173,6 +190,27 @@ def main() -> None:
                     (root / call["path"]).mkdir(parents=True, exist_ok=True)
                     steps.append({"result": b64("null"), "checkpoint": None, "log": None, "tmp_left": False})
                     continue
+                if fn == "plant":
+                    (root / call["path"]).write_bytes(base64.b64decode(call["content"]))
+                    steps.append({"result": b64("null"), "checkpoint": None, "log": None, "tmp_left": False})
+                    continue
+                if fn == "symlink":
+                    os.symlink(root / call["target"], root / call["link"])
+                    steps.append({"result": b64("null"), "checkpoint": None, "log": None, "tmp_left": False})
+                    continue
+                if fn == "probe":
+                    at = root / call["path"]
+                    if at.is_symlink():
+                        kind = "symlink"
+                    elif at.is_dir():
+                        kind = "dir"
+                    elif at.is_file():
+                        kind = "file"
+                    else:
+                        kind = "absent"
+                    found = {"kind": kind, "bytes": read_bytes(at) if kind in ("symlink", "file") else None}
+                    steps.append({"result": b64(json.dumps(found)), "checkpoint": None, "log": None, "tmp_left": False})
+                    continue
                 if fn == "clock_in":
                     answer = shiftwork.clock_in(target, call.get("unit_id"))
                 elif fn == "status":
@@ -189,7 +227,6 @@ def main() -> None:
                     )
                 else:  # pragma: no cover - a typo in the suite, not a difference
                     raise SystemExit(f"unknown fn {fn!r}")
-                tmp = Path(str(path) + ".tmp")
                 steps.append(
                     {
                         # NOT sort_keys: the key ORDER of the returned dict is part of what
@@ -197,7 +234,7 @@ def main() -> None:
                         "result": b64(json.dumps(answer)),
                         "checkpoint": read_bytes(path),
                         "log": read_bytes(Path(str(path) + ".log.jsonl")),
-                        "tmp_left": tmp.exists(),
+                        "tmp_left": leftovers(root),
                     },
                 )
             if case.get("assets"):

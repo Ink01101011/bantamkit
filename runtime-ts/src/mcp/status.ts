@@ -278,12 +278,16 @@ export function indexPressureCondition(memory: Memory): Condition | null {
   // rounded their own float could land on opposite sides of the line for the same store,
   // and this comparison is the whole reason they cannot.
   if (size === null || size * 100 < INDEX_PRESSURE_PERCENT * budget) return null;
+  // AT OR OVER THE BUDGET IS NOT "CLOSE" (job65/#186): the reply that carried the budget
+  // refusal used to close with "the next save is close to being refused". At `size >= budget`
+  // no save that adds a byte can land, so the sentence says so; the 90 % band keeps its words.
+  const consequence =
+    size >= budget ? 'so it is full and every save is refused until it is compacted' : 'so the next save is close to being refused';
   return {
     key: 'index-budget-low',
     sentence:
-      `the memory index is ${size} bytes of a ${budget}-byte budget, so the next save ` +
-      'is close to being refused — archive or shorten facts with ' +
-      '`bantamkit-memory compact`.',
+      `the memory index is ${size} bytes of a ${budget}-byte budget, ${consequence} — ` +
+      'archive or shorten facts with `bantamkit-memory compact`.',
   };
 }
 
@@ -462,7 +466,11 @@ export function statusReport(
         : `${plural(facts, 'fact')} in the project store`) +
       ', index ' +
       (size === null ? 'unreadable' : String(size)) +
-      ` of ${budget} bytes`,
+      ` of ${budget} bytes` +
+      // job65/#142: the store this line counts, by path. WAS: no path at all, so a store the
+      // walk picked up ABOVE the project — an ancestor's, or `~/.bantamkit/memory` itself —
+      // answered as the writable project layer with nothing on the surface saying where.
+      `; bound to ${memory.store.root}`,
     `event log: ${log.enabled ? 'on' : 'off'}`,
     // THE UPDATE LINE IS NOT A CONDITION, and that is the ruling of 2026-09-19 rather than an
     // omission. A newer version existing is not a fault: the server is serving correctly, and

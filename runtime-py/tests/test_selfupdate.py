@@ -67,16 +67,16 @@ def record_home(tmp_path, monkeypatch):
 
 
 def _payload(version: str) -> str:
-    """What `pypi.org/pypi/bantamkit/json` answers, reduced to the field that is read."""
-    return json.dumps({"info": {"name": "bantamkit", "version": version}})
+    """What `pip install --dry-run --report -` answers, reduced to the field that is read."""
+    return json.dumps({"install": [{"metadata": {"name": "bantamkit", "version": version}}]})
 
 
 def _fetch(version: str):
-    """A stub index that answers one version and records that it was asked."""
-    calls: list[tuple[str, float]] = []
+    """A stub index that answers one version and records the command it was handed."""
+    calls: list[tuple[list[str], float]] = []
 
-    def fetch(url: str, timeout: float) -> str:
-        calls.append((url, timeout))
+    def fetch(command: list[str], timeout: float) -> str:
+        calls.append((command, timeout))
         return _payload(version)
 
     fetch.calls = calls  # type: ignore[attr-defined]
@@ -96,6 +96,16 @@ def _recording_installer(code: int = 0, output: str = "Successfully installed ba
 
     installer.commands = commands  # type: ignore[attr-defined]
     return installer
+
+
+def _landed(version: str):
+    """The `installed_version` seam answering that the install now reports `version`.
+
+    Every success arm hands one in (J65-19, #128): `update` reads the install back before it
+    prints `updated`, and a stub installer writes nothing, so without this the honest default
+    would read THIS checkout's dist-info and refuse every arm for the right reason.
+    """
+    return lambda: version
 
 
 REGISTRY = Origin("registry", "/does/not/matter")
@@ -120,7 +130,7 @@ def test_the_same_version_says_up_to_date_and_runs_no_installer():
         "bantamkit-mcp 0.30.0 is installed; the package index has 0.30.0.",
         "up to date.",
     ]
-    assert fetch.calls == [(selfupdate.INDEX_URL, selfupdate.DEFAULT_TIMEOUT_SECONDS)]
+    assert fetch.calls == [(selfupdate.index_command(), selfupdate.DEFAULT_TIMEOUT_SECONDS)]
 
 
 def test_an_index_behind_the_installed_version_installs_nothing():
@@ -149,7 +159,13 @@ def test_the_index_being_behind_is_decided_numerically_not_alphabetically():
     update" and "greater, so do not" disagree about the direction rather than the fact.
     """
     installer = _recording_installer()
-    report = update("0.9.0", REGISTRY, fetch=_fetch("0.10.0"), installer=installer)
+    report = update(
+        "0.9.0",
+        REGISTRY,
+        fetch=_fetch("0.10.0"),
+        installer=installer,
+        installed_version=_landed("0.10.0"),
+    )
 
     assert "0.9.0" > "0.10.0", "the premise: a plain string compare gets this backwards"
     assert installer.commands, "the update must have been attempted"
@@ -194,10 +210,19 @@ def test_a_newer_index_runs_the_upgrade_command_and_the_command_is_captured_not_
     reports success and changes nothing the server will ever load.
     """
     installer = _recording_installer()
-    report = update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=installer)
+    report = update(
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=installer,
+        installed_version=_landed("0.31.0"),
+    )
 
+    # `==0.31.0` AND NOT A BARE NAME (J65-19, #128): the version this flag compared is the
+    # version pip is told to install, so a mirror behind the index that answered, or a release
+    # landing between the two calls, cannot make line 5 below a lie.
     assert installer.commands == [
-        [sys.executable, "-m", "pip", "install", "--upgrade", "bantamkit"]
+        [sys.executable, "-m", "pip", "install", "--upgrade", "bantamkit==0.31.0"]
     ]
     assert report.splitlines() == [
         "bantamkit-mcp 0.30.0 is installed; the package index has 0.31.0.",
@@ -218,7 +243,13 @@ def test_the_success_report_names_the_restart_and_the_stale_number_it_will_keep_
     version — the number the caller will go on seeing — and not the new one, which is the
     number a reader would expect and which would make the line useless.
     """
-    report = update("0.29.1", REGISTRY, fetch=_fetch("0.30.0"), installer=_recording_installer())
+    report = update(
+        "0.29.1",
+        REGISTRY,
+        fetch=_fetch("0.30.0"),
+        installer=_recording_installer(),
+        installed_version=_landed("0.30.0"),
+    )
     restart = report.splitlines()[-1]
 
     assert restart.startswith("restart the server:")
@@ -248,7 +279,11 @@ def test_an_installer_that_fails_refuses_and_hands_back_what_the_command_said():
 def test_an_installer_that_printed_nothing_still_reports_in_one_shape():
     """`(nothing)` rather than a line that is sometimes absent — one shape for the port."""
     report = update(
-        "0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer(output="  \n")
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=_recording_installer(output="  \n"),
+        installed_version=_landed("0.31.0"),
     )
 
     assert report.splitlines()[2:4] == ["the command printed:", "(nothing)"]
@@ -258,6 +293,11 @@ def test_an_installer_that_printed_nothing_still_reports_in_one_shape():
 
 
 SHAPELESS = ("local-file", "linked", "checkout", "ephemeral")
+
+#: The article each shape word takes, TYPED rather than computed by the function under test:
+#: "a ephemeral install" shipped in every release up to 0.35.7 (#177), and an expectation
+#: built from `_article` would have been green over it.
+ARTICLES = {"local-file": "a", "linked": "a", "checkout": "a", "ephemeral": "an"}
 
 
 @pytest.mark.parametrize("shape", SHAPELESS)
@@ -281,7 +321,7 @@ def test_a_shape_with_no_registry_route_refuses_and_names_the_real_route(shape):
     message = str(caught.value)
     assert message.startswith(
         "bantamkit-mcp 0.29.0 is installed and the package index has 0.30.0, "
-        f"but this is a {shape} install, which --update will not touch. "
+        f"but this is {ARTICLES[shape]} {shape} install, which --update will not touch. "
     )
     assert len(message.splitlines()) == 1, "a one-line refusal, like every --install refusal"
     assert "{" not in message, "an unsubstituted placeholder reached the operator"
@@ -390,24 +430,27 @@ def test_unreachable_and_garbage_are_two_different_refusals():
     [
         ("<html>", "not JSON at all"),
         ("[]", "JSON, but not an object"),
-        ('{"info": {}}', "an object with no version"),
-        ('{"info": {"version": ""}}', "a version that is the empty string"),
-        ('{"info": {"version": 30}}', "a version that is not a string"),
-        ('{"version": "0.31.0"}', "the right word at the wrong path"),
+        ('{"install": []}', "a report with nothing to install in it"),
+        ('{"install": [{"metadata": {}}]}', "a candidate with no version"),
+        ('{"install": [{"metadata": {"version": ""}}]}', "a version that is the empty string"),
+        ('{"install": [{"metadata": {"version": 30}}]}', "a version that is not a string"),
+        ('{"version": "0.31.0"}', "npm's shape: the right word at the wrong path"),
+        ('{"info": {"version": "0.31.0"}}', "pypi.org's JSON API, which this no longer asks"),
     ],
 )
 def test_every_shape_of_garbage_is_refused_rather_than_installed(body, why):
     """A body that is not a version must never reach the comparison, let alone the installer.
 
-    The last row is the one that matters most: `{"version": ...}` is npm's shape, not PyPI's,
-    and a reader who ported the parser by eye would accept it here. It is garbage on this
-    side and it is refused as garbage.
+    The last two rows are the ones that matter most: `{"version": ...}` is npm's shape and
+    `{"info": {"version": ...}}` was this module's own until J65-19 (#135) moved the question
+    to pip's installation report. A reader who ported the parser by eye, or kept the old
+    path, would accept one of them here. Both are garbage on this side and refused as such.
     """
     with pytest.raises(UpdateRefused) as caught:
         update(
             "0.30.0",
             REGISTRY,
-            fetch=lambda url, timeout: body,
+            fetch=lambda command, timeout: body,
             installer=_installer_that_must_not_run,
         )
 
@@ -471,6 +514,10 @@ def test_a_timeout_is_not_swallowed_by_the_unreachable_arm():
 NETWORK_FREE = {
     "record_update",
     "latest_from_index_payload",
+    "index_command",
+    "installed_version",
+    "_pip_failure_reason",
+    "_article",
     "upgrade_command",
     "run_installer",
     "_version_key",
@@ -496,8 +543,15 @@ ALLOWED = {
     "Callable",
     "DEFAULT_TIMEOUT_SECONDS",
     "DISTRIBUTION",
-    "INDEX_URL",
     "NOT_A_VERSION",
+    "NOT_INSTALLED",
+    "NO_INSTALLED_VERSION",
+    "NO_RECORDED_ROUTE",
+    "_article",
+    "_pip_failure_reason",
+    "index_command",
+    "installed_version",
+    "importlib",
     "NOT_JSON",
     "NO_OUTPUT",
     "NO_VERSION_FIELD",
@@ -539,9 +593,12 @@ def test_the_network_lives_in_exactly_one_function_of_this_module():
     appeared in any of them, at any level, reddens this.
 
     The complement is asserted too. A gate that only checked the offline half would stay
-    green if `fetch_index` stopped fetching and the call moved somewhere this list forgot to
-    name, so the scanner is run over `fetch_index` on its own and `urllib.request` must be
-    there.
+    green if `fetch_index` stopped asking and the call moved somewhere this list forgot to
+    name, so the scanner is run over `fetch_index` on its own and `subprocess` must be
+    there. AMENDED J65-19 (#135): the complement used to require `urllib.request` in
+    `fetch_index`. The network is reached through pip now — a subprocess, the same spawner
+    `run_installer` uses — so there is no HTTP client in this module at all, and that is
+    asserted as well: no function here may reach `urllib`, `http` or `socket`.
 
     RED-PROOF, measured 2026-09-11 against a copy of `src/` with a function-local
     `import urllib.request` plus a `urlopen(INDEX_URL)` added to the top of
@@ -560,10 +617,13 @@ def test_the_network_lives_in_exactly_one_function_of_this_module():
     assert not escaped, f"a new name reached the offline half of --update: {sorted(escaped)}"
 
     fetching = _names_reached_by(source, {"fetch_index"}, set(vars(selfupdate)))
-    assert "urllib.request" in fetching, (
-        "`fetch_index` no longer imports the request module; either the network moved "
+    assert "subprocess" in fetching, (
+        "`fetch_index` no longer spawns the package manager; either the network moved "
         "somewhere this gate is not looking, or this gate is now pointed at nothing"
     )
+    everything = _names_reached_by(source, defined, set(vars(selfupdate)))
+    clients = {n for n in everything if n.split(".")[0] in {"urllib", "http", "socket"}}
+    assert not clients, f"an HTTP client came back into --update: {sorted(clients)}"
 
 
 def test_this_gate_reddens_when_the_network_moves_into_the_offline_half():
@@ -784,7 +844,13 @@ def test_a_successful_fetch_writes_the_record_the_status_line_reads(record_home)
     """
     fetch = _fetch("0.31.0")
 
-    update("0.30.0", REGISTRY, fetch=fetch, installer=_recording_installer())
+    update(
+        "0.30.0",
+        REGISTRY,
+        fetch=fetch,
+        installer=_recording_installer(),
+        installed_version=_landed("0.31.0"),
+    )
 
     assert len(fetch.calls) == 1, fetch.calls
     written = _read_record(record_home)["pypi"]
@@ -801,7 +867,13 @@ def test_the_record_written_here_is_the_one_updatecheck_reads_back(record_home):
     parsed but whose shape the reader could not act on would print `could not be read` and
     still pass a key-by-key comparison.
     """
-    update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+    update(
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=_recording_installer(),
+        installed_version=_landed("0.31.0"),
+    )
 
     assert updatecheck.update_line("0.30.0") == (
         "update: bantamkit-mcp 0.30.0 is running; the package index has 0.31.0 — run "
@@ -837,7 +909,13 @@ def test_the_other_runtimes_key_is_left_exactly_as_it_was_found(record_home):
         encoding="utf-8",
     )
 
-    update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+    update(
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=_recording_installer(),
+        installed_version=_landed("0.31.0"),
+    )
 
     written = _read_record(record_home)
     assert written["npm"] == {"package": "bantamkit-mcp", "latest": "0.29.0"}
@@ -865,7 +943,13 @@ def test_a_machine_with_no_bantamkit_directory_is_not_given_one(tmp_path, monkey
     monkeypatch.chdir(workdir)
     monkeypatch.setattr(updatecheck, "_home", lambda: bare)
 
-    report = update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+    report = update(
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=_recording_installer(),
+        installed_version=_landed("0.31.0"),
+    )
 
     assert report.startswith("bantamkit-mcp 0.30.0 is installed; the package index has 0.31.0.")
     assert "updated bantamkit-mcp from 0.30.0 to 0.31.0." in report
@@ -883,7 +967,13 @@ def test_a_write_that_cannot_land_does_not_turn_a_good_update_into_a_failure(rec
     """
     (record_home / ".bantamkit" / "update-check.json").mkdir()
 
-    report = update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+    report = update(
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=_recording_installer(),
+        installed_version=_landed("0.31.0"),
+    )
 
     assert "updated bantamkit-mcp from 0.30.0 to 0.31.0." in report
     assert selfupdate.record_update("0.31.0") is False
@@ -938,7 +1028,13 @@ def test_an_unreadable_record_is_replaced_rather_than_merged_into(record_home):
         "<html>captive portal</html>", encoding="utf-8"
     )
 
-    update("0.30.0", REGISTRY, fetch=_fetch("0.31.0"), installer=_recording_installer())
+    update(
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=_recording_installer(),
+        installed_version=_landed("0.31.0"),
+    )
 
     assert _read_record(record_home)["pypi"]["latest"] == "0.31.0"
     assert updatecheck.update_status("0.31.0").state == "current"
@@ -997,3 +1093,241 @@ def test_the_writer_leaves_no_temporary_file_behind(record_home):
     assert sorted(p.name for p in (record_home / ".bantamkit").iterdir()) == [
         "update-check.json"
     ]
+
+
+# --- the install, read back (J65-19, #128) ------------------------------------------------
+
+
+def test_an_installer_that_exits_zero_and_leaves_the_old_version_is_refused_by_name():
+    """`pip install` exiting 0 says nothing about what it left; the dist-info does.
+
+    The port measured the defect (#128): with the index stubbed to 9.9.9 and an installer
+    that recorded its argv and changed nothing, 0.35.7 printed `updated … to 9.9.9.` and
+    exited 0 with the old version still on disk. The success line is read off the install
+    now, and a mismatch is the installer's own words under a sentence that names both numbers.
+    """
+    installer = _recording_installer(output="Requirement already satisfied: bantamkit")
+    with pytest.raises(UpdateRefused) as caught:
+        update(
+            "0.30.0",
+            REGISTRY,
+            fetch=_fetch("0.31.0"),
+            installer=installer,
+            installed_version=_landed("0.30.0"),
+        )
+
+    assert len(installer.commands) == 1, "the installer ran once; the refusal is about what it left"
+    assert str(caught.value).splitlines() == [
+        "the update command exited 0 but did not install 0.31.0: "
+        f"{shlex.join(installer.commands[0])}",
+        "bantamkit-mcp now reports 0.30.0, not 0.31.0; the tree the command names did not take "
+        "the update.",
+        "the command printed:",
+        "Requirement already satisfied: bantamkit",
+    ]
+
+
+def test_an_installer_that_exits_zero_and_leaves_nothing_readable_names_the_absence():
+    with pytest.raises(UpdateRefused) as caught:
+        update(
+            "0.30.0",
+            REGISTRY,
+            fetch=_fetch("0.31.0"),
+            installer=_recording_installer(output="  "),
+            installed_version=lambda: None,
+        )
+
+    message = str(caught.value)
+    assert "bantamkit-mcp now reports no readable version, not 0.31.0;" in message
+    assert message.endswith("the command printed:\n(nothing)")
+
+
+def test_the_install_is_compared_by_the_version_rule_so_a_padded_version_still_landed():
+    report = update(
+        "0.30.0",
+        REGISTRY,
+        fetch=_fetch("0.31.0"),
+        installer=_recording_installer(),
+        installed_version=_landed("0.31"),
+    )
+    assert "updated bantamkit-mcp from 0.30.0 to 0.31.0." in report
+
+
+def test_installed_version_reads_the_dist_info_on_disk_afresh(tmp_path, monkeypatch):
+    """The default seam reads what pip wrote, in the process that ran pip, without a restart.
+
+    A dist-info earlier on `sys.path` than this checkout's is what `metadata.version` answers
+    from, and its METADATA is read on every call — so the version rewritten UNDER a running
+    process is the version reported, which is the property the success line now stands on.
+    """
+    site = tmp_path / "site"
+    info = site / "bantamkit-7.7.7.dist-info"
+    info.mkdir(parents=True)
+    metadata = "Metadata-Version: 2.1\nName: bantamkit\nVersion: {}\n"
+    (info / "METADATA").write_text(metadata.format("7.7.7"), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(site))
+
+    assert selfupdate.installed_version() == "7.7.7"
+    (info / "METADATA").write_text(metadata.format("7.7.8"), encoding="utf-8")
+    assert selfupdate.installed_version() == "7.7.8"
+
+
+# --- the article, and the unknown shape (#177) --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("shape", "article"),
+    [("ephemeral", "an"), ("checkout", "a"), ("orphan", "an"), ("sideloaded", "a")],
+)
+def test_the_article_follows_the_shape_word(shape, article):
+    """`an ephemeral install`, never `a ephemeral install` (#177) — on a known shape and on one
+    the table has never heard of, whose fallthrough sentence carries the same article."""
+    with pytest.raises(UpdateRefused) as caught:
+        update(
+            "0.29.0",
+            Origin(shape, "/tmp/an-origin"),
+            fetch=_fetch("0.30.0"),
+            installer=_installer_that_must_not_run,
+        )
+
+    message = str(caught.value)
+    assert f" but this is {article} {shape} install, " in message
+    if shape not in selfupdate.ROUTES:
+        assert message.endswith(
+            f"There is no recorded update route for {article} {shape} install, so --update will "
+            "not guess one."
+        )
+    assert selfupdate._article(shape) == article
+
+
+# --- the index, asked of pip (J65-19, #135) -----------------------------------------------
+
+
+def _one_liner(script: str) -> list[str]:
+    return [sys.executable, "-c", script]
+
+
+def test_fetch_index_runs_the_command_and_maps_its_failures_in_the_documented_order():
+    """The contract is what `subprocess.run` does, measured rather than stubbed.
+
+    A child that never exits is killed at the deadline and that is the ONE `TimeoutError`;
+    every other failure is an `OSError` carrying the sentence worth printing — the last
+    `ERROR:` line pip wrote, else its last line, else the bare exit status — and a program
+    that cannot be spawned is the spawn's own `OSError`.
+    """
+    with pytest.raises(TimeoutError):
+        selfupdate.fetch_index(_one_liner("import time; time.sleep(5)"), timeout=0.3)
+
+    with pytest.raises(OSError) as refused:
+        selfupdate.fetch_index(
+            _one_liner(
+                "import sys; print('WARNING: retrying', file=sys.stderr); "
+                "print('ERROR: Could not find a version', file=sys.stderr); "
+                "print('ERROR: No matching distribution found for bantamkit', file=sys.stderr); "
+                "sys.exit(1)"
+            ),
+            timeout=5,
+        )
+    assert not isinstance(refused.value, TimeoutError)
+    assert str(refused.value) == "No matching distribution found for bantamkit"
+
+    with pytest.raises(OSError) as last_line:
+        selfupdate.fetch_index(
+            _one_liner(
+                "import sys; print('no such option: --report', file=sys.stderr); sys.exit(2)"
+            ),
+            timeout=5,
+        )
+    assert str(last_line.value) == "no such option: --report"
+
+    with pytest.raises(OSError) as silent:
+        selfupdate.fetch_index(_one_liner("import sys; sys.exit(3)"), timeout=5)
+    assert str(silent.value) == "exit 3"
+
+    with pytest.raises(OSError):
+        selfupdate.fetch_index(["/no/such/program/anywhere"], timeout=5)
+
+    body = selfupdate.fetch_index(_one_liner("print('{\"version\": \"0.30.0\"}')"), timeout=5)
+    assert body.strip() == '{"version": "0.30.0"}', "an answer is handed back whole, for the parser"
+
+
+def _tiny_wheel(path: Path, version: str) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr("bantamkit/__init__.py", f'__version__ = "{version}"\n')
+        wheel.writestr(
+            f"bantamkit-{version}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: bantamkit\nVersion: {version}\n",
+        )
+        wheel.writestr(
+            f"bantamkit-{version}.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        wheel.writestr(f"bantamkit-{version}.dist-info/RECORD", "")
+
+
+def test_the_real_pip_asked_through_index_command_honours_pip_index_url(tmp_path, monkeypatch):
+    """THE MEASUREMENT #135 ASKED FOR, on this side: the index pip is configured for is the
+    index the version check asks.
+
+    0.35.7's `fetch_index` asked `pypi.org`'s JSON API whatever `PIP_INDEX_URL` or `pip.conf`
+    said. This runs the ACTUAL pip of this interpreter with `PIP_INDEX_URL` pointed at a simple
+    index this test serves on 127.0.0.1 (two tiny wheels, HTML index, nothing else), with pip's
+    config files switched off so the developer's own `pip.conf` is not an input, and asserts
+    that the index asked is that one and that the document pip answered is the one
+    `latest_from_index_payload` reads. Nothing leaves this machine; the real index is never
+    asked.
+    """
+    import http.server
+    import threading
+
+    files = tmp_path / "files"
+    files.mkdir()
+    for version in ("0.35.7", "9.9.9"):
+        _tiny_wheel(files / f"bantamkit-{version}-py3-none-any.whl", version)
+    asked: list[str] = []
+
+    class Index(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            asked.append(self.path)
+            name = self.path.rsplit("/", 1)[-1]
+            if self.path.rstrip("/") == "/simple/bantamkit":
+                links = "".join(
+                    f'<a href="/files/{p.name}">{p.name}</a>' for p in sorted(files.iterdir())
+                )
+                body = f"<html><body>{links}</body></html>".encode()
+                kind = "text/html"
+            elif self.path.startswith("/files/") and (files / name).is_file():
+                body = (files / name).read_bytes()
+                kind = "application/octet-stream"
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Index)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("PIP_INDEX_URL", f"http://127.0.0.1:{server.server_address[1]}/simple")
+        monkeypatch.setenv("PIP_CONFIG_FILE", "/dev/null" if sys.platform != "win32" else "nul")
+        monkeypatch.setenv("PIP_CACHE_DIR", str(tmp_path / "pip-cache"))
+        monkeypatch.delenv("PIP_EXTRA_INDEX_URL", raising=False)
+
+        body = selfupdate.fetch_index(selfupdate.index_command(), timeout=60)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert selfupdate.latest_from_index_payload(body) == "9.9.9"
+    assert "/simple/bantamkit/" in asked, asked
+    assert all(p.startswith(("/simple/", "/files/")) for p in asked), asked

@@ -28,7 +28,7 @@
  * scratch and exercised there — see the note on `REAL_CHECKPOINT` below for why it is the
  * tracked template and not the live job file it used to be.
  */
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -62,6 +62,14 @@ const REF = join(here, 'ref', 'shiftwork_ref.py');
 const REAL_CHECKPOINT = join(repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json');
 
 const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+/** #116: the bytes of a user's own `checkpoint.tmp` beside a suffix-less checkpoint. */
+const SIBLING_BYTES = 'USER DATA - unrelated file\n';
+/** #165: `baseDocument()` with its first unit declared twice. */
+function duplicateIdDocument() {
+  const document = baseDocument();
+  document.plan.units.splice(1, 0, { ...document.plan.units[0] });
+  return document;
+}
 const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 const b64bytes = (buf) => buf.toString('base64');
 const unb64bytes = (s) => Buffer.from(s, 'base64');
@@ -269,7 +277,14 @@ function sessions(packDir, anyPackDir, brokenPacks) {
   four.history = [1, 2, 3, 4].map((n) => ({ unit: `old${n}`, outcome: 'done' }));
   add('history-ring-exactly-full', b64(raw(four)), [OUT('N1', 'done')]);
 
-  // ---- accounting: the four base keys are overridable, and the sort is by codepoint.
+  // ---- accounting: the sort is by codepoint. (Until job65 this session was
+  // `accounting-overrides-and-sorts` and its line also set `ts` and `role`: "the four base
+  // keys are overridable". Issue #117 ruled that a defect — the same override with `unit` and
+  // `event` forged a brief — so both runtimes now REFUSE such a line, and a refused line
+  // writes no log: the session would have gone on comparing `(absent)` to `(absent)`, the
+  // exact vacuity J50-10 describes below. The two reserved keys are gone from the line so the
+  // sort is still written, `unit-id/bit/forged/sort-session-still-writes-its-line` pins
+  // `ok` per side, and the refusal has its own sessions, `forged/*`.)
   //
   // J50-10: every line here carries `tokens` and `duration_ms`. Since job50/F5 `clock_out`
   // refuses a line without them, and a refused line writes NO log — so these three sessions
@@ -277,9 +292,9 @@ function sessions(packDir, anyPackDir, brokenPacks) {
   // The two keys are put where they also do work: `tokens` is the big integer and
   // `duration_ms` the `5.0` in the second session, so the shape check has to agree that an
   // unbounded integer and a whole float are both `integer`, before the serializer is reached.
-  add('accounting-overrides-and-sorts', b64(raw(baseDocument())), [
+  add('accounting-sorts-by-codepoint', b64(raw(baseDocument())), [
     OUT('N1', 'done', {
-      accounting: b64('{"ts": "overridden", "role": "planner", "\\ud83d\\ude00": 1, "\\ue000": 2, "z": 3, "": 4, "tokens": 1, "duration_ms": 2}'),
+      accounting: b64('{"\\ud83d\\ude00": 1, "\\ue000": 2, "z": 3, "": 4, "tokens": 1, "duration_ms": 2}'),
     }),
   ]);
   add('accounting-float-and-bigint', b64(raw(baseDocument())), [
@@ -435,46 +450,67 @@ function sessions(packDir, anyPackDir, brokenPacks) {
       OUT('N2', 'done', { now: 1755930100 }),
       { fn: 'chmod', path: '', mode: 0o755 },
       IN(),
+      // job65/#162: the retry the sentence invites lands. N2 is the cursor here, so this step
+      // would have been accepted before the fix too; the briefed NON-cursor shape the issue
+      // measured is `uncommitted/briefed-non-cursor-unit-retries` below.
+      OUT('N2', 'done', { now: 1755930200 }),
     ],
   });
-  // The ONLY thing that makes the temp file's NAME observable. `path.with_suffix(
-  // path.suffix + ".tmp")` is `checkpoint.json.tmp`, not `checkpoint.tmp`; on every other
-  // path the temp file is renamed on success and unlinked on failure, so its name never
-  // reaches a caller. With a DIRECTORY planted there the write fails EISDIR and the name is
-  // in the sentence — and the `contextlib.suppress(OSError)` around the cleanup unlink is
-  // exercised too, since unlinking a directory fails.
+  // UNTIL JOB65 THIS BLOCK MADE THE TEMP FILE'S NAME OBSERVABLE: `path.with_suffix(
+  // path.suffix + ".tmp")` was `checkpoint.json.tmp`, a DIRECTORY planted there failed the
+  // write EISDIR, and the name was in the sentence. Issue #116 ruled that name a defect —
+  // every writer of one checkpoint shared it (two renames of one file: `ok` answers with
+  // nothing on disk, measured 10 of 20), and a suffix-less `checkpoint` got the name of an
+  // unrelated sibling, `checkpoint.tmp`, which it overwrote — so the temp file is a
+  // per-writer name now (`<real>.<pid>.<random>.tmp`) and nothing can be planted in its way.
+  // The five sessions keep their files and their planted directories and prove the OPPOSITE
+  // of what they used to: the old name blocks nothing. The differential alone would accept
+  // both runtimes failing EISDIR together, so `concurrency/old-temp-name/*` below pins the
+  // `ok` bit per side; a regression to the old name on either side reddens those rows (the
+  // measured count is in `.shiftwork/notes-job65/J65-1.md`).
   cases.push({
-    name: 'temp-file-name-is-observable-when-a-directory-is-in-the-way',
+    name: 'old-temp-name-blocks-nothing',
     file: 'checkpoint.json',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'checkpoint.json.tmp' }, OUT('N1', 'done'), IN()],
   });
   cases.push({
-    name: 'temp-file-name-two-dots',
+    name: 'old-temp-name-two-dots',
     file: 'cp.a.json',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'cp.a.json.tmp' }, OUT('N1', 'done')],
   });
   cases.push({
-    name: 'temp-file-name-no-suffix',
+    name: 'old-temp-name-no-suffix',
     file: 'cp',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'cp.tmp' }, OUT('N1', 'done')],
   });
-
-  // `PurePath('.json').suffix` is '' — a leading dot is not a suffix — so the temp file is
-  // `.json.tmp` and not `.json.json.tmp`. Only the planted-directory arm can see the name.
+  // `PurePath('.json').suffix` is '' — a leading dot is not a suffix — so the OLD name here
+  // was `.json.tmp` and not `.json.json.tmp`; `cp.` likewise gave `cp..tmp`.
   cases.push({
-    name: 'temp-file-name-all-leading-dot',
+    name: 'old-temp-name-all-leading-dot',
     file: '.json',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: '.json.tmp' }, OUT('N1', 'done')],
   });
   cases.push({
-    name: 'temp-file-name-trailing-dot',
+    name: 'old-temp-name-trailing-dot',
     file: 'cp.',
     checkpoint: b64(raw(baseDocument())),
     calls: [{ fn: 'mkdir', path: 'cp..tmp' }, OUT('N1', 'done')],
+  });
+  // #116, the sibling: the user's own `checkpoint.tmp` beside a suffix-less `checkpoint` is
+  // read back by `probe` after the clock-out and pinned byte for byte per side below.
+  cases.push({
+    name: 'suffixless-sibling-survives',
+    file: 'checkpoint',
+    checkpoint: b64(raw(baseDocument())),
+    calls: [
+      { fn: 'plant', path: 'checkpoint.tmp', content: b64(SIBLING_BYTES) },
+      OUT('N1', 'done'),
+      { fn: 'probe', path: 'checkpoint.tmp' },
+    ],
   });
 
   // And the arm where the log itself cannot be created: a fresh read-only directory.
@@ -489,6 +525,57 @@ function sessions(packDir, anyPackDir, brokenPacks) {
       IN(),
     ],
   });
+
+  // ------------------------------------------------------ job65 / J65-1: #116 #137 #163 #165
+  //
+  // Four properties, each a differential session here AND a per-side literal in the
+  // `concurrency/` and `refusal/` blocks below, because every one of them is absolute and a
+  // regression landing in both runtimes at once would leave the differential green.
+  //
+  // #163: `{\xff}` is not UTF-8. `read_text` raised `UnicodeDecodeError` — a ValueError, not
+  // an OSError — out of every tool while a MISSING file answered `result: error`. Now the same
+  // sentence head as the missing file, on all four entry points.
+  cases.push({
+    name: 'invalid-utf8-is-a-structured-refusal',
+    file: 'checkpoint.json',
+    checkpoint: b64bytes(Buffer.from([0x7b, 0xff, 0x7d])),
+    calls: [ST(), IN(), OUT('N1', 'done')],
+  });
+  // #165: two units named N1. The schema cannot say ids are unique; `shiftwork_plan` refused
+  // through the core while status counted three, clock_in briefed the first N1 and clock_out
+  // rewrote only the first. Every tool now answers the core's sentence from the read itself.
+  cases.push({
+    name: 'duplicate-unit-ids-are-refused-by-every-tool',
+    file: 'checkpoint.json',
+    checkpoint: b64(raw(duplicateIdDocument())),
+    calls: [ST(), IN(), IN('N1'), OUT('N1', 'done')],
+  });
+  // #116: a lock another writer holds. Both sides wait `LOCK_WAIT_MS` (5 s each, the one slow
+  // session in this suite) and refuse with nothing written — never let through unlocked,
+  // because through is the race. The planted lock is theirs, so it is still there afterwards.
+  cases.push({
+    name: 'lock-held-by-another-writer',
+    file: 'checkpoint.json',
+    checkpoint: b64(raw(baseDocument())),
+    calls: [{ fn: 'plant', path: 'checkpoint.json.lock', content: b64('1\n') }, OUT('N1', 'done'), ST()],
+  });
+  // #137: the clock-out goes through a LINK. The rename lands on the link's target, the link
+  // stays a link, and a status read through either path sees the new cursor. Withheld on
+  // win32, where creating a symlink needs a privilege the runner may not have.
+  if (process.platform !== 'win32') {
+    cases.push({
+      name: 'symlinked-checkpoint-keeps-the-link',
+      file: 'real.json',
+      targetSuffix: '/link.json',
+      checkpoint: b64(raw(baseDocument())),
+      calls: [
+        { fn: 'symlink', link: 'link.json', target: 'real.json' },
+        OUT('N1', 'done'),
+        ST(),
+        { fn: 'probe', path: 'link.json' },
+      ],
+    });
+  }
 
   // ------------------------------------------------- AS-2: `job.roles`, the model check
   //
@@ -545,6 +632,7 @@ function sessions(packDir, anyPackDir, brokenPacks) {
   // feature that is unobservable on the whole existing corpus needs its own documents — see
   // `unitIdSessions`.
   for (const [name, doc, calls] of unitIdSessions()) cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls });
+  for (const [name, doc, calls] of j655Sessions()) cases.push({ name, file: 'checkpoint.json', checkpoint: doc, calls });
 
   return cases;
 }
@@ -735,9 +823,11 @@ function unitIdSessions() {
   return [
     // ---- 1a. THE CASE WHOSE ABSENCE HID THE BUG. The pointer is already on `C` — the state a
     // pre-job60 `clock_out A` left on disk — and the graph says `B`. Both surfaces are asked,
-    // against the same bytes at the same instant: `clock_in()` hands out `C`'s brief exactly as
-    // it always did, and `clock_in('C')` refuses it by name. Then `B`, the unit that is ready,
-    // and finally `status`, because D1 says a wave of briefs never moves the cursor.
+    // against the same bytes at the same instant. Until job65 this comment read "`clock_in()`
+    // hands out `C`'s brief exactly as it always did" and the rows pinned that; issue #164
+    // ruled it the bug (a not-ready cursor unit briefed with no warning — the hazard job60
+    // closed for the named path only), so now BOTH calls refuse `C` by the one sentence. Then
+    // `B`, the unit that is ready, and finally `status`, because a brief never moves the cursor.
     ['unit-id/cursor-disagrees-with-ready', b64(raw(shape2('C', 'done'))), [IN(), IN('C'), IN('B'), ST()]],
     // ---- 1b. and the repair, on the SAME graph driven from the top: D3 advances to `ready[0]`,
     // so the pointer lands on `B` and not on the `C` that plan order would have chosen.
@@ -797,6 +887,76 @@ function unitIdSessions() {
     // The clock-out is here so the closing `status` row has something it can be WRONG about:
     // on a graph that cannot batch the pointer moves by plan order, so it must read `B`.
     ['unit-id/graph-refusal-unknown-dependency', b64(raw(unknownDepDocument())), [IN('A'), IN(), OUT('A', 'done'), ST()]],
+  ];
+}
+
+/** #117: the issue's own document — C depends on both A and B, cursor A. */
+const issue117Document = () => baseDocument({
+  plan: { cursor: 'A', units: [unit('A', []), unit('B', []), unit('C', ['A', 'B'])] },
+});
+/** #164, second shape: the cursor on B while B's only dependency A is still todo (a re-plan). */
+const dependentCursorDocument = () => baseDocument({
+  plan: { cursor: 'B', units: [unit('A', []), unit('B', ['A'])] },
+});
+/** #117: the issue's forged line — a brief of C, on A's clock-out. */
+const FORGED_LINE = '{"tokens": 1, "duration_ms": 1, "unit": "C", "event": "brief", "status": "nope", "ts": "yesterday"}';
+/** job65/#117 #162 #164 ledger lines, written by hand into the ledger with `plant`. */
+const LEDGER = (...lines) => ({ fn: 'plant', path: 'checkpoint.json.log.jsonl', content: b64(lines.map((l) => `${l}\n`).join('')) });
+const L_BRIEF = '{"event": "brief", "role": "implementer", "ts": "x", "unit": "N2"}';
+const L_OUT = '{"briefed": true, "role": "implementer", "status": "done", "ts": "x", "unit": "N2"}';
+const L_BLOCKED = '{"briefed": true, "role": "implementer", "status": "blocked", "ts": "x", "unit": "N2"}';
+const L_UNCOMMITTED = '{"event": "uncommitted", "role": "implementer", "ts": "x", "unit": "N2"}';
+
+/**
+ * `[name, checkpoint, calls]` triples for job65 / J65-5 — #117, #162, #164.
+ *
+ * Each is a differential session here AND a per-side literal below, because all three fixes
+ * are a refusal or an acceptance both runtimes could lose together: a reserved-key check
+ * deleted from both, a marker line dropped from both, a readiness test skipped by both.
+ */
+function j655Sessions() {
+  const LINE = (text) => ({ accounting: b64(text) });
+  const base = () => b64(raw(baseDocument()));
+  const LATER = { now: 1755930061 };
+  const N2OUT = (over = {}) => OUT('N2', 'done', { history_entry: b64('{"unit": "N2", "outcome": "done"}'), ...over });
+  return [
+    // ---- #117. The issue's three steps: C refused (not the cursor), A's clock-out with the
+    // forged line REFUSED (used to be ok, writing a line `briefed` read as a brief of C), C
+    // refused AGAIN with the sentence it had at step 0 (used to be ok: A=done B=todo C=done).
+    ['forged/three-step-repro', b64(raw(issue117Document())), [OUT('C', 'done'), OUT('A', 'done', LINE(FORGED_LINE)), OUT('C', 'done', LATER), ST()]],
+    // each of the five alone, then clock_in to show the cursor never moved
+    ...['unit', 'role', 'status', 'ts', 'event'].map((key) => [
+      `forged/single-key/${key}`, base(), [OUT('N1', 'done', LINE(`{"tokens": 1, "duration_ms": 1, "${key}": "x"}`)), IN()],
+    ]),
+    // the caller's key order (reversed) is not the sentence's order
+    ['forged/caller-order-is-not-the-sentence', base(), [OUT('N1', 'done', LINE('{"event": "e", "ts": "t", "status": "s", "role": "r", "unit": "u", "duration_ms": 1, "tokens": 1}'))]],
+    // the F5 shape check still runs first: a line short of `tokens` meets ITS sentence
+    ['forged/shape-check-still-first', base(), [OUT('N1', 'done', LINE('{"unit": "C", "duration_ms": 1}'))]],
+
+    // ---- #162. The issue's shape, on the wave: N2 briefed against cursor N1, the directory
+    // read-only for its clock-out (the append to the existing ledger succeeds, the temp file
+    // does not), restored, and the SAME clock-out retried. Before: `unit N2 is not the cursor
+    // unit N1`. After: ok, because the `uncommitted` marker handed the brief back.
+    ['uncommitted/briefed-non-cursor-unit-retries', b64(raw(waveDocument())), [
+      IN('N2'),
+      { fn: 'chmod', path: '', mode: 0o555 },
+      N2OUT(),
+      { fn: 'chmod', path: '', mode: 0o755 },
+      N2OUT(LATER),
+      ST(),
+    ]],
+    // the marker's rule, read off hand-written ledgers through the clock-out gate — N2 is
+    // never the cursor here, so `ok` means `briefed` answered true and `error` means false
+    ['uncommitted/marker-hands-the-brief-back', b64(raw(waveDocument())), [LEDGER(L_BRIEF, L_OUT, L_UNCOMMITTED), N2OUT()]],
+    ['uncommitted/marker-annuls-only-the-line-above-it', b64(raw(waveDocument())), [LEDGER(L_BRIEF, L_OUT, L_OUT, L_UNCOMMITTED), N2OUT()]],
+    ['uncommitted/never-briefed-stays-unbriefed', b64(raw(waveDocument())), [LEDGER(L_OUT, L_UNCOMMITTED), N2OUT()]],
+    ['uncommitted/inline-re-run-still-reads-false', b64(raw(waveDocument())), [LEDGER(L_BRIEF, L_BLOCKED, L_OUT), N2OUT()]],
+
+    // ---- #164. The cursor on a `done` unit (a hand edit): the default call and the named
+    // call answer ONE sentence; the ready unit still proceeds; the pointer never moved.
+    ['unit-id/cursor-on-a-done-unit', b64(raw(shape2('A', 'done'))), [IN(), IN('A'), IN('B'), ST()]],
+    // and on a unit whose dependency has not run (a re-plan): the issue's second shape.
+    ['unit-id/cursor-on-a-unit-whose-dependency-has-not-run', b64(raw(dependentCursorDocument())), [IN(), IN('B'), IN('A'), ST()]],
   ];
 }
 
@@ -1065,8 +1225,16 @@ function anyPackSessions() {
  * and names and counts what it withheld in a note. This loop still chmods when it is reached.
  */
 async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
-  const { dumpJson, parseJson } = pyjson;
+  const { dumpJson, fromJs, parseJson } = pyjson;
   mkdirSync(dir, { recursive: true });
+  /** job65: ANY `*.tmp` / `*.lock` in the directory — the temp name is per writer now. */
+  const leftovers = () => {
+    try {
+      return readdirSync(dir).some((f) => /\.(tmp|lock)$/.test(f));
+    } catch {
+      return false;
+    }
+  };
   const path = join(dir, caseSpec.file);
   if (caseSpec.checkpoint !== null && caseSpec.checkpoint !== undefined) {
     writeFileSync(path, unb64bytes(caseSpec.checkpoint));
@@ -1082,7 +1250,7 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
     result: b64(result),
     checkpoint: existsSync(path) ? b64bytes(readFileSync(path)) : null,
     log: existsSync(`${path}.log.jsonl`) ? b64bytes(readFileSync(`${path}.log.jsonl`)) : null,
-    tmp_left: existsSync(`${path}.tmp`),
+    tmp_left: leftovers(),
   });
   for (const call of caseSpec.calls) {
     if (call.fn === 'chmod') {
@@ -1093,6 +1261,38 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
     if (call.fn === 'mkdir') {
       mkdirSync(join(dir, call.path), { recursive: true });
       steps.push({ result: b64('null'), checkpoint: null, log: null, tmp_left: false });
+      continue;
+    }
+    if (call.fn === 'plant') {
+      writeFileSync(join(dir, call.path), unb64bytes(call.content));
+      steps.push({ result: b64('null'), checkpoint: null, log: null, tmp_left: false });
+      continue;
+    }
+    if (call.fn === 'symlink') {
+      symlinkSync(join(dir, call.target), join(dir, call.link));
+      steps.push({ result: b64('null'), checkpoint: null, log: null, tmp_left: false });
+      continue;
+    }
+    if (call.fn === 'probe') {
+      // The reference answers `json.dumps({"kind", "bytes"})`, so this side dumps through
+      // `pyjson` too — `JSON.stringify` would differ by the two separators.
+      const at = join(dir, call.path);
+      let kind = 'absent';
+      try {
+        const st = lstatSync(at);
+        kind = st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'absent';
+      } catch {
+        kind = 'absent';
+      }
+      let bytes = null;
+      if (kind === 'symlink' || kind === 'file') {
+        try {
+          bytes = b64bytes(readFileSync(at));
+        } catch {
+          bytes = null;
+        }
+      }
+      steps.push({ result: b64(dumpJson(fromJs({ kind, bytes }))), checkpoint: null, log: null, tmp_left: false });
       continue;
     }
     let answer;
@@ -2202,7 +2402,9 @@ export async function run(ctx) {
         .split('\n')
         .map((text) => {
           const line = JSON.parse(text);
-          return line.event === 'brief' ? `brief ${line.unit}` : `out ${line.unit} ${String(line.briefed)}`;
+          if (line.event === 'brief') return `brief ${line.unit}`;
+          if (line.event === 'uncommitted') return `uncommitted ${line.unit}`; // job65/#162
+          return `out ${line.unit} ${String(line.briefed)}`;
         });
     };
     const trail = (label, name, step, expected) => row(`trail/${label}`, name, step, expected, (_, raw_) => ledger(raw_));
@@ -2214,35 +2416,41 @@ export async function run(ctx) {
     // units. Make `clock_out` advance in plan order again and the cursor half changes; drop the
     // readiness check and the graph half changes; agree with the other runtime about either and
     // this row still fails, because its expected value is a constant written here.
+    // job65/#164: the expected value moved from `cursor briefs C; ready is B` to `cursor
+    // refuses C; ready is B` — the pointer surface no longer hands out what the graph surface
+    // refuses. The row still holds the two fields against each other: make the default path
+    // brief `C` again and the head changes; drop the readiness check from the named path and
+    // the tail changes.
     cases.push({
-      name: 'unit-id/disagreement/cursor-briefs-C-while-ready-is-B',
+      name: 'unit-id/disagreement/cursor-refuses-C-while-ready-is-B',
       kind: 'json',
-      expected: both('cursor briefs C; ready is B'),
+      expected: both('cursor refuses C; ready is B'),
       actual: (() => {
         const noArg = at(DISAGREE, 0);
         const named = at(DISAGREE, 1);
         const read = (side) => {
-          const brief = noArg[side];
+          const first = noArg[side];
           const refusal = named[side];
-          const head = brief.result === 'brief' ? brief.unit.id : `(${brief.result})`;
+          const head = first.result === 'brief' ? `briefs ${first.unit.id}` : `refuses ${/^unit (\S+) is not ready/.exec(first.reason ?? '')?.[1] ?? `(${first.result})`}`;
           const tail = /ready is (.*)$/.exec(refusal.reason ?? '')?.[1] ?? `(${refusal.result}: no ready list)`;
-          return `cursor briefs ${head}; ready is ${tail}`;
+          return `cursor ${head}; ready is ${tail}`;
         };
         return { python: read('python'), node: read('node') };
       })(),
     });
-    // and the same disagreement spelled out call by call, so a red row above has a cause here.
-    bit('no-unit-id-still-briefs-the-cursor-unit', DISAGREE, 0, 'brief');
-    briefed('no-unit-id-is-the-cursor-unit', DISAGREE, 0, 'C');
+    // and the same judgement spelled out call by call, so a red row above has a cause here.
+    bit('no-unit-id-refuses-the-cursor-unit-too', DISAGREE, 0, 'error');
+    says('no-unit-id-refuses-the-cursor-unit-too', DISAGREE, 0, 'unit C is not ready; ready is B');
+    untouched('no-unit-id-refuses-the-cursor-unit-too', DISAGREE, 0);
     bit('cursor-unit-named-is-refused', DISAGREE, 1, 'error');
     says('cursor-unit-named-is-refused', DISAGREE, 1, 'unit C is not ready; ready is B');
     bit('the-ready-unit-is-briefed', DISAGREE, 2, 'brief');
     briefed('the-ready-unit-is-briefed', DISAGREE, 2, 'B');
     // D1: a wave of briefs never moves the pointer. Three clock-ins, cursor still `C`.
     cursor('clock-in-never-writes-the-cursor', DISAGREE, 3, 'C');
-    // the ledger records the units ACTUALLY briefed — the refusal issued nothing, so it logged
-    // nothing, which is what keeps `clock_out`'s `briefed` flag honest for a named unit.
-    trail('refusal-records-no-brief', DISAGREE, 3, ['brief C', 'brief B']);
+    // the ledger records the units ACTUALLY briefed — the two refusals issued nothing, so they
+    // logged nothing, which is what keeps `clock_out`'s `briefed` flag honest for a named unit.
+    trail('refusal-records-no-brief', DISAGREE, 3, ['brief B']);
 
     // ==================== 1b. D3 — the pointer lands on the graph's head, not plan order's
     const ADVANCE = 'unit-id/advance-follows-the-graph';
@@ -2339,10 +2547,13 @@ export async function run(ctx) {
     bit('cycle-outranks-the-not-ready-sentence', CYCLE, 1, 'error');
     says('cycle-outranks-the-not-ready-sentence', CYCLE, 1, 'the graph has a cycle: B -> C -> B');
     untouched('cycle-outranks-the-not-ready-sentence', CYCLE, 1);
-    // and the default path is unaffected, on the same bytes at the same instant: `clock_in()`
-    // reads `plan.cursor` and never the graph, so an unbatchable checkpoint is still drivable.
-    bit('cycle-default-path-still-briefs', CYCLE, 2, 'brief');
-    briefed('cycle-default-path-still-briefs', CYCLE, 2, 'A');
+    // job65/#164: the default path meets the SAME refusal on the same bytes — until job65 these
+    // two rows pinned `clock_in()` briefing `A` here ("reads `plan.cursor` and never the
+    // graph"), a cursor unit the named path refuses, which is #164's title. clock_out below
+    // still drives the unbatchable checkpoint to its end.
+    bit('cycle-default-path-refuses-too', CYCLE, 2, 'error');
+    says('cycle-default-path-refuses-too', CYCLE, 2, 'the graph has a cycle: B -> C -> B');
+    untouched('cycle-default-path-refuses-too', CYCLE, 2);
     // clock-out RECORDS: a recording surface acquires no new way to refuse on a broken graph.
     bit('cycle-clock-out-still-records', CYCLE, 3, 'ok');
     // D3's other arm, and the only session in this file that reaches it: `ready` is empty with
@@ -2352,14 +2563,14 @@ export async function run(ctx) {
     // the cycle outlived the satisfied unit, which is why `A` was placed outside it.
     bit('cycle-survives-the-satisfied-unit', CYCLE, 5, 'error');
     says('cycle-survives-the-satisfied-unit', CYCLE, 5, 'the graph has a cycle: B -> C -> B');
-    trail('graph-refusal-cycle', CYCLE, 5, ['brief A', 'out A true']);
+    trail('graph-refusal-cycle', CYCLE, 5, ['out A false']); // job65/#164: no brief was issued
 
     const UNKNOWNDEP = 'unit-id/graph-refusal-unknown-dependency';
     bit('unknown-dependency', UNKNOWNDEP, 0, 'error');
     says('unknown-dependency', UNKNOWNDEP, 0, 'node B depends on GHOST, which no node declares');
     untouched('unknown-dependency', UNKNOWNDEP, 0);
-    bit('unknown-dependency-default-path-still-briefs', UNKNOWNDEP, 1, 'brief');
-    briefed('unknown-dependency-default-path-still-briefs', UNKNOWNDEP, 1, 'A');
+    bit('unknown-dependency-default-path-refuses-too', UNKNOWNDEP, 1, 'error'); // job65/#164
+    says('unknown-dependency-default-path-refuses-too', UNKNOWNDEP, 1, 'node B depends on GHOST, which no node declares');
     bit('unknown-dependency-clock-out-still-records', UNKNOWNDEP, 2, 'ok');
     cursor('unknown-dependency-falls-back-to-plan-order', UNKNOWNDEP, 2, 'B');
     cursor('unknown-dependency-status-agrees', UNKNOWNDEP, 3, 'B');
@@ -2378,9 +2589,197 @@ export async function run(ctx) {
         'two cursor rows now separate `ready[0]` from plan order instead of agreeing with ' +
         'both. job61/(b): two sessions on graphs that cannot batch at all — a cycle outside ' +
         'the cursor and an edge into an id no unit declares — pin the core\'s sentence coming ' +
-        'back through `clock_in` verbatim, the default path briefing anyway, and D3 falling ' +
-        'back to plan order, which is the one arm no other session reaches.',
+        'back through `clock_in` verbatim, the default path refusing alongside (job65/#164), ' +
+        'and D3 falling back to plan order, which is the one arm no other session reaches.',
     );
+
+    // ==================== job65 / J65-5: #117 #162 #164, per side
+    //
+    // Every fix here is one both runtimes could lose TOGETHER — the reserved-key check deleted
+    // from both, the marker line dropped from both, the readiness test skipped by both — and
+    // a differential stays green through all three. So each is a literal against EACH side:
+    // the bit, the sentence, the disk, the ledger trail. The counts a mutation reddens are in
+    // `.shiftwork/notes-job65/J65-5.md`.
+    const FORGED = 'forged/three-step-repro';
+    const FORGED_SENTENCE = "unit A in role implementer reported an accounting line that sets the runtime's own keys: unit, status, ts, event";
+    bit('forged/step-1-not-the-cursor', FORGED, 0, 'error');
+    says('forged/step-1-not-the-cursor', FORGED, 0, 'unit C is not the cursor unit A');
+    // THE ROW: step 2 used to answer ok and write `{"unit": "C", "event": "brief", ...}`.
+    bit('forged/step-2-refused', FORGED, 1, 'error');
+    says('forged/step-2-refused', FORGED, 1, FORGED_SENTENCE);
+    untouched('forged/step-2-refused', FORGED, 1);
+    // and step 3, which used to land C done with B still todo, keeps step 1's sentence.
+    bit('forged/step-3-still-refused', FORGED, 2, 'error');
+    says('forged/step-3-still-refused', FORGED, 2, 'unit C is not the cursor unit A');
+    untouched('forged/step-3-still-refused', FORGED, 2);
+    cursor('forged/cursor-never-moved', FORGED, 3, 'A');
+    for (const key of ['unit', 'role', 'status', 'ts', 'event']) {
+      const name = `forged/single-key/${key}`;
+      bit(`forged/single-key/${key}`, name, 0, 'error');
+      says(`forged/single-key/${key}`, name, 0, `unit N1 in role implementer reported an accounting line that sets the runtime's own keys: ${key}`);
+      untouched(`forged/single-key/${key}`, name, 0);
+      briefed(`forged/single-key/${key}/cursor-still-N1`, name, 1, 'N1');
+    }
+    says('forged/caller-order-is-not-the-sentence', 'forged/caller-order-is-not-the-sentence', 0,
+      "unit N1 in role implementer reported an accounting line that sets the runtime's own keys: unit, role, status, ts, event");
+    // the F5 shape gate is still first, so no existing sentence moved
+    row('sentence-head/forged/shape-check-still-first', 'forged/shape-check-still-first', 0, 'the schema refuses',
+      (r) => (/the schema refuses/.test(r.reason ?? '') ? 'the schema refuses' : r.reason ?? r.result));
+    // `briefed` stays OVERWRITTEN, not refused: F6's own sessions above pin it
+    // (`briefed/self-report-true-overwritten`); the key is deliberately not in the five.
+    bit('forged/briefed-is-not-reserved', 'briefed/self-report-true-overwritten', 0, 'ok');
+    // and the codepoint-sort session still WRITES its line: with the two reserved keys it used
+    // to carry, both sides would refuse and the sort would be compared nowhere (J50-10's shape).
+    bit('forged/sort-session-still-writes-its-line', 'accounting-sorts-by-codepoint', 0, 'ok');
+
+    const RETRY = 'uncommitted/briefed-non-cursor-unit-retries';
+    const HEAD = 'checkpoint unwritable, last log line uncommitted: [Errno 13]';
+    bit('uncommitted/first-attempt-refused', RETRY, 2, 'error');
+    row('sentence-head/uncommitted/first-attempt-refused', RETRY, 2, HEAD, (r) => (r.reason ?? '').slice(0, HEAD.length));
+    // THE ROW: the retry used to answer `unit N2 is not the cursor unit N1`.
+    bit('uncommitted/retry-accepted', RETRY, 4, 'ok');
+    cursor('uncommitted/retry-leaves-the-cursor-on-N1', RETRY, 4, 'N1');
+    cursor('uncommitted/status-agrees', RETRY, 5, 'N1');
+    trail('uncommitted/retry', RETRY, 5, ['brief N2', 'out N2 true', 'uncommitted N2', 'out N2 true']);
+    // the marker's rule, per side, off hand-written ledgers
+    bit('uncommitted/marker-hands-the-brief-back', 'uncommitted/marker-hands-the-brief-back', 1, 'ok');
+    bit('uncommitted/marker-annuls-only-the-line-above-it', 'uncommitted/marker-annuls-only-the-line-above-it', 1, 'error');
+    bit('uncommitted/never-briefed-stays-unbriefed', 'uncommitted/never-briefed-stays-unbriefed', 1, 'error');
+    // F6's ruling kept: brief -> blocked -> inline re-run is still unbriefed
+    bit('uncommitted/inline-re-run-still-reads-false', 'uncommitted/inline-re-run-still-reads-false', 1, 'error');
+    says('uncommitted/inline-re-run-still-reads-false', 'uncommitted/inline-re-run-still-reads-false', 1, 'unit N2 is not the cursor unit N1');
+
+    const DONE = 'unit-id/cursor-on-a-done-unit';
+    // THE ROW: the default call used to brief `A` with `"status": "done"` in the brief.
+    bit('done-cursor/default-path-refuses', DONE, 0, 'error');
+    says('done-cursor/default-path-refuses', DONE, 0, 'unit A is not ready; ready is B');
+    untouched('done-cursor/default-path-refuses', DONE, 0);
+    says('done-cursor/named-path-is-the-same-sentence', DONE, 1, 'unit A is not ready; ready is B');
+    briefed('done-cursor/the-ready-unit-proceeds', DONE, 2, 'B');
+    cursor('done-cursor/never-moved', DONE, 3, 'A');
+    trail('done-cursor', DONE, 3, ['brief B']);
+    const DEP = 'unit-id/cursor-on-a-unit-whose-dependency-has-not-run';
+    bit('dependent-cursor/default-path-refuses', DEP, 0, 'error');
+    says('dependent-cursor/default-path-refuses', DEP, 0, 'unit B is not ready; ready is A');
+    untouched('dependent-cursor/default-path-refuses', DEP, 0);
+    says('dependent-cursor/named-path-is-the-same-sentence', DEP, 1, 'unit B is not ready; ready is A');
+    briefed('dependent-cursor/the-ready-unit-proceeds', DEP, 2, 'A');
+    cursor('dependent-cursor/never-moved', DEP, 3, 'B');
+
+    notes.push(
+      'job65 / J65-5 (#117 #162 #164): ' +
+        `${cases.filter((c) => c.name.startsWith('unit-id/') && c.name.includes('/forged/')).length} per-side cases pin the reserved-key refusal, ` +
+        `${cases.filter((c) => c.name.startsWith('unit-id/') && c.name.includes('/uncommitted/')).length} the uncommitted marker and the accepted retry, ` +
+        `${cases.filter((c) => c.name.startsWith('unit-id/') && (c.name.includes('/done-cursor/') || c.name.includes('/dependent-cursor/'))).length} the default clock_in readiness test; ` +
+        'the DISAGREE, cycle and unknown-dependency default-path rows moved from brief to refusal under #164.',
+    );
+  }
+
+  // ------------------------------------------ job65 / J65-1: the four properties, per side
+  //
+  // The sessions above compare the two runtimes; these rows compare EACH runtime to a
+  // constant, because every property here is absolute and a regression that lands in both
+  // at once (the port is written from the reference) leaves the differential green. The
+  // mutation that reddened each row, and by how much, is in `.shiftwork/notes-job65/J65-1.md`.
+  {
+    const at = (name, step) => {
+      const entry = ran.get(name);
+      const pick = (side) => entry[side].steps[step];
+      return {
+        python: JSON.parse(unb64(pick('python').result)),
+        node: JSON.parse(unb64(pick('node').result)),
+        pythonRaw: pick('python'),
+        nodeRaw: pick('node'),
+        wrote: entry.spec.checkpoint,
+        dir: dirs[specs.indexOf(entry.spec)],
+      };
+    };
+    const both = (v) => ({ python: v, node: v });
+    const bit = (label, name, step, expected) => {
+      const got = at(name, step);
+      cases.push({
+        name: `${label}/bit`,
+        kind: 'json',
+        expected: both(expected),
+        actual: { python: got.python.result, node: got.node.result },
+      });
+    };
+    const says = (label, name, step, sentence) => {
+      const got = at(name, step);
+      cases.push({
+        name: `${label}/sentence`,
+        kind: 'json',
+        expected: both(sentence),
+        actual: { python: got.python.reason ?? null, node: got.node.reason ?? null },
+      });
+    };
+    /** Checkpoint still the harness's bytes, and no log line — read per side off the step. */
+    const untouched = (label, name, step, tmp = false) => {
+      const got = at(name, step);
+      const state = (raw_) => ({
+        checkpoint: raw_.checkpoint === got.wrote ? 'as written' : 'REWRITTEN',
+        log: raw_.log === null ? 'no log file' : `log exists: ${unb64(raw_.log)}`,
+        tmp: raw_.tmp_left,
+      });
+      cases.push({
+        name: `${label}/untouched`,
+        kind: 'json',
+        expected: both({ checkpoint: 'as written', log: 'no log file', tmp }),
+        actual: { python: state(got.pythonRaw), node: state(got.nodeRaw) },
+      });
+    };
+    /** A `probe` step's answer, per side, against a literal. */
+    const probed = (label, name, step, expected) => {
+      const got = at(name, step);
+      cases.push({ name: `${label}/probe`, kind: 'json', expected: both(expected), actual: { python: got.python, node: got.node } });
+    };
+
+    // ---- #116: the old temp name blocks nothing (five file shapes), and the sibling survives.
+    for (const variant of ['blocks-nothing', 'two-dots', 'no-suffix', 'all-leading-dot', 'trailing-dot']) {
+      bit(`concurrency/old-temp-name/${variant}`, `old-temp-name-${variant}`, 1, 'ok');
+    }
+    bit('concurrency/suffixless-sibling', 'suffixless-sibling-survives', 1, 'ok');
+    probed('concurrency/suffixless-sibling', 'suffixless-sibling-survives', 2, { kind: 'file', bytes: b64(SIBLING_BYTES) });
+
+    // ---- #116: a lock another writer holds refuses, names the lock, writes nothing, leaves it.
+    {
+      const lock = join(at('lock-held-by-another-writer', 1).dir, 'checkpoint.json.lock');
+      bit('concurrency/lock-held', 'lock-held-by-another-writer', 1, 'error');
+      says('concurrency/lock-held', 'lock-held-by-another-writer', 1, `checkpoint locked by another clock-out, nothing written: ${lock}`);
+      // `tmp: true` is the planted `.lock` still being there: it is the other writer's.
+      untouched('concurrency/lock-held', 'lock-held-by-another-writer', 1, true);
+      bit('concurrency/lock-held/status-after', 'lock-held-by-another-writer', 2, 'status');
+    }
+
+    // ---- #137: through a link, the target is rewritten and the link is still a link.
+    if (ran.has('symlinked-checkpoint-keeps-the-link')) {
+      bit('concurrency/symlink', 'symlinked-checkpoint-keeps-the-link', 1, 'ok');
+      const got = at('symlinked-checkpoint-keeps-the-link', 3);
+      const seen = (side) => ({ kind: side.kind, cursor: side.bytes === null ? null : JSON.parse(unb64bytes(side.bytes).toString('utf8')).plan.cursor });
+      cases.push({
+        name: 'concurrency/symlink/link-stays-a-link-and-target-moved',
+        kind: 'json',
+        expected: both({ kind: 'symlink', cursor: 'N2' }),
+        actual: { python: seen(got.python), node: seen(got.node) },
+      });
+    }
+
+    // ---- #163: the UTF-8 sentence on all three entry points, nothing written.
+    {
+      const UTF8 = "checkpoint unreadable: 'utf-8' codec can't decode byte 0xff in position 1: invalid start byte";
+      for (const [step, fn] of [[0, 'status'], [1, 'clock-in'], [2, 'clock-out']]) {
+        bit(`refusal/invalid-utf8/${fn}`, 'invalid-utf8-is-a-structured-refusal', step, 'error');
+        says(`refusal/invalid-utf8/${fn}`, 'invalid-utf8-is-a-structured-refusal', step, UTF8);
+      }
+      untouched('refusal/invalid-utf8', 'invalid-utf8-is-a-structured-refusal', 2);
+    }
+
+    // ---- #165: the core's sentence from every tool, nothing written.
+    for (const [step, fn] of [[0, 'status'], [1, 'clock-in'], [2, 'clock-in-unit-id'], [3, 'clock-out']]) {
+      bit(`refusal/duplicate-ids/${fn}`, 'duplicate-unit-ids-are-refused-by-every-tool', step, 'error');
+      says(`refusal/duplicate-ids/${fn}`, 'duplicate-unit-ids-are-refused-by-every-tool', step, 'duplicate node id N1');
+    }
+    untouched('refusal/duplicate-ids', 'duplicate-unit-ids-are-refused-by-every-tool', 3);
   }
 
   // ------------------------------------------------------------------- the ruled cases
@@ -2428,6 +2827,14 @@ export async function run(ctx) {
     );
   }
 
+  notes.push(
+    'job65/J65-1 (#116 #137 #163 #165): the lock refusal, the old temp name blocking nothing on ' +
+      'five file shapes, a suffix-less checkpoint\'s sibling `.tmp` surviving byte for byte, a ' +
+      'symlinked checkpoint keeping its link, the invalid-UTF-8 sentence on three entry points ' +
+      'and the duplicate-id sentence on four are pinned by 29 per-side cases over 10 sessions ' +
+      '(9 on win32, where the symlink session is withheld); the mutation that reddened each is ' +
+      'in `.shiftwork/notes-job65/J65-1.md`.',
+  );
   notes.push(`${DUMP_TEXTS.length + 2} documents x 2 indents x 2 sort settings through json.dumps`);
   notes.push(`${specs.length} sessions, ${specs.reduce((n, s) => n + s.calls.length, 0)} calls, 4 comparisons each`);
   // J63-2: the abstention is COUNTABLE — a reader of this line can say "N cases abstained" —

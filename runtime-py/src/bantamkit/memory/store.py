@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import os
 import re
+import secrets
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -22,6 +24,46 @@ VALID_TYPES = {"user", "feedback", "project", "reference"}
 # `in` on a tuple is `==` per element where `in` on a set hashes and can raise.
 DURABLE_TYPES = ("feedback", "user")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+# THE LONGEST NAME A SAVE ACCEPTS (job65/#156). The fact lands as `<name>.md` and is written
+# through `<name>.md.<pid>.<8 hex>.tmp` (#161), so a name has to leave room for that suffix
+# under the 255-byte file-name limit every supported filesystem has. WAS: no cap, and a
+# 301-character name reached the OS and came back as a raw `[Errno 63] File name too long:
+# '<absolute path>'`. 128 is well under the limit and far above any name a fact needs; the
+# names are ASCII by `NAME_RE`, so characters and bytes are one count. Spelled once more in
+# the port.
+NAME_MAX_CHARS = 128
+
+# ONE LINE MEANS ONE LINE (job65/#155): a `description` is printed into `index.md` and into
+# the hook's injected header, one line per fact, so a character that ends a line there forges
+# a line nobody saved. Every C0/C1 control (that is `\n`, `\r`, `\t`, `\v`, `\f`, `\x1c`-`\x1e`,
+# `\x85` and the rest) plus U+2028/U+2029, which `str.splitlines` also breaks on. Refused
+# at save; in a fact file on disk each run of them is READ as one space (see `_facts`).
+# Spelled once more in the port, as the same ranges.
+_NOT_ONE_LINE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+# A LONE SURROGATE IS NOT TEXT (job65/#160). JSON can carry `\ud800` on its own and both
+# parsers hand it back as a string, but no UTF-8 file can hold it: CPython refused the write
+# with a `UnicodeEncodeError`, and the port wrote U+FFFD and said "saved". Any code point in
+# the surrogate block that survives in a Python `str` is lone (a pair is one code point).
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _codepoint(ch: str) -> str:
+    return f"U+{ord(ch):04X}"
+
+
+def lone_surrogate(text: str) -> str | None:
+    """`U+XXXX` of the first lone surrogate in `text`, or `None` when it is all text."""
+    found = _LONE_SURROGATE.search(text)
+    return None if found is None else _codepoint(found.group()[0])
+
+
+def _not_one_line(text: str) -> str | None:
+    """`U+XXXX` of the first character that keeps `text` from being one line, or `None`."""
+    found = _NOT_ONE_LINE.search(text)
+    return None if found is None else _codepoint(found.group()[0])
+
 DUPLICATE_JACCARD = 0.5
 
 # ---- the precision gate (roadmap #6) ---------------------------------------------
@@ -166,6 +208,17 @@ _ARCHIVE_DESTINATION_UNREACHABLE = (
 )
 
 
+#: job65/#141, #123: the errnos that say a directory EXISTS and this process may not write
+#: into it. EACCES is the chmod case on every platform; EPERM is an immutable flag or a
+#: Windows ACL (where libuv's and CPython's translations both land on it); EROFS is a
+#: read-only mount. The class is the WHOLE test on the write path (`save`'s fact write) and
+#: HALF of it on the mkdir path (`_ensure_dirs`), where `self.root` must also be present:
+#: the mkdir errno alone is platform-specific for a MISSING root (cwd `/` is EROFS on macOS,
+#: ENOENT on Node, EACCES on Linux -- see `_ensure_dirs`), and all three of those are
+#: "not there", which keeps its sentence.
+NOT_WRITABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+
+
 class MemoryValidationError(BantamError):
     pass
 
@@ -185,6 +238,14 @@ class Fact:
     # ISO date the fact first landed. `None` only on a Fact built in memory before its
     # first write; every Fact read off disk carries one (see `_facts`).
     created: str | None = None
+    # The file this Fact was READ FROM, set by `_facts` and by nothing else; `None` on a
+    # Fact built in memory. `compact` moves THIS path (#122): before it moved
+    # `facts/<name>.md` derived from the frontmatter, so a hand-edited `stale.md` whose
+    # frontmatter said `name: fresh-one` archived the NEWEST fact and left the stale one
+    # live, and a `name: 7` raised `FileNotFoundError` for a `facts/7.md` that never
+    # existed. Excluded from `==`/`repr` so a Fact read off disk still equals the Fact
+    # that was saved.
+    source: Path | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -457,6 +518,21 @@ class MemoryStore:
         carrying the failing leaf, or that strerror, would be a divergence manufactured by
         mkdir's internals. `self.root` is the path the caller named and both sides agree on
         it, which is what lets one conformance case pin this line byte for byte.
+
+        AMENDED job65/#141: THE SENTENCE ABOVE IS NOW THE "NOT THERE" ARM ONLY. A store at
+        `chmod 000` (and a `--store` naming one) answered it too -- "the directory is not
+        there" about a directory that exists -- and sent the operator looking for a missing
+        path. The predicate gains a second arm that is STILL an outcome and not a bare errno:
+        the mkdir failed with one of `NOT_WRITABLE_ERRNOS` *and* `self.root` is a directory
+        that can be stat'd. Then the refusal is `memory store is not writable: <root>:
+        <strerror>; the directory exists but cannot be written to, so nothing was written`.
+        The three-platform divergence the paragraph above measured is a divergence about a
+        root that is NOT THERE, so it never reaches the new arm: cwd `/` fails the second
+        half on every platform and keeps the old sentence. The strerror is safe to print
+        here because the errno class is fixed by the first half -- `Permission denied`,
+        `Operation not permitted` or `Read-only file system` -- and `tools/conformance/
+        suites/store.mjs` compares it. The 555 shape, where the mkdir SUCCEEDS because the
+        directories exist and the fact write is what fails, is `save`'s arm of the same fix.
         """
         # Checked BEFORE the mkdir, per user ruling #2: this is the one moment that can
         # tell whether `.bantamkit` already existed. After the mkdir it unconditionally
@@ -475,6 +551,8 @@ class MemoryStore:
             (self.root / "facts").mkdir(parents=True, exist_ok=True)
             (self.root / "archive").mkdir(parents=True, exist_ok=True)
         except OSError as e:
+            if e.errno in NOT_WRITABLE_ERRNOS and self._present():
+                raise self._unwritable(e) from e
             raise MemoryValidationError(
                 f"memory store could not be created: {self.root}; the directory is not"
                 " there and this filesystem would not make it, so nothing was written"
@@ -483,6 +561,25 @@ class MemoryStore:
             ensure_bantamkit_gitignore(
                 bantamkit_dir, created=not bantamkit_dir_existed_before
             )
+
+    def _present(self) -> bool:
+        """Is `self.root` a directory that is there? "I was not allowed to look" is "there".
+
+        `Path.is_dir()` answers False for the `_IGNORED_ERRNOS` (ENOENT, ENOTDIR, ...) and
+        RAISES for EACCES on a parent. A root this process cannot even stat is not "not
+        there", and the mkdir errno that brought us here already says what it is.
+        """
+        try:
+            return self.root.is_dir()
+        except OSError:
+            return True
+
+    def _unwritable(self, error: OSError) -> MemoryValidationError:
+        """One sentence for a store that exists and refused a write (#141), never "not there"."""
+        return MemoryValidationError(
+            f"memory store is not writable: {self.root}: {error.strerror}; the directory"
+            " exists but cannot be written to, so nothing was written"
+        )
 
     # ---- ops ----
 
@@ -498,6 +595,24 @@ class MemoryStore:
             raise MemoryValidationError(f"invalid name '{name}'; must match {NAME_RE.pattern}")
         if not (description or "").strip():
             raise MemoryValidationError("description must be a non-empty line")
+        if len(name) > NAME_MAX_CHARS:
+            raise MemoryValidationError(
+                f"invalid name: {len(name)} characters; must be at most {NAME_MAX_CHARS}"
+            )
+        for label, value in (
+            ("description", description),
+            ("body", body),
+            *((f"links[{i}]", link) for i, link in enumerate(links)),
+        ):
+            if isinstance(value, str) and (bad := lone_surrogate(value)):
+                raise MemoryValidationError(
+                    f"{label} holds a lone surrogate ({bad}), which is not text and cannot "
+                    f"be stored as UTF-8; nothing was saved"
+                )
+        if bad := _not_one_line(description.strip()):
+            raise MemoryValidationError(
+                f"description must be one line; it holds the control character {bad}"
+            )
 
         new_tokens = tokens(f"{name} {description}")
         existing = None
@@ -532,7 +647,16 @@ class MemoryStore:
         )
         path = self._fact_path(name)
         existed = path.read_text(encoding="utf-8") if path.exists() else None
-        self._write_fact(fact)
+        # #141, the 555 shape: `_ensure_dirs` found every directory already there, so the
+        # fact write is the first syscall this store makes that the mode refuses. Only the
+        # errno class that means "exists, not writable" is turned into the sentence; ENOSPC,
+        # ENAMETOOLONG and the rest still arrive as the `OSError` they always were.
+        try:
+            self._write_fact(fact)
+        except OSError as e:
+            if e.errno in NOT_WRITABLE_ERRNOS:
+                raise self._unwritable(e) from e
+            raise
         try:
             self._check_index_budget()
         except MemoryBudgetExceeded:
@@ -551,8 +675,16 @@ class MemoryStore:
         k: int | None = None,
         stamp: bool = True,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
+        skipped: list[dict[str, str]] | None = None,
     ) -> list[Fact]:
         """Top-`k` facts whose name+description share tokens with `query`.
+
+        `skipped` (job65/#119): when a list is passed, a fact file that cannot be read as a
+        fact is appended to it as `{file, reason}` and the rest of the store is still
+        scored -- see `_facts`. Without it the read is strict, as it always was.
+
+        A store this process cannot write to still answers (job65/#123): the
+        `last_recalled` stamp is best-effort. See `_stamp`.
 
         WAS: an unreadable store scored zero facts and returned `[]` — the same answer
         as a real miss, and `component.Memory` turned it into "no memories matched. Try
@@ -601,7 +733,8 @@ class MemoryStore:
         k = k if k is not None else self.k
         q = tokens(query)
         scored = []
-        for fact in self._snapshot if self._snapshot is not None else self._facts():
+        pool = self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
+        for fact in pool:
             score = len(q & tokens(f"{fact.name} {fact.description}"))
             if score > 0:
                 scored.append((score, fact))
@@ -618,7 +751,9 @@ class MemoryStore:
                 self._stamp(fact)
         return hits
 
-    def lookup(self, name: str, stamp: bool = True) -> Fact | None:
+    def lookup(
+        self, name: str, stamp: bool = True, skipped: list[dict[str, str]] | None = None
+    ) -> Fact | None:
         """The fact whose `name` field is exactly `name`, or `None`; no scoring, no ranking.
 
         WHY THIS EXISTS (job64, J64-4): `component.Memory` walks the layers looking for a
@@ -639,14 +774,27 @@ class MemoryStore:
         `stamp` dates the hit through `_stamp`, exactly as `recall` dates its hits, snapshot
         semantics included; nothing else on disk is touched, and a miss writes nothing.
         An unreadable store raises out of `_facts` here as it does out of `recall`, and
-        `component.Memory` treats the two the same way per layer.
+        `component.Memory` treats the two the same way per layer. The stamp is best-effort,
+        as in `recall` (#123). `skipped` is `recall`'s (#119).
         """
-        for fact in self._snapshot if self._snapshot is not None else self._facts():
+        pool = self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
+        for fact in pool:
             if fact.name == name:
                 if stamp:
                     self._stamp(fact)
                 return fact
         return None
+
+    def readable_facts(self) -> tuple[list[Fact], list[dict[str, str]]]:
+        """Every fact this store can read, and `{file, reason}` for each file it could not.
+
+        THE DECLARED TOLERANT LISTING (job65/#119). One empty, truncated, non-UTF-8 or
+        unreadable fact file costs that file, not the store: the hook's SessionStart index
+        and native export read through this, as `Memory.recall_outcome` reads through
+        `recall(..., skipped=...)`. A `facts/` that cannot be listed still raises.
+        """
+        skipped: list[dict[str, str]] = []
+        return self._facts(skipped=skipped), skipped
 
     def lint(self) -> None:
         """Every fact parses and carries a valid type, and the index fits its budget.
@@ -658,9 +806,18 @@ class MemoryStore:
         `_cmd_lint` already routes that to `lint: FAIL — ...` on stderr with exit 1
         (verified by running it), so the operator surface needed no change.
         """
-        for fact in self._facts():  # raises MemoryValidationError: unreadable, or malformed
+        findings: list[str] = []
+        # raises MemoryValidationError: unreadable, or malformed
+        for fact in self._facts(findings):
             if fact.type not in VALID_TYPES:
                 raise MemoryValidationError(f"fact '{fact.name}' has invalid type '{fact.type}'")
+        # The two hand-edit shapes every other op now TOLERATES (#121, #122) are named
+        # here, first one in file order, because lint is the one surface whose job is to
+        # say what an operator should fix: an unquoted timestamp that `_facts` read as a
+        # string, and a file whose name is not the fact's. Neither is a reason for `recall`
+        # or `compact` to refuse the whole store, and both are a reason for `lint` to exit 1.
+        if findings:
+            raise MemoryValidationError(findings[0])
         self._check_index_budget()
 
     def compact(self, reserve: int | None = None) -> CompactResult:
@@ -747,7 +904,11 @@ class MemoryStore:
         # `FileNotFoundError` out of the final write. `exist_ok=True` makes it free for
         # every store that is already there.
         self._ensure_dirs()
-        sizes = {fact.name: len(self._index_line(fact).encode()) for fact in facts}
+        # Keyed by the FACT, not by `fact.name` (#122): two files can carry one name, and a
+        # dict keyed by name collapsed them -- `index_before` reported 88 bytes for a
+        # 134-byte index, and the second file's line was never subtracted. `id()` is
+        # stable for the life of `facts`, which is the life of this call.
+        sizes = {id(fact): len(self._index_line(fact).encode()) for fact in facts}
         if reserve is None:
             # The default reserve is measured from the WARNING LINE, not from the budget.
             # One substitution, and it is the whole of `docs/porting.md` item 7: the
@@ -769,18 +930,23 @@ class MemoryStore:
         for fact in sorted(facts, key=self._eviction_key):
             if size <= target:
                 break
-            path = self._fact_path(fact.name)
+            # THE FILE THE FACT WAS READ FROM, not `facts/<name>.md` (#122). The two are the
+            # same path for every fact this store wrote; they part on a hand-edited file
+            # whose frontmatter names another fact, and there `_fact_path(fact.name)` moved
+            # the WRONG file -- the newest fact, under the name of the stalest -- or raised
+            # `FileNotFoundError` for a name no file carries. `lint` names the mismatch.
+            path = fact.source or self._fact_path(fact.name)
             # `os.replace`, not `os.rename`: the two agree on POSIX and differ on Windows,
             # where `rename` raises `FileExistsError` over an `archive/<name>.md` that is
             # already there. `runtime-ts` uses `pyReplace` here; this is the same call.
             path.replace(self.root / "archive" / path.name)
-            size -= sizes[fact.name]
+            size -= sizes[id(fact)]
             archived.append(
                 ArchivedFact(
                     name=fact.name,
                     type=fact.type,
                     description=fact.description,
-                    index_bytes=sizes[fact.name],
+                    index_bytes=sizes[id(fact)],
                     last_recalled=fact.last_recalled,
                     created=fact.created,
                 )
@@ -1239,31 +1405,110 @@ class MemoryStore:
             f"memory store is unreadable: {directory}: {because}; {consequence}"
         )
 
-    def _facts(self) -> list[Fact]:
+    def _facts(
+        self, findings: list[str] | None = None, skipped: list[dict[str, str]] | None = None
+    ) -> list[Fact]:
+        """Every fact on disk, in `_fact_paths` order, with two hand-edit shapes tolerated.
+
+        AN UNQUOTED TIMESTAMP IS READ AS ITS `str()` (#121). `yaml.safe_load` hands back a
+        `datetime.date` for `created: 2026-01-01` and a `datetime.datetime` for the longer
+        forms, while every file this store writes carries the quoted string. `recall` and
+        `save` never minded, but `compact` sorts `(last_recalled or created, name)` and
+        `sorted` raised `'<' not supported between instances of 'datetime.date' and 'str'`
+        the moment one hand-edited file sat beside a written one -- the only remedy the
+        budget refusal names, dead on the store that named it. `str(date)` is `isoformat()`
+        and `str(datetime)` is `isoformat(' ')`, the same text the port carries as a
+        scalar's `text`, so both runtimes read the same string and the next write quotes
+        it. Only timestamps are touched: an `int` or `bool` in these fields is left exactly
+        as the scalar cases in `tools/conformance/suites/store.mjs` pin it.
+
+        `findings`, when given, collects one sentence per shape `lint` should name -- the
+        coerced timestamp, and a file whose name is not the fact's (#122) -- without
+        raising, because every other caller tolerates both. `lint` is the only caller that
+        passes a list.
+
+        THE READ IS INSIDE THE `try` (job65/#159). WAS: `read_text` sat above it, so a file
+        that is not UTF-8 raised a bare `UnicodeDecodeError` -- `'utf-8' codec can't decode
+        byte 0xff in position 117` -- naming no file, and the model was told one of five
+        files was bad without which. `UnicodeDecodeError` is a `ValueError`, so moving the
+        read down makes it `malformed fact file <name>: <that same text>`, the per-file
+        shape every other refusal here already has. An `OSError` from the same read is NOT
+        in the tuple and still escapes as itself: "could not be read" is not "malformed".
+
+        A DESCRIPTION THAT IS NOT ONE LINE IS READ AS ONE (job65/#155): `save` refuses one,
+        and a hand-edited file holding one used to print a second line into `index.md` and
+        into the hook's injected header -- a project store forging a `[profile]` feedback
+        line. Each run of the characters `_NOT_ONE_LINE` names is read as one space, so the
+        fact stays readable and every line built from it is one line; `lint` names it
+        (`findings`), like the other two hand-edit shapes.
+
+        `skipped`, when given, makes ONE BAD FILE COST THAT FILE (job65/#119): a file that
+        is malformed or cannot be read is appended as `{file, reason}` -- the reason is the
+        sentence this would have raised -- and every other file is still read. A `facts/`
+        that cannot be LISTED still raises: that is a store nobody could read, not a fact.
+        `recall`, `lookup` and `readable_facts` pass it through; every other caller keeps
+        the strict read, because a save, a compaction or a lint over a store with a broken
+        file must not act as if the file were not there.
+        """
         facts = []
         for path in self._fact_paths():
-            text = path.read_text(encoding="utf-8")
+            if skipped is None:
+                facts.append(self._read_fact(path, findings))
+                continue
             try:
-                _, front, body = text.split("---\n", 2)
-                meta = yaml.safe_load(front)
-                if not isinstance(meta, dict):
-                    raise MemoryValidationError(
-                        f"malformed fact file {path.name}: frontmatter is not a mapping"
-                    )
-                facts.append(
-                    Fact(
-                        name=meta["name"],
-                        description=meta["description"],
-                        type=meta["type"],
-                        body=body.strip(),
-                        links=list(meta.get("links") or []),
-                        last_recalled=meta.get("last_recalled"),
-                        created=meta.get("created") or _mtime_date(path),
-                    )
-                )
-            except (ValueError, KeyError, yaml.YAMLError) as e:
-                raise MemoryValidationError(f"malformed fact file {path.name}: {e}") from e
+                facts.append(self._read_fact(path, findings))
+            except (BantamError, OSError) as e:
+                skipped.append({"file": path.name, "reason": str(e)})
         return facts
+
+    def _read_fact(self, path: Path, findings: list[str] | None) -> Fact:
+        """One fact file, parsed, or the `malformed fact file` sentence for it (see `_facts`)."""
+        try:
+            text = path.read_text(encoding="utf-8")
+            _, front, body = text.split("---\n", 2)
+            meta = yaml.safe_load(front)
+            if not isinstance(meta, dict):
+                raise MemoryValidationError(
+                    f"malformed fact file {path.name}: frontmatter is not a mapping"
+                )
+            name = meta["name"]
+            stamps = {}
+            for key in ("created", "last_recalled"):
+                value = meta.get(key)
+                if isinstance(value, date):  # `datetime` is a `date`
+                    value = str(value)
+                    if findings is not None:
+                        findings.append(
+                            f"fact '{name}' in {path.name}: {key} is the unquoted "
+                            f"timestamp {value}, read as '{value}'; quote it"
+                        )
+                stamps[key] = value
+            if findings is not None and path.stem != str(name):
+                findings.append(
+                    f"fact '{name}' in {path.name}: the file name does not match the "
+                    f"fact name; rename the file to {name}.md or the fact to {path.stem}"
+                )
+            description = meta["description"]
+            if isinstance(description, str) and (bad := _not_one_line(description)):
+                description = _NOT_ONE_LINE.sub(" ", description)
+                if findings is not None:
+                    findings.append(
+                        f"fact '{name}' in {path.name}: the description is not one line "
+                        f"(it holds the control character {bad}), read as '{description}'; "
+                        f"make it one line"
+                    )
+            return Fact(
+                name=name,
+                description=description,
+                type=meta["type"],
+                body=body.strip(),
+                links=list(meta.get("links") or []),
+                last_recalled=stamps["last_recalled"],
+                created=stamps["created"] or _mtime_date(path),
+                source=path,
+            )
+        except (ValueError, KeyError, yaml.YAMLError) as e:
+            raise MemoryValidationError(f"malformed fact file {path.name}: {e}") from e
 
     def _stamp(self, fact: Fact) -> None:
         """Date the recall without ever writing pinned content back.
@@ -1285,16 +1530,36 @@ class MemoryStore:
         survives on the pinned copy; nothing reads it but `_staleness_key` (through
         `_eviction_key`), and the
         pinned list dies with the scope.)
+
+        THE WRITE IS BEST-EFFORT (job65/#123). WAS: a store at `chmod 555` -- a shared
+        checkout, a read-only mount, a CI cache -- made `recall` raise `PermissionError`
+        out of this write AFTER the hits were computed, so a pure read was refused because
+        its bookkeeping could not land. NOW: an `OSError` from the write is swallowed here and
+        the hits are answered; the file keeps its old date and no temp is left (#161's
+        cleanup). Silent on purpose and for now: the property is "at most a degraded note",
+        and the note would have to be carried through `component.Memory`, which is another
+        unit's file in job65 -- recorded as an open question in its note. Every `OSError` is
+        best-effort, not only the permission class: a stamp that fails for ENOSPC has the
+        same standing, which is none against the read. What is NOT swallowed is the
+        `MemoryValidationError` the LISTING below raises inside a snapshot scope: that is a
+        store that stopped being readable, which is news, and the test that pins it
+        (`test_a_recall_pinned_before_the_store_broke_answers_but_never_dates_it`) still
+        holds. `fact.last_recalled` is set on the in-memory `Fact` first, as before.
         """
         fact.last_recalled = self._today()
         if self._snapshot is None:
-            self._write_fact(fact)
+            self._stamp_write(fact)
             return
         live = next((f for f in self._facts() if f.name == fact.name), None)
         if live is None:
             return
         live.last_recalled = fact.last_recalled
-        self._write_fact(live)
+        self._stamp_write(live)
+
+    def _stamp_write(self, fact: Fact) -> None:
+        """`_write_fact`, best-effort: an `OSError` leaves the old date on disk (#123)."""
+        with suppress(OSError):
+            self._write_fact(fact)
 
     def _fact_text(self, fact: Fact) -> str:
         """The exact bytes `_write_fact` would put on disk, without writing them.
@@ -1322,11 +1587,33 @@ class MemoryStore:
         )
 
     def _write_fact(self, fact: Fact) -> None:
+        """Write via a PER-WRITER temp file and `os.replace`, so a reader never sees a
+        half-written fact and two writers never share a temp (job65/#161).
+
+        WAS: `path.with_suffix(".md.tmp")`, one temp name per FACT, so two servers saving one
+        name at once raced on it -- the second `write_text` truncated the first's file and the
+        second `replace` found nothing (`[Errno 2] ... 'shared-name.md.tmp'`, 2 to 11 of 80
+        in the issue's and this unit's probes); and a write that died half-way (EFBIG under
+        `ulimit -f`, ENOSPC, SIGKILL) left `<name>.md.tmp` beside the facts. NOW: the same
+        shape `shiftwork.clock_out` and the hook ledger use (J65-1, J65-4):
+        `<name>.md.<pid>.<8 hex>.tmp`, opened with `x` (O_EXCL) so even a pid reuse cannot
+        share, renamed onto the fact, and unlinked on ANY failure before the error goes on
+        up. `_fact_paths` and `layers.count_facts` match `*.md`, so the temp is as invisible
+        to every listing as the old one was. Last writer still wins on the rename, which is
+        what "concurrent saves of one name all succeed" means. A SIGKILL between the open and
+        the unlink still leaves a temp; nothing in-process can promise otherwise.
+        """
         text = self._fact_text(fact)
         path = self._fact_path(fact.name)
-        tmp = path.with_suffix(".md.tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+        tmp = Path(f"{path}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            with tmp.open("x", encoding="utf-8") as fh:
+                fh.write(text)
+            tmp.replace(path)
+        except BaseException:
+            with suppress(OSError):
+                tmp.unlink()
+            raise
 
     def _rebuild_index(self) -> None:
         """Write `index.md` from the facts on disk. THE OP THE ORIGINAL DEFECT DESTROYED.

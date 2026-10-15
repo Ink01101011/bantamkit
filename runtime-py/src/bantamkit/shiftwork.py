@@ -65,7 +65,19 @@ checkpoint rename, so a partial failure can lose the commit but never the
 accounting. The recovery semantic is one line: a log line whose commit failed
 is detectable by re-reading the checkpoint (its unit is still the non-terminal
 cursor unit), so a retried clock-out may leave one duplicate log line — never
-a missing one.
+a missing one. Since job65 (#162) the orphan line is followed by an
+`{"event": "uncommitted", ...}` marker, appended in the same failure arm, so
+`_briefed` hands the brief back and the retry is ACCEPTED for a briefed
+non-cursor unit too — before the marker the orphan line spent the brief and
+the documented retry was refused `unit B is not the cursor unit A`. Since
+job65 (#117) the caller's accounting cannot set the five keys the runtime
+writes (`RESERVED_LEDGER_KEYS`): such a line is refused before anything is
+written, because `record.update(accounting)` let `{"unit": "C", "event":
+"brief"}` forge a brief of another unit that `_briefed` then trusted. And
+since job65 (#164) `clock_in()` with no `unit_id` applies the same readiness
+test as `clock_in(unit_id)`: a cursor left on a done/dropped unit or on a
+unit whose dependencies have not run is refused with the one not-ready
+sentence, never briefed.
 
 Cursor advance FOLLOWS THE GRAPH (job60/D3). It was v1-linear — the first
 non-terminal unit in `plan.units` order, `depends_on` ignored — while
@@ -78,15 +90,26 @@ recording surface does not acquire a new way to refuse — and to the clocked-ou
 unit when nothing non-terminal remains. On a linear chain the two orders
 coincide, which is why every case written before this holds its value.
 
-No lock: the MCP topology has one orchestrator by construction. The driver's
-O_EXCL lock guards cross-process races this shape does not have, and clock-out
-re-validates before writing so a concurrent driver run fails validation-visibly.
+A lock, since job65 (#116). The paragraph that stood here said the MCP topology
+has one orchestrator by construction and needs none; job60's waves made that
+false — a wave clocks out from several processes at once — and it was MEASURED:
+two clock-outs of DIFFERENT units at one instant, 10 trials, lost 10 of 20 `ok`
+answers and committed up to 5 `error` ones, on each runtime and across the two.
+The whole read-modify-write now runs under `<checkpoint>.lock` (O_EXCL, the same
+primitive as `driver.lock` and the hook ledger's lock, so a Python writer and a
+Node writer serialise against each other on the one file they share), the temp
+file is a per-writer name created exclusively, and the rename lands on the
+checkpoint's resolved target (#137) so a symlinked checkpoint stays a link. A
+writer that cannot take the lock is REFUSED, nothing written — never let through,
+because through is the race.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -112,7 +135,29 @@ TERMINAL_UNIT_STATUS = frozenset({"done", "dropped"})  # the driver's SUCCESS te
 #: word is the register's own — `clock_in` answers `result: "brief"` — so the ledger names
 #: the thing it recorded with the same word the wire used.
 BRIEF_EVENT = "brief"
+#: job65/#162: the `event` value of the line `clock_out` appends right after an accounting line
+#: whose COMMIT failed (the temp file or the rename refused). Log-then-commit keeps the
+#: accounting; this marker says the line above it did not count, so `_briefed` hands the
+#: brief back and the documented retry is accepted instead of refused as "not the cursor".
+UNCOMMITTED_EVENT = "uncommitted"
+#: job65/#117: the keys the runtime writes on every accounting line. A caller line that sets
+#: one is refused before anything is written: `record.update(accounting)` used to let
+#: `{"unit": "C", "event": "brief"}` turn A's clock-out into a forged brief of C that
+#: `_briefed` then trusted, and a `unit` overwritten is a cost booked to the wrong unit.
+#: `briefed` is NOT here on purpose: F6 ruled a self-reported `briefed` is OVERWRITTEN by the
+#: measured value, pinned on both sides, and #117 lists exactly these five.
+RESERVED_LEDGER_KEYS = ("unit", "role", "status", "ts", "event")
 HISTORY_RING_SIZE = 5  # the schema's maxItems — older entries fall off the ring
+#: job65/#116: the checkpoint's read-modify-write runs under `<checkpoint>.lock`, taken with
+#: O_EXCL — the one primitive both platforms and both runtimes share without a dependency,
+#: and the shape `driver.lock` and the hook ledger's lock (J65-4, #167) already use, so a
+#: Python writer and a Node writer serialise against each other on the one file they share.
+#: One policy differs from the ledger's: a writer that cannot take the lock within
+#: `LOCK_WAIT_MS` is REFUSED, nothing written — never let through unlocked, because through
+#: is exactly the race #116 measured. A lock older than `LOCK_STALE_MS` is a dead holder's.
+LOCK_WAIT_MS = 5000
+LOCK_STALE_MS = 30_000
+LOCK_POLL_MS = 5
 
 
 def _error(reason: str) -> dict[str, Any]:
@@ -123,7 +168,10 @@ def _read_valid(path: Path) -> tuple[dict | None, dict[str, Any] | None]:
     """Read and full-schema-validate. Returns (document, None) or (None, refusal)."""
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # #163: invalid UTF-8 is `UnicodeDecodeError`, a ValueError and not an OSError, and it
+        # escaped every tool as a raised exception while a missing file answered
+        # `result: error`. Same sentence head as the missing file: the bytes could not be read.
         return None, _error(f"checkpoint unreadable: {e}")
     try:
         document = json.loads(text)
@@ -132,6 +180,16 @@ def _read_valid(path: Path) -> tuple[dict | None, dict[str, Any] | None]:
     problem = schema_error(text, load_schema(SCHEMA_NAME))
     if problem is not None:
         return None, _error(f"checkpoint invalid: {problem}")
+    # #165: the schema cannot say that unit ids are unique, so this is the only check, and it
+    # sits on the read every tool starts with: status, clock_in and clock_out now answer what
+    # `shiftwork_plan` already answered through the core. Before it, `_find_unit` took the
+    # first match and a clock-out of the first `A` of two left a document no job could finish.
+    # The sentence is `workplan`'s, verbatim, so the plan view's answer does not move.
+    seen: set[str] = set()
+    for unit in document["plan"]["units"]:
+        if unit["id"] in seen:
+            return None, _error(f"duplicate node id {unit['id']}")
+        seen.add(unit["id"])
     return document, None
 
 
@@ -169,8 +227,15 @@ def _record_brief(log_path: Path, unit_id: str, role: str) -> None:
     that would be a programming error here, and hiding it would leave every unit
     `briefed: false` forever with no red anywhere.
     """
+    _record_event(log_path, BRIEF_EVENT, unit_id, role)
+
+
+def _record_event(log_path: Path, event: str, unit_id: str, role: str) -> None:
+    """One `{event, ts, unit, role}` line, best effort: the brief line (F6) and, since
+    job65/#162, the `uncommitted` marker share this shape so a reader tells every event
+    line from an accounting line by the one key, `event`, and never by `status`."""
     record = {
-        "event": BRIEF_EVENT,
+        "event": event,
         "ts": _timestamp(time.time()),
         "unit": unit_id,
         "role": role,
@@ -186,8 +251,10 @@ def _briefed(log_path: Path, unit_id: str) -> bool:
     """F6: was a brief issued for `unit_id` since its last clock-out? Read off the ledger.
 
     Walk the ledger in order, tracking only lines that name this unit: a brief line sets
-    the flag, an accounting line (any line that is not a brief event) clears it. The
-    answer is the flag at the end. So:
+    the flag, an accounting line (any line that is not a brief event) clears it, and —
+    since job65/#162 — an `uncommitted` line restores whatever the flag was before the
+    accounting line it follows, because that line's commit failed and it did not count.
+    The answer is the flag at the end. So:
 
     * brief, brief, clock-out            -> `briefed: true` (a relaunch; both briefs count);
     * brief, clock-out(blocked), clock-out -> the second is `briefed: false` — nobody was
@@ -196,14 +263,18 @@ def _briefed(log_path: Path, unit_id: str) -> bool:
       is the `"executed_by": "orchestrator-inline"` shape the job41 ledger self-reports);
     * brief, clock-out(blocked), brief, clock-out -> both `true`.
 
-    The one edge this rule gets "wrong" is chosen over the one the alternative gets wrong:
-    a clock-out retried after a failed commit (the documented orphan line) reads
-    `briefed: false` on its duplicate — but two consecutive accounting lines for one unit
-    with no brief between them are VISIBLE to a ledger reader, and the module already
-    documents that shape as a retry. The alternative ("any brief line ever") would mark the
-    blocked-then-inline re-run `true`, which is a false positive nobody can detect, i.e.
-    the defect class this feature was built to end. Detectable false negatives beat
-    undetectable false positives.
+    * brief, clock-out(uncommitted), clock-out -> the retry is `briefed: true` (#162).
+
+    Until job65 this docstring CHOSE the opposite edge: a clock-out retried after a failed
+    commit (the documented orphan line) read `briefed: false` on its duplicate, on the
+    argument that two consecutive accounting lines with no brief between them are visible
+    to a reader. Issue #162 measured what that cost: the orphan line also SPENT the brief,
+    so the retry of a briefed non-cursor unit was refused `unit B is not the cursor unit A`
+    and the documented recovery (retry) did not exist. The ruling stands for the
+    blocked-then-inline re-run — "any brief line ever" would mark it `true`, an
+    undetectable false positive — and the failed commit is now told apart from it by the
+    `uncommitted` marker `clock_out` appends in that one place, so the reader still sees
+    the retry and the runtime no longer mistakes it for an inline re-run.
 
     Reads the ledger the way a reader must: a missing or unreadable log is `false`, a line
     that is not JSON or not an object is skipped, never fatal — all 217 lines in this
@@ -214,6 +285,7 @@ def _briefed(log_path: Path, unit_id: str) -> bool:
     except OSError:
         return False
     briefed = False
+    before_last_accounting = False
     for line in text.splitlines():
         try:
             record = json.loads(line)
@@ -221,7 +293,14 @@ def _briefed(log_path: Path, unit_id: str) -> bool:
             continue
         if not isinstance(record, dict) or record.get("unit") != unit_id:
             continue
-        briefed = record.get("event") == BRIEF_EVENT
+        event = record.get("event")
+        if event == BRIEF_EVENT:
+            briefed = True
+        elif event == UNCOMMITTED_EVENT:
+            briefed = before_last_accounting
+        else:
+            before_last_accounting = briefed
+            briefed = False
     return briefed
 
 
@@ -294,13 +373,19 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     ``success`` when every unit is done/dropped. The ``brief`` payload is what
     the orchestrator hands to the spawned agent verbatim.
 
-    WHICH UNIT (job60/D1). `unit_id` omitted is the whole prior contract, byte for
-    byte — `plan.cursor`, including its `escalate` when the cursor names no unit —
-    and the order of judgements above the selection is unmoved, so no existing
-    refusal changes its place or its wording. `unit_id` GIVEN must name a unit the
-    graph says may run now: a member of `_ready`'s batch, which is exactly
-    `shiftwork_plan`'s `ready`. That is what lets an orchestrator spend the `width`
-    the batch view reports instead of only ever being handed the single pointer.
+    WHICH UNIT (job60/D1, amended job65/#164). `unit_id` omitted selects
+    `plan.cursor`, including its `escalate` when the cursor names no unit, and the
+    order of judgements above the selection is unmoved. `unit_id` GIVEN selects that
+    unit. EITHER WAY the selected unit must be one the graph says may run now: a
+    member of `_ready`'s batch, which is exactly `shiftwork_plan`'s `ready`. Until
+    job65 the default path skipped that test — "the whole prior contract, byte for
+    byte" — and #164 measured what the exemption cost: a cursor left on a `done` unit
+    by a hand edit, or on a unit whose dependency had not run by a re-plan, was
+    briefed with no refusal and no warning, which is the exact hazard job60 closed
+    for the named path. The two paths now apply ONE test, so the sentence below is
+    the same sentence whichever way the unit was chosen, and a graph that cannot
+    batch at all refuses the default path with the core's sentence exactly as it
+    refuses the named one.
 
     ONE refusal covers both ways that can fail, because they are one property — the
     unit is not ready — and a `unit_id` that names no unit at all is the limiting
@@ -334,19 +419,18 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     units = document["plan"]["units"]
     if all(u["status"] in TERMINAL_UNIT_STATUS for u in units):
         return {"result": "success", "reason": "all units done or dropped"}
-    if unit_id is None:
-        selected = document["plan"]["cursor"]
-        unit = _find_unit(document, selected)
-        if unit is None:
-            return {"result": "escalate", "reason": f"cursor {selected} names no unit"}
-    else:
-        ready, batch_refusal = _ready(document)
-        if batch_refusal is not None:
-            return batch_refusal  # the core's sentence, verbatim — `_read_valid`'s idiom
-        unit = _find_unit(document, unit_id)
-        if unit is None or unit_id not in ready:
-            return _error(f"unit {unit_id} is not ready; ready is {', '.join(ready)}")
-        selected = unit_id
+    selected = document["plan"]["cursor"] if unit_id is None else unit_id
+    unit = _find_unit(document, selected)
+    if unit_id is None and unit is None:
+        return {"result": "escalate", "reason": f"cursor {selected} names no unit"}
+    # #164: one readiness test for both paths. A terminal cursor unit is not in `ready`
+    # (the batch view drops done/dropped units), so it meets the same sentence as a unit
+    # whose dependencies have not run — one property, one sentence, as D1 ruled.
+    ready, batch_refusal = _ready(document)
+    if batch_refusal is not None:
+        return batch_refusal  # the core's sentence, verbatim — `_read_valid`'s idiom
+    if unit is None or selected not in ready:
+        return _error(f"unit {selected} is not ready; ready is {', '.join(ready)}")
     # F6: the brief is issued, so say so in the ledger — best effort, and only on this
     # branch: a refusal above issued nothing and therefore records nothing.
     _record_brief(_log_path(Path(checkpoint)), selected, unit["role"])
@@ -540,6 +624,31 @@ def _accounting_refusal(unit_id: str, unit: dict, accounting: dict | None) -> st
     )
 
 
+def _reserved_refusal(unit_id: str, unit: dict, accounting: dict | None) -> str | None:
+    """#117: an accounting line that sets a key the runtime writes is refused, nothing written.
+
+    `record.update(accounting)` ran AFTER the base keys, so a caller could overwrite them:
+    `{"unit": "C", "event": "brief"}` on A's clock-out wrote a line that `_briefed` then read
+    as a brief of C, and the next `clock_out("C")` was accepted although C was never briefed,
+    was not the cursor, and had a dependency still `todo` (measured: A=done B=todo C=done);
+    a `unit` overwritten also books the cost to the wrong unit. The fix is a refusal rather
+    than a silent merge-under because a line whose keys are dropped is a line the
+    orchestrator believes it wrote. Runs after the shape check (`additionalProperties: true`
+    lets these keys through it) and before any mutation, like the two gates above it.
+    The keys are named in `RESERVED_LEDGER_KEYS` order, not the caller's, so both runtimes
+    spell one sentence for one line. `briefed` is deliberately not here (F6: overwritten).
+    """
+    if accounting is None:
+        return None
+    present = [key for key in RESERVED_LEDGER_KEYS if key in accounting]
+    if not present:
+        return None
+    return (
+        f"unit {unit_id} in role {unit['role']} reported an accounting line "
+        f"that sets the runtime's own keys: {', '.join(present)}"
+    )
+
+
 def clock_out(
     checkpoint: str,
     unit_id: str,
@@ -588,6 +697,82 @@ def clock_out(
     commit failed is the detectable, tolerable leftover).
     """
     path = Path(checkpoint)
+    real = _real_target(path)
+    lock = Path(f"{real}.lock")
+    held, refusal = _acquire_lock(lock)
+    if refusal is not None:
+        return refusal
+    try:
+        return _clock_out_locked(
+            path, real, unit_id, status, handoff_patch, history_entry, accounting
+        )
+    finally:
+        if held:
+            with contextlib.suppress(OSError):
+                lock.unlink()
+
+
+def _real_target(path: Path) -> Path:
+    """#137: the file the rename lands on — a symlinked checkpoint's TARGET, so the link stays
+    a link and every other path to the same file sees the clock-out. Only the write side
+    resolves: the read, the ledger and every sentence use the path as given."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):  # a symlink loop, or a path the OS will not resolve
+        return path
+
+
+def _acquire_lock(lock: Path) -> tuple[bool, dict[str, Any] | None]:
+    """Take `<checkpoint>.lock` with O_EXCL. Answers `(held, refusal)`.
+
+    `held` is False without a refusal in exactly one case: the directory will not hold a
+    lock file for a reason other than one existing (read-only, gone). The clock-out then
+    goes on UNLOCKED, because the temp file that follows cannot be created there either
+    and ITS refusal is the one that names the cause — the `readonly-directory-*` arms keep
+    their sentences. A lock that exists is waited on; one older than `LOCK_STALE_MS` is a
+    dead holder's and is removed; past `LOCK_WAIT_MS` the clock-out is refused with
+    nothing written, so the caller can retry — never let through, which is the race.
+    """
+    deadline = time.monotonic() + LOCK_WAIT_MS / 1000
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            pass
+        except OSError:
+            return False, None
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f"{os.getpid()}\n")
+            return True, None
+        with contextlib.suppress(OSError):
+            if time.time() - os.stat(lock).st_mtime > LOCK_STALE_MS / 1000:
+                os.unlink(lock)
+        if time.monotonic() >= deadline:
+            return False, _error(f"checkpoint locked by another clock-out, nothing written: {lock}")
+        time.sleep(LOCK_POLL_MS / 1000)
+
+
+def _at(e: OSError, path: Path) -> str:
+    """`str(e)` with the checkpoint's own path in the filename slot (see the write path)."""
+    if e.errno is None:
+        return str(e)
+    winerror = getattr(e, "winerror", None)
+    if winerror is not None:
+        return str(OSError(e.errno, e.strerror, str(path), winerror))
+    return str(OSError(e.errno, e.strerror, str(path)))
+
+
+def _clock_out_locked(
+    path: Path,
+    real: Path,
+    unit_id: str,
+    status: str,
+    handoff_patch: dict[str, Any],
+    history_entry: dict[str, Any],
+    accounting: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """`clock_out`'s body, run under the lock its caller holds: mutate, validate, write."""
     log_path = _log_path(path)
     document, refusal = _read_valid(path)
     if refusal is not None:
@@ -608,6 +793,9 @@ def clock_out(
     bad_line = _accounting_refusal(unit_id, unit, accounting)
     if bad_line is not None:
         return _error(bad_line)
+    forged = _reserved_refusal(unit_id, unit, accounting)
+    if forged is not None:
+        return _error(forged)
 
     unit["status"] = status
     # D3: the cursor follows the GRAPH, on the document as just mutated. Three arms, in
@@ -639,7 +827,7 @@ def clock_out(
         "role": unit["role"],
         "status": status,
     }
-    record.update(accounting or {})
+    record.update(accounting or {})  # #117: none of the five base keys can be in it
     # F6: `briefed` is MEASURED off the ledger, after the orchestrator's keys are merged, so
     # the runtime's answer wins over a self-reported one. `executed_by: orchestrator-inline`
     # in the job41 ledger IS a self-report, and it is the only kind the ledger ever had; a
@@ -653,14 +841,28 @@ def clock_out(
     except OSError as e:
         return _error(f"accounting log unwritable, checkpoint untouched: {e}")
 
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # #116: a PER-WRITER temp name, created exclusively — never `with_suffix(".tmp")`, which
+    # gave every writer of one checkpoint the same temp file (two renames of one file, so one
+    # `ok` answer with nothing of it on disk) and gave a suffix-less `checkpoint` the name of
+    # an unrelated sibling, `checkpoint.tmp`, which it overwrote and renamed away. #137: the
+    # rename lands on `real`, the link's target. The refusal names the checkpoint AS GIVEN and
+    # not the temp name: a random name in a sentence is not reproducible, and the file the
+    # caller could not write is, to the caller, the checkpoint.
+    tmp = Path(f"{real}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
-        tmp.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        with tmp.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(document, indent=2) + "\n")
+        tmp.replace(real)
     except OSError as e:
         with contextlib.suppress(OSError):
             tmp.unlink()
-        return _error(f"checkpoint unwritable, last log line uncommitted: {e}")
+        # #162: the accounting line above is kept (log-then-commit: never lose the
+        # accounting) and MARKED: this line says it did not count, so `_briefed` hands the
+        # brief back and the retry the sentence invites is accepted. Best effort, like the
+        # brief line — the append that just succeeded can still fail here, and then the
+        # old edge (brief spent, retry refused) is what remains; the refusal is unchanged.
+        _record_event(log_path, UNCOMMITTED_EVENT, unit_id, unit["role"])
+        return _error(f"checkpoint unwritable, last log line uncommitted: {_at(e, path)}")
 
     return {
         "result": "ok",

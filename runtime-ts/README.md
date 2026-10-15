@@ -400,13 +400,17 @@ feature lands in both in one change, and a conformance case compares their answe
 are deliberate and each is ruled in the
 [divergence table](https://github.com/Ink01101011/bantamkit/blob/main/docs/porting.md#where-the-two-runtimes-deliberately-differ):
 
-- **Concurrent writes are safe for the memory store and lossy for the checkpoint, in both
-  runtimes.** `index.md` is derived from `facts/`, so the last writer re-enumerates everything
-  and the index self-heals: 8 trials of two processes × 15 saves, zero disagreements. A
-  checkpoint is not: `shiftwork_clock_out` is read-modify-write, so two concurrent clock-outs on
-  the *same cursor unit* both answer `ok` and one history entry is lost — 10/10 trials on Node
-  **and** 10/10 on the Python reference. The cursor check serialises the normal case; only the
-  same-unit collision loses.
+- **Concurrent writes are safe for the memory store and, since job65, for the checkpoint, in
+  both runtimes.** `index.md` is derived from `facts/`, so the last writer re-enumerates
+  everything and the index self-heals: 8 trials of two processes × 15 saves, zero
+  disagreements. A checkpoint is read-modify-write, and until job65 (#116) every writer shared
+  one temp file, so two concurrent clock-outs — on the same unit OR on two different units of
+  one wave — lost `ok` answers: 10 of 20 in 10 trials, on Node, on Python and across the two.
+  `shiftwork_clock_out` now holds `<checkpoint>.lock` (O_EXCL, the same protocol in both
+  runtimes) around the whole call and writes through a per-writer temp name: two clock-outs of
+  different units both land, and a second clock-out of the same unit is refused as not the
+  cursor unit. A writer that cannot take the lock within 5 s answers `result: error` and writes
+  nothing.
 - **Do not hand-edit a fact file's `name`, `description` or `type` to a bare non-string.**
   `description: 2026` is a YAML integer. Python interpolates it and carries on; this port refuses
   the whole store with `malformed fact file …`. Quote it: `description: '2026'`. Every fact the

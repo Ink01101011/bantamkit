@@ -144,13 +144,19 @@ def validate_reply(server) -> dict:
 
 
 def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_path):
-    report = status_of(build_server(make_memory(tmp_path)))
+    memory = make_memory(tmp_path)
+    report = status_of(build_server(memory))
     lines = report.split("\n")
     assert lines[0] == HEALTHY_LINE
     assert len(lines) == 6, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
     assert lines[2] == "serving 14 tools, 1 prompt, 2 resource templates"
-    assert lines[3] == "memory: 0 facts in the project store, index 0 of 24000 bytes"
+    # AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store
+    # the walk bound ABOVE the project was invisible on the one surface that reports binding.
+    assert lines[3] == (
+        "memory: 0 facts in the project store, index 0 of 24000 bytes; "
+        f"bound to {memory.store.root}"
+    )
     assert lines[4] == "event log: off"
     # Line 6, and it is NOT a condition: the home is redirected and empty, so the server is
     # still `Active 🟢` while saying it has never been checked.
@@ -425,8 +431,14 @@ def test_an_unreadable_memory_layer_is_observed_and_named_by_kind_not_by_name(tm
     assert "1 problem:" in report
     assert "1 memory layer could not be read (1 kind: project)" in report
     # KIND, never NAME: the store's own path is the operator's, and `extra:<name>` is a
-    # grant name. Neither is reportable, so neither may appear.
-    assert str(memory.store.root) not in report
+    # grant name. Neither is reportable IN A CONDITION, so neither may appear there.
+    # AMENDED job65/#142: WAS `not in report`. Line 4 now names the bound store by path --
+    # the issue's contract, and line 4 is not a condition (`docs/status.md`'s metadata rule
+    # is "No path appears in any SENTENCE" of the condition list). The condition block, which
+    # is also what the degraded footer carries on other tools' replies, stays path-free.
+    problems = report.split("1 problem:\n", 1)[1]
+    assert str(memory.store.root) not in problems
+    assert report.split("\n")[3].endswith(f"; bound to {memory.store.root}")
 
 
 def test_a_granted_layer_is_reported_by_its_kind_and_never_by_its_grant_name(tmp_path):

@@ -43,6 +43,7 @@ const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
 const REF = join(here, 'ref', 'cli_ref.py');
 const CLI = join(repoRoot, 'runtime-ts', 'dist', 'cli.js');
+const HOST_LOG_DIRNAME = 'mcp-logs-bantamkit';
 
 /** The same scrub `cli_ref.py` performs, kept literal so the two sides cannot drift apart. */
 const SCRUBBED = ['COLUMNS', 'LINES', 'BANTAMKIT_ASSETS'];
@@ -195,11 +196,58 @@ function fixture(scratch) {
     event(60000, 'memory_recall', 'answered'),
   );
 
+  // The two beds the ASCII promise did not cover (#187). Both INPUT paths — the host root
+  // and the store the event log lives under — are named outside ASCII: Thai, and an emoji
+  // outside the BMP so the escape has to spell a surrogate pair. The report is compared byte
+  // for byte and the reference's bytes are then checked to be ASCII below.
+  const thaiRoot = join(root, 'แคช-😀');
+  write(
+    join(thaiRoot, 'hostlogs', '-Users-x-proj', HOST_LOG_DIRNAME, 'a.jsonl'),
+    okCall('memory_save', SESSION_A, 0, 51),
+  );
+  write(join(thaiRoot, 'store-ชื่อ', 'events', 'mcp.jsonl'), event(10, 'memory_save', 'saved'));
+
+  busyFixture(join(root, 'busy'));
+
   // An empty store: the directory is there, the event log is not.
   mkdirSync(join(root, 'empty-store'), { recursive: true });
   mkdirSync(join(root, 'cwd'), { recursive: true });
   mkdirSync(join(root, 'home'), { recursive: true });
   return root;
+}
+
+/**
+ * The busy day (#130): ONE session of 130,000 calls, GENERATED here and never checked in.
+ *
+ * 260,000 host lines, ~32 MB. Measured 2026-10-14 at 4cc1ab7: the Node report ended in
+ * `RangeError: Maximum call stack size exceeded` from `Math.min(...anchors)` while the
+ * reference answered the same log in 1.4 s. The size is the issue's, and it is above the
+ * V8 spread-argument limit on purpose — a bed of 10,000 would pass against the defect. The
+ * three events sit inside the first calls' windows so the join and the duration buckets run
+ * over the big session too, not only the `[sessions]` line.
+ */
+const BUSY_CALLS = 130_000;
+const BUSY_SESSION = 'busy-1';
+
+function busyFixture(bed) {
+  const base = Date.UTC(2026, 9, 11, 5, 0, 0, 0);
+  const stamp = (offset) => new Date(base + offset).toISOString();
+  const lines = [];
+  for (let i = 0; i < BUSY_CALLS; i += 1) {
+    lines.push(
+      `{"debug":"Calling MCP tool: memory_recall","timestamp":"${stamp(i * 20)}","sessionId":"${BUSY_SESSION}","cwd":"/"}`,
+      `{"debug":"Tool 'memory_recall' completed successfully in 5ms","timestamp":"${stamp(i * 20 + 5)}","sessionId":"${BUSY_SESSION}","cwd":"/"}`,
+    );
+  }
+  write(join(bed, 'hostlogs', '-slug', HOST_LOG_DIRNAME, 'big.jsonl'), `${lines.join('\n')}\n`);
+  write(
+    join(bed, 'store', 'events', 'mcp.jsonl'),
+    [1, 21, 41]
+      .map((offset, i) =>
+        `${JSON.stringify({ v: 1, ts: stamp(offset), tool: 'memory_recall', outcome: i < 2 ? 'answered' : 'empty-no-match', detail: {} })}\n`,
+      )
+      .join(''),
+  );
 }
 
 // ---------------------------------------------------------------------------- the runs
@@ -310,15 +358,31 @@ export async function run(ctx) {
         BANTAMKIT_EVENT_LOG: join(root, 'store', 'events', 'mcp.jsonl'),
       },
     },
+    {
+      // Both input paths outside ASCII (#187). The report must still be ASCII, and it is
+      // the reference's bytes that are checked for that below — the differential alone
+      // would be satisfied by two runtimes that both printed the Thai.
+      label: 'non-ascii-paths',
+      argv: ['--mcp-report', '--store', join(root, 'แคช-😀', 'store-ชื่อ')],
+      env: { BANTAMKIT_HOST_LOG_ROOT: join(root, 'แคช-😀', 'hostlogs'), BANTAMKIT_EVENT_LOG: 'on' },
+    },
+    {
+      // One session of 130,000 calls (#130), generated at run time by `busyFixture`.
+      label: 'busy-130k',
+      argv: ['--mcp-report', '--store', bed('busy').store],
+      env: { BANTAMKIT_HOST_LOG_ROOT: bed('busy').host, BANTAMKIT_EVENT_LOG: 'on' },
+    },
   ];
 
   const cases = [];
   const reports = new Map();
+  const answers = new Map();
   for (const spec of specs) {
     const full = { ...spec, cwd, env: { HOME: home, ...spec.env } };
     const py = runPy(ctx, full);
     const node = runNode(full);
     reports.set(spec.label, py.stdout.toString('utf8'));
+    answers.set(spec.label, { py, node });
     cases.push(
       { name: `${spec.label}/stdout`, kind: 'bytes', expected: py.stdout, actual: node.stdout },
       { name: `${spec.label}/stderr`, kind: 'bytes', expected: py.stderr, actual: node.stderr },
@@ -373,6 +437,51 @@ export async function run(ctx) {
   // Non-vacuity of the two claims above, checked against the bytes rather than asserted.
   if (report.includes('clickup')) throw new Error('mcpreport: the sibling server reached the report');
   if (report.includes('schema_path')) throw new Error('mcpreport: host error text reached the report');
+
+  /**
+   * PRECONDITIONS ON THE REFERENCE, because a differential is blind to a regression that
+   * lands on both sides. Each is a literal typed here, checked against the reference's
+   * bytes, and thrown rather than reported.
+   */
+  const require = (condition, message) => {
+    if (!condition) throw new Error(`mcpreport: ${message}`);
+  };
+  // #187: every byte of the non-ASCII bed's report is ASCII, the Thai is gone, and the two
+  // path lines carry the escapes — the emoji as a surrogate pair, lowercase hex.
+  const thai = answers.get('non-ascii-paths');
+  require(thai.py.exit === 0, `non-ascii-paths: the reference exited ${thai.py.exit}`);
+  require(thai.py.stdout.every((b) => b < 0x80), 'non-ascii-paths: the reference printed a byte outside ASCII');
+  require(thai.node.stdout.every((b) => b < 0x80), 'non-ascii-paths: the port printed a byte outside ASCII');
+  const thaiReport = reports.get('non-ascii-paths');
+  require(!thaiReport.includes('แคช'), 'non-ascii-paths: the host root reached the report verbatim');
+  require(
+    thaiReport.split('\n').some((l) => l.startsWith('host-log-root: ') && l.endsWith('\\u0e41\\u0e04\\u0e0a-\\ud83d\\ude00/hostlogs')),
+    `non-ascii-paths: host-log-root is not escaped: ${JSON.stringify(thaiReport.split('\n')[3])}`,
+  );
+  require(
+    thaiReport.split('\n').some((l) => l.startsWith('event-log: ') && l.includes('store-\\u0e0a\\u0e37\\u0e48\\u0e2d/events/mcp.jsonl')),
+    'non-ascii-paths: event-log is not escaped',
+  );
+  // #130: the busy day is REPORTED on both sides — exit 0, nothing on stderr, and the
+  // session line carries the count. Two crashes would compare equal; this is what says
+  // neither crashed.
+  const busy = answers.get('busy-130k');
+  require(busy.py.exit === 0 && busy.node.exit === 0, `busy-130k: exits ${busy.py.exit} / ${busy.node.exit}`);
+  require(busy.py.stderr.length === 0 && busy.node.stderr.length === 0, 'busy-130k: something was written to stderr');
+  const busyReport = reports.get('busy-130k');
+  require(busyReport.includes(`\nhost-calls: ${BUSY_CALLS}\n`), 'busy-130k: the reference did not count the calls');
+  require(
+    busyReport.split('\n').some((l) => l.startsWith(`${BUSY_SESSION} calls=${BUSY_CALLS} `)),
+    'busy-130k: the session line is missing',
+  );
+  notes.push(
+    `the non-ascii-paths bed names both inputs in Thai plus an emoji outside the BMP, and both reports ` +
+      'are pure ASCII with the two path lines escaped as \\uXXXX per UTF-16 code unit (#187). the ' +
+      'ASCII check is a precondition on each side\'s bytes, not a differential.',
+    `the busy-130k bed is ${BUSY_CALLS} calls in one session, generated at run time and never checked ` +
+      'in; both sides exit 0 with an empty stderr and the same bytes (#130). before the fix the port ' +
+      'died with RangeError on this bed and the reference did not.',
+  );
 
   return { cases, notes };
 }

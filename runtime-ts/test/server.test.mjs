@@ -350,8 +350,8 @@ test('memory_compact refuses a non-integer reserve in pydantic\'s words', async 
     refused.content[0].text,
     'Error executing tool memory_compact: 1 validation error for memory_compactArguments\n' +
       'reserve\n' +
-      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
+      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]",
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
 });
 
@@ -673,10 +673,10 @@ test('bantamkit_read refuses a non-string path and a non-integer limit in pydant
     'Error executing tool bantamkit_read: 2 validation errors for bantamkit_readArguments\n' +
       'path\n' +
       '  Input should be a valid string [type=string_type, input_value=123, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type\n' +
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
       'limit\n' +
-      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]\n" +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/int_parsing',
+      "  Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='2.5', input_type=str]",
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
 });
 
@@ -719,8 +719,8 @@ test('bantamkit_read: an offset past 2^53 is refused by the schema and the bound
     refused.content[0].text,
     'Error executing tool bantamkit_read: 1 validation error for bantamkit_readArguments\n' +
       'offset\n' +
-      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740993, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/less_than_equal',
+      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740993, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.equal(
     await readOne({ path, part: 'Sales', offset: 9007199254740991 }),
@@ -1072,25 +1072,25 @@ test('an argument of the wrong type is refused in the reference runtime’s own 
     text(2),
     'Error executing tool memory_recall: 1 validation error for memory_recallArguments\n' +
       'query\n' +
-      '  Input should be a valid string [type=string_type, input_value=123, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type',
+      '  Input should be a valid string [type=string_type, input_value=123, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.equal(
     text(3),
     'Error executing tool memory_recall: 1 validation error for memory_recallArguments\n' +
       'query\n' +
-      '  Field required [type=missing, input_value={}, input_type=dict]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/missing',
+      '  Field required [type=missing, input_value={}, input_type=dict]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.equal(
     text(4),
     'Error executing tool memory_save: 2 validation errors for memory_saveArguments\n' +
       'links.0\n' +
       '  Input should be a valid string [type=string_type, input_value=1, input_type=int]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type\n' +
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
       'links.2\n' +
-      '  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]\n' +
-      '    For further information visit https://errors.pydantic.dev/2.13/v/string_type',
+      '  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
   assert.match(text(5), /int_from_float/);
   assert.match(text(6), /Input should be a valid dictionary \[type=dict_type, input_value='notadict', input_type=str\]/);
@@ -1271,7 +1271,9 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
   assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
-  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
+  // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
+  // walk bound ABOVE the project was invisible on the one surface that reports binding.
+  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes; bound to ${store}`);
   assert.equal(rows[4], 'event log: off');
   // Line 6, and it is NOT a condition: `session()` puts HOME at a scratch directory with no
   // record in it, so the server says it has never been checked and is still `Active 🟢`.
@@ -1357,14 +1359,15 @@ test('the report carries the update line in every one of the five states, and no
 
 test('the same store one byte of budget tighter reports Degraded, and names the condition', async () => {
   const { size: INDEX_BYTES, degraded: DEGRADED_BUDGET } = await indexFacts();
-  const { lines, stderr } = await statusSession(
+  const { lines, stderr, store } = await statusSession(
     [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
     DEGRADED_BUDGET,
   );
   const report = byId(lines, 3).result.structuredContent.result;
   const rows = report.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
-  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${DEGRADED_BUDGET} bytes`);
+  // AMENDED job65/#142: `; bound to <store>` — see the healthy case above.
+  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${DEGRADED_BUDGET} bytes; bound to ${store}`);
   // The update line sits between `event log:` and the problem block in EVERY state, degraded
   // included — it is not a problem, so it does not join the list of them.
   assert.equal(rows[5], UPDATE_NEVER);
@@ -1519,7 +1522,11 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
       'nothing is saved — check that those store directories exist and are readable.',
   );
   assert.ok(!report.includes('somebodys-private-notes'), `the grant NAME leaked into the report:\n${report}`);
-  assert.ok(!report.includes(bed), `a path leaked into the report:\n${report}`);
+  // AMENDED job65/#142: WAS `!report.includes(bed)` over the whole report. Line 4 now names
+  // the bound PROJECT store by path (the issue's contract; line 4 is not a condition). The
+  // problem block — what the degraded footer carries — still names no path.
+  assert.ok(!rows.slice(6).join('\n').includes(bed), `a path leaked into the problems:\n${report}`);
+  assert.equal(rows[3].split('; bound to ')[1], join(bed, '.bantamkit', 'memory'));
   assert.equal(stderr, '');
 });
 
@@ -1789,4 +1796,54 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   const footer = byId(lines, 4).result.structuredContent.bantamkit_degraded;
   assert.ok(footer.startsWith(`${FOOTER_HEAD}2): the memory index is `), footer);
   assert.equal(stderr, '');
+});
+
+// ------------------------------------------------------ #133 (job65): skill_audit's two bounds
+
+test('#133: skill_audit refuses a negative usage count and a budget past 2^53 in the reference frames', async () => {
+  // Per-side literals, beside the differential in `tools/conformance/suites/wire.mjs`: the
+  // manifest advertised `usage` values `minimum: 0` and `budget.maximum: 9007199254740991`
+  // and neither runtime enforced either until this job. The frames below were measured on
+  // pydantic 2.13 (`dict[str, Annotated[int, Field(ge=0)]]`, `Annotated[int, Field(le=...)]`)
+  // and name the ORIGINAL input — the string `'-1'`, not the `-1` it parsed to.
+  const { ARG_MODELS, SKILL_BUDGET_MAXIMUM, validateArguments } = await import('../dist/mcp/pyargs.js');
+  const { fromJs, parseJson } = await import('../dist/pyjson.js');
+  assert.equal(SKILL_BUDGET_MAXIMUM, 9007199254740991n);
+  const refusal = (args) => {
+    try {
+      validateArguments(ARG_MODELS.skill_audit, args);
+    } catch (error) {
+      return error.detail;
+    }
+    return 'accepted';
+  };
+  assert.equal(
+    refusal(fromJs({ root: 'x', usage: { 'solo-check': -1 } })),
+    '1 validation error for skill_auditArguments\n' +
+      'usage.solo-check\n' +
+      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
+  );
+  assert.equal(
+    refusal(fromJs({ root: 'x', usage: { a: '-1', b: 2, c: -3 } })),
+    '2 validation errors for skill_auditArguments\n' +
+      'usage.a\n' +
+      "  Input should be greater than or equal to 0 [type=greater_than_equal, input_value='-1', input_type=str]\n" +
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
+      'usage.c\n' +
+      '  Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-3, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
+  );
+  // 2^53 is exact in JSON text; `parseJson` keeps it as a bigint so the frame prints it whole.
+  assert.equal(
+    refusal(parseJson('{"root": "x", "budget": 9007199254740992}')),
+    '1 validation error for skill_auditArguments\n' +
+      'budget\n' +
+      '  Input should be less than or equal to 9007199254740991 [type=less_than_equal, input_value=9007199254740992, input_type=int]',
+      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
+  );
+  // The floor of `usage` and the ceiling of `budget` are inclusive; a negative budget is
+  // the HANDLER's refusal (`budget must not be negative`), not this table's.
+  assert.equal(refusal(fromJs({ root: 'x', usage: { 'solo-check': 0 }, budget: 9007199254740991 })), 'accepted');
+  assert.equal(refusal(fromJs({ root: 'x', budget: -1 })), 'accepted');
 });

@@ -1053,9 +1053,14 @@ test('a corrupt read-only layer is skipped; the project layer failing is a real 
   sandboxed(home, () => {
     assert.match(Memory.layered(project, frozen()).recall('shared'), /^\[project\] \[a\] /);
     writeFileSync(join(store, 'facts', 'broken.md'), 'no frontmatter at all\n');
-    assert.throws(() => Memory.layered(project, frozen()).recall('shared'), MemoryValidationError);
+    // AMENDED job65 (#119): this pinned `assert.throws(..., MemoryValidationError)` — the
+    // defect #119 reports ("fails the recall on one bad project fact"). One malformed fact
+    // now costs that fact and is NAMED; a project store that cannot be LISTED still throws.
+    const reply = Memory.layered(project, frozen()).recall('shared');
+    assert.match(reply, /^\[project\] \[a\] /);
+    assert.match(reply, /\n\[project\] malformed fact file broken\.md: /);
   });
-  t.diagnostic('the grant raised inside recall and was skipped; the project layer was not');
+  t.diagnostic('one bad file in either layer costs that file; the rest still answer');
 });
 
 // ------------------------------------- roadmap #6: the precision gate, from the component
@@ -1145,4 +1150,53 @@ test('Memory.recall passes the ratio through to the outcome', () => {
   const mem = new Memory(root, frozen({ k: 9 }));
   assert.ok(mem.recall('alpha bravo charlie delta').includes('[weak]'));
   assert.ok(!mem.recall('alpha bravo charlie delta', null, 1.0).includes('[weak]'));
+});
+
+test('a grant naming a regular file says it is not a directory (#184)', () => {
+  // Mutation: drop the pyExists arm in loadGrants -> red ("does not exist").
+  const bed = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-grant-file-')));
+  const store = join(bed, 'proj', '.bantamkit', 'memory');
+  mkdirSync(store, { recursive: true });
+  writeFileSync(join(bed, 'afile'), 'x');
+  const config = join(bed, 'proj', '.bantamkit', 'config.yaml');
+  writeFileSync(config, 'extra_stores:\n  - ../../afile\n');
+  assert.throws(() => loadGrants(store), (e) =>
+    e instanceof MemoryValidationError &&
+    e.message === `granted store is not a directory: ${join(bed, 'afile')} (from ${config})`);
+  rmSync(bed, { recursive: true, force: true });
+});
+
+// job65/#158: a tab PyYAML will not scan is refused in ONE sentence, the one `layers.py` gives.
+for (const [text, line, column] of [
+  ['extra_stores:\n\t- ../other\n', 2, 1],
+  ['extra_stores:\t[../other]\n', 1, 14],
+  ['extra_stores:\n  -\t../other\n', 2, 4],
+  ['extra_stores: []\t# none\n', 1, 17],
+]) {
+  test(`#158: a tab at line ${line}, column ${column} is refused in the reference's sentence`, () => {
+    const bed = mkdtempSync(join(tmpdir(), 'bk-tab-'));
+    try {
+      const store = join(bed, 'proj', '.bantamkit', 'memory');
+      mkdirSync(store, { recursive: true });
+      const config = join(bed, 'proj', '.bantamkit', 'config.yaml');
+      writeFileSync(config, text);
+      assert.throws(() => loadGrants(store), (e) => e instanceof MemoryValidationError &&
+        e.message === `invalid memory config ${config}: line ${line}, column ${column}: a tab cannot start a YAML token; indent with spaces`);
+    } finally {
+      rmSync(bed, { recursive: true, force: true });
+    }
+  });
+}
+
+test('#158: a tab inside a comment or a quoted grant is not refused', () => {
+  const bed = realpathSync(mkdtempSync(join(tmpdir(), 'bk-tab-')));
+  try {
+    const store = join(bed, 'proj', '.bantamkit', 'memory');
+    mkdirSync(store, { recursive: true });
+    mkdirSync(join(bed, 'proj', '.bantamkit', 'a\tb'));
+    writeFileSync(join(bed, 'proj', '.bantamkit', 'config.yaml'), "# a\tcomment\nextra_stores:\n  - 'a\tb'\n");
+    assert.deepEqual(loadGrants(store), [join(bed, 'proj', '.bantamkit', 'a\tb')]);
+  } finally {
+    rmSync(bed, { recursive: true, force: true });
+  }
 });

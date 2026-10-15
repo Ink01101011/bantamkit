@@ -24,6 +24,9 @@ bytes. Handing over a pre-parsed object would silently erase the int/float disti
     {"op": "contract", "name": str}
         -> {"data": {key: b64}} | {"error": {...}}
 
+    {"op": "pattern_dialect", "patterns": [b64], "strings": [b64]}
+        -> {"results": ["error" | "unsupported" | "0110…" (re.search per string)]}
+
     {"op": "iter_errors", "cases": [{"schema": b64_json_text, "instance": b64_json_text}]}
         -> {"results": [{"trace": [{"path": [...], "kw": str|None, "msg": b64}],
                          "best": {...}|None}]}
@@ -33,13 +36,15 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import sys
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
 import jsonschema
-from bantamkit.contract import extract_json, load_contract, schema_error
+from bantamkit.contract import _pattern_unsupported, extract_json, load_contract, schema_error
 from jsonschema.exceptions import best_match
 
 
@@ -109,6 +114,28 @@ def main() -> None:
             json.dump(caught(e), sys.stdout)
             return
         json.dump({"data": {k: b64(v) for k, v in data.items()}}, sys.stdout)
+        return
+
+    if op == "pattern_dialect":
+        # The dialect itself (#131), one row per pattern: refused as outside the shared
+        # dialect, refused by `re`, or the search bit per string. The pre-scan runs first,
+        # exactly as `contract._unsupported_schema` runs before `check_schema`.
+        strings = [unb64(t) for t in payload["strings"]]
+        results = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # `re`'s FutureWarnings are not the measurement
+            for text in payload["patterns"]:
+                pattern = unb64(text)
+                if _pattern_unsupported(pattern):
+                    results.append("unsupported")
+                    continue
+                try:
+                    compiled = re.compile(pattern)
+                except Exception:  # noqa: BLE001 - re.error, OverflowError, ValueError alike
+                    results.append("error")
+                    continue
+                results.append("".join("1" if compiled.search(s) else "0" for s in strings))
+        json.dump({"results": results}, sys.stdout)
         return
 
     if op == "iter_errors":

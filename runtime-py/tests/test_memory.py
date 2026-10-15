@@ -1,5 +1,6 @@
 import io
 import itertools
+import json
 import os
 import re
 import subprocess
@@ -2900,3 +2901,328 @@ def test_zero_and_one_are_both_inside_the_accepted_range(store):
     _score_ladder(store)
     assert store.recall(_LADDER_QUERY, k=10, min_ratio=0.0)
     assert store.recall(_LADDER_QUERY, k=10, min_ratio=1.0)
+
+
+# ---- job65 (J65-2): the two hand-edit shapes compact tolerates, and `--reserve 0` ----
+#
+# Every file the store WRITES quotes `created`, names the file after the fact, and is one
+# the eviction sort can order. A file a hand reaches is none of those by guarantee, and
+# until job65 three such files each had their own failure on BOTH runtimes: an unquoted
+# `created: 2026-01-01` killed `compact` with `'<' not supported between instances of
+# 'datetime.date' and 'str'` (#121); a `stale.md` whose frontmatter said `name: fresh-one`
+# made `compact` archive `facts/fresh-one.md` — the NEWEST fact — and report the stalest as
+# gone (#122); and `--reserve 0`, which the tool schema allows, was refused by the CLI
+# with `must be >= 1` (#134). The fixtures below are written by hand ON PURPOSE.
+
+
+def _hand_fact(store, filename, name, description, created, *, body="b", last_recalled="null"):
+    """A fact file as a hand would write it: `created` and `last_recalled` spelled verbatim."""
+    (store.root / "facts" / filename).write_text(
+        f"---\nname: {name}\ndescription: {description}\ntype: project\n"
+        f"created: {created}\nlast_recalled: {last_recalled}\nlinks: []\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def _index_bytes(store):
+    return len(store.index_text().encode("utf-8"))
+
+
+def test_an_unquoted_created_date_is_read_as_the_quoted_string(tmp_path):
+    """#121: `yaml.safe_load` hands back a `datetime.date`; the Fact carries its `str()`."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "hand-edit.md", "hand-edit", "hand edited fact", "2026-01-01")
+    _hand_fact(
+        store, "dt.md", "dt", "a datetime", "'2026-10-11'", last_recalled="2026-08-23T10:00:00Z"
+    )
+    facts = {fact.name: fact for fact in store._facts()}
+    assert facts["hand-edit"].created == "2026-01-01"
+    assert isinstance(facts["hand-edit"].created, str)
+    # `str(datetime)` is `isoformat(' ')`, and `Z` is `+00:00` — the port's scalar text.
+    assert facts["dt"].last_recalled == "2026-08-23 10:00:00+00:00"
+    assert facts["hand-edit"].source == store.root / "facts" / "hand-edit.md"
+
+
+def test_compact_treats_an_unquoted_created_date_like_the_quoted_form(tmp_path):
+    """#121: the stalest fact by date leaves, whether or not its date was quoted."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    for name, description in (
+        ("f1", "alpha apples"),
+        ("f2", "bravo bananas"),
+        ("f3", "charlie cherries"),
+    ):
+        assert store.save("project", name, description, "b").status == "saved"
+    _hand_fact(store, "hand-edit.md", "hand-edit", "hand edited fact", "2026-01-01")
+    store.index_budget = _index_bytes(store) - 1  # exactly one line has to go
+    result = store.compact(reserve=0)
+    assert result.names == ["hand-edit"], result
+    assert (store.root / "archive" / "hand-edit.md").exists()
+    # The remedy the budget refusal names is alive again: the store recalls and saves.
+    assert [f.name for f in store.recall("bravo bananas")] == ["f2"]
+
+
+def test_lint_names_an_unquoted_timestamp_by_file_and_field(tmp_path):
+    """#121: lint is where the hand-edit is NAMED, with the fix; compact tolerates it."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    store.save("project", "ok", "a written fact", "b")
+    _hand_fact(store, "hand-edit.md", "hand-edit", "hand edited fact", "2026-01-01")
+    with pytest.raises(MemoryValidationError) as e:
+        store.lint()
+    assert str(e.value) == (
+        "fact 'hand-edit' in hand-edit.md: created is the unquoted timestamp 2026-01-01, "
+        "read as '2026-01-01'; quote it"
+    )
+    # The next write re-quotes it, so a recall that stamps the fact heals the file.
+    store.recall("hand edited", stamp=True)
+    healed = (store.root / "facts" / "hand-edit.md").read_text(encoding="utf-8")
+    assert "created: '2026-01-01'" in healed
+    store.lint()
+
+
+def test_compact_archives_the_file_a_fact_was_read_from_not_its_name(tmp_path):
+    """#122: `stale.md` says `name: fresh-one`; the stale FILE moves, the fresh one stays."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "fresh-one.md", "fresh-one", "the newest fact", "'2026-10-01'", body="NEW")
+    _hand_fact(store, "keep-a.md", "keep-a", "keep this one", "'2026-10-02'")
+    _hand_fact(store, "stale.md", "fresh-one", "the stalest fact", "'2020-01-01'", body="OLD")
+    store.index_budget = _index_bytes(store) - 1
+    result = store.compact(reserve=0)
+    assert result.names == ["fresh-one"]  # the frontmatter name, as always
+    # The arithmetic counts FILES, not names: 134 bytes before, 87 after (#122's report
+    # said "88 to 41" because two facts named `fresh-one` collapsed into one size).
+    assert (result.index_before, result.index_after) == (134, 87)
+    assert sorted(p.name for p in (store.root / "archive").iterdir()) == ["stale.md"]
+
+    def body(rel):
+        return (store.root / rel).read_text(encoding="utf-8").rstrip().rsplit("\n", 1)[-1]
+
+    assert body("archive/stale.md") == "OLD"
+    assert body("facts/fresh-one.md") == "NEW"
+
+
+def test_compact_with_a_numeric_name_in_a_misnamed_file_moves_that_file(tmp_path):
+    """#122's crashing variant: `name: 7` in `seven.md` used to raise for `facts/7.md`."""
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "seven.md", "7", "a numeric name", "'2020-01-01'", body="OLD")
+    _hand_fact(store, "keep-a.md", "keep-a", "keep this one", "'2026-10-02'")
+    store.index_budget = _index_bytes(store) - 1
+    result = store.compact(reserve=0)
+    assert [str(name) for name in result.names] == ["7"]
+    assert sorted(p.name for p in (store.root / "archive").iterdir()) == ["seven.md"]
+    assert sorted(p.name for p in (store.root / "facts").iterdir()) == ["keep-a.md"]
+
+
+def test_lint_names_a_file_whose_name_is_not_the_facts(tmp_path):
+    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-10-14")
+    _hand_fact(store, "stale.md", "fresh-one", "the stalest fact", "'2020-01-01'")
+    with pytest.raises(MemoryValidationError) as e:
+        store.lint()
+    assert str(e.value) == (
+        "fact 'fresh-one' in stale.md: the file name does not match the fact name; "
+        "rename the file to fresh-one.md or the fact to stale"
+    )
+
+
+def test_compact_cli_accepts_reserve_zero_and_refuses_a_negative_one(tmp_path, capsys):
+    """#134: the tool schema says `minimum: 0`; the CLI agrees, and -1 is the floor."""
+    store = MemoryStore(tmp_path / "mem")
+    _fill(store, 4)
+    budget = _index_bytes(store) - 1
+    code, out, _ = _run(
+        ["compact", "--store", str(store.root), "--budget", str(budget), "--reserve", "0"],
+        capsys,
+    )
+    assert code == 0
+    assert f"(budget {budget}, target {budget}, reserve 0, " in out, out
+    with pytest.raises(SystemExit) as e:
+        _run(["compact", "--store", str(store.root), "--reserve", "-1"], capsys)
+    assert e.value.code == 2
+    assert "argument --reserve: must be >= 0" in capsys.readouterr().err
+
+
+def test_the_served_reserve_description_quotes_the_default_the_code_computes(tmp_path):
+    """#134: the description's worked example is the store's own arithmetic, re-derived."""
+    repo = Path(bantamkit.__file__).parent.parent.parent.parent
+    asset = json.loads((repo / "assets/tools/memory_compact.json").read_text(encoding="utf-8"))
+    description = asset["parameters"]["properties"]["reserve"]["description"]
+    store = MemoryStore(tmp_path / "mem", index_budget=24000)
+    store.save("project", "one", "only fact here", "b")
+    assert _index_bytes(store) == 39
+    result = store.compact()
+    assert (result.reserve, result.target) == (2440, 21560)
+    for number in ("2401 + 39 = 2440", "21560-byte target", "(90 * budget - 1) // 100"):
+        assert number in description, description
+
+
+# ---------------------------------------------------------------------------
+# job65 J65-6: a read-only store answers recall (#123), a store that exists and
+# refuses a write says so (#141), a per-writer temp that is removed on failure (#161),
+# and a non-UTF-8 fact file that is named (#159). Failures are INJECTED by errno rather
+# than by chmod, the repo's rule for a property that must hold on every platform and uid
+# (see `_deny_replace`); the conformance `store` suite runs the real chmod shapes.
+# ---------------------------------------------------------------------------
+
+
+def _raising(err):
+    """A `Path` method that always raises `OSError(err)` naming its own path."""
+
+    def method(self, *args, **kwargs):
+        raise OSError(err, os.strerror(err), str(self))
+
+    return method
+
+
+def _refuse_writes_under(monkeypatch, directory, err=13):
+    """Make every `Path.open("x")` and `Path.mkdir` under `directory` fail with errno `err`."""
+    import errno as errno_mod
+
+    real_open, real_mkdir = Path.open, Path.mkdir
+    directory = Path(directory)
+
+    def guarded_open(self, mode="r", *args, **kwargs):
+        if "x" in mode and directory in self.parents:
+            raise OSError(err, os.strerror(err), str(self))
+        return real_open(self, mode, *args, **kwargs)
+
+    def guarded_mkdir(self, *args, **kwargs):
+        if self == directory or directory in self.parents:
+            if self.is_dir():
+                raise OSError(err, os.strerror(err), str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(Path, "mkdir", guarded_mkdir)
+    return errno_mod
+
+
+@pytest.mark.parametrize("err", [13, 1, 30])  # EACCES, EPERM, EROFS
+def test_recall_on_a_store_that_refuses_the_stamp_still_answers(tmp_path, monkeypatch, err):
+    """#123: the stamp is bookkeeping and a pure read must not die of it.
+
+    Mutation: let `_stamp_write` call `_write_fact` unguarded -> 3 red (the OSError escapes)."""
+    store = _three_facts(tmp_path)
+    facts = store.root / "facts"
+    before = {p.name: p.read_bytes() for p in facts.iterdir()}
+    _refuse_writes_under(monkeypatch, store.root, err)
+    hits = MemoryStore(store.root, create=False, today=lambda: "2026-10-15").recall("w0a")
+    assert [f.name for f in hits] == ["fact-0"]
+    monkeypatch.undo()
+    assert {p.name: p.read_bytes() for p in facts.iterdir()} == before, "nothing dated, no temp"
+
+
+@pytest.mark.parametrize("err", [13, 1, 30])
+def test_save_into_a_store_that_exists_but_refuses_writes_says_not_writable(
+    tmp_path, monkeypatch, err
+):
+    """#141, both arms: the mkdir arm (a 000 root) and the write arm (a 555 store).
+
+    Mutation: drop `NOT_WRITABLE_ERRNOS` from `_ensure_dirs` and `save` -> 6 red."""
+    store = _three_facts(tmp_path)
+    expected = (
+        f"memory store is not writable: {store.root}: {os.strerror(err)}; the directory"
+        " exists but cannot be written to, so nothing was written"
+    )
+    # Write arm: every directory is there, the fact's temp is what the mode refuses.
+    real_open = Path.open
+
+    def refuse_exclusive(self, mode="r", *a, **k):
+        if "x" in mode:
+            raise OSError(err, os.strerror(err), str(self))
+        return real_open(self, mode, *a, **k)
+
+    monkeypatch.setattr(Path, "open", refuse_exclusive)
+    with pytest.raises(MemoryValidationError) as e:
+        store.save("project", "new-one", "an unrelated subject line", "b")
+    assert str(e.value) == expected
+    monkeypatch.undo()
+    # Mkdir arm: `facts/` is gone and the root refuses to have it made again.
+    for p in (store.root / "facts").iterdir():
+        p.unlink()
+    (store.root / "facts").rmdir()
+    real_mkdir = Path.mkdir
+
+    def refuse(self, *a, **k):
+        if self.parent == store.root:
+            raise OSError(err, os.strerror(err), str(self))
+        return real_mkdir(self, *a, **k)
+
+    monkeypatch.setattr(Path, "mkdir", refuse)
+    with pytest.raises(MemoryValidationError) as e:
+        store.save("project", "new-one", "an unrelated subject line", "b")
+    assert str(e.value) == expected
+
+
+def test_a_root_that_is_not_there_keeps_the_not_there_sentence(tmp_path, monkeypatch):
+    """#141's other half: "is not there" is reserved for a root that is not there, even when
+    the mkdir errno is EACCES/EROFS (cwd `/` gives EROFS on macOS, EACCES on Linux).
+
+    Mutation: test the errno alone, without `_present()` -> 1 red."""
+    root = tmp_path / "absent" / "mem"
+    monkeypatch.setattr(Path, "mkdir", _raising(30))
+    with pytest.raises(MemoryValidationError) as e:
+        MemoryStore(root, create=False).save("project", "a", "a subject", "b")
+    assert str(e.value) == (
+        f"memory store could not be created: {root}; the directory is not there and this"
+        " filesystem would not make it, so nothing was written"
+    )
+
+
+def test_a_save_never_touches_a_sibling_named_like_the_old_temp(tmp_path):
+    """#161: `<name>.md.tmp` was every writer's temp, so a save truncated and renamed away
+    whatever sat there. The temp is per-writer now, so a stray file of that name survives.
+
+    Mutation: `tmp = path.with_suffix(".md.tmp")` again -> 1 red."""
+    store = _three_facts(tmp_path)
+    sibling = store.root / "facts" / "fact-0.md.tmp"
+    sibling.write_bytes(b"not ours\n")
+    store.save("project", "fact-0", "w0a w0b w0c w0d", "rewritten")
+    assert sibling.read_bytes() == b"not ours\n"
+    assert "rewritten" in (store.root / "facts" / "fact-0.md").read_text(encoding="utf-8")
+
+
+def test_a_write_that_fails_leaves_no_temp_behind(tmp_path, monkeypatch):
+    """#161: a rename that fails (stand-in for EFBIG/ENOSPC mid-write) removes its temp.
+
+    Mutation: drop the `tmp.unlink()` in `_write_fact` -> 1 red."""
+    store = _three_facts(tmp_path)
+    monkeypatch.setattr(Path, "replace", _raising(28))
+    with pytest.raises(OSError):
+        store.save("project", "fresh", "an unrelated subject line", "b")
+    monkeypatch.undo()
+    assert sorted(p.name for p in (store.root / "facts").iterdir()) == [
+        "fact-0.md", "fact-1.md", "fact-2.md"
+    ]
+
+
+def test_twenty_processes_saving_different_facts_all_land(tmp_path):
+    """#161's concurrency property, run for real: 20 writers, one store, 20 facts, no temps."""
+    root = tmp_path / "mem"
+    MemoryStore(root).save("project", "seed", "seed subject", "b")
+    code = (
+        "import sys; from bantamkit.memory.store import MemoryStore; i = sys.argv[2]; "
+        "MemoryStore(sys.argv[1]).save('project', 'fact-' + i, 'subject ' + i + ' q' + i * 3, 'b')"
+    )
+    procs = [
+        subprocess.Popen([sys.executable, "-c", code, str(root), str(i)], stderr=subprocess.PIPE)
+        for i in range(20)
+    ]
+    errs = [p.communicate()[1] for p in procs]
+    assert [e for e in errs if e] == []
+    names = sorted(p.name for p in (root / "facts").iterdir())
+    assert len(names) == 21 and all(n.endswith(".md") for n in names), names
+
+
+def test_a_fact_file_that_is_not_utf8_is_named(tmp_path):
+    """#159: `malformed fact file <name>: <the decoder's own text>`, from every reader.
+
+    Mutation: move `read_text` back above the `try` -> 1 red."""
+    store = _three_facts(tmp_path)
+    with open(store.root / "facts" / "fact-1.md", "ab") as fh:
+        fh.write(b"\xff\xfe")
+    for call in (lambda: store.recall("w0a"), store.index_text, store.lint,
+                 lambda: store.save("project", "x", "an unrelated subject", "b")):
+        with pytest.raises(MemoryValidationError) as e:
+            call()
+        assert str(e.value).startswith(
+            "malformed fact file fact-1.md: 'utf-8' codec can't decode byte 0xff"
+        )

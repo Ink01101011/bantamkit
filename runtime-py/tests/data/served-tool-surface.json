@@ -57,8 +57,7 @@
         "properties": {
           "reserve": {
             "type": "integer",
-            "minimum": 0,
-            "description": "Bytes of index headroom to free below the budget. Omit for the default: the size of the largest index line the store holds, capped at half the budget."
+            "description": "Bytes of index headroom to free below the budget: the target is `budget - reserve`, a negative value counts as 0, any value is capped at half the budget, and 0 compacts to the budget itself. Omit for the default: the room the degraded-index warning demands (the budget minus `(90 * budget - 1) // 100`) plus the size of the largest index line the store holds -- at the default 24000-byte budget with a 39-byte largest line that is 2401 + 39 = 2440, a 21560-byte target."
           }
         }
       },
@@ -86,9 +85,7 @@
           },
           "k": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 5,
-            "description": "Facts wanted. Raised to the store default of 3 when smaller; never lowered below it."
+            "description": "Facts wanted, clamped to 1..5. Raised to the store default of 3 when smaller; never lowered below it."
           }
         },
         "required": [
@@ -167,7 +164,7 @@
       }
     },
     "shiftwork_clock_in": {
-      "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. The unit briefed is the one at plan.cursor, or, when unit_id is given, that unit — which must appear in shiftwork_plan's `ready`, the batch the dependency graph says may run now. A unit_id that is not ready, including one naming no unit, is refused with {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and the refusals of the batch view itself (cycle, unknown dependency, unreadable checkpoint) pass through verbatim. Clock-in still never moves plan.cursor; clock_out does. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
+      "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. The unit briefed is the one at plan.cursor, or, when unit_id is given, that unit — either way it must appear in shiftwork_plan's `ready`, the batch the dependency graph says may run now: the cursor unit is held to the same ready test as unit_id. A unit that is not ready (a done or dropped cursor, a cursor whose dependencies have not run, a unit_id naming no unit) is refused with {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and on both paths the refusals of the batch view itself (cycle, unknown dependency, unreadable checkpoint) pass through verbatim; a cursor naming no unit still escalates. Clock-in still never moves plan.cursor; clock_out does. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -284,7 +281,7 @@
             "anyOf": [
               {
                 "type": "object",
-                "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged (a refused key is friction, not safety). Lines written before this schema existed may spell these differently; the schema governs new writes only.",
+                "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged, except the five the runtime writes itself — unit, role, status, ts, event — which are refused (result=error) before anything is written; a self-reported briefed is overwritten, not refused. Lines written before this schema existed may spell these differently; the schema governs new writes only.",
                 "properties": {
                   "tokens": {
                     "type": "integer",
@@ -367,7 +364,7 @@
       }
     },
     "validate_json": {
-      "description": "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; when invalid, feed the feedback back to the model and retry.",
+      "description": "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; when invalid, feed the feedback back to the model and retry. The output may be any JSON value; otherwise the first fenced block, or the first object or array in the text, is used. $schema selects draft-04, draft-06, draft-07, 2019-09 or 2020-12 (default); $ref resolves only inside the one schema (\"#\", \"#/...\", \"#name\"), so a remote reference or an embedded $id is refused. pattern is Python re syntax, without inline flags, look-behind, backreferences, atomic or possessive groups, conditional groups or \\N{...}; a document's patterns get 500 ms in total.",
       "inputSchema": {
         "properties": {
           "output": {
@@ -521,7 +518,7 @@
       }
     },
     "work_plan": {
-      "description": "Work plan: turn a dependency graph into the batches that may run in parallel. Takes `nodes`, each `{id, depends_on, priority}` — `priority` defaults to 0 — and answers `{\"result\": \"plan\", \"batches\", \"sequence\", \"width\"}`: batch k holds every node whose dependencies all appear in batches below k, `sequence` is those batches flattened in order, and `width` is the largest batch length — the widest fan-out, which is the number an orchestrator needs to decide whether it can afford the batch. Order inside a batch is priority descending, then the order the nodes were given; both halves are contract, because determinism inside a batch is what two implementations are held to. Empty `nodes` is an ANSWER, not a refusal: no batches, no sequence, width 0. Three refusals, checked in this order and one sentence each: `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. It reports what the graph permits and decides nothing about what may actually be dispatched together — `depends_on` encodes logical order, not file contention, so a batch this tool calls parallel may still hold work that writes one file. Pure computation over the nodes it was handed: it opens no file and takes no path. Never mutates.",
+      "description": "Work plan: turn a dependency graph into the batches that may run in parallel. Takes `nodes`, each `{id, depends_on, priority}` — `depends_on` absent or null means none, `priority` defaults to 0 — and answers `{\"result\": \"plan\", \"batches\", \"sequence\", \"width\"}`: batch k holds every node whose dependencies all appear in batches below k, `sequence` is those batches flattened in order, and `width` is the largest batch length — the widest fan-out, which is the number an orchestrator needs to decide whether it can afford the batch. Order inside a batch is priority descending, then the order the nodes were given; both halves are contract, because determinism inside a batch is what two implementations are held to. Empty `nodes` is an ANSWER, not a refusal: no batches, no sequence, width 0. Four refusals, checked in this order and one sentence each: `nodes[<i>].<field> must be ...` for a node whose `id` is not a string, whose `depends_on` is not a list of strings or whose `priority` is not an integer (named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. It reports what the graph permits and decides nothing about what may actually be dispatched together — `depends_on` encodes logical order, not file contention, so a batch this tool calls parallel may still hold work that writes one file. Pure computation over the nodes it was handed: it opens no file and takes no path. Never mutates.",
       "inputSchema": {
         "properties": {
           "nodes": {
@@ -535,11 +532,18 @@
                   "description": "The node's identifier, unique across `nodes`"
                 },
                 "depends_on": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "description": "Ids this node waits for; every one of them must be declared by some node"
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Ids this node waits for; every one of them must be declared by some node. Optional: absent or null means none"
                 },
                 "priority": {
                   "type": "integer",
@@ -547,8 +551,7 @@
                 }
               },
               "required": [
-                "id",
-                "depends_on"
+                "id"
               ]
             }
           }

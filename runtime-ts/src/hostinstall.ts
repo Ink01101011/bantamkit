@@ -36,21 +36,24 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { currentInstall, Undetermined } from './mcp/identity.js';
 import { bantamkitDirFor, ensureBantamkitGitignore } from './memory/store.js';
 import { compareVersions, keptCli, keptManifest, keptPrefix, PACKAGE, runInstaller, shlexJoin } from './npminstall.js';
-import { dumpJson, fromJs } from './pyjson.js';
+import { dumpJson, fromJs, parseJson, PyJSONDecodeError, type PyValue } from './pyjson.js';
 
 export { keptCli, keptPrefix };
 
@@ -66,6 +69,18 @@ export class InstallError extends Error {}
 
 const dumps = (value: unknown, indent: number | null = null, sortKeys = false): string =>
   dumpJson(fromJs(value), { indent, sortKeys });
+
+/**
+ * THE HOST FILE IS HELD AS THE REFERENCE HOLDS IT (#118): a tagged `PyValue` from
+ * `parseJson`, never a `JSON.parse` object. The difference is the user's own data: through a
+ * JS number `12345678901234567890` becomes `1.2345678901234567e+19`, `1.0` becomes `1`, and
+ * `1e400` becomes `Infinity` and is written back as that bare word, which no JSON parser —
+ * Cursor's included — will read. Through a JS object an integer-like key such as `"9"` moves
+ * to the front. A `Map` of `PyValue`s keeps the int/float split, the arbitrary precision and
+ * the key order the file had, so `dumpJson` writes back the bytes `json.dumps` writes.
+ */
+type PyDict = { readonly t: 'dict'; readonly v: Map<string, PyValue> };
+const pyDict = (entries?: Iterable<readonly [string, PyValue]>): PyDict => ({ t: 'dict', v: new Map(entries) });
 
 /**
  * The file `--install <host>` would write, on THIS platform.
@@ -118,56 +133,143 @@ export function entryFor(host: Host, command: string, args: string[]): Record<st
  * `[1, 2, 3]`, the ONE input where the two vocabularies happen to agree, so neither suite
  * could see it. Review measured `"hello"` and `5`.
  *
- * `int` vs `float` follows `json`'s own split: a JSON number with no fraction and no exponent
- * is decoded by `int`, everything else by `float`.
+ * Since #118 the value is tagged by the same split `json` makes — a JSON number with no
+ * fraction and no exponent is `int`, everything else `float` — so the tag IS the name.
  */
-function pyTypeName(value: unknown): string {
-  if (value === null) return 'NoneType';
-  if (Array.isArray(value)) return 'list';
-  if (typeof value === 'string') return 'str';
-  if (typeof value === 'boolean') return 'bool';
-  if (typeof value === 'number') return Number.isInteger(value) ? 'int' : 'float';
-  return typeof value;
+function pyTypeName(value: PyValue): string {
+  switch (value.t) {
+    case 'null':
+      return 'NoneType';
+    case 'bool':
+      return 'bool';
+    case 'int':
+      return 'int';
+    case 'float':
+      return 'float';
+    case 'str':
+      return 'str';
+    case 'list':
+      return 'list';
+    case 'dict':
+      return 'dict';
+  }
 }
 
-function readConfig(path: string): Record<string, unknown> {
-  if (!existsSync(path)) return {};
+/**
+ * The first non-finite float in `value`, with where it sits, or `null`. Depth-first, in
+ * document order, so both runtimes name the same number when a file holds two.
+ */
+function nonFiniteIn(value: PyValue, trail: readonly (string | number)[]): { where: string; value: number } | null {
+  if (value.t === 'float' && !Number.isFinite(value.v)) return { where: whereIs(trail), value: value.v };
+  if (value.t === 'dict') {
+    for (const [key, item] of value.v) {
+      const found = nonFiniteIn(item, [...trail, key]);
+      if (found !== null) return found;
+    }
+  } else if (value.t === 'list') {
+    for (const [index, item] of value.v.entries()) {
+      const found = nonFiniteIn(item, [...trail, index]);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+/** `mcpServers.other.huge`, `servers.list[2]`: keys joined by `.`, indexes in brackets. */
+function whereIs(trail: readonly (string | number)[]): string {
+  let out = '';
+  for (const segment of trail) {
+    if (typeof segment === 'number') out += `[${segment}]`;
+    else out += out === '' ? segment : `.${segment}`;
+  }
+  return out === '' ? 'the top level' : out;
+}
+
+function readConfig(path: string): PyDict {
+  if (!existsSync(path)) return pyDict();
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
   } catch (e) {
     throw new InstallError(`cannot read ${path}: ${(e as Error).message}`);
   }
-  if (text.trim() === '') return {};
-  let loaded: unknown;
+  if (text.trim() === '') return pyDict();
+  let loaded: PyValue;
   try {
-    loaded = JSON.parse(text);
+    loaded = parseJson(text);
   } catch (e) {
-    // The reference reports CPython's message, line and column. `JSON.parse` gives neither
-    // the same wording nor a position, so this is a RULED difference rather than a silent
-    // one: both refuse, both name the file, and the reason after the colon differs.
+    if (!(e instanceof PyJSONDecodeError)) throw e;
+    // The reference reports CPython's message, line and column, and so does this parser —
+    // the ruling that once covered V8's `Unexpected token …` wording retired with #118.
     throw new InstallError(
-      `${path} is not valid JSON, so this refuses to touch it: ${(e as Error).message}`,
+      `${path} is not valid JSON, so this refuses to touch it: ${e.msg} (line ${e.lineno}, column ${e.colno})`,
     );
   }
-  if (loaded === null || typeof loaded !== 'object' || Array.isArray(loaded)) {
+  if (loaded.t !== 'dict') {
     throw new InstallError(`${path} holds ${pyTypeName(loaded)}, not an object; refusing to touch it`);
   }
-  return loaded as Record<string, unknown>;
+  // A NUMBER JSON CANNOT CARRY IS REFUSED HERE, before anything is planned (#118). `1e400`
+  // decodes to `Infinity` and `dumpJson` — faithful to `json.dumps` — would write it back as
+  // that bare word, which no JSON parser accepts: the host then cannot read ANY of its
+  // servers, and the next run of this very command refuses its own output. The literals
+  // `NaN`/`Infinity` that CPython's decoder tolerates take the same door.
+  const found = nonFiniteIn(loaded, []);
+  if (found !== null) {
+    const spelled = dumpJson({ t: 'float', v: found.value });
+    throw new InstallError(`${path} has a number at ${found.where} that JSON cannot carry (${spelled}); refusing to touch it`);
+  }
+  return loaded;
 }
 
-function writeConfig(path: string, data: Record<string, unknown>): void {
+/**
+ * Where the bytes land: the file ITSELF, through any symlink (#136).
+ *
+ * A dotfiles user keeps `~/.cursor/mcp.json` as a link into a repository. Writing a temp file
+ * beside the LINK and renaming it onto the link's name replaces the link with a detached
+ * regular file: the repository copy never gets the entry and the next sync reverts it without
+ * a word. `realpathSync` wants the target to exist; a link whose target is not there yet is
+ * followed by hand (the reference's `os.path.realpath` is non-strict), so the write creates
+ * the target and the link stays a link either way.
+ */
+function writeTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    // ENOENT: a fresh file, or a link whose target does not exist yet.
+  }
+  let at = path;
+  for (let hops = 0; hops < 40; hops += 1) {
+    let link: string;
+    try {
+      if (!lstatSync(at).isSymbolicLink()) return at;
+      link = readlinkSync(at);
+    } catch {
+      return at;
+    }
+    at = resolve(dirname(at), link);
+  }
+  return at;
+}
+
+/**
+ * Write the whole document, atomically, leaving no half-file behind on a crash — and atomic
+ * ONTO THE REAL FILE: the temp file is made beside `writeTarget(path)` and renamed onto it, so
+ * a symlinked config is written through rather than swapped for a regular file.
+ */
+function writeConfig(path: string, data: PyValue): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.bantamkit-tmp`;
+  const target = writeTarget(path);
+  if (target !== path) mkdirSync(dirname(target), { recursive: true });
+  const tmp = `${target}.bantamkit-tmp`;
   // The mode of the file being replaced, carried onto its replacement. A host config holds
   // API keys in per-server `env` blocks, and a user who chmod'ed theirs to 0600 had it come
   // back 0644, because a fresh temp file gets the process umask. Measured on both runtimes
   // before this line existed.
-  const mode = existsSync(path) ? statSync(path).mode & 0o7777 : null;
+  const mode = existsSync(target) ? statSync(target).mode & 0o7777 : null;
   try {
-    writeFileSync(tmp, `${dumps(data, 2)}\n`, 'utf8');
+    writeFileSync(tmp, `${dumpJson(data, { indent: 2 })}\n`, 'utf8');
     if (mode !== null) chmodSync(tmp, mode);
-    renameSync(tmp, path);
+    renameSync(tmp, target);
   } catch (e) {
     rmSync(tmp, { force: true });
     throw new InstallError(`cannot write ${path}: ${(e as Error).message}`);
@@ -181,9 +283,47 @@ function today(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+/** `os.path.lexists`: there is SOMETHING at this name, a dangling link included. */
+function lexists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The name the next backup of `path` gets: the first one that is not taken.
+ *
+ * `<name>.backup-<date>` when nothing holds that name, then `<name>.backup-<date>.1`, `.2`,
+ * ... on the same day. The plan lines print this same name before the write, so what the
+ * plan says and what the write does are one computation.
+ */
+function backupTarget(path: string): string {
+  const stamp = today();
+  let candidate = `${path}.backup-${stamp}`;
+  for (let n = 1; lexists(candidate); n += 1) candidate = `${path}.backup-${stamp}.${n}`;
+  return candidate;
+}
+
+/**
+ * Copy the file aside before changing it. Returns the copy, or `null` if there was none.
+ *
+ * Dated, so a person looking at their own config directory a week later can tell when it
+ * happened — and NEVER OVERWRITTEN (#138). Until job65 a second run on the same day wrote the
+ * same `<name>.backup-<date>` on purpose, "rather than growing a pile nobody prunes"; the
+ * README's undo promise is that the backup restores the file as it was BEFORE bantamkit
+ * touched it, and the second run was overwriting exactly that copy with the first run's
+ * output. A pile of dated copies is the price of an undo that works; the counter suffix is
+ * the price of keeping the documented name for the first one.
+ *
+ * `copyFileSync` follows a symlink on the source, so the copy holds the REAL file's bytes and
+ * sits beside the path the report names.
+ */
 function backup(path: string): string | null {
   if (!existsSync(path)) return null;
-  const target = `${path}.backup-${today()}`;
+  const target = backupTarget(path);
   try {
     copyFileSync(path, target);
   } catch (e) {
@@ -238,29 +378,30 @@ export function install(host: Host, command: string, args: string[], force = fal
   const wanted = entryFor(host, command, args);
 
   const data = readConfig(path);
-  const raw = data[key];
-  if (raw !== undefined && (raw === null || typeof raw !== 'object' || Array.isArray(raw))) {
+  const raw = data.v.get(key);
+  if (raw !== undefined && raw.t !== 'dict') {
     throw new InstallError(`${path} has a '${key}' that is not an object; refusing to touch it`);
   }
-  const servers = (raw ?? {}) as Record<string, unknown>;
+  const servers: PyDict = raw ?? pyDict();
 
-  const existing = servers[ENTRY];
-  if (existing !== undefined && dumps(existing, null, true) === dumps(wanted, null, true)) {
+  // MEMBERSHIP, not a null test: `"bantamkit": null` is an entry (`PY_NONE`, not `undefined`).
+  const existing = servers.v.get(ENTRY);
+  if (existing !== undefined && dumpJson(existing, { sortKeys: true }) === dumps(wanted, null, true)) {
     return `bantamkit is already installed in ${host} and matches\n  file   : ${path}`;
   }
   if (existing !== undefined && !force) {
     throw new InstallError(
       `${host} already has a bantamkit entry with different settings\n` +
         `  file    : ${path}\n` +
-        `  current : ${dumps(existing, null, true)}\n` +
+        `  current : ${dumpJson(existing, { sortKeys: true })}\n` +
         `  proposed: ${dumps(wanted, null, true)}\n` +
         '  re-run with --force to replace it',
     );
   }
 
   const copied = backup(path);
-  servers[ENTRY] = wanted;
-  data[key] = servers;
+  servers.v.set(ENTRY, fromJs(wanted));
+  data.v.set(key, servers);
   writeConfig(path, data);
 
   const lines = [
@@ -551,10 +692,18 @@ function hookEntry(matcher: string | null, command: string): Record<string, unkn
   return entry;
 }
 
-/** A plain object — not null, not an array. The shape every test below needs first. */
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+/** The `hooks` object as this module holds it: event -> its entries, in the file's order. */
+type HookTable = Map<string, PyValue[]>;
+
+/** `{"event": [...]}` as a `PyValue`, for the one comparison and the one write that need it. */
+const asPyValue = (table: HookTable): PyValue =>
+  ({ t: 'dict', v: new Map([...table].map(([event, entries]) => [event, { t: 'list', v: entries }])) });
+
+/** The `str` behind a key, or `undefined` when the key is absent or holds something else. */
+const strAt = (dict: PyDict, key: string): string | undefined => {
+  const value = dict.v.get(key);
+  return value !== undefined && value.t === 'str' ? value.v : undefined;
+};
 
 /**
  * The two command spellings bantamkit ever wrote, for entries that predate the marker.
@@ -573,11 +722,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * entry's JSON happened to contain `bantamkit` anywhere, so a matcher, a `statusMessage` or a
  * third-party script with the word in its filename was claimed as ours and deleted.
  */
-function isLegacyOurs(hook: Record<string, unknown>): boolean {
-  if (hook['type'] !== 'command') return false;
-  const command = hook['command'];
-  if (typeof command !== 'string' || !command.includes('bantamkit')) return false;
+function isLegacyOurs(hook: PyDict): boolean {
+  if (strAt(hook, 'type') !== 'command') return false;
+  const command = strAt(hook, 'command');
+  if (command === undefined || !command.includes('bantamkit')) return false;
   return command.includes('bantamkit-hook') || command === '--hook' || command.endsWith(' --hook');
+}
+
+/** ONE inner hook object: ours by marker, or by one of the two legacy spellings. */
+function isOurHook(hook: PyValue): boolean {
+  return hook.t === 'dict' && (hook.v.has(HOOK_MARKER_KEY) || isLegacyOurs(hook));
 }
 
 /**
@@ -595,62 +749,93 @@ function isLegacyOurs(hook: Record<string, unknown>): boolean {
  * Ownership is now a property of the ENTRY and of nothing else: our marker, or one of the two
  * shapes we wrote before the marker existed. Where any binary lives is not consulted.
  */
-function isOurs(entry: unknown): boolean {
-  if (!isObject(entry)) return false;
-  const hooks = entry['hooks'];
-  if (!Array.isArray(hooks)) return false;
-  return hooks.some(
-    (hook) => isObject(hook) && (HOOK_MARKER_KEY in hook || isLegacyOurs(hook)),
-  );
+function isOurs(entry: PyValue): boolean {
+  if (entry.t !== 'dict') return false;
+  const hooks = entry.v.get('hooks');
+  if (hooks === undefined || hooks.t !== 'list') return false;
+  return hooks.v.some(isOurHook);
+}
+
+/**
+ * `entry` with bantamkit's own command objects taken out, and how many came out.
+ *
+ * THE UNIT OF OWNERSHIP IS THE COMMAND OBJECT, NOT THE MATCHER BLOCK (#129). `isOurs` answers
+ * "does this block hold one of ours", and dropping the whole block on that answer deleted a
+ * user's `notify-send` that shared the block with ours — after a plan that had just promised
+ * their hooks were left byte for byte. So: a block that is not ours comes back untouched (the
+ * same object, nothing removed); a block that holds ours loses ONLY those objects and keeps
+ * every other key it had; and a block left with no hooks at all is `null`, because
+ * `{"matcher": ..., "hooks": []}` is an artefact nobody wrote.
+ */
+function withoutOurs(entry: PyValue): [PyValue | null, number] {
+  if (!isOurs(entry) || entry.t !== 'dict') return [entry, 0];
+  const hooks = entry.v.get('hooks');
+  if (hooks === undefined || hooks.t !== 'list') return [entry, 0];
+  const kept = hooks.v.filter((hook) => !isOurHook(hook));
+  const removed = hooks.v.length - kept.length;
+  if (kept.length === 0) return [null, removed];
+  const trimmed = pyDict(entry.v);
+  trimmed.v.set('hooks', { t: 'list', v: kept });
+  return [trimmed, removed];
 }
 
 /** The `hooks` object, validated. Refuses by name rather than crashing on somebody's file. */
-function readHooks(path: string, data: Record<string, unknown>): Record<string, unknown[]> {
-  const raw = data['hooks'];
-  if (raw === undefined) return {};
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+function readHooks(path: string, data: PyDict): HookTable {
+  const raw = data.v.get('hooks');
+  if (raw === undefined) return new Map();
+  if (raw.t !== 'dict') {
     throw new InstallError(`${path} has a 'hooks' that is not an object; refusing to touch it`);
   }
-  const hooks: Record<string, unknown[]> = {};
-  for (const [event, entries] of Object.entries(raw as Record<string, unknown>)) {
-    if (!Array.isArray(entries)) {
+  const hooks: HookTable = new Map();
+  for (const [event, entries] of raw.v) {
+    if (entries.t !== 'list') {
       throw new InstallError(`${path} has a 'hooks.${event}' that is not a list; refusing to touch it`);
     }
-    hooks[event] = [...entries];
+    hooks.set(event, [...entries.v]);
   }
   return hooks;
 }
 
 /**
- * The `hooks` object this run wants, built from whatever is there now.
+ * The `hooks` object this run wants, built from whatever is there now, the events that change,
+ * and how many of OUR command objects came out.
  *
- * ONE PASS OVER THE SEVEN EVENTS AND NOTHING ELSE: every event keeps its non-bantamkit entries
- * in their existing order, ours is appended after them, and an event left with none loses its
- * key rather than holding an empty list — `install.mjs`'s rule, kept because a settings file
- * full of empty arrays is a worse artefact than one with nothing in it.
+ * ONE PASS OVER THE SEVEN EVENTS AND NOTHING ELSE: every event keeps its non-bantamkit hooks in
+ * their existing order and their existing blocks, ours is appended after them, and an event
+ * left with none loses its key rather than holding an empty list — `install.mjs`'s rule, kept
+ * because a settings file full of empty arrays is a worse artefact than one with nothing in
+ * it. A block is dropped only when taking ours out of it leaves it empty (`withoutOurs`).
  *
  * Events outside the seven are not read, not reordered and not removed.
  */
 function plannedHooks(
-  current: Record<string, unknown[]>,
+  current: HookTable,
   command: string,
   remove: boolean,
-): { hooks: Record<string, unknown[]>; touched: string[] } {
-  const hooks: Record<string, unknown[]> = { ...current };
+): { hooks: HookTable; touched: string[]; removed: number } {
+  const hooks: HookTable = new Map(current);
   const touched: string[] = [];
+  let removed = 0;
   for (const [event, matcher] of HOOK_EVENTS) {
-    const before = hooks[event] ?? [];
-    const kept = before.filter((entry) => !isOurs(entry));
+    const before = hooks.get(event) ?? [];
+    const kept: PyValue[] = [];
+    let removedHere = 0;
+    for (const entry of before) {
+      const [trimmed, count] = withoutOurs(entry);
+      removedHere += count;
+      if (trimmed !== null) kept.push(trimmed);
+    }
+    removed += removedHere;
     if (remove) {
-      if (kept.length !== before.length) touched.push(event);
+      if (removedHere > 0) touched.push(event);
     } else {
-      kept.push(hookEntry(matcher, command));
+      kept.push(fromJs(hookEntry(matcher, command)));
       touched.push(event);
     }
-    if (kept.length > 0) hooks[event] = kept;
-    else delete hooks[event];
+    if (kept.length > 0) hooks.set(event, kept);
+    else hooks.delete(event);
   }
-  return { hooks, touched };
+  return { hooks, touched, removed };
 }
 
 const EVENT_NAMES = HOOK_EVENTS.map(([event]) => event).join(' ');
@@ -669,7 +854,7 @@ function hookPlan(path: string, command: string): string {
     `  events : ${EVENT_NAMES}`,
     `  command: ${command}`,
   ];
-  if (existsSync(path)) lines.push(`  backup : ${path}.backup-${today()}`);
+  if (existsSync(path)) lines.push(`  backup : ${backupTarget(path)}`);
   lines.push("Existing hooks are left byte-for-byte; only bantamkit's own entries are replaced.");
   return `${lines.join('\n')}\n`;
 }
@@ -692,7 +877,7 @@ function removalPlan(path: string, events: readonly string[], entries: number): 
     [
       `bantamkit would remove ${entries} hook entries from ${path}`,
       `  events : ${events.join(' ')}`,
-      `  backup : ${path}.backup-${today()}`,
+      `  backup : ${backupTarget(path)}`,
       "Existing hooks are left byte-for-byte; only bantamkit's own entries are removed.",
     ].join('\n') + '\n'
   );
@@ -725,7 +910,7 @@ export function installHooks(options: HookOptions = {}): string {
   const current = readHooks(path, data);
   const { hooks } = plannedHooks(current, rendered, false);
 
-  if (dumps(hooks, null, true) === dumps(current, null, true)) {
+  if (dumpJson(asPyValue(hooks), { sortKeys: true }) === dumpJson(asPyValue(current), { sortKeys: true })) {
     return `bantamkit hooks are already installed in ${path} and match`;
   }
 
@@ -745,7 +930,7 @@ export function installHooks(options: HookOptions = {}): string {
   }
 
   const copied = backup(path);
-  data['hooks'] = hooks;
+  data.v.set('hooks', asPyValue(hooks));
   writeConfig(path, data);
 
   const lines = [
@@ -786,14 +971,13 @@ export function removeHooks(options: HookOptions = {}): string {
   const path = claudeSettingsPath();
   const data = readConfig(path);
   const current = readHooks(path, data);
-  const { hooks, touched } = plannedHooks(current, '', true);
+  const { hooks, touched, removed: entries } = plannedHooks(current, '', true);
 
   if (touched.length === 0) return `no bantamkit hooks are installed in ${path}`;
 
-  // Entries, not events: an event can hold more than one of ours if somebody hand-edited the
-  // file, and the plan has to say what is actually going.
-  let entries = 0;
-  for (const event of touched) entries += (current[event] ?? []).length - (hooks[event] ?? []).length;
+  // `entries` counts OUR COMMAND OBJECTS, not events and not matcher blocks: an event can hold
+  // more than one of ours if somebody hand-edited the file, and a block that also holds a
+  // user's hook stays while ours leaves it (#129) — the plan has to say what is actually going.
 
   const tell = options.tell ?? ((): void => {});
   const yes = options.yes ?? false;
@@ -811,7 +995,7 @@ export function removeHooks(options: HookOptions = {}): string {
   }
 
   const copied = backup(path);
-  data['hooks'] = hooks;
+  data.v.set('hooks', asPyValue(hooks));
   writeConfig(path, data);
 
   const lines = [`removed bantamkit hooks from ${path}`, `  events : ${touched.join(' ')}`];

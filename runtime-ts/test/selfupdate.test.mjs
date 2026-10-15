@@ -24,8 +24,8 @@
  */
 import assert from 'node:assert/strict';
 import { createHook } from 'node:async_hooks';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -37,10 +37,12 @@ import {
   AHEAD,
   COMPARISON,
   DEFAULT_TIMEOUT_SECONDS,
-  INDEX_URL,
   IndexTimeout,
+  NO_INSTALLED_VERSION,
   NO_OUTPUT,
+  NO_RECORDED_ROUTE,
   NO_ROUTE,
+  NOT_INSTALLED,
   NOT_JSON,
   NO_VERSION_FIELD,
   PACKAGE,
@@ -48,11 +50,15 @@ import {
   ROUTES,
   UP_TO_DATE,
   UpdateRefused,
+  article,
   compareVersions,
   fetchIndex,
   fill,
+  indexCommand,
   installEnvironment,
   latestFromIndexPayload,
+  packageRoot,
+  readInstalledVersion,
   runUpdate,
   shlexJoin,
   recordUpdate,
@@ -81,14 +87,14 @@ function runCli(argv, columns) {
   return spawnSync(process.execPath, [CLI, ...argv], { input: '', env, encoding: 'utf8' });
 }
 
-/** What `registry.npmjs.org/bantamkit-mcp/latest` answers, reduced to the field that is read. */
+/** What `npm view bantamkit-mcp@latest --json` answers, reduced to the field that is read. */
 const payload = (version) => JSON.stringify({ name: PACKAGE, version });
 
-/** A stub index that answers one version and records that it was asked. */
+/** A stub index that answers one version and records the command it was handed. */
 function stubFetch(version) {
   const calls = [];
-  const fetch = async (url, timeout) => {
-    calls.push([url, timeout]);
+  const fetch = async (command, timeout) => {
+    calls.push([command, timeout]);
     return payload(version);
   };
   fetch.calls = calls;
@@ -104,6 +110,13 @@ const installerMustNotRun = (command) => {
   throw new assert.AssertionError({ message: `an installer ran when nothing should have: ${command}` });
 };
 
+/**
+ * The `installedVersion` seam answering that the tree now reports `version`. Every success arm
+ * hands one in (J65-19, #128): `update` reads the manifest back before it prints `updated`, and
+ * a recording installer writes nothing, so the honest default would refuse every arm.
+ */
+const landed = (version) => () => version;
+
 function recordingInstaller(code = 0, output = 'added 1 package in 902ms') {
   const commands = [];
   const installer = (command) => {
@@ -118,6 +131,12 @@ function recordingInstaller(code = 0, output = 'added 1 package in 902ms') {
 const ENV = { root: '/opt/x', global: false };
 const REGISTRY = { shape: 'registry', source: '/does/not/matter' };
 const SHAPELESS = ['local-file', 'linked', 'checkout', 'ephemeral'];
+/**
+ * The article each shape word takes, TYPED rather than computed by `article`: "a ephemeral
+ * install" shipped in every release up to 0.35.7 (#177), and an expectation built from the
+ * function under test would have been green over it.
+ */
+const ARTICLES = { 'local-file': 'a', linked: 'a', checkout: 'a', ephemeral: 'an' };
 
 async function refusal(fn) {
   try {
@@ -186,7 +205,7 @@ test('the same version says up to date, runs no installer, and is the sentence t
     report,
     'bantamkit-mcp 0.30.0 is installed; the package index has 0.30.0.\nup to date.',
   );
-  assert.deepEqual(fetch.calls, [[INDEX_URL, DEFAULT_TIMEOUT_SECONDS]]);
+  assert.deepEqual(fetch.calls, [[indexCommand(ENV), DEFAULT_TIMEOUT_SECONDS]]);
 });
 
 test('an index BEHIND the installed version installs nothing and says so', async () => {
@@ -207,7 +226,7 @@ test('the index being behind is decided numerically, not alphabetically', async 
   // `'0.9.0' > '0.10.0'` as strings, so an implementation that compared text would report the
   // index as BEHIND here and do nothing. This is the pair that catches it.
   const installer = recordingInstaller();
-  const report = await update('0.9.0', REGISTRY, { fetch: stubFetch('0.10.0'), installer, environment: ENV });
+  const report = await update('0.9.0', REGISTRY, { fetch: stubFetch('0.10.0'), installer, environment: ENV, installedVersion: landed('0.10.0') });
 
   assert.ok(report.includes('updated bantamkit-mcp from 0.9.0 to 0.10.0.'), report);
   assert.equal(installer.commands.length, 1);
@@ -247,13 +266,16 @@ test('a prerelease sorts AFTER its release, which is wrong by semver and right b
 
 test('a newer index runs the upgrade command, and the command is captured rather than run', async () => {
   const installer = recordingInstaller();
-  const report = await update('0.29.0', REGISTRY, { fetch: stubFetch('0.30.0'), installer, environment: ENV });
+  const report = await update('0.29.0', REGISTRY, { fetch: stubFetch('0.30.0'), installer, environment: ENV, installedVersion: landed('0.30.0') });
 
-  assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', '/opt/x', 'bantamkit-mcp@latest']]);
+  // `@0.30.0` AND NOT `@latest` (J65-19, #128): the version this flag compared is the version
+  // npm is told to install, so a mirror behind the index that answered, or a dist-tag moved
+  // between the two calls, cannot make line 5 of the report a lie.
+  assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', '/opt/x', 'bantamkit-mcp@0.30.0']]);
   assert.equal(
     report,
     'bantamkit-mcp 0.29.0 is installed; the package index has 0.30.0.\n' +
-      'updating from the package index: npm install --prefix /opt/x bantamkit-mcp@latest\n' +
+      'updating from the package index: npm install --prefix /opt/x bantamkit-mcp@0.30.0\n' +
       'the command printed:\n' +
       'added 1 package in 902ms\n' +
       'updated bantamkit-mcp from 0.29.0 to 0.30.0.\n' +
@@ -267,6 +289,7 @@ test('an installer that printed nothing still reports in one shape', async () =>
     fetch: stubFetch('0.30.0'),
     installer: recordingInstaller(0, '   \n  '),
     environment: ENV,
+    installedVersion: landed('0.30.0'),
   });
   assert.ok(report.includes(`the command printed:\n${NO_OUTPUT}\n`), report);
 });
@@ -281,7 +304,7 @@ test('an installer that failed refuses and hands back what the command said', as
   );
   assert.equal(
     message,
-    'the update command exited 7: npm install --prefix /opt/x bantamkit-mcp@latest\n' +
+    'the update command exited 7: npm install --prefix /opt/x bantamkit-mcp@0.30.0\n' +
       'bantamkit-mcp 0.29.0 is still installed; nothing was changed.\n' +
       'the command printed:\n' +
       'npm ERR! code EACCES',
@@ -301,8 +324,8 @@ for (const shape of SHAPELESS) {
     );
     assert.ok(
       message.startsWith(
-        'bantamkit-mcp 0.29.0 is installed and the package index has 0.30.0, but this is a ' +
-          `${shape} install, which --update will not touch. `,
+        'bantamkit-mcp 0.29.0 is installed and the package index has 0.30.0, but this is ' +
+          `${ARTICLES[shape]} ${shape} install, which --update will not touch. `,
       ),
       message,
     );
@@ -510,8 +533,29 @@ test('installEnvironment reads a RECORD: a package.json beside node_modules mean
   writeFileSync(join(project, 'package.json'), '{"name":"host"}', 'utf8');
 
   const env = installEnvironment(join(project, 'node_modules', PACKAGE, 'dist', 'selfupdate.js'));
-  assert.deepEqual(env, { root: project, global: false });
-  assert.deepEqual(upgradeCommand(env), ['npm', 'install', '--prefix', project, 'bantamkit-mcp@latest']);
+  assert.deepEqual(env, { root: project, global: false, exact: false });
+  assert.deepEqual(upgradeCommand(env, '0.30.0'), ['npm', 'install', '--prefix', project, 'bantamkit-mcp@0.30.0']);
+  assert.deepEqual(indexCommand(env), ['npm', 'view', '--prefix', project, 'bantamkit-mcp@latest', '--json', '--fetch-retries=0']);
+});
+
+test('an EXACT pin in the prefix manifest is kept exact: --save-exact, and only then', () => {
+  // npm rewrites `"0.35.7"` to `"^0.35.7"` on `npm install <pkg>@<v>` unless told otherwise
+  // (observed in #128). The record of what the operator pinned is theirs, not npm's.
+  const root = room();
+  const exact = join(root, 'exact');
+  const caret = join(root, 'caret');
+  for (const [project, spec] of [[exact, '0.29.0'], [caret, '^0.29.0']]) {
+    mkdirSync(join(project, 'node_modules', PACKAGE, 'dist'), { recursive: true });
+    writeFileSync(join(project, 'package.json'), JSON.stringify({ dependencies: { [PACKAGE]: spec } }), 'utf8');
+  }
+  const pinned = installEnvironment(join(exact, 'node_modules', PACKAGE, 'dist', 'selfupdate.js'));
+  assert.deepEqual(pinned, { root: exact, global: false, exact: true });
+  assert.deepEqual(upgradeCommand(pinned, '0.30.0'), ['npm', 'install', '--prefix', exact, '--save-exact', 'bantamkit-mcp@0.30.0']);
+  const ranged = installEnvironment(join(caret, 'node_modules', PACKAGE, 'dist', 'selfupdate.js'));
+  assert.deepEqual(ranged, { root: caret, global: false, exact: false });
+  assert.deepEqual(upgradeCommand(ranged, '0.30.0'), ['npm', 'install', '--prefix', caret, 'bantamkit-mcp@0.30.0']);
+  // The view command never carries it: `--save-exact` is about what npm writes, and a view writes nothing.
+  assert.ok(!indexCommand(pinned).includes('--save-exact'));
 });
 
 test('no package.json beside node_modules is the GLOBAL tree, and --prefix there is destructive', () => {
@@ -527,8 +571,9 @@ test('no package.json beside node_modules is the GLOBAL tree, and --prefix there
   mkdirSync(join(lib, 'node_modules', PACKAGE, 'dist'), { recursive: true });
 
   const env = installEnvironment(join(lib, 'node_modules', PACKAGE, 'dist', 'selfupdate.js'));
-  assert.deepEqual(env, { root: lib, global: true });
-  assert.deepEqual(upgradeCommand(env), ['npm', 'install', '--global', 'bantamkit-mcp@latest']);
+  assert.deepEqual(env, { root: lib, global: true, exact: false });
+  assert.deepEqual(upgradeCommand(env, '0.30.0'), ['npm', 'install', '--global', 'bantamkit-mcp@0.30.0']);
+  assert.deepEqual(indexCommand(env), ['npm', 'view', '--global', 'bantamkit-mcp@latest', '--json', '--fetch-retries=0']);
 });
 
 test('the no-node_modules arm of installEnvironment cannot be reached from a registry install', () => {
@@ -539,7 +584,7 @@ test('the no-node_modules arm of installEnvironment cannot be reached from a reg
   // shape `--update` refuses before it ever builds a command.
   const root = room();
   mkdirSync(join(root, 'tree', 'dist'), { recursive: true });
-  assert.deepEqual(installEnvironment(join(root, 'tree', 'dist', 'selfupdate.js')), { root: '', global: true });
+  assert.deepEqual(installEnvironment(join(root, 'tree', 'dist', 'selfupdate.js')), { root: '', global: true, exact: false });
   assert.equal(currentInstall().shape, 'checkout');
 });
 
@@ -853,16 +898,20 @@ test('an npx cache with an OLDER kept install updates the kept install, by its v
     const fetch = stubFetch('0.33.0');
     const installer = recordingInstaller();
 
-    const r = await runFrom(EPHEMERAL, '0.29.0', { fetch, installer });
+    const r = await runFrom(EPHEMERAL, '0.29.0', { fetch, installer, installedVersion: landed('0.33.0') });
 
-    assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', prefix, 'bantamkit-mcp@latest']]);
-    assert.deepEqual(fetch.calls, [[INDEX_URL, DEFAULT_TIMEOUT_SECONDS]], 'still exactly one index request');
+    assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', prefix, 'bantamkit-mcp@0.33.0']]);
+    assert.deepEqual(
+      fetch.calls,
+      [[['npm', 'view', '--prefix', prefix, 'bantamkit-mcp@latest', '--json', '--fetch-retries=0'], DEFAULT_TIMEOUT_SECONDS]],
+      'still exactly one index request, and it is asked of the KEPT prefix, where the install will point',
+    );
     assert.equal(r.code, 0);
     assert.equal(r.err, '');
     assert.equal(
       r.out,
       'bantamkit-mcp 0.32.1 is installed; the package index has 0.33.0.\n' +
-        `updating from the package index: npm install --prefix ${shlexJoin([prefix])} bantamkit-mcp@latest\n` +
+        `updating from the package index: npm install --prefix ${shlexJoin([prefix])} bantamkit-mcp@0.33.0\n` +
         'the command printed:\n' +
         'added 1 package in 902ms\n' +
         'updated bantamkit-mcp from 0.32.1 to 0.33.0.\n' +
@@ -894,7 +943,7 @@ test('an npx cache with NO kept install refuses exactly as before, by the ROUTES
     assert.equal(r.out, '');
     assert.equal(
       r.err,
-      `error: ${fill(NO_ROUTE, { program: PROGRAM, installed: '0.29.0', latest: '0.30.0', shape: 'ephemeral', route })}\n`,
+      `error: ${fill(NO_ROUTE, { program: PROGRAM, installed: '0.29.0', latest: '0.30.0', article: 'an', shape: 'ephemeral', route })}\n`,
     );
     assert.ok(
       r.err.includes('the next run serves the same cached 0.29.0 unless the host command line asks for bantamkit-mcp@latest.'),
@@ -914,7 +963,7 @@ test('a kept install whose npm run fails is the command-failed refusal, naming t
     assert.equal(r.out, '');
     assert.equal(
       r.err,
-      `error: the update command exited 1: npm install --prefix ${shlexJoin([prefix])} bantamkit-mcp@latest\n` +
+      `error: the update command exited 1: npm install --prefix ${shlexJoin([prefix])} bantamkit-mcp@0.33.0\n` +
         'bantamkit-mcp 0.32.1 is still installed; nothing was changed.\n' +
         'the command printed:\n' +
         'npm ERR! code ENOTFOUND\n',
@@ -928,8 +977,8 @@ test('the kept prefix is a --prefix tree by installEnvironment, and one without 
     // npm writes a package.json there, so it is a prefix install and its siblings are not pruned.
     const prefix = seedKept('0.32.1');
     const env = installEnvironment(keptCli(prefix));
-    assert.deepEqual(env, { root: prefix, global: false });
-    assert.deepEqual(upgradeCommand(env), ['npm', 'install', '--prefix', prefix, 'bantamkit-mcp@latest']);
+    assert.deepEqual(env, { root: prefix, global: false, exact: false });
+    assert.deepEqual(upgradeCommand(env, '0.33.0'), ['npm', 'install', '--prefix', prefix, 'bantamkit-mcp@0.33.0']);
   });
   await withHome(async () => {
     // A kept manifest with NO package.json beside node_modules reads as the global tree, and
@@ -939,7 +988,8 @@ test('the kept prefix is a --prefix tree by installEnvironment, and one without 
     assert.equal(installEnvironment(keptCli(prefix)).global, true);
     const r = await runFrom(EPHEMERAL, '0.29.0', { fetch: stubFetch('0.33.0'), installer: installerMustNotRun });
     assert.equal(r.code, 1);
-    assert.ok(r.err.startsWith('error: bantamkit-mcp 0.29.0 is installed and the package index has 0.33.0, but this is a ephemeral install'), r.err);
+    // "an ephemeral", not "a ephemeral" — the article follows the shape word (#177).
+    assert.ok(r.err.startsWith('error: bantamkit-mcp 0.29.0 is installed and the package index has 0.33.0, but this is an ephemeral install'), r.err);
   });
 });
 
@@ -950,9 +1000,10 @@ test('a kept install changes nothing for any shape that is not an npx cache', as
     const registry = await runFrom(() => ({ shape: 'registry', source: null }), '0.29.0', {
       fetch: stubFetch('0.33.0'),
       installer,
+      installedVersion: landed('0.33.0'),
     });
     assert.equal(registry.code, 0);
-    assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', '/opt/x', 'bantamkit-mcp@latest']]);
+    assert.deepEqual(installer.commands, [['npm', 'install', '--prefix', '/opt/x', 'bantamkit-mcp@0.33.0']]);
     assert.ok(registry.out.startsWith('bantamkit-mcp 0.29.0 is installed; the package index has 0.33.0.\n'), registry.out);
 
     for (const shape of ['local-file', 'linked', 'checkout']) {
@@ -962,7 +1013,7 @@ test('a kept install changes nothing for any shape that is not an npx cache', as
       });
       assert.equal(r.code, 1, shape);
       assert.ok(
-        r.err.startsWith(`error: bantamkit-mcp 0.29.0 is installed and the package index has 0.33.0, but this is a ${shape} install`),
+        r.err.startsWith(`error: bantamkit-mcp 0.29.0 is installed and the package index has 0.33.0, but this is ${ARTICLES[shape]} ${shape} install`),
         r.err,
       );
     }
@@ -971,41 +1022,195 @@ test('a kept install changes nothing for any shape that is not an npx cache', as
 
 // ============================================================ the platform's own failures
 
-test('fetchIndex maps a real hang to IndexTimeout and a real refusal to a plain Error', async () => {
-  // LOOPBACK, AND NOTHING LEAVES THIS MACHINE. Stubbing undici here would assert this file's
-  // guess about undici back at itself, and the guess is the entire contract.
-  const server = net.createServer(() => {});
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  try {
-    await assert.rejects(
-      () => fetchIndex(`http://127.0.0.1:${port}/latest`, 0.2),
-      (e) => e instanceof IndexTimeout,
-      'a server that accepts and never answers is a TIMEOUT',
-    );
-  } finally {
-    server.close();
-  }
+// ============================================================ the install, read back (J65-19, #128)
 
-  await assert.rejects(
-    () => fetchIndex('http://127.0.0.1:49999/latest', 5),
-    (e) => {
-      assert.ok(!(e instanceof IndexTimeout), 'a closed port is not a timeout');
-      // `TypeError: fetch failed` is what Node throws and it names nothing. The CAUSE is the
-      // sentence worth printing, and this asserts the operator gets that one.
-      assert.ok(/ECONNREFUSED/.test(e.message), `the cause did not reach the message: ${e.message}`);
-      return true;
-    },
+test('an installer that exits 0 and leaves the old version behind is a refusal, not a success', async () => {
+  // MEASURED 2026-10-13 (#128): with the index stubbed to 9.9.9 and an `npm` on PATH that
+  // recorded its argv and changed nothing, 0.35.7 printed `updated bantamkit-mcp from 0.35.7 to
+  // 9.9.9.` and exited 0 with 0.35.7 still on disk. The success line is read off the tree now.
+  const installer = recordingInstaller(0, 'changed 1 package in 1s');
+  const message = await refusal(() =>
+    update('0.29.0', REGISTRY, { fetch: stubFetch('0.30.0'), installer, environment: ENV, installedVersion: landed('0.29.0') }),
+  );
+  assert.equal(installer.commands.length, 1, 'the installer ran once; the refusal is about what it left');
+  assert.equal(
+    message,
+    'the update command exited 0 but did not install 0.30.0: npm install --prefix /opt/x bantamkit-mcp@0.30.0\n' +
+      'bantamkit-mcp now reports 0.29.0, not 0.30.0; the tree the command names did not take the update.\n' +
+      'the command printed:\n' +
+      'changed 1 package in 1s',
   );
 });
 
+test('an installer that exits 0 and leaves no readable manifest is the same refusal, naming the absence', async () => {
+  const message = await refusal(() =>
+    update('0.29.0', REGISTRY, { fetch: stubFetch('0.30.0'), installer: recordingInstaller(0, '   '), environment: ENV, installedVersion: landed(null) }),
+  );
+  assert.ok(message.includes(`bantamkit-mcp now reports ${NO_INSTALLED_VERSION}, not 0.30.0;`), message);
+  assert.ok(message.endsWith(`the command printed:\n${NO_OUTPUT}`), message);
+  // The default seam on a root with no node_modules is that absence, and on one with a manifest
+  // it is the manifest's version — read off the disk, which is what makes the line above true.
+  assert.equal(readInstalledVersion(ENV), null);
+  const root = room();
+  mkdirSync(join(root, 'node_modules', PACKAGE), { recursive: true });
+  writeFileSync(join(root, 'node_modules', PACKAGE, 'package.json'), JSON.stringify({ name: PACKAGE, version: '0.30.0' }), 'utf8');
+  assert.equal(readInstalledVersion({ root, global: false }), '0.30.0');
+  const report = await update('0.29.0', REGISTRY, { fetch: stubFetch('0.30.0'), installer: recordingInstaller(), environment: { root, global: false } });
+  assert.ok(report.includes('updated bantamkit-mcp from 0.29.0 to 0.30.0.'), report);
+});
+
+test('the manifest is compared by the version rule, so 0.30 on disk is the 0.30.0 that was compared', async () => {
+  const report = await update('0.29.0', REGISTRY, { fetch: stubFetch('0.30.0'), installer: recordingInstaller(), environment: ENV, installedVersion: landed('0.30') });
+  assert.ok(report.includes('updated bantamkit-mcp from 0.29.0 to 0.30.0.'), report);
+});
+
+// ============================================================ the article, and the tree the route names (#177)
+
+test('the article follows the shape word: an ephemeral install, a checkout install, an unknown vowel-initial one', async () => {
+  assert.equal(article('ephemeral'), 'an');
+  assert.equal(article('checkout'), 'a');
+  assert.equal(article('Orphan'), 'an', 'case does not change the sound');
+  const message = await refusal(() =>
+    update('0.29.0', { shape: 'ephemeral', source: '' }, { fetch: stubFetch('0.30.0'), installer: installerMustNotRun, environment: ENV }),
+  );
+  assert.ok(message.includes(' but this is an ephemeral install, '), message);
+  assert.ok(!message.includes(' a ephemeral '), message);
+  const unknown = await refusal(() =>
+    update('0.29.0', { shape: 'orphan', source: '' }, { fetch: stubFetch('0.30.0'), installer: installerMustNotRun, environment: ENV }),
+  );
+  assert.ok(unknown.includes(' but this is an orphan install, '), unknown);
+  assert.ok(unknown.endsWith(fill(NO_RECORDED_ROUTE, { article: 'an', shape: 'orphan' })), unknown);
+  assert.equal(NO_RECORDED_ROUTE, 'There is no recorded update route for {article} {shape} install, so --update will not guess one.');
+});
+
+test('a checkout names the package root above dist/, which is the tree the route says to pull', async () => {
+  // `cli.ts` hands in `dirname(import.meta.url)`, which is `dist/`; the manifest this build
+  // reads its version from sits one level up, and THAT directory is the source tree. A
+  // directory with no manifest above it stands in as itself, so nothing is invented.
+  const root = room();
+  mkdirSync(join(root, 'tree', 'dist'), { recursive: true });
+  writeFileSync(join(root, 'tree', 'package.json'), JSON.stringify({ name: PACKAGE, version: '0.29.0' }), 'utf8');
+  assert.equal(packageRoot(join(root, 'tree', 'dist')), join(root, 'tree'));
+  assert.equal(packageRoot('/no/such/dist'), '/no/such/dist');
+  const err = [];
+  await runUpdate(() => {}, (t) => err.push(t), '0.29.0', join(root, 'tree', 'dist'), {
+    install: () => ({ shape: 'checkout', source: null }),
+    fetch: stubFetch('0.30.0'),
+    installer: installerMustNotRun,
+    environment: ENV,
+  });
+  assert.ok(err.join('').includes(`a source tree at ${join(root, 'tree')} that no installer recorded`), err.join(''));
+  assert.ok(!err.join('').includes(`${join(root, 'tree', 'dist')} that`), 'the route named dist/ as the tree');
+});
+
+// ============================================================ the platform's own failures
+
+/** A command that is a Node one-liner, so these arms run the same on every platform. */
+const nodeCommand = (script) => [process.execPath, '-e', script];
+
+test('fetchIndex maps a real hang to IndexTimeout, a real failure to its summary, and no program to its spawn error', async () => {
+  // THE CONTRACT IS WHAT `spawnSync` DOES, measured rather than stubbed: a child that never
+  // exits is killed at the deadline and comes back as `ETIMEDOUT`, which is the one fact that
+  // becomes the timeout refusal — every other failure is a plain `Error` carrying the sentence
+  // the operator should read, in the order `fetchIndex`'s docstring gives.
+  await assert.rejects(
+    () => fetchIndex(nodeCommand('setInterval(() => {}, 1000)'), 0.3),
+    (e) => e instanceof IndexTimeout,
+    'a command that never answers is a TIMEOUT',
+  );
+  await assert.rejects(
+    () => fetchIndex(nodeCommand('process.stdout.write(JSON.stringify({error:{code:"ECONNREFUSED",summary:"request to http://127.0.0.1:1/bantamkit-mcp failed, reason: connect ECONNREFUSED 127.0.0.1:1"}})); process.exit(1)'), 5),
+    (e) => {
+      assert.ok(!(e instanceof IndexTimeout), 'a refused registry is not a timeout');
+      assert.equal(e.message, 'request to http://127.0.0.1:1/bantamkit-mcp failed, reason: connect ECONNREFUSED 127.0.0.1:1');
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => fetchIndex(nodeCommand('process.stdout.write(JSON.stringify({error:{code:"E404"}})); process.exit(1)'), 5),
+    (e) => e.message === 'E404',
+  );
+  await assert.rejects(
+    () => fetchIndex(nodeCommand('process.stderr.write("\\nnpm error something went wrong\\n"); process.exit(1)'), 5),
+    (e) => e.message === 'npm error something went wrong',
+  );
+  await assert.rejects(() => fetchIndex(nodeCommand('process.exit(3)'), 5), (e) => e.message === 'exit 3');
+  await assert.rejects(
+    () => fetchIndex(['/no/such/program/anywhere'], 5),
+    (e) => !(e instanceof IndexTimeout) && /ENOENT/.test(e.message),
+  );
+  // And the body of a command that answers is handed back whole, for the real parser to judge.
+  assert.equal(await fetchIndex(nodeCommand('process.stdout.write("{\\"version\\":\\"0.30.0\\"}")'), 5), '{"version":"0.30.0"}');
+});
+
+test('the real npm, asked through indexCommand, honours npm_config_registry — measured against a loopback registry (#135)', async () => {
+  // THE MEASUREMENT #135 ASKED FOR. The 0.35.7 `fetch` asked `registry.npmjs.org` whatever npm
+  // was configured for; this spawns the actual `npm` on PATH with `npm_config_registry` pointed
+  // at a server THIS test runs on 127.0.0.1, and asserts that the registry it asked is that
+  // one and that the document it answered is the one `latestFromIndexPayload` reads. Nothing
+  // leaves this machine. A machine with no `npm` on PATH says so and measures nothing.
+  //
+  // THE REGISTRY IS A CHILD PROCESS, NOT AN IN-PROCESS SERVER: `fetchIndex` is `spawnSync`,
+  // which blocks this event loop for as long as npm runs, so a server on this loop could never
+  // answer it — measured here as `spawnSync npm ETIMEDOUT` after 30 s on the first version of
+  // this node, with the registry sitting one `await` away the whole time.
+  const probe = spawnSync('npm', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' });
+  if (probe.error || probe.status !== 0) {
+    console.log(`# npm is not on PATH here (${probe.error?.code ?? `exit ${probe.status}`}); the loopback measurement did not run`);
+    return;
+  }
+  const root = room();
+  const askedLog = join(root, 'asked.log');
+  const portFile = join(root, 'port');
+  writeFileSync(
+    join(root, 'registry.mjs'),
+    [
+      "import http from 'node:http';",
+      "import fs from 'node:fs';",
+      `const pkg = ${JSON.stringify(PACKAGE)};`,
+      "const doc = { name: pkg, 'dist-tags': { latest: '9.9.9' }, versions: { '9.9.9': { name: pkg, version: '9.9.9', dist: { tarball: 'http://127.0.0.1:1/none.tgz' } } } };",
+      'const server = http.createServer((req, res) => {',
+      `  fs.appendFileSync(${JSON.stringify(askedLog)}, req.url + '\\n');`,
+      "  if (req.url.startsWith('/' + pkg)) { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(doc)); return; }",
+      "  res.statusCode = 404; res.end('{\"error\":\"not found\"}');",
+      '});',
+      `server.listen(0, '127.0.0.1', () => fs.writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)));`,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  const registry = spawn(process.execPath, [join(root, 'registry.mjs')], { stdio: 'ignore' });
+  try {
+    for (let waited = 0; !existsSync(portFile) && waited < 100; waited += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(existsSync(portFile), 'the loopback registry never came up');
+    const port = readFileSync(portFile, 'utf8').trim();
+    writeFileSync(join(root, 'package.json'), '{"name":"host"}', 'utf8');
+    const previous = { registry: process.env.npm_config_registry, cache: process.env.npm_config_cache };
+    process.env.npm_config_registry = `http://127.0.0.1:${port}/`;
+    process.env.npm_config_cache = join(root, 'npm-cache');
+    try {
+      const body = await fetchIndex(indexCommand({ root, global: false }), 30);
+      assert.equal(latestFromIndexPayload(body), '9.9.9');
+    } finally {
+      for (const [key, value] of [['npm_config_registry', previous.registry], ['npm_config_cache', previous.cache]]) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const asked = readFileSync(askedLog, 'utf8').split('\n').filter((l) => l !== '');
+    assert.ok(asked.some((u) => u.startsWith(`/${PACKAGE}`)), `the loopback registry was never asked for the package: ${asked.join(', ')}`);
+  } finally {
+    registry.kill();
+  }
+});
+
 /*
- * THE TWO LOOPBACK NODES SIT LAST ON PURPOSE, AND MOVING THEM IS A REAL BREAKAGE.
+ * THE LOOPBACK NODE SITS LAST ON PURPOSE, AND MOVING IT IS A REAL BREAKAGE.
  *
- * `fetch` leaves a connection pool behind it, and undici settles that pool asynchronously —
- * a TCPWRAP can be created after the promise these two nodes await has already resolved.
- * Run them ABOVE the no-network census and the census attributes those handles to the
- * offline arms and reddens: measured here, `a network handle was opened: TCPWRAP,
+ * It opens a real server, and the no-network census above attributes any handle it can see
+ * to the offline arms: measured in the `fetch` era, `a network handle was opened: TCPWRAP,
  * TCPCONNECTWRAP`, on a run where nothing in `--update`'s offline half had touched a socket.
  *
  * The alternative — draining and clearing the census before the arms — was refused: a gate
@@ -1026,7 +1231,7 @@ test('a successful fetch writes the record the status line reads, from ONE fetch
   clearRecord();
   const fetch = stubFetch('0.31.0');
 
-  await update('0.30.0', REGISTRY, { fetch, installer: recordingInstaller(), environment: ENV });
+  await update('0.30.0', REGISTRY, { fetch, installer: recordingInstaller(), environment: ENV, installedVersion: landed('0.31.0') });
 
   assert.equal(fetch.calls.length, 1, JSON.stringify(fetch.calls));
   // AMENDED 2026-09-21 (job62, J62-13): the entry carries a third field now — its own
@@ -1041,7 +1246,7 @@ test('a successful fetch writes the record the status line reads, from ONE fetch
 
 test('the record written here is the one updatecheck reads back', async () => {
   clearRecord();
-  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV });
+  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV, installedVersion: landed('0.31.0') });
 
   assert.equal(
     updateLine('0.30.0'),
@@ -1063,7 +1268,7 @@ test("the other runtime's key is left exactly as it was found", async () => {
     'utf8',
   );
 
-  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV });
+  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV, installedVersion: landed('0.31.0') });
 
   const written = readRecordFile();
   // npm and PyPI are two registries that can disagree at one version number — job56 shipped a
@@ -1102,6 +1307,7 @@ test('a machine with no .bantamkit directory is not given one', async () => {
       fetch: stubFetch('0.31.0'),
       installer: recordingInstaller(),
       environment: ENV,
+      installedVersion: landed('0.31.0'),
     });
     assert.ok(report.startsWith('bantamkit-mcp 0.30.0 is installed; the package index has 0.31.0.'), report);
     assert.ok(report.includes('updated bantamkit-mcp from 0.30.0 to 0.31.0.'), report);
@@ -1124,6 +1330,7 @@ test('a write that cannot land does not turn a good update into a failure', asyn
       fetch: stubFetch('0.31.0'),
       installer: recordingInstaller(),
       environment: ENV,
+      installedVersion: landed('0.31.0'),
     });
     assert.ok(report.includes('updated bantamkit-mcp from 0.30.0 to 0.31.0.'), report);
     assert.equal(recordUpdate('0.31.0'), false);
@@ -1178,7 +1385,7 @@ test('an unreadable record is replaced rather than merged into', async () => {
   // There is nothing in it to preserve, and leaving it would leave the line unreadable.
   writeFileSync(join(FILE_HOME, '.bantamkit', 'update-check.json'), '<html>captive portal</html>', 'utf8');
 
-  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV });
+  await update('0.30.0', REGISTRY, { fetch: stubFetch('0.31.0'), installer: recordingInstaller(), environment: ENV, installedVersion: landed('0.31.0') });
 
   assert.equal(readRecordFile().npm.latest, '0.31.0');
   assert.equal(updateStatus('0.31.0').state, 'current');

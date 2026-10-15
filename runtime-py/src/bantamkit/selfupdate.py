@@ -36,16 +36,22 @@ Every string `--update` can print is a named constant below. J46-30 copies them 
 differ between the runtimes, because they are genuinely different objects and not different
 spellings of one object:
 
-* the URL asked (`pypi.org` vs `registry.npmjs.org`) and the JSON path the version sits at;
-* the command an update runs (`pip install --upgrade` vs `npm install -g`);
+* the question asked of the index and the JSON path the version sits at — since J65-19
+  (#135) each runtime asks ITS OWN PACKAGE MANAGER rather than fetching a URL of its own:
+  `pip install --dry-run --report -` here (the version at `install[0].metadata.version`),
+  `npm view --json` there (at the top level), so the registry, proxy and auth config the
+  following install honours is honoured by the check in front of it;
+* the command an update runs (`pip install --upgrade bantamkit==<v>` vs `npm install
+  bantamkit-mcp@<v>`), which since J65-19 (#128) names the version it compared and is
+  followed by reading the installed version back before `UPDATED` is printed;
 * the per-shape route sentences in `ROUTES`, which name those commands.
 
 `COMPARISON`, `UP_TO_DATE`, `AHEAD`, `RESTART`, `UPDATED`, `NO_ROUTE`, `TIMED_OUT`,
-`UNREACHABLE`, `NOT_A_VERSION` and `COMMAND_FAILED` are shape-for-shape and byte-for-byte
-identical on both sides. They deliberately say `bantamkit-mcp` and never `bantamkit`: the
-PyPI distribution is `bantamkit` and the npm package is `bantamkit-mcp`, but the command the
-operator typed is `bantamkit-mcp` on both, so naming the command keeps the prose identical
-and still names something true.
+`UNREACHABLE`, `NOT_A_VERSION`, `COMMAND_FAILED`, `NOT_INSTALLED`, `NO_INSTALLED_VERSION`
+and `NO_RECORDED_ROUTE` are shape-for-shape and byte-for-byte identical on both sides. They
+deliberately say `bantamkit-mcp` and never `bantamkit`: the PyPI distribution is `bantamkit`
+and the npm package is `bantamkit-mcp`, but the command the operator typed is `bantamkit-mcp`
+on both, so naming the command keeps the prose identical and still names something true.
 
 Layer 5 (Composition): this module reaches the network and shells out to an installer.
 Nothing in the runtime imports it — `mcpserver.py` calls it from the flag and returns before
@@ -64,8 +70,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from bantamkit import __version__
-
 #: The command the operator typed, on BOTH runtimes. Not the distribution name — see the
 #: module docstring: PyPI has `bantamkit`, npm has `bantamkit-mcp`, and only this word is
 #: the same on both, so only this word can appear in a sentence the port copies verbatim.
@@ -73,9 +77,6 @@ PROGRAM = "bantamkit-mcp"
 
 #: The PyPI distribution this interpreter would upgrade. Divergent by construction.
 DISTRIBUTION = "bantamkit"
-
-#: The one URL this toolbox ever fetches. Divergent by construction.
-INDEX_URL = f"https://pypi.org/pypi/{DISTRIBUTION}/json"
 
 #: Explicit, and short enough that a person who typed the flag does not think it hung.
 #: AS-7(3): the network is not on any other path here, so nothing else inherits this.
@@ -123,9 +124,12 @@ RESTART = (
 # J46-4 defect. Exit 1 and not 2, because argparse already owns 2 for a usage error and
 # `--update` is not one.
 
+#: `{article}` is `a` or `an` by the shape word's first letter (`_article`): "a ephemeral
+#: install" shipped in every release up to 0.35.7 (#177), because the template carried the
+#: article and the shape was substituted after it.
 NO_ROUTE = (
-    "{program} {installed} is installed and the package index has {latest}, but this is a "
-    "{shape} install, which --update will not touch. {route}"
+    "{program} {installed} is installed and the package index has {latest}, but this is "
+    "{article} {shape} install, which --update will not touch. {route}"
 )
 
 TIMED_OUT = (
@@ -150,6 +154,29 @@ COMMAND_FAILED = (
     "{program} {installed} is still installed; nothing was changed.\n"
     "{printed}\n"
     "{output}"
+)
+
+#: The installer exited 0 and the install does not report the version it was told to install
+#: (J65-19, #128). The same shape as `COMMAND_FAILED` — the command on line 1, the
+#: installer's own words last — because it is the same kind of failure read off the disk
+#: instead of off the exit code. `{found}` is the version the install reports now, or
+#: `NO_INSTALLED_VERSION` when nothing readable reports one.
+NOT_INSTALLED = (
+    "the update command exited 0 but did not install {latest}: {command}\n"
+    "{program} now reports {found}, not {latest}; the tree the command names did not take "
+    "the update.\n"
+    "{printed}\n"
+    "{output}"
+)
+
+#: What `{found}` reads when no installed version could be read back after the installer ran.
+NO_INSTALLED_VERSION = "no readable version"
+
+#: The fallthrough for a shape word `ROUTES` has never heard of — `INSTALL_SHAPES` growing a
+#: sixth word. Not divergent: it names no package manager, so the port copies it.
+NO_RECORDED_ROUTE = (
+    "There is no recorded update route for {article} {shape} install, so --update will not "
+    "guess one."
 )
 
 #: The install shape itself could not be derived — `mcpserver._Undetermined`, which is what
@@ -229,12 +256,17 @@ class Origin:
 
 
 def latest_from_index_payload(text: str) -> str:
-    """The version string out of PyPI's JSON, or a named refusal. Pure — no network here.
+    """The version string out of pip's installation report, or a named refusal. Pure.
 
     SPLIT FROM THE FETCH SO THE GARBAGE CASE IS TESTED THROUGH THE REAL PARSER. A test that
     stubbed a parsed version would prove nothing about what happens when a captive-portal
     login page comes back with a 200, which is the realistic shape of "the index answered
     and it was not the index".
+
+    THE JSON PATH IS `install[0].metadata.version` SINCE J65-19 (#135): the body is pip's
+    `--report` document (format version 1, pip >= 22.2) for the one candidate pip would
+    install, no longer `pypi.org`'s own `info.version`. The port reads `version` at the top
+    level of `npm view --json`; both refusals below are the same two sentences.
     """
     try:
         payload = json.loads(text)
@@ -244,62 +276,141 @@ def latest_from_index_payload(text: str) -> str:
         ) from None
     version = ""
     if isinstance(payload, dict):
-        info = payload.get("info")
-        if isinstance(info, dict) and isinstance(info.get("version"), str):
-            version = info["version"].strip()
+        install = payload.get("install")
+        first = install[0] if isinstance(install, list) and install else None
+        meta = first.get("metadata") if isinstance(first, dict) else None
+        if isinstance(meta, dict) and isinstance(meta.get("version"), str):
+            version = meta["version"].strip()
     if not version:
         raise UpdateRefused(NOT_A_VERSION.format(program=PROGRAM, why=NO_VERSION_FIELD))
     return version
 
 
-def fetch_index(url: str = INDEX_URL, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> str:
-    """The ONLY network call in this codebase. One request, one timeout, two failure words.
+def index_command() -> list[str]:
+    """The command that asks the index what pip would install — pip itself, never a URL.
 
-    THE IMPORT IS FUNCTION-LOCAL AND THAT IS NOT AN EVASION. `mcpserver._file_url_path`
-    hand-rolls `url2pathname` precisely because `urllib.request` drags `http.client` and
-    `socket` in behind it; a server that never reaches this flag should not pay that at
-    import time. The no-network gate in `runtime-py/tests/test_install_shape.py` guards
-    eleven named functions in `mcpserver.py` — since J46-32 it is RED on a function-local
-    import and on `__import__` too — and this function is in neither that module nor that
-    set, which is the point: the network lives in exactly one function that the gate's
-    eleven cannot reach.
+    WHY pip AND NOT `urlopen` (J65-19, #135). The version check and the `pip install` that
+    follows it must agree about WHICH index they mean, and only pip knows: `PIP_INDEX_URL`,
+    `pip.conf`'s `index-url` and `extra-index-url`, `trusted-host`, `cert`, the
+    `HTTPS_PROXY` environment and its own `proxy` setting, keyring auth for a private
+    mirror. The old `fetch_index` hard-coded `https://pypi.org/pypi/bantamkit/json` — the
+    JSON API only Warehouse serves — so behind a mirror it compared against an index the
+    install never used, or failed where the install would have worked.
+
+    `--dry-run --report -` is pip's INSTALLATION REPORT (format 1, pip >= 22.2, not the
+    experimental `pip index` command): the version at `install[0].metadata.version` is the
+    one candidate pip resolved under its own config, which is exactly the version
+    `upgrade_command` then names. `--ignore-installed` because without it an index at the
+    installed version reports "already satisfied" and an EMPTY `install` list; `--no-deps`
+    because the question is one package and resolving the tree costs a request per
+    dependency; `-q` because pip's progress lines go to stdout and would sit in front of the
+    JSON; `--retries 0` because a refused index takes pip 7.7 s under its default schedule
+    (measured) and the truth — `No matching distribution found` — is what `UNREACHABLE`
+    should carry, not a 10-second silence; `--disable-pip-version-check` so the one request
+    stays one. Measured against a loopback simple index in `test_selfupdate.py`: 0.15 s.
+
+    `sys.executable -m pip` for the reason `upgrade_command` gives: the pip that answers
+    must be the pip that installs.
+    """
+    return [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--dry-run",
+        "--no-deps",
+        "--ignore-installed",
+        "--retries",
+        "0",
+        "--disable-pip-version-check",
+        "-q",
+        "--report",
+        "-",
+        DISTRIBUTION,
+    ]
+
+
+def fetch_index(command: list[str], timeout: float = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """The ONLY path to the network in this codebase, and it goes through pip (J65-19, #135).
+
+    No `urllib` any more: the question is asked of `index_command` as a subprocess, with
+    `subprocess.run`'s own `timeout` as the deadline — pip is killed when it passes, which is
+    the one fact that becomes `TimeoutError`. The no-network gate in
+    `runtime-py/tests/test_install_shape.py` guards eleven named functions in
+    `mcpserver.py`, and this function is in neither that module nor that set, which is the
+    point: the network lives behind exactly one function that the gate's eleven cannot reach.
 
     THE CONTRACT WITH `update` IS THE EXCEPTION TYPE, because that is what decides which
     sentence the operator reads. `TimeoutError` means the clock ran out; any other `OSError`
-    means it could not be reached, and its `str()` is what `UNREACHABLE` interpolates. An
-    injected fetch in a test raises the same two to exercise the same two arms.
+    means it could not be reached, and its `str()` is what `UNREACHABLE` interpolates — the
+    last `ERROR:` line pip wrote (`No matching distribution found for bantamkit` for a dead
+    or empty index, measured), else the last line it wrote at all, else the bare exit
+    status. A pip that could not even be spawned is the spawn's own `OSError`.
+
+    Nothing here parses a version: a body that is not the report is not a version either and
+    is refused BY NAME in `latest_from_index_payload`, through the real parser.
     """
-    from urllib.error import HTTPError, URLError
-    from urllib.request import Request, urlopen
-
-    request = Request(  # noqa: S310 - https literal, not caller-supplied
-        url,
-        headers={"Accept": "application/json", "User-Agent": f"{PROGRAM}/{__version__}"},
-    )
     try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310
-            raw = response.read()
-    except HTTPError as exc:
-        raise OSError(f"HTTP {exc.code} {exc.reason}") from None
-    except URLError as exc:
-        reason = exc.reason
-        if isinstance(reason, TimeoutError):
-            raise TimeoutError(str(reason)) from None
-        raise OSError(str(reason) or exc.__class__.__name__) from None
-    # `replace` rather than `strict`: a body that is not UTF-8 is not a version either, and
-    # it should reach `latest_from_index_payload` and be refused BY NAME, not raise here.
-    return raw.decode("utf-8", "replace")
+        done = subprocess.run(  # noqa: S603 - argv list built here, never a shell string
+            command,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(
+            f"{command[-1]} did not answer within {_seconds(timeout)} seconds"
+        ) from exc
+    if done.returncode != 0:
+        stderr = done.stderr.decode("utf-8", "replace")
+        raise OSError(_pip_failure_reason(done.returncode, stderr))
+    return done.stdout.decode("utf-8", "replace")
 
 
-def upgrade_command() -> list[str]:
-    """What a `registry` install upgrades with, on THIS interpreter.
+def _pip_failure_reason(code: int, stderr: str) -> str:
+    """The one line of a pip failure worth printing, in the order `fetch_index` gives."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("ERROR:"):
+            return line[len("ERROR:") :].strip() or line
+    return lines[-1] if lines else f"exit {code}"
+
+
+def installed_version() -> str | None:
+    """The version THIS interpreter's install of `bantamkit` reports now, read off the disk.
+
+    The default `installed_version` seam of `update` (J65-19, #128): what the success line is
+    allowed to say is what the dist-info reports after pip ran, never what the index said.
+    `metadata.version` reads `METADATA` afresh on each call, so it sees the file pip just
+    wrote; `None` when no distribution answers, which is what a tree that took nothing
+    looks like from here.
+    """
+    from importlib import metadata
+
+    try:
+        found = metadata.version(DISTRIBUTION)
+    except metadata.PackageNotFoundError:
+        return None
+    return found.strip() or None
+
+
+def upgrade_command(latest: str) -> list[str]:
+    """What a `registry` install upgrades with, on THIS interpreter, to THIS version.
 
     `sys.executable -m pip` and never a bare `pip`: the server may be running from a venv
     whose `pip` is not the one first on `PATH`, and upgrading the wrong environment is a
     failure that reports success. The same reason `hostinstall.this_command()` records an
     absolute console-script path rather than a name to look up.
+
+    `==<latest>` AND NOT A BARE NAME (J65-19, #128): `pip install --upgrade bantamkit` lets
+    pip resolve "latest" a second time, against whatever index it is configured for, so a
+    mirror behind the one that answered the check, or a release landing between the two
+    calls, installs something other than the version line 1 of the report compared — and
+    the success line was printed from the compared number regardless. The spec names the
+    version this flag compared, and `update` reads the install back before it says
+    `updated`.
     """
-    return [sys.executable, "-m", "pip", "install", "--upgrade", DISTRIBUTION]
+    return [sys.executable, "-m", "pip", "install", "--upgrade", f"{DISTRIBUTION}=={latest}"]
 
 
 def run_installer(command: list[str]) -> tuple[int, str]:
@@ -463,18 +574,20 @@ def update(
     installed: str,
     origin: Origin,
     *,
-    fetch: Callable[[str, float], str] = fetch_index,
+    fetch: Callable[[list[str], float], str] = fetch_index,
     installer: Callable[[list[str]], tuple[int, str]] = run_installer,
-    url: str = INDEX_URL,
+    installed_version: Callable[[], str | None] = installed_version,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> str:
     """The whole flag: ask the index, compare, and act — or refuse, by name.
 
-    THE TWO SEAMS ARE `fetch` AND `installer`, and they are keyword arguments with real
-    defaults rather than module globals a test monkeypatches. A test that reaches PyPI fails
-    on a plane and passes for the wrong reason off a cache; a test that ran a real installer
-    would rewrite the developer's own environment. Both substitutes are handed in here, so
-    every arm below is reachable offline and the installer command is CAPTURED, never run.
+    THE THREE SEAMS ARE `fetch`, `installer` AND `installed_version`, and they are keyword
+    arguments with real defaults rather than module globals a test monkeypatches. A test that
+    reaches PyPI fails on a plane and passes for the wrong reason off a cache; a test that
+    ran a real installer would rewrite the developer's own environment. The substitutes are
+    handed in here, so every arm below is reachable offline and the installer command is
+    CAPTURED, never run. `fetch` is handed `index_command()` and the timeout; it answers the
+    body.
 
     THE INDEX IS ASKED BEFORE THE SHAPE IS JUDGED, and that order is deliberate. The user
     asked the flag to go and check the latest version; an operator on a checkout that is
@@ -482,7 +595,7 @@ def update(
     that installs it. The shape decides the ACTION, never whether the question is asked.
     """
     try:
-        body = fetch(url, timeout)
+        body = fetch(index_command(), timeout)
     except TimeoutError:
         raise UpdateRefused(TIMED_OUT.format(timeout=_seconds(timeout))) from None
     except OSError as exc:
@@ -506,28 +619,28 @@ def update(
         return f"{header}\n{AHEAD}"
 
     if origin.shape != "registry":
-        route = ROUTES.get(origin.shape)
-        if route is None:
-            # An unknown shape word is a fact about THIS code being behind
-            # `INSTALL_SHAPES`, not about the operator's machine, and inventing a route for
-            # it would be the guess the whole install-shape surface refuses to make.
-            route = (
-                f"There is no recorded update route for a {origin.shape} install, so "
-                "--update will not guess one."
-            )
+        # An unknown shape word is a fact about THIS code being behind `INSTALL_SHAPES`, not
+        # about the operator's machine, and inventing a route for it would be the guess the
+        # whole install-shape surface refuses to make.
+        route = ROUTES.get(origin.shape, NO_RECORDED_ROUTE)
         raise UpdateRefused(
             NO_ROUTE.format(
                 program=PROGRAM,
                 installed=installed,
                 latest=latest,
+                article=_article(origin.shape),
                 shape=origin.shape,
                 route=route.format(
-                    source=origin.source, distribution=DISTRIBUTION, latest=latest
+                    source=origin.source,
+                    distribution=DISTRIBUTION,
+                    latest=latest,
+                    article=_article(origin.shape),
+                    shape=origin.shape,
                 ),
             )
         )
 
-    command = upgrade_command()
+    command = upgrade_command(latest)
     rendered = shlex.join(command)
     code, output = installer(command)
     printed = output.strip() or NO_OUTPUT
@@ -538,6 +651,23 @@ def update(
                 command=rendered,
                 program=PROGRAM,
                 installed=installed,
+                printed=PRINTED,
+                output=printed,
+            )
+        )
+    # THE SUCCESS LINE IS READ OFF THE DISK, NOT OFF THE INDEX (J65-19, #128). An installer
+    # that exited 0 has said nothing about which version it left behind, so the install is
+    # read back and compared with the version this flag compared, by the same comparator —
+    # `0.30` and `0.30.0` are one release — and a mismatch, or nothing readable at all, is a
+    # refusal carrying the installer's words.
+    found = installed_version()
+    if found is None or compare_versions(found, latest) != 0:
+        raise UpdateRefused(
+            NOT_INSTALLED.format(
+                latest=latest,
+                command=rendered,
+                program=PROGRAM,
+                found=found if found is not None else NO_INSTALLED_VERSION,
                 printed=PRINTED,
                 output=printed,
             )
@@ -563,3 +693,12 @@ def _seconds(timeout: float) -> str:
     if float(timeout).is_integer():
         return str(int(timeout))
     return str(timeout)
+
+
+def _article(word: str) -> str:
+    """`a` or `an` for the word that follows, by its first letter (#177).
+
+    A letter test and not a table, because `INSTALL_SHAPES` can grow a word this file has
+    never seen; the port's `article` applies the same rule byte for byte.
+    """
+    return "an" if word[:1].lower() in {"a", "e", "i", "o", "u"} else "a"

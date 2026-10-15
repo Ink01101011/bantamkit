@@ -541,7 +541,31 @@ function buildMemory(options: Options): Memory {
     checkStoreFlag(options.store);
     return new Memory(options.store, shared);
   }
+  if (options.start !== null) checkStartFlag(options.start);
   return Memory.layered(options.start, shared);
+}
+
+/**
+ * job65/#142: `--start` must name a directory that is there.
+ *
+ * WAS: unchecked. `pyResolve` of a path that does not exist answers the path anyway, the walk
+ * then climbed its nonexistent parents to the first real one and bound whatever store sat
+ * above it — a typo'd `--start` silently bound an ancestor's store as the WRITABLE project
+ * layer. Unlike `--store`, a missing `--start` is not a designation: nothing is ever created
+ * at a start directory, so a missing one can only be a mistake, and it is refused by name
+ * before a transport exists. Same `stat` and the same sentence family as `checkStoreFlag`.
+ */
+function checkStartFlag(raw: string): void {
+  const start = pyJoin(raw);
+  let isDir: boolean;
+  try {
+    isDir = pyStatIsDir(start);
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+    if (e.name === 'FileNotFoundError') throw new Refusal(`--start does not exist: ${start}`);
+    throw new Refusal(`--start is unreachable: ${start}: ${e.strerror}`);
+  }
+  if (!isDir) throw new Refusal(`--start is not a directory: ${start}`);
 }
 
 /**

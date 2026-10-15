@@ -7,12 +7,12 @@
  * ship a server whose recovery behaviour differs from the reference's on every mistyped
  * argument, and that is a product difference, not a cosmetic one.
  *
- * WHAT THE URL IS. `https://errors.pydantic.dev/2.13/v/<type>` names an entry in pydantic's
- * public error catalogue. This runtime has no pydantic; the URL is part of the sentence the
- * reference emits, reproduced because the sentence is the contract. `2.13` is therefore a
- * PIN on the reference, not a claim about this process — and it is compared against the
- * live server by `tools/conformance/suites/wire.mjs`, so the day the Python side bumps to
- * 2.14 the suite goes red here instead of the two runtimes drifting apart quietly.
+ * WHY THERE IS NO URL (job65/#185). pydantic ends each error with `For further information
+ * visit https://errors.pydantic.dev/<major.minor>/v/<type>`, naming whichever pydantic pip
+ * resolved. This port used to reproduce it with `2.13` hard-coded, and the reference printed
+ * `2.14` the day PyPI resolved 2.14 — the refusal texts differed by install date. The
+ * reference now sets `PYDANTIC_ERRORS_INCLUDE_URL=0` at import (`bantamkit.mcpserver`), so
+ * neither runtime prints the line; `tools/conformance/suites/wire.mjs` compares the two.
  *
  * EVERY RULE BELOW WAS MEASURED, not read off pydantic's documentation. The probes are in
  * `scratchpad/job38-n7/probe{4,7,8,9}.py` and each drove the real stdio server:
@@ -36,6 +36,12 @@ export interface FieldSpec {
   readonly optional: boolean;
   /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
   readonly le?: bigint;
+  /**
+   * `Field(ge=...)`: an inclusive floor, checked the same way. On a `dictInt` it binds the
+   * VALUES — `dict[str, Annotated[int, Field(ge=0)]]` on the reference — so the frame's
+   * location is `usage.<key>`, as the type frame's is.
+   */
+  readonly ge?: bigint;
 }
 
 export interface ArgModel {
@@ -45,7 +51,7 @@ export interface ArgModel {
 }
 
 const req = (name: string, kind: FieldSpec['kind']): FieldSpec => ({ name, kind, optional: false });
-const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint } = {}): FieldSpec => ({
+const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint; ge?: bigint } = {}): FieldSpec => ({
   name,
   kind,
   optional: true,
@@ -71,6 +77,16 @@ const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint } = {})
  * register a tool.
  */
 export const OFFSET_MAXIMUM = 9007199254740991n;
+
+/**
+ * `assets/tools/skill_audit.json` `budget.maximum` — the same `Number.MAX_SAFE_INTEGER` as
+ * `OFFSET_MAXIMUM`, spelled as its own constant because it is tied to a different asset
+ * and would stay where it is if the other ever moved. Bound on the reference as
+ * `Annotated[int, Field(le=SKILL_BUDGET_MAXIMUM)]` (#133, job65): until then the manifest
+ * advertised a ceiling neither runtime enforced, and `budget: 2**53` was audited as if it
+ * were a number a catalogue could be measured against.
+ */
+export const SKILL_BUDGET_MAXIMUM = 9007199254740991n;
 
 /**
  * One model per handler, mirroring `build_server`'s closures signature for signature.
@@ -125,9 +141,10 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   bantamkit_status: { model: 'bantamkit_statusArguments', fields: [] },
   // `reserve: int | None = None` on the reference, so it is the same lax `int` as `k`:
   // `'2'`, `True` and `3.0` validate, `'2.5'` is `int_parsing`, `2.5` is `int_from_float`,
-  // and an explicit `null` is the default. The manifest's `minimum: 0` is advisory to the
-  // client; nothing here floors it — a negative value reaches `MemoryStore.compact`, whose
-  // `max(0, min(reserve, budget // 2))` is the only clamp on either side (6b966e5).
+  // and an explicit `null` is the default. Nothing here floors it — a negative value
+  // reaches `MemoryStore.compact`, whose `max(0, min(reserve, budget // 2))` is the only
+  // clamp on either side (6b966e5) — and since #133 (job65) the manifest no longer
+  // advertises a `minimum` it does not enforce: the clamp is stated in the description.
   memory_compact: { model: 'memory_compactArguments', fields: [opt('reserve', 'int')] },
   // `bantamkit_read(path: str, part: str | None = None, offset: int | None = None,
   // limit: int | None = None)` on the reference (job43). `path` and `part` are the strict
@@ -145,16 +162,19 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
     model: 'bantamkit_readArguments',
     fields: [req('path', 'str'), opt('part', 'str'), opt('offset', 'int', { le: OFFSET_MAXIMUM }), opt('limit', 'int')],
   },
-  // `skill_audit(root: str, enabled: list[str] | None = None, usage: dict[str, int] | None =
-  // None, check: str | None = None, budget: int | None = None)` on the reference (job44).
-  // `usage` is the only `dict[str, int]` on the surface and the reason `dictInt` exists:
-  // pydantic validates a typed dict's VALUES, so `{'a': 'x'}` is `usage.a` / `int_parsing`
-  // where `handoff_patch`'s `dict[str, Any]` takes anything. `budget` carries no `le`,
-  // because the reference binds none — the manifest's `maximum` is advisory to the client,
-  // and the handler's own refusal is the negative one. `versions` is the only
-  // `dict[str, str]`, and the reason `dictStr` exists beside it: a `str` field is STRICT even
-  // in lax mode, so `{'a': 1}` is `versions.a` / `string_type` where the same value under
-  // `usage` would validate.
+  // `skill_audit(root: str, enabled: list[str] | None = None, usage: dict[str,
+  // Annotated[int, Field(ge=0)]] | None = None, check: str | None = None, budget:
+  // Annotated[int, Field(le=SKILL_BUDGET_MAXIMUM)] | None = None)` on the reference (job44;
+  // the two bounds since #133, job65). `usage` is the only `dict[str, int]` on the surface
+  // and the reason `dictInt` exists: pydantic validates a typed dict's VALUES, so `{'a':
+  // 'x'}` is `usage.a` / `int_parsing` and `{'a': -1}` is `usage.a` /
+  // `greater_than_equal`, where `handoff_patch`'s `dict[str, Any]` takes anything. `budget`'s
+  // ceiling is the manifest's `maximum`, bound the way `bantamkit_read`'s `offset` is;
+  // its floor is still the handler's own refusal (`budget must not be negative`), which
+  // the manifest's `minimum: 0` describes and this table does not pre-empt. `versions` is
+  // the only `dict[str, str]`, and the reason `dictStr` exists beside it: a `str` field is
+  // STRICT even in lax mode, so `{'a': 1}` is `versions.a` / `string_type` where the same
+  // value under `usage` would validate.
   // `dry_run: bool | None = None` on the reference (job45 row 5). LAX bool, and every arm
   // below was MEASURED against the real stdio server, not read off pydantic's docs
   // (`scratchpad` probe, 33 inputs): `0`/`1` and `0.0`/`1.0` coerce; any OTHER integral
@@ -194,9 +214,9 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
     fields: [
       req('root', 'str'),
       opt('enabled', 'listStr'),
-      opt('usage', 'dictInt'),
+      opt('usage', 'dictInt', { ge: 0n }),
       opt('check', 'str'),
-      opt('budget', 'int'),
+      opt('budget', 'int', { le: SKILL_BUDGET_MAXIMUM }),
       opt('versions', 'dictStr'),
     ],
   },
@@ -323,7 +343,7 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
       const bad: RawError[] = [];
       const coerced = new Map<string, PyValue>();
       for (const [key, item] of value.v) {
-        const checked = checkInt(`${spec.name}.${key}`, item);
+        const checked = checkBoundedInt(spec, `${spec.name}.${key}`, item);
         if ('value' in checked) coerced.set(key, checked.value);
         else bad.push(checked);
       }
@@ -400,22 +420,36 @@ function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawEr
       return wrongType();
     }
     case 'int': {
-      const checked = checkInt(spec.name, value);
-      if (!('value' in checked)) return [checked];
-      // `less_than_equal` names the ORIGINAL input, as every constraint error does.
-      if (spec.le !== undefined && checked.value.t === 'int' && checked.value.v > spec.le) {
-        return [
-          {
-            loc: spec.name,
-            type: 'less_than_equal',
-            msg: `Input should be less than or equal to ${spec.le}`,
-            input: value,
-          },
-        ];
-      }
-      return checked;
+      const checked = checkBoundedInt(spec, spec.name, value);
+      return 'value' in checked ? checked : [checked];
     }
   }
+}
+
+/**
+ * The lax int parse, then the field's `ge`/`le` bounds on what it parsed.
+ *
+ * A constraint frame names the ORIGINAL input, as every pydantic constraint error does:
+ * `usage: {'a': '-1'}` is `greater_than_equal` with `input_value='-1', input_type=str`, the
+ * string the client sent and not the `-1` it parsed to. Measured against pydantic 2.13 on
+ * `dict[str, Annotated[int, Field(ge=0)]]` and `Annotated[int, Field(le=2**53-1)]`,
+ * 2026-10-15 (job65 J65-13 note, §3), and compared over stdio by `suites/wire.mjs`.
+ */
+function checkBoundedInt(spec: FieldSpec, loc: string, value: PyValue): { value: PyValue } | RawError {
+  const checked = checkInt(loc, value);
+  if (!('value' in checked) || checked.value.t !== 'int') return checked;
+  if (spec.ge !== undefined && checked.value.v < spec.ge) {
+    return {
+      loc,
+      type: 'greater_than_equal',
+      msg: `Input should be greater than or equal to ${spec.ge}`,
+      input: value,
+    };
+  }
+  if (spec.le !== undefined && checked.value.v > spec.le) {
+    return { loc, type: 'less_than_equal', msg: `Input should be less than or equal to ${spec.le}`, input: value };
+  }
+  return checked;
 }
 
 function checkInt(loc: string, value: PyValue): { value: PyValue } | RawError {
@@ -561,6 +595,49 @@ export class PyValidationFailure extends Error {
 }
 
 /**
+ * A LONE SURROGATE IN ANY STRING ARGUMENT IS REFUSED BY NAME (job65/#160), before any other
+ * check. JSON can spell `\ud800` on its own; no UTF-8 file or frame can carry it. This port
+ * used to accept it and write U+FFFD ("saved", data silently altered); the reference never
+ * answered at all, because the SDK's frame parser rejects the escape and drops the request.
+ * Both now answer `Error executing tool <name>: argument '<path>' holds a lone surrogate
+ * (U+XXXX), which is not text; nothing was done` — the reference from its stdio reader
+ * (`bantamkit.mcpstdio`), this port from here. `<path>` is the top-level argument, then
+ * `[i]` for a list item and `.key` for a dict member; the first in document order wins.
+ * Keys are not inspected: an unknown key is ignored by both sides anyway.
+ */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+export function loneSurrogateArgument(args: PyValue): string | null {
+  const walk = (value: PyValue, where: string): string | null => {
+    if (value.t === 'str') {
+      const found = LONE_SURROGATE.exec(value.v);
+      if (found === null) return null;
+      const unit = found[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+      return `argument '${where}' holds a lone surrogate (U+${unit}), which is not text; nothing was done`;
+    }
+    if (value.t === 'list') {
+      for (let i = 0; i < value.v.length; i += 1) {
+        const hit = walk(value.v[i]!, `${where}[${i}]`);
+        if (hit !== null) return hit;
+      }
+    }
+    if (value.t === 'dict') {
+      for (const [key, item] of value.v) {
+        const hit = walk(item, `${where}.${key}`);
+        if (hit !== null) return hit;
+      }
+    }
+    return null;
+  };
+  if (args.t !== 'dict') return null;
+  for (const [key, item] of args.v) {
+    const hit = walk(item, key);
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+/**
  * `model.model_validate(arguments)` for one tool, or the exact `ValidationError` text.
  *
  * Unknown keys are IGNORED, because pydantic's default `model_config` ignores them and the
@@ -574,6 +651,8 @@ export class PyValidationFailure extends Error {
  * its `input_value` and not the string the wire held.
  */
 export function validateArguments(model: ArgModel, args: PyValue): Map<string, PyValue> {
+  const lone = loneSurrogateArgument(args);
+  if (lone !== null) throw new Error(lone);
   const unwrapped = preParseJson(model, args);
   const supplied = unwrapped.t === 'dict' ? unwrapped.v : new Map<string, PyValue>();
   const errors: RawError[] = [];
@@ -599,8 +678,7 @@ export function validateArguments(model: ArgModel, args: PyValue): Map<string, P
     .map(
       (e) =>
         `${e.loc}\n  ${e.msg} [type=${e.type}, input_value=${truncateRepr(reprValue(e.input))}, ` +
-        `input_type=${pyTypeName(e.input)}]\n    For further information visit ` +
-        `https://errors.pydantic.dev/2.13/v/${e.type}`,
+        `input_type=${pyTypeName(e.input)}]`,
     )
     .join('\n');
   throw new PyValidationFailure(`${head}\n${body}`);

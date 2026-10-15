@@ -943,3 +943,111 @@ test('a hand-edited entry of any shape is answered, never thrown on', async () =
     assert.deepEqual(readFileSync(path), before);
   });
 });
+
+// ------------------------------------------------------------ job65: #129, #136, #138
+
+const symlinksNeedAPrivilegeOnWindows = { skip: process.platform === 'win32' };
+const USER_HOOK = { type: 'command', command: 'notify-send user-hook' };
+
+/** What the user in #129 did: their own command, inside the block that holds ours. */
+function addUserHookToOurBlock(h, path, event = 'SessionStart') {
+  const doc = readJson(path);
+  const block = doc.hooks[event][0];
+  assert.ok(block.hooks.some((hook) => h.HOOK_MARKER_KEY in hook), JSON.stringify(block));
+  block.hooks.push({ ...USER_HOOK });
+  writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+}
+
+test('#129: --remove-hooks takes only our command out of a block the user also uses', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    addUserHookToOurBlock(h, path);
+    const { said, tell } = recorder();
+
+    const report = h.removeHooks({ ...CHECKOUT, tell, ask: () => true });
+
+    const after = readJson(path);
+    assert.deepEqual(after.hooks.SessionStart, [{ matcher: 'startup|resume|clear|compact', hooks: [USER_HOOK] }]);
+    assert.deepEqual(Object.keys(after.hooks), ['SessionStart'], 'another event kept a block');
+    for (const entries of Object.values(after.hooks)) {
+      for (const entry of entries) for (const hook of entry.hooks) assert.ok(!(h.HOOK_MARKER_KEY in hook));
+    }
+    // Seven COMMAND OBJECTS came out, the block that still held the user's hook stayed, and the
+    // plan said so before the write.
+    assert.ok(said.join('').startsWith(`bantamkit would remove 7 hook entries from ${path}\n`), said.join(''));
+    assert.ok(report.includes('  events : SessionStart PreToolUse PostToolUse UserPromptSubmit'), report);
+  });
+});
+
+test('#129: a reinstall keeps a user’s hook that shares our block', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    addUserHookToOurBlock(h, path);
+
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+
+    const blocks = readJson(path).hooks.SessionStart;
+    const foreign = blocks.flatMap((b) => b.hooks).filter((hook) => !(h.HOOK_MARKER_KEY in hook)).map((hook) => hook.command);
+    assert.deepEqual(foreign, ['notify-send user-hook']);
+    assert.equal(blocks.flatMap((b) => b.hooks).filter((hook) => h.HOOK_MARKER_KEY in hook).length, 1);
+    assert.equal(blocks.length, 2, JSON.stringify(blocks));
+  });
+});
+
+test('#129: a block that holds only ours is dropped whole', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    h.removeHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    assert.deepEqual(readJson(path).hooks, {});
+  });
+});
+
+test('#136: a symlinked settings file is written through and stays a link', symlinksNeedAPrivilegeOnWindows, async () => {
+  await withHome(async (h, root) => {
+    const { symlinkSync, lstatSync } = await import('node:fs');
+    const dotfiles = join(root, 'dotfiles');
+    mkdirSync(dotfiles);
+    const target = join(dotfiles, 'settings.json');
+    const original = Buffer.from('{"theme": "dark"}\n');
+    writeFileSync(target, original);
+    const path = h.claudeSettingsPath();
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path);
+
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+
+    assert.ok(lstatSync(path).isSymbolicLink(), 'the link was replaced by a regular file');
+    const doc = readJson(target);
+    assert.equal(doc.theme, 'dark');
+    assert.deepEqual(Object.keys(doc.hooks).sort(), h.HOOK_EVENTS.map(([event]) => event).sort());
+    const copies = backupsIn(path);
+    assert.equal(copies.length, 1);
+    assert.deepEqual(readFileSync(join(dirname(path), copies[0])), original);
+    assert.ok(!lstatSync(join(dirname(path), copies[0])).isSymbolicLink());
+  });
+});
+
+test('#138: an install and a removal on one day keep both backups', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    const seeded = seed(path, `${JSON.stringify({ hooks: { PreToolUse: [FOREIGN] } }, null, 2)}\n`);
+    const pad = (n) => String(n).padStart(2, '0');
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    const beforeRemoval = readFileSync(path);
+    const { said, tell } = recorder();
+
+    const report = h.removeHooks({ ...CHECKOUT, tell, ask: () => true });
+
+    assert.deepEqual(backupsIn(path).sort(), [`settings.json.backup-${stamp}`, `settings.json.backup-${stamp}.1`]);
+    assert.deepEqual(readFileSync(join(dirname(path), `settings.json.backup-${stamp}`)), seeded);
+    assert.deepEqual(readFileSync(join(dirname(path), `settings.json.backup-${stamp}.1`)), beforeRemoval);
+    // The plan named the name the write then used.
+    assert.ok(said.join('').includes(`  backup : ${path}.backup-${stamp}.1\n`), said.join(''));
+    assert.ok(report.includes(`  backup : ${path}.backup-${stamp}.1`), report);
+  });
+});

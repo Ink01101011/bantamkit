@@ -109,6 +109,18 @@ function positive(text: string): number {
 }
 
 /**
+ * `_nonnegative`: `--reserve 0` is a real request — compact to the budget itself — and the
+ * tool's schema says `minimum: 0`, so the CLI accepts it too (#134). WAS `positive`, which
+ * refused 0 with `must be >= 1` on both CLIs while `memory_compact` took it. `typeName` is
+ * `_nonnegative` for the reason `positive` gives: argparse prints the callable's `__name__`.
+ */
+function nonnegative(text: string): number {
+  const value = pyIntStrict(text);
+  if (value < 0) throw new ArgumentTypeError('must be >= 0');
+  return value;
+}
+
+/**
  * `common(sub)`: the store selector and the budget, on every subcommand.
  *
  * ORDER IS WIRE-VISIBLE. argparse prints optionals in the order they were added, so this
@@ -200,9 +212,13 @@ const PARSER: ParserSpec = {
                 dest: 'reserve',
                 metavar: 'BYTES',
                 kind: 'store',
-                help: 'headroom to leave below the budget (default: the largest index line kept)',
-                convert: positive,
-                typeName: '_positive',
+                // The default is `MemoryStore.compact`'s (job46): the sentence quotes it rather
+                // than the pre-job46 "largest index line kept" it used to state (#134).
+                help:
+                  'headroom to leave below the budget (default: the budget minus its 90 percent ' +
+                  'warning line, plus the largest index line kept; capped at half the budget)',
+                convert: nonnegative,
+                typeName: '_nonnegative',
                 defaultValue: null,
               },
             ]),

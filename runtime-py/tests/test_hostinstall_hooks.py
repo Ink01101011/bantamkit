@@ -1031,3 +1031,116 @@ def test_a_foreign_entry_is_not_claimed_however_it_mentions_us(home, label, entr
 def test_ownership_never_raises_on_a_hand_edited_file(home, entry):
     """Somebody else's settings file is input, not a contract. It answers False, it never throws."""
     assert hostinstall._is_ours(entry) is False
+
+
+# ------------------------------------------------------------ job65: #129, #136, #138
+
+symlinks_need_a_privilege_on_windows = pytest.mark.skipif(
+    sys.platform == "win32", reason="os.symlink needs a privilege on Windows"
+)
+
+USER_HOOK = {"type": "command", "command": "notify-send user-hook"}
+
+
+def _add_user_hook_to_our_block(path: Path, event: str = "SessionStart") -> None:
+    """What the user in #129 did: their own command, inside the block that holds ours."""
+    doc = read_json(path)
+    block = doc["hooks"][event][0]
+    assert any(hostinstall.HOOK_MARKER_KEY in hook for hook in block["hooks"]), block
+    block["hooks"].append(dict(USER_HOOK))
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+def test_129_remove_hooks_takes_only_our_command_out_of_a_block_the_user_also_uses(home):
+    path = hostinstall.claude_settings_path()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+    _add_user_hook_to_our_block(path)
+    tell = Recorder()
+
+    report = hostinstall.remove_hooks(tell=tell, ask=lambda: True)
+
+    after = read_json(path)
+    assert after["hooks"]["SessionStart"] == [
+        {"matcher": "startup|resume|clear|compact", "hooks": [USER_HOOK]}
+    ]
+    assert list(after["hooks"]) == ["SessionStart"], "another event kept a block"
+    assert all(
+        hostinstall.HOOK_MARKER_KEY not in hook
+        for entries in after["hooks"].values()
+        for entry in entries
+        for hook in entry["hooks"]
+    )
+    # Seven COMMAND OBJECTS came out, the block that still held the user's hook stayed, and
+    # the plan said so before the write.
+    assert tell.text.startswith(f"bantamkit would remove 7 hook entries from {path}\n")
+    assert "  events : SessionStart PreToolUse PostToolUse UserPromptSubmit" in report
+
+
+def test_129_a_reinstall_keeps_a_users_hook_that_shares_our_block(home):
+    path = hostinstall.claude_settings_path()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+    _add_user_hook_to_our_block(path)
+
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+
+    blocks = read_json(path)["hooks"]["SessionStart"]
+    hooks = [hook for block in blocks for hook in block["hooks"]]
+    foreign = [hook["command"] for hook in hooks if hostinstall.HOOK_MARKER_KEY not in hook]
+    assert foreign == ["notify-send user-hook"]
+    assert sum(hostinstall.HOOK_MARKER_KEY in hook for hook in hooks) == 1
+    assert len(blocks) == 2, blocks
+
+
+def test_129_a_block_that_holds_only_ours_is_dropped_whole(home):
+    """The other half of the rule: taking ours out of a block that held nothing else leaves
+    no `{"matcher": ..., "hooks": []}` behind."""
+    path = hostinstall.claude_settings_path()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+
+    hostinstall.remove_hooks(tell=lambda _text: None, ask=lambda: True)
+
+    assert read_json(path)["hooks"] == {}
+
+
+@symlinks_need_a_privilege_on_windows
+def test_136_a_symlinked_settings_file_is_written_through_and_stays_a_link(home):
+    dotfiles = home / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "settings.json"
+    original = b'{"theme": "dark"}\n'
+    target.write_bytes(original)
+    path = hostinstall.claude_settings_path()
+    path.parent.mkdir(parents=True)
+    path.symlink_to(target)
+
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+
+    assert path.is_symlink(), "the link was replaced by a regular file"
+    doc = json.loads(target.read_text(encoding="utf-8"))
+    assert doc["theme"] == "dark"
+    assert set(doc["hooks"]) == {event for event, _ in hostinstall.HOOK_EVENTS}
+    copies = backups_in(path)
+    assert len(copies) == 1
+    assert (path.parent / copies[0]).read_bytes() == original
+    assert not (path.parent / copies[0]).is_symlink()
+
+
+def test_138_an_install_and_a_removal_on_one_day_keep_both_backups(home):
+    path = hostinstall.claude_settings_path()
+    seeded = seed(path, json.dumps({"hooks": {"PreToolUse": [FOREIGN]}}, indent=2) + "\n")
+    stamp = date.today().isoformat()
+    hostinstall.install_hooks(tell=lambda _text: None, ask=lambda: True)
+    before_removal = path.read_bytes()
+    tell = Recorder()
+
+    report = hostinstall.remove_hooks(tell=tell, ask=lambda: True)
+
+    assert backups_in(path) == [
+        f"settings.json.backup-{stamp}",
+        f"settings.json.backup-{stamp}.1",
+    ]
+    assert (path.parent / f"settings.json.backup-{stamp}").read_bytes() == seeded
+    assert (path.parent / f"settings.json.backup-{stamp}.1").read_bytes() == before_removal
+    # The plan named the name the write then used.
+    assert f"  backup : {path}.backup-{stamp}.1\n" in tell.text
+    assert f"  backup : {path}.backup-{stamp}.1" in report

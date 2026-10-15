@@ -25,11 +25,13 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { EOL } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -506,8 +508,11 @@ function scenarios(ctx, real) {
       { ...three, files: { ...three.files, 'index.md': 'stale\n' } }, { index_budget: 130 }, [
         save('project', 'probe', 'an entirely unrelated probe subject line', 'b'),
       ]],
-    // `_write_fact` writes `<name>.md.tmp` and renames. With `facts/` read-only the write
-    // is what fails, and the path in the message is the only place the tmp step shows.
+    // `_write_fact` writes a temp and renames. With `facts/` read-only the write is what
+    // fails. AMENDED job65/#141: the answer is now `memory store is not writable: <root>:
+    // Permission denied; …` on both sides (it used to be the raw `PermissionError` naming
+    // `<name>.md.tmp`, the only place the old fixed temp name showed). The per-side literal
+    // for this sentence is in the J65-6 block in `run()`.
     ['a read-only facts directory fails on the tmp write, and says so',
       { ...three, modes: { facts: 0o555 } }, {}, [
         save('project', 'fact-0', 'w0a w0b w0c w0d', 'rewritten'),
@@ -809,6 +814,211 @@ export async function run(ctx) {
       actual: nd,
     });
     notes.push(`constructor-less tags: python refuses ${py.filter(Boolean).length}/4, node ${nd.filter(Boolean).length}/4 (the fifth, \`!\`, is the ruled one where python answers)`);
+  }
+
+  // ------------------------------------------------ job65 J65-6: #123 #141 #159 #161 #184
+  //
+  // THE PROPERTIES, each pinned by a differential (answer + tree, python against node) AND a
+  // per-side literal, because a differential stays green through a regression that lands in
+  // both runtimes at once:
+  //   #123  recall on a 555 store answers its facts and the tree is byte-unchanged
+  //   #141  save on a 555 store and on a 000 root says `memory store is not writable: <root>:
+  //         Permission denied; the directory exists but cannot be written to, so nothing was
+  //         written` — never "the directory is not there"
+  //   #159  a non-UTF-8 fact file is `malformed fact file <name>: <decoder text>`
+  //   #161  a save leaves a stray `<name>.md.tmp` sibling exactly as it was, and no temp of its own
+  //   #184  a grant naming a regular file is `granted store is not a directory: <path> (from <config>)`
+  // The chmod scenarios are WITHHELD, named and counted in a note when a probe shows the mode
+  // is not honoured (uid 0, or Windows): root writes through 0o555, both sides would succeed
+  // identically and the differential would pass for the wrong reason (shiftwork.mjs, J63-2).
+  {
+    const probeDir = join(ctx.scratch, 'j656-probe');
+    mkdirSync(probeDir, { recursive: true });
+    chmodSync(probeDir, 0o555);
+    let honoured = false;
+    try {
+      writeFileSync(join(probeDir, 'x'), 'x', { flag: 'wx' });
+    } catch {
+      honoured = true;
+    } finally {
+      chmodSync(probeDir, 0o755);
+    }
+    const SEALED =
+      'memory store is not writable: <ROOT>: Permission denied; the directory exists but cannot be written to, so nothing was written';
+    const fact0 = factFile('fact-0', { description: 'w0a w0b w0c w0d' });
+    const base = { dirs: ['facts', 'archive'], files: { 'facts/fact-0.md': fact0, 'index.md': '- [[fact-0]] (project) — w0a w0b w0c w0d\n' } };
+    const errorOf = (r) => (r?.error ? unb64(r.error.message) : null);
+    const j656 = [
+      // [label, spec, options, calls, needsChmod, literal(results, tree, untouchedTree) -> value, expected]
+      ['#123 recall on a 555 store answers and dates nothing',
+        { ...base, modes: { facts: 0o555, '': 0o555 } }, { create: false }, [recall('w0a', 3, true)], true,
+        (r, tree, untouched) => ({ names: Array.isArray(r[0]) ? r[0].map((f) => unb64(f.name)) : r[0], treeUnchanged: tree === untouched }),
+        { names: ['fact-0'], treeUnchanged: true }],
+      ['#141 save into a 555 store is refused as not writable',
+        { ...base, modes: { facts: 0o555, '': 0o555 } }, { create: false },
+        [save('project', 'beta', 'an unrelated subject line', 'b')], true,
+        (r, tree, untouched) => ({ error: errorOf(r[0]), treeUnchanged: tree === untouched }),
+        { error: SEALED, treeUnchanged: true }],
+      ['#141 save into a 000 root is refused as not writable',
+        { dirs: [], modes: { '': 0o000 } }, { create: false },
+        [save('project', 'beta', 'an unrelated subject line', 'b')], true,
+        (r) => ({ error: errorOf(r[0]) }), { error: SEALED }],
+      ['#159 a non-utf-8 fact file is named by every reader',
+        { ...base, files: { ...base.files, 'facts/bad.md': Buffer.from([0x61, 0xff, 0x62]) } }, { create: false },
+        [indexText(), recall('w0a', 3, false)], false,
+        (r) => r.map(errorOf),
+        Array(2).fill("malformed fact file bad.md: 'utf-8' codec can't decode byte 0xff in position 1: invalid start byte")],
+      ['#161 a save leaves a stray <name>.md.tmp exactly as it was and no temp of its own',
+        { ...base, files: { ...base.files, 'facts/fact-0.md.tmp': 'not ours\n' } }, {},
+        [save('project', 'fact-0', 'w0a w0b w0c w0d', 'rewritten')], false,
+        (r, tree) => ({ status: r[0]?.status ?? errorOf(r[0]), temps: tree.split('\n').filter((l) => /\.tmp\t/.test(l)).map((l) => l.split('\t').slice(0, 3).join(' ')),
+          sibling: tree.includes(`facts/fact-0.md.tmp\tfile\t9\t${Buffer.from('not ours\n').toString('base64')}`) }),
+        { status: 'saved', temps: ['facts/fact-0.md.tmp file 9'], sibling: true }],
+    ];
+    const withheld = [];
+    let k = 0;
+    for (const [label, spec, options, calls, needsChmod, literal, expected] of j656) {
+      k += 1;
+      if (needsChmod && !honoured) {
+        withheld.push(label);
+        continue;
+      }
+      const bed = join(ctx.scratch, `j656-${k}`);
+      const roots = {};
+      for (const side of ['py', 'node', 'untouched']) {
+        roots[side] = join(bed, side);
+        materialise(roots[side], spec);
+      }
+      const untouched = manifest(roots.untouched);
+      for (const side of ['py', 'node']) applyModes(roots[side], spec, true);
+      const request = (root) => ({ op: 'run', root, today: TODAY, index_budget: null, k: null, create: options.create ?? true, calls });
+      let py;
+      let nd;
+      try {
+        py = scrub(ctx.runPython(REF, request(roots.py)).results, roots.py);
+        nd = scrub(runNode(store, request(roots.node)).results, roots.node);
+      } finally {
+        for (const side of ['py', 'node']) applyModes(roots[side], spec, false);
+      }
+      const trees = { py: manifest(roots.py), node: manifest(roots.node) };
+      cases.push({ name: `j65-6: ${label} — answer`, kind: 'json', expected: py, actual: nd });
+      cases.push({ name: `j65-6: ${label} — tree`, kind: 'bytes', expected: trees.py, actual: trees.node });
+      // The literal: ONE side against a typed constant, so a symmetric regression is red.
+      cases.push({ name: `j65-6: ${label} — python against the literal`, kind: 'json', expected, actual: literal(py, trees.py, untouched) });
+      cases.push({ name: `j65-6: ${label} — node against the literal`, kind: 'json', expected, actual: literal(nd, trees.node, untouched) });
+    }
+    // #161's other half: a write that DIES after its temp exists removes the temp. The issue's
+    // own shape, `ulimit -f 4` (2 KiB) under an 8 KiB body, so the write fails with EFBIG — a
+    // child process per side, because the limit is per process. Withheld on win32 (no ulimit).
+    // A fact path that is a directory does NOT reach the write (`save` reads it first), which
+    // is why this is not a fixture above.
+    if (process.platform === 'win32') {
+      withheld.push('#161 a write cut short by a file-size limit (no ulimit on win32)');
+    } else {
+      const huge = {};
+      for (const side of ['py', 'node']) {
+        const root = join(ctx.scratch, 'j656-efbig', side);
+        materialise(root, base);
+        const [cmd, ...args] = side === 'py'
+          ? [ctx.python, '-c', "import sys; sys.path.insert(0, sys.argv[2]); from bantamkit.memory.store import MemoryStore; MemoryStore(sys.argv[1]).save('project', 'huge', 'big body', 'z' * 8192)", root, join(ctx.repoRoot, 'runtime-py', 'src')]
+          : [process.execPath, '--input-type=module', '-e', `import { MemoryStore } from ${JSON.stringify(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'store.js')).href)}; new MemoryStore(process.argv[1]).save('project', 'huge', 'big body', 'z'.repeat(8192));`, root];
+        const r = spawnSync('/bin/sh', ['-c', 'ulimit -f 4; exec "$@"', 'sh', cmd, ...args], { encoding: 'utf8' });
+        huge[side] = { failed: r.status !== 0, efbig: /\[Errno 27\]/.test(r.stderr), facts: readdirSync(join(root, 'facts')).sort() };
+      }
+      const expected = { failed: true, efbig: true, facts: ['fact-0.md'] };
+      cases.push({ name: 'j65-6: #161 a write cut short by a file-size limit leaves no temp — answer', kind: 'json', expected: huge.py, actual: huge.node });
+      cases.push({ name: 'j65-6: #161 a write cut short by a file-size limit leaves no temp — python against the literal', kind: 'json', expected, actual: huge.py });
+      cases.push({ name: 'j65-6: #161 a write cut short by a file-size limit leaves no temp — node against the literal', kind: 'json', expected, actual: huge.node });
+    }
+    // #184: `load_grants` over a config naming a regular file, and one naming nothing.
+    const layers = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'layers.js')).href);
+    const nodeGrants = (storePath) => {
+      try {
+        return { grants: layers.loadGrants(storePath).map(b64) };
+      } catch (e) {
+        return { error: { type: e?.name ?? 'Error', message: b64(String(e?.message ?? e)) } };
+      }
+    };
+    for (const [label, entry, expected] of [
+      ['#184 a grant naming a regular file is not a directory', '../../afile',
+        'granted store is not a directory: <ROOT>/afile (from <ROOT>/proj/.bantamkit/config.yaml)'],
+      ['#184 a grant naming nothing still does not exist', '../../missing',
+        'granted store does not exist: <ROOT>/missing (from <ROOT>/proj/.bantamkit/config.yaml)'],
+    ]) {
+      const answers = {};
+      for (const side of ['py', 'node']) {
+        const bed = join(ctx.scratch, 'j656-grants', label.includes('regular') ? 'file' : 'none', side);
+        mkdirSync(join(bed, 'proj', '.bantamkit', 'memory'), { recursive: true });
+        writeFileSync(join(bed, 'afile'), 'x\n');
+        writeFileSync(join(bed, 'proj', '.bantamkit', 'config.yaml'), `extra_stores:\n  - ${entry}\n`);
+        const storePath = join(bed, 'proj', '.bantamkit', 'memory');
+        answers[side] = scrub(side === 'py' ? ctx.runPython(REF, { op: 'grants', store: storePath }) : nodeGrants(storePath), bed);
+      }
+      cases.push({ name: `j65-6: ${label} — answer`, kind: 'json', expected: answers.py, actual: answers.node });
+      for (const side of ['py', 'node']) {
+        cases.push({ name: `j65-6: ${label} — ${side === 'py' ? 'python' : 'node'} against the literal`, kind: 'json', expected, actual: errorOf(answers[side]) });
+      }
+    }
+    notes.push(
+      withheld.length === 0
+        ? `j65-6: ${j656.length + 3} scenarios, each a differential and a per-side literal`
+        : `j65-6: ${withheld.length} chmod scenarios WITHHELD because a 0o555 directory accepted a create (uid 0 or Windows): ${withheld.join('; ')}`,
+    );
+  }
+
+  // ------------------------------------------------ job65 J65-10: #158 a tab in config.yaml
+  //
+  // WAS: the port's reader took `[ \t]*` as indentation and LAYERED a tab-indented grant list;
+  // PyYAML refused the same file at startup — one config, two verdicts. Now both refuse, in one
+  // sentence: Python rewrites PyYAML's `found character '\t' that cannot start any token` from
+  // its own mark, Node finds the same byte with `firstTokenTab`. A differential per document and
+  // a literal per side (a symmetric regression keeps a differential green). The last two rows
+  // are the boundary: a tab inside a quoted scalar and inside a comment is NOT refused by
+  // PyYAML, so it must not be refused here either.
+  {
+    const layers158 = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'layers.js')).href);
+    const nodeGrants158 = (storePath) => {
+      try {
+        return { grants: layers158.loadGrants(storePath).map(b64) };
+      } catch (e) {
+        return { error: { type: e?.name ?? 'Error', message: b64(String(e?.message ?? e)) } };
+      }
+    };
+    const CFG = '<ROOT>/proj/.bantamkit/config.yaml';
+    const tabbed = (line, column) =>
+      `invalid memory config ${CFG}: line ${line}, column ${column}: a tab cannot start a YAML token; indent with spaces`;
+    const docs158 = [
+      ['the issue: a tab-indented grant item', 'extra_stores:\n\t- ../../other\n', { error: tabbed(2, 1) }],
+      ['a tab after the colon', 'extra_stores:\t[../../other]\n', { error: tabbed(1, 14) }],
+      ['a tab after the dash', 'extra_stores:\n  -\t../../other\n', { error: tabbed(2, 4) }],
+      ['spaces then a tab', 'extra_stores:\n  \t- ../../other\n', { error: tabbed(2, 3) }],
+      ['a tab-indented second key', 'extra_stores: []\n\tother: 1\n', { error: tabbed(2, 1) }],
+      ['a tab between a value and its comment', 'extra_stores: []\t# none\n', { error: tabbed(1, 17) }],
+      ['a tab alone on a line', 'extra_stores: []\n\t\n', { error: tabbed(2, 1) }],
+      ['boundary: a tab inside a comment is accepted', '# a\tcomment\nextra_stores:\n  - ../../other\n', { grants: ['<ROOT>/other'] }],
+      ['boundary: a tab inside a quoted grant is content', "extra_stores:\n  - '../../other'\n  - \"../../other\"\n", { grants: ['<ROOT>/other', '<ROOT>/other'] }],
+    ];
+    const asLiteral = (a) => (a?.error ? { error: unb64(a.error.message) } : { grants: (a?.grants ?? []).map(unb64) });
+    let k158 = 0;
+    for (const [label, text, expected] of docs158) {
+      k158 += 1;
+      const answers = {};
+      for (const side of ['py', 'node']) {
+        const bed = join(ctx.scratch, 'j6510-tabs', String(k158), side);
+        mkdirSync(join(bed, 'proj', '.bantamkit', 'memory'), { recursive: true });
+        mkdirSync(join(bed, 'other'), { recursive: true });
+        writeFileSync(join(bed, 'proj', '.bantamkit', 'config.yaml'), text);
+        const storePath = join(bed, 'proj', '.bantamkit', 'memory');
+        const raw = scrub(side === 'py' ? ctx.runPython(REF, { op: 'grants', store: storePath }) : nodeGrants158(storePath), bed);
+        // `scrub` masks the bed in an error only; a grant is a resolved PATH, masked here.
+        if (Array.isArray(raw?.grants)) raw.grants = raw.grants.map((g) => b64(scrubPath(scrubPath(unb64(g), realpathSync(bed)), bed)));
+        answers[side] = raw;
+      }
+      cases.push({ name: `j65-10: #158 ${label} — answer`, kind: 'json', expected: answers.py, actual: answers.node });
+      for (const side of ['py', 'node']) {
+        cases.push({ name: `j65-10: #158 ${label} — ${side === 'py' ? 'python' : 'node'} against the literal`, kind: 'json', expected, actual: asLiteral(answers[side]) });
+      }
+    }
   }
 
   // ------------------------------------------------ the self-ignoring .bantamkit/.gitignore

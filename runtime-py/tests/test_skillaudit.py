@@ -1508,3 +1508,56 @@ def test_the_environments_own_skill_root_is_not_read(tmp_path, monkeypatch):
     assert json.loads(text)["catalogue_bytes"] == README_CATALOGUE_BYTES
     assert not (tmp_path / ".claude").exists()
     assert os.environ["HOME"] == str(tmp_path)
+
+
+# ------------------------------------------------------ #133 (job65): the advertised bounds
+
+
+def test_a_negative_usage_count_is_refused_by_the_schema_frame_before_the_handler_runs(tmp_path):
+    """`usage` values carry `minimum: 0` in the manifest; the signature now binds it.
+
+    The refusal is pydantic's `greater_than_equal` at `usage.<key>` — the same frame a
+    wrong type gets — and names the ORIGINAL input, so a string `'-1'` is reported as the
+    string. The handler never runs, so no record is written. The Node port reproduces the
+    sentence; `tools/conformance/suites/wire.mjs` compares the two over stdio.
+    """
+    server, log = make(tmp_path)
+    is_error, text = call(server, root=str(CACHE), usage={"solo-check": -1})
+    assert is_error
+    assert text.startswith(
+        "Error executing tool skill_audit: 1 validation error for skill_auditArguments\n"
+        "usage.solo-check\n  Input should be greater than or equal to 0 "
+        "[type=greater_than_equal, input_value=-1, input_type=int]"
+    )
+    is_error, text = call(server, root=str(CACHE), usage={"a": "-1", "b": 2, "c": -3})
+    assert is_error
+    assert text.startswith(
+        "Error executing tool skill_audit: 2 validation errors for skill_auditArguments\n"
+        "usage.a\n  Input should be greater than or equal to 0 "
+        "[type=greater_than_equal, input_value='-1', input_type=str]"
+    )
+    assert records(log) == []
+    # Zero is the floor and is legal: it is the `never-invoked` measurement itself.
+    is_error, _ = call(server, root=str(CACHE), usage={"solo-check": 0})
+    assert not is_error
+
+
+def test_a_budget_past_2_pow_53_is_refused_by_the_schema_and_the_boundary_is_not(tmp_path):
+    """`budget.maximum` (2**53 - 1) is bound as `Field(le=SKILL_BUDGET_MAXIMUM)`.
+
+    Above it the refusal is the SDK's `less_than_equal` frame and nothing is logged; AT it
+    the argument is legal and the audit runs. The floor stays the handler's own sentence
+    (`budget must not be negative`), which the parametrized refusal test above pins.
+    """
+    server, log = make(tmp_path)
+    is_error, text = call(server, root=str(CACHE), budget=2**53)
+    assert is_error
+    assert text.startswith(
+        "Error executing tool skill_audit: 1 validation error for skill_auditArguments\n"
+        "budget\n  Input should be less than or equal to 9007199254740991 "
+        "[type=less_than_equal, input_value=9007199254740992, input_type=int]"
+    )
+    assert records(log) == []
+    is_error, text = call(server, root=str(CACHE), budget=2**53 - 1)
+    assert not is_error
+    assert json.loads(text)["skills"] >= 1

@@ -99,8 +99,11 @@ dispatched is still refused, and that refusal keeps its existing sentence
 pinning it stays green. And `plan.cursor` now advances to `ready[0]` of the
 graph recomputed on the mutated document, so the pointer can no longer land on a
 unit whose dependencies have not run; the `plan.units` fallback is reachable only
-when the graph cannot batch at all. A caller that never passes `unit_id` is
-unaffected, and no checkpoint field was added. Enforced in both runtimes and
+when the graph cannot batch at all. No checkpoint field was added. (Since job65,
+#164, a caller that never passes `unit_id` is held to the same readiness test: a
+cursor unit that is done, dropped or still waiting on a dependency is refused with
+`unit <id> is not ready; ready is <list>`, and a graph that cannot batch returns the
+refusal the named call gives.) Enforced in both runtimes and
 gated by 43 per-side cases over 7 sessions in `node tools/conformance/run.mjs
 --suite shiftwork` (PASS 1697 cases, 0 failures); see `docs/shiftwork.md`,
 *Spending the width*.

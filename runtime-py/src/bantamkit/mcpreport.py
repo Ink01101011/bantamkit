@@ -585,6 +585,31 @@ def _lines_or_none(lines: list[str]) -> list[str]:
     return lines if lines else ["(none)"]
 
 
+def escape_ascii(text: str) -> str:
+    """The two input paths, spelled in ASCII.
+
+    `docs/mcpreport.md` promises an ASCII report, and the two paths it echoes are the only
+    bytes in it that come from outside a closed vocabulary. Measured 2026-10-13 (#187): a
+    root named `แคช-😀` reached stdout verbatim. Every character outside printable ASCII
+    (0x20-0x7E) becomes `\\uXXXX`, lowercase hex, one escape per UTF-16 code unit -- so a
+    character outside the BMP is written as its surrogate pair, which is what the Node
+    half gets for free from `charCodeAt` -- and nothing else is touched: a backslash stays
+    a backslash, so a Windows path reads as typed. Not `json.dumps`, which would also
+    escape `\\` and `"`; not `ascii()`, which spells astral characters `\\U0001f600`.
+    """
+    out: list[str] = []
+    for char in text:
+        cp = ord(char)
+        if 0x20 <= cp <= 0x7E:
+            out.append(char)
+        elif cp > 0xFFFF:
+            cp -= 0x10000
+            out.append(f"\\u{0xD800 + (cp >> 10):04x}\\u{0xDC00 + (cp & 0x3FF):04x}")
+        else:
+            out.append(f"\\u{cp:04x}")
+    return "".join(out)
+
+
 def render(host: HostScan, events: EventScan, joined: Join) -> str:
     """The report, as the bytes `docs/mcpreport.md` specifies. No clock is read here."""
     out: list[str] = [f"bantamkit mcp report v{REPORT_VERSION}", "", "[sources]"]
@@ -595,9 +620,9 @@ def render(host: HostScan, events: EventScan, joined: Join) -> str:
             f"set {HOST_LOG_ROOT_ENV}"
         )
     elif host.missing == "not-found":
-        out.append(f"host-log-root: not found at {host.root}")
+        out.append(f"host-log-root: not found at {escape_ascii(str(host.root))}")
     else:
-        out.append(f"host-log-root: {host.root}")
+        out.append(f"host-log-root: {escape_ascii(str(host.root))}")
     out += [
         f"host-log-dirs: {host.dirs}",
         f"host-log-files: {host.files}",
@@ -612,9 +637,9 @@ def render(host: HostScan, events: EventScan, joined: Join) -> str:
     if events.missing == "off":
         out.append("event-log: off (BANTAMKIT_EVENT_LOG unset or off)")
     elif events.missing == "not-found":
-        out.append(f"event-log: not found at {events.path}")
+        out.append(f"event-log: not found at {escape_ascii(str(events.path))}")
     else:
-        out.append(f"event-log: {events.path}")
+        out.append(f"event-log: {escape_ascii(str(events.path))}")
     out += [
         f"event-records: {events.records}",
         f"event-records-unreadable: {events.unreadable}",

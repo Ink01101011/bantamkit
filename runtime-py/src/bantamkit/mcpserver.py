@@ -67,6 +67,17 @@ except ImportError:  # surfaced as a clear SystemExit in main()
 
 _INSTALL_HINT = 'bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"'
 
+# NO PYDANTIC VERSION IN A REFUSAL (job65/#185). An argument the tool's model refuses reaches
+# the client as pydantic's own `ValidationError` text, which ends every error with `For further
+# information visit https://errors.pydantic.dev/<major.minor>/v/<type>` -- the version of
+# whichever pydantic pip resolved, which this package does not pin. The port reproduces the
+# sentence and could only hard-code one version (`2.13`), so the two refusal texts drifted
+# apart the day PyPI resolved 2.14. pydantic-core reads this variable once, the first time it
+# FORMATS an error, so it is set at import, before this server can format one; both runtimes
+# now print the sentence without the URL line. Forced, not `setdefault`: an operator's own
+# setting would split the two runtimes' text again.
+os.environ["PYDANTIC_ERRORS_INCLUDE_URL"] = "0"
+
 SERVER_NAME = "bantamkit"
 
 
@@ -790,11 +801,19 @@ def _index_pressure_condition(memory: Memory) -> Condition | None:
     budget = memory.store.index_budget
     if size is None or size * 100 < INDEX_PRESSURE_PERCENT * budget:
         return None
+    # AT OR OVER THE BUDGET IS NOT "CLOSE" (job65/#186). The same reply that carried the
+    # budget refusal ("Nothing was saved and retrying will not help") used to close with
+    # "the next save is close to being refused". At `size >= budget` no save that adds a
+    # byte can land, so the sentence says that; below it, the 90 % band keeps its words.
+    consequence = (
+        "so it is full and every save is refused until it is compacted"
+        if size >= budget
+        else "so the next save is close to being refused"
+    )
     return Condition(
         "index-budget-low",
-        f"the memory index is {size} bytes of a {budget}-byte budget, so the next save "
-        "is close to being refused — archive or shorten facts with "
-        "`python -m bantamkit.memory compact`.",
+        f"the memory index is {size} bytes of a {budget}-byte budget, {consequence} — "
+        "archive or shorten facts with `python -m bantamkit.memory compact`.",
     )
 
 
@@ -965,7 +984,11 @@ def status_report(
         )
         + ", index "
         + ("unreadable" if size is None else str(size))
-        + f" of {budget} bytes",
+        + f" of {budget} bytes"
+        # job65/#142: the store this line counts, by path. WAS: no path at all, so a store
+        # the walk picked up ABOVE the project -- an ancestor's, or `~/.bantamkit/memory`
+        # itself -- answered as the writable project layer with nothing saying where.
+        + f"; bound to {memory.store.root}",
         f"event log: {'on' if log.enabled else 'off'}",
         # THE UPDATE LINE IS NOT A CONDITION, and that is the ruling of 2026-09-19 rather
         # than an omission. A newer version existing is not a fault: the server is serving
@@ -1070,6 +1093,12 @@ _NO_JSON_UNWRAP = frozenset({"bantamkit_read"})
 # the asset pack is not on disk — the failure mode a packaging mistake would then have is "the
 # server will not import" rather than "the server refuses to register a tool".
 OFFSET_MAXIMUM = 9007199254740991
+
+#: `assets/tools/skill_audit.json` `budget.maximum`: the same `2**53 - 1` as `OFFSET_MAXIMUM`,
+#: as its own name because it is tied to a different asset. Bound in `skill_audit`'s
+#: signature as `Field(le=SKILL_BUDGET_MAXIMUM)` (#133, job65); the port's
+#: `SKILL_BUDGET_MAXIMUM` in `runtime-ts/src/mcp/pyargs.ts` is the same number.
+SKILL_BUDGET_MAXIMUM = 9007199254740991
 
 
 @dataclass
@@ -1395,7 +1424,13 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
 
     def memory_recall(query: str, k: int | None = None) -> str:
         if k is not None:
-            k = max(1, min(k, 5))  # the advertised schema's bounds; clients may ignore it
+            # Clamped, not refused, and the manifest says so: `assets/tools/memory_recall.json`
+            # used to advertise `minimum: 1, maximum: 5` on `k` while this line and the
+            # store's RB-P1 floor quietly took any integer — #133 (job65) reconciled the
+            # schema to the behaviour rather than the other way round, because the floor is
+            # a documented feature and a cap that refused `k: 10` would trade a friendlier
+            # answer for a stricter one. The description now states the clamp.
+            k = max(1, min(k, 5))
         with _record_raise(log, "memory_recall"):
             outcome = memory.recall_outcome(query, k)
         detail = {
@@ -1421,9 +1456,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         `nothing-archived` otherwise), never a match on the reply.
         """
         # No floor here: `MemoryStore.compact` clamps `reserve` to `[0, budget // 2]`
-        # itself, so a negative value from a client that ignored the schema is already
-        # handled where the arithmetic lives, and a second clamp would be a second thing
-        # to keep equal across the two runtimes.
+        # itself, so a negative value is already handled where the arithmetic lives, and a
+        # second clamp would be a second thing to keep equal across the two runtimes. The
+        # manifest no longer advertises a `minimum` this does not enforce (#133, job65);
+        # its description states the clamp instead.
         with _record_raise(log, "memory_compact"):
             outcome = memory.compact_outcome(reserve)
         log.record(
@@ -1667,12 +1703,23 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     def skill_audit(
         root: str,
         enabled: list[str] | None = None,
-        usage: dict[str, int] | None = None,
+        usage: dict[str, Annotated[int, Field(ge=0)]] | None = None,
         check: str | None = None,
-        budget: int | None = None,
+        budget: Annotated[int, Field(le=SKILL_BUDGET_MAXIMUM)] | None = None,
         versions: dict[str, str] | None = None,
     ) -> str:
         """The catalogue auditor on the MCP surface: `skillaudit` measures, this serves it.
+
+        TWO BOUNDS ARE IN THE SIGNATURE (#133, job65), because the manifest advertised them
+        and nothing enforced them: `usage` values carry `minimum: 0` and `budget` carries
+        `maximum: 9007199254740991` in `assets/tools/skill_audit.json`, and until this job
+        `usage: {"x": -1}` was audited (a negative call count is not a measurement) and
+        `budget: 2**53` was compared against the catalogue as if it were a number a host
+        could hold. Both are now pydantic's frames — `greater_than_equal` at `usage.<key>`,
+        `less_than_equal` at `budget` — the same refusal a wrong type gets, and the port
+        reproduces the sentence (`runtime-ts/src/mcp/pyargs.ts`). `budget`'s FLOOR stays
+        the handler's: `skillaudit.audit` refuses a negative budget with its own sentence,
+        and a `ge=0` here would pre-empt a refusal the suite pins.
 
         THE REPLY IS A JSON DOCUMENT AND NOT PROSE, which is the one thing that makes this
         handler shaped differently from `bantamkit_read` next door. The reader answers a
@@ -2235,7 +2282,31 @@ def _build_memory(args: argparse.Namespace) -> Memory:
             raise SystemExit("--store requires a non-empty path")
         _check_store_flag(args.store)
         return Memory(store=args.store, k=args.k, index_budget=args.index_budget)
+    if args.start is not None:
+        _check_start_flag(args.start)
     return Memory.layered(start=args.start, k=args.k, index_budget=args.index_budget)
+
+
+def _check_start_flag(raw: str) -> None:
+    """job65/#142: `--start` must name a directory that is there.
+
+    WAS: unchecked. `Path.resolve()` of a path that does not exist answers the path anyway,
+    the walk then climbed its nonexistent parents to the first real one and bound whatever
+    store sat above it -- a typo'd `--start` silently bound an ancestor's store as the
+    WRITABLE project layer. Unlike `--store`, a missing `--start` is not a designation:
+    nothing is ever created at a start directory, so a missing one can only be a mistake,
+    and it is refused by name before a transport exists. Same `stat` and the same sentence
+    family as `_check_store_flag`; `runtime-ts/src/cli.ts` holds the twin.
+    """
+    start = Path(raw)
+    try:
+        info = os.stat(start)
+    except FileNotFoundError as e:
+        raise SystemExit(f"--start does not exist: {start}") from e
+    except OSError as e:
+        raise SystemExit(f"--start is unreachable: {start}: {e.strerror}") from e
+    if not stat_module.S_ISDIR(info.st_mode):
+        raise SystemExit(f"--start is not a directory: {start}")
 
 
 def _check_store_flag(raw: str) -> None:
@@ -2727,7 +2798,12 @@ def _dispatch(args: argparse.Namespace) -> None:
         _build_parser().print_help()
         return
     server = build_server(_build_memory(args))
-    asyncio.run(server.run_stdio_async())
+    # `serve_stdio` is `server.run_stdio_async()` with the stdin reader wrapped so a
+    # `tools/call` carrying a lone surrogate is ANSWERED by name instead of dropped by the
+    # SDK's frame parser (job65/#160); see `bantamkit.mcpstdio`.
+    from bantamkit.mcpstdio import serve_stdio  # imports the SDK, which main() has checked
+
+    asyncio.run(serve_stdio(server))
 
 
 # `python -m bantamkit.mcpserver` is the invocation a host config reaches for when the

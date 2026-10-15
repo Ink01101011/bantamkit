@@ -371,9 +371,70 @@ def _read_ledger(run: HookRun, session_id: Any) -> dict[str, Any]:
 
 
 def _write_ledger(run: HookRun, session_id: Any, ledger: dict[str, Any]) -> None:
+    """Temp-and-rename, never a bare truncating write (job65, J65-4, #167).
+
+    A reader that lands between a whole-file truncate and its write sees an empty ledger,
+    which `_read_ledger` reads as "nothing seen". `os.replace` is atomic on both platforms;
+    the name carries the pid so two writers never share a temp file.
+    """
     os.makedirs(run.state, exist_ok=True)
-    with open(_ledger_path(run, session_id), "w", encoding="utf-8") as fh:
+    file = _ledger_path(run, session_id)
+    tmp = f"{file}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(_dumps(ledger))
+    os.replace(tmp, file)
+
+
+#: How long a writer waits for the ledger lock before going ahead without it.
+_LEDGER_LOCK_WAIT_MS = 2000
+#: A lock file older than this was left by a hook process that died holding it.
+_LEDGER_LOCK_STALE_MS = 10_000
+#: The poll between two attempts at the lock.
+_LEDGER_LOCK_POLL_MS = 5
+
+
+def _update_ledger(run: HookRun, session_id: Any, update: Callable[[dict[str, Any]], bool]) -> None:
+    """One read-modify-write of the session ledger, under a lock (job65, J65-4, #167).
+
+    THE RACE THIS CLOSES IS MEASURED, not supposed: the host fires one hook PROCESS per tool
+    call and a parallel tool block fires them at once, so twenty Reads in one block are
+    twenty processes each doing read -> add one entry -> write the whole file, and the last
+    writer wins. Measured at 64ae11d over 20 distinct files: 16 of 20 entries survived on
+    this side, 6 of 20 on the port (`.shiftwork/notes-job65/J65-4.md`). An atomic write alone
+    cannot close it -- the lost entries are lost between the read and the write, not inside
+    the write -- so the whole read-modify-write runs under `<ledger>.lock`, taken with
+    `O_EXCL` (the one primitive both platforms and both runtimes share without a
+    dependency). A lock older than `_LEDGER_LOCK_STALE_MS` is a dead holder's and is
+    removed; a writer that cannot take the lock within `_LEDGER_LOCK_WAIT_MS` goes ahead
+    unlocked, because a hook that fails the tool call over its own cache is worse than a
+    lost entry. `update` returns whether the ledger changed; nothing is written when it did
+    not.
+    """
+    os.makedirs(run.state, exist_ok=True)
+    lock = f"{_ledger_path(run, session_id)}.lock"
+    deadline = time.monotonic() + _LEDGER_LOCK_WAIT_MS / 1000
+    held = False
+    while not held and time.monotonic() < deadline:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            held = True
+        except OSError:
+            try:
+                if time.time() - os.stat(lock).st_mtime > _LEDGER_LOCK_STALE_MS / 1000:
+                    os.unlink(lock)
+            except OSError:
+                pass  # the holder released it between the open and the stat: go round again
+            time.sleep(_LEDGER_LOCK_POLL_MS / 1000)
+    try:
+        ledger = _read_ledger(run, session_id)
+        if update(ledger):
+            _write_ledger(run, session_id, ledger)
+    finally:
+        if held:
+            try:
+                os.unlink(lock)
+            except OSError:
+                pass
 
 
 def _injected_seen(ledger: dict[str, Any], transcript: str) -> dict[str, Any]:
@@ -505,6 +566,8 @@ class NativeExport:
     bytes: int = 0
     index_bytes: int = 0
     skipped: list[str] = field(default_factory=list)
+    #: Fact files that could not be read as a fact, left out of the export (#119).
+    unparsed: list[dict[str, str]] = field(default_factory=list)
     #: Whether the host's index was there to append to. A never creates it.
     index: str = "absent"
     error: str | None = None
@@ -679,11 +742,9 @@ def _export_to_native(directory: str, store: str) -> NativeExport:
     appended: list[str] = []
     try:
         memory = MemoryStore(store, create=False)
+        facts, result.unparsed = _tolerant_facts(memory)
         ranked = _rank_by_session_drop_rule(
-            [
-                (fact, position, memory._index_line(fact))
-                for position, fact in enumerate(memory._facts())
-            ]
+            [(fact, position, memory._index_line(fact)) for position, fact in enumerate(facts)]
         )
         for fact, _position, _line in ranked:
             if result.exported >= NATIVE_EXPORT_MAX:
@@ -753,6 +814,8 @@ class CappedIndex:
     total: int
     injected: int
     dropped: list[str] = field(default_factory=list)
+    #: Fact files that could not be read as a fact and were left out (#119).
+    skipped: list[dict[str, str]] = field(default_factory=list)
     facts: int | None = None
 
 
@@ -788,7 +851,7 @@ def _rank_by_session_drop_rule(
     return ranked
 
 
-def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> CappedIndex:
+def _capped_index(root: str, header: Callable[[str, int], str], max_bytes: int) -> CappedIndex:
     """The index of `root` as ONE capped block.
 
     A header whose number is the number of fact lines IN the block, the fact lines that fit
@@ -806,8 +869,9 @@ def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> Ca
     so a reader who sees a bare number knows the block is whole.
     """
     store = MemoryStore(root, create=False)
+    facts, skipped = _tolerant_facts(store)
     all_facts: list[tuple[Fact, int, str]] = [
-        (fact, position, store._index_line(fact)) for position, fact in enumerate(store._facts())
+        (fact, position, store._index_line(fact)) for position, fact in enumerate(facts)
     ]
     ranked = _rank_by_session_drop_rule(all_facts)
 
@@ -822,7 +886,8 @@ def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> Ca
     shown = [entry for entry in all_facts if entry[1] in kept]
     dropped = [entry[0].name for entry in ranked if entry[1] not in kept]
     body = _cap_lines("".join(entry[2] for entry in shown).rstrip("\n"), max_bytes)
-    lines = [header(f"{len(shown)} of {len(all_facts)}" if dropped else str(len(all_facts)))]
+    count = f"{len(shown)} of {len(all_facts)}" if dropped else str(len(all_facts))
+    lines = [header(count, len(all_facts))]
     if body:
         lines.append(body)
     if dropped:
@@ -832,8 +897,14 @@ def _capped_index(root: str, header: Callable[[str], str], max_bytes: int) -> Ca
             f"~/.bantamkit/hooks/hook-log.jsonl names the dropped; "
             f"mcp__bantamkit__memory_recall reads any fact by name]"
         )
+    if skipped:
+        lines.append(_skipped_line(skipped))
     return CappedIndex(
-        block="\n".join(lines), total=len(all_facts), injected=len(shown), dropped=dropped
+        block="\n".join(lines),
+        total=len(all_facts),
+        injected=len(shown),
+        dropped=dropped,
+        skipped=skipped,
     )
 
 
@@ -857,6 +928,49 @@ def _message(e: BaseException) -> str:
     return str(e) or e.__class__.__name__
 
 
+# ------------------------------------------- one unreadable fact costs one fact (#119)
+# `MemoryStore._facts()` parses EVERY file and raises on the first it cannot read as a fact,
+# so before job65 one empty, truncated or non-UTF-8 file in the profile store blanked
+# SessionStart outright (the profile block was outside any try) and one in the project store
+# silenced every UserPromptSubmit injection. The hook's contract is "never loud" and the
+# memory doc's is "one bad neighbour cannot take down recall"; neither was true of one file.
+#
+# The store DECLARES the tolerant read (job65/J65-9): `MemoryStore.readable_facts()` answers
+# every fact it can parse and `{file, reason}` for each file it cannot, and
+# `Memory.recall_outcome` reads every layer the same way and hands the left-out files back as
+# `RecallOutcome.skipped`. The hook used to get there by narrowing the store's private
+# `_fact_paths` on its own instance; it now asks the store, so a file the hook keeps is a file
+# the store read, through the one parser, with no seam the store does not declare.
+
+#: A footer naming many broken files is still bounded, like everything else this injects.
+SKIPPED_LINE_MAX = 500
+
+
+def _tolerant_facts(store: MemoryStore) -> tuple[list[Fact], list[dict[str, str]]]:
+    """Every fact `store` can read, and the files it could not (`{file, reason}`).
+
+    `MemoryStore.readable_facts`. A store whose `facts/` cannot be LISTED still raises,
+    exactly as before: that is a layer that could not be read, not a fact.
+    """
+    return store.readable_facts()
+
+
+def _fact_noun(total: int) -> str:
+    """`1 fact` / `N facts` (#188). The noun follows the block's TOTAL, the last number."""
+    return "fact" if total == 1 else "facts"
+
+
+def _skipped_line(skipped: list[dict[str, str]]) -> str:
+    """The block's footer when files were left out: their names, never their contents."""
+    n = len(skipped)
+    names = ", ".join(s["file"] for s in skipped)
+    return _cap_bytes(
+        f"[{n} fact {'file' if n == 1 else 'files'} not read — not a valid fact: {names}; "
+        "~/.bantamkit/hooks/hook-log.jsonl has the reason]",
+        SKIPPED_LINE_MAX,
+    )
+
+
 # ---------------------------------------------------------------- SessionStart
 
 
@@ -865,13 +979,24 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
     parts: list[str] = []
     profile_facts = _count_facts(run.profile)
     profile = CappedIndex(block="", total=0, injected=0, dropped=[])
+    # IN ITS OWN TRY (job65, #119): this block used to sit outside every try, so a profile
+    # store the hook could not read at all raised past the arm and the session got NO context
+    # -- not the project block, not the toolbox line. One unreadable FILE is handled inside
+    # `_capped_index`; this catch is for a store that cannot even be listed, and it costs the
+    # profile block only.
     if profile_facts > 0:
-        profile = _capped_index(
-            run.profile,
-            lambda count: f"[bantamkit profile memory — {count} facts learned across projects]",
-            SESSION_INJECT_MAX,
-        )
-        parts.append(profile.block)
+        try:
+            profile = _capped_index(
+                run.profile,
+                lambda count, total: (
+                    f"[bantamkit profile memory — {count} {_fact_noun(total)} "
+                    "learned across projects]"
+                ),
+                SESSION_INJECT_MAX,
+            )
+            parts.append(profile.block)
+        except Exception as e:  # noqa: BLE001 - a bad store is a log line, never a dead session
+            _log(run, {"event": "SessionStart", "warn": f"profile: {_message(e)}"})
     # WHERE THE HOST'S OWN AUTO-MEMORY DIRECTORY IS, resolved ONCE per session and used twice:
     # it decides whether the project index has to be injected at all, and it is where A
     # exports. SessionStart is the event because it is the one that already had to answer this
@@ -896,7 +1021,9 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             if native.dir is None:
                 project = _capped_index(
                     store,
-                    lambda count: f"[bantamkit project memory — {count} facts]",
+                    lambda count, total: (
+                        f"[bantamkit project memory — {count} {_fact_noun(total)}]"
+                    ),
                     SESSION_INJECT_MAX,
                 )
                 project.facts = _count_facts(store)
@@ -956,11 +1083,15 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             "profileFacts": profile_facts,
             "profileInjected": profile.injected,
             "profileDropped": profile.dropped,
+            # #119: the files left out, by name and the store's reason -- present only when
+            # non-empty, so a healthy session's record is the shape it always was.
+            **({"profileSkipped": profile.skipped} if profile.skipped else {}),
             **(
                 {
                     "projectFacts": project.facts,
                     "projectInjected": project.injected,
                     "projectDropped": project.dropped,
+                    **({"projectSkipped": project.skipped} if project.skipped else {}),
                 }
                 if project
                 else {}
@@ -981,6 +1112,7 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
                     "nativeBytes": exported.bytes,
                     "nativeIndexBytes": exported.index_bytes,
                     "nativeSkipped": exported.skipped,
+                    **({"nativeUnparsed": exported.unparsed} if exported.unparsed else {}),
                     "nativeIndex": exported.index,
                     **({"nativeError": exported.error} if exported.error else {}),
                 }
@@ -1065,7 +1197,12 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # prompt, for up to three files -- and the rules keyed on that date (compaction's
     # stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
     # reading this arm's traffic. An explicit `memory_recall` still stamps.
+    # ONE UNREADABLE FACT COSTS THAT FACT (job65, #119): the recall reads every layer past
+    # the files it cannot read and names them in `o.skipped`; one recall, healthy or not. A
+    # layer that cannot be LISTED fails exactly as it did.
     o = m.recall_outcome(prompt, 3, stamp=False)
+    skipped = [dict(s) for s in o.skipped]
+    degraded: dict[str, Any] = {"skipped": skipped} if skipped else {}
     if o.status != "answered":
         _log(
             run,
@@ -1074,15 +1211,22 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
                 "action": "none",
                 "status": o.status,
                 "candidates": o.candidates,
+                **degraded,
             },
         )
         return
     # Only the HEADER line of each hit -- `[layer] [name] (type) description`. The body costs
     # ~1.5 KB a fact and would be re-sent on every later call; the header is ~150 B and tells
     # the model exactly which name to pass to memory_recall if it wants the body.
-    heads = [line for line in o.reply.split("\n") if RECALL_HEADER.match(line)]
+    # Read off `o.headers`, built from the parsed fields (job65, #155), never by filtering the
+    # reply's lines: a fact BODY line shaped like `[profile] [x] (feedback) ...` used to pass
+    # for a header and be injected as a memory nobody saved.
+    heads = [line for line in o.headers if RECALL_HEADER.match(line)]
     if not heads:
-        _log(run, {"event": "UserPromptSubmit", "action": "none", "reason": "no-headers"})
+        _log(
+            run,
+            {"event": "UserPromptSubmit", "action": "none", "reason": "no-headers", **degraded},
+        )
         return
     # WHAT THIS CONTEXT HAS ALREADY BEEN SHOWN IS NOT SHOWN AGAIN (job64, J64-2). Measured
     # 2026-09-25: 333 of 598 injections in a week repeated a name injected earlier in the
@@ -1116,6 +1260,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
                 "session": payload.get("session_id"),
                 "prompt": _prompt_fingerprint(prompt),
                 "suppressed": suppressed,
+                **degraded,
             },
         )
         return
@@ -1166,6 +1311,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
             "injected": injected,
             "dropped": len(fresh) - len(injected),
             "suppressed": suppressed,
+            **degraded,
         },
     )
     _emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}})
@@ -1305,7 +1451,15 @@ def _apply_registration_store_pin(run: HookRun, cwd: str) -> None:
 # reads because they never pass through bantamkit's Agent. A PreToolUse hook is the one
 # place that does see them. Keyed by transcript (a subagent has its own transcript and has
 # NOT seen the parent's read), by path+offset+limit, and by mtime+size so an edit re-arms
-# it. REFUSES ONCE: the second identical call goes through, so nothing can be hard-blocked.
+# it. REFUSES ONCE: the second identical call goes through, so nothing can be hard-blocked
+# -- and ONLY once (job65, J65-4, #166): the allowed retry used to write `refused: False`
+# back, which re-armed the gate and refused every other read (allow, deny, allow, deny, ...)
+# of a file the docs promise is "refused once". The record now keeps `refused: True` until
+# the signature changes, so the sequence is allow, deny, allow, allow, ... and an edit
+# re-arms. ONLY REGULAR FILES (#190): a directory stats fine, so it was ledgered and its
+# retry refused with "use the content from that earlier read" -- content the host never
+# produced, because the first Read failed with EISDIR. Anything that is not a regular file
+# is treated like a missing path: not ledgered, never refused, Read produces its own error.
 
 
 def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
@@ -1320,6 +1474,16 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
         return  # missing file: let Read produce its own error
     if not stat.S_ISREG(st.st_mode):
         return  # a directory/device read has no file content to reuse
+    # NOR A FILE THIS PROCESS MAY NOT READ (job65, #192). `S_ISREG` closed the directory case
+    # of #190 but the ledger still recorded on PreToolUse, before the host's Read could fail:
+    # a `chmod 000` file was ledgered and its retry refused with "use the content from that
+    # earlier read" -- content the host never produced. The hook runs as the same user as the
+    # host's Read, so `R_OK` here is the host's answer; a file that fails it is treated like a
+    # missing path: not ledgered, never refused. Chosen over moving the record to
+    # PostToolUse[Read] because it is one check in the arm that already decides, on both
+    # runtimes, and needs no second event to agree with the first (docs/hooks.md).
+    if not os.access(file, os.R_OK):
+        return
     offset = ti.get("offset")
     limit = ti.get("limit")
     # The transcript is the CONTEXT dimension: a subagent has its own transcript and has not
@@ -1327,22 +1491,44 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
     # `_pre_compact` must filter on it and a path may itself contain the key's delimiter.
     transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
     key = f"{transcript}|{file}|{_js_str(offset)}|{_js_str(limit)}"
-    ledger = _read_ledger(run, payload.get("session_id"))
-    prev = ledger["reads"].get(key)
-    prev = prev if isinstance(prev, dict) else None
     sig = f"{_js_number(_mtime_ms(st))}|{st.st_size}"
-    if prev and prev.get("sig") == sig and not prev.get("refused"):
-        prev["refused"] = True
-        prev["count"] = int(prev.get("count") or 0) + 1
-        _write_ledger(run, payload.get("session_id"), ledger)
+    decision = {"action": "record", "refused_at": ""}
+
+    # The whole read-modify-write under the ledger lock (#167); the decision is emitted after.
+    def _apply(ledger: dict[str, Any]) -> bool:
+        prev = ledger["reads"].get(key)
+        prev = prev if isinstance(prev, dict) else None
+        if prev and prev.get("sig") == sig:
+            prev["count"] = int(prev.get("count") or 0) + 1
+            if not prev.get("refused"):
+                prev["refused"] = True
+                decision["action"] = "refuse"
+                decision["refused_at"] = _js_str(prev.get("at"))
+            else:
+                # refused once already; every later repeat goes through
+                decision["action"] = "allow-after-refuse-or-change"
+            return True
+        ledger["reads"][key] = {
+            "sig": sig,
+            "at": _stamp(),
+            "count": (int(prev.get("count") or 0) if prev else 0) + 1,
+            "refused": False,
+            "transcript": transcript,
+            "file": file,
+        }
+        decision["action"] = "allow-after-refuse-or-change" if prev else "record"
+        return True
+
+    _update_ledger(run, payload.get("session_id"), _apply)
+    if decision["action"] == "refuse":
         where = ""
         if offset is not None:
             tail = f", limit {_js_str(limit)}" if limit is not None else ""
             where = f" (offset {_js_str(offset)}{tail})"
         reason = (
             f"bantamkit filegraph: {file}{where} was already read in this context at "
-            f"{prev.get('at')} and is unchanged on disk (same mtime and size). Use the "
-            "content from that earlier read. If you genuinely need it again, repeat the "
+            f"{decision['refused_at']} and is unchanged on disk (same mtime and size). Use "
+            "the content from that earlier read. If you genuinely need it again, repeat the "
             "exact same call — this refusal fires only once per unchanged file."
         )
         _log(run, {"event": "PreToolUse", "action": "refuse", "file": file, "size": st.st_size})
@@ -1356,23 +1542,9 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
             }
         )
         return
-    ledger["reads"][key] = {
-        "sig": sig,
-        "at": _stamp(),
-        "count": (int(prev.get("count") or 0) if prev else 0) + 1,
-        "refused": False,
-        "transcript": transcript,
-        "file": file,
-    }
-    _write_ledger(run, payload.get("session_id"), ledger)
     _log(
         run,
-        {
-            "event": "PreToolUse",
-            "action": "allow-after-refuse-or-change" if prev else "record",
-            "file": file,
-            "size": st.st_size,
-        },
+        {"event": "PreToolUse", "action": decision["action"], "file": file, "size": st.st_size},
     )
 
 
@@ -2084,11 +2256,47 @@ def _maybe_dream(run: HookRun, payload: dict[str, Any]) -> None:
 
 _TOOL_USE = re.compile(r'"type":\s*"tool_use"')
 _SAVE_CALL = re.compile(r'"name":\s*"mcp__bantamkit__memory_save"')
-#: A write into any `memory/` directory, as the transcript spells a tool input. The class
-#: is backslash-or-slash, and it is spelled as a module constant because a backslash inside
-#: an f-string expression is a syntax error before CPython 3.12 and this package supports
-#: 3.11.
-_SAVE_WRITE = re.compile(r'"file_path":"[^"]*[\\/]memory[\\/][^"]*\.md"')
+#: The native write tools whose `file_path` can put a fact into a `memory/` directory.
+_SAVE_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
+#: The path shape of a native memory write: a `.md` under any `memory/` directory. The class
+#: is backslash-or-slash, spelled as a module constant because a backslash inside an f-string
+#: expression is a syntax error before CPython 3.12 and this package supports 3.11.
+_SAVE_WRITE_PATH = re.compile(r"[\\/]memory[\\/].*\.md\Z", re.DOTALL)
+#: A line can only hold a native write if it names one of the tools; the rest are not parsed.
+_SAVE_LINE_HINT = re.compile(r'"name":\s*"(?:Write|Edit|MultiEdit)"')
+
+
+def _transcript_wrote_memory(text: str) -> bool:
+    """Did the transcript WRITE a native memory file (job65, #169)? Only a `tool_use` counts.
+
+    A Write/Edit/MultiEdit whose `file_path` is a `.md` under a `memory/` directory. Before
+    this a regex over the whole text took ANY `"file_path"` under `memory/` -- a Read of
+    `docs/memory/notes.md` included -- as a save, and silenced the nudge. (A `memory_save`
+    call is still recognised by its tool name, as it always was; that half was never the
+    defect.) Lines are prefiltered on the tool names and only those parsed; a line that does
+    not parse is not a save.
+    """
+    for line in text.split("\n"):
+        if not _SAVE_LINE_HINT.search(line):
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        msg = record.get("message") if isinstance(record, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in _SAVE_WRITE_TOOLS:
+                continue
+            ti = block.get("input")
+            fp = ti.get("file_path") if isinstance(ti, dict) else None
+            if isinstance(fp, str) and _SAVE_WRITE_PATH.search(fp):
+                return True
+    return False
 
 
 def _stop(run: HookRun, payload: dict[str, Any]) -> None:
@@ -2108,7 +2316,7 @@ def _stop(run: HookRun, payload: dict[str, Any]) -> None:
     saved = bool(
         int(ledger.get("saved") or 0) > 0
         or _SAVE_CALL.search(text)
-        or _SAVE_WRITE.search(text)
+        or _transcript_wrote_memory(text)
     )
     if tool_uses < STOP_NUDGE_MIN_TOOL_CALLS or saved:
         _log(run, {"event": "Stop", "action": "pass", "toolUses": tool_uses, "saved": saved})
@@ -2160,7 +2368,19 @@ def run_hook(stdin: Any = None) -> None:
         if isinstance(parsed, dict):
             payload = parsed
     except ValueError:
-        _log(run, {"event": "parse-error", "raw": raw[:200]})
+        # THE INPUT IS NOT LOGGED, AT ANY LENGTH (job65, #168): a truncated UserPromptSubmit
+        # event carries the user's prompt, and this line used to keep its first 200
+        # characters. Its size and a SHA-256 digest are kept instead, the same fingerprint
+        # `_prompt_fingerprint` gives a prompt that did parse.
+        data = raw.encode("utf-8", "surrogatepass")
+        _log(
+            run,
+            {
+                "event": "parse-error",
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            },
+        )
         return
     event = payload.get("hook_event_name")
     # Before ANY arm binds a store: the winning registration's `BANTAMKIT_MEMORY_DIR`,

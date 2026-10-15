@@ -402,3 +402,81 @@ test('the planner does not mutate the nodes it was handed', () => {
   planned(nodes);
   assert.equal(JSON.stringify(nodes), before);
 });
+
+// ------------------------------------------------------------ #127 (job65): the node's shape
+
+/**
+ * A node off `assets/tools/work_plan.json`'s item schema is refused by position, never
+ * coerced. Pinned as literals here because the differential cannot see a sentence both
+ * runtimes copied; the Python twin is `runtime-py/tests/test_workplan.py`. Before this
+ * check `planNodes` in `src/mcp/server.ts` turned a string `depends_on` into `[]` — and
+ * planned `a` beside the `b` it depended on — a string `priority` into 0, and `5` into `'5'`.
+ */
+test('#127: a string depends_on is refused, not coerced to no dependencies', () => {
+  assert.deepEqual(plan([{ id: 'a', depends_on: 'b' }, { id: 'b', depends_on: [] }]), {
+    result: 'error',
+    reason: 'nodes[0].depends_on must be a list of strings',
+  });
+});
+
+test('#127: a depends_on holding a non-string is refused by the same sentence', () => {
+  assert.deepEqual(plan([{ id: 'a', depends_on: [] }, { id: 'b', depends_on: ['a', 2] }]), {
+    result: 'error',
+    reason: 'nodes[1].depends_on must be a list of strings',
+  });
+});
+
+test('#127: a string priority is refused, not treated as 0', () => {
+  assert.deepEqual(plan([{ id: 'a', depends_on: [], priority: '3' }, { id: 'b', depends_on: [], priority: 1 }]), {
+    result: 'error',
+    reason: 'nodes[0].priority must be an integer',
+  });
+});
+
+test('#127: a boolean priority and a fractional priority are refused; an integral float is an integer', () => {
+  assert.deepEqual(plan([{ id: 'a', depends_on: [], priority: true }]), {
+    result: 'error',
+    reason: 'nodes[0].priority must be an integer',
+  });
+  assert.deepEqual(plan([{ id: 'a', depends_on: [], priority: 2.5 }]), {
+    result: 'error',
+    reason: 'nodes[0].priority must be an integer',
+  });
+  // `3.0` is `3` to JSON.parse; JSON Schema's `integer` admits it and so does the reference.
+  assert.deepEqual(plan([{ id: 'a', depends_on: [] }, { id: 'b', depends_on: [], priority: 3.0 }]), {
+    batches: [['b', 'a']],
+    sequence: ['b', 'a'],
+    width: 2,
+  });
+});
+
+test('#127: a non-string id is refused, so 5 and "5" can no longer collide as one node', () => {
+  assert.deepEqual(plan([{ id: 5, depends_on: [] }, { id: '5', depends_on: [] }]), {
+    result: 'error',
+    reason: 'nodes[0].id must be a string',
+  });
+  assert.deepEqual(plan([{ depends_on: [] }]), { result: 'error', reason: 'nodes[0].id must be a string' });
+});
+
+test('#127: a node that is not an object is refused by position', () => {
+  assert.deepEqual(plan([{ id: 'a', depends_on: [] }, 'b']), { result: 'error', reason: 'nodes[1] must be an object' });
+  assert.deepEqual(plan([null]), { result: 'error', reason: 'nodes[0] must be an object' });
+  assert.deepEqual(plan([['a']]), { result: 'error', reason: 'nodes[0] must be an object' });
+});
+
+test('#127: the shape of every node is checked before any graph refusal', () => {
+  // Shape at index 0 beats the duplicate at index 1.
+  assert.deepEqual(plan([{ id: 'a', depends_on: [], priority: 'x' }, { id: 'a', depends_on: [] }]), {
+    result: 'error',
+    reason: 'nodes[0].priority must be an integer',
+  });
+  // The duplicate at index 1 does NOT beat the shape at index 2: the whole list is read first.
+  assert.deepEqual(plan([{ id: 'a' }, { id: 'a' }, { id: 'c', depends_on: 'a' }]), {
+    result: 'error',
+    reason: 'nodes[2].depends_on must be a list of strings',
+  });
+});
+
+test('#127: a null depends_on and a null priority are the defaults, not contradictions', () => {
+  assert.deepEqual(plan([{ id: 'a', depends_on: null, priority: null }]), { batches: [['a']], sequence: ['a'], width: 1 });
+});

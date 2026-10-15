@@ -215,7 +215,8 @@ test('THE DEBT: a directory at the OLD slug is not the answer — the resolver d
   const r = runHook({ hook_event_name: 'SessionStart', source: 'startup' }, { home, cwd });
   assert.equal(r.record.nativeBranch, 'unknown');
   const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
-  assert.match(ctx, /\[bantamkit project memory — 1 facts\]/);
+  // AMENDED job65 (#188): this pinned "1 facts"; one fact is "1 fact" now.
+  assert.match(ctx, /\[bantamkit project memory — 1 fact\]/);
   assert.equal(r.record.projectInjected, 1);
 });
 
@@ -225,10 +226,15 @@ test('an absent name is written as a valid auto-memory file: name, description, 
   const cwd = newDir('cwd');
   const t = newDir('transcript');
   const dir = seedNative(join(t, 'memory'));
-  seedStore(cwd, [
-    { type: 'project', name: 'alpha', description: 'the first fact' },
-    { type: 'feedback', name: 'beta', description: 'the second   fact\nwrapped' },
-  ]);
+  const root = seedStore(cwd, [{ type: 'project', name: 'alpha', description: 'the first fact' }]);
+  // AMENDED job65 (#155): `beta` was saved through the store, which refuses a description
+  // with a line break now. It is the HAND-EDITED shape that can still hold one, so it is
+  // written by hand; the store reads the break as a space and the export collapses the rest.
+  writeFileSync(
+    join(root, 'facts', 'beta.md'),
+    '---\nname: beta\ndescription: "the second   fact\\nwrapped"\ntype: feedback\n' +
+      "created: '2026-10-01'\nlast_recalled: null\nlinks: []\n---\n\nbody\n",
+  );
   const r = runHook(
     { hook_event_name: 'SessionStart', source: 'startup', transcript_path: transcriptIn(t) },
     { cwd },

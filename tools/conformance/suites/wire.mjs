@@ -384,7 +384,7 @@ export async function run(ctx) {
     callTool(3, 'memory_save', { type: 'project', name: 'Wire_Case One', description: 'the wire, byte for byte — ทดสอบ', body: 'a fact with an em dash — and a DEL \u007f', links: ['other-fact'] }),
     callTool(4, 'memory_recall', { query: 'wire byte' }),
     // SIX facts sharing one token, so the RECALL BUDGET is observable: the default is 3, the
-    // advertised ceiling is 5, and `k` is clamped to it. With fewer facts than the budget
+    // ceiling is 5 (stated in `k`'s description since #133), and `k` is clamped to it. With fewer facts than the budget
     // every setting returns the same list and the clamp is unmeasurable — which is exactly
     // how a mutation that deleted it survived the first sweep.
     callTool(5, 'memory_save', { type: 'project', name: 'budget-a', description: 'budget probe alpha', body: 'a' }),
@@ -400,6 +400,11 @@ export async function run(ctx) {
     callTool(15, 'memory_save', { type: 'bogus', name: 'x', description: 'd', body: 'b' }),
     callTool(16, 'memory_save', { type: 'project', name: 'wire-case-one', description: 'the wire, byte for byte — ทดสอบ', body: 'updated' }),
     callTool(17, 'memory_recall', { query: 'nothing like this exists' }),
+    // #133 (job65): `k` below the floor. The manifest no longer advertises `minimum: 1` /
+    // `maximum: 5` on `k` — neither runtime ever refused outside them, both clamp — so the
+    // description states the clamp and these two, with `k: 99` above, are the clamp compared.
+    callTool(18, 'memory_recall', { query: 'budget probe', k: 0 }),
+    callTool(19, 'memory_recall', { query: 'budget probe', k: -1 }),
   ]);
 
   // PRODUCTION SHAPE: no `--store`, so `Memory.layered` runs and recall lines carry `[project] `.
@@ -636,6 +641,27 @@ export async function run(ctx) {
   });
 
   /**
+   * job65/#154: `BANTAMKIT_EVENT_LOG=on` over a `--store` that was never saved to. WAS: one
+   * `work_plan` call left `<store>/events/mcp.jsonl` behind on both runtimes, creating the store
+   * a later layered walk would bind. Now the default log lives in the store and never creates
+   * it: the record is dropped until a save brings the store into existence, then the next
+   * records land. `ghost154` in `captureArtifacts` reads the tree for every session.
+   */
+  add('eventlog-never-creates-the-store', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'work_plan', { nodes: [] }),
+    callTool(3, 'bantamkit_status', {}),
+  ], { argv: ['--store', join(store, 'ghost154')], env: { ...baseEnv, [EVENT_LOG_ENV]: 'on' }, mask: (t) => t.replace(/build sha256:[0-9a-f]{64}/g, 'build sha256:<masked>') });
+  add('eventlog-starts-with-the-store', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'work_plan', { nodes: [] }),
+    callTool(3, 'memory_save', { type: 'project', name: 'ghost-saved', description: 'the save that makes the store', body: 'b' }),
+    callTool(4, 'work_plan', { nodes: [] }),
+  ], { argv: ['--store', join(store, 'ghost154')], env: { ...baseEnv, [EVENT_LOG_ENV]: 'on' } });
+
+  /**
    * The fourth `save` outcome, which needs a budget too small for its own index to fit.
    *
    * `docs/eventlog.md` calls `Memory.save` the sharpest case in the table — four outcomes,
@@ -690,7 +716,7 @@ export async function run(ctx) {
    * the budget itself), `9999` (capped at half the budget, 160, which the three survivors'
    * lines reach by equality, so two more leave — `compact-b` and `-c`, the first two names
    * among five equally-stale facts — and the archive holds `-a`, `-b`, `-c`), a negative
-   * (clamped to 0 by `MemoryStore.compact` on both sides — the manifest's `minimum: 0` is advisory to the client),
+   * (clamped to 0 by `MemoryStore.compact` on both sides — since #133 the manifest advertises no `minimum` and its description states the clamp),
    * `2.5` (`int_from_float`), `'notanint'` (`int_parsing`), `true` (lax `int`, so 1),
    * `null` (the default), `'3.0'` (lax again), no `arguments` at all, and an extra key.
    *
@@ -891,6 +917,18 @@ export async function run(ctx) {
     callTool(21, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, versions: { 'dup-kit@kit-market': '9.9.9' } }),
     callTool(22, 'skill_audit', { root: SKILL_CACHE, versions: { 'hash-kit@kit-market': 1 } }),
     callTool(23, 'skill_audit', { root: '' }),
+    // #133 (job65): the two bounds the manifest advertised and nothing enforced. `usage`
+    // values carry `minimum: 0` and `budget` carries `maximum: 9007199254740991`; both are
+    // bound in the reference's signature now and reproduced by the port, so a negative
+    // count is `greater_than_equal` at `usage.<key>` — naming the ORIGINAL input, the
+    // string `'-1'` where a string was sent — and 2^53 is `less_than_equal` at `budget`,
+    // with the three frames of id 25 in model-field order. 2^53 is exact in JSON text and
+    // `JSON.stringify` writes it whole. Id 26 sits AT the ceiling and is audited; id 27 is
+    // the negative budget, which stays the HANDLER's own sentence (id 13 above), not a frame.
+    callTool(24, 'skill_audit', { root: SKILL_CACHE, usage: { 'solo-check': -1 } }),
+    callTool(25, 'skill_audit', { root: SKILL_CACHE, usage: { a: '-1', b: 2, 'trigger-kit:deadlock-hunt': -3 }, budget: 9007199254740992 }),
+    callTool(26, 'skill_audit', { root: SKILL_CACHE, enabled: SKILL_ENABLED, usage: SKILL_USAGE, budget: 9007199254740991 }),
+    callTool(27, 'skill_audit', { root: SKILL_CACHE, usage: { 'solo-check': 0 }, budget: -1 }),
   ], { env: { ...baseEnv, [EVENT_LOG_ENV]: '1' } });
 
   /**
@@ -998,6 +1036,46 @@ export async function run(ctx) {
     add(`negotiate-${version}`, [INIT(version)]);
   }
 
+  // ------------------------------------------------ job65 J65-9: memory strings and names
+  //
+  // #155 a description that is not one line, #156 a bent name onto another fact and an
+  // over-long name, #160 a lone surrogate in a tool argument (the reference used to drop the
+  // request and never answer), #185 no pydantic version URL in a refusal, #186 the over-budget
+  // footer, #119 one malformed fact costs that fact in `memory_recall`. Compared frame by frame
+  // like every session here, and pinned PER SIDE below against literals, because each is an
+  // absolute property and a differential is blind to a regression landing in both runtimes.
+  const factBytes = (name_, description) =>
+    `---\nname: ${name_}\ndescription: ${description}\ntype: project\ncreated: '2026-10-01'\n` +
+    `last_recalled: null\nlinks: []\n---\n\nbody of ${name_}\n`;
+  const writeLine = (path, text) => JSON.stringify({ conformance: 'write', path, b64: b64(text) });
+  add('j65-9-strings', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'memory_save', { type: 'project', name: 'deploy-command', description: 'how we deploy', body: 'OLD BODY' }),
+    callTool(3, 'memory_save', { type: 'project', name: 'Deploy Command', description: 'something else entirely', body: 'NEW BODY' }),
+    callTool(4, 'memory_save', { type: 'project', name: 'a'.repeat(129), description: 'long name fact', body: 'b' }),
+    callTool(5, 'memory_save', { type: 'project', name: 'nl-desc', description: 'line one\nline two', body: 'b' }),
+    callTool(6, 'memory_save', { type: 'project', name: 'sur', description: 'lone surrogate \ud800 desc', body: 'b' }),
+    callTool(7, 'memory_recall', { query: 'lone \udc00 surrogate' }),
+    callTool(8, 'memory_save', { type: 'project', name: 'n', description: 'd' }),
+    writeLine(join(store, 'facts', 'zz-bad.md'), '---\nname: zz-bad\n'),
+    callTool(9, 'memory_recall', { query: 'deploy' }),
+  ]);
+  add(
+    'j65-9-over-budget',
+    [
+      INIT(),
+      INITIALIZED,
+      // The first save makes `facts/`, then six facts are written past the budget by hand.
+      callTool(2, 'memory_save', { type: 'project', name: 'seed', description: 's', body: 's' }),
+      ...Array.from({ length: 6 }, (_, i) => writeLine(join(store, 'facts', `f${i}.md`), factBytes(`f${i}`, `fact number ${i} here`))),
+      callTool(3, 'memory_save', { type: 'project', name: 'x', description: 'x', body: 'x' }),
+    ],
+    // `refMask`: the footer names each install's own compaction command, the ruled
+    // `index-budget-low` difference `status-degraded` documents; the literals below pin both.
+    { argv: ['--store', store, '--index-budget', '100'], refMask: substituteMemoryProg },
+  );
+
   // ---------------------------------------------------------------------- run them both
 
   const cases = [];
@@ -1042,6 +1120,10 @@ export async function run(ctx) {
       // not set the variable and wrote a file anyway is the defect the default exists to
       // prevent, and it is only visible if the file is looked for unconditionally.
       eventlog: existsSync(eventlog) ? readFileSync(eventlog, 'utf8') : null,
+      // job65/#154: the never-saved `--store` the two `eventlog-*-store` sessions name, and
+      // its log if any. Read for every session: no other session may create it either.
+      ghost154: existsSync(join(store, 'ghost154')) ? readdirSync(join(store, 'ghost154'), { recursive: true }).map(String).sort() : null,
+      ghost154log: existsSync(join(store, 'ghost154', ...EVENT_LOG_RELATIVE)) ? readFileSync(join(store, 'ghost154', ...EVENT_LOG_RELATIVE), 'utf8') : null,
       // The fact files `memory_compact` moved: still on disk, out of the index. Listed for
       // every session so a compaction that ran where none was asked for is visible too —
       // and listed for EVERY store a session can reach, not only `--store`: the layered
@@ -1302,6 +1384,33 @@ export async function run(ctx) {
       actual: outcomesOf(node.eventlog),
     });
 
+    // job65/#154: differential AND a literal per side (a symmetric regression keeps a
+    // differential green). The never-saved store is absent after a non-memory call with the
+    // log on; once a save makes it, the save and every later record land in it.
+    {
+      const never = results.get('eventlog-never-creates-the-store');
+      const starts = results.get('eventlog-starts-with-the-store');
+      const seen = (side) => ({
+        afterWorkPlan: never[side].ghost154,
+        afterSave: starts[side].ghost154log === null ? null : outcomesOf(starts[side].ghost154log),
+      });
+      const expected154 = { afterWorkPlan: null, afterSave: [['memory_save', 'saved'], ['work_plan', 'plan']] };
+      cases.push({ name: 'eventlog: #154 the log never creates the store — answer', kind: 'json', expected: seen('python'), actual: seen('node') });
+      cases.push({ name: 'eventlog: #154 the log never creates the store — python against the literal', kind: 'json', expected: expected154, actual: seen('python') });
+      cases.push({ name: 'eventlog: #154 the log never creates the store — node against the literal', kind: 'json', expected: expected154, actual: seen('node') });
+      // job65/#142, per side: line 4 of `bantamkit_status` names the store it is bound to.
+      const boundLine = (side) => (toolTextOf(never[side], 3) ?? '').split('\n')[3]?.split('; bound to ')[1] ?? null;
+      for (const side of ['python', 'node']) {
+        cases.push({ name: `status: #142 line 4 names the bound store — ${side} against the literal`, kind: 'json', expected: join(store, 'ghost154'), actual: boundLine(side) });
+      }
+      for (const [name, r] of results) {
+        if (name.startsWith('eventlog-starts')) continue;
+        if (r.python.ghost154 !== null || r.node.ghost154 !== null) {
+          cases.push({ name: `eventlog: #154 session ${name} created the never-saved store`, kind: 'json', expected: null, actual: { python: r.python.ghost154, node: r.node.ghost154 } });
+        }
+      }
+    }
+
     /**
      * The one record whose REPLY is ruled un-comparable and whose RECORD is not.
      *
@@ -1418,10 +1527,14 @@ export async function run(ctx) {
      * which the host can see — and `refused` carries an empty object. The five
      * argument-shaped calls record nothing at all, because pydantic (and `validateArguments`
      * here) refuses before the handler is entered, so the record COUNT is part of what is
-     * compared: 17 records for 22 calls, with the two `usage`-coercion calls and the two
-     * `versions` calls among the seventeen — a lax int is not a refusal, and neither is a
+     * compared: 19 records for 26 calls, with the two `usage`-coercion calls and the two
+     * `versions` calls among the nineteen — a lax int is not a refusal, and neither is a
      * `versions` entry naming a directory this root does not hold. The empty root IS one, and
-     * it is recorded, because the module refuses it rather than the model doing so.
+     * it is recorded, because the module refuses it rather than the model doing so. Since
+     * #133 (job65) ids 24 and 25 — a negative `usage` count, a `budget` past 2^53 — are
+     * model refusals and record nothing, id 26 (`budget` AT the ceiling) is `audited` and
+     * id 27 (negative `budget`) is the handler's `refused`: 17 + 2 = 19, MEASURED off this
+     * case's own failure after the four calls were added.
      */
     const auditLog = results.get('skill-audit');
     cases.push({
@@ -1437,9 +1550,9 @@ export async function run(ctx) {
       actual: outcomesOf(auditLog.node.eventlog),
     });
     cases.push({
-      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 17 records for 22 calls',
+      name: 'eventlog: the skill-audit session reached both skill_audit outcomes, 19 records for 26 calls',
       kind: 'json',
-      expected: { outcomes: ['audited', 'refused'], records: 17 },
+      expected: { outcomes: ['audited', 'refused'], records: 19 },
       actual: {
         outcomes: [...new Set(outcomesOf(auditLog.node.eventlog).map(([, outcome]) => outcome))].sort(),
         records: outcomesOf(auditLog.node.eventlog).length,
@@ -2344,6 +2457,52 @@ export async function run(ctx) {
   }
 
   notes.push(`${sessions.length} sessions, both runtimes, over identical paths under ${scratch}`);
+  // ------------------------------------------------ job65 J65-9: the per-side literals
+  {
+    const { python, node } = results.get('j65-9-strings');
+    const over = results.get('j65-9-over-budget');
+    const texts = (side, overSide) => ({
+      bentNameOntoAFact: toolTextOf(side, 3),
+      overLongName: toolTextOf(side, 4),
+      notOneLine: toolTextOf(side, 5),
+      loneSurrogateSave: toolTextOf(side, 6),
+      loneSurrogateRecall: toolTextOf(side, 7),
+      pydanticUrl: (toolTextOf(side, 8) ?? '').includes('errors.pydantic.dev'),
+      recallPastABadFact: toolTextOf(side, 9),
+      overBudgetFooter: remedySentences(overSide.frames),
+    });
+    const expected = {
+      bentNameOntoAFact:
+        "similar memory 'deploy-command' already exists — save under that SAME name to update it, or skip. Do not rename to force a copy.",
+      overLongName: 'error: invalid name: 129 characters; must be at most 128',
+      notOneLine: 'error: description must be one line; it holds the control character U+000A',
+      loneSurrogateSave:
+        "Error executing tool memory_save: argument 'description' holds a lone surrogate (U+D800), which is not text; nothing was done",
+      loneSurrogateRecall:
+        "Error executing tool memory_recall: argument 'query' holds a lone surrogate (U+DC00), which is not text; nothing was done",
+      pydanticUrl: false,
+      recallPastABadFact:
+        '[deploy-command] (project) how we deploy\nOLD BODY\n\n' +
+        '1 fact file could not be read and was skipped; every other fact was searched:\n' +
+        '[project] malformed fact file zz-bad.md: not enough values to unpack (expected 3, got 2)',
+      overBudgetFooter: [],
+    };
+    const py = texts(python, over.python);
+    const nd = texts(node, over.node);
+    // The footer names each install's own compaction command (the ruled `index-budget-low`
+    // difference above); everything else in it is pinned, the command per side.
+    const footer = (command) =>
+      `the memory index is 279 bytes of a 100-byte budget, so it is full and every save is refused until it is compacted — archive or shorten facts with \`${command}\`. Call \`bantamkit_status\` for the full report.`;
+    cases.push(
+      // Two copies, both in the refused save's frame: a budget refusal is a NORMAL `str`
+      // reply, so the footer is in `content[0].text` and again in `structuredContent.result`.
+      { name: 'j65-9: PINNED PER SIDE (#155 #156 #160 #185 #186 #119) — the reference', kind: 'json',
+        expected: { ...expected, overBudgetFooter: Array(2).fill(footer('python -m bantamkit.memory compact')) }, actual: py },
+      { name: 'j65-9: PINNED PER SIDE (#155 #156 #160 #185 #186 #119) — the port', kind: 'json',
+        expected: { ...expected, overBudgetFooter: Array(2).fill(footer('bantamkit-memory compact')) }, actual: nd },
+    );
+  }
+
   return { cases, notes };
 }
 

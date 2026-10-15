@@ -410,5 +410,314 @@ export async function run(ctx) {
       'and both digests stay on the LF text, as the reference computes them.',
   );
 
+  // ------------------------------------------- #120: hand-edited YAML the emitter never writes
+  //
+  // THE PROPERTY (job65 J65-11, #120). For YAML a human writes into a fact file and PyYAML's
+  // emitter never does, the port either reads it EXACTLY as PyYAML does or refuses it with a
+  // named `FactParseError` — it never answers a guess. A guess is the bug: `description: |`
+  // was read as the string `| hand edited block` and the first recall stamped that guess back
+  // to disk, losing the YAML, while `links: [a, b]` refused the whole store Python served.
+  // Block scalars (`|`, `>`, every chomping and indentation indicator) and one-line flow
+  // sequences of scalars are now READ; anchors, tags, flow mappings, nested or multi-line
+  // flow sequences are REFUSED, and that refusal is the ruled difference below.
+  //
+  // Four shapes of case, because a differential is blind to a regression landing in both:
+  //   1. read-alike: the parse, side to side, AND the bytes a stamp writes back, side to side;
+  //   2. both refuse: the refusal bit side to side, plus a per-side literal;
+  //   3. node refuses where python reads: `ruling:` over the answer, plus a per-side literal
+  //      pinning WHO refuses — the case that fails if the port goes back to answering;
+  //   4. a seeded corpus of 1500 generated frontmatters, where the port must never answer
+  //      differently from the reference and never answer where the reference refuses.
+  {
+    const fm = (front) => `---\n${front}---\n\nbody\n`;
+    const desc = (v) => fm(`name: hand-edited\ndescription: ${v}\ntype: project\ncreated: '2026-10-13'\nlast_recalled: null\nlinks: []\n`);
+    const links = (v) => fm(`name: linked\ndescription: d\ntype: project\ncreated: '2026-10-13'\nlast_recalled: null\nlinks: ${v}\n`);
+    const blockLinks = (items) => fm(`name: linked\ndescription: d\ntype: project\ncreated: '2026-10-13'\nlast_recalled: null\nlinks:\n${items}\n`);
+    // A PyScalar in the shape `jsonable` gives a Python scalar, so the two parses compare.
+    const jsonable = (v) => {
+      if (v === null || typeof v === 'string') return v;
+      if (Array.isArray(v)) return v.map(jsonable);
+      if (typeof v === 'object' && typeof v.pyType === 'string') {
+        const type = v.pyType.replace(/^datetime\./, '');
+        const text = type === 'datetime' ? v.text.replace(' ', 'T') : v.text;
+        return `<python ${type} ${text}>`;
+      }
+      return v;
+    };
+    const nodeParse = (text) => {
+      try {
+        const { meta, body } = factfile.parseFactText(text);
+        return { meta: Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, jsonable(v)])), body };
+      } catch (e) {
+        return { error: `${e.name}: ${e.message}`, named: e instanceof factfile.FactParseError };
+      }
+    };
+    const nodeReemit = (text) => {
+      try {
+        const { meta, body } = factfile.parseFactText(text);
+        return factfile.formatFact({
+          name: meta.name,
+          description: meta.description,
+          type: meta.type,
+          created: meta.created ?? null,
+          last_recalled: meta.last_recalled ?? null,
+          links: meta.links ?? [],
+          body,
+        });
+      } catch (e) {
+        return `${e.name}: ${e.message}`;
+      }
+    };
+
+    // 1. READ ALIKE. The first two are the issue's own inputs.
+    const readAlike = [
+      ['block scalar, the issue\'s input', desc('|\n  hand edited\n  block')],
+      ['flow sequence in links, the issue\'s input', links('[a, b]')],
+      ['flow sequence in description, the issue\'s input', desc('[a, b]')],
+      ['folded', desc('>\n  folded\n  text')],
+      ['literal, strip', desc('|-\n  a\n  b')],
+      ['literal, keep', desc('|+\n  a\n\n')],
+      ['folded, strip', desc('>-\n  a\n  b')],
+      ['folded, keep, a more-indented line', desc('>+\n  a\n   b\n  c\n')],
+      ['folded, blank lines and a more-indented line', desc('>\n  a\n\n  b\n   c\n  d')],
+      ['folded, runs of blank lines', desc('>\n  a\n  b\n\n  c\n\n\n  d')],
+      ['literal, indentation indicator', desc('|2\n   a\n  b')],
+      ['literal, indicator then strip', desc('|2-\n   a')],
+      ['literal, strip then indicator', desc('|-2\n   a')],
+      ['literal, header comment', desc('| # c\n  x')],
+      ['literal, leading blank line', desc('|\n\n  x')],
+      ['literal, a column-0 comment after it', desc('|\n  x\n#c')],
+      ['literal, an indented comment line is content', desc('|\n  x\n  #c')],
+      ['literal, a tab inside the content', desc('|\n  a\tb')],
+      ['literal, non-ascii', desc('|\n  é ü\n  ไทย')],
+      ['literal, empty', desc('|')],
+      ['literal, a dash line is content', desc('|\n  a\n  - b')],
+      ['block scalar as a sequence item', blockLinks('- |\n  x\n- y')],
+      ['flow sequence, quoted items', links('[a, \'b c\', "d"]')],
+      ['flow sequence, resolved scalars', links('[1, 2026-01-02, true, null, ~]')],
+      ['flow sequence, trailing comma', links('[a, b,]')],
+      ['flow sequence, no spaces', links('[a,b]')],
+      ['flow sequence, padded', links('[ a , b ]')],
+      ['flow sequence, inner spaces kept', links('[a  b]')],
+      ['flow sequence, a colon with no space', links('[a:b]')],
+      ['flow sequence, a hash with no space', links('[a#b]')],
+      ['flow sequence, a trailing comment', links('[a] # c')],
+      ['flow sequence, a doubled quote', links("['a''b']")],
+      ['a comment where the value is', desc('#c')],
+      ['spaces before a quoted value', desc("  'x'")],
+      ['a comment after a quoted value', desc("'x' #c")],
+      ['a comment hard against a quoted value', desc("'x'#c")],
+    ];
+    // 2. BOTH REFUSE.
+    const bothRefuse = [
+      ['block scalar, a letter in the header', desc('|x\n  a')],
+      ['block scalar, indentation indicator 0', desc('|0\n  a')],
+      ['block scalar, a less-indented line not at column 0', desc('|\n  a\n x')],
+      ['block scalar, an indicator deeper than the content', desc('|9\n  a')],
+      ['an undefined alias', desc('*a')],
+      ['an unknown tag', desc('!foo x')],
+      ['a directive indicator', desc('%x')],
+      ['a reserved @', desc('@x')],
+      ['a reserved backtick', desc('`x')],
+      ['a stray }', desc('}')],
+      ['a stray ]', desc(']')],
+      ['a stray ,', desc(', x')],
+      ['a mapping key indicator', desc('? x')],
+      ['a sequence entry indicator', desc('- x')],
+      ['a bare dash', desc('-')],
+      ['a mapping value inside a plain scalar', desc('a: b')],
+      ['a trailing tab', desc('x\t')],
+      ['a tab inside a plain scalar', desc('a\tb')],
+      ['flow sequence, a comment inside', links('[a # c]')],
+      ['flow sequence, an empty entry', links('[a,, b]')],
+      ['flow sequence, only a comma', links('[,]')],
+    ];
+    // 3. NODE REFUSES, PYTHON READS — the deliberate difference.
+    const ruled = [
+      ['an anchor', desc('&a x')],
+      ['a core-schema tag', desc('!!str 5')],
+      ['a flow mapping', desc('{a: 1}')],
+      ['an empty flow mapping', desc('{}')],
+      ['a nested flow sequence', links('[a, [b]]')],
+      ['a flow sequence holding a pair', links('[a: b]')],
+      ['a flow sequence over two lines', links('[a,\n  b]')],
+      ['an anchor on a sequence item', blockLinks('- &a x')],
+    ];
+
+    const all = [...readAlike, ...bothRefuse, ...ruled];
+    const pyParsed = ctx.runPython(REF, { op: 'parse', texts_b64: all.map(([, t]) => b64(t)) }).parsed;
+    const pyReemit = ctx.runPython(REF, { op: 'reemit', texts_b64: readAlike.map(([, t]) => b64(t)) }).reemitted;
+    const pyOf = (i) => pyParsed[i];
+    const nodeOf = all.map(([, t]) => nodeParse(t));
+    const refuses = (r) => r.error !== undefined;
+
+    readAlike.forEach(([label], i) => {
+      const { named, ...nd } = nodeOf[i];
+      void named;
+      cases.push({ name: `#120 read alike: ${label}: the parse`, kind: 'json', expected: pyOf(i), actual: nd });
+      const re = pyReemit[i];
+      cases.push({
+        name: `#120 read alike: ${label}: the bytes a stamp writes back`,
+        kind: 'bytes',
+        expected: re.b64 !== undefined ? unb64(re.b64) : re.error,
+        actual: nodeReemit(readAlike[i][1]),
+      });
+    });
+    const o1 = readAlike.length;
+    cases.push({
+      name: '#120 both refuse: who refuses, side to side',
+      kind: 'json',
+      expected: bothRefuse.map((_, k) => refuses(pyOf(o1 + k))),
+      actual: bothRefuse.map((_, k) => refuses(nodeOf[o1 + k])),
+    });
+    const o2 = o1 + bothRefuse.length;
+    ruled.forEach(([label], k) => {
+      const { named, ...nd } = nodeOf[o2 + k];
+      void named;
+      cases.push({
+        name: `ruling: #120 node refuses where python reads: ${label}`,
+        kind: 'json',
+        expected: pyOf(o2 + k),
+        actual: nd,
+        ruling:
+          'YAML the codec does not implement — an anchor, a tag, a flow mapping, a nested or ' +
+          'multi-line flow sequence — is REFUSED by the port with a named FactParseError, ' +
+          'where PyYAML reads it. A refusal names the file and writes nothing; the guess it ' +
+          'replaced (#120) was read as plain text and stamped back to disk. Reading these ' +
+          'would mean porting the scanner, anchors and the composer, which this codec does ' +
+          'not do. Registered in docs/porting.md ("the YAML scanner cases").',
+      });
+    });
+
+    // The per-side literals: a differential stays green through a regression that lands in
+    // both runtimes, so each side is also held to what it is REQUIRED to do.
+    const expectBits = (n, bit) => Array.from({ length: n }, () => bit);
+    cases.push({
+      name: '#120 per side: python reads every read-alike input',
+      kind: 'json',
+      expected: expectBits(readAlike.length, false),
+      actual: readAlike.map((_, i) => refuses(pyOf(i))),
+    });
+    cases.push({
+      name: '#120 per side: node reads every read-alike input',
+      kind: 'json',
+      expected: expectBits(readAlike.length, false),
+      actual: readAlike.map((_, i) => refuses(nodeOf[i])),
+    });
+    cases.push({
+      name: '#120 per side: python refuses every both-refuse input',
+      kind: 'json',
+      expected: expectBits(bothRefuse.length, true),
+      actual: bothRefuse.map((_, k) => refuses(pyOf(o1 + k))),
+    });
+    cases.push({
+      name: '#120 per side: node refuses every both-refuse input, with a named FactParseError',
+      kind: 'json',
+      expected: expectBits(bothRefuse.length, true),
+      actual: bothRefuse.map((_, k) => nodeOf[o1 + k].named === true),
+    });
+    cases.push({
+      name: '#120 per side: the ruled inputs — python reads every one',
+      kind: 'json',
+      expected: expectBits(ruled.length, false),
+      actual: ruled.map((_, k) => refuses(pyOf(o2 + k))),
+    });
+    cases.push({
+      name: '#120 per side: the ruled inputs — node refuses every one, with a named FactParseError',
+      kind: 'json',
+      expected: expectBits(ruled.length, true),
+      actual: ruled.map((_, k) => nodeOf[o2 + k].named === true),
+    });
+    // The headline values, spelled, on both sides.
+    for (const [side, of] of [['python', pyOf], ['node', (i) => nodeOf[i]]]) {
+      cases.push({
+        name: `#120 per side: ${side} reads the issue's block scalar as two lines and a newline`,
+        kind: 'json',
+        expected: 'hand edited\nblock\n',
+        actual: of(0).meta?.description,
+      });
+      cases.push({
+        name: `#120 per side: ${side} reads the issue's links: [a, b] as a two-item list`,
+        kind: 'json',
+        expected: ['a', 'b'],
+        actual: of(1).meta?.links,
+      });
+    }
+    cases.push({
+      name: '#120 per side: node stamps the issue\'s block scalar back as PyYAML spells it',
+      kind: 'bytes',
+      expected:
+        "---\nname: hand-edited\ndescription: 'hand edited\n\n  block\n\n  '\ntype: project\n" +
+        "created: '2026-10-13'\nlast_recalled: null\nlinks: []\n---\n\nbody\n",
+      actual: nodeReemit(readAlike[0][1]),
+    });
+
+    // 4. A SEEDED CORPUS. The fixed inputs above are the ones somebody thought of; this is
+    // the ones nobody did. An LCG so the 1500 are the same 1500 on every run and platform.
+    let seed = 120;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const pick = (a) => a[Math.floor(rnd() * a.length)];
+    const words = ['a', 'b c', 'x', '1', 'true', '~', 'null', '2026-01-02', '-x', 'a:b', 'a#b', 'é', '', ' ', '  ', '\t', 'q\tr', "'", '"', '#c', ' #c', 'k: v', '- z'];
+    const headers = ['|', '>', '|-', '|+', '>-', '>+', '|1', '|2', '|3', '>2', '|-1', '|2+', '| #c', '|  ', '|0', '|x'];
+    const indent = () => ' '.repeat(Math.floor(rnd() * 5));
+    const value = () => {
+      const r = rnd();
+      if (r < 0.55) {
+        let s = `${pick(headers)}\n`;
+        const n = Math.floor(rnd() * 5);
+        for (let k = 0; k < n; k += 1) s += rnd() < 0.2 ? `${indent()}\n` : `${indent()}${pick(words)}\n`;
+        return s.replace(/\n$/, rnd() < 0.5 ? '' : '\n');
+      }
+      if (r < 0.85) {
+        const n = Math.floor(rnd() * 4);
+        const items = [];
+        for (let k = 0; k < n; k += 1) {
+          items.push(rnd() < 0.2 ? `'${pick(words)}'` : rnd() < 0.1 ? `"${pick(words)}"` : pick(words));
+        }
+        return `[${pick(['', ' '])}${items.join(pick([',', ', ', ' ,', ' , ']))}${pick(['', ',', ', ', ' '])}]${pick(['', ' ', ' #c', '#c', ' x'])}`;
+      }
+      return pick(['&', '*', '!', '%', '@', '`', '{', '}', ',', '?', '-', ':', '#', '']) + pick(words);
+    };
+    const generated = [];
+    for (let k = 0; k < 1500; k += 1) {
+      generated.push(
+        rnd() < 0.7
+          ? fm(`name: n\ndescription: ${value()}\ntype: project\n${rnd() < 0.3 ? '#tail\n' : ''}`)
+          : fm(`name: n\ndescription: d\nlinks:\n- ${value()}\n- y\ntype: project\n`),
+      );
+    }
+    const pyGen = ctx.runPython(REF, { op: 'parse', texts_b64: generated.map(b64) }).parsed;
+    const guesses = [];
+    let read = 0;
+    let nodeOnlyRefusals = 0;
+    generated.forEach((text, k) => {
+      const nd = nodeParse(text);
+      const py = pyGen[k];
+      if (refuses(nd)) {
+        if (!refuses(py)) nodeOnlyRefusals += 1;
+        return;
+      }
+      if (refuses(py) || JSON.stringify(nd) !== JSON.stringify(py)) guesses.push({ text, python: py, node: nd });
+      else read += 1;
+    });
+    cases.push({
+      name: '#120 seeded corpus: of 1500 generated frontmatters, node never answers what python does not',
+      kind: 'json',
+      expected: [],
+      actual: guesses.slice(0, 5),
+    });
+    cases.push({
+      name: '#120 seeded corpus: node reads a share of it, so the case above is not vacuous',
+      kind: 'json',
+      expected: true,
+      actual: read >= 500,
+    });
+    notes.push(
+      `#120 seeded corpus: ${read} of 1500 read alike, ${nodeOnlyRefusals} refused by node where python reads, ` +
+        `${guesses.length} guesses`,
+    );
+  }
+
+
   return { cases, notes };
 }

@@ -20,6 +20,7 @@ survive byte-exactly travels as base64.
      "k": int|null, "create": bool, "calls": [{"op": ..., "args": [...]}, ...]}
       -> {"results": [<result>|{"error": {...}}, ...]}
 
+    {"op": "grants",   "store": <project store>}  -> {"grants": [b64 path]} | {"error": {...}}
     {"op": "version"}                             -> {"version": "3.12.13", "version_info": [3, 12, 13]}
     {"op": "strerror", "names": ["EACCES", ...]}  -> {"strerror": {name: text}}
     {"op": "decode",   "seqs": [[byte, ...]]}     -> {"decoded": [{...}]}
@@ -144,6 +145,15 @@ def main() -> None:
     op = request["op"]
     if op == "run":
         out = run_calls(request)
+    elif op == "grants":
+        # job65/#184: `load_grants` for the project store at `store`, answered as the list
+        # of resolved grant paths or the error it raised. Same envelope as `run`'s errors.
+        from bantamkit.memory.layers import load_grants
+
+        try:
+            out = {"grants": [b64(str(g)) for g in load_grants(request["store"])]}
+        except BaseException as e:  # noqa: BLE001 — the refusal is the answer being compared
+            out = error_json(e)
     elif op == "version":
         # The interpreter this reference runs on, so a suite can withhold a case whose
         # reference the floor cannot compute (`winpaths` needs 3.12; see suites/store.mjs).

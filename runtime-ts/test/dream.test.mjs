@@ -965,7 +965,8 @@ test('dry_run is the lax pydantic bool, measured against the reference over the 
     assert.equal(isError, true, `${JSON.stringify(bad)} should refuse`);
     assert.ok(text.includes('1 validation error for memory_dreamArguments'), text);
     assert.ok(text.includes(`[type=${type},`), text);
-    assert.ok(text.includes(`https://errors.pydantic.dev/2.13/v/${type}`), text);
+    // AMENDED job65 (#185): this pinned the `2.13` URL; neither runtime prints the URL line now.
+    assert.ok(!text.includes('errors.pydantic.dev'), text);
   }
   await client.close();
 });

@@ -239,8 +239,24 @@ export function loadGrants(projectStore: string): string[] {
     throw new MemoryValidationError(`invalid memory config ${configPath}: not a file`);
   }
   let data: ConfigDocument;
+  let text: string;
   try {
-    data = parseConfigDocument(pyReadText(configPath));
+    text = pyReadText(configPath);
+  } catch (e) {
+    throw new MemoryValidationError(
+      `invalid memory config ${configPath}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  // job65/#158: a tab where a YAML token would start is refused BEFORE the reader runs, in
+  // the sentence `load_grants` gives for PyYAML's own refusal of the same byte. The reader
+  // below accepted `[ \t]*` as indentation, so a tab-indented grant list was layered here
+  // and refused at startup by the reference: one config, two verdicts.
+  const tab = firstTokenTab(text);
+  if (tab !== null) {
+    throw new MemoryValidationError(`invalid memory config ${configPath}: ${tabSentence(tab[0], tab[1])}`);
+  }
+  try {
+    data = parseConfigDocument(text);
   } catch (e) {
     // `except (yaml.YAMLError, OSError, UnicodeDecodeError)`. `pyReadText` raises the last
     // two with CPython's own text; the first is where this port's reason differs — see the
@@ -263,9 +279,10 @@ export function loadGrants(projectStore: string): string[] {
   for (const entry of raw.items) {
     const resolved = pyResolve(pyJoin(pyParent(configPath), entry.value));
     if (!pyIsDir(resolved)) {
-      throw new MemoryValidationError(
-        `granted store does not exist: ${resolved} (from ${configPath})`,
-      );
+      // job65/#184: a path that EXISTS but is not a directory is its own sentence; a regular
+      // file used to be called nonexistent. `pyExists` raises for EACCES exactly as `pyIsDir`.
+      const shape = pyExists(resolved) ? 'is not a directory' : 'does not exist';
+      throw new MemoryValidationError(`granted store ${shape}: ${resolved} (from ${configPath})`);
     }
     grants.push(resolved);
   }
@@ -273,6 +290,74 @@ export function loadGrants(projectStore: string): string[] {
 }
 
 // ------------------------------------------------------------------------- the config
+
+/**
+ * job65/#158 — the sentence both runtimes give for a tab PyYAML will not scan. Python
+ * rewrites PyYAML's `found character '\t' that cannot start any token` into exactly this,
+ * from the error's own mark; this port finds the same byte with `firstTokenTab`.
+ */
+export function tabSentence(line: number, column: number): string {
+  return `line ${line}, column ${column}: a tab cannot start a YAML token; indent with spaces`;
+}
+
+/**
+ * The first tab PyYAML's scanner would refuse, as 1-based `[line, column]`, or `null`.
+ *
+ * MEASURED, not read off the spec: PyYAML 6.0.3's `scan_to_next_token` skips SPACES only, and
+ * a plain scalar stops at a tab, so every tab outside a quoted scalar and outside a comment
+ * is `found character '\t' that cannot start any token` — leading indentation, after `:`,
+ * after `-`, inside `[ ]`, between a value and its comment, trailing, alone on a line, and
+ * after `---`. A tab inside `'...'`/`"..."` or after a ` #` is accepted. The probe battery
+ * is in `.shiftwork/notes-job65/J65-10.md`. A quote OPENS a scalar only where a token can
+ * start (line start, or after a space, `[`, `{` or `,`) — `it's` is a plain scalar — and an
+ * open quote carries across lines, as a flow scalar does.
+ */
+export function firstTokenTab(text: string): [number, number] | null {
+  const lines = text.split('\n');
+  let quote: string | null = null;
+  let flow = 0;
+  let plain = false; // inside a plain scalar, where a quote, `[` or ` ` is content
+  let plainIndent = 0; // the indentation of the line that plain scalar started on
+  for (let n = 0; n < lines.length; n += 1) {
+    const line = lines[n]!;
+    // A plain scalar continues onto a MORE-indented next line (a multi-line plain scalar);
+    // anything else starts a token. An approximation of PyYAML's indent rule.
+    const indent = line.length - line.replace(/^ +/, '').length;
+    if (plain && indent <= plainIndent) plain = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i]!;
+      if (quote !== null) {
+        if (quote === '"' && ch === '\\') i += 1;
+        else if (quote === "'" && ch === "'" && line[i + 1] === "'") i += 1;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '\t') return [n + 1, i + 1];
+      const next = line[i + 1] ?? ' ';
+      if (ch === ' ') {
+        if (plain && next === '#') plain = false;
+        continue;
+      }
+      if (plain) {
+        if (ch === ':' && (next === ' ' || next === '\t' || (flow > 0 && ',[]{}'.includes(next)))) plain = false;
+        else if (flow > 0 && ',[]{}'.includes(ch)) plain = false;
+        else continue;
+      }
+      // A token starts here.
+      if (ch === '#') break;
+      if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === '[' || ch === '{') flow += 1;
+      else if ((ch === ']' || ch === '}') && flow > 0) flow -= 1;
+      else if (ch === ',' && flow > 0) continue;
+      else if ((ch === '-' || ch === ':' || ch === '?') && (next === ' ' || next === '\t')) continue;
+      else {
+        plain = true;
+        plainIndent = indent;
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * `yaml.safe_load` reduced to the question `load_grants` actually asks.

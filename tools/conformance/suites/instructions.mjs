@@ -725,9 +725,14 @@ export async function run(ctx) {
       recallTool.description ?? '',
       'string',
     );
+    // Amended by job65 J65-13 (#133): the served schema used to carry `minimum: 1` /
+    // `maximum: 5` on `k` while this sentence said `k` is RAISED when smaller — a schema
+    // and a description that contradicted each other on one property. Neither runtime ever
+    // refused outside the bounds (both clamp), so the bounds left the schema and the clamp
+    // moved into the sentence; the floor claim this case was written for is unchanged.
     push(
       N('c', 'j64', 'memory_recall-k-description-states-the-floor'),
-      'Facts wanted. Raised to the store default of 3 when smaller; never lowered below it.',
+      'Facts wanted, clamped to 1..5. Raised to the store default of 3 when smaller; never lowered below it.',
       recallTool.inputSchema?.properties?.k?.description ?? '',
       'string',
     );

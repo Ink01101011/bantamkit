@@ -25,6 +25,7 @@ import {
   HOST_LOG_DIRNAME,
   HOST_LOG_ROOT_ENV,
   defaultHostLogRoot,
+  escapeAscii,
   formatTimestamp,
   join as joinLogs,
   p50,
@@ -607,4 +608,81 @@ test('--mcp-report prints the report on stdout and exits 0 without touching a st
   assert.ok(r.stdout.endsWith('\n'));
   // it returned before any store existed: the flag prints and exits ahead of `buildMemory`
   assert.throws(() => statSync(store), /ENOENT/);
+});
+
+// --- 10. the two inputs that are not from a closed vocabulary, and the input that is big ---
+
+test('escapeAscii spells every non-printable-ASCII code unit as \\uXXXX and touches nothing else', () => {
+  // Thai is three BMP escapes; the emoji is OUTSIDE the BMP and becomes its surrogate pair,
+  // which is how the reference spells it too. A backslash is left alone — a Windows path
+  // must read as typed — and LF / DEL are escaped because they are not printable.
+  assert.equal(escapeAscii('a/แคช-😀\\b\n\x7f~ '), 'a/\\u0e41\\u0e04\\u0e0a-\\ud83d\\ude00\\b\\u000a\\u007f~ ');
+  assert.equal(escapeAscii('/Users/x/proj'), '/Users/x/proj');
+});
+
+test('the two input paths are escaped, so the report is ASCII whatever they hold (#187)', () => {
+  // THE MUTATION THAT REDDENS THIS: print `host.root` / `events.path` verbatim again. The
+  // Thai root reaches stdout and the ASCII assertion throws.
+  const bed = fresh();
+  const root = join(bed, 'แคช-😀', 'hostlogs');
+  host(root, '-Users-x-proj', 'a.jsonl', call('memory_save', SESSION_A, 0, 20));
+  const log = events(join(bed, 'store-ชื่อ', 'events', 'mcp.jsonl'), [[10, 'memory_save', 'saved']]);
+
+  const text = report(root, log);
+
+  for (let i = 0; i < text.length; i += 1) assert.ok(text.charCodeAt(i) < 0x80, `byte ${i} is not ASCII`);
+  assert.ok(!text.includes('แคช'), 'the root reached the report verbatim');
+  assert.ok(!text.includes('ชื่อ'), 'the store reached the report verbatim');
+  assert.equal(field(text, 'host-log-root'), escapeAscii(root));
+  assert.ok(field(text, 'host-log-root').endsWith('\\u0e41\\u0e04\\u0e0a-\\ud83d\\ude00/hostlogs'));
+  assert.equal(field(text, 'event-log'), escapeAscii(log));
+  assert.ok(field(text, 'event-log').includes('store-\\u0e0a\\u0e37\\u0e48\\u0e2d/events/mcp.jsonl'));
+
+  // Both other arms carry a path too, and both are the same two lines.
+  const absent = join(bed, 'ไม่มี');
+  const missing = report(absent, join(bed, 'store-ชื่อ', 'events', 'nope.jsonl'));
+  for (let i = 0; i < missing.length; i += 1) assert.ok(missing.charCodeAt(i) < 0x80);
+  assert.equal(field(missing, 'host-log-root'), `not found at ${escapeAscii(absent)}`);
+  assert.ok(field(missing, 'event-log').startsWith('not found at '));
+  assert.ok(field(missing, 'event-log').includes('store-\\u0e0a\\u0e37\\u0e48\\u0e2d/events/nope.jsonl'));
+});
+
+test('one session of 130,000 calls is reported, not a RangeError (#130)', () => {
+  // The host log is UNBOUNDED and the host never rotates it. Measured 2026-10-14 at 4cc1ab7:
+  // this bed ended with `RangeError: Maximum call stack size exceeded` from
+  // `Math.min(...anchors)` in `render`, and the reference answered it in 1.4 s.
+  //
+  // THE MUTATION THAT REDDENS THIS: put any one `Math.min(...)`/`Math.max(...)` or
+  // `out.push(...lines)` back over a per-session or per-bucket list.
+  const bed = fresh();
+  const root = join(bed, 'hostlogs');
+  const dir = join(root, '-Users-x-proj', HOST_LOG_DIRNAME);
+  mkdirSync(dir, { recursive: true });
+  const base = parseTimestamp('2026-10-11T05:00:00.000Z');
+  const lines = [];
+  for (let i = 0; i < 130_000; i += 1) {
+    lines.push(
+      `{"debug":"Calling MCP tool: memory_recall","timestamp":"${formatTimestamp(base + i * 20)}","sessionId":"busy-1","cwd":"/"}`,
+      `{"debug":"Tool 'memory_recall' completed successfully in 5ms","timestamp":"${formatTimestamp(base + i * 20 + 5)}","sessionId":"busy-1","cwd":"/"}`,
+    );
+  }
+  writeFileSync(join(dir, 'big.jsonl'), lines.join('\n') + '\n');
+  // Three events inside the first calls' windows, so the join and the duration buckets run
+  // over the big session too rather than only the [sessions] line.
+  const log = events(join(bed, 'store', 'events', 'mcp.jsonl'), [
+    [1, 'memory_recall', 'answered'],
+    [21, 'memory_recall', 'answered'],
+    [41, 'memory_recall', 'empty-no-match'],
+  ]);
+
+  const text = report(root, log);
+
+  assert.equal(field(text, 'host-calls'), '130000');
+  assert.equal(field(text, 'host-records'), '260000');
+  const session = text.split('\n').find((l) => l.startsWith('busy-1 '));
+  assert.equal(
+    session,
+    'busy-1 calls=130000 ok=130000 fail=0 incomplete=0 first=2026-10-11T05:00:00.000Z' +
+      ' last=2026-10-11T05:43:19.980Z attributed=0 tools=memory_recall',
+  );
 });

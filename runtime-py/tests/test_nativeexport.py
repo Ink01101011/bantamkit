@@ -272,7 +272,8 @@ def test_the_debt_a_directory_at_the_old_slug_is_not_the_answer(tmp_path):
     r = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home, cwd=cwd)
     assert r.record["nativeBranch"] == "unknown"
     ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "[bantamkit project memory — 1 facts]" in ctx
+    # AMENDED job65 (#188): this pinned "1 facts"; one fact is "1 fact" now.
+    assert "[bantamkit project memory — 1 fact]" in ctx
     assert r.record["projectInjected"] == 1
 
 
@@ -283,12 +284,14 @@ def test_an_absent_name_is_written_as_a_valid_auto_memory_file(tmp_path):
     home, cwd = _bed(tmp_path, "home"), _bed(tmp_path, "cwd")
     t = _bed(tmp_path, "transcript")
     native = _seed_native(t / "memory")
-    _seed_store(
-        cwd,
-        [
-            {"type": "project", "name": "alpha", "description": "the first fact"},
-            {"type": "feedback", "name": "beta", "description": "the second   fact\nwrapped"},
-        ],
+    root = _seed_store(cwd, [{"type": "project", "name": "alpha", "description": "the first fact"}])
+    # AMENDED job65 (#155): `beta` was saved through the store, which refuses a description
+    # with a line break now. It is the HAND-EDITED shape that can still hold one, so it is
+    # written by hand; the store reads the break as a space and the export collapses the rest.
+    (root / "facts" / "beta.md").write_text(
+        '---\nname: beta\ndescription: "the second   fact\\nwrapped"\ntype: feedback\n'
+        "created: '2026-10-01'\nlast_recalled: null\nlinks: []\n---\n\nbody\n",
+        encoding="utf-8",
     )
     r = _run_hook(
         {

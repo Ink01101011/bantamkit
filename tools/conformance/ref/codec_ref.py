@@ -18,6 +18,9 @@ survive byte-exactly travel as base64, because the point of the exercise is byte
     {"op": "read_file", "paths": [...]}          # goes through Path.read_text, so the
       -> {"parsed": [...]}                       # universal-newline translation is real
 
+    {"op": "reemit", "texts_b64": [...]}         # parse, then write the Fact back: the
+      -> {"reemitted": [{"b64": ...} | {"error": "..."}]}   # bytes a `_stamp` would leave (#120)
+
     {"op": "today", "ts": [unix seconds]}        # date.today() is LOCAL; run me with $TZ
       -> {"dates": ["YYYY-MM-DD", ...]}
 
@@ -91,6 +94,33 @@ def parse_text(text: str) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def reemit_text(text: str) -> dict:
+    """Parse a fact text as `_facts` does, then write it back as `_write_fact` does.
+
+    This is the half of `_stamp` that matters to the codec (#120): a hand-edited block scalar
+    or flow sequence is READ, and the next recall writes PyYAML's spelling of the same value
+    back. The port has to land on the same bytes, or a recall from Node rewrites a file into
+    something Python would not have written.
+    """
+    try:
+        _, front, body = text.split("---\n", 2)
+        meta = yaml.safe_load(front)
+        if not isinstance(meta, dict):
+            return {"error": "frontmatter is not a mapping"}
+        fact = {
+            "name": meta["name"],
+            "description": meta["description"],
+            "type": meta["type"],
+            "created": meta.get("created"),
+            "last_recalled": meta.get("last_recalled"),
+            "links": list(meta.get("links") or []),
+            "body": body.strip(),
+        }
+        return {"b64": base64.b64encode(write_fact(fact).encode("utf-8")).decode("ascii")}
+    except (ValueError, KeyError, yaml.YAMLError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 def main() -> None:
     # STDIN IS A BYTE PROTOCOL, SO DECODE IT AS ONE.
     #
@@ -118,6 +148,9 @@ def main() -> None:
     elif op == "parse":
         texts = [base64.b64decode(b).decode("utf-8") for b in request["texts_b64"]]
         json.dump({"parsed": [parse_text(t) for t in texts]}, sys.stdout)
+    elif op == "reemit":
+        texts = [base64.b64decode(b).decode("utf-8") for b in request["texts_b64"]]
+        json.dump({"reemitted": [reemit_text(t) for t in texts]}, sys.stdout)
     elif op == "read_file":
         # `Path.read_text` opens in TEXT mode, so this arm is where universal-newline
         # translation actually happens rather than being simulated.

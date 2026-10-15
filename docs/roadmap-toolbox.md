@@ -1315,3 +1315,131 @@ worktree copy). The gate figures above stay as measured at `cbd12d9`; at `4bf71d
 persist. Unreachable from Claude Code (the key is an absolute path or a UUID; `NAME_RE` rules
 `__proto__` out as a fact name), so it is registered, not fixed: a `Map` or a null-prototype
 object would close it when the file is next touched.
+
+## Registered 2026-10-15 — the closing review of job65, the issue sweep #116-#192 (J65-23), branch `fix/job65-issue-sweep`
+
+**Why this section exists.** The unit notes are `.shiftwork/notes-job65/J65-{0..11,13,18,19,21,23}.md`.
+They are force-added to the branch, but `.shiftwork/` is gitignored, so this section is the
+copy a clone can rely on. Every number a row needs is restated here.
+
+**Base.** The job's base `64ae11d` (0.35.7) is an ancestor of the branch. The branch was rebased
+onto main's PR #191 tip `7526aa6`, which is `git merge-base HEAD origin/main`. Every diff below
+is `7526aa6..2a77070`.
+
+**What moved, and what is owed.** `git diff --stat 7526aa6..2a77070 -- runtime-py/src runtime-ts/src assets`
+shows 39 files changed in both runtimes, so **release 0.35.8 is owed** as a separate job after
+merge (user ruling 2026-10-14: no version bump on the fix branch). Served sentences that changed:
+
+- `assets/tools/validate_json.json`: the description gained three sentences. They say any JSON
+  value is accepted, name the drafts and the one-resource `$ref` rule, and name the `pattern`
+  dialect and its 500 ms budget.
+- `assets/tools/work_plan.json`: the description now says "Four refusals", the
+  `nodes[<i>].<field> must be ...` shape refusal comes first, and "`depends_on` absent or null means
+  none". `depends_on` left the item's `required` and is now `anyOf` array-of-string or null.
+- `assets/tools/memory_recall.json`: `k` lost `minimum`/`maximum`. Its description is now "Facts
+  wanted, clamped to 1..5. ...".
+- `assets/tools/memory_compact.json`: `reserve` lost `minimum`. Its description now states the
+  job46 formula with the worked example `2401 + 39 = 2440`.
+- `-h`: one help line changed, on both runtimes, `bantamkit-memory compact --reserve`. It now reads
+  "headroom to leave below the budget (default: the budget minus its 90 percent warning line,
+  plus the largest index line kept; capped at half the budget)". `bantamkit-mcp -h` is
+  unchanged, and byte-identical across the runtimes at `COLUMNS=80`.
+
+The published artifact must be run and its `tools/list` read, not inferred.
+
+**Verdicts (66 rows: the 63 `bug` issues created since 2026-10-13, plus #134 #177 #187).**
+FIXED 47, PARTIAL 2 (#118, #133), NOT FIXED 0, INVALID 0, DEFERRED 17. The per-issue table, with
+its sha and evidence command, is in `J65-23.md`.
+
+### OPEN — left by this job
+
+**(ttt) DEFERRED by the user's cutoff of 2026-10-15: 17 bug issues, still OPEN on GitHub.**
+#124 #139 #140 #143 #144 #145 #146 #147 #148 #150 #151 #171 #173 #174 #178 #180 #181. They were
+owned by the dropped units J65-12, J65-14, J65-15, J65-16, J65-17 and J65-20, and they go to one
+follow-up job. This review did not probe them, so each issue body is still the only evidence.
+J65-0's parity table restates the Python side of each: #143, #144 and #171 have no Python
+surface, #173 is Python-only, and #181 is unverified.
+
+**(uuu) #133 is PARTIAL: an unknown top-level argument is still ignored on both runtimes.** The
+issue's Expected says `{unitId: "B"}`, a misspelled `unit_id`, should be refused. Instead
+`shiftwork_clock_in` briefs the cursor unit. Every bound the schemas advertise is now either
+enforced or removed (`3c4d3d7`). Refusing extras would need `extra="forbid"` on every model and
+`additionalProperties: false` on every asset. That is a surface-wide change with host-compatibility
+risk, and it needs a user ruling (J65-13 Q2). `wire` pins `extra: 1` as accepted twice.
+
+**(vvv) #118 is PARTIAL: host JSON keeps its numbers but not its bytes.** Since `9d6466b`/`ab79a5a`,
+numbers, key order and unknown keys survive, and `1e400` is refused by location. The issue's
+Expected also says "every other byte (... non-ASCII text, indentation) is kept". Both runtimes
+still re-indent at 2 and `\uXXXX`-escape non-ASCII text, and tests pin that on purpose as what
+makes the two write identical bytes
+(`test_the_written_json_escapes_non_ascii_so_both_runtimes_write_the_same_bytes`). Closing the
+gap needs a splice-only writer on both runtimes. Probe:
+`node <scratch>/j65-23/u18/probe.mjs` (a copy of J65-18's), lines `#118b`.
+
+**(www) Three hook arms still read-modify-write the session ledger unlocked.** J65-4 put the
+`PreToolUse` read arm under a lock (#167). The `UserPromptSubmit` seen-set, the `PostToolUse`
+`memory_save` counter and `Stop` `stopNudged` now write through a rename, but without the lock,
+so a parallel `Read` can still lose one entry or one `saved` increment. The fix is three lines
+per arm on each runtime (J65-4 Q1). J65-4 also notes that no case covers the stale-lock or 2 s
+timeout path.
+
+**(xxx) A recall on a read-only store fails to stamp `last_recalled`, and says nothing.** #123 is
+fixed: the recall answers. The stamp failure could now travel back on `RecallOutcome` the same
+way `skipped` does (J65-6 Q1, J65-9 Q5). A suggested sentence:
+`last_recalled was not stamped: memory store is not writable: <root>: <strerror>`.
+
+**(yyy) #120 left eight ruled shapes where the Node codec refuses YAML that PyYAML reads.** These
+are anchors, tags, flow mappings, nested or multi-line flow sequences, and blank lines inside a
+block sequence. Recall now skips such a file (J65-9). A save still refuses the whole store on
+Node and succeeds on Python. They are pinned as `ruling:` cases in `codec.mjs`, with per-side
+literals. The open decision is whether a later job ports the scanner, or whether refusing by
+name is the final answer (J65-11 Q1).
+
+**(zzz) `runtime-py/src/bantamkit/mcpstdio.py` reaches four private SDK names.** They are
+`_claim_fd`, `_open_stdin_diversion`, `_UnownedTextWrapper` and `_lowlevel_server`, and they are
+needed to answer #160's lone surrogate. This is safe under the `mcp<2.1` cap. Any SDK bump must
+rerun `--suite wire`: the `j65-9-strings` ids 6 and 7 go red if the wrapper stops working. A lone
+surrogate outside `params.arguments` is still dropped by the Python SDK, the same #148 class as
+the malformed frames in (ttt) (J65-9 Q1/Q2).
+
+**(aaaa) Small, two-sided follow-ups found by the units.** None of them is named by an issue.
+- `work_plan`: a node with no `id` still escapes as `Error executing tool work_plan: 'id'`, pinned
+  by `tool/no-id`, where a non-string id gets the structured sentence (J65-13 Q1).
+- Shift-work: invalid JSON in a checkpoint answers `checkpoint is not parseable as JSON: ...`,
+  while invalid UTF-8 answers `checkpoint unreadable: ...`. #163's text asks for the latter on
+  both (J65-1 Q1).
+- `memory_compact` on a store that mixes an `int` `created:` with string ones raises `TypeError`
+  on both runtimes (J65-2 Q2, `<S2>/probe-oq2.sh`).
+- `bantamkit-memory status --start <missing>` still designates. The SessionStart hook log does
+  not name the bound store (J65-10 Q1/Q3).
+- A config with a multi-line plain scalar (`extra_stores:\n  - a\nk: v\n  - 'a'\n`) is read by
+  PyYAML and refused by the Node reader (J65-10 Q4).
+- `tools/hooks/update-probe.mjs` still fetches `registry.npmjs.org` and `pypi.org` by URL, the
+  #135 shape on the stale-install record (J65-19 Q1).
+- `\B` on the empty string follows CPython 3.11-3.13, and 3.14 changed it (J65-7 Q1).
+- `validate_json` still lets `SchemaError`/`TypeError` escape as `isError` (J65-3 Q3).
+- `pyfs.ts` has no EFBIG strerror (J65-6 Q2).
+- `NAME_RE` admits a trailing `\n` in a name (J65-9 Q4).
+
+**(bbbb) Docs debt, for the 0.36.0 docs job.**
+- `docs/status.md`: line 4's samples lack `; bound to <path>` (#142), and the `index-budget-low`
+  row lacks the "full" sentence (#186).
+- `docs/mcp.md:28`: the feedback clip (#153).
+- `runtime-ts/README.md:403`: concurrent writes (#161).
+- `docs/hooks.md`: "There is no Python half of this adapter".
+- `README.md` and `runtime-ts/README.md`: the `.backup-<date>` wording (#138) and the
+  `bantamkit-mcp@latest` update rows (#128).
+- `docs/shiftwork.md:489` and `docs/conformance.md`'s `workplan` row: "three refusals" (#127).
+
+**(cccc) A sentence in the user's `CLAUDE.md` is now false.** The job60 amendment says "A caller
+that never passes `unit_id` is unaffected." Since `e152d23` (#164), a default `clock_in()` on a
+done, not-ready or unbatchable cursor unit is refused with `unit <id> is not ready; ready is <list>`
+or the graph's own refusal. The file is the user's, so this review did not edit it.
+
+**Gates, re-derived by this review at `2a77070`, from a fresh `npm ci && npm run build`, throwaway `HOME`, clean `TMPDIR`:**
+
+<!-- provenance: value=14452 cases, 2782 byte-identical, 8264 exact-string, 3406 structural, 171 ruled-different, 0 failures; commit=2a77070; command=TMPDIR=<cleantmp> node tools/conformance/run.mjs --all -->
+<!-- provenance: value=2 failed, 3389 passed, 58 skipped, 2 deselected, 3 xfailed in 238.09s (both: test_encoding_gate on .shiftwork/notes-job65/J65-10-probes/{mutate,real}.py); commit=2a77070; command=.venv/bin/python -m pytest runtime-py/tests -q -->
+<!-- provenance: value=tests 1394, pass 1347, fail 0, skipped 47; commit=2a77070; command=cd runtime-ts && npm test -->
+<!-- provenance: value=tests 19, pass 19, fail 0; commit=2a77070; command=node --test 'tools/hooks/*.test.mjs' -->
+<!-- provenance: value=All checks passed!; commit=2a77070; command=.venv/bin/ruff check runtime-py tools -->

@@ -38,6 +38,8 @@
  * handed — the two branches Python takes when `_snapshot` is pinned have no reachable
  * caller here. Everything else about both functions is the reference's.
  */
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 
 import { BantamError } from '../errors.js';
@@ -49,11 +51,13 @@ import {
   cmpCodepoint,
   matchesMd,
   pyExists,
+  pyIsDir,
   pyJoin,
   pyLexists,
   pyMkdirParents,
   pyMtimeDate,
   pyName,
+  pyNewlineOut,
   pyParent,
   pyParents,
   pyReadText,
@@ -61,9 +65,9 @@ import {
   pyScandirNames,
   pySuffix,
   pyUnlink,
-  pyWithSuffix,
   pyWriteText,
   PyOSError,
+  PyUnicodeDecodeError,
   sortedPathNames,
 } from './pyfs.js';
 
@@ -191,6 +195,54 @@ export const DURABLE_TYPES = ['feedback', 'user'] as const;
 const NAME_RE = /^[a-z0-9][a-z0-9-]*\n?$/;
 const NAME_PATTERN = '^[a-z0-9][a-z0-9-]*$';
 
+/**
+ * THE LONGEST NAME A SAVE ACCEPTS (job65/#156): `NAME_MAX_CHARS` in the reference, the same
+ * number. The fact lands as `<name>.md` through `<name>.md.<pid>.<8 hex>.tmp` (#161), so the
+ * name leaves room for that suffix under the 255-byte file-name limit. WAS: no cap, and a
+ * 301-character name came back as a raw `[Errno 63] File name too long: '<absolute path>'`.
+ * `NAME_RE` admits ASCII only, so characters and bytes are one count.
+ */
+export const NAME_MAX_CHARS = 128;
+
+/**
+ * ONE LINE MEANS ONE LINE (job65/#155): the reference's `_NOT_ONE_LINE`, the same ranges —
+ * every C0/C1 control plus U+2028/U+2029. Refused in a saved `description`; in a fact file on
+ * disk each run of them is READ as one space (see `facts()`), so `index.md` and the hook's
+ * injected header can never gain a line nobody saved.
+ */
+const NOT_ONE_LINE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+
+/**
+ * A LONE SURROGATE IS NOT TEXT (job65/#160). JSON can carry `\ud800` on its own; no UTF-8
+ * file can hold it. This port used to write U+FFFD and say "saved"; the reference raised a
+ * `UnicodeEncodeError`. A JS string holds a pair as two code units, so a surrogate is lone
+ * when it is a high one not followed by a low one, or a low one not preceded by a high one.
+ */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+function codepoint(unit: string): string {
+  return `U+${unit.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`;
+}
+
+/** `U+XXXX` of the first lone surrogate in `text`, or `null` when it is all text. */
+export function loneSurrogate(text: string): string | null {
+  const found = LONE_SURROGATE.exec(text);
+  return found === null ? null : codepoint(found[0]);
+}
+
+function notOneLine(text: string): string | null {
+  NOT_ONE_LINE.lastIndex = 0;
+  const found = NOT_ONE_LINE.exec(text);
+  NOT_ONE_LINE.lastIndex = 0;
+  return found === null ? null : codepoint(found[0]);
+}
+
+/** One fact file left out of a tolerant read, and the store's own sentence for why (#119). */
+export interface SkippedFact {
+  file: string;
+  reason: string;
+}
+
 export const DUPLICATE_JACCARD = 0.5;
 
 // ---- the precision gate (roadmap #6) ---------------------------------------------
@@ -317,6 +369,14 @@ const FACT_UNREACHABLE =
 const ARCHIVE_DESTINATION_UNREACHABLE =
   "a destination that could not be stat'd is not a name that is already archived, " +
   'and nothing has moved: the fact is still in facts/';
+
+/**
+ * job65/#141, #123: the codes that say a directory EXISTS and this process may not write into
+ * it — `NOT_WRITABLE_ERRNOS` in the reference. EACCES is the chmod case everywhere, EPERM an
+ * immutable flag or a Windows ACL, EROFS a read-only mount. On the mkdir path it is only half
+ * the test (`ensureDirs` also needs the root to be there); see the reference's docstring.
+ */
+const NOT_WRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
 
 export class MemoryValidationError extends BantamError {}
 export class MemoryBudgetExceeded extends BantamError {}
@@ -716,6 +776,13 @@ export class MemoryStore {
    * the failing leaf, or that strerror, would be a divergence manufactured by mkdir's
    * internals. `this.root` is the path the caller named and both sides agree on it, which is
    * what lets one conformance case pin this line byte for byte.
+   *
+   * AMENDED job65/#141: THE SENTENCE ABOVE IS NOW THE "NOT THERE" ARM ONLY. A `chmod 000`
+   * store answered it too, about a directory that exists. The second arm is still an outcome:
+   * the mkdir failed with one of `NOT_WRITABLE_CODES` AND `this.root` is a directory that is
+   * there, and then the refusal is `memory store is not writable: <root>: <strerror>; the
+   * directory exists but cannot be written to, so nothing was written`. The cwd-`/` divergence
+   * measured above is about a root that is NOT there, so it never reaches this arm.
    */
   private ensureDirs(): void {
     // Checked BEFORE the mkdir below, per user ruling #2: this is the one moment that can
@@ -733,12 +800,31 @@ export class MemoryStore {
       pyMkdirParents(pyJoin(this.root, 'archive'));
     } catch (e) {
       if (!(e instanceof PyOSError)) throw e;
+      if (NOT_WRITABLE_CODES.has(e.code) && this.present()) throw this.unwritable(e);
       throw new MemoryValidationError(
         `memory store could not be created: ${this.root}; the directory is not` +
           ' there and this filesystem would not make it, so nothing was written',
       );
     }
     if (bantamkitDir !== null) ensureBantamkitGitignore(bantamkitDir, !bantamkitDirExistedBefore);
+  }
+
+  /** `_present`: is `this.root` a directory that is there? "Not allowed to look" is "there". */
+  private present(): boolean {
+    try {
+      return pyIsDir(this.root);
+    } catch (e) {
+      if (!(e instanceof PyOSError)) throw e;
+      return true;
+    }
+  }
+
+  /** `_unwritable`: one sentence for a store that exists and refused a write (#141). */
+  private unwritable(error: PyOSError): MemoryValidationError {
+    return new MemoryValidationError(
+      `memory store is not writable: ${this.root}: ${error.strerror}; the directory` +
+        ' exists but cannot be written to, so nothing was written',
+    );
   }
 
   // ---- ops ----
@@ -772,6 +858,26 @@ export class MemoryStore {
     if (pyStrip(description || '') === '') {
       throw new MemoryValidationError('description must be a non-empty line');
     }
+    if (name.length > NAME_MAX_CHARS) {
+      throw new MemoryValidationError(`invalid name: ${name.length} characters; must be at most ${NAME_MAX_CHARS}`);
+    }
+    const texts: Array<[string, unknown]> = [
+      ['description', description],
+      ['body', body],
+      ...links.map((link, i): [string, unknown] => [`links[${i}]`, link]),
+    ];
+    for (const [label, value] of texts) {
+      const bad = typeof value === 'string' ? loneSurrogate(value) : null;
+      if (bad !== null) {
+        throw new MemoryValidationError(
+          `${label} holds a lone surrogate (${bad}), which is not text and cannot be stored as UTF-8; nothing was saved`,
+        );
+      }
+    }
+    const broken = notOneLine(pyStrip(description));
+    if (broken !== null) {
+      throw new MemoryValidationError(`description must be one line; it holds the control character ${broken}`);
+    }
 
     const newTokens = tokens(`${name} ${description}`);
     let existing: Fact | null = null;
@@ -798,7 +904,14 @@ export class MemoryStore {
     };
     const path = this.factPath(name);
     const existed = pyExists(path) ? pyReadText(path) : null;
-    this.writeFact(fact);
+    // #141, the 555 shape: every directory was already there, so the fact write is the first
+    // syscall the mode refuses. Only the "exists, not writable" codes become the sentence.
+    try {
+      this.writeFact(fact);
+    } catch (e) {
+      if (e instanceof PyOSError && NOT_WRITABLE_CODES.has(e.code)) throw this.unwritable(e);
+      throw e;
+    }
     try {
       this.checkIndexBudget();
     } catch (e) {
@@ -837,12 +950,18 @@ export class MemoryStore {
    * reference's `not 0.0 <= min_ratio <= 1.0` refuses it. That is a real mutant (M7b) and
    * it is killed on both sides.
    */
-  recall(query: string, k: number | null = null, stamp = true, minRatio = RECALL_MIN_SCORE_RATIO): Fact[] {
+  recall(
+    query: string,
+    k: number | null = null,
+    stamp = true,
+    minRatio = RECALL_MIN_SCORE_RATIO,
+    skipped?: SkippedFact[],
+  ): Fact[] {
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
     const limit = k ?? this.k;
     const q = tokens(query);
     let scored: Array<{ score: number; name: FactValue; fact: Fact }> = [];
-    for (const fact of this.facts()) {
+    for (const fact of this.facts(undefined, skipped)) {
       let score = 0;
       for (const t of tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) if (q.has(t)) score += 1;
       if (score > 0) scored.push({ score, name: fact.name, fact });
@@ -883,8 +1002,8 @@ export class MemoryStore {
    * order, which is the order `recall` breaks a tie in. `stamp` dates the hit through
    * `stamp()` exactly as `recall` dates its hits; a miss writes nothing.
    */
-  lookup(name: string, stamp = true): Fact | null {
-    for (const fact of this.facts()) {
+  lookup(name: string, stamp = true, skipped?: SkippedFact[]): Fact | null {
+    for (const fact of this.facts(undefined, skipped)) {
       if (typeof fact.name === 'string' && fact.name === name) {
         if (stamp) this.stamp(fact);
         return fact;
@@ -914,13 +1033,20 @@ export class MemoryStore {
    * and the budget error to `lint: FAIL — …` on stderr with exit 1.
    */
   lint(): void {
-    for (const fact of this.facts()) {
+    const findings: string[] = [];
+    for (const fact of this.facts(findings)) {
       if (!(VALID_TYPES as readonly string[]).includes(pyText(fact.type))) {
         throw new MemoryValidationError(
           `fact '${pyText(fact.name)}' has invalid type '${pyText(fact.type)}'`,
         );
       }
     }
+    // The two hand-edit shapes every other op now TOLERATES (#121, #122) are named here,
+    // first one in file order, because lint is the one surface whose job is to say what an
+    // operator should fix: an unquoted timestamp that `facts` read as a string, and a file
+    // whose name is not the fact's. Neither is a reason for `recall` or `compact` to refuse
+    // the whole store, and both are a reason for `lint` to exit 1.
+    if (findings.length > 0) throw new MemoryValidationError(findings[0]!);
     this.checkIndexBudget();
   }
 
@@ -1013,9 +1139,13 @@ export class MemoryStore {
     // name, instead of surfacing as a `FileNotFoundError` out of the final write. `exist_ok`
     // semantics make it free for every store that is already there.
     this.ensureDirs();
-    const sizes = new Map<string, number>();
+    // Keyed by the FACT, not by `fact.name` (#122): two files can carry one name, and a map
+    // keyed by name collapsed them — `indexBefore` reported 88 bytes for a 134-byte index, and
+    // the second file's line was never subtracted. `byEviction` sorts a copy of this same
+    // array, so the objects are the keys on both sides of the loop.
+    const sizes = new Map<Fact, number>();
     for (const fact of facts) {
-      sizes.set(pyHashKey(fact.name), Buffer.byteLength(this.indexLine(fact), 'utf8'));
+      sizes.set(fact, Buffer.byteLength(this.indexLine(fact), 'utf8'));
     }
     const all = [...sizes.values()];
     if (reserve === null) {
@@ -1041,9 +1171,14 @@ export class MemoryStore {
     const archived: ArchivedFact[] = [];
     for (const fact of this.byEviction(facts)) {
       if (size <= target) break;
-      const path = this.factPath(fact.name);
+      // THE FILE THE FACT WAS READ FROM, not `facts/<name>.md` (#122). The two are the same
+      // path for every fact this store wrote; they part on a hand-edited file whose
+      // frontmatter names another fact, and there `factPath(fact.name)` moved the WRONG file
+      // — the newest fact, under the name of the stalest — or raised for a name no file
+      // carries. `lint` names the mismatch.
+      const path = fact.source ?? this.factPath(fact.name);
       pyReplace(path, pyJoin(this.root, 'archive', pyName(path)));
-      const bytes = sizes.get(pyHashKey(fact.name))!;
+      const bytes = sizes.get(fact)!;
       size -= bytes;
       archived.push({
         name: fact.name,
@@ -1284,6 +1419,19 @@ export class MemoryStore {
    * bytes `dream` MEASURES and the bytes the store WRITES are already one function. That is
    * the code-shape difference the Python half had to manufacture, not a behaviour one.
    */
+  /**
+   * Every fact this store can read, and `{file, reason}` for each file it could not.
+   *
+   * THE DECLARED TOLERANT LISTING (job65/#119), `readable_facts` in the reference. One empty,
+   * truncated, non-UTF-8 or unreadable fact file costs that file, not the store: the hook's
+   * SessionStart index and native export read through this, as `Memory.recallOutcome` reads
+   * through `recall(..., skipped)`. A `facts/` that cannot be listed still throws.
+   */
+  readableFacts(): { facts: Fact[]; skipped: SkippedFact[] } {
+    const skipped: SkippedFact[] = [];
+    return { facts: this.facts(undefined, skipped), skipped };
+  }
+
   internals(): StoreInternals {
     return {
       facts: () => this.facts(),
@@ -1453,10 +1601,11 @@ export class MemoryStore {
   /**
    * Every fact on disk, parsed.
    *
-   * The `read_text` is OUTSIDE the try in the reference, so a fact file that is not UTF-8
-   * raises a bare `UnicodeDecodeError` rather than a `malformed fact file …` sentence. That
-   * ordering is reproduced: `pyReadText` raises `PyUnicodeDecodeError` with CPython's own
-   * message and it is not caught here.
+   * AMENDED job65/#159: the `read_text` is now INSIDE the reference's try, so a fact file that
+   * is not UTF-8 is `malformed fact file <name>: 'utf-8' codec can't decode …` — naming the
+   * file — instead of the bare decoder message. `pyReadText` raises `PyUnicodeDecodeError`
+   * with CPython's own text and it is wrapped here; a `PyOSError` from the read still escapes
+   * as itself, as in the reference (`OSError` is not in its `except`).
    *
    * RULING — THE MESSAGE TEXT FOR A MALFORMED FILE. `_facts` interpolates the exception into
    * `malformed fact file {name}: {e}`, and that reaches the model. Three of the four shapes
@@ -1471,13 +1620,65 @@ export class MemoryStore {
    * carried as a must-differ `ruling` case in the conformance suite so it is re-measured on
    * every run instead of asserted once and forgotten.
    */
-  private facts(): Fact[] {
+  /**
+   * `_facts`: every fact on disk, in `factPaths` order, with two hand-edit shapes tolerated.
+   *
+   * AN UNQUOTED TIMESTAMP IS READ AS ITS `str()` (#121). `yaml.safe_load` hands the reference
+   * a `datetime.date` for `created: 2026-01-01` and a `datetime.datetime` for the longer
+   * forms, while every file the store writes carries the quoted string. `recall` and `save`
+   * never minded, but `compact` sorts `(last_recalled or created, name)` and the sort raised
+   * `'<' not supported between instances of 'datetime.date' and 'str'` the moment one
+   * hand-edited file sat beside a written one — the only remedy the budget refusal names,
+   * dead on the store that named it. The scalar's `text` IS `str(value)` on the reference
+   * (`isoformat()` for a date, `isoformat(' ')` for a datetime), so both runtimes read the
+   * same string and the next write quotes it. Only timestamps are touched: an `int` or `bool`
+   * in these fields is left exactly as the scalar cases in `suites/store.mjs` pin it.
+   *
+   * `findings`, when given, collects one sentence per shape `lint` should name — the coerced
+   * timestamp, and a file whose name is not the fact's (#122) — without throwing, because
+   * every other caller tolerates both. `lint` is the only caller that passes an array.
+   */
+  /**
+   * `skipped`, when given, makes ONE BAD FILE COST THAT FILE (job65/#119): a file that is
+   * malformed or cannot be read is pushed as `{file, reason}` (the sentence this would have
+   * thrown) and every other file is still read. Only `recall`, `lookup` and `readableFacts`
+   * pass it; a save, a compaction or a lint keeps the strict read.
+   */
+  private facts(findings?: string[], skipped?: SkippedFact[]): Fact[] {
     const out: Fact[] = [];
     for (const path of this.factPaths()) {
-      const text = pyReadText(path); // outside the try, exactly as in the reference
+      if (skipped === undefined) {
+        out.push(this.readFact(path, findings));
+        continue;
+      }
+      try {
+        out.push(this.readFact(path, findings));
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError)) throw e;
+        skipped.push({ file: basename(path), reason: e.message });
+      }
+    }
+    return out;
+  }
+
+  /** One fact file, parsed, or the `malformed fact file` sentence for it (see `facts`). */
+  private readFact(path: string, findings?: string[]): Fact {
+    const timestampText = (value: FactValue | FactValue[] | undefined): FactValue | FactValue[] | undefined =>
+      value instanceof PyScalar && (value.ord.kind === 'date' || value.ord.kind === 'datetime')
+        ? value.text
+        : value;
+    {
       const file = basename(path);
       const malformed = (reason: string): MemoryValidationError =>
         new MemoryValidationError(`malformed fact file ${file}: ${reason}`);
+      let text: string;
+      try {
+        text = pyReadText(path);
+      } catch (e) {
+        // #159: `UnicodeDecodeError` is a `ValueError`, which the reference's `except` names.
+        if (e instanceof PyUnicodeDecodeError) throw malformed(e.message);
+        throw e;
+      }
 
       const parts = pySplit(text, '---\n', 2);
       if (parts.length !== 3) {
@@ -1494,21 +1695,57 @@ export class MemoryStore {
       for (const key of ['name', 'description', 'type']) {
         if (!(key in meta)) throw malformed(`'${key}'`);
       }
-      const rawCreated = meta['created'] as FactValue | FactValue[] | undefined;
-      out.push({
-        name: meta['name'] as FactValue,
-        description: meta['description'] as FactValue,
+      const name = meta['name'] as FactValue;
+      const stamps: Record<string, FactValue | FactValue[] | undefined> = {};
+      for (const key of ['created', 'last_recalled']) {
+        const raw = meta[key] as FactValue | FactValue[] | undefined;
+        const value = timestampText(raw);
+        if (findings !== undefined && value !== raw) {
+          findings.push(
+            `fact '${pyText(name)}' in ${file}: ${key} is the unquoted timestamp ${value}, ` +
+              `read as '${value}'; quote it`,
+          );
+        }
+        stamps[key] = value;
+      }
+      // `path.stem`, spelled the way `archived()` spells it.
+      const suffix = pySuffix(file);
+      const stem = suffix === '' ? file : file.slice(0, file.length - suffix.length);
+      if (findings !== undefined && stem !== pyText(name)) {
+        findings.push(
+          `fact '${pyText(name)}' in ${file}: the file name does not match the fact name; ` +
+            `rename the file to ${pyText(name)}.md or the fact to ${stem}`,
+        );
+      }
+      const rawCreated = stamps['created'];
+      // #155: a description that is not one line is READ as one — each run of `NOT_ONE_LINE`
+      // is one space — and `lint` names it, like the other hand-edit shapes.
+      let description = meta['description'] as FactValue;
+      const broken = typeof description === 'string' ? notOneLine(description) : null;
+      if (broken !== null) {
+        description = (description as string).replace(NOT_ONE_LINE, ' ');
+        if (findings !== undefined) {
+          findings.push(
+            `fact '${pyText(name)}' in ${file}: the description is not one line ` +
+              `(it holds the control character ${broken}), read as '${description}'; make it one line`,
+          );
+        }
+      }
+      return {
+        name,
+        description,
         type: meta['type'] as FactValue,
         body: pyStrip(parts[2]!),
         links: pyList(meta['links'] as FactValue | FactValue[] | undefined),
-        last_recalled: (meta['last_recalled'] as FactValue) ?? null,
+        last_recalled: (stamps['last_recalled'] as FactValue) ?? null,
         // `or`, not `??`: every FALSY value falls back to the mtime, and that is now more
         // than the empty string — `created: 0`, `created: false` and `created: 0.0` are all
-        // falsy in Python too, while `created: 2026-08-23` is a truthy `date` and is kept.
+        // falsy in Python too, while `created: 2026-08-23` is a truthy `date` (now its text)
+        // and is kept.
         created: pyTruthy(rawCreated) ? (rawCreated as FactValue) : pyMtimeDate(path),
-      });
+        source: path,
+      };
     }
-    return out;
   }
 
   /**
@@ -1521,15 +1758,46 @@ export class MemoryStore {
    */
   private stamp(fact: Fact): void {
     fact.last_recalled = this.today();
-    this.writeFact(fact);
+    // job65/#123: BEST-EFFORT. A read-only store (chmod 555, a read-only mount, a CI cache)
+    // used to fail the whole recall here, after the hits were computed. A `PyOSError` from the
+    // write now leaves the old date on disk and the recall answers; see the reference's
+    // `_stamp` for why it is silent.
+    try {
+      this.writeFact(fact);
+    } catch (e) {
+      if (!(e instanceof PyOSError)) throw e;
+    }
   }
 
-  /** Write via `<name>.md.tmp` and `os.replace`, so a reader never sees a half-written fact. */
+  /**
+   * Write via a PER-WRITER temp and `os.replace`, so a reader never sees a half-written fact
+   * and two writers never share a temp (job65/#161).
+   *
+   * WAS `<name>.md.tmp`, one temp per FACT: two servers saving one name raced on it (the
+   * second `replace` found nothing — `[Errno 2] … 'shared-name.md.tmp'`), and a write that
+   * died half-way left the temp beside the facts. NOW the shape `clockOut` and the hook ledger
+   * use (J65-1, J65-4): `<name>.md.<pid>.<8 hex>.tmp`, created with `wx` (O_EXCL), renamed
+   * onto the fact, and unlinked on any failure before the error goes on up. `*.md` listings
+   * never see it.
+   */
   private writeFact(fact: Fact): void {
     const path = this.factPath(fact.name);
-    const tmp = pyWithSuffix(path, '.md.tmp');
-    pyWriteText(tmp, formatFact(fact));
-    pyReplace(tmp, path);
+    const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      try {
+        writeFileSync(tmp, pyNewlineOut(formatFact(fact)), { encoding: 'utf8', flag: 'wx' });
+      } catch (e) {
+        throw asPyOSError(e, tmp, undefined, 'crt');
+      }
+      pyReplace(tmp, path);
+    } catch (e) {
+      try {
+        pyUnlink(tmp);
+      } catch (cleanup) {
+        if (!(cleanup instanceof PyOSError)) throw cleanup;
+      }
+      throw e;
+    }
   }
 
   /**
