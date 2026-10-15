@@ -406,7 +406,11 @@ test('#201: the probe asks the registry npm is configured for, and pip through i
   const home = newHome();
   const argv = join(scratch, `pip-argv-${counter++}.json`);
   const before = mirrorHits;
-  await probe(home, { ...served(), [SEAM.npm]: `${origin}/mirror/`, BK_TEST_PIP_ARGV: argv });
+  // npm's cache is pointed back at HOME, where it lives by default outside this harness, so the
+  // last assertion below sees what an operator's HOME would get.
+  await probe(home, {
+    ...served(), [SEAM.npm]: `${origin}/mirror/`, BK_TEST_PIP_ARGV: argv, npm_config_cache: join(home, '.npm'),
+  });
 
   const parsed = JSON.parse(readFileSync(recordFile(home), 'utf8'));
   assert.equal(parsed.npm?.latest, MIRROR, 'the record does not carry the configured registry\'s version');
@@ -418,6 +422,11 @@ test('#201: the probe asks the registry npm is configured for, and pip through i
       '--disable-pip-version-check', '-q', '--report', '-', 'bantamkit'],
     'pip was not asked with bantamkit.selfupdate.index_command()',
   );
+  // NO CACHE IN HOME. The probe is detached and outlives the session that spawned it, so a cache
+  // npm or pip kept under HOME was written after its owner had moved on — in the hook tests,
+  // into a throwaway HOME already being removed (`ENOTEMPTY`, the failed 0.36.0 publish). The
+  // record is the only thing the probe may leave there.
+  assert.deepEqual(readdirSync(home).sort(), ['.bantamkit'], 'the probe left something in HOME besides the record');
 });
 
 /** `YYYY-MM-DDTHH:MM:SSZ` — `selfupdate.STAMP` on both sides. */

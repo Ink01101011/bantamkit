@@ -83,6 +83,7 @@
 // surface, it is the thing that feeds one.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -269,6 +270,32 @@ async function main() {
     return;
   }
 
+  // NO CACHE OUTLIVES THE PROBE. `npm view` and `pip install --dry-run` each keep an HTTP cache
+  // under the home directory (`~/.npm`, `~/Library/Caches/pip`). This process is DETACHED and
+  // outlives the session that spawned it, so those writes landed in a HOME after its owner had
+  // finished with it: the hook tests' throwaway HOMEs were removed while pip was still writing
+  // there (`ENOTEMPTY` from `rmSync`, which failed the 0.36.0 publish at phase 1). Nothing here
+  // needs a cache — one question per registry per day — so pip runs with none and npm gets a
+  // private one under the temp directory, removed on the way out. The registry, proxy and auth
+  // config #201 is about are untouched: a cache location is not a registry.
+  let npmCache = null;
+  try {
+    npmCache = fs.mkdtempSync(path.join(os.tmpdir(), 'bantamkit-probe-npm-'));
+    process.env.npm_config_cache = npmCache;
+  } catch {
+    // No private cache: npm falls back to its own default. A cache is not worth a lost answer.
+  }
+  process.env.PIP_NO_CACHE_DIR = '1';
+  try {
+    await ask(rt, updatecheck, file, directory);
+  } finally {
+    if (npmCache !== null) {
+      try { fs.rmSync(npmCache, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
+}
+
+async function ask(rt, updatecheck, file, directory) {
   // BOTH QUESTIONS AT ONCE. They are two independent requests to two hosts, and a detached
   // child that takes 20 s instead of 10 on a captive network is 10 s of a process nobody is
   // waiting for — but it is also 10 s longer that a laptop lid can close on it half-done. pip
