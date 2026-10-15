@@ -3283,6 +3283,72 @@ export async function run(ctx) {
     );
   }
 
+  // ------------------------------------------------ store-pin-args (job67, J67-5, #170)
+  //
+  // The hook binds the store the winning registration pins, so that it injects from the store
+  // the server serves (J50-1). Until #170 it read the pin off `env.BANTAMKIT_MEMORY_DIR` only;
+  // a registration pinning through `args: [..., "--store", X]` — the spelling the README
+  // documents, and the one that OUTRANKS the env pin on the server — had the hook walking from
+  // cwd while the server served X. MEASURED BEFORE THE FIX, on both runtimes: every args
+  // spelling injected `walk-fact`, and `both` injected `env-fact`.
+  //
+  // Every bed puts a DIFFERENT populated store in every place the hook could wrongly bind —
+  // the walk's `<cwd>/.bantamkit/memory`, the env pin, the args pin, a relative store under
+  // cwd — each holding a fact whose NAME is unique to it and whose description matches the one
+  // prompt, so a wrong binding changes WHICH name reaches stdout, never whether one does. The
+  // names are compared side to side AND pinned per side, because a regression landing in both
+  // runtimes leaves a differential green.
+  {
+    const id = 'store-pin-args';
+    const base = join(root, id);
+    const cwd = join(base, 'proj');
+    mkdirSync(cwd, { recursive: true });
+    const facts = (name) => [{ type: 'project', name, description: `${name} explains the release ladder` }];
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), facts('walk-fact'));
+    const argsStore = join(base, 'pinned-args');
+    const envStore = join(base, 'pinned-env');
+    seedStore(ctx, argsStore, facts('args-fact'));
+    seedStore(ctx, envStore, facts('env-fact'));
+    seedStore(ctx, join(cwd, 'rel', 'store'), facts('rel-fact'));
+    const NAMES = ['args-fact', 'env-fact', 'rel-fact', 'walk-fact'];
+    const spellings = [
+      ['args-space', { command: 'node', args: ['/x/cli.js', '--store', argsStore] }, ['args-fact'], 'user'],
+      ['args-equals', { command: 'node', args: ['/x/cli.js', `--store=${argsStore}`] }, ['args-fact'], 'user'],
+      ['env', { command: 'node', args: ['/x/cli.js'], env: { BANTAMKIT_MEMORY_DIR: envStore } }, ['env-fact'], 'user'],
+      ['args-outranks-env', { command: 'node', args: ['/x/cli.js', '--store', argsStore], env: { BANTAMKIT_MEMORY_DIR: envStore } }, ['args-fact'], 'user'],
+      ['args-last-wins', { command: 'node', args: ['/x/cli.js', '--store', envStore, `--store=${argsStore}`] }, ['args-fact'], 'user'],
+      ['args-relative', { command: 'node', args: ['/x/cli.js', '--store', join('rel', 'store')] }, ['rel-fact'], 'user'],
+      ['args-empty-is-no-pin', { command: 'node', args: ['/x/cli.js', '--store='], env: { BANTAMKIT_MEMORY_DIR: envStore } }, ['env-fact'], 'user'],
+      ['no-pin-walks', { command: 'node', args: ['/x/cli.js'] }, ['walk-fact'], null],
+    ];
+    for (const [spelling, entry, want, scope] of spellings) {
+      const probe = (side) => {
+        const h = home(`${id}-${spelling}`, side);
+        writeFile(join(h, '.claude.json'), `${JSON.stringify({ mcpServers: { bantamkit: entry } })}\n`);
+        const sid = `${id}-${spelling}`;
+        const u = runHook(ctx, side, {
+          payload: { hook_event_name: 'UserPromptSubmit', prompt: 'walk me through the release ladder', cwd, session_id: sid },
+          cwd,
+          home: h,
+        });
+        const s = runHook(ctx, side, { payload: { hook_event_name: 'SessionStart', source: 'startup', cwd, session_id: sid }, cwd, home: h });
+        const rec = s.records.filter((x) => x['event'] === 'SessionStart').slice(-1)[0];
+        return {
+          exit: [u.exit, s.exit],
+          recalled: NAMES.filter((n) => dec(u.stdout).includes(n)),
+          sessionIndex: NAMES.filter((n) => dec(s.stdout).includes(n)),
+          storeScope: rec && 'storeScope' in rec ? rec['storeScope'] : '<no storeScope on a SessionStart record>',
+        };
+      };
+      const py = probe('py');
+      const nd = probe('node');
+      cases.push(
+        { name: `${id}: ${spelling} — the store the hook injects from, side to side`, kind: 'json', expected: py, actual: nd },
+        ...literalCases(py, nd, `${id}: ${spelling} — injects from the store the server would serve`, { exit: [0, 0], recalled: want, sessionIndex: want, storeScope: scope }),
+      );
+    }
+  }
+
   notes.push(
     'every hook run in this suite asserted that the adapter followed the throwaway HOME ' +
       '(both HOME and USERPROFILE) before a byte it wrote was read; a run that did not stops the suite',

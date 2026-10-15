@@ -118,6 +118,18 @@ Measured on the development machine 2026-08-24, 25 runs each, p50:
 | `bantamkit-mcp --statusline` | **69.4 ms** | one file, bounded at 256 KiB |
 | `bantamkit-mcp --mcp-report` | **88.6 ms** | 22 slug directories, 112 files, 1674 records, plus the event log |
 
+**AMENDED 2026-10-15 (job67, J67-5, #172): the 69.4 ms and 18.1 ms above are not reproduced, and
+the 19 ms gap between the two flags is gone.** Re-measured on an Apple M4 Pro, Darwin 25.6.0,
+Node v25.2.1, 25 cold runs each on a throwaway `HOME` (machine shared with three other job67
+units, load average 5–9): `node -e 0` **21 ms**, `--statusline` **86 → 34 ms** p50 (p95 90 → 36),
+`--mcp-report` **88 → 34 ms** p50 on that empty `HOME` — the 88.6 ms row read the operator's own
+host logs, which no probe here may read, so it is not re-measured on that bed. The cut:
+`bantamkit-mcp` imported the MCP server and SDK before any flag was looked at; both flags now
+return before they are loaded (`docs/hooks.md`, "What one hook call costs", has the method and the
+per-event table). Rerun: `node .shiftwork/notes-job67/J67-5-flag.mjs now runtime-ts/dist/cli.js --statusline`
+(and `--mcp-report`). The argument below does not rest on the timing: what makes source A the
+wrong source for a redraw path is that it is unbounded and bantamkit does not own it.
+
 The 19 ms is the smaller half of the reason. The larger half is that **source A is unbounded
 and bantamkit does not own it**: the host writes it, never rotates it, and it was 1533 records
 when `docs/eventlog.md` was written and 1674 five days later. A redraw path may not have its

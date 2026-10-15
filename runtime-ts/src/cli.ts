@@ -79,8 +79,12 @@ import { buildReport, resolveEventLogPath } from './mcpreport.js';
 import { Memory } from './memory/component.js';
 import { DEFAULT_INDEX_BUDGET } from './memory/store.js';
 import { packFileCount } from './mcp/identity.js';
-import { buildServer } from './mcp/server.js';
-import { RawStdioTransport } from './mcp/transport.js';
+// NOT `./mcp/server.js` NOR `./mcp/transport.js`, ON PURPOSE (job67/#172). Those two pull in the
+// MCP SDK and its schema library, which measured ~50 ms of a ~90 ms cold `--hook` on Node 25
+// (`node -e 0` is ~21 ms; ~38 ms after; docs/hooks.md, "What one hook call costs") — paid on
+// EVERY tool call by a hook that never opens a transport.
+// Only the serving path at the bottom of `main` needs them, and it imports them there. A
+// static import of either here puts that cost back on `--hook` and `--statusline`.
 import {
   ArgumentTypeError,
   ArgvError,
@@ -879,6 +883,11 @@ async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
   const memory = buildMemory(options);
+  // Lazy, and only here: see the note at the imports (job67/#172).
+  const [{ buildServer }, { RawStdioTransport }] = await Promise.all([
+    import('./mcp/server.js'),
+    import('./mcp/transport.js'),
+  ]);
   const wire = new RawStdioTransport();
   const server = buildServer(memory, wire, version());
   await server.connect(wire);

@@ -1803,8 +1803,41 @@ function winningRegistration(run: HookRun, cwd: string): Registration {
 // in `.mcp.json` `env` values before spawning the server. A pin written that way reaches
 // `pinnedStore` unexpanded here, and is refused by it as a relative path — loudly, on the
 // log, never silently as the wrong store. No registration on this machine uses the syntax.
+//
+// AMENDED 2026-10-15 (job67, J67-5, #170): `args: [..., "--store", X]` IS A PIN TOO. The server
+// reads `--store` off its own argv and it OUTRANKS `BANTAMKIT_MEMORY_DIR` there (README,
+// "--store STORE ... outranks BANTAMKIT_MEMORY_DIR"), so a registration pinning that way had
+// the server serving X while this hook walked from cwd — the J50-1 split, through the other
+// spelling. The winning entry's `--store X` / `--store=X` (the LAST one, as argparse keeps the
+// last) is now fed into the same one resolution, ahead of `env`. A relative X is joined to the
+// cwd the registration was looked up for, which is the directory the host launches the server
+// in, so it names the directory the server's `Memory(store=X)` opens. An empty value, or a
+// `--store` with nothing after it, is a command line the server refuses to start on; it pins
+// nothing here, and the `env` rule below decides. Not followed: `--start`, and an abbreviated
+// `--sto X` (argparse would take it; no registration on this machine spells either).
+function storeFromArgs(args: unknown): string | null {
+  if (!Array.isArray(args)) return null;
+  let last = '';
+  for (let i = 0; i < args.length; i += 1) {
+    const a: unknown = args[i];
+    if (a === '--store') {
+      const value: unknown = i + 1 < args.length ? args[i + 1] : null;
+      last = typeof value === 'string' ? value : '';
+    } else if (typeof a === 'string' && a.startsWith('--store=')) {
+      last = a.slice('--store='.length);
+    }
+  }
+  return last === '' ? null : last;
+}
+
 function applyRegistrationStorePin(run: HookRun, cwd: string): void {
   const { entry, scope } = winningRegistration(run, cwd);
+  const pinned = entry ? storeFromArgs(entry['args']) : null;
+  if (pinned !== null) {
+    process.env['BANTAMKIT_MEMORY_DIR'] = path.resolve(cwd, pinned);
+    run.storeScope = scope;
+    return;
+  }
   const env = entry ? entry['env'] : null;
   if (!env || typeof env !== 'object' || Array.isArray(env)) return;
   if (!Object.prototype.hasOwnProperty.call(env, 'BANTAMKIT_MEMORY_DIR')) return;
