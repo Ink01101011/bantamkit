@@ -1443,3 +1443,105 @@ or the graph's own refusal. The file is the user's, so this review did not edit 
 <!-- provenance: value=tests 1394, pass 1347, fail 0, skipped 47; commit=2a77070; command=cd runtime-ts && npm test -->
 <!-- provenance: value=tests 19, pass 19, fail 0; commit=2a77070; command=node --test 'tools/hooks/*.test.mjs' -->
 <!-- provenance: value=All checks passed!; commit=2a77070; command=.venv/bin/ruff check runtime-py tools -->
+
+## Registered 2026-10-15 — the closing review of job66, the remaining-issues sweep (J66-12), branch `fix/job66-remaining`
+
+**Why this section exists.** The unit notes are `.shiftwork/notes-job66/J66-{1..7,12}.md`, force-added
+to the branch. `.shiftwork/` is gitignored, so this section is the copy a clone can rely on. Base `09b2d74`
+(job65's tip), reviewed head `2455ed0`. J66-8..11 (the 0.36.0 enhancements and docs) were dropped from
+this job and are not reviewed here.
+
+**What moved, and what is owed.** `git diff --stat 09b2d74..HEAD -- runtime-py/src runtime-ts/src`
+shows 17 source files changed in both runtimes, so a release is owed. By the user's ruling it is
+**0.35.9**, a separate job after merge. `assets/` is untouched, so no tool description or schema
+moved, and `bantamkit-mcp -h` is byte-identical to `09b2d74` on both runtimes. The served sentences
+and frames that changed are listed in `J66-12.md` section 8.
+
+**Verdicts (the 18-issue 0.35.9 bug set).** FIXED 17 (#124 #139 #140 #143 #144 #145 #146 #147 #148
+#150 #151 #171 #173 #174 #178 #180 #181). NOT FULLY FIXED 1: #118, REOPENED for blocker (dddd). The
+per-issue table, with sha and evidence command, is in `J66-12.md` section 5.
+
+### CLOSED by this job, listed so it is not re-registered
+
+- **(ttt)** CLOSED. All 17 deferred issues were fixed by J66-1..J66-7 and probed by this review.
+  #118 was not among them; it is tracked by (vvv).
+
+### OPEN — left by this job
+
+**(vvv), amended 2026-10-15 by J66-12.** Literal UTF-8 and the file's own indent unit now hold on both
+runtimes for LF and CRLF files (`5b69e56`). The only remainder is (dddd). Close (vvv) when (dddd) closes.
+
+**(dddd) BLOCKER for 0.35.9: a CR-only host file is re-indented differently by the two runtimes (#118).**
+Python's `_detected_indent` reads through universal newlines, while Node's `detectedIndent` splits on `\n`
+only. On a file whose lines end in a bare `\r`, Python keeps 4 spaces and Node writes 2. The written
+bytes differ, and Node loses the file's indent. Probe: `J66-12.md` section 7. Owner: J66-13. The fix
+puts both runtimes on one splitting rule and adds an `install-host-text` seed with per-side literals.
+
+**(eeee) Wire answers that still differ, all pre-existing and unruled (J66-3 Q1, J66-4 Q2-Q5).**
+- A `tools/call` to an UNSERVED tool with a lone surrogate in its arguments: the reference answers
+  `-32600`, the port `Unknown tool:`. Pinned on purpose by `test_memory_strings.py:198`
+  (checkpoint question d).
+- A notification with a bad `_meta`: the reference is silent; the port answers `-32600` with
+  `id: null`.
+- `prompts/get` with an unknown name: the reference answers `code 0`, the port `-32602` with
+  `data: null`. `server.test.mjs:1485` pins the port on purpose, so this needs a ruling.
+- The `unknown-methods` ruling says the TS SDK has "no seam" for `data: "<method>"`.
+  `Protocol.fallbackRequestHandler` is public, so the reason is stale. The ruling is still green.
+- `logging/setLevel` and `completion/complete` with bad params: the reference answers `-32602`,
+  the port `-32601`. This was read, not probed.
+
+**(ffff) Node's request guard rides a TS-private SDK name (J66-4 Q6).** `guardRequests` wraps
+`Protocol._requestHandlers`. It throws at startup if the map is gone, and the SDK is pinned exactly
+at 1.31.0. Any SDK bump must rerun `--suite wire`. This is the Node twin of (zzz).
+
+**(gggg) Packaging and install follow-ups.**
+- `runtime-ts/package-lock.json` still resolves five transitive advisories: fast-uri (high),
+  proxy-addr (critical), hono, ip-address and qs, all `fixAvailable`. The lock is not packed, and
+  a fresh consumer install audits clean (J66-1), so only the dev/CI tree is affected. The fix is
+  `npm audit fix` in its own unit.
+- `load_tool` on a malformed file inside `tools/`: Python raises `KeyError`; Node returns
+  `undefined` fields.
+- Python `--update`, `--install*` and a bare server still need the `[mcp]` extra (J66-2 Q2).
+- The quoted update command needs `& ` in PowerShell. sh, bash, zsh and cmd run it as printed
+  (J66-2 Q1).
+
+**(hhhh) Numeric parsing windows (J66-6 Q1-Q3, Q5).**
+- Node's ICU is Unicode 16 (760 Nd digits) and the CPython 3.12 reference is Unicode 15 (680),
+  so 80 digits parse on Node only. CPython 3.14 accepts them too.
+- `PYTHONINTMAXSTRDIGITS` moves the reference's 4300-digit cap; the port hard-codes 4300.
+- `--k` past 2^53 loses precision on Node only.
+- `pyIntOrNull` (the COLUMNS reader) is still ASCII-only.
+
+**(iiii) CLI leftovers (J66-6 Q4, Q6).** `--store` and `--start` beside the other one-shots, and
+`--k`/`--index-budget` beside any one-shot, are accepted and ignored. A stacked refusal names the
+flags in registration order, not argv order.
+
+**(jjjj) Host JSON normalisations, documented and identical on both runtimes (J66-7).** CRLF is written
+as LF, a missing final newline is added, and a user-written `\uXXXX` for a printable character comes
+back as the character. A file whose first indented line is odd (3 spaces) gets that unit throughout.
+
+**(kkkk) Test infrastructure.**
+- `shiftwork.test.mjs` *#116: a lock held by another writer* went red once under three concurrent
+  mutation runs (J66-2). It was green in this review.
+- `runtime-ts/assets` is gitignored and `pretest` only builds, so `dream.test` needs
+  `npm run sync-assets` on a fresh tree. Reported, not re-measured.
+- `test_mcp_request_guard.py` went red once in J66-4's run and was not reproduced.
+
+**(llll) Docs debt, for the 0.36.0 docs job.**
+- `docs/release-npm.md:22` still says the SDK is "pinned exactly 1.30.0".
+- The served `skill_audit`/`token_ledger` descriptions do not name the `bantamkit_degraded` key.
+  docs/status.md, docs/ledger.md and docs/skill-audit.md do name it.
+- The `validate` summary in `docs/conformance.md` lacks section 6 (`asset-load/*`).
+- The Windows host-gone write codes are unmeasured (J66-3 Q2).
+- Python now validates each frame twice, and the cost is unmeasured (J66-3 Q3).
+- `skill_audit` on a `SKILL.md` with a BOM is unprobed (J66-5).
+
+**Gates, re-derived by this review at `2455ed0`, from `npm ci && npm run sync-assets && npm run build`, throwaway `HOME`, clean `TMPDIR`:**
+
+<!-- provenance: value=3470 passed, 58 skipped, 2 deselected, 3 xfailed in 233.65s; commit=2455ed0; command=.venv/bin/python -m pytest runtime-py/tests -q -p no:cacheprovider -->
+<!-- provenance: value=tests 1437, pass 1390, fail 0, skipped 47; commit=2455ed0; command=cd runtime-ts && npm test -->
+<!-- provenance: value=tests 19, pass 19, fail 0; commit=2455ed0; command=node --test tools/hooks/update-signal.test.mjs -->
+<!-- provenance: value=All checks passed!; commit=2455ed0; command=.venv/bin/ruff check runtime-py tools -->
+<!-- provenance: value=14683 cases, 2828 byte-identical, 8377 exact-string, 3478 structural, 171 ruled-different, 0 failures; commit=2455ed0; command=TMPDIR=<cleantmp> node tools/conformance/run.mjs --all -->
+
+**Verdict: BLOCKED** on (dddd) alone. Every other row above is deferred, not blocking.
