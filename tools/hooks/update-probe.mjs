@@ -5,6 +5,19 @@
 //
 //   node tools/hooks/update-probe.mjs
 //
+// IT ASKS THE PACKAGE MANAGERS, NOT A URL (#201, job67 J67-9). Until 0.36.0 this file fetched
+// `registry.npmjs.org/bantamkit-mcp/latest` and `pypi.org/pypi/bantamkit/json` by hard-coded URL,
+// the shape J65-19 (#135) moved `--update` off: behind a mirror the SessionStart line compared
+// against the public index while `--update` compared against the configured one. Now the npm
+// half runs `selfupdate.indexCommand` (`npm view … bantamkit-mcp@latest --json`) through
+// `selfupdate.fetchIndex` and parses it with `latestFromIndexPayload`, imported from the built
+// `runtime-ts/dist/selfupdate.js`; the PyPI half runs the checkout's `.venv` interpreter on
+// `bantamkit.selfupdate`'s own `index_command()` / `fetch_index` / `latest_from_index_payload`
+// (`pip install --dry-run … --report -`). No third spelling of either question exists here, so
+// `npm_config_registry`, `.npmrc`, `PIP_INDEX_URL`, `pip.conf` and the proxies reach the record
+// exactly as they reach `--update`. An unbuilt `dist/` writes nothing; a missing `.venv` leaves
+// the `pypi` key as found (a failing manager).
+//
 // WHY THIS IS A SEPARATE PROCESS AND NOT A FUNCTION. Measured 2026-09-19 on this machine
 // (`docs/superpowers/specs/2026-09-19-stale-version-signal-design.md`): a cold stdio boot of
 // the MCP server is 0.09 s, one registry GET is 0.14-0.46 s on a good network, and 10.0 s
@@ -71,18 +84,19 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // --- the two registries -----------------------------------------------------------------
-// The npm URL and JSON path are `selfupdate.ts`'s (`INDEX_URL`, top-level `version`); the PyPI
-// URL and JSON path are `selfupdate.py`'s (`INDEX_URL`, `info.version`). They are spelled here
-// rather than imported because THIS program is the only thing in the repo that asks BOTH — the
-// Node runtime knows only npm and the Python runtime knows only PyPI, by construction.
+// Each half is asked through the runtime that owns it: npm through `runtime-ts/dist/
+// selfupdate.js`, PyPI through `runtime-py`'s `bantamkit.selfupdate` under the checkout's venv.
+// THIS program is still the only thing in the repo that asks BOTH — the Node runtime knows only
+// npm and the Python runtime knows only PyPI, by construction.
 
-/** The npm package. Equal to `npminstall.PACKAGE`, and imported from it below when it loads. */
+/** The npm package. Equal to `npminstall.PACKAGE`. */
 const NPM_PACKAGE = 'bantamkit-mcp';
 
-/** The PyPI distribution. `runtime-py/src/bantamkit/selfupdate.py:75` — `DISTRIBUTION`. */
+/** The PyPI distribution. `runtime-py/src/bantamkit/selfupdate.py` — `DISTRIBUTION`. */
 const PYPI_DISTRIBUTION = 'bantamkit';
 
 /**
@@ -91,11 +105,6 @@ const PYPI_DISTRIBUTION = 'bantamkit';
  */
 const NPM_KEY = 'npm';
 const PYPI_KEY = 'pypi';
-
-const NPM_URL = process.env.BANTAMKIT_UPDATE_NPM_URL
-  || `https://registry.npmjs.org/${NPM_PACKAGE}/latest`;
-const PYPI_URL = process.env.BANTAMKIT_UPDATE_PYPI_URL
-  || `https://pypi.org/pypi/${PYPI_DISTRIBUTION}/json`;
 
 /**
  * 10 s per registry, matching `selfupdate.DEFAULT_TIMEOUT_SECONDS` on both sides. Nothing waits
@@ -107,6 +116,12 @@ const PYPI_URL = process.env.BANTAMKIT_UPDATE_PYPI_URL
  * test can reach, and a failure path nothing runs is a failure path nobody has seen work.
  */
 const TIMEOUT_MS = Number(process.env.BANTAMKIT_UPDATE_TIMEOUT_MS) || 10_000;
+
+/**
+ * Past `TIMEOUT_MS`, how long the Python process gets to report pip's own timeout before it is
+ * killed. `fetch_index` kills pip at the bound; this covers the interpreter's start around it.
+ */
+const PYTHON_GRACE_MS = 2_000;
 
 /**
  * The same shape check both readers apply to `latest` (`updatecheck.py:_VERSION`,
@@ -132,77 +147,118 @@ function stamp() {
 }
 
 /**
- * `{recordPath, loadRecord, SOURCE_RECORD}` from the built Node runtime, or `null`.
+ * `{updatecheck, selfupdate, npminstall}` from the built Node runtime, or `null`.
  *
  * IMPORTED RATHER THAN RESPELLED. `recordPath()` is where `<homedir>/.bantamkit/
- * update-check.json` is defined; a second spelling here would be a second place for the writer
- * and the readers to disagree about which file this feature lives in. The repo's own `dist/` is
- * the one the hook beside this file already loads its memory component from.
+ * update-check.json` is defined, and `indexCommand` / `fetchIndex` / `latestFromIndexPayload`
+ * are what `--update` asks npm with; a second spelling here would be a second place for the
+ * writer and the readers to disagree. The repo's own `dist/` is the one the hook beside this
+ * file already loads its memory component from.
  *
  * An unbuilt `dist/` means this program does nothing, silently — the same answer it gives for a
  * missing `.bantamkit`, and the hook that spawns it already requires that build.
  */
-async function reader() {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const dist = path.resolve(here, '..', '..', 'runtime-ts', 'dist');
+async function runtime() {
+  const dist = path.join(REPO, 'runtime-ts', 'dist');
   try {
     // `pathToFileURL`, not a `file://` template: a repo checked out under a path with a space
     // or a `#` in it is the normal case on macOS, and a raw string import would truncate at it.
-    const mod = await import(pathToFileURL(path.join(dist, 'updatecheck.js')).href);
-    if (typeof mod.recordPath !== 'function' || typeof mod.loadRecord !== 'function') return null;
-    return mod;
+    const load = (name) => import(pathToFileURL(path.join(dist, name)).href);
+    const [updatecheck, selfupdate, npminstall] = await Promise.all([
+      load('updatecheck.js'), load('selfupdate.js'), load('npminstall.js'),
+    ]);
+    if (typeof updatecheck.recordPath !== 'function' || typeof updatecheck.loadRecord !== 'function') return null;
+    for (const name of ['indexCommand', 'fetchIndex', 'latestFromIndexPayload', 'installEnvironment']) {
+      if (typeof selfupdate[name] !== 'function') return null;
+    }
+    if (typeof npminstall.keptCli !== 'function') return null;
+    return { updatecheck, selfupdate, npminstall };
   } catch {
     return null;
   }
 }
 
-/**
- * The version one registry serves, or `null`. Reaches the network; throws for nothing.
- *
- * `pick` is the JSON path, passed in rather than branched on, because the two registries differ
- * in EXACTLY that and nothing else: npm's `/latest` document carries `version` at the top level
- * and PyPI's carries it at `info.version`.
- */
-async function ask(url, pick) {
-  let text;
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json', 'User-Agent': `${NPM_PACKAGE}/update-probe` },
-      signal: AbortSignal.timeout(Math.max(1, Math.round(TIMEOUT_MS))),
-    });
-    if (!response.ok) return null;
-    text = new TextDecoder('utf-8').decode(await response.arrayBuffer());
-  } catch {
-    // A timeout, a refused connection, a DNS failure, a captive portal serving HTML: every one
-    // of them is the same answer here — this registry did not tell us anything.
-    return null;
-  }
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const raw = pick(payload);
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/** A version string the readers accept, or `null`. */
+function accepted(raw) {
   if (typeof raw !== 'string') return null;
   const version = raw.trim();
   return VERSION.test(version) ? version : null;
 }
 
-/** npm's `/latest` manifest: `version` at the top level. Measured 2026-09-11, 26 keys. */
-const npmVersion = (payload) => (payload && typeof payload === 'object' && !Array.isArray(payload)
-  ? payload.version
-  : undefined);
+/**
+ * The checkout's venv interpreter, or `null`. The PyPI question is `bantamkit.selfupdate`'s and
+ * is asked by the interpreter that would install, as `index_command()` says (`sys.executable`).
+ */
+function venvPython() {
+  const candidates = process.platform === 'win32'
+    ? [path.join(REPO, '.venv', 'Scripts', 'python.exe')]
+    : [path.join(REPO, '.venv', 'bin', 'python')];
+  return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
 
-/** PyPI's project JSON: `info.version`. */
-const pypiVersion = (payload) => (payload && typeof payload === 'object' && !Array.isArray(payload)
-  && payload.info && typeof payload.info === 'object' && !Array.isArray(payload.info)
-  ? payload.info.version
-  : undefined);
+/**
+ * What the Python runtime's `--update` would compare against, or `null`. Throws for nothing.
+ *
+ * `index_command()`, `fetch_index()` and `latest_from_index_payload()` are run, not copied, so
+ * the argv (`-m pip install --dry-run … --report - bantamkit`), the deadline and the JSON path
+ * (`install[0].metadata.version`) are the reference's own. Asynchronous, so it runs while the
+ * npm half (synchronous, `spawnSync` inside `fetchIndex`) is asked.
+ */
+function askPip() {
+  const python = venvPython();
+  if (python === null) return Promise.resolve(null);
+  const code = [
+    'import sys',
+    'from bantamkit import selfupdate as s',
+    'sys.stdout.write(s.latest_from_index_payload(s.fetch_index(s.index_command(), float(sys.argv[1]))))',
+  ].join('\n');
+  return new Promise((resolve) => {
+    let out = '';
+    let child;
+    try {
+      child = spawn(python, ['-c', code, String(TIMEOUT_MS / 1000)], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: TIMEOUT_MS + PYTHON_GRACE_MS,
+        windowsHide: true,
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('error', () => resolve(null));
+    child.on('close', (status) => resolve(status === 0 ? accepted(out) : null));
+  });
+}
+
+/**
+ * What the Node runtime's `--update` would compare against, or `null`. Throws for nothing.
+ *
+ * The environment is the KEPT install's (`~/.bantamkit/mcp`), because that is the install the
+ * SessionStart line names and whose `cli.js --update` it tells the operator to run: npm reads
+ * the project `.npmrc` relative to the prefix, so asking from anywhere else could read another
+ * `registry=`. Without a kept install `installEnvironment` answers `--global`, as it would for
+ * that `cli.js`.
+ */
+async function askNpm({ selfupdate, npminstall }) {
+  try {
+    const environment = selfupdate.installEnvironment(npminstall.keptCli());
+    const body = await selfupdate.fetchIndex(selfupdate.indexCommand(environment), TIMEOUT_MS / 1000);
+    return accepted(selfupdate.latestFromIndexPayload(body));
+  } catch {
+    // A timeout, a refused registry, no npm, a captive portal's HTML: every one of them is the
+    // same answer here — this registry did not tell us anything.
+    return null;
+  }
+}
 
 async function main() {
-  const updatecheck = await reader();
-  if (updatecheck === null) return;
+  const rt = await runtime();
+  if (rt === null) return;
+  const { updatecheck } = rt;
 
   const file = updatecheck.recordPath();
   const directory = path.dirname(file);
@@ -213,13 +269,13 @@ async function main() {
     return;
   }
 
-  // BOTH GETS AT ONCE. They are two independent requests to two hosts, and a detached child
-  // that takes 20 s instead of 10 on a captive network is 10 s of a process nobody is waiting
-  // for — but it is also 10 s longer that a laptop lid can close on it half-done.
-  const [npm, pypi] = await Promise.all([
-    ask(NPM_URL, npmVersion),
-    ask(PYPI_URL, pypiVersion),
-  ]);
+  // BOTH QUESTIONS AT ONCE. They are two independent requests to two hosts, and a detached
+  // child that takes 20 s instead of 10 on a captive network is 10 s of a process nobody is
+  // waiting for — but it is also 10 s longer that a laptop lid can close on it half-done. pip
+  // is spawned first and runs on its own while `fetchIndex` blocks this thread on npm.
+  const pending = askPip();
+  const npm = await askNpm(rt);
+  const pypi = await pending;
   if (npm === null && pypi === null) return;   // nothing learned: the old record stands
 
   const loaded = updatecheck.loadRecord(file);
@@ -260,7 +316,9 @@ async function main() {
 // hook that spawned this passed `stdio: 'ignore'` and read neither, and an operator running it
 // by hand learns what happened by looking at the record, which is the only thing it produces.
 //
-// `process.exit` RATHER THAN FALLING OFF THE END, and that is measured, not tidiness. An
+// `process.exit` RATHER THAN FALLING OFF THE END, and that is measured, not tidiness. (The
+// measurement below is of the old `fetch`; since #201 the network is in child processes with
+// their own deadlines, and the exit still guarantees nothing here outlives the write.) An
 // aborted `fetch` rejects on time but does NOT release undici's connection attempt: against
 // `192.0.2.1:8080` (RFC 5737, a connect that hangs) the promise settled at 1001 ms and the
 // process stayed alive for 10.54 s waiting on the pool's own connect timeout. Everything this

@@ -717,7 +717,12 @@ top of every session, for a fact that is not urgent.
 
 **The writer is a grandchild nobody waits for.** `tools/hooks/update-probe.mjs` asks both
 registries (npm *and* PyPI — it is the only thing in the repo that asks both, because each
-runtime knows only its own) and writes the answer through a temp file and a rename. The hook
+runtime knows only its own) and writes the answer through a temp file and a rename. It asks the
+way `--update` does, not by URL (#201, job67): `npm view … bantamkit-mcp@latest --json` through
+the built port's `selfupdate.indexCommand` / `fetchIndex`, and pip's `install --dry-run … --report
+-` through the checkout's `.venv` running `bantamkit.selfupdate.index_command()`, so
+`npm_config_registry`, `.npmrc`, `PIP_INDEX_URL`, `pip.conf` and proxies reach both. No built
+`dist/` writes nothing; no `.venv` leaves the `pypi` key as found. The hook
 forks it with `detached: true`, `stdio: 'ignore'`, and `.unref()`, then returns; **each third
 of that is load-bearing** — `detached` keeps the host from reaping it, `stdio: 'ignore'` means
 nothing it prints can reach the user's screen or hold a pipe open, `unref()` lets this process
