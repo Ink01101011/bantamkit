@@ -208,3 +208,37 @@ test('a CRLF asset reads back LF, the way Python text mode does', () => {
     assert.equal(real.loadSkill('crlf'), 'one\ntwo\nthree\nfour\n');
   });
 });
+
+test('job66/#145: every loader refuses a name that is not bare, before touching the disk', () => {
+  // A pack with a real `x` of each kind, and `outside.*` in the pack root (one `..` up from
+  // each kind's directory) and beside the pack (two up). Before #145 `loadSchema('../outside')`
+  // parsed the pack-root file and `loadTool('../schemas/x')` returned a Tool of three
+  // `undefined`s. The sentence is the reference's (`assets.py::_asset_path`), compared across
+  // runtimes by `node tools/conformance/run.mjs --suite validate` (`asset-load/*`).
+  const parent = scratch('bare');
+  const root = join(parent, 'pack');
+  for (const d of ['tools', 'schemas', 'skills']) mkdirSync(join(root, d), { recursive: true });
+  writeFileSync(join(root, 'tools', 'x.json'), '{"name": "x", "description": "d", "parameters": {}}');
+  writeFileSync(join(root, 'schemas', 'x.json'), '{"type": "object"}');
+  writeFileSync(join(root, 'skills', 'x.md'), 'x\n');
+  for (const dir of [root, parent]) {
+    writeFileSync(join(dir, 'outside.json'), '{"leaked": true}');
+    writeFileSync(join(dir, 'outside.md'), 'secret notes\n');
+  }
+  const loaders = { tool: real.loadTool, schema: real.loadSchema, skill: real.loadSkill };
+  withPack(root, () => {
+    for (const [kind, load] of Object.entries(loaders)) {
+      assert.doesNotThrow(() => load('x'), `${kind}('x') is a bare name and must still load`);
+      for (const name of ['../outside', '../../outside', '..\\outside', 'a/b', '..', 'C:outside', 'x\0']) {
+        assert.throws(() => load(name), {
+          name: 'AssetNotFound',
+          message: `${kind} asset name is not a bare name: ${name}`,
+        });
+      }
+    }
+    assert.throws(() => real.loadToolAsset('../schemas/x'), {
+      name: 'AssetNotFound',
+      message: 'tool asset name is not a bare name: ../schemas/x',
+    });
+  });
+});

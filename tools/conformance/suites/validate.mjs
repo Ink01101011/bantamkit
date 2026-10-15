@@ -19,12 +19,18 @@
  *      disagree about when to use scientific notation and how wide an exponent is.
  *   5. `load_contract` against `yaml.safe_load` of the SHIPPED `assets/contracts/default.yaml`,
  *      key for key. That is the gate on reading a YAML file with no YAML engine.
+ *   6. job66/#145: `load_tool`/`load_schema`/`load_skill` against `loadTool`/`loadSchema`/
+ *      `loadSkill` over a pack built here, one name per case — which names are refused and
+ *      in what sentence. A name that is not bare (`..`, `/`, `\`, a drive colon, a NUL)
+ *      must be refused on BOTH sides, so beside the differential each side is pinned to a
+ *      literal verdict list: the differential alone stays green if the check is removed
+ *      from both runtimes at once.
  *
  * The schemas travel as raw JSON TEXT and each side runs its own decoder over the same
  * bytes. Handing over a parsed object would erase the int/float distinction that
  * `{instance!r}` prints, which is one of the things under test.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -1332,6 +1338,88 @@ export async function run(ctx) {
     },
   });
   notes.push(`#131 #132 #152 #153: ${j7.length} schema_error cases, ${Object.keys(J7_LITERALS).length + 2} pinned as literals on each side`);
+
+  // ------------------------------------------------- 6. the asset loaders take a BARE name (#145)
+  //
+  // A pack under the scratch dir with one asset of each kind named `x`, and an `outside.*`
+  // pair one level ABOVE each kind's directory (in the pack root) and two levels above (beside
+  // the pack). Before #145, `../outside` loaded the pack-root file and `../../outside` the one
+  // beside the pack, on both runtimes. `nope` is the not-found arm, whose sentence names the
+  // path and must stay exactly as it was.
+  const assets = await import(nodeUrl('assets'));
+  const packParent = join(ctx.scratch, 'validate-asset-pack');
+  const pack = join(packParent, 'pack');
+  for (const d of ['tools', 'schemas', 'skills']) mkdirSync(join(pack, d), { recursive: true });
+  writeFileSync(join(pack, 'tools', 'x.json'), '{"name": "x", "description": "d", "parameters": {}}');
+  writeFileSync(join(pack, 'schemas', 'x.json'), '{"type": "object"}');
+  writeFileSync(join(pack, 'skills', 'x.md'), 'skill x\n');
+  for (const dir of [pack, packParent]) {
+    writeFileSync(join(dir, 'outside.json'), '{"leaked": true}');
+    writeFileSync(join(dir, 'outside.md'), 'secret notes\n');
+  }
+  const ASSET_NAMES = [
+    ['x', 'ok'],
+    ['nope', 'missing'],
+    ['../outside', 'refused'],
+    ['../../outside', 'refused'],
+    ['..\\outside', 'refused'],
+    ['a/b', 'refused'],
+    ['..', 'refused'],
+    ['C:outside', 'refused'],
+    ['x\0', 'refused'],
+  ];
+  const ASSET_CASES = [];
+  for (const loader of ['tool', 'schema', 'skill']) {
+    for (const [assetName, verdict] of ASSET_NAMES) ASSET_CASES.push({ loader, name: assetName, verdict });
+  }
+  ASSET_CASES.push({ loader: 'tool', name: '../schemas/x', verdict: 'refused' });
+  const pyAssets = ctx.runPython(REF, {
+    op: 'asset_load',
+    root: pack,
+    cases: ASSET_CASES.map((c) => ({ loader: c.loader, name: b64(c.name) })),
+  }).results;
+  const nodeLoaders = { tool: assets.loadTool, schema: assets.loadSchema, skill: assets.loadSkill };
+  const savedAssets = process.env.BANTAMKIT_ASSETS;
+  process.env.BANTAMKIT_ASSETS = pack;
+  let nodeAssets;
+  try {
+    nodeAssets = ASSET_CASES.map((c) => {
+      try {
+        nodeLoaders[c.loader](c.name);
+        return 'ok';
+      } catch (e) {
+        return `${e.constructor.name}: ${e.message}`;
+      }
+    });
+  } finally {
+    if (savedAssets === undefined) delete process.env.BANTAMKIT_ASSETS;
+    else process.env.BANTAMKIT_ASSETS = savedAssets;
+  }
+  // `answer` would read a bare string as base64, so the reference's plain "ok" is taken first.
+  const pyAssetAnswers = pyAssets.map((v) => (v === 'ok' ? 'ok' : answer(v)));
+  const label = (c) => `${c.loader}(${JSON.stringify(c.name)})`;
+  ASSET_CASES.forEach((c, i) => {
+    cases.push({
+      name: `asset-load/${label(c)}: verdict and sentence`,
+      kind: 'string',
+      expected: pyAssetAnswers[i],
+      actual: nodeAssets[i],
+    });
+  });
+  // The per-side literal: every non-bare name is refused with THE sentence, on each side.
+  const assetRefusal = (c) => `AssetNotFound: ${c.loader} asset name is not a bare name: ${c.name}`;
+  const literal = ASSET_CASES.map((c) => (c.verdict === 'refused' ? assetRefusal(c) : c.verdict === 'ok' ? 'ok' : 'missing'));
+  const shape = (a, c) => (c.verdict === 'missing' && a.startsWith(`AssetNotFound: ${c.loader} asset not found: `) ? 'missing' : a);
+  cases.push({
+    name: `asset-load/literal: ${ASSET_CASES.filter((c) => c.verdict === 'refused').length} non-bare names refused in one sentence, on each side`,
+    kind: 'json',
+    expected: { python: literal, node: literal },
+    actual: {
+      python: ASSET_CASES.map((c, i) => shape(pyAssetAnswers[i], c)),
+      node: ASSET_CASES.map((c, i) => shape(nodeAssets[i], c)),
+    },
+  });
+  notes.push(`#145: ${ASSET_CASES.length} asset-loader names, each compared and pinned as a literal on each side`);
 
   return { cases, notes };
 }

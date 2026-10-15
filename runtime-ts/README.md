@@ -445,7 +445,16 @@ all ship inside `dist/` and none of them is reachable through an import — they
 running `bantamkit-mcp` and `bantamkit-memory`. Importing the package starts no server and
 opens no transport. The vendored `assets/` is not importable either, but it is *readable*:
 `assetsRoot()` resolves to the `assets/` directory inside the installed package, which is how
-`loadTool('memory_save')` answers from a consumer that never unpacked anything itself.
+`loadTool('memory_save')` answers from a consumer that never unpacked anything itself. The
+loaders take a **bare** asset name: one with `/`, `\`, `..`, a drive colon or a NUL in it is
+refused with `AssetNotFound: <kind> asset name is not a bare name: <name>` before the disk is
+touched, so a name taken from user input cannot read a file outside the pack (the Python
+loaders refuse it in the same sentence).
+
+**The types need no `@types/node`.** The package declares no dependency on it, so nothing
+reachable from `index.d.ts` names a Node-only global: a `strict` consumer with `types: []`
+and `skipLibCheck: false` type-checks `import ... from 'bantamkit-mcp'` clean.
+`encodeRecord` is declared to return `Uint8Array` (the value is a `Buffer`, a subclass of it).
 
 **What the one entry point exports**, grouped by the module each name comes from:
 
@@ -530,7 +539,9 @@ node tools/conformance/npx-cold-start.mjs --offline    # + the no-network arms (
 The conformance harness shells out to a CPython for the reference side. That is a
 **development-time** dependency of the test tooling; nothing under `tools/` ships, and
 `files: ["dist", "assets"]` is the whole published surface. Runtime dependencies: exactly one,
-`@modelcontextprotocol/sdk`, pinned to `1.30.0`.
+`@modelcontextprotocol/sdk`, pinned to `1.31.0`, the first release outside advisory
+GHSA-6qxp-vccf-f47h (`>= 1.12.0, < 1.31.0`, the SDK's OAuth client, which this package never
+imports).
 
 ## Measurements and history
 
