@@ -389,3 +389,33 @@ test('todayLocal is LOCAL, and toISOString().slice(0,10) is not the same thing',
   // A year before 1000 must still be four digits: Python's isoformat zero-pads.
   assert.equal(todayLocal(new Date(Date.UTC(7, 0, 2, 12))).length, 10);
 });
+
+// ------------------------------------------------- #120: YAML a human writes and PyYAML reads
+
+test('#120: a block scalar is read the way PyYAML reads it, not as the text "| ..."', () => {
+  const p = (v) => parseFactText(`---\nname: n\ndescription: ${v}\ntype: project\n---\n\nb\n`).meta.description;
+  // Each expected value was measured against yaml.safe_load (PyYAML 6.0.3) on the same text.
+  assert.equal(p('|\n  hand edited\n  block'), 'hand edited\nblock\n');
+  assert.equal(p('>\n  folded\n  text'), 'folded text\n');
+  assert.equal(p('|-\n  a\n  b'), 'a\nb');
+  assert.equal(p('|+\n  a\n\n'), 'a\n\n\n');
+  assert.equal(p('|2\n   a\n  b'), ' a\nb\n');
+  assert.equal(p('>\n  a\n\n  b\n   c\n  d'), 'a\nb\n c\nd\n');
+  assert.equal(p('|'), '');
+});
+
+test('#120: a one-line flow sequence of scalars is a list, as PyYAML reads it', () => {
+  const p = (v) => parseFactText(`---\nname: n\ndescription: d\ntype: project\nlinks: ${v}\n---\n\nb\n`).meta.links;
+  assert.deepEqual(p('[a, b]'), ['a', 'b']);
+  assert.deepEqual(p("[a, 'b c', \"d\",]"), ['a', 'b c', 'd']);
+  assert.deepEqual(p('[ a:b , a#b ] # note'), ['a:b', 'a#b']);
+  assert.deepEqual(p('[]'), []);
+});
+
+test('#120: YAML the codec does not implement raises a named FactParseError, never a guess', () => {
+  const p = (v) => parseFactText(`---\nname: n\ndescription: ${v}\ntype: project\n---\n\nb\n`);
+  for (const v of ['&a x', '*a', '!!str 5', '!', '%x', '@x', '`x', '{a: 1}', '}', ']', ', x', '? x', '- x',
+    'a: b', 'x\t', '[a, [b]]', '[a: b]', '[a,\n  b]', '|0\n  a', '|x\n  a', '|\n  a\n x']) {
+    assert.throws(() => p(v), FactParseError, JSON.stringify(v));
+  }
+});

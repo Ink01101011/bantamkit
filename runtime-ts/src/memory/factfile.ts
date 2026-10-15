@@ -153,8 +153,16 @@ export function pySplit(text: string, sep: string, maxsplit: number): string[] {
  * RULING — SCOPE. This is not a YAML parser and does not try to be. It accepts a
  * root-level block mapping of plain keys whose values are plain, single-quoted or
  * double-quoted scalars (wrapped or not), `[]`, or a block sequence of such scalars at
- * column 0 — which is exactly what PyYAML emits for a `Fact` at these dump settings.
- * Anything else RAISES instead of guessing. The reason is the failure mode this whole unit
+ * column 0 — which is exactly what PyYAML emits for a `Fact` at these dump settings —
+ * plus, since #120, the two shapes a human writes by hand that the emitter never does:
+ * block scalars (`|`, `>`, every chomping and indentation indicator) and a one-line flow
+ * sequence of scalars (`[a, 'b c', 2]`), each read exactly as PyYAML reads it, and blank
+ * and comment lines between entries. Anything else RAISES instead of guessing: every
+ * indicator in `REFUSED_INDICATORS`, a nested or multi-line flow sequence, a tab in a
+ * plain scalar. Before #120 most of those fell through to the plain-scalar scanner, so
+ * `description: |` became the text `| hand edited block` and the first recall stamped
+ * that guess back to disk; the conformance suite now generates 1500 frontmatters a run and
+ * requires the port never to answer one differently from PyYAML. The reason is the failure mode this whole unit
  * exists for: a parser that silently produces something plausible for input it does not
  * understand turns a hand-edited fact file into a wrong `Fact`, and nothing anywhere
  * reports it. A raise is visible; `_facts` already has a sentence for it.
@@ -171,6 +179,14 @@ export function parseFrontmatter(front: string): FactMeta {
   const meta: FactMeta = {};
   let pos = 0;
   while (pos < front.length) {
+    // A blank line, or a line holding only a comment, is not an entry to PyYAML's scanner
+    // (`scan_to_next_token` steps over both), so it is not one here either. A block scalar's
+    // trailing `#` line at column 0 is the shape that needs this (#120).
+    const blank = /^ *(?:#[^\n]*)?(?:\n|$)/.exec(front.slice(pos));
+    if (blank && blank[0].length > 0) {
+      pos += blank[0].length;
+      continue;
+    }
     const key = /^([A-Za-z_][A-Za-z0-9_-]*):/.exec(front.slice(pos, front.indexOf('\n', pos) + 1 || undefined));
     if (!key) {
       throw new FactParseError(`frontmatter line is not a plain "key:" mapping entry: ${line(front, pos)}`);
@@ -187,6 +203,7 @@ export function parseFrontmatter(front: string): FactMeta {
     } else if (front[pos] === ' ') {
       pos += 1;
       [value, pos] = scanNode(front, pos);
+      pos = skipTrailingComment(front, pos);
       if (pos < front.length && front[pos] !== '\n') {
         throw new FactParseError(`trailing content after the value of "${key[1]}": ${line(front, pos)}`);
       }
@@ -204,21 +221,305 @@ function line(text: string, pos: number): string {
   return JSON.stringify(text.slice(pos, end === -1 ? undefined : end));
 }
 
+/**
+ * What a YAML indicator this codec does NOT implement means to PyYAML, keyed by the
+ * character that starts the value. RULING (#120): each of these RAISES a named
+ * `FactParseError` instead of falling through to `scanPlain`. Before #120 they fell through,
+ * so `description: &a x` was read as the string `&a x` where Python reads `x`, and the first
+ * recall stamped that guess back to disk quoted — the hand-edited YAML was gone for good.
+ * A refusal names the file and changes nothing; a guess rewrites it.
+ *
+ * `|` and `>` are not here: block scalars ARE implemented (`scanBlockScalar`). Nor is `[`:
+ * a one-line flow sequence of scalars is implemented (`scanFlowSequence`). Nor is `#`: a
+ * comment where the value should be leaves the value null, which is what PyYAML reads.
+ */
+const REFUSED_INDICATORS: Record<string, string> = {
+  '&': 'an anchor',
+  '*': 'an alias',
+  '!': 'a tag',
+  '%': 'a directive',
+  '@': 'a reserved indicator',
+  '`': 'a reserved indicator',
+  '{': 'a flow mapping',
+  '}': 'a flow-mapping end outside a flow collection',
+  ']': 'a flow-sequence end outside a flow collection',
+  ',': 'a flow-entry separator outside a flow collection',
+  '\t': 'a tab, which cannot start a YAML token',
+};
+
+/** `'\0 \t\r\n\x85\u2028\u2029'` in PyYAML's scanner: end of input, whitespace or a break. */
+function blankOrEnd(ch: string | undefined): boolean {
+  return ch === undefined || ' \t\r\n\x85\u2028\u2029'.includes(ch);
+}
+
+function refuseIndicator(front: string, pos: number, what: string): never {
+  throw new FactParseError(
+    `${JSON.stringify(front[pos])} starts ${what} — YAML this codec does not implement, ` +
+      `so it is refused rather than read as plain text: ${line(front, pos)}`,
+  );
+}
+
+/**
+ * After a value: spaces, then an optional comment to end of line. PyYAML's
+ * `scan_to_next_token` skips exactly that (spaces, never tabs), so `'x' # note` and
+ * `[a]#note` are the value and nothing more. A plain scalar has already eaten its own
+ * ` #` comment, and a block scalar ends at a line break, so this is a no-op for both.
+ */
+function skipTrailingComment(front: string, pos: number): number {
+  let i = pos;
+  while (front[i] === ' ') i += 1;
+  if (front[i] === '#') {
+    while (i < front.length && front[i] !== '\n') i += 1;
+    return i;
+  }
+  return i === front.length || front[i] === '\n' ? i : pos;
+}
+
 /** A single-line-or-wrapped scalar starting at `pos`. Returns the value and the index after it. */
 function scanNode(front: string, pos: number): [FactValue | FactValue[], number] {
+  // PyYAML steps over SPACES before a token (never tabs), so `description:   'x'` is `x`
+  // and not the plain text `'x'` it used to be here.
+  while (front[pos] === ' ') pos += 1;
   const ch = front[pos];
+  if (ch === undefined || ch === '\n') return [null, pos]; // `key:   ` is null, as `key:` is
+  if (ch === '#') {
+    // A comment where the value should be: the value is empty, so null.
+    const eol = front.indexOf('\n', pos);
+    return [null, eol === -1 ? front.length : eol];
+  }
   if (ch === "'") return scanQuoted(front, pos, "'");
   if (ch === '"') return scanQuoted(front, pos, '"');
-  if (ch === '[') {
-    const m = /^\[\s*\]/.exec(front.slice(pos));
-    if (!m) {
-      throw new FactParseError(
-        `only the empty flow sequence "[]" is in this codec's language: ${line(front, pos)}`,
-      );
-    }
-    return [[], pos + m[0].length];
+  if (ch === '[') return scanFlowSequence(front, pos);
+  if (ch === '|' || ch === '>') return scanBlockScalar(front, pos);
+  const refused = REFUSED_INDICATORS[ch];
+  if (refused !== undefined) refuseIndicator(front, pos, refused);
+  if ((ch === '-' || ch === '?' || ch === ':') && blankOrEnd(front[pos + 1])) {
+    refuseIndicator(
+      front,
+      pos,
+      ch === '-' ? 'a sequence entry' : ch === '?' ? 'a mapping key' : 'a mapping value',
+    );
   }
   return scanPlain(front, pos);
+}
+
+/** The column of `pos`: characters since the last `\n`. PyYAML's `self.column`. */
+function column(front: string, pos: number): number {
+  return pos - (front.lastIndexOf('\n', pos - 1) + 1);
+}
+
+/**
+ * A block scalar, `|` (literal) or `>` (folded), with its chomping and indentation
+ * indicators. A port of PyYAML's `scan_block_scalar` and its three helpers, line for line,
+ * including the folding rule PyYAML picked where the spec is ambiguous (a more-indented
+ * line keeps its break). Implemented rather than refused (#120) because it is the shape a
+ * human reaches for when a description runs to two lines, and refusing it bricks the whole
+ * store for Node while Python serves it.
+ *
+ * The value is a mapping value or a column-0 sequence item, so PyYAML's `self.indent` is 0
+ * and `min_indent` is 1 in both places. Returns the value and the index of the `\n` that ends
+ * its last consumed line (or the end of input), the same contract `scanPlain` keeps.
+ *
+ * Line breaks other than `\n` (`\x85`, `\u2028`, `\u2029`, a stray `\r`) are breaks to
+ * PyYAML and not to this port, so a block scalar holding one is refused, not misread.
+ */
+function scanBlockScalar(front: string, pos: number): [string, number] {
+  const folded = front[pos] === '>';
+  const bad = (why: string): FactParseError =>
+    new FactParseError(`while scanning a block scalar, ${why}: ${line(front, pos)}`);
+  const digit = (c: string | undefined): boolean => c !== undefined && c >= '0' && c <= '9';
+  let i = pos + 1;
+
+  // scan_block_scalar_indicators
+  let chomping: boolean | null = null;
+  let increment: number | null = null;
+  if (front[i] === '+' || front[i] === '-') {
+    chomping = front[i] === '+';
+    i += 1;
+    if (digit(front[i])) {
+      increment = Number(front[i]);
+      if (increment === 0) throw bad('expected indentation indicator in the range 1-9, but found 0');
+      i += 1;
+    }
+  } else if (digit(front[i])) {
+    increment = Number(front[i]);
+    if (increment === 0) throw bad('expected indentation indicator in the range 1-9, but found 0');
+    i += 1;
+    if (front[i] === '+' || front[i] === '-') {
+      chomping = front[i] === '+';
+      i += 1;
+    }
+  }
+  if (!(i === front.length || front[i] === ' ' || front[i] === '\n')) {
+    throw bad(`expected chomping or indentation indicators, but found ${JSON.stringify(front[i])}`);
+  }
+
+  // scan_block_scalar_ignored_line
+  while (front[i] === ' ') i += 1;
+  if (front[i] === '#') {
+    while (i < front.length && front[i] !== '\n') {
+      if ('\r\x85\u2028\u2029'.includes(front[i]!)) throw bad('a line break other than \\n');
+      i += 1;
+    }
+  }
+  if (i < front.length && front[i] !== '\n') {
+    throw bad(`expected a comment or a line break, but found ${JSON.stringify(front[i])}`);
+  }
+  if (i < front.length) i += 1;
+
+  // scan_block_scalar_breaks
+  const scanBreaks = (indent: number): string[] => {
+    const chunks: string[] = [];
+    while (column(front, i) < indent && front[i] === ' ') i += 1;
+    while (front[i] === '\n') {
+      chunks.push('\n');
+      i += 1;
+      while (column(front, i) < indent && front[i] === ' ') i += 1;
+    }
+    return chunks;
+  };
+
+  const minIndent = 1;
+  let indent: number;
+  let breaks: string[];
+  if (increment === null) {
+    // scan_block_scalar_indentation
+    breaks = [];
+    let maxIndent = 0;
+    while (front[i] === ' ' || front[i] === '\n') {
+      if (front[i] === '\n') {
+        breaks.push('\n');
+        i += 1;
+      } else {
+        i += 1;
+        maxIndent = Math.max(maxIndent, column(front, i));
+      }
+    }
+    indent = Math.max(minIndent, maxIndent);
+  } else {
+    indent = minIndent + increment - 1;
+    breaks = scanBreaks(indent);
+  }
+
+  const chunks: string[] = [];
+  let lineBreak = '';
+  while (column(front, i) === indent && i < front.length) {
+    chunks.push(...breaks);
+    const leadingNonSpace = front[i] !== ' ' && front[i] !== '\t';
+    const eol = front.indexOf('\n', i);
+    const end = eol === -1 ? front.length : eol;
+    const text = front.slice(i, end);
+    if (/[\r\x85\u2028\u2029]/.test(text)) throw bad('a line break other than \\n');
+    chunks.push(text);
+    i = end;
+    lineBreak = i < front.length ? '\n' : '';
+    if (lineBreak) i += 1;
+    breaks = scanBreaks(indent);
+    if (column(front, i) === indent && i < front.length) {
+      if (folded && lineBreak === '\n' && leadingNonSpace && front[i] !== ' ' && front[i] !== '\t') {
+        if (breaks.length === 0) chunks.push(' ');
+      } else {
+        chunks.push(lineBreak);
+      }
+    } else {
+      break;
+    }
+  }
+  if (chomping !== false) chunks.push(lineBreak);
+  if (chomping === true) chunks.push(...breaks);
+
+  // What follows must be the next entry at column 0 (or nothing). A less-indented line that
+  // is not at column 0 is a parser error to PyYAML (`|\n  a\n x` is measured), so it is one
+  // here; nothing after the scalar is read as part of it. The one exception is a comment,
+  // which PyYAML's `scan_to_next_token` steps over at any column.
+  if (i < front.length && column(front, i) !== 0 && front[i] === '#') {
+    const eol = front.indexOf('\n', i);
+    return [chunks.join(''), eol === -1 ? front.length : eol];
+  }
+  if (i < front.length && column(front, i) !== 0) {
+    throw new FactParseError(`content after a block scalar is not at column 0: ${line(front, i)}`);
+  }
+  return [chunks.join(''), i === front.length ? i : i - 1];
+}
+
+/**
+ * A flow sequence on ONE line, of plain, single- or double-quoted scalars: `[a, 'b c', 2]`.
+ * A port of how PyYAML's scanner reads a plain scalar at `flow_level > 0` (it ends at `,`,
+ * `?`, `[`, `]`, `{`, `}`, at `: ` and at ` #`), with each item resolved exactly as a
+ * mapping value is. A trailing comma is allowed, as PyYAML allows it.
+ *
+ * RULING (#120): the empty `[]` was all this accepted before, and `links: [a, b]` made Node
+ * refuse the whole store while Python served it. What is still REFUSED, each a named
+ * `FactParseError`: a nested collection (`[a, [b]]`, `[a, {b: c}]`), a single-pair mapping
+ * (`[a: b]`, `[? x]`), and a sequence that continues onto the next line. Python reads all
+ * three; registered in `docs/porting.md` with the other scanner shapes.
+ */
+function scanFlowSequence(front: string, pos: number): [FactValue[], number] {
+  const eol = front.indexOf('\n', pos);
+  const end = eol === -1 ? front.length : eol;
+  const refuse = (why: string): never => {
+    throw new FactParseError(`a flow sequence ${why} is outside this codec's language: ${line(front, pos)}`);
+  };
+  const items: FactValue[] = [];
+  let i = pos + 1;
+  const skipSpaces = (): void => {
+    while (front[i] === ' ') i += 1;
+  };
+  skipSpaces();
+  if (front[i] === ']') return [items, i + 1];
+  for (;;) {
+    if (i >= end) refuse('that continues past its line');
+    const ch = front[i]!;
+    if (ch === "'" || ch === '"') {
+      const [value, next] = scanQuoted(front, i, ch);
+      if (next > end) refuse('whose quoted item spans lines');
+      items.push(value);
+      i = next;
+    } else if (ch === '[' || ch === '{') {
+      refuse('holding a nested collection');
+    } else if (ch === '?' || ch === ':') {
+      refuse('holding a mapping entry');
+    } else if (ch === '-' && blankOrEnd(front[i + 1])) {
+      refuse('holding a block sequence entry');
+    } else if (REFUSED_INDICATORS[ch] !== undefined || ch === '#' || ch === '|' || ch === '>') {
+      refuseIndicator(front, i, ch === '#' ? 'a comment' : ch === '|' || ch === '>' ? 'a block scalar' : REFUSED_INDICATORS[ch]!);
+    } else {
+      // scan_plain at flow_level > 0, confined to this line.
+      let text = '';
+      let spaces = '';
+      for (;;) {
+        if (front[i] === '#') break;
+        let length = 0;
+        for (;;) {
+          const c = front[i + length];
+          if (blankOrEnd(c)) break;
+          if (c === ':' && (blankOrEnd(front[i + length + 1]) || ',[]{}'.includes(front[i + length + 1]!))) break;
+          if (',?[]{}'.includes(c!)) break;
+          length += 1;
+        }
+        if (length === 0) break;
+        text += spaces + front.slice(i, i + length);
+        i += length;
+        const from = i;
+        while (front[i] === ' ') i += 1;
+        spaces = front.slice(from, i);
+        if (i >= end) refuse('that continues past its line');
+        if (spaces === '' || front[i] === '#') break;
+      }
+      items.push(constructPlain(text));
+    }
+    skipSpaces();
+    if (front[i] === ']') return [items, i + 1];
+    if (front[i] !== ',') {
+      if (front[i] === ':' || front[i] === '?') refuse('holding a mapping entry');
+      if (i >= end) refuse('that continues past its line');
+      refuse(`with ${JSON.stringify(front[i])} where "," or "]" belongs`);
+    }
+    i += 1;
+    skipSpaces();
+    if (front[i] === ']') return [items, i + 1];
+    if (front[i] === ',') refuse('with an empty entry');
+  }
 }
 
 /**
@@ -239,6 +540,12 @@ function scanPlain(front: string, pos: number): [FactValue, number] {
     // Python reads is the point.
     const hash = raw.indexOf(' #');
     const cut = hash === -1 ? raw : raw.slice(0, hash);
+    // A tab is not whitespace to PyYAML's plain-scalar scanner (`scan_plain_spaces` takes
+    // spaces only), and a tab cannot start a token, so `x\t` and `a\tb` are a ScannerError
+    // there. Trimming it here answered a value Python refuses (#120, measured).
+    if (cut.includes('\t')) {
+      throw new FactParseError(`a tab inside a plain scalar is not readable YAML — PyYAML rejects it too: ${line(front, i)}`);
+    }
     const piece = cut.replace(/[ \t]+$/, '').replace(/^[ \t]+/, '');
     if (pieces.length > 0 && piece === '') {
       throw new FactParseError('a blank line inside a plain scalar is outside this codec\'s language');
@@ -257,7 +564,10 @@ function scanPlain(front: string, pos: number): [FactValue, number] {
     i = next;
   }
   const value = pieces.join(' ');
-  if (/(^|[ \t]):([ \t]|$)/.test(value)) {
+  // `:` followed by a blank ends a plain scalar in PyYAML's block context, whatever precedes
+  // it — `a: b` and `a:` are both `mapping values are not allowed here`. The old pattern
+  // demanded a blank BEFORE the colon too, so `a: b` was answered (#120, measured).
+  if (/:([ \t]|$)/.test(value)) {
     throw new FactParseError(
       `a plain scalar containing ": " is not readable YAML — PyYAML rejects it too: ${JSON.stringify(value)}`,
     );
@@ -415,10 +725,11 @@ function scanBlockSequence(front: string, pos: number): [FactValue[], number] {
       throw new FactParseError('a nested sequence item is not in this codec\'s language');
     }
     items.push(value);
-    if (next < front.length && front[next] !== '\n') {
-      throw new FactParseError(`trailing content after a sequence item: ${line(front, next)}`);
+    const after = skipTrailingComment(front, next);
+    if (after < front.length && front[after] !== '\n') {
+      throw new FactParseError(`trailing content after a sequence item: ${line(front, after)}`);
     }
-    i = next + 1;
+    i = after + 1;
   }
   return [items, i];
 }

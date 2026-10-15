@@ -855,10 +855,12 @@ function constructTimestamp(raw: string): PyScalar {
  *     carried as a must-differ case rather than claimed.
  *   - `yaml` (`!`, `&`, `*`) RAISES, and CPython does NOT agree for all three: `k: !` is a
  *     tag PROPERTY on an empty node in the real scanner and answers `None`, while `&` and
- *     `*` are an anchor and an alias and answer with a `ScannerError`. This codec has no
- *     scanner and sees three plain scalars. All three are must-differ cases; `!` is the one
- *     where CPython answers and this port refuses, and it is written down as that rather
- *     than filed with the other two.
+ *     `*` are an anchor and an alias and answer with a `ScannerError`. All three are
+ *     must-differ cases; `!` is the one where CPython answers and this port refuses, and it
+ *     is written down as that rather than filed with the other two. Since #120 the fact
+ *     codec refuses a value STARTING with any of the three before it reaches this function
+ *     (`REFUSED_INDICATORS` in `factfile.ts`), so the raise a store sees is a
+ *     `FactParseError` naming the indicator; this arm still answers for any other caller.
  */
 export function constructPlain(value: string): string | null | PyScalar {
   const tag = resolveImplicitTag(value);
