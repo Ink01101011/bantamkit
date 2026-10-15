@@ -115,6 +115,33 @@ export const UNKNOWN = 'bantamkit Unknown ⚪';
 /** One space, U+00B7, one space. */
 export const SEP = ' · ';
 
+/**
+ * The widest the line may be, in terminal columns (#189).
+ *
+ * Status bars are commonly ~80 columns. Every fixed part, every count (bounded by `WINDOW`)
+ * and every outcome (a closed vocabulary) fits well inside it; the one part that does not
+ * is the tool name, which `TOOL` lets run to 64 characters. When the line would be wider,
+ * `render` shortens the TOOL — never the outcome, the part an operator acts on — and marks
+ * the cut with `ELLIPSIS`. A line that already fits is never touched.
+ */
+export const WIDTH = 80;
+
+/** U+2026, one column: the mark a shortened tool name ends in. */
+export const ELLIPSIS = '\u2026';
+
+/** The three state emoji: East-Asian Wide, two columns each. Every other character is one. */
+const WIDE: ReadonlySet<number> = new Set([0x1f7e2, 0x1f7e0, 0x26aa]);
+
+/**
+ * Terminal columns of a rendered line. Not a general width function: the line can only
+ * hold ASCII, U+00B7, U+2026 and the three emoji, so the three are the whole wide set.
+ */
+export function columns(line: string): number {
+  let width = 0;
+  for (const ch of line) width += WIDE.has(ch.codePointAt(0)!) ? 2 : 1;
+  return width;
+}
+
 export const OFF = 'event log off';
 export const ABSENT = 'no event log yet';
 export const UNREADABLE = 'event log unreadable';
@@ -273,12 +300,17 @@ export function probe(
 export function render(reading: Reading): string {
   if (reading.state === 'unknown') return `${UNKNOWN}${SEP}${reading.reason}`;
   const events = `${reading.events} event${reading.events === 1 ? '' : 's'}`;
-  const named = `${reading.tool} ${reading.outcome}`;
+  let head = `${ACTIVE}${SEP}${events}${SEP}`;
   if (reading.state === 'degraded') {
     const problems = `${reading.problems} problem${reading.problems === 1 ? '' : 's'}`;
-    return `${DEGRADED}${SEP}${events}${SEP}${problems}${SEP}${named}`;
+    head = `${DEGRADED}${SEP}${events}${SEP}${problems}${SEP}`;
   }
-  return `${ACTIVE}${SEP}${events}${SEP}${named}`;
+  const line = `${head}${reading.tool} ${reading.outcome}`;
+  const over = columns(line) - WIDTH;
+  if (over <= 0) return line;
+  // Tool names are ASCII by `TOOL`, so one character is one column here.
+  const keep = Math.max(0, reading.tool.length - over - ELLIPSIS.length);
+  return `${head}${reading.tool.slice(0, keep)}${ELLIPSIS} ${reading.outcome}`;
 }
 
 /**

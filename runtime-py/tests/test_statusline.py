@@ -48,6 +48,7 @@ from bantamkit.statusline import (
     TAIL_BYTES,
     UNKNOWN,
     UNREADABLE,
+    WIDTH,
     WINDOW,
     Reading,
     parse,
@@ -155,7 +156,12 @@ def test_the_degraded_line_names_the_most_recent_problem_not_the_most_recent_rec
         _record("validate_json", "valid"),
     )
     line = status_line(_env(log), store=str(tmp_path))
-    assert line == f"{DEGRADED}{SEP}3 events{SEP}1 problem{SEP}memory_recall empty-unreadable-layer"
+    # #189 moved this pin: the full line was 83 columns, past the documented WIDTH of 80, so
+    # the tool name is now shortened with U+2026. What this test guards is unchanged -- the
+    # line names the PROBLEM (`memory_re… empty-unreadable-layer`), not `validate_json valid`.
+    assert line == (
+        f"{DEGRADED}{SEP}3 events{SEP}1 problem{SEP}memory_re\u2026 empty-unreadable-layer"
+    )
 
 
 def test_the_counts_are_pluralised_the_way_the_status_report_pluralises(tmp_path):
@@ -569,3 +575,50 @@ def test_the_emoji_are_the_three_the_document_pins():
     assert DEGRADED == "bantamkit Degraded \U0001f7e0"
     assert UNKNOWN == "bantamkit Unknown ⚪"
     assert SEP == " · "
+
+
+# ------------------------------------------------------------------ the width bound (#189)
+
+
+def _columns(line: str) -> int:
+    """The issue's own counting rule, kept independent of the module's `columns`."""
+    return sum(2 if ord(ch) > 0x1F000 or ch == "\u26aa" else 1 for ch in line)
+
+
+def test_the_documented_width_is_80_columns():
+    """`docs/statusline.md` states 80; a WIDTH that drifted would pass every check below."""
+    assert WIDTH == 80
+
+
+def test_no_reading_the_parser_admits_renders_wider_than_width():
+    """#189: every state, every outcome, the longest tool `^[a-z0-9_]{1,64}$` admits and the
+    widest counts `WINDOW` allows -- none renders past WIDTH columns."""
+    widest = 0
+    for tool in ("a" * 64, "memory_recall", "x"):
+        for outcome in OUTCOMES:
+            for events, problems in ((WINDOW, WINDOW), (1, 1), (WINDOW, 0)):
+                state = "active" if problems == 0 else "degraded"
+                line = render(Reading(state, events, problems, tool, outcome))
+                widest = max(widest, _columns(line))
+    for reason in (OFF, ABSENT, UNREADABLE, EMPTY, SURPRISE):
+        widest = max(widest, _columns(render(Reading("unknown", 0, 0, "", "", reason))))
+    assert widest == WIDTH
+
+
+def test_the_issues_line_keeps_its_outcome_and_marks_the_cut():
+    """#189's own 86-column line: the tool is shortened with U+2026, the outcome is whole."""
+    line = render(Reading("degraded", 50, 50, "memory_recall", "empty-unreadable-layer"))
+    assert line == (
+        f"{DEGRADED}{SEP}50 events{SEP}50 problems{SEP}memory\u2026 empty-unreadable-layer"
+    )
+    assert _columns(line) == 80
+
+
+def test_a_line_that_fits_is_never_touched_and_one_over_is_cut_by_one():
+    """The boundary pair: 80 columns exactly is left alone, 81 loses one tool character
+    plus room for the mark."""
+    at = render(Reading("degraded", 1, 1, "t" * 27, "raised"))
+    over = render(Reading("degraded", 1, 1, "t" * 28, "raised"))
+    assert at == f"{DEGRADED}{SEP}1 event{SEP}1 problem{SEP}{'t' * 27} raised"
+    assert over == f"{DEGRADED}{SEP}1 event{SEP}1 problem{SEP}{'t' * 26}\u2026 raised"
+    assert _columns(at) == _columns(over) == 80

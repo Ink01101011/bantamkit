@@ -52,6 +52,33 @@ this surface's own: it marks the state neither of the others can express.
 | `event log empty` | the file exists and holds no renderable record |
 | `state unavailable` | the outermost catch-all — a bug in this module, rendered rather than raised |
 
+### The width: at most 80 columns
+
+The line is **at most 80 terminal columns** (`WIDTH`), counting the three state emoji as two
+columns each (East-Asian Wide) and every other character as one. Status bars are commonly
+~80 columns, and a host that cuts a wider line cuts its **end** — the outcome, the part an
+operator acts on (#189).
+
+Every fixed part, every count (bounded by `WINDOW`) and every outcome (a closed vocabulary)
+fits well inside 80. The one part that does not is the **tool name**, which the parser admits
+up to 64 characters. When the full line would be wider than 80, the tool name — and only the
+tool name — is shortened to fit exactly and ends in `…` (U+2026, one column); the outcome is
+never shortened. A line that fits is never touched. The rule is a pure function of the
+reading, so the same log gives the same bytes on both runtimes.
+
+```
+bantamkit Degraded 🟠 · 50 events · 50 problems · memory… empty-unreadable-layer
+```
+
+That is the issue's own line, 86 columns before this rule and 80 after. With the longest
+tool name the parser admits, the widest line was 137 columns before it. The conformance suite
+prints the widest line either runtime rendered over every bed as a note
+(`node tools/conformance/run.mjs --suite statusline`), and pins the width beds per side.
+
+U+00B7 and U+2026 are East-Asian *Ambiguous*: a terminal configured to draw ambiguous
+characters wide (some CJK locales) draws them as two, and the bound above is stated for the
+ordinary one-column setting.
+
 **Off is the default** ([eventlog.md](eventlog.md)), so `event log off` is the line most
 operators see until they opt in, and it is the honest one. A bar that printed `Active` from
 no evidence would print `Active` when the server is dead. To get a green bar, turn the log on
@@ -259,6 +286,9 @@ Each was run and produced the failure named. The Node half owes the same list an
 | 4 | no borrowed text on the line | drop the tool/outcome validation in `parse` | the sentinel path is **on the rendered line**: `…memory_save /Users/k/secret/PLEASE-DO-NOT-RENDER-THIS.json` |
 | 4 | …structurally, with no sentinel | render `detail`'s first value beside the outcome | `assert 'saved /Users/k/secret/…' in frozenset({'answered', …})` |
 | — | the port is compared, not claimed | Node `WINDOW = 50 → 25` | conformance `4 differed` of 52 |
+| — | the width bound, per side (#189) | `WIDTH = 80 → 90` in **both** runtimes | conformance `10 differed` of 79 — every one a per-side literal or widest-fits case, **0** differential: the reason those exist |
+| — | …the boundary | `WIDTH = 80 → 79` in both | `10 differed` of 79, including `width-at-80/*-literal` — a line that fits is cut |
+| — | …the port is compared | Node `WIDTH = 81`; Node `ELLIPSIS = ""`; Python never truncates | `10`, `9`, `10 differed` of 79 |
 | — | the tail bound | Node `start = 0` | conformance `2 differed` of 52 — **and 0 differed** against the obvious ordinary-record bed, which is why that bed was replaced |
 
 ## What is deliberately not here

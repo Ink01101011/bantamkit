@@ -43,6 +43,7 @@ import {
   TAIL_BYTES,
   UNKNOWN,
   UNREADABLE,
+  WIDTH,
   WINDOW,
   parse,
   probe,
@@ -137,9 +138,12 @@ test('the degraded line names the most recent PROBLEM, not the most recent recor
     record('shiftwork_status', 'status'),
     record('validate_json', 'valid'),
   );
+  // #189 moved this pin: the full line was 83 columns, past the documented WIDTH of 80, so the
+  // tool name is now shortened with U+2026. What this test guards is unchanged -- the line
+  // names the PROBLEM (`memory_re… empty-unreadable-layer`), not `validate_json valid`.
   assert.equal(
     statusLine(env(file), dir),
-    `${DEGRADED}${SEP}3 events${SEP}1 problem${SEP}memory_recall empty-unreadable-layer`,
+    `${DEGRADED}${SEP}3 events${SEP}1 problem${SEP}memory_re\u2026 empty-unreadable-layer`,
   );
 });
 
@@ -478,4 +482,46 @@ test('the emoji are the three the document pins', () => {
   assert.equal(DEGRADED, 'bantamkit Degraded \u{1F7E0}');
   assert.equal(UNKNOWN, 'bantamkit Unknown ⚪');
   assert.equal(SEP, ' · ');
+});
+
+// ------------------------------------------------------------------ the width bound (#189)
+
+/** The issue's own counting rule, kept independent of the module's `columns`. */
+const cols = (line) => [...line].reduce((a, ch) => a + (ch.codePointAt(0) > 0x1f000 || ch === '\u26aa' ? 2 : 1), 0);
+const reading = (state, events, problems, tool, outcome, reason = '') => ({ state, events, problems, tool, outcome, reason });
+
+test('the documented width is 80 columns', () => {
+  // `docs/statusline.md` states 80; a WIDTH that drifted would pass every check below.
+  assert.equal(WIDTH, 80);
+});
+
+test('no reading the parser admits renders wider than WIDTH (#189)', () => {
+  let widest = 0;
+  for (const tool of ['a'.repeat(64), 'memory_recall', 'x']) {
+    for (const outcome of OUTCOMES) {
+      for (const [events, problems] of [[WINDOW, WINDOW], [1, 1], [WINDOW, 0]]) {
+        const line = render(reading(problems === 0 ? 'active' : 'degraded', events, problems, tool, outcome));
+        widest = Math.max(widest, cols(line));
+      }
+    }
+  }
+  for (const reason of [OFF, ABSENT, UNREADABLE, EMPTY, SURPRISE]) {
+    widest = Math.max(widest, cols(render(reading('unknown', 0, 0, '', '', reason))));
+  }
+  assert.equal(widest, WIDTH);
+});
+
+test("the issue's line keeps its outcome and marks the cut (#189)", () => {
+  const line = render(reading('degraded', 50, 50, 'memory_recall', 'empty-unreadable-layer'));
+  assert.equal(line, `${DEGRADED}${SEP}50 events${SEP}50 problems${SEP}memory\u2026 empty-unreadable-layer`);
+  assert.equal(cols(line), 80);
+});
+
+test('a line that fits is never touched and one over is cut by one (#189)', () => {
+  const at = render(reading('degraded', 1, 1, 't'.repeat(27), 'raised'));
+  const over = render(reading('degraded', 1, 1, 't'.repeat(28), 'raised'));
+  assert.equal(at, `${DEGRADED}${SEP}1 event${SEP}1 problem${SEP}${'t'.repeat(27)} raised`);
+  assert.equal(over, `${DEGRADED}${SEP}1 event${SEP}1 problem${SEP}${'t'.repeat(26)}\u2026 raised`);
+  assert.equal(cols(at), 80);
+  assert.equal(cols(over), 80);
 });

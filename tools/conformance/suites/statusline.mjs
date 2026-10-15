@@ -68,6 +68,26 @@ const SENTINEL = '/Users/k/secret/PLEASE-DO-NOT-RENDER-THIS.json';
 
 const unb64 = (s) => Buffer.from(s, 'base64');
 
+/** The documented width (#189), in terminal columns, and the longest tool the parser admits. */
+const WIDTH = 80;
+const LONGEST_TOOL = 'a'.repeat(64);
+
+/** Columns with the three state emoji counted as two: the issue's own counting rule. */
+const columns = (line) => [...line].reduce((a, ch) => a + (ch === '\u{1F7E2}' || ch === '\u{1F7E0}' || ch === '\u26AA' ? 2 : 1), 0);
+
+/**
+ * PER-SIDE LITERALS for the width beds. A differential is blind to a regression that lands in
+ * both runtimes at once (a WIDTH of 90 on both sides agrees perfectly), so each side's line
+ * is also compared against these bytes, typed here rather than read back from either runtime.
+ */
+const WIDTH_LITERALS = {
+  'wide-issue': 'bantamkit Degraded \u{1F7E0} \u00b7 50 events \u00b7 50 problems \u00b7 memory\u2026 empty-unreadable-layer',
+  'wide-longest-degraded': `bantamkit Degraded \u{1F7E0} \u00b7 50 events \u00b7 50 problems \u00b7 ${'a'.repeat(6)}\u2026 empty-unreadable-layer`,
+  'wide-longest-active': `bantamkit Active \u{1F7E2} \u00b7 50 events \u00b7 ${'a'.repeat(25)}\u2026 empty-nothing-saved`,
+  'width-at-80': `bantamkit Degraded \u{1F7E0} \u00b7 1 event \u00b7 1 problem \u00b7 ${'t'.repeat(27)} raised`,
+  'width-at-81': `bantamkit Degraded \u{1F7E0} \u00b7 1 event \u00b7 1 problem \u00b7 ${'t'.repeat(26)}\u2026 raised`,
+};
+
 // ------------------------------------------------------------------------------ fixture
 
 /** One record, spelled the way `docs/eventlog.md` spells it. */
@@ -145,6 +165,16 @@ function fixture(scratch) {
   // The rotated generation carries a fault the live file has already replaced.
   log('rotation', record('memory_save', 'saved'));
   write(join(root, 'rotation', 'events', 'mcp.jsonl.1'), adverse);
+
+  // The width beds (#189). The issue's own line, the longest tool `^[a-z0-9_]{1,64}$` admits
+  // in both states, and a PAIR at the boundary: `1 event · 1 problem · <tool> raised` is
+  // exactly WIDTH columns with a 27-character tool and one over with 28, so a runtime that
+  // cut one column early or one late reddens one of the two.
+  log('wide-issue', record('memory_recall', 'empty-unreadable-layer').repeat(WINDOW));
+  log('wide-longest-degraded', record(LONGEST_TOOL, 'empty-unreadable-layer').repeat(WINDOW));
+  log('wide-longest-active', record(LONGEST_TOOL, 'empty-nothing-saved').repeat(WINDOW));
+  log('width-at-80', record('t'.repeat(27), 'raised'));
+  log('width-at-81', record('t'.repeat(28), 'raised'));
 
   mkdirSync(join(root, 'cwd'), { recursive: true });
   mkdirSync(join(root, 'home'), { recursive: true });
@@ -226,6 +256,7 @@ function specs(root) {
     bed('tail-kept', at('tail-kept')),
     bed('window-over-a-big-file', at('window-over-a-big-file')),
     bed('rotation', at('rotation')),
+    ...Object.keys(WIDTH_LITERALS).map((label) => bed(label, at(label))),
   ];
 }
 
@@ -263,6 +294,25 @@ export async function run(ctx) {
    * for a reason that had nothing to do with the port. Running the SAME runtime twice and
    * comparing is what distinguishes "the two agree" from "the two agree right now".
    */
+  // The width property, per side (#189): every bed's line, on each runtime, against the
+  // documented WIDTH; and the width beds against their typed literals.
+  const nodeLines = new Map();
+  for (const spec of specs(root)) {
+    const full = { ...spec, cwd, env: { HOME: home, ...spec.env } };
+    nodeLines.set(spec.label, runNode(full).stdout.toString('utf8').trimEnd());
+  }
+  const widest = (lines) => Math.max(...[...lines.values()].map(columns));
+  cases.push(
+    { name: 'width/py-widest-line-fits', kind: 'json', expected: true, actual: widest(rendered) <= WIDTH },
+    { name: 'width/node-widest-line-fits', kind: 'json', expected: true, actual: widest(nodeLines) <= WIDTH },
+  );
+  for (const [label, literal] of Object.entries(WIDTH_LITERALS)) {
+    cases.push(
+      { name: `${label}/py-literal`, kind: 'json', expected: literal, actual: rendered.get(label) },
+      { name: `${label}/node-literal`, kind: 'json', expected: literal, actual: nodeLines.get(label) },
+    );
+  }
+
   const again = { ...specs(root)[0], cwd, env: { HOME: home, BANTAMKIT_EVENT_LOG: join(root, 'healthy', 'events', 'mcp.jsonl') } };
   cases.push({
     name: 'healthy/deterministic-across-two-runs',
@@ -328,6 +378,9 @@ export async function run(ctx) {
     'NOTHING IS MASKED. this surface reads no clock, so the comparison is the whole of stdout and the ' +
       'same argv run twice gives the same bytes. every bed also compares stderr, which is empty on ' +
       'both sides in all of them — including the two filesystem failures.',
+    `the widest line either runtime printed over every bed is ${Math.max(widest(rendered), widest(nodeLines))} columns (documented ` +
+      `width ${WIDTH}, state emoji counted as 2); the width beds carry the issue's 86-column line and the ` +
+      'longest tool name the parser admits, shortened with U+2026 and the outcome kept whole.',
     'no real store is read or created: every spec passes --store, every log is a literal path under ' +
       'harness scratch, and HOME and cwd are inside the fixture.',
   ];
