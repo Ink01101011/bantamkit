@@ -847,6 +847,26 @@ test('#118: a file with no indented line is written at two spaces', async () => 
   });
 });
 
+// #118, review J66-12 B1: a host file whose lines end in a bare CR (classic Mac) keeps its
+// indent. The reference reads through universal newlines, so `\r` is a line break there; this
+// side splitting on `\n` alone saw one line and wrote two spaces. The same seed and literal sit
+// in `runtime-py/tests/test_hostinstall.py`, so a regression on both sides is red on each.
+test('#118: a CR-only host file keeps its indent', async () => {
+  await withHome(async (h) => {
+    const path = h.hostConfigPath('cursor');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '{\r    "mcpServers": {\r        "other": {"command": "x"}\r    }\r}\r', 'utf8');
+
+    h.install('cursor', CMD, []);
+
+    assert.equal(
+      readFileSync(path, 'utf8'),
+      '{\n    "mcpServers": {\n        "other": {\n            "command": "x"\n        },\n' +
+        `        "bantamkit": {\n            "command": "${CMD}",\n            "args": []\n        }\n    }\n}\n`,
+    );
+  });
+});
+
 test('#136: a symlinked config is written through and stays a link', symlinksNeedAPrivilegeOnWindows, async () => {
   await withHome(async (h, root) => {
     const { symlinkSync, lstatSync } = await import('node:fs');

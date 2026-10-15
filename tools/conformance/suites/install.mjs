@@ -753,6 +753,49 @@ export async function run(ctx) {
           ),
         );
       }
+      // A host file whose lines end in a bare CR (classic Mac): the reference reads it through
+      // universal newlines, so `\r` breaks a line and the 4-space unit is found. The port once
+      // split on `\n` only, saw one line and wrote two spaces (review J66-12 B1). Both writers
+      // (`--install`, `--install-hooks`) go through the one `writeConfig`, so both are seeded.
+      // Bytes side to side, and the 4-space text against a literal per side.
+      {
+        const CR_SEED = '{\r    "mcpServers": {\r        "other": {"command": "x"}\r    }\r}\r';
+        const CR_OTHER = '        "other": {\n            "command": "x"\n        }';
+        {
+          const id = 'install-host-text (bare CR line ends)';
+          const hs = homes('install-host-text-cr');
+          seedBoth(hs, CR_SEED);
+          both(id, hs, ['--install', 'cursor']);
+          const written = { py: maskEntry(readFileSync(config(hs.py), 'utf8')), node: maskEntry(readFileSync(config(hs.node), 'utf8')) };
+          cases.push({ name: `${id}: the written mcp.json, byte for byte, with the ruled entry masked`, kind: 'bytes', expected: written.py, actual: written.node });
+          cases.push(
+            ...literalCases(
+              written.py,
+              written.node,
+              `${id}: the written mcp.json against a literal`,
+              `{\n    "mcpServers": {\n${CR_OTHER},\n        "bantamkit": <ENTRY>\n    }\n}\n`,
+              'bytes',
+            ),
+          );
+        }
+        {
+          const id = 'install-host-text (--install-hooks, bare CR line ends)';
+          const hs = homes('install-host-text-hooks-cr');
+          const settings = (h) => join(h, '.claude', 'settings.json');
+          for (const h of Object.values(hs)) {
+            mkdirSync(join(h, '.claude'), { recursive: true });
+            writeFileSync(settings(h), CR_SEED, 'utf8');
+          }
+          both(id, hs, ['--install-hooks', '--yes']);
+          const maskHook = (text) => text.replace(/"command": "[^"\n]*--hook"/g, '"command": <HOOK>');
+          const written = { py: maskHook(readFileSync(settings(hs.py), 'utf8')), node: maskHook(readFileSync(settings(hs.node), 'utf8')) };
+          cases.push({ name: `${id}: the written settings.json, byte for byte, with the ruled hook command masked`, kind: 'bytes', expected: written.py, actual: written.node });
+          const head = (text) => text.slice(0, text.indexOf(',\n    "hooks": {'));
+          cases.push(
+            ...literalCases(head(written.py), head(written.node), `${id}: the user's part of settings.json against a literal`, `{\n    "mcpServers": {\n${CR_OTHER}\n    }`, 'bytes'),
+          );
+        }
+      }
     }
 
     // ---- #118: a number JSON cannot carry is refused by name, and nothing is written

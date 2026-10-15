@@ -483,6 +483,27 @@ def test_118_a_file_with_no_indented_line_is_written_at_two_spaces(home):
     )
 
 
+def test_118_a_cr_only_host_file_keeps_its_indent(home):
+    """#118, review J66-12 B1: lines ending in a bare CR (classic Mac) still carry the indent.
+
+    `_detected_indent` reads through universal newlines, so `\r` is a line break and the
+    4-space unit is found. `runtime-ts` once split on `\n` alone and wrote two spaces; the same
+    seed and literal sit in `runtime-ts/test/hostinstall.test.mjs`, so a regression on both
+    sides is red on each.
+    """
+    path = hostinstall.host_config_path("cursor")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{\r    "mcpServers": {\r        "other": {"command": "x"}\r    }\r}\r')
+
+    hostinstall.install("cursor", CMD, [])
+
+    assert path.read_bytes().decode("utf-8") == (
+        '{\n    "mcpServers": {\n        "other": {\n            "command": "x"\n        },\n'
+        f'        "bantamkit": {{\n            "command": "{CMD}",\n'
+        '            "args": []\n        }\n    }\n}\n'
+    )
+
+
 @symlinks_need_a_privilege_on_windows
 def test_136_a_symlinked_config_is_written_through_and_stays_a_link(home):
     dotfiles = home / "dotfiles"

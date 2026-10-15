@@ -285,6 +285,11 @@ function writeConfig(path: string, data: PyValue): void {
  * depth-one member. A file with no such line (absent, empty, all on one line) gets two
  * spaces, which is what this writer always used. The reference's `_detected_indent` applies
  * the same rule to the same text.
+ *
+ * Lines break where Python's universal newlines break them — `\r\n`, a bare `\r`, or `\n` —
+ * because the reference reads through `Path.read_text`, which translates all three. Splitting
+ * on `\n` alone saw a classic-Mac (CR-only) file as one line, fell back to two spaces, and so
+ * wrote different bytes from the reference and lost the file's indent (#118, review J66-12 B1).
  */
 function detectedIndent(path: string): string {
   let text: string;
@@ -293,7 +298,7 @@ function detectedIndent(path: string): string {
   } catch {
     return '  ';
   }
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r\n|\r|\n/)) {
     if ((line[0] !== ' ' && line[0] !== '\t') || !/[^ \t\r]/.test(line)) continue;
     if (line[0] === '\t') return '\t';
     return ' '.repeat(line.length - line.replace(/^ +/, '').length);
