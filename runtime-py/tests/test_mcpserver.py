@@ -397,8 +397,22 @@ def test_build_memory_store_flag_yields_single_layer(tmp_path):
 
 def test_build_memory_default_is_layered(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    (tmp_path / "proj").mkdir()  # job65/#142: a `--start` that is not there is refused
     mem = _build_memory(_parse_args(["--start", str(tmp_path / "proj")]))
     assert len(mem._layers) >= 2
+
+
+def test_a_start_that_is_not_a_directory_is_refused_by_name(tmp_path):
+    """job65/#142: a `--start` that is not there used to bind an ancestor's store silently."""
+    missing = tmp_path / "no" / "such" / "project"
+    with pytest.raises(SystemExit) as caught:
+        _build_memory(_parse_args(["--start", str(missing)]))
+    assert str(caught.value) == f"--start does not exist: {missing}"
+    afile = tmp_path / "afile"
+    afile.write_text("x", encoding="utf-8")
+    with pytest.raises(SystemExit) as caught:
+        _build_memory(_parse_args(["--start", str(afile)]))
+    assert str(caught.value) == f"--start is not a directory: {afile}"
 
 
 def test_the_store_flag_outranks_the_env_pin_and_start_does_not(tmp_path, monkeypatch):
@@ -621,6 +635,7 @@ def test_index_budget_reaches_the_store_on_both_deployment_paths(tmp_path, monke
         _parse_args(["--store", str(tmp_path / "s"), "--index-budget", str(budget)])
     )
     assert single.store.index_budget == budget
+    (tmp_path / "proj").mkdir()  # job65/#142: a `--start` that is not there is refused
     layered = _build_memory(
         _parse_args(["--start", str(tmp_path / "proj"), "--index-budget", str(budget)])
     )

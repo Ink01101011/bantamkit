@@ -641,6 +641,27 @@ export async function run(ctx) {
   });
 
   /**
+   * job65/#154: `BANTAMKIT_EVENT_LOG=on` over a `--store` that was never saved to. WAS: one
+   * `work_plan` call left `<store>/events/mcp.jsonl` behind on both runtimes, creating the store
+   * a later layered walk would bind. Now the default log lives in the store and never creates
+   * it: the record is dropped until a save brings the store into existence, then the next
+   * records land. `ghost154` in `captureArtifacts` reads the tree for every session.
+   */
+  add('eventlog-never-creates-the-store', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'work_plan', { nodes: [] }),
+    callTool(3, 'bantamkit_status', {}),
+  ], { argv: ['--store', join(store, 'ghost154')], env: { ...baseEnv, [EVENT_LOG_ENV]: 'on' }, mask: (t) => t.replace(/build sha256:[0-9a-f]{64}/g, 'build sha256:<masked>') });
+  add('eventlog-starts-with-the-store', [
+    INIT(),
+    INITIALIZED,
+    callTool(2, 'work_plan', { nodes: [] }),
+    callTool(3, 'memory_save', { type: 'project', name: 'ghost-saved', description: 'the save that makes the store', body: 'b' }),
+    callTool(4, 'work_plan', { nodes: [] }),
+  ], { argv: ['--store', join(store, 'ghost154')], env: { ...baseEnv, [EVENT_LOG_ENV]: 'on' } });
+
+  /**
    * The fourth `save` outcome, which needs a budget too small for its own index to fit.
    *
    * `docs/eventlog.md` calls `Memory.save` the sharpest case in the table — four outcomes,
@@ -1059,6 +1080,10 @@ export async function run(ctx) {
       // not set the variable and wrote a file anyway is the defect the default exists to
       // prevent, and it is only visible if the file is looked for unconditionally.
       eventlog: existsSync(eventlog) ? readFileSync(eventlog, 'utf8') : null,
+      // job65/#154: the never-saved `--store` the two `eventlog-*-store` sessions name, and
+      // its log if any. Read for every session: no other session may create it either.
+      ghost154: existsSync(join(store, 'ghost154')) ? readdirSync(join(store, 'ghost154'), { recursive: true }).map(String).sort() : null,
+      ghost154log: existsSync(join(store, 'ghost154', ...EVENT_LOG_RELATIVE)) ? readFileSync(join(store, 'ghost154', ...EVENT_LOG_RELATIVE), 'utf8') : null,
       // The fact files `memory_compact` moved: still on disk, out of the index. Listed for
       // every session so a compaction that ran where none was asked for is visible too —
       // and listed for EVERY store a session can reach, not only `--store`: the layered
@@ -1318,6 +1343,33 @@ export async function run(ctx) {
       expected: outcomesOf(python.eventlog),
       actual: outcomesOf(node.eventlog),
     });
+
+    // job65/#154: differential AND a literal per side (a symmetric regression keeps a
+    // differential green). The never-saved store is absent after a non-memory call with the
+    // log on; once a save makes it, the save and every later record land in it.
+    {
+      const never = results.get('eventlog-never-creates-the-store');
+      const starts = results.get('eventlog-starts-with-the-store');
+      const seen = (side) => ({
+        afterWorkPlan: never[side].ghost154,
+        afterSave: starts[side].ghost154log === null ? null : outcomesOf(starts[side].ghost154log),
+      });
+      const expected154 = { afterWorkPlan: null, afterSave: [['memory_save', 'saved'], ['work_plan', 'plan']] };
+      cases.push({ name: 'eventlog: #154 the log never creates the store — answer', kind: 'json', expected: seen('python'), actual: seen('node') });
+      cases.push({ name: 'eventlog: #154 the log never creates the store — python against the literal', kind: 'json', expected: expected154, actual: seen('python') });
+      cases.push({ name: 'eventlog: #154 the log never creates the store — node against the literal', kind: 'json', expected: expected154, actual: seen('node') });
+      // job65/#142, per side: line 4 of `bantamkit_status` names the store it is bound to.
+      const boundLine = (side) => (toolTextOf(never[side], 3) ?? '').split('\n')[3]?.split('; bound to ')[1] ?? null;
+      for (const side of ['python', 'node']) {
+        cases.push({ name: `status: #142 line 4 names the bound store — ${side} against the literal`, kind: 'json', expected: join(store, 'ghost154'), actual: boundLine(side) });
+      }
+      for (const [name, r] of results) {
+        if (name.startsWith('eventlog-starts')) continue;
+        if (r.python.ghost154 !== null || r.node.ghost154 !== null) {
+          cases.push({ name: `eventlog: #154 session ${name} created the never-saved store`, kind: 'json', expected: null, actual: { python: r.python.ghost154, node: r.node.ghost154 } });
+        }
+      }
+    }
 
     /**
      * The one record whose REPLY is ruled un-comparable and whose RECORD is not.

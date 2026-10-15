@@ -1160,3 +1160,38 @@ test('a grant naming a regular file says it is not a directory (#184)', () => {
     e.message === `granted store is not a directory: ${join(bed, 'afile')} (from ${config})`);
   rmSync(bed, { recursive: true, force: true });
 });
+
+// job65/#158: a tab PyYAML will not scan is refused in ONE sentence, the one `layers.py` gives.
+for (const [text, line, column] of [
+  ['extra_stores:\n\t- ../other\n', 2, 1],
+  ['extra_stores:\t[../other]\n', 1, 14],
+  ['extra_stores:\n  -\t../other\n', 2, 4],
+  ['extra_stores: []\t# none\n', 1, 17],
+]) {
+  test(`#158: a tab at line ${line}, column ${column} is refused in the reference's sentence`, () => {
+    const bed = mkdtempSync(join(tmpdir(), 'bk-tab-'));
+    try {
+      const store = join(bed, 'proj', '.bantamkit', 'memory');
+      mkdirSync(store, { recursive: true });
+      const config = join(bed, 'proj', '.bantamkit', 'config.yaml');
+      writeFileSync(config, text);
+      assert.throws(() => loadGrants(store), (e) => e instanceof MemoryValidationError &&
+        e.message === `invalid memory config ${config}: line ${line}, column ${column}: a tab cannot start a YAML token; indent with spaces`);
+    } finally {
+      rmSync(bed, { recursive: true, force: true });
+    }
+  });
+}
+
+test('#158: a tab inside a comment or a quoted grant is not refused', () => {
+  const bed = realpathSync(mkdtempSync(join(tmpdir(), 'bk-tab-')));
+  try {
+    const store = join(bed, 'proj', '.bantamkit', 'memory');
+    mkdirSync(store, { recursive: true });
+    mkdirSync(join(bed, 'proj', '.bantamkit', 'a\tb'));
+    writeFileSync(join(bed, 'proj', '.bantamkit', 'config.yaml'), "# a\tcomment\nextra_stores:\n  - 'a\tb'\n");
+    assert.deepEqual(loadGrants(store), [join(bed, 'proj', '.bantamkit', 'a\tb')]);
+  } finally {
+    rmSync(bed, { recursive: true, force: true });
+  }
+});

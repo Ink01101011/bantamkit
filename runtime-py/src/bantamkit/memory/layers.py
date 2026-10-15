@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+import yaml.scanner
 
 from bantamkit.memory.store import MemoryValidationError
 
@@ -243,6 +244,11 @@ def load_grants(project_store: str | Path) -> list[Path]:
     try:
         data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        tab = _token_tab(e)
+        if tab is not None:
+            raise MemoryValidationError(
+                f"invalid memory config {config_path}: {tab_sentence(*tab)}"
+            ) from e
         raise MemoryValidationError(f"invalid memory config {config_path}: {e}") from e
     if data is None:
         return []
@@ -263,3 +269,29 @@ def load_grants(project_store: str | Path) -> list[Path]:
             )
         grants.append(resolved)
     return grants
+
+
+#: PyYAML's own wording for a tab where a token would start (job65/#158). Matched exactly,
+#: so a PyYAML that rewords it falls back to the generic sentence rather than misreporting.
+_TAB_PROBLEM = "found character '\\t' that cannot start any token"
+
+
+def tab_sentence(line: int, column: int) -> str:
+    """job65/#158 — the sentence both runtimes give for a tab PyYAML will not scan.
+
+    WAS: PyYAML's multi-line `ScannerError` text after the `invalid memory config <path>: `
+    prefix, while the port's reader accepted `[ \\t]*` as indentation and layered the very
+    same tab-indented grant list — one config, two verdicts. Now both refuse, in this one
+    sentence: here rewritten from the error's own mark, and in `layers.ts` from
+    `firstTokenTab`, which finds the same byte.
+    """
+    return f"line {line}, column {column}: a tab cannot start a YAML token; indent with spaces"
+
+
+def _token_tab(error: BaseException) -> tuple[int, int] | None:
+    if not isinstance(error, yaml.scanner.ScannerError) or error.problem != _TAB_PROBLEM:
+        return None
+    mark = error.problem_mark
+    if mark is None:
+        return None
+    return mark.line + 1, mark.column + 1

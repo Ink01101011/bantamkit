@@ -700,3 +700,36 @@ def test_a_grant_naming_a_regular_file_says_it_is_not_a_directory(tmp_path):
     with pytest.raises(MemoryValidationError) as e:
         load_grants(store)
     assert str(e.value) == f"granted store does not exist: {tmp_path / 'missing'} (from {config})"
+
+
+# job65/#158: a tab PyYAML will not scan is refused in ONE sentence, the one `layers.ts` gives.
+@pytest.mark.parametrize(
+    ("text", "line", "column"),
+    [
+        ("extra_stores:\n\t- ../other\n", 2, 1),
+        ("extra_stores:\t[../other]\n", 1, 14),
+        ("extra_stores:\n  -\t../other\n", 2, 4),
+        ("extra_stores: []\t# none\n", 1, 17),
+    ],
+)
+def test_a_tab_where_a_yaml_token_starts_is_refused_in_one_sentence(tmp_path, text, line, column):
+    store = tmp_path / "proj" / ".bantamkit" / "memory"
+    store.mkdir(parents=True)
+    config = store.parent / "config.yaml"
+    config.write_text(text, encoding="utf-8")
+    with pytest.raises(MemoryValidationError) as caught:
+        load_grants(store)
+    assert str(caught.value) == (
+        f"invalid memory config {config}: line {line}, column {column}: "
+        "a tab cannot start a YAML token; indent with spaces"
+    )
+
+
+def test_a_tab_inside_a_comment_or_a_quoted_grant_is_not_refused(tmp_path):
+    store = tmp_path / "proj" / ".bantamkit" / "memory"
+    store.mkdir(parents=True)
+    (tmp_path / "proj" / ".bantamkit" / "a\tb").mkdir()
+    (store.parent / "config.yaml").write_text(
+        "# a\tcomment\nextra_stores:\n  - 'a\tb'\n", encoding="utf-8"
+    )
+    assert load_grants(store) == [(store.parent / "a\tb").resolve()]

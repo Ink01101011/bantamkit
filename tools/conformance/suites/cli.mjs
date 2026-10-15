@@ -3002,6 +3002,40 @@ export async function run(ctx) {
     },
   });
 
+  // ============================================ job65/#142: `--start` that is not a directory ==
+  //
+  // WAS: unchecked on both runtimes. `resolve()` of a path that does not exist answers the path,
+  // the walk climbed its nonexistent parents to the first real one, and a typo'd `--start`
+  // silently bound whatever store sat above it as the WRITABLE project layer. Now refused by
+  // name before a transport exists, in `--store`'s sentence family. Unlike `--store`, missing is
+  // not a designation (nothing is ever created at a start directory). A differential over the
+  // streams AND a literal per side, because a symmetric revert of both checks keeps the
+  // differential green (J48-3).
+  for (const [label, make, sentence] of [
+    ['start-at-a-path-that-is-not-there', (dir) => join(dir, 'no', 'such', 'project'), (p) => `--start does not exist: ${p}\n`],
+    ['start-at-a-regular-file', (dir) => {
+      const f = join(dir, 'a-regular-file');
+      writeFileSync(f, 'a file, not a directory\n');
+      return f;
+    }, (p) => `--start is not a directory: ${p}\n`],
+  ]) {
+    const bed = writableBed(ctx.scratch, `cli-${label}`);
+    const start = make(join(ctx.scratch, `cli-${label}`));
+    const spec = bedSpec(bed, { argv: ['--start', start], stdin: `${HANDSHAKE_FRAMES.join('\n')}\n` });
+    const py = runPy(ctx, spec);
+    const node = runNode(spec);
+    cases.push(...bedStreamCases(label, py, node, bed, [[start, '<START>']]));
+    cases.push({
+      name: `${label}/PINNED PER SIDE: each runtime refused BY NAME, at exit 1, with nothing on stdout (#142)`,
+      kind: 'json',
+      expected: {
+        python: { exit: 1, stdout: '', stderr: sentence(start), timedOut: false },
+        node: { exit: 1, stdout: '', stderr: sentence(start), timedOut: false },
+      },
+      actual: { python: refusedWith(py), node: refusedWith(node) },
+    });
+  }
+
   // ====================================== `--update`: the arms, the ruling, the companion ==
   //
   // THE GAP THIS CLOSES, STATED PRECISELY. Until this block, the ONLY parity gate on

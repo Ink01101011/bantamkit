@@ -994,6 +994,22 @@ The ancestor chain is resolved, but the returned store path is **not** resolved
 further: a symlinked store keeps its config beside the symlink, not beside the
 symlink's target. Grant paths, by contrast, are fully resolved.
 
+**job65, #142 — what the walk binds is now visible, and the walk itself is unchanged.**
+Two defects were filed against discovery and both are fixed: `bantamkit_status` line 4
+now ends `; bound to <store path>` (it named no path, so a store bound ABOVE the project
+was invisible), and `bantamkit-mcp --start <dir>` refuses a `<dir>` that is not there
+(`--start does not exist: <dir>`) or is not a directory (`--start is not a directory:
+<dir>`), exit 1, before a transport exists. It used to resolve the missing path, climb
+its nonexistent parents to the first real one, and bind whatever store sat above.
+**Decision: the walk does NOT stop at `$HOME`.** This page's stated contract is "walks it
+and its parents" to the filesystem root, and two documented behaviours depend on the walk
+reaching `~/.bantamkit/memory` itself (the no-duplicate-profile-layer rule and the
+"give this project a store of its own" remedy below). Stopping at `$HOME` would change
+which store a cwd outside the home binds, silently, for every such operator — the
+opposite of the issue's point. The fix is the visibility; the pin
+(`BANTAMKIT_MEMORY_DIR`) and `--store` stay the way to choose a store outright.
+`bantamkit-memory status --start` (the operator CLI) is not changed by this.
+
 ### Pinning the store: `BANTAMKIT_MEMORY_DIR`
 
 Discovery starts from cwd, and under an MCP host cwd is chosen by the **host**,
@@ -1170,6 +1186,19 @@ covers unparsable YAML, a top-level value that is not a mapping, an
 or is not a directory, and a `config.yaml` that is itself a directory. The two are
 distinct sentences (job65, #184): `granted store does not exist: <path> (from
 <config>)` and `granted store is not a directory: <path> (from <config>)`.
+
+**A tab where YAML would start a token is refused (job65, #158).** YAML indents with
+spaces, and PyYAML refuses every tab outside a quoted scalar or a comment — leading
+indentation, after `:` or `-`, inside `[ ]`, before a comment, trailing. The Node reader
+used to accept a tab as indentation and LAYER a tab-indented grant list that the Python
+server refused at startup. Both runtimes now refuse it in one sentence:
+`invalid memory config <config>: line <L>, column <C>: a tab cannot start a YAML token;
+indent with spaces` — Python rewrites PyYAML's own `found character '\t' that cannot start
+any token` from its mark, Node finds the same byte before its reader runs. A tab inside
+`'…'`/`"…"` or after ` #` is accepted on both. Where a document holds an earlier,
+different error, PyYAML reports that one first and Node still names the tab: both
+refuse, in different words (the existing reader ruling covers that wording).
+Gate: `node tools/conformance/run.mjs --suite store` (`j65-10: #158 …`).
 
 The `<name>` in an `[extra:<name>]` prefix is the granted store's project
 directory — the parent of its `.bantamkit` — so the grant above shows up as

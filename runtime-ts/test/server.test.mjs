@@ -1271,7 +1271,9 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
   assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
-  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes`);
+  // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
+  // walk bound ABOVE the project was invisible on the one surface that reports binding.
+  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes; bound to ${store}`);
   assert.equal(rows[4], 'event log: off');
   // Line 6, and it is NOT a condition: `session()` puts HOME at a scratch directory with no
   // record in it, so the server says it has never been checked and is still `Active 🟢`.
@@ -1357,14 +1359,15 @@ test('the report carries the update line in every one of the five states, and no
 
 test('the same store one byte of budget tighter reports Degraded, and names the condition', async () => {
   const { size: INDEX_BYTES, degraded: DEGRADED_BUDGET } = await indexFacts();
-  const { lines, stderr } = await statusSession(
+  const { lines, stderr, store } = await statusSession(
     [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
     DEGRADED_BUDGET,
   );
   const report = byId(lines, 3).result.structuredContent.result;
   const rows = report.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
-  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${DEGRADED_BUDGET} bytes`);
+  // AMENDED job65/#142: `; bound to <store>` — see the healthy case above.
+  assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${DEGRADED_BUDGET} bytes; bound to ${store}`);
   // The update line sits between `event log:` and the problem block in EVERY state, degraded
   // included — it is not a problem, so it does not join the list of them.
   assert.equal(rows[5], UPDATE_NEVER);
@@ -1519,7 +1522,11 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
       'nothing is saved — check that those store directories exist and are readable.',
   );
   assert.ok(!report.includes('somebodys-private-notes'), `the grant NAME leaked into the report:\n${report}`);
-  assert.ok(!report.includes(bed), `a path leaked into the report:\n${report}`);
+  // AMENDED job65/#142: WAS `!report.includes(bed)` over the whole report. Line 4 now names
+  // the bound PROJECT store by path (the issue's contract; line 4 is not a condition). The
+  // problem block — what the degraded footer carries — still names no path.
+  assert.ok(!rows.slice(6).join('\n').includes(bed), `a path leaked into the problems:\n${report}`);
+  assert.equal(rows[3].split('; bound to ')[1], join(bed, '.bantamkit', 'memory'));
   assert.equal(stderr, '');
 });
 

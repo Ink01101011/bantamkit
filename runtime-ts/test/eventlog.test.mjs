@@ -911,3 +911,32 @@ test('a write the filesystem refuses is swallowed, and the record simply disappe
   log.record('validate_json', 'valid');
   assert.equal(readFileSync(blocker, 'utf8'), 'not a directory\n');
 });
+
+test('job65/#154: an `on` log never creates the store it lives in', () => {
+  const bed = mkdtempSync(join(tmpdir(), 'bk-ghost-'));
+  try {
+    const store = join(bed, 'ghost', '.bantamkit', 'memory');
+    const log = EventLog.fromEnv(store, { [EVENT_LOG_ENV]: 'on' });
+    log.record('work_plan', 'plan');
+    assert.equal(existsSync(join(bed, 'ghost')), false);
+    assert.equal(log.writeFailed, false, 'a dropped record is not a write failure');
+    mkdirSync(store, { recursive: true });
+    log.record('work_plan', 'plan');
+    assert.deepEqual(readFileSync(defaultPath(store), 'utf8').trim().split('\n').map((l) => JSON.parse(l).tool), ['work_plan']);
+  } finally {
+    rmSync(bed, { recursive: true, force: true });
+  }
+});
+
+test('job65/#154: a literal log path is still created where the operator named it', () => {
+  const bed = mkdtempSync(join(tmpdir(), 'bk-ghost-'));
+  try {
+    const target = join(bed, 'logs', 'deep', 'mcp.jsonl');
+    const log = EventLog.fromEnv(join(bed, 'absent-store'), { [EVENT_LOG_ENV]: target });
+    log.record('work_plan', 'plan');
+    assert.equal(existsSync(target), true);
+    assert.equal(existsSync(join(bed, 'absent-store')), false);
+  } finally {
+    rmSync(bed, { recursive: true, force: true });
+  }
+});

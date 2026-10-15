@@ -498,6 +498,20 @@ the store the same four questions.
 | `1`, `on`, `true`, `yes` (any case) | the default file, `<store>/events/mcp.jsonl` |
 | anything else | taken as the literal path of the log file |
 
+**The default file never creates the store (job65, #154).** With `on`, the log lives
+INSIDE the store, so it is written only once the store directory exists. A record
+composed while the store is not there yet — a `--store` that was never saved to, or the
+designated `<cwd>/.bantamkit/memory` of a layered session that found none — is
+**dropped**: not redirected anywhere else, not counted as a write failure (nothing was
+offered to the filesystem, so `bantamkit_status` stays healthy), and the store is not
+created for it. The first `memory_save` creates the store; that save's record and every
+record after it land. Both runtimes apply this rule. It used to be the log's own
+`mkdir` that brought a never-saved store into existence, and the next layered walk then
+bound that directory as its store (docs/mcp.md: "Starting the server creates nothing
+anywhere"). A **literal path** is the operator's own choice: its parent directories are
+still created, wherever they are. Gate: `node tools/conformance/run.mjs --suite wire`
+(`eventlog: #154 …`).
+
 **Off is the default**, and the reason is measured rather than stylistic:
 `node tools/conformance/run.mjs --all` reads the operator's live memory store by design
 and read-only. A log that were on by default would turn that read into a write against

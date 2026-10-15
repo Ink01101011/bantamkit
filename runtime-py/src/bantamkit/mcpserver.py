@@ -965,7 +965,11 @@ def status_report(
         )
         + ", index "
         + ("unreadable" if size is None else str(size))
-        + f" of {budget} bytes",
+        + f" of {budget} bytes"
+        # job65/#142: the store this line counts, by path. WAS: no path at all, so a store
+        # the walk picked up ABOVE the project -- an ancestor's, or `~/.bantamkit/memory`
+        # itself -- answered as the writable project layer with nothing saying where.
+        + f"; bound to {memory.store.root}",
         f"event log: {'on' if log.enabled else 'off'}",
         # THE UPDATE LINE IS NOT A CONDITION, and that is the ruling of 2026-09-19 rather
         # than an omission. A newer version existing is not a fault: the server is serving
@@ -2259,7 +2263,31 @@ def _build_memory(args: argparse.Namespace) -> Memory:
             raise SystemExit("--store requires a non-empty path")
         _check_store_flag(args.store)
         return Memory(store=args.store, k=args.k, index_budget=args.index_budget)
+    if args.start is not None:
+        _check_start_flag(args.start)
     return Memory.layered(start=args.start, k=args.k, index_budget=args.index_budget)
+
+
+def _check_start_flag(raw: str) -> None:
+    """job65/#142: `--start` must name a directory that is there.
+
+    WAS: unchecked. `Path.resolve()` of a path that does not exist answers the path anyway,
+    the walk then climbed its nonexistent parents to the first real one and bound whatever
+    store sat above it -- a typo'd `--start` silently bound an ancestor's store as the
+    WRITABLE project layer. Unlike `--store`, a missing `--start` is not a designation:
+    nothing is ever created at a start directory, so a missing one can only be a mistake,
+    and it is refused by name before a transport exists. Same `stat` and the same sentence
+    family as `_check_store_flag`; `runtime-ts/src/cli.ts` holds the twin.
+    """
+    start = Path(raw)
+    try:
+        info = os.stat(start)
+    except FileNotFoundError as e:
+        raise SystemExit(f"--start does not exist: {start}") from e
+    except OSError as e:
+        raise SystemExit(f"--start is unreachable: {start}: {e.strerror}") from e
+    if not stat_module.S_ISDIR(info.st_mode):
+        raise SystemExit(f"--start is not a directory: {start}")
 
 
 def _check_store_flag(raw: str) -> None:

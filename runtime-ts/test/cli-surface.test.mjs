@@ -71,7 +71,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -797,3 +797,27 @@ test('isTTY is undefined on a pipe, so the check is TRUTHINESS — `=== false` w
   assert.equal(probe.status, 0, probe.stderr);
   assert.deepEqual(JSON.parse(probe.stdout), { t: 'undefined', v: null, eqFalse: false });
 });
+
+test('job65/#142: a --start that is not a directory is refused by name, before a transport exists', () => {
+  const bed = mkdtempSync(join(tmpdir(), 'bk-start-'));
+  try {
+    const env = { ...process.env, HOME: bed, USERPROFILE: bed, BANTAMKIT_MEMORY_DIR: '' };
+    const missing = join(bed, 'no', 'such', 'project');
+    const afile = join(bed, 'afile');
+    writeFileSync(afile, 'x');
+    for (const [start, stderr] of [
+      [missing, `--start does not exist: ${missing}\n`],
+      [afile, `--start is not a directory: ${afile}\n`],
+    ]) {
+      const r = spawnSync(process.execPath, [CLI, '--start', start], { cwd: bed, input: '', env, encoding: 'utf8' });
+      assert.deepEqual({ exit: r.status, stdout: r.stdout, stderr: r.stderr }, { exit: 1, stdout: '', stderr });
+    }
+    assert.deepEqual(readdirSyncSorted(bed), ['afile']);
+  } finally {
+    rmSync(bed, { recursive: true, force: true });
+  }
+});
+
+function readdirSyncSorted(dir) {
+  return readdirSync(dir).sort();
+}

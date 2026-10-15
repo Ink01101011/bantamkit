@@ -462,7 +462,11 @@ export function statusReport(
         : `${plural(facts, 'fact')} in the project store`) +
       ', index ' +
       (size === null ? 'unreadable' : String(size)) +
-      ` of ${budget} bytes`,
+      ` of ${budget} bytes` +
+      // job65/#142: the store this line counts, by path. WAS: no path at all, so a store the
+      // walk picked up ABOVE the project — an ancestor's, or `~/.bantamkit/memory` itself —
+      // answered as the writable project layer with nothing on the surface saying where.
+      `; bound to ${memory.store.root}`,
     `event log: ${log.enabled ? 'on' : 'off'}`,
     // THE UPDATE LINE IS NOT A CONDITION, and that is the ruling of 2026-09-19 rather than an
     // omission. A newer version existing is not a fault: the server is serving correctly, and

@@ -196,10 +196,23 @@ class EventLog:
         path: Path | None,
         cap_bytes: int = CAP_BYTES,
         clock: Callable[[], int] = _default_clock,
+        requires_dir: Path | None = None,
     ) -> None:
         self.path = path
         self.cap_bytes = cap_bytes
         self._clock = clock
+        #: job65/#154: the directory that must already exist before a record is written.
+        #:
+        #: `from_env` sets it to the store root when the switch is `on` (the default file
+        #: lives INSIDE the store). WAS: the `mkdir` in `_append` brought a never-saved store
+        #: into existence -- `--store <absent>` plus one `work_plan` call left
+        #: `<store>/events/mcp.jsonl` behind, and the next layered session walking up through
+        #: it bound that directory as its store. The log does not create the store: while the
+        #: store is not there a record has nowhere to go and is DROPPED -- not redirected, and
+        #: not counted as `write_failed`, because nothing was offered to the filesystem. The
+        #: first save creates the store; records after it land. A literal path is the
+        #: operator's own choice and keeps `requires_dir` None.
+        self.requires_dir = requires_dir
         #: Set the first time `record` swallows an `OSError`, and never cleared.
         #:
         #: FAILING TO LOG STILL NEVER FAILS THE TOOL — that contract is unchanged and
@@ -225,7 +238,13 @@ class EventLog:
         clock: Callable[[], int] = _default_clock,
     ) -> EventLog:
         source = os.environ if env is None else env
-        return cls(resolve_path(store_root, source.get(EVENT_LOG_ENV)), clock=clock)
+        raw = source.get(EVENT_LOG_ENV)
+        in_store = raw is not None and raw.strip().lower() in _ON
+        return cls(
+            resolve_path(store_root, raw),
+            clock=clock,
+            requires_dir=Path(store_root) if in_store else None,
+        )
 
     @property
     def enabled(self) -> bool:
@@ -280,6 +299,10 @@ class EventLog:
         intent, not a live path.
         """
         assert self.path is not None
+        # job65/#154: `is_dir()` raises PermissionError for EACCES, which lands in `record`'s
+        # `except OSError` as a lost record -- the verdict `eventlog.ts` reaches too.
+        if self.requires_dir is not None and not self.requires_dir.is_dir():
+            return
         # AUDIT FINDING (J51-1): this `mkdir(parents=True)` can bring a whole `.bantamkit`
         # directory into existence on its own -- `BANTAMKIT_EVENT_LOG=on` with a project
         # store that was never saved to reaches here first -- entirely bypassing

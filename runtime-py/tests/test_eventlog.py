@@ -768,3 +768,28 @@ async def test_bantamkit_read_records_its_decision_and_the_reply_wording_says_mo
         ("page", {"bytes": 3, "kind": "text", "parts": 1, "rows": 2}),
         ("refused-unknown-part", {"kind": "text", "parts": 1}),
     ]
+
+
+def test_an_on_log_never_creates_the_store_it_lives_in(tmp_path):
+    """job65/#154: `on` puts the log INSIDE the store, so it waits for the store to exist.
+
+    WAS: `_append`'s `mkdir(parents=True)` made the never-saved store, and the next layered
+    walk bound it. The dropped record is not a write failure: nothing was offered to disk.
+    """
+    store = tmp_path / "ghost" / ".bantamkit" / "memory"
+    log = EventLog.from_env(store, {EVENT_LOG_ENV: "on"})
+    log.record("work_plan", "plan")
+    assert not (tmp_path / "ghost").exists()
+    assert log.write_failed is False
+    store.mkdir(parents=True)
+    log.record("work_plan", "plan")
+    lines = default_path(store).read_text(encoding="utf-8").splitlines()
+    assert [json.loads(x)["tool"] for x in lines] == ["work_plan"]
+
+
+def test_a_literal_log_path_is_still_created_where_the_operator_named_it(tmp_path):
+    target = tmp_path / "logs" / "deep" / "mcp.jsonl"
+    log = EventLog.from_env(tmp_path / "absent-store", {EVENT_LOG_ENV: str(target)})
+    log.record("work_plan", "plan")
+    assert target.exists()
+    assert not (tmp_path / "absent-store").exists()

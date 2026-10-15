@@ -59,7 +59,7 @@
  */
 import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
 
-import { cmpCodepoint, osErrorClassName, pyExists, PyOSError, pyJoin, pyName, pyParent } from './memory/pyfs.js';
+import { cmpCodepoint, osErrorClassName, pyExists, pyIsDir, PyOSError, pyJoin, pyName, pyParent } from './memory/pyfs.js';
 import { bantamkitDirFor, ensureBantamkitGitignore } from './memory/store.js';
 
 /**
@@ -202,10 +202,30 @@ export class EventLog {
    */
   writeFailed = false;
 
-  constructor(path: string | null, capBytes: number = CAP_BYTES, clock: () => number = defaultClock) {
+  /**
+   * job65/#154: the directory that must already exist before a record is written, or `null`.
+   *
+   * `fromEnv` sets it to the store root when the switch is `on` (the default file lives
+   * INSIDE the store). WAS: the `mkdir` in `append` brought a never-saved store into
+   * existence — `--store <absent>` plus one `work_plan` call left `<store>/events/mcp.jsonl`
+   * behind, and the next layered session walking up through it bound that directory as its
+   * store. The log does not create the store: while the store is not there, a record has
+   * nowhere to go and is DROPPED — not redirected, and not counted as `writeFailed`, because
+   * nothing was offered to the filesystem. The first save creates the store; records after it
+   * land. A literal path is the operator's own choice and keeps `requiresDir === null`.
+   */
+  readonly requiresDir: string | null;
+
+  constructor(
+    path: string | null,
+    capBytes: number = CAP_BYTES,
+    clock: () => number = defaultClock,
+    requiresDir: string | null = null,
+  ) {
     this.path = path;
     this.capBytes = capBytes;
     this.clock = clock;
+    this.requiresDir = requiresDir;
   }
 
   static fromEnv(
@@ -213,7 +233,9 @@ export class EventLog {
     env: Record<string, string | undefined> = process.env,
     clock: () => number = defaultClock,
   ): EventLog {
-    return new EventLog(resolvePath(storeRoot, env[EVENT_LOG_ENV]), CAP_BYTES, clock);
+    const raw = env[EVENT_LOG_ENV];
+    const inStore = raw !== undefined && raw !== null && ON.has(raw.trim().toLowerCase());
+    return new EventLog(resolvePath(storeRoot, raw), CAP_BYTES, clock, inStore ? storeRoot : null);
   }
 
   get enabled(): boolean {
@@ -269,6 +291,9 @@ export class EventLog {
    * by construction, so that branch is a statement of intent, not a live path.
    */
   private append(path: string, payload: Buffer): void {
+    // job65/#154: `pyIsDir` raises for EACCES exactly as `Path.is_dir()` does, and that lands
+    // in `record`'s catch as a lost record — the same verdict the reference reaches.
+    if (this.requiresDir !== null && !pyIsDir(this.requiresDir)) return;
     // AUDIT FINDING (J51-1, mirrored from `runtime-py/src/bantamkit/eventlog.py`): the
     // `mkdirSync` below can bring a whole `.bantamkit` directory into existence on its own
     // -- `BANTAMKIT_EVENT_LOG=on` with a project store that was never saved to reaches here

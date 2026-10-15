@@ -25,6 +25,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -963,6 +964,61 @@ export async function run(ctx) {
         ? `j65-6: ${j656.length + 3} scenarios, each a differential and a per-side literal`
         : `j65-6: ${withheld.length} chmod scenarios WITHHELD because a 0o555 directory accepted a create (uid 0 or Windows): ${withheld.join('; ')}`,
     );
+  }
+
+  // ------------------------------------------------ job65 J65-10: #158 a tab in config.yaml
+  //
+  // WAS: the port's reader took `[ \t]*` as indentation and LAYERED a tab-indented grant list;
+  // PyYAML refused the same file at startup — one config, two verdicts. Now both refuse, in one
+  // sentence: Python rewrites PyYAML's `found character '\t' that cannot start any token` from
+  // its own mark, Node finds the same byte with `firstTokenTab`. A differential per document and
+  // a literal per side (a symmetric regression keeps a differential green). The last two rows
+  // are the boundary: a tab inside a quoted scalar and inside a comment is NOT refused by
+  // PyYAML, so it must not be refused here either.
+  {
+    const layers158 = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'layers.js')).href);
+    const nodeGrants158 = (storePath) => {
+      try {
+        return { grants: layers158.loadGrants(storePath).map(b64) };
+      } catch (e) {
+        return { error: { type: e?.name ?? 'Error', message: b64(String(e?.message ?? e)) } };
+      }
+    };
+    const CFG = '<ROOT>/proj/.bantamkit/config.yaml';
+    const tabbed = (line, column) =>
+      `invalid memory config ${CFG}: line ${line}, column ${column}: a tab cannot start a YAML token; indent with spaces`;
+    const docs158 = [
+      ['the issue: a tab-indented grant item', 'extra_stores:\n\t- ../../other\n', { error: tabbed(2, 1) }],
+      ['a tab after the colon', 'extra_stores:\t[../../other]\n', { error: tabbed(1, 14) }],
+      ['a tab after the dash', 'extra_stores:\n  -\t../../other\n', { error: tabbed(2, 4) }],
+      ['spaces then a tab', 'extra_stores:\n  \t- ../../other\n', { error: tabbed(2, 3) }],
+      ['a tab-indented second key', 'extra_stores: []\n\tother: 1\n', { error: tabbed(2, 1) }],
+      ['a tab between a value and its comment', 'extra_stores: []\t# none\n', { error: tabbed(1, 17) }],
+      ['a tab alone on a line', 'extra_stores: []\n\t\n', { error: tabbed(2, 1) }],
+      ['boundary: a tab inside a comment is accepted', '# a\tcomment\nextra_stores:\n  - ../../other\n', { grants: ['<ROOT>/other'] }],
+      ['boundary: a tab inside a quoted grant is content', "extra_stores:\n  - '../../other'\n  - \"../../other\"\n", { grants: ['<ROOT>/other', '<ROOT>/other'] }],
+    ];
+    const asLiteral = (a) => (a?.error ? { error: unb64(a.error.message) } : { grants: (a?.grants ?? []).map(unb64) });
+    let k158 = 0;
+    for (const [label, text, expected] of docs158) {
+      k158 += 1;
+      const answers = {};
+      for (const side of ['py', 'node']) {
+        const bed = join(ctx.scratch, 'j6510-tabs', String(k158), side);
+        mkdirSync(join(bed, 'proj', '.bantamkit', 'memory'), { recursive: true });
+        mkdirSync(join(bed, 'other'), { recursive: true });
+        writeFileSync(join(bed, 'proj', '.bantamkit', 'config.yaml'), text);
+        const storePath = join(bed, 'proj', '.bantamkit', 'memory');
+        const raw = scrub(side === 'py' ? ctx.runPython(REF, { op: 'grants', store: storePath }) : nodeGrants158(storePath), bed);
+        // `scrub` masks the bed in an error only; a grant is a resolved PATH, masked here.
+        if (Array.isArray(raw?.grants)) raw.grants = raw.grants.map((g) => b64(scrubPath(scrubPath(unb64(g), realpathSync(bed)), bed)));
+        answers[side] = raw;
+      }
+      cases.push({ name: `j65-10: #158 ${label} — answer`, kind: 'json', expected: answers.py, actual: answers.node });
+      for (const side of ['py', 'node']) {
+        cases.push({ name: `j65-10: #158 ${label} — ${side === 'py' ? 'python' : 'node'} against the literal`, kind: 'json', expected, actual: asLiteral(answers[side]) });
+      }
+    }
   }
 
   // ------------------------------------------------ the self-ignoring .bantamkit/.gitignore
