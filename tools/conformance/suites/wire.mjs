@@ -740,6 +740,58 @@ export async function run(ctx) {
     rpc(60, 'resources/read', { uri: 'bantamkit://skills/%6Demory' }),
   ]);
 
+  // job67/J67-1 (#133, user ruling 2026-10-15): every served tool refuses an unknown
+  // top-level argument key by name, before anything runs. One call per tool with otherwise
+  // well-formed arguments plus `bogus`, then the edges. Compared by the per-id loop (bytes
+  // too) AND pinned per side against a literal in the j67-1 block below.
+  const J67_1_CALLS = {
+    memory_save: { type: 'project', name: 'j67-unknown-args', description: 'an unknown key refused', body: 'b', bogus: 1 },
+    memory_recall: { query: 'a', bogus: 1 },
+    validate_json: { output: '{}', schema: { type: 'object' }, bogus: 1 },
+    shiftwork_clock_in: { checkpoint, bogus: 1 },
+    shiftwork_clock_out: {
+      checkpoint,
+      unit_id: cursorUnit,
+      status: 'done',
+      handoff_patch: {},
+      history_entry: { unit: cursorUnit, outcome: 'never written' },
+      bogus: 1,
+    },
+    shiftwork_status: { checkpoint, bogus: 1 },
+    build_identity: { bogus: 1 },
+    bantamkit_status: { bogus: 1 },
+    memory_compact: { reserve: 0, bogus: 1 },
+    skill_audit: { root: SKILL_FIXTURE, bogus: 1 },
+    memory_dream: { dry_run: true, bogus: 1 },
+    token_ledger: { root: docs, bogus: 1 },
+    work_plan: { nodes: [], bogus: 1 },
+    shiftwork_plan: { checkpoint, bogus: 1 },
+  };
+  add('j67-1-unknown-args', [
+    INIT(),
+    INITIALIZED,
+    ...Object.entries(J67_1_CALLS).map(([tool, args], i) => callTool(10 + i, tool, args)),
+    // Nothing was done: the refused save left no fact to recall, and the refused `done`
+    // clock_out left the cursor where it was (served, it would have advanced it).
+    callTool(30, 'memory_recall', { query: 'j67-unknown-args an unknown key refused' }),
+    callTool(31, 'shiftwork_status', { checkpoint }),
+    // The FIRST unknown key in arrival order is named.
+    callTool(32, 'memory_recall', { query: 'a', zz: 1, aa: 2 }),
+    // An unknown key outranks a type error on a known one...
+    callTool(33, 'memory_recall', { query: 123, bogus: 1 }),
+    // ...and a lone surrogate (#160) outranks an unknown key, even in that key's value.
+    callTool(34, 'memory_recall', { query: 'a', bogus: '\ud800' }),
+    // `_meta` lives in params, not arguments, and is untouched...
+    rpc(35, 'tools/call', { name: 'memory_recall', arguments: { query: 'a' }, _meta: { progressToken: 'j67' } }),
+    // ...while a `_meta` INSIDE arguments is just another unknown argument.
+    callTool(36, 'memory_recall', { query: 'a', _meta: { progressToken: 'j67' } }),
+    // Case matters, and a name off Object.prototype is no field either.
+    callTool(37, 'memory_recall', { Query: 'a' }),
+    callTool(38, 'memory_recall', { query: 'a', constructor: 1 }),
+    // The unitId trap the issue names.
+    callTool(39, 'shiftwork_clock_in', { checkpoint, unitId: cursorUnit }),
+  ]);
+
   add('identity', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})]);
   add('identity-pycache', [INIT(), INITIALIZED, callTool(2, 'build_identity', {})], {
     env: { ...baseEnv, BANTAMKIT_ASSETS: PYCACHE_ASSETS },
@@ -1648,6 +1700,78 @@ export async function run(ctx) {
         ],
       });
     }
+  }
+
+  // ----------------------------- job67/J67-1: an unknown top-level argument, refused by name
+
+  /**
+   * #133 (user ruling 2026-10-15). The per-id loop compares every `j67-1-unknown-args` frame
+   * side to side; these pin each side against a LITERAL, one case per served tool, because
+   * the two runtimes IGNORED an unknown key in lockstep through 0.35.9 and a differential
+   * passed the whole time. `known` is read off the asset on disk, so the sentence is tied to
+   * the advertised schema rather than to either runtime's argument table.
+   */
+  {
+    const assetKeys = (tool) =>
+      Object.keys(JSON.parse(readFileSync(join(ASSETS, 'tools', `${tool}.json`), 'utf8')).parameters.properties);
+    const refusal = (tool, key, known = assetKeys(tool)) => ({
+      content: [{ text: `Error executing tool ${tool}: unknown argument '${key}'; known: ${known.length === 0 ? '(none)' : known.join(', ')}`, type: 'text' }],
+      isError: true,
+    });
+    const resultOf = (side, id) => frameOf(side, id)?.result ?? 'missing';
+    const { python: pyAds, node: nodeAds } = results.get('advertisement');
+    const looseOf = (side) =>
+      Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, t.inputSchema?.additionalProperties ?? 'absent']));
+    const tools = Object.keys(J67_1_CALLS);
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const side = results.get('j67-1-unknown-args')[key];
+      tools.forEach((tool, i) => {
+        cases.push({
+          name: `j67-1: #133 ${label} refuses ${tool}(bogus=1) by name, nothing done (literal)`,
+          kind: 'json',
+          expected: refusal(tool, 'bogus'),
+          actual: resultOf(side, 10 + i),
+        });
+      });
+      cases.push({
+        name: `j67-1: #133 ${label}: the refused save wrote nothing and the refused clock_out moved nothing (literal)`,
+        kind: 'json',
+        expected: { recall: 'no memories to search: nothing is saved in any layer bound here.', cursor: cursorUnit },
+        actual: {
+          recall: toolTextOf(side, 30)?.split(' The project store ')[0] ?? 'missing',
+          cursor: frameOf(side, 31)?.result?.structuredContent?.cursor ?? 'missing',
+        },
+      });
+      cases.push({
+        name: `j67-1: #133 ${label}: first unknown key in arrival order, before a type error, after a lone surrogate (literal)`,
+        kind: 'json',
+        expected: [
+          refusal('memory_recall', 'zz'),
+          refusal('memory_recall', 'bogus'),
+          {
+            content: [{ text: "Error executing tool memory_recall: argument 'bogus' holds a lone surrogate (U+D800), which is not text; nothing was done", type: 'text' }],
+            isError: true,
+          },
+          refusal('memory_recall', '_meta'),
+          refusal('memory_recall', 'Query'),
+          refusal('memory_recall', 'constructor'),
+          refusal('shiftwork_clock_in', 'unitId'),
+        ],
+        actual: [32, 33, 34, 36, 37, 38, 39].map((id) => resultOf(side, id)),
+      });
+      cases.push({
+        name: `j67-1: #133 ${label} serves a call whose _meta rides in params (literal)`,
+        kind: 'json',
+        expected: false,
+        actual: frameOf(side, 35)?.result?.isError ?? 'missing',
+      });
+    }
+    cases.push({
+      name: 'j67-1: #133 every served inputSchema advertises additionalProperties false, on each side (literal)',
+      kind: 'json',
+      expected: { python: Object.fromEntries(tools.map((t) => [t, false])), node: Object.fromEntries(tools.map((t) => [t, false])) },
+      actual: { python: looseOf(pyAds), node: looseOf(nodeAds) },
+    });
   }
 
   // ------------------------------------------- the one remedy the two installs spell apart

@@ -1059,6 +1059,30 @@ class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
 
     unwrap_json: bool = True
 
+    def validate_arguments(self, arguments_to_validate: dict[str, Any]) -> dict[str, Any]:
+        """Refuse an unknown top-level key by name, then validate as the SDK does (#133).
+
+        User ruling 2026-10-15: every served tool refuses an argument key its schema does not
+        name, and every served asset advertises `additionalProperties: false` at the top
+        level. Until 0.36.0 pydantic's default `extra="ignore"` dropped such a key, so
+        `unitId` for `unit_id` ran the call as if the argument had never been sent. The
+        sentence is `unknown argument '<key>'; known: <fields in schema order>` (`(none)`
+        for a tool that takes no argument), naming the first unknown key in arrival order;
+        `Tool.run` prefixes `Error executing tool <name>: ` and answers `isError: true`,
+        exactly as for a pydantic refusal, and the handler never runs. NOT `extra="forbid"`:
+        that would be pydantic's `extra_forbidden` frame listing EVERY unknown key after the
+        type errors, and the port would have to reproduce it. The port says the same sentence
+        from `unknownArgument` in `runtime-ts/src/mcp/pyargs.ts`. A lone surrogate is refused
+        before this, by `bantamkit.mcpstdio`, on both sides.
+        """
+        known = [field.alias or name for name, field in self.arg_model.model_fields.items()]
+        for key in arguments_to_validate:
+            if key not in known:
+                raise ValueError(
+                    f"unknown argument '{key}'; known: {', '.join(known) if known else '(none)'}"
+                )
+        return super().validate_arguments(arguments_to_validate)
+
     def pre_parse_json(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.unwrap_json:
             return data

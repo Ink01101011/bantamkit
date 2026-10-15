@@ -19,7 +19,8 @@
         "type": "integer",
         "description": "Facts wanted, clamped to 1..5. Raised to the store default of 3 when smaller; never lowered below it."
       }
-    }
+    },
+    "additionalProperties": false
   },
   "output_schema": {
     "properties": {

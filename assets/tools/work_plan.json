@@ -45,7 +45,8 @@
       "nodes"
     ],
     "type": "object",
-    "title": "work_planArguments"
+    "title": "work_planArguments",
+    "additionalProperties": false
   },
   "output_schema": {
     "type": "object",

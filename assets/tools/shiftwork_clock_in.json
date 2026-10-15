@@ -27,7 +27,8 @@
       "checkpoint"
     ],
     "type": "object",
-    "title": "shiftwork_clock_inArguments"
+    "title": "shiftwork_clock_inArguments",
+    "additionalProperties": false
   },
   "output_schema": {
     "type": "object",

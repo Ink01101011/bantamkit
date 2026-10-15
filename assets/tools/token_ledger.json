@@ -22,7 +22,8 @@
         "type": "string",
         "description": "Price table to read instead of `$BANTAMKIT_PRICES` or the shipped one; only consulted when `model` is given. A malformed table is a configuration fault and stops with its own sentence, rather than being reported as an unpriced model"
       }
-    }
+    },
+    "additionalProperties": false
   },
   "output_schema": {
     "properties": {

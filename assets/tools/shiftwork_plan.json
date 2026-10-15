@@ -15,7 +15,8 @@
       "checkpoint"
     ],
     "type": "object",
-    "title": "shiftwork_planArguments"
+    "title": "shiftwork_planArguments",
+    "additionalProperties": false
   },
   "output_schema": {
     "type": "object",

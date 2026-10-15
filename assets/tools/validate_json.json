@@ -21,7 +21,8 @@
       "schema"
     ],
     "type": "object",
-    "title": "validate_jsonArguments"
+    "title": "validate_jsonArguments",
+    "additionalProperties": false
   },
   "output_schema": {
     "type": "object",

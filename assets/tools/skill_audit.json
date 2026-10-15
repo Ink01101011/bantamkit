@@ -52,7 +52,8 @@
         },
         "description": "Plugin id (`<plugin>@<marketplace>`) to the version directory name the host actually serves; when a plugin is named here that directory is resolved whatever byte order would have said, and a plugin absent from it falls back to byte order"
       }
-    }
+    },
+    "additionalProperties": false
   },
   "output_schema": {
     "properties": {

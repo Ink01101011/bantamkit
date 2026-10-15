@@ -43,7 +43,8 @@
         },
         "description": "names of related memories"
       }
-    }
+    },
+    "additionalProperties": false
   },
   "output_schema": {
     "properties": {

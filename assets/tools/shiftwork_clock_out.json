@@ -140,7 +140,8 @@
       "history_entry"
     ],
     "type": "object",
-    "title": "shiftwork_clock_outArguments"
+    "title": "shiftwork_clock_outArguments",
+    "additionalProperties": false
   },
   "output_schema": {
     "type": "object",

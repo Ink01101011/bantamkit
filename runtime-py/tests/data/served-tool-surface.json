@@ -21,7 +21,8 @@
       "inputSchema": {
         "properties": {},
         "type": "object",
-        "title": "bantamkit_statusArguments"
+        "title": "bantamkit_statusArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "properties": {
@@ -42,7 +43,8 @@
       "inputSchema": {
         "properties": {},
         "type": "object",
-        "title": "build_identity_toolArguments"
+        "title": "build_identity_toolArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
@@ -59,7 +61,8 @@
             "type": "integer",
             "description": "Bytes of index headroom to free below the budget: the target is `budget - reserve`, a negative value counts as 0, any value is capped at half the budget, and 0 compacts to the budget itself. Omit for the default: the room the degraded-index warning demands (the budget minus `(90 * budget - 1) // 100`) plus the size of the largest index line the store holds -- at the default 24000-byte budget with a 39-byte largest line that is 2401 + 39 = 2440, a 21560-byte target."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "outputSchema": {
         "properties": {
@@ -91,7 +94,8 @@
         "required": [
           "query"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       },
       "outputSchema": {
         "properties": {
@@ -147,7 +151,8 @@
           "description",
           "body"
         ],
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false
       },
       "outputSchema": {
         "properties": {
@@ -188,7 +193,8 @@
           "checkpoint"
         ],
         "type": "object",
-        "title": "shiftwork_clock_inArguments"
+        "title": "shiftwork_clock_inArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
@@ -334,7 +340,8 @@
           "history_entry"
         ],
         "type": "object",
-        "title": "shiftwork_clock_outArguments"
+        "title": "shiftwork_clock_outArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
@@ -355,7 +362,8 @@
           "checkpoint"
         ],
         "type": "object",
-        "title": "shiftwork_statusArguments"
+        "title": "shiftwork_statusArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
@@ -382,7 +390,8 @@
           "schema"
         ],
         "type": "object",
-        "title": "validate_jsonArguments"
+        "title": "validate_jsonArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
@@ -440,7 +449,8 @@
             },
             "description": "Plugin id (`<plugin>@<marketplace>`) to the version directory name the host actually serves; when a plugin is named here that directory is resolved whatever byte order would have said, and a plugin absent from it falls back to byte order"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "outputSchema": {
         "properties": {
@@ -465,7 +475,8 @@
             "type": "boolean",
             "description": "Preview only. True (the default) performs every read, merge and projection and writes nothing. Pass false to apply the plan."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "outputSchema": {
         "properties": {
@@ -501,7 +512,8 @@
             "type": "string",
             "description": "Price table to read instead of `$BANTAMKIT_PRICES` or the shipped one; only consulted when `model` is given. A malformed table is a configuration fault and stops with its own sentence, rather than being reported as an unpriced model"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "outputSchema": {
         "properties": {
@@ -560,7 +572,8 @@
           "nodes"
         ],
         "type": "object",
-        "title": "work_planArguments"
+        "title": "work_planArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",
@@ -581,7 +594,8 @@
           "checkpoint"
         ],
         "type": "object",
-        "title": "shiftwork_planArguments"
+        "title": "shiftwork_planArguments",
+        "additionalProperties": false
       },
       "outputSchema": {
         "type": "object",

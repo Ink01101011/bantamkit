@@ -40,6 +40,17 @@ pip install "bantamkit[mcp] @ git+https://github.com/Ink01101011/bantamkit.git@v
 The `memory_save`/`memory_recall` input schemas are the asset pack's
 `assets/tools/*.json` verbatim — the same contract agents see in-process.
 
+**An argument a tool does not take is refused by name.** Every served tool's input schema
+says `"additionalProperties": false` at its top level, and both servers hold a call to it: a
+key the schema does not name answers `isError: true` with
+`Error executing tool <name>: unknown argument '<key>'; known: <the schema's keys, in order>`
+(`known: (none)` for a tool that takes no argument), naming the first unknown key in the
+order it arrived, and nothing runs. It is checked after a lone surrogate (#160) and before
+any type check on a known key. `_meta` rides in the call's `params`, not in `arguments`, and
+is untouched. Through 0.35.9 both servers ignored such a key, so `unitId` for `unit_id` ran
+the call as if the argument had never been sent (#133; `tools/conformance/suites/wire.mjs`,
+the `j67-1:` block, pins each tool on each side).
+
 ## Shift-work tools
 
 The [shift-work](shiftwork.md) driver spawns sessions from outside; these

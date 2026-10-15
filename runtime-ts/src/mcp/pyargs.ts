@@ -542,7 +542,7 @@ function exceedsIntDigitCap(value: PyValue): boolean {
  * THE RULE IS THE SDK'S, NOT A PARAPHRASE. A key is unwrapped when all of this holds:
  *
  *   * the key names a field of the model — an unknown key is not in `key_to_field_info` and
- *     is left alone (it is ignored by validation anyway);
+ *     is left alone (since #133 it never gets this far: `unknownArgument` refuses it first);
  *   * the value is a string;
  *   * the field's annotation `is not str`. That is an IDENTITY test on the annotation
  *     object, so `str | None` is NOT `str` and DOES get unwrapped: `skill_audit(check=
@@ -603,7 +603,8 @@ export class PyValidationFailure extends Error {
  * (U+XXXX), which is not text; nothing was done` — the reference from its stdio reader
  * (`bantamkit.mcpstdio`), this port from here. `<path>` is the top-level argument, then
  * `[i]` for a list item and `.key` for a dict member; the first in document order wins.
- * Keys are not inspected: an unknown key is ignored by both sides anyway.
+ * Keys are not inspected, and an unknown key's VALUE is walked too: this check runs before
+ * the unknown-key refusal (#133) on both sides.
  */
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
@@ -638,10 +639,34 @@ export function loneSurrogateArgument(args: PyValue): string | null {
 }
 
 /**
+ * The refusal for the first top-level key `model` does not name, or `null` (#133).
+ *
+ * The sentence is shared with the reference byte for byte; `known` is the model's field
+ * order, which is the asset's `parameters.properties` order (`test/pyargs-unknown.test.mjs`
+ * ties the two). Only a dict is inspected: a non-object `arguments` never reaches here.
+ */
+export function unknownArgument(model: ArgModel, args: PyValue): string | null {
+  if (args.t !== 'dict') return null;
+  const names = model.fields.map((field) => field.name);
+  for (const key of args.v.keys()) {
+    if (!names.includes(key)) {
+      return `unknown argument '${key}'; known: ${names.length === 0 ? '(none)' : names.join(', ')}`;
+    }
+  }
+  return null;
+}
+
+/**
  * `model.model_validate(arguments)` for one tool, or the exact `ValidationError` text.
  *
- * Unknown keys are IGNORED, because pydantic's default `model_config` ignores them and the
- * measured server accepts `{"query": "a", "extra": 1}` without complaint. The absent-key case
+ * AN UNKNOWN TOP-LEVEL KEY IS REFUSED BY NAME (#133, user ruling 2026-10-15), after the
+ * lone-surrogate check and before anything else: `unknown argument '<key>'; known: <the
+ * model's fields, in schema order, comma-separated>` (`known: (none)` for a tool that takes
+ * no argument), the first unknown key in the order the arguments arrived. Until 0.36.0 both
+ * runtimes IGNORED such a key, pydantic's default, so `unitId` for `unit_id` ran the call as
+ * if the argument had never been sent. The reference says the same sentence from
+ * `_ArgMetadata.validate_arguments` (`bantamkit.mcpserver`), and every served asset now
+ * advertises `additionalProperties: false` at the top level. The absent-key case
  * and the explicit-`null` case are different: `{}` is `missing`, `{"handoff_patch": null}` is
  * `dict_type`, and only an OPTIONAL field treats `null` as its default.
  *
@@ -653,6 +678,8 @@ export function loneSurrogateArgument(args: PyValue): string | null {
 export function validateArguments(model: ArgModel, args: PyValue): Map<string, PyValue> {
   const lone = loneSurrogateArgument(args);
   if (lone !== null) throw new Error(lone);
+  const unknown = unknownArgument(model, args);
+  if (unknown !== null) throw new Error(unknown);
   const unwrapped = preParseJson(model, args);
   const supplied = unwrapped.t === 'dict' ? unwrapped.v : new Map<string, PyValue>();
   const errors: RawError[] = [];
