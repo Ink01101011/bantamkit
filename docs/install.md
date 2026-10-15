@@ -404,6 +404,19 @@ Registering the server does not register the hooks, in either direction. What th
 what they cost, and the full consent gate are in [hooks.md](hooks.md).
 
 
+### One action per command line (job66, #139)
+
+`--assets-root`, `--hook`, `--mcp-report`, `--statusline`, `--update`, `--install`,
+`--install-hooks` and `--remove-hooks` each act and exit, so a command line takes **one** of
+them. Two together are a usage error on both runtimes — the usage block, then
+`bantamkit-mcp: error: argument --install: not allowed with argument --assets-root`, exit 2,
+nothing written. (Until 0.35.8 the first in registration order ran and the rest were dropped at
+exit 0.) The flag named after `argument` is the later of the two in `-h` order, not in your
+argv. A modifier given to a flag that does not read it is refused before anything acts, at
+exit 1: `--force` without `--install`, `--yes` without `--install-hooks`/`--remove-hooks`, and
+`--store`/`--start` with `--hook` (`--store is not meaningful with --hook`: the hook binds the
+store from the cwd in the host's event, never from argv).
+
 ### The Python route with no network
 
 For a machine with no network, `pip download` a wheelhouse on a connected machine with the same
@@ -990,7 +1003,9 @@ client = OpenAICompatible(
 Skills, critique rubrics, tool schemas and eval tasks ship as data under
 `assets/`, not as Python. They are resolved in this order:
 
-1. `$BANTAMKIT_ASSETS` — if set, that directory is used, full stop.
+1. `$BANTAMKIT_ASSETS` — if set, that directory is used, full stop. It is not checked for
+   existence: `--assets-root` at a missing path prints that path and `0 files` at exit 0 on
+   both runtimes (job66, #140; the Node CLI used to die with an ENOENT stack).
 2. The packaged copy inside the installed package (`bantamkit/assets/`).
 3. The repo checkout, `<repo-root>/assets/` — what an editable install uses.
 

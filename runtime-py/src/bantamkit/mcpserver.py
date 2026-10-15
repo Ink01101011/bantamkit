@@ -2231,8 +2231,50 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: job66/#139: the flags that each ACT and then exit, in registration order. At most one of
+#: them may be given. WAS: `_dispatch` ran the first in registration order and dropped the
+#: rest at exit 0, so `--install cursor --assets-root` printed the pack root, wrote no host
+#: config, and told the script that called it nothing.
+_ONE_SHOT_DESTS = (
+    "assets_root",
+    "hook",
+    "mcp_report",
+    "statusline",
+    "update",
+    "install",
+    "install_hooks",
+    "remove_hooks",
+)
+
+
+def _refuse_stacked_one_shots(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Two one-shot flags together are a USAGE error: the usage block, one sentence, exit 2.
+
+    The sentence is argparse's own mutually-exclusive wording, but this is NOT
+    `add_mutually_exclusive_group()`, and the reason is measured: the eight flags are not
+    contiguous in the parser (`--k`, `--index-budget` and `--force` sit between them), and
+    CPython 3.12/3.13 leave a non-contiguous group out of the usage line while 3.14 brackets
+    it as `[--assets-root | --hook | ...]`. A real group would make `-h` depend on the
+    interpreter's minor version, and both `-h` outputs are compared byte for byte with the
+    port's. So the check runs after the parse, over the same actions, and names the two
+    EARLIEST-REGISTERED flags given -- deterministic, and the same order
+    `runtime-ts/src/cli.ts` names them in.
+    """
+    given = [
+        action
+        for action in parser._actions
+        if action.dest in _ONE_SHOT_DESTS and getattr(args, action.dest) not in (None, False)
+    ]
+    if len(given) > 1:
+        first, second = ("/".join(a.option_strings) for a in given[:2])
+        parser.error(f"argument {second}: not allowed with argument {first}")
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    _refuse_stacked_one_shots(parser, args)
+    return args
 
 
 def _typed_bare_at_a_terminal(
@@ -2398,10 +2440,11 @@ def _check_store_flag(raw: str) -> None:
 def _run_hook(args: argparse.Namespace) -> None:
     """`--hook`: one JSON event on stdin, at most one JSON object on stdout, EXIT 0 ALWAYS.
 
-    DISPATCH ORDER IS REGISTRATION ORDER, which is the rule the flags around it already
-    follow and the reason `--mcp-report --install cursor` prints a report and writes
-    nothing. `--hook` is registered directly after `--index-budget`, so it is checked
-    directly after `--assets-root` -- the same order `runtime-ts/src/cli.ts` checks it in.
+    ALONE ON ITS COMMAND LINE (job66/#139). `--hook` beside another one-shot flag is a usage
+    error at exit 2, and `--store`/`--start`/`--yes`/`--force` beside it are refused at exit
+    1 before this runs. WAS: dispatch order was registration order, so `--mcp-report
+    --install cursor` printed a report and silently wrote nothing, and `--hook --store X`
+    ignored X.
 
     EXIT 0 ALWAYS, AND THAT IS THE CONTRACT, not a convenience. A hook that exits non-zero
     or lets a traceback reach stderr is rendered by the host as an error on the USER'S
@@ -2755,6 +2798,29 @@ def main() -> None:
 
 
 def _dispatch(args: argparse.Namespace) -> None:
+    # job66/#139: THE MODIFIERS ARE CHECKED BEFORE ANY FLAG ACTS. `_parse_args` already
+    # refuses two one-shot flags together; what is left is a modifier given to a flag that
+    # does not read it. WAS: these two refusals sat after every acting arm, so `--hook --yes`,
+    # `--hook --force` and `--statusline --force` ran the first flag and dropped the modifier
+    # at exit 0 while `--force` alone was refused. Same sentences, same exit 1, earlier.
+    #
+    # `--force` alone is a typo with a plausible reading -- somebody meant to install and
+    # dropped the flag that says where. Refusing names the missing half instead of running
+    # something that ignores it.
+    if args.force and not args.install:
+        raise SystemExit("--force is only meaningful with --install")
+    # The same reading, and the same refusal, for the consent flag. The sentence names BOTH
+    # flags since the ruling of 2026-09-20: naming only one would send an operator who
+    # mistyped `--remove-hooks` looking for a flag they already had.
+    if args.yes and not (args.install_hooks or args.remove_hooks):
+        raise SystemExit("--yes is only meaningful with --install-hooks or --remove-hooks")
+    # REFUSED, NOT HONOURED (job66/#139). The hook binds the store the winning MCP
+    # registration pins, resolved from the cwd the HOST put in the event -- `_run_hook` never
+    # reads `args` -- so `--hook --store X` used to inject nothing from X and say nothing.
+    # Honouring it would give a hook registration a second, competing way to name a store.
+    for flag in ("store", "start"):
+        if args.hook and getattr(args, flag) is not None:
+            raise SystemExit(f"--{flag} is not meaningful with --hook")
     # Before `_build_memory`, which touches the filesystem, and before the server exists at
     # all -- the Node arm returns from `main` here too, ahead of `new RawStdioTransport()`.
     if args.assets_root:
@@ -2775,27 +2841,14 @@ def _dispatch(args: argparse.Namespace) -> None:
     if args.install:
         _run_install(args)
         return
-    # REGISTRATION ORDER AGAIN, which is what makes `--mcp-report --install-hooks` print a
-    # report and write nothing, exactly as `--mcp-report --install cursor` already does.
+    # At most one of these arms can be reached (job66/#139: `_parse_args` refuses a second
+    # one-shot flag), so the order below no longer decides what a stacked argv does.
     if args.install_hooks:
         _run_install_hooks(args)
         return
     if args.remove_hooks:
         _run_remove_hooks(args)
         return
-    # `--force` alone is a typo with a plausible reading -- somebody meant to install and
-    # dropped the flag that says where. Refusing names the missing half instead of starting
-    # a server that ignores it.
-    if args.force:
-        raise SystemExit("--force is only meaningful with --install")
-    # The same reading, and the same refusal, for the consent flag: `--yes` on its own is
-    # somebody who meant to install or remove hooks and dropped the flag that says which. It
-    # is checked AFTER `--force` because that is registration order, and both are checked
-    # after every flag that acts, so `--install-hooks --yes` never reaches either of them. The
-    # sentence names BOTH flags since the ruling of 2026-09-20: naming only one would send an
-    # operator who mistyped `--remove-hooks` looking for a flag they already had.
-    if args.yes:
-        raise SystemExit("--yes is only meaningful with --install-hooks or --remove-hooks")
     # A PERSON TYPED IT. `_typed_bare_at_a_terminal` carries the whole argument; what
     # belongs here is only that this sits BEFORE `_build_memory`, which is what creates a
     # store. Somebody who typed a command to see what it does has not asked for a

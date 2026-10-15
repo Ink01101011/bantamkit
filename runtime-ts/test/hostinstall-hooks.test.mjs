@@ -800,11 +800,19 @@ for (const [answer, removes] of [
 }
 
 test('--mcp-report --install-hooks prints a report and writes no settings file', () => {
-  // DISPATCH ORDER IS REGISTRATION ORDER, the rule every flag on this parser follows.
+  // AMENDED by job66/#139, which outranks the pin: this argv used to print a report and
+  // silently drop `--install-hooks` at exit 0 (DISPATCH ORDER IS REGISTRATION ORDER). Two
+  // one-shot flags are now a usage error, so it exits 2 — and still writes no settings file,
+  // which is the half of the old contract that survives.
   const root = mkdtempSync(join(tmpdir(), 'bk-hooks-cli-'));
   try {
     const r = runCli(['--mcp-report', '--install-hooks', '--yes'], root);
-    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(
+      r.stderr.endsWith('bantamkit-mcp: error: argument --install-hooks: not allowed with argument --mcp-report\n'),
+      r.stderr,
+    );
+    assert.equal(r.stdout, '');
     assert.equal(existsSync(join(root, '.claude', 'settings.json')), false);
   } finally {
     rmSync(root, { recursive: true, force: true });

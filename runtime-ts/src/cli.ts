@@ -379,9 +379,44 @@ export interface Options {
   yes: boolean;
 }
 
+/**
+ * job66/#139: the flags that each ACT and then exit, in registration order — the reference's
+ * `_ONE_SHOT_DESTS`. At most one may be given. WAS: `main` ran the first in registration
+ * order and dropped the rest at exit 0.
+ */
+const ONE_SHOT_DESTS: readonly string[] = [
+  'assets_root',
+  'hook',
+  'mcp_report',
+  'statusline',
+  'update',
+  'install',
+  'install_hooks',
+  'remove_hooks',
+];
+
+/**
+ * `_refuse_stacked_one_shots`: two one-shot flags together are a USAGE error — the usage
+ * block, argparse's mutually-exclusive sentence, exit 2. Not a `groups` entry, for the
+ * reference's measured reason: the eight are not contiguous, and CPython 3.14 brackets a
+ * non-contiguous group in the usage line where 3.12/3.13 omit it, so a real group would make
+ * the reference's `-h` depend on its interpreter. Checked after the parse, naming the two
+ * EARLIEST-REGISTERED flags given, exactly as the reference does.
+ */
+function refuseStackedOneShots(values: Record<string, unknown>): void {
+  const given = PARSER.actions.filter(
+    (action) => ONE_SHOT_DESTS.includes(action.dest) && values[action.dest] !== null && values[action.dest] !== false,
+  );
+  if (given.length > 1) {
+    const [first, second] = given.map((action) => action.optionStrings.join('/'));
+    throw new ArgvError(PARSER, `argument ${second}: not allowed with argument ${first}`);
+  }
+}
+
 /** `_parse_args`, arm for arm, including the mutually exclusive group and `-h`. */
 export function parseArgs(argv: readonly string[]): Options {
   const values = parseWithSpec(PARSER, argv);
+  refuseStackedOneShots(values);
   return {
     k: values['k'] as number,
     indexBudget: values['index_budget'] as number,
@@ -652,6 +687,22 @@ function version(): string {
 
 async function main(argv: readonly string[]): Promise<number> {
   const options = parseArgs(argv);
+  // job66/#139: THE MODIFIERS ARE CHECKED BEFORE ANY FLAG ACTS, in the reference's order and
+  // with its sentences. WAS: the two refusals sat after every acting arm, so `--hook --yes`,
+  // `--hook --force` and `--statusline --force` dropped the modifier at exit 0.
+  //
+  // `--force` alone is a typo with a plausible reading — somebody meant to install and
+  // dropped the flag that says where. Refusing names the missing half.
+  if (options.force && (options.install ?? null) === null) throw new Refusal('--force is only meaningful with --install');
+  // The same reading for the consent flag; the sentence names BOTH flags since the ruling of
+  // 2026-09-20.
+  if (options.yes && !(options.installHooks || options.removeHooks)) {
+    throw new Refusal('--yes is only meaningful with --install-hooks or --remove-hooks');
+  }
+  // REFUSED, NOT HONOURED: the hook binds the store from the cwd the HOST put in the event,
+  // and `runHook()` takes no options, so `--hook --store X` used to inject nothing from X.
+  if (options.hook && options.store !== null) throw new Refusal('--store is not meaningful with --hook');
+  if (options.hook && options.start !== null) throw new Refusal('--start is not meaningful with --hook');
   if (options.assetsRoot) {
     const root = assetsRoot();
     // `packFileCount`, not a second walk: the count printed here and the count
@@ -661,10 +712,8 @@ async function main(argv: readonly string[]): Promise<number> {
     return 0;
   }
   if (options.hook) {
-    // DISPATCH ORDER IS REGISTRATION ORDER, which is the rule the four flags below already
-    // follow and the reason `--mcp-report --install cursor` prints a report and writes
-    // nothing. `--hook` is registered directly after `--index-budget`, so it is checked
-    // directly after `--assets-root`.
+    // ALONE ON ITS COMMAND LINE (job66/#139): another one-shot flag beside it is a usage
+    // error, and `--store`/`--start`/`--yes`/`--force` beside it are refused above.
     //
     // EXIT 0 ALWAYS, AND THAT IS THE CONTRACT, not a convenience. A hook that exits non-zero
     // or lets a stack reach stderr is rendered by the host as an error on the user's screen,
@@ -724,11 +773,9 @@ async function main(argv: readonly string[]): Promise<number> {
       dirname(fileURLToPath(import.meta.url)),
     );
   }
-  // ORDER IS OBSERVABLE, and it is the reference's order. `main` in `mcpserver.py` checks
-  // assets_root, then mcp_report, then statusline, then update, then install, then force — so
-  // `--mcp-report --install cursor` prints a report and writes NOTHING. Dispatching install
-  // earlier here made the same argv write a file on one runtime and not the other: one
-  // command line, two different states on the user's disk. Reviewed and moved.
+  // ORDER WAS OBSERVABLE, and it was the reference's order: `--mcp-report --install cursor`
+  // printed a report and wrote NOTHING. Since job66/#139 that argv is a usage error on both
+  // sides (`refuseStackedOneShots`), so at most one arm below is ever reached.
   if (options.install !== null && options.install !== undefined) {
     // Before any store or transport exists, the shape `--assets-root` established. The command
     // is resolved INSIDE the try: on an `npx` cache it makes the kept install first, and npm
@@ -742,9 +789,6 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     return 0;
   }
-  // REGISTRATION ORDER AGAIN, which is what makes `--mcp-report --install-hooks` print a
-  // report and write nothing, exactly as `--mcp-report --install cursor` already does.
-  //
   // THREE EXITS, AND THE TWO THAT WRITE NOTHING ARE NOT THE SAME EXIT (S1 RULING Q3.3/Q3.4):
   //
   //   0  written, or already installed and matching
@@ -815,16 +859,6 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     return 0;
   }
-  // `--force` alone is a typo with a plausible reading — somebody meant to install and
-  // dropped the flag that says where. Refusing names the missing half.
-  if (options.force) throw new Refusal('--force is only meaningful with --install');
-  // The same reading, and the same refusal, for the consent flag: `--yes` on its own is
-  // somebody who meant to install or remove hooks and dropped the flag that says which. It is
-  // checked AFTER `--force` because that is registration order, and both are checked after
-  // every flag that acts, so `--install-hooks --yes` never reaches either of them. The
-  // sentence names BOTH flags since the ruling of 2026-09-20: naming only one would send an
-  // operator who mistyped `--remove-hooks` looking for a flag they already had.
-  if (options.yes) throw new Refusal('--yes is only meaningful with --install-hooks or --remove-hooks');
   // A PERSON TYPED IT. `typedBareAtATerminal` carries the whole argument; what belongs here is
   // only that this sits BEFORE `buildMemory`, which is what creates a store. Somebody who typed
   // a command to see what it does has not asked for a `.bantamkit/memory` directory in whatever
