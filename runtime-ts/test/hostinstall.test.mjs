@@ -10,6 +10,7 @@
  * redirection is total — but it is asserted below rather than assumed, because a test whose
  * isolation is a belief is a test that eventually writes to somebody's Cursor config.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

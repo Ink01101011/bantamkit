@@ -231,6 +231,8 @@ FORBIDDEN_IMPORTS = (
     "filegraph",
     "loopguard",
     "memory",
+    # #200 (job70 T200-9): the touch graph is core; contract/profile must not reach it.
+    "touch",
 )
 
 PRE_SPLIT_DEFAULTS = {

@@ -38,11 +38,15 @@ surface rather than an addition to an existing list.
 
 ## The report
 
-Exactly six lines when healthy, `\n`-joined, no trailing newline:
+Six lines plus the four-line storage block when healthy (see the 2026-10-16 amendment below),
+`\n`-joined, no trailing newline:
 
-*(Captured from a live run of this tree at `1928ae0` (`0.35.9` content) — both runtimes, over
-stdio, `tools/call bantamkit_status`, in a scratch `HOME` against a two-fact project store
-(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> status`). The two captures are
+*(RE-CAPTURED 2026-10-16 by J69-8 from a live run of this tree at `f780012` plus J69-8's
+uncommitted retention fixes (`0.36.0` content) — both runtimes, over stdio, `tools/call
+bantamkit_status`, in a scratch `HOME` with no `~/.bantamkit`, `BANTAMKIT_RETENTION` and
+`BANTAMKIT_INDEX_DIR` unset, against a two-fact project store
+(`env -u BANTAMKIT_RETENTION -u BANTAMKIT_INDEX_DIR TMPDIR=<scratch> node
+.shiftwork/notes-job67/J67-7-probe.mjs <node|py> status`). Previously captured at `1928ae0`. The two captures are
 byte-identical except the `build` digest on line 2, which [porting.md](porting.md) already
 rules divergent; the scratch directory is shown as `<project>`. **Line 3 is re-captured and
 never hand-edited**: the tool count is a live claim this repo gates
@@ -55,12 +59,19 @@ record last held — a scratch `HOME` has no record, so it says `update: never c
 
 ```
 bantamkit Active 🟢
-version 0.35.9, build sha256:2fcd4006ffea34a2811181db6c1f7ca7fb3d5bb3d9c097bcec25f6c044e431e9
+version 0.36.0, build sha256:eaf1c3ad295ce280e188885c881760aadc03dc99822da1f563b0caf503db8998
 serving 14 tools, 1 prompt, 2 resource templates
 memory: 2 facts in the project store, index 87 of 24000 bytes; bound to <project>/.bantamkit/memory
 event log: off
 update: never checked.
+storage: core on; hooks off; host data off
+index facts project: 2 docs, 3406 bytes, persisted
+logs: none
+retention: last ran never; refused 0
 ```
+
+(The Node capture; the Python one differs only in the `build` digest. With
+`BANTAMKIT_RETENTION=off` the last line reads `retention: off; last ran never; refused 0`.)
 
 When something is wrong, line 1 changes and a block is appended:
 
@@ -75,7 +86,8 @@ update: never checked.
 - the memory index is 87 bytes of a 70-byte budget, so it is full and every save is refused until it is compacted — archive or shorten facts with `bantamkit-memory compact`.
 ```
 
-(The same capture with `--index-budget 70`; the Node spelling of the remedy is shown, the
+(The four storage lines, which sit between `update:` and the problem block, are left out of
+this example; it is the 1928ae0 capture with `--index-budget 70`; the Node spelling of the remedy is shown, the
 reference names `python -m bantamkit.memory compact` — the `index-budget-low` row of
 [porting.md](porting.md).)
 
@@ -93,7 +105,37 @@ Field by field:
 | 4 `bound to` | `store.root` of the writable project layer | the absolute path of the store the line counts (job65, #142) — an ancestor's store or `~/.bantamkit/memory` picked up by the walk is named, not passed off as the project's own |
 | 5 | `log.enabled` | `on` / `off` |
 | 6 | `updatecheck.update_line(version)` | one of **five** sentences, read off `<homedir>/.bantamkit/update-check.json`. Never absent — there is no silent state. See below. |
+| 7 `storage` | `storage.tiers.tiers(home, cwd)` | `storage: core on; hooks on\|off; host data on\|off` (#204, S2; job69 J69-7) — see the amendment below |
+| `index` | one per memory layer whose `facts/` is a directory | `index facts <layer kind>: <n> doc(s), <bytes> bytes, persisted\|in-memory` |
+| `logs` | `~/.bantamkit/hooks/hook-log.jsonl`, `~/.bantamkit/usage/*.jsonl` | `logs: <name> <bytes> (<n> rotated, <n> skipped)` per log, or `logs: none` |
+| `retention` | `~/.bantamkit/retention.json`, `BANTAMKIT_RETENTION` | `retention: [off; ]last ran <iso>\|never; refused <n>` |
+| `read-repaired` | `Memory.repaired` (#199 Task 6) | `read-repaired: <n> this process` |
+| `usage ledger` | the first layer's `~/.bantamkit/usage/<store id>.jsonl`, and the process's missed-append count for that path (J68-10) | `usage ledger: <path> (<lines> lines, <skipped> skipped)`; `, <missed> missed writes` is added before the `)` only when an append could not be written — see `docs/memory.md`, *Recall by meaning* |
 | problems | one `- ` line per condition, worst first | |
+
+**Amendment, 2026-10-16 (#204, job69 J69-7): the storage block.** "Exactly six lines when
+healthy" is now six plus the storage block, which follows line 6 so that no earlier line moved,
+and precedes the problem block, which is still appended last. On an MCP-only host (no hook, no
+native directory, no log, no retention record) and a store with facts it is four lines:
+
+```
+storage: core on; hooks off; host data off
+index facts project: 1 doc, 3241 bytes, persisted
+logs: none
+retention: off; last ran never; refused 0
+```
+
+*Tiers.* `core` is always on. `hooks` is on when `~/.claude/settings.json`, or the cwd's
+`.claude/settings.json` / `.claude/settings.local.json`, carries one of bantamkit's own hooks
+(read as `--install-hooks` reads them; a file it would refuse is `off`, never an error). `host
+data` is on when the native resolver (RULING Q1.2, branches 1 and 2 — no hook payload here)
+answers a directory. *Index.* The report refreshes each layer's hot index as recall would; the
+layer is named by KIND, never by a grant's name; `in-memory` is the spec's "index directory
+unwritable" row — recall then scores from an index built per call. *Logs.* `bytes` is the live
+file plus its rotated `.N.gz` segments; `skipped` is what `LogSegment.read` could not parse.
+None of this is a condition: it never flips line 1, never enters `degraded_conditions()`, and
+never rides the footer. Both runtimes print the same bytes; `tools/conformance/suites/storage-tiers.mjs`
+compares them on four host profiles, and the `wire` status sessions compare the block too.
 
 ### Line 6 — the update line (J57-3, 2026-09-19)
 

@@ -879,3 +879,18 @@ def remove_hooks(
         lines.append(f"  backup : {copied}")
     lines.append("restart Claude Code (or run /hooks) for this to take effect")
     return "\n".join(lines)
+
+
+def has_bantamkit_hooks(path: Path) -> bool:
+    """Whether the settings file at `path` carries one of bantamkit's own hooks (#204, S2).
+
+    Read exactly as `install_hooks` reads it -- `_read_config`, `_read_hooks`, ownership by
+    `_is_ours` -- but as an OBSERVATION: the capability tiers ask it, and a file this module
+    would refuse to touch (not JSON, not an object, a `hooks` of the wrong shape, unreadable,
+    not UTF-8) answers False rather than raising. A missing tier is silent, never an error.
+    """
+    try:
+        hooks = _read_hooks(path, _read_config(path))
+    except (InstallError, OSError, ValueError, RecursionError):
+        return False
+    return any(_is_ours(entry) for entries in hooks.values() for entry in entries)

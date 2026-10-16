@@ -1,0 +1,5 @@
+{"view": "ctx", "precision_at_inject": 0.3469387755102041, "recall_at_3": 0.7435897435897435, "thai_recall_at_3": 0.7222222222222222, "n": 20, "injected": 49}
+{"view": "ctx0", "precision_at_inject": 0.3469387755102041, "recall_at_3": 0.7435897435897435, "thai_recall_at_3": 0.7222222222222222, "n": 20, "injected": 49}
+{"view": "ctx_probe", "precision_at_inject": 0.3469387755102041, "recall_at_3": 0.782051282051282, "thai_recall_at_3": 0.8055555555555555, "n": 20, "injected": 49}
+{"view": "ctx_via", "precision_at_inject": 0.2898550724637681, "recall_at_3": 0.8974358974358974, "thai_recall_at_3": 0.8888888888888888, "n": 20, "injected": 69}
+{"view": "via", "precision_at_inject": 0.15, "recall_at_3": 0.1794871794871795, "thai_recall_at_3": 0.19444444444444445, "n": 20, "injected": 20}

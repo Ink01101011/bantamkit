@@ -185,17 +185,20 @@ function manifest(root) {
 
 // ------------------------------------------------------------------------ call shapes
 
-const save = (type, name, description, body, links = []) => ({
+// `keywords` (#199) is a sixth arg only when given, so every call built before it is unchanged.
+const save = (type, name, description, body, links = [], keywords = null) => ({
   op: 'save',
-  args: [b64(type), b64(name), b64(description), b64(body), links.map(b64)],
+  args: [b64(type), b64(name), b64(description), b64(body), links.map(b64), ...(keywords === null ? [] : [keywords.map(b64)])],
 });
 const recall = (query, k = null, stamp = true) => ({ op: 'recall', args: [b64(query), k, stamp] });
 const lookup = (name, stamp = true) => ({ op: 'lookup', args: [b64(name), stamp] });
 const indexText = () => ({ op: 'index_text' });
-const memorySave = (type, name, description, body, links = []) => ({
+const memorySave = (type, name, description, body, links = [], keywords = null) => ({
   op: 'memory_save',
-  args: [b64(type), b64(name), b64(description), b64(body), links.map(b64)],
+  args: [b64(type), b64(name), b64(description), b64(body), links.map(b64), ...(keywords === null ? [] : [keywords.map(b64)])],
 });
+
+const memoryRecall = (query, stamp) => ({ op: 'memory_recall', args: [b64(query), stamp] });
 
 /** The Node side of one scenario, shaped exactly like `store_ref.py`'s answer. */
 function runNode(store, request) {
@@ -207,6 +210,7 @@ function runNode(store, request) {
   try {
     s = new store.MemoryStore(request.root, {
       today: () => request.today,
+      now: () => `${request.today}T00:00:00Z`,
       create: request.create ?? true,
       ...(request.index_budget === null ? {} : { indexBudget: request.index_budget }),
       ...(request.k === null ? {} : { k: request.k }),
@@ -217,8 +221,8 @@ function runNode(store, request) {
   for (const call of request.calls) {
     try {
       if (call.op === 'save') {
-        const [type, name, description, body, links] = call.args;
-        const r = s.save(unb64(type), unb64(name), unb64(description), unb64(body), links.map(unb64));
+        const [type, name, description, body, links, ...more] = call.args;
+        const r = s.save(unb64(type), unb64(name), unb64(description), unb64(body), links.map(unb64), ...(more.length > 0 ? [more[0].map(unb64)] : []));
         results.push({
           status: r.status,
           name: b64(r.name),
@@ -241,6 +245,7 @@ function runNode(store, request) {
             links: f.links.map((l) => b64(store.pyText(l))),
             last_recalled: nullable(f.last_recalled),
             created: nullable(f.created),
+            ...((f.keywords ?? []).length > 0 ? { keywords: f.keywords.map(b64) } : {}),
           })),
         );
       } else if (call.op === 'lookup') {
@@ -260,6 +265,7 @@ function runNode(store, request) {
                 links: f.links.map((l) => b64(store.pyText(l))),
                 last_recalled: nullable(f.last_recalled),
                 created: nullable(f.created),
+                ...((f.keywords ?? []).length > 0 ? { keywords: f.keywords.map(b64) } : {}),
               },
         );
       } else if (call.op === 'index_text') {
@@ -268,12 +274,24 @@ function runNode(store, request) {
         // `Memory.saveOutcome` over the SAME root (#120 ruling), as `store_ref.py` runs it.
         const mem = new request.component.Memory(request.root, {
           today: () => request.today,
+          now: () => `${request.today}T00:00:00Z`,
           ...(request.index_budget === null ? {} : { indexBudget: request.index_budget }),
           ...(request.k === null ? {} : { k: request.k }),
         });
-        const [type, name, description, body, links] = call.args;
-        const out = mem.saveOutcome(unb64(type), unb64(name), unb64(description), unb64(body), links.map(unb64));
+        const [type, name, description, body, links, ...more] = call.args;
+        const out = mem.saveOutcome(unb64(type), unb64(name), unb64(description), unb64(body), links.map(unb64), more.length > 0 ? more[0].map(unb64) : null);
         results.push({ reply: b64(out.reply), status: out.status });
+      } else if (call.op === 'memory_recall') {
+        // `Memory.recallOutcome` over the SAME root (#199 Task 6), as `store_ref.py` runs it.
+        const mem = new request.component.Memory(request.root, {
+          today: () => request.today,
+          now: () => `${request.today}T00:00:00Z`,
+          ...(request.index_budget === null ? {} : { indexBudget: request.index_budget }),
+          ...(request.k === null ? {} : { k: request.k }),
+        });
+        const [query, stamp] = call.args;
+        const out = mem.recallOutcome(unb64(query), null, 0.0, stamp);
+        results.push({ reply: b64(out.reply), status: out.status, repaired: mem.repaired });
       } else {
         throw new Error(`unknown call op ${call.op}`);
       }
@@ -747,7 +765,29 @@ function scenarios(ctx, real) {
 
 // ------------------------------------------------------------------------------- run
 
+/**
+ * HOME is this suite's own scratch home for the whole run (#199, J68-5): a stamping `recall` or
+ * `lookup` appends to the usage ledger under `~/.bantamkit/usage/`, and the harness does not
+ * move HOME — without this, every such call here would write the operator's real home. The
+ * reference children inherit it (`runPython` spreads `process.env`).
+ */
 export async function run(ctx) {
+  const was = [process.env.HOME, process.env.USERPROFILE];
+  const home = join(ctx.scratch, 'store-home');
+  mkdirSync(home, { recursive: true });
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return await runIn(ctx, home);
+  } finally {
+    for (const [k, v] of [['HOME', was[0]], ['USERPROFILE', was[1]]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+async function runIn(ctx, home) {
   const store = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'store.js')).href);
   const pyfs = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'pyfs.js')).href);
   const pyyaml = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'pyyaml.js')).href);
@@ -800,6 +840,244 @@ export async function run(ctx) {
     });
   }
   notes.push(`${list.length} scenarios compared, ${ruled.length} ruled to differ in their answer`);
+
+  // #199 (job68 J68-3): THE `keywords` FACT FIELD. Optional, a list of strings, written after
+  // `links` and only when non-empty; any other shape refuses the file with
+  // `fact '<name>' in <file>: keywords must be a list of strings`. Three groups:
+  //   A. a save with Thai keywords, a lookup, a stamping recall (the rewrite must keep them),
+  //      a `Memory.saveOutcome` with keywords, and a save without: answers and trees side to
+  //      side, plus each side's two fact files against a LITERAL, because a regression that
+  //      lands in both (both escape the Thai, both drop the key on a stamp, both write
+  //      `keywords: []`) leaves every differential green;
+  //   B. five wrong shapes PyYAML and this codec both read: the refusal side to side, and the
+  //      sentence against a literal per side for the same reason;
+  //   C. two of #120's eight ruled codec shapes (`{a: b}`, `[[a]]`): Python reads the YAML
+  //      and refuses with the keywords sentence, Node's codec refuses the file first. Both
+  //      refuse — the sentence is ruled to differ, the refusal bit is compared unruled.
+  {
+    const component = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'component.js')).href);
+    let bedN = 0;
+    const runBoth = (files, calls) => {
+      bedN += 1;
+      const roots = {};
+      const spec = { dirs: ['facts', 'archive'], files, mtimes: Object.fromEntries(Object.keys(files).map((f) => [f, 1755990000])) };
+      for (const side of ['py', 'node']) {
+        roots[side] = join(ctx.scratch, `j68-3-${bedN}`, side);
+        materialise(roots[side], spec);
+        applyModes(roots[side], spec, true);
+      }
+      const request = (root) => ({ op: 'run', root, today: TODAY, index_budget: null, k: null, create: true, calls });
+      const py = scrub(ctx.runPython(REF, request(roots.py)).results, roots.py);
+      const nd = scrub(runNode(store, { ...request(roots.node), component }).results, roots.node);
+      return { py, nd, roots };
+    };
+    // `Path.read_text` folds CRLF back to LF, so the literal is platform-free.
+    const factText = (root, name) => {
+      try {
+        return readFileSync(join(root, 'facts', `${name}.md`), 'utf8').replace(/\r\n/g, '\n');
+      } catch {
+        return null;
+      }
+    };
+
+    // A.
+    const kw = ['ปล่อยเวอร์ชัน', 'publish', 'คำ — with a dash'];
+    const a = runBoth({}, [
+      save('project', 'release-lessons', 'how to run a release', 'body', [], kw),
+      lookup('release-lessons', false),
+      recall('release lessons', null, true),
+      memorySave('feedback', 'thai-kw', 'another subject entirely', 'b', [], ['ภาษาไทย']),
+      save('project', 'plain', 'a plain unrelated fact', 'b'),
+      save('project', 'empty-kw', 'keywords given but empty', 'b', [], []),
+    ]);
+    cases.push({ name: '#199 keywords: save, lookup, stamping recall, memory_save — answers, side to side', kind: 'json', expected: a.py, actual: a.nd });
+    cases.push({ name: '#199 keywords: save, lookup, stamping recall, memory_save — tree, side to side', kind: 'bytes', expected: manifest(a.roots.py), actual: manifest(a.roots.node) });
+    // #199 D5: the stamping recall no longer rewrites the file (WAS `last_recalled: '${TODAY}'`
+    // here, and the case name said "kept by the stamp"); its use is a ledger line, below.
+    const expectedFiles = {
+      'release-lessons':
+        `---\nname: release-lessons\ndescription: how to run a release\ntype: project\ncreated: '${TODAY}'\n` +
+        `last_recalled: null\nlinks: []\nkeywords:\n- ปล่อยเวอร์ชัน\n- publish\n- คำ — with a dash\n---\n\nbody\n`,
+      'thai-kw':
+        `---\nname: thai-kw\ndescription: another subject entirely\ntype: feedback\ncreated: '${TODAY}'\n` +
+        `last_recalled: null\nlinks: []\nkeywords:\n- ภาษาไทย\n---\n\nb\n`,
+      plain:
+        `---\nname: plain\ndescription: a plain unrelated fact\ntype: project\ncreated: '${TODAY}'\n` +
+        `last_recalled: null\nlinks: []\n---\n\nb\n`,
+      'empty-kw':
+        `---\nname: empty-kw\ndescription: keywords given but empty\ntype: project\ncreated: '${TODAY}'\n` +
+        `last_recalled: null\nlinks: []\n---\n\nb\n`,
+    };
+    for (const [label, side] of [['python', 'py'], ['node', 'node']]) {
+      cases.push({
+        name: `#199 keywords: PINNED PER SIDE — the fact files ${label} wrote (raw UTF-8 after links; no key when empty; untouched by the stamp, #199 D5)`,
+        kind: 'json',
+        expected: expectedFiles,
+        actual: Object.fromEntries(Object.keys(expectedFiles).map((n) => [n, factText(a.roots[side], n)])),
+      });
+    }
+    // #199 D5: where the stamp went. Each side's usage ledger for its own store, side to side and
+    // against a literal: the non-stamping lookup wrote nothing, the stamping recall one
+    // `recall_hit` for its one hit, under the frozen clock.
+    const usage = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'usage.js')).href);
+    const ledgerText = (root) => {
+      try {
+        return readFileSync(new usage.UsageLedger(home, root).path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    cases.push({
+      name: '#199 keywords: the usage ledger the stamping recall appended, side to side',
+      kind: 'bytes',
+      expected: ledgerText(a.roots.py),
+      actual: ledgerText(a.roots.node),
+    });
+    for (const [label, side] of [['python', 'py'], ['node', 'node']]) {
+      cases.push({
+        // AMENDED job68 J68-6 (#199, plan Task 6: "`Memory.save` must append the `save` event,
+        // with keywords"): WAS the recall_hit line alone; the `memory_save` after it now adds
+        // the `save` event read-repair restores keywords from. The stamp is still one line.
+        name: `#199 D5: PINNED PER SIDE — ${label}'s stamping recall is one ledger line, the memory_save one save event, and no fact file moved`,
+        kind: 'string',
+        expected:
+          `{"ts":"${TODAY}T00:00:00Z","fact":"release-lessons","kind":"recall_hit"}\n` +
+          `{"ts":"${TODAY}T00:00:00Z","fact":"thai-kw","kind":"save","keywords":["ภาษาไทย"]}\n`,
+        actual: ledgerText(a.roots[side]),
+      });
+    }
+
+    // B.
+    const sentence = "fact 'bad' in bad.md: keywords must be a list of strings";
+    const shapes = ['nope', 'null', '7', '[1, a]', '\n- a\n- 2', '\n- a\n- true', "\n- '2026-10-15'\n- 2026-10-15", ''];
+    const badFile = (shape) =>
+      `---\nname: bad\ndescription: d\ntype: project\ncreated: '2026-10-15'\nlast_recalled: null\nlinks: []\nkeywords: ${shape}\n---\n\nb\n`;
+    const message = (results) => (results[0]?.error ? unb64(results[0].error.message) : JSON.stringify(results[0]));
+    for (const shape of shapes) {
+      const b = runBoth({ 'facts/bad.md': badFile(shape) }, [lookup('bad', false)]);
+      const tag = JSON.stringify(shape);
+      cases.push({ name: `#199 keywords: wrong shape ${tag} — refusal, side to side`, kind: 'json', expected: b.py, actual: b.nd });
+      cases.push({ name: `#199 keywords: wrong shape ${tag} — PINNED PER SIDE: python refuses in these words`, kind: 'json', expected: sentence, actual: message(b.py) });
+      cases.push({ name: `#199 keywords: wrong shape ${tag} — PINNED PER SIDE: node refuses in these words`, kind: 'json', expected: sentence, actual: message(b.nd) });
+    }
+
+    // C.
+    for (const shape of ['{a: b}', '[[a]]']) {
+      const c = runBoth({ 'facts/bad.md': badFile(shape) }, [lookup('bad', false)]);
+      cases.push({
+        name: `ruling: #120 keywords ${shape} — python refuses with the keywords sentence, node's codec refuses the file first`,
+        kind: 'json',
+        expected: c.py,
+        actual: c.nd,
+        ruling: `#120 (docs/porting.md): ${shape} is one of the eight YAML shapes PyYAML reads and the port refuses by name; the keywords check never sees it on Node`,
+      });
+      const refused = (results) => ({ refused: Boolean(results[0]?.error), type: results[0]?.error?.type ?? null });
+      cases.push({ name: `#199 keywords ${shape} — the refusal bit: both runtimes refuse the file`, kind: 'json', expected: refused(c.py), actual: refused(c.nd) });
+      cases.push({ name: `#199 keywords ${shape} — PINNED PER SIDE: python refuses with the keywords sentence`, kind: 'json', expected: sentence, actual: message(c.py) });
+    }
+  }
+
+  // #199 (job68 J68-6): READ-REPAIR (spec D8) and UNKNOWN FRONTMATTER KEYS (register row (mmmm),
+  // user ruling 2026-10-15). One store, three calls, each run on its own so the tree can be read
+  // between them:
+  //   1. the HOOK's call (`stamp=false`) — no fact file moves on either side (tree against the
+  //      untouched materialisation, per side) and nothing is counted;
+  //   2. the TOOL's call — a 0.35.9-shaped fact (non-null `last_recalled`, a hand-written
+  //      `priority` and `owner`) is repaired, and a fact whose `keywords` a 0.35.x runtime
+  //      stripped gets them back from the ledger's `save` copy; answers, tree and ledger side to
+  //      side, the two repaired files and the ledger against a LITERAL per side;
+  //   3. the TOOL's call again — the tree is byte-unchanged and nothing is repaired twice.
+  {
+    const component = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'component.js')).href);
+    const usage = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'usage.js')).href);
+    const files = {
+      'facts/deploy-steps.md':
+        "---\nname: deploy-steps\ndescription: deploy steps for the release train\ntype: project\n" +
+        "created: '2026-08-01'\nlast_recalled: '2026-08-10'\nlinks: []\npriority: high\nowner:\n- kk\n- ops\n---\n\nrun the train\n",
+      'facts/release-thai.md':
+        "---\nname: release-thai\ndescription: release notes in thai\ntype: project\n" +
+        "created: '2026-08-01'\nlast_recalled: null\nlinks: []\n---\n\nb\n",
+      'facts/control.md':
+        "---\nname: control\ndescription: release control fact\ntype: project\n" +
+        "created: '2026-08-01'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n---\n\nb\n",
+    };
+    const spec = { dirs: ['facts', 'archive'], files, mtimes: Object.fromEntries(Object.keys(files).map((f) => [f, 1755990000])) };
+    const roots = {};
+    const pristine = join(ctx.scratch, 'j68-6', 'pristine');
+    materialise(pristine, spec);
+    for (const side of ['py', 'node']) {
+      roots[side] = join(ctx.scratch, 'j68-6', side);
+      materialise(roots[side], spec);
+      applyModes(roots[side], spec, true);
+      // The `save` copy a 0.36+ runtime appended before 0.35.x rewrote the file without the key.
+      new usage.UsageLedger(home, roots[side]).append('release-thai', 'save', '2026-08-02T00:00:00Z', ['ปล่อย']);
+    }
+    const ledgerText = (root) => {
+      try {
+        return readFileSync(new usage.UsageLedger(home, root).path, 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const factText = (root, name) => readFileSync(join(root, 'facts', `${name}.md`), 'utf8').replace(/\r\n/g, '\n');
+    const runBoth = (calls) => {
+      const request = (root) => ({ op: 'run', root, today: TODAY, index_budget: null, k: null, create: true, calls });
+      return {
+        py: scrub(ctx.runPython(REF, request(roots.py)).results, roots.py),
+        nd: scrub(runNode(store, { ...request(roots.node), component }).results, roots.node),
+      };
+    };
+    const QUERY = 'deploy steps release ปล่อย';
+    const repaired = (results) => results.map((r) => r.repaired ?? r.error);
+
+    // 1. the hook
+    const h = runBoth([memoryRecall(QUERY, false)]);
+    cases.push({ name: '#199 read-repair: the hook path — answers, side to side', kind: 'json', expected: h.py, actual: h.nd });
+    for (const [label, side] of [['python', 'py'], ['node', 'node']]) {
+      cases.push({ name: `#199 read-repair: PINNED PER SIDE — ${label}'s hook path leaves the tree byte-unchanged`, kind: 'bytes', expected: manifest(pristine), actual: manifest(roots[side]) });
+      cases.push({ name: `#199 read-repair: PINNED PER SIDE — ${label}'s hook path repairs nothing`, kind: 'json', expected: [0], actual: repaired(side === 'py' ? h.py : h.nd) });
+    }
+
+    // 2. the tool, first use
+    const t = runBoth([memoryRecall(QUERY, true)]);
+    cases.push({ name: '#199 read-repair: the first tool recall — answers, side to side', kind: 'json', expected: t.py, actual: t.nd });
+    cases.push({ name: '#199 read-repair: the first tool recall — tree, side to side', kind: 'bytes', expected: manifest(roots.py), actual: manifest(roots.node) });
+    cases.push({ name: '#199 read-repair: the first tool recall — usage ledger, side to side', kind: 'bytes', expected: ledgerText(roots.py), actual: ledgerText(roots.node) });
+    const expectedFiles = {
+      'deploy-steps':
+        "---\nname: deploy-steps\ndescription: deploy steps for the release train\ntype: project\n" +
+        "created: '2026-08-01'\nlast_recalled: null\nlinks: []\npriority: high\nowner:\n- kk\n- ops\n---\n\nrun the train\n",
+      'release-thai':
+        "---\nname: release-thai\ndescription: release notes in thai\ntype: project\n" +
+        "created: '2026-08-01'\nlast_recalled: null\nlinks: []\nkeywords:\n- ปล่อย\n---\n\nb\n",
+      control: files['facts/control.md'],
+    };
+    for (const [label, side] of [['python', 'py'], ['node', 'node']]) {
+      const results = side === 'py' ? t.py : t.nd;
+      cases.push({ name: `#199 read-repair: PINNED PER SIDE — ${label} repaired the old fact and restored the stripped keywords, keeping priority and owner`, kind: 'json', expected: expectedFiles, actual: Object.fromEntries(Object.keys(expectedFiles).map((n) => [n, factText(roots[side], n)])) });
+      cases.push({ name: `#199 read-repair: PINNED PER SIDE — ${label} counted two repairs`, kind: 'json', expected: [2], actual: repaired(results) });
+      const lines = (ledgerText(roots[side]) ?? '').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      cases.push({
+        name: `#199 read-repair: PINNED PER SIDE — ${label}'s ledger holds one seed, dated by the old stamp`,
+        kind: 'json',
+        expected: [['deploy-steps', 'seed', '2026-08-10T00:00:00Z']],
+        actual: lines.filter((e) => e.kind === 'seed').map((e) => [e.fact, e.kind, e.ts]),
+      });
+    }
+
+    // 3. the tool, again
+    const after = { py: manifest(roots.py), node: manifest(roots.node) };
+    const ledgerAfter = { py: ledgerText(roots.py), node: ledgerText(roots.node) };
+    const u = runBoth([memoryRecall(QUERY, true)]);
+    cases.push({ name: '#199 read-repair: the second tool recall — answers, side to side', kind: 'json', expected: u.py, actual: u.nd });
+    for (const [label, side] of [['python', 'py'], ['node', 'node']]) {
+      cases.push({ name: `#199 read-repair: PINNED PER SIDE — ${label}'s second tool recall leaves the tree byte-unchanged`, kind: 'bytes', expected: after[side], actual: manifest(roots[side]) });
+      cases.push({ name: `#199 read-repair: PINNED PER SIDE — ${label}'s second tool recall repairs nothing`, kind: 'json', expected: [0], actual: repaired(side === 'py' ? u.py : u.nd) });
+      const added = (ledgerText(roots[side]) ?? '').slice((ledgerAfter[side] ?? '').length).split('\n').filter(Boolean).map((l) => JSON.parse(l).kind);
+      cases.push({ name: `#199 read-repair: PINNED PER SIDE — ${label}'s second tool recall appends only recall hits`, kind: 'json', expected: added.map(() => 'recall_hit'), actual: added });
+    }
+    notes.push('j68-6: read-repair over the hook call, the first tool call and the second, per side and side to side');
+  }
 
   // job67 J67-3, #120's remainder by USER RULING (2026-10-15): ONE UNREADABLE FACT FILE COSTS
   // THAT FILE, NOT THE SAVE. A save skips it, names it (`skipped`, and the closing paragraph of

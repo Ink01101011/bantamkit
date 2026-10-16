@@ -27,6 +27,7 @@
  * the hook's ledger and log land in the scratch) and a scratch cwd holding its own
  * `.shiftwork`, so the assertions do not move when a real job clocks a unit in or out.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -142,6 +143,19 @@ function hostWouldAccept(stdout) {
 }
 
 // ------------------------------------------------------------------ the channel
+
+/** Run `fn` with HOME and USERPROFILE at `home`: where the usage ledger is kept (#199 D5). */
+function withHome(home, fn) {
+  const was = [process.env.HOME, process.env.USERPROFILE];
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return fn();
+  } finally {
+    [process.env.HOME, process.env.USERPROFILE] = was;
+  }
+}
+
 test('PreCompact output is accepted by the host, and reaches it as plain stdout', () => {
   const r = preCompact();
   assert.equal(r.status, 0, `exit ${r.status}; stderr: ${r.stderr}`);
@@ -1020,8 +1034,12 @@ test('what is dropped follows the stated rule, not the alphabet: durable types f
   save('2026-01-01', 'feedback', 'ab-feedback-oldest', 'feedbackold');       // alphabet-second, oldest evidence
   save('2026-01-01', 'feedback', 'ac-feedback-old-but-recalled', 'recalledold');
   save('2026-09-01', 'feedback', 'zz-feedback-newest', 'feedbacknew');       // alphabet-last, newest
-  // A real recall stamps `last_recalled` on the old fact, and that stamp outranks `created`.
-  new Memory(dir, { today: () => '2026-09-12' }).recall('recalledold');
+  // A real recall records a use of the old fact, and that use outranks `created`. #199 D5: the
+  // use is a `recall_hit` in the usage ledger under the hook's HOME (WAS: `last_recalled` was
+  // stamped into the file), so the recall runs with that HOME.
+  withHome(home, () =>
+    new Memory(dir, { today: () => '2026-09-12', now: () => '2026-09-12T00:00:00Z' }).recall('recalledold'),
+  );
 
   const s = sessionStart({ home });
   assert.equal(s.status, 0, s.stderr);
@@ -1142,13 +1160,18 @@ test('an injection leaves every fact file byte- and mtime-identical; the explici
   assert.match(r.stdout, /\[pinned\]/);
   assert.deepEqual(state(), before, 'an injection rewrote a fact file, or moved its mtime');
 
-  // CONTROL: the explicit path, on the same bed, still stamps — and only the hit.
+  const { UsageLedger } = await import(join(MEMORY_DIST, 'usage.js'));
+  const ledger = new UsageLedger(home, store).path;
+  assert.equal(existsSync(ledger), false, 'an injection wrote a usage event (#199: the hook writes nothing)');
+
+  // CONTROL: the explicit path, on the same bed, still stamps — and only the hit. #199 D5: the
+  // stamp is a `recall_hit` in the usage ledger and NO fact file moves. WAS: `last_recalled` was
+  // dated in pinned.md.
   const { Memory } = await import(join(MEMORY_DIST, 'component.js'));
-  new Memory(store).recall('the deploy flag ships tonight');
-  const after = state();
-  assert.match(after['pinned.md'].bytes, /^last_recalled: '\d{4}-\d{2}-\d{2}'$/m);
-  assert.notDeepEqual(after['pinned.md'], before['pinned.md']);
-  assert.deepEqual(after['unrelated.md'], before['unrelated.md']);
+  withHome(home, () => new Memory(store).recall('the deploy flag ships tonight'));
+  assert.deepEqual(state(), before);
+  const events = readFileSync(ledger, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.deepEqual(events.map((e) => [e.fact, e.kind]), [['pinned', 'recall_hit']]);
 });
 
 test('no prompt text reaches the log — a digest, two sizes, and a closed field set', async () => {
@@ -1232,7 +1255,9 @@ const DEDUPE_FACTS = [
 const PROMPT_A = 'deployment path rollback procedure for the staging cluster';
 /** Hits `unrelated-alpha` first and then two of A's three — the MIXED case after A. */
 const PROMPT_C = 'nothing shared here at all about the staging cluster';
-const A_NAMES = ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'];
+// #199 D3: BM25F's order — `staging-cluster-notes` outranks `rollback-runbook`. WAS: v1 overlap
+// scores 8, 3, 3, the tie broken by name.
+const A_NAMES = ['deployment-rollback', 'staging-cluster-notes', 'rollback-runbook'];
 
 async function dedupeBed(facts = DEDUPE_FACTS) {
   const cwd = newCwd();
@@ -1592,15 +1617,16 @@ test('re-dating a fact does not re-arm the dream gate, and a content change does
   runHook(stopPayload(), { home, cwd }); // S1: the first look previews
   const fp1 = fingerprint();
 
-  // (a1) an explicit recall dates the fact: null -> today, bytes AND mtime move.
+  // (a1) an explicit recall writes nothing to the fact: bytes AND mtime stay. #199 D5: the use is
+  // a ledger event. WAS: it dated `last_recalled` and was the first of three rewrites.
   const bytesBefore = readFileSync(fact, 'utf8'); const mtimeBefore = statSync(fact).mtimeMs;
   assert.match(m.recall('operator recalls every turn'), /recalled-often/);
-  assert.notEqual(readFileSync(fact, 'utf8'), bytesBefore, 'the recall rewrote the file');
-  assert.notEqual(statSync(fact).mtimeMs, mtimeBefore, 'the recall moved the mtime');
-  assert.match(readFileSync(fact, 'utf8'), /^last_recalled: '2026-09-25'$/m, 'the recall dated it');
+  assert.equal(readFileSync(fact, 'utf8'), bytesBefore, 'the recall rewrote the file');
+  assert.equal(statSync(fact).mtimeMs, mtimeBefore, 'the recall moved the mtime');
   runHook(stopPayload(), { home, cwd }); // S2
-  // (a2) the same line re-dated to another day — what tomorrow's recall writes.
+  // (a2) the same line re-dated to another day — what an older runtime's recall writes.
   writeFileSync(fact, readFileSync(fact, 'utf8').replace(/^last_recalled: .*$/m, "last_recalled: '2020-01-01'"));
+  assert.notEqual(readFileSync(fact, 'utf8'), bytesBefore, 'the re-dating rewrote the file');
   runHook(stopPayload(), { home, cwd }); // S3
   // (a3) the mtime alone — a same-day re-stamp (J64-0 Q4).
   const later = new Date(statSync(fact).mtimeMs + 1000);

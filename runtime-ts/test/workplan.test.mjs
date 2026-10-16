@@ -16,6 +16,7 @@
  * `checkpoint-job41.json` on 2026-09-18 and pasted in as `{id, depends_on}` pairs in
  * `plan.units` order — which is the insertion order the tie-break is defined against.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 

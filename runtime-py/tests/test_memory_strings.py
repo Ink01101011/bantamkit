@@ -248,7 +248,9 @@ def test_119_one_bad_project_fact_no_longer_fails_the_recall(tmp_path, home):
     memory = Memory.layered(start=project)
     outcome = memory.recall_outcome("shared words", 5)
     assert outcome.status == "answered"
-    assert [h.split("]")[1] for h in outcome.headers] == [" [ok-fact", " [prof-ok"]
+    # #199 D3: pooled and ranked once; the profile's `feedback` fact (W_TYPE 1.3) outranks the
+    # project's `project` fact at a near score. WAS: project layer first, by walk order.
+    assert [h.split("]")[1] for h in outcome.headers] == [" [prof-ok", " [ok-fact"]
     assert [(s["layer"], s["file"]) for s in outcome.skipped] == [
         ("project", "zz-bad.md"),
         ("profile", "broken.md"),

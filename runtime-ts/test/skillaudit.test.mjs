@@ -22,6 +22,7 @@
  * implementation from one that looks correct. Simplifying any of them is how the guard is
  * lost.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import {
   existsSync,

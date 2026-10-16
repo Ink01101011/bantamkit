@@ -323,6 +323,15 @@ def _resolve(match: re.Match[str], basis: str) -> str | None:
         return ""
 
 
+def union_keywords(first: list[str], second: list[str]) -> list[str]:
+    """`first` in order, then each entry of `second` not already taken, compared exactly."""
+    out = list(first)
+    for word in second:
+        if word not in out:
+            out.append(word)
+    return out
+
+
 def absolutise(
     body: str, basis: str, name: str, layer: str
 ) -> tuple[str, list[DateHit], list[DateHit]]:
@@ -646,6 +655,12 @@ def dream(
             last_recalled=max(
                 (d for d in (here.last_recalled, there.last_recalled) if d), default=None
             ),
+            # #199 Task 6 (J68-3 ruling, orchestrator default 2026-10-15): the survivor's
+            # keywords are the UNION -- the project's in order, then each profile keyword
+            # not already there, compared exactly -- and a hand-written key either copy
+            # carries survives, the project's value winning where both carry it.
+            keywords=union_keywords(here.keywords, there.keywords),
+            extra={**here.extra, **{k: v for k, v in there.extra.items() if k not in here.extra}},
         )
         planned[name] = survivor
         consumed.append(name)
@@ -748,4 +763,8 @@ def dream(
         _consume(profile, name)
     _rebuild_if_present(project)
     _rebuild_if_present(profile)
+    # The hot index follows the files (#204): `_rebuild_if_present` reaches it only where an
+    # `index.md` exists, and the profile store never has one.
+    project._after_write()
+    profile._after_write()
     return replace(result, applied=True)

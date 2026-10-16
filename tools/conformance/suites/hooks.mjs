@@ -84,6 +84,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 export const name = 'hooks';
 export const summary = 'the hook adapter, the hook installer and the native export, as processes over one bed';
@@ -254,7 +255,12 @@ function seedStore(ctx, storeRoot, facts) {
  * dates a fact on disk after J64-1 — so "re-dated by a recall" is what the product writes and
  * not a line this file spelled. Asserts the name was a hit, or the re-dating never happened.
  */
-function recallStore(ctx, storeRoot, query, expectName) {
+/**
+ * An explicit `Memory.recall` through the reference, under `home` (#199, J68-5): the recall
+ * appends a `recall_hit` to the usage ledger under HOME, and a child spawned with the harness's
+ * own environment would append it to the operator's real `~/.bantamkit/usage/`.
+ */
+function recallStore(ctx, storeRoot, query, expectName, home) {
   const r = spawnSync(
     ctx.python,
     [
@@ -266,7 +272,7 @@ function recallStore(ctx, storeRoot, query, expectName) {
       query,
       expectName,
     ],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } },
   );
   if (r.status !== 0) throw new Error(`hooks: could not recall in ${storeRoot}\n${r.stderr}`);
 }
@@ -2219,6 +2225,18 @@ export async function run(ctx) {
         },
       ),
     );
+    // #199 D5 (J68-5), PER SIDE: the hook writes NO usage event either — an injection is not
+    // intentional use, and counting it would be rich-get-richer (spec, Ranker). The ledger
+    // directory under each side's HOME must not exist after the injection.
+    const usageDir = (side) => join(home(id, side), '.bantamkit', 'usage');
+    cases.push(
+      ...literalCases(
+        existsSync(usageDir('py')) ? readdirSync(usageDir('py')).sort() : 'no usage directory',
+        existsSync(usageDir('node')) ? readdirSync(usageDir('node')).sort() : 'no usage directory',
+        'inject-no-stamp: PINNED PER SIDE: the injection appended no usage event (#199 D5)',
+        'no usage directory',
+      ),
+    );
     // THE PROPERTY, PER SIDE: not one file rewritten, not one mtime moved, not one stamp.
     cases.push(
       ...literalCases(
@@ -2259,7 +2277,9 @@ export async function run(ctx) {
         'inject-no-stamp: PINNED PER SIDE: the three names injected, in score order, and the block size',
         // 423 is MEASURED off both sides on this bed (2026-09-25), not derived: the header
         // line plus three `[project] [name] (type) description` headers, under the cap.
-        { bytes: 423, injected: ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'] },
+        // #199 D3: BM25F's order (WAS deployment-rollback, rollback-runbook, staging-cluster-notes:
+        // v1 overlap 8, 3, 3, the tie broken by name). The bytes are the same three headers.
+        { bytes: 423, injected: ['deployment-rollback', 'staging-cluster-notes', 'rollback-runbook'] },
       ),
     );
   }
@@ -2314,7 +2334,8 @@ export async function run(ctx) {
     // bed, so after A it is the mixed case.
     const A = 'deployment path rollback procedure for the staging cluster';
     const C = 'nothing shared here at all about the staging cluster';
-    const A_NAMES = ['deployment-rollback', 'rollback-runbook', 'staging-cluster-notes'];
+    // #199 D3: BM25F's order (WAS deployment-rollback, rollback-runbook, staging-cluster-notes).
+    const A_NAMES = ['deployment-rollback', 'staging-cluster-notes', 'rollback-runbook'];
     b.snapshot();
 
     const maskStamps = (ledger) => ({
@@ -2725,7 +2746,7 @@ export async function run(ctx) {
       };
       stop('S1 first look');
       const a1Before = factsState(factsDir);
-      recallStore(ctx, store, 'the operator recalls every turn', 'recalled-often');
+      recallStore(ctx, store, 'the operator recalls every turn', 'recalled-often', h);
       const a1 = factsDiff(a1Before, factsState(factsDir));
       stop('S2 after an explicit recall');
       writeFileSync(fact, readFileSync(fact, 'utf8').replace(/^last_recalled: .*$/m, REDATED));
@@ -2755,13 +2776,15 @@ export async function run(ctx) {
     b.restore();
     const nd = sequence('node');
 
-    // PRECONDITION: the first look previewed on both sides, the recall really rewrote the
-    // fact (bytes, mtime and the date all moved), and the body edit landed.
+    // PRECONDITION: the first look previewed on both sides, the explicit recall wrote NOTHING
+    // to the fact (#199 D5: its use is a ledger line; WAS 'the recall re-dated the file', bytes,
+    // mtime and date all moved), and the body edit landed. S3's hand re-dating is now the one
+    // rewrite that keeps the content, and `sameAfterRedate` below still pins its skip.
     const pre = (s) => ({ first: s.steps[0].action, a1: s.a1, bodyEdited: s.bodyEdited });
     cases.push(
-      ...literalCases(pre(py), pre(nd), 'dream-fingerprint: precondition — S1 previewed, the recall re-dated the file, the body edit landed', {
+      ...literalCases(pre(py), pre(nd), 'dream-fingerprint: precondition — S1 previewed, the recall wrote nothing (#199 D5), the body edit landed', {
         first: 'dream-preview',
-        a1: { rewritten: ['recalled-often.md'], mtimeMoved: ['recalled-often.md'], stamped: ['recalled-often.md'] },
+        a1: { rewritten: [], mtimeMoved: [], stamped: [] },
         bodyEdited: true,
       }),
     );
@@ -3232,6 +3255,89 @@ export async function run(ctx) {
     );
   }
 
+  // ============ native-layer: the hook recalls Claude Code's auto-memory as `[native]` (#199)
+  //
+  // job68, J68-11 (user ruling 2026-10-15, "A + B"). UserPromptSubmit pools the host's own
+  // auto-memory as the LAST, read-only layer, from the directory RULING Q1.2's resolver found —
+  // here branch 3, `dirname(transcript_path)/memory` holding a `MEMORY.md` — never a computed
+  // slug. Three claims, PER SIDE against typed constants (one shared component changing on both
+  // sides would leave a differential green): (1) the native fact is injected tagged `[native]`
+  // and bantamkit's exported copy of a project fact is NOT injected a second time; (2) the same
+  // prompt with no `transcript_path` injects nothing from the host (no branch answered, so no
+  // layer); (3) the hook wrote nothing: the native directory's names, bytes and mtimes are as
+  // they were, and no usage ledger appeared. Then the two sides are compared.
+  {
+    const id = 'native-layer';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    const projectStore = join(cwd, '.bantamkit', 'memory');
+    mkdirSync(join(projectStore, 'facts'), { recursive: true });
+    writeFileSync(
+      join(projectStore, 'facts', 'kafka-notes.md'),
+      "---\nname: kafka-notes\ndescription: kafka consumer group notes\ntype: project\ncreated: '2026-10-01'\n" +
+        'last_recalled: null\nlinks: []\n---\n\nbody\n',
+    );
+    const tdir = join(b.root, 'transcripts');
+    const nativeDir = join(tdir, 'memory');
+    mkdirSync(nativeDir, { recursive: true });
+    writeFileSync(join(tdir, 'session.jsonl'), '');
+    writeFileSync(join(nativeDir, 'MEMORY.md'), '# Memory index\n\n- [kafka-lag](kafka-lag.md) — kafka consumer lag runbook\n');
+    const nat = (name, description, type, body) =>
+      `---\nname: ${name}\ndescription: "${description}"\nmetadata:\n  node_type: memory\n  type: ${type}\n---\n\n${body}\n`;
+    writeFileSync(join(nativeDir, 'kafka-lag.md'), nat('kafka-lag', 'kafka consumer lag runbook', 'reference', 'native'));
+    // bantamkit's own export of the project fact: same name, so it must not answer twice.
+    writeFileSync(join(nativeDir, 'kafka-notes.md'), nat('kafka-notes', 'kafka consumer group notes lag', 'project', 'copy'));
+    b.snapshot();
+    const PROMPT = 'kafka consumer lag is high again on the group';
+    const ctxOf = (r) => {
+      const text = dec(r.stdout);
+      return text ? JSON.parse(text).hookSpecificOutput?.additionalContext ?? '' : '';
+    };
+    const nativeState = () =>
+      Object.fromEntries(
+        readdirSync(nativeDir)
+          .sort()
+          .map((n) => [n, { bytes: readFileSync(join(nativeDir, n), 'utf8'), mtimeMs: statSync(join(nativeDir, n)).mtimeMs }]),
+      );
+    const sequence = (side) => {
+      const h = home(id, side);
+      const before = nativeState();
+      const hook = (payload) => runHook(ctx, side, { payload: { cwd, ...payload }, cwd, home: h });
+      const withHost = ctxOf(
+        hook({ hook_event_name: 'UserPromptSubmit', prompt: PROMPT, session_id: 'n1', transcript_path: join(tdir, 'session.jsonl') }),
+      );
+      const withoutHost = ctxOf(hook({ hook_event_name: 'UserPromptSubmit', prompt: PROMPT, session_id: 'n2' }));
+      const after = nativeState();
+      const usage = join(h, '.bantamkit', 'usage');
+      return {
+        withHost: withHost.split('\n').slice(1),
+        withoutHost: withoutHost.split('\n').slice(1),
+        nativeUntouched: JSON.stringify(before) === JSON.stringify(after),
+        usage: existsSync(usage) ? readdirSync(usage).sort() : 'no usage directory',
+      };
+    };
+    const py = sequence('py');
+    b.restore();
+    const nd = sequence('node');
+    cases.push(
+      ...literalCases(
+        py,
+        nd,
+        'native-layer: PINNED PER SIDE (#199 J68-11): the transcript branch adds [native], an exported copy is not injected twice, and the hook writes nothing',
+        {
+          withHost: [
+            '[native] [kafka-lag] (reference) kafka consumer lag runbook',
+            '[project] [kafka-notes] (project) kafka consumer group notes',
+          ],
+          withoutHost: ['[project] [kafka-notes] (project) kafka consumer group notes'],
+          nativeUntouched: true,
+          usage: 'no usage directory',
+        },
+      ),
+      { name: 'native-layer: the two sides inject the same lines', kind: 'json', expected: py, actual: nd },
+    );
+  }
+
   // ===================================== #173: the host-registered arms run without the SDK
   //
   // ADDED BY job66 (J66-2). `--hook`, `--statusline` and `--mcp-report` are what a host runs
@@ -3345,6 +3451,79 @@ export async function run(ctx) {
       cases.push(
         { name: `${id}: ${spelling} — the store the hook injects from, side to side`, kind: 'json', expected: py, actual: nd },
         ...literalCases(py, nd, `${id}: ${spelling} — injects from the store the server would serve`, { exit: [0, 0], recalled: want, sessionIndex: want, storeScope: scope }),
+      );
+    }
+  }
+
+  // #204 Task 4 (job69 J69-4): THE HOOK LOG IS A `LogSegment` NOW. The existing
+  // `hook-log.jsonl` is segment 0: an append that leaves it past ROTATE_BYTES (1,000,000 B,
+  // pinned here as a literal, so a change to the constant on both sides reddens) gzips it
+  // whole to `hook-log.jsonl.1.gz` and the live file starts empty. Each home is SEEDED with
+  // valid lines to exactly the bound (`over`) or 400 B under it (`under`, and no hook line is
+  // 400 B), then one ignored event fires. What is compared: the `hook-log*` names after each
+  // of two runs, the live file's state after the first, whether the decompressed segment is the seed
+  // plus exactly one line, and that line's `event`/`action`/leading keys (`ts`/`ms` vary).
+  {
+    const id = 'hook-log-rotate';
+    const BOUND = 1_000_000;
+    const seedLog = (count) => {
+      const line = (i, pad = '') => `{"ts":"old","ms":0,"event":"seed","i":${i},"p":"${pad}"}\n`;
+      const parts = [];
+      let size = 0;
+      let i = 0;
+      while (size + 2 * line(i).length < count) {
+        parts.push(line(i));
+        size += line(i).length;
+        i += 1;
+      }
+      parts.push(line(i, 'x'.repeat(count - size - line(i).length)));
+      return parts.join('');
+    };
+    for (const [label, count] of [['over', BOUND], ['under', BOUND - 400]]) {
+      const cwd = join(root, `${id}-${label}`);
+      mkdirSync(cwd, { recursive: true });
+      const seeded = seedLog(count);
+      const probe = (side) => {
+        const h = home(`${id}-${label}`, side);
+        const log = HOOK_LOG(h);
+        writeFile(log, seeded);
+        const names = () => readdirSync(dirname(log)).filter((x) => x.startsWith('hook-log')).sort();
+        const payload = { hook_event_name: 'BogusEvent', cwd, session_id: id };
+        const first = runHook(ctx, side, { payload, cwd, home: h });
+        // The size past the seed varies with `ms`, so the live file is read as a state.
+        const size = statSync(log).size;
+        const live = size === 0 ? 0 : size > count && size <= BOUND ? 'the seed plus the line, within the bound' : size;
+        const afterFirst = { names: names(), live };
+        let segment = '<no segment>';
+        if (existsSync(`${log}.1.gz`)) {
+          const text = gunzipSync(readFileSync(`${log}.1.gz`)).toString('utf8');
+          const rest = text.startsWith(seeded) ? text.slice(seeded.length) : null;
+          const lines = rest === null ? [] : rest.split('\n').filter((l) => l);
+          const rec = lines.length === 1 ? JSON.parse(lines[0]) : null;
+          segment = {
+            seedFirst: rest !== null,
+            linesAfterSeed: lines.length,
+            record: rec && { keys: Object.keys(rec).slice(0, 2), event: rec.event, action: rec.action },
+          };
+        }
+        const second = runHook(ctx, side, { payload, cwd, home: h });
+        return { exit: [first.exit, second.exit], afterFirst, segment, afterSecond: names() };
+      };
+      const py = probe('py');
+      const nd = probe('node');
+      const rotated = label === 'over';
+      cases.push(
+        { name: `${id}: ${label} — the hook log after one append, side to side`, kind: 'json', expected: py, actual: nd },
+        ...literalCases(py, nd, `${id}: ${label} — ${rotated ? 'gzips the whole seed plus the line into .1.gz' : 'does not rotate under the bound'}`, {
+          exit: [0, 0],
+          afterFirst: rotated
+            ? { names: ['hook-log.jsonl', 'hook-log.jsonl.1.gz'], live: 0 }
+            : { names: ['hook-log.jsonl'], live: 'the seed plus the line, within the bound' },
+          segment: rotated
+            ? { seedFirst: true, linesAfterSeed: 1, record: { keys: ['ts', 'ms'], event: 'BogusEvent', action: 'ignored' } }
+            : '<no segment>',
+          afterSecond: rotated ? ['hook-log.jsonl', 'hook-log.jsonl.1.gz'] : ['hook-log.jsonl'],
+        }),
       );
     }
   }

@@ -719,9 +719,12 @@ export async function run(ctx) {
     // this sentence names none. Three facts share one word (`osprey`) and nothing else, so
     // the duplicate gate lets all three in and `k: 1` over the three is the floor's own test.
     const recallTool = S.tools.memory_recall ?? { description: '', inputSchema: { properties: {} } };
+    // Amended by #200 (job70 T200-7): the description gains one closing sentence naming the
+    // new `file` argument; every claim this case was written for is unchanged and still pinned.
+    // WAS: '... a query that is exactly a fact\'s name returns that fact alone.'
     push(
       N('c', 'j64', 'memory_recall-description-wording'),
-      'Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact\'s name returns that fact alone.',
+      'Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact\'s name returns that fact alone. Pass file instead of query to see the memories linked to a file.',
       recallTool.description ?? '',
       'string',
     );

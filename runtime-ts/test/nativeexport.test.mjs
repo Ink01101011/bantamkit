@@ -31,6 +31,7 @@
  * style note: J62-5 lost the operator's real `~/.claude/settings.json` to a probe that set
  * only `COLUMNS`/`LINES`.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {

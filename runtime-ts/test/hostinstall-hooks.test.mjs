@@ -16,6 +16,7 @@
  * by a program that wrote the file and then threw. Every refusal case below reads the settings
  * file before and after and compares Buffers, and asserts that no `.backup-` sibling appeared.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

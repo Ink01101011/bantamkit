@@ -27,7 +27,20 @@ from bantamkit.memory.__main__ import main as memory_main
 
 @pytest.fixture
 def store(tmp_path):
-    return MemoryStore(tmp_path / "mem", today=lambda: "2026-08-06")
+    return MemoryStore(
+        tmp_path / "mem", today=lambda: "2026-08-06", now=lambda: "2026-08-06T00:00:00Z"
+    )
+
+
+def _uses(store):
+    """The usage ledger's events for this store, as `(fact, kind)` (#199 D5)."""
+    path = store.usage().path
+    if not path.exists():
+        return []
+    return [
+        (e["fact"], e["kind"])
+        for e in (json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    ]
 
 
 def test_save_writes_fact_file_and_index(store):
@@ -78,11 +91,13 @@ def test_recall_returns_topk_and_stamps(store):
     store.save("project", "deploy-command", "how we deploy to prod", "make ship-prod")
     store.save("user", "editor-pref", "user prefers vim keybindings", "vim everywhere")
     store.save("reference", "ci-dashboard", "link to the ci dashboard", "https://ci")
+    before = (store.root / "facts" / "deploy-command.md").read_bytes()
     facts = store.recall("how do we deploy prod", k=1)
     assert [f.name for f in facts] == ["deploy-command"]
-    assert "last_recalled: '2026-08-06'" in (store.root / "facts" / "deploy-command.md").read_text(
-        encoding="utf-8"
-    )
+    # #199 D5: the use goes to the usage ledger; the fact file is no longer rewritten.
+    # WAS: `last_recalled: '2026-08-06'` was written into deploy-command.md.
+    assert (store.root / "facts" / "deploy-command.md").read_bytes() == before
+    assert _uses(store) == [("deploy-command", "recall_hit")]
 
 
 def test_recall_no_match_returns_empty(store):
@@ -98,12 +113,14 @@ def test_lookup_answers_the_named_fact_alone_and_stamps_only_it(store):
     named and dates the one named."""
     store.save("project", "deploy-command", "how we deploy to prod", "make ship-prod")
     store.save("project", "deploy-notes", "deploy command prod notes", "the notes")
+    facts = store.root / "facts"
+    before = {p.name: p.read_bytes() for p in facts.iterdir()}
     fact = store.lookup("deploy-command")
     assert fact is not None and (fact.name, fact.body) == ("deploy-command", "make ship-prod")
-    facts = store.root / "facts"
-    named = (facts / "deploy-command.md").read_text(encoding="utf-8")
-    assert "last_recalled: '2026-08-06'" in named
-    assert "last_recalled: null" in (facts / "deploy-notes.md").read_text(encoding="utf-8")
+    # #199 D5: a by-name read is a `body_read` in the ledger, for the named fact only.
+    # WAS: `last_recalled` was dated in deploy-command.md and left null in deploy-notes.md.
+    assert {p.name: p.read_bytes() for p in facts.iterdir()} == before
+    assert _uses(store) == [("deploy-command", "body_read")]
 
 
 def test_lookup_misses_write_nothing_and_never_score(store):
@@ -160,6 +177,8 @@ def _seed_three_roles(root, roles):
     for role in ("hot", "old"):
         store.save("project", roles[role], _describe(roles[role]), role)
     store._today = lambda: "2026-08-20"
+    # #199 D5: the recall's date is the usage ledger's clock now, so it is frozen too.
+    store._now = lambda: "2026-08-20T00:00:00Z"
     store.recall(roles["hot"][0] * 24)  # the token unique to HOT: stamps HOT and nothing else
     store._today = lambda: "2026-08-21"
     store.save("project", roles["new"], _describe(roles["new"]), "new")
@@ -676,7 +695,9 @@ def test_created_is_persisted_on_the_next_write_of_a_legacy_fact(tmp_path):
     old = time.mktime(datetime(2025, 3, 4).timetuple())
     os.utime(store.root / "facts" / "legacy-fact.md", (old, old))
 
-    store.recall("alpha subject")  # any write of the fact carries the derived date through
+    # Any write of the fact carries the derived date through. #199 D5: a recall no longer
+    # writes the file (WAS: `store.recall("alpha subject")` was the write), so a re-save is.
+    store.save("project", "legacy-fact", "an alpha subject", "body")
 
     text = (store.root / "facts" / "legacy-fact.md").read_text(encoding="utf-8")
     assert "created: '2025-03-04'" in text
@@ -956,7 +977,10 @@ def test_snapshot_stamp_never_writes_pinned_content_back(store):
         store.recall("database port", k=1)
     text = (store.root / "facts" / "db-port.md").read_text(encoding="utf-8")
     assert "6543" in text and "5432" not in text
-    assert "last_recalled: '2026-08-06'" in text
+    # #199 D5: the stamp is a ledger event now and writes no fact file at all, so nothing
+    # pinned can be written back. WAS: `last_recalled: '2026-08-06'` landed on the live file.
+    assert "last_recalled: null" in text
+    assert _uses(store) == [("db-port", "recall_hit")]
 
 
 def test_snapshot_skips_stamping_a_fact_the_scope_deleted(store):
@@ -1744,17 +1768,15 @@ def test_a_recall_pinned_before_the_store_broke_answers_but_never_dates_it(
     is surprising:
 
     - BROKE INSIDE THE SCOPE. The pin holds, so `recall(..., stamp=False)` still answers
-      from the facts as of entry — that is what the pin is FOR. The default
-      `stamp=True` raises out of `_stamp`, which lists the live store, and it does so
-      AFTER the hits were computed, so the answer is thrown away. WAS: `_stamp` got an
-      empty listing, found no live copy, and silently skipped the stamp.
+      from the facts as of entry — that is what the pin is FOR. #199 D5: the default
+      `stamp=True` now answers too, from the pin, and records the use in the usage ledger,
+      which lists nothing in the store. WAS (job37): it raised out of `_stamp`, which listed
+      the live store after the hits were computed, and threw the answer away.
     - ALREADY UNREADABLE AT ENTRY. Nothing is pinned and `recall` raises on its own.
     - REPAIRED INSIDE THE SCOPE. Entry pinned nothing, so reads go live and see the
       repair.
 
-    The stamp raise is kept rather than swallowed: a store that stops being readable
-    mid-turn is news. What is asserted is that it costs nothing — no fact is left
-    half-dated, because `_stamp` lists before it writes and raises on the first hit.
+    What is still asserted is that no fact file is touched by any of it.
     """
     store = _three_facts(tmp_path)
     facts = store.root / "facts"
@@ -1764,13 +1786,12 @@ def test_a_recall_pinned_before_the_store_broke_answers_but_never_dates_it(
         assert store._snapshot is not None and len(store._snapshot) == 3
         _deny_scandir(monkeypatch, facts)
         assert [f.name for f in store.recall("w0a", stamp=False)] == ["fact-0"]
-        with pytest.raises(MemoryValidationError) as e:
-            store.recall("w0a")
-        assert str(facts) in str(e.value)
+        assert [f.name for f in store.recall("w0a")] == ["fact-0"]
         monkeypatch.undo()
     assert {p.name: p.read_bytes() for p in facts.iterdir()} == on_disk, (
-        "a recall that raised while stamping still dated a fact"
+        "a recall inside the scope wrote a fact file"
     )
+    assert _uses(store) == [("fact-0", "recall_hit")]
 
     _deny_scandir(monkeypatch, facts)
     with store.snapshot():
@@ -2793,16 +2814,58 @@ def test_the_default_ratio_is_zero_and_gates_nothing(store):
     ] == ungated
 
 
+def _ladder_bm25():
+    """The ladder's BM25F scores (#199 D3): the gate divides these now, not overlap counts."""
+    from bantamkit.memory.retrieval import Doc, bm25_scores
+
+    names = ["four", "three", "two", "one"]
+    docs = [
+        Doc("four", "alpha bravo charlie delta", ()),
+        Doc("three", "alpha bravo charlie zulu", ()),
+        Doc("two", "alpha bravo yankee zulu", ()),
+        Doc("one", "alpha xray yankee zulu", ()),
+    ]
+    return dict(zip(names, bm25_scores(_LADDER_QUERY, docs), strict=True))
+
+
+def _ratio_landing_on(score: float, best: float) -> float:
+    """A ratio whose floor `ratio * best` is EXACTLY `score`, found ulp by ulp."""
+    import math
+
+    r = score / best
+    for _ in range(64):
+        if r * best == score:
+            return r
+        r = math.nextafter(r, 0.0 if r * best > score else 1.0)
+    raise AssertionError("no ratio lands exactly on the score")
+
+
 def test_a_fact_exactly_at_the_threshold_is_admitted(store):
-    """AT the boundary, not near it: 0.5 * 4 == 2.0 exactly, and the score-2 fact stays."""
+    """AT the boundary, not near it: a floor of exactly the score-two fact's score keeps it.
+
+    #199 D3: the scores are BM25F now (WAS: overlap counts 4/3/2/1, where 0.5 * 4 == 2.0
+    landed exactly). The ratio is found so that `ratio * best` IS the fact's score to the
+    bit, and one ulp above it drops the fact: `>=`, not `>`.
+    """
+    import math
+
     _score_ladder(store)
-    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.5)] == [
+    s = _ladder_bm25()
+    at_two = _ratio_landing_on(s["two"], s["four"])
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=at_two)] == [
         "four",
         "three",
         "two",
     ]
+    above = math.nextafter(at_two, 1.0)
+    assert above * s["four"] > s["two"]
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=above)] == [
+        "four",
+        "three",
+    ]
     # And one rung further down, where the floor lands exactly on the weakest fact.
-    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.25)] == [
+    at_one = _ratio_landing_on(s["one"], s["four"])
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=at_one)] == [
         "four",
         "three",
         "two",
@@ -2811,9 +2874,16 @@ def test_a_fact_exactly_at_the_threshold_is_admitted(store):
 
 
 def test_just_above_the_threshold_drops_the_fact_and_just_below_keeps_it(store):
+    """#199 D3: over BM25F the ladder is 1.0 / 0.490 / 0.196 / 0.045 of the best (WAS 4/3/2/1
+    counts, so 0.6 kept two facts and 0.4 three); each ratio below sits between two rungs."""
     _score_ladder(store)
-    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.6)] == ["four", "three"]
-    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.4)] == [
+    s = _ladder_bm25()
+    assert [round(s[n] / s["four"], 3) for n in ("four", "three", "two", "one")] == [
+        1.0, 0.49, 0.196, 0.045,
+    ]
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.5)] == ["four"]
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.4)] == ["four", "three"]
+    assert [f.name for f in store.recall(_LADDER_QUERY, k=10, min_ratio=0.1)] == [
         "four",
         "three",
         "two",
@@ -2868,12 +2938,18 @@ def test_the_cut_is_relative_to_the_best_score_not_an_absolute_count(store):
     # The absolute counts move by 5x with the length of the query...
     assert (score("alpha", short), score("bravo", short)) == (2, 2)
     assert (score("alpha", long), score("bravo", long)) == (10, 9)
-    # ...so any absolute cut above 2 would gate the short prompt out entirely while
-    # admitting both facts on the long one. The ratio does not move that way: the pair
-    # is a tie at 452 characters and a 0.9 near-tie at 7855, both times admitted at 0.9.
+    # ...and so do the BM25F scores the gate divides since #199 D3 (0.36 -> 2.33)...
+    from bantamkit.memory.retrieval import Doc, bm25_scores
+
+    docs = [Doc(f.name, f.description, ()) for f in store.recall(long, k=10)]
+    assert bm25_scores(long, docs)[0] > 5 * bm25_scores(short, docs)[0]
+    # ...so any absolute cut would gate the short prompt out entirely while admitting
+    # both facts on the long one. The ratio does not move that way: the pair is a tie on
+    # the short prompt and a 0.70 near-tie on the long one (WAS 0.9 over overlap counts;
+    # BM25F weighs the rare `ten` higher), both times admitted at 0.7.
     for query in (short, long):
         assert [f.name for f in store.recall(query, k=10)] == ["alpha", "bravo"]
-        assert [f.name for f in store.recall(query, k=10, min_ratio=0.9)] == ["alpha", "bravo"]
+        assert [f.name for f in store.recall(query, k=10, min_ratio=0.7)] == ["alpha", "bravo"]
     # Only the exact-tie requirement can tell the two lengths apart, and that is the
     # ratio reporting a real difference in relevance rather than a difference in length.
     assert [f.name for f in store.recall(short, k=10, min_ratio=1.0)] == ["alpha", "bravo"]
@@ -2972,8 +3048,9 @@ def test_lint_names_an_unquoted_timestamp_by_file_and_field(tmp_path):
         "fact 'hand-edit' in hand-edit.md: created is the unquoted timestamp 2026-01-01, "
         "read as '2026-01-01'; quote it"
     )
-    # The next write re-quotes it, so a recall that stamps the fact heals the file.
-    store.recall("hand edited", stamp=True)
+    # The next write re-quotes it. #199 D5: a recall no longer writes (WAS: a recall that
+    # stamped the fact healed the file), so the write that heals it is a re-save.
+    store.save("project", "hand-edit", "hand edited fact", "b")
     healed = (store.root / "facts" / "hand-edit.md").read_text(encoding="utf-8")
     assert "created: '2026-01-01'" in healed
     store.lint()
@@ -3269,3 +3346,233 @@ def test_save_skips_an_unreadable_fact_file_by_name_and_never_overwrites_it(tmp_
         "saved 'second-fact'\n\n1 fact file could not be read and was skipped; "
         f"the duplicate check read every other fact:\n[project] {why}"
     )
+
+
+# ---- keywords (#199, J68-3) ----
+
+
+def test_save_writes_keywords_and_reads_them_back(store):
+    store.save(
+        "project", "release-lessons", "how to run a release", "body",
+        keywords=("ปล่อยเวอร์ชัน", "publish"),
+    )
+    text = (store.root / "facts" / "release-lessons.md").read_text(encoding="utf-8")
+    # Raw UTF-8, not `ป` escapes: `_fact_text` dumps with `allow_unicode=True`, and the
+    # key sits after `links`, the last key a 0.36.0 file carries.
+    assert "links: []\nkeywords:\n- ปล่อยเวอร์ชัน\n- publish\n---\n" in text
+    assert store.lookup("release-lessons", stamp=False).keywords == ["ปล่อยเวอร์ชัน", "publish"]
+
+
+def test_fact_without_keywords_is_byte_identical_to_before(store):
+    store.save("project", "plain", "a plain fact", "body")
+    assert (store.root / "facts" / "plain.md").read_text(encoding="utf-8") == (
+        "---\nname: plain\ndescription: a plain fact\ntype: project\n"
+        "created: '2026-08-06'\nlast_recalled: null\nlinks: []\n---\n\nbody\n"
+    )
+    assert store.lookup("plain", stamp=False).keywords == []
+
+
+def test_a_recall_stamp_keeps_the_keywords(store):
+    store.save("project", "kw-fact", "a fact with keywords", "b", keywords=("คำ",))
+    before = (store.root / "facts" / "kw-fact.md").read_bytes()
+    store.recall("keywords fact", 1)
+    # #199 D5: the stamp no longer rewrites the file (WAS: through `_fact_text`, dating it),
+    # so the keywords cannot be lost by one; the file is byte for byte what `save` wrote.
+    text = (store.root / "facts" / "kw-fact.md").read_text(encoding="utf-8")
+    assert (store.root / "facts" / "kw-fact.md").read_bytes() == before
+    assert "keywords:\n- คำ\n" in text
+    assert _uses(store) == [("kw-fact", "recall_hit")]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "nope", "null", "", "7", "[1, a]", "{a: b}", "[[a]]",
+        "\n- a\n- 2", "\n- a\n- true", "\n- '2026-10-15'\n- 2026-10-15",
+    ],
+)
+def test_keywords_wrong_shape_is_refused(store, shape):
+    (store.root / "facts").mkdir(parents=True, exist_ok=True)
+    (store.root / "facts" / "bad.md").write_text(
+        "---\nname: bad\ndescription: d\ntype: project\ncreated: '2026-10-15'\n"
+        f"last_recalled: null\nlinks: []\nkeywords: {shape}\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        MemoryValidationError, match=r"^fact 'bad' in bad\.md: keywords must be a list of strings$"
+    ):
+        store.lookup("bad", stamp=False)
+
+
+def test_save_refuses_a_lone_surrogate_in_a_keyword(store):
+    with pytest.raises(MemoryValidationError, match=r"^keywords\[1\] holds a lone surrogate"):
+        store.save("project", "x", "d", "b", keywords=("ok", "\ud800"))
+    assert not (store.root / "facts" / "x.md").exists()
+
+
+def test_memory_save_passes_keywords_through(tmp_path):
+    m = Memory(tmp_path / "mem")
+    assert m.save("project", "kw", "a fact", "b", keywords=["ไทย"]).startswith("saved 'kw'")
+    written = (tmp_path / "mem" / "facts" / "kw.md").read_text(encoding="utf-8")
+    assert "keywords:\n- ไทย\n" in written
+
+
+# ------------------------------------------------- read-repair (#199 Task 6, spec D8)
+
+
+def _old(store, name="old", stamp="'2026-10-01'", extra=""):
+    """A 0.35.9-shaped fact: saved, then its `last_recalled` stamped as 0.35.x stamped it."""
+    store.save("project", name, f"an old fact called {name}", "b")
+    p = store.root / "facts" / f"{name}.md"
+    p.write_text(
+        p.read_text(encoding="utf-8").replace(
+            "last_recalled: null\n", f"last_recalled: {stamp}\n{extra}"
+        ),
+        encoding="utf-8",
+    )
+    return p
+
+
+def test_old_fact_is_repaired_once(tmp_path):
+    from bantamkit.memory.usage import UsageLedger
+
+    s = MemoryStore(tmp_path / "store", create=True)
+    p = _old(s)
+    led = UsageLedger(Path.home(), tmp_path / "store")
+    f = s.lookup("old", stamp=False)
+    assert s.repair(f, led, "2026-10-15T00:00:00Z") is True
+    assert "last_recalled: null" in p.read_text(encoding="utf-8")
+    assert led.last_used("old") == "2026-10-01T00:00:00Z"
+    after = p.read_bytes()
+    assert s.repair(s.lookup("old", stamp=False), led, "2026-10-15T00:00:00Z") is False
+    assert p.read_bytes() == after
+    assert [e for e in _uses(s) if e[1] == "seed"] == [("old", "seed")]
+
+
+def test_keywords_stripped_by_old_runtime_are_restored(tmp_path):
+    from bantamkit.memory.usage import UsageLedger
+
+    s = MemoryStore(tmp_path / "store", create=True)
+    led = UsageLedger(Path.home(), tmp_path / "store")
+    s.save("project", "kw", "fact", "b", keywords=("ปล่อย",))
+    led.append("kw", "save", "2026-10-15T00:00:00Z", keywords=["ปล่อย"])
+    p = tmp_path / "store" / "facts" / "kw.md"
+    # What 0.35.9 does: rewrite from a dataclass with no `keywords` field.
+    p.write_text(p.read_text(encoding="utf-8").replace("keywords:\n- ปล่อย\n", ""), encoding="utf-8")
+    assert s.repair(s.lookup("kw", stamp=False), led, "2026-10-15T00:00:00Z") is True
+    assert s.lookup("kw", stamp=False).keywords == ["ปล่อย"]
+    # Nothing to seed: the stamp was null, so the ledger gained no event.
+    assert [e for e in _uses(s) if e[1] == "seed"] == []
+
+
+@pytest.mark.parametrize(
+    ("stamp", "seed"),
+    [
+        ("'2026-10-01'", "2026-10-01T00:00:00Z"),
+        ("2026-10-01", "2026-10-01T00:00:00Z"),  # unquoted: a `date`, read as its text
+        ("'2026-10-01T09:30:00Z'", "2026-10-01T00:00:00Z"),
+        ("'2099-01-01'", "2026-10-15T00:00:00Z"),  # a future stamp is clamped to now
+        ("'2026-13-01'", None),  # not a day: nothing is invented
+        ("'yesterday'", None),
+        ("''", None),
+    ],
+)
+def test_repair_seeds_the_stamps_day_or_nothing(tmp_path, stamp, seed):
+    from bantamkit.memory.usage import UsageLedger
+
+    s = MemoryStore(tmp_path / "store", create=True)
+    p = _old(s, stamp=stamp)
+    led = UsageLedger(Path.home(), tmp_path / "store")
+    assert s.repair(s.lookup("old", stamp=False), led, "2026-10-15T00:00:00Z") is True
+    assert "last_recalled: null\n" in p.read_text(encoding="utf-8")
+    assert led.last_used("old") == seed
+
+
+def test_repair_leaves_a_fact_whose_file_is_not_its_name(tmp_path):
+    from bantamkit.memory.usage import UsageLedger
+
+    s = MemoryStore(tmp_path / "store", create=True)
+    p = _old(s)
+    moved = p.with_name("elsewhere.md")
+    p.rename(moved)
+    before = moved.read_bytes()
+    led = UsageLedger(Path.home(), tmp_path / "store")
+    assert s.repair(s.lookup("old", stamp=False), led, "2026-10-15T00:00:00Z") is False
+    assert moved.read_bytes() == before
+    assert not p.exists()
+
+
+def test_tool_recall_repairs_once_and_the_hook_path_never(tmp_path):
+    m = Memory(tmp_path / "mem")
+    p = _old(m.store, "deploy-steps")
+    before = p.read_bytes()
+    # The hook's call: `stamp=False`. The file is byte-unchanged and nothing is counted.
+    m.recall_outcome("deploy steps", 3, stamp=False)
+    assert p.read_bytes() == before
+    assert m.repaired == 0
+    m.recall("deploy steps")
+    repaired = p.read_bytes()
+    assert repaired != before and b"last_recalled: null\n" in repaired
+    assert m.repaired == 1
+    m.recall("deploy steps")
+    assert p.read_bytes() == repaired
+    assert m.repaired == 1
+
+
+def test_a_name_lookup_repairs_too(tmp_path):
+    m = Memory(tmp_path / "mem")
+    p = _old(m.store, "deploy-steps")
+    m.recall("deploy-steps")
+    assert b"last_recalled: null\n" in p.read_bytes()
+    assert m.repaired == 1
+
+
+def test_a_read_only_layer_is_never_repaired(tmp_path):
+    profile = MemoryStore(tmp_path / "profile", create=True)
+    p = _old(profile, "deploy-steps")
+    before = p.read_bytes()
+    m = Memory.layered_for_eval(tmp_path / "project", tmp_path / "profile")
+    assert "deploy-steps" in m.recall("deploy steps")
+    assert p.read_bytes() == before
+    assert m.repaired == 0
+
+
+def test_memory_save_appends_a_save_event_with_its_keywords(tmp_path):
+    m = Memory(tmp_path / "mem")
+    m.save("project", "kw", "a fact", "b", keywords=["ไทย", "thai"])
+    m.save("project", "plain", "another unrelated thing", "b")
+    lines = [
+        json.loads(line)
+        for line in m.usage().path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [(e["fact"], e["kind"], e["keywords"]) for e in lines] == [
+        ("kw", "save", ["ไทย", "thai"]),
+        ("plain", "save", []),
+    ]
+    assert m.usage().keywords_copy("kw") == ["ไทย", "thai"]
+
+
+# ---------------------------------- unknown frontmatter keys (register row (mmmm), Task 6)
+
+
+def test_unknown_frontmatter_keys_survive_save_recall_and_repair(tmp_path):
+    m = Memory(tmp_path / "mem")
+    p = _old(m.store, "deploy-steps", extra="priority: high\nowner:\n- kk\n- ops\n")
+    m.recall("deploy steps")  # tool recall: read-repair rewrites the file
+    text = p.read_text(encoding="utf-8")
+    assert "last_recalled: null\n" in text
+    assert text.endswith("links: []\npriority: high\nowner:\n- kk\n- ops\n---\n\nb\n"), text
+    assert m.store.lookup("deploy-steps", stamp=False).extra == {
+        "priority": "high", "owner": ["kk", "ops"],
+    }
+    # A re-save keeps them too, after `keywords`.
+    m.save("project", "deploy-steps", "an old fact called deploy-steps", "b2", keywords=["x"])
+    assert p.read_text(encoding="utf-8").endswith(
+        "links: []\nkeywords:\n- x\npriority: high\nowner:\n- kk\n- ops\n---\n\nb2\n"
+    )
+
+
+def test_a_key_safe_load_does_not_read_as_text_is_not_carried(tmp_path):
+    s = MemoryStore(tmp_path / "store", create=True)
+    _old(s, extra="on: 1\nnull: 2\nkeep: 3\n")
+    assert s.lookup("old", stamp=False).extra == {"keep": 3}

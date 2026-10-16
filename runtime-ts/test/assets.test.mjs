@@ -9,6 +9,7 @@
  * pack — the same silent-wrong-source class the sh launcher's `PYTHONPATH` comment is
  * about.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

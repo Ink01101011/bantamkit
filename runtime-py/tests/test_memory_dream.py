@@ -934,3 +934,39 @@ def test_a_fixture_older_than_its_mtime_still_dates_against_the_file(tmp_path: P
     assert (date(2026, 6, 1) + timedelta(days=0)).isoformat() not in (
         result.absolutised[0].resolved
     )
+
+
+# -------------------- #199 Task 6: keywords union, hand-written keys survive (J68-3 ruling)
+
+
+def _with_front(path: Path, extra: str) -> None:
+    """Insert `extra` frontmatter lines just before the closing `---`."""
+    text = path.read_text(encoding="utf-8")
+    head, rest = text.split("\n---\n", 1)
+    path.write_text(head + "\n" + extra + "---\n" + rest, encoding="utf-8")
+
+
+@pytest.mark.parametrize("identical", [True, False])
+def test_the_survivor_keeps_the_union_of_both_keyword_lists(
+    tmp_path: Path, identical: bool
+) -> None:
+    project, profile = _stores(tmp_path)
+    _write(project.root, "shared-ruling", description="one ruling", body="the same body",
+           mtime="2026-08-27")
+    _write(profile.root, "shared-ruling", description="one ruling",
+           body="the same body" if identical else "another body", mtime="2026-08-27")
+    _with_front(project._fact_path("shared-ruling"),
+                "keywords:\n- ปล่อย\n- deploy\npriority: high\nowner: kk\n")
+    _with_front(profile._fact_path("shared-ruling"),
+                "keywords:\n- deploy\n- Deploy\n- ปล่อย\n- ship\nowner: ops\nteam: core\n")
+
+    dream(project, profile, dry_run=False)
+
+    survivor = project.lookup("shared-ruling", stamp=False)
+    # Project order first, then the profile's not already present, compared exactly.
+    assert survivor.keywords == ["ปล่อย", "deploy", "Deploy", "ship"]
+    # The project's value wins where both carry a key; a profile-only key survives.
+    assert survivor.extra == {"priority": "high", "owner": "kk", "team": "core"}
+    assert project._fact_path("shared-ruling").read_text(encoding="utf-8").count(
+        "keywords:\n- ปล่อย\n- deploy\n- Deploy\n- ship\npriority: high\nowner: kk\nteam: core\n"
+    ) == 1

@@ -14,6 +14,7 @@
  *   - #152: `"x"`, `1.0` and `null` are JSON documents.
  *   - #153: an offending value is quoted at most 200 codepoints, a sentence at most 1000.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';

@@ -20,6 +20,7 @@
  * it: adding a test file produced 40 phantom edge rows, and creating one note moved
  * `unknown-language` from 1689 to 1690 and scored four equivalent mutants as KILLED.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

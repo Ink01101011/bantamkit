@@ -20,6 +20,7 @@
  * own: the zip reader's deflate branch, `unescape` on the legacy no-semicolon names, the
  * UTF-8 scanner's `reason` strings, quoted-printable's soft breaks, `repr()`.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

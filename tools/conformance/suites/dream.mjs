@@ -969,6 +969,53 @@ export async function run(ctx) {
   }
   notes.push(`${list.length} scenarios compared, each on the plan and BOTH directories`);
 
+  // ------------------------------- #199 Task 6: keywords union, hand-written keys (J68-3 ruling)
+  // When `dream` merges a project and a profile copy of one fact, the survivor's `keywords` are
+  // the UNION (project order first, then each profile keyword not already present, compared
+  // exactly), and every unknown frontmatter key either copy carries survives, the project's value
+  // winning. Both arms: an identical body and a diverged one. Plan and both trees side to side,
+  // then the survivor's file against a LITERAL per side, because a symmetric regression (both
+  // keep only the project's list, both drop `team`) leaves every differential green.
+  {
+    const front = (n, body, extra) =>
+      factFile(n, { description: 'one ruling', body }).replace('\n---\n\n', `\n${extra}---\n\n`);
+    const PROJECT_EXTRA = 'keywords:\n- ปล่อย\n- deploy\npriority: high\nowner: kk\n';
+    const PROFILE_EXTRA = 'keywords:\n- deploy\n- Deploy\n- ปล่อย\n- ship\nowner: ops\nteam: core\n';
+    for (const identical of [true, false]) {
+      const label = `#199 keywords union, ${identical ? 'identical' : 'diverged'} pair`;
+      const bed = join(ctx.scratch, `kw-${identical ? 'same' : 'diff'}`);
+      const roots = {};
+      for (const side of ['py', 'node']) {
+        roots[side] = { project: join(bed, side, 'project'), profile: join(bed, side, 'profile') };
+        materialise(roots[side].project, {
+          files: { 'facts/shared-ruling.md': front('shared-ruling', 'the same body', PROJECT_EXTRA) },
+          mtimes: { 'facts/shared-ruling.md': '2026-08-27' },
+        });
+        materialise(roots[side].profile, {
+          files: { 'facts/shared-ruling.md': front('shared-ruling', identical ? 'the same body' : 'another body', PROFILE_EXTRA) },
+          mtimes: { 'facts/shared-ruling.md': '2026-08-27' },
+        });
+      }
+      const request = (side) => ({
+        op: 'run', project: roots[side].project, profile: roots[side].profile, dry_run: false,
+        index_budget: null, profile_index_budget: null, create: true, passes: 1,
+      });
+      const py = ctx.runPython(REF, request('py'));
+      const nd = runNode(store, dreamer, request('node'));
+      cases.push({ name: `${label} — plan`, kind: 'json', expected: py.results, actual: nd.results });
+      cases.push({ name: `${label} — project tree`, kind: 'bytes', expected: manifest(roots.py.project), actual: manifest(roots.node.project) });
+      cases.push({ name: `${label} — profile tree`, kind: 'bytes', expected: manifest(roots.py.profile), actual: manifest(roots.node.profile) });
+      const survivor = (side) => {
+        const text = readFileSync(join(roots[side].project, 'facts', 'shared-ruling.md'), 'utf8').replace(/\r\n/g, '\n');
+        return text.slice(text.indexOf('links:'), text.indexOf('\n---\n') + 1);
+      };
+      const expected = 'links: []\nkeywords:\n- ปล่อย\n- deploy\n- Deploy\n- ship\npriority: high\nowner: kk\nteam: core\n';
+      for (const [who, side] of [['python', 'py'], ['node', 'node']]) {
+        cases.push({ name: `${label} — PINNED PER SIDE: ${who}'s survivor carries the union`, kind: 'string', expected, actual: survivor(side) });
+      }
+    }
+  }
+
   // ------------------------------------------------------ the pure boundary, side by side
   const boundaryCases = BOUNDARY_TERMS.map(([, term]) => [
     b64(`It landed ${term}, they said.`),

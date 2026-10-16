@@ -1,0 +1,25 @@
+{
+  "declared": "2026-10-15",
+  "spec": "docs/superpowers/specs/2026-10-15-recall-by-meaning-design.md",
+  "precision_at_inject_min": 0.8,
+  "recall_at_3_min": "baseline_v1_gold",
+  "thai_recall_at_3_min_exclusive": 0.0,
+  "hook_p50_rise_ms_max": 5.0,
+  "gold_is_held_out": true,
+  "gold_judge": {
+    "ruled": "2026-10-16",
+    "judge": "separate model, blind to silver, engine output and scores",
+    "spotcheck_prompts": 10,
+    "spotcheck_seed": 20261016,
+    "agreement_min": 0.9,
+    "kappa_min": 0.6
+  },
+  "gold_judge_calibrated": {
+    "ruled": "2026-10-16",
+    "why": "uncalibrated judge failed the spot-check (agreement 0.68, kappa 0.1525); the user ruled the agent does all labelling itself",
+    "method": "judge given the user's labelled prompts as examples; validated by 2-fold cross-validation over the user's 10 (seed 20261017), pooled",
+    "agreement_min": 0.9,
+    "kappa_min": 0.6,
+    "on_miss": "gold is still the calibrated judge's labels on the 40 plus the user's 10, but every gold number is reported UNVALIDATED and no gold bar line may read PASS"
+  }
+}

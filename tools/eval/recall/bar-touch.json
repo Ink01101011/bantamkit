@@ -1,0 +1,26 @@
+{
+  "declared": "2026-10-16",
+  "spec": "docs/superpowers/specs/2026-10-15-touch-graph-design.md",
+  "via_precision_gold_min": 0.8,
+  "via_off_by_default_if_missed": true,
+  "precision_at_inject_min": "j68_7_v2_gold_precision_at_inject",
+  "posttooluse_p50_rise_ms_max": 2.0,
+  "stop_git_status_p50_ms_max": 30.0,
+  "latency_runtime": "node runtime-ts/dist/cli.js --hook, 15 cold runs per event, throwaway HOME",
+  "git_status_repo": "this repository at the measuring commit",
+  "gold_is_held_out": true,
+  "gold_pass": 2,
+  "gold_rows_max": 50,
+  "gold_seed": 200,
+  "eval_scope": "sessions whose cwd is this repository (strong edges resolve against its ls-files)",
+  "unlabelled_injection_counts_as": "not relevant",
+  "reported_not_gated": ["re-reads after a B summary"],
+  "gold_judge": {
+    "ruled": "2026-10-16",
+    "judge": "separate model, blind to silver, engine output and scores; reads only a judge-input file of prompt, touch context and fact text",
+    "spotcheck_prompts": 10,
+    "spotcheck_seed": 20261016,
+    "agreement_min": 0.9,
+    "kappa_min": 0.6
+  }
+}

@@ -16,6 +16,7 @@
  * `number` rounds silently. `a cost above 2**53 refuses` and `every class at its own rate`
  * are the two cases that would go wrong if the `bigint` were ever quietly relaxed.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

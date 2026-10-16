@@ -23,6 +23,7 @@
  * pair that decides anything is `0.9.0` against `0.10.0`, where a string compare says the index
  * is BEHIND and would print `ahead` over a genuinely stale install.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import {
   existsSync,

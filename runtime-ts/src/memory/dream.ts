@@ -570,6 +570,20 @@ export function claimSlot(block: string): [string, string] | null {
  * them, followed by the `UNRESOLVED` matches in the order the second scan met them, which
  * is the order `dream.py` builds the same list in.
  */
+/** `first` in order, then each entry of `second` not already taken, compared exactly. */
+export function unionKeywords(first: readonly string[], second: readonly string[]): string[] {
+  const out = [...first];
+  for (const word of second) if (!out.includes(word)) out.push(word);
+  return out;
+}
+
+/** `{**here, **(there's keys here lacks)}` as `Fact.extra`, absent when both are empty. */
+function unionExtra(here: NonNullable<Fact['extra']>, there: NonNullable<Fact['extra']>): Pick<Fact, 'extra'> {
+  const keys = new Set(here.map(([k]) => k));
+  const out = [...here, ...there.filter(([k]) => !keys.has(k))];
+  return out.length > 0 ? { extra: out } : {};
+}
+
 export function absolutise(
   body: string,
   basis: string,
@@ -937,6 +951,11 @@ export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true)
       links,
       created: createdCandidates.length > 0 ? pyMin(createdCandidates) : null,
       last_recalled: recalledCandidates.length > 0 ? pyMax(recalledCandidates) : null,
+      // #199 Task 6 (J68-3 ruling, orchestrator default 2026-10-15): the keywords are the UNION —
+      // the project's in order, then each profile keyword not already there, compared exactly —
+      // and a hand-written key either copy carries survives, the project's value winning.
+      keywords: unionKeywords(here.keywords ?? [], there.keywords ?? []),
+      ...unionExtra(here.extra ?? [], there.extra ?? []),
     };
     planned.set(key, survivor);
     consumed.push(name);
@@ -1057,6 +1076,10 @@ export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true)
   for (const name of consumed) consume(profile, name);
   rebuildIfPresent(project);
   rebuildIfPresent(profile);
+  // The hot index follows the files (#204): `rebuildIfPresent` reaches it only where an
+  // `index.md` exists, and the profile store never has one.
+  projectInner.afterWrite();
+  profileInner.afterWrite();
   return { ...result, applied: true };
 }
 

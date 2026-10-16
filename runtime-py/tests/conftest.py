@@ -4,6 +4,7 @@ import pytest
 
 from bantamkit.client import Message, Response, ToolCall, Usage
 from bantamkit.memory.layers import MEMORY_DIR_ENV
+from bantamkit.storage.hotindex import INDEX_DIR_ENV
 
 #: The one mark that opts out of `_no_ambient_memory_pin` below. Spelled once, here,
 #: because a marker name duplicated between a fixture and the node it exempts is how the
@@ -65,6 +66,57 @@ def _no_ambient_memory_pin(request, monkeypatch):
     if REAL_PAIR_MARK in request.keywords:
         return
     monkeypatch.delenv(MEMORY_DIR_ENV, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _hot_index_off_the_operators_home(monkeypatch, tmp_path_factory):
+    """Every store's hot index (#204) lands in a per-node temp dir, never `~/.bantamkit/index`.
+
+    `MemoryStore.index()` keeps one index file set per store realpath under the home
+    directory; a suite that makes thousands of temp stores would otherwise leave thousands of
+    index files in the operator's real home. `INDEX_DIR_ENV` is the knob both runtimes honour;
+    it is in `os.environ`, so a subprocess a node spawns inherits it. A node that wants the
+    home location deletes it itself.
+    """
+    monkeypatch.setenv(INDEX_DIR_ENV, str(tmp_path_factory.mktemp("hot-index")))
+
+
+@pytest.fixture(autouse=True)
+def _home_off_the_operators_home(request, tmp_path_factory):
+    """Every node runs with HOME and USERPROFILE at a scratch home, never the operator's.
+
+    #199 (J68-5): `memory_recall` and a by-name lookup append to the usage ledger under
+    `~/.bantamkit/usage/`, and the store resolves `~` per call. Before this fixture one
+    `test_memory.py` node, run from a shell whose HOME was the operator's, wrote a ledger
+    into the real `~/.bantamkit/usage/` (measured 2026-10-16, J68-5's note). The Python
+    half of `runtime-ts/test/_sandbox.mjs`; a node that wants another home sets it in its
+    own body, after this. The `realpair` node asks about the operator's machine and keeps it.
+
+    ITS OWN `MonkeyPatch`, not the node's: a node that calls `monkeypatch.undo()` mid-body
+    (the fault-injection nodes do) would otherwise put the operator's HOME back for the
+    rest of that node, and the next recall in it would write there.
+    """
+    if REAL_PAIR_MARK in request.keywords:
+        yield
+        return
+    home = tmp_path_factory.mktemp("home")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("HOME", str(home))
+        mp.setenv("USERPROFILE", str(home))
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _retention_off(monkeypatch):
+    """No node spawns the daily Retention child (#204, J69-6) unless it asks to.
+
+    The SessionStart hook and the server start a detached child that DELETES files under the
+    home it is given and archives `.shiftwork` jobs under the cwd it is given. A node that
+    drives either with a cwd inside this checkout would archive this checkout's jobs. The
+    retention tests delete the variable themselves, over a scratch HOME. It is in
+    `os.environ`, so every subprocess a node spawns inherits it.
+    """
+    monkeypatch.setenv("BANTAMKIT_RETENTION", "off")
 
 
 class FakeClient:

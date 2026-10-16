@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import load_skill, load_tool
@@ -22,6 +23,8 @@ from bantamkit.memory.layers import (
     load_grants,
     resolve_project_store,
 )
+from bantamkit.memory.native import NATIVE_LAYER, NativeStore
+from bantamkit.memory.retrieval import query_terms, stale, weight_of
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
     MIN_RATIO_RANGE,
@@ -30,7 +33,19 @@ from bantamkit.memory.store import (
     MemoryBudgetExceeded,
     MemoryStore,
     MemoryValidationError,
+    Pool,
+    pick_hits,
+    pool_of,
+    utc_now,
 )
+from bantamkit.memory.usage import UsageLedger
+from bantamkit.storage.tiers import current_cwd
+from bantamkit.touch import context as _touch_context_mod
+from bantamkit.touch import recallfile as _recall_file_mod
+from bantamkit.touch.graph import TouchGraph
+from bantamkit.touch.log import TouchLog
+from bantamkit.touch.refs import FileSet, shortest_suffix
+from bantamkit.touch.repo import find_repo, ls_files
 
 
 @dataclass(frozen=True)
@@ -98,6 +113,7 @@ class RecallOutcome:
     lookup: str | None = None
     skipped: tuple[dict[str, str], ...] = ()
     headers: tuple[str, ...] = ()
+    via: str | None = None
 
 
 def normalize_name(name: str) -> str:
@@ -238,6 +254,11 @@ def _layer_label(root: Path) -> str:
     return root.name
 
 
+def _count(store: Any) -> int:
+    """A layer's fact count: `facts/*.md` for a bantamkit store, the listing for the native one."""
+    return store.count() if isinstance(store, NativeStore) else count_facts(store.root)
+
+
 class Memory:
     def __init__(
         self,
@@ -280,6 +301,9 @@ class Memory:
         # the disk recovers. `None` means the caller named the path outright --
         # `Memory(store=...)` — and no resolution happened to report.
         self._binding = binding
+        # Facts read-repaired by this Memory (#199 Task 6): `bantamkit_status` reports it as
+        # `read-repaired: <n> this process`, since a server holds one Memory for its life.
+        self.repaired = 0
 
     @classmethod
     def layered(
@@ -287,8 +311,14 @@ class Memory:
         start: str | Path | None = None,
         k: int = 3,
         index_budget: int = DEFAULT_INDEX_BUDGET,
+        native: str | Path | None = None,
     ) -> Memory:
-        """Project store (resolved) + configured read-only grants + profile store.
+        """Project store (resolved) + configured read-only grants + profile store + `native`.
+
+        `native` (#199 J68-11, user ruling A+B) is Claude Code's auto-memory directory AS THE
+        CALLER RESOLVED IT -- the hook through all three branches of RULING Q1.2, the MCP
+        server through the first two -- or `None`, and then there is no such layer. It is
+        appended LAST and read-only: `native.NativeStore`.
 
         `resolve_project_store` rather than `discover_project_store`: the path both
         return is the same path (`test_resolve_path_never_disagrees_with_discover`),
@@ -321,7 +351,13 @@ class Memory:
         profile_root = _profile_store()
         if not _same_directory(profile_root, project_root):
             mem._layers.append(("profile", MemoryStore(profile_root, k=k, create=False), False))
+        mem._add_native(native)
         return mem
+
+    def _add_native(self, native: str | Path | None) -> None:
+        """The host's auto-memory as the last, read-only layer, when a directory was resolved."""
+        if native is not None and str(native).strip():
+            self._layers.append((NATIVE_LAYER, NativeStore(native), False))
 
     def setup(self, agent: Agent) -> None:
         agent.register_tool(ToolDef(tool=load_tool("memory_save"), handler=self.save))
@@ -356,13 +392,25 @@ class Memory:
             yield
 
     def save(
-        self, type: str, name: str, description: str, body: str, links: list[str] | None = None
+        self,
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: list[str] | None = None,
+        keywords: list[str] | None = None,
     ) -> str:
         """The reply the model reads. Unchanged, and still the tool's advertised return."""
-        return self.save_outcome(type, name, description, body, links).reply
+        return self.save_outcome(type, name, description, body, links, keywords).reply
 
     def save_outcome(
-        self, type: str, name: str, description: str, body: str, links: list[str] | None = None
+        self,
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: list[str] | None = None,
+        keywords: list[str] | None = None,
     ) -> SaveOutcome:
         """`save`, with the branch it took carried out alongside the sentence it wrote.
 
@@ -396,7 +444,9 @@ class Memory:
                     ),
                     status="duplicate",
                 )
-            result = self.store.save(type, name, description, body, tuple(links))
+            result = self.store.save(
+                type, name, description, body, tuple(links), tuple(keywords or ())
+            )
         except MemoryValidationError as e:
             return SaveOutcome(reply=f"error: {e}", status="refused-validation")
         except MemoryBudgetExceeded as e:
@@ -431,13 +481,20 @@ class Memory:
                 + note,
                 status="duplicate",
             )
+        # The `save` event carries the keywords (#199 D5): read-repair restores them from it
+        # when a 0.35.x runtime rewrites the file without the field. Best-effort (#123).
+        self.usage().append(
+            result.name, "save", self.store._now(), keywords=list(keywords or ())
+        )
         return SaveOutcome(reply=f"saved '{result.name}'" + note, status="saved")
 
     def recall(
         self,
-        query: str,
+        query: str | None = None,
         k: int | None = None,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
+        include_archived: bool | None = None,
+        file: str | None = None,
     ) -> str:
         """`k` is the model asking for *more*, never for less than the store's default.
 
@@ -452,7 +509,15 @@ class Memory:
         The floor is the operator's configured default, not a constant, so a consumer
         who really wants top-1 says so once at construction (`Memory(store, k=1)`).
         """
-        return self.recall_outcome(query, k, min_ratio).reply
+        # `file` (#200): the eval agent is served `assets/tools/memory_recall.json` too, so it
+        # may send `file` or no `query`; the MCP handler's three branches, in its order.
+        if file is not None:
+            return self.recall_file(file, k, query).reply
+        if query is None:
+            raise MemoryValidationError(_recall_file_mod.RECALL_NEEDS_QUERY_OR_FILE)
+        return self.recall_outcome(
+            query, k, min_ratio, include_archived=bool(include_archived)
+        ).reply
 
     def recall_outcome(
         self,
@@ -461,6 +526,8 @@ class Memory:
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
         *,
         stamp: bool = True,
+        include_archived: bool = False,
+        context: _touch_context_mod.TouchContext | None = None,
     ) -> RecallOutcome:
         """`recall`, carrying the walk it performed as numbers rather than as prose.
 
@@ -478,26 +545,28 @@ class Memory:
         `unreadable` count instead of being scored as empty; that distinction is the
         whole subject of `_nothing_to_report` below and must not be undone here.
 
-        `min_ratio` (roadmap #6) rides through to every layer's `MemoryStore.recall`
-        unchanged, so the gate is measured against EACH LAYER's own best score and never
-        across layers: a profile fact does not have to out-score the project store's top
-        hit to be admitted, because the two stores are answering as two stores. Its
-        default is `RECALL_MIN_SCORE_RATIO` = 0.0, which keeps every fact `recall` was
-        going to return, and nothing on the tool path passes anything else today. A ratio
-        outside `[0.0, 1.0]` raises out of the FIRST layer, which is the writable project
-        store, so it surfaces as the error it is rather than as an `unreadable` count —
-        the read-only-layer `except` below would otherwise file a caller's bad argument as
-        a corrupt grant.
+        `min_ratio` (roadmap #6) is the gate: SINCE #199 (D3, Task 5) every layer's facts
+        are pooled and scored ONCE, and a fact is admitted when its BM25F score reaches
+        `min_ratio` times the best score of the WHOLE recall (`_pooled`, `pick_hits`). WAS:
+        each layer's own `MemoryStore.recall` gated against that layer's best and never
+        across layers. Its default is `RECALL_MIN_SCORE_RATIO` = 0.0, which keeps every fact
+        that scored, and nothing on the tool path passes anything else today. A ratio
+        outside `[0.0, 1.0]` raises `MIN_RATIO_RANGE` at the top of this method, before any
+        layer is read, so it surfaces as the error it is rather than as an `unreadable`
+        count -- the read-only-layer `except` would otherwise file a caller's bad argument
+        as a corrupt grant.
 
-        `stamp` (job64, J64-1) is whether a hit in the WRITABLE layer gets its
-        `last_recalled` dated. It defaults to True, which is what every explicit recall —
-        the `memory_recall` tool, the memory CLI, `Memory.recall` — has always done, and
-        those callers do not pass it. The one caller that passes False is the hook's
-        `UserPromptSubmit` arm: an automatic injection is not the model asking for a fact,
-        and dating it as one was measured (2026-09-25) to stamp 25 of 42 facts in one
-        store as "recalled today", so every rule keyed on `last_recalled` — compaction's
-        stalest-first, SessionStart's drop rule — was reading injection traffic instead of
-        model demand. Read-only layers are never stamped whatever this says.
+        `stamp` (job64, J64-1) is whether this recall counts as USE. SINCE #199 (D5) it no
+        longer dates `last_recalled`: with it True, every hit is appended to the usage ledger
+        (`recall_hit`, or `body_read` for an exact-name hit; `_use`) and the hits in the
+        WRITABLE layer are read-repaired (`_repair`). It defaults to True, which is what
+        every explicit recall -- the `memory_recall` tool, the memory CLI, `Memory.recall` --
+        has always done, and those callers do not pass it. The one caller that passes False
+        is the hook's `UserPromptSubmit` arm: an automatic injection is not the model asking
+        for a fact, and counting it as one was measured (2026-09-25, when it still dated
+        `last_recalled`) to mark 25 of 42 facts in one store as "recalled today", so every
+        rule keyed on use -- compaction's stalest-first, SessionStart's drop rule -- was
+        reading injection traffic instead of model demand. The hook writes nothing.
 
         THE EXACT-NAME WALK (job64, J64-4) runs first, and only for a query in the name
         shape (`_is_name_shaped`: `strip()`ped, `NAME_RE`-valid, and carrying a hyphen —
@@ -516,6 +585,20 @@ class Memory:
         check on `min_ratio` runs BEFORE the walk for the same reason it runs before any
         file is read in `MemoryStore.recall`: a caller's bad argument must surface as the
         error it is, not be swallowed by an exact hit.
+
+        `include_archived` (#204) appends, AFTER every live hit, up to `budget` facts from
+        each layer's `archive/` (`MemoryStore.archived_recall`, through the cold index), in
+        layer order, each header tagged `[archived]`; a name already in the reply is not
+        repeated. An exact-name hit still answers alone, and without the flag the reply is
+        byte for byte what it always was. A read-only layer whose archive cannot be read is
+        passed over; the project layer's raises, as its recall does.
+
+        `context` (#200, the hook's `_touch_context`) is what the session touched: its
+        `weights` ride into the ranker's `W_CONTEXT` slot, and when `touch.context.via_enabled()`
+        and it carries a graph, ONE fact with a strong edge to a window path that the gate did
+        not pick is appended after every other hit, its header suffixed ` [via <file>]`
+        (`via` names it). A via fact is never stamped, repaired or counted as usage: only the
+        hook passes `context`, and it passes `stamp=False`. An exact-name hit ignores it.
         """
         if not 0.0 <= min_ratio <= 1.0:
             raise MemoryValidationError(MIN_RATIO_RANGE)
@@ -527,45 +610,13 @@ class Memory:
             if named is not None:
                 return named
             lookup = "miss"
-        picked: list[tuple[str, Fact]] = []
-        seen: set[str] = set()
-        reached = 0
-        unreadable = 0
-        candidates = 0
-        skipped: list[dict[str, str]] = []
-        for label, store, writable in self._layers:
-            if len(picked) >= budget:
-                break  # budget spent: later (read-only) layers are never even read
-            reached += 1
-            # ONE BAD FILE COSTS THAT FILE (job65/#119): the layer is scored over every fact
-            # it CAN read, and the rest are named. Only a layer that cannot be listed at all
-            # is still the error (project) or the `unreadable` count (read-only) below.
-            left_out: list[dict[str, str]] = []
-            try:
-                facts = store.recall(
-                    query,
-                    budget,
-                    stamp=writable and stamp,
-                    min_ratio=min_ratio,
-                    skipped=left_out,
-                )
-            except (BantamError, OSError, UnicodeDecodeError):
-                if writable:
-                    raise  # the project layer failing is a real error, as in v1
-                unreadable += 1
-                continue  # a corrupt grant/profile layer must not take down recall
-            skipped.extend({"layer": label, **s} for s in left_out)
-            try:
-                candidates += count_facts(store.root)
-            except OSError:
-                # It scored a moment ago, so it is readable; a race that unlists it now
-                # must not turn a successful recall into a failed one for a log field.
-                pass
-            for fact in facts:
-                if fact.name in seen or len(picked) >= budget:
-                    continue
-                seen.add(fact.name)
-                picked.append((label, fact))
+        picked, reached, unreadable, candidates, skipped = self._pooled(
+            query, budget, min_ratio, context
+        )
+        via = self._via(picked, context)
+        if stamp:
+            self._use([fact for _, fact in picked], "recall_hit")
+            self._repair(picked)
         counts = {
             "budget": budget,
             "layers": len(self._layers),
@@ -578,18 +629,325 @@ class Memory:
         }
         lead = f"{_miss_line(name)}\n\n" if lookup == "miss" else ""
         note = _skipped_note(skipped)
-        if not picked:
+        seen = {fact.name for _, fact in picked}
+        archived = self._archived_hits(query, budget, seen) if include_archived else []
+        if archived or via is not None:
+            counts["returned"] = len(picked) + len(archived) + (via is not None)
+        if not picked and not archived and via is None:
             status, reply = self._nothing_to_report()
             return RecallOutcome(reply=lead + reply + note, status=status, **counts)
+        shown = [(label, fact, False, "") for label, fact in picked] + [
+            (label, fact, True, "") for label, fact in archived
+        ]
+        if via is not None:
+            shown.append((via[0], via[1], False, via[2]))
         return RecallOutcome(
             reply=lead
-            + "\n\n".join(self._format(label, fact) for label, fact in picked)
+            + "\n\n".join(
+                f"{self._header(label, fact, old)}{tail}\n{fact.body}"
+                for label, fact, old, tail in shown
+            )
             + note,
             status="answered",
-            source=picked[0][0].split(":", 1)[0],
-            headers=tuple(self._header(label, fact) for label, fact in picked),
+            source=shown[0][0].split(":", 1)[0],
+            headers=tuple(self._header(lab, fact, old) + tail for lab, fact, old, tail in shown),
+            via=None if via is None else via[1].name,
             **counts,
         )
+
+    def layer_stores(self) -> list[tuple[str, Any, bool]]:
+        """`(label, store, writable)` per layer, in precedence order (the touch graph's input)."""
+        return list(self._layers)
+
+    def recall_file(
+        self, file: str, k: int | None = None, query: str | None = None
+    ) -> RecallOutcome:
+        """`memory_recall({file})` (#200, E1-C): the facts linked to one tracked file.
+
+        The repo is the server's working directory's (`storage.tiers.current_cwd`); none is
+        `FILE_NOT_IN_REPO`. `file` is resolved by `FileSet.matches` after
+        `recallfile.normalize_file`: no match is `FILE_UNKNOWN`, several are `FILE_AMBIGUOUS`
+        (a bare `store.ts` never guesses). The reply's first line is the history line, the
+        second `QUERY_IGNORED` when a `query` came too, then the linked facts formatted as a
+        recall formats them, at most `max(k, self.k)`, or `FILE_NO_FACTS`. The graph is
+        loaded over this component's layers; when it cannot be built the tracked files come
+        from `git ls-files` and there are no edges, so the history line still answers.
+        Nothing is stamped, repaired or counted as usage: facts are found with
+        `store.lookup(name, stamp=False)`, and a name no layer holds any more is passed over.
+        `status` is `answered` when a fact is shown, else `none`.
+        """
+        rf = _recall_file_mod
+        budget = self.k if k is None else max(k, self.k)
+        ignored = "" if query is None else f"\n{rf.QUERY_IGNORED}"
+        base = {
+            "budget": budget, "layers": len(self._layers), "reached": 0, "returned": 0,
+            "candidates": 0,
+        }
+
+        def said(text: str) -> RecallOutcome:
+            first, _, rest = text.partition("\n")
+            return RecallOutcome(
+                reply=first + ignored + (f"\n{rest}" if rest else ""), status="none", **base
+            )
+
+        cwd = current_cwd()
+        repo = None if cwd is None else find_repo(cwd)
+        if repo is None:
+            return said(rf.FILE_NOT_IN_REPO)
+        home = Path.home()
+        graph = TouchGraph(home, repo).load(self.layer_stores())
+        if graph is None:
+            graph = {"files": ls_files(repo) or [], "strong": {}, "weak": {}}
+        fs = FileSet([f for f in graph["files"] if isinstance(f, str)])
+        want = rf.normalize_file(file)
+        found = fs.matches(want)
+        if not found:
+            return said(rf.FILE_UNKNOWN.format(file=want))
+        if len(found) > 1:
+            return said(rf.ambiguous(want, found, fs))
+        path = found[0]
+        suffix = shortest_suffix(path, fs)
+        history = rf.history_line(repo, path, TouchLog(home, repo.id).read(), suffix)
+        names = rf.linked_names(graph, path, utc_now())
+        shown: list[tuple[str, Fact]] = []
+        for n in names:
+            if len(shown) >= budget:
+                break
+            for label, store, _w in self._layers:
+                try:
+                    fact = store.lookup(n, stamp=False)
+                except (BantamError, OSError, UnicodeDecodeError):
+                    fact = None
+                if fact is not None:
+                    shown.append((label, fact))
+                    break
+        base["reached"] = len(self._layers)
+        base["candidates"] = len(names)
+        if not shown:
+            return said(f"{history}\n\n{rf.FILE_NO_FACTS.format(suffix=suffix)}")
+        base["returned"] = len(shown)
+        return RecallOutcome(
+            reply=history + ignored + "\n\n"
+            + "\n\n".join(self._format(label, fact) for label, fact in shown),
+            status="answered",
+            source=shown[0][0].split(":", 1)[0],
+            headers=tuple(self._header(label, fact) for label, fact in shown),
+            **base,
+        )
+
+    def _via(
+        self,
+        picked: list[tuple[str, Fact]],
+        context: _touch_context_mod.TouchContext | None,
+    ) -> tuple[str, Fact, str] | None:
+        """The via admission (#200, E3): `(label, fact, " [via <file>]")`, or `None`.
+
+        Off unless `via_enabled()`; needs a graph. The candidates are the strong-edge facts
+        of the window's paths, most recent path first, minus the names already picked; each
+        is found by name in the first layer holding it (never stamped) and weighed as
+        `weight_of(type, stale, 0, 1)`. A layer that cannot answer holds nothing.
+        """
+        if context is None or context.graph is None or not _touch_context_mod.via_enabled():
+            return None
+        graph = context.graph
+        found: dict[str, tuple[str, Fact]] = {}
+
+        def weigh(n: str) -> float | None:
+            for label, store, _w in self._layers:
+                try:
+                    f = store.lookup(n, stamp=False)
+                except (BantamError, OSError, UnicodeDecodeError):
+                    f = None
+                if f is not None:
+                    found[n] = (label, f)
+                    return weight_of(str(f.type), stale(str(f.description)), 0.0, 1.0)
+            return None
+
+        names = {fact.name for _, fact in picked}
+        pick = _touch_context_mod.via_pick(graph, context.strong_window, names, weigh)
+        if pick is None:
+            return None
+        label, fact = found[pick[0]]
+        return label, fact, _touch_context_mod.via_label(pick[1], graph)
+
+    def _pooled(
+        self,
+        query: str,
+        budget: int,
+        min_ratio: float,
+        context: _touch_context_mod.TouchContext | None = None,
+    ) -> tuple[list[tuple[str, Fact]], int, int, int, list[dict[str, str]]]:
+        """The scoring walk (#199 D3): every layer's facts pooled, scored ONCE, gated, ranked.
+
+        WAS: each layer was recalled on its own, gated against its OWN best score, and its
+        hits appended in layer order until the budget was spent, so a later layer was never
+        read once an earlier one filled it. NOW every layer is read -- through its hot index
+        where it has one, so no fact file is parsed but the hits -- the pooled collection is
+        scored once with BM25F, `min_ratio` is taken against the best score of the whole
+        recall, and `retrieval.rank` orders what passed by `(-final, layer_order, name)`:
+        a tie still goes to the project layer, then to the name. The first `budget` facts are
+        taken, the first of each name only, so a name held by two layers is answered once.
+
+        Returns `(picked, reached, unreadable, candidates, skipped)`, the counters meaning
+        what they meant: a read-only layer that cannot be read is counted `unreadable` and
+        holds nothing; the project layer failing raises, as it always did.
+        """
+        q = query_terms(query)
+        stores: list[MemoryStore] = []
+        pools: list[Pool | None] = []
+        left: list[list[dict[str, str]]] = []
+        reached = unreadable = candidates = 0
+        # The names every bantamkit layer read so far holds: the native layer drops them
+        # before it is scored (#199 J68-11), so an exported copy never answers twice.
+        shadow: set[str] = set()
+        for _, store, writable in self._layers:
+            reached += 1
+            left_out: list[dict[str, str]] = []
+            stores.append(store)
+            left.append(left_out)
+            native = isinstance(store, NativeStore)
+            try:
+                if native:
+                    pool = store.pool(q, skipped=left_out, shadow=shadow)
+                else:
+                    pool = store.pool(q, skipped=left_out)
+                    shadow.update(pool.all_names())
+                pools.append(pool)
+            except (BantamError, OSError, UnicodeDecodeError):
+                if writable:
+                    raise  # the project layer failing is a real error, as in v1
+                unreadable += 1
+                pools.append(None)  # a corrupt grant/profile layer must not take down recall
+                continue
+            try:
+                candidates += _count(store)
+            except OSError:
+                # It scored a moment ago, so it is readable; a race that unlists it now
+                # must not turn a successful recall into a failed one for a log field.
+                pass
+
+        def repool(i: int) -> Pool:
+            try:
+                store = stores[i]
+                if isinstance(store, NativeStore):
+                    return pool_of(store.candidates(left[i], shadow), q)
+                return pool_of(store.candidates(left[i]), q)
+            except (BantamError, OSError, UnicodeDecodeError):
+                if self._layers[i][2]:
+                    raise
+                return Pool(0, 0.0, {})
+
+        ledger = self.usage()
+        now = self.store._now()
+        hits = pick_hits(
+            stores,
+            pools,
+            q,
+            budget,
+            min_ratio,
+            lambda: ledger.weights(now),
+            repool,
+            dedupe=True,
+            context=context.weights if context is not None else None,
+        )
+        skipped = [
+            {"layer": label, **s}
+            for (label, _, _), left_out in zip(self._layers, left, strict=True)
+            for s in left_out
+        ]
+        picked = [(self._layers[i][0], fact) for i, fact in hits]
+        return picked, reached, unreadable, candidates, skipped
+
+    def usage(self) -> UsageLedger:
+        """The usage ledger this memory reads and writes (#199 D5): keyed on the FIRST layer,
+        the project store (the profile store when it is the only one). Every layer's use is
+        recorded there; nothing is written into a read-only layer."""
+        return UsageLedger(Path.home(), self._layers[0][1].root)
+
+    def _use(self, facts: list[Fact], kind: str) -> None:
+        """One `kind` event per fact (`recall_hit`, `body_read`), best-effort (#123)."""
+        ledger = self.usage()
+        now = self.store._now()
+        for fact in facts:
+            if isinstance(fact.name, str):
+                ledger.append(fact.name, kind, now)
+
+    def _repair(self, picked: list[tuple[str, Fact]]) -> None:
+        """Read-repair the tool's hits that live in the WRITABLE layer (#199 D8).
+
+        The caller is the tool path only (`stamp=True`): the hook never repairs, and a
+        read-only layer is never written. A repair that cannot happen leaves the fact as it
+        was and the recall answers anyway (#123).
+        """
+        writable = {label: store for label, store, w in self._layers if w}
+        if not any(label in writable for label, _ in picked):
+            return
+        ledger = self.usage()
+        now = self.store._now()
+        for label, fact in picked:
+            store = writable.get(label)
+            try:
+                if store is not None and store.repair(fact, ledger, now):
+                    self.repaired += 1
+            except (BantamError, OSError):
+                pass
+
+    def usage_census(self) -> tuple[str, int, int]:
+        """`(path, lines, skipped)` of this memory's usage ledger, for `bantamkit_status`."""
+        ledger = self.usage()
+        lines, skipped = ledger.census()
+        return str(ledger.path), lines, skipped
+
+    # ------------------------------------------------------- the eval harness (#199)
+
+    @classmethod
+    def layered_for_eval(
+        cls,
+        project: str | Path,
+        profile: str | Path,
+        engine: str = "v2",
+        native: str | Path | None = None,
+    ) -> Memory:
+        """A project + profile memory over two COPIES, for `tools/eval/recall/score.py`.
+
+        No grant and no home-directory profile is consulted. `engine` names the scorer; this
+        runtime has one, `v2` (BM25F + gate + ranker); `v1` is the eval's own baseline.
+        `native` (#199 J68-11) adds a COPY of an auto-memory directory as the last layer, so
+        the eval scores both views: A without it, B with it.
+        """
+        if engine != "v2":
+            raise ValueError(f"unknown engine: {engine!r}")
+        mem = cls(project)
+        mem._show_layers = True
+        mem._layers.append(("profile", MemoryStore(profile, k=mem.k, create=False), False))
+        mem._add_native(native)
+        return mem
+
+    def inject_candidates(self, prompt: str) -> list[Fact]:
+        """What the `UserPromptSubmit` hook would inject for `prompt`, before its byte cap."""
+        return [fact for _, fact in self._pooled(prompt, 3, RECALL_MIN_SCORE_RATIO)[0]]
+
+    def rank_all(self, prompt: str, depth: int = 50) -> list[Fact]:
+        """The ranking past the gate, `depth` deep: what recall@3 is measured on."""
+        return [fact for _, fact in self._pooled(prompt, depth, RECALL_MIN_SCORE_RATIO)[0]]
+
+    def _archived_hits(self, query: str, budget: int, seen: set[str]) -> list[tuple[str, Fact]]:
+        """`include_archived`: each layer's archived matches, in layer order, up to `budget`."""
+        out: list[tuple[str, Fact]] = []
+        taken = set(seen)
+        for label, store, writable in self._layers:
+            if len(out) >= budget:
+                break
+            try:
+                facts = store.archived_recall(query, budget - len(out), exclude=taken)
+            except (BantamError, OSError, UnicodeDecodeError):
+                if writable:
+                    raise
+                continue
+            for fact in facts:
+                taken.add(fact.name)
+                out.append((label, fact))
+        return out
 
     def _lookup_by_name(self, name: str, budget: int, stamp: bool) -> RecallOutcome | None:
         """The exact-name walk: the first layer holding a fact named `name` answers alone.
@@ -609,7 +967,7 @@ class Memory:
             reached += 1
             left_out: list[dict[str, str]] = []
             try:
-                fact = store.lookup(name, stamp=writable and stamp, skipped=left_out)
+                fact = store.lookup(name, stamp=False, skipped=left_out)
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:
                     raise  # the project layer failing is a real error, as in the scoring walk
@@ -617,10 +975,13 @@ class Memory:
                 continue
             skipped.extend({"layer": label, **s} for s in left_out)
             try:
-                candidates += count_facts(store.root)
+                candidates += _count(store)
             except OSError:
                 pass  # it listed a moment ago; a race must not fail the recall for a log field
             if fact is not None:
+                if stamp:
+                    self._use([fact], "body_read")
+                    self._repair([(label, fact)])
                 return RecallOutcome(
                     reply=self._format(label, fact) + _skipped_note(skipped),
                     status="answered",
@@ -718,10 +1079,20 @@ class Memory:
         except OSError:
             return None
 
+    @classmethod
+    def _layer_count(cls, store: Any) -> int | None:
+        """`_fact_count` for one bound layer; the native layer counts its own listing."""
+        if not isinstance(store, NativeStore):
+            return cls._fact_count(store.root)
+        try:
+            return store.count()
+        except OSError:
+            return None
+
     def _unreadable_layers(self) -> list[Path]:
         """Roots of the layers that could not be listed at all — never counted as 0."""
         return [
-            store.root for _, store, _ in self._layers if self._fact_count(store.root) is None
+            store.root for _, store, _ in self._layers if self._layer_count(store) is None
         ]
 
     def _searchable_facts(self) -> int:
@@ -731,7 +1102,7 @@ class Memory:
         `recall` above already skips it, and it must not become evidence that there
         was nothing to read.
         """
-        return sum(n for _, store, _ in self._layers if (n := self._fact_count(store.root)))
+        return sum(n for _, store, _ in self._layers if (n := self._layer_count(store)))
 
     @staticmethod
     def _is_profile_store(root: Path) -> bool:
@@ -1026,10 +1397,14 @@ class Memory:
     _save = save
     _recall = recall
 
-    def _header(self, label: str, fact: Fact) -> str:
-        """`[layer] [name] (type) description`, from the parsed fields (job65/#155)."""
-        tag = f"[{label}] " if self._show_layers else ""
-        return f"{tag}[{fact.name}] ({fact.type}) {fact.description}"
+    def _header(self, label: str, fact: Fact, archived: bool = False) -> str:
+        """`[layer] [name] (type) description`, from the parsed fields (job65/#155).
 
-    def _format(self, label: str, fact: Fact) -> str:
-        return f"{self._header(label, fact)}\n{fact.body}"
+        An archived hit (`include_archived`, #204) carries `[archived] ` before its name.
+        """
+        tag = f"[{label}] " if self._show_layers else ""
+        old = "[archived] " if archived else ""
+        return f"{tag}{old}[{fact.name}] ({fact.type}) {fact.description}"
+
+    def _format(self, label: str, fact: Fact, archived: bool = False) -> str:
+        return f"{self._header(label, fact, archived)}\n{fact.body}"

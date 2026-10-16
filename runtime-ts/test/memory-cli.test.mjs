@@ -25,6 +25,7 @@
  * compares them; this is the fast loop beside it, and it is the one that runs on a machine
  * with no Python at all — which is the machine the npm package is for.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

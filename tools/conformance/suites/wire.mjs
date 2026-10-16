@@ -37,10 +37,12 @@
  * compared with only `ts` masked. Every other session leaves the variable unset and is the
  * evidence that OFF IS THE DEFAULT in both runtimes.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pep440ToSemver } from './version.mjs';
 
 export const name = 'wire';
 export const summary = 'the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves';
@@ -186,7 +188,7 @@ const J66_3_MALFORMED = [
  * not survive, and there is none. Contrast the 2026-09-05 CI failure this gate was built from,
  * where a watcher WROTE ITS VERDICT from a `SIGTERM` handler and produced nothing on Windows.
  */
-function runNode(spec) {
+export function runNode(spec) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, BANTAMKIT_ASSETS: ASSETS };
     for (const [key, value] of Object.entries(spec.env ?? {})) {
@@ -528,6 +530,142 @@ export async function run(ctx) {
     callTool(19, 'memory_recall', { query: 'budget probe', k: -1 }),
   ]);
 
+  // #199 (job68 J68-3): `keywords` through the MCP argument layer — pydantic on one side,
+  // `pyargs` + the `memory_save` dispatch on the other. id 3 lands Thai keywords, id 4 and
+  // id 5 are the two refusals (not a list; a list holding a non-string), id 6 re-saves the
+  // fact WITHOUT them (an update writes what it is given), id 7 saves fresh ones. The fact
+  // files' `keywords:` blocks are captured per session below (`keywords`) and pinned per side.
+  add('memory-keywords', [
+    INIT(),
+    INITIALIZED,
+    callTool(3, 'memory_save', { type: 'project', name: 'kw-wire', description: 'keywords over the wire', body: 'b', keywords: ['ปล่อยเวอร์ชัน', 'release'] }),
+    callTool(4, 'memory_save', { type: 'project', name: 'kw-bad', description: 'a refused shape', body: 'b', keywords: 'ปล่อย' }),
+    callTool(5, 'memory_save', { type: 'project', name: 'kw-bad', description: 'a refused shape', body: 'b', keywords: [1, 'ok'] }),
+    callTool(6, 'memory_save', { type: 'project', name: 'kw-plain', description: 'no keywords at all here', body: 'b' }),
+    callTool(7, 'memory_save', { type: 'user', name: 'kw-null', description: 'null keywords are the default', body: 'b', keywords: null }),
+  ]);
+
+  // #204 (job69 J69-5): `memory_recall`'s `include_archived` through both MCP argument layers.
+  // The archived fact is planted by a harness `write` into `archive/` (made by the saves), and
+  // the cold index lives under the redirected `HOME`, which `setup()` wipes between the sides.
+  // id 2 is today's reply, id 3 the flag false (the same bytes), id 4 the flag on, id 5 only
+  // archived hits, id 6 an exact live name (answers alone), ids 7-11 the argument layer: a
+  // string pydantic refuses, a lax `1`, `null`, the lax string `"true"`, and a float.
+  const ARCHIVED_FACT =
+    "---\nname: old-wire\ndescription: old wire release notes\ntype: project\ncreated: '2026-10-01'\n" +
+    'last_recalled: null\nlinks: []\n---\n\nold body\n';
+  add(
+    'memory-archived',
+    [
+      INIT(),
+      INITIALIZED,
+      callTool(20, 'memory_save', { type: 'project', name: 'live-wire', description: 'live wire release lessons', body: 'live body' }),
+      callTool(21, 'memory_save', { type: 'project', name: 'other-fact', description: 'unrelated words', body: 'x' }),
+      JSON.stringify({ conformance: 'write', path: join(store, 'archive', 'old-wire.md'), b64: b64(ARCHIVED_FACT) }),
+      callTool(2, 'memory_recall', { query: 'wire release' }),
+      callTool(3, 'memory_recall', { query: 'wire release', include_archived: false }),
+      callTool(4, 'memory_recall', { query: 'wire release', include_archived: true }),
+      callTool(5, 'memory_recall', { query: 'old notes', include_archived: true }),
+      callTool(6, 'memory_recall', { query: 'live-wire', include_archived: true }),
+      callTool(7, 'memory_recall', { query: 'wire release', include_archived: 'notabool' }),
+      callTool(8, 'memory_recall', { query: 'old notes', include_archived: 1 }),
+      callTool(9, 'memory_recall', { query: 'old notes', include_archived: null }),
+      callTool(10, 'memory_recall', { query: 'old notes', include_archived: 'true' }),
+      callTool(11, 'memory_recall', { query: 'old notes', include_archived: 1.5 }),
+    ],
+    { env: { ...baseEnv, BANTAMKIT_INDEX_DIR: join(home, 'index') } },
+  );
+
+  // #200 (job70 T200-7): `memory_recall`'s `file` through both MCP argument layers. The git bed
+  // is made ONCE by the harness, before either side runs (nothing here writes it), so both
+  // servers read the same commit: `src/memory/store.ts`, `other/store.ts`, `docs/x.md`. The
+  // store and the graph (`<HOME>/.bantamkit/graph/`) are wiped between the sides by `setup()`.
+  // id 2 is the advertised schema (`file`, `required: []`), 3 a unique suffix with its linked
+  // fact, 4 an ambiguous suffix, 5 an unknown file, 6 a file no fact names, 7 file + query
+  // (line 2 says the query was ignored), 8 neither (the tool error), 9 `file: 3` (the argument
+  // layer's refusal), 10 `file: null` beside a query (an ordinary recall), 11 a Windows
+  // separator. A second bed with no git compares `FILE_NOT_IN_REPO`.
+  const rfRepo = join(scratch, 'recall-file-repo');
+  const rfPlain = join(scratch, 'recall-file-plain');
+  rmSync(rfRepo, { recursive: true, force: true });
+  mkdirSync(rfPlain, { recursive: true });
+  for (const rel of ['src/memory/store.ts', 'other/store.ts', 'docs/x.md']) {
+    mkdirSync(dirname(join(rfRepo, rel)), { recursive: true });
+    writeFileSync(join(rfRepo, rel), 'x\n');
+  }
+  const rfGit = (...args) =>
+    execFileSync(
+      'git',
+      ['-c', 'user.email=wire@conformance', '-c', 'user.name=wire', '-c', 'commit.gpgsign=false', '-C', rfRepo, ...args],
+      { stdio: 'pipe', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } },
+    );
+  rfGit('init', '-q');
+  rfGit('add', '.');
+  rfGit('commit', '-qm', 'the recall-file bed');
+  const rfEnv = { ...baseEnv, BANTAMKIT_INDEX_DIR: join(home, 'index') };
+  add(
+    'memory-recall-file',
+    [
+      INIT(),
+      INITIALIZED,
+      callTool(20, 'memory_save', { type: 'project', name: 'fa', description: 'about memory/store.ts', body: 'fa body' }),
+      callTool(21, 'memory_save', { type: 'project', name: 'fb', description: 'unrelated words here', body: 'fb body' }),
+      rpc(2, 'tools/list'),
+      callTool(3, 'memory_recall', { file: 'memory/store.ts' }),
+      callTool(4, 'memory_recall', { file: 'store.ts' }),
+      callTool(5, 'memory_recall', { file: 'nope.py' }),
+      callTool(6, 'memory_recall', { file: 'docs/x.md' }),
+      callTool(7, 'memory_recall', { file: 'store.ts', query: 'x' }),
+      callTool(8, 'memory_recall', {}),
+      callTool(9, 'memory_recall', { file: 3 }),
+      callTool(10, 'memory_recall', { file: null, query: 'unrelated' }),
+      callTool(11, 'memory_recall', { file: 'memory\\store.ts' }),
+    ],
+    { cwd: rfRepo, env: rfEnv },
+  );
+  add(
+    'memory-recall-file-nogit',
+    [INIT(), INITIALIZED, callTool(2, 'memory_recall', { file: 'x.py' }), callTool(3, 'memory_recall', { file: 'x.py', query: 'q' })],
+    { cwd: rfPlain, env: rfEnv },
+  );
+
+  // #204 (job69 J69-6): `shiftwork_status`'s `search` through both MCP argument layers. The
+  // job archive is planted ONCE, before either side runs (nothing here writes it); the cold
+  // index it is synced into lives under the redirected `HOME`, which `setup()` wipes between
+  // the sides. id 2 is today's reply, 3 a hit, 4 an empty query, 5 `null` (today's reply),
+  // 6 a refused int, 7 a missing checkpoint, 8 a Thai query.
+  const swRoot = join(scratch, 'sw-search');
+  mkdirSync(join(swRoot, '.shiftwork', 'archive'), { recursive: true });
+  const swCheckpoint = join(swRoot, '.shiftwork', 'checkpoint-wire.json');
+  cpSync(REAL_CHECKPOINT, swCheckpoint);
+  writeFileSync(
+    join(swRoot, '.shiftwork', 'archive', 'wirejob.json.gz'),
+    gzipSync(
+      Buffer.from(
+        JSON.stringify({
+          '.shiftwork/briefs-wirejob/U1.md': 'first line\nthe wire release notes — ไทย\n',
+          '.shiftwork/checkpoint-wirejob.json': '{"job":{"goal":"wire job"}}',
+        }),
+        'utf8',
+      ),
+    ),
+  );
+  add(
+    'shiftwork-search',
+    [
+      INIT(),
+      INITIALIZED,
+      callTool(2, 'shiftwork_status', { checkpoint: swCheckpoint }),
+      callTool(3, 'shiftwork_status', { checkpoint: swCheckpoint, search: 'wire release' }),
+      callTool(4, 'shiftwork_status', { checkpoint: swCheckpoint, search: '' }),
+      callTool(5, 'shiftwork_status', { checkpoint: swCheckpoint, search: null }),
+      callTool(6, 'shiftwork_status', { checkpoint: swCheckpoint, search: 5 }),
+      callTool(7, 'shiftwork_status', { checkpoint: missing, search: 'wire' }),
+      callTool(8, 'shiftwork_status', { checkpoint: swCheckpoint, search: 'ไทย' }),
+    ],
+    { env: { ...baseEnv, BANTAMKIT_INDEX_DIR: join(home, 'index') } },
+  );
+
   // PRODUCTION SHAPE: no `--store`, so `Memory.layered` runs and recall lines carry `[project] `.
   sessions.push({
     name: 'memory-layered',
@@ -547,6 +685,38 @@ export async function run(ctx) {
       callTool(5, 'memory_compact', {}),
     ],
   });
+
+  // #199 J68-11: the MCP path's `[native]` layer. The server receives no `transcript_path`, so
+  // RULING Q1.2's first two branches only; here branch 2, `autoMemoryDirectory` in the
+  // redirected HOME's `~/.claude/settings.json`, ACCEPTED because the directory holds a
+  // `MEMORY.md`. Its twin names a directory with no `MEMORY.md`, so the candidate is refused and
+  // there is no native layer at all. `prepare` writes both after `setup()`, on each side.
+  const hostMemory = join(home, 'host-memory');
+  const prepareNative = (withIndex) => () => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ autoMemoryDirectory: hostMemory }));
+    mkdirSync(hostMemory, { recursive: true });
+    if (withIndex) writeFileSync(join(hostMemory, 'MEMORY.md'), '# Memory index\n');
+    writeFileSync(
+      join(hostMemory, 'kafka-lag.md'),
+      '---\nname: kafka-lag\ndescription: "kafka consumer lag runbook"\nmetadata:\n  type: reference\n---\n\nnative body\n',
+    );
+  };
+  for (const [name_, withIndex] of [['memory-native', true], ['memory-native-unverified', false]]) {
+    sessions.push({
+      name: name_,
+      argv: [],
+      env: { ...baseEnv, CLAUDE_COWORK_MEMORY_PATH_OVERRIDE: null },
+      cwd: project,
+      prepare: prepareNative(withIndex),
+      lines: [
+        INIT(),
+        INITIALIZED,
+        callTool(2, 'memory_recall', { query: 'kafka consumer lag' }),
+        callTool(3, 'memory_recall', { query: 'kafka-lag' }),
+      ],
+    });
+  }
 
   add('validate', [
     INIT(),
@@ -1397,12 +1567,30 @@ export async function run(ctx) {
     'negotiate-2024-10-07',
   ]);
 
+  /**
+   * job68 J68-12 (user ruling 2026-10-15): one version, two registry spellings. On a
+   * prerelease the reference says `0.37.0b1` (in `serverInfo.version` and in the status
+   * report's `version …` line) where the port says `0.37.0-beta.1`, so the reference's
+   * frames are rewritten into npm's spelling before the comparison — the reference side
+   * only, like `refMask`, so the port drifting INTO the PEP 440 spelling still fails. On a
+   * stable version the two spellings are the same string and this is the identity.
+   * `suites/version.mjs` pins the two spellings themselves.
+   */
+  const declaredPy = /^__version__ = "([^"]+)"$/m.exec(
+    readFileSync(join(ctx.repoRoot, 'runtime-py', 'src', 'bantamkit', '__init__.py'), 'utf8'),
+  )?.[1];
+  const npmSpelling = declaredPy ? pep440ToSemver(declaredPy) : declaredPy;
+  const spellVersionForNpm = (text) =>
+    declaredPy && npmSpelling !== declaredPy ? text.split(declaredPy).join(npmSpelling) : text;
+
   const results = new Map();
   for (const spec of sessions) {
     setup();
+    spec.prepare?.();
     const [pythonSide] = ctx.runPython(REF, { sessions: [{ ...spec, lines: spec.lines.map(b64) }] }).sessions;
     const pythonExtra = captureArtifacts();
     setup();
+    spec.prepare?.();
     const nodeSide = await runNode(spec);
     const nodeExtra = captureArtifacts();
     results.set(spec.name, {
@@ -1440,12 +1628,30 @@ export async function run(ctx) {
       // one on-disk trace an explicit `memory_recall` leaves, read here for the same reason
       // the archives are — a session that stopped stamping, or one that started stamping a
       // read-only layer, is visible only if the file is looked at.
+      // #199: name -> the `keywords:` block of each fact in `--store` that carries one.
+      keywords: keywordsOf(join(store, 'facts')),
       stamps: {
         store: stampsOf(join(store, 'facts')),
         project: stampsOf(join(project, '.bantamkit', 'memory', 'facts')),
         profile: stampsOf(join(home, '.bantamkit', 'memory', 'facts')),
       },
+      // #199 D5: where an explicit recall's stamp lives now — the usage ledgers under the
+      // redirected HOME, `ts` masked (the server's own clock). Both sides run against the same
+      // paths (`setup()` wipes between them), so a ledger's store-id name is the same on both.
+      usage: usageOf(join(home, '.bantamkit', 'usage')),
     };
+  }
+  /** ledger file -> its events with `ts` masked; `null` for no usage directory (#199 D5). */
+  function usageOf(dir) {
+    if (!existsSync(dir)) return null;
+    const out = {};
+    for (const name of readdirSync(dir).filter((n) => n.endsWith('.jsonl')).sort()) {
+      out[name] = readFileSync(join(dir, name), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => line.replace(/^\{"ts":"[^"]*"/, '{"ts":"<ts>"'));
+    }
+    return out;
   }
   /** name -> the `last_recalled:` frontmatter value of each fact, or `null` for no such directory. */
   function stampsOf(facts) {
@@ -1454,6 +1660,17 @@ export async function run(ctx) {
     for (const name of readdirSync(facts).filter((n) => n.endsWith('.md')).sort()) {
       const text = readFileSync(join(facts, name), 'utf8');
       out[name.slice(0, -3)] = (/^last_recalled: (.*)$/m.exec(text) ?? [, '<no last_recalled line>'])[1];
+    }
+    return out;
+  }
+  /** name -> the `keywords:` block (up to the closing `---`) of each fact that has one; `null` for no directory. */
+  function keywordsOf(facts) {
+    if (!existsSync(facts)) return null;
+    const out = {};
+    for (const name of readdirSync(facts).filter((n) => n.endsWith('.md')).sort()) {
+      const text = readFileSync(join(facts, name), 'utf8').replace(/\r\n/g, '\n');
+      const m = /^keywords:\n((?:- .*\n)*)---\n/m.exec(text) ?? /^(keywords: .*)$/m.exec(text);
+      if (m) out[name.slice(0, -3)] = m[1];
     }
     return out;
   }
@@ -1532,7 +1749,7 @@ export async function run(ctx) {
      * `index-budget-low` remedy names a command, and the two installs provide different ones.
      */
     const refMask = spec.refMask ?? ((text) => text);
-    const maskRef = (text) => refMask(mask(text));
+    const maskRef = (text) => refMask(mask(spellVersionForNpm(text)));
     cases.push({
       name: `${spec.name}: the answered ids`,
       kind: 'json',
@@ -2415,7 +2632,16 @@ export async function run(ctx) {
         `with __pycache__ ${pycPy.assets_digest} over ${pycPy.assets_files} (reference), ` +
         `${pycNd.assets_digest} over ${pycNd.assets_files} (port)`,
     );
-    cases.push({ name: 'build_identity: version agrees', kind: 'string', expected: py.version, actual: nd.version });
+    // job68 J68-12 (user ruling 2026-10-15): one version, two registry spellings. The reference
+    // reports PEP 440 and the port semver, so the reference's answer is mapped with
+    // `publish.sh`'s mapping first. `pep440ToSemver` passes a STABLE version through unchanged,
+    // so a stable tree is still compared byte for byte; `suites/version.mjs` pins both arms.
+    cases.push({
+      name: 'build_identity: version agrees',
+      kind: 'string',
+      expected: pep440ToSemver(py.version),
+      actual: nd.version,
+    });
     cases.push({
       name: 'build_identity: server_name agrees',
       kind: 'string',
@@ -2747,6 +2973,10 @@ export async function run(ctx) {
           .sort();
         return `${session} (store): ${said.join(',')}`;
       });
+      // #204 (job69 J69-5): `memory-archived` does not compact — the HARNESS plants one fact in
+      // its `archive/` with a `write` directive, so that one file and nothing else is expected
+      // there. It runs before `memory-compact`, so it leads the list.
+      expectedArchives.unshift('memory-archived (store): old-wire.md');
       cases.push({
         name: `memory_compact: ${label} wrote \`archive/\` in the sessions that compacted, in no other store, and only what the replies named`,
         kind: 'json',
@@ -2809,17 +3039,154 @@ export async function run(ctx) {
       expected: python.stamps,
       actual: node.stamps,
     });
+    cases.push({
+      name: 'memory_recall stamps: the layered session left the same usage ledger (#199 D5)',
+      kind: 'json',
+      expected: python.usage,
+      actual: node.usage,
+    });
     for (const [label, side] of [['the reference', python], ['the port', node]]) {
+      // #199 D5: the stamp is a `recall_hit` in the usage ledger, and NO fact file is dated in
+      // either store. WAS 'id 4 dated `layered` on disk, and only in the project store'.
+      // AMENDED job68 J68-6 (#199, plan Task 6: "`Memory.save` must append the `save` event, with
+      // keywords"): the session's `memory_save` of `layered` now leads the ledger with that event.
+      const ledgers = Object.values(side.usage ?? {});
       cases.push({
-        name: `memory_recall stamps: PINNED PER SIDE: id 4 dated \`layered\` on disk, and only in the project store — ${label}`,
+        name: `memory_recall stamps: PINNED PER SIDE: id 4 is one \`recall_hit\` for \`layered\` after its \`save\` event in the usage ledger, and no fact file is dated — ${label}`,
         kind: 'json',
-        expected: { layered: 'an ISO date', profileStamped: [] },
+        expected: {
+          layered: 'null',
+          profileStamped: [],
+          ledgers: [['{"ts":"<ts>","fact":"layered","kind":"save","keywords":[]}', '{"ts":"<ts>","fact":"layered","kind":"recall_hit"}']],
+        },
         actual: {
           layered: ISO_DATE.test(stampOf(side)) ? 'an ISO date' : stampOf(side),
           profileStamped: Object.entries(side.stamps.profile ?? {}).filter(([, v]) => v !== 'null').map(([n]) => n),
+          ledgers,
         },
       });
     }
+  }
+
+  // #199 (job68 J68-3): the `keywords` the `memory-keywords` session left on disk, side to
+  // side and PER SIDE against a literal — a differential is blind to both MCP layers dropping
+  // the argument at once, which is exactly the shape of a new optional field nobody routed.
+  {
+    const { python, node } = results.get('memory-keywords');
+    cases.push({ name: '#199 memory_save keywords: the fact files carry the same keywords blocks', kind: 'json', expected: python.keywords, actual: node.keywords });
+    for (const [label, side] of [['the reference', python], ['the port', node]]) {
+      cases.push({
+        name: `#199 memory_save keywords: PINNED PER SIDE: only kw-wire carries keywords, raw UTF-8 — ${label}`,
+        kind: 'json',
+        expected: { 'kw-wire': '- ปล่อยเวอร์ชัน\n- release\n' },
+        actual: side.keywords,
+      });
+    }
+  }
+
+  // #204 (job69 J69-6): `shiftwork_status(search)` PER SIDE — a differential is blind to both
+  // MCP layers dropping the argument at once.
+  for (const [label, side] of [['the reference', 'python'], ['the port', 'node']]) {
+    const sc = (id) => frameOf(results.get('shiftwork-search')[side], id)?.result?.structuredContent ?? null;
+    const hit = [{ job: 'wirejob', file: '.shiftwork/briefs-wirejob/U1.md', line: 2 }];
+    cases.push({
+      name: `#204 shiftwork_status search: PINNED PER SIDE: absent and null are today's reply, a query lists archived lines — ${label}`,
+      kind: 'json',
+      expected: { absent: false, hit, empty: [], null: false, thai: hit },
+      actual: {
+        absent: sc(2) === null ? 'missing' : 'search' in sc(2),
+        hit: sc(3)?.search ?? 'missing',
+        empty: sc(4)?.search ?? 'missing',
+        null: sc(5) === null ? 'missing' : 'search' in sc(5),
+        thai: sc(8)?.search ?? 'missing',
+      },
+    });
+  }
+
+  // #199 J68-11: the MCP path's native layer PER SIDE against literals — a differential is blind
+  // to both servers dropping the layer, or both accepting a candidate with no `MEMORY.md`.
+  for (const [label, side] of [['the reference', 'python'], ['the port', 'node']]) {
+    const text = (session, id) => toolTextOf(results.get(session)[side], id);
+    cases.push({
+      name: `#199 J68-11 memory_recall [native]: PINNED PER SIDE: branch 2 with a MEMORY.md adds the layer, without one it is absent — ${label}`,
+      kind: 'json',
+      expected: {
+        words: '[native] [kafka-lag] (reference) kafka consumer lag runbook\nnative body',
+        name: '[native] [kafka-lag] (reference) kafka consumer lag runbook\nnative body',
+        unverifiedWords: true,
+        unverifiedHasNative: false,
+      },
+      actual: {
+        words: text('memory-native', 2),
+        name: text('memory-native', 3),
+        unverifiedWords:
+          text('memory-native-unverified', 2)?.startsWith('no memories to search: nothing is saved in any layer bound here.') ?? false,
+        unverifiedHasNative: [2, 3].some((id) => (text('memory-native-unverified', id) ?? '').includes('[native]')),
+      },
+    });
+  }
+
+  // #204 (job69 J69-5): `include_archived` PER SIDE against literals — a differential is blind
+  // to both MCP layers dropping the new argument at once, or to both putting archived hits first.
+  {
+    const ARCHIVED_ON =
+      '[live-wire] (project) live wire release lessons\nlive body\n\n' +
+      '[archived] [old-wire] (project) old wire release notes\nold body';
+    for (const [label, side] of [['the reference', 'python'], ['the port', 'node']]) {
+      const text = (id) => toolTextOf(results.get('memory-archived')[side], id);
+      cases.push({
+        name: `#204 memory_recall include_archived: PINNED PER SIDE: off is today's reply, on appends the archived hit tagged — ${label}`,
+        kind: 'json',
+        expected: {
+          absent: '[live-wire] (project) live wire release lessons\nlive body',
+          false: '[live-wire] (project) live wire release lessons\nlive body',
+          true: ARCHIVED_ON,
+          onlyArchived: '[archived] [old-wire] (project) old wire release notes\nold body',
+          exactName: '[live-wire] (project) live wire release lessons\nlive body',
+          lax1: '[archived] [old-wire] (project) old wire release notes\nold body',
+          null: 'no memories matched. Try different words, or proceed without.',
+        },
+        actual: {
+          absent: text(2),
+          false: text(3),
+          true: text(4),
+          onlyArchived: text(5),
+          exactName: text(6),
+          lax1: text(8),
+          null: text(9),
+        },
+      });
+    }
+  }
+
+  // #200 (job70 T200-7): `memory_recall({file})` PER SIDE against literals — a differential is
+  // blind to both runtimes rewording `FILE_UNKNOWN` at once (the spec fixes the sentence
+  // byte-identical across runtimes), to both dropping the new refusal, or to both serving it as
+  // a success.
+  for (const [label, side] of [['the reference', 'python'], ['the port', 'node']]) {
+    const frames = results.get('memory-recall-file')[side];
+    const text = (id) => toolTextOf(frames, id);
+    const none = toolTextOf(results.get('memory-recall-file-nogit')[side], 2);
+    cases.push({
+      name: `#200 memory_recall file: PINNED PER SIDE: the unknown-file reply, the neither-argument refusal and its error bit, no repo — ${label}`,
+      kind: 'json',
+      expected: {
+        unknown: 'No tracked file in this repository matches "nope.py".',
+        neither: 'Error executing tool memory_recall: memory_recall needs a query or a file.',
+        neitherIsError: true,
+        ambiguous: '"store.ts" matches 2 tracked files: memory/store.ts, other/store.ts. Pass a longer suffix.',
+        noRepo: "memory_recall file needs a git repository; the server's working directory is not inside one.",
+        windows: true,
+      },
+      actual: {
+        unknown: text(5),
+        neither: text(8),
+        neitherIsError: frameOf(frames, 8)?.result?.isError ?? null,
+        ambiguous: text(4),
+        noRepo: none,
+        windows: (text(11) ?? '').startsWith('[file] memory/store.ts — last touched never; last commit '),
+      },
+    });
   }
 
   // -------------------------------------------------- the band, held to register item 7

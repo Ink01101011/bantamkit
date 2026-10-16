@@ -22,6 +22,7 @@
  * where this implementation is deliberately wrong and has to be wrong the SAME WAY as the
  * reference.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { createHook } from 'node:async_hooks';
 import { spawn, spawnSync } from 'node:child_process';

@@ -72,6 +72,7 @@ from pathlib import Path
 from typing import Any
 
 from bantamkit.memory.store import bantamkit_dir_for, ensure_bantamkit_gitignore
+from bantamkit.storage.logsegment import LogSegment
 
 #: Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/
 #: `true`/`yes` -> the default file inside the memory store. Anything else is taken as
@@ -135,15 +136,23 @@ def encode_record(epoch_ms: int, tool: str, outcome: str, detail: dict[str, Any]
     module is non-ASCII today; the setting is what keeps that a fact about the data
     rather than a difference between the runtimes if it ever stops being one.
     """
-    record = {
+    text = json.dumps(
+        _record_object(epoch_ms, tool, outcome, detail), ensure_ascii=False, separators=(",", ":")
+    )
+    return text.encode("utf-8") + b"\n"
+
+
+def _record_object(
+    epoch_ms: int, tool: str, outcome: str, detail: dict[str, Any]
+) -> dict[str, Any]:
+    """The record `encode_record` spells, as the object `LogSegment.append` writes."""
+    return {
         "v": SCHEMA_VERSION,
         "ts": format_timestamp(epoch_ms),
         "tool": tool,
         "outcome": outcome,
         "detail": {key: detail[key] for key in sorted(detail)},
     }
-    text = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-    return text.encode("utf-8") + b"\n"
 
 
 def default_path(store_root: Path) -> Path:
@@ -266,9 +275,10 @@ class EventLog:
         """
         if self.path is None:
             return
-        payload = encode_record(self._clock(), tool, outcome, detail or {})
+        obj = _record_object(self._clock(), tool, outcome, detail or {})
+        payload = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
         try:
-            self._append(payload)
+            self._append(obj, payload)
         except OSError:
             self.write_failed = True
             return
@@ -282,8 +292,15 @@ class EventLog:
         """
         self.record(tool, "raised", {"type": type(exc).__name__})
 
-    def _append(self, payload: bytes) -> None:
-        """Rotate if this record would cross the cap, then append in BINARY mode.
+    def _append(self, obj: dict[str, Any], payload: bytes) -> None:
+        """Rotate if this record would cross the cap, then append through `LogSegment`.
+
+        #204 (J69-4): the line goes through `storage.LogSegment.append` (the shared O_EXCL
+        lock, a newline before a cut last line, the same bytes `encode_record` spells). THE
+        ROTATION RULE BELOW IS NOT `LogSegment.rotate`'s, on purpose: this log keeps exactly
+        one plain `<path>.1` that `--statusline` and `--mcp-report` read in both runtimes, and
+        a 2 MiB ceiling with no retention job behind it; docs/eventlog.md says one rotation
+        rule cannot be right for both this log and the hook log.
 
         Binary, not text: a text-mode write translates `\\n` to `os.linesep`, which is
         `\\r\\n` on Windows, and a Node reader byte-comparing the file would see a
@@ -332,5 +349,5 @@ class EventLog:
             size = 0
         if size and size + len(payload) > self.cap_bytes:
             os.replace(self.path, self.path.with_name(self.path.name + ".1"))
-        with open(self.path, "ab") as handle:
-            handle.write(payload)
+        if not LogSegment(self.path).append(obj):
+            raise OSError("the record could not be appended")  # caught by `record`

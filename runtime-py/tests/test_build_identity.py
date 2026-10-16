@@ -101,6 +101,7 @@ class _Session:
         # Stripped for mcpdrift's reason: an inherited override would point every tree at
         # ONE asset pack, and the asset half of the fingerprint could never fire.
         env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)  # moves with HOME: Windows reads it (#204 J69-9 F6)
         env["PYTHONPATH"] = str(import_path)
         self.proc = subprocess.Popen(
             [sys.executable, "-c", "from bantamkit.mcpserver import main; main()"],

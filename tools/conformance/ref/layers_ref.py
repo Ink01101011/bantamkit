@@ -89,6 +89,9 @@ def run_memory(request: dict) -> dict:
     try:
         if request["registration"] == "layered":
             start = request.get("start")
+            native = request.get("native")
+            if native is not None:
+                kwargs["native"] = unb64(native)
             mem = Memory.layered(unb64(start) if start is not None else None, **kwargs)
         else:
             mem = Memory(unb64(request["root"]), **kwargs)
@@ -96,6 +99,8 @@ def run_memory(request: dict) -> dict:
         return {"results": [error_json(e)]}
     for _, store, _ in mem._layers:
         store._today = lambda: today
+        # The usage ledger's clock (#199 D5), frozen the same way.
+        store._now = lambda: f"{today}T00:00:00Z"
 
     results = []
     for call in request["calls"]:
@@ -134,6 +139,25 @@ def main() -> None:
     op = request["op"]
     if op == "memory":
         out = run_memory(request)
+    elif op == "native_pool":
+        # #199 J68-11: the native layer's pool with the `shadow` names dropped before scoring.
+        from bantamkit.memory.native import NativeStore
+        from bantamkit.memory.retrieval import query_terms
+
+        pool = NativeStore(unb64(request["dir"])).pool(
+            query_terms(unb64(request["query"])), shadow={unb64(x) for x in request["shadow"]}
+        )
+        out = {
+            "pool": {
+                "n": pool.n,
+                "total": pool.total,
+                "df": pool.df,
+                "names": pool.names,
+                "lengths": pool.lengths,
+                "segs": pool.segs,
+                "stale": pool.stale,
+            }
+        }
     elif op == "count_facts":
         out = {"counts": [guard(lambda r=r: count_facts(unb64(r))) for r in request["roots"]]}
     elif op == "resolve":

@@ -34,6 +34,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -73,9 +74,17 @@ const scrub = (text, root) => {
 
 // -------------------------------------------------------------------------- fixtures
 
-const factFile = (n, { description = `about ${n}`, type = 'project', created = '2026-08-01', last = 'null', links = '[]', body = 'b' } = {}) =>
+const factFile = (n, { description = `about ${n}`, type = 'project', created = '2026-08-01', last = 'null', links = '[]', body = 'b', keywords = null } = {}) =>
   `---\nname: ${n}\ndescription: ${description}\ntype: ${type}\ncreated: ` +
-  `${created === null ? 'null' : `'${created}'`}\nlast_recalled: ${last}\nlinks: ${links}\n---\n\n${body}\n`;
+  `${created === null ? 'null' : `'${created}'`}\nlast_recalled: ${last}\nlinks: ${links}\n` +
+  `${keywords === null ? '' : `keywords:\n${keywords.map((k) => `- ${k}\n`).join('')}`}---\n\n${body}\n`;
+
+/**
+ * One file in Claude Code's own auto-memory shape (#199 J68-11): the type nested under
+ * `metadata:`, as the host writes it and as bantamkit's native export copies it.
+ */
+const nativeFile = (n, description, { type = 'project', body = 'native body', extra = '' } = {}) =>
+  `---\nname: ${n}\ndescription: "${description}"\nmetadata:\n  node_type: memory\n  type: ${type}\n${extra}---\n\n${body}\n`;
 
 /** A store at `path`, as bytes rather than as a call into the code under test. */
 function storeSpec(path, facts = {}) {
@@ -144,6 +153,7 @@ const applyModes = (root, spec, on) => {
  * into a read-only grant still fails.
  */
 function manifest(root) {
+  const usage = usageNames(root);
   const lines = [];
   const walk = (dir) => {
     let entries;
@@ -163,12 +173,65 @@ function manifest(root) {
         walk(full);
       } else {
         const bytes = readFileSync(full);
-        lines.push(`${rel}\tfile\t${bytes.length}\t${scrub(bytes.toString('utf8'), root)}`);
+        lines.push(`${usage(rel)}\tfile\t${bytes.length}\t${scrub(bytes.toString('utf8'), root)}`);
       }
     }
   };
   walk(root);
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * A usage ledger (#199 D5) is `.bantamkit/usage/<store id>.jsonl`, the id being the first 16
+ * hex of sha256 over the store's real path — so the two sides, in `py/` and `node/`, name the
+ * same ledger differently. This maps a ledger's path to the store it belongs to, relative to
+ * the bed (`usage/<store: project/.bantamkit/memory>.jsonl`); an id no directory in the bed
+ * hashes to stays as it is, and so still differs.
+ */
+function usageNames(root) {
+  const ids = new Map();
+  const hash = (p) => createHash('sha256').update(p, 'utf8').digest('hex').slice(0, 16);
+  const walk = (dir) => {
+    let entries;
+    try {
+      const real = realpathSync.native(dir);
+      const rel = relative(root, dir) || '.';
+      ids.set(hash(real), rel);
+      // A store that does not exist (yet) is keyed on its path all the same: a designated
+      // project store, which a recall can name before any save has made it.
+      if (!ids.has(hash(join(real, '.bantamkit', 'memory')))) {
+        ids.set(hash(join(real, '.bantamkit', 'memory')), join(rel, '.bantamkit', 'memory'));
+      }
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) if (e.isDirectory()) walk(join(dir, e.name));
+  };
+  walk(root);
+  return (rel) =>
+    rel.replace(/(\.bantamkit[\\/]usage[\\/])([0-9a-f]{16})(\.jsonl)$/, (m, a, id, b) =>
+      ids.has(id) ? `${a}<store: ${ids.get(id).split('\\').join('/')}>${b}` : m,
+    );
+}
+
+/** A native directory's files and their text, or `absent` (#199 J68-11). */
+function nativeTree(dir) {
+  let names;
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return 'absent';
+  }
+  return Object.fromEntries(names.map((n) => [n, readFileSync(join(dir, n), 'utf8')]));
+}
+
+/** What the fixture wrote under `native`, in the same shape as `nativeTree`. */
+function nativeFixture(spec, native) {
+  const prefix = `${native}/`;
+  const files = Object.entries(spec.files ?? {}).filter(([p]) => p.startsWith(prefix));
+  if (files.length === 0) return 'absent';
+  return Object.fromEntries(files.map(([p, c]) => [p.slice(prefix.length), c]).sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
 // ------------------------------------------------------------------------ call shapes
@@ -196,9 +259,12 @@ async function runNode(mod, request, env) {
     }
   };
   try {
-    const options = { today: () => request.today };
+    // The usage ledger's clock, frozen as `today` is (#199 D5): a recall's `recall_hit` carries
+    // a timestamp, and the trees below compare the ledger.
+    const options = { today: () => request.today, now: () => `${request.today}T00:00:00Z` };
     if (request.k !== null) options.k = request.k;
     if (request.index_budget !== null) options.indexBudget = request.index_budget;
+    if (request.native !== null) options.native = unb64(request.native);
     let mem;
     try {
       mem =
@@ -419,6 +485,93 @@ function scenarios() {
       { registration: 'store', root: 'direct' },
       [recall('probe-fact-two'), recall('probe-fact-nine')]],
 
+    // ---- #199 (J68-5): one engine over every layer, and Thai by `keywords` ------------
+    //
+    // A wholly Thai prompt shares no `[a-z0-9]` token with anything, so v1 answered it with
+    // "no memories matched". The profile fact carries Thai `keywords`; tokenize v2 cuts the
+    // prompt and the keywords into the same bigrams, the layers are pooled and ranked once,
+    // and the profile fact answers on both sides with the same bytes. The second recall is
+    // English and reaches both (`release` is in the profile fact's NAME); the third is Thai
+    // that shares no bigram with anything. (`อากาศวันนี้` was the first choice and MATCHED:
+    // it shares the bigram `ัน` with `ปล่อยเวอร์ชัน` — a gate at 0.0 admits one shared
+    // vowel-mark bigram; Task 7's floor is what has to answer that.)
+    // The tree carries the usage ledger's `recall_hit` lines (stamped under the frozen clock).
+    ['layered: a Thai prompt recalls a fact by its Thai keywords, pooled across layers',
+      merge(storeSpec('companyA/.bantamkit/memory', { 'release-steps': 'how we cut a release' }), {
+        dirs: ['home/.bantamkit/memory/facts', 'home/.bantamkit/memory/archive'],
+        files: {
+          'home/.bantamkit/memory/facts/release-lessons.md': factFile('release-lessons', {
+            description: 'what went wrong in past releases', type: 'feedback', keywords: ['ปล่อยเวอร์ชัน', 'บทเรียน'],
+          }),
+        },
+      }),
+      { registration: 'layered', start: 'companyA' },
+      [recall('ปล่อยเวอร์ชันครั้งก่อนมีบทเรียนอะไร'), recall('release'), recall('ฝนตกหนัก')]],
+
+    // ---- #199 J68-11: Claude Code's auto-memory as the read-only `[native]` layer -------
+    //
+    // `native` is the directory the caller resolved (RULING Q1.2), relative to the bed. The
+    // tree comparison covers the native directory too: a port that stamped, repaired or wrote
+    // a fact there fails it, and `NATIVE_UNTOUCHED` below pins the same per side.
+    ['layered+native: a native fact joins the pooled ranking, tagged [native]',
+      merge(storeSpec('companyA/.bantamkit/memory', { 'kafka-notes': 'kafka consumer notes' }), homeStore, {
+        files: {
+          'native/MEMORY.md': '# Memory index\n\n- [kafka-lag](kafka-lag.md) — kafka consumer lag runbook\n',
+          'native/kafka-lag.md': nativeFile('kafka-lag', 'kafka consumer lag runbook', { type: 'reference' }),
+          // The bantamkit shape, dated as 0.35.x dated it: a writable layer would read-repair
+          // it on this tool recall; the native layer never writes, so it stays dated.
+          'native/old-shape.md': factFile('old-shape', { description: 'kafka broker sizing', last: "'2026-01-02'" }),
+        },
+      }),
+      { registration: 'layered', start: 'companyA', native: 'native' },
+      [layersOp(), recall('kafka consumer lag'), recall('kafka broker')]],
+    // LAST IN layer_order: an exact tie goes to the bantamkit layer before the name, so
+    // `zzz-project` answers ahead of `aaa-native` although the name sorts after it.
+    ['layered+native: a tie goes to the bantamkit layer, the native layer being last',
+      merge(storeSpec('companyA/.bantamkit/memory', { 'zzz-project': 'shared tie words' }), homeStore, {
+        files: {
+          'native/MEMORY.md': '# Memory index\n',
+          'native/aaa-native.md': nativeFile('aaa-native', 'shared tie words', { body: 'b' }),
+        },
+      }),
+      { registration: 'layered', start: 'companyA', native: 'native' },
+      [recall('shared tie words')]],
+    ['layered+native: a name a bantamkit layer holds answers from bantamkit, never twice',
+      merge(storeSpec('companyA/.bantamkit/memory', { deploy: 'how we deploy' }), homeStore, {
+        files: {
+          'native/MEMORY.md': '# Memory index\n',
+          // bantamkit's own export: same name, a description that would OUT-SCORE the project's.
+          'native/deploy.md': nativeFile('deploy', 'deploy deploy deploy the deploy runbook', { body: 'export copy' }),
+          'native/deploy-window.md': nativeFile('deploy-window', 'when a deploy may run'),
+        },
+      }),
+      { registration: 'layered', start: 'companyA', native: 'native' },
+      [recall('deploy'), recall('deploy runbook window')]],
+    ['layered+native: a native file that does not parse is skipped and named; MEMORY.md is no fact',
+      merge(storeSpec('companyA/.bantamkit/memory', { 'gc-tuning': 'garbage collector tuning' }), homeStore, {
+        files: {
+          'native/MEMORY.md': '# Memory index\n\n- [garbage](garbage.md) — garbage collector pauses\n',
+          'native/broken.md': 'State as of 2026-08-23, garbage collector pauses, no frontmatter.\n',
+          'native/notype.md': '---\nname: notype\ndescription: garbage collector\n---\n\nb\n',
+          'native/gc-pauses.md': nativeFile('gc-pauses', 'garbage collector pauses in prod', { type: 'feedback' }),
+        },
+      }),
+      { registration: 'layered', start: 'companyA', native: 'native' },
+      [recall('garbage collector pauses')]],
+    ['layered+native: an exact native name answers alone, past the bantamkit layers',
+      merge(storeSpec('companyA/.bantamkit/memory', { 'release-lag': 'release lag kafka notes' }), homeStore, {
+        files: {
+          'native/MEMORY.md': '# Memory index\n',
+          'native/kafka-lag.md': nativeFile('kafka-lag', 'kafka consumer lag runbook', { type: 'reference' }),
+        },
+      }),
+      { registration: 'layered', start: 'companyA', native: 'native' },
+      [recall('kafka-lag')]],
+    ['layered+native: a native directory that is not there is a layer of nothing, silently',
+      merge(emptyOwn, homeStore),
+      { registration: 'layered', start: 'companyA', native: 'not-there' },
+      [layersOp(), recall('anything')]],
+
     // ---- the pin's own refusals, through the component ---------------------------------
     ['layered: a relative pin refuses the whole construction',
       merge(emptyOwn, homeStore),
@@ -587,6 +740,8 @@ export async function run(ctx) {
   }
   /** Each scenario's rendered answers, kept so a literal below can pin one against a constant. */
   const answersByLabel = new Map();
+  /** #199 J68-11: each native scenario's native directory after the calls, per side. */
+  const nativeTrees = new Map();
   let n = 0;
   let layeredCount = 0;
   for (const [label, spec, options, calls, requires] of scenarios()) {
@@ -614,6 +769,7 @@ export async function run(ctx) {
       today: TODAY,
       k: options.k ?? null,
       index_budget: options.index_budget ?? null,
+      native: options.native === undefined ? null : b64(join(root, options.native)),
       calls,
     });
     const py = ctx.runPython(REF, request(roots.py), {
@@ -649,6 +805,13 @@ export async function run(ctx) {
       });
     }
     answersByLabel.set(label, rendered);
+    if (options.native !== undefined) {
+      nativeTrees.set(label, {
+        py: nativeTree(join(roots.py, options.native)),
+        node: nativeTree(join(roots.node, options.native)),
+        fixture: nativeFixture(spec, options.native),
+      });
+    }
     cases.push({
       name: `${label} — tree`,
       kind: 'bytes',
@@ -699,10 +862,20 @@ export async function run(ctx) {
   pinned('layered: a bare word that names a fact is still the word search', [
     '[project] [deploy] (project) a fact about deploys\nb\n\n[project] [runbook] (project) the deploy runbook\nb',
   ]);
+  // #199 (J68-5): the Thai prompt's answer, per side. A differential cannot see an engine that
+  // went back to v1 on BOTH sides (both would say "no memories matched"); this can.
+  pinned('layered: a Thai prompt recalls a fact by its Thai keywords, pooled across layers', [
+    '[profile] [release-lessons] (feedback) what went wrong in past releases\nb',
+    '[project] [release-steps] (project) how we cut a release\nb\n\n' +
+      '[profile] [release-lessons] (feedback) what went wrong in past releases\nb',
+    'no memories matched. Try different words, or proceed without.',
+  ]);
   pinned('--store: the exact-name walk runs under the --store form too, untagged', [
     '[probe-fact-two] (project) a probe fact\nb',
     "no fact named 'probe-fact-nine' in any layer bound here; matching by words instead:\n\n" +
-      '[probe-fact-one] (project) a probe fact\nb\n\n[probe-fact-two] (project) a probe fact\nb',
+      // #199 D3/D5: the two tie on BM25F, and the exact-name read of `probe-fact-two` one call
+      // earlier is a `body_read` in the usage ledger, which orders it first. WAS one, two (name).
+      '[probe-fact-two] (project) a probe fact\nb\n\n[probe-fact-one] (project) a probe fact\nb',
   ]);
   // RB-P1's floor, as a literal for the first time: `k: 1` over three matches answers three.
   // The differential above has held this since job44; a floor removed from BOTH sides would
@@ -711,6 +884,54 @@ export async function run(ctx) {
     '[project] [fact-a] (project) shared token\nb\n\n[project] [fact-b] (project) shared token\nb\n\n' +
       '[project] [fact-c] (project) shared token\nb',
   ]);
+  // ---- #199 J68-11, PER SIDE. Every native scenario above is a differential, and the layer
+  // landed in BOTH runtimes in one unit, so removing it from both — or tagging it `[profile]` on
+  // both, or letting both answer an exported copy twice — would leave every differential green.
+  pinned('layered+native: a native fact joins the pooled ranking, tagged [native]', [
+    'project, profile, native',
+    '[native] [kafka-lag] (reference) kafka consumer lag runbook\nnative body\n\n' +
+      '[project] [kafka-notes] (project) kafka consumer notes\nb\n\n' +
+      '[native] [old-shape] (project) kafka broker sizing\nb',
+    '[native] [old-shape] (project) kafka broker sizing\nb\n\n' +
+      '[project] [kafka-notes] (project) kafka consumer notes\nb\n\n' +
+      '[native] [kafka-lag] (reference) kafka consumer lag runbook\nnative body',
+  ]);
+  pinned('layered+native: a tie goes to the bantamkit layer, the native layer being last', [
+    '[project] [zzz-project] (project) shared tie words\nb\n\n[native] [aaa-native] (project) shared tie words\nb',
+  ]);
+  pinned('layered+native: a name a bantamkit layer holds answers from bantamkit, never twice', [
+    '[project] [deploy] (project) how we deploy\nb\n\n[native] [deploy-window] (project) when a deploy may run\nnative body',
+    '[native] [deploy-window] (project) when a deploy may run\nnative body\n\n[project] [deploy] (project) how we deploy\nb',
+  ]);
+  pinned('layered+native: a native file that does not parse is skipped and named; MEMORY.md is no fact', [
+    '[native] [gc-pauses] (feedback) garbage collector pauses in prod\nnative body\n\n' +
+      '[project] [gc-tuning] (project) garbage collector tuning\nb\n\n' +
+      '2 fact files could not be read and were skipped; every other fact was searched:\n' +
+      '[native] malformed fact file <ROOT>/native/broken.md: no frontmatter fences\n' +
+      "[native] malformed fact file <ROOT>/native/notype.md: no 'type' at the top level and none under " +
+      "'metadata:' — this file matches neither store's shape",
+  ]);
+  pinned('layered+native: an exact native name answers alone, past the bantamkit layers', [
+    '[native] [kafka-lag] (reference) kafka consumer lag runbook\nnative body',
+  ]);
+  pinned('layered+native: a native directory that is not there is a layer of nothing, silently', [
+    'project, profile, native',
+    'no memories to search: nothing is saved in any layer bound here. ' +
+      'The project store <ROOT>/companyA/.bantamkit/memory is empty; it is <ROOT>/companyA\'s own store, ' +
+      'bound without the walk leaving that directory. That is a binding, not a search result — if your ' +
+      'facts are in another store, set BANTAMKIT_MEMORY_DIR to its absolute path and restart; otherwise ' +
+      'save a memory to start this one.',
+  ]);
+  // READ-ONLY, PER SIDE: every native directory holds, after the calls, exactly the bytes the
+  // fixture wrote — compared with the fixture typed in this file, not with the other runtime.
+  for (const [label, t] of nativeTrees) {
+    cases.push({
+      name: `PINNED PER SIDE: the native directory is untouched — ${label}`,
+      kind: 'json',
+      expected: { python: t.fixture, node: t.fixture },
+      actual: { python: t.py, node: t.node },
+    });
+  }
   const sealedAnswers = answersByLabel.get(
     'layered: the designated root cannot be created, so it is not — and the server still answers',
   );
@@ -792,6 +1013,54 @@ export async function run(ctx) {
     },
     symlinks: [['dangling/facts', '{ROOT}/nowhere-at-all']],
   }));
+  // ---- #199 J68-11: the native pool with a bantamkit name SHADOWED, as numbers. The replies
+  // above cannot see BM25's collection statistics move: a port that dropped the shadowed row
+  // but kept its length in `total` (so `avgdl` drifts) answered every scenario identically.
+  // Differential, then PER SIDE against the constant, which is what the files alone give for
+  // the three unshadowed facts (`pool_of` over them; `test_pool_without_equals_the_files_pool`).
+  {
+    const natDir = join(shapes, 'native-pool');
+    materialise(natDir, {
+      files: {
+        'MEMORY.md': '# Memory index\n',
+        'n0.md': nativeFile('n0', 'kafka lag'),
+        'n1.md': nativeFile('n1', 'kafka broker lag with a very long description of many many extra words'),
+        'n2.md': nativeFile('n2', 'zookeeper'),
+        'n3.md': nativeFile('n3', 'lag lag kafka'),
+      },
+    });
+    const req = { op: 'native_pool', dir: b64(natDir), query: b64('kafka lag'), shadow: [b64('n1')] };
+    const py = ctx.runPython(REF, req, probeEnv).pool;
+    const nativeMod = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'native.js')).href);
+    const retrieval = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'retrieval.js')).href);
+    const p = new nativeMod.NativeStore(natDir).pool(retrieval.queryTerms('kafka lag'), undefined, new Set(['n1']));
+    const nd = {
+      n: p.n,
+      total: p.total,
+      df: Object.fromEntries(p.df),
+      names: [...p.names],
+      lengths: [...p.lengths],
+      segs: Object.fromEntries(p.segs),
+      stale: [...p.stale],
+    };
+    cases.push({ name: 'native pool with a shadowed name: the two sides agree', kind: 'json', expected: py, actual: nd });
+    const NATIVE_POOL = {
+      n: 3,
+      total: 12,
+      df: { kafka: 2, lag: 2 },
+      names: ['n0', 'n2', 'n3'],
+      lengths: [4, 3, 5],
+      // `[row, run, weight]`: n0 and n3 (rows 0 and 2) hold both terms; n3 says `lag` twice.
+      segs: { kafka: [0, 1, 1, 2, 1, 1], lag: [0, 1, 1, 2, 1, 2] },
+      stale: [],
+    };
+    cases.push({
+      name: 'PINNED PER SIDE: the native pool with n1 shadowed holds n0, n2, n3 and no trace of n1',
+      kind: 'json',
+      expected: { python: NATIVE_POOL, node: NATIVE_POOL },
+      actual: { python: py, node: nd },
+    });
+  }
   const countRoots = ['populated', 'empty', 'nofacts', 'dangling', 'filefacts', 'dotted', 'dirfact']
     .map((r) => join(shapes, r));
   const pyCounts = ctx.runPython(REF, { op: 'count_facts', roots: countRoots.map(b64) }, probeEnv).counts;

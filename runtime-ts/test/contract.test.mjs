@@ -13,6 +13,7 @@
  * two sentences the Python suite itself asserts, `best_match`'s CHOICE on documents with
  * several errors, `extract_json`'s two arms, and the reader for `assets/contracts/default.yaml`.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

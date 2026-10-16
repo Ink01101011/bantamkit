@@ -20,6 +20,7 @@
  * the file after the first read and before the second. A driver that wrote every request up
  * front could do neither, and a cache is per-server, so the two calls must share a process.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';

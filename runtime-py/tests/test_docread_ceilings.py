@@ -265,7 +265,7 @@ def test_the_fallback_to_the_whole_markup_cap_is_observable():
         assert docread.html_rows(markup) == ("�",)
 
 
-def test_the_package_still_imports_when_the_method_is_gone():
+def test_the_package_still_imports_when_the_method_is_gone(tmp_path):
     """The claim is "the package imports", so it is proved by IMPORTING it — in a fresh
     interpreter with `HTMLParser.goahead` deleted before `bantamkit.docread` is loaded.
     In-process this would prove nothing: this module is already imported."""
@@ -280,7 +280,10 @@ def test_the_package_still_imports_when_the_method_is_gone():
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={"PYTHONPATH": str(SRC), "PATH": "/usr/bin:/bin"},
+        # A throwaway HOME (#204 J69-9 F7): the env is built from scratch, and without HOME
+        # `expanduser` falls back to the passwd entry, the operator's real home.
+        env={"PYTHONPATH": str(SRC), "PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+             "USERPROFILE": str(tmp_path)},
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout.split() == ["False"]

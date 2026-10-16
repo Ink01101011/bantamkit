@@ -43,6 +43,13 @@
           "type": "string"
         },
         "description": "names of related memories"
+      },
+      "keywords": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Words the user will type when they need this fact, in the user's own language as well as English (e.g. Thai and English terms)"
       }
     },
     "additionalProperties": false

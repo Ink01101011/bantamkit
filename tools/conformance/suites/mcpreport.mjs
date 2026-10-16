@@ -392,7 +392,7 @@ export async function run(ctx) {
   const reports = new Map();
   const answers = new Map();
   for (const spec of specs) {
-    const full = { ...spec, cwd, env: { HOME: home, ...spec.env } };
+    const full = { ...spec, cwd, env: { HOME: home, USERPROFILE: home, ...spec.env } };
     const py = runPy(ctx, full);
     const node = runNode(full);
     reports.set(spec.label, py.stdout.toString('utf8'));
@@ -418,7 +418,7 @@ export async function run(ctx) {
    * and comparing is what distinguishes "the two agree" from "the two agree right now".
    */
   const twice = specs[0];
-  const again = { ...twice, cwd, env: { HOME: home, ...twice.env } };
+  const again = { ...twice, cwd, env: { HOME: home, USERPROFILE: home, ...twice.env } };
   cases.push({
     name: 'full/deterministic-across-two-runs',
     kind: 'bytes',

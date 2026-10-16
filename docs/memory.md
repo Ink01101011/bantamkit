@@ -91,8 +91,11 @@ name: payments-api-owner
 description: which team owns the payments api
 type: project
 created: '2026-08-01'
-last_recalled: '2026-08-06'
+last_recalled: null
 links: []
+keywords:
+- payments
+- จ่ายเงิน
 ---
 
 The payments API is owned by team Atlas.
@@ -107,8 +110,20 @@ The payments API is owned by team Atlas.
   written before this field existed has none: the store falls back to the file's
   own mtime and persists that date on the fact's next write, so no store on disk
   needs a migration pass.
-- `last_recalled` — ISO date, stamped by `recall`; `null` until first recalled.
+- `last_recalled` — **written `null` since #199 (job68).** It was the ISO date `recall`
+  stamped on every hit, which rewrote the fact file on every read. Use now lives in the
+  usage ledger (see *Recall by meaning* below). The line stays, so a 0.35.x runtime still
+  parses the file; a fact that still carries a date is read-repaired the first time the
+  agent recalls it.
 - `links` — names of related facts.
+- `keywords` — optional (#199). A list of strings: the words the user will type when they
+  need the fact, in the user's own language as well as English. Recall scores them
+  alongside `name` and `description`, so a Thai prompt can reach an English fact without a
+  model. Written only when non-empty, after `links`. `memory_save` takes it as `keywords`
+  (the tool schema declares an array of strings). A fact file whose `keywords` has any other
+  shape is refused on read with `fact '<name>' in <file>: keywords must be a list of strings`.
+- Any other frontmatter key (`priority: high`, ...) is kept, in its original order, through
+  every rewrite: save, read-repair and dream (#199 Task 6). YAML comments are not kept.
 
 The store index holds one line per fact, `- [[name]] (type) — description`. It
 is the thing the budget is measured against, and is rebuilt after every save and
@@ -251,7 +266,7 @@ literal above, by the store suite in `node tools/conformance/run.mjs --all`.
 | Op | Who runs it | When |
 |---|---|---|
 | `recall(query, k=None)` | the agent, via `memory_recall` | before a task resembling past work |
-| `save(type, name, description, body, links=())` | the agent, via `memory_save` | after learning a durable fact |
+| `save(type, name, description, body, links=(), keywords=())` | the agent, via `memory_save` | after learning a durable fact |
 | `lint()` | you, from host code or CI | to fail fast on a corrupted or over-budget store |
 | `compact(reserve=None)` | you, from host code or a maintenance job | when a save has hit the budget |
 | `archived()` | you | to list what compaction has moved out |
@@ -303,6 +318,26 @@ except MemoryValidationError as e:
 
 ### recall
 
+**`file` (#200, job70).** `memory_recall({file: "store.ts"})` answers the facts linked to one
+tracked file instead of a search: a history line (`[file] store.ts — last touched <day> (<op>);
+last commit <sha7> <subject>`), then the linked facts, strong edges (the fact names the file)
+first. `query` is then optional and ignored, and the reply says so; neither argument is the
+tool error `memory_recall needs a query or a file.` Nothing is stamped or counted as use. The
+argument, its six sentences and the repo it reads (the server's working directory's) are in
+`docs/touch.md`.
+
+**The `[via <file>]` line (#200, job70), OFF by default.** With `BANTAMKIT_VIA=on`, the hook's
+recall may append ONE fact past the gate after the k gated hits, a fact whose text names a file
+this session touched in its last 20 tool calls, its header ending ` [via store.ts]`. It is the
+only path by which a fact is shown that the gate did not admit, and it is off because gold pass
+2 measured its precision at 0.150 against a bar of 0.8 (UNVALIDATED; `docs/touch.md`). The
+ranker sentence below, *never lifts a fact over the gate*, holds whenever it is off.
+
+**SUPERSEDED by #199 (job68): the next paragraph describes the engine through 0.36.0.** Since
+#199, recall ranks by BM25F over name, description and `keywords`, and dates nothing in the
+fact file. See *Recall by meaning (#199)* just below; the paragraph is kept as the record
+of what it replaced.
+
 Scores every fact by how many lowercased alphanumeric tokens the query shares
 with `"{name} {description}"`, keeps those with a non-zero score, sorts by score
 then name, and returns the top `k` (default 3, or `k` passed per call). Every
@@ -316,8 +351,181 @@ with `stamp=False` and dates nothing, so the stamp now records explicit recalls
 only (the `memory_recall` tool, the memory CLI, `Memory.recall`).
 
 **The body is not searched.** A fact is only findable through the words in its
-name and description; this is why the skill insists descriptions be written to
-match the future query.
+name and description (and, since #199, its `keywords`); this is why the skill insists
+descriptions be written to match the future query.
+
+#### Recall by meaning (#199, job68)
+
+Issue #199 found that the hook injected mostly off-topic facts and that a Thai prompt
+recalled nothing: every token weighed the same, and `[a-z0-9]+` tokenised Thai to the
+empty set. The design is `docs/superpowers/specs/2026-10-15-recall-by-meaning-design.md`
+(decisions D1–D8, agreed with the user 2026-10-15). `memory_recall`, the memory CLI,
+`Memory.recall` and the `UserPromptSubmit` hook share one pipeline
+(`runtime-py/src/bantamkit/memory/retrieval.py`, `runtime-ts/src/memory/retrieval.ts`,
+compared by the `recall-retrieval` conformance suite):
+
+```
+query ─► tokenize_v2 ─► BM25F over every layer at once ─► gate ─► rank ─► top k
+```
+
+- **`tokenize_v2`.** NFKC, then lowercase, then runs split by script. Runs in letters,
+  digits and marks of space-delimited scripts become words. Runs in Thai, Lao, Myanmar,
+  Khmer, kana and CJK (fixed code-point ranges, so the two runtimes cannot disagree through
+  different Unicode versions) become **character bigrams**; a one-character run is that
+  character. A dictionary segmenter was rejected because the two runtimes would segment
+  differently. The v1 `tokens` is unchanged and still feeds dream/dedupe's Jaccard.
+- **BM25F.** Fields `name` (boost 2.0; a kebab name is words), `description` (1.0) and
+  `keywords` (2.0); `k1 = 1.2`, `b = 0.75`. IDF and the average length are computed per
+  call over the **pooled** collection, every layer's facts at once, read through each
+  layer's hot index (`docs/storage.md`). Scores are rounded to 9 decimals, Python's
+  `round(x, 9)` exactly on both sides, before anything compares them. The body is not
+  scored.
+- **The gate decides eligibility on relevance alone** (D2, D3): a fact is eligible iff
+  `score > 0`, `score >= GATE_FLOOR` and `score >= min_ratio * best`, where `best` is the
+  best score **of the whole recall, across layers** (it was per layer; see the gate
+  section below). Shipped: `GATE_FLOOR = 0.0`, and `min_ratio` defaults to
+  `RECALL_MIN_SCORE_RATIO = GATE_RATIO = 0.0`. Nothing eligible means nothing is returned
+  or injected.
+- **The ranker orders what passed, and never lifts a fact over the gate.**
+  `final = round(score × max(0.1, w_type + w_fresh + 0.2 × log1p(usage) + 0 × context), 9)`,
+  sorted by `(-final, layer order, name)`. `w_type`: `feedback` 1.3, `project` 1.1,
+  `reference` and `user` 1.0 (an unknown type 1.0). `w_fresh` is −0.5 when the description
+  opens with the whole word `SUPERSEDED`, `CLOSED` or `REFUTED`. The context weight is the
+  slot #200 fills (**AMENDED, job70, #200:** the term is `W_CONTEXT × ctx`, `ctx` in `[0, 1]`
+  from what the session touched in its last 20 tool calls: 1.0 for a fact whose text names a
+  touched file, a decayed share for one used near a touch. `W_CONTEXT = 0.0` ships, because
+  #200's silver set had one positive in 238 prompts and could not tune it, so the order is
+  unchanged; see `docs/touch.md`). On a tie the project layer wins, then the lower name in
+  code-point order. A name two layers hold is answered once, by whichever copy ranks first
+  (on a tie, the earlier layer's).
+- **Usage.** `usage` is `Σ 0.5^(age_days / 14)` over the fact's use events in the usage
+  ledger. Only intentional use counts: a `recall_hit` (a tool recall returned the fact), a
+  `body_read` (an exact-name lookup returned it) and a `seed` (see read-repair). A `save`
+  does not count, and **the hook's injection never counts**: counting it would be
+  rich-get-richer.
+
+**The usage ledger** (D5) is `~/.bantamkit/usage/<store id>.jsonl`, where the store id is
+the first 16 hex characters of sha256 over the store's realpath, so moving a store restarts
+its history. It is append-only, one event per line: `{ts, fact, kind}` with `kind` one of
+`recall_hit`, `body_read`, `save` (which carries a copy of the fact's `keywords`) and
+`seed`. It sits outside the store, which is committed, and is keyed on the first layer of a
+layered memory, so a hit from a read-only layer is recorded there and nothing is written
+into the read-only layer. Appends take `<ledger>.lock` with `O_EXCL`, the one lock primitive
+both platforms and both runtimes share. Past 5,000 lines the live file is folded under that
+lock into one `folded` line per fact (its decayed weight, and its last use as `last`) plus
+its latest `save`. Past 1,000,000 bytes it is rotated to `.1.gz`, `.2.gz`, ... and every
+read spans the segments; Retention folds lines older than 30 days (`docs/storage.md`). The
+ledger never makes recall fail: a missing or unreadable ledger is no usage, a corrupt line
+is skipped and counted, and an append that cannot be written is lost while the recall
+answers. The `recall-usage` conformance suite compares the two runtimes' ledger bytes.
+
+**Who writes what.**
+
+| path | fact files | usage ledger |
+|---|---|---|
+| `UserPromptSubmit` hook | nothing | nothing |
+| `memory_recall` / CLI / `Memory.recall` | only a read-repair, once per old fact | one `recall_hit` per returned fact |
+| exact-name hit (`deploy-command`) | only a read-repair | one `body_read` |
+| `memory_save` | the fact | one `save`, with its `keywords` (`[]` when none) |
+
+`last_recalled` is no longer written, so a recall no longer rewrites the file it read.
+Every reader of "when was this last used" takes the ledger first:
+`ledger.last_used(name) or fact.last_recalled or fact.created`. That covers `compact`'s
+eviction order and the `SessionStart` drop rule (`docs/hooks.md`). A folded line's `last`
+is its last use; the fold time is never read as one.
+
+**Read-repair** (D8). Old facts are not migrated in a pass. The first time a tool recall
+(or an exact-name hit) returns a fact from the writable layer whose `last_recalled` is not
+null, or whose `keywords` are missing while the ledger's latest `save` copy holds some, the
+fact is rewritten once, through the store's usual temp-and-rename write. `last_recalled`
+becomes `null` (the line stays, so 0.35.x still parses the file), the keywords are restored
+from the copy, and every unknown key is kept. Only after the write succeeds is the old date
+appended as one `seed` event at `YYYY-MM-DDT00:00:00Z`, so the fact's history is not lost.
+A repaired fact is new-format, so a second recall writes nothing. The hook never repairs,
+and neither does a read-only layer. The keywords half exists because a 0.35.x runtime on the
+same machine rewrites a fact from a dataclass without the field and silently drops it.
+`bantamkit_status` reports both halves on two lines after the storage block:
+
+```
+read-repaired: <n> this process
+usage ledger: <path> (<lines> lines, <skipped> skipped)
+```
+
+When an append to the ledger could not be written (its directory cannot be made, the file
+cannot be opened), the event is lost and the recall or save that tried it answers normally.
+The miss is not silent: each runtime counts it, per ledger path, for the life of the process,
+and the second line then ends `, <missed> missed writes)`. On a ledger that has never missed
+a write, the line is the one above, byte for byte (J68-10; `storage-tiers.mjs`, session
+`unwritable-ledger`).
+
+**What was measured, and the bar** (spec, *Evaluation and the bar*, declared before any
+number existed: precision@inject ≥ 0.8 on gold; recall@3 on gold no lower than the old
+engine's; Thai-prompt recall@3 > 0; hook p50 rise ≤ 5 ms on Node). The harness is
+`tools/eval/recall/`. Silver is 70 prompts mined from this machine's transcripts, where a
+later `memory_recall` or Read of a memory file labels the fact. Gold is 50 prompts, 48 of
+them Thai, held out from all tuning. View A scores the bantamkit layers only. View B adds
+the session's own `[native]` auto-memory layer, which is what the hook ships with. The
+numbers are precision@inject / recall@3 / Thai recall@3.
+
+| set | v1 (0.36.0 engine) | v2 shipped, view A | v2 shipped, view B |
+|---|---|---|---|
+| silver, 70 (J68-7, built on `a6f1475`) | 0.030 / 0.048 / 0.050 | 0.060 / 0.080 / 0.083 | 0.092 / 0.168 / 0.175 |
+| gold, pooled, 50 (J68-17/18, `05d486e`) — UNVALIDATED | 0.215 / 0.126 / 0.109 | 0.290 / 0.175 / 0.148 | **0.432 / 0.386 / 0.369** |
+
+- **Every gold number is UNVALIDATED.** Spec D7 (amended 2026-10-16) accepts a model
+  judge's labels only if, on the user's own 10-prompt spot-check, raw agreement is ≥ 0.9
+  and Cohen's kappa ≥ 0.6. The calibrated judge (claude-opus-5-5) reached 0.68 and 0.2395.
+- **Gold was first scored once** at `335b9a0` against candidates that came partly from the
+  v1 engine's own top hits. Every injection v2 made outside those candidates counted as
+  wrong, which put v1 ahead (view B at the silver-tuned point: 0.080 / 0.103 against v1's
+  0.204 / 0.202). For the pooled rescore, a calibrated judge (J68-18) labelled every injection
+  any engine made, without being told which engine made it. Both engines were then scored on
+  the union (`tools/eval/recall/score_pooled.py`).
+- **Against the bar, view B:** precision@inject 0.432 **misses** 0.8. recall@3 0.386 ≥ v1's
+  0.126 would pass, and Thai recall@3 0.369 > 0 would pass, but both are UNVALIDATED.
+  The hook p50 rise is +1.6 to +2.1 ms on Node, within the 5 ms (see the `[native]` layer
+  section).
+- **Constants.** `tools/eval/recall/tune.py` searched a 288-point grid on silver only
+  (`GATE_FLOOR`, `GATE_RATIO`, `W_USAGE`, `W_TYPE.feedback`). No point reached the 0.85
+  silver precision target. Its best, `GATE_RATIO = 0.7`, gained +0.013 precision on silver
+  (n = 70, within its noise). It would have reddened 68 tests and cases that pin the 0.0
+  default on purpose. The orchestrator ruled to ship 0.0, and the pooled gold agrees: 0.7
+  is worse there too (view B 0.407 / 0.308 / 0.288). `W_USAGE` is inert on both sets,
+  because an eval ledger is empty by construction.
+- **Next lever** (spec D6): an embedding backend. It is not part of this job.
+
+Rerun: the commands are in `.shiftwork/notes-job68/J68-7.md`, `J68-17.md` and `J68-18.md`.
+`score.py --engine v1` must run on the pre-#199 source, because in this tree
+`recall_outcome` IS v2. In a tree that has `bantamkit.memory.retrieval` on its import path,
+the script refuses and prints the recipe:
+`git archive 4bab744 runtime-py/src | tar -x -C <dir>`, then
+`PYTHONPATH=<dir>/runtime-py/src`.
+
+**Known gaps, stated.** (1) CLOSED by J68-10: spec D5's "ledger not writable" row. An
+append that fails is still lost, but `bantamkit_status` now counts it (`, <n> missed writes`).
+(2) The hook log's `injected[].score` is still the v1 overlap count
+(`docs/hooks.md`), not the BM25F score that ranked the fact.
+
+**AMENDED 2026-10-16 (job69, #204): recall reads a derived index, not every file.**
+The score, the gate, the order and the stamp are unchanged; what changed is where the
+words come from. Each store keeps a hot index at `~/.bantamkit/index/<sha16>.json`
+plus 32 shard files (outside the store, which is committed), refreshed with one
+directory `stat` per call and a full file `stat` every 10 minutes, and patched by every
+`save`, `compact`, `archive`, `restore` and `dream` in the same process. Only the `k`
+hits are parsed. A store holding an unreadable file, a name used twice or a name that
+is not a string is read file by file as before, so the answer never depends on the
+index. `BANTAMKIT_INDEX_DIR` moves the indexes; deleting them loses nothing. Measured at
+`d2a14d0`: 5,000 facts, hook-style recall p50 Python 239 → 13.2 ms, Node 105 → 12.5 ms.
+See `docs/storage.md`.
+
+**`include_archived` (job69, #204).** `memory_recall(query, k, include_archived=true)`
+(Python `Memory.recall_outcome(..., include_archived=True)`, Node `recallOutcome(...,
+includeArchived)`) also searches every layer's `archive/`, through a cold index under
+`~/.bantamkit/cold/facts-archive-<store id>/` (or `<BANTAMKIT_INDEX_DIR>/cold/`).
+Archived hits come after the live ones, header `[layer] [archived] [name] (type)
+description`, scored by #199's tokenizer, never gated and never stamped; an exact-name
+query still answers alone. Without the flag nothing changes, and the hook never asks for
+archived facts. Compared by `storage-cold` and the `wire` `memory-archived` session.
 
 #### lookup (job64, J64-4)
 
@@ -373,10 +581,14 @@ threshold tuned on English prompts would be tuned on a population that structura
 excludes a Thai-writing operator's prompts, and a non-zero cut would suppress memory
 for them first. That is a property of the tokenizer rather than of the gate, and it is
 one reason the replacement number has to come from the control-armed measurement.
+**Amended by #199 (job68):** recall now tokenises with `tokenize_v2`, which cuts Thai and
+CJK into character bigrams, and scores `keywords` in the user's language. A Thai prompt
+reaches the gate (Thai recall@3 0.369 on pooled gold, UNVALIDATED; see *Recall by
+meaning*).
 
 The gate is **relative, so it can never empty a recall.** The floor is a fraction of
-that recall's own best score, and the best-scoring fact is by definition equal to the
-maximum, so it clears every ratio in `[0.0, 1.0]` — including `1.0`, the strictest
+that recall's own best score (with `GATE_FLOOR` at its shipped 0.0, #199), and the
+best-scoring fact is by definition equal to the maximum, so it clears every ratio in `[0.0, 1.0]` — including `1.0`, the strictest
 value the range permits. Two consequences, both measured on a temporary store rather
 than argued: where one fact scores 3 and two score 1, `min_ratio=0.5` prunes three
 hits to one; where all three score 1, `min_ratio=1.0` prunes nothing and returns all
@@ -392,12 +604,15 @@ injections" is a statement about the width of an injection, not about how many p
 get one. An empty recall still comes only from the score-`> 0` filter above, as it did
 before this gate existed.
 
-The gate is applied **per layer**. A layered `Memory` hands the same ratio to every
-store and each one measures against its own top hit, so a profile fact does not have
-to out-score the project store's best to be admitted. Where the gate sits relative to
-the top-`k` slice is not specified and cannot be observed: the survivors are always a
-prefix of the score-sorted list, so filtering before or after the slice returns the
-same facts.
+**SUPERSEDED by #199 (job68): the gate is applied once over the pooled recall, not per
+layer.** A layered `Memory` scores every layer's facts as ONE collection with BM25F, so
+`min_ratio` is taken against the best score of the whole recall. A profile fact that scored
+well inside its own layer can now fall under the ratio when the project store holds a far
+better match. That is the deliberate change from per-layer gating in plan Task 5 (#199 D3).
+At the shipped 0.0 it changes nothing, since every fact scoring above 0 still clears the
+ratio. The gate also gained an absolute floor, `GATE_FLOOR`, shipped at 0.0 because the
+silver grid found no floor that helped (J68-7). Where the gate sits relative to the top-`k`
+slice still cannot be observed: the survivors are a prefix of the score-sorted list.
 
 A ratio outside `[0.0, 1.0]` — `NaN` included — is refused **before any file is read**,
 with the same sentence in both runtimes:
@@ -546,7 +761,9 @@ Two things about that target matter, and both were measured defects:
 **The eviction order is class first, then staleness:**
 `(1 if type in DURABLE_TYPES else 0, last_recalled or created, name)`, with
 `DURABLE_TYPES = ("feedback", "user")` (`runtime-py/src/bantamkit/memory/store.py`,
-`runtime-ts/src/memory/store.ts`).
+`runtime-ts/src/memory/store.ts`). **Amended by #199 (job68):** the staleness term is now
+`ledger.last_used(name) or last_recalled or created`. The usage ledger's last intentional
+use comes first, because `last_recalled` is no longer written.
 
 - **Every fact of another type is exhausted before any `feedback` or `user` fact
   is archived.** A `feedback` fact is a standing instruction from the user and a
@@ -777,6 +994,9 @@ gone. The hook's per-prompt injection no longer stamps, so it no longer moves a
 fact's mtime; an explicit `memory_recall` (and an exact-name hit, which stamps
 the one fact it returns) still does.
 
+**Amendment (#199, job68):** no recall writes `last_recalled` any more, so a read no longer
+moves the mtime. The one exception is read-repair, which rewrites an old-format fact once.
+
 ### The gate
 
 `tools/conformance/suites/dream.mjs` is what makes the port a fact rather than a
@@ -972,14 +1192,59 @@ from bantamkit import Agent, Memory
 agent = Agent(client=client).use(Memory.layered())   # client as above
 ```
 
-`Memory.layered(start=None, k=3, index_budget=24000)` is a classmethod; `k`
-bounds the merged result and `index_budget` governs the project store.
+`Memory.layered(start=None, k=3, index_budget=24000, native=None)` is a classmethod; `k`
+bounds the merged result and `index_budget` governs the project store. `native` is
+Claude Code's own auto-memory directory, as the caller resolved it (below); `None`
+means there is no `native` layer.
 
 | Layer | Where | Written? |
 |---|---|---|
 | `project` | nearest `.bantamkit/memory` at or above `start` (default cwd) | yes — saves, recall stamps, `compact`, `lint` |
 | `extra:<name>` | each path listed in `.bantamkit/config.yaml` | never |
 | `profile` | `~/.bantamkit/memory` | never |
+| `native` | Claude Code's auto-memory directory, when one is found | never |
+
+### The `[native]` layer: Claude Code's auto-memory (#199)
+
+The host keeps its own memory, one Markdown file per fact, in an auto-memory
+directory. Since #199 (user ruling 2026-10-15) recall reads it as the **last**
+layer, and its hits are tagged `[native]`:
+
+```
+[native] [kafka-lag] (reference) kafka consumer lag runbook
+```
+
+- **Where it comes from.** bantamkit never computes the directory. The
+  `UserPromptSubmit` hook uses the directory the hook's resolver finds: the
+  `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` variable, then `autoMemoryDirectory` in
+  `~/.claude/settings.json`, then the `memory/` directory beside the hook's
+  `transcript_path`. The last two count only when the directory holds a
+  `MEMORY.md`. The MCP server receives no transcript, so `memory_recall` uses the
+  first two only. When none of them answers, there is no `native` layer. A
+  directory that is named but not there is a layer with nothing in it, and recall
+  says nothing about it.
+- **What is read.** Every `*.md` in the directory except `MEMORY.md`. Each needs
+  YAML frontmatter with `name`, `description` and a type, either at `type` or under
+  `metadata.type`. A file that does not parse is skipped and named in the reply,
+  the same way a broken fact file is named in any other layer. Two files that claim
+  one name keep the first in code-point order.
+- **Read-only.** bantamkit never writes into the directory. A `native` hit is never
+  stamped, never read-repaired, never compacted and never consumed by `dream`. A
+  tool recall that returns it records a `recall_hit` (or `body_read`) by name in the
+  usage ledger under `~/.bantamkit`, as it would for any other hit. The hook still
+  writes nothing. The layer's hot index lives under `~/.bantamkit/index/` (or
+  `BANTAMKIT_INDEX_DIR`), like every other layer's.
+- **Ranking and dedupe.** Native facts are pooled and scored with every other layer.
+  The layer is last in the order, so on an exact tie the bantamkit fact comes first.
+  A name that any bantamkit layer holds is dropped from the `native` layer before
+  scoring. The hook's SessionStart export copies project facts into this directory,
+  so without the drop every exported fact would answer twice. With it, the bantamkit
+  fact always wins and the copy counts in no score statistic.
+- **Cost.** Measured 2026-10-16 with 150 project facts and 150 native facts, as cold
+  `--hook` UserPromptSubmit runs (p50 of 25, three interleaved rounds). Node took
+  42.6–42.9 ms with the layer and 40.7–41.2 ms on 0.36.0, so all of #199 costs
+  1.6–2.1 ms. Python took 360.7–361.3 ms with the layer and 358.4–360.2 ms without
+  it. The command is in `.shiftwork/notes-job68/J68-11.md`.
 
 ### Discovery
 
@@ -1195,6 +1460,13 @@ order — project, then extras in config order, then profile — deduped by fact
 name, with the earlier layer winning. The merged result is at most `k` facts
 total, so a project store that already answers the query spends the budget and
 the later layers are never even read — **unless the query is a fact's name.**
+
+**SUPERSEDED by #199 (job68): every layer is read, and its facts are scored with every other
+layer's as one collection.** The paragraph above describes the walk through 0.36.0. Now the
+layers (project, then extras, then profile, then `[native]`) are pooled. BM25F scores the
+pool once, the gate and the ranker run once, and the first `k` facts are taken, the first of
+each name only. Layer order survives only as the tie-break. See *Recall by meaning (#199)*
+under *recall*.
 
 **Amendment 2026-09-25 (job64, J64-4): an exact name is looked up in every
 layer before any scoring.** The sentence above described the design as built,

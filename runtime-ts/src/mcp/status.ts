@@ -30,13 +30,16 @@
  *     reader to stop reading, and the one time it matters it is then invisible.
  */
 import { statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { AssetNotFound, assetsRoot } from '../assets.js';
 import type { EventLog } from '../eventlog.js';
 import { Memory } from '../memory/component.js';
 import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
+import { statusLine } from '../memory/usage.js';
 import type { MemoryStore } from '../memory/store.js';
+import { currentCwd, statusLines } from '../storage/tiers.js';
 import { updateLine } from '../updatecheck.js';
 import { Undetermined, currentInstall, originStat } from './identity.js';
 import type { Install } from './identity.js';
@@ -485,6 +488,16 @@ export function statusReport(
     // module in `src/` reaching the one `fetch` in this runtime, and this file is on a path a
     // host reaches. The version is the one line 2 already printed.
     updateLine(identity.get('version') as string),
+    // #204 (job69 J69-7): the capability tiers, every hot index, every log and the last
+    // retention run — AFTER the update line, so every line above keeps its number. Read here,
+    // on demand, and never on the per-call footer path. The reference reads `Path.home()`.
+    ...statusLines(memory, homedir(), currentCwd()),
+    // #199 Task 6: read-repair and the usage ledger, AFTER the storage block for the same reason
+    // the block sits after the update line — every line above keeps its number.
+    `read-repaired: ${memory.repaired} this process`,
+    // J68-10: an append that could not be written is counted in `memory/usage` and named here,
+    // so an unwritable ledger is visible (#199 D5 error row).
+    statusLine(...memory.usageCensus()),
   ];
   if (conditions.length > 0) {
     lines.push(`${plural(conditions.length, 'problem')}:`);

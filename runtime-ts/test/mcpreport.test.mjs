@@ -13,6 +13,7 @@
  * tree, which is exactly the overridability the module exists to have. No real memory store
  * is read or created either — every store path below is under the same temp tree.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';

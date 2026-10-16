@@ -7,11 +7,12 @@
  * — and nothing in the conformance suite — opens the real store: the defect this module
  * reimplements is the one that rewrote a 13,472-byte `index.md` from an empty listing.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
@@ -25,6 +26,41 @@ import {
   undegradedIndexCeiling,
 } from '../dist/memory/store.js';
 import * as pyfs from '../dist/memory/pyfs.js';
+import { bm25Scores } from '../dist/memory/retrieval.js';
+import { UsageLedger } from '../dist/memory/usage.js';
+
+/** The ladder's BM25F scores (#199 D3): the gate divides these now, not overlap counts. */
+function ladderBm25() {
+  const docs = [
+    { name: 'four', description: 'alpha bravo charlie delta', keywords: [] },
+    { name: 'three', description: 'alpha bravo charlie zulu', keywords: [] },
+    { name: 'two', description: 'alpha bravo yankee zulu', keywords: [] },
+    { name: 'one', description: 'alpha xray yankee zulu', keywords: [] },
+  ];
+  const s = bm25Scores('alpha bravo charlie delta', docs);
+  return { four: s[0], three: s[1], two: s[2], one: s[3] };
+}
+
+/** The next double after `x` toward `to` (Python's `math.nextafter`). */
+function nextafter(x, to) {
+  if (x === to) return to;
+  const b = new DataView(new ArrayBuffer(8));
+  b.setFloat64(0, x);
+  let bits = b.getBigUint64(0);
+  bits += (to > x) === (x >= 0) ? 1n : -1n;
+  b.setBigUint64(0, bits);
+  return b.getFloat64(0);
+}
+
+/** A ratio whose floor `ratio * best` is EXACTLY `score`, found ulp by ulp. */
+function ratioLandingOn(score, best) {
+  let r = score / best;
+  for (let i = 0; i < 64; i += 1) {
+    if (r * best === score) return r;
+    r = nextafter(r, r * best > score ? 0 : 1);
+  }
+  throw new Error('no ratio lands exactly on the score');
+}
 
 const TODAY = '2026-08-23';
 /**
@@ -46,7 +82,15 @@ const TODAY = '2026-08-23';
  * were needed to learn that, and the second is the reason this paragraph exists.
  */
 const fresh = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-store-')));
-const store = (root, over = {}) => new MemoryStore(root, { today: () => TODAY, ...over });
+const store = (root, over = {}) =>
+  new MemoryStore(root, { today: () => TODAY, now: () => `${TODAY}T00:00:00Z`, ...over });
+
+/** The usage ledger's events for the store at `root`, as `[fact, kind]` (#199 D5). */
+function uses(root) {
+  const path = new UsageLedger(homedir(), root).path;
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).map((e) => [e.fact, e.kind]);
+}
 const bytes = (p) => readFileSync(p);
 const text = (p) => readFileSync(p, 'utf8');
 /**
@@ -344,12 +388,13 @@ test('recall orders by score then name, honours k, and stamps only the hits', ()
   s.save('project', 'delta', 'alpha z1 z2 z3 z4 z5 z6 z7', 'b');
   s.save('project', 'echo', 'unrelated q1 q2 q3 q4 q5 q6 q7', 'b');
 
+  const before = Object.fromEntries(['alpha', 'bravo', 'delta', 'echo'].map((n) => [n, bytes(join(root, 'facts', `${n}.md`))]));
   const hits = s.recall('alpha beta gamma', 3);
   assert.deepEqual(hits.map((f) => f.name), ['alpha', 'bravo', 'delta']);
-  for (const n of ['alpha', 'bravo', 'delta']) {
-    assert.match(text(join(root, 'facts', `${n}.md`)), /last_recalled: '2026-08-23'/);
-  }
-  assert.match(text(join(root, 'facts', 'echo.md')), /last_recalled: null/);
+  // #199 D5: one `recall_hit` per hit in the usage ledger, and no fact file is rewritten.
+  // WAS: `last_recalled: '2026-08-23'` was written into the three hits.
+  for (const n of ['alpha', 'bravo', 'delta', 'echo']) assert.deepEqual(bytes(join(root, 'facts', `${n}.md`)), before[n]);
+  assert.deepEqual(uses(root), [['alpha', 'recall_hit'], ['bravo', 'recall_hit'], ['delta', 'recall_hit']]);
   assert.deepEqual(s.recall('alpha', 1).map((f) => f.name), ['alpha']);
   assert.deepEqual(s.recall('nothing-matches-this-token').map((f) => f.name), []);
   rmSync(root, { recursive: true, force: true });
@@ -373,10 +418,14 @@ test('lookup answers the named fact alone and stamps only it (job64, J64-4)', ()
   const s = store(root);
   s.save('project', 'deploy-command', 'how we deploy to prod', 'make ship-prod');
   s.save('project', 'deploy-notes', 'deploy command prod notes', 'the notes');
+  const before = bytes(join(root, 'facts', 'deploy-command.md'));
   const fact = s.lookup('deploy-command');
   assert.deepEqual([fact?.name, fact?.body], ['deploy-command', 'make ship-prod']);
-  assert.match(text(join(root, 'facts', 'deploy-command.md')), /last_recalled: '2026-08-23'/);
+  // #199 D5: a `body_read` for the named fact only; no file is dated. WAS: deploy-command.md
+  // got `last_recalled: '2026-08-23'` and deploy-notes.md kept null.
+  assert.deepEqual(bytes(join(root, 'facts', 'deploy-command.md')), before);
   assert.match(text(join(root, 'facts', 'deploy-notes.md')), /last_recalled: null/);
+  assert.deepEqual(uses(root), [['deploy-command', 'body_read']]);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -406,7 +455,10 @@ test('the name tie-break is by CODEPOINT, which is not what String.sort does', (
   for (const n of ['\u{1f414}', '！', 'zz']) {
     writeFileSync(join(root, 'facts', `${n}.md`), frame(n), 'utf8');
   }
-  assert.deepEqual(s.recall('shared', 3, false).map((f) => f.name), ['zz', '！', '\u{1f414}']);
+  // #199 D3: BM25F's length norm puts the two token-less names (equal score) above `zz`, and
+  // they tie, so the code-point order decides them: U+FF01 before U+1F414, where a UTF-16
+  // sort would put the astral one first. WAS ['zz', '！', '🐔'] under overlap counts.
+  assert.deepEqual(s.recall('shared', 3, false).map((f) => f.name), ['！', '\u{1f414}', 'zz']);
   assert.deepEqual(
     s.indexText().split('\n').filter(Boolean).map((l) => l.slice(4, l.indexOf(']]'))),
     ['zz', '！', '\u{1f414}'],
@@ -1000,20 +1052,32 @@ test('the default ratio is zero and gates nothing', () => {
 });
 
 test('a fact exactly at the threshold is admitted', () => {
-  // AT the boundary, not near it: 0.5 * 4 === 2.0 exactly in IEEE754 on both runtimes, and
-  // the score-2 fact stays. This is the node that separates `>=` from `>`.
+  // AT the boundary, not near it: a floor of exactly the score-two fact's score keeps it, and
+  // one ulp above drops it. This is the node that separates `>=` from `>`. #199 D3: the scores
+  // are BM25F (WAS overlap counts 4/3/2/1, where 0.5 * 4 === 2.0 landed exactly).
   const s = scoreLadder(store(fresh()));
-  assert.equal(0.5 * 4, 2.0, 'the boundary is exact, so this node really is at it');
-  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.5)), ['four', 'three', 'two']);
+  const sc = ladderBm25();
+  const atTwo = ratioLandingOn(sc.two, sc.four);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, atTwo)), ['four', 'three', 'two']);
+  const above = nextafter(atTwo, 1);
+  assert.ok(above * sc.four > sc.two);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, above)), ['four', 'three']);
   // And one rung further down, where the floor lands exactly on the weakest fact.
-  assert.equal(0.25 * 4, 1.0);
-  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.25)), ['four', 'three', 'two', 'one']);
+  const atOne = ratioLandingOn(sc.one, sc.four);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, atOne)), ['four', 'three', 'two', 'one']);
 });
 
 test('just above the threshold drops the fact and just below keeps it', () => {
+  // #199 D3: over BM25F the ladder is 1.0 / 0.490 / 0.196 / 0.045 of the best (WAS 4/3/2/1).
   const s = scoreLadder(store(fresh()));
-  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.6)), ['four', 'three']);
-  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.4)), ['four', 'three', 'two']);
+  const sc = ladderBm25();
+  assert.deepEqual(
+    ['four', 'three', 'two', 'one'].map((n) => Math.round((sc[n] / sc.four) * 1000) / 1000),
+    [1, 0.49, 0.196, 0.045],
+  );
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.5)), ['four']);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.4)), ['four', 'three']);
+  assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 0.1)), ['four', 'three', 'two']);
   assert.deepEqual(names(s.recall(LADDER_QUERY, 10, false, 1.0)), ['four']);
 });
 
@@ -1076,12 +1140,19 @@ test('the cut is relative to the best score, not an absolute count', () => {
   // The absolute counts move by 5x with the length of the query...
   assert.deepEqual([score('alpha', alphaD, short), score('bravo', bravoD, short)], [2, 2]);
   assert.deepEqual([score('alpha', alphaD, long), score('bravo', bravoD, long)], [10, 9]);
-  // ...so any absolute cut above 2 would gate the short prompt out entirely while admitting
-  // both facts on the long one. The ratio does not move that way: the pair is a tie at the
-  // short length and a 0.9 near-tie at the long one, both times admitted at 0.9.
+  // ...and so do the BM25F scores the gate divides since #199 D3 (0.36 -> 2.33)...
+  const docs = [
+    { name: 'alpha', description: alphaD, keywords: [] },
+    { name: 'bravo', description: bravoD, keywords: [] },
+  ];
+  assert.ok(bm25Scores(long, docs)[0] > 5 * bm25Scores(short, docs)[0]);
+  // ...so any absolute cut would gate the short prompt out entirely while admitting both
+  // facts on the long one. The ratio does not move that way: the pair is a tie at the short
+  // length and a 0.70 near-tie at the long one (WAS 0.9 over overlap counts; BM25F weighs the
+  // rare `ten` higher), both times admitted at 0.7.
   for (const query of [short, long]) {
     assert.deepEqual(names(s.recall(query, 10, false)), ['alpha', 'bravo']);
-    assert.deepEqual(names(s.recall(query, 10, false, 0.9)), ['alpha', 'bravo']);
+    assert.deepEqual(names(s.recall(query, 10, false, 0.7)), ['alpha', 'bravo']);
   }
   // Only the exact-tie requirement can tell the two lengths apart, and that is the ratio
   // reporting a real difference in relevance rather than a difference in length.
@@ -1264,10 +1335,12 @@ test('an unquoted created date is read as the quoted string and re-quoted on the
         "fact 'dt' in dt.md: last_recalled is the unquoted timestamp 2026-08-23 10:00:00+00:00, " +
           "read as '2026-08-23 10:00:00+00:00'; quote it",
   );
-  // A recall that stamps the fact writes the string back QUOTED, so the file heals.
-  s.recall('hand edited', null, true);
+  // The next write puts the string back QUOTED, so the file heals. #199 D5: a recall no longer
+  // writes (WAS: a recall that stamped the fact was the write), so the store's own write is.
+  const { writeFact } = s.internals();
+  const facts = s.recall('hand edited a datetime', null, false);
+  for (const fact of facts.filter((f) => f.name === 'hand-edit' || f.name === 'dt')) writeFact(fact);
   assert.match(read(join(root, 'facts', 'hand-edit.md')), /created: '2026-01-01'\n/);
-  s.recall('a datetime', null, true);
   s.lint();
 });
 
@@ -1449,5 +1522,332 @@ test('#120 ruling: save skips an unreadable fact file by name and never overwrit
     assert.deepEqual(clean.save('project', 'one', 'one subject', 'b'), { status: 'saved', name: 'one', similar: null });
   } finally {
     rmSync(dirname(root), { recursive: true, force: true });
+  }
+});
+
+// --------------------------------------------------------------------- keywords (#199)
+
+test('save writes keywords after links, raw UTF-8, and reads them back', () => {
+  const root = fresh();
+  try {
+    const s = store(root);
+    s.save('project', 'release-lessons', 'how to run a release', 'body', [], ['ปล่อยเวอร์ชัน', 'publish']);
+    assert.ok(read(join(root, 'facts', 'release-lessons.md')).includes('links: []\nkeywords:\n- ปล่อยเวอร์ชัน\n- publish\n---\n'));
+    assert.deepEqual(s.lookup('release-lessons', false).keywords, ['ปล่อยเวอร์ชัน', 'publish']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a fact without keywords is byte-identical to before the field existed', () => {
+  const root = fresh();
+  try {
+    const s = store(root);
+    s.save('project', 'plain', 'a plain fact', 'body');
+    assert.equal(
+      text(join(root, 'facts', 'plain.md')),
+      disk(`---\nname: plain\ndescription: a plain fact\ntype: project\ncreated: '${TODAY}'\nlast_recalled: null\nlinks: []\n---\n\nbody\n`),
+    );
+    assert.deepEqual(s.lookup('plain', false).keywords, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a recall stamp keeps the keywords', () => {
+  const root = fresh();
+  try {
+    const s = store(root);
+    s.save('project', 'kw-fact', 'a fact with keywords', 'b', [], ['คำ']);
+    const before = read(join(root, 'facts', 'kw-fact.md'));
+    s.recall('keywords fact', 1);
+    // #199 D5: the stamp no longer rewrites the file (WAS: dated it through `formatFact`), so the
+    // keywords cannot be lost by one; the file is what `save` wrote, and the ledger has the hit.
+    const t = read(join(root, 'facts', 'kw-fact.md'));
+    assert.equal(t, before);
+    assert.ok(t.includes('keywords:\n- คำ\n'));
+    assert.deepEqual(uses(root), [['kw-fact', 'recall_hit']]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// `{a: b}` and `[[a]]` are two of #120's eight ruled codec shapes (docs/porting.md): PyYAML
+// reads them and the reference then refuses with the keywords sentence; this codec refuses the
+// FILE first, by name. Both runtimes refuse — only the sentence differs, as for any key.
+for (const [shape, why] of [
+  ['{a: b}', /^malformed fact file bad\.md: "\{" starts a flow mapping/],
+  ['[[a]]', /^malformed fact file bad\.md: a flow sequence holding a nested collection/],
+]) {
+  test(`keywords of a #120 codec shape (${shape}) refuse the file`, () => {
+    const root = fresh();
+    try {
+      mkdirSync(join(root, 'facts'), { recursive: true });
+      writeFileSync(
+        join(root, 'facts', 'bad.md'),
+        `---\nname: bad\ndescription: d\ntype: project\ncreated: '2026-10-15'\nlast_recalled: null\nlinks: []\nkeywords: ${shape}\n---\n\nb\n`,
+      );
+      assert.throws(() => store(root).lookup('bad', false), { name: 'MemoryValidationError', message: why });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const shape of ['nope', 'null', '', '7', '[1, a]', '\n- a\n- 2', '\n- a\n- true', "\n- '2026-10-15'\n- 2026-10-15"]) {
+  test(`keywords of the wrong shape (${JSON.stringify(shape)}) are refused`, () => {
+    const root = fresh();
+    try {
+      mkdirSync(join(root, 'facts'), { recursive: true });
+      writeFileSync(
+        join(root, 'facts', 'bad.md'),
+        `---\nname: bad\ndescription: d\ntype: project\ncreated: '2026-10-15'\nlast_recalled: null\nlinks: []\nkeywords: ${shape}\n---\n\nb\n`,
+      );
+      assert.throws(() => store(root).lookup('bad', false), {
+        name: 'MemoryValidationError',
+        message: "fact 'bad' in bad.md: keywords must be a list of strings",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('save refuses a lone surrogate in a keyword', () => {
+  const root = fresh();
+  try {
+    assert.throws(() => store(root).save('project', 'x', 'd', 'b', [], ['ok', '\ud800']), {
+      message: /^keywords\[1\] holds a lone surrogate/,
+    });
+    assert.ok(!existsSync(join(root, 'facts', 'x.md')));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Memory.save passes keywords through to the store', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = fresh();
+  try {
+    const reply = new Memory(root, { today: () => TODAY }).save('project', 'kw', 'a fact', 'b', null, ['ไทย']);
+    assert.ok(reply.startsWith("saved 'kw'"));
+    assert.ok(read(join(root, 'facts', 'kw.md')).includes('keywords:\n- ไทย\n'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------------------------- read-repair (#199 Task 6, spec D8)
+
+/** A 0.35.9-shaped fact: saved, then its `last_recalled` stamped as 0.35.x stamped it. */
+function oldFact(s, root, name = 'old', stamp = "'2026-10-01'", extra = '') {
+  s.save('project', name, `an old fact called ${name}`, 'b');
+  const p = join(root, 'facts', `${name}.md`);
+  writeFileSync(p, read(p).replace('last_recalled: null\n', `last_recalled: ${stamp}\n${extra}`));
+  return p;
+}
+const NOW = '2026-10-15T00:00:00Z';
+
+test('an old fact is repaired once (#199 Task 6)', () => {
+  const root = fresh();
+  try {
+    const s = store(root);
+    const p = oldFact(s, root);
+    const led = new UsageLedger(homedir(), root);
+    assert.equal(s.repair(s.lookup('old', false), led, NOW), true);
+    assert.ok(read(p).includes('last_recalled: null'));
+    assert.equal(led.lastUsed('old'), '2026-10-01T00:00:00Z');
+    const after = bytes(p);
+    assert.equal(s.repair(s.lookup('old', false), led, NOW), false);
+    assert.deepEqual(bytes(p), after);
+    assert.deepEqual(uses(root).filter(([, k]) => k === 'seed'), [['old', 'seed']]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('keywords an old runtime stripped are restored from the save copy (#199 Task 6)', () => {
+  const root = fresh();
+  try {
+    const s = store(root);
+    const led = new UsageLedger(homedir(), root);
+    s.save('project', 'kw', 'fact', 'b', [], ['ปล่อย']);
+    led.append('kw', 'save', NOW, ['ปล่อย']);
+    const p = join(root, 'facts', 'kw.md');
+    writeFileSync(p, read(p).replace('keywords:\n- ปล่อย\n', '')); // what 0.35.9 does
+    assert.equal(s.repair(s.lookup('kw', false), led, NOW), true);
+    assert.deepEqual(s.lookup('kw', false).keywords, ['ปล่อย']);
+    assert.deepEqual(uses(root).filter(([, k]) => k === 'seed'), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const [stamp, seed] of [
+  ["'2026-10-01'", '2026-10-01T00:00:00Z'],
+  ['2026-10-01', '2026-10-01T00:00:00Z'],
+  ["'2026-10-01T09:30:00Z'", '2026-10-01T00:00:00Z'],
+  ["'2099-01-01'", NOW],
+  ["'2026-13-01'", null],
+  ["'yesterday'", null],
+  ["''", null],
+]) {
+  test(`repair seeds the stamp's day or nothing (${stamp})`, () => {
+    const root = fresh();
+    try {
+      const s = store(root);
+      const p = oldFact(s, root, 'old', stamp);
+      const led = new UsageLedger(homedir(), root);
+      assert.equal(s.repair(s.lookup('old', false), led, NOW), true);
+      assert.ok(read(p).includes('last_recalled: null\n'));
+      assert.equal(led.lastUsed('old'), seed);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('repair leaves a fact whose file is not its name', () => {
+  const root = fresh();
+  try {
+    const s = store(root);
+    const p = oldFact(s, root);
+    const moved = join(root, 'facts', 'elsewhere.md');
+    pyfs.pyReplace(p, moved);
+    const before = bytes(moved);
+    assert.equal(s.repair(s.lookup('old', false), new UsageLedger(homedir(), root), NOW), false);
+    assert.deepEqual(bytes(moved), before);
+    assert.equal(existsSync(p), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('tool recall repairs once and the hook path never (#199 Task 6)', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = fresh();
+  try {
+    const m = new Memory(root, { today: () => TODAY });
+    const p = oldFact(m.store, root, 'deploy-steps');
+    const before = bytes(p);
+    m.recallOutcome('deploy steps', 3, RECALL_MIN_SCORE_RATIO, false); // the hook's call
+    assert.deepEqual(bytes(p), before);
+    assert.equal(m.repaired, 0);
+    m.recall('deploy steps');
+    const repaired = bytes(p);
+    assert.notDeepEqual(repaired, before);
+    assert.ok(repaired.toString('utf8').includes('last_recalled: null\n'));
+    assert.equal(m.repaired, 1);
+    m.recall('deploy steps');
+    assert.deepEqual(bytes(p), repaired);
+    assert.equal(m.repaired, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a name lookup repairs too', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = fresh();
+  try {
+    const m = new Memory(root, { today: () => TODAY });
+    const p = oldFact(m.store, root, 'deploy-steps');
+    m.recall('deploy-steps');
+    assert.ok(read(p).includes('last_recalled: null\n'));
+    assert.equal(m.repaired, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a read-only layer is never repaired', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = fresh();
+  try {
+    const profileRoot = join(root, 'profile');
+    const p = oldFact(store(profileRoot), profileRoot, 'deploy-steps');
+    const before = bytes(p);
+    const m = Memory.layeredForEval(join(root, 'project'), profileRoot);
+    assert.ok(m.recall('deploy steps').includes('deploy-steps'));
+    assert.deepEqual(bytes(p), before);
+    assert.equal(m.repaired, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Memory.save appends a save event with its keywords', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = fresh();
+  try {
+    const m = new Memory(root, { today: () => TODAY });
+    m.save('project', 'kw', 'a fact', 'b', null, ['ไทย', 'thai']);
+    m.save('project', 'plain', 'another unrelated thing', 'b');
+    const led = new UsageLedger(homedir(), root);
+    const lines = readFileSync(led.path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.deepEqual(lines.map((e) => [e.fact, e.kind, e.keywords]), [
+      ['kw', 'save', ['ไทย', 'thai']],
+      ['plain', 'save', []],
+    ]);
+    assert.deepEqual(led.keywordsCopy('kw'), ['ไทย', 'thai']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------- unknown frontmatter keys (register row (mmmm), Task 6)
+
+test('unknown frontmatter keys survive save, recall and repair', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const root = fresh();
+  try {
+    const m = new Memory(root, { today: () => TODAY });
+    const p = oldFact(m.store, root, 'deploy-steps', "'2026-10-01'", 'priority: high\nowner:\n- kk\n- ops\n');
+    m.recall('deploy steps');
+    const t = read(p);
+    assert.ok(t.includes('last_recalled: null\n'));
+    assert.ok(t.endsWith('links: []\npriority: high\nowner:\n- kk\n- ops\n---\n\nb\n'), t);
+    assert.deepEqual(m.store.lookup('deploy-steps', false).extra, [['priority', 'high'], ['owner', ['kk', 'ops']]]);
+    m.save('project', 'deploy-steps', 'an old fact called deploy-steps', 'b2', null, ['x']);
+    assert.ok(read(p).endsWith('links: []\nkeywords:\n- x\npriority: high\nowner:\n- kk\n- ops\n---\n\nb2\n'));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a key PyYAML does not read as text is not carried', () => {
+  const root = fresh();
+  try {
+    const s = store(root);
+    oldFact(s, root, 'old', "'2026-10-01'", 'on: 1\nnull: 2\nkeep: 3\n');
+    const extra = s.lookup('old', false).extra;
+    assert.deepEqual(extra.map(([k, v]) => [k, String(v)]), [['keep', '3']]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the status report counts read-repairs and names the usage ledger (#199 Task 6)', async () => {
+  const { Memory } = await import('../dist/memory/component.js');
+  const { statusReport } = await import('../dist/mcp/status.js');
+  const root = fresh();
+  try {
+    const m = new Memory(root, { today: () => TODAY });
+    m.save('project', 'deploy-steps', 'how deploy steps run', 'b');
+    const p = join(root, 'facts', 'deploy-steps.md');
+    writeFileSync(p, read(p).replace('last_recalled: null', "last_recalled: '2026-10-01'"));
+    m.recall('deploy steps');
+    const ledger = new UsageLedger(homedir(), root).path;
+    writeFileSync(ledger, readFileSync(ledger, 'utf8') + 'not json\n');
+    const rows = statusReport(m, { enabled: false }, [], new Map([['version', '0'], ['build_id', 'x']]), 14, 1, 2).split('\n');
+    // Found by prefix: under `npm test` HOME is shared, so the `logs:` block above may list
+    // other files' ledgers too; the two lines are the last two before any problem block.
+    const at = rows.findIndex((r) => r.startsWith('read-repaired: '));
+    assert.equal(rows[at - 1].startsWith('retention: '), true);
+    assert.equal(rows[at], 'read-repaired: 1 this process');
+    // save, recall_hit, seed, and the corrupt line.
+    assert.equal(rows[at + 1], `usage ledger: ${ledger} (4 lines, 1 skipped)`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

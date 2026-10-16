@@ -26,6 +26,7 @@
  * under the OS temp directory; the two nodes that read this repository read it and never
  * write to it.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {

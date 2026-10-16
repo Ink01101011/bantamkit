@@ -12,6 +12,7 @@
  * round-trips to the same string, the store just silently stops being byte-comparable with
  * the Python one. So the assertions here are on BYTES, never on parsed values.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';

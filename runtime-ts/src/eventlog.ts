@@ -57,10 +57,11 @@
  * in this module, and hiding it would leave the log silently empty forever with nothing to
  * notice — the failure mode a diagnostic can least afford.
  */
-import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { mkdirSync, renameSync, statSync } from 'node:fs';
 
 import { cmpCodepoint, osErrorClassName, pyExists, pyIsDir, PyOSError, pyJoin, pyName, pyParent } from './memory/pyfs.js';
 import { bantamkitDirFor, ensureBantamkitGitignore } from './memory/store.js';
+import { LogSegment } from './storage/logsegment.js';
 
 /**
  * Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/`true`/
@@ -146,10 +147,19 @@ export function encodeRecord(
   outcome: string,
   detail: Readonly<Record<string, DetailValue>>,
 ): Uint8Array {
+  return Buffer.from(`${JSON.stringify(recordObject(epochMs, tool, outcome, detail))}\n`, 'utf8');
+}
+
+/** The record `encodeRecord` spells, as the object `LogSegment.append` writes. */
+function recordObject(
+  epochMs: number,
+  tool: string,
+  outcome: string,
+  detail: Readonly<Record<string, DetailValue>>,
+): Record<string, unknown> {
   const sorted: Record<string, DetailValue> = {};
   for (const key of Object.keys(detail).sort(cmpCodepoint)) sorted[key] = detail[key]!;
-  const record = { v: SCHEMA_VERSION, ts: formatTimestamp(epochMs), tool, outcome, detail: sorted };
-  return Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
+  return { v: SCHEMA_VERSION, ts: formatTimestamp(epochMs), tool, outcome, detail: sorted };
 }
 
 /**
@@ -258,9 +268,10 @@ export class EventLog {
    */
   record(tool: string, outcome: string, detail: Readonly<Record<string, DetailValue>> = {}): void {
     if (this.path === null) return;
-    const payload = encodeRecord(this.clock(), tool, outcome, detail);
+    const obj = recordObject(this.clock(), tool, outcome, detail);
+    const payload = Buffer.from(`${JSON.stringify(obj)}\n`, 'utf8');
     try {
-      this.append(this.path, payload);
+      this.append(this.path, obj, payload);
     } catch (e) {
       if (!isSystemError(e)) throw e;
       // Set HERE and nowhere else, so the flag means exactly "a record was composed, offered
@@ -282,7 +293,14 @@ export class EventLog {
   }
 
   /**
-   * Rotate if this record would cross the cap, then append as BYTES.
+   * Rotate if this record would cross the cap, then append through `LogSegment`.
+   *
+   * #204 (J69-4): the line goes through `storage/logsegment`'s `append` (the shared O_EXCL
+   * lock, a newline before a cut last line, the bytes `encodeRecord` spells). THE ROTATION
+   * RULE BELOW IS NOT `LogSegment.rotate`'s, on purpose: this log keeps exactly one plain
+   * `<path>.1` that `--statusline` and `--mcp-report` read in both runtimes, and a 2 MiB
+   * ceiling with no retention job behind it (docs/eventlog.md: one rotation rule cannot be
+   * right for both this log and the hook log). What follows is the pre-#204 wording.
    *
    * A `Buffer`, not a string: the reference opens the file in binary append mode because a
    * text-mode write translates `\n` to `os.linesep`, which is `\r\n` on Windows, and a
@@ -297,7 +315,7 @@ export class EventLog {
    * than the cap is written whole rather than split — records here are a few hundred bytes
    * by construction, so that branch is a statement of intent, not a live path.
    */
-  private append(path: string, payload: Uint8Array): void {
+  private append(path: string, obj: Record<string, unknown>, payload: Uint8Array): void {
     // job65/#154: `pyIsDir` raises for EACCES exactly as `Path.is_dir()` does, and that lands
     // in `record`'s catch as a lost record — the same verdict the reference reaches.
     if (this.requiresDir !== null && !pyIsDir(this.requiresDir)) return;
@@ -336,7 +354,10 @@ export class EventLog {
     if (size && size + payload.length > this.capBytes) {
       renameSync(path, `${path}.1`);
     }
-    appendFileSync(path, payload);
+    if (!new LogSegment(path).append(obj)) {
+      // A system error by shape (a string `code`), so `record` counts it as a lost record.
+      throw Object.assign(new Error('the record could not be appended'), { code: 'EIO' });
+    }
   }
 }
 

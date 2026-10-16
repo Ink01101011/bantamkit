@@ -39,13 +39,29 @@
  * caller here. Everything else about both functions is the reference's.
  */
 import { randomBytes } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename } from 'node:path';
 
 import { BantamError } from '../errors.js';
+import { ColdIndex, ColdIndexError } from '../storage/coldindex.js';
+import { HotIndex, INDEX_DIR_ENV, type IndexDoc } from '../storage/hotindex.js';
 import type { Fact, FactValue } from './factfile.js';
-import { formatFact, parseFrontmatter, pyList, pySplit, pyStrip, pyTruthy, todayLocal } from './factfile.js';
+import { extraOf, formatFact, parseFrontmatter, pyList, pySplit, pyStrip, pyTruthy, todayLocal } from './factfile.js';
 import { PyScalar } from './pyyaml.js';
+import {
+  bm25Segments,
+  docTerms,
+  FIELD_BOOST,
+  GATE_RATIO,
+  lengthOf,
+  queryTerms,
+  rankColumns,
+  stale,
+  tokenizeV2,
+  weightOf,
+} from './retrieval.js';
+import { seedTs, storeId, UsageLedger } from './usage.js';
 import {
   asPyOSError,
   cmpCodepoint,
@@ -63,6 +79,7 @@ import {
   pyReadText,
   pyReplace,
   pyScandirNames,
+  pyScandirProbe,
   pySuffix,
   pyUnlink,
   pyWriteText,
@@ -230,6 +247,11 @@ export function loneSurrogate(text: string): string | null {
   return found === null ? null : codepoint(found[0]);
 }
 
+/** `text` read as one line: each run of `NOT_ONE_LINE` is one space (the read side of #155). */
+export function oneLine(text: string): string {
+  return text.replace(NOT_ONE_LINE, ' ');
+}
+
 function notOneLine(text: string): string | null {
   NOT_ONE_LINE.lastIndex = 0;
   const found = NOT_ONE_LINE.exec(text);
@@ -289,7 +311,7 @@ export const DUPLICATE_JACCARD = 0.5;
 // `runtime-py/src/bantamkit/memory/store.py`'s `RECALL_MIN_SCORE_RATIO` is the reference.
 // `Memory.recallOutcome` and the `UserPromptSubmit` hook that calls it inherit it rather
 // than restating it.
-export const RECALL_MIN_SCORE_RATIO = 0.0;
+export const RECALL_MIN_SCORE_RATIO = GATE_RATIO;
 
 // Spelled once because both runtimes raise it verbatim. The offending value is NOT
 // interpolated: Python renders `2.0` as `2.0` and JavaScript renders it as `2`, so a
@@ -434,6 +456,7 @@ export interface StoreInternals {
   indexLine(fact: Fact): string;
   writeFact(fact: Fact): void;
   rebuildIndex(): void;
+  afterWrite(): void;
 }
 
 export interface MemoryStoreOptions {
@@ -441,6 +464,302 @@ export interface MemoryStoreOptions {
   k?: number;
   today?: () => string;
   create?: boolean;
+  /** The usage ledger's clock (#199): `YYYY-MM-DDTHH:MM:SSZ`, UTC. A harness freezes it. */
+  now?: () => string;
+}
+
+// ------------------------------------------------------------------- retrieval (#199)
+
+/**
+ * One layer's share of a pooled BM25 collection, as COLUMNS (#199 D3, J68-5): the reference's
+ * `Pool`. `n`, `total` and `df` are over EVERY fact of the layer; the rows are every doc of an
+ * index, or only the facts holding a query term when the files answered, in NAME order (code
+ * point; equal names in listing order), so a row's position is its tie-break within the layer.
+ * `segs[t]` is each query term's run-length postings over rows, `[start, count, weight, ...]`.
+ * `facts` holds the parsed facts when the files answered; `files` the file per row when the
+ * index did (`''` is `<name>.md`), and only a HIT is parsed.
+ */
+export interface Pool {
+  n: number;
+  total: number;
+  df: Map<string, number>;
+  names: readonly string[];
+  lengths: readonly number[];
+  types: readonly number[];
+  typeNames: readonly string[];
+  stale: readonly number[];
+  segs: Map<string, number[]>;
+  facts: Fact[] | null;
+  files: readonly string[] | null;
+  indexed: boolean;
+  /**
+   * Every fact's name, rows or not, when the rows are not every fact (`poolOf`); `null` when
+   * `names` already is (an index's pool). What a bantamkit layer holds, for the native layer's
+   * dedupe (#199 J68-11). The reference's `Pool.every`.
+   */
+  every: readonly string[] | null;
+}
+
+/** Every name a pool's layer holds, whether or not it holds a query term (`Pool.all_names`). */
+export function allNames(pool: Pool): readonly string[] {
+  return pool.every === null ? pool.names : pool.every;
+}
+
+/**
+ * `pool` as if the facts named in `drop` had never been listed (#199 J68-11). For a pool whose
+ * rows are EVERY fact of its layer (an index's): `n` loses each dropped row and `total` its
+ * length, rows are renumbered in order, each term's run-length segments are cut and re-run over
+ * the new ids, and `df` is recounted from them. The reference's `pool_without`.
+ */
+export function poolWithout(pool: Pool, drop: ReadonlySet<string>): Pool {
+  const keep: number[] = [];
+  pool.names.forEach((name, i) => {
+    if (!drop.has(name)) keep.push(i);
+  });
+  if (keep.length === pool.names.length) return pool;
+  const newId = new Map<number, number>(keep.map((old, i) => [old, i]));
+  let total = pool.total;
+  pool.names.forEach((name, i) => {
+    if (drop.has(name)) total -= pool.lengths[i]!;
+  });
+  const segs = new Map<string, number[]>();
+  const df = new Map<string, number>();
+  for (const t of pool.df.keys()) {
+    const out: number[] = [];
+    const seg = pool.segs.get(t) ?? [];
+    for (let j = 0; j < seg.length; j += 3) {
+      const start = seg[j]!;
+      const count = seg[j + 1]!;
+      const weight = seg[j + 2]!;
+      for (let old = start; old < start + count; old += 1) {
+        const nid = newId.get(old);
+        if (nid === undefined) continue;
+        const k = out.length;
+        if (k > 0 && out[k - 3]! + out[k - 2]! === nid && out[k - 1] === weight) out[k - 2] = out[k - 2]! + 1;
+        else out.push(nid, 1, weight);
+      }
+    }
+    segs.set(t, out);
+    let d = 0;
+    for (let j = 1; j < out.length; j += 3) d += out[j]!;
+    df.set(t, d);
+  }
+  return {
+    n: pool.n - (pool.names.length - keep.length),
+    total,
+    df,
+    names: keep.map((i) => pool.names[i]!),
+    lengths: keep.map((i) => pool.lengths[i]!),
+    types: keep.map((i) => pool.types[i]!),
+    typeNames: pool.typeNames,
+    stale: pool.stale.filter((i) => newId.has(i)).map((i) => newId.get(i)!),
+    segs,
+    facts: null,
+    files: pool.files === null ? null : keep.map((i) => pool.files![i]!),
+    indexed: pool.indexed,
+    every: null,
+  };
+}
+
+/** A pool that holds nothing: a read-only layer the files could not read either. */
+export function emptyPool(): Pool {
+  const none: never[] = [];
+  return { n: 0, total: 0, df: new Map(), names: none, lengths: none, types: none, typeNames: none, stale: none, segs: new Map(), facts: [], files: null, indexed: false, every: none };
+}
+
+/** The first index `>= lo` whose name is not code-point-before `name` (`bisect_left`). */
+function bisectName(names: readonly string[], name: string, right: boolean): number {
+  let lo = 0;
+  let hi = names.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const c = cmpCodepoint(names[mid]!, name);
+    if (c < 0 || (right && c === 0)) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * `retrieval.weight` per row of `p`: once per (type, staleness), then per used name, then per
+ * name with file context (#200: `context[name] > 0`, the usage kept).
+ */
+function poolWeights(p: Pool, usage: ReadonlyMap<string, number>, context: ReadonlyMap<string, number> | null = null): number[] {
+  const plain = p.typeNames.map((t) => weightOf(t, false, 0.0));
+  const out = p.types.map((c) => plain[c]!);
+  for (const i of p.stale) out[i] = weightOf(p.typeNames[p.types[i]!]!, true, 0.0);
+  if (usage.size > 0) {
+    const staleIds = new Set(p.stale);
+    for (const [name, u] of usage) {
+      if (!(u > 0.0)) continue; // no usage weighs as none (`weightOf`)
+      const lo = bisectName(p.names, name, false);
+      const hi = bisectName(p.names, name, true);
+      for (let i = lo; i < hi; i += 1) out[i] = weightOf(p.typeNames[p.types[i]!]!, staleIds.has(i), u);
+    }
+  }
+  if (context !== null && context.size > 0) {
+    const staleIds = new Set(p.stale);
+    for (const [name, c] of context) {
+      if (!(c > 0.0)) continue; // no context weighs as none (`weightOf`)
+      const lo = bisectName(p.names, name, false);
+      const hi = bisectName(p.names, name, true);
+      const u = usage.get(name) ?? 0.0;
+      for (let i = lo; i < hi; i += 1) out[i] = weightOf(p.typeNames[p.types[i]!]!, staleIds.has(i), u, c);
+    }
+  }
+  return out;
+}
+
+/** A `Pool` from parsed facts: the files' answer, and the reference for the index's. */
+export function poolOf(facts: readonly Fact[], q: readonly string[]): Pool {
+  const held: Array<{ name: string; length: number; type: string; stale: boolean; fact: Fact; mine: Map<string, number> }> = [];
+  let total = 0;
+  const df = new Map<string, number>(q.map((t) => [t, 0]));
+  for (const fact of facts) {
+    const name = pyText(fact.name);
+    const description = pyText(fact.description);
+    const keywords = [...(fact.keywords ?? [])];
+    const [weights, length] = docTerms({ name, description, keywords });
+    total += length;
+    const mine = new Map<string, number>();
+    for (const t of q) if (weights.has(t)) mine.set(t, weights.get(t)!);
+    if (mine.size > 0) {
+      for (const t of mine.keys()) df.set(t, df.get(t)! + 1);
+      held.push({ name, length, type: pyText(fact.type), stale: stale(description), fact, mine });
+    }
+  }
+  held.sort((a, b) => cmpCodepoint(a.name, b.name)); // stable: two files claiming a name keep listing order
+  const typeNames = [...new Set(held.map((r) => r.type))].sort(cmpCodepoint);
+  const code = new Map(typeNames.map((t, i) => [t, i]));
+  const segs = new Map<string, number[]>(q.map((t) => [t, []]));
+  held.forEach((r, i) => {
+    for (const [t, w] of r.mine) segs.get(t)!.push(i, 1, w);
+  });
+  const staleIds: number[] = [];
+  held.forEach((r, i) => {
+    if (r.stale) staleIds.push(i);
+  });
+  return {
+    n: facts.length,
+    total,
+    df,
+    names: held.map((r) => r.name),
+    lengths: held.map((r) => r.length),
+    types: held.map((r) => code.get(r.type)!),
+    typeNames,
+    stale: staleIds,
+    segs,
+    facts: held.map((r) => r.fact),
+    files: null,
+    indexed: false,
+    every: facts.map((fact) => pyText(fact.name)),
+  };
+}
+
+/**
+ * Every admitted row of every pool, best first, as `[layer, row]`: BM25 once over the pooled
+ * counts, then `retrieval.rankColumns` (`gate`, then `(-final, layerOrder, name)`). `layerOrder`
+ * is the pool's position; a `null` pool (a layer that could not be read) holds nothing. Scored
+ * and sorted when called; each pair is spelled only when the caller reaches it. `usage` is
+ * called only when some row holds a query term. The reference's `pooled_ranking`.
+ */
+export function* pooledRanking(
+  pools: ReadonlyArray<Pool | null>,
+  q: readonly string[],
+  ratio: number,
+  usage: () => ReadonlyMap<string, number>,
+  context: ReadonlyMap<string, number> | null = null,
+): Generator<[number, number]> {
+  const live: Array<[number, Pool]> = [];
+  pools.forEach((p, i) => {
+    if (p !== null) live.push([i, p]);
+  });
+  if (!live.some(([, p]) => q.some((t) => (p.segs.get(t)?.length ?? 0) > 0))) return;
+  let n = 0;
+  let total = 0;
+  const df = new Map<string, number>(q.map((t) => [t, 0]));
+  const segs = new Map<string, number[]>(q.map((t) => [t, []]));
+  const lengths: number[] = [];
+  const starts: number[] = [];
+  for (const [, p] of live) {
+    n += p.n;
+    total += p.total;
+    const offset = lengths.length;
+    starts.push(offset);
+    for (const t of q) {
+      df.set(t, df.get(t)! + (p.df.get(t) ?? 0));
+      const seg = p.segs.get(t);
+      if (seg !== undefined && seg.length > 0) {
+        const into = segs.get(t)!;
+        for (let j = 0; j < seg.length; j += 3) into.push(seg[j]! + offset, seg[j + 1]!, seg[j + 2]!);
+      }
+    }
+    for (const x of p.lengths) lengths.push(x);
+  }
+  const scores = bm25Segments(q, n, total, df, lengths, segs);
+  const used = usage();
+  const weights: number[] = [];
+  for (const [, p] of live) for (const w of poolWeights(p, used, context)) weights.push(w);
+  const order = rankColumns(scores, weights, ratio);
+  for (const g of order) {
+    let at = starts.length - 1;
+    while (starts[at]! > g) at -= 1;
+    yield [live[at]![0], g - starts[at]!];
+  }
+}
+
+/** Anything `pickHits` can ask to stand a pooled row back up as a fact. */
+export interface Resolver {
+  resolve(pool: Pool, row: number): Fact | null;
+}
+
+/**
+ * The first `k` admitted facts of a pooled ranking, as `[layer, Fact]`: the reference's
+ * `pick_hits`. Only these hits are parsed. A hit whose file no longer says what its index said
+ * hands that layer to the files (`repool`) and the ranking is taken again. `dedupe` keeps the
+ * first fact of each name (`pyHashKey`, Python's set). A negative `k` slices as `[:k]` does.
+ * `context` is the file context (#200, `touch/context` `contextWeights`); `null` is none.
+ */
+export function pickHits(
+  stores: readonly Resolver[],
+  pools: ReadonlyArray<Pool | null>,
+  q: readonly string[],
+  k: number,
+  ratio: number,
+  usage: () => ReadonlyMap<string, number>,
+  repool: (i: number) => Pool,
+  dedupe = false,
+  context: ReadonlyMap<string, number> | null = null,
+): Array<[number, Fact]> {
+  let memo: ReadonlyMap<string, number> | null = null;
+  const weights = (): ReadonlyMap<string, number> => (memo ??= usage());
+  const live = [...pools];
+  for (;;) {
+    const out: Array<[number, Fact]> = [];
+    const seen = new Set<string>();
+    let redo: number | null = null;
+    for (const [layer, row] of pooledRanking(live, q, ratio, weights, context)) {
+      if (k >= 0 && out.length >= k) break;
+      const fact = stores[layer]!.resolve(live[layer]!, row);
+      if (fact === null) {
+        redo = layer;
+        break;
+      }
+      if (dedupe) {
+        const key = pyHashKey(fact.name);
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      out.push([layer, fact]);
+    }
+    if (redo === null) return k >= 0 ? out : out.slice(0, k);
+    live[redo] = repool(redo);
+  }
+}
+
+/** The usage ledger's timestamp: `YYYY-MM-DDTHH:MM:SSZ`, UTC, to the second. */
+export function utcNow(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 // --------------------------------------------------------------------------- scoring
@@ -708,17 +1027,32 @@ function looksLikeMapping(front: string): boolean {
 
 // ----------------------------------------------------------------------------- the store
 
+/**
+ * What `MemoryStore.repair` needs of a usage ledger: its latest `save` copy of a fact's keywords,
+ * and an append. Structural, so `UsageLedger` satisfies it without the published `.d.ts`
+ * naming that class (its types reach `Buffer`, job66/#144).
+ */
+export interface RepairLedger {
+  keywordsCopy(fact: string): string[] | null;
+  append(fact: string, kind: 'seed', ts: string): boolean;
+}
+
 export class MemoryStore {
   readonly root: string;
   readonly indexBudget: number;
   readonly k: number;
   private readonly today: () => string;
+  /** The usage ledger's clock (#199), frozen by a harness as `today` is. */
+  readonly now: () => string;
+  private hot: HotIndex | null = null;
+  private coldIdx: ColdIndex | null = null;
 
   constructor(root: string, options: MemoryStoreOptions = {}) {
     this.root = pyJoin(root);
     this.indexBudget = options.indexBudget ?? DEFAULT_INDEX_BUDGET;
     this.k = options.k ?? 3;
     this.today = options.today ?? ((): string => todayLocal());
+    this.now = options.now ?? utcNow;
     if (options.create ?? true) this.ensureDirs();
   }
 
@@ -819,6 +1153,7 @@ export class MemoryStore {
     description: string,
     body: string,
     links: readonly string[] = [],
+    keywords: readonly string[] = [],
   ): SaveResult {
     this.ensureDirs();
     if (!(VALID_TYPES as readonly string[]).includes(type)) {
@@ -839,6 +1174,7 @@ export class MemoryStore {
       ['description', description],
       ['body', body],
       ...links.map((link, i): [string, unknown] => [`links[${i}]`, link]),
+      ...keywords.map((word, i): [string, unknown] => [`keywords[${i}]`, word]),
     ];
     for (const [label, value] of texts) {
       const bad = typeof value === 'string' ? loneSurrogate(value) : null;
@@ -888,7 +1224,12 @@ export class MemoryStore {
       type,
       body,
       links: [...links],
+      keywords: [...keywords],
       last_recalled: null,
+      // An update keeps every hand-written key the file carried (#199 Task 6).
+      ...(existing !== null && existing.extra !== undefined && existing.extra.length > 0
+        ? { extra: [...existing.extra] }
+        : {}),
       // An update keeps the date the fact first landed: rewriting a fact is not the same
       // event as creating it, and resetting this would launder a stale fact into a fresh one.
       created: existing !== null ? existing.created ?? null : this.today(),
@@ -952,31 +1293,142 @@ export class MemoryStore {
   ): Fact[] {
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
     const limit = k ?? this.k;
-    const q = tokens(query);
-    let scored: Array<{ score: number; name: FactValue; fact: Fact }> = [];
-    for (const fact of this.facts(undefined, skipped)) {
-      let score = 0;
-      for (const t of tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) if (q.has(t)) score += 1;
-      if (score > 0) scored.push({ score, name: fact.name, fact });
-    }
-    if (scored.length > 0) {
-      // No `if (minRatio > 0)` shortcut on purpose: at 0.0 this line still runs and still
-      // keeps everything, so "the default gates nothing" is a fact about the arithmetic
-      // rather than about a branch that could be edited away. `Math.max(...scored)` is NOT
-      // used: a spread is one argument per fact and a large store would overflow the
-      // argument limit, which is a crash the reference's `max(...)` over a generator does
-      // not have.
-      let best = scored[0]!.score;
-      for (const s of scored) if (s.score > best) best = s.score;
-      const floor = minRatio * best;
-      scored = scored.filter((s) => s.score >= floor);
-    }
-    // `key=lambda pair: (-pair[0], pair[1].name)`. The name comparison is CODEPOINT order
-    // for two strings — which is not what `Array.prototype.sort` does — and Python's `<`
-    // for everything else, refusals included. See `sortScored`.
-    const hits = sortScored(scored).slice(0, limit).map((s) => s.fact);
-    if (stamp) for (const fact of hits) this.stamp(fact);
+    const q = queryTerms(query);
+    const ledger = this.usage();
+    const hits = pickHits(
+      [this],
+      [this.pool(q, skipped)],
+      q,
+      limit,
+      minRatio,
+      () => ledger.weights(this.now()),
+      () => poolOf(this.candidates(skipped), q),
+    ).map(([, fact]) => fact);
+    if (stamp) this.use(ledger, hits, 'recall_hit');
     return hits;
+  }
+
+  /**
+   * This store's usage ledger: `~/.bantamkit/usage/<store id>.jsonl` (#199 D5). Private on this
+   * side only so the published `.d.ts` names no `UsageLedger` (its `reduceUsage` types reach
+   * `Buffer`, which a consumer without `@types/node` cannot resolve, job66/#144).
+   */
+  private usage(): UsageLedger {
+    return new UsageLedger(homedir(), this.root);
+  }
+
+  /** One `kind` event per fact, best-effort: the ledger never fails a read (#123). */
+  private use(ledger: UsageLedger, facts: readonly Fact[], kind: 'recall_hit' | 'body_read'): void {
+    const now = this.now();
+    for (const fact of facts) if (typeof fact.name === 'string') ledger.append(fact.name, kind, now);
+  }
+
+  /**
+   * Read-repair one old-format fact (#199 D8); `true` when it rewrote the file. The reference's
+   * `repair` — read its docstring. Old format is a non-null `last_recalled`, or no `keywords`
+   * while the ledger's latest `save` copy holds some. The fact is written back through
+   * `writeFact` with `last_recalled: null`, the keywords restored and every `extra` key kept;
+   * then the stamp becomes one `seed` event (`seedTs`). Never throws for a write that cannot
+   * happen. `ledger` is structural so the published `.d.ts` names no `UsageLedger` (job66/#144).
+   */
+  repair(fact: Fact, ledger: RepairLedger, now: string): boolean {
+    const name = fact.name;
+    if (typeof name !== 'string' || !NAME_RE.test(name)) return false;
+    if (fact.source !== undefined && basename(fact.source) !== `${name}.md`) return false;
+    const stamp = fact.last_recalled;
+    const restore = fact.keywords !== undefined && fact.keywords.length > 0 ? null : ledger.keywordsCopy(name);
+    if (stamp === null && !(restore !== null && restore.length > 0)) return false;
+    const repaired: Fact = {
+      ...fact,
+      last_recalled: null,
+      keywords: [...(restore !== null && restore.length > 0 ? restore : (fact.keywords ?? []))],
+    };
+    try {
+      this.writeFact(repaired);
+    } catch (e) {
+      if (e instanceof PyOSError) return false;
+      throw e;
+    }
+    this.afterWrite();
+    if (stamp !== null) {
+      const seed = seedTs(pyText(stamp), now);
+      if (seed !== null) ledger.append(name, 'seed', seed);
+    }
+    return true;
+  }
+
+  /** Every fact a recall scores, parsed: the listing (`snapshot` is the reference's alone). */
+  candidates(skipped?: SkippedFact[]): Fact[] {
+    return this.facts(undefined, skipped);
+  }
+
+  /**
+   * This store's share of a pooled BM25 recall for the query terms `q` (#199 D3): through the
+   * hot index when `indexed` allows it — the head and only the postings shards `q` hashes to,
+   * no fact file parsed (user ruling 2026-10-15) — else the files'. The reference's `pool`.
+   */
+  pool(q: readonly string[], skipped?: SkippedFact[]): Pool {
+    const idx = this.indexed();
+    if (idx !== null) {
+      const got = MemoryStore.poolIndexed(idx, q);
+      if (got !== null) return got;
+    }
+    return poolOf(this.candidates(skipped), q);
+  }
+
+  /**
+   * `poolOf`'s answer from the index: the head's columns and `q`'s segments. A run's weight is
+   * `Σ boost · tf` over its fields; a row's length the head's `cols.length`; both exact while
+   * FIELD_BOOST holds whole numbers (the head records them and is rebuilt when they move). `df`
+   * is a term's run lengths summed. `null` (the files decide) for a segment list the index cannot
+   * vouch for. The reference's `_pool_indexed`.
+   */
+  static poolIndexed(idx: HotIndex, q: readonly string[]): Pool | null {
+    const cols = idx.cols();
+    const n = cols.name.length;
+    const [bn, bd, bk] = FIELD_BOOST.map(([, b]) => b) as [number, number, number];
+    const segs = new Map<string, number[]>();
+    const df = new Map<string, number>(q.map((t) => [t, 0]));
+    for (const [t, seg] of idx.segments(q)) {
+      if (!Array.isArray(seg) || seg.length % 5 !== 0) return null;
+      const out: number[] = [];
+      let d = 0;
+      for (let j = 0; j < seg.length; j += 5) {
+        const a = seg[j];
+        const c = seg[j + 1];
+        const x = seg[j + 2];
+        const y = seg[j + 3];
+        const z = seg[j + 4];
+        if (!(Number.isInteger(a) && Number.isInteger(c) && Number.isInteger(x) && Number.isInteger(y) && Number.isInteger(z))) return null;
+        if (c < 1 || a < 0 || a + c > n || x < 0 || y < 0 || z < 0) return null;
+        out.push(a, c, bn * x + bd * y + bk * z);
+        d += c;
+      }
+      segs.set(t, out);
+      df.set(t, d);
+    }
+    return {
+      n,
+      total: lengthOf(idx.lensTotal()),
+      df,
+      names: cols.name,
+      lengths: cols.length,
+      types: cols.type,
+      typeNames: cols.types,
+      stale: cols.stale,
+      segs,
+      facts: null,
+      files: cols.file,
+      indexed: true,
+      every: null,
+    };
+  }
+
+  /** The fact a pooled row stands for: parsed already, or the one file the index names. */
+  resolve(pool: Pool, row: number): Fact | null {
+    if (pool.facts !== null) return pool.facts[row]!;
+    const name = pool.names[row]!;
+    return this.factNamed(pool.files![row] || `${name}.md`, name);
   }
 
   /**
@@ -996,13 +1448,208 @@ export class MemoryStore {
    * `stamp()` exactly as `recall` dates its hits; a miss writes nothing.
    */
   lookup(name: string, stamp = true, skipped?: SkippedFact[]): Fact | null {
-    for (const fact of this.facts(undefined, skipped)) {
+    const idx = this.indexed();
+    if (idx !== null) {
+      if (!idx.names().has(name)) return null;
+      const hit = this.indexedFact(idx, name);
+      if (hit !== null) {
+        if (stamp) this.use(this.usage(), [hit], 'body_read');
+        return hit;
+      }
+    }
+    for (const fact of this.candidates(skipped)) {
       if (typeof fact.name === 'string' && fact.name === name) {
-        if (stamp) this.stamp(fact);
+        if (stamp) this.use(this.usage(), [fact], 'body_read');
         return fact;
       }
     }
     return null;
+  }
+
+  /**
+   * This store's hot index (#204), built lazily: `~/.bantamkit/index/`, or `INDEX_DIR_ENV`.
+   *
+   * DERIVED AND INVISIBLE. `recall` and `lookup` answer from it exactly what they answered from
+   * the files — same facts, same order, same gate, same refusals — and fall back to reading
+   * every file wherever the index cannot vouch for that answer (`indexed`). Every write keeps
+   * an existing index current (`afterWrite`).
+   */
+  index(): HotIndex {
+    if (this.hot === null) {
+      const override = process.env[INDEX_DIR_ENV] || null;
+      this.hot = new HotIndex(this.root, 'facts', homedir(), override);
+    }
+    return this.hot;
+  }
+
+  /**
+   * The index, refreshed, when a read may answer from it; `null` sends it to the files. The
+   * reference's `_indexed`: the files answer when any file is `skipped` (unreadable,
+   * malformed, or a second file claiming a name) or any fact's `name` is not a string
+   * (`loose`). THE LISTING IS PROBED FIRST: a `facts/` that cannot be listed raises the
+   * store's own sentence, and an absent one answers from the files (`[]`, no index made).
+   */
+  private indexed(): HotIndex | null {
+    if (!this.probeFacts()) return null;
+    const idx = this.index();
+    idx.refresh('fast');
+    if (idx.skipped.size > 0 || idx.loose.length > 0) return null;
+    return idx;
+  }
+
+  /** `listing(facts/)`'s refusal, without listing; `false` for a `facts/` that is absent. */
+  private probeFacts(): boolean {
+    const directory = pyJoin(this.root, 'facts');
+    try {
+      pyScandirProbe(directory);
+    } catch (e) {
+      const error = e instanceof PyOSError ? e : asPyOSError(e, directory);
+      if (error.code === 'ENOENT') {
+        if (pyLexists(directory)) {
+          throw this.unreadable(directory, error, FACTS_UNREADABLE, 'a path exists there');
+        }
+        return false;
+      }
+      throw this.unreadable(directory, error, FACTS_UNREADABLE);
+    }
+    return true;
+  }
+
+  /** The one file the index names for `name`, parsed; `null` if it no longer says so. */
+  private indexedFact(idx: HotIndex, name: string): Fact | null {
+    const file = idx.fileOf(name);
+    return file === null ? null : this.factNamed(file, name);
+  }
+
+  /** `facts/<file>` parsed, if it still names itself `name`; else `null`. */
+  private factNamed(file: string, name: string): Fact | null {
+    let fact: Fact;
+    try {
+      fact = this.readFact(pyJoin(this.root, 'facts', file));
+    } catch (e) {
+      if (e instanceof BantamError || e instanceof PyOSError) return null;
+      throw e;
+    }
+    return typeof fact.name === 'string' && fact.name === name ? fact : null;
+  }
+
+  /**
+   * Keep an EXISTING index current after a write; never create one, never fail one. Every
+   * writer here renames into `facts/`, which moves its mtime, so a fast refresh patches exactly
+   * the files written. If the refresh cannot run, what is held in memory is dropped and the
+   * next reader patches from the disk.
+   */
+  private afterWrite(): void {
+    const idx = this.index();
+    if (!idx.exists()) return;
+    try {
+      idx.refresh('fast');
+    } catch (e) {
+      if (!(e instanceof BantamError || e instanceof PyOSError)) throw e;
+      idx.invalidate();
+    }
+  }
+
+  /**
+   * This store's cold index of `archive/` (#204): `ColdIndex("facts-archive-<storeId>")`, under
+   * `~/.bantamkit/cold/`, or `<INDEX_DIR_ENV>/cold/` when that is set — the knob that moves the
+   * hot index, so no run that isolates one leaks the other.
+   */
+  cold(): ColdIndex {
+    if (this.coldIdx === null) {
+      const override = process.env[INDEX_DIR_ENV] || null;
+      this.coldIdx = new ColdIndex(
+        `facts-archive-${storeId(this.root)}`,
+        homedir(),
+        override ? pyJoin(override, 'cold') : null,
+      );
+    }
+    return this.coldIdx;
+  }
+
+  /**
+   * The cold index with every `archive/*.md` it has not seen at this `(mtime_ns, size)` added,
+   * as one new segment; the first call indexes the whole existing `archive/`. A file that left
+   * `archive/` stays in a segment and is dropped at read. An index this module cannot read is
+   * reset and rebuilt from the files. An unlistable `archive/` throws the store's own sentence.
+   */
+  private coldSynced(): ColdIndex {
+    const archive = pyJoin(this.root, 'archive');
+    const listing = this.listing(archive, ARCHIVE_UNREADABLE).sort(cmpCodepoint);
+    const cold = this.cold();
+    let held: IndexDoc[];
+    try {
+      held = cold.allDocs();
+    } catch (e) {
+      if (!(e instanceof ColdIndexError)) throw e;
+      cold.reset();
+      held = [];
+    }
+    const seen = new Set(held.map((d) => JSON.stringify([d.file, d.mtime_ns, d.size])));
+    const fresh = new Map<string, IndexDoc>();
+    for (const file of listing) {
+      const p = pyJoin(archive, file);
+      let mtimeNs: string;
+      let size: number;
+      try {
+        const st = statSync(p, { bigint: true });
+        mtimeNs = st.mtimeNs.toString();
+        size = Number(st.size);
+      } catch {
+        continue;
+      }
+      if (seen.has(JSON.stringify([file, mtimeNs, size]))) continue;
+      const doc = this.index().parseFile(p, mtimeNs, size);
+      if (typeof doc !== 'string' && !fresh.has(doc.name)) fresh.set(doc.name, doc);
+    }
+    if (fresh.size > 0) {
+      try {
+        cold.add(fresh);
+      } catch (e) {
+        if (!(e instanceof ColdIndexError)) throw e;
+        cold.reset();
+        return this.coldSynced();
+      }
+    }
+    return cold;
+  }
+
+  /**
+   * `include_archived` (#204): up to `k` `archive/` facts matching `query`, best first — the
+   * summed term frequency of its `tokenizeV2` terms over name, description and keywords, ties
+   * by name. Each hit is read back from its file, and one that no longer says what the index
+   * said is passed over, as are names in `exclude`. Never stamped.
+   */
+  archivedRecall(query: string, k: number, exclude: Iterable<string> = []): Fact[] {
+    const terms = tokenizeV2(query);
+    if (terms.length === 0 || k <= 0) return [];
+    let cold = this.coldSynced();
+    let rows: Array<[string, string, number]>;
+    try {
+      rows = cold.query(terms);
+    } catch (e) {
+      if (!(e instanceof ColdIndexError)) throw e;
+      cold.reset();
+      cold = this.coldSynced();
+      rows = cold.query(terms);
+    }
+    const skip = new Set(exclude);
+    const hits: Fact[] = [];
+    for (const [name] of rows) {
+      if (hits.length >= k) break;
+      if (skip.has(name)) continue;
+      const doc = cold.doc(name);
+      if (doc === null) continue;
+      let fact: Fact;
+      try {
+        fact = this.readFact(pyJoin(this.root, 'archive', doc.file));
+      } catch (e) {
+        if (e instanceof BantamError || e instanceof PyOSError) continue;
+        throw e;
+      }
+      if (typeof fact.name === 'string' && fact.name === name) hits.push(fact);
+    }
+    return hits;
   }
 
   /**
@@ -1162,7 +1809,7 @@ export class MemoryStore {
     let size = all.reduce((total, bytes) => total + bytes, 0);
     const before = size;
     const archived: ArchivedFact[] = [];
-    for (const fact of this.byEviction(facts)) {
+    for (const fact of this.byEviction(facts, this.usage().lastUsedMap())) {
       if (size <= target) break;
       // THE FILE THE FACT WAS READ FROM, not `facts/<name>.md` (#122). The two are the same
       // path for every fact this store wrote; they part on a hand-edited file whose
@@ -1438,6 +2085,7 @@ export class MemoryStore {
       indexLine: (fact) => this.indexLine(fact),
       writeFact: (fact) => this.writeFact(fact),
       rebuildIndex: () => this.rebuildIndex(),
+      afterWrite: () => this.afterWrite(),
     };
   }
 
@@ -1492,7 +2140,7 @@ export class MemoryStore {
    * `str` raises there instead of sorting; both runtimes must fail the same way. Both sorts
    * are STABLE, so equal keys keep listing order on either side.
    */
-  private byEviction(facts: readonly Fact[]): Fact[] {
+  private byEviction(facts: readonly Fact[], used: ReadonlyMap<string, string> = new Map()): Fact[] {
     // `1 if fact.type in DURABLE_TYPES else 0`. `pyEqualValue` and not `===`, because `type`
     // comes out of YAML uncast: a hand-edited `type: 2026` puts a `date` in that field, and
     // Python's `==` answers False across types rather than raising the way `<` would.
@@ -1501,10 +2149,21 @@ export class MemoryStore {
     // taking `compact` — the operator's only way back under budget — down with it.
     const rank = (fact: Fact): number =>
       DURABLE_TYPES.some((durable) => pyEqualValue(fact.type, durable)) ? 1 : 0;
-    const key = (fact: Fact): [FactValue, FactValue] => [
-      pyTruthy(fact.last_recalled) ? fact.last_recalled! : pyTruthy(fact.created) ? fact.created! : '',
-      fact.name,
-    ];
+    // SINCE #199 (D5) the first evidence is the usage ledger's `lastUsed` (one read per
+    // `compact`): recall no longer writes `last_recalled`. The reference's `_staleness_key`.
+    const key = (fact: Fact): [FactValue, FactValue] => {
+      const last = typeof fact.name === 'string' ? used.get(fact.name) : undefined;
+      return [
+        last
+          ? last
+          : pyTruthy(fact.last_recalled)
+            ? fact.last_recalled!
+            : pyTruthy(fact.created)
+              ? fact.created!
+              : '',
+        fact.name,
+      ];
+    };
     return [...facts].sort((a, b) => {
       // The rank is an `int` on both sides, so it is compared as one and never handed to
       // `pyCompareLt` — a `number` is not a `FactValue`, and the tuple below stays the
@@ -1730,12 +2389,22 @@ export class MemoryStore {
           );
         }
       }
+      const links = pyList(meta['links'] as FactValue | FactValue[] | undefined);
+      // #199: absent is `[]`; any other shape — a scalar, `null`, a list holding a non-string
+      // — refuses the file with the reference's sentence, after the required keys and `links`.
+      const keywords = 'keywords' in meta ? meta['keywords'] : [];
+      if (!(Array.isArray(keywords) && keywords.every((k) => typeof k === 'string'))) {
+        throw new MemoryValidationError(`fact '${pyText(name)}' in ${file}: keywords must be a list of strings`);
+      }
       return {
         name,
         description,
         type: meta['type'] as FactValue,
         body: pyStrip(parts[2]!),
-        links: pyList(meta['links'] as FactValue | FactValue[] | undefined),
+        links,
+        keywords: [...(keywords as string[])],
+        // #199 Task 6: every key the store does not own, in file order; absent when none.
+        ...(extraOf(meta).length > 0 ? { extra: extraOf(meta) } : {}),
         last_recalled: (stamps['last_recalled'] as FactValue) ?? null,
         // `or`, not `??`: every FALSY value falls back to the mtime, and that is now more
         // than the empty string — `created: 0`, `created: false` and `created: 0.0` are all
@@ -1744,27 +2413,6 @@ export class MemoryStore {
         created: pyTruthy(rawCreated) ? (rawCreated as FactValue) : pyMtimeDate(path),
         source: path,
       };
-    }
-  }
-
-  /**
-   * Date the recall.
-   *
-   * The reference's `snapshot` branch is absent here for the reason given at the top of the
-   * file: nothing on the MCP surface enters a snapshot scope, so `_snapshot` is always
-   * `None` and only this arm ever runs. No fact is left half-dated either way, because the
-   * listing inside `_facts` has already run before any write.
-   */
-  private stamp(fact: Fact): void {
-    fact.last_recalled = this.today();
-    // job65/#123: BEST-EFFORT. A read-only store (chmod 555, a read-only mount, a CI cache)
-    // used to fail the whole recall here, after the hits were computed. A `PyOSError` from the
-    // write now leaves the old date on disk and the recall answers; see the reference's
-    // `_stamp` for why it is silent.
-    try {
-      this.writeFact(fact);
-    } catch (e) {
-      if (!(e instanceof PyOSError)) throw e;
     }
   }
 
@@ -1808,6 +2456,9 @@ export class MemoryStore {
    */
   private rebuildIndex(tolerant = false): void {
     pyWriteText(pyJoin(this.root, 'index.md'), this.indexTextOf(tolerant));
+    // Every writer of a fact file ends here (save, its rollback, compact, archive, restore),
+    // so this is where the hot index follows the files (#204).
+    this.afterWrite();
   }
 
   /**

@@ -8,6 +8,7 @@
  * `parameters.properties` order (the `known:` list is read off the model) and pin that every
  * served asset closes its top level. `tools/conformance/suites/wire.mjs` pins the wire.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -52,11 +53,11 @@ test('every served tool refuses an unknown key by name', () => {
 
 test('the first unknown key in arrival order is named, ahead of a type error', () => {
   const model = ARG_MODELS.memory_recall;
-  assert.equal(unknownArgument(model, fromJs({ query: 'a', zz: 1, aa: 2 })), "unknown argument 'zz'; known: query, k");
+  assert.equal(unknownArgument(model, fromJs({ query: 'a', zz: 1, aa: 2 })), "unknown argument 'zz'; known: query, k, include_archived, file");
   assert.throws(() => validateArguments(model, fromJs({ query: 123, bogus: 1 })), {
-    message: "unknown argument 'bogus'; known: query, k",
+    message: "unknown argument 'bogus'; known: query, k, include_archived, file",
   });
-  assert.equal(unknownArgument(model, fromJs({ query: 'a', constructor: 1 })), "unknown argument 'constructor'; known: query, k");
+  assert.equal(unknownArgument(model, fromJs({ query: 'a', constructor: 1 })), "unknown argument 'constructor'; known: query, k, include_archived, file");
 });
 
 test('known keys alone still validate', () => {

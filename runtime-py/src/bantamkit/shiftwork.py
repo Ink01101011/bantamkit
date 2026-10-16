@@ -875,8 +875,13 @@ def _clock_out_locked(
     }
 
 
-def status(checkpoint: str) -> dict[str, Any]:
-    """Read-only progress summary. Never mutates."""
+def status(checkpoint: str, search: str | None = None) -> dict[str, Any]:
+    """Read-only progress summary. Never mutates the checkpoint.
+
+    `search` (#204, J69-6) adds a `search` key: `{job, file, line}` for each line of a job
+    Retention archived under this checkpoint's `.shiftwork/archive/` that holds every term of
+    the query (`storage.retention.search_archived`). Without it the answer is unchanged.
+    """
     document, refusal = _read_valid(Path(checkpoint))
     if refusal is not None:
         return refusal
@@ -884,13 +889,18 @@ def status(checkpoint: str) -> dict[str, Any]:
     for unit in document["plan"]["units"]:
         counts[unit["status"]] = counts.get(unit["status"], 0) + 1
     history = document["history"]
-    return {
+    out = {
         "result": "status",
         "cursor": document["plan"]["cursor"],
         "units": counts,
         "open_questions": len(document["handoff"]["open_questions"]),
         "last_history": history[-1] if history else None,
     }
+    if search is not None:
+        from bantamkit.storage.retention import search_archived
+
+        out["search"] = search_archived(checkpoint, search)
+    return out
 
 
 def plan_batches(checkpoint: str) -> dict[str, Any]:

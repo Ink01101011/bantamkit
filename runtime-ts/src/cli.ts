@@ -68,17 +68,19 @@
  * reaches for is answered on the wire instead, by `build_identity`. `runtime-ts/README.md`
  * and `docs/install.md` carry the same correction in their own words.
  */
-import { readFileSync, readSync } from 'node:fs';
+import { readFileSync, readSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { assetsRoot } from './assets.js';
 import { BantamError } from './errors.js';
-import { logHookFailure, runHook } from './hookadapter.js';
+import { logHookFailure, nativeMemoryDir, runHook } from './hookadapter.js';
 import { buildReport, resolveEventLogPath } from './mcpreport.js';
 import { Memory } from './memory/component.js';
 import { DEFAULT_INDEX_BUDGET } from './memory/store.js';
 import { packFileCount } from './mcp/identity.js';
+import { maybeSpawn as maybeSpawnRetention } from './storage/retention.js';
 // NOT `./mcp/server.js` NOR `./mcp/transport.js`, ON PURPOSE (job67/#172). Those two pull in the
 // MCP SDK and its schema library, which measured ~50 ms of a ~90 ms cold `--hook` on Node 25
 // (`node -e 0` is ~21 ms; ~38 ms after; docs/hooks.md, "What one hook call costs") — paid on
@@ -581,7 +583,10 @@ function buildMemory(options: Options): Memory {
     return new Memory(options.store, shared);
   }
   if (options.start !== null) checkStartFlag(options.start);
-  return Memory.layered(options.start, shared);
+  // The host's auto-memory as the read-only `[native]` layer (#199 J68-11): the MCP server
+  // receives no `transcript_path`, so RULING Q1.2's first two branches only, and with neither
+  // answering there is no such layer.
+  return Memory.layered(options.start, { ...shared, native: nativeMemoryDir(homedir()) });
 }
 
 /**
@@ -687,6 +692,16 @@ function checkStoreFlag(raw: string): void {
  */
 function version(): string {
   return (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version;
+}
+
+/** `os.path.realpath(os.path.expanduser("~"))`: the home the reference's server hands Retention. */
+function realHome(): string {
+  const home = homedir();
+  try {
+    return realpathSync.native(home);
+  } catch {
+    return home;
+  }
 }
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -890,6 +905,9 @@ async function main(argv: readonly string[]): Promise<number> {
   ]);
   const wire = new RawStdioTransport();
   const server = buildServer(memory, wire, version());
+  // RETENTION (#204, J69-6), for a host with no hooks: the same detached daily child the
+  // SessionStart hook starts, standing down when a hook wrote its log within the TTL.
+  maybeSpawnRetention(realHome(), process.cwd(), { server: true });
   await server.connect(wire);
   // `asyncio.run(server.run_stdio_async())` returns when the client closes stdin. Here the
   // process stays alive on the stdin listener until the transport closes, which is what an

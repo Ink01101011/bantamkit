@@ -1,0 +1,137 @@
+{
+ "UNVALIDATED": true,
+ "provenance": {
+  "validated": false,
+  "source": "user 10 (spot-check ids) + calibrated judge J68-16 40",
+  "cv": {
+   "n": 50,
+   "agreement": 0.68,
+   "kappa": 0.2395,
+   "pass": false,
+   "method": "2-fold CV, pooled, folds A/B"
+  },
+  "caveat": "judge saw candidate sets that partly came from the v1 engine's top hits; J68-16 reported using the offered candidates to guess context on very short prompts"
+ },
+ "merge_line": {
+  "n": 50,
+  "agreement": 0.68,
+  "kappa": 0.2395,
+  "judge": "calibrated judge J68-16 (claude-opus-5-5), CV folds J68-14/J68-15",
+  "pass": false
+ },
+ "scored_once": "2026-10-17, J68-7, after the constants were frozen in tuning.json",
+ "frozen_constants": {
+  "GATE_FLOOR": 0.0,
+  "GATE_RATIO": 0.7,
+  "W_USAGE": 0.2,
+  "W_TYPE.feedback": 1.3
+ },
+ "gold50": {
+  "v1": {
+   "precision_at_inject": 0.20430107526881722,
+   "recall_at_3": 0.20222222222222222,
+   "thai_recall_at_3": 0.16511627906976745,
+   "n": 50
+  },
+  "v2": {
+   "constants": {
+    "GATE_FLOOR": 0.0,
+    "GATE_RATIO": 0.7,
+    "W_USAGE": 0.2,
+    "W_TYPE.feedback": 1.3
+   },
+   "labels": ".shiftwork/notes-job68/gold-labels.jsonl",
+   "A": {
+    "precision_at_inject": 0.14705882352941177,
+    "recall_at_3": 0.12296296296296295,
+    "thai_recall_at_3": 0.10542635658914729,
+    "n": 50,
+    "injected": 68
+   },
+   "B": {
+    "precision_at_inject": 0.07964601769911504,
+    "recall_at_3": 0.10259259259259258,
+    "thai_recall_at_3": 0.08410852713178295,
+    "n": 50,
+    "injected": 113
+   }
+  },
+  "bar_view_B": {
+   "precision_at_inject>=0.8": [
+    0.07964601769911504,
+    "UNVALIDATED (would miss)"
+   ],
+   "recall_at_3>=v1": [
+    0.10259259259259258,
+    0.20222222222222222,
+    "UNVALIDATED (would miss)"
+   ],
+   "thai_recall_at_3>0": [
+    0.08410852713178295,
+    "UNVALIDATED (would pass)"
+   ],
+   "A_beside_B": {
+    "precision_at_inject": 0.14705882352941177,
+    "recall_at_3": 0.12296296296296295,
+    "thai_recall_at_3": 0.10542635658914729,
+    "n": 50,
+    "injected": 68
+   }
+  }
+ },
+ "user10": {
+  "note": "the user's 10 spot-check prompts alone (gold-labels-user.jsonl, n=10)",
+  "v1": {
+   "precision_at_inject": 0.30434782608695654,
+   "recall_at_3": 0.4666666666666667,
+   "thai_recall_at_3": 0.3333333333333333,
+   "n": 10
+  },
+  "v2": {
+   "constants": {
+    "GATE_FLOOR": 0.0,
+    "GATE_RATIO": 0.7,
+    "W_USAGE": 0.2,
+    "W_TYPE.feedback": 1.3
+   },
+   "labels": ".shiftwork/notes-job68/gold-labels-user.jsonl",
+   "A": {
+    "precision_at_inject": 0.25,
+    "recall_at_3": 0.25,
+    "thai_recall_at_3": 0.1875,
+    "n": 10,
+    "injected": 12
+   },
+   "B": {
+    "precision_at_inject": 0.07692307692307693,
+    "recall_at_3": 0.15,
+    "thai_recall_at_3": 0.0625,
+    "n": 10,
+    "injected": 26
+   }
+  },
+  "bar_view_B": {
+   "precision_at_inject>=0.8": [
+    0.07692307692307693,
+    "UNVALIDATED (would miss)"
+   ],
+   "recall_at_3>=v1": [
+    0.15,
+    0.4666666666666667,
+    "UNVALIDATED (would miss)"
+   ],
+   "thai_recall_at_3>0": [
+    0.0625,
+    "UNVALIDATED (would pass)"
+   ],
+   "A_beside_B": {
+    "precision_at_inject": 0.25,
+    "recall_at_3": 0.25,
+    "thai_recall_at_3": 0.1875,
+    "n": 10,
+    "injected": 12
+   }
+  }
+ },
+ "hook_p50": "not re-measured in J68-7 (constants only); J68-11: +1.6..2.1 ms p50 on Node, budget +5"
+}

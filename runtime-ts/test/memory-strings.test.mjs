@@ -5,6 +5,7 @@
  * cross-runtime comparison is the `j65-9` block of `tools/conformance/suites/hooks.mjs` and
  * `wire.mjs`.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
@@ -190,7 +191,9 @@ test('#119 one bad project fact no longer fails the recall', () => {
     const memory = Memory.layered(project);
     const o = memory.recallOutcome('shared words', 5);
     assert.equal(o.status, 'answered');
-    assert.deepEqual(o.headers.map((h) => h.split(']')[1]), [' [ok-fact', ' [prof-ok']);
+    // #199 D3: pooled and ranked once; the profile's `feedback` fact (W_TYPE 1.3) outranks the
+    // project's `project` fact at a near score. WAS: project layer first, by walk order.
+    assert.deepEqual(o.headers.map((h) => h.split(']')[1]), [' [prof-ok', ' [ok-fact']);
     assert.deepEqual(o.skipped.map((s) => [s.layer, s.file]), [['project', 'zz-bad.md'], ['profile', 'broken.md']]);
     const named = memory.recallOutcome('prof-ok');
     assert.equal(named.lookup, 'hit');

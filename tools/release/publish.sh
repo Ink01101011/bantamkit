@@ -26,6 +26,15 @@
 # half-done release (0.26.0's shape: npm landed, PyPI did not) be finished by rerunning this
 # script with no arguments and no flags to remember.
 #
+# PRERELEASES (job68, #199). One version has two spellings: __init__.py declares PEP 440
+# (`0.37.0b1`, what PyPI carries) and package.json declares semver (`0.37.0-beta.1`, what npm
+# carries). Phase 0 maps the first to the second (aN -> -alpha.N, bN -> -beta.N, rcN -> -rc.N)
+# and checks every npm-side site against the mapped spelling; every PyPI-side site, the
+# runtime-py/README.md wheelhouse pin among them, keeps the PEP 440 one. A prerelease goes to
+# npm under `--tag beta`, so `@latest` -- what every user's MCP config runs -- does not move to
+# it. A stable version maps to itself, gets no --tag, and runs exactly as before.
+# tools/release/test_version_map.sh pins the mapping.
+#
 # AUTHENTICATION, AND WHY THERE IS NO SECRET IN THIS FILE.
 #   npm   plain `npm publish --access public`, with NO --otp. npm answers with a callback URL
 #         that you open in a browser and authenticate there. That flow reads no stdin, so it
@@ -106,6 +115,22 @@ note()  { printf '  note    %s\n' "$*"; }
 bad()   { printf '  FAILED  %s\n' "$*" >&2; }
 die()   { printf '\nREFUSED: %s\n' "$*" >&2; exit 1; }
 
+# PEP 440 (__init__.py, PyPI) -> semver (package.json, npm). A stable version passes through
+# unchanged, and so does anything not recognised -- the version-site check then refuses it,
+# rather than a guess going through. Read out of this file by tools/release/test_version_map.sh.
+map_pep440_to_semver() {   # 0.37.0b1 -> 0.37.0-beta.1 ; 0.37.0rc2 -> 0.37.0-rc.2 ; 0.36.0 -> 0.36.0
+  printf '%s\n' "$1" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)a([0-9]+)$/\1-alpha.\2/; s/^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$/\1-beta.\2/; s/^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$/\1-rc.\2/'
+}
+
+# The npm dist-tag for a semver version: `beta` for any prerelease (a `-` in it), nothing for a
+# stable one. Without --tag, npm moves `latest` -- and `npx bantamkit-mcp@latest` with it.
+npm_dist_tag() {
+  case "$1" in
+    *-*) printf '%s\n' "beta" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
 PROBLEM_COUNT=0
 problem() { PROBLEM_COUNT=$((PROBLEM_COUNT + 1)); bad "$1"; }
 
@@ -155,15 +180,34 @@ if [ -z "$VERSION" ]; then
 fi
 say "  version  : $VERSION  (from runtime-py/src/bantamkit/__init__.py)"
 
+# The npm spelling of $VERSION, and the arguments `npm publish` takes for it. For a stable
+# version NPM_VERSION = VERSION and the arguments are the same `--access public` as always,
+# so nothing below prints or does anything different; the two lines here print only for a
+# prerelease.
+NPM_VERSION="$(map_pep440_to_semver "$VERSION")"
+NPM_DIST_TAG="$(npm_dist_tag "$NPM_VERSION")"
+NPM_PUBLISH_ARGS=(--access public)
+if [ -n "$NPM_DIST_TAG" ]; then
+  NPM_PUBLISH_ARGS+=(--tag "$NPM_DIST_TAG")
+fi
+if [ "$NPM_VERSION" != "$VERSION" ] || [ -n "$NPM_DIST_TAG" ]; then
+  say "  npm      : $NPM_VERSION  (semver spelling of $VERSION; PyPI keeps $VERSION)"
+  say "  publish  : npm publish ${NPM_PUBLISH_ARGS[*]}  (a prerelease never moves @latest)"
+fi
+
 PKG_VERSION="$(node -p "require('$REPO/runtime-ts/package.json').version" 2>/dev/null || true)"
 LOCK_VERSION="$(node -p "require('$REPO/runtime-ts/package-lock.json').version" 2>/dev/null || true)"
 LOCK_ROOT_VERSION="$(node -p "require('$REPO/runtime-ts/package-lock.json').packages[''].version" 2>/dev/null || true)"
 
-check_site() { # label, value
-  if [ "${2:-}" != "$VERSION" ]; then
-    problem "version site disagrees: $1 says '${2:-(unreadable)}', __init__.py says '$VERSION'."
+check_site() { # label, value -- an npm-side site, so it must carry the npm spelling
+  if [ "${2:-}" != "$NPM_VERSION" ]; then
+    if [ "$NPM_VERSION" = "$VERSION" ]; then
+      problem "version site disagrees: $1 says '${2:-(unreadable)}', __init__.py says '$VERSION'."
+    else
+      problem "version site disagrees: $1 says '${2:-(unreadable)}', __init__.py says '$VERSION', whose npm spelling is '$NPM_VERSION'."
+    fi
   else
-    ok "$1 = $VERSION"
+    ok "$1 = $NPM_VERSION"
   fi
 }
 check_site "runtime-ts/package.json" "$PKG_VERSION"
@@ -174,8 +218,10 @@ check_site "runtime-ts/package-lock.json .packages[''].version" "$LOCK_ROOT_VERS
 # working install -- so it is a version site too, and it has been moved at every release since
 # 0.34.3. A pin there that is not this version is a site left behind. (A version literal that
 # REPORTS what some artifact did on a date is a historical record, not a site, and is
-# deliberately not checked here.)
-README_PINS="$(grep -oE 'bantamkit\[mcp\]==[0-9]+\.[0-9]+\.[0-9]+' "$REPO/runtime-py/README.md" | sed 's/.*==//' | sort -u | tr '\n' ' ' | sed 's/ *$//' || true)"
+# deliberately not checked here.) It is a PyPI pin, so it carries the PEP 440 spelling: the
+# optional aN/bN/rcN suffix is part of the match, and a semver `-beta.1` there is not -- that
+# pin reads as its X.Y.Z alone, which disagrees with $VERSION and is refused.
+README_PINS="$(grep -oE 'bantamkit\[mcp\]==[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?' "$REPO/runtime-py/README.md" | sed 's/.*==//' | sort -u | tr '\n' ' ' | sed 's/ *$//' || true)"
 if [ -z "$README_PINS" ]; then
   note "runtime-py/README.md carries no wheelhouse pin to check."
 elif [ "$README_PINS" != "$VERSION" ]; then
@@ -304,7 +350,7 @@ registry_state() { # url, label -> sets REGISTRY_ANSWER to yes|no, or refuses ou
 
 # registry.npmjs.org is asked DIRECTLY rather than through `npm view`, which answers out of a
 # metadata cache that lags a publish by minutes.
-registry_state "https://registry.npmjs.org/bantamkit-mcp/$VERSION" "npm"
+registry_state "https://registry.npmjs.org/bantamkit-mcp/$NPM_VERSION" "npm"
 NPM_ALREADY="$REGISTRY_ANSWER"
 # The PER-VERSION PyPI endpoint. The plain /pypi/<name>/json "latest" view and the simple index
 # are both CDN-cached and lag; this one answers 404 until the version exists.
@@ -312,9 +358,9 @@ registry_state "https://pypi.org/pypi/bantamkit/$VERSION/json" "PyPI"
 PYPI_ALREADY="$REGISTRY_ANSWER"
 
 if [ "$NPM_ALREADY" = "yes" ]; then
-  note "npm ALREADY carries bantamkit-mcp@$VERSION -- it will be verified, never republished."
+  note "npm ALREADY carries bantamkit-mcp@$NPM_VERSION -- it will be verified, never republished."
 else
-  ok "npm does not yet carry bantamkit-mcp@$VERSION"
+  ok "npm does not yet carry bantamkit-mcp@$NPM_VERSION"
 fi
 if [ "$PYPI_ALREADY" = "yes" ]; then
   note "PyPI ALREADY carries bantamkit==$VERSION -- it will be verified, never re-uploaded."
@@ -381,7 +427,7 @@ say "  --- npm pack (its prepack runs build-for-pack.mjs, then sync-assets)"
 say "  --- python -m build (wheel + sdist)"
 "$VENV_PY" -m build --no-isolation --outdir "$OUT_DIR/pypi" "$REPO/runtime-py" || die "python -m build failed."
 
-TGZ="$OUT_DIR/npm/bantamkit-mcp-$VERSION.tgz"
+TGZ="$OUT_DIR/npm/bantamkit-mcp-$NPM_VERSION.tgz"
 WHEEL="$OUT_DIR/pypi/bantamkit-$VERSION-py3-none-any.whl"
 SDIST="$OUT_DIR/pypi/bantamkit-$VERSION.tar.gz"
 
@@ -434,9 +480,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
   say "  This tree is publishable: built, gated and checked, and nothing left the machine."
   say "  artifacts     : $OUT_DIR"
   if [ "$NPM_ALREADY" = "yes" ]; then
-    say "  would do  npm : SKIP, the registry already carries bantamkit-mcp@$VERSION"
+    say "  would do  npm : SKIP, the registry already carries bantamkit-mcp@$NPM_VERSION"
   else
-    say "  would do  npm : publish bantamkit-mcp@$VERSION"
+    say "  would do  npm : publish bantamkit-mcp@$NPM_VERSION"
+  fi
+  if [ -n "$NPM_DIST_TAG" ]; then
+    say "  npm command   : npm publish ${NPM_PUBLISH_ARGS[*]}  (dist-tag $NPM_DIST_TAG; @latest stays where it is)"
   fi
   if [ "$PYPI_ALREADY" = "yes" ]; then
     say "  would do PyPI : SKIP, PyPI already carries bantamkit==$VERSION"
@@ -459,7 +508,10 @@ if [ "$NPM_ALREADY" = "no" ] || [ "$PYPI_ALREADY" = "no" ]; then
     if [ "$NPM_ALREADY" = "yes" ]; then
       printf '  npm  : skip (already published)\n'
     else
-      printf '  npm  : publish bantamkit-mcp@%s as %s\n' "$VERSION" "$NPM_USER"
+      printf '  npm  : publish bantamkit-mcp@%s as %s\n' "$NPM_VERSION" "$NPM_USER"
+      if [ -n "$NPM_DIST_TAG" ]; then
+        printf '         under dist-tag %s, so @latest does not move\n' "$NPM_DIST_TAG"
+      fi
     fi
     if [ "$PYPI_ALREADY" = "yes" ]; then
       printf '  PyPI : skip (already published)\n'
@@ -480,17 +532,17 @@ fi
 phase "phase 4/8  publish npm"
 
 if [ "$NPM_ALREADY" = "yes" ]; then
-  note "SKIPPED: the registry already carries bantamkit-mcp@$VERSION."
+  note "SKIPPED: the registry already carries bantamkit-mcp@$NPM_VERSION."
   note "npm forbids republishing a version, so skipping is the only correct behaviour here --"
   note "not a convenience, and it is what lets a half-done release be finished by rerunning."
 else
-  say '  npm publish --access public, with NO --otp.'
+  say "  npm publish ${NPM_PUBLISH_ARGS[*]}, with NO --otp."
   say '  npm answers with a CALLBACK URL to open in a browser. Its output is streamed'
   say '  straight through below: nothing here captures, buffers or wraps it.'
   say ''
   # No pipe, no capture, no wrapper: stdout and stderr are this script's own, unbuffered by
   # anything we control, so the callback URL reaches the person running this.
-  if ( cd "$REPO/runtime-ts" && npm publish --access public ); then
+  if ( cd "$REPO/runtime-ts" && npm publish "${NPM_PUBLISH_ARGS[@]}" ); then
     ok "npm publish returned 0"
   else
     # A NON-ZERO npm publish IS NOT PROOF THAT NOTHING WAS PUBLISHED (0.35.6, 2026-09-26).
@@ -510,7 +562,7 @@ else
     REMOTE_SHA1=""
     attempt=0
     while [ "$attempt" -lt 6 ]; do
-      REMOTE_SHA1="$(curl -sS --max-time 30 "https://registry.npmjs.org/bantamkit-mcp/$VERSION" 2>/dev/null \
+      REMOTE_SHA1="$(curl -sS --max-time 30 "https://registry.npmjs.org/bantamkit-mcp/$NPM_VERSION" 2>/dev/null \
         | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(t).dist.shasum||""))}catch{}})' \
         || true)"
       [ -n "$REMOTE_SHA1" ] && break
@@ -520,9 +572,9 @@ else
     done
     if [ -z "$REMOTE_SHA1" ]; then
       die "npm publish failed (its output is above), and registry.npmjs.org does not carry
-         bantamkit-mcp@$VERSION after 30 s. Nothing was uploaded to PyPI."
+         bantamkit-mcp@$NPM_VERSION after 30 s. Nothing was uploaded to PyPI."
     elif [ "$REMOTE_SHA1" != "$LOCAL_SHA1" ]; then
-      die "npm publish failed, and registry.npmjs.org carries bantamkit-mcp@$VERSION with shasum
+      die "npm publish failed, and registry.npmjs.org carries bantamkit-mcp@$NPM_VERSION with shasum
          $REMOTE_SHA1 -- not $LOCAL_SHA1, the tarball this run built. That is a different
          artifact under this version. Nothing was uploaded to PyPI."
     fi
@@ -538,16 +590,16 @@ say "  --- asking registry.npmjs.org directly"
 NPM_LANDED="no"
 attempt=0
 while [ "$attempt" -lt 30 ]; do
-  registry_state "https://registry.npmjs.org/bantamkit-mcp/$VERSION" "npm"
+  registry_state "https://registry.npmjs.org/bantamkit-mcp/$NPM_VERSION" "npm"
   if [ "$REGISTRY_ANSWER" = "yes" ]; then NPM_LANDED="yes"; break; fi
   attempt=$((attempt + 1))
   say "      not visible yet (attempt $attempt); waiting 5 s"
   sleep 5
 done
 if [ "$NPM_LANDED" != "yes" ]; then
-  die "bantamkit-mcp@$VERSION is still not on registry.npmjs.org. PyPI was NOT uploaded."
+  die "bantamkit-mcp@$NPM_VERSION is still not on registry.npmjs.org. PyPI was NOT uploaded."
 fi
-ok "registry.npmjs.org carries bantamkit-mcp@$VERSION"
+ok "registry.npmjs.org carries bantamkit-mcp@$NPM_VERSION"
 
 say "  --- installing the PUBLISHED tarball and driving it over stdio"
 # npm's own metadata cache can answer ETARGET for minutes after a successful publish.
@@ -559,7 +611,7 @@ attempt=0
 INSTALLED="no"
 while [ "$attempt" -lt 10 ]; do
   if npm install --prefix "$NPM_PROBE" --prefer-online --no-audit --no-fund \
-       "bantamkit-mcp@$VERSION" >/dev/null 2>"$SCRATCH/npm-install.err"; then
+       "bantamkit-mcp@$NPM_VERSION" >/dev/null 2>"$SCRATCH/npm-install.err"; then
     INSTALLED="yes"; break
   fi
   attempt=$((attempt + 1))
@@ -569,11 +621,11 @@ while [ "$attempt" -lt 10 ]; do
 done
 if [ "$INSTALLED" != "yes" ]; then
   cat "$SCRATCH/npm-install.err" >&2 || true
-  die "could not install bantamkit-mcp@$VERSION even with --prefer-online.
+  die "could not install bantamkit-mcp@$NPM_VERSION even with --prefer-online.
          The registry answered 200 for it, so it IS published; this is an install problem and
          not a publish problem. PyPI was NOT uploaded."
 fi
-node "$SCRIPT_DIR/roster-probe.mjs" --label "npm bantamkit-mcp@$VERSION" \
+node "$SCRIPT_DIR/roster-probe.mjs" --label "npm bantamkit-mcp@$NPM_VERSION" \
   -- node "$NPM_PROBE/node_modules/bantamkit-mcp/dist/cli.js" \
   || die "the PUBLISHED npm artifact does not advertise what MCP_TOOLS declares. PyPI was NOT uploaded."
 
@@ -682,7 +734,7 @@ phase "phase 8/8  summary"
 
 say "  bantamkit $VERSION is published and verified on BOTH registries."
 say ""
-say "  npm   https://www.npmjs.com/package/bantamkit-mcp/v/$VERSION"
+say "  npm   https://www.npmjs.com/package/bantamkit-mcp/v/$NPM_VERSION"
 say "        verified by installing the published tarball and listing its tools over stdio"
 say "  PyPI  https://pypi.org/project/bantamkit/$VERSION/"
 say "        verified by sha256 against the local build, then by installing the [mcp] extra"
@@ -691,7 +743,11 @@ say ""
 say "  artifacts kept at: $OUT_DIR"
 say ""
 say "  STILL YOURS TO DO, by hand and by decision:"
-say "    - git tag -a v$VERSION -m \"bantamkit $VERSION\" && git push origin v$VERSION"
-say "    - gh release create v$VERSION --notes-file <notes>   (notes cover TAG TO TAG)"
+say "    - git tag -a v$NPM_VERSION -m \"bantamkit $VERSION\" && git push origin v$NPM_VERSION"
+if [ -n "$NPM_DIST_TAG" ]; then
+  say "    - gh release create v$NPM_VERSION --prerelease --notes-file <notes>   (notes cover TAG TO TAG)"
+else
+  say "    - gh release create v$NPM_VERSION --notes-file <notes>   (notes cover TAG TO TAG)"
+fi
 say "    - merge the release branch to main if it is not there already"
 say ""

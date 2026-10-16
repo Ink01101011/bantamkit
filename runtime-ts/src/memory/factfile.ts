@@ -48,6 +48,48 @@ export interface Fact {
   last_recalled: FactValue;
   created?: FactValue;
   source?: string;
+  /**
+   * The words the user will type for this fact, in their own language as well as English
+   * (#199). Absent and `[]` are the same fact; `formatFact` writes the key only when it is
+   * non-empty, so a fact that never had any keeps its bytes. `MemoryStore.readFact` refuses
+   * any other shape with `keywords must be a list of strings`, as the reference does.
+   */
+  keywords?: string[];
+  /**
+   * Every frontmatter key the store does not own (`OWNED_KEYS`), in file order, with the value
+   * the codec read (#199 Task 6, register row (mmmm), user ruling 2026-10-15). `formatFact`
+   * re-emits them after the owned keys, so no rewrite loses a hand-written `priority: high`.
+   * Absent when there are none. A key the reference's `safe_load` would not read as a string
+   * (`true:`, `null:`, `on:`) is not carried, on either side: see `isTextKey`.
+   */
+  extra?: ReadonlyArray<readonly [string, FactValue | FactValue[]]>;
+}
+
+/** The frontmatter keys `formatFact` writes itself; every other key rides in `Fact.extra`. */
+export const OWNED_KEYS: readonly string[] = [
+  'name',
+  'description',
+  'type',
+  'created',
+  'last_recalled',
+  'links',
+  'keywords',
+];
+
+/**
+ * Whether PyYAML reads `key` as a `str`. The reference keeps `isinstance(k, str)` keys only:
+ * `on:` is `True` and `null:` is `None` there, and this codec reads every key as text, so the
+ * two could not spell such a key back alike. Neither carries it.
+ */
+export function isTextKey(key: string): boolean {
+  return typeof constructPlain(key) === 'string';
+}
+
+/** `Fact.extra` from a parsed frontmatter: the text keys `OWNED_KEYS` does not name, in order. */
+export function extraOf(meta: Record<string, unknown>): Array<[string, FactValue | FactValue[]]> {
+  return Object.keys(meta)
+    .filter((k) => !OWNED_KEYS.includes(k) && isTextKey(k))
+    .map((k): [string, FactValue | FactValue[]] => [k, meta[k] as FactValue | FactValue[]]);
 }
 
 /** The frontmatter as it comes off disk — exactly the keys the file carries. */
@@ -107,6 +149,11 @@ export function formatFact(fact: Fact | ParsedFact): string {
     ['created', fact.created ?? null],
     ['last_recalled', fact.last_recalled ?? null],
     ['links', fact.links],
+    // #199: only when non-empty, after `links` — the reference's `_fact_text` adds the key
+    // to its dict in the same place under the same condition.
+    ...(fact.keywords && fact.keywords.length > 0 ? [['keywords', fact.keywords] as const] : []),
+    // #199 Task 6: after the owned keys, in the order the file had them.
+    ...(fact.extra ?? []).filter(([k]) => !OWNED_KEYS.includes(k)),
   ]);
   return '---\n' + front + '---\n\n' + pyStrip(fact.body) + '\n';
 }
@@ -149,6 +196,10 @@ function factOfParsed(parsed: ParsedFact): Fact {
     created: meta['created'] === undefined ? null : one('created'),
     last_recalled: meta['last_recalled'] === undefined ? null : one('last_recalled'),
     links: pyList(meta['links']),
+    ...(Array.isArray(meta['keywords']) && meta['keywords'].every((k) => typeof k === 'string')
+      ? { keywords: [...(meta['keywords'] as string[])] }
+      : {}),
+    ...(extraOf(meta).length > 0 ? { extra: extraOf(meta) } : {}),
     body,
   };
 }

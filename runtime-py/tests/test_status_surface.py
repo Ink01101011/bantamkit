@@ -63,10 +63,17 @@ def record_home(tmp_path, monkeypatch):
     is total, and the `.bantamkit` directory is made so a record can be constructed.
 
     The default state is therefore `never checked`: the directory is empty.
+
+    #204 (job69 J69-7): the report's storage lines read `Path.home()` -- the tiers, the logs
+    and `retention.json` -- so `HOME`/`USERPROFILE` move to the same root, and the native
+    override is cleared so the host-data tier is the redirected home's, not the operator's.
     """
     root = tmp_path / "record-home"
     (root / ".bantamkit").mkdir(parents=True)
     monkeypatch.setattr(updatecheck, "_home", lambda: root)
+    monkeypatch.setenv("HOME", str(root))
+    monkeypatch.setenv("USERPROFILE", str(root))
+    monkeypatch.delenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", raising=False)
     return root
 
 
@@ -148,7 +155,12 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     report = status_of(build_server(memory))
     lines = report.split("\n")
     assert lines[0] == HEALTHY_LINE
-    assert len(lines) == 6, report
+    # AMENDED job69 J69-7 (#204): 6 -> 10, the four storage lines appended after line 6.
+    # AMENDED job68 J68-6 (#199, plan Task 6 names the two status lines): 10 -> 12, the
+    # read-repair count and the usage ledger appended after the storage block.
+    # AMENDED job70 T200-1 (#200, plan Task 1 names the `touch:` line): 12 -> 13, `touch: none`
+    # between the logs and retention, so retention and the two lines after it move down one.
+    assert len(lines) == 13, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
     assert lines[2] == "serving 14 tools, 1 prompt, 2 resource templates"
     # AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store
@@ -161,6 +173,26 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     # Line 6, and it is NOT a condition: the home is redirected and empty, so the server is
     # still `Active 🟢` while saying it has never been checked.
     assert lines[5] == updatecheck.UPDATE_NEVER
+    # #204 (job69 J69-7): the storage block, on a home with no hook, no native directory, no
+    # log and no retention record -- the MCP-only profile. The index is built by the report
+    # itself (a fast refresh, as recall does), so its bytes are the files it left.
+    assert lines[6] == "storage: core on; hooks off; host data off"
+    idx = memory.store.index()
+    held = sum(
+        p.stat().st_size
+        for p in [
+            idx.path,
+            *[idx.shard_path(f, i) for f in ("postings", "words") for i in range(16)],
+        ]
+        if p.exists()
+    )
+    assert held > 0
+    assert lines[7] == f"index facts project: 0 docs, {held} bytes, persisted"
+    assert lines[8] == "logs: none"
+    assert lines[9] == "touch: none"  # #200 (job70 T200-1)
+    assert lines[10] == "retention: off; last ran never; refused 0"
+    assert lines[11] == "read-repaired: 0 this process"
+    assert lines[12] == f"usage ledger: {memory.usage().path} (0 lines, 0 skipped)"
 
 
 def _record(latest: str, checked_at: str = "2026-09-19T21:04:11Z") -> str:
@@ -226,7 +258,10 @@ def test_the_report_carries_the_update_line_in_every_one_of_the_five_states(
     # running: a stale install is not a fault, so line 1 stays Active, the report grows no
     # `problems:` block, and `degraded_conditions` never learns the record exists.
     assert lines[0] == HEALTHY_LINE
-    assert len(lines) == 6, lines
+    # AMENDED job69 J69-7 (#204): 6 -> 10, the four storage lines after the update line.
+    # AMENDED job68 J68-6 (#199, plan Task 6): 10 -> 12, read-repair and the usage ledger.
+    # AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, the `touch:` line.
+    assert len(lines) == 13, lines
     assert FOOTER_MARK not in "\n".join(lines)
     assert degraded_conditions(make_memory(tmp_path), EventLog(None)) == []
 
@@ -825,3 +860,25 @@ def test_the_status_manifest_claims_the_mcp_surface_and_nothing_else():
     )
     assert asset["name"] == STATUS_NAME
     assert asset["surfaces"] == ["mcp"]
+
+
+def test_the_report_counts_read_repairs_and_names_the_usage_ledger(tmp_path):
+    """#199 Task 6: `read-repaired: <n> this process` and `usage ledger: <path> (...)`."""
+    memory = make_memory(tmp_path)
+    memory.save("project", "deploy-steps", "how deploy steps run", "b")
+    p = memory.store.root / "facts" / "deploy-steps.md"
+    p.write_text(
+        p.read_text(encoding="utf-8").replace(
+            "last_recalled: null", "last_recalled: '2026-10-01'"
+        ),
+        encoding="utf-8",
+    )
+    memory.recall("deploy steps")
+    ledger = memory.usage().path
+    with ledger.open("a", encoding="utf-8") as fh:
+        fh.write("not json\n")
+    lines = status_of(build_server(memory)).split("\n")
+    # AMENDED job70 T200-1 (#200): indexes 10/11 -> 11/12, the `touch:` line sits above them.
+    assert lines[11] == "read-repaired: 1 this process"
+    # save, recall_hit, seed, and the corrupt line.
+    assert lines[12] == f"usage ledger: {ledger} (4 lines, 1 skipped)"

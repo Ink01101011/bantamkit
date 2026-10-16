@@ -242,6 +242,8 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `--k K` | Default recall budget | `3` | `"--k", "5"` |
 | `--index-budget BYTES` | Memory index byte budget | `24000` | `"--index-budget", "32000"` |
 | `BANTAMKIT_EVENT_LOG` | Logs tool outcomes as JSONL | off; `on` → `<store>/events/mcp.jsonl`; other values are a path | `"env": {"BANTAMKIT_EVENT_LOG": "on"}` |
+| `BANTAMKIT_RETENTION` | The daily Retention job: deletes session read ledgers older than 7 days, folds log lines older than 30 days, archives closed `.shiftwork` jobs 7 days after they close (verified before delete) | on; `off` (or `0`/`false`/`no`) turns it off | `"env": {"BANTAMKIT_RETENTION": "off"}` — [docs/storage.md](docs/storage.md#retention) |
+| `BANTAMKIT_INDEX_DIR` | Where the derived recall indexes live (hot and cold); deleting them loses nothing | `~/.bantamkit/index` | `"env": {"BANTAMKIT_INDEX_DIR": "/abs/scratch/index"}` |
 | `BANTAMKIT_ASSETS` | Your own asset pack (skills, rubrics, schemas) | the pack inside the package | `"env": {"BANTAMKIT_ASSETS": "/abs/my-assets"}` |
 | `BANTAMKIT_HOST_LOG_ROOT` | Where `--mcp-report` finds the host's MCP logs | macOS `~/Library/Caches/claude-cli-nodejs`; elsewhere unset | `BANTAMKIT_HOST_LOG_ROOT=/abs/logs bantamkit-mcp --mcp-report` |
 | `BANTAMKIT_PRICES` | Price table for the token ledger | `pricing/default.json` in the asset pack | `"env": {"BANTAMKIT_PRICES": "/abs/prices.json"}` |
