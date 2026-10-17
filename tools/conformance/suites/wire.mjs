@@ -576,6 +576,29 @@ export async function run(ctx) {
     { env: { ...baseEnv, BANTAMKIT_INDEX_DIR: join(home, 'index') } },
   );
 
+  // #212: a fact whose frontmatter spells a lone surrogate as a YAML escape (the file is UTF-8,
+  // the backslash literal), planted live and archived. Python's strict encoder refused it at
+  // the first hot-index write, so the session's first recall died; the archived copy is read
+  // by the cold index, the other writer that serialises a fact's description. Both now read
+  // each lone half as U+FFFD. id 2 is the recall, id 3 the archived recall, id 4 an exact name.
+  const SURROGATE_FACT = (where) =>
+    `---\nname: release-${where}\ndescription: "release \\ud800 ${where} notes"\ntype: project\n` +
+    "created: '2026-10-01'\nlast_recalled: null\nlinks: []\n---\n\nbody " + where + '\n';
+  add(
+    'memory-surrogate',
+    [
+      INIT(),
+      INITIALIZED,
+      callTool(20, 'memory_save', { type: 'project', name: 'other-fact', description: 'unrelated words', body: 'x' }),
+      JSON.stringify({ conformance: 'write', path: join(store, 'facts', 'release-live.md'), b64: b64(SURROGATE_FACT('live')) }),
+      JSON.stringify({ conformance: 'write', path: join(store, 'archive', 'release-old.md'), b64: b64(SURROGATE_FACT('old')) }),
+      callTool(2, 'memory_recall', { query: 'release notes' }),
+      callTool(3, 'memory_recall', { query: 'release notes', include_archived: true }),
+      callTool(4, 'memory_recall', { query: 'release-live' }),
+    ],
+    { env: { ...baseEnv, BANTAMKIT_INDEX_DIR: join(home, 'index') } },
+  );
+
   // #200 (job70 T200-7): `memory_recall`'s `file` through both MCP argument layers. The git bed
   // is made ONCE by the harness, before either side runs (nothing here writes it), so both
   // servers read the same commit: `src/memory/store.ts`, `other/store.ts`, `docs/x.md`. The
@@ -2976,7 +2999,8 @@ export async function run(ctx) {
       // #204 (job69 J69-5): `memory-archived` does not compact — the HARNESS plants one fact in
       // its `archive/` with a `write` directive, so that one file and nothing else is expected
       // there. It runs before `memory-compact`, so it leads the list.
-      expectedArchives.unshift('memory-archived (store): old-wire.md');
+      // #212's `memory-surrogate` plants one archived fact the same way, and runs second.
+      expectedArchives.unshift('memory-archived (store): old-wire.md', 'memory-surrogate (store): release-old.md');
       cases.push({
         name: `memory_compact: ${label} wrote \`archive/\` in the sessions that compacted, in no other store, and only what the replies named`,
         kind: 'json',
@@ -3157,6 +3181,24 @@ export async function run(ctx) {
         },
       });
     }
+  }
+
+  // #212 PER SIDE: a differential stays green if both servers keep the surrogate or both drop
+  // the fact, so the replies are pinned: found, live and archived, each lone half U+FFFD.
+  for (const [label, side] of [['the reference', 'python'], ['the port', 'node']]) {
+    const text = (id) => toolTextOf(results.get('memory-surrogate')[side], id);
+    cases.push({
+      name: `#212 memory_recall over a lone-surrogate fact: PINNED PER SIDE: found, live and archived, as U+FFFD — ${label}`,
+      kind: 'json',
+      expected: {
+        live: '[release-live] (project) release \ufffd live notes\nbody live',
+        archived:
+          '[release-live] (project) release \ufffd live notes\nbody live\n\n' +
+          '[archived] [release-old] (project) release \ufffd old notes\nbody old',
+        exactName: '[release-live] (project) release \ufffd live notes\nbody live',
+      },
+      actual: { live: text(2), archived: text(3), exactName: text(4) },
+    });
   }
 
   // #200 (job70 T200-7): `memory_recall({file})` PER SIDE against literals — a differential is
