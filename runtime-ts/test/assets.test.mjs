@@ -179,6 +179,22 @@ test('loadSkill returns skill text', () => {
   });
 });
 
+test('the memory_queries instructions and manifest load (#207 amendment 3, Q5-Q7)', () => {
+  withPack(repoPack, () => {
+    const text = real.loadSkill('memory-queries');
+    assert.ok(text.startsWith('# Likely-prompt queries\n'));
+    assert.ok(text.includes('memory_queries') && text.includes('never copy more than'));
+    assert.ok(real.loadSkill('memory').includes('## Likely-prompt queries'));
+    const t = real.loadTool('memory_queries');
+    assert.equal(t.name, 'memory_queries');
+    assert.deepEqual(Object.keys(t.parameters.properties), ['facts']);
+    assert.deepEqual(real.loadToolAsset('memory_queries').surfaces, ['mcp']);
+    const q = real.loadTool('memory_save').parameters.properties.queries;
+    assert.equal(q.type, 'array');
+    assert.deepEqual(q.items, { type: 'string' });
+  });
+});
+
 test('each loader names the path it could not find', () => {
   const empty = scratch('empty');
   withPack(empty, () => {
