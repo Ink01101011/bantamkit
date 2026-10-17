@@ -150,6 +150,7 @@ export async function run(ctx) {
     ['memory_dream', { dry_run: true }],
     ['token_ledger', { root: LEDGER_FIXTURE }],
     ['work_plan', { nodes: [] }],
+    ['memory_queries', {}], // #207 amendment 3: lists, writes nothing
     ['bantamkit_status', {}],
   ];
   const FIRST_TOOL_ID = 3;

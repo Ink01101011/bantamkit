@@ -959,6 +959,7 @@ export async function run(ctx) {
     token_ledger: { root: docs, bogus: 1 },
     work_plan: { nodes: [], bogus: 1 },
     shiftwork_plan: { checkpoint, bogus: 1 },
+    memory_queries: { bogus: 1 }, // #207 amendment 3: the fifteenth tool
   };
   add('j67-1-unknown-args', [
     INIT(),
@@ -2069,6 +2070,8 @@ export async function run(ctx) {
       token_ledger: ['Token ledger', RO],
       work_plan: ['Work plan: batch a dependency graph', RO],
       shiftwork_plan: ['Shift work: plan', RO],
+      // #207 amendment 3: the fifteenth tool writes the queries sidecar, never a fact.
+      memory_queries: ['Likely-prompt queries for saved facts', { destructiveHint: false, openWorldHint: false, readOnlyHint: false }],
     };
     const advertised = (side) =>
       Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, [t.title ?? 'absent', t.annotations ?? 'absent']]));
