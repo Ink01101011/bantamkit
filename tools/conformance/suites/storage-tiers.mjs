@@ -24,6 +24,7 @@
  * (byte counts the harness can derive are derived; the index's own bytes are compared across
  * sides and shape-checked per side), and recall answering over the unwritable index directory.
  */
+import { pep440ToSemver } from './version.mjs';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -69,6 +70,10 @@ export async function run(ctx) {
     }
   };
   const maskBuild = (text) => text.replace(/build sha256:[0-9a-f]{64}/g, 'build sha256:<masked>');
+  // A prerelease has two spellings of one version (docs/porting.md, "a prerelease version's
+  // spelling"; the `version` suite pins each side's). Compare the reference AFTER mapping its
+  // PEP 440 spelling to semver, as that ruling says; a stable version maps to itself.
+  const semverPy = (text) => text.replace(/(version )([0-9][0-9A-Za-z.]*)(, build)/g, (_, a, v, b) => a + pep440ToSemver(v) + b);
 
   const root = join(ctx.scratch, 'storage-tiers');
   const home = join(root, 'home');
@@ -238,7 +243,8 @@ export async function run(ctx) {
         if (isIdentity) return `isError: ${JSON.stringify(frame.result?.isError ?? null)}`;
         return maskBuild(canonical(JSON.stringify(frame)));
       };
-      cases.push({ name: `${session}: id ${id}`, kind: 'string', expected: view(py.get(id)), actual: view(nd.get(id)) });
+      const expected = view(py.get(id));
+      cases.push({ name: `${session}: id ${id}`, kind: 'string', expected: semverPy(expected), actual: view(nd.get(id)) });
     }
   }
 
