@@ -6,13 +6,18 @@
 
 **Architecture:** Recall is columnar. `pooled_ranking` (Python `runtime-py/src/bantamkit/memory/store.py:540`, Node `runtime-ts/src/memory/store.ts:666`) concatenates every layer's `Pool`, scores the concatenation once with `bm25_segments`, and orders it with `rank_columns`. The `Scorer` replaces only that one scoring call. `Bm25fScorer` wraps it unchanged. `CosineScorer` reads one float32 vector per pooled row from a per-store vector cache beside the hot index. A query is embedded before recall by `Memory.prepare(query)`, which is sync in Python and async in Node. That keeps `recall_outcome` synchronous on both sides. If the backend is off or failing, or a row has no vector, the whole recall is ranked by BM25, byte for byte as before.
 
-**Tech Stack:** Python 3.11+ (`runtime-py`, stdlib only: `urllib.request`, `array`, `hashlib`, `functools`, `threading`); TypeScript on Node ≥ 20 (`runtime-ts`, global `fetch`, `AbortSignal.timeout`, no new dependency); conformance harness `tools/conformance/run.mjs`; pytest; `node --test`; ollama over loopback HTTP (opt-in, never a dependency).
+**Tech Stack:** Python 3.11+ (`runtime-py`, stdlib only: `urllib.request`, `array`, `hashlib`, `functools`, `threading`); TypeScript on Node ≥ 20 (`runtime-ts`, `node:http` request with `agent: false` and a total-deadline timer (never global `fetch`, see Global Constraints), no new dependency); conformance harness `tools/conformance/run.mjs`; pytest; `node --test`; ollama over loopback HTTP (opt-in, never a dependency).
 
 **Spec:** `docs/superpowers/specs/2026-10-17-recall-embedding-design.md` (D1–D10, approved 2026-10-17, commit 6df4084). Deviations this plan had to resolve against the code are listed in `.shiftwork/notes-job71p/P-207.md`.
 
 ## Global Constraints
 
 - Every feature lands in BOTH `runtime-py/` and `runtime-ts/` in the same task, with a conformance case comparing the two. That covers the same tool schema, the same error sentence and the same exit code (CLAUDE.md, "Two runtimes, one surface").
+- **User rulings 2026-10-17 (answers to P-207's open questions; binding):**
+  - Q1: `OLLAMA_HOST=0.0.0.0` (and `::`) counts as loopback, but the request goes to `127.0.0.1` (or `::1`): `parse_host` rewrites the unspecified address before building `base`, so no request ever targets `0.0.0.0`. Spec D7 amended to match.
+  - Q2: the hook-log `scorer` key appears only when embedding is configured, so the off path stays byte-identical to 0.37.0-beta.1.
+  - Q3: the ≤ 100 ms embedding-on budget gates the **Node** hook only (the one that ships). The Python hook's p50 rise is measured and reported in `latency.json` and the note, never a pass/fail line.
+- Orchestrator rule (privacy): the Node HTTP client is `node:http` with `agent: false`, never global `fetch` (proxy env, see Task 2 Step 4); a unit test asserts `embed.ts` contains no `fetch(`.
 - A deliberate divergence costs three things: a row in `docs/porting.md`, a `ruling:` case, and, for a refusal, a second unruled case on the refusal bit. This plan has exactly one: the memory CLI's prog spelling inside the new `vectors:` fix line (Task 4).
 - No new runtime dependency on either side. The npm install stays pure Node, with no Python at runtime (spec D2).
 - The embedding backend is ollama over HTTP and is **opt-in**: `BANTAMKIT_EMBED=ollama`. When it is unset or empty, or holds any other value, embedding is off.
@@ -822,13 +827,16 @@ from bantamkit.memory.embed import config_from_env, parse_host, refused_host_sen
     ("[::1]:8080", "http://[::1]:8080"),
     ("::1", "http://[::1]:11434"),
     ("HTTP://LOCALHOST:1", "http://localhost:1"),
+    ("0.0.0.0", "http://127.0.0.1:11434"),
+    ("0.0.0.0:9", "http://127.0.0.1:9"),
+    ("[::]:8080", "http://[::1]:8080"),
 ])
 def test_loopback_hosts_are_accepted(raw, base):
     assert parse_host(raw)[0] == base
 
 
 @pytest.mark.parametrize("raw", [
-    "0.0.0.0", "10.0.0.1", "example.com", "128.0.0.1", "127.0.0", "127.0.0.256",
+    "10.0.0.1", "example.com", "128.0.0.1", "127.0.0", "127.0.0.256",
     "localhost.evil.com", "[::2]", "ftp://localhost", "localhost:abc", "localhost:0", "localhost:70000",
     "127.0.0.1:１２", "0:0:0:0:0:0:0:1",
 ])
@@ -1020,11 +1028,12 @@ def prepare(config: EmbedConfig, query: str) -> Scorer:
 
 - [ ] **Step 4: Implement `embed.ts`.**
   - The same functions and the same sentences.
-  - `embedTexts` is `async`. It calls `fetch(`${base}/api/embed`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({model, input, keep_alive: KEEP_ALIVE}), signal: AbortSignal.timeout(timeoutMs) })`.
+  - `embedTexts` is `async`. It sends `POST ${base}/api/embed` with `http.request({host, port, path: '/api/embed', method: 'POST', agent: false, headers: {'Content-Type': 'application/json', 'Content-Length': <byte length>}})` from `node:http`, body `JSON.stringify({model, input, keep_alive: KEEP_ALIVE})`. **Never global `fetch`**: on Node ≥ 24, `NODE_USE_ENV_PROXY=1` makes `fetch` honour `HTTP_PROXY`, which would carry fact text off the machine; `node:http` with `agent: false` never consults a proxy (the Python side's `ProxyHandler({})` is the same rule).
+  - One total-deadline timer of `timeoutMs` covers connect, send and the whole response body; when it fires it calls `req.destroy()` with an error whose `name` is `'TimeoutError'`, and the timer is cleared on every exit path.
   - Error mapping:
-    - A thrown error whose `name` (or `cause.name`) is `'TimeoutError'` becomes `timeout`. Any other throw becomes `unreachable`.
-    - `res.status === 404` becomes `no-model`; any other non-2xx becomes `unreachable`.
-    - `await res.json()` runs under the same signal, so a timeout there is `timeout` and a parse error is `unreachable`.
+    - The `'TimeoutError'` above becomes `timeout`. Any other request or socket error becomes `unreachable`.
+    - `statusCode === 404` becomes `no-model`; any other non-2xx becomes `unreachable`.
+    - The body is collected as Buffers, decoded UTF-8 and `JSON.parse`d; a parse error is `unreachable`.
   - The shape checks are those of Python. The client lives in `memory/embed.ts`; check that `runtime-ts/test/selfupdate.test.mjs:676` ("cli.ts is the ONLY module in src/ that reaches this one") still passes, since it pins imports of `selfupdate.js`, not `fetch`.
 
 - [ ] **Step 5: `CosineScorer` and `row_vectors` (`vectors.py`; the Node port is the same)**
@@ -1130,14 +1139,14 @@ def row_vectors(store: Any, pool: Any, model: str) -> list[array | None] | None:
     5. **Timeout:** stub B, `--delay-ms 300`. The answer equals case 4's BM25 reply byte for byte, with `fallback: 'timeout'`.
     6. **Unreachable:** a port taken from a stub that was then killed. The answer is BM25, with `fallback: 'unreachable'`.
     7. **No model:** `BANTAMKIT_EMBED_MODEL=nope` against stub A. The answer is BM25, with `fallback: 'no-model'`.
-    8. **Refused host:** the `host` op over the 21 strings of the Step 2 tables, returning `[base | null]` per string. The table is compared Py vs Node, plus the `refused_host_sentence('10.0.0.1')` bytes (`kind: 'string'`).
+    8. **Refused host:** the `host` op over the 23 strings of the Step 2 tables, returning `[base | null]` per string. The table is compared Py vs Node, plus the `refused_host_sentence('10.0.0.1')` bytes (`kind: 'string'`).
     9. **Refusal bit, unruled:** for `OLLAMA_HOST=10.0.0.1`, both sides report `on: false, refused: '10.0.0.1'`, and the recall's `fallback` is `'refused-host'`.
     10. **Request bytes:** stub A's `--log` file. Each side's query request, parsed as JSON, must be equal. That covers the `input` cut at 2,000 code points for a prompt of 1,999 ASCII characters plus 3 astral emoji, the `model`, and `keep_alive: '30m'`.
     11. **Lone-surrogate description** (Task 1 Step 3): the same visible answer on both sides.
     12. **Py-written cache, Node ranks:** Python fills the cache and Node recalls from that same index dir, and the reverse. Both rankings equal case 1.
 
 - [ ] **Step 9: Prove it guards (rsync copy)**
-  - **M2a:** Node `isLoopback` accepts `0.0.0.0`. Expect red on case 8 only.
+  - **M2a:** Node `parseHost` maps `0.0.0.0` to `http://0.0.0.0:11434` instead of `http://127.0.0.1:11434`. Expect red on case 8 only.
   - **M2b:** Python `prepare` cuts at `QUERY_MAX_CHARS` UTF-16 units: `query.encode('utf-16-le')[:4000].decode('utf-16-le', 'ignore')`. Expect red on case 10.
   - **M2c:** Node `CosineScorer.column` returns cosines of the available rows instead of `null` on a missing vector. Expect red on case 4.
   - **M2d:** Python maps HTTP 404 to `unreachable`. Expect red on case 7.
@@ -1419,6 +1428,7 @@ Run: `git add tools/eval/recall/bar.json && git diff --cached --stat && git comm
     - (c) this branch, embedding on, with the model warmed by one discarded call and the cache full.
   - Pass rules: (b) − (a) ≤ 5 ms, and (c) − (b) ≤ 100 ms.
   - The timeout path is already exercised by the stub (Task 2, case 5).
+  - Also run the same bed through the Python hook (`.venv/bin/python -m bantamkit.mcpserver --hook` on the same payloads; verify the module entry with `-h` first, off and on warm) and record its p50 rise as `py_*` fields: reported only, never a PASS/MISS line (user ruling Q3).
   - Write `latency.json`.
 - [ ] **Step 8: On a MISS (spec §6.7).** Change nothing in product code. The orchestrator stops, records the miss on #207 with the aggregate numbers only, and keeps the bar. Tasks 1–4 stay on the local branch `feat/207-recall-embedding`, unmerged and unpushed. The release branch is cut from `main` with Task 0's commit only (cherry-picked). On a PASS, Task 6 proceeds over all of it.
 - [ ] **Step 9: Commit** `tune_embed.py`, `inject_embed.py` and `bench_embed.mjs` (`eval(recall): #207 embedding view, gate tuning, latency bench`). The numbers go into the note, not the repo.
