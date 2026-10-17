@@ -1636,10 +1636,10 @@ and `"skillAuditBytes": len(skill_line.encode("utf-8")) if skill_line else 0,` a
 - `prompts/get skill_audit` returns `render_report(run_live(home, current_cwd(), now_stamp())) + "\n\n" + TAIL` as one `user` text message. Python home is `Path.home()`; Node home is `homedir()`.
 - `prompts/list` lists both prompts, `bantamkit_status` first.
 - Unknown names are still `Unknown prompt: <name>`, `-32602`.
-- `SERVED_PROMPTS = 2` on both sides, so status line 3 reads `serving 14 tools, 2 prompts, 2 resource templates`.
+- `SERVED_PROMPTS = 2` on both sides, so status line 3 reads `serving 14 tools, 2 prompts, 2 resource templates`. (served-tools: dated — fourteen when this plan was written)
 
 - [ ] **Step 1: Update the pins first, so they fail.** These are the only existing pins this plan changes:
-  - `test_status_surface.py:163` becomes `"serving 14 tools, 2 prompts, 2 resource templates"`.
+  - `test_status_surface.py:163` becomes `"serving 14 tools, 2 prompts, 2 resource templates"`. (served-tools: dated — fourteen when this plan was written)
   - `test_served_tool_count_records.py:502`: the same.
   - `server.test.mjs:1295`: the same.
   - `server.test.mjs:1512`: `assert.equal(advertised.length, 2, 'SERVED_PROMPTS says 2 and the wire must agree')`.
@@ -1699,7 +1699,7 @@ and `"skillAuditBytes": len(skill_line.encode("utf-8")) if skill_line else 0,` a
   - **P1:** Node lists the prompts in the other order.
   - **P2:** Python's guard still refuses `skill_audit`.
   - **P3:** Node's tail drops `ask me before applying it`.
-  - **P4 (symmetric):** both `SERVED_PROMPTS` stay 1. Expect red only on the `server.test`/`test_status_surface` pins and this suite's per-side status-line literal. Add one if absent: line 3 is `serving 14 tools, 2 prompts, 2 resource templates`, per side.
+  - **P4 (symmetric):** both `SERVED_PROMPTS` stay 1. Expect red only on the `server.test`/`test_status_surface` pins and this suite's per-side status-line literal. Add one if absent: line 3 is `serving 14 tools, 2 prompts, 2 resource templates`, per side. (served-tools: dated — fourteen when this plan was written)
 - [ ] **Step 8: Gates, then commit** (`feat(mcp): the skill_audit prompt — gather, audit, report and a proposed diff (#205)`).
 
 ---

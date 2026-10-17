@@ -291,7 +291,7 @@ means an old process. Per-install table: [npm README → Updating](runtime-ts/RE
 
 ## 🧰 What it serves
 
-Both servers serve the same 14 tools, the `bantamkit_status` prompt and two resource templates
+Both servers serve the same 15 tools, the `bantamkit_status` prompt and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
 
 | Tool | What it does |
