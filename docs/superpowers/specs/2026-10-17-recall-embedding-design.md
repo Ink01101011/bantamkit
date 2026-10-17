@@ -5,6 +5,12 @@
 are the user's. Decisions marked **(default)** are the orchestrator's, made where the user did not
 rule, and the user accepted them with the rest of the design.
 
+> **Shipped state (job71, 2026-10-17).** The D8 bar MISSED, so per §6.7 only §1 (the `Scorer` interface
+> and `Bm25fScorer`) ships. The ollama scorer, vector cache, `memory embed`, the status lines and the
+> `BANTAMKIT_EMBED*` / `OLLAMA_HOST` / `EMBED_GATE` surfaces described below were built and measured but
+> are NOT in this tree; they stay on the local `feat/207-recall-embedding` branch. Results:
+> docs/memory.md (#207 note) and the issue.
+
 ## Why round two
 
 #199 shipped a pooled BM25F ranker and missed its predeclared bar. On pooled gold, view B scored
