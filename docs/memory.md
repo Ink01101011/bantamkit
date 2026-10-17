@@ -501,6 +501,32 @@ the script refuses and prints the recipe:
 `git archive 4bab744 runtime-py/src | tar -x -C <dir>`, then
 `PYTHONPATH=<dir>/runtime-py/src`.
 
+**The embedding backend was measured and MISSED; it is not shipped (#207, job71).** Round
+two put recall's scoring call behind a `Scorer` interface (`retrieval.Scorer`,
+`Bm25fScorer`, the shared `BM25F`; Node `Scorer`, `Bm25fScorer`, `BM25F`). `pooled_ranking`
+and `pick_hits` (Node `pooledRanking`, `pickHits`) take a `scorer` that defaults to `BM25F`,
+and `Bm25fScorer` returns the pooled BM25F column byte for byte, so no recall changes.
+This interface is the only part of #207 that ships. The opt-in ollama scorer built on it
+(bge-m3 cosine over every layer, with a vector cache, BM25 fallback and status lines) was
+held to the bar declared in `tools/eval/recall/bar.json` before any number existed:
+precision@inject at least the BM25 view's + 0.05, **and** recall@3 at least the BM25
+view's, on the same pooled gold. All numbers below are **UNVALIDATED** (same judge rule
+as above). They are precision@inject / recall@3 / Thai recall@3 / facts injected over 50 prompts:
+
+| view, pooled gold (50) — UNVALIDATED | p@inject / recall@3 / Thai r@3 / injected |
+|---|---|
+| embedding (view B + cosine, gate 0.6 tuned on silver) | 0.628 / 0.182 / 0.179 / 51 |
+| BM25F, view B as shipped | 0.432 / 0.354 / 0.336 / 139 |
+
+The precision clause holds (+0.196), but recall@3 falls by half, so the bar **misses**.
+The cosine gate that the silver tuning chose injects about a third as often. Two more
+results go against it. At the product's 150 ms query deadline, 3 of 70 silver and 3 of 50
+gold prompts timed out against a warm model. With embedding off, the Node hook p50 rose
+about 6 ms over 0.37.0-beta.1, against a 5 ms limit. That rise is
+in the ollama scorer commit, not in the interface: interleaved, N = 30, 4 repeats, the
+interface alone measures 43.95 ms against beta.1's 44.05 ms. Per spec §6.7 the scorer
+branch stays local and the bar stays where it is.
+
 **Known gaps, stated.** (1) CLOSED by J68-10: spec D5's "ledger not writable" row. An
 append that fails is still lost, but `bantamkit_status` now counts it (`, <n> missed writes`).
 (2) The hook log's `injected[].score` is still the v1 overlap count

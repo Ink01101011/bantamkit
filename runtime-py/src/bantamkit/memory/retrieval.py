@@ -12,7 +12,7 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import repeat
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 # Scripts written WITHOUT spaces between words. Codepoint ranges, not a Unicode-database
 # lookup, so the two runtimes cannot disagree through different Unicode versions.
@@ -244,6 +244,56 @@ def bm25_scores(query: str, docs: list[Doc]) -> list[float]:
     return bm25_pooled(q, len(docs), total, df, rows)
 
 
+class Columns(NamedTuple):
+    """The pooled collection `pooled_ranking` hands a scorer: BM25's inputs, in
+    `bm25_segments` order."""
+
+    q: list[str]
+    n: int
+    total: float
+    df: Mapping[str, int]
+    lengths: list[float]
+    segs: Mapping[str, list[Any]]
+
+
+class Scorer(Protocol):
+    """What ranks the pooled rows (#207 D1). Only the score column changes; gate, weights and
+    the inject cap stay where they are. `column` returns `None` when it cannot score every row;
+    the caller then ranks the whole recall with BM25F and the scorer's `fallback` says why."""
+
+    dense: bool
+    fallback: str | None
+
+    def label(self) -> str: ...
+    def used(self) -> str: ...
+    def floor(self) -> float: ...
+    def column(self, cols: Columns, vecs: list[Any] | None) -> list[float] | None: ...
+
+
+class Bm25fScorer:
+    """Today's scorer, unchanged: `bm25_segments` over the pooled columns."""
+
+    dense = False
+
+    def __init__(self, fallback: str | None = None) -> None:
+        self.fallback = fallback
+
+    def label(self) -> str:
+        return "bm25f"
+
+    def used(self) -> str:
+        return "bm25f"
+
+    def floor(self) -> float:
+        return GATE_FLOOR  # a call-time read: tune.py rebinds the module global
+
+    def column(self, cols: Columns, vecs: list[Any] | None) -> list[float]:
+        return bm25_segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs)
+
+
+BM25F = Bm25fScorer()
+
+
 # ------------------------------------------------------------------ the gate and the ranker
 #
 # D3: the GATE decides eligibility on relevance alone; the WEIGHTS only order what passed.
@@ -346,15 +396,20 @@ def rank(
     return [k[3] for k in keyed]
 
 
-def rank_columns(scores: list[float], weights: list[float], ratio: float = GATE_RATIO) -> list[int]:
+def rank_columns(
+    scores: list[float], weights: list[float], ratio: float = GATE_RATIO, floor: float | None = None
+) -> list[int]:
     """`rank` over columns: the ids `gate` admits, best first by `(-final, id)`.
+
+    `floor` is the scorer's absolute floor (#207: `Scorer.floor()`); `None` reads `GATE_FLOOR`
+    at call time.
 
     Equal to `rank` when ids run in `(layer_order, name)` order, which is how the pooled
     columns are laid out (each layer's docs in name order, layers in order): the sort is
     stable and `reverse` keeps equal keys in input order, so a tie goes to the smaller id.
     """
     best = max(scores, default=0.0)
-    least = max(GATE_FLOOR, ratio * best)
+    least = max(GATE_FLOOR if floor is None else floor, ratio * best)
     admitted = [i for i, x in enumerate(scores) if x > 0.0 and x >= least]
     # Every row's final, at C speed; only the admitted ones are read.
     final = list(map(round, map(operator.mul, scores, weights), repeat(SCORE_ROUND, len(scores))))

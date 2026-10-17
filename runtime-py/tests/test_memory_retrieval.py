@@ -212,3 +212,52 @@ def test_rank_columns_is_rank_over_layer_then_name_ordered_items():
         assert rank_columns(scores, [weight(c, usage) for c in items], ratio) == rank(
             items, scores, usage, ratio
         )
+
+
+# ------------------------------------------------------------------ #207 D1: the Scorer interface
+
+from bantamkit.memory import retrieval  # noqa: E402
+from bantamkit.memory.retrieval import (  # noqa: E402
+    BM25F,
+    Bm25fScorer,
+    Columns,
+    bm25_segments,
+    rank_columns,
+)
+
+
+def test_bm25f_scorer_column_is_bm25_segments():
+    cols = Columns(["a"], 3, 6.0, {"a": 2}, [2.0, 2.0, 2.0], {"a": [0, 2, 2.0]})
+    assert BM25F.column(cols, None) == bm25_segments(*cols)
+    assert BM25F.dense is False and BM25F.fallback is None
+    assert BM25F.label() == "bm25f" and BM25F.used() == "bm25f"
+
+
+def test_bm25f_floor_reads_gate_floor_at_call_time(monkeypatch):
+    monkeypatch.setattr(retrieval, "GATE_FLOOR", 1.5)
+    assert BM25F.floor() == 1.5
+
+
+def test_fallback_scorer_reports_bm25f_and_its_reason():
+    s = Bm25fScorer("timeout")
+    assert s.used() == "bm25f" and s.fallback == "timeout"
+
+
+def test_rank_columns_explicit_floor_overrides_gate_floor():
+    assert rank_columns([0.3, 0.6, 0.0], [1.0, 1.0, 1.0], 0.0, 0.5) == [1]
+    assert rank_columns([0.3, 0.6, 0.0], [1.0, 1.0, 1.0], 0.0) == [1, 0]
+
+
+def test_pooled_ranking_honours_a_rebound_gate_floor(monkeypatch):
+    # tune.py rebinds retrieval.GATE_FLOOR between grid points; the scorer must read it per call.
+    from bantamkit.memory.store import Fact, pool_of, pooled_ranking
+
+    facts = [
+        Fact("alpha-one", "alpha bravo", "project", "", [], None),
+        Fact("beta-two", "alpha", "project", "", [], None),
+    ]
+    q = ["alpha", "bravo"]
+    every = list(pooled_ranking([pool_of(facts, q)], q, 0.0, dict))
+    assert len(every) == 2
+    monkeypatch.setattr(retrieval, "GATE_FLOOR", 10.0)
+    assert list(pooled_ranking([pool_of(facts, q)], q, 0.0, dict)) == []

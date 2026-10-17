@@ -50,13 +50,15 @@ import type { Fact, FactValue } from './factfile.js';
 import { extraOf, formatFact, parseFrontmatter, pyList, pySplit, pyStrip, pyTruthy, todayLocal } from './factfile.js';
 import { PyScalar } from './pyyaml.js';
 import {
-  bm25Segments,
+  BM25F,
+  type Columns,
   docTerms,
   FIELD_BOOST,
   GATE_RATIO,
   lengthOf,
   queryTerms,
   rankColumns,
+  type Scorer,
   stale,
   tokenizeV2,
   weightOf,
@@ -662,6 +664,10 @@ export function poolOf(facts: readonly Fact[], q: readonly string[]): Pool {
  * is the pool's position; a `null` pool (a layer that could not be read) holds nothing. Scored
  * and sorted when called; each pair is spelled only when the caller reaches it. `usage` is
  * called only when some row holds a query term. The reference's `pooled_ranking`.
+ *
+ * A dense scorer (`scorer.dense`) skips the term-hit early exit, reads one vector per row
+ * through `rows(layer, pool)`, and when its `column` cannot score every row (`null`) the whole
+ * recall is ranked by BM25F, with BM25F's floor: scores are never mixed (#207 D1, D6).
  */
 export function* pooledRanking(
   pools: ReadonlyArray<Pool | null>,
@@ -669,12 +675,15 @@ export function* pooledRanking(
   ratio: number,
   usage: () => ReadonlyMap<string, number>,
   context: ReadonlyMap<string, number> | null = null,
+  scorer: Scorer = BM25F,
+  rows: RowsOf | null = null,
 ): Generator<[number, number]> {
   const live: Array<[number, Pool]> = [];
   pools.forEach((p, i) => {
     if (p !== null) live.push([i, p]);
   });
-  if (!live.some(([, p]) => q.some((t) => (p.segs.get(t)?.length ?? 0) > 0))) return;
+  const anyHit = (): boolean => live.some(([, p]) => q.some((t) => (p.segs.get(t)?.length ?? 0) > 0));
+  if (!scorer.dense && !anyHit()) return;
   let n = 0;
   let total = 0;
   const df = new Map<string, number>(q.map((t) => [t, 0]));
@@ -696,16 +705,40 @@ export function* pooledRanking(
     }
     for (const x of p.lengths) lengths.push(x);
   }
-  const scores = bm25Segments(q, n, total, df, lengths, segs);
+  const cols: Columns = { q, n, total, df, lengths, segs };
+  let scores = scorer.dense ? scorer.column(cols, rowVectors(live, rows)) : null;
+  let floor: number;
+  if (scores === null) {
+    if (scorer.dense && !anyHit()) return;
+    scores = BM25F.column(cols);
+    floor = BM25F.floor();
+  } else {
+    floor = scorer.floor();
+  }
   const used = usage();
   const weights: number[] = [];
   for (const [, p] of live) for (const w of poolWeights(p, used, context)) weights.push(w);
-  const order = rankColumns(scores, weights, ratio);
+  const order = rankColumns(scores, weights, ratio, floor);
   for (const g of order) {
     let at = starts.length - 1;
     while (starts[at]! > g) at -= 1;
     yield [live[at]![0], g - starts[at]!];
   }
+}
+
+/** One vector per row of the live pool at that layer index, or `null` when the layer cannot say. */
+export type RowsOf = (layer: number, pool: Pool) => Array<Float32Array | null> | null;
+
+/** One vector per pooled row, layer by layer, or `null` when any layer cannot say. */
+function rowVectors(live: ReadonlyArray<[number, Pool]>, rows: RowsOf | null): Array<Float32Array | null> | null {
+  if (rows === null) return null;
+  const out: Array<Float32Array | null> = [];
+  for (const [i, p] of live) {
+    const got = rows(i, p);
+    if (got === null || got.length !== p.names.length) return null;
+    for (const v of got) out.push(v);
+  }
+  return out;
 }
 
 /** Anything `pickHits` can ask to stand a pooled row back up as a fact. */
@@ -730,6 +763,8 @@ export function pickHits(
   repool: (i: number) => Pool,
   dedupe = false,
   context: ReadonlyMap<string, number> | null = null,
+  scorer: Scorer = BM25F,
+  rows: RowsOf | null = null,
 ): Array<[number, Fact]> {
   let memo: ReadonlyMap<string, number> | null = null;
   const weights = (): ReadonlyMap<string, number> => (memo ??= usage());
@@ -738,7 +773,7 @@ export function pickHits(
     const out: Array<[number, Fact]> = [];
     const seen = new Set<string>();
     let redo: number | null = null;
-    for (const [layer, row] of pooledRanking(live, q, ratio, weights, context)) {
+    for (const [layer, row] of pooledRanking(live, q, ratio, weights, context, scorer, rows)) {
       if (k >= 0 && out.length >= k) break;
       const fact = stores[layer]!.resolve(live[layer]!, row);
       if (fact === null) {

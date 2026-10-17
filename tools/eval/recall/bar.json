@@ -21,5 +21,20 @@
     "agreement_min": 0.9,
     "kappa_min": 0.6,
     "on_miss": "gold is still the calibrated judge's labels on the 40 plus the user's 10, but every gold number is reported UNVALIDATED and no gold bar line may read PASS"
+  },
+  "embedding": {
+    "declared": "2026-10-17",
+    "spec": "docs/superpowers/specs/2026-10-17-recall-embedding-design.md",
+    "pass": "embedding view precision@inject >= BM25 view precision@inject + 0.05 AND embedding view recall@3 >= BM25 view recall@3, both on the same pooled gold",
+    "precision_at_inject_margin_over_bm25": 0.05,
+    "recall_at_3_min": "bm25_view_same_pooled_gold",
+    "bar_199_precision_at_inject_min_still_reported": 0.8,
+    "hook_p50_rise_ms_max_embedding_on_warm": 100.0,
+    "query_embed_timeout_ms": 150,
+    "hook_p50_rise_ms_max_embedding_off": 5.0,
+    "embed_gate_tuned_on": "silver only; frozen in tuning-embed.json before gold is scored",
+    "gold_is_held_out": true,
+    "gold_is_unvalidated": true,
+    "on_miss": "ship the Scorer refactor only; OllamaScorer stays on a local branch; record the miss on #207; the bar does not move"
   }
 }

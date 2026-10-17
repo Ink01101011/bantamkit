@@ -6,6 +6,8 @@ import './_sandbox.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BM25F,
+  Bm25fScorer,
   bm25Pooled,
   bm25Scores,
   docTerms,
@@ -239,4 +241,21 @@ test('rankColumns is rank over layer-then-name ordered items', () => {
       rank(items, scores, usage, ratio),
     );
   }
+});
+
+// #207 D1: the Scorer interface.
+test('BM25F column is bm25Segments, floor read at call time', () => {
+  const cols = { q: ['a'], n: 3, total: 6, df: new Map([['a', 2]]), lengths: [2, 2, 2], segs: new Map([['a', [0, 2, 2]]]) };
+  assert.deepEqual(BM25F.column(cols, null), bm25Segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs));
+  assert.equal(BM25F.dense, false);
+  assert.equal(BM25F.fallback, null);
+  assert.equal(BM25F.label(), 'bm25f');
+  assert.equal(BM25F.used(), 'bm25f');
+  assert.equal(BM25F.floor(), 0);
+  assert.equal(new Bm25fScorer('timeout').used(), 'bm25f');
+  assert.equal(new Bm25fScorer('timeout').fallback, 'timeout');
+});
+test('rankColumns explicit floor', () => {
+  assert.deepEqual(rankColumns([0.3, 0.6, 0], [1, 1, 1], 0, 0.5), [1]);
+  assert.deepEqual(rankColumns([0.3, 0.6, 0], [1, 1, 1], 0), [1, 0]);
 });
