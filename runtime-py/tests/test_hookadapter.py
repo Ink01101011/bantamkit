@@ -2328,3 +2328,151 @@ def test_ups_builds_no_context_while_it_cannot_move_the_reply(tmp_path, monkeypa
     assert built == skipped
     recs = [x for x in _log_lines(home) if x.get("event") == "UserPromptSubmit"]
     assert "context" not in recs[-2] and recs[-1]["context"] == 1
+
+
+# --- #207 amendment 3: the short-prompt session head (Q3) and the queries nudge (Q8) --------
+
+from bantamkit import hookadapter as H  # noqa: E402
+
+
+def _TEXT(text):  # noqa: N802 - a record-builder, spelled like the block it builds
+    return {"type": "text", "text": text}
+
+
+def _rec(text=None, *, content=None, **kw):
+    r = {"type": "user", "message": {"content": text if content is None else content}, **kw}
+    return json.dumps(r, ensure_ascii=False)
+
+
+def test_the_head_constants():
+    assert (H.HEAD_SHORT, H.HEAD_CUT, H.TAIL_BYTES) == (80, 500, 262144)
+
+
+def test_previous_prompt_rules(tmp_path):
+    t = tmp_path / "t.jsonl"
+    t.write_text(
+        "\n".join(
+            [
+                _rec("first prompt"),
+                _rec("side", isSidechain=True),
+                _rec("meta", isMeta=True),
+                _rec("<command-name>/clear</command-name>"),
+                _rec("[Request interrupted by user]"),
+                _rec(content=[{"type": "tool_result", "content": "x"}]),
+                json.dumps({"type": "assistant", "message": {"content": "hi"}}),
+                _rec(content=[_TEXT("  second "), _TEXT("part")]),
+                "not json",
+                _rec("current"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert H._previous_prompt(str(t), "current") == "second \npart"
+    assert H._previous_prompt(str(t), "  current ") == "second \npart"  # compared stripped
+    assert H._previous_prompt(str(t), "other") == "current"
+
+
+def test_previous_prompt_drops_every_trailing_copy_of_the_current_prompt(tmp_path):
+    t = tmp_path / "t.jsonl"
+    t.write_text("\n".join([_rec("before"), _rec("now"), _rec(" now ")]) + "\n", encoding="utf-8")
+    assert H._previous_prompt(str(t), "now") == "before"
+    t.write_text("\n".join([_rec("now"), _rec("before")]) + "\n", encoding="utf-8")
+    assert H._previous_prompt(str(t), "now") == "before"  # not yet written: the last one
+
+
+def test_previous_prompt_drops_the_partial_first_line_of_the_tail(tmp_path):
+    t = tmp_path / "t.jsonl"
+    head = _rec("x" * (H.TAIL_BYTES + 10))  # this whole line straddles the 256 KiB boundary
+    t.write_text(head + "\n" + _rec("kept") + "\n", encoding="utf-8")
+    assert H._previous_prompt(str(t), "now") == "kept"
+    t.write_text(head + "\n", encoding="utf-8")
+    assert H._previous_prompt(str(t), "now") == ""
+    # a prompt that starts before the tail is not read, even when its line ends inside it
+    t.write_text(_rec("y" * 100) + "\n" + "z" * (H.TAIL_BYTES - 10) + "\n", encoding="utf-8")
+    assert H._previous_prompt(str(t), "now") == ""
+
+
+def test_previous_prompt_never_raises(tmp_path):
+    assert H._previous_prompt(str(tmp_path / "missing.jsonl"), "x") == ""
+    assert H._previous_prompt(str(tmp_path), "x") == ""  # a directory
+    assert H._previous_prompt("", "x") == ""
+    t = tmp_path / "bad.jsonl"
+    t.write_bytes(b"\xff\xfe\n" + _rec("ok").encode("utf-8") + b"\n")
+    assert H._previous_prompt(str(t), "x") == "ok"
+
+
+def test_head_query_only_for_short_prompts(tmp_path):
+    t = tmp_path / "t.jsonl"
+    t.write_text(_rec("p" * 600) + "\n", encoding="utf-8")
+    assert H._head_query("ok?", str(t)) == "ok?\n" + "p" * 500
+    assert H._head_query("x" * 79, str(t)) is not None
+    assert H._head_query("x" * 80, str(t)) is None
+    assert H._head_query("\U0001F414" * 79, str(t)) is not None  # 79 code points, 158 UTF-16 units
+    assert H._head_query("\U0001F414" * 80, str(t)) is None
+    assert H._head_query("ok?", str(tmp_path / "none.jsonl")) is None
+    assert H._head_query("ok?", "") is None
+
+
+def test_a_short_prompt_borrows_the_previous_prompt_for_its_recall(tmp_path):
+    home, cwd = _bed(tmp_path, "head")
+    _save(
+        cwd / ".bantamkit" / "memory",
+        "reference",
+        "conformance-gate",
+        "the gate is zero failures, never a total",
+        "body",
+    )
+    t = tmp_path / "head" / "t.jsonl"
+    t.write_text(_rec("what does the conformance gate demand") + "\n", encoding="utf-8")
+    prompt = "and how do I run that?"
+    with_head = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": prompt, "transcript_path": str(t)},
+        home=home,
+        cwd=cwd,
+    )
+    assert with_head.returncode == 0, with_head.stderr
+    ctx = json.loads(with_head.stdout.decode())["hookSpecificOutput"]["additionalContext"]
+    assert "[conformance-gate]" in ctx
+    without = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": prompt}, home=home, cwd=cwd,
+        session="another-session",
+    )
+    assert without.returncode == 0, without.stderr
+    assert without.stdout == b""
+    missing = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": prompt,
+         "transcript_path": str(tmp_path / "nope.jsonl")},
+        home=home, cwd=cwd, session="third-session",
+    )
+    assert missing.returncode == 0 and missing.stdout == b"" and missing.stderr == b""
+
+
+_NUDGE = (
+    "[bantamkit] 1 of 1 facts have no likely-prompt queries yet; call "
+    "mcp__bantamkit__memory_queries with {} to list them and write their queries."
+)
+
+
+def test_session_start_nudges_while_a_fact_has_no_queries(tmp_path, monkeypatch):
+    home, cwd = _bed(tmp_path, "nudge")
+    start = {"hook_event_name": "SessionStart", "source": "startup"}
+
+    def ctx() -> str:
+        done = _run_hook(start, home=home, cwd=cwd)
+        assert done.returncode == 0, done.stderr
+        return json.loads(done.stdout.decode())["hookSpecificOutput"]["additionalContext"]
+
+    assert "likely-prompt queries" not in ctx()  # zero facts: no line
+    store = cwd / ".bantamkit" / "memory"
+    _save(store, "project", "the-project-fact", "what this checkout is for", "body")
+    got = ctx()
+    assert _NUDGE in got
+    assert got.index("[bantamkit] Toolbox is live") < got.index(_NUDGE)
+    from bantamkit.memory.component import Memory
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    w = Memory(store).queries_write([{"name": "the-project-fact", "queries": ["what is it"]}])
+    assert w["result"] == "written"
+    assert "likely-prompt queries" not in ctx()
