@@ -8,8 +8,9 @@
  * fact file when written>}}}`. Derived from nothing and owned by nobody's facts: deleting it
  * loses recall quality only. `BANTAMKIT_INDEX_DIR` does not move it, because it is not an index.
  *
- * Read with `parseJson` (Python's `json.loads`: `1.0` and `true` are not the int 1) over a
- * FATAL UTF-8 decode (Python's strict decode). Written with Python's `dumps` options
+ * Read with `parseJson` (Python's `json.loads`: `1.0` and `true` are not the int 1) over
+ * `pyDecodeUtf8` (Python's strict decode: a leading BOM is kept as U+FEFF, so the parse refuses
+ * it and the sidecar is malformed, as in the reference). Written with Python's `dumps` options
  * (sorted keys by code point, `ensure_ascii=False`, compact) under the storage lock, through a
  * `<name>.<pid>.tmp` file and a rename. A text Python's UTF-8 encoder would refuse (a lone
  * surrogate) is refused here too rather than written as U+FFFD.
@@ -22,6 +23,7 @@ import { dumpJson, encodeBasestringAscii, parseJson, type PyValue } from '../pyj
 import { cmpCodepoint } from '../pysem.js';
 import { INDEX_DIR_ENV, sha16 } from '../storage/hotindex.js';
 import { exclusive } from '../storage/lock.js';
+import { pyDecodeUtf8 } from './pyfs.js';
 import { stripNospace, tokenizeV2 } from './retrieval.js';
 import { loneSurrogate, MemoryValidationError } from './store.js';
 
@@ -60,8 +62,9 @@ function docOf(p: string): Dict | null {
 function docOfBytes(raw: Uint8Array): Dict | null {
   let doc: PyValue;
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(raw);
-    doc = parseJson(text);
+    // `pyDecodeUtf8`, the package's one UTF-8 decode: strict, and a leading BOM is KEPT as
+    // U+FEFF, so `parseJson` refuses it as `json.loads` does and the sidecar is malformed.
+    doc = parseJson(pyDecodeUtf8(raw));
   } catch {
     return null;
   }
@@ -188,7 +191,7 @@ function cached(p: string, sha: string): Map<string, Row> | null {
   let doc: unknown;
   try {
     // The BOM is KEPT, so it fails the parse as Python's `json.loads` fails on it.
-    doc = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(p)));
+    doc = JSON.parse(pyDecodeUtf8(fs.readFileSync(p)));
   } catch {
     return null;
   }
@@ -230,7 +233,8 @@ const pyInt = (n: number): PyValue => ({ t: 'int', v: BigInt(n) });
 function sidecarEntries(raw: Uint8Array): Map<string, string[]> {
   let text: string;
   try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+    // A BOM is kept (U+FEFF), so `JSON.parse` and the reference path both refuse it (J72-31).
+    text = pyDecodeUtf8(raw);
   } catch {
     return new Map();
   }

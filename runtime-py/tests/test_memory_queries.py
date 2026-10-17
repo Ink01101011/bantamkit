@@ -138,6 +138,22 @@ def test_invalid_utf8_reads_as_absent(tmp_path):
     assert Q.read_sidecar(p) == {}
 
 
+def test_a_bom_sidecar_is_malformed_read_ranked_and_replaced(tmp_path, monkeypatch):
+    # J72-31: the utf-8 codec keeps a leading BOM as U+FEFF and json.loads refuses it, so the
+    # sidecar is malformed everywhere: no entries, no terms, and a write replaces it. The port
+    # answers the same (`a BOM sidecar is malformed` in queries.test.mjs).
+    monkeypatch.setenv("BANTAMKIT_INDEX_DIR", str(tmp_path / "idx"))
+    home, root = tmp_path / "h", tmp_path / "store"
+    root.mkdir()
+    p = Q.sidecar_path(home, root)
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b'\xef\xbb\xbf{"facts":{"a":{"queries":["deploy staging"],"sha":""}},"v":1}')
+    assert Q.read_sidecar(p) == {}
+    assert Q.layer_terms(home, root) == {}
+    Q.write_entries(p, {"b": (["y"], "s")})
+    assert p.read_bytes() == b'{"facts":{"b":{"queries":["y"],"sha":"s"}},"v":1}'
+
+
 def test_missing_sidecar_reads_as_absent(tmp_path):
     assert Q.read_sidecar(tmp_path / "nope.json") == {}
     assert Q.read_sidecar(tmp_path) == {}  # a directory

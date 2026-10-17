@@ -225,6 +225,29 @@ test('malformed entries are skipped one by one', () => {
   assert.deepEqual(Q.readSidecar(p), new Map([['d', ['ok']]]));
 });
 
+test('a BOM sidecar is malformed: read, ranked and replaced', () => {
+  // J72-31: the BOM is kept (pyDecodeUtf8, ignoreBOM: true), so the parse refuses it as
+  // json.loads does (`test_a_bom_sidecar_is_malformed_read_ranked_and_replaced`).
+  const t = scratch();
+  const home = join(t, 'h');
+  const root = join(t, 'store');
+  mkdirSync(root);
+  const before = process.env.BANTAMKIT_INDEX_DIR;
+  process.env.BANTAMKIT_INDEX_DIR = join(t, 'idx');
+  try {
+    const p = Q.sidecarPath(home, root);
+    mkdirSync(join(home, '.bantamkit', 'queries'), { recursive: true });
+    writeFileSync(p, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"facts":{"a":{"queries":["deploy staging"],"sha":""}},"v":1}')]));
+    assert.deepEqual(Q.readSidecar(p), new Map());
+    assert.deepEqual(Q.layerTerms(home, root), new Map());
+    Q.writeEntries(p, new Map([['b', [['y'], 's']]]));
+    assert.equal(readFileSync(p, 'latin1'), '{"facts":{"b":{"queries":["y"],"sha":"s"}},"v":1}');
+  } finally {
+    if (before === undefined) delete process.env.BANTAMKIT_INDEX_DIR;
+    else process.env.BANTAMKIT_INDEX_DIR = before;
+  }
+});
+
 test('invalid utf8 reads as absent', () => {
   const p = join(scratch(), 'q.json');
   writeFileSync(p, Buffer.concat([Buffer.from('{"v":1,"facts":{"a":{"queries":["'), Buffer.from([0xff]), Buffer.from('"]}}}')]));

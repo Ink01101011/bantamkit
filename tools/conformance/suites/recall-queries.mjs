@@ -85,6 +85,14 @@ const S9 = 'the sidecar could not be saved';
 const S10 = (n, m) => `queries: ${n} of ${m} facts`;
 const S11 = 'queries: unavailable';
 
+/**
+ * sidecar/bom (J72-31), measured on the reference at c83bb2c: with the project sidecar refused,
+ * only the native sidecar's entry counts (shared-name's native copy is shadowed by the project
+ * one), and a write of one fact over it leaves 7 of the 9 facts with no queries.
+ */
+const BOM_COVERAGE = [1, 9];
+const BOM_WRITE = { result: 'written', written: 1, remaining: 7 };
+
 function literalCases(pySide, nodeSide, label, expected, kind = 'json') {
   return [
     { name: `${label} — python`, kind, expected, actual: pySide },
@@ -575,6 +583,87 @@ export async function run(ctx) {
     });
     const view = (m) => m.map(([k, v]) => [unb64(k), v.map(unb64)]);
     cases.push(...literalCases(view(pr.maps.at(-1)), view(nr.maps.at(-1)), 'sidecar/malformed: LITERAL a bad entry is skipped one by one', [['d', ['ok']], ['ไทย', ['วิธี deploy', 'how']]]));
+  }
+
+  // ================================================================ sidecar/bom (J72-31)
+  // A sidecar whose bytes start with a UTF-8 BOM (EF BB BF: a hand edit in a Windows editor).
+  // CPython's utf-8 codec keeps it as U+FEFF and `json.loads` refuses it, so the reference
+  // reads that sidecar as MALFORMED: no entries, no coverage, a cache of nothing, and a write
+  // that replaces it. The port decodes through `pyDecodeUtf8` (`ignoreBOM: true`) and must
+  // answer the same. Per side, each answer is ALSO held against the same bed with the project
+  // sidecar deleted, and typed: a change that made both sides strip the BOM alike leaves the
+  // differentials green and reddens those.
+  {
+    const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+    const SIDES = ['py', 'node'];
+    const bom = mixedBed(join(root, 'bom'));
+    const ref = mixedBed(join(root, 'bom-ref'));
+    for (const side of SIDES) {
+      const p = sidecarOf(bom.homes[side], bom.project);
+      writeFileSync(p, Buffer.concat([BOM, readFileSync(p)]));
+      rmSync(sidecarOf(ref.homes[side], ref.project));
+    }
+    const bomPath = (side) => sidecarOf(bom.homes[side], bom.project);
+    if (!SIDES.every((side) => readFileSync(bomPath(side)).subarray(0, 3).equals(BOM))) {
+      throw new Error('recall-queries: the BOM sidecar bed lost its BOM');
+    }
+
+    // read: readSidecar of the BOM file.
+    const pr = py(ctx, sideEnv(bom.root, 'py', bom.homes.py), { op: 'read_sidecar', paths: [bomPath('py')] });
+    const nr = nodeRead([bomPath('node')]);
+    cases.push({ name: 'sidecar/bom: read — python against node', kind: 'json', expected: pr.maps, actual: nr.maps });
+    cases.push(...literalCases(pr.maps[0], nr.maps[0], 'sidecar/bom: LITERAL a BOM-prefixed sidecar reads as no sidecar', []));
+
+    // coverage and the missing list (what S10 and S12 count), against the no-project-sidecar bed.
+    const qreq = (bed) => ({ op: 'queries', project: bed.project, profile: bed.profile, native: bed.native, calls: [{ do: 'coverage' }, { do: 'missing' }] });
+    const qview = (o) => [o[0], { result: o[1].result, remaining: o[1].remaining, facts: o[1].facts.map((f) => [f.layer, f.name]) }];
+    const pq = qview(py(ctx, sideEnv(bom.root, 'py', bom.homes.py), qreq(bom)).out);
+    const nq = qview(nodeQueries(sideEnv(bom.root, 'node', bom.homes.node), qreq(bom)).out);
+    const pqRef = qview(py(ctx, sideEnv(ref.root, 'py', ref.homes.py), qreq(ref)).out);
+    const nqRef = qview(nodeQueries(sideEnv(ref.root, 'node', ref.homes.node), qreq(ref)).out);
+    cases.push({ name: 'sidecar/bom: coverage and the missing list — python against node', kind: 'json', expected: pq, actual: nq });
+    cases.push({ name: 'sidecar/bom: coverage and the missing list equal the bed with no project sidecar, per side', kind: 'json', expected: { py: pqRef, node: nqRef }, actual: { py: pq, node: nq } });
+    cases.push(...literalCases(pq[0], nq[0], 'sidecar/bom: LITERAL coverage counts the native sidecar only', BOM_COVERAGE));
+
+    // rank: the BOM sidecar contributes nothing, so the answer is the no-project-sidecar answer.
+    const { p: bp, n: bn } = rankBoth(bom);
+    const { p: rp, n: rn } = rankBoth(ref);
+    const view = (r) => ({ inject: names(r.inject), rank: names(r.rank), reply: unb64(r.reply), status: r.status });
+    PROMPTS.forEach((pp, i) => {
+      cases.push({ name: `sidecar/bom: rank ${JSON.stringify(pp.prompt)} — python against node`, kind: 'json', expected: view(bp.results[i]), actual: view(bn.results[i]) });
+      cases.push({
+        name: `sidecar/bom: rank ${JSON.stringify(pp.prompt)} — equals the bed with no project sidecar, per side`,
+        kind: 'json',
+        expected: { py: view(rp.results[i]), node: view(rn.results[i]) },
+        actual: { py: view(bp.results[i]), node: view(bn.results[i]) },
+      });
+    });
+    // "why so slow" reaches hook-latency through its project queries only.
+    cases.push(...literalCases(names(bp.results[1].inject), names(bn.results[1].inject), 'sidecar/bom: LITERAL "why so slow" injects nothing over a BOM sidecar', []));
+
+    // the derived cache of a BOM sidecar holds no facts: the same bytes on both sides.
+    const key = createHash('sha256').update(realpathSync.native(bom.project), 'utf8').digest('hex').slice(0, 16);
+    const cache = (side) => {
+      const p = join(bom.root, `idx-${side}`, `${key}.qterms.json`);
+      return existsSync(p) ? readFileSync(p, 'latin1') : null;
+    };
+    const sha1 = (side) => createHash('sha1').update(readFileSync(bomPath(side))).digest('hex');
+    cases.push({ name: 'sidecar/bom: the project cache, python bytes against node bytes', kind: 'json', expected: cache('py'), actual: cache('node') });
+    cases.push(
+      { name: 'sidecar/bom: LITERAL the project cache holds no facts — python', kind: 'json', expected: `{"facts":{},"sidecar":"${sha1('py')}","v":1}`, actual: cache('py') },
+      { name: 'sidecar/bom: LITERAL the project cache holds no facts — node', kind: 'json', expected: `{"facts":{},"sidecar":"${sha1('node')}","v":1}`, actual: cache('node') },
+    );
+
+    // write: a memory_queries write over the BOM sidecar replaces it, as any malformed one.
+    const good = { name: 'gate-rule', queries: ['zero failures'] };
+    const wreq = { op: 'queries', project: bom.project, profile: bom.profile, native: bom.native, calls: [{ do: 'write', facts: [good] }] };
+    const pw = py(ctx, sideEnv(bom.root, 'py', bom.homes.py), wreq).out[0];
+    const nw = nodeQueries(sideEnv(bom.root, 'node', bom.homes.node), wreq).out[0];
+    const after = (side) => (existsSync(bomPath(side)) ? readFileSync(bomPath(side), 'utf8') : null);
+    cases.push({ name: 'sidecar/bom: write-merge — answer and the sidecar bytes after it, python against node', kind: 'json', expected: { out: pw, sidecar: after('py') }, actual: { out: nw, sidecar: after('node') } });
+    const factSha = createHash('sha1').update(readFileSync(join(bom.project, 'facts', 'gate-rule.md'))).digest('hex');
+    cases.push(...literalCases(after('py'), after('node'), 'sidecar/bom: LITERAL a write replaces the BOM sidecar (its old entries are not merged)', `{"facts":{"gate-rule":{"queries":["zero failures"],"sha":"${factSha}"}},"v":1}`));
+    cases.push(...literalCases(pw, nw, 'sidecar/bom: LITERAL the write answer', BOM_WRITE));
   }
 
   // ======================================================================= head (8-11)
