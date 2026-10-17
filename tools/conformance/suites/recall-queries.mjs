@@ -35,7 +35,7 @@
  * the reference refuses to run with a `HOME` outside the scratch.
  */
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -231,6 +231,10 @@ export async function run(ctx) {
   const queries = await import(dist('memory/queries.js'));
   const hook = await import(dist('hookadapter.js'));
   const { pyText } = await import(dist('memory/store.js'));
+  const { cmpCodepoint } = await import(dist('pysem.js'));
+  // One `QueryScorer` row as the ref writes it: `null` (no entry), or the tokenized qdoc.
+  const rowView = (r) =>
+    r === null ? null : [bits(r[1]), [...r[0].keys()].sort(cmpCodepoint).map((t) => [b64(t), bits(r[0].get(t))])];
 
   // The Node half of the ref's `QueryScorer.column` hook: the same three columns, recorded.
   const TRACE = [];
@@ -239,7 +243,7 @@ export async function run(ctx) {
     const col = column.call(this, cols, vecs);
     if (vecs !== null && col !== null) {
       const a = retrieval.bm25Segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs);
-      TRACE.push({ vecs: vecs.map((v) => b64(v)), a: a.map(bits), col: col.map(bits) });
+      TRACE.push({ vecs: vecs.map(rowView), a: a.map(bits), col: col.map(bits) });
     }
     return col;
   };
@@ -359,7 +363,7 @@ export async function run(ctx) {
     let exact = 0;
     for (const t of r.trace) {
       t.vecs.forEach((v, j) => {
-        if (unb64(v) !== '') return;
+        if (v !== null) return;
         rows += 1;
         if (t.col[j] === t.a[j]) exact += 1;
       });
@@ -435,6 +439,100 @@ export async function run(ctx) {
       });
     });
     cases.push(...literalCases(bp.results.every((r) => r.trace.length === 0), bn.results.every((r) => r.trace.length === 0), 'rank/no-sidecar-is-b: LITERAL no sidecar never builds a QueryScorer', true));
+  }
+
+  // ============================================================ the term cache (J72-30)
+  // A DERIVED cache of each sidecar's tokenized qdocs, beside the hot index (Q9 latency). Both
+  // sides build it from the same sidecar bytes, byte for byte; each reads the other's; a cache
+  // of other sidecar bytes, a malformed one and a missing one are rebuilt, never used.
+  {
+    const bed = mixedBed(join(root, 'terms'));
+    const key = (store) => createHash('sha256').update(realpathSync.native(store), 'utf8').digest('hex').slice(0, 16);
+    // The path, derived HERE from the rule (`<index dir>/<sha16(realpath(root))>.qterms.json`).
+    const cacheOf = (side, store) => join(bed.root, `idx-${side}`, `${key(store)}.qterms.json`);
+    const bytesOf = (p) => (existsSync(p) ? readFileSync(p).toString('base64') : null);
+    const stamp = (p) => {
+      if (!existsSync(p)) return null; // a cache that was never written is not "unchanged"
+      const st = statSync(p, { bigint: true });
+      return `${st.ino}:${st.mtimeNs}`;
+    };
+    const sha1 = (p) => createHash('sha1').update(readFileSync(p)).digest('hex');
+    const view = (r) => ({ inject: names(r.inject), rank: names(r.rank), reply: unb64(r.reply), status: r.status, trace: r.trace });
+    const SIDE = ['py', 'node'];
+    const WITH = [['project', bed.project], ['native', bed.native]];
+
+    // terms/missing-is-built: the first recall builds each cache; both sides write the same bytes.
+    const first = rankBoth(bed);
+    for (const [label, store] of WITH) {
+      cases.push({ name: `terms/missing-is-built: the ${label} cache, python bytes against node bytes`, kind: 'json', expected: bytesOf(cacheOf('py', store)), actual: bytesOf(cacheOf('node', store)) });
+      cases.push(...literalCases(existsSync(cacheOf('py', store)), existsSync(cacheOf('node', store)), `terms/missing-is-built: LITERAL the ${label} cache is written`, true));
+      const head = (side) => {
+        const t = existsSync(cacheOf(side, store)) ? readFileSync(cacheOf(side, store), 'latin1') : '';
+        return t.endsWith(`"sidecar":"${sha1(sidecarOf(bed.homes[side], store))}","v":1}`) && /^[\x20-\x7e]*$/.test(t);
+      };
+      cases.push(...literalCases(head('py'), head('node'), `terms/missing-is-built: LITERAL the ${label} cache is ASCII and names its sidecar's sha1 and v 1`, true));
+    }
+    cases.push(...literalCases(existsSync(cacheOf('py', bed.profile)), existsSync(cacheOf('node', bed.profile)), 'terms/missing-is-built: LITERAL a layer with no sidecar has no cache', false));
+    PROMPTS.forEach((pr, i) => {
+      cases.push({ name: `terms/missing-is-built: ${JSON.stringify(pr.prompt)} — ranks as the mixed bed, python against node`, kind: 'json', expected: view(first.p.results[i]), actual: view(first.n.results[i]) });
+      cases.push(...literalCases(names(first.p.results[i].inject), names(first.n.results[i].inject), `terms/missing-is-built: LITERAL inject for ${JSON.stringify(pr.prompt)}`, MIXED_INJECT[i]));
+    });
+
+    // terms/cross-read: each side's cache handed to the other is READ (the file is not
+    // replaced: same inode and mtime) and ranks what the side's own cache ranked.
+    const built = Object.fromEntries(SIDE.map((side) => [side, Object.fromEntries(WITH.map(([l, st]) => [l, bytesOf(cacheOf(side, st))]))]));
+    for (const [, store] of WITH) {
+      if (!existsSync(cacheOf('py', store)) || !existsSync(cacheOf('node', store))) continue; // reddened above
+      const pyBytes = readFileSync(cacheOf('py', store));
+      writeFileSync(cacheOf('py', store), readFileSync(cacheOf('node', store)));
+      writeFileSync(cacheOf('node', store), pyBytes);
+    }
+    const before = Object.fromEntries(SIDE.map((side) => [side, WITH.map(([, st]) => stamp(cacheOf(side, st)))]));
+    const cross = rankBoth(bed);
+    PROMPTS.forEach((pr, i) => {
+      cases.push({
+        name: `terms/cross-read: ${JSON.stringify(pr.prompt)} — python reading node's cache and node reading python's rank as each side's own`,
+        kind: 'json',
+        expected: { py: view(first.p.results[i]), node: view(first.n.results[i]) },
+        actual: { py: view(cross.p.results[i]), node: view(cross.n.results[i]) },
+      });
+    });
+    const after = Object.fromEntries(SIDE.map((side) => [side, WITH.map(([, st]) => stamp(cacheOf(side, st)))]));
+    cases.push(...literalCases(
+      !after.py.includes(null) && JSON.stringify(after.py) === JSON.stringify(before.py),
+      !after.node.includes(null) && JSON.stringify(after.node) === JSON.stringify(before.node),
+      "terms/cross-read: LITERAL the other side's cache is read, not rewritten (inode and mtime unchanged)",
+      true,
+    ));
+
+    // terms/stale-is-ignored: the sidecar changes under a cache that still describes the old
+    // bytes. Using it would keep `hook-latency` on "why so slow" (only its queries hold it).
+    const STALE = Object.fromEntries(Object.entries(PROJECT_QUERIES).filter(([n]) => n !== 'hook-latency'));
+    for (const side of SIDE) write(sidecarOf(bed.homes[side], bed.project), sidecarDoc(STALE));
+    const stale = rankBoth(bed);
+    cases.push(...literalCases(names(stale.p.results[1].inject), names(stale.n.results[1].inject), 'terms/stale-is-ignored: LITERAL "why so slow" no longer injects hook-latency', []));
+    PROMPTS.forEach((pr, i) => {
+      cases.push({ name: `terms/stale-is-ignored: ${JSON.stringify(pr.prompt)} — python against node`, kind: 'json', expected: view(stale.p.results[i]), actual: view(stale.n.results[i]) });
+    });
+    const named = (side) => existsSync(cacheOf(side, bed.project)) && readFileSync(cacheOf(side, bed.project), 'latin1').includes(`"sidecar":"${sha1(sidecarOf(bed.homes[side], bed.project))}"`);
+    cases.push(...literalCases(named('py'), named('node'), "terms/stale-is-ignored: LITERAL the cache is rewritten for the new sidecar's sha1", true));
+    cases.push({ name: 'terms/stale-is-ignored: the rewritten project cache, python bytes against node bytes', kind: 'json', expected: bytesOf(cacheOf('py', bed.project)), actual: bytesOf(cacheOf('node', bed.project)) });
+    const fresh = Object.fromEntries(SIDE.map((side) => [side, bytesOf(cacheOf(side, bed.project))]));
+    cases.push(...literalCases(fresh.py !== built.py.project, fresh.node !== built.node.project, 'terms/stale-is-ignored: LITERAL the old bytes are gone', true));
+
+    // terms/malformed-is-rebuilt and terms/deleted-is-rebuilt: back to the same bytes.
+    for (const [label, wreck] of [
+      ['malformed-is-rebuilt', (p) => writeFileSync(p, 'not json')],
+      ['deleted-is-rebuilt', (p) => rmSync(p)],
+    ]) {
+      for (const side of SIDE) if (existsSync(cacheOf(side, bed.project))) wreck(cacheOf(side, bed.project));
+      const again = rankBoth(bed);
+      cases.push(...literalCases(bytesOf(cacheOf('py', bed.project)) === fresh.py, bytesOf(cacheOf('node', bed.project)) === fresh.node, `terms/${label}: LITERAL the cache comes back byte for byte`, true));
+      PROMPTS.forEach((pr, i) => {
+        cases.push({ name: `terms/${label}: ${JSON.stringify(pr.prompt)} — ranks as before, per side`, kind: 'json', expected: { py: view(stale.p.results[i]), node: view(stale.n.results[i]) }, actual: { py: view(again.p.results[i]), node: view(again.n.results[i]) } });
+      });
+    }
+    notes.push(`terms: cache bytes ${fresh.py === null ? 0 : Buffer.from(fresh.py, 'base64').length} (project, after the stale rewrite)`);
   }
 
   // ===================================================================== sidecar (7)

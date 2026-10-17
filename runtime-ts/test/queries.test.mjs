@@ -11,9 +11,14 @@ import {
   GATE_FLOOR,
   QUERY_WEIGHT,
   QueryScorer,
+  bm25Rows,
   bm25Scores,
   bm25Segments,
+  docTerms,
+  nospace,
+  nospaceTable,
   stripNospace,
+  tokenizeV2,
 } from '../dist/memory/retrieval.js';
 
 // ------------------------------------------------------------- 2.1: the scorer
@@ -43,13 +48,96 @@ test('QueryScorer adds the qdoc vector unrounded', () => {
     lengths: [1.0, 1.0],
     segs: new Map([['deploy', [0, 1, 2.0]]]),
   };
-  const vecs = [qdocOf(['how do I deploy']), qdocOf([])];
+  const qdocs = [qdocOf(['how do I deploy']), qdocOf([])];
+  const vecs = [docTerms({ name: '', description: qdocs[0], keywords: [] }), null]; // no entry is null
   const a = bm25Segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs);
-  const b = bm25Scores('deploy', vecs.map((v) => ({ name: '', description: v, keywords: [] })));
+  const b = bm25Scores('deploy', qdocs.map((v) => ({ name: '', description: v, keywords: [] })));
   const got = new QueryScorer('deploy').column(cols, vecs);
   assert.deepEqual(got, a.map((x, i) => x + QUERY_WEIGHT * b[i]));
   assert.equal(got[1], a[1]); // an empty qdoc scores 0
   assert.ok(b[0] > 0.0); // the qdoc vector is really in the sum
+});
+
+const asDoc = (v) => ({ name: '', description: v, keywords: [] });
+
+test('bm25Rows is bm25Scores on the same docs', () => {
+  const texts = ['how do I deploy', 'deploy deploy staging', '', 'ไทย only', 'release the npm package'];
+  const docs = texts.map((t) => asDoc(qdocOf([t])));
+  for (const prompt of ['deploy', 'npm package release', 'ไทย', '', 'nothing here']) {
+    assert.deepEqual(bm25Rows(prompt, docs.map(docTerms)), bm25Scores(prompt, docs));
+  }
+  assert.deepEqual(bm25Rows('deploy', [null, docTerms(docs[1])]), bm25Scores('deploy', [docs[2], docs[1]]));
+  assert.deepEqual(bm25Rows('deploy', []), []);
+});
+
+// J72-30: the hot-path rewrites of `nospace`, `stripNospace` and `tokenizeV2` are Node-internal;
+// the table and a per-character reading of the reference are the oracle.
+test('nospace is the NOSPACE table for every code point', () => {
+  let bad = 0;
+  for (let cp = 0; cp < 0x110000; cp += 1) if (nospace(cp) !== nospaceTable(cp)) bad += 1;
+  assert.equal(bad, 0);
+});
+
+/** The reference's `tokenize_v2`, one code point at a time (the pre-J72-30 port). */
+function tokenizeSlow(text) {
+  const s = text.normalize('NFKC').toLowerCase();
+  const out = [];
+  let word = '';
+  let run = [];
+  const flushWord = () => {
+    if (word) out.push(word);
+    word = '';
+  };
+  const flushRun = () => {
+    if (run.length === 1) out.push(run[0]);
+    else for (let i = 0; i + 1 < run.length; i++) out.push(run[i] + run[i + 1]);
+    run = [];
+  };
+  for (const ch of s) {
+    if (nospaceTable(ch.codePointAt(0))) {
+      flushWord();
+      run.push(ch);
+    } else if (/^[\p{L}\p{N}\p{M}]$/u.test(ch)) {
+      flushRun();
+      word += ch;
+    } else {
+      flushWord();
+      flushRun();
+    }
+  }
+  flushWord();
+  flushRun();
+  return out;
+}
+
+test('tokenizeV2 and stripNospace equal the per-character reading on mixed scripts', () => {
+  const pools = [[0, 0x80], [0x80, 0x3000], [0x0e00, 0x0f00], [0x3000, 0xa000], [0xd800, 0xe000], [0xff00, 0xfff0], [0x1f300, 0x1f700], [0xf900, 0xfb00]];
+  let seed = 7;
+  const rnd = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let n = 0; n < 20000; n += 1) {
+    let s = '';
+    const len = Math.floor(rnd() * 40);
+    for (let i = 0; i < len; i++) {
+      const [lo, hi] = pools[Math.floor(rnd() * pools.length)];
+      s += String.fromCodePoint(lo + Math.floor(rnd() * (hi - lo)));
+    }
+    assert.deepEqual(tokenizeV2(s), tokenizeSlow(s), JSON.stringify(s));
+    let blank = '';
+    for (const ch of s) blank += nospaceTable(ch.codePointAt(0)) ? ' ' : ch;
+    assert.equal(stripNospace(s), blank, JSON.stringify(s));
+  }
+  // lone surrogates on either side of a pair, and a pair split by nothing
+  // the ASCII fast path: every ASCII code unit, alone and in runs
+  let ascii = '';
+  for (let c = 0; c < 0x80; c += 1) ascii += String.fromCharCode(c) + 'Ab9' + String.fromCharCode(c);
+  assert.deepEqual(tokenizeV2(ascii), tokenizeSlow(ascii));
+  for (const s of ['', ' ', 'ABC def_9x', 'a-b.c', 'MiXeD 42 \u007f', '\u0000x\u001fy']) assert.deepEqual(tokenizeV2(s), tokenizeSlow(s), JSON.stringify(s));
+  for (const s of ['\ud800', '\udc00x', 'a\ud83d\udc14b', '\ud83d\ud83d\udc14', 'ไทย\udc00ไทย', 'ｶﾀｶﾅ']) {
+    assert.deepEqual(tokenizeV2(s), tokenizeSlow(s), JSON.stringify(s));
+  }
 });
 
 test('QueryScorer without vectors gives the recall back to BM25F', () => {
@@ -70,7 +158,7 @@ test('a Thai-only query scores zero after stripping', () => {
 // ------------------------------------------------------------- 2.2: the sidecar module
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as Q from '../dist/memory/queries.js';
@@ -451,4 +539,228 @@ test('coverage counts a name once across layers', () => {
   );
   // a profile sidecar lifts a profile fact in the pooled ranking
   assert.equal(names(m.injectCandidates('a profile query'))[0], 'only-profile');
+});
+
+
+// ----------------------------------------------- J72-30: the derived term cache (Q9 latency)
+// The same tests, inputs and expected bytes as test_memory_queries.py's.
+
+const TERMS_SIDECAR = new Map([
+  ['b-fact', [['วิธี deploy ขึ้น staging', 'how do I deploy to staging', 'Deploy, deploy!'], 'x']],
+  ['a-fact', [['ｶﾀｶﾅ halfwidth 🐔 note'], '']],
+  ['thai-only', [['ภาษาไทยล้วน'], '']],
+]);
+
+function termsBed() {
+  const { t, h } = homeBed();
+  const root = join(t, 'store');
+  mkdirSync(root);
+  const side = Q.sidecarPath(h, root);
+  Q.writeEntries(side, TERMS_SIDECAR);
+  return { t, h, root, side };
+}
+
+/** Rows as plain Maps: a cached row reads its counts in place (`CountsView`), a built one is a Map. */
+const norm = (rows) => new Map([...rows].map(([n, [w, dl]]) => [n, [new Map([...w.keys()].sort().map((t) => [t, w.get(t)])), dl]]));
+const wantRows = (side) => norm(new Map([...Q.readSidecar(side)].map(([n, qs]) => [n, docTerms(asDoc(Q.qdoc(qs)))])));
+const sha1 = (p) => createHash('sha1').update(readFileSync(p)).digest('hex');
+
+test('the terms path is beside the hot index', () => {
+  const { t, h } = homeBed();
+  const root = join(t, 'store');
+  assert.equal(Q.termsPath(h, root), join(t, 'index', `${sha16(root)}.qterms.json`));
+});
+
+test('the terms path without an index dir is under home', () => {
+  const { t, h } = homeBed();
+  delete process.env.BANTAMKIT_INDEX_DIR;
+  const root = join(t, 'store');
+  try {
+    assert.equal(Q.termsPath(h, root), join(h, '.bantamkit', 'index', `${sha16(root)}.qterms.json`));
+  } finally {
+    process.env.BANTAMKIT_INDEX_DIR = join(t, 'index');
+  }
+});
+
+test('layerTerms are the qdoc docTerms to the bit', () => {
+  const { h, root, side } = termsBed();
+  const cache = Q.termsPath(h, root);
+  assert.ok(!existsSync(cache));
+  const built = Q.layerTerms(h, root); // missing cache: derived, then written
+  assert.deepEqual(norm(built), wantRows(side));
+  assert.deepEqual(built.get('thai-only'), [new Map(), 0]);
+  assert.ok(existsSync(cache));
+  assert.deepEqual(norm(Q.layerTerms(h, root)), norm(built)); // and read back from the cache
+});
+
+test('the cache bytes are sorted compact ascii', () => {
+  const { h, root, side } = termsBed();
+  Q.layerTerms(h, root);
+  const cache = Q.termsPath(h, root);
+  assert.equal(
+    readFileSync(cache, 'latin1'),
+    '{"facts":{"a-fact":[5,["halfwidth",1,"note",1,"\\u30ab\\u30bf",1,"\\u30ab\\u30ca",1,' +
+      '"\\u30bf\\u30ab",1]],"b-fact":[10,["deploy",4,"do",1,"how",1,"i",1,"staging",2,"to",1]],' +
+      `"thai-only":[0,[]]},"sidecar":"${sha1(side)}","v":1}`,
+  );
+  assert.deepEqual(readdirSync(join(cache, '..')), [cache.split('/').at(-1)]); // no tmp left behind
+});
+
+test('a cache of other sidecar bytes is never used', () => {
+  const { h, root, side } = termsBed();
+  Q.layerTerms(h, root);
+  const cache = Q.termsPath(h, root);
+  const stale = readFileSync(cache, 'latin1');
+  Q.writeEntries(side, new Map([['b-fact', [['nothing in common'], '']]]));
+  assert.equal(readFileSync(cache, 'latin1'), stale); // the sidecar moved on, the cache did not
+  assert.deepEqual(norm(Q.layerTerms(h, root)), wantRows(side));
+  assert.notEqual(readFileSync(cache, 'latin1'), stale); // and it was rewritten
+});
+
+test('the cache is what is read when it is the sidecar\'s', () => {
+  const { h, root, side } = termsBed();
+  mkdirSync(join(Q.termsPath(h, root), '..'), { recursive: true });
+  writeFileSync(Q.termsPath(h, root), `{"facts":{"z":[2,["zz",2.0,"zz",5]]},"sidecar":"${sha1(side)}","v":1}`, 'latin1');
+  assert.deepEqual(norm(Q.layerTerms(h, root)), new Map([['z', [new Map([['zz', 2]]), 2]]]));
+});
+
+for (const body of [
+  '',
+  'not json',
+  '[]',
+  '{"facts":{},"sidecar":"SHA","v":2}',
+  '{"facts":{},"sidecar":"SHA","v":true}',
+  '{"facts":{},"sidecar":"SHA","v":"1"}',
+  '{"facts":{},"v":1}',
+  '{"facts":[],"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,["zz",2],3]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[-1,[]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2.5,[]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,["zz",true]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,["zz",1.5]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,["zz",1e400]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[9007199254740993,[]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[9007199254740992,[]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,["zz",NaN]]},"sidecar":"SHA","v":1}',
+  '\ufeff{"facts":{},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,{}]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,["zz"]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":[2,[1,2]]},"sidecar":"SHA","v":1}',
+  '{"facts":{"z":"x"},"sidecar":"SHA","v":1}',
+]) {
+  test(`a malformed cache is rebuilt: ${JSON.stringify(body)}`, () => {
+    const { h, root, side } = termsBed();
+    const cache = Q.termsPath(h, root);
+    mkdirSync(join(cache, '..'), { recursive: true });
+    writeFileSync(cache, body.replace('SHA', sha1(side)), 'utf8');
+    assert.deepEqual(norm(Q.layerTerms(h, root)), wantRows(side));
+    assert.ok(readFileSync(cache, 'latin1').includes(`"sidecar":"${sha1(side)}"`));
+  });
+}
+
+test('no sidecar writes no cache', () => {
+  const { t, h } = homeBed();
+  const root = join(t, 'store');
+  mkdirSync(root);
+  assert.deepEqual(Q.layerTerms(h, root), new Map());
+  assert.ok(!existsSync(join(t, 'index')));
+});
+
+test('a malformed sidecar has no rows', () => {
+  const { t, h } = homeBed();
+  const root = join(t, 'store');
+  mkdirSync(root);
+  const side = Q.sidecarPath(h, root);
+  mkdirSync(join(side, '..'), { recursive: true });
+  writeFileSync(side, '{"v":1.0,"facts":{"a":{"queries":["x"]}}}', 'utf8');
+  assert.deepEqual(Q.layerTerms(h, root), new Map());
+});
+
+test('an unwritable cache still scores', () => {
+  const { t, h, root, side } = termsBed();
+  writeFileSync(join(t, 'index'), 'a file where the index dir would be', 'utf8');
+  assert.deepEqual(norm(Q.layerTerms(h, root)), wantRows(side));
+  assert.deepEqual(readdirSync(t).sort(), ['home', 'index', 'store']);
+});
+
+test('recall scores the same from the cache and from the sidecar', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  const side = Q.sidecarPath(h, m.store.root);
+  Q.writeEntries(side, new Map([['release-steps', [['publish to npm registry'], '']], ['lint-rules', [['ruff'], '']]]));
+  const cache = Q.termsPath(h, m.store.root);
+  const first = m.recallOutcome('npm registry ruff', 3, undefined, false); // builds the cache
+  assert.ok(existsSync(cache));
+  const again = m.recallOutcome('npm registry ruff', 3, undefined, false); // reads it
+  rmSync(cache);
+  const rebuilt = m.recallOutcome('npm registry ruff', 3, undefined, false);
+  assert.deepEqual(again, first);
+  assert.deepEqual(rebuilt, first);
+  assert.ok(first.reply.includes('release-steps'));
+});
+
+// J72-30: the cache's fast paths are Node-internal; `dumpJson` and `parseJson` are the oracles.
+test('dumpTerms writes what dumpJson writes', () => {
+  const odd = ['\ue000', '\uffff', '\u{10000}', 'plain', 'deploy', 'ไทย', 'カタ', '\u007f', '"q"', 'back\\slash', '\n\t\b\f\r', '\u0001', '🐔', '\ud800', '\udc00x', 'é', '__proto__', 'constructor', ''];
+  let seed = 11;
+  const rnd = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (let n = 0; n < 300; n += 1) {
+    const facts = new Map();
+    const k = Math.floor(rnd() * 6);
+    for (let i = 0; i < k; i += 1) {
+      const counts = new Map();
+      const m = Math.floor(rnd() * 6);
+      for (let j = 0; j < m; j += 1) counts.set(odd[Math.floor(rnd() * odd.length)] + (rnd() < 0.5 ? '' : String(j)), 1 + Math.floor(rnd() * 9));
+      facts.set(odd[Math.floor(rnd() * odd.length)] + String(i), [Math.floor(rnd() * 99), counts]);
+    }
+    assert.equal(Q.dumpTerms(facts, 'ab12'), Q.dumpTermsSlow(facts, 'ab12'));
+  }
+});
+
+test('the fast sidecar read is the reference read', () => {
+  const enc = (t) => new TextEncoder().encode(t);
+  const texts = [
+    '{"facts":{"a":{"queries":["x"],"sha":""}},"v":1}',
+    '{"facts":{"a":{"queries":["x"]},"b":{"queries":[]},"c":"x","d":{"queries":["ok",1]},"e":{}},"v":1}',
+    '{"facts":{"a":{"queries":["x"]}},"v":1.0}',
+    '{"v":1.0,"facts":{"a":{"queries":["x"]}},"v":1}',
+    '{"v":1,"facts":{"a":{"queries":["x"]}},"v":1.0}',
+    '{"facts":{"a":{"queries":["x"]}},"v": 1}',
+    '{"facts":{"a":{"queries":["x"]}},"v":1} ',
+    '{"facts":{"a":{"queries":["x"]}},"x":{"v":1}}',
+    '{"facts":{"a":{"queries":[NaN]}},"v":1}',
+    '{"facts":[],"v":1}',
+    '{"v":1}',
+    '[{"v":1}]',
+    '{"facts":{"__proto__":{"queries":["p"]},"a":{"queries":["\\ud800"]}},"v":1}',
+    '{"facts":{"a":{"queries":["x"]},"a":{"queries":["y"]}},"v":1}',
+    '{"facts":{"a\\"v":1}',
+    '',
+  ];
+  for (const t of texts) assert.deepEqual(Q.sidecarEntries(enc(t)), Q.sidecarEntriesSlow(enc(t)), t);
+  const bad = Buffer.concat([Buffer.from('{"facts":{"a":{"queries":["'), Buffer.from([0xff]), Buffer.from('"]}},"v":1}')]);
+  assert.deepEqual(Q.sidecarEntries(bad), new Map());
+});
+
+test('a cached row scores what the same row as a Map scores, duplicates first-wins', () => {
+  const { h, root, side } = termsBed();
+  mkdirSync(join(Q.termsPath(h, root), '..'), { recursive: true });
+  writeFileSync(
+    Q.termsPath(h, root),
+    `{"facts":{"a":[7,["deploy",2,"zz",0,"deploy",9,"staging",1]],"b":[3,["how",3]]},"sidecar":"${sha1(side)}","v":1}`,
+    'latin1',
+  );
+  const rows = Q.layerTerms(h, root);
+  const asMaps = [new Map([['deploy', 2], ['zz', 0], ['staging', 1]]), new Map([['how', 3]])];
+  for (const prompt of ['deploy staging', 'how zz', 'deploy deploy how', 'nothing']) {
+    assert.deepEqual(
+      bm25Rows(prompt, [rows.get('a'), null, rows.get('b')]),
+      bm25Rows(prompt, [[asMaps[0], 7], null, [asMaps[1], 3]]),
+      prompt,
+    );
+  }
 });

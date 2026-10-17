@@ -21,8 +21,9 @@ Every string that must survive byte-exactly travels as base64; doubles as their 
       -> {"results": [{"inject": [b64], "rank": [b64], "reply": b64, "status": str,
                        "trace": [{"vecs": [b64], "a": [hex16], "col": [hex16]}]}, ...]}
         `trace` is every `QueryScorer.column` call of the call's three recalls, in order: the
-        qdocs it was handed, the BM25F column alone, and the column it returned.
-        `force_off` makes every sidecar read answer `{}` (case 5's B arm).
+        rows it was handed (`null`, or `[dl bits, [[term b64, weight bits], ...]]`, terms
+        code-point sorted), the BM25F column alone, and the column it returned.
+        `force_off` makes every layer's queries answer `{}` (case 5's B arm).
     {"op": "read_sidecar", "paths": [path, ...]} -> {"maps": [[[b64, [b64, ...]], ...], ...]}
     {"op": "previous_prompt", "calls": [{"path": b64, "current": b64}]} -> {"out": [b64]}
     {"op": "head_query", "calls": [{"prompt": b64, "path": b64}]} -> {"out": [b64|null]}
@@ -74,6 +75,13 @@ def _memory(request: dict) -> Memory:
     )
 
 
+def _row(v):  # one `QueryScorer` row (J72-30: tokenized, from `queries.layer_terms`)
+    if v is None:
+        return None
+    weights, dl = v
+    return [bits(dl), [[b64(t), bits(w)] for t, w in sorted(weights.items())]]
+
+
 TRACE: list[dict] = []
 _column = retrieval.QueryScorer.column
 
@@ -83,7 +91,7 @@ def _traced(self, cols, vecs):  # the ref hook on `QueryScorer.column` (cases 1-
     if vecs is not None and col is not None:
         a = bm25_segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs)
         TRACE.append(
-            {"vecs": [b64(v) for v in vecs], "a": [bits(x) for x in a], "col": [bits(x) for x in col]}
+            {"vecs": [_row(v) for v in vecs], "a": [bits(x) for x in a], "col": [bits(x) for x in col]}
         )
     return col
 
@@ -93,7 +101,7 @@ retrieval.QueryScorer.column = _traced
 
 def run_rank(request: dict) -> dict:
     if request.get("force_off"):
-        component_mod._queries.read_sidecar = lambda path: {}
+        component_mod._queries.layer_terms = lambda home, root: {}
     mem = _memory(request)
     out = []
     for call in request["calls"]:

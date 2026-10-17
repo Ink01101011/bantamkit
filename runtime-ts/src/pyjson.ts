@@ -193,7 +193,7 @@ const ESCAPE_DCT: Record<string, string> = {
  * emits for an astral character under `ensure_ascii`, so iterating by codepoint would only
  * have to split every pair back apart.
  */
-function encodeBasestringAscii(s: string): string {
+export function encodeBasestringAscii(s: string): string {
   let out = '"';
   for (let i = 0; i < s.length; i += 1) {
     const ch = s[i]!;

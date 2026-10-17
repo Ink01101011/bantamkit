@@ -834,10 +834,9 @@ class Memory:
         qdoc. Gate, weights and the cap are unchanged.
         """
         home = Path.home()
-        sides = [
-            _queries.read_sidecar(_queries.sidecar_path(home, store.root))
-            for _, store, _ in self._layers
-        ]
+        # Each layer's queries as tokenized rows (J72-30): from the derived cache beside the
+        # hot index when it is the sidecar's, else from the sidecar itself.
+        sides = [_queries.layer_terms(home, store.root) for _, store, _ in self._layers]
         every_row = any(sides)
         q = query_terms(query if head is None else head)
         stores: list[MemoryStore] = []
@@ -887,11 +886,10 @@ class Memory:
         scorer: Scorer = BM25F
         rows: Any = None
         if every_row:
-            docs = [{n: _queries.qdoc(v) for n, v in side.items()} for side in sides]
             scorer = QueryScorer(query)
 
-            def rows(i: int, p: Pool) -> list[str]:
-                return [docs[i].get(n, "") for n in p.names]
+            def rows(i: int, p: Pool) -> list[Any]:
+                return [sides[i].get(n) for n in p.names]
 
         ledger = self.usage()
         now = self.store._now()

@@ -3,6 +3,7 @@
 Mirrored in runtime-ts/test/queries.test.mjs; `recall-queries` conformance compares the two
 runtimes."""
 
+import hashlib
 import json
 
 import pytest
@@ -16,8 +17,10 @@ from bantamkit.memory.retrieval import (
     Columns,
     Doc,
     QueryScorer,
+    bm25_rows,
     bm25_scores,
     bm25_segments,
+    doc_terms,
     strip_nospace,
 )
 from bantamkit.memory.store import MemoryValidationError
@@ -42,13 +45,24 @@ def test_strip_nospace_blanks_each_nospace_code_point_before_nfkc():
 
 def test_query_scorer_adds_the_qdoc_vector_unrounded():
     cols = Columns(["deploy"], 2, 2.0, {"deploy": 1}, [1.0, 1.0], {"deploy": [0, 1, 2.0]})
-    vecs = [_qdoc(["how do I deploy"]), _qdoc([])]
+    qdocs = [_qdoc(["how do I deploy"]), _qdoc([])]
+    vecs = [doc_terms(Doc("", qdocs[0], ())), None]  # a row with no entry is None
     a = bm25_segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs)
-    b = bm25_scores("deploy", [Doc("", v, ()) for v in vecs])
+    b = bm25_scores("deploy", [Doc("", v, ()) for v in qdocs])
     got = QueryScorer("deploy").column(cols, vecs)
     assert got == [x + QUERY_WEIGHT * y for x, y in zip(a, b, strict=True)]
     assert got[1] == a[1]  # an empty qdoc scores 0
     assert b[0] > 0.0  # the qdoc vector is really in the sum
+
+
+def test_bm25_rows_is_bm25_scores_on_the_same_docs():
+    texts = ["how do I deploy", "deploy deploy staging", "", "ไทย only", "release the npm package"]
+    docs = [Doc("", _qdoc([t]), ()) for t in texts]
+    for prompt in ("deploy", "npm package release", "ไทย", "", "nothing here"):
+        assert bm25_rows(prompt, [doc_terms(d) for d in docs]) == bm25_scores(prompt, docs)
+    pair = bm25_scores("deploy", [docs[2], docs[1]])
+    assert bm25_rows("deploy", [None, doc_terms(docs[1])]) == pair
+    assert bm25_rows("deploy", []) == []
 
 
 def test_query_scorer_without_vectors_gives_the_recall_back_to_bm25f():
@@ -378,3 +392,159 @@ def test_coverage_counts_a_name_once_across_layers(tmp_path, home):
     )
     # a profile sidecar lifts a profile fact in the pooled ranking
     assert [f.name for f in m.inject_candidates("a profile query")][0] == "only-profile"
+
+
+# ----------------------------------------------- J72-30: the derived term cache (Q9 latency)
+
+_TERMS_SIDECAR = {
+    "b-fact": (["วิธี deploy ขึ้น staging", "how do I deploy to staging", "Deploy, deploy!"], "x"),
+    "a-fact": (["ｶﾀｶﾅ halfwidth 🐔 note"], ""),
+    "thai-only": (["ภาษาไทยล้วน"], ""),
+}
+def _terms_bed(tmp_path, home):
+    root = tmp_path / "store"
+    root.mkdir()
+    side = Q.sidecar_path(home, root)
+    Q.write_entries(side, dict(_TERMS_SIDECAR))
+    return root, side
+
+
+def _want_rows(side):
+    return {n: doc_terms(Doc("", Q.qdoc(qs), ())) for n, qs in Q.read_sidecar(side).items()}
+
+
+def test_terms_path_is_beside_the_hot_index(tmp_path, home):
+    root = tmp_path / "store"
+    assert Q.terms_path(home, root) == tmp_path / "index" / f"{sha16(root)}.qterms.json"
+
+
+def test_terms_path_without_an_index_dir_is_under_home(tmp_path, home, monkeypatch):
+    monkeypatch.delenv("BANTAMKIT_INDEX_DIR")
+    root = tmp_path / "store"
+    assert Q.terms_path(home, root) == home / ".bantamkit" / "index" / f"{sha16(root)}.qterms.json"
+
+
+def test_layer_terms_are_the_qdoc_doc_terms_to_the_bit(tmp_path, home):
+    root, side = _terms_bed(tmp_path, home)
+    cache = Q.terms_path(home, root)
+    assert not cache.exists()
+    built = Q.layer_terms(home, root)  # missing cache: derived, then written
+    assert built == _want_rows(side)
+    assert all(type(w) is float for ws, _ in built.values() for w in ws.values())
+    assert all(type(dl) is float for _, dl in built.values())
+    assert built["thai-only"] == ({}, 0.0)
+    assert cache.exists()
+    assert Q.layer_terms(home, root) == built  # and read back from the cache
+
+
+def test_the_cache_bytes_are_sorted_compact_ascii(tmp_path, home):
+    root, side = _terms_bed(tmp_path, home)
+    Q.layer_terms(home, root)
+    text = Q.terms_path(home, root).read_bytes().decode("ascii")
+    sha = hashlib.sha1(side.read_bytes()).hexdigest()
+    assert text == (
+        '{"facts":{"a-fact":[5,["halfwidth",1,"note",1,"\\u30ab\\u30bf",1,"\\u30ab\\u30ca",1,'
+        '"\\u30bf\\u30ab",1]],"b-fact":[10,["deploy",4,"do",1,"how",1,"i",1,"staging",2,"to",1]],'
+        '"thai-only":[0,[]]},"sidecar":"' + sha + '","v":1}'
+    )
+    assert sorted(p.name for p in Q.terms_path(home, root).parent.iterdir()) == [
+        Q.terms_path(home, root).name
+    ]  # no tmp left behind
+
+
+def test_a_cache_of_other_sidecar_bytes_is_never_used(tmp_path, home):
+    root, side = _terms_bed(tmp_path, home)
+    Q.layer_terms(home, root)
+    cache = Q.terms_path(home, root)
+    stale = cache.read_text(encoding="ascii")
+    Q.write_entries(side, {"b-fact": (["nothing in common"], "")})
+    assert cache.read_text(encoding="ascii") == stale  # the sidecar moved on, the cache did not
+    assert Q.layer_terms(home, root) == _want_rows(side)
+    assert cache.read_text(encoding="ascii") != stale  # and it was rewritten
+
+
+def test_the_cache_is_what_is_read_when_it_is_the_sidecars(tmp_path, home):
+    root, side = _terms_bed(tmp_path, home)
+    sha = hashlib.sha1(side.read_bytes()).hexdigest()
+    Q.terms_path(home, root).parent.mkdir(parents=True, exist_ok=True)
+    Q.terms_path(home, root).write_text(
+        '{"facts":{"z":[2,["zz",2.0,"zz",5]]},"sidecar":"' + sha + '","v":1}', encoding="ascii"
+    )
+    assert Q.layer_terms(home, root) == {"z": ({"zz": 2.0}, 2.0)}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "not json",
+        "[]",
+        '{"facts":{},"sidecar":"SHA","v":2}',
+        '{"facts":{},"sidecar":"SHA","v":true}',
+        '{"facts":{},"sidecar":"SHA","v":"1"}',
+        '{"facts":{},"v":1}',
+        '{"facts":[],"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,["zz",2],3]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[-1,[]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2.5,[]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,["zz",true]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,["zz",1.5]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,["zz",1e400]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[9007199254740993,[]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[9007199254740992,[]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,["zz",NaN]]},"sidecar":"SHA","v":1}',
+        '\ufeff{"facts":{},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,{}]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,["zz"]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":[2,[1,2]]},"sidecar":"SHA","v":1}',
+        '{"facts":{"z":"x"},"sidecar":"SHA","v":1}',
+    ],
+)
+def test_a_malformed_cache_is_rebuilt(tmp_path, home, body):
+    root, side = _terms_bed(tmp_path, home)
+    sha = hashlib.sha1(side.read_bytes()).hexdigest()
+    cache = Q.terms_path(home, root)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(body.replace("SHA", sha), encoding="utf-8")
+    assert Q.layer_terms(home, root) == _want_rows(side)
+    assert f'"sidecar":"{sha}"' in cache.read_text(encoding="ascii")
+
+
+def test_no_sidecar_writes_no_cache(tmp_path, home):
+    root = tmp_path / "store"
+    root.mkdir()
+    assert Q.layer_terms(home, root) == {}
+    assert not (tmp_path / "index").exists()
+
+
+def test_a_malformed_sidecar_has_no_rows(tmp_path, home):
+    root = tmp_path / "store"
+    root.mkdir()
+    side = Q.sidecar_path(home, root)
+    side.parent.mkdir(parents=True)
+    side.write_text('{"v":1.0,"facts":{"a":{"queries":["x"]}}}', encoding="utf-8")
+    assert Q.layer_terms(home, root) == {}
+
+
+def test_an_unwritable_cache_still_scores(tmp_path, home):
+    root, side = _terms_bed(tmp_path, home)
+    (tmp_path / "index").write_text("a file where the index dir would be", encoding="utf-8")
+    assert Q.layer_terms(home, root) == _want_rows(side)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["home", "index", "store"]
+
+
+def test_recall_scores_the_same_from_the_cache_and_from_the_sidecar(tmp_path, home):
+    m = _mem(tmp_path)
+    side = Q.sidecar_path(home, m.store.root)
+    Q.write_entries(
+        side, {"release-steps": (["publish to npm registry"], ""), "lint-rules": (["ruff"], "")}
+    )
+    cache = Q.terms_path(home, m.store.root)
+    first = m.recall_outcome("npm registry ruff", 3, stamp=False)  # builds the cache
+    assert cache.exists()
+    again = m.recall_outcome("npm registry ruff", 3, stamp=False)  # reads it
+    cache.unlink()
+    rebuilt = m.recall_outcome("npm registry ruff", 3, stamp=False)
+    assert first == again == rebuilt
+    assert "release-steps" in first.reply

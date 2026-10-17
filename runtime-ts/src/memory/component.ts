@@ -847,8 +847,10 @@ export class Memory {
     // rows) and the column is `QueryScorer`: BM25F over `head ?? query` plus `QUERY_WEIGHT`
     // times BM25 of the bare `query` over each row's qdoc. Gate, weights and the cap are
     // unchanged. The reference's `_pooled`.
+    // Each layer's queries as tokenized rows (J72-30): from the derived cache beside the hot
+    // index when it is the sidecar's, else from the sidecar itself.
     const home = pyHome();
-    const sides = this.layers.map(([, store]) => queriesMod.readSidecar(queriesMod.sidecarPath(home, store.root)));
+    const sides = this.layers.map(([, store]) => queriesMod.layerTerms(home, store.root));
     const everyRow = sides.some((side) => side.size > 0);
     const q = queryTerms(head === null ? query : head);
     const stores: Array<MemoryStore | NativeStore> = [];
@@ -903,11 +905,10 @@ export class Memory {
     const ledger = this.usage();
     const now = this.store.now();
     let scorer: Scorer = BM25F;
-    let rows: ((i: number, p: Pool) => string[]) | null = null;
+    let rows: ((i: number, p: Pool) => Array<queriesMod.Row | null>) | null = null;
     if (everyRow) {
-      const docs = sides.map((side) => new Map([...side].map(([n, v]) => [n, queriesMod.qdoc(v)])));
       scorer = new QueryScorer(query);
-      rows = (i, p) => p.names.map((n) => docs[i]!.get(n) ?? '');
+      rows = (i, p) => p.names.map((n) => sides[i]!.get(n) ?? null);
     }
     const hits = pickHits(
       stores,
