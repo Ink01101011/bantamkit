@@ -287,6 +287,54 @@ export function bm25Scores(query: string, docs: Doc[]): number[] {
   return bm25Pooled(q, docs.length, total, df, rows);
 }
 
+/** The pooled collection `pooledRanking` hands a scorer: BM25's inputs, in `bm25Segments` order. */
+export interface Columns {
+  q: readonly string[];
+  n: number;
+  total: number;
+  df: ReadonlyMap<string, number>;
+  lengths: readonly number[];
+  segs: ReadonlyMap<string, number[]>;
+}
+
+/**
+ * What ranks the pooled rows (#207 D1). Only the score column changes; gate, weights and the
+ * inject cap stay where they are. `column` returns `null` when it cannot score every row; the
+ * caller then ranks the whole recall with BM25F and the scorer's `fallback` says why. The
+ * reference's `Scorer` protocol.
+ */
+export interface Scorer {
+  /** True: `column` reads row vectors, and the term-hit early exit is skipped. */
+  readonly dense: boolean;
+  /** Set when a dense scorer gave the recall back to BM25. */
+  fallback: string | null;
+  label(): string;
+  used(): string;
+  floor(): number;
+  column(cols: Columns, vecs: ReadonlyArray<Float32Array | null> | null): number[] | null;
+}
+
+/** Today's scorer, unchanged: `bm25Segments` over the pooled columns. */
+export class Bm25fScorer implements Scorer {
+  readonly dense = false;
+  constructor(public fallback: string | null = null) {}
+  label(): string {
+    return 'bm25f';
+  }
+  used(): string {
+    return 'bm25f';
+  }
+  floor(): number {
+    return GATE_FLOOR;
+  }
+  column(cols: Columns): number[] {
+    return bm25Segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs);
+  }
+}
+
+/** The shared off-path scorer; `fallback` is `null`. */
+export const BM25F = new Bm25fScorer();
+
 // ------------------------------------------------------------------ the gate and the ranker
 //
 // D3: the GATE decides eligibility on relevance alone; the WEIGHTS only order what passed. A
@@ -308,6 +356,8 @@ export const W_USAGE = 0.2;
 /** The #200 slot: file context, zero until #200 gives it a signal. */
 export let W_CONTEXT = 0.0;
 export const W_FLOOR = 0.1;
+/** #207 D9: the embedding scorer's absolute cosine floor; Task 5 tunes it on silver only. */
+export const EMBED_GATE = 0.0;
 export const STALE_WORDS = ['SUPERSEDED', 'CLOSED', 'REFUTED'] as const;
 
 export interface Candidate {
@@ -380,14 +430,20 @@ export function weightOf(type: string, isStale: boolean, usage: number, ctx = 0.
 /**
  * `rank` over columns: the ids `gate` admits, best first by `(-final, id)` — equal to `rank`
  * when ids run in `(layerOrder, name)` order, as the pooled columns do. The reference's
- * `rank_columns`.
+ * `rank_columns`. `floor` is the scorer's absolute floor (#207: `Scorer.floor()`); `null` reads
+ * `GATE_FLOOR`.
  */
-export function rankColumns(scores: readonly number[], weights: readonly number[], ratio = GATE_RATIO): number[] {
+export function rankColumns(
+  scores: readonly number[],
+  weights: readonly number[],
+  ratio = GATE_RATIO,
+  floor: number | null = null,
+): number[] {
   let best = 0.0;
   scores.forEach((s, i) => {
     if (i === 0 || s > best) best = s;
   });
-  const least = Math.max(GATE_FLOOR, ratio * best);
+  const least = Math.max(floor ?? GATE_FLOOR, ratio * best);
   const admitted: number[] = [];
   const final = new Float64Array(scores.length);
   for (let i = 0; i < scores.length; i += 1) {

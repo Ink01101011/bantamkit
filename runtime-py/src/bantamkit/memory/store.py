@@ -20,10 +20,12 @@ import yaml
 from bantamkit.client import BantamError
 
 from .retrieval import (
+    BM25F,
     FIELD_BOOST,
     GATE_RATIO,
+    Columns,
     Doc,
-    bm25_segments,
+    Scorer,
     doc_terms,
     length_of,
     query_terms,
@@ -543,18 +545,25 @@ def pooled_ranking(
     ratio: float,
     usage: Callable[[], dict[str, float]],
     context: Mapping[str, float] | None = None,
+    scorer: Scorer = BM25F,
+    rows: Callable[[int, Pool], list[Any] | None] | None = None,
 ) -> Iterator[tuple[int, int]]:
-    """Every admitted row of every pool, best first, as `(layer, row)`: BM25 once over the
-    pooled counts, then `retrieval.rank_columns` (`gate`, then `(-final, layer_order, name)`).
+    """Every admitted row of every pool, best first, as `(layer, row)`: the scorer's column
+    once over the pooled rows (BM25F over the pooled counts unless a dense `scorer` scores
+    them, #207 D1), then `retrieval.rank_columns` (`gate`, then `(-final, layer_order, name)`).
     `layer_order` is the pool's position; a `None` pool (a layer that could not be read) is a
     gap and holds nothing. Scored and sorted when called; each `(layer, row)` is spelled
     only when the caller reaches it (a hook takes three of 5,000).
 
     `usage` is called only when some row holds a query term, so a recall that matches
     nothing never reads the ledger.
+
+    A dense scorer (`scorer.dense`) skips the term-hit early exit, reads one vector per row
+    through `rows(layer, pool)`, and when its `column` cannot score every row (`None`) the
+    whole recall is ranked by BM25F, with BM25F's floor: scores are never mixed.
     """
     live = [(i, p) for i, p in enumerate(pools) if p is not None]
-    if not any(p.segs.get(t) for _, p in live for t in q):
+    if not scorer.dense and not any(p.segs.get(t) for _, p in live for t in q):
         return iter(())
     n = 0
     total = 0.0
@@ -576,12 +585,20 @@ def pooled_ranking(
                     seg[0::3] = [a + offset for a in seg[0::3]]
                 segs[t] += seg
         lengths += p.lengths
-    scores = bm25_segments(q, n, total, df, lengths, segs)
+    cols = Columns(q, n, total, df, lengths, segs)
+    scores = scorer.column(cols, _row_vectors(live, rows)) if scorer.dense else None
+    if scores is None:
+        if scorer.dense and not any(p.segs.get(t) for _, p in live for t in q):
+            return iter(())
+        scores = BM25F.column(cols, None)
+        floor = BM25F.floor()
+    else:
+        floor = scorer.floor()
     used = usage()
     weights: list[float] = []
     for _, p in live:
         weights += p.weights(used, context)
-    order = rank_columns(scores, weights, ratio)
+    order = rank_columns(scores, weights, ratio, floor)
     layers = [i for i, _ in live]
 
     def spelled() -> Iterator[tuple[int, int]]:
@@ -590,6 +607,19 @@ def pooled_ranking(
             yield layers[at], g - starts[at]
 
     return spelled()
+
+
+def _row_vectors(live: list[tuple[int, Pool]], rows: Any) -> list[Any] | None:
+    """One vector per pooled row, layer by layer, or `None` when any layer cannot say."""
+    if rows is None:
+        return None
+    out: list[Any] = []
+    for i, p in live:
+        got = rows(i, p)
+        if got is None or len(got) != len(p.names):
+            return None
+        out += got
+    return out
 
 
 def pick_hits(
@@ -602,6 +632,8 @@ def pick_hits(
     repool: Callable[[int], Pool],
     dedupe: bool = False,
     context: Mapping[str, float] | None = None,
+    scorer: Scorer = BM25F,
+    rows: Any = None,
 ) -> list[tuple[int, Fact]]:
     """The first `k` admitted facts of a pooled ranking, as `(layer, Fact)`.
 
@@ -627,7 +659,7 @@ def pick_hits(
         seen: set[Any] = set()
         redo = None
         with no_gc():  # the scoring pass only allocates; see `hotindex.no_gc` (J68-5)
-            ranked = pooled_ranking(pools, q, ratio, weights, context)
+            ranked = pooled_ranking(pools, q, ratio, weights, context, scorer, rows)
         for layer, row in ranked:
             if k >= 0 and len(out) >= k:
                 break
