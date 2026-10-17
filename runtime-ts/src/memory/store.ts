@@ -727,12 +727,12 @@ export function* pooledRanking(
 }
 
 /** One vector per row of the live pool at that layer index, or `null` when the layer cannot say. */
-export type RowsOf = (layer: number, pool: Pool) => Array<Float32Array | null> | null;
+export type RowsOf = (layer: number, pool: Pool) => ReadonlyArray<unknown> | null;
 
 /** One vector per pooled row, layer by layer, or `null` when any layer cannot say. */
-function rowVectors(live: ReadonlyArray<[number, Pool]>, rows: RowsOf | null): Array<Float32Array | null> | null {
+function rowVectors(live: ReadonlyArray<[number, Pool]>, rows: RowsOf | null): unknown[] | null {
   if (rows === null) return null;
-  const out: Array<Float32Array | null> = [];
+  const out: unknown[] = [];
   for (const [i, p] of live) {
     const got = rows(i, p);
     if (got === null || got.length !== p.names.length) return null;

@@ -22,6 +22,19 @@ const nospace = (cp: number): boolean => NOSPACE.some(([lo, hi]) => cp >= lo && 
 const WORDCHAR = /^[\p{L}\p{N}\p{M}]$/u;
 
 /**
+ * Every code point of a no-space script replaced by one space, on the RAW text (before NFKC).
+ *
+ * Q2's qdoc keeps only the spaced-script tokens of a query: the Thai bigrams were measured as
+ * noise (J72-20). The order matters for fidelity: the probe stripped first and tokenized
+ * after. Iterates CODE POINTS, as Python's str does. The reference's `strip_nospace`.
+ */
+export function stripNospace(text: string): string {
+  let out = '';
+  for (const ch of text) out += nospace(ch.codePointAt(0)!) ? ' ' : ch;
+  return out;
+}
+
+/**
  * NFKC, lowercase, then words for spaced scripts and character bigrams for the rest.
  *
  * A list, not a set: BM25 needs term frequency. A no-space run of one character is
@@ -75,6 +88,8 @@ export const FIELD_BOOST: ReadonlyArray<[keyof Doc, number]> = [
   ['keywords', 2.0],
 ];
 export const SCORE_ROUND = 9;
+/** #207 amendment 3 (Q2): the weight on the likely-prompt vector. Frozen by gold look 6; never tuned on gold. */
+export const QUERY_WEIGHT = 1.0;
 
 /**
  * Python's `round(x, ndigits)` for a float, ndigits >= 0: CPython's `double_round`.
@@ -311,7 +326,7 @@ export interface Scorer {
   label(): string;
   used(): string;
   floor(): number;
-  column(cols: Columns, vecs: ReadonlyArray<Float32Array | null> | null): number[] | null;
+  column(cols: Columns, vecs: ReadonlyArray<unknown> | null): number[] | null;
 }
 
 /** Today's scorer, unchanged: `bm25Segments` over the pooled columns. */
@@ -334,6 +349,38 @@ export class Bm25fScorer implements Scorer {
 
 /** The shared off-path scorer; `fallback` is `null`. */
 export const BM25F = new Bm25fScorer();
+
+/**
+ * BM25F over the pooled columns plus `QUERY_WEIGHT` times BM25 of the bare prompt over each
+ * row's qdoc (#207 amendment 3, Q2). Dense: `vecs` is one qdoc string per pooled row, in row
+ * order, so a row whose name or description holds no prompt term can still be lifted by its
+ * queries. The reference's `QueryScorer`.
+ */
+export class QueryScorer implements Scorer {
+  readonly dense = true;
+  fallback: string | null = null;
+  constructor(readonly prompt: string) {}
+  label(): string {
+    return 'bm25f+queries';
+  }
+  used(): string {
+    return 'bm25f+queries';
+  }
+  floor(): number {
+    return GATE_FLOOR; // a call-time read, as `Bm25fScorer.floor`
+  }
+  column(cols: Columns, vecs: ReadonlyArray<unknown> | null): number[] | null {
+    if (vecs === null) return null;
+    const a = bm25Segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs);
+    const b = bm25Scores(
+      this.prompt,
+      vecs.map((v) => ({ name: '', description: v as string, keywords: [] })),
+    );
+    if (a.length !== b.length) throw new Error('zip() argument 2 is shorter than argument 1');
+    // NOT rounded: the probe summed two rounded columns, and `rankColumns` rounds `score * weight`.
+    return a.map((x, i) => x + QUERY_WEIGHT * b[i]!);
+  }
+}
 
 // ------------------------------------------------------------------ the gate and the ranker
 //
