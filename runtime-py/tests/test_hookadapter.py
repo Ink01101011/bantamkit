@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -466,7 +467,7 @@ def test_a_matching_prompt_injects_recall_HEADERS_and_not_bodies(tmp_path):
     assert line["dropped"] == 0
 
 
-def test_an_injection_leaves_every_fact_file_byte_and_mtime_identical(tmp_path):
+def test_an_injection_leaves_every_fact_file_byte_and_mtime_identical(tmp_path, monkeypatch):
     """AN INJECTION IS NOT A RECALL (job64, J64-1). Until this job the arm went through
     `Memory.recall_outcome` with the component's default `stamp`, so every automatic
     injection dated up to three facts `last_recalled: <today>` and rewrote their files —
@@ -500,14 +501,22 @@ def test_an_injection_leaves_every_fact_file_byte_and_mtime_identical(tmp_path):
     assert "[conformance-gate]" in ctx
     assert state() == before, "an injection rewrote a fact file, or moved its mtime"
 
-    # CONTROL: the explicit path, on the same bed, still stamps — and only the hit.
+    from bantamkit.memory.usage import UsageLedger
+
+    ledger = UsageLedger(home, store).path
+    assert not ledger.exists(), "an injection wrote a usage event (#199: the hook writes nothing)"
+
+    # CONTROL: the explicit path, on the same bed, still stamps — and only the hit. #199 D5:
+    # the stamp is a `recall_hit` in the usage ledger, and NO fact file moves. WAS:
+    # `last_recalled` was dated in conformance-gate.md.
     from bantamkit.memory.component import Memory
 
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     Memory(store=store).recall("what is the conformance gate here")
-    after = state()
-    assert b"last_recalled: '" in after["conformance-gate.md"][0]
-    assert after["conformance-gate.md"] != before["conformance-gate.md"]
-    assert after["unrelated.md"] == before["unrelated.md"]
+    assert state() == before
+    events = [json.loads(x) for x in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [(e["fact"], e["kind"]) for e in events] == [("conformance-gate", "recall_hit")]
 
 
 def test_the_prompt_is_logged_as_a_fingerprint_and_never_as_text(tmp_path):
@@ -619,12 +628,15 @@ _DEDUPE_FACTS = [
     ("reference", "unrelated-alpha", "nothing shared here at all"),
     ("reference", "unrelated-beta", "still nothing in common with anything"),
 ]
-#: Hits the three `deployment`/`rollback`/`staging` facts, in this order (scores 8, 3, 3).
+#: Hits the three `deployment`/`rollback`/`staging` facts, in `_A_NAMES` order.
 _PROMPT_A = "deployment path rollback procedure for the staging cluster"
 #: Hits `unrelated-alpha` first and then two of A's three, measured through `Memory.layered`
 #: on this bed -- so after A it is the MIXED case: one unseen header, two seen.
 _PROMPT_C = "nothing shared here at all about the staging cluster"
-_A_NAMES = ["deployment-rollback", "rollback-runbook", "staging-cluster-notes"]
+# #199 D3: the order is BM25F's now -- `staging-cluster-notes` (shorter, and `staging` and
+# `cluster` are rarer than `rollback`) outranks `rollback-runbook`. WAS: v1 overlap scores
+# 8, 3, 3, the tie broken by name.
+_A_NAMES = ["deployment-rollback", "staging-cluster-notes", "rollback-runbook"]
 
 
 def _dedupe_bed(tmp_path: Path, name: str, facts=_DEDUPE_FACTS) -> tuple[Path, Path]:
@@ -1668,8 +1680,13 @@ def test_the_store_fingerprint_masks_only_the_last_recalled_line(tmp_path):
 def test_re_dating_a_fact_does_not_re_arm_the_dream_gate_but_a_content_change_does(tmp_path):
     """The same property through the hook: (a) an explicit recall, a re-dating of the line
     and a bare touch each leave the next Stop a `dream-skip unchanged` with the SAME stored
-    fingerprint; (b) a body edit and (c) a new fact each produce a preview. The three (a)
-    steps are checked to have really rewritten the file, or a skip would prove nothing."""
+    fingerprint; (b) a body edit and (c) a new fact each produce a preview. The (a2) and
+    (a3) steps are checked to have really rewritten the file, or a skip would prove nothing.
+
+    #199 D5: (a1) an explicit recall no longer writes the file at all -- the use is a ledger
+    event -- so it is checked to leave bytes and mtime alone. WAS: it dated `last_recalled`,
+    and was the first of three rewrites. (a2) is what an older runtime's recall still writes.
+    """
     from bantamkit.memory.component import Memory
 
     home, cwd = _bed(tmp_path, "stop-dream-redate")
@@ -1682,13 +1699,12 @@ def test_re_dating_a_fact_does_not_re_arm_the_dream_gate_but_a_content_change_do
     _stop(home, cwd, transcript)  # S1: the first look previews
     fp1 = _dream_fingerprint(home)
 
-    # (a1) an explicit recall dates the fact: null -> today, bytes AND mtime move.
+    # (a1) an explicit recall writes nothing to the fact: bytes AND mtime stay (#199 D5).
     bytes_before, mtime_before = fact.read_bytes(), fact.stat().st_mtime_ns
     assert "recalled-often" in Memory(store=project).recall("operator recalls every turn")
-    assert fact.read_bytes() != bytes_before and fact.stat().st_mtime_ns != mtime_before
-    assert "last_recalled: '" in fact.read_text(encoding="utf-8"), "the recall dated it"
+    assert fact.read_bytes() == bytes_before and fact.stat().st_mtime_ns == mtime_before
     _stop(home, cwd, transcript)  # S2
-    # (a2) the same line re-dated to another day -- what tomorrow's recall writes.
+    # (a2) the same line re-dated to another day -- what an older runtime's recall writes.
     fact.write_text(
         re.sub(
             r"^last_recalled: .*$",
@@ -1698,6 +1714,7 @@ def test_re_dating_a_fact_does_not_re_arm_the_dream_gate_but_a_content_change_do
         ),
         encoding="utf-8",
     )
+    assert fact.read_bytes() != bytes_before, "the re-dating rewrote the file"
     _stop(home, cwd, transcript)  # S3
     # (a3) the mtime alone -- a same-day re-stamp (J64-0 Q4).
     later = fact.stat().st_mtime_ns + 10**9
@@ -1978,3 +1995,336 @@ def test_170_relative_store_resolves_against_cwd_and_empty_store_pins_nothing(tm
     e = _run_hook({"hook_event_name": "SessionStart", "source": "startup"}, home=home2, cwd=cwd)
     assert e.returncode == 0, e.stderr
     assert "env-fact" in e.stdout.decode("utf-8")
+
+
+# ------------------------------------------------------------- #200 Task 1: the touch log
+
+
+def test_post_tool_use_records_edit_and_never_bash(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    r = tmp_path / "repo"
+    (r / "src").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(r)], check=True)
+    for tool, ti in [
+        ("Edit", {"file_path": str(r / "src" / "a.py")}),
+        ("Bash", {"command": "cat src/a.py"}),
+        ("Read", {"file_path": str(r / "src" / "a.py")}),
+    ]:
+        done = _run_hook(
+            {"hook_event_name": "PostToolUse", "tool_name": tool, "tool_input": ti},
+            home=home,
+            cwd=r,
+            session="s1",
+        )
+        assert done.returncode == 0 and done.stdout == b""
+    log = next((home / ".bantamkit" / "touch").glob("*.jsonl"))
+    lines = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    # Seq 3 for the Read: the Bash call between them is counted, not recorded.
+    assert [(x["op"], x["path"], x["seq"]) for x in lines] == [
+        ("edit", "src/a.py", 1),
+        ("read", "src/a.py", 3),
+    ]
+
+
+def test_post_tool_use_outside_a_repo_records_nothing(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    _run_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(plain / "a.py")},
+        },
+        home=home,
+        cwd=plain,
+        session="s1",
+    )
+    assert not (home / ".bantamkit" / "touch").exists()
+    assert not (home / ".bantamkit" / "hooks" / "ledger-s1.seq.json").exists()
+
+
+def test_post_tool_use_unwritable_touch_log_is_a_logged_miss(tmp_path):
+    home = tmp_path / "home"
+    (home / ".bantamkit").mkdir(parents=True)
+    (home / ".bantamkit" / "touch").write_text("a file, not a dir", encoding="utf-8")
+    r = tmp_path / "repo"
+    r.mkdir()
+    subprocess.run(["git", "init", "-q", str(r)], check=True)
+    done = _run_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(r / "x")},
+        },
+        home=home,
+        cwd=r,
+        session="s1",
+    )
+    assert done.returncode == 0 and done.stdout == b"" and done.stderr == b""
+    misses = [x for x in _log_lines(home) if x.get("touch") == "miss"]
+    assert misses == [{**misses[0], "event": "PostToolUse", "touch": "miss", "tool": "Read"}]
+
+
+# ------------------------------------------------------------- #200 Task 3: bash-turn
+
+
+def test_stop_records_a_bash_turn_write_once_and_never_an_edited_file(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    r = tmp_path / "repo"
+    r.mkdir()
+    subprocess.run(["git", "init", "-q", str(r)], check=True)
+    (r / "a.txt").write_text("1\n", encoding="utf-8")
+
+    def hook(payload):
+        done = _run_hook(payload, home=home, cwd=r, session="s1")
+        assert done.returncode == 0, done.stderr
+        return done
+
+    # A PostToolUse before the turn opens, so the turn's `from` is not 0.
+    hook({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}})
+    hook({"hook_event_name": "UserPromptSubmit", "prompt": "hi"})  # short: the skip still opens
+    hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(r / "a.txt")},
+        }
+    )
+    (r / "b.txt").write_text("by bash\n", encoding="utf-8")
+    (r / "a.txt").write_text("again, longer\n", encoding="utf-8")
+    hook({"hook_event_name": "Stop"})
+    log = next((home / ".bantamkit" / "touch").glob("*.jsonl"))
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    turns = [x for x in rows if x.get("via") == "bash-turn"]
+    assert [(x["op"], x["path"], x["from"], x["seq"]) for x in turns] == [("write", "b.txt", 1, 2)]
+    before = log.read_bytes()
+    hook({"hook_event_name": "Stop", "stop_hook_active": True})
+    assert log.read_bytes() == before
+
+
+def test_stop_outside_a_repo_or_without_a_turn_records_nothing(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    for p in ({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}, {"hook_event_name": "Stop"}):
+        assert _run_hook(p, home=home, cwd=plain, session="s1").returncode == 0
+    assert not (home / ".bantamkit" / "touch").exists()
+    assert not (home / ".bantamkit" / "hooks" / "ledger-s1.turn.json").exists()
+    r = tmp_path / "repo"
+    r.mkdir()
+    subprocess.run(["git", "init", "-q", str(r)], check=True)
+    (r / "x.txt").write_text("x\n", encoding="utf-8")
+    assert _run_hook({"hook_event_name": "Stop"}, home=home, cwd=r, session="s2").returncode == 0
+    assert not (home / ".bantamkit" / "touch").exists()
+
+
+# --------------------------------------------- #200 Task 5: w_context and the via admission
+
+VIA_PROMPT = "explain the gateway rollout plan please"
+VIA_LINE = "[project] [fa] (project) notes about src/a.py [via a.py]"
+
+
+def _via_bed(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A git repo tracking src/a.py; its store holds `fa` (names the file, does not match
+    the prompt) and `gate-fact` (matches the prompt)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    r = tmp_path / "repo"
+    (r / "src").mkdir(parents=True)
+    (r / "src" / "a.py").write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(r)], check=True)
+    subprocess.run(["git", "-C", str(r), "add", "src/a.py"], check=True)
+    # A commit: `renames` reads `git log`, and a repo with no HEAD has no graph (T200-4).
+    subprocess.run(
+        ["git", "-C", str(r), "-c", "user.email=t@t", "-c", "user.name=t", "-c",
+         "commit.gpgsign=false", "commit", "-qm", "one"],
+        check=True,
+    )
+    store = r / ".bantamkit" / "memory"
+    _save(store, "project", "fa", "notes about src/a.py", "kept short")
+    _save(store, "project", "gate-fact", "gateway rollout plan details", "the plan")
+    return home, r, store
+
+
+def _via_ctx(done) -> list[str]:
+    assert done.returncode == 0, done.stderr
+    if not done.stdout:
+        return []
+    out = json.loads(done.stdout)
+    return out["hookSpecificOutput"]["additionalContext"].split("\n")
+
+
+def _post(home, r, tool, ti, env_extra=None):
+    done = _run_hook(
+        {"hook_event_name": "PostToolUse", "tool_name": tool, "tool_input": ti},
+        home=home,
+        cwd=r,
+        session="s1",
+        env_extra=env_extra,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+def _ups(home, r, env_extra=None, session="s1"):
+    return _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": VIA_PROMPT},
+        home=home,
+        cwd=r,
+        session=session,
+        env_extra=env_extra,
+    )
+
+
+def _store_bytes(store: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in sorted((store / "facts").glob("*.md"))}
+
+
+def _usage_files(home: Path) -> dict[str, bytes]:
+    root = home / ".bantamkit" / "usage"
+    if not root.exists():
+        return {}
+    return {str(p): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_via_line_after_an_edit_once_and_the_hook_writes_no_fact_or_usage(tmp_path):
+    home, r, store = _via_bed(tmp_path)
+    on = {"BANTAMKIT_VIA": "on"}
+    _post(home, r, "Edit", {"file_path": str(r / "src" / "a.py")}, on)
+    facts, usage = _store_bytes(store), _usage_files(home)
+    lines = _via_ctx(_ups(home, r, on))
+    assert lines[1:] == ["[project] [gate-fact] (project) gateway rollout plan details", VIA_LINE]
+    assert _store_bytes(store) == facts, "a via fact is never stamped or repaired"
+    assert _usage_files(home) == usage, "the hook writes no usage ledger line (#199)"
+    rec = [x for x in _log_lines(home) if x.get("event") == "UserPromptSubmit"][-1]
+    assert rec["via"] == "fa" and rec["context"] == 1
+    assert [x["name"] for x in rec["injected"]] == ["gate-fact", "fa"]
+    assert rec["injected"][1]["score"] == 0, "the [via ...] label is not scored"
+    # Already in the window: the seen-set suppresses it on the next prompt.
+    assert _via_ctx(_ups(home, r, on)) == []
+
+
+def test_via_off_by_default_and_by_the_switch(tmp_path):
+    home, r, _store = _via_bed(tmp_path)
+    _post(home, r, "Edit", {"file_path": str(r / "src" / "a.py")})
+    # Not `on`/`off`: the module default, VIA_ON = False.
+    lines = _via_ctx(_ups(home, r, {"BANTAMKIT_VIA": "unset-means-default"}))
+    assert VIA_LINE not in lines and len(lines) == 2
+    rec = [x for x in _log_lines(home) if x.get("event") == "UserPromptSubmit"][-1]
+    # T200-10: with W_CONTEXT 0 and via off no context is built, so none is counted (it was
+    # `rec["context"] == 1`, the dead work the reviewer named; the reply is unchanged).
+    assert "via" not in rec and "context" not in rec
+    lines = _via_ctx(_ups(home, r, {"BANTAMKIT_VIA": "off"}, session="s2"))
+    assert VIA_LINE not in lines
+
+
+def test_via_on_by_the_module_default_unless_the_switch_says_off(tmp_path, monkeypatch, capsys):
+    import io
+
+    from bantamkit import hookadapter
+    from bantamkit.touch import context as tc
+
+    home, r, _store = _via_bed(tmp_path)
+    _post(home, r, "Edit", {"file_path": str(r / "src" / "a.py")})
+    monkeypatch.setattr(tc, "VIA_ON", True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("BANTAMKIT_MEMORY_DIR", raising=False)
+    monkeypatch.chdir(r)
+
+    def ups(session: str) -> list[str]:
+        raw = json.dumps(
+            {"hook_event_name": "UserPromptSubmit", "prompt": VIA_PROMPT, "cwd": str(r),
+             "session_id": session}
+        ).encode("utf-8")
+        hookadapter.run_hook(io.BytesIO(raw))
+        out = capsys.readouterr().out
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"].split("\n") if out else []
+
+    monkeypatch.delenv("BANTAMKIT_VIA", raising=False)
+    assert ups("s1")[1:].count(VIA_LINE) == 1
+    monkeypatch.setenv("BANTAMKIT_VIA", "off")
+    # A fresh transcript key: nothing seen yet, so only the switch can withhold the line.
+    _post(home, r, "Edit", {"file_path": str(r / "src" / "a.py")})
+    lines = ups("s1-other")
+    assert VIA_LINE not in lines
+
+
+def test_via_absent_when_the_edit_is_21_calls_back(tmp_path):
+    home, r, _store = _via_bed(tmp_path)
+    on = {"BANTAMKIT_VIA": "on"}
+    _post(home, r, "Edit", {"file_path": str(r / "src" / "a.py")}, on)
+    for _ in range(21):
+        _post(home, r, "Bash", {"command": "ls"}, on)
+    lines = _via_ctx(_ups(home, r, on))
+    assert lines[1:] == ["[project] [gate-fact] (project) gateway rollout plan details"]
+    rec = [x for x in _log_lines(home) if x.get("event") == "UserPromptSubmit"][-1]
+    assert "context" not in rec and "via" not in rec
+
+
+# --- T200-10: the reviewer's blockers ----------------------------------------------------
+
+
+def test_no_git_on_path_records_nothing(tmp_path):
+    """Spec Error handling: "No git, or not inside a repo | Nothing is recorded" (B2)."""
+    home, r, _store = _via_bed(tmp_path)
+    nogit = tmp_path / "nogit"
+    nogit.mkdir()
+    _post(home, r, "Read", {"file_path": str(r / "src" / "a.py")}, {"PATH": str(nogit)})
+    _post(home, r, "Edit", {"file_path": str(r / "src" / "a.py")}, {"PATH": str(nogit)})
+    assert not (home / ".bantamkit" / "touch").exists()
+    assert not (home / ".bantamkit" / "hooks" / "ledger-s1.seq.json").exists()
+    # The control: git reachable through a symlink in a PATH directory records both.
+    link = tmp_path / "gitlink"
+    link.mkdir()
+    (link / "git").symlink_to(shutil.which("git"))
+    _post(home, r, "Read", {"file_path": str(r / "src" / "a.py")}, {"PATH": str(link)})
+    (log,) = (home / ".bantamkit" / "touch").glob("*.jsonl")
+    assert [json.loads(x)["op"] for x in log.read_text(encoding="utf-8").splitlines()] == ["read"]
+
+
+def test_ups_builds_no_context_while_it_cannot_move_the_reply(tmp_path, monkeypatch, capsys):
+    """W_CONTEXT 0 and via off: no touch-log read, no graph, the same reply bytes (T200-10)."""
+    import io
+
+    from bantamkit import hookadapter
+    from bantamkit.memory import retrieval
+
+    assert retrieval.W_CONTEXT == 0.0
+    home, r, _store = _via_bed(tmp_path)
+    for session in ("s1", "s2"):  # each prompt's own session has the Edit in its window
+        done = _run_hook(
+            {"hook_event_name": "PostToolUse", "tool_name": "Edit",
+             "tool_input": {"file_path": str(r / "src" / "a.py")}},
+            home=home, cwd=r, session=session,
+        )
+        assert done.returncode == 0, done.stderr
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("BANTAMKIT_MEMORY_DIR", raising=False)
+    monkeypatch.delenv("BANTAMKIT_VIA", raising=False)
+    monkeypatch.chdir(r)
+    graph = home / ".bantamkit" / "graph"
+
+    def ups(session: str) -> str:
+        raw = json.dumps(
+            {"hook_event_name": "UserPromptSubmit", "prompt": VIA_PROMPT, "cwd": str(r),
+             "session_id": session}
+        ).encode("utf-8")
+        hookadapter.run_hook(io.BytesIO(raw))
+        return capsys.readouterr().out
+
+    skipped = ups("s1")
+    assert skipped and not graph.exists(), "the inert state builds no graph"
+    # Force the build only (the gate's own `via_enabled`; the recall's stays off): the
+    # context is built, the graph written, and the reply is byte for byte the same.
+    monkeypatch.setattr(hookadapter, "via_enabled", lambda: True)
+    built = ups("s2")
+    assert len(list(graph.glob("*.json"))) == 1
+    assert built == skipped
+    recs = [x for x in _log_lines(home) if x.get("event") == "UserPromptSubmit"]
+    assert "context" not in recs[-2] and recs[-1]["context"] == 1

@@ -25,6 +25,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -55,11 +56,13 @@ let caseN = 0;
 const T0 = Date.parse('2026-09-06T12:00:00.000Z');
 const at = (ms) => new Date(T0 + ms).toISOString();
 
-function run({ log, sessions, cwd = '/proj', text = false }) {
+function run({ log, sessions, cwd = '/proj', text = false, rotated = [] }) {
   const dir = path.join(scratch, `case-${caseN++}`);
   const proj = path.join(dir, 'projects', '-proj');
   mkdirSync(proj, { recursive: true });
   writeFileSync(path.join(dir, 'hook-log.jsonl'), log.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  // `rotated[i]` is the record list of segment `.<i+1>.gz` (job69: the hook log is a LogSegment).
+  rotated.forEach((recs, i) => writeFileSync(path.join(dir, `hook-log.jsonl.${i + 1}.gz`), gzipSync(recs.map((r) => JSON.stringify(r)).join('\n') + '\n')));
   for (const [sid, spec] of Object.entries(sessions)) {
     const lines = [JSON.stringify({ type: 'user', sessionId: sid, cwd, timestamp: at(0) })];
     for (const e of spec.main ?? []) lines.push(JSON.stringify({ type: 'assistant', sessionId: sid, cwd, timestamp: at(e.t), message: { content: [e.block] } }));
@@ -190,6 +193,19 @@ console.log('injection-precision.mjs — fixture agreement\n');
   check('a verdict prints the control rows beside the injected ones', printed.includes('CONTROL not-injected'), true);
   check('and every rate carries an interval', (printed.match(/\[\d+\.\d–\d+\.\d\]/g) || []).length, 4);
   check('and it still names no threshold', printed.includes('names no precision threshold'), true);
+}
+
+// ---- 7. a rotated hook log is read whole (job69, #204) -------------------------------------
+// The hook log gzips itself into `.1.gz`, `.2.gz`, ... at 1,000,000 bytes. Records in a rotated
+// segment are history like any other; a segment past a numbering gap is not one of the log's
+// (`LogSegment.segments()` stops at the first gap), and a corrupt one is skipped, not fatal.
+{
+  const live = [inject('s1', 3000, ['fact-a'])];
+  const seg1 = [inject('s1', 1000, ['fact-a']), inject('s1', 1500, ['fact-b'])];
+  const seg2 = [inject('s1', 2000, ['fact-a'])];
+  const j = run({ log: live, rotated: [seg1, seg2], sessions: { s1: { main: [recallCall(50_000, 'fact-a')] } } });
+  check('records in rotated segments are counted with the live ones', j.joined, 4);
+  check('and their uses are joined like any other', j.counts.recallSignal, 3);
 }
 
 if (failures) { console.log(`\n${failures} failed`); process.exit(1); }

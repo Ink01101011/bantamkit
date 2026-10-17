@@ -14,6 +14,7 @@
  * are invisible until the day they bite (`sorted(Path)` over a NESTED tree, and a float
  * that has been through `JSON.parse`) are pinned to a number.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -39,6 +40,7 @@ import {
   UPDATE_UNREADABLE,
   updateCommand,
 } from '../dist/updatecheck.js';
+import { FAMILIES, HotIndex, SHARDS } from '../dist/storage/index.js';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(packageRoot);
@@ -98,6 +100,16 @@ const INITIALIZED = { jsonrpc: '2.0', method: 'notifications/initialized' };
  * `RETIRED` constant further down, which the platform gate would read as a guard for this
  * block by coincidence of spelling — a coincidence is not a consideration.
  */
+/**
+ * A fresh HOME for one session (#199, J68-5). The shared `fakehome` accumulates the usage
+ * ledgers every `memory_recall` in this file appends, and `bantamkit_status` prints one `logs`
+ * row per ledger, so a test that pins the status block runs on a home of its own.
+ */
+function ownHome() {
+  ownHome.last = mkdtempSync(join(scratch, 'home-'));
+  return ownHome.last;
+}
+
 function session(requests, { args = [], env = {}, cwd = null, cli = CLI } = {}) {
   const isolated = cwd ?? join(scratch, `cwd${(seq += 1)}`);
   mkdirSync(isolated, { recursive: true });
@@ -1076,13 +1088,12 @@ test('an argument of the wrong type is refused in the reference runtime’s own 
       '  Input should be a valid string [type=string_type, input_value=123, input_type=int]',
       // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
   );
-  assert.equal(
-    text(3),
-    'Error executing tool memory_recall: 1 validation error for memory_recallArguments\n' +
-      'query\n' +
-      '  Field required [type=missing, input_value={}, input_type=dict]',
-      // AMENDED job65 (#185): pydantic's `For further information visit` URL line is gone on both runtimes
-  );
+  // AMENDED #200 (job70 T200-7): `query` is optional since `file` exists, so `{}` is no longer
+  // pydantic's `Field required` frame but the tool's own refusal, the same on both runtimes.
+  // WAS: 'Error executing tool memory_recall: 1 validation error for memory_recallArguments\n' +
+  //      'query\n  Field required [type=missing, input_value={}, input_type=dict]'
+  assert.equal(byId(lines, 3).result.isError, true);
+  assert.equal(text(3), 'Error executing tool memory_recall: memory_recall needs a query or a file.');
   assert.equal(
     text(4),
     'Error executing tool memory_save: 2 validation errors for memory_saveArguments\n' +
@@ -1255,7 +1266,10 @@ const FOOTER_HEAD = '⚠️ bantamkit degraded (';
 async function statusSession(requests, budget) {
   const store = freshStore();
   const args = ['--store', store, ...(budget === undefined ? [] : ['--index-budget', String(budget)])];
-  const { lines, stderr, code } = await session(requests, { args });
+  // Its own HOME (#199, J68-6): `memory_save` now appends a `save` event to the usage ledger,
+  // so the shared `fakehome` holds a ledger per store other tests saved into, and the status
+  // lists every one under `logs`. See `ownHome`.
+  const { lines, stderr, code } = await session(requests, { args, env: { HOME: ownHome(), USERPROFILE: ownHome.last } });
   return { lines, stderr, code, store };
 }
 
@@ -1268,9 +1282,16 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.equal(statSync(join(store, 'index.md')).size, INDEX_BYTES, 'two sessions wrote different indexes');
   const report = byId(lines, 3).result.structuredContent.result;
   const rows = report.split('\n');
-  assert.equal(rows.length, 6, report);
+  // AMENDED job69 J69-7 (#204): 6 -> 10, the four storage lines appended after line 6.
+  // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12, read-repair and the usage ledger.
+  // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, `touch: none` between the logs and retention.
+  assert.equal(rows.length, 13, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
-  assert.match(rows[1], /^version \d+\.\d+\.\d+, build sha256:[0-9a-f]{64}$/);
+  // job68 J68-12: the version this build's package.json declares, exactly. WAS a stable-only
+  // `\d+\.\d+\.\d+` shape, which a prerelease (`0.37.0-beta.1`, npm's spelling) failed.
+  const declared = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  assert.match(rows[1], /^version \S+, build sha256:[0-9a-f]{64}$/);
+  assert.equal(rows[1].split(',')[0], `version ${declared}`);
   assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
   // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
   // walk bound ABOVE the project was invisible on the one surface that reports binding.
@@ -1279,6 +1300,24 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   // Line 6, and it is NOT a condition: `session()` puts HOME at a scratch directory with no
   // record in it, so the server says it has never been checked and is still `Active 🟢`.
   assert.equal(rows[5], UPDATE_NEVER);
+  // #204 (job69 J69-7): the storage block on a home with no hook, no native directory, no log
+  // and no retention record. The index is the one the report's own fast refresh left on disk.
+  assert.equal(rows[6], 'storage: core on; hooks off; host data off');
+  // `scripts/run-tests.mjs` sets the index dir for the run; the server inherits it.
+  assert.ok(process.env.BANTAMKIT_INDEX_DIR, 'run through `npm test`, which sets BANTAMKIT_INDEX_DIR');
+  const hot = new HotIndex(store, 'facts', tmpdir(), process.env.BANTAMKIT_INDEX_DIR);
+  const files = [hot.path];
+  for (const f of FAMILIES) for (let i = 0; i < SHARDS; i += 1) files.push(hot.shardPath(f, i));
+  const held = files.reduce((n, p) => n + (existsSync(p) ? statSync(p).size : 0), 0);
+  assert.ok(held > 0, 'the report left no index on disk');
+  assert.equal(rows[7], `index facts project: 1 doc, ${held} bytes, persisted`);
+  // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): WAS 'logs: none'. `memory_save` now appends
+  // the `save` event read-repair restores keywords from, so the probe's save made the ledger.
+  assert.match(rows[8], /^logs: usage\/[0-9a-f]{16} \d+ \(0 rotated, 0 skipped\)$/);
+  assert.equal(rows[9], 'touch: none'); // #200 (job70 T200-1)
+  assert.equal(rows[10], 'retention: off; last ran never; refused 0');
+  assert.equal(rows[11], 'read-repaired: 0 this process');
+  assert.match(rows[12], /^usage ledger: .*[\\/]\.bantamkit[\\/]usage[\\/][0-9a-f]{16}\.jsonl \(1 lines, 0 skipped\)$/);
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
   // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
   assert.equal(byId(lines, 3).result.content[0].text, report);
@@ -1350,7 +1389,10 @@ test('the report carries the update line in every one of the five states, and no
     // running: a stale install is not a fault, so line 1 stays Active, the report grows no
     // `problems:` block, and no OTHER tool's reply carries a footer about it.
     assert.equal(rows[0], REPORT_LINE_1_ACTIVE, state);
-    assert.equal(rows.length, 6, `${state}: ${report}`);
+    // AMENDED job69 J69-7 (#204): 6 -> 10, the four storage lines after the update line.
+    // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12.
+    // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13.
+    assert.equal(rows.length, 13, `${state}: ${report}`);
     assert.ok(!report.includes(FOOTER_HEAD), state);
     const other = byId(lines, 4).result;
     assert.ok(!JSON.stringify(other).includes('bantamkit_degraded'), `${state}: a footer rode an unrelated reply`);
@@ -1372,13 +1414,18 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
   // The update line sits between `event log:` and the problem block in EVERY state, degraded
   // included — it is not a problem, so it does not join the list of them.
   assert.equal(rows[5], UPDATE_NEVER);
-  assert.equal(rows[6], '1 problem:');
+  // AMENDED job69 J69-7 (#204): the four storage lines sit between the update line and the
+  // problem block, which is still appended last; every problem row moved down by four.
+  assert.equal(rows[6], 'storage: core on; hooks off; host data off');
+  // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): +2, read-repair and the usage ledger before it.
+  // AMENDED job70 T200-1 (#200, plan Task 1): the problem block moves down one, below `touch: none`.
+  assert.equal(rows[13], '1 problem:');
   assert.equal(
-    rows[7],
+    rows[14],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
-  assert.equal(rows.length, 8);
+  assert.equal(rows.length, 15); // AMENDED job70 T200-1 (#200, plan Task 1): 14 -> 15
   /**
    * THE REMEDY NAMES A COMMAND THIS INSTALL ACTUALLY PROVIDES, from outside the server.
    *
@@ -1394,7 +1441,7 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
    */
   const bins = Object.keys(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).bin);
   assert.ok(bins.includes('bantamkit-memory'), `package.json ships no bantamkit-memory bin: ${bins}`);
-  assert.match(rows[7], /`bantamkit-memory compact`/);
+  assert.match(rows[14], /`bantamkit-memory compact`/);
   assert.ok(
     !report.includes('python -m bantamkit.memory'),
     `the degraded report names a command a pure-npm install cannot run:\n${report}`,
@@ -1511,14 +1558,31 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
   writeFileSync(join(bed, 'somebodys-private-notes', 'facts'), 'a regular file where a directory belongs\n');
   writeFileSync(join(bed, '.bantamkit', 'config.yaml'), 'extra_stores:\n- ../somebodys-private-notes\n');
   // No `--store`: this is the layered path production runs, and the only one with an `extra`.
-  const { lines, stderr } = await session([INIT, INITIALIZED, call(2, 'bantamkit_status', {})], { cwd: bed });
+  // Its own HOME (#199, J68-5): the shared `fakehome` holds the usage ledgers other tests'
+  // `memory_recall` calls appended, and `bantamkit_status` lists every ledger under `logs`.
+  const home = ownHome();
+  const { lines, stderr } = await session([INIT, INITIALIZED, call(2, 'bantamkit_status', {})], {
+    cwd: bed,
+    env: { HOME: home, USERPROFILE: home },
+  });
   const report = byId(lines, 2).result.structuredContent.result;
   const rows = report.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
   assert.equal(rows[5], UPDATE_NEVER);
-  assert.equal(rows[6], '1 problem:');
+  // AMENDED job69 J69-7 (#204): the storage block sits before the problem block (+4). The
+  // unreadable `extra` layer has NO index line — a `facts` that is not a directory is skipped,
+  // so the block names neither the grant nor its kind.
+  assert.deepEqual(rows.slice(6, 11).map((r) => r.replace(/\d+ bytes/, '<n> bytes')), [
+    'storage: core on; hooks off; host data off',
+    'index facts project: 0 docs, <n> bytes, persisted',
+    'logs: none',
+    'touch: none', // AMENDED job70 T200-1 (#200, plan Task 1): the `touch:` line
+    'retention: off; last ran never; refused 0',
+  ]);
+  // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): +2, read-repair and the usage ledger before it.
+  assert.equal(rows[13], '1 problem:');
   assert.equal(
-    rows[7],
+    rows[14],
     '- 1 memory layer could not be read (1 kind: extra), so an empty recall is not evidence that ' +
       'nothing is saved — check that those store directories exist and are readable.',
   );
@@ -1526,7 +1590,8 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
   // AMENDED job65/#142: WAS `!report.includes(bed)` over the whole report. Line 4 now names
   // the bound PROJECT store by path (the issue's contract; line 4 is not a condition). The
   // problem block — what the degraded footer carries — still names no path.
-  assert.ok(!rows.slice(6).join('\n').includes(bed), `a path leaked into the problems:\n${report}`);
+  assert.ok(!rows.slice(12).join('\n').includes(bed), `a path leaked into the problems:\n${report}`);
+  assert.ok(!rows.slice(6, 10).join('\n').includes(bed), `a path leaked into the storage block:\n${report}`);
   assert.equal(rows[3].split('; bound to ')[1], join(bed, '.bantamkit', 'memory'));
   assert.equal(stderr, '');
 });
@@ -1765,7 +1830,12 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   const store = freshStore();
   const { lines, stderr } = await session(
     [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {}), call(4, 'build_identity', {})],
-    { args: ['--store', store, '--index-budget', String(DEGRADED_BUDGET)], cli: join(pkg, 'dist', 'cli.js') },
+    {
+      args: ['--store', store, '--index-budget', String(DEGRADED_BUDGET)],
+      cli: join(pkg, 'dist', 'cli.js'),
+      // Its own HOME (#199, J68-5): see `ownHome`.
+      env: { HOME: ownHome(), USERPROFILE: ownHome.last },
+    },
   );
 
   const id = byId(lines, 4).result.structuredContent;
@@ -1778,19 +1848,23 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   const rows = byId(lines, 3).result.structuredContent.result.split('\n');
   assert.equal(rows[0], REPORT_LINE_1_DEGRADED);
   assert.equal(rows[5], UPDATE_NEVER);
-  assert.equal(rows[6], '2 problems:');
+  // AMENDED job69 J69-7 (#204): +4, the storage lines before the problem block.
+  assert.equal(rows[6], 'storage: core on; hooks off; host data off');
+  // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): +2, read-repair and the usage ledger before it.
+  // AMENDED job70 T200-1 (#200, plan Task 1): the problem block moves down one, below `touch: none`.
+  assert.equal(rows[13], '2 problems:');
   assert.equal(
-    rows[7],
+    rows[14],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
   assert.equal(
-    rows[8],
+    rows[15],
     `- this server was installed from ${gone}, which no longer exists, so nothing can be ` +
       'refreshed in place there — reinstall bantamkit by name from a package registry and ' +
       'restart the server.',
   );
-  assert.equal(rows.length, 9);
+  assert.equal(rows.length, 16); // AMENDED job70 T200-1 (#200, plan Task 1): 15 -> 16
 
   // The footer shows the FIRST condition, which is still the index one — so the count moved
   // and the sentence did not. That pair is what would break if the order were changed by hand.

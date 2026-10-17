@@ -50,9 +50,21 @@ import { fileURLToPath } from 'node:url';
 import { Memory } from './memory/component.js';
 import type { RecallOutcome } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
-import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
+import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens, utcNow } from './memory/store.js';
 import type { Fact } from './memory/store.js';
+import { UsageLedger } from './memory/usage.js';
 import { keptCli, keptManifest, keptPrefix } from './npminstall.js';
+import { exclusive } from './storage/lock.js';
+import { LogSegment, ROTATE_BYTES } from './storage/logsegment.js';
+import { maybeSpawn as maybeSpawnRetention } from './storage/retention.js';
+import { changed, loadTurn, saveTurn, snapshot } from './touch/bashturn.js';
+import { TOUCH_WINDOW, type TouchContext, contextWeights, viaEnabled, window as touchWindow } from './touch/context.js';
+import { W_CONTEXT } from './memory/retrieval.js';
+import { TouchGraph } from './touch/graph.js';
+import { TOUCH_OPS, TouchLog, currentSeq, nextSeq, useNames } from './touch/log.js';
+import { FileSet, shortestSuffix } from './touch/refs.js';
+import { findRepo, git, gitOnPath, lsFiles, relPath } from './touch/repo.js';
+import { SUMMARY_COMMIT_GRACE_S, compactLine, lastSessionLine, previousSession, shiftTs, uncommittedCount } from './touch/summary.js';
 import {
   decide as decideUpdate,
   KEY as UPDATE_KEY,
@@ -191,6 +203,7 @@ export interface HookInput {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   tool_use_id?: string;
+  tool_response?: unknown;
   trigger?: string;
   stop_hook_active?: boolean;
 }
@@ -228,15 +241,17 @@ function newRun(): HookRun {
   };
 }
 
+/**
+ * One `hook-log.jsonl` line through `storage/logsegment`'s `LogSegment` (#204, J69-4).
+ * Best-effort: `append` never throws an `fs` error. The existing file is segment 0; once an
+ * append leaves it past `ROTATE_BYTES` (judged from the size the append measured) it is
+ * gzipped to `hook-log.jsonl.<n>.gz`. Rotation drops nothing (docs/eventlog.md, stream 2);
+ * Retention (J69-6) folds LIVE lines older than 30 days into per-day counts (docs/hooks.md).
+ */
 function log(run: HookRun, record: LogRecord): void {
-  try {
-    fs.mkdirSync(run.state, { recursive: true });
-    fs.appendFileSync(
-      run.log,
-      `${JSON.stringify({ ts: new Date().toISOString(), ms: Date.now() - T0, ...record })}\n`,
-    );
-  } catch {
-    /* logging is best-effort */
+  const seg = new LogSegment(run.log);
+  if (seg.append({ ts: new Date().toISOString(), ms: Date.now() - T0, ...record }) && seg.size > ROTATE_BYTES) {
+    seg.rotate(ROTATE_BYTES);
   }
 }
 
@@ -382,28 +397,15 @@ const LEDGER_LOCK_POLL_MS = 5;
  */
 function updateLedger(run: HookRun, sessionId: string | undefined, update: (ledger: Ledger) => boolean): void {
   fs.mkdirSync(run.state, { recursive: true });
-  const lock = `${ledgerPath(run, sessionId)}.lock`;
-  const deadline = Date.now() + LEDGER_LOCK_WAIT_MS;
-  let held = false;
-  while (!held && Date.now() < deadline) {
-    try {
-      fs.closeSync(fs.openSync(lock, 'wx'));
-      held = true;
-    } catch {
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > LEDGER_LOCK_STALE_MS) fs.rmSync(lock, { force: true });
-      } catch {
-        /* the holder released it between the open and the stat: go round again */
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LEDGER_LOCK_POLL_MS);
-    }
-  }
-  try {
-    const ledger = readLedger(run, sessionId);
-    if (update(ledger)) writeLedger(run, sessionId, ledger);
-  } finally {
-    if (held) fs.rmSync(lock, { force: true });
-  }
+  // `storage/lock`'s `exclusive` since #204 (J69-4): the same loop, lifted, with these values.
+  exclusive(
+    ledgerPath(run, sessionId),
+    () => {
+      const ledger = readLedger(run, sessionId);
+      if (update(ledger)) writeLedger(run, sessionId, ledger);
+    },
+    { waitMs: LEDGER_LOCK_WAIT_MS, staleMs: LEDGER_LOCK_STALE_MS, pollMs: LEDGER_LOCK_POLL_MS },
+  );
 }
 
 // ------------------------------------- the host's auto-memory directory, and A's export
@@ -556,6 +558,17 @@ function resolveNativeMemory(run: HookRun, input: HookInput): NativeMemory {
   return { dir: null, branch: 'unknown', tried };
 }
 
+/**
+ * RULING Q1.2 for a caller with no hook payload: branches 1 and 2 only (#204, J69-7). The
+ * capability tiers ask this from the MCP server, which never receives `transcript_path`, so
+ * branch 3 has nothing to read. Never throws; `null` is "no host data". The reference's
+ * `native_memory_dir`.
+ */
+export function nativeMemoryDir(home: string): string | null {
+  const run: HookRun = { home, state: '', log: '', profile: '', dreamState: '', storeScope: null };
+  return resolveNativeMemory(run, {}).dir;
+}
+
 /** What one export run did, in numbers the operator can rerun the arm against. */
 interface NativeExport {
   /** Names for which SOMETHING was written this run. */
@@ -689,6 +702,7 @@ function exportToNative(dir: string, store: string): NativeExport {
         line: indexLine(fact),
         name: pyText(fact.name),
       })),
+      new UsageLedger(os.homedir(), source.root).lastUsedMap(),
     );
     for (const f of ranked) {
       if (result.exported >= NATIVE_EXPORT_MAX) break;
@@ -744,7 +758,8 @@ function exportToNative(dir: string, store: string): NativeExport {
 // (`MemoryStore.byEviction`) read backwards — the facts `compact` would archive LAST are the
 // ones a session should see FIRST — so the hook invents no new notion of worth: durable
 // types (`DURABLE_TYPES`) before decaying ones, then the most recent evidence of use
-// (`last_recalled`, falling back to `created`), then name. Inside one class the date is
+// (the usage ledger's last use since #199, then `last_recalled`, falling back to `created`),
+// then name. Inside one class the date is
 // the ONLY signal a fact carries on disk, and `last_recalled` is stamped by the recall path
 // before its own byte cap (J49-B3), so this is a stated rule, not a claim of importance.
 const SESSION_DROP_RULE =
@@ -789,11 +804,19 @@ interface CappedIndex {
  * It was inline in `cappedIndex` and had exactly one caller; the export is the second, and a
  * second copy of a four-key comparator is how "the same rule" stops being the same rule.
  */
-function rankBySessionDropRule(all: readonly IndexedFact[]): IndexedFact[] {
+function rankBySessionDropRule(
+  all: readonly IndexedFact[],
+  used: ReadonlyMap<string, string> = new Map(),
+): IndexedFact[] {
   const text = (value: unknown): string => (value == null ? '' : pyText(value));
   const decays = (f: IndexedFact): number =>
     DURABLE_TYPES.some((durable) => pyEqualValue(f.fact.type, durable)) ? 0 : 1;
-  const evidence = (f: IndexedFact): string => text(f.fact.last_recalled) || text(f.fact.created);
+  // SINCE #199 (D5): the store's usage ledger first (read-only here — the hook writes nothing),
+  // because recall no longer dates `last_recalled`. The reference's `evidence`.
+  const evidence = (f: IndexedFact): string =>
+    (typeof f.fact.name === 'string' ? used.get(f.fact.name) : undefined) ||
+    text(f.fact.last_recalled) ||
+    text(f.fact.created);
   const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
   return [...all].sort(
     (a, b) =>
@@ -811,7 +834,7 @@ function cappedIndex(root: string, header: (count: string, total: number) => str
     line: indexLine(fact),
     name: pyText(fact.name),
   }));
-  const ranked = rankBySessionDropRule(all);
+  const ranked = rankBySessionDropRule(all, new UsageLedger(os.homedir(), store.root).lastUsedMap());
   const kept = new Set<IndexedFact>();
   let size = 0;
   for (const f of ranked) {
@@ -1147,6 +1170,10 @@ function sessionStart(run: HookRun, input: HookInput): void {
   } catch (e) {
     log(run, { event: 'SessionStart', warn: message(e) });
   }
+  // B (#200, E1-B): the last session's edits and commits, or after a compaction this session's
+  // edits — its own part, outside the 3000-byte memory blocks, '' when silent.
+  const touch = touchSummary(run, input);
+  if (touch) parts.push(touch);
   parts.push(
     '[bantamkit] Toolbox is live: mcp__bantamkit__memory_recall reads the body of any fact above; memory_save stores a durable lesson (feedback|user|project|reference — never something derivable from the repo). Repeat reads of an unchanged file are refused once by the filegraph hook; a save nudge fires once at session end when nothing was saved.',
   );
@@ -1193,6 +1220,7 @@ function sessionStart(run: HookRun, input: HookInput): void {
     source: input.source,
     cwd,
     bytes: Buffer.byteLength(ctx),
+    touchBytes: Buffer.byteLength(touch),
     profileFacts,
     profileInjected: profile.injected,
     profileDropped: profile.dropped,
@@ -1237,7 +1265,48 @@ function sessionStart(run: HookRun, input: HookInput): void {
     updateProbe: update.probe,
     updateBytes: Buffer.byteLength(update.line || ''),
   });
+  // RETENTION (#204, J69-6): at most once a day, a detached silent child prunes, folds,
+  // rotates and archives closed `.shiftwork` jobs under this session's cwd. Never inline,
+  // never waited for; only a spawn this hook could not make is a log line.
+  if (maybeSpawnRetention(run.home, cwd) === 'failed') {
+    log(run, { event: 'SessionStart', warn: 'retention: the child could not be started' });
+  }
   emit({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: ctx } });
+}
+
+/**
+ * The B line for this SessionStart (#200, E1-B): `''` outside a repo, when silent, or on any
+ * failure. Port of `_touch_summary`: `source === 'compact'` gets this session's edits, any other
+ * source the previous session in this repo. Git runs only once the touch log has something to say.
+ */
+function touchSummary(run: HookRun, input: HookInput): string {
+  try {
+    const repo = findRepo(String(input.cwd || process.cwd()));
+    if (repo === null) return '';
+    const rows = new TouchLog(run.home, repo.id).read();
+    const session = String(input.session_id || '');
+    const compact = input.source === 'compact';
+    const prev = compact ? null : previousSession(rows, session);
+    if (!compact && prev === null) return '';
+    const fset = new FileSet(lsFiles(repo) ?? []);
+    const display = (p: string): string => (fset.files.has(p) ? shortestSuffix(p, fset) : p);
+    if (compact) return compactLine(rows, session, display);
+    const mine = prev![1];
+    const stamps = mine.map((r) => r['ts'] as string);
+    let first = stamps[0]!;
+    let last = stamps[0]!;
+    for (const t of stamps) {
+      if (t < first) first = t;
+      if (t > last) last = t;
+    }
+    const until = shiftTs(last, SUMMARY_COMMIT_GRACE_S);
+    const out = git(repo, ['log', '--format=%s', `--since=${first}`, `--until=${until}`, 'HEAD']);
+    const status = git(repo, ['status', '--porcelain=v1', '-z', '-uall']) ?? '';
+    const commits = (out ?? '').split('\n').filter((s) => s);
+    return lastSessionLine(mine, utcNow(), display, commits, uncommittedCount(status));
+  } catch {
+    return ''; // the summary is an enhancement; no line is its failure
+  }
 }
 
 // ------------------------------------------------------------ UserPromptSubmit
@@ -1249,6 +1318,9 @@ function sessionStart(run: HookRun, input: HookInput): void {
  */
 const RECALL_HEADER = /^\[([^\]]+)\] \[([^\]]+)\] \(([a-z]+)\) (.*)$/;
 
+/** The via suffix a header admitted past the gate carries (#200): ` [via <file>]`, at the end. */
+const VIA_SUFFIX = / \[via [^\]\n]+\]$/;
+
 interface ScoredHeader {
   name: string;
   layer: string;
@@ -1257,20 +1329,21 @@ interface ScoredHeader {
 }
 
 /**
- * The store's own score for one injected header against this prompt.
+ * The v1 word-overlap count for one injected header, kept for log compatibility.
  *
- * `MemoryStore.recall` computes `score` and throws it away — it returns `Fact[]`, and
- * `recallOutcome` carries counts but no per-fact score, so no runtime API surfaces the
- * number roadmap #6 has to gate on. It does not need to. The score IS
+ * THIS IS NOT THE SCORE THAT RANKED THE FACT (#199, J68-8 F2). Since #199 recall pools every
+ * layer and ranks by BM25F plus the gate and ranker (`memory/retrieval`), and no runtime API
+ * surfaces that per-fact number. What the hook log's `injected[].score` holds is still the
+ * pre-#199 overlap
  *
  *     |tokens(name + " " + description) ∩ tokens(query)|
  *
- * and all three inputs are here: `tokens` is exported from the runtime's own `store.js`
- * (so this is the shipped tokenizer, not a second copy of it), the query is the prompt, and
- * `name`/`description` are the two fields `Memory.format` interpolated into this very line.
- * Re-deriving it is exact, not an estimate — for every fact `memory_save` writes, whose
- * description is one line by construction. A hand-edited multi-line description would have
- * already broken the header this parses, and would score its first line.
+ * re-derived from the header `Memory.format` printed, with the store's own exported `tokens`.
+ * It is kept so a log written before and after #199 means the same thing in this field;
+ * replacing it with the BM25F score is a log-format change, not made here. It can be 0 for a
+ * fact the ranker put first: a Thai prompt tokenizes to nothing under `tokens`, while the
+ * BM25F tokenizer and the fact's `keywords` match it. A hand-edited multi-line description
+ * would have already broken the header this parses, and would count its first line.
  */
 function scoreHeader(head: string, queryTokens: Set<string>): ScoredHeader | null {
   const m = RECALL_HEADER.exec(head);
@@ -1278,7 +1351,7 @@ function scoreHeader(head: string, queryTokens: Set<string>): ScoredHeader | nul
   const layer = m[1] ?? '';
   const name = m[2] ?? '';
   const type = m[3] ?? '';
-  const description = m[4] ?? '';
+  const description = (m[4] ?? '').replace(VIA_SUFFIX, ''); // the fact's own score, not its label's (#200)
   let score = 0;
   for (const t of tokens(`${name} ${description}`)) if (queryTokens.has(t)) score += 1;
   return { name, layer, type, score };
@@ -1305,24 +1378,34 @@ function promptFingerprint(prompt: string): { sha256: string; chars: number; byt
 }
 
 function userPromptSubmit(run: HookRun, input: HookInput): void {
+  turnOpen(run, input); // #200: before the skip; a command's turn can still run Bash
   const prompt = String(input.prompt || '').trim();
   if (prompt.length < PROMPT_MIN_CHARS || prompt.startsWith('/')) {
     log(run, { event: 'UserPromptSubmit', action: 'skip', reason: 'short-or-command' });
     return;
   }
-  const m = Memory.layered(input.cwd || process.cwd());
+  // The host's auto-memory joins as the last, read-only `[native]` layer (#199 J68-11, user
+  // ruling A+B), from the directory RULING Q1.2's resolver FOUND — all three branches, since this
+  // payload carries `transcript_path` — and never from a slug computed here.
+  const native = resolveNativeMemory(run, input);
+  const m = Memory.layered(input.cwd || process.cwd(), { native: native.dir });
   // `stamp = false` (job64, J64-1): an injection is the HOOK reading the store, not the model
   // asking for a fact, so it must not date `last_recalled`. Before this it did, on every
   // prompt, for up to three files — and the rules keyed on that date (compaction's
   // stalest-first, the SessionStart drop rule, the Stop dream's store fingerprint) were
   // reading this arm's traffic. An explicit `memory_recall` still stamps.
-  const ask = (): RecallOutcome => m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false);
+  // #200: what this session touched in its last TOUCH_WINDOW tool calls ranks the facts that
+  // name those files (`W_CONTEXT`), and, when the via path is on, admits one of them past the
+  // gate. `null` (no repo, no touches, no graph, any error) is today's recall.
+  const touch = touchContext(run, input, m);
+  const ask = (): RecallOutcome => m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false, false, touch);
   // ONE UNREADABLE FACT COSTS THAT FACT (job65, #119): the recall reads every layer past the
   // files it cannot read and names them in `o.skipped`; one recall, healthy or not. A layer
   // that cannot be LISTED fails exactly as it did.
   const o: RecallOutcome = ask();
   const skipped = o.skipped.map((s) => ({ ...s }));
-  const degraded = skipped.length ? { skipped } : {};
+  const degraded: Record<string, unknown> = skipped.length ? { skipped } : {};
+  if (touch !== null) degraded.context = [...touch.weights.values()].filter((w) => w > 0.0).length;
   if (o.status !== 'answered') {
     log(run, { event: 'UserPromptSubmit', action: 'none', status: o.status, candidates: o.candidates, ...degraded });
     return;
@@ -1411,8 +1494,33 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
     dropped: fresh.length - injected.length,
     suppressed,
     ...degraded,
+    ...(o.via !== null && injected.some((x) => x.name === o.via) ? { via: o.via } : {}),
   });
   emit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: ctx } });
+}
+
+/**
+ * The session's touch context for this prompt (#200, E1-A): `null` on any failure. Port of
+ * `_touch_context`: this session's read/edit/write lines in its last `TOUCH_WINDOW` tool calls,
+ * the graph loaded over the recall's own layers. Never throws. While `W_CONTEXT === 0` and via
+ * is off a context cannot move the reply, so none is built: no touch-log read, no graph load or
+ * rebuild (T200-10). The reply bytes are the same; the hook log's `context` count is absent.
+ */
+function touchContext(run: HookRun, input: HookInput, m: Memory): TouchContext | null {
+  if (W_CONTEXT === 0.0 && !viaEnabled()) return null;
+  try {
+    const repo = findRepo(String(input.cwd || process.cwd()));
+    if (repo === null) return null;
+    const session = String(input.session_id || '');
+    const seq = currentSeq(run.state, session);
+    const paths = touchWindow(new TouchLog(run.home, repo.id).tail(session, seq - TOUCH_WINDOW), seq);
+    if (paths.length === 0) return null;
+    const graph = new TouchGraph(run.home, repo).load(m.layerStores());
+    if (graph === null) return null;
+    return { weights: contextWeights(graph, paths, utcNow()), strongWindow: paths, graph };
+  } catch {
+    return null; // no context is the enhancement's only failure mode
+  }
 }
 
 // ------------------------------------------------------------- PreToolUse Read
@@ -1519,6 +1627,97 @@ function preToolUseRead(run: HookRun, input: HookInput): void {
 //
 // Folded in from tool-metrics' `hooks/scripts/log_event.py`; the field names are that file's,
 // so an events.jsonl written by either program reads in either.
+/**
+ * UserPromptSubmit opens a turn (#200, E5): one `git status` snapshot at the current seq. Port
+ * of `_turn_open`: before the short-prompt / slash-command skip; outside a repo or when git
+ * fails nothing is written. Never throws, never emits.
+ */
+function turnOpen(run: HookRun, input: HookInput): void {
+  try {
+    const repo = findRepo(String(input.cwd || process.cwd()));
+    if (repo === null) return;
+    const snap = snapshot(repo);
+    if (snap !== null) {
+      const session = String(input.session_id || '');
+      saveTurn(run.state, session, snap, currentSeq(run.state, session));
+    }
+  } catch {
+    log(run, { event: 'UserPromptSubmit', touch: 'miss' });
+  }
+}
+
+/**
+ * Stop closes the turn (#200, E5). Port of `_turn_close`: every path the two snapshots
+ * disagree on, unless an `edit`/`write` line of this session after the turn's seq names it,
+ * becomes `write` with `via: "bash-turn"` and `from` the turn's seq, at the current seq; then
+ * the new snapshot is saved at the current seq, so a second Stop in one turn records nothing
+ * twice. Never throws, never emits.
+ */
+function turnClose(run: HookRun, input: HookInput): void {
+  try {
+    const repo = findRepo(String(input.cwd || process.cwd()));
+    if (repo === null) return;
+    const session = String(input.session_id || '');
+    const turn = loadTurn(run.state, session);
+    if (turn === null) return;
+    const [frm, before] = turn;
+    const after = snapshot(repo);
+    if (after === null) return;
+    const touchLog = new TouchLog(run.home, repo.id);
+    const explained = new Set(
+      touchLog
+        .tail(session, frm)
+        .filter((r) => r['op'] === 'edit' || r['op'] === 'write')
+        .map((r) => r['path']),
+    );
+    const seq = currentSeq(run.state, session);
+    let ok = true;
+    for (const p of changed(before, after)) {
+      if (!explained.has(p)) ok = touchLog.appendTouch(session, seq, 'write', p, 'bash-turn', frm) && ok;
+    }
+    saveTurn(run.state, session, after, seq);
+    if (!ok) log(run, { event: 'Stop', touch: 'miss' });
+  } catch {
+    log(run, { event: 'Stop', touch: 'miss' });
+  }
+}
+
+/**
+ * One touch or use line per PostToolUse in a git repo (#200). Never throws, never emits. Port
+ * of `_record_touch`: outside a repo nothing is written, not even the counter; inside one EVERY
+ * tool call takes the session's next `seq`, Bash included, but only Read/Edit/MultiEdit/Write/
+ * NotebookEdit of a file inside the toplevel make a touch line, and a bantamkit
+ * `memory_recall` / `memory_save` adds one `use` line per fact it named. A write that fails is
+ * one `touch: miss` hook-log record.
+ */
+function recordTouch(run: HookRun, input: HookInput): void {
+  try {
+    const repo = findRepo(String(input.cwd || process.cwd()));
+    // No `git` executable on PATH (`gitOnPath`, a stat walk) is "no git": nothing is written.
+    if (repo === null || !gitOnPath()) return;
+    const session = String(input.session_id || '');
+    const seq = nextSeq(run.state, session); // EVERY tool call counts, Bash included
+    const tool = typeof input.tool_name === 'string' ? input.tool_name : '';
+    const raw = input.tool_input;
+    const ti: Record<string, unknown> = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const touchLog = new TouchLog(run.home, repo.id);
+    let ok = true;
+    const op = TOUCH_OPS.get(tool);
+    if (op !== undefined) {
+      const file = ti[tool === 'NotebookEdit' ? 'notebook_path' : 'file_path'];
+      const rel = typeof file === 'string' && file ? relPath(repo, file) : null;
+      if (rel !== null) ok = touchLog.appendTouch(session, seq, op, rel);
+    }
+    for (const [fact, kind] of useNames(tool, ti, input.tool_response)) {
+      ok = touchLog.appendUse(session, seq, fact, kind) && ok;
+    }
+    if (!ok) log(run, { event: 'PostToolUse', touch: 'miss', tool });
+  } catch {
+    // the graph is an enhancement (#200, Error handling)
+    log(run, { event: 'PostToolUse', touch: 'miss' });
+  }
+}
+
 function appendUsageEvent(run: HookRun, input: HookInput): void {
   const tool = input.tool_name || '?';
   const ti = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {};
@@ -2596,6 +2795,7 @@ export async function runHook(): Promise<void> {
     case 'PreToolUse':
       return input.tool_name === 'Read' ? preToolUseRead(run, input) : undefined;
     case 'PostToolUse':
+      recordTouch(run, input); // #200: the touch log, before the usage event
       appendUsageEvent(run, input); // every tool, not just bantamkit's — it is a usage denominator
       return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(run, input) : undefined;
     case 'PreCompact':
@@ -2603,6 +2803,7 @@ export async function runHook(): Promise<void> {
     case 'PostCompact':
       return postCompact(run, input);
     case 'Stop':
+      turnClose(run, input); // #200: also under `stop_hook_active`; the re-save dedupes
       maybeDream(run, input); // gated on the store changing; logs only, never emits
       return stop(run, input);
     default:

@@ -250,6 +250,8 @@ class _Session:
     def __init__(self, argv: list[str], cwd: Path, home: Path, timeout: float):
         env = {k: v for k, v in os.environ.items() if k != "BANTAMKIT_ASSETS"}
         env["HOME"] = str(home)
+        # USERPROFILE moves with HOME (#204 J69-9 F6): on Windows the child reads it, not HOME.
+        env["USERPROFILE"] = str(home)
         self.timeout = timeout
         self.proc = subprocess.Popen(
             argv,

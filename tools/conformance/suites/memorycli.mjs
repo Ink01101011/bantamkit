@@ -1079,7 +1079,7 @@ export async function run(ctx) {
   mkdirSync(cwd, { recursive: true });
 
   /** Every step in this suite gets scratch for a home and an explicit cwd. */
-  const envFor = (width) => ({ HOME: home, ...(width === null ? {} : { COLUMNS: String(width) }) });
+  const envFor = (width) => ({ HOME: home, USERPROFILE: home, ...(width === null ? {} : { COLUMNS: String(width) }) });
 
   // ------------------------------------------------------------------------- the help forms
 

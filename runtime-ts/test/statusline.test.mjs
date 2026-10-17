@@ -22,6 +22,7 @@
  * NOTHING HERE TOUCHES A REAL STORE. Every path is under a scratch directory and every
  * invocation passes `--store`, so `discoverProjectStore` never walks.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';

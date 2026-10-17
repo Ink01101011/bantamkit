@@ -15,6 +15,7 @@
  * disagreeing because the session in between added a call — so a node reading them would fail
  * for a reason nobody caused.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

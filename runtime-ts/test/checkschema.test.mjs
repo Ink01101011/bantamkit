@@ -14,6 +14,7 @@
  * validator accepted `EF BB BF` as three ordinary bytes while the `TextDecoder` behind it
  * silently dropped them, so the module checked one string and returned another.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

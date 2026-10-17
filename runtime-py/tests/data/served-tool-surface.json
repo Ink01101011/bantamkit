@@ -99,7 +99,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone.",
+      "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone. Pass file instead of query to see the memories linked to a file.",
       "inputSchema": {
         "properties": {
           "query": {
@@ -109,11 +109,18 @@
           "k": {
             "type": "integer",
             "description": "Facts wanted, clamped to 1..5. Raised to the store default of 3 when smaller; never lowered below it."
+          },
+          "include_archived": {
+            "type": "boolean",
+            "default": false,
+            "description": "Also search facts compaction moved to archive/. Archived matches come after the live ones, tagged [archived]."
+          },
+          "file": {
+            "type": "string",
+            "description": "A tracked file, or the shortest unique suffix of one (store.ts, memory/store.ts). Returns the facts linked to it and when it was last touched; query is then ignored."
           }
         },
-        "required": [
-          "query"
-        ],
+        "required": [],
         "type": "object",
         "additionalProperties": false
       },
@@ -169,6 +176,13 @@
               "type": "string"
             },
             "description": "names of related memories"
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Words the user will type when they need this fact, in the user's own language as well as English (e.g. Thai and English terms)"
           }
         },
         "required": [
@@ -401,6 +415,10 @@
           "checkpoint": {
             "title": "Checkpoint",
             "type": "string"
+          },
+          "search": {
+            "type": "string",
+            "description": "Also search jobs Retention archived under this checkpoint's .shiftwork/archive/: every line holding all the query's words, as {job, file, line}."
           }
         },
         "required": [

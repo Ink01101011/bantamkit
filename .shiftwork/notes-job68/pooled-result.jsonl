@@ -1,0 +1,5 @@
+{"view": "A_shipped", "precision_at_inject": 0.2903225806451613, "recall_at_3": 0.1746376811594203, "thai_recall_at_3": 0.14848484848484847, "n": 50, "injected": 93}
+{"view": "A_tuned", "precision_at_inject": 0.27941176470588236, "recall_at_3": 0.12826086956521737, "thai_recall_at_3": 0.11136363636363635, "n": 50, "injected": 68}
+{"view": "B_shipped", "precision_at_inject": 0.4316546762589928, "recall_at_3": 0.3855072463768116, "thai_recall_at_3": 0.36893939393939396, "n": 50, "injected": 139}
+{"view": "B_tuned", "precision_at_inject": 0.40707964601769914, "recall_at_3": 0.30833333333333335, "thai_recall_at_3": 0.28825757575757577, "n": 50, "injected": 113}
+{"view": "v1", "precision_at_inject": 0.21505376344086022, "recall_at_3": 0.12608695652173912, "thai_recall_at_3": 0.10909090909090909, "n": 50, "injected": 93}

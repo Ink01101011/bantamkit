@@ -2,6 +2,7 @@
 // files (#140), and `--k`/`--index-budget` parsed exactly as CPython's `int()` (#174).
 // Each literal here is the reference's measured answer, so a regression that landed in BOTH
 // runtimes (which the `cli` conformance differential cannot see) still reddens this file.
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

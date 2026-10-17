@@ -83,6 +83,8 @@ def fact_json(fact) -> dict:
         "links": [b64(str(link)) for link in fact.links],
         "last_recalled": None if fact.last_recalled is None else b64(str(fact.last_recalled)),
         "created": None if fact.created is None else b64(str(fact.created)),
+        # #199: only when non-empty, so every answer recorded before the field is unchanged.
+        **({"keywords": [b64(k) for k in fact.keywords]} if fact.keywords else {}),
     }
 
 
@@ -101,7 +103,12 @@ def run_calls(request: dict) -> dict:
     today = request["today"]
     try:
         store = MemoryStore(
-            request["root"], today=lambda: today, create=request.get("create", True), **kwargs
+            request["root"],
+            today=lambda: today,
+            create=request.get("create", True),
+            # The usage ledger's clock (#199 D5), frozen as `today` is.
+            now=lambda: f"{today}T00:00:00Z",
+            **kwargs,
         )
     except BaseException as e:  # noqa: BLE001 — the constructor's failure is a result too
         return {"results": [error_json(e)]}
@@ -110,10 +117,12 @@ def run_calls(request: dict) -> dict:
         op = call["op"]
         try:
             if op == "save":
-                type_, name, description, body, links = call["args"]
+                # A sixth arg is `keywords` (#199); a five-arg call is the call it always was.
+                type_, name, description, body, links, *more = call["args"]
                 r = store.save(
                     unb64(type_), unb64(name), unb64(description), unb64(body),
                     tuple(unb64(x) for x in links),
+                    **({"keywords": tuple(unb64(x) for x in more[0])} if more else {}),
                 )
                 # `similar` is the OTHER fact's `name` field verbatim, and `_facts` puts
                 # whatever the YAML resolved to in there — an `int` for `name: 7`. `str()`
@@ -146,12 +155,27 @@ def run_calls(request: dict) -> dict:
 
                 mem = Memory(request["root"], **kwargs)
                 mem.store._today = lambda: today
-                type_, name, description, body, links = call["args"]
+                mem.store._now = lambda: f"{today}T00:00:00Z"
+                type_, name, description, body, links, *more = call["args"]
                 out = mem.save_outcome(
                     unb64(type_), unb64(name), unb64(description), unb64(body),
                     [unb64(x) for x in links],
+                    **({"keywords": [unb64(x) for x in more[0]]} if more else {}),
                 )
                 results.append({"reply": b64(out.reply), "status": out.status})
+            elif op == "memory_recall":
+                # `Memory.recall_outcome` over the SAME root (#199 Task 6): `stamp` is the tool
+                # (True) or the hook (False); `repaired` is how many facts THIS call read-repaired.
+                from bantamkit.memory.component import Memory
+
+                mem = Memory(request["root"], **kwargs)
+                mem.store._today = lambda: today
+                mem.store._now = lambda: f"{today}T00:00:00Z"
+                query, stamp = call["args"]
+                out = mem.recall_outcome(unb64(query), None, stamp=stamp)
+                results.append(
+                    {"reply": b64(out.reply), "status": out.status, "repaired": mem.repaired}
+                )
             else:
                 raise ValueError(f"unknown call op {op!r}")
         except BaseException as e:  # noqa: BLE001 — every failure is part of the comparison

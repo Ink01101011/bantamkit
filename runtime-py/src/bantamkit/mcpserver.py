@@ -49,8 +49,12 @@ from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, INDEX_PRESSURE_PERCENT, Memory
+from bantamkit.memory import usage as memory_usage
+from bantamkit.memory.store import MemoryValidationError
 from bantamkit.pricing import PriceTableError
 from bantamkit.statusline import status_line
+from bantamkit.storage import tiers as storage_tiers
+from bantamkit.touch.recallfile import RECALL_NEEDS_QUERY_OR_FILE
 
 try:
     from mcp.server import MCPServer
@@ -1008,6 +1012,16 @@ def status_report(
         # `test_selfupdate.py::test_only_the_update_flag_reaches_this_module_from_the_server`
         # still holds, because the name this reaches is `updatecheck` and not `selfupdate`.
         updatecheck.update_line(str(identity["version"])),
+        # #204 (job69 J69-7): the capability tiers, every hot index, every log and the last
+        # retention run -- AFTER the update line, so every line above keeps its number. Read
+        # here, on demand, and never on the per-call footer path.
+        *storage_tiers.status_lines(memory, Path.home(), storage_tiers.current_cwd()),
+        # #199 Task 6: read-repair and the usage ledger, AFTER the storage block for the same
+        # reason the block sits after the update line -- every line above keeps its number.
+        f"read-repaired: {memory.repaired} this process",
+        # J68-10: an append that could not be written is counted in `memory.usage` and named
+        # here, so an unwritable ledger is visible (#199 D5 error row).
+        memory_usage.status_line(*memory.usage_census()),
     ]
     if conditions:
         lines.append(f"{_plural(len(conditions), 'problem')}:")
@@ -1464,10 +1478,15 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         return f'{document[:-2]},\n  "bantamkit_degraded": {key}\n}}'
 
     def memory_save(
-        type: str, name: str, description: str, body: str, links: list[str] | None = None
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: list[str] | None = None,
+        keywords: list[str] | None = None,
     ) -> str:
         with _record_raise(log, "memory_save"):
-            outcome = memory.save_outcome(type, name, description, body, links)
+            outcome = memory.save_outcome(type, name, description, body, links, keywords)
         if log.enabled:
             # Only when a log is actually on: `index_accounting` re-parses `facts/`, and
             # a diagnostic must not put that on the path of an operator who did not ask
@@ -1480,7 +1499,12 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             log.record("memory_save", outcome.status, detail)
         return _noted(outcome.reply)
 
-    def memory_recall(query: str, k: int | None = None) -> str:
+    def memory_recall(
+        query: str | None = None,
+        k: int | None = None,
+        include_archived: bool | None = None,
+        file: str | None = None,
+    ) -> str:
         if k is not None:
             # Clamped, not refused, and the manifest says so: `assets/tools/memory_recall.json`
             # used to advertise `minimum: 1, maximum: 5` on `k` while this line and the
@@ -1490,7 +1514,19 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             # answer for a stricter one. The description now states the clamp.
             k = max(1, min(k, 5))
         with _record_raise(log, "memory_recall"):
-            outcome = memory.recall_outcome(query, k)
+            # `include_archived` (#204): archived facts after the live ones, tagged. `None`
+            # and `False` make the call this handler has always made, so the reply is
+            # byte for byte today's (and a `Memory` without the keyword still serves).
+            # `file` (#200, E1-C): the facts linked to one tracked file; a `query` beside it is
+            # ignored and the reply says so. Neither is the one refusal this tool adds.
+            if file is not None:
+                outcome = memory.recall_file(file, k, query)
+            elif query is None:
+                raise MemoryValidationError(RECALL_NEEDS_QUERY_OR_FILE)
+            elif include_archived:
+                outcome = memory.recall_outcome(query, k, include_archived=True)
+            else:
+                outcome = memory.recall_outcome(query, k)
         detail = {
             "budget": outcome.budget,
             "candidates": outcome.candidates,
@@ -1501,6 +1537,8 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         }
         if outcome.source is not None:
             detail["source"] = outcome.source
+        if file is not None:
+            detail["file"] = True
         log.record("memory_recall", outcome.status, detail)
         return _noted(outcome.reply)
 
@@ -1603,9 +1641,16 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             )
         )
 
-    def shiftwork_status(checkpoint: str) -> dict[str, Any]:
+    def shiftwork_status(checkpoint: str, search: str | None = None) -> dict[str, Any]:
+        # `search` (#204, J69-6): archived jobs' lines; absent, the reply is today's.
         return _noted_dict(
-            _record_result(log, "shiftwork_status", lambda: shiftwork.status(checkpoint))
+            _record_result(
+                log,
+                "shiftwork_status",
+                lambda: shiftwork.status(checkpoint)
+                if search is None
+                else shiftwork.status(checkpoint, search=search),
+            )
         )
 
     def work_plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2407,7 +2452,17 @@ def _build_memory(args: argparse.Namespace) -> Memory:
         return Memory(store=args.store, k=args.k, index_budget=args.index_budget)
     if args.start is not None:
         _check_start_flag(args.start)
-    return Memory.layered(start=args.start, k=args.k, index_budget=args.index_budget)
+    # The host's auto-memory as the read-only `[native]` layer (#199 J68-11): the MCP server
+    # receives no `transcript_path`, so RULING Q1.2's first two branches only, and with
+    # neither answering there is no such layer.
+    from bantamkit.hookadapter import native_memory_dir
+
+    return Memory.layered(
+        start=args.start,
+        k=args.k,
+        index_budget=args.index_budget,
+        native=native_memory_dir(str(Path.home())),
+    )
 
 
 def _check_start_flag(raw: str) -> None:
@@ -2939,6 +2994,11 @@ def _dispatch(args: argparse.Namespace) -> None:
         _build_parser().print_help()
         return
     server = build_server(_build_memory(args))
+    # RETENTION (#204, J69-6), for a host with no hooks: the same detached daily child the
+    # SessionStart hook starts, standing down when a hook wrote its log within the TTL.
+    from bantamkit.storage.retention import maybe_spawn
+
+    maybe_spawn(os.path.realpath(os.path.expanduser("~")), os.getcwd(), server=True)
     # `serve_stdio` is `server.run_stdio_async()` with the stdin reader wrapped so a
     # `tools/call` carrying a lone surrogate is ANSWERED by name instead of dropped by the
     # SDK's frame parser (job65/#160); see `bantamkit.mcpstdio`.

@@ -15,6 +15,7 @@
  * for the recall tie-break are beside it. This file is the in-runtime half, so a mutation
  * that survives the pins is visible without a Python on PATH.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import {
   mkdirSync,
@@ -263,14 +264,18 @@ test('one hand-edited fact does not take the store down, and the index line is P
   }
 });
 
-test('a non-string name reaches the FILE PATH, and _stamp writes there', () => {
+test('a non-string name reaches the FILE PATH, and a write lands there', () => {
   const root = bed({ 'in-name.md': factFile({ name: '2026-08-23', description: 'shared probe token' }) });
   try {
     const store = new MemoryStore(root, { today: () => '2026-08-23', create: false });
     assert.equal(store.indexText(), '- [[2026-08-23]] (project) — shared probe token\n');
-    store.recall('shared probe token', 3, true);
-    // `_write_fact` uses `f"{fact.name}.md"`, so the stamp lands on a NEW file named after
-    // the date, and the original is left where it was.
+    // #199 D5: a recall's stamp writes no file any more, so it leaves the directory alone.
+    // WAS ('…and _stamp writes there'): the stamp was the write that landed on the new path.
+    const [hit] = store.recall('shared probe token', 3, true);
+    assert.deepEqual(readdirSync(join(root, 'facts')).sort(), ['in-name.md']);
+    // `_write_fact` uses `f"{fact.name}.md"`, so a write lands on a NEW file named after the
+    // date, and the original is left where it was.
+    store.internals().writeFact(hit);
     assert.deepEqual(readdirSync(join(root, 'facts')).sort(), ['2026-08-23.md', 'in-name.md']);
     // …and `created` goes back through `safe_dump` as the quoted string it came in as,
     // while a `date` in that field would go back unquoted. Both are pinned below.
@@ -307,7 +312,9 @@ test('a date in created is read as its ISO string and round-trips through _stamp
     assert.notEqual(pyText(hits.find((f) => f.name === 'zeroed').created), '0');
     assert.match(pyText(hits.find((f) => f.name === 'zeroed').created), /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(typeof hits.find((f) => f.name === 'dated').created, 'string');
-    store.recall('shared probe token', 3, true);
+    // #199 D5: the recall's stamp no longer writes, so the next write is the store's own
+    // `writeFact` (WAS: `store.recall(..., true)`, whose stamp was the write).
+    store.internals().writeFact(hits.find((f) => f.name === 'dated'));
     assert.match(readFileSync(join(root, 'facts', 'dated.md'), 'utf8'), /^created: '2026-08-23'$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -391,11 +398,13 @@ test('a numeric name and its string spelling are TWO facts across layers, not on
     const out = Memory.layered(project, { today: () => '2026-08-23', k: 9 }).recall('shared probe token');
     const lines = out.split('\n\n').map((block) => block.split('\n')[0]);
     // The project layer contributes `7` and `True`. In the grant, `'7'` is a DIFFERENT key
-    // and survives; `7.0` equals `7` and `1` equals `True`, so both are dropped.
+    // and survives; `7.0` equals `7` and `1` equals `True`, so both are dropped. #199 D3: the
+    // layers are pooled and ranked once, so the grant's `'7'` (the project's `7`'s equal score,
+    // after it on layer order) comes before the project's weaker `True`. WAS: layer by layer.
     assert.deepEqual(lines, [
       '[project] [7] (project) shared probe token',
-      '[project] [True] (project) shared probe',
       '[extra:granted] [7] (project) shared probe token',
+      '[project] [True] (project) shared probe',
     ]);
   } finally {
     if (saved[MEMORY_DIR_ENV] === undefined) delete process.env[MEMORY_DIR_ENV];

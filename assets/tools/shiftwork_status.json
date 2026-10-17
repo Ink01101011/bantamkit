@@ -10,6 +10,10 @@
       "checkpoint": {
         "title": "Checkpoint",
         "type": "string"
+      },
+      "search": {
+        "type": "string",
+        "description": "Also search jobs Retention archived under this checkpoint's .shiftwork/archive/: every line holding all the query's words, as {job, file, line}."
       }
     },
     "required": [

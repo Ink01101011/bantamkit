@@ -15,6 +15,7 @@
  *     of raising; a draft-3 `$schema` is refused by name.
  *   - the `$schema` URI is normalised as `_utils.URIDict` normalises it.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 

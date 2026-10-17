@@ -11,6 +11,7 @@
  * appends `Path.home()/.bantamkit/memory` and would otherwise recall against, and STAMP,
  * the operator's own facts.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
@@ -22,6 +23,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -37,6 +39,18 @@ import {
 } from '../dist/memory/layers.js';
 import { layerLabel, Memory, normalizeName, profileStore } from '../dist/memory/component.js';
 import { MemoryValidationError, RECALL_MIN_SCORE_RATIO } from '../dist/memory/store.js';
+import { UsageLedger } from '../dist/memory/usage.js';
+
+/** The usage ledger events of the memory whose first layer is `store` (#199 D5). */
+function uses(home, store) {
+  const path = new UsageLedger(home, store).path;
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .map((e) => [e.fact, e.kind]);
+}
 
 /**
  * `os.stat`'s strerror for a path that is not there.
@@ -465,9 +479,13 @@ test('a layered recall stamps the project layer by default, and not when told no
     assert.deepEqual([quiet.status, quiet.returned], ['answered', 1]);
     assert.equal(readFileSync(path, 'utf8'), before);
 
+    assert.deepEqual(uses(home, join(project, '.bantamkit', 'memory')), []);
+
     const loud = Memory.layered(project, frozen()).recallOutcome('deploy');
     assert.equal(loud.reply, quiet.reply, 'the flag changes what is written, never what is answered');
-    assert.match(readFileSync(path, 'utf8'), new RegExp(`^last_recalled: '${TODAY}'$`, 'm'));
+    // #199 D5: a `recall_hit` in the usage ledger; the fact file is untouched. WAS: dated.
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.deepEqual(uses(home, join(project, '.bantamkit', 'memory')), [['deploy', 'recall_hit']]);
   });
 });
 
@@ -538,10 +556,14 @@ test('an exact hit in the project layer stops the walk and stamps only that fact
     assert.deepEqual([quiet.lookup, quiet.reached, quiet.returned], ['hit', 1, 1]);
     assert.equal(readFileSync(path, 'utf8'), before);
 
+    assert.deepEqual(uses(home, store), []);
     const loud = Memory.layered(project, frozen()).recallOutcome('deploy-command');
     assert.equal(loud.reply, quiet.reply);
   });
-  assert.match(readFileSync(path, 'utf8'), new RegExp(`^last_recalled: '${TODAY}'$`, 'm'));
+  // #199 D5: one `body_read` for the named fact, in the ledger; no fact file is written. WAS:
+  // deploy-command.md was dated and the other two left null.
+  assert.equal(readFileSync(path, 'utf8'), before);
+  assert.deepEqual(uses(home, store), [['deploy-command', 'body_read']]);
   assert.match(readFileSync(join(store, 'facts', 'deploy-notes.md'), 'utf8'), /^last_recalled: null$/m);
   assert.match(readFileSync(join(profile, 'facts', 'deploy-command.md'), 'utf8'), /^last_recalled: null$/m);
 });
@@ -1094,13 +1116,11 @@ test('the gate default changes no layered recall', () => {
   });
 });
 
-test('the gate is measured per layer and never across layers', () => {
-  // A profile fact does not have to out-score the project store's top hit.
-  //
-  // Project scores 4 and 1; profile scores 1. At `minRatio=1.0` the project layer keeps only
-  // its own best — so `weak` goes — while `gamma` survives, because 1 is the best score in
-  // the store that holds it. A gate applied to the MERGED list would have dropped `gamma`
-  // too, and this is the assertion that tells them apart.
+test('the gate is measured across the pooled layers', () => {
+  // #199 D3: the ratio is taken against the best score of the WHOLE recall. WAS 'the gate is
+  // measured per layer and never across layers': each layer was gated against its own top hit,
+  // so at `minRatio=1.0` the profile's `gamma` survived beside the project's `alpha`. Pooled,
+  // `gamma` does not reach the pool's best, so `alpha` alone answers; `weak` still goes.
   const bed = fresh();
   const home = join(bed, 'home');
   mkstore(join(home, '.bantamkit', 'memory'), { gamma: 'alpha oscar papa quebec' });
@@ -1115,9 +1135,11 @@ test('the gate is measured per layer and never across layers', () => {
       null,
       1.0,
     );
-    assert.equal(out.returned, 2);
-    assert.ok(out.reply.includes('[alpha]') && out.reply.includes('[gamma]'));
+    assert.equal(out.returned, 1);
+    assert.ok(out.reply.includes('[alpha]') && !out.reply.includes('[gamma]'));
     assert.ok(!out.reply.includes('[weak]'));
+    // And at 0.0 the pool keeps all three, so the cut above was the gate's doing.
+    assert.equal(Memory.layered(project, frozen({ k: 9 })).recallOutcome('alpha bravo charlie delta').returned, 3);
   });
 });
 
@@ -1199,4 +1221,77 @@ test('#158: a tab inside a comment or a quoted grant is not refused', () => {
   } finally {
     rmSync(bed, { recursive: true, force: true });
   }
+});
+
+// ---- #199 D5: usage replaces `last_recalled` writes (J68-5), the reference's four tests ----
+
+test('the hook recall (stamp = false) writes nothing: no fact file moves and no ledger appears', () => {
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkdirSync(home);
+  const project = join(bed, 'companyA');
+  const store = mkstore(join(project, '.bantamkit', 'memory'), { deploy: 'a fact about deploys' });
+  const path = join(store, 'facts', 'deploy.md');
+  const before = [readFileSync(path, 'utf8'), statSync(path).mtimeMs];
+  sandboxed(home, () => {
+    const out = Memory.layered(project, frozen()).recallOutcome('deploy', 3, RECALL_MIN_SCORE_RATIO, false);
+    assert.equal(out.returned, 1);
+  });
+  assert.deepEqual([readFileSync(path, 'utf8'), statSync(path).mtimeMs], before);
+  assert.equal(existsSync(join(home, '.bantamkit', 'usage')), false);
+});
+
+test('the tool recall appends one recall_hit per returned fact and writes no fact file', () => {
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkdirSync(home);
+  const project = join(bed, 'companyA');
+  const store = mkstore(join(project, '.bantamkit', 'memory'), {
+    deploy: 'a fact about deploys',
+    unrelated: 'nothing in common',
+  });
+  const files = () => readdirSync(join(store, 'facts')).map((n) => readFileSync(join(store, 'facts', n), 'utf8'));
+  const before = files();
+  sandboxed(home, () => assert.equal(Memory.layered(project, frozen()).recallOutcome('deploy').returned, 1));
+  assert.deepEqual(files(), before);
+  assert.deepEqual(uses(home, store), [['deploy', 'recall_hit']]);
+});
+
+test('a profile hit is recorded in the project ledger, and the profile is untouched', () => {
+  const bed = fresh();
+  const home = join(bed, 'home');
+  const project = join(bed, 'companyA');
+  const store = mkstore(join(project, '.bantamkit', 'memory'), { unrelated: 'nothing in common' });
+  const profile = mkstore(join(home, '.bantamkit', 'memory'), { 'prof-deploy': 'deploy at night' });
+  const before = readFileSync(join(profile, 'facts', 'prof-deploy.md'), 'utf8');
+  sandboxed(home, () => {
+    const out = Memory.layered(project, frozen()).recallOutcome('deploy');
+    assert.deepEqual([...out.headers], ['[profile] [prof-deploy] (project) deploy at night']);
+  });
+  assert.equal(readFileSync(join(profile, 'facts', 'prof-deploy.md'), 'utf8'), before);
+  assert.deepEqual(uses(home, store), [['prof-deploy', 'recall_hit']]);
+  assert.equal(existsSync(new UsageLedger(home, profile).path), false);
+});
+
+test('usage orders two equal facts but never admits a third', () => {
+  const bed = fresh();
+  const home = join(bed, 'home');
+  mkdirSync(home);
+  const project = join(bed, 'companyA');
+  const store = mkstore(join(project, '.bantamkit', 'memory'), {
+    'a-deploy': 'deploy notes',
+    'b-deploy': 'deploy notes too',
+    'c-other': 'nothing in common',
+  });
+  sandboxed(home, () => {
+    const mem = Memory.layered(project, frozen());
+    assert.ok(mem.recallOutcome('deploy', null, RECALL_MIN_SCORE_RATIO, false).headers[0].startsWith('[project] [a-deploy]'));
+    const ledger = new UsageLedger(home, store);
+    for (let i = 0; i < 5; i += 1) {
+      ledger.append('b-deploy', 'recall_hit', mem.store.now());
+      ledger.append('c-other', 'recall_hit', mem.store.now());
+    }
+    const out = mem.recallOutcome('deploy', null, RECALL_MIN_SCORE_RATIO, false);
+    assert.deepEqual(out.headers.map((h) => h.split('] [')[1].split(']')[0]), ['b-deploy', 'a-deploy']);
+  });
 });

@@ -106,6 +106,8 @@ def run_store(request: dict) -> dict:
             request["root"],
             today=lambda: request["today"],
             create=request.get("create", True),
+            # The usage ledger's clock (#199 D5): a stamping recall appends a timestamped event.
+            now=lambda: f"{request['today']}T00:00:00Z",
             **kwargs,
         )
     except BaseException as e:  # noqa: BLE001 — a refusal at construction is an answer
@@ -140,6 +142,7 @@ def run_layered(request: dict) -> dict:
         memory = Memory.layered(request["start"], **kwargs)
         today = request["today"]
         for _, store, _ in memory._layers:
+            store._now = lambda: f"{today}T00:00:00Z"  # the usage ledger's clock (#199 D5)
             store._today = lambda: today
     except BaseException as e:  # noqa: BLE001
         return {"results": [error_json(e)]}

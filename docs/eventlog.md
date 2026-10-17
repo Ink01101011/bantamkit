@@ -555,14 +555,23 @@ The file is opened in **binary append** mode. A text-mode write translates `\n` 
 see a different stream on a different platform — the same defect `test_newline_gate.py`
 exists to keep out of the repository.
 
+**Since #204 (job69 J69-4) the append goes through `storage.LogSegment.append`** in both
+runtimes: binary, under the shared O_EXCL lock at `<path>.lock`, and a cut last line gets a
+newline before the record so the record is not lost with it. The bytes of a record are the
+ones above. **The rotation rule is NOT `LogSegment.rotate`'s, on purpose**: this log keeps its
+one plain `<path>.1` (read by `--statusline` and `--mcp-report` in both runtimes) and its
+2 MiB ceiling, which no retention job has to enforce; the hook log, which may lose nothing,
+rotates into numbered `.gz` segments instead. `storage-log`'s *event log* scenario pins the
+plain `.1` per side.
+
 ## Notes for the Node half
 
 * `new Date(ms).toISOString()` produces `ts` directly; do not build it by hand.
 * `JSON.stringify` already emits the compact separators and does not escape non-ASCII.
   Build the object with the keys in contract order and `detail` from a pre-sorted key
   list; `JSON.stringify` preserves insertion order for string keys.
-* Append with `fs.appendFileSync(path, buf)` on a `Buffer`, not a string with a
-  platform newline.
+* Append through `storage/logsegment`'s `LogSegment.append` (since #204; it was
+  `fs.appendFileSync(path, buf)` on a `Buffer`), never a string with a platform newline.
 * The rotation check reads the current size first and rotates with `fs.renameSync`;
   swallow `ENOENT`, `EACCES`, `EPERM`, `ENOSPC`, `ENOTDIR` and the rest of the `OSError`
   class the same way.

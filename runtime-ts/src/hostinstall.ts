@@ -1065,3 +1065,23 @@ export function removeHooks(options: HookOptions = {}): string {
   lines.push('restart Claude Code (or run /hooks) for this to take effect');
   return lines.join('\n');
 }
+
+/**
+ * Whether the settings file at `path` carries one of bantamkit's own hooks (#204, S2).
+ *
+ * Read exactly as `installHooks` reads it — `readConfig`, `readHooks`, ownership by `isOurs` —
+ * but as an OBSERVATION: the capability tiers ask it, and a file this module would refuse to
+ * touch (not JSON, not an object, a `hooks` of the wrong shape, unreadable, not UTF-8) answers
+ * false rather than throwing. A missing tier is silent, never an error. The reference's
+ * `has_bantamkit_hooks`; its `read_text` refuses bytes that are not UTF-8, so this does too.
+ */
+export function hasBantamkitHooks(path: string): boolean {
+  try {
+    if (existsSync(path)) new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readFileSync(path));
+    const hooks = readHooks(path, readConfig(path));
+    for (const entries of hooks.values()) if (entries.some(isOurs)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}

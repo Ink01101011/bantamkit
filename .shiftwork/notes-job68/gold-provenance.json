@@ -1,0 +1,12 @@
+{
+ "validated": false,
+ "source": "user 10 (spot-check ids) + calibrated judge J68-16 40",
+ "cv": {
+  "n": 50,
+  "agreement": 0.68,
+  "kappa": 0.2395,
+  "pass": false,
+  "method": "2-fold CV, pooled, folds A/B"
+ },
+ "caveat": "judge saw candidate sets that partly came from the v1 engine's top hits; J68-16 reported using the offered candidates to guess context on very short prompts"
+}

@@ -19,6 +19,7 @@
  * two sides are held equal by being the same assertions over the same bytes, and either one
  * going red is the same red.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';

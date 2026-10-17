@@ -73,9 +73,28 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .memory import retrieval
 from .memory.component import Memory
 from .memory.layers import discover_project_store, resolve_project_store
-from .memory.store import DURABLE_TYPES, Fact, MemoryStore, tokens
+from .memory.store import DURABLE_TYPES, Fact, MemoryStore, tokens, utc_now
+from .storage import logsegment as _logsegment
+from .storage import retention as _retention
+from .storage.lock import exclusive
+from .storage.logsegment import LogSegment
+from .touch.bashturn import changed, load_turn, save_turn, snapshot
+from .touch.context import TOUCH_WINDOW, TouchContext, context_weights, via_enabled, window
+from .touch.graph import TouchGraph
+from .touch.log import TOUCH_OPS, TouchLog, current_seq, next_seq, use_names
+from .touch.refs import FileSet, shortest_suffix
+from .touch.repo import find_repo, git, git_on_path, ls_files, relpath
+from .touch.summary import (
+    SUMMARY_COMMIT_GRACE_S,
+    compact_line,
+    last_session_line,
+    previous_session,
+    shift_ts,
+    uncommitted_count,
+)
 
 # The process clock, for the `ms` on every log line. `time.time()` and not `monotonic`,
 # because the Node module reads `Date.now()` here and the two logs are read side by side.
@@ -203,13 +222,19 @@ def _stamp() -> str:
 
 
 def _log(run: HookRun, record: dict[str, Any]) -> None:
-    try:
-        os.makedirs(run.state, exist_ok=True)
-        line = _dumps({"ts": _stamp(), "ms": int((time.time() - _T0) * 1000), **record})
-        with open(run.log, "a", encoding="utf-8") as fh:
-            fh.write(f"{line}\n")
-    except OSError:
-        pass  # logging is best-effort
+    """One `hook-log.jsonl` line through `storage.LogSegment` (#204, J69-4). Best-effort.
+
+    The existing file is segment 0. Once an append leaves it past `logsegment.ROTATE_BYTES`
+    (read at call time; judged from the size the append measured, so no second `stat`) it is
+    gzipped to `hook-log.jsonl.<n>.gz` and a fresh live file starts. Rotation drops nothing:
+    roadmap #6's instrument reads this log as its only evidence (docs/eventlog.md). Retention
+    (J69-6) folds LIVE lines older than 30 days into per-day counts (docs/hooks.md).
+    """
+    seg = LogSegment(run.log)
+    if seg.append({"ts": _stamp(), "ms": int((time.time() - _T0) * 1000), **record}):
+        limit = _logsegment.ROTATE_BYTES
+        if seg.size > limit:
+            seg.rotate(limit)
 
 
 def _dumps(obj: Any) -> str:
@@ -411,30 +436,16 @@ def _update_ledger(run: HookRun, session_id: Any, update: Callable[[dict[str, An
     not.
     """
     os.makedirs(run.state, exist_ok=True)
-    lock = f"{_ledger_path(run, session_id)}.lock"
-    deadline = time.monotonic() + _LEDGER_LOCK_WAIT_MS / 1000
-    held = False
-    while not held and time.monotonic() < deadline:
-        try:
-            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-            held = True
-        except OSError:
-            try:
-                if time.time() - os.stat(lock).st_mtime > _LEDGER_LOCK_STALE_MS / 1000:
-                    os.unlink(lock)
-            except OSError:
-                pass  # the holder released it between the open and the stat: go round again
-            time.sleep(_LEDGER_LOCK_POLL_MS / 1000)
-    try:
+    # `storage.lock.exclusive` since #204 (J69-4): the same loop, lifted, with these values.
+    with exclusive(
+        Path(_ledger_path(run, session_id)),
+        _LEDGER_LOCK_WAIT_MS,
+        _LEDGER_LOCK_STALE_MS,
+        _LEDGER_LOCK_POLL_MS,
+    ):
         ledger = _read_ledger(run, session_id)
         if update(ledger):
             _write_ledger(run, session_id, ledger)
-    finally:
-        if held:
-            try:
-                os.unlink(lock)
-            except OSError:
-                pass
 
 
 def _injected_seen(ledger: dict[str, Any], transcript: str) -> dict[str, Any]:
@@ -629,6 +640,16 @@ def _resolve_native_memory(run: HookRun, payload: dict[str, Any]) -> NativeMemor
     return NativeMemory(dir=None, branch="unknown", tried=tried)
 
 
+def native_memory_dir(home: str) -> str | None:
+    """RULING Q1.2 for a caller with no hook payload: branches 1 and 2 only (#204, J69-7).
+
+    The capability tiers ask this from the MCP server, which never receives `transcript_path`,
+    so branch 3 has nothing to read. Never raises; `None` is "no host data".
+    """
+    run = HookRun(home=home, state="", log="", profile="", dream_state="")
+    return _resolve_native_memory(run, {}).dir
+
+
 def _collapse_whitespace(text: Any) -> str:
     r"""Whitespace collapsed to single spaces, then trimmed the way `trim()` trims.
 
@@ -744,7 +765,8 @@ def _export_to_native(directory: str, store: str) -> NativeExport:
         memory = MemoryStore(store, create=False)
         facts, result.unparsed = _tolerant_facts(memory)
         ranked = _rank_by_session_drop_rule(
-            [(fact, position, memory._index_line(fact)) for position, fact in enumerate(facts)]
+            [(fact, position, memory._index_line(fact)) for position, fact in enumerate(facts)],
+            memory.usage().last_used_map(),
         )
         for fact, _position, _line in ranked:
             if result.exported >= NATIVE_EXPORT_MAX:
@@ -801,8 +823,8 @@ def _export_to_native(directory: str, store: str) -> NativeExport:
 # five nobody was told about. The rule below is the store's own eviction order read
 # backwards -- the facts `compact` would archive LAST are the ones a session should see
 # FIRST -- so the hook invents no new notion of worth: durable types (`DURABLE_TYPES`)
-# before decaying ones, then the most recent evidence of use (`last_recalled`, falling back
-# to `created`), then name.
+# before decaying ones, then the most recent evidence of use (the usage ledger's last use
+# since #199, then `last_recalled`, falling back to `created`), then name.
 SESSION_DROP_RULE = (
     "durable types first, then most recently recalled (else created) first, then name"
 )
@@ -821,6 +843,7 @@ class CappedIndex:
 
 def _rank_by_session_drop_rule(
     all_facts: list[tuple[Fact, int, str]],
+    used: dict[str, str] | None = None,
 ) -> list[tuple[Fact, int, str]]:
     """`SESSION_DROP_RULE` as a sort, extracted 2026-09-20 (J62-7) so that the session block
     and A's export cannot come to disagree about which facts matter most.
@@ -843,7 +866,11 @@ def _rank_by_session_drop_rule(
         return 0 if entry[0].type in DURABLE_TYPES else 1
 
     def evidence(entry: tuple[Fact, int, str]) -> str:
-        return entry[0].last_recalled or entry[0].created or ""
+        # SINCE #199 (D5): the store's usage ledger first (`used`, read-only here -- the hook
+        # writes nothing), because recall no longer dates `last_recalled`.
+        name = entry[0].name
+        last = used.get(name) if used and isinstance(name, str) else None
+        return last or entry[0].last_recalled or entry[0].created or ""
 
     ranked = sorted(all_facts, key=lambda e: (str(e[0].name), e[1]))
     ranked.sort(key=evidence, reverse=True)
@@ -873,7 +900,7 @@ def _capped_index(root: str, header: Callable[[str, int], str], max_bytes: int) 
     all_facts: list[tuple[Fact, int, str]] = [
         (fact, position, store._index_line(fact)) for position, fact in enumerate(facts)
     ]
-    ranked = _rank_by_session_drop_rule(all_facts)
+    ranked = _rank_by_session_drop_rule(all_facts, store.usage().last_used_map())
 
     kept: set[int] = set()
     size = 0
@@ -1032,6 +1059,11 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
                 exported = _export_to_native(native.dir, store)
     except Exception as e:  # noqa: BLE001 - a bad store is a log line, never a dead session
         _log(run, {"event": "SessionStart", "warn": _message(e)})
+    # B (#200, E1-B): the last session's edits and commits, or after a compaction this
+    # session's edits -- its own part, outside the 3000-byte memory blocks, "" when silent.
+    touch = _touch_summary(run, payload)
+    if touch:
+        parts.append(touch)
     parts.append(
         "[bantamkit] Toolbox is live: mcp__bantamkit__memory_recall reads the body of any "
         "fact above; memory_save stores a durable lesson (feedback|user|project|reference — "
@@ -1080,6 +1112,7 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             "source": payload.get("source"),
             "cwd": cwd,
             "bytes": len(ctx.encode("utf-8")),
+            "touchBytes": len(touch.encode("utf-8")),
             "profileFacts": profile_facts,
             "profileInjected": profile.injected,
             "profileDropped": profile.dropped,
@@ -1125,7 +1158,46 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             "updateBytes": 0,
         },
     )
+    # RETENTION (#204, J69-6): at most once a day, a detached silent child prunes, folds,
+    # rotates and archives closed `.shiftwork` jobs under this session's cwd. Never inline,
+    # never waited for; only a spawn this hook could not make is a log line.
+    if _retention.maybe_spawn(run.home, cwd) == "failed":
+        _log(run, {"event": "SessionStart", "warn": "retention: the child could not be started"})
     _emit({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}})
+
+
+def _touch_summary(run: HookRun, payload: dict[str, Any]) -> str:
+    """The B line for this SessionStart (#200, E1-B): `""` outside a repo, when silent, or on
+    any failure. `source == "compact"` gets this session's edits; any other source gets the
+    previous session in this repo. Git runs only once the touch log has something to say.
+    """
+    try:
+        repo = find_repo(str(payload.get("cwd") or os.getcwd()))
+        if repo is None:
+            return ""
+        rows = TouchLog(run.home, repo.id).read()
+        session = _js_str(payload.get("session_id") or "")
+        compact = payload.get("source") == "compact"
+        prev = None if compact else previous_session(rows, session)
+        if not compact and prev is None:
+            return ""
+        fs = FileSet(ls_files(repo) or [])
+
+        def display(p: str) -> str:
+            return shortest_suffix(p, fs) if p in fs.files else p
+
+        if compact:
+            return compact_line(rows, session, display)
+        _, mine = prev  # type: ignore[misc]
+        stamps = [r["ts"] for r in mine]
+        until = shift_ts(max(stamps), SUMMARY_COMMIT_GRACE_S)
+        since = f"--since={min(stamps)}"
+        out = git(repo, ["log", "--format=%s", since, f"--until={until}", "HEAD"])
+        status = git(repo, ["status", "--porcelain=v1", "-z", "-uall"]) or ""
+        commits = [s for s in (out or "").split("\n") if s]
+        return last_session_line(mine, utc_now(), display, commits, uncommitted_count(status))
+    except Exception:  # noqa: BLE001 - the summary is an enhancement; no line is its failure
+        return ""
 
 
 # ------------------------------------------------------------ UserPromptSubmit
@@ -1136,21 +1208,25 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
 #: set of lines called headers cannot drift from the set of lines the log describes.
 RECALL_HEADER = re.compile(r"^\[([^\]]+)\] \[([^\]]+)\] \(([a-z]+)\) (.*)$")
 
+#: The via suffix a header admitted past the gate carries (#200): ` [via <file>]`, at the end.
+VIA_SUFFIX = re.compile(r" \[via [^\]\n]+\]$")
+
 
 def _score_header(head: str, query_tokens: set[str]) -> dict[str, Any] | None:
-    """The store's own score for one injected header against this prompt.
+    """The v1 word-overlap count for one injected header, kept for log compatibility.
 
-    `MemoryStore.recall` computes `score` and throws it away -- it returns `list[Fact]`, and
-    `RecallOutcome` carries counts but no per-fact score, so no runtime API surfaces the
-    number roadmap #6 has to gate on. It does not need to. The score IS
+    THIS IS NOT THE SCORE THAT RANKED THE FACT (#199, J68-8 F2). Since #199 recall pools
+    every layer and ranks by BM25F plus the gate and ranker (`memory/retrieval`), and no
+    runtime API surfaces that per-fact number. What the hook log's `injected[].score` holds
+    is still the pre-#199 overlap
 
         |tokens(name + " " + description) & tokens(query)|
 
-    and all three inputs are here: `tokens` is the store's OWN tokenizer (imported, not a
-    second copy of it), the query is the prompt, and `name`/`description` are the two fields
-    `Memory._format` interpolated into this very line. Re-deriving it is exact, not an
-    estimate -- for every fact `memory_save` writes, whose description is one line by
-    construction.
+    re-derived from the header `Memory._format` printed, with the store's own `tokens`.
+    It is kept so a log written before and after #199 means the same thing in this field;
+    replacing it with the BM25F score is a log-format change, not made here. It can be 0 for
+    a fact the ranker put first: a Thai prompt tokenizes to nothing under `tokens`, while the
+    BM25F tokenizer and the fact's `keywords` match it.
 
     `tokens` IS THE STORE'S PUBLIC NAME ON BOTH SIDES since J62-3B. It was `_tokens` here
     while `runtime-ts/src/memory/store.ts` exported `tokens`, so this call site was an
@@ -1161,6 +1237,7 @@ def _score_header(head: str, query_tokens: set[str]) -> dict[str, Any] | None:
     if not m:
         return None
     name, type_, description = m.group(2), m.group(3), m.group(4)
+    description = VIA_SUFFIX.sub("", description)  # the fact's own score, not its label's (#200)
     score = len(tokens(f"{name} {description}") & query_tokens)
     return {"name": name, "layer": m.group(1), "type": type_, "score": score}
 
@@ -1187,11 +1264,16 @@ def _prompt_fingerprint(prompt: str) -> dict[str, Any]:
 
 
 def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
+    _turn_open(run, payload)  # #200: before the skip; a command's turn can still run Bash
     prompt = str(payload.get("prompt") or "").strip()
     if len(prompt) < PROMPT_MIN_CHARS or prompt.startswith("/"):
         _log(run, {"event": "UserPromptSubmit", "action": "skip", "reason": "short-or-command"})
         return
-    m = Memory.layered(str(payload.get("cwd") or os.getcwd()))
+    # The host's auto-memory joins as the last, read-only `[native]` layer (#199 J68-11, user
+    # ruling A+B), from the directory RULING Q1.2's resolver FOUND -- all three branches, since
+    # this payload carries `transcript_path` -- and never from a slug computed here.
+    native = _resolve_native_memory(run, payload)
+    m = Memory.layered(str(payload.get("cwd") or os.getcwd()), native=native.dir)
     # `stamp=False` (job64, J64-1): an injection is the HOOK reading the store, not the model
     # asking for a fact, so it must not date `last_recalled`. Before this it did, on every
     # prompt, for up to three files -- and the rules keyed on that date (compaction's
@@ -1200,9 +1282,15 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # ONE UNREADABLE FACT COSTS THAT FACT (job65, #119): the recall reads every layer past
     # the files it cannot read and names them in `o.skipped`; one recall, healthy or not. A
     # layer that cannot be LISTED fails exactly as it did.
-    o = m.recall_outcome(prompt, 3, stamp=False)
+    # #200: what this session touched in its last TOUCH_WINDOW tool calls ranks the facts
+    # that name those files (`W_CONTEXT`), and, when the via path is on, admits one of them
+    # past the gate. `None` (no repo, no touches, no graph, any error) is today's recall.
+    touch = _touch_context(run, payload, m)
+    o = m.recall_outcome(prompt, 3, stamp=False, context=touch)
     skipped = [dict(s) for s in o.skipped]
     degraded: dict[str, Any] = {"skipped": skipped} if skipped else {}
+    if touch is not None:
+        degraded["context"] = sum(1 for w in touch.weights.values() if w > 0.0)
     if o.status != "answered":
         _log(
             run,
@@ -1312,9 +1400,40 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
             "dropped": len(fresh) - len(injected),
             "suppressed": suppressed,
             **degraded,
+            **({"via": o.via} if any(x["name"] == o.via for x in injected) else {}),
         },
     )
     _emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}})
+
+
+def _touch_context(run: HookRun, payload: dict[str, Any], m: Memory) -> TouchContext | None:
+    """The session's touch context for this prompt (#200, E1-A): `None` on any failure.
+
+    The window is this session's read/edit/write lines in its last `TOUCH_WINDOW` tool calls;
+    no window, no repo or no graph is no context. The graph is loaded over the recall's own
+    layers. Never raises: no context is the enhancement's only failure mode.
+
+    While `retrieval.W_CONTEXT == 0` and via is off, a context cannot move the reply (`0 * ctx`
+    with `ctx` finite, and no via line), so none is built: no touch-log read, no graph load or
+    rebuild (T200-10). The reply bytes are the same; the hook log's `context` count is absent.
+    """
+    if retrieval.W_CONTEXT == 0.0 and not via_enabled():
+        return None
+    try:
+        repo = find_repo(str(payload.get("cwd") or os.getcwd()))
+        if repo is None:
+            return None
+        session = _js_str(payload.get("session_id") or "")
+        seq = current_seq(run.state, session)
+        paths = window(TouchLog(run.home, repo.id).tail(session, seq - TOUCH_WINDOW), seq)
+        if not paths:
+            return None
+        graph = TouchGraph(run.home, repo).load(m.layer_stores())
+        if graph is None:
+            return None
+        return TouchContext(context_weights(graph, paths, utc_now()), paths, graph)
+    except Exception:  # noqa: BLE001 - no context is the enhancement's only failure mode
+        return None
 
 
 # ------------------------------------------ the server's actual store pin (J50-1)
@@ -1591,6 +1710,98 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
 # PROCESS per tool call and a parallel tool block fires them concurrently, which loses
 # 40-50% of a read-modify-write's records. An append of a line this size is atomic on both
 # platforms, so this half has no such race.
+
+
+def _record_touch(run: HookRun, payload: dict[str, Any]) -> None:
+    """One touch or use line per PostToolUse in a git repo (#200). Never raises, never emits.
+
+    Outside a repo nothing is written, not even the counter. Inside one, EVERY tool call takes
+    the session's next `seq`, Bash included, but only Read/Edit/MultiEdit/Write/NotebookEdit
+    of a file inside the toplevel make a touch line: a Bash call is never a touch line, and a
+    read made through Bash is never captured. A bantamkit `memory_recall` or `memory_save`
+    adds one `use` line per fact it named. No rotate here: Retention folds and rotates, so
+    this arm pays one locked counter write and one locked append. A write that fails is one
+    `touch: miss` hook-log record, which `bantamkit_status` counts. No `git` executable on
+    PATH (`git_on_path`, a stat walk) is "no git": nothing is written either (T200-10, B2).
+    """
+    try:
+        repo = find_repo(str(payload.get("cwd") or os.getcwd()))
+        if repo is None or not git_on_path():
+            return
+        session = _js_str(payload.get("session_id") or "")
+        seq = next_seq(run.state, session)  # EVERY tool call counts, Bash included
+        tool = payload.get("tool_name") if isinstance(payload.get("tool_name"), str) else ""
+        ti = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+        log = TouchLog(run.home, repo.id)
+        ok = True
+        op = TOUCH_OPS.get(tool)
+        if op is not None:
+            raw = ti.get("notebook_path" if tool == "NotebookEdit" else "file_path")
+            rel = relpath(repo, raw) if isinstance(raw, str) and raw else None
+            if rel is not None:
+                ok = log.append_touch(session, seq, op, rel)
+        for fact, kind in use_names(tool, ti, payload.get("tool_response")):
+            ok = log.append_use(session, seq, fact, kind) and ok
+        if not ok:
+            _log(run, {"event": "PostToolUse", "touch": "miss", "tool": tool})
+    except Exception:  # noqa: BLE001 - the graph is an enhancement (#200, Error handling)
+        _log(run, {"event": "PostToolUse", "touch": "miss"})
+
+
+def _turn_open(run: HookRun, payload: dict[str, Any]) -> None:
+    """UserPromptSubmit opens a turn (#200, E5): one `git status` snapshot at the current seq.
+
+    Runs before the short-prompt / slash-command skip, because a command's turn can still run
+    Bash. Outside a repo, or when git fails, nothing is written. Never raises, never emits.
+    """
+    try:
+        repo = find_repo(str(payload.get("cwd") or os.getcwd()))
+        if repo is None:
+            return
+        snap = snapshot(repo)
+        if snap is not None:
+            session = _js_str(payload.get("session_id") or "")
+            save_turn(run.state, session, snap, current_seq(run.state, session))
+    except Exception:  # noqa: BLE001 - the graph is an enhancement (#200, Error handling)
+        _log(run, {"event": "UserPromptSubmit", "touch": "miss"})
+
+
+def _turn_close(run: HookRun, payload: dict[str, Any]) -> None:
+    """Stop closes the turn (#200, E5): the files Bash changed become `write` lines.
+
+    A path the snapshots disagree on is recorded unless an `edit`/`write` line of this session
+    after the turn's seq already names it. Each line is `via: "bash-turn"`, `from` the turn's
+    seq, at the current seq, so a use co-occurs with it when its seq lies in `(from, seq]`.
+    The new snapshot is saved at the current seq, so a second Stop in one turn (the save
+    nudge's continuation, `stop_hook_active`) records nothing twice. No turn, no repo, or git
+    failing: nothing. Never raises, never emits.
+    """
+    try:
+        repo = find_repo(str(payload.get("cwd") or os.getcwd()))
+        if repo is None:
+            return
+        session = _js_str(payload.get("session_id") or "")
+        turn = load_turn(run.state, session)
+        if turn is None:
+            return
+        frm, before = turn
+        after = snapshot(repo)
+        if after is None:
+            return
+        log = TouchLog(run.home, repo.id)
+        explained = {
+            r.get("path") for r in log.tail(session, frm) if r.get("op") in ("edit", "write")
+        }
+        seq = current_seq(run.state, session)
+        ok = True
+        for p in changed(before, after):
+            if p not in explained:
+                ok = log.append_touch(session, seq, "write", p, via="bash-turn", frm=frm) and ok
+        save_turn(run.state, session, after, seq)
+        if not ok:
+            _log(run, {"event": "Stop", "touch": "miss"})
+    except Exception:  # noqa: BLE001 - the graph is an enhancement (#200, Error handling)
+        _log(run, {"event": "Stop", "touch": "miss"})
 
 
 def _append_usage_event(run: HookRun, payload: dict[str, Any]) -> None:
@@ -2431,6 +2642,7 @@ def run_hook(stdin: Any = None) -> None:
             _pre_tool_use_read(run, payload)
         return
     if event == "PostToolUse":
+        _record_touch(run, payload)  # #200: the touch log, before the usage event
         # EVERY tool, not just bantamkit's -- it is a usage denominator.
         _append_usage_event(run, payload)
         if payload.get("tool_name") == "mcp__bantamkit__memory_save":
@@ -2443,6 +2655,7 @@ def run_hook(stdin: Any = None) -> None:
         _post_compact(run, payload)
         return
     if event == "Stop":
+        _turn_close(run, payload)  # #200: also under `stop_hook_active`; the re-save dedupes
         _maybe_dream(run, payload)  # gated on the store changing; logs only, never emits
         _stop(run, payload)
         return

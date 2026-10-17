@@ -83,6 +83,7 @@
 import { AssetNotFound, loadSchema, loadToolAsset } from './assets.js';
 import { schemaError } from './contract.js';
 import { randomBytes } from 'node:crypto';
+import { homedir } from 'node:os';
 import { closeSync, openSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import {
   asPyOSError,
@@ -99,6 +100,7 @@ import {
 import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, type PyValue } from './pyjson.js';
 import { checkSchema, PyJsonSchemaUnsupported } from './pyjsonschema.js';
 import { plan, type PlanNode, type PlanResult } from './workplan.js';
+import { searchArchived } from './storage/retention.js';
 
 export const SCHEMA_NAME = 'shiftwork-checkpoint';
 /** The accounting line's shape lives on the TOOL asset, not in a second copy here (F5). */
@@ -1052,7 +1054,13 @@ function clockOutLocked(
  * its key order is the order the statuses appear in the plan and not an alphabetical one.
  * The result is dumped without `sort_keys` on the wire, so that order is observable.
  */
-export function status(checkpoint: string): PyValue {
+/**
+ * Read-only progress summary. Never mutates the checkpoint. `search` (#204, J69-6) adds a
+ * `search` key: `{job, file, line}` for each line of a job Retention archived under this
+ * checkpoint's `.shiftwork/archive/` that holds every term of the query. Without it the
+ * answer is unchanged.
+ */
+export function status(checkpoint: string, search: string | null = null): PyValue {
   const { document, refusal } = readValid(pyJoin(checkpoint));
   if (refusal !== null) return refusal;
   const doc = document!;
@@ -1063,13 +1071,17 @@ export function status(checkpoint: string): PyValue {
     counts.set(key, int(seen === undefined ? 1 : Number((seen as { v: bigint }).v) + 1));
   }
   const history = subList(doc, 'history');
-  return dict([
+  const out = dict([
     ['result', str('status')],
     ['cursor', field(subDict(doc, 'plan'), 'cursor')],
     ['units', { t: 'dict', v: counts }],
     ['open_questions', int(subList(subDict(doc, 'handoff'), 'open_questions').v.length)],
     ['last_history', history.v.length > 0 ? history.v[history.v.length - 1]! : { t: 'null' }],
   ]);
+  if (search !== null) {
+    out.v.set('search', fromJs(searchArchived(checkpoint, search, homedir())));
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------------- plan_batches

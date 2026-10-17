@@ -18,6 +18,7 @@
  * write into the user's home directory, and a test that did it once would be a test that
  * did it on every run.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import {
@@ -975,4 +976,38 @@ test('dry_run is the lax pydantic bool, measured against the reference over the 
  *  encoded POSIX path and on Windows it comes back as `/C:/...`, which `join` never fixes. */
 function scratchRepoRoot() {
   return dirname(dirname(fileURLToPath(import.meta.url)));
+}
+
+// -------------------- #199 Task 6: keywords union, hand-written keys survive (J68-3 ruling)
+
+/** Insert `extra` frontmatter lines just before the closing `---`. */
+function withFront(path, extra) {
+  const text = readFileSync(path, 'utf8');
+  const at = text.indexOf('\n---\n');
+  writeFileSync(path, text.slice(0, at) + '\n' + extra + '---\n' + text.slice(at + 5), 'utf8');
+}
+
+for (const identical of [true, false]) {
+  test(`the survivor keeps the union of both keyword lists (identical=${identical})`, () => {
+    const [project, profile] = stores(bed());
+    const p = writeFact(project.root, 'shared-ruling', { description: 'one ruling', body: 'the same body', mtime: '2026-08-27' });
+    const q = writeFact(profile.root, 'shared-ruling', {
+      description: 'one ruling',
+      body: identical ? 'the same body' : 'another body',
+      mtime: '2026-08-27',
+    });
+    withFront(p, 'keywords:\n- ปล่อย\n- deploy\npriority: high\nowner: kk\n');
+    withFront(q, 'keywords:\n- deploy\n- Deploy\n- ปล่อย\n- ship\nowner: ops\nteam: core\n');
+
+    dream(project, profile, false);
+
+    const survivor = project.lookup('shared-ruling', false);
+    assert.deepEqual(survivor.keywords, ['ปล่อย', 'deploy', 'Deploy', 'ship']);
+    assert.deepEqual(survivor.extra, [['priority', 'high'], ['owner', 'kk'], ['team', 'core']]);
+    const text = readFileSync(join(project.root, 'facts', 'shared-ruling.md'), 'utf8');
+    assert.equal(
+      text.split('keywords:\n- ปล่อย\n- deploy\n- Deploy\n- ship\npriority: high\nowner: kk\nteam: core\n').length - 1,
+      1,
+    );
+  });
 }

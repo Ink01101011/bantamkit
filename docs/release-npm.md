@@ -76,7 +76,7 @@ checked before the first upload is checked before the first upload:
 | 1 test | the four gates. 0 failures is the bar |
 | 2 build | both artifacts, into a **clean directory named for the version** |
 | 3 prepublish | `npx-cold-start.mjs`, `twine check`, and the asset pack inside each artifact **hashed** against `assets/` |
-| 4 npm | `npm publish --access public`, output streamed live |
+| 4 npm | `npm publish --access public` (plus `--tag beta` for a prerelease, see below), output streamed live |
 | 5 verify npm | `registry.npmjs.org` directly, then the **published** tarball driven over stdio |
 | 6 PyPI | `twine upload`, **by exact filename** |
 | 7 verify PyPI | the per-version endpoint, sha256 against the local build, then an install with the `[mcp]` extra driven over stdio |
@@ -106,6 +106,43 @@ description and an input schema no commit carries — silently. And both publish
 **driven over real stdio** (`tools/release/roster-probe.mjs`) and compared against `MCP_TOOLS`,
 because every local gate rebuilds before it looks, and the artifact that reaches a user is the
 one nothing was asking.
+
+### Prereleases: one version, two spellings, and `--tag beta`
+
+A beta is spelled differently on each registry. PyPI takes PEP 440 (`0.37.0b1`). npm takes
+semver (`0.37.0-beta.1`). `__init__.py` declares the PEP 440 spelling and `package.json` the
+semver one. Phase 0 maps the first onto the second before it compares them:
+
+| `__version__` (PyPI) | npm spelling | npm dist-tag |
+|---|---|---|
+| `0.37.0a1` | `0.37.0-alpha.1` | `beta` |
+| `0.37.0b1` | `0.37.0-beta.1` | `beta` |
+| `0.37.0rc2` | `0.37.0-rc.2` | `beta` |
+| `0.36.0` | `0.36.0`, unchanged | none, so `latest` |
+
+- **npm-side sites carry the semver spelling.** That means `package.json`, both
+  `package-lock.json` version fields, the npm registry URL, the tarball name, the post-publish
+  install, and the tag the summary prints (`v0.37.0-beta.1`).
+- **PyPI-side sites keep the PEP 440 spelling.** That means the registry URL, the wheel and
+  sdist names, and the `runtime-py/README.md` wheelhouse pin (`bantamkit[mcp]==0.37.0b1`). A
+  semver spelling in that pin is refused.
+- **A version the mapping does not recognise is left alone** (`.devN`, `.postN`, anything
+  else). The version-site check then refuses it, so a guess never goes through.
+- **A prerelease goes to npm under `--tag beta`.** Without it, npm moves `latest`, and every
+  user config that runs `npx bantamkit-mcp@latest` moves with it. Phase 0 and the dry-run
+  print the exact `npm publish` command, and the summary prints `gh release create …
+  --prerelease`.
+- **A stable version maps to itself and gets no `--tag`, so it runs exactly as before.** The
+  same dry-run on an unbumped tree prints the same output before and after this change (job68,
+  J68-9).
+
+`tools/release/test_version_map.sh` pins the mapping and the dist-tag. It reads both functions
+out of `publish.sh` itself. Run it with `bash tools/release/test_version_map.sh`.
+
+**Not covered by this script:** the version-agreement nodes below still compare
+`__version__` and `package.json` byte for byte. A beta bump that is correct by this table
+therefore fails phase 1 until those nodes learn the same mapping. They live in the runtimes'
+suites, and the ruling they enforce ("one number with two declarations") belongs to the user.
 
 ## Before you publish
 
@@ -210,6 +247,14 @@ it, and the second statement is the one that follows.
 TypeScript. That is the price of the identity, and it is now paid deliberately. Independent
 versioning was the alternative; it was rejected because it buys a few skipped publishes at
 the cost of the one number that says which build you are running.
+
+**A prerelease has two spellings of the one number** (job68 J68-12, user ruling 2026-10-15).
+PyPI requires PEP 440 and npm requires semver, so `__version__ = "0.37.0b1"` is followed by
+`"version": "0.37.0-beta.1"` in `package.json` — the mapping `tools/release/publish.sh`
+applies (`aN` → `-alpha.N`, `bN` → `-beta.N`, `rcN` → `-rc.N`). Both nodes below compare the
+two declarations after that mapping, and a stable version must still be byte-identical. Each
+runtime reports its own registry's spelling; see `docs/porting.md`, "a prerelease version's
+spelling".
 
 **When they disagree.** The suite goes red before anything is published — no judgement call,
 no "which one did we mean". Bring `package.json` to `__version__`, not the reverse.

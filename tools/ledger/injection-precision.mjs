@@ -57,6 +57,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 
 // ---------------------------------------------------------------- sample floors
 // Not a precision threshold — a floor on how much data will be spoken about at all.
@@ -101,9 +102,28 @@ function nameMatcher(name) {
 }
 
 // ---------------------------------------------------------------- the hook log
+/**
+ * Every line of the hook log, oldest first: the rotated `<file>.1.gz`, `.2.gz`, ... (stopping
+ * at the first gap, as `LogSegment.segments()` does), then the live file. Since job69 (#204)
+ * the hook log rotates at 1,000,000 bytes, so the live file alone holds only the lines since
+ * the last rotation; reading it alone would silently drop the instrument's history. A
+ * segment that cannot be read or decompressed is skipped, as `LogSegment.read` skips it.
+ */
+function readLogLines(file) {
+  const texts = [];
+  for (let n = 1; fs.existsSync(`${file}.${n}.gz`); n += 1) {
+    try { texts.push(zlib.gunzipSync(fs.readFileSync(`${file}.${n}.gz`)).toString('utf8')); } catch { /* skipped */ }
+  }
+  let live = null;
+  try { live = fs.readFileSync(file, 'utf8'); } catch { /* no live file */ }
+  if (live === null && texts.length === 0) return null;
+  if (live !== null) texts.push(live);
+  return texts.join('\n').split('\n');
+}
+
 function readInjections(file) {
-  let lines = [];
-  try { lines = fs.readFileSync(file, 'utf8').split('\n'); } catch { return { records: [], legacy: 0, total: 0 }; }
+  const lines = readLogLines(file);
+  if (lines === null) return { records: [], legacy: 0, total: 0 };
   const records = [];
   let legacy = 0;
   let total = 0;

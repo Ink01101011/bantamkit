@@ -285,7 +285,7 @@ export async function run(ctx) {
   const cases = [];
   const rendered = new Map();
   for (const spec of specs(root)) {
-    const full = { ...spec, cwd, env: { HOME: home, ...spec.env } };
+    const full = { ...spec, cwd, env: { HOME: home, USERPROFILE: home, ...spec.env } };
     const py = runPy(ctx, full);
     const node = runNode(full);
     rendered.set(spec.label, py.stdout.toString('utf8').trimEnd());
@@ -313,7 +313,7 @@ export async function run(ctx) {
   // documented WIDTH; and the width beds against their typed literals.
   const nodeLines = new Map();
   for (const spec of specs(root)) {
-    const full = { ...spec, cwd, env: { HOME: home, ...spec.env } };
+    const full = { ...spec, cwd, env: { HOME: home, USERPROFILE: home, ...spec.env } };
     nodeLines.set(spec.label, runNode(full).stdout.toString('utf8').trimEnd());
   }
   const widest = (lines) => Math.max(...[...lines.values()].map(columns));
@@ -328,7 +328,7 @@ export async function run(ctx) {
     );
   }
 
-  const again = { ...specs(root)[0], cwd, env: { HOME: home, BANTAMKIT_EVENT_LOG: join(root, 'healthy', 'events', 'mcp.jsonl') } };
+  const again = { ...specs(root)[0], cwd, env: { HOME: home, USERPROFILE: home, BANTAMKIT_EVENT_LOG: join(root, 'healthy', 'events', 'mcp.jsonl') } };
   cases.push({
     name: 'healthy/deterministic-across-two-runs',
     kind: 'bytes',

@@ -26,6 +26,7 @@
  * fallback and left the message; the node below builds a worktree whose deps root HAS a
  * built `dist/` and asserts the launcher still declines to serve it.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';

@@ -40,17 +40,32 @@ import {
   type StoreBinding,
 } from './layers.js';
 import { pyHome, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
+import { homedir } from 'node:os';
+import { NATIVE_LAYER, NativeStore } from './native.js';
+import { queryTerms, stale, weightOf } from './retrieval.js';
+import { type TouchContext, viaEnabled, viaLabel, viaPick } from '../touch/context.js';
+import { TouchGraph } from '../touch/graph.js';
+import { TouchLog } from '../touch/log.js';
+import * as recallFileMod from '../touch/recallfile.js';
+import { FileSet, shortestSuffix } from '../touch/refs.js';
+import { findRepo, lsFiles } from '../touch/repo.js';
 import {
+  allNames,
   DEFAULT_INDEX_BUDGET,
   MemoryBudgetExceeded,
   MemoryStore,
   MemoryValidationError,
   MIN_RATIO_RANGE,
-  pyHashKey,
+  pickHits,
+  emptyPool,
+  type Pool,
+  poolOf,
   pyText,
   RECALL_MIN_SCORE_RATIO,
   type SkippedFact,
+  utcNow,
 } from './store.js';
+import { UsageLedger } from './usage.js';
 import { dream as runDream, formatFixed3, SUPERSEDED_HEADING } from './dream.js';
 import type { DreamResult } from './dream.js';
 
@@ -183,9 +198,23 @@ export interface MemoryOptions {
    * store's own `date.today()`, so nothing about a real run changes.
    */
   today?: () => string;
+  /** The usage ledger's clock (#199), frozen the same way; the default is UTC now. */
+  now?: () => string;
+  /**
+   * Claude Code's auto-memory directory AS THE CALLER RESOLVED IT (#199 J68-11, user ruling
+   * A+B) — the hook through all three branches of RULING Q1.2, the MCP server through the
+   * first two — or absent/`null`, and then there is no such layer. `layered` appends it LAST
+   * and read-only (`NativeStore`). The reference's `native` argument.
+   */
+  native?: string | null;
 }
 
-type Layer = [label: string, store: MemoryStore, writable: boolean];
+type Layer = [label: string, store: MemoryStore | NativeStore, writable: boolean];
+
+/** A layer's fact count: `facts/*.md` for a bantamkit store, the listing for the native one. */
+function countOf(store: MemoryStore | NativeStore): number {
+  return store instanceof NativeStore ? store.count() : countFacts(store.root);
+}
 
 /**
  * What `save` DECIDED, beside the sentence it says about it.
@@ -273,6 +302,11 @@ export interface RecallOutcome {
    * shaped like a header can never pass for one.
    */
   readonly headers: readonly string[];
+  /**
+   * The fact admitted past the gate by the via path (#200, E3), its header last and suffixed
+   * ` [via <file>]`; `null` when none was.
+   */
+  readonly via: string | null;
 }
 
 /**
@@ -317,6 +351,12 @@ export class Memory {
    */
   private readonly binding: StoreBinding | null;
 
+  /**
+   * Facts read-repaired by this Memory (#199 Task 6): `bantamkit_status` reports it as
+   * `read-repaired: <n> this process`, since a server holds one Memory for its life.
+   */
+  repaired = 0;
+
   constructor(store: string, options: MemoryOptions = {}, binding: StoreBinding | null = null) {
     const k = options.k ?? 3;
     // `create: false`, AND IT IS THE WHOLE OF THE cwd-`/` FIX. This was the last eager layer —
@@ -347,6 +387,7 @@ export class Memory {
       k,
       create: false,
       ...(options.today ? { today: options.today } : {}),
+      ...(options.now ? { now: options.now } : {}),
     });
     this.k = k;
     this.layers = [['project', this.store, true]];
@@ -374,10 +415,11 @@ export class Memory {
     mem.showLayers = true;
     const k = options.k ?? 3;
     const today = options.today;
+    const now = options.now;
     for (const grant of loadGrants(binding.path)) {
       mem.layers.push([
         `extra:${layerLabel(grant)}`,
-        new MemoryStore(grant, { k, create: false, ...(today ? { today } : {}) }),
+        new MemoryStore(grant, { k, create: false, ...(today ? { today } : {}), ...(now ? { now } : {}) }),
         false,
       ]);
     }
@@ -392,11 +434,17 @@ export class Memory {
     if (!sameDirectory(profileRoot, binding.path)) {
       mem.layers.push([
         'profile',
-        new MemoryStore(profileRoot, { k, create: false, ...(today ? { today } : {}) }),
+        new MemoryStore(profileRoot, { k, create: false, ...(today ? { today } : {}), ...(now ? { now } : {}) }),
         false,
       ]);
     }
+    mem.addNative(options.native ?? null);
     return mem;
+  }
+
+  /** The host's auto-memory as the last, read-only layer, when a directory was resolved. */
+  private addNative(native: string | null): void {
+    if (native !== null && pyStrip(native)) this.layers.push([NATIVE_LAYER, new NativeStore(native), false]);
   }
 
   /** The labels, in order. `_layers` is private in the reference too; this is for the tests. */
@@ -411,8 +459,9 @@ export class Memory {
     description: string,
     body: string,
     links: readonly string[] | null = null,
+    keywords: readonly string[] | null = null,
   ): string {
-    return this.saveOutcome(type, name, description, body, links).reply;
+    return this.saveOutcome(type, name, description, body, links, keywords).reply;
   }
 
   /**
@@ -429,6 +478,7 @@ export class Memory {
     description: string,
     body: string,
     links: readonly string[] | null = null,
+    keywords: readonly string[] | null = null,
   ): SaveOutcome {
     const normalized = normalizeName(name);
     const normalizedLinks = (links ?? []).map((link) => normalizeName(link));
@@ -446,7 +496,7 @@ export class Memory {
           status: 'duplicate',
         };
       }
-      result = this.store.save(type, normalized, description, body, normalizedLinks);
+      result = this.store.save(type, normalized, description, body, normalizedLinks, keywords ?? []);
     } catch (e) {
       if (e instanceof MemoryValidationError) {
         return { reply: `error: ${e.message}`, status: 'refused-validation' };
@@ -483,6 +533,9 @@ export class Memory {
         status: 'duplicate',
       };
     }
+    // The `save` event carries the keywords (#199 D5): read-repair restores them from it when a
+    // 0.35.x runtime rewrites the file without the field. Best-effort (#123).
+    this.usage().append(result.name as string, 'save', this.store.now(), [...(keywords ?? [])]);
     return { reply: `saved '${result.name}'${note}`, status: 'saved' };
   }
 
@@ -494,8 +547,17 @@ export class Memory {
    * fact. The floor is the operator's configured default, not a constant, so a consumer who
    * really wants top-1 says so once at construction.
    */
-  recall(query: string, k: number | null = null, minRatio = RECALL_MIN_SCORE_RATIO): string {
-    return this.recallOutcome(query, k, minRatio).reply;
+  recall(
+    query: string | null,
+    k: number | null = null,
+    minRatio = RECALL_MIN_SCORE_RATIO,
+    includeArchived: boolean | null = null,
+    file: string | null = null,
+  ): string {
+    // `file` (#200): the server handler's three branches, in its order (the reference's `recall`).
+    if (file !== null) return this.recallFile(file, k, query).reply;
+    if (query === null) throw new MemoryValidationError(recallFileMod.RECALL_NEEDS_QUERY_OR_FILE);
+    return this.recallOutcome(query, k, minRatio, true, includeArchived === true).reply;
   }
 
   /**
@@ -515,25 +577,27 @@ export class Memory {
    * scored as empty; that distinction is the whole subject of `nothingToReport` below and
    * must not be undone here.
    *
-   * `minRatio` (roadmap #6) rides through to every layer's `MemoryStore.recall` unchanged,
-   * so the gate is measured against EACH LAYER's own best score and never across layers: a
-   * profile fact does not have to out-score the project store's top hit to be admitted,
-   * because the two stores are answering as two stores. Its default is
-   * `RECALL_MIN_SCORE_RATIO` = 0.0, which keeps every fact `recall` was going to return,
-   * and nothing on the tool path passes anything else today. A ratio outside `[0.0, 1.0]`
-   * raises out of the FIRST layer, which is the writable project store, so it surfaces as
-   * the error it is rather than as an `unreadable` count — the read-only-layer `catch`
-   * below would otherwise file a caller's bad argument as a corrupt grant.
+   * `minRatio` (roadmap #6) is the gate: SINCE #199 (D3, Task 5) every layer's facts are
+   * pooled and scored ONCE, and a fact is admitted when its BM25F score reaches `minRatio`
+   * times the best score of the WHOLE recall (`pooled`, `pickHits`). WAS: each layer's own
+   * `MemoryStore.recall` gated against that layer's best and never across layers. Its default
+   * is `RECALL_MIN_SCORE_RATIO` = 0.0, which keeps every fact that scored, and nothing on the
+   * tool path passes anything else today. A ratio outside `[0.0, 1.0]` throws
+   * `MIN_RATIO_RANGE` at the top of this method, before any layer is read, so it surfaces as
+   * the error it is rather than as an `unreadable` count — the read-only-layer `catch` would
+   * otherwise file a caller's bad argument as a corrupt grant.
    *
-   * `stamp` (job64, J64-1) is whether a hit in the WRITABLE layer gets its `last_recalled`
-   * dated. It defaults to true, which is what every explicit recall — the `memory_recall`
-   * tool, the memory CLI, `Memory.recall` — has always done, and those callers do not pass
-   * it. The one caller that passes false is the hook's `UserPromptSubmit` arm: an automatic
-   * injection is not the model asking for a fact, and dating it as one was measured
-   * (2026-09-25) to stamp 25 of 42 facts in one store as "recalled today", so every rule
-   * keyed on `last_recalled` — compaction's stalest-first, SessionStart's drop rule — was
-   * reading injection traffic instead of model demand. Read-only layers are never stamped
-   * whatever this says.
+   * `stamp` (job64, J64-1) is whether this recall counts as USE. SINCE #199 (D5) it no longer
+   * dates `last_recalled`: with it true, every hit is appended to the usage ledger
+   * (`recall_hit`, or `body_read` for an exact-name hit; `use`) and the hits in the WRITABLE
+   * layer are read-repaired (`repair`). It defaults to true, which is what every explicit
+   * recall — the `memory_recall` tool, the memory CLI, `Memory.recall` — has always done, and
+   * those callers do not pass it. The one caller that passes false is the hook's
+   * `UserPromptSubmit` arm: an automatic injection is not the model asking for a fact, and
+   * counting it as one was measured (2026-09-25, when it still dated `last_recalled`) to mark
+   * 25 of 42 facts in one store as "recalled today", so every rule keyed on use —
+   * compaction's stalest-first, SessionStart's drop rule — was reading injection traffic
+   * instead of model demand. The hook writes nothing.
    *
    * THE EXACT-NAME WALK (job64, J64-4) runs first, and only for a query in the name shape
    * (`isNameShaped`: `pyStrip`ped, `NAME_RE`-valid, and carrying a hyphen — a bare word is a
@@ -550,12 +614,19 @@ export class Memory {
    * check on `minRatio` runs BEFORE the walk for the same reason
    * it runs before any file is read in `MemoryStore.recall`: a caller's bad argument must
    * surface as the error it is, not be swallowed by an exact hit.
+   *
+   * `includeArchived` (#204) appends, AFTER every live hit, up to `budget` facts from each
+   * layer's `archive/` (`MemoryStore.archivedRecall`, through the cold index), in layer order,
+   * each header tagged `[archived]`; a name already in the reply is not repeated. An exact-name
+   * hit still answers alone, and without the flag the reply is byte for byte what it was.
    */
   recallOutcome(
     query: string,
     k: number | null = null,
     minRatio = RECALL_MIN_SCORE_RATIO,
     stamp = true,
+    includeArchived = false,
+    context: TouchContext | null = null,
   ): RecallOutcome {
     // `not 0.0 <= min_ratio <= 1.0`: NaN fails the same chain on both sides.
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
@@ -567,45 +638,11 @@ export class Memory {
       if (named !== null) return named;
       lookup = 'miss';
     }
-    const picked: Array<[string, Fact]> = [];
-    const seen = new Set<string>();
-    let reached = 0;
-    let unreadable = 0;
-    let candidates = 0;
-    const skipped: SkippedInLayer[] = [];
-    for (const [label, store, writable] of this.layers) {
-      if (picked.length >= budget) break; // budget spent: later layers are never even read
-      reached += 1;
-      // ONE BAD FILE COSTS THAT FILE (job65/#119): the layer is scored over every fact it CAN
-      // read and the rest are named. Only a layer that cannot be listed is still the error.
-      const leftOut: SkippedFact[] = [];
-      let facts: Fact[];
-      try {
-        facts = store.recall(query, budget, writable && stamp, minRatio, leftOut);
-      } catch (e) {
-        if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
-          throw e;
-        }
-        if (writable) throw e; // the project layer failing is a real error, as in v1
-        unreadable += 1;
-        continue; // a corrupt grant/profile layer must not take down recall
-      }
-      for (const s of leftOut) skipped.push({ layer: label, ...s });
-      try {
-        candidates += countFacts(store.root);
-      } catch (e) {
-        // It scored a moment ago, so it is readable; a race that unlists it now must not
-        // turn a successful recall into a failed one for a log field.
-        if (!(e instanceof PyOSError)) throw e;
-      }
-      for (const fact of facts) {
-        // `if fact.name in seen` over a Python `set`, which is `hash`/`==` and not `str` —
-        // see `store.pyHashKey` for why a hand-edited numeric name makes the two differ.
-        const key = pyHashKey(fact.name);
-        if (seen.has(key) || picked.length >= budget) continue;
-        seen.add(key);
-        picked.push([label, fact]);
-      }
+    const { picked, reached, unreadable, candidates, skipped } = this.pooled(query, budget, minRatio, context);
+    const via = this.viaOf(picked, context);
+    if (stamp) {
+      this.use(picked.map(([, fact]) => fact), 'recall_hit');
+      this.repair(picked);
     }
     const counts = {
       budget,
@@ -619,17 +656,304 @@ export class Memory {
     };
     const lead = lookup === 'miss' ? `${missLine(name)}\n\n` : '';
     const note = skippedNote(skipped);
-    if (picked.length === 0) {
+    const archived = includeArchived ? this.archivedHits(query, budget, picked) : [];
+    if (archived.length > 0 || via !== null) counts.returned = picked.length + archived.length + (via !== null ? 1 : 0);
+    if (picked.length === 0 && archived.length === 0 && via === null) {
       const [status, reply] = this.nothingToReport();
-      return { reply: lead + reply + note, status, source: null, headers: [], ...counts };
+      return { reply: lead + reply + note, status, source: null, headers: [], via: null, ...counts };
     }
+    const shown: Array<[string, Fact, boolean, string]> = [
+      ...picked.map(([label, fact]): [string, Fact, boolean, string] => [label, fact, false, '']),
+      ...archived.map(([label, fact]): [string, Fact, boolean, string] => [label, fact, true, '']),
+    ];
+    if (via !== null) shown.push([via[0], via[1], false, via[2]]);
     return {
-      reply: lead + picked.map(([label, fact]) => this.format(label, fact)).join('\n\n') + note,
+      reply: lead + shown.map(([label, fact, old, tail]) => `${this.header(label, fact, old)}${tail}\n${fact.body}`).join('\n\n') + note,
       status: 'answered',
-      source: picked[0]![0].split(':', 1)[0]!,
-      headers: picked.map(([label, fact]) => this.header(label, fact)),
+      source: shown[0]![0].split(':', 1)[0]!,
+      headers: shown.map(([label, fact, old, tail]) => this.header(label, fact, old) + tail),
+      via: via === null ? null : via[3],
       ...counts,
     };
+  }
+
+  /** `[label, store, writable]` per layer, in precedence order (the touch graph's input). */
+  layerStores(): ReadonlyArray<readonly [string, MemoryStore | NativeStore, boolean]> {
+    return this.layers.map(([label, store, writable]) => [label, store, writable] as const);
+  }
+
+  /**
+   * `memory_recall({file})` (#200, E1-C): the facts linked to one tracked file. The reference's
+   * `recall_file`; read its docstring for the rules. The repo is `process.cwd()`'s; the graph is
+   * loaded over this component's layers, and when it cannot be built the files come from
+   * `git ls-files` with no edges. Nothing is stamped: facts are found with `lookup(name, false)`.
+   */
+  recallFile(file: string, k: number | null = null, query: string | null = null): RecallOutcome {
+    const rf = recallFileMod;
+    const budget = k === null ? this.k : Math.max(k, this.k);
+    const ignored = query === null ? '' : `\n${rf.QUERY_IGNORED}`;
+    const base = { budget, layers: this.layers.length, reached: 0, returned: 0, candidates: 0 };
+    const said = (text: string): RecallOutcome => {
+      const at = text.indexOf('\n');
+      const reply = at < 0 ? text + ignored : text.slice(0, at) + ignored + text.slice(at);
+      return { reply, status: 'none', source: null, unreadable: 0, lookup: null, skipped: [], headers: [], via: null, ...base };
+    };
+    let cwd: string | null;
+    try {
+      cwd = process.cwd();
+    } catch {
+      cwd = null;
+    }
+    const repo = cwd === null ? null : findRepo(cwd);
+    if (repo === null) return said(rf.FILE_NOT_IN_REPO);
+    const home = pyHome();
+    const loaded = new TouchGraph(home, repo).load(this.layerStores());
+    const graph = loaded ?? { files: lsFiles(repo) ?? [], strong: {}, weak: {} };
+    const fs = new FileSet(graph.files.filter((f): f is string => typeof f === 'string'));
+    const want = rf.normalizeFile(file);
+    const found = fs.matches(want);
+    if (found.length === 0) return said(rf.fill(rf.FILE_UNKNOWN, { file: want }));
+    if (found.length > 1) return said(rf.ambiguous(want, found, fs));
+    const p = found[0]!;
+    const suffix = shortestSuffix(p, fs);
+    const history = rf.historyLine(repo, p, new TouchLog(home, repo.id).read(), suffix);
+    const names = rf.linkedNames(graph, p, utcNow());
+    const shown: Array<[string, Fact]> = [];
+    for (const n of names) {
+      if (shown.length >= budget) break;
+      for (const [label, store] of this.layers) {
+        let fact: Fact | null;
+        try {
+          fact = store.lookup(n, false);
+        } catch (e) {
+          if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
+          fact = null;
+        }
+        if (fact !== null) {
+          shown.push([label, fact]);
+          break;
+        }
+      }
+    }
+    base.reached = this.layers.length;
+    base.candidates = names.length;
+    if (shown.length === 0) return said(`${history}\n\n${rf.fill(rf.FILE_NO_FACTS, { suffix })}`);
+    base.returned = shown.length;
+    return {
+      reply: history + ignored + '\n\n' + shown.map(([label, fact]) => this.format(label, fact)).join('\n\n'),
+      status: 'answered',
+      source: shown[0]![0].split(':', 1)[0]!,
+      unreadable: 0,
+      lookup: null,
+      skipped: [],
+      headers: shown.map(([label, fact]) => this.header(label, fact)),
+      via: null,
+      ...base,
+    };
+  }
+
+  /**
+   * The via admission (#200, E3): `[label, fact, " [via <file>]", name]`, or `null`. Off unless
+   * `viaEnabled()`; needs a graph. Each strong-edge candidate of the window is found by name in
+   * the first layer holding it (never stamped) and weighed `weightOf(type, stale, 0, 1)`; a
+   * layer that cannot answer holds nothing. The reference's `_via`.
+   */
+  private viaOf(picked: ReadonlyArray<readonly [string, Fact]>, context: TouchContext | null): [string, Fact, string, string] | null {
+    if (context === null || context.graph === null || !viaEnabled()) return null;
+    const graph = context.graph;
+    const found = new Map<string, [string, Fact]>();
+    const weigh = (n: string): number | null => {
+      for (const [label, store] of this.layers) {
+        let f: Fact | null;
+        try {
+          f = store.lookup(n, false);
+        } catch (e) {
+          if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
+          f = null;
+        }
+        if (f !== null) {
+          found.set(n, [label, f]);
+          return weightOf(pyText(f.type), stale(pyText(f.description)), 0.0, 1.0);
+        }
+      }
+      return null;
+    };
+    const names = new Set(picked.map(([, fact]) => fact.name as string));
+    const pick = viaPick(graph, context.strongWindow, names, weigh);
+    if (pick === null) return null;
+    const [label, fact] = found.get(pick[0])!;
+    return [label, fact, viaLabel(pick[1], graph), pick[0]];
+  }
+
+  /**
+   * The scoring walk (#199 D3): every layer's facts pooled, scored ONCE with BM25F, gated
+   * against the best score of the whole recall, ranked by `(-final, layerOrder, name)`, the
+   * first `budget` taken with the first of each name only. Every layer is read, through its hot
+   * index where it has one. A read-only layer that cannot be read is `unreadable` and holds
+   * nothing; the project layer failing throws. The reference's `_pooled`.
+   */
+  private pooled(
+    query: string,
+    budget: number,
+    minRatio: number,
+    context: TouchContext | null = null,
+  ): {
+    picked: Array<[string, Fact]>;
+    reached: number;
+    unreadable: number;
+    candidates: number;
+    skipped: SkippedInLayer[];
+  } {
+    const q = queryTerms(query);
+    const stores: Array<MemoryStore | NativeStore> = [];
+    const pools: Array<Pool | null> = [];
+    const left: SkippedFact[][] = [];
+    let reached = 0;
+    let unreadable = 0;
+    let candidates = 0;
+    const readable = (e: unknown): boolean =>
+      e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError;
+    // The names every bantamkit layer read so far holds: the native layer drops them before it
+    // is scored (#199 J68-11), so an exported copy never answers twice.
+    const shadow = new Set<string>();
+    for (const [, store, writable] of this.layers) {
+      reached += 1;
+      const leftOut: SkippedFact[] = [];
+      stores.push(store);
+      left.push(leftOut);
+      try {
+        if (store instanceof NativeStore) {
+          pools.push(store.pool(q, leftOut, shadow));
+        } else {
+          const pool = store.pool(q, leftOut);
+          for (const name of allNames(pool)) shadow.add(name);
+          pools.push(pool);
+        }
+      } catch (e) {
+        if (!readable(e)) throw e;
+        if (writable) throw e; // the project layer failing is a real error, as in v1
+        unreadable += 1;
+        pools.push(null); // a corrupt grant/profile layer must not take down recall
+        continue;
+      }
+      try {
+        candidates += countOf(store);
+      } catch (e) {
+        // It scored a moment ago, so it is readable; a race that unlists it now must not
+        // turn a successful recall into a failed one for a log field.
+        if (!(e instanceof PyOSError)) throw e;
+      }
+    }
+    const repool = (i: number): Pool => {
+      try {
+        const store = stores[i]!;
+        if (store instanceof NativeStore) return poolOf(store.candidates(left[i]!, shadow), q);
+        return poolOf(store.candidates(left[i]!), q);
+      } catch (e) {
+        if (!readable(e) || this.layers[i]![2]) throw e;
+        return emptyPool();
+      }
+    };
+    const ledger = this.usage();
+    const now = this.store.now();
+    const hits = pickHits(stores, pools, q, budget, minRatio, () => ledger.weights(now), repool, true, context?.weights ?? null);
+    const skipped: SkippedInLayer[] = [];
+    this.layers.forEach(([label], i) => {
+      for (const s of left[i]!) skipped.push({ layer: label, ...s });
+    });
+    const picked = hits.map(([i, fact]): [string, Fact] => [this.layers[i]![0], fact]);
+    return { picked, reached, unreadable, candidates, skipped };
+  }
+
+  /**
+   * The usage ledger this memory reads and writes (#199 D5): keyed on the FIRST layer, the
+   * project store. Every layer's use is recorded there; nothing is written into a read-only
+   * layer. The reference's `usage`; private here so the published `.d.ts` names no
+   * `UsageLedger` (job66/#144: its types reach `Buffer`).
+   */
+  private usage(): UsageLedger {
+    return new UsageLedger(homedir(), this.layers[0]![1].root);
+  }
+
+  /** One `kind` event per fact, best-effort (#123). */
+  private use(facts: readonly Fact[], kind: 'recall_hit' | 'body_read'): void {
+    const ledger = this.usage();
+    const now = this.store.now();
+    for (const fact of facts) if (typeof fact.name === 'string') ledger.append(fact.name, kind, now);
+  }
+
+  /**
+   * Read-repair the tool's hits that live in the WRITABLE layer (#199 D8): never the hook's
+   * (`stamp=false`), never a read-only layer's. A repair that cannot happen leaves the fact as
+   * it was and the recall answers anyway (#123). The reference's `_repair`.
+   */
+  private repair(picked: ReadonlyArray<readonly [string, Fact]>): void {
+    const writable = new Map<string, MemoryStore>();
+    for (const [label, store, w] of this.layers) if (w && store instanceof MemoryStore) writable.set(label, store);
+    if (!picked.some(([label]) => writable.has(label))) return;
+    const ledger = this.usage();
+    const now = this.store.now();
+    for (const [label, fact] of picked) {
+      const store = writable.get(label);
+      try {
+        if (store !== undefined && store.repair(fact, ledger, now)) this.repaired += 1;
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError)) throw e;
+      }
+    }
+  }
+
+  /** `[path, lines, skipped]` of this memory's usage ledger, for `bantamkit_status`. */
+  usageCensus(): [path: string, lines: number, skipped: number] {
+    const ledger = this.usage();
+    const [lines, skipped] = ledger.census();
+    return [ledger.path, lines, skipped];
+  }
+
+  /**
+   * A project + profile memory over two COPIES, for `tools/eval/recall/score.py` — no grant
+   * and no home-directory profile is consulted. The reference's `layered_for_eval`.
+   */
+  static layeredForEval(project: string, profile: string, engine = 'v2', native: string | null = null): Memory {
+    if (engine !== 'v2') throw new Error(`unknown engine: ${JSON.stringify(engine)}`);
+    const mem = new Memory(project);
+    mem.showLayers = true;
+    mem.layers.push(['profile', new MemoryStore(profile, { k: mem.k, create: false }), false]);
+    mem.addNative(native);
+    return mem;
+  }
+
+  /** What the `UserPromptSubmit` hook would inject for `prompt`, before its byte cap. */
+  injectCandidates(prompt: string): Fact[] {
+    return this.pooled(prompt, 3, RECALL_MIN_SCORE_RATIO).picked.map(([, fact]) => fact);
+  }
+
+  /** The ranking past the gate, `depth` deep: what recall@3 is measured on. */
+  rankAll(prompt: string, depth = 50): Fact[] {
+    return this.pooled(prompt, depth, RECALL_MIN_SCORE_RATIO).picked.map(([, fact]) => fact);
+  }
+
+  /** `includeArchived`: each layer's archived matches, in layer order, up to `budget`. */
+  private archivedHits(query: string, budget: number, picked: Array<[string, Fact]>): Array<[string, Fact]> {
+    const out: Array<[string, Fact]> = [];
+    const taken = new Set<string>();
+    for (const [, fact] of picked) if (typeof fact.name === 'string') taken.add(fact.name);
+    for (const [label, store, writable] of this.layers) {
+      if (out.length >= budget) break;
+      let facts: Fact[];
+      try {
+        facts = store.archivedRecall(query, budget - out.length, taken);
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
+        if (writable) throw e;
+        continue;
+      }
+      for (const fact of facts) {
+        taken.add(fact.name as string);
+        out.push([label, fact]);
+      }
+    }
+    return out;
   }
 
   /**
@@ -652,7 +976,7 @@ export class Memory {
       const leftOut: SkippedFact[] = [];
       let fact: Fact | null;
       try {
-        fact = store.lookup(name, writable && stamp, leftOut);
+        fact = store.lookup(name, false, leftOut);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
           throw e;
@@ -663,12 +987,16 @@ export class Memory {
       }
       for (const s of leftOut) skipped.push({ layer: label, ...s });
       try {
-        candidates += countFacts(store.root);
+        candidates += countOf(store);
       } catch (e) {
         // It listed a moment ago; a race must not fail the recall for a log field.
         if (!(e instanceof PyOSError)) throw e;
       }
       if (fact !== null) {
+        if (stamp) {
+          this.use([fact], 'body_read');
+          this.repair([[label, fact]]);
+        }
         return {
           reply: this.format(label, fact) + skippedNote(skipped),
           status: 'answered',
@@ -682,6 +1010,7 @@ export class Memory {
           lookup: 'hit',
           skipped,
           headers: [this.header(label, fact)],
+          via: null,
         };
       }
     }
@@ -785,7 +1114,7 @@ export class Memory {
         result: null,
       };
     }
-    const result = runDream(this.store, profile, dryRun);
+    const result = runDream(this.store, profile as MemoryStore, dryRun);
     let status: string;
     if (result.overBudget) status = 'refused-budget';
     else if (result.changes === 0) status = 'nothing-to-consolidate';
@@ -987,10 +1316,21 @@ export class Memory {
     }
   }
 
+  /** `factCount` for one bound layer; the native layer counts its own listing. */
+  private static layerCount(store: MemoryStore | NativeStore): number | null {
+    if (!(store instanceof NativeStore)) return Memory.factCount(store.root);
+    try {
+      return store.count();
+    } catch (e) {
+      if (e instanceof PyOSError) return null;
+      throw e;
+    }
+  }
+
   /** Roots of the layers that could not be listed at all — never counted as 0. */
   private unreadableLayers(): string[] {
     return this.layers
-      .filter(([, store]) => Memory.factCount(store.root) === null)
+      .filter(([, store]) => Memory.layerCount(store) === null)
       .map(([, store]) => store.root);
   }
 
@@ -1002,7 +1342,7 @@ export class Memory {
    */
   private searchableFacts(): number {
     let total = 0;
-    for (const [, store] of this.layers) total += Memory.factCount(store.root) ?? 0;
+    for (const [, store] of this.layers) total += Memory.layerCount(store) ?? 0;
     return total;
   }
 
@@ -1092,15 +1432,17 @@ export class Memory {
   }
 
   /** `[layer] [name] (type) description`, from the parsed fields (job65/#155). */
-  private header(label: string, fact: Fact): string {
+  private header(label: string, fact: Fact, archived = false): string {
     // `pyText` for the three interpolated fields, not template-literal coercion: a
     // hand-edited `name:` with nothing after it is `None` in Python's sentence and would be
     // `null` in this one. The store already reproduces it in the index line and on disk.
+    // An archived hit (`includeArchived`, #204) carries `[archived] ` before its name.
     const tag = this.showLayers ? `[${label}] ` : '';
-    return `${tag}[${pyText(fact.name)}] (${pyText(fact.type)}) ${pyText(fact.description)}`;
+    const old = archived ? '[archived] ' : '';
+    return `${tag}${old}[${pyText(fact.name)}] (${pyText(fact.type)}) ${pyText(fact.description)}`;
   }
 
-  private format(label: string, fact: Fact): string {
-    return `${this.header(label, fact)}\n${fact.body}`;
+  private format(label: string, fact: Fact, archived = false): string {
+    return `${this.header(label, fact, archived)}\n${fact.body}`;
   }
 }

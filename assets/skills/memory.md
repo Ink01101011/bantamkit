@@ -22,6 +22,7 @@ past-you would have used. Do this before acting, not after.
 
 Write it to match the future recall QUERY, not to summarize the body.
 Ask: "what words will future-me search with?" Put related memory names in links.
+Fill keywords with the words the user will actually type, in their language — recall matches those too.
 
 ## On "duplicate" replies
 

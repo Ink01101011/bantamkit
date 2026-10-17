@@ -57,6 +57,7 @@ import {
   appendFileSync,
   lstatSync,
   mkdirSync,
+  opendirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -772,6 +773,19 @@ export function pyMkdirParents(path: string): void {
 export function pyScandirNames(directory: string): string[] {
   try {
     return readdirSync(directory);
+  } catch (e) {
+    throw asPyOSError(scandirShape(e, directory), directory, undefined, 'scandir');
+  }
+}
+
+/**
+ * `with os.scandir(directory): pass` — open the directory and close it, listing nothing.
+ * Raises exactly what `pyScandirNames` raises for a directory that cannot be listed; the hot
+ * index's fast path (#204) asks this before it answers for a store it did not list.
+ */
+export function pyScandirProbe(directory: string): void {
+  try {
+    opendirSync(directory).closeSync();
   } catch (e) {
     throw asPyOSError(scandirShape(e, directory), directory, undefined, 'scandir');
   }

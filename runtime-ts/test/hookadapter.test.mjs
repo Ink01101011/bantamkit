@@ -23,6 +23,7 @@
  * NOTHING HERE TOUCHES THE REAL HOME. Every run gets a scratch HOME (so the adapter's ledger
  * and log land in the scratch) and a scratch cwd.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

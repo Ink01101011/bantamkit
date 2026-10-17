@@ -47,12 +47,14 @@
  * scenarios pin `HOME` and `BANTAMKIT_MEMORY_DIR` inside each side's own bed, so the
  * profile layer is the harness's and never the operator's.
  */
+import { createHash } from 'node:crypto';
 import {
   lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -171,6 +173,7 @@ function materialise(root, spec) {
  * touched the right files" are separate claims and this is where the second one is checked.
  */
 function manifest(root) {
+  const usage = usageNames(root);
   const lines = [];
   const walk = (dir) => {
     let entries;
@@ -190,12 +193,38 @@ function manifest(root) {
         walk(full);
       } else {
         const bytes = readFileSync(full);
-        lines.push(`${rel}\tfile\t${bytes.length}\t${scrubPath(bytes.toString('utf8'), root)}`);
+        lines.push(`${usage(rel)}\tfile\t${bytes.length}\t${scrubPath(bytes.toString('utf8'), root)}`);
       }
     }
   };
   walk(root);
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * A usage ledger (#199 D5) is `.bantamkit/usage/<store id>.jsonl`, the id a hash of the store's
+ * real path, so the `py/` and `node/` halves name one ledger differently. This names it by the
+ * store it belongs to, relative to the bed; an id no directory in the bed hashes to stays as
+ * it is and so still differs. The same mapping as `recall-strings.mjs`'s.
+ */
+function usageNames(root) {
+  const ids = new Map();
+  const hash = (p) => createHash('sha256').update(p, 'utf8').digest('hex').slice(0, 16);
+  const walk = (dir) => {
+    let entries;
+    try {
+      ids.set(hash(realpathSync.native(dir)), relative(root, dir) || '.');
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) if (e.isDirectory()) walk(join(dir, e.name));
+  };
+  walk(root);
+  return (rel) =>
+    rel.replace(/(\.bantamkit[\\/]usage[\\/])([0-9a-f]{16})(\.jsonl)$/, (m, a, id, b) =>
+      ids.has(id) ? `${a}<store: ${ids.get(id).split('\\').join('/')}>${b}` : m,
+    );
 }
 
 // ------------------------------------------------------------------------ call shapes
@@ -218,7 +247,19 @@ const call = (ratio, { query = LADDER_QUERY, k = 10, stamp = true } = {}) => ({
 // ------------------------------------------------------------------------ node side
 
 /** The Node side of one `store` request, shaped exactly like `recall_gate_ref.py`'s answer. */
-function runNodeStore(store, request) {
+function runNodeStore(store, request, home) {
+  // The usage ledger (#199 D5) is kept under HOME: the bed's own, as the reference's is.
+  const was = [process.env.HOME, process.env.USERPROFILE];
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return runNodeStoreIn(store, request);
+  } finally {
+    [process.env.HOME, process.env.USERPROFILE] = was;
+  }
+}
+
+function runNodeStoreIn(store, request) {
   const encode = (e) => ({
     error: { type: e?.name ?? 'Error', message: b64(String(e?.message ?? e)) },
   });
@@ -226,6 +267,7 @@ function runNodeStore(store, request) {
   try {
     s = new store.MemoryStore(request.root, {
       today: () => request.today,
+      now: () => `${request.today}T00:00:00Z`,
       create: request.create ?? true,
       ...(request.k === null ? {} : { k: request.k }),
     });
@@ -275,6 +317,7 @@ function runNodeLayered(component, request, env) {
     try {
       mem = component.Memory.layered(request.start, {
         today: () => request.today,
+        now: () => `${request.today}T00:00:00Z`,
         ...(request.k === null ? {} : { k: request.k }),
       });
     } catch (e) {
@@ -309,24 +352,33 @@ function runNodeLayered(component, request, env) {
  * store would make directories the fixture did not describe — the same trap J45-7 named for
  * the Node constructor.
  */
-function storeScenarios() {
+function storeScenarios(bounds) {
+  // #199 D3: the ladder is scored by BM25F now, 1.0 / 0.490 / 0.196 / 0.045 of the best (WAS
+  // overlap counts 4/3/2/1). The fixed ratios below are kept as cuts between rungs and RENAMED
+  // (WAS 'AT THRESHOLD 0.25: 0.25*4 is exactly 1.0 ...', '0.4 lands between the score-2 and
+  // score-1 facts', 'AT THRESHOLD 0.5: 0.5*4 is exactly 2.0 ...', '0.6 lands between the
+  // score-3 and score-2 facts'); the at-threshold claims moved to `bounds`, ratios whose floor
+  // IS a fact's BM25F score to the bit, found ulp by ulp in `run()`.
   return [
     ['the shipped default gates nothing — and it is not named here', LADDER, {}, [call('default')]],
     ['0.0 keeps every fact the ungated recall would have returned', LADDER, {}, [call(0.0)]],
+    ['0.25 lands between the third and second rung (BM25F)', LADDER, {}, [call(0.25)]],
+    ['0.4 lands between the third and second rung too (BM25F)', LADDER, {}, [call(0.4)]],
+    ['0.5 lands between the second rung and the top (BM25F)', LADDER, {}, [call(0.5)]],
+    ['0.6 keeps the top hit alone (BM25F)', LADDER, {}, [call(0.6)]],
     [
-      'AT THRESHOLD 0.25: 0.25*4 is exactly 1.0 and the score-1 fact is ADMITTED',
+      'AT THRESHOLD: a floor that IS the score-two fact\'s BM25F score ADMITS it',
       LADDER,
       {},
-      [call(0.25)],
+      [call(bounds.atTwo)],
     ],
-    ['0.4 lands between the score-2 and score-1 facts', LADDER, {}, [call(0.4)]],
+    ['ONE ULP ABOVE that floor: the score-two fact goes', LADDER, {}, [call(bounds.aboveTwo)]],
     [
-      'AT THRESHOLD 0.5: 0.5*4 is exactly 2.0 and the score-2 fact is ADMITTED',
+      'AT THRESHOLD: a floor that IS the weakest fact\'s BM25F score ADMITS all four',
       LADDER,
       {},
-      [call(0.5)],
+      [call(bounds.atOne)],
     ],
-    ['0.6 lands between the score-3 and score-2 facts', LADDER, {}, [call(0.6)]],
     ['1.0 keeps only the top hit', LADDER, {}, [call(1.0)]],
     [
       'THE RELATIVE GATE: a uniformly weak field at 1.0 returns ALL of it',
@@ -385,6 +437,25 @@ const UNREADABLE = {
 };
 
 // ------------------------------------------------------------------------- literals
+
+/** The next double after `x` toward `to` (Python's `math.nextafter`). */
+function nextafter(x, to) {
+  if (x === to) return to;
+  const v = new DataView(new ArrayBuffer(8));
+  v.setFloat64(0, x);
+  v.setBigUint64(0, v.getBigUint64(0) + ((to > x) === (x >= 0) ? 1n : -1n));
+  return v.getFloat64(0);
+}
+
+/** A ratio whose floor `ratio * best` is EXACTLY `score`, found ulp by ulp. */
+function ratioLandingOn(score, best) {
+  let r = score / best;
+  for (let i = 0; i < 64; i += 1) {
+    if (r * best === score) return r;
+    r = nextafter(r, r * best > score ? 0 : 1);
+  }
+  throw new Error(`no ratio lands exactly on ${score} / ${best}`);
+}
 
 /**
  * Compare EACH side to a typed constant, rather than to the other side.
@@ -453,8 +524,27 @@ export async function run(ctx) {
   // ------------------------------------------------------------------ the store scenarios
   let n = 0;
   const answers = {};
+  // The at-threshold ratios (#199 D3): `ratio * best` IS the fact's score, to the bit, on both
+  // runtimes (one IEEE multiply). Computed from the port's BM25F, sent as JSON numbers, which
+  // round-trip a double exactly on both sides.
+  const retrieval = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'retrieval.js')).href);
+  const ladder = retrieval.bm25Scores(
+    LADDER_QUERY,
+    [
+      ['four', 'alpha bravo charlie delta'],
+      ['three', 'alpha bravo charlie zulu'],
+      ['two', 'alpha bravo yankee zulu'],
+      ['one', 'alpha xray yankee zulu'],
+    ].map(([n, description]) => ({ name: n, description, keywords: [] })),
+  );
+  const bounds = {
+    atTwo: ratioLandingOn(ladder[2], ladder[0]),
+    atOne: ratioLandingOn(ladder[3], ladder[0]),
+  };
+  bounds.aboveTwo = nextafter(bounds.atTwo, 1);
+  notes.push(`ladder BM25F scores ${ladder.join(', ')}; bounds ${JSON.stringify(bounds)}`);
   for (const [label, spec, options, calls] of [
-    ...storeScenarios(),
+    ...storeScenarios(bounds),
     [
       'the range check runs BEFORE any file is read: an unreadable store still says "ratio"',
       UNREADABLE,
@@ -467,7 +557,7 @@ export async function run(ctx) {
     const roots = {};
     for (const side of ['py', 'node']) {
       roots[side] = join(bed, side);
-      materialise(roots[side], spec);
+      materialise(roots[side], merge(spec, { dirs: ['home'] }));
     }
     const request = (root) => ({
       op: 'store',
@@ -477,8 +567,11 @@ export async function run(ctx) {
       create: false,
       calls,
     });
-    const py = ctx.runPython(REF, request(roots.py));
-    const nd = runNodeStore(store, request(roots.node));
+    // HOME is the bed's, on both sides (#199 D5): a stamping recall appends to the usage ledger
+    // under it, and the tree below compares that ledger — it is where the stamp lives now.
+    const homeOf = (root) => join(root, 'home');
+    const py = ctx.runPython(REF, request(roots.py), { HOME: homeOf(roots.py), USERPROFILE: homeOf(roots.py) });
+    const nd = runNodeStore(store, request(roots.node), homeOf(roots.node));
     answers[label] = { py: scrub(py.results, roots.py), node: scrub(nd.results, roots.node) };
 
     cases.push({
@@ -502,16 +595,15 @@ export async function run(ctx) {
 
   // ---------------------------------------------------------------- the layered scenarios
   //
-  // `Memory.layered` is the registration production runs, and it is the ONLY place the
-  // per-layer property exists: the ratio rides down to every layer unchanged, so each store
-  // is gated against ITS OWN top hit and never against another layer's. The fixture is
-  // asymmetric on purpose — the project layer holds a score-4 fact AND a score-1 fact, the
-  // profile layer holds only a score-1 fact — so at `min_ratio = 1.0` the project's weak
-  // fact is gated out while the profile's identical-scoring one survives. A gate applied
-  // across layers, or a component that stopped forwarding the ratio, differs here.
+  // `Memory.layered` is the registration production runs. #199 D3: the layers are POOLED and
+  // scored once, so the ratio is taken against the best score of the whole recall. WAS: each
+  // store was gated against ITS OWN top hit, and at `min_ratio = 1.0` the profile's weak fact
+  // survived beside the project's top one. The fixture is unchanged — the project layer holds
+  // a strong fact AND a weak one, the profile layer only a weak one — so at 1.0 only the
+  // project's top fact answers now, and the trees carry the ledger's `recall_hit` for it.
   const layeredScenarios = [
     [
-      'layered: the gate is applied per layer, against each layer\'s own top hit',
+      'layered: the gate is taken against the pooled best (#199 D3; WAS per layer)',
       [call(1.0, { query: LADDER_QUERY, k: 5 })],
     ],
     ['layered: the default still gates nothing across three layers', [call('default', { k: 5 })]],
@@ -597,12 +689,23 @@ export async function run(ctx) {
       'string',
     ),
   );
+  // #199 D3: WAS 'LITERAL: at 0.5 the score-2 fact is admitted (>= and not >)' over overlap
+  // counts; the same claim, on a floor that IS the BM25F score, and its one-ulp-above partner.
+  const AT_TWO = "AT THRESHOLD: a floor that IS the score-two fact's BM25F score ADMITS it";
   cases.push(
     ...literalCases(
-      names('py', 'AT THRESHOLD 0.5: 0.5*4 is exactly 2.0 and the score-2 fact is ADMITTED'),
-      names('node', 'AT THRESHOLD 0.5: 0.5*4 is exactly 2.0 and the score-2 fact is ADMITTED'),
-      'LITERAL: at 0.5 the score-2 fact is admitted (>= and not >)',
+      names('py', AT_TWO),
+      names('node', AT_TWO),
+      'LITERAL: at the exact BM25F floor the score-two fact is admitted (>= and not >)',
       ['four', 'three', 'two'],
+    ),
+  );
+  cases.push(
+    ...literalCases(
+      names('py', 'ONE ULP ABOVE that floor: the score-two fact goes'),
+      names('node', 'ONE ULP ABOVE that floor: the score-two fact goes'),
+      'LITERAL: one ulp above the score-two floor drops it',
+      ['four', 'three'],
     ),
   );
   cases.push(

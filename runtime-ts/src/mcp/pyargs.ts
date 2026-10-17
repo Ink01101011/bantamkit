@@ -108,9 +108,12 @@ export const SKILL_BUDGET_MAXIMUM = 9007199254740991n;
 export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   memory_save: {
     model: 'memory_saveArguments',
-    fields: [req('type', 'str'), req('name', 'str'), req('description', 'str'), req('body', 'str'), opt('links', 'listStr')],
+    fields: [req('type', 'str'), req('name', 'str'), req('description', 'str'), req('body', 'str'), opt('links', 'listStr'), opt('keywords', 'listStr')],
   },
-  memory_recall: { model: 'memory_recallArguments', fields: [req('query', 'str'), opt('k', 'int')] },
+  memory_recall: {
+    model: 'memory_recallArguments',
+    fields: [opt('query', 'str'), opt('k', 'int'), opt('include_archived', 'bool'), opt('file', 'str')],
+  },
   validate_json: { model: 'validate_jsonArguments', fields: [req('output', 'str'), req('schema', 'dict')] },
   // `clock_in(checkpoint: str, unit_id: str | None = None)` since job60: the optional field
   // is the same `opt(...)` `shiftwork_clock_out`'s `accounting` already is, and `str` is the
@@ -132,7 +135,7 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
       opt('accounting', 'dict'),
     ],
   },
-  shiftwork_status: { model: 'shiftwork_statusArguments', fields: [req('checkpoint', 'str')] },
+  shiftwork_status: { model: 'shiftwork_statusArguments', fields: [req('checkpoint', 'str'), opt('search', 'str')] },
   build_identity: { model: 'build_identity_toolArguments', fields: [] },
   // `bantamkit_statusArguments`, not `bantamkit_status_toolArguments`: the model name is
   // pydantic's, derived from the reference's CLOSURE name, and the status handler is called

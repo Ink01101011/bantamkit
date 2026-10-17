@@ -502,6 +502,23 @@ construction; `driver.lock` guards cross-process races the single-session
 shape does not have, and clock-out re-validates before writing so a
 concurrent driver run fails validation-visibly rather than corrupting.
 
+### Archived jobs: Retention and `shiftwork_status(search)` (job69, #204)
+
+Once a day Retention archives every CLOSED job (all units `done` or `dropped`) whose newest
+file is more than 7 days old, in the `.shiftwork/` directly under the session's working
+directory: the checkpoint, its `.log.jsonl`, and every file under `briefs-<job>/` and
+`notes-<job>/` become one `.shiftwork/archive/<job>.json.gz`, verified before the originals are
+deleted. An open job is never touched, at any age; `<checkpoint>.log.jsonl` is archived with its
+job but never moved onto a rotating log, because `clock_out` reads its brief lines.
+`BANTAMKIT_RETENTION=off` turns it off. Details, and how to read or restore an archive:
+`docs/storage.md`, *Retention*.
+
+`shiftwork_status({checkpoint, search})` searches those archives. It answers the usual status
+plus `search: [{job, file, line}]`: every line (1-based) of an archived job's files holding
+every word of the query (#199's tokenizer), best job first, at most 50. Without `search`, the
+reply is byte-for-byte what it was. Compared by the `wire` suite's `shiftwork-search` session
+and `storage-retention`.
+
 ### The batch view: `shiftwork_plan` and `work_plan`
 
 **Both are READ-ONLY.** They answer one question — *which of these units does

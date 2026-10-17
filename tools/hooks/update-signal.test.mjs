@@ -157,6 +157,8 @@ function environment(home, extra) {
     // npm's cache and logs land under the scratch tree, never the scratch HOME the tests list.
     npm_config_cache: join(scratch, 'npm-cache'),
     PYTHONPATH: PIP_STUB,
+    // No detached Retention child (#204, J69-6) writing into the scratch HOME these tests list.
+    BANTAMKIT_RETENTION: 'off',
     ...extra,
   };
   assert.equal(env.HOME, home, 'HOME must point at the scratch home');

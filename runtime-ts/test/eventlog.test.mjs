@@ -27,6 +27,7 @@
  * raw-line side-channel and is stubbed: no frame in this file cares about a float literal,
  * which is `test/server.test.mjs`'s subject and is tested there over a real process.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {

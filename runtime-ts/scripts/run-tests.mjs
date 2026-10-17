@@ -7,7 +7,8 @@
  * the reporter are all Node's own.
  */
 import { spawnSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,6 +36,28 @@ if (files.length === 0) {
  * reader is a human, not a grep.
  */
 const reporter = process.env.CI ? ['--test-reporter=tap'] : [];
-process.exit(
-  spawnSync(process.execPath, ['--test', ...reporter, ...files], { stdio: 'inherit' }).status ?? 1,
-);
+
+/**
+ * Every store's hot index (#204) lands in one temp dir for the run, never in the operator's
+ * `~/.bantamkit/index/`: `MemoryStore.index()` honours `BANTAMKIT_INDEX_DIR` on both runtimes
+ * (`runtime-py/tests/conftest.py` sets it per node). A test that wants the home location
+ * deletes it itself.
+ */
+const indexDir = mkdtempSync(join(tmpdir(), 'bk-hot-index-'));
+const status =
+  spawnSync(process.execPath, ['--test', ...reporter, ...files], {
+    stdio: 'inherit',
+    // `BANTAMKIT_RETENTION=off` (#204, J69-6): no test's SessionStart or server start spawns the
+    // detached Retention child, which deletes under the home and archives `.shiftwork` jobs
+    // under the cwd it is given. The retention tests delete it for their own scratch HOME.
+    // `BANTAMKIT_TEST_SANDBOX` (J69-9 F5) tells `test/_sandbox.mjs` the run is already sandboxed;
+    // a file run directly with `node --test` has no marker and sandboxes itself.
+    env: {
+      ...process.env,
+      BANTAMKIT_INDEX_DIR: indexDir,
+      BANTAMKIT_RETENTION: 'off',
+      BANTAMKIT_TEST_SANDBOX: indexDir,
+    },
+  }).status ?? 1;
+rmSync(indexDir, { recursive: true, force: true });
+process.exit(status);

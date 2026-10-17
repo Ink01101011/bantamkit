@@ -15,6 +15,7 @@
  * temp directory; the job whose checkpoint this unit is being run from is exactly the file
  * a careless port would rewrite un-escaped on its first successful clock-out.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';

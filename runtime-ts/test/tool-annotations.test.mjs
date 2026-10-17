@@ -11,6 +11,7 @@
  * two wires (`j67-2:` cases). The unknown-prompt frame (#198) is pinned for this side by
  * `server.test.mjs` (code and message) and here (the whole frame, `data: null` included).
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';

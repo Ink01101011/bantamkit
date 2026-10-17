@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recall Gold Labels</title>
+<meta name="description" content="Label each prompt's five candidate facts as relevant or not, then export gold-labels.jsonl. The page ships with no data: load gold-candidates.jsonl by file or paste.">
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #dddcd6; --accent: #2f5fd0; --yes: #1f7a46; --yes-bg: #e3f3e9;
+    --no: #a33a2a; --no-bg: #f8e5e1; --warn: #8a6100;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615; --panel: #20201e; --text: #ecebe6; --muted: #a3a29b;
+      --line: #3a3a36; --accent: #8aa8ff; --yes: #7fd3a0; --yes-bg: #1d3328;
+      --no: #f0a294; --no-bg: #3a2420; --warn: #e3b75a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161615; --panel: #20201e; --text: #ecebe6; --muted: #a3a29b;
+    --line: #3a3a36; --accent: #8aa8ff; --yes: #7fd3a0; --yes-bg: #1d3328;
+    --no: #f0a294; --no-bg: #3a2420; --warn: #e3b75a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 96px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  p.lede { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  textarea {
+    width: 100%; min-height: 120px; resize: vertical; font: 13px/1.4 ui-monospace, Menlo, monospace;
+    background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  button, .file {
+    font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  button:focus-visible, .file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .file input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .status { color: var(--muted); font-size: 0.9rem; }
+  .status.err { color: var(--no); }
+  .status.warn { color: var(--warn); }
+  ol#items { list-style: none; padding: 0; margin: 20px 0 0; display: grid; gap: 14px; }
+  li.item { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .meta { color: var(--muted); font-size: 0.82rem; margin-bottom: 6px; }
+  .prompt { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 10px; max-height: 14em; overflow-y: auto; }
+  .cand { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .cand code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 0.88rem; }
+  .cand button { min-width: 44px; min-height: 36px; padding: 4px 10px; }
+  .cand button[aria-pressed="true"].yes { background: var(--yes-bg); color: var(--yes); border-color: var(--yes); }
+  .cand button[aria-pressed="true"].no { background: var(--no-bg); color: var(--no); border-color: var(--no); }
+  .bar {
+    position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+    padding: 10px 16px; display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Recall gold labels</h1>
+  <p class="lede">Read each prompt, then ask of every candidate: <strong>if this prompt were sent, would the agent do better on <em>this prompt</em> with this fact in its context?</strong> ✓ only if it bears on what the prompt asks or on how the agent must do it. A true fact about another project or another topic is ✗. A prompt with no ✓ at all is a valid answer. Load the candidates file first; nothing leaves this page except the file you export.</p>
+
+  <section class="panel" aria-labelledby="load-h">
+    <h2 id="load-h" style="font-size:1rem;margin:0 0 8px">Load candidates</h2>
+    <textarea id="paste" placeholder="Paste the contents of gold-candidates.jsonl here" aria-label="gold-candidates.jsonl contents"></textarea>
+    <div class="row">
+      <button class="primary" id="load">Load pasted text</button>
+      <label class="file">Choose file…<input type="file" id="file" accept=".jsonl,.json,.txt,application/json"></label>
+      <button id="clear">Clear all marks</button>
+      <span class="status" id="loadStatus" role="status"></span>
+    </div>
+  </section>
+
+  <ol id="items"></ol>
+
+  <section class="panel" id="outWrap" hidden aria-labelledby="out-h" style="margin-top:20px">
+    <h2 id="out-h" style="font-size:1rem;margin:0 0 8px">gold-labels.jsonl</h2>
+    <textarea id="out" readonly aria-label="exported gold-labels.jsonl"></textarea>
+    <div class="row"><button id="copy">Copy</button></div>
+  </section>
+</main>
+
+<div class="bar" id="bar" hidden>
+  <span class="status" id="progress" role="status"></span>
+  <button class="primary" id="export">Export gold-labels.jsonl</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var rows = [];
+  var marks = {}; // id -> {candidateName: true|false}
+  var KEY = "recall-gold-marks-v1";
+
+  function $(id) { return document.getElementById(id); }
+
+  function saveDraft() {
+    try { localStorage.setItem(KEY, JSON.stringify(marks)); } catch (e) { /* storage is a convenience */ }
+  }
+  function loadDraft() {
+    try { var s = localStorage.getItem(KEY); return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
+  }
+
+  function parse(text) {
+    var out = [], lines = text.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i].trim();
+      if (!l) continue;
+      var r;
+      try { r = JSON.parse(l); } catch (e) { throw new Error("line " + (i + 1) + " is not JSON"); }
+      if (typeof r.id !== "number" || typeof r.prompt !== "string" || !Array.isArray(r.candidates)) {
+        throw new Error("line " + (i + 1) + " lacks id, prompt or candidates");
+      }
+      out.push({ id: r.id, prompt: r.prompt, candidates: r.candidates.map(String), thai: !!r.thai });
+    }
+    if (!out.length) throw new Error("no rows found");
+    return out;
+  }
+
+  function setStatus(el, msg, cls) { el.textContent = msg; el.className = "status" + (cls ? " " + cls : ""); }
+
+  function load(text) {
+    try { rows = parse(text); } catch (e) { setStatus($("loadStatus"), e.message, "err"); return; }
+    var draft = loadDraft();
+    marks = {};
+    rows.forEach(function (r) {
+      var d = draft[r.id] || {};
+      marks[r.id] = {};
+      r.candidates.forEach(function (c) { if (typeof d[c] === "boolean") marks[r.id][c] = d[c]; });
+    });
+    setStatus($("loadStatus"), rows.length + " prompts loaded");
+    render();
+  }
+
+  function render() {
+    var ol = $("items");
+    ol.textContent = "";
+    rows.forEach(function (r, idx) {
+      var li = document.createElement("li");
+      li.className = "item";
+      var meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = "#" + r.id + " · " + (idx + 1) + " of " + rows.length + (r.thai ? " · Thai" : "");
+      var p = document.createElement("p");
+      p.className = "prompt";
+      p.textContent = r.prompt;
+      li.appendChild(meta);
+      li.appendChild(p);
+      r.candidates.forEach(function (c) {
+        var row = document.createElement("div");
+        row.className = "cand";
+        var code = document.createElement("code");
+        code.textContent = c;
+        row.appendChild(code);
+        [[true, "✓", "yes", "relevant"], [false, "✗", "no", "not relevant"]].forEach(function (spec) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = spec[2];
+          b.textContent = spec[1];
+          b.setAttribute("aria-label", c + ": " + spec[3]);
+          b.setAttribute("aria-pressed", String(marks[r.id][c] === spec[0]));
+          b.addEventListener("click", function () {
+            marks[r.id][c] = spec[0];
+            saveDraft();
+            var bs = row.querySelectorAll("button");
+            bs[0].setAttribute("aria-pressed", String(marks[r.id][c] === true));
+            bs[1].setAttribute("aria-pressed", String(marks[r.id][c] === false));
+            progress();
+          });
+          row.appendChild(b);
+        });
+        li.appendChild(row);
+      });
+      ol.appendChild(li);
+    });
+    $("bar").hidden = false;
+    progress();
+  }
+
+  function undecided() {
+    var n = 0;
+    rows.forEach(function (r) { r.candidates.forEach(function (c) { if (typeof marks[r.id][c] !== "boolean") n++; }); });
+    return n;
+  }
+
+  function progress() {
+    var total = rows.reduce(function (a, r) { return a + r.candidates.length; }, 0);
+    var left = undecided();
+    setStatus($("progress"), (total - left) + " of " + total + " decided", left ? "warn" : "");
+  }
+
+  function labelsText() {
+    return rows.map(function (r) {
+      return JSON.stringify({
+        id: r.id, prompt: r.prompt,
+        positives: r.candidates.filter(function (c) { return marks[r.id][c] === true; }),
+        thai: r.thai
+      });
+    }).join("\n") + "\n";
+  }
+
+  // Viewer frames refuse plain downloads and modal dialogs: save through the
+  // downloads capability (.txt — .jsonl is not on its allowlist), confirm an
+  // incomplete export with a second click, and always show the text to copy.
+  var armed = false;
+  function exportLabels() {
+    var left = undecided();
+    if (left && !armed) {
+      armed = true;
+      setStatus($("progress"), left + " undecided will export as ✗ — click Export again to confirm", "warn");
+      return;
+    }
+    armed = false;
+    var text = labelsText();
+    $("out").value = text;
+    $("outWrap").hidden = false;
+    var use = window.claude && window.claude.use;
+    if (!use) { setStatus($("progress"), "copy the text below into gold-labels.jsonl", "warn"); return; }
+    use("downloads").then(function (dl) {
+      if (!dl) { setStatus($("progress"), "saving is unavailable here — copy the text below", "warn"); return; }
+      return dl.save({ filename: "gold-labels.txt", data: text }).then(function () {
+        setStatus($("progress"), "saved gold-labels.txt");
+      }, function (e) {
+        setStatus($("progress"), (e && e.code === "declined" ? "save declined" : "save failed") + " — copy the text below", "warn");
+      });
+    });
+  }
+
+  $("copy").addEventListener("click", function () {
+    var t = $("out");
+    t.select();
+    var done = function () { setStatus($("progress"), "copied"); };
+    if (navigator.clipboard) navigator.clipboard.writeText(t.value).then(done, function () { setStatus($("progress"), "copy failed — select the text and copy it", "warn"); });
+  });
+
+  $("load").addEventListener("click", function () { load($("paste").value); });
+  $("file").addEventListener("change", function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    f.text().then(load, function () { setStatus($("loadStatus"), "could not read the file", "err"); });
+  });
+  $("export").addEventListener("click", exportLabels);
+  $("clear").addEventListener("click", function () {
+    marks = {};
+    rows.forEach(function (r) { marks[r.id] = {}; });
+    try { localStorage.removeItem(KEY); } catch (e) { /* storage is a convenience */ }
+    if (rows.length) render();
+    setStatus($("loadStatus"), "all marks cleared");
+  });
+})();
+</script>
+</body>
+</html>

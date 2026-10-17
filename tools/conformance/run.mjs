@@ -288,6 +288,14 @@ function clip(s, n = 400) {
  * resolves symlinks but PRESERVES the 8.3 name; only the `.native` binding expands it.
  */
 const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-conformance-')));
+// Every store a suite makes keeps its hot index (#204) in this run's scratch, never in the
+// operator's `~/.bantamkit/index/`: both runtimes honour `BANTAMKIT_INDEX_DIR`, and every
+// reference child inherits `process.env` (`runPython`). A suite that pins it sets its own.
+if (!process.env.BANTAMKIT_INDEX_DIR) process.env.BANTAMKIT_INDEX_DIR = join(scratch, 'hot-index');
+// No suite's SessionStart or server start spawns the detached Retention child (#204, J69-6): it
+// deletes under the HOME and archives `.shiftwork` jobs under the cwd it is given, and a suite
+// may run with the checkout as its cwd. `storage-retention` turns it back on per call.
+process.env.BANTAMKIT_RETENTION = 'off';
 const ctx = { python, repoRoot, runtimeTs: join(repoRoot, 'runtime-ts'), scratch, runPython, options };
 
 let totals = { cases: 0, bytes: 0, strings: 0, json: 0, failed: 0, rulings: 0 };

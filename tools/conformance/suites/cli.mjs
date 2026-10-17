@@ -53,6 +53,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pep440ToSemver } from './version.mjs';
 
 export const name = 'cli';
 export const summary = 'the `bantamkit-mcp` command line as a process: stdout, stderr, exit code';
@@ -1727,7 +1728,7 @@ function withStubOnNodePath(spec, stub) {
 }
 
 function matrix(scratch) {
-  const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home') } };
+  const sandbox = { cwd: join(scratch, 'cli-cwd'), env: { HOME: join(scratch, 'cli-home'), USERPROFILE: join(scratch, 'cli-home') } };
   NPM_STUB = npmStub(scratch, PORT_VERSION);
   UPDATE_STUBS = packageManagerStubs(scratch);
   return [
@@ -2695,13 +2696,24 @@ export async function run(ctx) {
   // stack trace instead of as a named case. Measured: that is exactly what the both-sides
   // `if (true)` mutation did to the first draft of this block. An unparsable line is DATA — it
   // is the defect — so it travels as one and is compared like anything else.
-  const framesOf = (r) =>
+  //
+  // job68 J68-12 (user ruling 2026-10-15): the reference's `serverInfo.version` is mapped
+  // PEP 440 -> semver before the comparison, because a prerelease is spelled per registry
+  // (`0.37.0b1` against `0.37.0-beta.1`; docs/porting.md, "a prerelease version's spelling").
+  // A stable version maps to itself, so a stable tree is still compared exactly; the two
+  // spellings themselves are pinned by `suites/version.mjs`.
+  const framesOf = (r, side) =>
     dec(r.stdout)
       .split('\n')
       .filter((l) => l.trim() !== '')
       .map((l) => {
         try {
-          return JSON.parse(l);
+          const frame = JSON.parse(l);
+          const info = frame?.result?.serverInfo;
+          if (side === 'python' && info && typeof info.version === 'string') {
+            info.version = pep440ToSemver(info.version);
+          }
+          return frame;
         } catch (e) {
           return { 'NOT A FRAME': l, 'the parser said': e.message };
         }
@@ -2710,7 +2722,7 @@ export async function run(ctx) {
   cases.push({
     name: 'bare-over-a-pipe/handshake: the frames a bare launch answers with',
     kind: 'json',
-    expected: framesOf(pipePy),
+    expected: framesOf(pipePy, 'python'),
     actual: framesOf(pipeNode),
   });
   cases.push({ name: 'bare-over-a-pipe/stderr', kind: 'bytes', expected: pipePy.stderr, actual: pipeNode.stderr });
@@ -2805,7 +2817,7 @@ export async function run(ctx) {
       cases.push({
         name: 'unwritable-cwd/handshake: the frames a launch from an uncreatable cwd answers with',
         kind: 'json',
-        expected: framesOf(hostilePy),
+        expected: framesOf(hostilePy, 'python'),
         actual: framesOf(hostileNode),
       });
       cases.push({
@@ -2889,7 +2901,7 @@ export async function run(ctx) {
   cases.push({
     name: 'writable-cwd/handshake: a launch in an ordinary directory answers the same frames',
     kind: 'json',
-    expected: framesOf(writablePy),
+    expected: framesOf(writablePy, 'python'),
     actual: framesOf(writableNode),
   });
   cases.push({
@@ -3094,7 +3106,7 @@ export async function run(ctx) {
   cases.push({
     name: 'store-at-a-path-that-is-not-there/handshake: the frames a DESIGNATED store answers with',
     kind: 'json',
-    expected: framesOf(missingPy),
+    expected: framesOf(missingPy, 'python'),
     actual: framesOf(missingNode),
   });
   cases.push({

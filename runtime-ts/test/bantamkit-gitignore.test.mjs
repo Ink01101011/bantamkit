@@ -32,6 +32,7 @@
  * that was never saved to). That path must carry the same gitignore write (and the same
  * "only if `.bantamkit` did not already exist" gate).
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {

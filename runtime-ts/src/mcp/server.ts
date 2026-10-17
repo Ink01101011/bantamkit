@@ -63,6 +63,8 @@ import * as tokenledger from '../tokenledger.js';
 import { EventLog, type DetailValue } from '../eventlog.js';
 import type { Memory } from '../memory/component.js';
 import { PyOSError, asPyOSError, pyReadText } from '../memory/pyfs.js';
+import { MemoryValidationError } from '../memory/store.js';
+import { RECALL_NEEDS_QUERY_OR_FILE } from '../touch/recallfile.js';
 import { fromJs, parseJson, reprValue, toJs, type PyValue } from '../pyjson.js';
 import * as shiftwork from '../shiftwork.js';
 import { plan } from '../workplan.js';
@@ -573,8 +575,10 @@ function runTool(
     case 'memory_save': {
       const links = args.get('links');
       const asStrings = links && links.t === 'list' ? links.v.map((v) => asText(v)) : null;
+      const words = args.get('keywords');
+      const keywords = words && words.t === 'list' ? words.v.map((v) => asText(v)) : null;
       const outcome = recordRaise(log, 'memory_save', () =>
-        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings),
+        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings, keywords),
       );
       if (log.enabled) {
         // Only when a log is actually on: `indexAccounting` re-parses `facts/`, and a
@@ -592,7 +596,21 @@ function runTool(
       let k = asInt(args.get('k'));
       // The advertised schema's bounds; clients may ignore it, so the server does not.
       if (k !== null) k = Math.max(1, Math.min(k, 5));
-      const outcome = recordRaise(log, 'memory_recall', () => memory.recallOutcome(asText(args.get('query')), k));
+      // `include_archived` (#204): archived facts after the live ones, tagged; absent and
+      // `false` are the reply this tool has always given, byte for byte.
+      const includeArchived = asBool(args.get('include_archived')) === true;
+      // `file` (#200, E1-C): the facts linked to one tracked file; a `query` beside it is
+      // ignored and the reply says so. Neither is the one refusal this tool adds. `null` is
+      // the default for both, as `str | None = None` is on the reference.
+      const fileArg = args.get('file');
+      const file = fileArg !== undefined && fileArg.t === 'str' ? fileArg.v : null;
+      const queryArg = args.get('query');
+      const query = queryArg !== undefined && queryArg.t === 'str' ? queryArg.v : null;
+      const outcome = recordRaise(log, 'memory_recall', () => {
+        if (file !== null) return memory.recallFile(file, k, query);
+        if (query === null) throw new MemoryValidationError(RECALL_NEEDS_QUERY_OR_FILE);
+        return memory.recallOutcome(query, k, undefined, true, includeArchived);
+      });
       const detail: Record<string, DetailValue> = {
         budget: outcome.budget,
         candidates: outcome.candidates,
@@ -602,6 +620,7 @@ function runTool(
         unreadable: outcome.unreadable,
       };
       if (outcome.source !== null) detail['source'] = outcome.source;
+      if (file !== null) detail['file'] = true;
       log.record('memory_recall', outcome.status, detail);
       return { value: { t: 'str', v: noted(outcome.reply) }, wrapped: true };
     }
@@ -639,11 +658,15 @@ function runTool(
         ),
         wrapped: false,
       };
-    case 'shiftwork_status':
+    case 'shiftwork_status': {
+      // `search` (#204, J69-6): archived jobs' lines; absent, the reply is today's.
+      const search = args.get('search');
+      const query = search === undefined || search.t === 'null' ? null : asText(search);
       return {
-        value: notedDict(recordResult(log, name, () => shiftwork.status(asText(args.get('checkpoint'))))),
+        value: notedDict(recordResult(log, name, () => shiftwork.status(asText(args.get('checkpoint')), query))),
         wrapped: false,
       };
+    }
     case 'build_identity': {
       const identity = recordRaise(log, 'build_identity', () => buildIdentity(version, sdkVersion()));
       // The COUNT of underivable fields, not the fields and not the digests. A code digest is

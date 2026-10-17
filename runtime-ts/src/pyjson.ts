@@ -165,6 +165,10 @@ export interface DumpOptions {
   indent?: number | null;
   /** Python's `sort_keys`. The comparison is by CODEPOINT, not by UTF-16 unit. */
   sortKeys?: boolean;
+  /** Python's `ensure_ascii`; default `true`. `false` escapes only `"`, `\\` and C0. */
+  ensureAscii?: boolean;
+  /** Python's `separators=(item, key)`; default is Python's for the `indent` given. */
+  separators?: readonly [string, string];
 }
 
 /**
@@ -204,6 +208,22 @@ function encodeBasestringAscii(s: string): string {
   return `${out}"`;
 }
 
+/** `py_encode_basestring` (`ensure_ascii=False`): `"`, `\\` and C0 escaped, the rest raw. */
+function encodeBasestring(s: string): string {
+  let out = '"';
+  for (let i = 0; i < s.length; i += 1) {
+    const ch = s[i]!;
+    const short = ESCAPE_DCT[ch];
+    if (short !== undefined) {
+      out += short;
+      continue;
+    }
+    const unit = s.charCodeAt(i);
+    out += unit < 0x20 ? `\\u${unit.toString(16).padStart(4, '0')}` : ch;
+  }
+  return `${out}"`;
+}
+
 /** `floatstr` under `allow_nan=True`: `repr` for the finite ones, bare words for the rest. */
 function encodeFloat(x: number): string {
   if (Number.isNaN(x)) return 'NaN';
@@ -217,8 +237,9 @@ export function dumpJson(value: PyValue, options: DumpOptions = {}): string {
   const sortKeys = options.sortKeys ?? false;
   const pad = indent === null ? '' : ' '.repeat(indent);
   // `indent is not None` changes the ITEM separator and leaves the key separator alone.
-  const itemSep = indent === null ? ', ' : ',';
-  const keySep = ': ';
+  const itemSep = options.separators?.[0] ?? (indent === null ? ', ' : ',');
+  const keySep = options.separators?.[1] ?? ': ';
+  const encodeStr = options.ensureAscii === false ? encodeBasestring : encodeBasestringAscii;
 
   const encode = (v: PyValue, level: number): string => {
     switch (v.t) {
@@ -231,7 +252,7 @@ export function dumpJson(value: PyValue, options: DumpOptions = {}): string {
       case 'float':
         return encodeFloat(v.v);
       case 'str':
-        return encodeBasestringAscii(v.v);
+        return encodeStr(v.v);
       case 'list': {
         if (v.v.length === 0) return '[]';
         const parts = v.v.map((item) => encode(item, level + 1));
@@ -245,7 +266,7 @@ export function dumpJson(value: PyValue, options: DumpOptions = {}): string {
         // `sorted(dct.items())` — keys are unique, so the value never enters the compare.
         if (sortKeys) entries.sort((a, b) => cmpCodepoint(a[0], b[0]));
         const parts = entries.map(
-          ([k, item]) => `${encodeBasestringAscii(k)}${keySep}${encode(item, level + 1)}`,
+          ([k, item]) => `${encodeStr(k)}${keySep}${encode(item, level + 1)}`,
         );
         if (indent === null) return `{${parts.join(itemSep)}}`;
         const nl = `\n${pad.repeat(level + 1)}`;

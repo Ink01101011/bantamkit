@@ -69,6 +69,7 @@
  *   55  `break_on_hyphens` changes an OPTION's help: `project-` ends a line, at a width
  *       where no word is long enough for `_handle_long_word` to be involved at all.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

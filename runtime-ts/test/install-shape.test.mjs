@@ -33,6 +33,7 @@
  *                `ephemeral` where the Python side refuses to: it is a record, not a guess at
  *                a cache directory's name.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { createHook } from 'node:async_hooks';
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';

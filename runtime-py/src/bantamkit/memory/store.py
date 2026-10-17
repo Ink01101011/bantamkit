@@ -7,15 +7,56 @@ import fnmatch
 import os
 import re
 import secrets
-from collections.abc import Callable, Iterator
+from bisect import bisect_left, bisect_right
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from bantamkit.client import BantamError
+
+from .retrieval import (
+    FIELD_BOOST,
+    GATE_RATIO,
+    Doc,
+    bm25_segments,
+    doc_terms,
+    length_of,
+    query_terms,
+    rank_columns,
+    stale,
+    weight_of,
+)
+from .usage import UsageLedger, seed_ts
+
+if TYPE_CHECKING:
+    from bantamkit.storage.hotindex import HotIndex
+
+# libyaml when it is there (#204): J69-2 measured 0.9 s of a 1.50 s hot-index build at 5,000
+# facts in the pure-Python `SafeLoader`. Both loaders resolve scalars with the same
+# `SafeConstructor`; only the scanner differs, and its ERROR TEXT differs -- so any refusal
+# from the C loader is re-parsed by the pure one, and the sentence a model reads is the one
+# it always was (`load_frontmatter`).
+_CSafeLoader = getattr(yaml, "CSafeLoader", None)
+
+
+def load_frontmatter(text: str) -> Any:
+    """`yaml.safe_load(text)`, through libyaml when present; a refusal is the pure loader's.
+
+    Any exception out of the C loader -- not only `YAMLError` -- sends the same text to
+    `yaml.safe_load`, which then answers or raises exactly as it did before this existed.
+    """
+    if _CSafeLoader is not None:
+        try:
+            return yaml.load(text, Loader=_CSafeLoader)  # noqa: S506 -- a SAFE loader
+        except Exception:  # noqa: BLE001 -- the pure loader decides what a refusal says
+            pass
+    return yaml.safe_load(text)
+
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
 # The types whose worth does NOT decay with time-since-last-recall, and which `compact`
@@ -111,7 +152,11 @@ DUPLICATE_JACCARD = 0.5
 # and hold the same float; `Memory.recall_outcome` and the `UserPromptSubmit` hook that
 # calls it inherit it rather than restating it, so the day it changes it changes once per
 # runtime and everything downstream moves with it.
-RECALL_MIN_SCORE_RATIO = 0.0
+#
+# SINCE #199 (J68-5) the number is `retrieval.GATE_RATIO` and the score it divides is BM25F
+# over `tokenize_v2`, pooled over every layer of one recall (D3): the two names are one
+# number, and Task 7 tunes it on the silver set, never on gold.
+RECALL_MIN_SCORE_RATIO = GATE_RATIO
 
 # Spelled once because both runtimes raise it verbatim. The offending value is NOT
 # interpolated: Python renders `2.0` as `2.0` and JavaScript renders it as `2`, so a
@@ -246,6 +291,23 @@ class Fact:
     # existed. Excluded from `==`/`repr` so a Fact read off disk still equals the Fact
     # that was saved.
     source: Path | None = field(default=None, compare=False, repr=False)
+    # The words the user will type for this fact, in their own language as well as
+    # English (#199). Written only when non-empty, after `links`, so a fact that never had
+    # any keeps the bytes it had before the field existed. A hand-written key of any other
+    # shape is refused by `_read_fact` with `keywords must be a list of strings`.
+    keywords: list[str] = field(default_factory=list)
+    # Every frontmatter key the store does not own (`OWNED_KEYS`), in file order, with the
+    # value `safe_load` gave it (#199 Task 6, register row (mmmm), user ruling 2026-10-15).
+    # WAS: a rewrite emitted only the owned keys, so a hand-written `priority: high` was gone
+    # after the first stamp. NOW `_fact_text` re-emits these after the owned keys, so neither
+    # `save`, read-repair, `dream` nor any other rewrite loses one. A key `safe_load` does not
+    # read as a string (`true:`, `null:`, `on:`) is not carried: the port reads every key as
+    # text and could not spell it back the same way. YAML comments never survive `safe_load`.
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+# The frontmatter keys `_fact_text` writes itself; every other key rides in `Fact.extra`.
+OWNED_KEYS = ("name", "description", "type", "created", "last_recalled", "links", "keywords")
 
 
 @dataclass
@@ -315,6 +377,279 @@ def tokens(text: str) -> set[str]:
     the drift this promotion removes.
     """
     return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _text(value: Any) -> str:
+    """`f"{value}"` for a field a hand-edit may have typed: what the hot index keeps (#204)."""
+    return value if isinstance(value, str) else str(value)
+
+
+@dataclass
+class Pool:
+    """One layer's share of a pooled BM25 collection, as COLUMNS (#199 D3, J68-5).
+
+    `n`, `total` and `df` are over EVERY fact of the layer. The rows are the facts that can
+    score: every doc of an index (it scores them without reading them), or only the facts
+    holding a query term when the files answered. Rows run in NAME order (code point; equal
+    names in listing order), so a row's position is its tie-break within the layer.
+    `segs[t]` is each query term's run-length postings over rows, `[start, count, weight, ...]`
+    (`retrieval.bm25_segments`). `facts` holds the parsed facts when the files answered;
+    `files` the file per row when the index did (`""` is `<name>.md`), and only a HIT is
+    parsed (`MemoryStore.resolve`). Pooling layers is summing the counts and laying the rows
+    end to end.
+    """
+
+    n: int
+    total: float
+    df: dict[str, int]
+    names: list[str] = field(default_factory=list)
+    lengths: list[float] = field(default_factory=list)
+    types: list[int] = field(default_factory=list)
+    type_names: list[str] = field(default_factory=list)
+    stale: list[int] = field(default_factory=list)
+    segs: dict[str, list[Any]] = field(default_factory=dict)
+    facts: list[Fact] | None = None
+    files: list[str] | None = None
+    indexed: bool = False
+    # Every fact's name, rows or not, when the rows are not every fact (`pool_of`); `None`
+    # when `names` already is (an index's pool). What a bantamkit layer holds, for the
+    # native layer's dedupe (#199 J68-11, `native.NativeStore.pool`).
+    every: list[str] | None = None
+
+    def all_names(self) -> list[str]:
+        """Every name this layer holds, whether or not it holds a query term."""
+        return self.names if self.every is None else self.every
+
+    def weights(
+        self, usage: dict[str, float], context: Mapping[str, float] | None = None
+    ) -> list[float]:
+        """`retrieval.weight` per row: once per (type, staleness), then per used name, then
+        per name with file context (#200: `context[name] > 0`, the usage kept)."""
+        plain = [weight_of(t, False, 0.0) for t in self.type_names]
+        out = list(map(plain.__getitem__, self.types))
+        names, types = self.names, self.types
+        for i in self.stale:
+            out[i] = weight_of(self.type_names[types[i]], True, 0.0)
+        if usage:
+            stale_ids = set(self.stale)
+            for name, u in usage.items():
+                if not (u > 0.0):
+                    continue  # no usage weighs as none (`weight_of`)
+                lo = bisect_left(names, name)
+                hi = bisect_right(names, name, lo)
+                for i in range(lo, hi):
+                    out[i] = weight_of(self.type_names[types[i]], i in stale_ids, u)
+        if context:
+            stale_ids = set(self.stale)
+            for name, c in context.items():
+                if not (c > 0.0):
+                    continue  # no context weighs as none (`weight_of`)
+                lo = bisect_left(names, name)
+                hi = bisect_right(names, name, lo)
+                u = usage.get(name, 0.0)
+                for i in range(lo, hi):
+                    out[i] = weight_of(self.type_names[types[i]], i in stale_ids, u, c)
+        return out
+
+
+def pool_of(facts: list[Fact], q: list[str]) -> Pool:
+    """A `Pool` from parsed facts: the files' answer, and the reference for the index's."""
+    held: list[tuple[str, float, str, bool, Fact, dict[str, float]]] = []
+    total = 0.0
+    df = dict.fromkeys(q, 0)
+    for fact in facts:
+        doc = Doc(_text(fact.name), _text(fact.description), tuple(fact.keywords))
+        weights, length = doc_terms(doc)
+        total += length
+        mine = {t: weights[t] for t in q if t in weights}
+        if mine:
+            for t in mine:
+                df[t] += 1
+            held.append((doc.name, length, _text(fact.type), stale(doc.description), fact, mine))
+    held.sort(key=lambda r: r[0])  # stable: two files claiming a name keep listing order
+    type_names = sorted({r[2] for r in held})
+    code = {t: i for i, t in enumerate(type_names)}
+    segs: dict[str, list[Any]] = {t: [] for t in q}
+    for i, row in enumerate(held):
+        for t, w in row[5].items():
+            segs[t] += (i, 1, w)
+    return Pool(
+        len(facts),
+        total,
+        df,
+        names=[r[0] for r in held],
+        lengths=[r[1] for r in held],
+        types=[code[r[2]] for r in held],
+        type_names=type_names,
+        stale=[i for i, r in enumerate(held) if r[3]],
+        segs=segs,
+        facts=[r[4] for r in held],
+        every=[_text(fact.name) for fact in facts],
+    )
+
+
+def pool_without(pool: Pool, drop: Any) -> Pool:
+    """`pool` as if the facts named in `drop` had never been listed (#199 J68-11).
+
+    For a pool whose rows are EVERY fact of its layer (an index's, `MemoryStore._pool_indexed`):
+    `n` loses each dropped row and `total` its length, the rows are renumbered in order, each
+    term's run-length segments are cut and re-run over the new ids, and `df` is recounted from
+    them. The native layer drops the names a bantamkit layer holds this way, so an exported
+    copy never counts in a BM25 statistic.
+    """
+    keep = [i for i, name in enumerate(pool.names) if name not in drop]
+    if len(keep) == len(pool.names):
+        return pool
+    new_id = {old: new for new, old in enumerate(keep)}
+    total = pool.total
+    for i, name in enumerate(pool.names):
+        if name in drop:
+            total -= pool.lengths[i]
+    segs: dict[str, list[Any]] = {}
+    df: dict[str, int] = {}
+    for t in pool.df:
+        out: list[Any] = []
+        seg = pool.segs.get(t) or []
+        for j in range(0, len(seg), 3):
+            start, count, weight = seg[j], seg[j + 1], seg[j + 2]
+            for old in range(start, start + count):
+                nid = new_id.get(old)
+                if nid is None:
+                    continue
+                if out and out[-3] + out[-2] == nid and out[-1] == weight:
+                    out[-2] += 1
+                else:
+                    out += (nid, 1, weight)
+        segs[t] = out
+        df[t] = sum(out[1::3])
+    return Pool(
+        pool.n - (len(pool.names) - len(keep)),
+        total,
+        df,
+        names=[pool.names[i] for i in keep],
+        lengths=[pool.lengths[i] for i in keep],
+        types=[pool.types[i] for i in keep],
+        type_names=pool.type_names,
+        stale=[new_id[i] for i in pool.stale if i in new_id],
+        segs=segs,
+        files=None if pool.files is None else [pool.files[i] for i in keep],
+        indexed=pool.indexed,
+    )
+
+
+def pooled_ranking(
+    pools: list[Pool | None],
+    q: list[str],
+    ratio: float,
+    usage: Callable[[], dict[str, float]],
+    context: Mapping[str, float] | None = None,
+) -> Iterator[tuple[int, int]]:
+    """Every admitted row of every pool, best first, as `(layer, row)`: BM25 once over the
+    pooled counts, then `retrieval.rank_columns` (`gate`, then `(-final, layer_order, name)`).
+    `layer_order` is the pool's position; a `None` pool (a layer that could not be read) is a
+    gap and holds nothing. Scored and sorted when called; each `(layer, row)` is spelled
+    only when the caller reaches it (a hook takes three of 5,000).
+
+    `usage` is called only when some row holds a query term, so a recall that matches
+    nothing never reads the ledger.
+    """
+    live = [(i, p) for i, p in enumerate(pools) if p is not None]
+    if not any(p.segs.get(t) for _, p in live for t in q):
+        return iter(())
+    n = 0
+    total = 0.0
+    df = dict.fromkeys(q, 0)
+    segs: dict[str, list[Any]] = {t: [] for t in q}
+    lengths: list[float] = []
+    starts: list[int] = []
+    for _, p in live:
+        n += p.n
+        total += p.total
+        offset = len(lengths)
+        starts.append(offset)
+        for t in q:
+            df[t] += p.df.get(t, 0)
+            seg = p.segs.get(t)
+            if seg:
+                if offset:
+                    seg = list(seg)
+                    seg[0::3] = [a + offset for a in seg[0::3]]
+                segs[t] += seg
+        lengths += p.lengths
+    scores = bm25_segments(q, n, total, df, lengths, segs)
+    used = usage()
+    weights: list[float] = []
+    for _, p in live:
+        weights += p.weights(used, context)
+    order = rank_columns(scores, weights, ratio)
+    layers = [i for i, _ in live]
+
+    def spelled() -> Iterator[tuple[int, int]]:
+        for g in order:
+            at = bisect_right(starts, g) - 1
+            yield layers[at], g - starts[at]
+
+    return spelled()
+
+
+def pick_hits(
+    stores: list[Any],
+    pools: list[Pool | None],
+    q: list[str],
+    k: int,
+    ratio: float,
+    usage: Callable[[], dict[str, float]],
+    repool: Callable[[int], Pool],
+    dedupe: bool = False,
+    context: Mapping[str, float] | None = None,
+) -> list[tuple[int, Fact]]:
+    """The first `k` admitted facts of a pooled ranking, as `(layer, Fact)`.
+
+    Only these hits are parsed (`MemoryStore.resolve`). A hit whose file no longer says what
+    its index said hands that layer to the files (`repool`) and the ranking is taken again,
+    as `_recall_indexed` did before #199. `dedupe` keeps the first fact of each name, which
+    is what a layered recall shows; one store returns two files that claim one name, as it
+    always did. A negative `k` slices as Python's `[:k]` does. `context` is the file context
+    (#200, `touch.context.context_weights`), handed to `Pool.weights`; `None` is none.
+    """
+    memo: list[dict[str, float]] = []
+
+    def weights() -> dict[str, float]:
+        if not memo:
+            memo.append(usage())
+        return memo[0]
+
+    from bantamkit.storage.hotindex import no_gc
+
+    pools = list(pools)
+    while True:
+        out: list[tuple[int, Fact]] = []
+        seen: set[Any] = set()
+        redo = None
+        with no_gc():  # the scoring pass only allocates; see `hotindex.no_gc` (J68-5)
+            ranked = pooled_ranking(pools, q, ratio, weights, context)
+        for layer, row in ranked:
+            if k >= 0 and len(out) >= k:
+                break
+            pool = pools[layer]
+            assert pool is not None
+            fact = stores[layer].resolve(pool, row)
+            if fact is None:
+                redo = layer
+                break
+            if dedupe:
+                if fact.name in seen:
+                    continue
+                seen.add(fact.name)
+            out.append((layer, fact))
+        if redo is None:
+            return out if k >= 0 else out[:k]
+        pools[redo] = repool(redo)
+
+
+def utc_now() -> str:
+    """The usage ledger's timestamp: `YYYY-MM-DDTHH:MM:SSZ`, UTC, to the second."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -441,14 +776,207 @@ class MemoryStore:
         k: int = 3,
         today: Callable[[], str] | None = None,
         create: bool = True,
+        now: Callable[[], str] | None = None,
     ):
         self.root = Path(root)
         self.index_budget = index_budget
         self.k = k
         self._today = today or (lambda: date.today().isoformat())
+        # The usage ledger's clock (#199): `YYYY-MM-DDTHH:MM:SSZ`, UTC. A harness freezes it
+        # as it freezes `_today`.
+        self._now = now or utc_now
         self._snapshot: list[Fact] | None = None
+        self._index: HotIndex | None = None
+        self._cold: Any = None
         if create:
             self._ensure_dirs()
+
+    def index(self) -> HotIndex:
+        """This store's hot index (#204), built lazily: `~/.bantamkit/index/`, or `INDEX_DIR_ENV`.
+
+        The variable lives in `bantamkit.storage.hotindex`, not here: it moves where an INDEX
+        is kept, never where the store is, so the writer-env register in `divergence` does
+        not count it (`test_no_environment_variable_moves_the_writers_store_...`).
+
+        DERIVED AND INVISIBLE. `recall` and `lookup` answer from it exactly what they
+        answered from the files -- same facts, same order, same gate, same refusals -- and
+        fall back to reading every file wherever the index cannot vouch for that answer
+        (`_indexed`). Every write keeps an existing index current (`_after_write`).
+        """
+        if self._index is None:
+            from bantamkit.storage.hotindex import INDEX_DIR_ENV, HotIndex
+
+            override = os.environ.get(INDEX_DIR_ENV) or None
+            self._index = HotIndex(self.root, "facts", Path.home(), index_dir=override)
+        return self._index
+
+    def _indexed(self) -> HotIndex | None:
+        """The index, refreshed, when a read may answer from it; `None` sends it to the files.
+
+        The files answer instead when the index cannot reproduce today's answer exactly:
+        inside `snapshot()` (the pinned copy is the answer), when any file is `skipped`
+        (unreadable, malformed, or a second file claiming a name -- recall scores both, and
+        names the unreadable ones in `skipped`, in listing order), or when any fact's `name`
+        is not a string (`loose`: the sort then compares across types, and may raise).
+
+        THE LISTING IS PROBED FIRST. A `facts/` that cannot be listed raises the store's own
+        sentence here, as `_facts` would: a fresh index must not answer for a store nobody
+        can read (chmod changes no mtime, so the index alone cannot tell).
+        """
+        if self._snapshot is not None or not self._probe_facts():
+            return None
+        idx = self.index()
+        idx.refresh("fast")
+        if idx.skipped or idx.loose:
+            return None
+        return idx
+
+    def _probe_facts(self) -> bool:
+        """`_listing(facts/)`'s refusal, without listing: open the directory and close it.
+
+        False for a `facts/` that is simply absent: there is nothing to index, the files
+        answer `[]` at once, and no index file is made for a store that does not exist.
+        """
+        directory = self.root / "facts"
+        try:
+            with os.scandir(directory):
+                pass
+        except FileNotFoundError as e:
+            if os.path.lexists(directory):
+                raise self._unreadable(
+                    directory, e, _FACTS_UNREADABLE, "a path exists there"
+                ) from e
+            return False
+        except OSError as e:
+            raise self._unreadable(directory, e, _FACTS_UNREADABLE) from e
+        return True
+
+    def _indexed_fact(self, idx: HotIndex, name: str) -> Fact | None:
+        """The one file the index names for `name`, parsed; `None` if it no longer says so."""
+        file = idx.file_of(name)
+        return None if file is None else self._fact_named(file, name)
+
+    def _fact_named(self, file: str, name: str) -> Fact | None:
+        """`facts/<file>` parsed, if it still names itself `name`; else `None`."""
+        try:
+            fact = self._read_fact(self.root / "facts" / file, None)
+        except (BantamError, OSError):
+            return None
+        return fact if isinstance(fact.name, str) and fact.name == name else None
+
+    def _after_write(self) -> None:
+        """Keep an EXISTING index current after a write; never create one, never fail one.
+
+        Every writer here renames into `facts/`, which moves its mtime, so a fast refresh
+        patches exactly the files written. If the refresh cannot run, what is held in memory
+        is dropped and the next reader patches from the disk, whose mtime has moved.
+        """
+        idx = self.index()
+        if not idx.exists():
+            return
+        try:
+            idx.refresh("fast")
+        except (BantamError, OSError):
+            idx.invalidate()
+
+    def cold(self) -> Any:
+        """This store's cold index of `archive/` (#204): `ColdIndex("facts-archive-<store_id>")`.
+
+        Under `~/.bantamkit/cold/`, or `<INDEX_DIR_ENV>/cold/` when that is set -- the same
+        knob that moves the hot index, so no run that isolates one leaks the other.
+        """
+        if self._cold is None:
+            from bantamkit.memory.usage import store_id
+            from bantamkit.storage.coldindex import ColdIndex
+            from bantamkit.storage.hotindex import INDEX_DIR_ENV
+
+            override = os.environ.get(INDEX_DIR_ENV) or None
+            self._cold = ColdIndex(
+                f"facts-archive-{store_id(self.root)}",
+                Path.home(),
+                cold_dir=Path(override) / "cold" if override else None,
+            )
+        return self._cold
+
+    def _cold_synced(self) -> Any:
+        """The cold index, with every `archive/*.md` not yet seen at its `(mtime_ns, size)` added.
+
+        The first call indexes the whole existing `archive/`; later calls add only what moved
+        there since, as one new segment. A file that left `archive/` (restored) stays in a
+        segment and is dropped at read (`archived_recall`). An index this module cannot read
+        is reset and rebuilt from the files. An `archive/` that cannot be listed raises the
+        store's own sentence, as `archived()` does.
+        """
+        from bantamkit.storage.coldindex import ColdIndexError
+
+        archive = self.root / "archive"
+        listing = sorted(self._listing(archive, _ARCHIVE_UNREADABLE))
+        cold = self.cold()
+        try:
+            held = cold.all_docs()
+        except ColdIndexError:
+            cold.reset()
+            held = []
+        seen = {(d["file"], d["mtime_ns"], d["size"]) for d in held}
+        new: dict[str, dict[str, Any]] = {}
+        for file in listing:
+            path = archive / file
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            mtime_ns, size = str(st.st_mtime_ns), st.st_size
+            if (file, mtime_ns, size) in seen:
+                continue
+            doc, _reason = self.index().parse_file(path, mtime_ns, size)
+            if doc is not None and doc["name"] not in new:
+                new[doc["name"]] = doc
+        if new:
+            try:
+                cold.add(new)
+            except ColdIndexError:
+                cold.reset()
+                return self._cold_synced()
+        return cold
+
+    def archived_recall(self, query: str, k: int, exclude: Any = ()) -> list[Fact]:
+        """`include_archived` (#204): up to `k` `archive/` facts matching `query`, best first.
+
+        Scored from the cold index: the summed term frequency of the query's `tokenize_v2`
+        terms over each archived fact's name, description and keywords, ties by name. Each
+        hit is read back from its file, and one that no longer says what the index said --
+        restored, renamed, unreadable -- is passed over. Names in `exclude` (the live hits)
+        are passed over too. Never stamped: an archived fact is not rewritten by a read.
+        """
+        from bantamkit.memory.retrieval import tokenize_v2
+        from bantamkit.storage.coldindex import ColdIndexError
+
+        terms = tokenize_v2(query)
+        if not terms or k <= 0:
+            return []
+        cold = self._cold_synced()
+        try:
+            rows = cold.query(terms)
+        except ColdIndexError:
+            cold.reset()
+            cold = self._cold_synced()
+            rows = cold.query(terms)
+        hits: list[Fact] = []
+        for name, _seg, _tf in rows:
+            if len(hits) >= k:
+                break
+            if name in exclude:
+                continue
+            doc = cold.doc(name)
+            if doc is None:
+                continue
+            try:
+                fact = self._read_fact(self.root / "archive" / doc["file"], None)
+            except (BantamError, OSError):
+                continue
+            if isinstance(fact.name, str) and fact.name == name:
+                hits.append(fact)
+        return hits
 
     @contextmanager
     def snapshot(self) -> Iterator[None]:
@@ -587,7 +1115,13 @@ class MemoryStore:
     # ---- ops ----
 
     def save(
-        self, type: str, name: str, description: str, body: str, links: tuple[str, ...] = ()
+        self,
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: tuple[str, ...] = (),
+        keywords: tuple[str, ...] = (),
     ) -> SaveResult:
         self._ensure_dirs()
         if type not in VALID_TYPES:
@@ -606,6 +1140,7 @@ class MemoryStore:
             ("description", description),
             ("body", body),
             *((f"links[{i}]", link) for i, link in enumerate(links)),
+            *((f"keywords[{i}]", word) for i, word in enumerate(keywords)),
         ):
             if isinstance(value, str) and (bad := lone_surrogate(value)):
                 raise MemoryValidationError(
@@ -660,7 +1195,10 @@ class MemoryStore:
             type=type,
             body=body,
             links=list(links),
+            keywords=list(keywords),
             last_recalled=None,
+            # An update keeps every hand-written key the file carried (#199 Task 6).
+            extra=dict(existing.extra) if existing is not None else {},
             # An update keeps the date the fact first landed — rewriting a fact is not
             # the same event as creating it, and resetting this would let a re-save
             # launder a stale fact into a fresh one.
@@ -754,25 +1292,156 @@ class MemoryStore:
         if not 0.0 <= min_ratio <= 1.0:
             raise MemoryValidationError(_MIN_RATIO_RANGE)
         k = k if k is not None else self.k
-        q = tokens(query)
-        scored = []
-        pool = self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
-        for fact in pool:
-            score = len(q & tokens(f"{fact.name} {fact.description}"))
-            if score > 0:
-                scored.append((score, fact))
-        if scored:
-            # No `if min_ratio > 0` shortcut on purpose: at 0.0 this line still runs and
-            # still keeps everything, so "the default gates nothing" is a fact about the
-            # arithmetic rather than about a branch that could be edited away.
-            floor = min_ratio * max(score for score, _ in scored)
-            scored = [pair for pair in scored if pair[0] >= floor]
-        scored.sort(key=lambda pair: (-pair[0], pair[1].name))
-        hits = [fact for _, fact in scored[:k]]
+        q = query_terms(query)
+        ledger = self.usage()
+        picked = pick_hits(
+            [self],
+            [self.pool(q, skipped=skipped)],
+            q,
+            k,
+            min_ratio,
+            lambda: ledger.weights(self._now()),
+            lambda _: pool_of(self.candidates(skipped), q),
+        )
+        hits = [fact for _, fact in picked]
         if stamp:
-            for fact in hits:
-                self._stamp(fact)
+            self._use(ledger, hits, "recall_hit")
         return hits
+
+    # ------------------------------------------------------------- retrieval (#199)
+
+    def usage(self) -> UsageLedger:
+        """This store's usage ledger: `~/.bantamkit/usage/<store id>.jsonl` (#199 D5)."""
+        return UsageLedger(Path.home(), self.root)
+
+    def _use(self, ledger: UsageLedger, facts: list[Fact], kind: str) -> None:
+        """One `kind` event per fact, best-effort: the ledger never fails a read (#123)."""
+        now = self._now()
+        for fact in facts:
+            if isinstance(fact.name, str):
+                ledger.append(fact.name, kind, now)
+
+    def repair(self, fact: Fact, ledger: UsageLedger, now: str) -> bool:
+        """Read-repair one old-format fact (#199 D8); True when it rewrote the file.
+
+        Old format is a non-null `last_recalled` (0.35.x stamped it on every recall), or no
+        `keywords` while the ledger's latest `save` copy holds some (0.35.x rewrote the file
+        from a dataclass without the field and dropped them). The repair writes the fact back
+        through `_write_fact` -- one temp-and-rename -- with `last_recalled: null` (the line
+        stays, so 0.35.x still parses the file), the keywords restored from the copy, and every
+        `extra` key kept; THEN the stamp becomes one `seed` event dated by it
+        (`usage.seed_ts`), so a write that fails seeds nothing and the next use tries again.
+        A repaired fact is new-format, so a second call returns False and writes nothing.
+
+        Never raises for a write that cannot happen: a recall that repairs must still answer
+        (#123). A fact whose file is not `facts/<name>.md` is left alone, because
+        `_write_fact` would write a second file beside it. The caller decides WHICH facts:
+        `Memory.recall_outcome` repairs the tool's hits in the writable layer, never the
+        hook's (`stamp=False`), and never a read-only layer's.
+        """
+        name = fact.name
+        if not isinstance(name, str) or not NAME_RE.match(name):
+            return False
+        if fact.source is not None and fact.source.name != f"{name}.md":
+            return False
+        stamp = fact.last_recalled
+        restore = None if fact.keywords else ledger.keywords_copy(name)
+        if stamp is None and not restore:
+            return False
+        repaired = replace(
+            fact, last_recalled=None, keywords=list(restore or fact.keywords)
+        )
+        try:
+            self._write_fact(repaired)
+        except OSError:
+            return False
+        self._after_write()
+        if stamp is not None and (seed := seed_ts(str(stamp), now)) is not None:
+            ledger.append(name, "seed", seed)
+        return True
+
+    def candidates(self, skipped: list[dict[str, str]] | None = None) -> list[Fact]:
+        """Every fact a recall scores, parsed: the pinned snapshot, else the listing.
+
+        `skipped` is `recall`'s (#119). This is the files' answer; `pool` answers from the
+        index wherever the index can vouch for it, and never parses a fact it does not return.
+        """
+        return self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
+
+    def pool(self, q: list[str], skipped: list[dict[str, str]] | None = None) -> Pool:
+        """This store's share of a pooled BM25 recall for the query terms `q` (#199 D3).
+
+        Through the hot index when `_indexed` allows it, reading the head and only the
+        postings shards `q` hashes to -- no fact file is parsed here (user ruling
+        2026-10-15: the hook scores on the derived index). Anywhere the index cannot vouch
+        for the answer it is the files', exactly as `recall` decided before #199.
+        """
+        idx = self._indexed()
+        if idx is not None:
+            from bantamkit.storage.hotindex import no_gc
+
+            with no_gc():  # builds one tuple per posting and nothing cyclic (J68-5)
+                got = self._pool_indexed(idx, q)
+            if got is not None:
+                return got
+        return pool_of(self.candidates(skipped), q)
+
+    @staticmethod
+    def _pool_indexed(idx: HotIndex, q: list[str]) -> Pool | None:
+        """`pool_of`'s answer from the index: the head's columns and `q`'s segments.
+
+        A run's weight is `Σ boost · tf` over its fields, which is `doc_terms`' `Σ boost` per
+        occurrence; a row's length is the head's `cols.length`, `length_of(lens)` summed when
+        the index was built. Both are exact while FIELD_BOOST holds whole numbers
+        (`test_field_boosts_are_whole_numbers` pins that; the head records the boosts it
+        summed and is rebuilt when they move), so the index and the files give the same bits.
+        `df` is a term's run lengths summed: the docs holding it. `None` -- the files decide --
+        for a segment list the index cannot vouch for.
+        """
+        cols = idx.cols()
+        n = len(cols["name"])
+        boost = [float(b) for _, b in FIELD_BOOST]
+        bn, bd, bk = boost
+        segs: dict[str, list[Any]] = {}
+        df = dict.fromkeys(q, 0)
+        for t, seg in idx.segments(q).items():
+            if type(seg) is not list or len(seg) % 5 or not set(map(type, seg)) <= {int}:
+                return None
+            out: list[Any] = []
+            d = 0
+            for j in range(0, len(seg), 5):
+                a, c, x, y, z = seg[j : j + 5]
+                if c < 1 or a < 0 or a + c > n or x < 0 or y < 0 or z < 0:
+                    return None
+                out += (a, c, bn * x + bd * y + bk * z)
+                d += c
+            segs[t] = out
+            df[t] = d
+        return Pool(
+            n,
+            length_of(idx.lens_total()),
+            df,
+            names=cols["name"],
+            lengths=cols["length"],
+            types=cols["type"],
+            type_names=cols["types"],
+            stale=cols["stale"],
+            segs=segs,
+            files=cols["file"],
+            indexed=True,
+        )
+
+    def resolve(self, pool: Pool, row: int) -> Fact | None:
+        """The fact a pooled row stands for: parsed already, or the one file the index names.
+
+        `None` when that file no longer says what the index said: the caller lets the
+        files decide (`pick_hits`).
+        """
+        if pool.facts is not None:
+            return pool.facts[row]
+        assert pool.files is not None
+        name = pool.names[row]
+        return self._fact_named(pool.files[row] or f"{name}.md", name)
 
     def lookup(
         self, name: str, stamp: bool = True, skipped: list[dict[str, str]] | None = None
@@ -800,11 +1469,19 @@ class MemoryStore:
         `component.Memory` treats the two the same way per layer. The stamp is best-effort,
         as in `recall` (#123). `skipped` is `recall`'s (#119).
         """
-        pool = self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
-        for fact in pool:
+        idx = self._indexed()
+        if idx is not None:
+            if name not in idx.names():
+                return None
+            hit = self._indexed_fact(idx, name)
+            if hit is not None:
+                if stamp:
+                    self._use(self.usage(), [hit], "body_read")
+                return hit
+        for fact in self.candidates(skipped):
             if fact.name == name:
                 if stamp:
-                    self._stamp(fact)
+                    self._use(self.usage(), [fact], "body_read")
                 return fact
         return None
 
@@ -950,7 +1627,8 @@ class MemoryStore:
         size = sum(sizes.values())
         before = size
         archived: list[ArchivedFact] = []
-        for fact in sorted(facts, key=self._eviction_key):
+        used = self.usage().last_used_map()
+        for fact in sorted(facts, key=lambda f: self._eviction_key(f, used)):
             if size <= target:
                 break
             # THE FILE THE FACT WAS READ FROM, not `facts/<name>.md` (#122). The two are the
@@ -1287,7 +1965,7 @@ class MemoryStore:
     def _index_line(self, fact: Fact) -> str:
         return f"- [[{fact.name}]] ({fact.type}) — {fact.description}\n"
 
-    def _staleness_key(self, fact: Fact) -> tuple[str, str]:
+    def _staleness_key(self, fact: Fact, used: dict[str, str] | None = None) -> tuple[str, str]:
         """Order by the last evidence anyone wanted this fact — never by its absence.
 
         `last_recalled` alone conflated two opposite facts: one written seconds ago and
@@ -1297,10 +1975,17 @@ class MemoryStore:
         `['zulu-newest']`). Falling back to `created` makes absence of evidence mean
         "as stale as it is old" instead of "maximally stale". Ties break on name only
         after the dates are equal, so the alphabet can no longer decide a live question.
-        """
-        return (fact.last_recalled or fact.created or "", fact.name)
 
-    def _eviction_key(self, fact: Fact) -> tuple[int, str, str]:
+        SINCE #199 (D5) the first evidence is the usage ledger's `last_used` (`used`, one read
+        per `compact`): recall no longer writes `last_recalled`, so a fact file's date is what
+        it was when the old runtime last stamped it, and the ledger knows better.
+        """
+        last = used.get(fact.name) if used and isinstance(fact.name, str) else None
+        return (last or fact.last_recalled or fact.created or "", fact.name)
+
+    def _eviction_key(
+        self, fact: Fact, used: dict[str, str] | None = None
+    ) -> tuple[int, str, str]:
         """`compact`'s order: class first, then staleness. Nothing else reads it.
 
         A `feedback` fact is the user's own correction, and its value does NOT decay with
@@ -1345,7 +2030,7 @@ class MemoryStore:
         only way back under budget, down with a `TypeError`. `runtime-ts` spells the same
         comparison as one `pyEqualValue` per entry.
         """
-        return (1 if fact.type in DURABLE_TYPES else 0, *self._staleness_key(fact))
+        return (1 if fact.type in DURABLE_TYPES else 0, *self._staleness_key(fact, used))
 
     def _listing(self, directory: Path, consequence: str) -> list[str]:
         """The `*.md` names in one of this store's two directories, or a raise. Never a lie.
@@ -1495,7 +2180,7 @@ class MemoryStore:
         try:
             text = path.read_text(encoding="utf-8")
             _, front, body = text.split("---\n", 2)
-            meta = yaml.safe_load(front)
+            meta = load_frontmatter(front)
             if not isinstance(meta, dict):
                 raise MemoryValidationError(
                     f"malformed fact file {path.name}: frontmatter is not a mapping"
@@ -1526,69 +2211,32 @@ class MemoryStore:
                         f"(it holds the control character {bad}), read as '{description}'; "
                         f"make it one line"
                     )
+            fact_type = meta["type"]
+            links = list(meta.get("links") or [])
+            # #199: absent is `[]`; any other shape -- a scalar, `null`, a list holding a
+            # non-string -- refuses the file with this sentence, after the three required
+            # keys and `links`, so a file missing one of those still names THAT first.
+            keywords = meta.get("keywords", [])
+            if not (isinstance(keywords, list) and all(isinstance(k, str) for k in keywords)):
+                raise MemoryValidationError(
+                    f"fact '{name}' in {path.name}: keywords must be a list of strings"
+                )
             return Fact(
                 name=name,
                 description=description,
-                type=meta["type"],
+                type=fact_type,
                 body=body.strip(),
-                links=list(meta.get("links") or []),
+                links=links,
+                keywords=list(keywords),
                 last_recalled=stamps["last_recalled"],
                 created=stamps["created"] or _mtime_date(path),
                 source=path,
+                extra={
+                    k: v for k, v in meta.items() if isinstance(k, str) and k not in OWNED_KEYS
+                },
             )
         except (ValueError, KeyError, yaml.YAMLError) as e:
             raise MemoryValidationError(f"malformed fact file {path.name}: {e}") from e
-
-    def _stamp(self, fact: Fact) -> None:
-        """Date the recall without ever writing pinned content back.
-
-        Inside `snapshot()` a hit is a pre-scope copy of the file, so writing it
-        verbatim would silently revert a `save` made in the same scope — the same
-        poisoning, in reverse. The date therefore lands on whatever is on disk now,
-        and a fact that is no longer there is left alone rather than resurrected.
-
-        WAS: an unreadable store made `self._facts()` below return `[]`, so `live` was
-        `None` and every stamp was quietly skipped — a recall inside a scope silently
-        stopped recording that it happened. NOW: `MemoryValidationError` out of the
-        listing. This is the ONLY caller that can raise after `recall` already has its
-        answer, which is why `snapshot()` documents it as its non-obvious case.
-
-        No fact is left half-dated: the listing runs before any `_write_fact`, and it
-        raises on the first hit, so a `recall` that raises here has written nothing.
-        (`fact.last_recalled` is set on the in-memory `Fact` first and that mutation
-        survives on the pinned copy; nothing reads it but `_staleness_key` (through
-        `_eviction_key`), and the
-        pinned list dies with the scope.)
-
-        THE WRITE IS BEST-EFFORT (job65/#123). WAS: a store at `chmod 555` -- a shared
-        checkout, a read-only mount, a CI cache -- made `recall` raise `PermissionError`
-        out of this write AFTER the hits were computed, so a pure read was refused because
-        its bookkeeping could not land. NOW: an `OSError` from the write is swallowed here and
-        the hits are answered; the file keeps its old date and no temp is left (#161's
-        cleanup). Silent on purpose and for now: the property is "at most a degraded note",
-        and the note would have to be carried through `component.Memory`, which is another
-        unit's file in job65 -- recorded as an open question in its note. Every `OSError` is
-        best-effort, not only the permission class: a stamp that fails for ENOSPC has the
-        same standing, which is none against the read. What is NOT swallowed is the
-        `MemoryValidationError` the LISTING below raises inside a snapshot scope: that is a
-        store that stopped being readable, which is news, and the test that pins it
-        (`test_a_recall_pinned_before_the_store_broke_answers_but_never_dates_it`) still
-        holds. `fact.last_recalled` is set on the in-memory `Fact` first, as before.
-        """
-        fact.last_recalled = self._today()
-        if self._snapshot is None:
-            self._stamp_write(fact)
-            return
-        live = next((f for f in self._facts() if f.name == fact.name), None)
-        if live is None:
-            return
-        live.last_recalled = fact.last_recalled
-        self._stamp_write(live)
-
-    def _stamp_write(self, fact: Fact) -> None:
-        """`_write_fact`, best-effort: an `OSError` leaves the old date on disk (#123)."""
-        with suppress(OSError):
-            self._write_fact(fact)
 
     def _fact_text(self, fact: Fact) -> str:
         """The exact bytes `_write_fact` would put on disk, without writing them.
@@ -1607,6 +2255,13 @@ class MemoryStore:
             "last_recalled": fact.last_recalled,
             "links": fact.links,
         }
+        # Only when non-empty (#199): a fact that never had keywords keeps its bytes.
+        if fact.keywords:
+            meta["keywords"] = fact.keywords
+        # After the owned keys, in the order the file had them (#199 Task 6).
+        for key, value in fact.extra.items():
+            if key not in OWNED_KEYS:
+                meta[key] = value
         return (
             "---\n"
             + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
@@ -1657,6 +2312,9 @@ class MemoryStore:
         to. The read is what was wrong and the read is where it is fixed.
         """
         (self.root / "index.md").write_text(self._index_text(tolerant), encoding="utf-8")
+        # Every writer of a fact file ends here (save, its rollback, compact, archive,
+        # restore), so this is where the hot index follows the files (#204).
+        self._after_write()
 
     def _check_index_budget(self, tolerant: bool = False) -> None:
         """Raise `MemoryBudgetExceeded` if the index would not fit.

@@ -14,6 +14,7 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
 )
+from bantamkit.memory.usage import UsageLedger
 
 
 def test_assets_root_env_override(monkeypatch, tmp_path):
@@ -270,6 +271,17 @@ def test_layered_project_wins_on_duplicate_name_and_prefixes_layers(tmp_path, fa
     assert "[profile] [profile-only]" in out
 
 
+def _uses(store_root):
+    """The usage ledger events of the memory whose first layer is `store_root` (#199 D5)."""
+    import json
+
+    path = UsageLedger(Path.home(), store_root).path
+    if not path.exists():
+        return []
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return [(e["fact"], e["kind"]) for e in rows]
+
+
 def test_layered_k_budget_is_total_across_layers(tmp_path, fake_home):
     project = tmp_path / "companyA"
     project.mkdir()
@@ -285,8 +297,15 @@ def test_layered_k_budget_is_total_across_layers(tmp_path, fake_home):
     _seed(profile_store, "prof", "y", description="deploy to production at night")
 
     out = Memory.layered(start=project, k=3)._recall("deploy")
-    assert out.count("[project] [") == 3
-    assert "[profile]" not in out  # budget spent before profile
+    # #199 D3: the budget is still the total across layers, but the layers are pooled and
+    # ranked as one, so the shorter profile fact (BM25F length norm) takes a slot. WAS: three
+    # project facts, "budget spent before profile", which was never read.
+    assert out.count("] [") == 3
+    assert [line.split("] [")[1].split("]")[0] for line in out.split("\n") if "] [" in line] == [
+        "prof",
+        "proj-2",
+        "proj-0",
+    ]
 
 
 def test_layered_save_writes_project_layer_only(tmp_path, fake_home):
@@ -337,10 +356,14 @@ def test_layered_recall_stamps_the_project_layer_by_default_and_not_when_told_no
     assert (quiet.status, quiet.returned) == ("answered", 1)
     assert path.read_bytes() == before
 
+    assert _uses(store) == []
+
     loud = Memory.layered(start=project).recall_outcome("deploy")
     assert loud.reply == quiet.reply, "the flag changes what is written, never what is answered"
-    assert path.read_bytes() != before
-    assert b"last_recalled: '" in path.read_bytes()
+    # #199 D5: the stamp is a `recall_hit` in the usage ledger; the fact file is untouched.
+    # WAS: `last_recalled` was dated in deploy.md.
+    assert path.read_bytes() == before
+    assert _uses(store) == [("deploy", "recall_hit")]
 
 
 # ---- the exact-name walk (job64, J64-4) -------------------------------------------------
@@ -415,11 +438,16 @@ def test_an_exact_hit_in_the_project_layer_stops_the_walk_and_stamps_only_that_f
     assert (quiet.lookup, quiet.reached, quiet.returned) == ("hit", 1, 1)
     assert path.read_bytes() == before
 
+    assert _uses(store) == []
+
     loud = Memory.layered(start=project).recall_outcome("deploy-command")
     assert loud.reply == quiet.reply
-    assert b"last_recalled: '" in path.read_bytes()
+    # #199 D5: one `body_read` for the named fact, in the ledger; no fact file is written.
+    # WAS: deploy-command.md was dated and the other two left null.
+    assert path.read_bytes() == before
     assert b"last_recalled: null" in (store / "facts" / "deploy-notes.md").read_bytes()
     assert b"last_recalled: null" in (profile / "facts" / "deploy-command.md").read_bytes()
+    assert _uses(store) == [("deploy-command", "body_read")]
 
 
 def test_a_name_shaped_query_nobody_holds_says_so_in_one_leading_line(tmp_path, fake_home):
@@ -585,10 +613,16 @@ def test_v1_corrupt_layer_raises_on_recall(tmp_path):
     assert "malformed fact file broken.md:" in out
 
 
-def test_layered_short_circuits_and_does_not_query_profile_when_budget_filled(
+def test_layered_reads_every_layer_and_ranks_them_as_one(
     tmp_path, fake_home, monkeypatch
 ):
-    """Profile store recall should not be called when k budget is filled by project layer."""
+    """#199 D3: every layer is read and the pool is ranked once; the budget is the total.
+
+    WAS `test_layered_short_circuits_and_does_not_query_profile_when_budget_filled`: four
+    project facts filled k=4 and the profile store was never asked. Pooling reads every layer
+    (through its hot index, so no fact file but the hits is parsed), and the profile fact,
+    whose description is shortest, now ranks first.
+    """
     project = tmp_path / "companyA"
     project.mkdir()
     store = project / ".bantamkit" / "memory"
@@ -605,22 +639,20 @@ def test_layered_short_circuits_and_does_not_query_profile_when_budget_filled(
     _seed(profile_store, "prof", "y", description="fact from profile")
 
     mem = Memory.layered(start=project, k=4)
-    # Spy on profile store recall by tracking calls
     profile_layer_store = mem._layers[-1][1]  # Get the profile store
-    original_recall = profile_layer_store.recall
-    recall_called = []
+    original_pool = profile_layer_store.pool
+    pool_called = []
 
-    def spy_recall(*args, **kwargs):
-        recall_called.append((args, kwargs))
-        return original_recall(*args, **kwargs)
+    def spy_pool(*args, **kwargs):
+        pool_called.append((args, kwargs))
+        return original_pool(*args, **kwargs)
 
-    profile_layer_store.recall = spy_recall
+    profile_layer_store.pool = spy_pool
 
     out = mem._recall("fact")
-    # Should get 4 project facts, filling budget
-    assert out.count("[project] [") == 4
-    # Profile recall should NOT have been called (budget exhausted before reaching it)
-    assert not recall_called, "Profile store recall should not be called when k budget is filled"
+    assert out.count("] [") == 4
+    assert out.startswith("[profile] [prof]")
+    assert len(pool_called) == 1, "the profile layer is pooled, budget or not"
 
 
 def test_layered_readonly_layer_with_invalid_utf8_does_not_break_recall(tmp_path, fake_home):
@@ -1086,13 +1118,13 @@ def test_the_gate_default_changes_no_layered_recall(tmp_path, fake_home):
     )
 
 
-def test_the_gate_is_measured_per_layer_and_never_across_layers(tmp_path, fake_home):
-    """A profile fact does not have to out-score the project store's top hit.
+def test_the_gate_is_measured_across_the_pooled_layers(tmp_path, fake_home):
+    """#199 D3: the ratio is taken against the best score of the WHOLE recall.
 
-    Project scores 4 and 1; profile scores 1. At `min_ratio=1.0` the project layer
-    keeps only its own best — so `weak` goes — while `gamma` survives, because 1 is
-    the best score in the store that holds it. A gate applied to the merged list
-    would have dropped `gamma` too, and this is the assertion that tells them apart.
+    WAS `test_the_gate_is_measured_per_layer_and_never_across_layers`: each layer was gated
+    against its own top hit, so at `min_ratio=1.0` the profile's `gamma` survived beside the
+    project's `alpha`. Pooled, `gamma` must out-score nothing but must reach the pool's best,
+    and it does not, so `alpha` alone answers; `weak` still goes.
     """
     project = tmp_path / "companyA"
     project.mkdir()
@@ -1104,9 +1136,12 @@ def test_the_gate_is_measured_per_layer_and_never_across_layers(tmp_path, fake_h
     out = Memory.layered(start=project, k=9).recall_outcome(
         "alpha bravo charlie delta", min_ratio=1.0
     )
-    assert out.returned == 2
-    assert "[alpha]" in out.reply and "[gamma]" in out.reply
+    assert out.returned == 1
+    assert "[alpha]" in out.reply and "[gamma]" not in out.reply
     assert "[weak]" not in out.reply
+    # And at 0.0 the pool keeps all three, so the cut above was the gate's doing.
+    every = Memory.layered(start=project, k=9).recall_outcome("alpha bravo charlie delta")
+    assert every.returned == 3
 
 
 def test_a_bad_ratio_surfaces_as_the_error_it_is_not_as_an_unreadable_layer(tmp_path, fake_home):
@@ -1126,3 +1161,73 @@ def test_memory_recall_passes_the_ratio_through_to_the_outcome(tmp_path):
     mem._save("project", "weak", "alpha xray yankee zulu", "x")
     assert "[weak]" in mem.recall("alpha bravo charlie delta")
     assert "[weak]" not in mem.recall("alpha bravo charlie delta", min_ratio=1.0)
+
+
+# ---- #199 D5: usage replaces `last_recalled` writes (J68-5) -------------------------------
+
+
+def test_hook_recall_writes_nothing(tmp_path, fake_home):
+    """The hook's path (`stamp=False`): no fact file moves and no usage ledger appears."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "deploy", "project truth")
+    path = store / "facts" / "deploy.md"
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+    out = Memory.layered(start=project).recall_outcome("deploy", 3, stamp=False)
+    assert out.returned == 1
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert not (fake_home / ".bantamkit" / "usage").exists()
+
+
+def test_tool_recall_appends_recall_hit_and_not_last_recalled(tmp_path, fake_home):
+    """The tool's path: the fact file is byte for byte unchanged; the ledger has one
+    `recall_hit` per returned fact and nothing for a fact that was not returned."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "deploy", "project truth")
+    _seed(store, "unrelated", "x", description="nothing in common")
+    facts = store / "facts"
+    before = {p.name: p.read_bytes() for p in facts.iterdir()}
+    out = Memory.layered(start=project).recall_outcome("deploy")
+    assert out.returned == 1
+    assert {p.name: p.read_bytes() for p in facts.iterdir()} == before
+    assert _uses(store) == [("deploy", "recall_hit")]
+
+
+def test_a_profile_hit_is_recorded_in_the_project_ledger_and_the_profile_is_untouched(
+    tmp_path, fake_home
+):
+    """The ledger keys on the FIRST layer (#199 plan, Task 5); a read-only layer's use is
+    recorded there, and nothing at all is written into the read-only layer."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "unrelated", "x", description="nothing in common")
+    profile = fake_home / ".bantamkit" / "memory"
+    _seed(profile, "prof-deploy", "y", description="deploy at night")
+    before = {p: p.read_bytes() for p in (profile / "facts").iterdir()}
+    out = Memory.layered(start=project).recall_outcome("deploy")
+    assert out.headers == ("[profile] [prof-deploy] (project) deploy at night",)
+    assert {p: p.read_bytes() for p in (profile / "facts").iterdir()} == before
+    assert _uses(store) == [("prof-deploy", "recall_hit")]
+    assert not UsageLedger(Path.home(), profile).path.exists()
+
+
+def test_usage_orders_two_equal_facts_but_never_admits_a_third(tmp_path, fake_home):
+    """D3 end to end: a used fact wins a tie; a fact that does not match is never lifted."""
+    project = tmp_path / "companyA"
+    project.mkdir()
+    store = project / ".bantamkit" / "memory"
+    _seed(store, "a-deploy", "x", description="deploy notes")
+    _seed(store, "b-deploy", "x", description="deploy notes too")
+    _seed(store, "c-other", "x", description="nothing in common")
+    mem = Memory.layered(start=project)
+    assert mem.recall_outcome("deploy", stamp=False).headers[0].startswith("[project] [a-deploy]")
+    ledger = UsageLedger(Path.home(), store)
+    for _ in range(5):
+        ledger.append("b-deploy", "recall_hit", mem.store._now())
+        ledger.append("c-other", "recall_hit", mem.store._now())
+    out = mem.recall_outcome("deploy", stamp=False)
+    assert [h.split("] [")[1].split("]")[0] for h in out.headers] == ["b-deploy", "a-deploy"]

@@ -1,0 +1,6 @@
+{"label":"base","event":"PostToolUse-Read","p50_ms":37.8,"p95_ms":62.4,"n":15}
+{"label":"base","event":"PostToolUse-Bash","p50_ms":37.6,"p95_ms":39.5,"n":15}
+{"label":"base","event":"UserPromptSubmit","p50_ms":40.5,"p95_ms":45.5,"n":15}
+{"label":"base","event":"Stop","p50_ms":39.6,"p95_ms":72.4,"n":15}
+{"label":"base","event":"SessionStart","p50_ms":89.6,"p95_ms":130,"n":15}
+{"label":"base","event":"git-status","p50_ms":18,"p95_ms":169.7,"n":15}

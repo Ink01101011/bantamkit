@@ -13,6 +13,7 @@
  * * #180 — `resources/read` on a URI no template takes is `-32602 Unknown resource: <uri>`,
  *   and a template's name is percent-decoded the way the reference decodes it.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';

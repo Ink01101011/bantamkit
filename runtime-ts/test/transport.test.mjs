@@ -11,6 +11,7 @@
  *   both with `id: null`; an integer id past 2^53 is echoed exactly.
  * * #181 — an EPIPE on the output closes the transport quietly; any other error still throws.
  */
+import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
