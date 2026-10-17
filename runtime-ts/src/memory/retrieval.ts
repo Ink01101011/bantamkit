@@ -356,8 +356,6 @@ export const W_USAGE = 0.2;
 /** The #200 slot: file context, zero until #200 gives it a signal. */
 export let W_CONTEXT = 0.0;
 export const W_FLOOR = 0.1;
-/** #207 D9: the embedding scorer's absolute cosine floor; Task 5 tunes it on silver only. */
-export const EMBED_GATE = 0.0;
 export const STALE_WORDS = ['SUPERSEDED', 'CLOSED', 'REFUTED'] as const;
 
 export interface Candidate {

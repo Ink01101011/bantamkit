@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. In this repo every multi-unit run goes through the shiftwork tools (CLAUDE.md); the unit map is at the end.
 
+> **Shipped state (J71-8, 2026-10-17).** The D8 bar MISSED (spec §6.7), so only Task 0 (the `Scorer` interface, `Bm25fScorer`) ships, on `feat/207-scorer-only`. Tasks 1–7 stay on the local `feat/207-recall-embedding` branch. Their files are not in this tree, so the commit blocks of Tasks 1 and 2 are marked `text` rather than `bash`: they are a record of the plan, not commands to run here. `EMBED_GATE` (Task 0's placeholder for the dense scorer's floor) has no user without Task 2, so it was removed.
+
 **Goal:** Put recall's scorer behind a `Scorer` interface in both runtimes (shippable alone), then add an opt-in ollama embedding scorer that ranks every fact of every layer by cosine, with a derived vector cache, a strict BM25 fallback, operator fill paths, status lines and a predeclared eval (issue #207).
 
 **Architecture:** Recall is columnar. `pooled_ranking` (Python `runtime-py/src/bantamkit/memory/store.py:540`, Node `runtime-ts/src/memory/store.ts:666`) concatenates every layer's `Pool`, scores the concatenation once with `bm25_segments`, and orders it with `rank_columns`. The `Scorer` replaces only that one scoring call. `Bm25fScorer` wraps it unchanged. `CosineScorer` reads one float32 vector per pooled row from a per-store vector cache beside the hot index. A query is embedded before recall by `Memory.prepare(query)`, which is sync in Python and async in Node. That keeps `recall_outcome` synchronous on both sides. If the backend is off or failing, or a row has no vector, the whole recall is ranked by BM25, byte for byte as before.
@@ -692,7 +694,7 @@ Copy the `b64`/`unb64`/`REF` preamble and `literalCases` from `recall-gate.mjs:5
 
 - [ ] **Step 7: Gates and commit**
 
-```bash
+```text
 git add runtime-py/src/bantamkit/memory/vectors.py runtime-ts/src/memory/vectors.ts \
   runtime-py/tests/test_memory_vectors.py runtime-ts/test/vectors.test.mjs \
   tools/conformance/suites/recall-embed.mjs tools/conformance/ref/embed_ref.py && git diff --cached --stat
@@ -1155,7 +1157,7 @@ def row_vectors(store: Any, pool: Any, model: str) -> list[array | None] | None:
 
 - [ ] **Step 10: Gates and commit**
 
-```bash
+```text
 git add runtime-py/src/bantamkit/memory/embed.py runtime-ts/src/memory/embed.ts \
   runtime-py/src/bantamkit/memory/vectors.py runtime-ts/src/memory/vectors.ts \
   runtime-py/src/bantamkit/memory/store.py runtime-ts/src/memory/store.ts \

@@ -311,8 +311,6 @@ W_FRESH_DEMOTE = -0.5
 W_USAGE = 0.2
 W_CONTEXT = 0.0  # the #200 slot: file context, zero until #200 gives it a signal
 W_FLOOR = 0.1
-# #207 D9: the embedding scorer's absolute cosine floor; Task 5 tunes it on silver only.
-EMBED_GATE = 0.0
 STALE_WORDS = ("SUPERSEDED", "CLOSED", "REFUTED")
 _STALE_FIRST = frozenset(" \t" + "".join(w[0] for w in STALE_WORDS))
 
