@@ -351,7 +351,10 @@ def test_the_ttl_is_once_a_day(bed):
     assert not retention.due(home, "2026-10-16T23:59:59.999Z")
     assert retention.due(home, "2026-10-17T00:00:00.000Z")
     assert retention.due(home, "2026-10-15T00:00:00.000Z")  # a stamp from the future is not fresh
-    # The child stamped NOW (today, 00:00Z); the wall clock is later today, so not due.
+    # maybe_spawn reads the wall clock, so re-stamp the run at the real now: a run within the
+    # last 24 h is fresh (pinning NOW here failed the day after NOW, 2026-10-17).
+    state["ran_at"] = retention.now_stamp()
+    (home / ".bantamkit/retention.json").write_text(json.dumps(state), encoding="utf-8")
     assert retention.maybe_spawn(home, str(bed / "a")) == "fresh"
 
 

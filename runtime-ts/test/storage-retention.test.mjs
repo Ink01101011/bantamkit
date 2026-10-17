@@ -288,6 +288,10 @@ test('the TTL is once a day', (t) => {
   assert.equal(retention.due(home, '2026-10-16T23:59:59.999Z'), false);
   assert.equal(retention.due(home, '2026-10-17T00:00:00.000Z'), true);
   assert.equal(retention.due(home, '2026-10-15T00:00:00.000Z'), true);
+  // maybeSpawn reads the wall clock, so re-stamp the run at the real now: a run within the
+  // last 24 h is fresh (pinning NOW here failed the day after NOW, 2026-10-17).
+  state.ran_at = retention.nowStamp();
+  fs.writeFileSync(path.join(home, '.bantamkit/retention.json'), JSON.stringify(state));
   assert.equal(retention.maybeSpawn(home, path.join(base, 'a')), 'fresh');
 });
 
