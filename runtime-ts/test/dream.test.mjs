@@ -896,7 +896,7 @@ test('memory_dream is served eleventh and its schema is the asset', async () => 
   // this node is about where `memory_dream` sits, and a later tool moving in behind it
   // must not be able to satisfy it.
   assert.equal(listed[10].name, 'memory_dream');
-  assert.equal(listed.length, 14);
+  assert.equal(listed.length, 15); // + memory_queries (#207 amendment 3)
   const asset = JSON.parse(readFileSync(join(scratchRepoRoot(), 'assets', 'tools', 'memory_dream.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'memory_dream');
   assert.equal(served.description, asset.description);
