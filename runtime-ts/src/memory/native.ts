@@ -141,14 +141,17 @@ export class NativeStore {
     return this.listing().length;
   }
 
-  /** This layer's share of a pooled recall, the `shadow` names taken out before scoring. */
-  pool(q: readonly string[], skipped?: SkippedFact[], shadow: ReadonlySet<string> = EMPTY): Pool {
+  /**
+   * This layer's share of a pooled recall, the `shadow` names taken out before scoring.
+   * `everyRow` reaches `poolOf` only (#207 amendment 3, `store.poolOf`).
+   */
+  pool(q: readonly string[], skipped?: SkippedFact[], shadow: ReadonlySet<string> = EMPTY, everyRow = false): Pool {
     const idx = this.indexed();
-    if (idx === null) return poolOf([], q);
+    if (idx === null) return poolOf([], q, everyRow);
     if (skipped !== undefined) for (const s of skippedOf(idx)) skipped.push(s);
     const got = MemoryStore.poolIndexed(idx, q);
     if (got !== null) return poolWithout(got, shadow);
-    return poolOf(this.candidates(undefined, shadow), q);
+    return poolOf(this.candidates(undefined, shadow), q, everyRow);
   }
 
   /** The fact a row stands for; `null` when its file no longer says what the index said. */

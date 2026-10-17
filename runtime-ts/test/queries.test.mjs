@@ -192,3 +192,263 @@ test('the constants', () => {
   assert.deepEqual([Q.LIST_LIMIT, Q.BODY_EXCERPT, Q.QUERIES_DIR], [10, 600, 'queries']);
   assert.equal(Q.WRITE_FAILED, 'the sidecar could not be saved');
 });
+
+// ------------------------------------------------------------- 2.3: the ranker, save, backfill
+
+import { Memory } from '../dist/memory/component.js';
+import { MemoryStore } from '../dist/memory/store.js';
+
+/** The reference's `home` fixture: a scratch HOME/USERPROFILE and index, Retention off. */
+function homeBed() {
+  const t = scratch();
+  const h = join(t, 'home');
+  mkdirSync(h);
+  process.env.HOME = h;
+  process.env.USERPROFILE = h;
+  process.env.BANTAMKIT_INDEX_DIR = join(t, 'index');
+  process.env.BANTAMKIT_RETENTION = 'off';
+  return { t, h };
+}
+
+function mem(t) {
+  const m = new Memory(join(t, 'proj'));
+  m.save('project', 'release-steps', 'how the package goes out', 'Run publish.sh, then verify on npm.');
+  m.save('project', 'lint-rules', 'ruff config for tools', 'ruff check runtime-py tools');
+  return m;
+}
+
+const names = (facts) => facts.map((f) => f.name);
+
+test('no sidecar is byte-identical to B', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  const before = m.recallOutcome('how do I ship the package', 3, undefined, false).reply;
+  assert.ok(before.includes('release-steps'));
+  assert.ok(!existsSync(join(h, '.bantamkit', 'queries')));
+  assert.equal(m.recallOutcome('how do I ship the package', 3, undefined, false).reply, before);
+});
+
+test('an empty sidecar is byte-identical to B', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  const before = m.recallOutcome('how do I ship the package', 3, undefined, false);
+  Q.writeEntries(Q.sidecarPath(h, m.store.root), new Map([['release-steps', null]]));
+  const after = m.recallOutcome('how do I ship the package', 3, undefined, false);
+  assert.deepEqual(after, before);
+});
+
+test('a query alone admits a fact BM25F misses', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  // "npm" and "registry" are in no name or description: BM25F scores nothing.
+  assert.deepEqual(names(m.injectCandidates('npm registry')), []);
+  Q.writeEntries(Q.sidecarPath(h, m.store.root), new Map([['release-steps', [['publish to npm registry'], '']]]));
+  assert.deepEqual(names(m.injectCandidates('npm registry')), ['release-steps']);
+});
+
+/** The reference's `store.snapshot()` (absent here): `indexed` answers null, so the files answer. */
+function filesPath(m, body) {
+  const store = m.store;
+  store.indexed = () => null;
+  try {
+    return body();
+  } finally {
+    delete store.indexed;
+  }
+}
+
+test('files path and index path agree with a sidecar', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  Q.writeEntries(Q.sidecarPath(h, m.store.root), new Map([['lint-rules', [['which linter config'], '']]]));
+  const indexed = names(m.rankAll('which linter config'));
+  const files = filesPath(m, () => names(m.rankAll('which linter config')));
+  assert.deepEqual(files, ['lint-rules']);
+  assert.deepEqual(indexed, ['lint-rules']);
+});
+
+test('a query lifts a row the files pool would have dropped', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  Q.writeEntries(Q.sidecarPath(h, m.store.root), new Map([['release-steps', [['npm registry'], '']]]));
+  assert.deepEqual(filesPath(m, () => names(m.rankAll('npm registry'))), ['release-steps']);
+});
+
+test('head feeds BM25F only', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  assert.deepEqual(names(m.injectCandidates('and then?')), []);
+  assert.deepEqual(names(m.injectCandidates('and then?', 'and then?\nruff config')), ['lint-rules']);
+  // the queries vector keeps the bare prompt: a head term matching only a query adds nothing
+  Q.writeEntries(Q.sidecarPath(h, m.store.root), new Map([['release-steps', [['npm registry'], '']]]));
+  assert.deepEqual(names(m.injectCandidates('and then?', 'and then?\nnpm registry')), []);
+  const got = m.recallOutcome('and then?', 3, undefined, false, false, null, 'and then?\nruff config');
+  assert.ok(got.headers.length > 0 && got.headers[0].includes('lint-rules'));
+});
+
+test('save writes queries and refuses bad ones', () => {
+  const { t, h } = homeBed();
+  const m = new Memory(join(t, 'proj'));
+  const side = () => Q.readSidecar(Q.sidecarPath(h, m.store.root));
+  const o = m.saveOutcome('project', 'a-fact', 'd', 'b', null, null, ['q one', 'q two']);
+  assert.equal(o.status, 'saved');
+  assert.equal(o.reply, "saved 'a-fact'");
+  assert.deepEqual(side(), new Map([['a-fact', ['q one', 'q two']]]));
+  const raw = JSON.parse(readFileSync(Q.sidecarPath(h, m.store.root), 'utf8'));
+  assert.equal(raw.facts['a-fact'].sha, Q.factSha(join(m.store.root, 'facts', 'a-fact.md')));
+  assert.notEqual(raw.facts['a-fact'].sha, '');
+  const bad = m.saveOutcome('project', 'b-fact', 'd', 'b', null, null, Array(9).fill('q'));
+  assert.equal(bad.status, 'refused-validation');
+  assert.equal(bad.reply, 'error: queries: at most 8 per fact, got 9');
+  assert.ok(!existsSync(join(m.store.root, 'facts', 'b-fact.md')));
+  // omitted leaves the entry untouched; [] deletes it
+  assert.equal(m.saveOutcome('project', 'a-fact', 'd', 'b2').status, 'saved');
+  assert.deepEqual(side(), new Map([['a-fact', ['q one', 'q two']]]));
+  assert.equal(m.saveOutcome('project', 'a-fact', 'd', 'b3', null, null, []).status, 'saved');
+  assert.deepEqual(side(), new Map());
+  assert.equal(m.save('project', 'c-fact', 'unrelated words entirely', 'zzz', null, null, ['via save']), "saved 'c-fact'");
+  assert.deepEqual(side(), new Map([['c-fact', ['via save']]]));
+});
+
+test('save without queries writes no sidecar', () => {
+  const { t, h } = homeBed();
+  const m = new Memory(join(t, 'proj'));
+  assert.equal(m.saveOutcome('project', 'a-fact', 'd', 'b').status, 'saved');
+  assert.ok(!existsSync(join(h, '.bantamkit', 'queries')));
+});
+
+test('save survives an unwritable sidecar', () => {
+  const { t, h } = homeBed();
+  mkdirSync(join(h, '.bantamkit'));
+  writeFileSync(join(h, '.bantamkit', 'queries'), 'a file, not a directory', 'utf8');
+  const m = new Memory(join(t, 'proj'));
+  const o = m.saveOutcome('project', 'a-fact', 'd', 'b', null, null, ['q']);
+  assert.equal(o.status, 'saved');
+  assert.equal(o.reply, "saved 'a-fact' (queries not written: the sidecar could not be saved)");
+  assert.ok(existsSync(join(m.store.root, 'facts', 'a-fact.md')));
+});
+
+test('save survives a query its encoder refuses (a lone surrogate)', () => {
+  const { t, h } = homeBed();
+  const m = new Memory(join(t, 'proj'));
+  const o = m.saveOutcome('project', 'a-fact', 'd', 'b', null, null, ['\ud800']);
+  assert.equal(o.status, 'saved');
+  assert.equal(o.reply, "saved 'a-fact' (queries not written: the sidecar could not be saved)");
+  assert.deepEqual(readdirSync(join(h, '.bantamkit', 'queries')), []);
+});
+
+test('queriesMissing and queriesWrite', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  const got = m.queriesMissing();
+  assert.equal(got.result, 'missing');
+  assert.equal(got.remaining, 2);
+  assert.deepEqual(got.facts.map((f) => [f.layer, f.name]), [
+    ['project', 'lint-rules'],
+    ['project', 'release-steps'],
+  ]);
+  assert.equal(got.facts[1].description, 'how the package goes out');
+  assert.ok(got.facts[1].body.startsWith('Run publish.sh, then verify on npm.'));
+  assert.ok(got.instructions.startsWith('# Likely-prompt queries'));
+  assert.deepEqual(Object.keys(got).sort(), ['facts', 'instructions', 'remaining', 'result']);
+  assert.deepEqual(Object.keys(got.facts[0]).sort(), ['body', 'description', 'layer', 'name']);
+  assert.deepEqual(m.queriesWrite([{ name: 'lint-rules', queries: ['which linter'] }]), {
+    result: 'written',
+    written: 1,
+    remaining: 1,
+  });
+  assert.deepEqual(m.queriesCoverage(), [1, 2]);
+  assert.deepEqual(m.queriesMissing().facts.map((f) => f.name), ['release-steps']);
+  assert.deepEqual(m.queriesWrite([{ name: 'nope', queries: ['x'] }]), {
+    result: 'error',
+    reason: "facts[0]: no fact named 'nope' in any layer",
+  });
+  assert.deepEqual(
+    m.queriesWrite([
+      { name: 'lint-rules', layer: 'project', queries: ['x'] },
+      { name: 'nope', layer: 'project', queries: ['x'] },
+    ]),
+    { result: 'error', reason: "facts[1]: no fact named 'nope' in layer 'project'" },
+  );
+  // the whole call was refused: item 0 was not written either
+  assert.deepEqual(Q.readSidecar(Q.sidecarPath(h, m.store.root)), new Map([['lint-rules', ['which linter']]]));
+  assert.deepEqual(m.queriesWrite([{ name: 'lint-rules', layer: 'zzz', queries: ['x'] }]), {
+    result: 'error',
+    reason: "facts[0]: no layer named 'zzz'; layers are project",
+  });
+  for (const bad of [{ queries: ['x'] }, 'x', { name: '', queries: ['x'] }, { name: 'lint-rules' }]) {
+    assert.deepEqual(m.queriesWrite([bad]), {
+      result: 'error',
+      reason: 'facts[0] must be an object with a name and queries',
+    });
+  }
+  // a non-string layer is S5, not S6; `layer: null` is omitted
+  assert.deepEqual(m.queriesWrite([{ name: 'lint-rules', layer: 3, queries: ['x'] }]), {
+    result: 'error',
+    reason: 'facts[0] must be an object with a name and queries',
+  });
+  assert.equal(m.queriesWrite([{ name: 'lint-rules', layer: null, queries: ['which linter'] }]).result, 'written');
+  assert.deepEqual(m.queriesWrite([{ name: 'lint-rules', queries: Array(9).fill('x') }]), {
+    result: 'error',
+    reason: 'facts[0]: queries: at most 8 per fact, got 9',
+  });
+  assert.deepEqual(m.queriesWrite([{ name: 'lint-rules', queries: 'x' }]), {
+    result: 'error',
+    reason: 'facts[0]: queries must be a list of strings',
+  });
+});
+
+test('a queriesWrite failure is S9', () => {
+  const { t, h } = homeBed();
+  const m = mem(t);
+  mkdirSync(join(h, '.bantamkit'), { recursive: true });
+  writeFileSync(join(h, '.bantamkit', 'queries'), 'a file', 'utf8');
+  assert.deepEqual(m.queriesWrite([{ name: 'lint-rules', queries: ['x'] }]), {
+    result: 'error',
+    reason: 'the sidecar could not be saved',
+  });
+});
+
+test('queriesMissing lists at most ten', () => {
+  const { t } = homeBed();
+  const m = new Memory(join(t, 'proj'));
+  const words = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima'.split(' ');
+  words.forEach((w, i) => {
+    const n = `fact-${String(i).padStart(2, '0')}`;
+    assert.equal(m.save('project', n, `${w} ${w}`, 'b'.repeat(700)), `saved '${n}'`);
+  });
+  const got = m.queriesMissing();
+  assert.equal(got.facts.length, 10);
+  assert.equal(got.remaining, 12);
+  assert.equal(got.facts[0].body.length, Q.BODY_EXCERPT);
+  assert.deepEqual(m.queriesCoverage(), [0, 12]);
+});
+
+test('coverage counts a name once across layers', () => {
+  const { t, h } = homeBed();
+  const profile = join(t, 'profile');
+  new Memory(profile).save('user', 'shared-name', 'in profile', 'p');
+  new Memory(profile).save('user', 'only-profile', 'in profile', 'p');
+  const m = mem(t);
+  m.save('project', 'shared-name', 'in project', 'q');
+  m.layers.push(['profile', new MemoryStore(profile, { create: false }), false]);
+  assert.deepEqual(m.queriesCoverage(), [0, 4]);
+  assert.deepEqual(m.queriesMissing().facts.map((f) => [f.layer, f.name]), [
+    ['project', 'lint-rules'],
+    ['project', 'release-steps'],
+    ['project', 'shared-name'],
+    ['profile', 'only-profile'],
+  ]);
+  assert.deepEqual(m.queriesWrite([{ name: 'only-profile', queries: ['a profile query'] }]), {
+    result: 'written',
+    written: 1,
+    remaining: 3,
+  });
+  assert.deepEqual(Q.readSidecar(Q.sidecarPath(h, profile)), new Map([['only-profile', ['a profile query']]]));
+  assert.equal(
+    m.queriesWrite([{ name: 'x', layer: 'nope', queries: ['x'] }]).reason,
+    "facts[0]: no layer named 'nope'; layers are project, profile",
+  );
+  // a profile sidecar lifts a profile fact in the pooled ranking
+  assert.equal(names(m.injectCandidates('a profile query'))[0], 'only-profile');
+});
