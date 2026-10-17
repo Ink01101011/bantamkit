@@ -62,7 +62,7 @@ def _served_assets() -> dict[str, dict]:
 
 def test_every_served_asset_carries_a_title_and_only_mcp_hint_keys():
     assets = _served_assets()
-    assert len(assets) == 14
+    assert len(assets) == 15  # + memory_queries (#207 amendment 3)
     for name, asset in assets.items():
         assert isinstance(asset["title"], str) and asset["title"].strip(), name
         hints = asset["annotations"]
@@ -146,7 +146,7 @@ def test_the_wire_advertises_the_asset_title_and_hints_whatever_the_log_state(tm
     [line] = _exchange(tmp_path, [{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}], event_log)
     tools = json.loads(line)["result"]["tools"]
     assets = _served_assets()
-    assert len(tools) == 14
+    assert len(tools) == 15  # + memory_queries (#207 amendment 3)
     for tool in tools:
         asset = assets[tool["name"]]
         assert tool["title"] == asset["title"]

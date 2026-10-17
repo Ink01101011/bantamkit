@@ -44,13 +44,14 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_fourteen_tools(tmp_path):
+def test_lists_exactly_the_fifteen_tools(tmp_path):
     """One server, one entry point: memory and shiftwork ride the same instance.
 
     Seven since `build_identity` (RB-P84's second half), EIGHT since
     `bantamkit_status` (`docs/status.md`), ELEVEN since `skill_audit`, TWELVE since
     `memory_dream` (job45, roadmap row 5) and FOURTEEN since `work_plan` and
-    `shiftwork_plan` (job `workplan-dag`): the list is EXACT, so a tool added to the
+    `shiftwork_plan` (job `workplan-dag`) and FIFTEEN since `memory_queries` (#207
+    amendment 3): the list is EXACT, so a tool added to the
     server is a deliberate edit here. The assertion is not relaxed to a membership check
     — an exact list is the only form that notices a tool arriving.
     """
@@ -63,6 +64,7 @@ def test_lists_exactly_the_fourteen_tools(tmp_path):
                 "build_identity",
                 "memory_compact",
                 "memory_dream",
+                "memory_queries",
                 "memory_recall",
                 "memory_save",
                 "shiftwork_clock_in",
@@ -542,6 +544,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                     "build_identity",
                     "memory_compact",
                     "memory_dream",
+                    "memory_queries",
                     "memory_recall",
                     "memory_save",
                     "shiftwork_clock_in",
@@ -602,6 +605,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                     "build_identity",
                     "memory_compact",
                     "memory_dream",
+                    "memory_queries",
                     "memory_recall",
                     "memory_save",
                     "shiftwork_clock_in",
@@ -1158,3 +1162,51 @@ def test_the_served_tools_still_unwrap_a_json_encoded_list(tmp_path):
             return r.is_error, r.content[0].text
 
     assert run(scenario()) == (False, "saved 'links-unwrap'")
+
+
+def test_memory_queries_lists_writes_and_refuses_over_mcp(tmp_path, monkeypatch):
+    """#207 amendment 3 (Q5/Q6): `memory_save(queries)`, then `memory_queries` `{}`, a write
+    and a refusal, through the served tools. The sidecar lands under the scratch HOME."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    save = {"type": "project", "description": "who owns the payments API", "body": "billing"}
+
+    async def scenario():
+        async with Client(make_server(tmp_path)) as c:
+            one = await c.call_tool(
+                "memory_save", {**save, "name": "payments-owner", "queries": ["who owns pay"]}
+            )
+            assert one.content[0].text == "saved 'payments-owner'"
+            two = await c.call_tool(
+                "memory_save",
+                {"type": "project", "name": "lint-rules", "description": "ruff config",
+                 "body": "ruff check"},
+            )
+            assert two.content[0].text == "saved 'lint-rules'"
+            bad = await c.call_tool(
+                "memory_save", {**save, "name": "x-fact", "queries": ["q"] * 9}
+            )
+            assert bad.content[0].text == "error: queries: at most 8 per fact, got 9"
+            listed = (await c.call_tool("memory_queries", {})).structured_content
+            assert listed["result"] == "missing" and listed["remaining"] == 1
+            assert [f["name"] for f in listed["facts"]] == ["lint-rules"]
+            assert listed["instructions"] == load_skill("memory-queries")
+            wrote = await c.call_tool(
+                "memory_queries", {"facts": [{"name": "lint-rules", "queries": ["linter?"]}]}
+            )
+            assert wrote.structured_content == {"result": "written", "written": 1, "remaining": 0}
+            refused = await c.call_tool(
+                "memory_queries", {"facts": [{"name": "nope", "queries": ["x"]}]}
+            )
+            assert refused.is_error is False
+            assert refused.structured_content == {
+                "result": "error",
+                "reason": "facts[0]: no fact named 'nope' in any layer",
+            }
+            recalled = await c.call_tool("memory_recall", {"query": "linter?"})
+            assert "[lint-rules]" in recalled.content[0].text
+
+    run(scenario())
+    assert len(list((home / ".bantamkit" / "queries").glob("*.json"))) == 1

@@ -50,6 +50,13 @@
           "type": "string"
         },
         "description": "Words the user will type when they need this fact, in the user's own language as well as English (e.g. Thai and English terms)"
+      },
+      "queries": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "The prompts a user would type when this fact is what they need: three in the user's language and three in English, at most 8, each at most 200 characters"
       }
     },
     "additionalProperties": false

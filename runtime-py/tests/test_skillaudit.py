@@ -1484,7 +1484,7 @@ def test_the_tool_is_served_at_its_pinned_index_and_its_schema_is_the_assets(tmp
     # the drift the rename was meant to stop happening to the NAME — and the exact reason
     # the count belongs in the assertion, not in prose.
     assert order[9] == "skill_audit"
-    assert len(order) == 14
+    assert len(order) == 15  # + memory_queries, appended (#207 amendment 3)
     asset = json.loads(
         (REPO / "assets" / "tools" / "skill_audit.json").read_text(encoding="utf-8")
     )
