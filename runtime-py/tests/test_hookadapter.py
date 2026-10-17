@@ -2388,6 +2388,12 @@ def test_previous_prompt_drops_the_partial_first_line_of_the_tail(tmp_path):
     assert H._previous_prompt(str(t), "now") == "kept"
     t.write_text(head + "\n", encoding="utf-8")
     assert H._previous_prompt(str(t), "now") == ""
+    # the cut line is dropped even when what is left of it parses: the tail starts EXACTLY at
+    # a record's `{`, but the line began earlier (junk ahead of it), so it is not a record
+    ghost = _rec("g" * (H.TAIL_BYTES - 1 - len(_rec(""))))
+    assert len(ghost.encode("utf-8")) == H.TAIL_BYTES - 1
+    t.write_text("junk" + ghost + "\n", encoding="utf-8")
+    assert H._previous_prompt(str(t), "now") == ""
     # a prompt that starts before the tail is not read, even when its line ends inside it
     t.write_text(_rec("y" * 100) + "\n" + "z" * (H.TAIL_BYTES - 10) + "\n", encoding="utf-8")
     assert H._previous_prompt(str(t), "now") == ""
