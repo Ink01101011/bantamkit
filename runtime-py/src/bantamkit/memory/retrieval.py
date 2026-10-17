@@ -31,6 +31,16 @@ def _nospace(cp: int) -> bool:
     return any(lo <= cp <= hi for lo, hi in _NOSPACE)
 
 
+def strip_nospace(text: str) -> str:
+    """Every code point of a no-space script replaced by one space, on the RAW text (before NFKC).
+
+    Q2's qdoc keeps only the spaced-script tokens of a query: the Thai bigrams were
+    measured as noise (J72-20). The order matters for fidelity: the probe stripped first
+    and tokenized after.
+    """
+    return "".join(" " if _nospace(ord(ch)) else ch for ch in text)
+
+
 def _wordchar(ch: str) -> bool:
     return unicodedata.category(ch)[0] in "LNM"
 
@@ -78,6 +88,9 @@ BM25_B = 0.75
 # Field order IS the summation order; runtime-ts/src/memory/retrieval.ts sums the same way.
 FIELD_BOOST = (("name", 2.0), ("description", 1.0), ("keywords", 2.0))
 SCORE_ROUND = 9
+# #207 amendment 3 (Q2): the weight on the likely-prompt vector. Frozen by gold look 6;
+# never tuned on gold.
+QUERY_WEIGHT = 1.0
 
 
 @dataclass(frozen=True)
@@ -292,6 +305,37 @@ class Bm25fScorer:
 
 
 BM25F = Bm25fScorer()
+
+
+class QueryScorer:
+    """BM25F over the pooled columns plus `QUERY_WEIGHT` times BM25 of the bare prompt over
+    each row's qdoc (#207 amendment 3, Q2). Dense: `vecs` is one qdoc string per pooled row,
+    in row order (`pooled_ranking`'s `rows`), so a row whose name or description holds no
+    prompt term can still be lifted by its queries."""
+
+    dense = True
+
+    def __init__(self, prompt: str) -> None:
+        self.prompt = prompt
+        self.fallback: str | None = None
+
+    def label(self) -> str:
+        return "bm25f+queries"
+
+    def used(self) -> str:
+        return "bm25f+queries"
+
+    def floor(self) -> float:
+        return GATE_FLOOR  # a call-time read, as `Bm25fScorer.floor`
+
+    def column(self, cols: Columns, vecs: list[Any] | None) -> list[float] | None:
+        if vecs is None:
+            return None
+        a = bm25_segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs)
+        b = bm25_scores(self.prompt, [Doc("", v, ()) for v in vecs])
+        # NOT rounded: the probe summed two rounded columns, and `rank_columns` rounds
+        # `score * weight`.
+        return [x + QUERY_WEIGHT * y for x, y in zip(a, b, strict=True)]
 
 
 # ------------------------------------------------------------------ the gate and the ranker
