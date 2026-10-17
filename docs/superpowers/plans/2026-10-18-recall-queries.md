@@ -1378,3 +1378,21 @@ real `~/.bantamkit` before and after.
   of Task 3.
 
 Quote each gate's final count line in the unit note.
+
+## Orchestrator rulings on the open questions (2026-10-18)
+
+1. **Head prompt.** Take the plan's rule: drop any trailing copies of the current prompt (compared stripped), then
+   take the last main-chain prompt that is left. Split on `"\n"` only. Q10 scores with J72-12's `prev`, so the ranking
+   reproduction checks the ranker. The product's own head extraction is checked separately, as an agreement count
+   against J72-12. Every disagreement is reported with its class, and none of them blocks the result.
+2. **Files-path pool.** Confirmed: whenever any sidecar of a layer has entries, add `every_row`, so the files path and
+   the index path score the same pool.
+3. **`sha`.** Written, never read for scoring. `memory_queries {}` lists only facts that have no queries. `queries: []`
+   deletes the entry, and omitting `queries` leaves it untouched.
+4. **Limits.** A limit violation refuses the whole save (`refused-validation`, with the plan's sentence), and Claude
+   fixes the call and retries. Only an IO failure on the sidecar is best-effort, with S4.
+5. **N of M.** Accepted as planned: distinct names across all readable layers, in precedence order.
+6. **Q10 gold.** Confirmed: log a `reproduction` line (not a look) before any gold file is read.
+7. **Units.** Python, Node, conformance and measurement are separate units in ONE job. The job is not done, and no PR
+   is opened, until all four have landed and the reviewer has passed them.
+8. **Strip before NFKC.** Kept to match the probe, and pinned by a test.
