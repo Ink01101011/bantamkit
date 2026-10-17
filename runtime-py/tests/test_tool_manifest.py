@@ -556,3 +556,13 @@ def test_clock_out_serves_the_sub_schemas_the_checkpoint_writer_enforces():
         "unit_id" in sentence and "cursor" in sentence
         for sentence in description.replace(";", ".").split(". ")
     )
+
+
+def test_memory_queries_instructions_load():
+    """#207 amendment 3 (Q7): the text `memory_queries {}` hands back, and memory.md's pointer."""
+    from bantamkit.assets import load_skill
+
+    text = load_skill("memory-queries")
+    assert text.startswith("# Likely-prompt queries\n")
+    assert "memory_queries" in text and "never copy more than" in text
+    assert "## Likely-prompt queries" in load_skill("memory")
