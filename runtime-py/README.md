@@ -48,7 +48,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   ([docs/hooks.md](https://github.com/Ink01101011/bantamkit/blob/main/docs/hooks.md)).
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
-  [the fourteen tools](#-what-it-serves).
+  [the fifteen tools](#-what-it-serves).
 - **Same answers as the Node server.** The two share a memory store on disk, and every surface
   is compared between both runtimes by a conformance suite (`node tools/conformance/run.mjs
   --all` in the repository), so install whichever your host makes easy.
@@ -71,7 +71,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and variable, with its default |
 | [Update](#-update) | `--update`, pipx, uv, then restart |
 | [Troubleshooting](#-troubleshooting) | Timeouts, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 14 tools, one prompt, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, one prompt, two resource templates |
 | [Requirements](#-requirements) | Python and dependencies |
 | [The asset pack](#-the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
 | [The operator CLI: `python -m bantamkit.memory`](#-the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
@@ -305,6 +305,7 @@ It serves 15 tools, the `bantamkit_status` prompt and two resource templates
 | `memory_recall` | retrieve facts matching a query |
 | `memory_compact` | archive the stalest facts to fit the index budget |
 | `memory_dream` | consolidate facts the project and profile layers hold under the same name |
+| `memory_queries` | list the facts that have no likely-prompt queries yet, and store the queries written for them; recall matches a prompt against them |
 | `validate_json` | validate a document against a JSON Schema |
 | `skill_audit` | audit a skill catalogue for findings |
 | `shiftwork_clock_in` | open a unit of work and get its brief |
@@ -402,7 +403,7 @@ as a side effect of the package's own imports (`agent`, `assets`, `budget`, `cli
 | `bantamkit.memory` | the memory store | `Memory`, `MemoryStore` |
 | **9 modules** | | **30 values, no `__all__`** |
 
-**This is not the npm package's export surface.** Both runtimes serve the same fourteen MCP
+**This is not the npm package's export surface.** Both runtimes serve the same fifteen MCP
 tools, but what each one exports *to an importer* is a different product: here it is the
 agent/critique/eval library above; there it is the memory store, the asset pack, the event log,
 the shift-work tools and a set of CPython-semantics shims — 141 values behind one entry point. Of

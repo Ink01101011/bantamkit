@@ -355,6 +355,7 @@ It serves 15 tools, the `bantamkit_status` prompt and two resource templates
 | `memory_recall` | retrieve facts matching a query |
 | `memory_compact` | archive the stalest facts to fit the index budget |
 | `memory_dream` | consolidate facts the project and profile layers hold under the same name |
+| `memory_queries` | list the facts that have no likely-prompt queries yet, and store the queries written for them; recall matches a prompt against them |
 | `validate_json` | validate a document against a JSON Schema |
 | `skill_audit` | audit a skill catalogue for findings |
 | `shiftwork_clock_in` | open a unit of work and get its brief |

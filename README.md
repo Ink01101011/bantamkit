@@ -41,7 +41,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   long session that saved nothing ([docs/hooks.md](docs/hooks.md)).
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
-  [the fourteen tools](#-what-it-serves).
+  [the fifteen tools](#-what-it-serves).
 - **Two runtimes, one store.** Pure Node on npm and Python on PyPI read and write the same
   files, and every surface is compared between both runtimes by a conformance suite
   (`node tools/conformance/run.mjs --all`).
@@ -66,7 +66,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
 | [Update](#-update) | `--update`, then restart the server |
 | [Troubleshooting](#-troubleshooting) | Timeouts, Connection closed, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 14 tools, one prompt, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, one prompt, two resource templates |
 | [Use it as a Python library](#-use-it-as-a-python-library) | `pip install bantamkit` and a minimal agent |
 | [Recommended defaults](#-recommended-defaults) | Which components to attach, measured on four models |
 | [Documentation](#-documentation) | Every page under `docs/` |
@@ -300,6 +300,7 @@ Both servers serve the same 15 tools, the `bantamkit_status` prompt and two reso
 | `memory_recall` | retrieve facts matching a query |
 | `memory_compact` | archive the stalest facts to fit the index budget |
 | `memory_dream` | consolidate facts the project and profile layers hold under the same name |
+| `memory_queries` | list the facts that have no likely-prompt queries yet, and store the queries written for them; recall matches a prompt against them |
 | `validate_json` | validate a document against a JSON Schema |
 | `skill_audit` | audit a skill catalogue for findings |
 | `shiftwork_clock_in` | open a unit of work and get its brief |
