@@ -108,7 +108,7 @@ export const SKILL_BUDGET_MAXIMUM = 9007199254740991n;
 export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   memory_save: {
     model: 'memory_saveArguments',
-    fields: [req('type', 'str'), req('name', 'str'), req('description', 'str'), req('body', 'str'), opt('links', 'listStr'), opt('keywords', 'listStr')],
+    fields: [req('type', 'str'), req('name', 'str'), req('description', 'str'), req('body', 'str'), opt('links', 'listStr'), opt('keywords', 'listStr'), opt('queries', 'listStr')],
   },
   memory_recall: {
     model: 'memory_recallArguments',
@@ -233,6 +233,9 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // `shiftwork_plan(checkpoint: str)` — the same one strict `str` the other four
   // shift-work tools take.
   shiftwork_plan: { model: 'shiftwork_planArguments', fields: [req('checkpoint', 'str')] },
+  // `memory_queries(facts: list[dict[str, Any]] | None = None)` (#207 amendment 3, Q6): the
+  // `listDict` `work_plan` uses, optional; omitted or null lists the facts missing queries.
+  memory_queries: { model: 'memory_queriesArguments', fields: [opt('facts', 'listDict')] },
 };
 
 /** `type(value).__name__`, for the `input_type=` half of the sentence. */

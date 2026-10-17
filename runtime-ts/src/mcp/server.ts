@@ -85,12 +85,12 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The fourteen, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The fifteen, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
  * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
  * beside `memory_save` where a reader would look for it, `skill_audit` after that,
- * `memory_dream` after that, `token_ledger` after that and `work_plan` then `shiftwork_plan`
- * after that, for the same reason the reference appends: registration order IS the served
+ * `memory_dream` after that, `token_ledger` after that, `work_plan` then `shiftwork_plan`
+ * after that and `memory_queries` (#207 amendment 3) last, for the same reason the reference appends: registration order IS the served
  * order, and appending is the only edit that leaves the others where every existing
  * declaration says they are.
  *
@@ -125,6 +125,7 @@ export const MCP_TOOLS = [
   'token_ledger',
   'work_plan',
   'shiftwork_plan',
+  'memory_queries',
 ] as const;
 
 /** The served set, for the call path: a name outside it is unknown, whatever `ARG_MODELS` says. */
@@ -577,8 +578,11 @@ function runTool(
       const asStrings = links && links.t === 'list' ? links.v.map((v) => asText(v)) : null;
       const words = args.get('keywords');
       const keywords = words && words.t === 'list' ? words.v.map((v) => asText(v)) : null;
+      // #207 amendment 3 (Q5): the fact's likely prompts, read exactly as `keywords` is.
+      const prompts = args.get('queries');
+      const queries = prompts && prompts.t === 'list' ? prompts.v.map((v) => asText(v)) : null;
       const outcome = recordRaise(log, 'memory_save', () =>
-        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings, keywords),
+        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings, keywords, queries),
       );
       if (log.enabled) {
         // Only when a log is actually on: `indexAccounting` re-parses `facts/`, and a
@@ -1100,6 +1104,24 @@ function runTool(
         ),
         wrapped: false,
       };
+    case 'memory_queries': {
+      // #207 amendment 3 (Q6): `{}` lists the facts with no likely-prompt queries and the
+      // instructions for writing theirs; `{"facts": [...]}` writes them. The refusal is the
+      // `{"result": "error", "reason"}` shape `work_plan` uses, recorded the same way.
+      const facts = args.get('facts');
+      return {
+        value: notedDict(
+          recordResult(log, name, () =>
+            fromJs(
+              facts === undefined || facts.t === 'null'
+                ? memory.queriesMissing()
+                : memory.queriesWrite(toJs(facts) as unknown[]),
+            ),
+          ),
+        ),
+        wrapped: false,
+      };
+    }
     case 'shiftwork_plan':
       // The read-only batch view of a checkpoint. Registered beside `shiftwork_status`
       // because it is the same kind of thing: a path in, an answer out, and not one byte
