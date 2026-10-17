@@ -3,9 +3,12 @@
 Mirrored in runtime-ts/test/queries.test.mjs; `recall-queries` conformance compares the two
 runtimes."""
 
+import json
+
 import pytest
 
 from bantamkit.memory import queries as Q
+from bantamkit.memory.component import Memory
 from bantamkit.memory.retrieval import (
     BM25F,
     GATE_FLOOR,
@@ -166,3 +169,212 @@ def test_the_constants():
     assert (Q.SIDECAR_VERSION, Q.MAX_QUERIES, Q.MAX_QUERY_CHARS) == (1, 8, 200)
     assert (Q.LIST_LIMIT, Q.BODY_EXCERPT, Q.QUERIES_DIR) == (10, 600, "queries")
     assert Q.WRITE_FAILED == "the sidecar could not be saved"
+
+
+# ------------------------------------------------------------- 1.3: the ranker, save, backfill
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    h = tmp_path / "home"
+    h.mkdir()
+    for k in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(k, str(h))
+    monkeypatch.setenv("BANTAMKIT_INDEX_DIR", str(tmp_path / "index"))
+    monkeypatch.setenv("BANTAMKIT_RETENTION", "off")
+    return h
+
+
+def _mem(tmp_path):
+    m = Memory(tmp_path / "proj")
+    body = "Run publish.sh, then verify on npm."
+    m.save("project", "release-steps", "how the package goes out", body)
+    m.save("project", "lint-rules", "ruff config for tools", "ruff check runtime-py tools")
+    return m
+
+
+def test_no_sidecar_is_byte_identical_to_b(tmp_path, home):
+    m = _mem(tmp_path)
+    before = m.recall_outcome("how do I ship the package", 3, stamp=False).reply
+    assert "release-steps" in before
+    assert not (home / ".bantamkit" / "queries").exists()
+    assert m.recall_outcome("how do I ship the package", 3, stamp=False).reply == before
+
+
+def test_an_empty_sidecar_is_byte_identical_to_b(tmp_path, home):
+    m = _mem(tmp_path)
+    before = m.recall_outcome("how do I ship the package", 3, stamp=False)
+    Q.write_entries(Q.sidecar_path(home, m.store.root), {"release-steps": None})
+    after = m.recall_outcome("how do I ship the package", 3, stamp=False)
+    assert after == before
+
+
+def test_a_query_alone_admits_a_fact_bm25f_misses(tmp_path, home):
+    m = _mem(tmp_path)
+    # "npm" and "registry" are in no name or description: BM25F scores nothing.
+    assert [f.name for f in m.inject_candidates("npm registry")] == []
+    side = Q.sidecar_path(home, m.store.root)
+    Q.write_entries(side, {"release-steps": (["publish to npm registry"], "")})
+    assert [f.name for f in m.inject_candidates("npm registry")] == ["release-steps"]
+
+
+def test_files_path_and_index_path_agree_with_a_sidecar(tmp_path, home):
+    m = _mem(tmp_path)
+    side = Q.sidecar_path(home, m.store.root)
+    Q.write_entries(side, {"lint-rules": (["which linter config"], "")})
+    indexed = [f.name for f in m.rank_all("which linter config")]
+    with m.store.snapshot():  # `_indexed` returns None inside a snapshot: the files answer
+        files = [f.name for f in m.rank_all("which linter config")]
+    assert files == indexed == ["lint-rules"]
+
+
+def test_a_query_lifts_a_row_the_files_pool_would_have_dropped(tmp_path, home):
+    m = _mem(tmp_path)
+    Q.write_entries(Q.sidecar_path(home, m.store.root), {"release-steps": (["npm registry"], "")})
+    with m.store.snapshot():
+        assert [f.name for f in m.rank_all("npm registry")] == ["release-steps"]
+
+
+def test_head_feeds_bm25f_only(tmp_path, home):
+    m = _mem(tmp_path)
+    assert [f.name for f in m.inject_candidates("and then?")] == []
+    got = m.inject_candidates("and then?", head="and then?\nruff config")
+    assert [f.name for f in got] == ["lint-rules"]
+    # the queries vector keeps the bare prompt: a head term matching only a query adds nothing
+    Q.write_entries(Q.sidecar_path(home, m.store.root), {"release-steps": (["npm registry"], "")})
+    assert [f.name for f in m.inject_candidates("and then?", head="and then?\nnpm registry")] == []
+    got = m.recall_outcome("and then?", 3, stamp=False, head="and then?\nruff config")
+    assert got.headers and "lint-rules" in got.headers[0]
+
+
+def test_save_writes_queries_and_refuses_bad_ones(tmp_path, home):
+    m = Memory(tmp_path / "proj")
+    o = m.save_outcome("project", "a-fact", "d", "b", queries=["q one", "q two"])
+    assert o.status == "saved" and o.reply == "saved 'a-fact'"
+    side = Q.read_sidecar(Q.sidecar_path(home, m.store.root))
+    assert side == {"a-fact": ["q one", "q two"]}
+    raw = json.loads(Q.sidecar_path(home, m.store.root).read_text(encoding="utf-8"))
+    assert raw["facts"]["a-fact"]["sha"] == Q.fact_sha(m.store.root / "facts" / "a-fact.md")
+    assert raw["facts"]["a-fact"]["sha"] != ""
+    bad = m.save_outcome("project", "b-fact", "d", "b", queries=["q"] * 9)
+    assert bad.status == "refused-validation"
+    assert bad.reply == "error: queries: at most 8 per fact, got 9"
+    assert not (m.store.root / "facts" / "b-fact.md").exists()
+    # omitted leaves the entry untouched; [] deletes it
+    assert m.save_outcome("project", "a-fact", "d", "b2").status == "saved"
+    assert Q.read_sidecar(Q.sidecar_path(home, m.store.root)) == {"a-fact": ["q one", "q two"]}
+    assert m.save_outcome("project", "a-fact", "d", "b3", queries=[]).status == "saved"
+    assert Q.read_sidecar(Q.sidecar_path(home, m.store.root)) == {}
+    got = m.save("project", "c-fact", "unrelated words entirely", "zzz", queries=["via save"])
+    assert got == "saved 'c-fact'"
+    assert Q.read_sidecar(Q.sidecar_path(home, m.store.root)) == {"c-fact": ["via save"]}
+
+
+def test_save_without_queries_writes_no_sidecar(tmp_path, home):
+    m = Memory(tmp_path / "proj")
+    assert m.save_outcome("project", "a-fact", "d", "b").status == "saved"
+    assert not (home / ".bantamkit" / "queries").exists()
+
+
+def test_save_survives_an_unwritable_sidecar(tmp_path, home):
+    (home / ".bantamkit").mkdir()
+    (home / ".bantamkit" / "queries").write_text("a file, not a directory", encoding="utf-8")
+    m = Memory(tmp_path / "proj")
+    o = m.save_outcome("project", "a-fact", "d", "b", queries=["q"])
+    assert o.status == "saved"
+    assert o.reply == "saved 'a-fact' (queries not written: the sidecar could not be saved)"
+    assert (m.store.root / "facts" / "a-fact.md").exists()
+
+
+def test_queries_missing_and_write(tmp_path, home):
+    m = _mem(tmp_path)
+    got = m.queries_missing()
+    assert got["result"] == "missing" and got["remaining"] == 2
+    assert [(f["layer"], f["name"]) for f in got["facts"]] == [
+        ("project", "lint-rules"),
+        ("project", "release-steps"),
+    ]
+    assert got["facts"][1]["description"] == "how the package goes out"
+    assert got["facts"][1]["body"].startswith("Run publish.sh, then verify on npm.")
+    assert got["instructions"].startswith("# Likely-prompt queries")
+    assert set(got) == {"result", "facts", "remaining", "instructions"}
+    assert set(got["facts"][0]) == {"layer", "name", "description", "body"}
+    w = m.queries_write([{"name": "lint-rules", "queries": ["which linter"]}])
+    assert w == {"result": "written", "written": 1, "remaining": 1}
+    assert m.queries_coverage() == (1, 2)
+    assert [f["name"] for f in m.queries_missing()["facts"]] == ["release-steps"]
+    assert m.queries_write([{"name": "nope", "queries": ["x"]}]) == {
+        "result": "error",
+        "reason": "facts[0]: no fact named 'nope' in any layer",
+    }
+    assert m.queries_write([{"name": "lint-rules", "layer": "project", "queries": ["x"]},
+                            {"name": "nope", "layer": "project", "queries": ["x"]}]) == {
+        "result": "error",
+        "reason": "facts[1]: no fact named 'nope' in layer 'project'",
+    }
+    # the whole call was refused: item 0 was not written either
+    assert Q.read_sidecar(Q.sidecar_path(home, m.store.root)) == {"lint-rules": ["which linter"]}
+    assert m.queries_write([{"name": "lint-rules", "layer": "zzz", "queries": ["x"]}]) == {
+        "result": "error",
+        "reason": "facts[0]: no layer named 'zzz'; layers are project",
+    }
+    for bad in ({"queries": ["x"]}, "x", {"name": "", "queries": ["x"]}, {"name": "lint-rules"}):
+        assert m.queries_write([bad]) == {
+            "result": "error",
+            "reason": "facts[0] must be an object with a name and queries",
+        }
+    assert m.queries_write([{"name": "lint-rules", "queries": ["x"] * 9}]) == {
+        "result": "error",
+        "reason": "facts[0]: queries: at most 8 per fact, got 9",
+    }
+    assert m.queries_write([{"name": "lint-rules", "queries": "x"}]) == {
+        "result": "error",
+        "reason": "facts[0]: queries must be a list of strings",
+    }
+
+
+def test_queries_write_failure_is_s9(tmp_path, home):
+    m = _mem(tmp_path)
+    (home / ".bantamkit").mkdir(exist_ok=True)
+    (home / ".bantamkit" / "queries").write_text("a file", encoding="utf-8")
+    assert m.queries_write([{"name": "lint-rules", "queries": ["x"]}]) == {
+        "result": "error",
+        "reason": "the sidecar could not be saved",
+    }
+
+
+def test_queries_missing_lists_at_most_ten(tmp_path, home):
+    m = Memory(tmp_path / "proj")
+    words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split()
+    for i, w in enumerate(words):
+        assert m.save("project", f"fact-{i:02d}", f"{w} {w}", "b" * 700) == f"saved 'fact-{i:02d}'"
+    got = m.queries_missing()
+    assert len(got["facts"]) == 10 and got["remaining"] == 12
+    assert len(got["facts"][0]["body"]) == Q.BODY_EXCERPT
+    assert m.queries_coverage() == (0, 12)
+
+
+def test_coverage_counts_a_name_once_across_layers(tmp_path, home):
+    profile = tmp_path / "profile"
+    Memory(profile).save("user", "shared-name", "in profile", "p")
+    Memory(profile).save("user", "only-profile", "in profile", "p")
+    m = _mem(tmp_path)
+    m.save("project", "shared-name", "in project", "q")
+    from bantamkit.memory.store import MemoryStore
+
+    m._layers.append(("profile", MemoryStore(profile, create=False), False))
+    assert m.queries_coverage() == (0, 4)
+    got = m.queries_missing()
+    assert [(f["layer"], f["name"]) for f in got["facts"]] == [
+        ("project", "lint-rules"),
+        ("project", "release-steps"),
+        ("project", "shared-name"),
+        ("profile", "only-profile"),
+    ]
+    w = m.queries_write([{"name": "only-profile", "queries": ["a profile query"]}])
+    assert w == {"result": "written", "written": 1, "remaining": 3}
+    assert Q.read_sidecar(Q.sidecar_path(home, profile)) == {"only-profile": ["a profile query"]}
+    assert m.queries_write([{"name": "x", "layer": "nope", "queries": ["x"]}])["reason"] == (
+        "facts[0]: no layer named 'nope'; layers are project, profile"
+    )
+    # a profile sidecar lifts a profile fact in the pooled ranking
+    assert [f.name for f in m.inject_candidates("a profile query")][0] == "only-profile"
