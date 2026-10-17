@@ -880,6 +880,53 @@ async function runIn(ctx, home) {
       }
     };
 
+    // #212: a lone surrogate spelled as a YAML escape (the file is UTF-8; the backslash is
+    // literal). Python's strict encoder refused it at the first index write, so one such fact
+    // took down every recall on its store; Node's encoder wrote U+FFFD. Both now read each lone
+    // half as U+FFFD and a split pair as its one character. The save is there for `index.md`:
+    // it is rebuilt from every fact on disk, the surrogate one included.
+    {
+      const sur = runBoth(
+        {
+          'facts/release-notes.md': factFile('release-notes', { description: '"release \\ud800 notes"' }),
+          'facts/pair-fact.md': factFile('pair-fact', { description: '"pair \\ud83d\\ude00 reversed \\ude00\\ud83d"' }),
+        },
+        [
+          recall('release notes', null, true),
+          lookup('pair-fact', true),
+          memoryRecall('release notes', true),
+          save('project', 'unrelated', 'a wholly different subject', 'b'),
+          indexText(),
+        ],
+      );
+      cases.push({ name: '#212 a lone surrogate escape: recall, lookup, memory_recall, save — answers, side to side', kind: 'json', expected: sur.py, actual: sur.nd });
+      cases.push({ name: '#212 a lone surrogate escape: recall, lookup, memory_recall, save — tree, side to side', kind: 'bytes', expected: manifest(sur.roots.py), actual: manifest(sur.roots.node) });
+      // PER SIDE: a differential stays green if both sides keep the surrogate or both drop the
+      // fact. These pin what each side answers: the fact found, its description U+FFFD.
+      const surLiteral = [
+        ['release-notes'],
+        'pair-fact',
+        true,
+        '- [[pair-fact]] (project) — pair \u{1F600} reversed \ufffd\ufffd\n' +
+          '- [[release-notes]] (project) — release \ufffd notes\n' +
+          '- [[unrelated]] (project) — a wholly different subject\n',
+      ];
+      for (const [label, side] of [['python', 'py'], ['node', 'node']]) {
+        const r = side === 'py' ? sur.py : sur.nd;
+        cases.push({
+          name: `#212 PINNED PER SIDE — the surrogate fact is recalled and index.md holds U+FFFD (${label})`,
+          kind: 'json',
+          expected: surLiteral,
+          actual: [
+            Array.isArray(r[0]) ? r[0].map((f) => unb64(f.name)) : r[0],
+            r[1] && r[1].name ? unb64(r[1].name) : r[1],
+            r[2] && typeof r[2].reply === 'string' ? unb64(r[2].reply).includes('release \ufffd notes') : r[2],
+            r[4] && typeof r[4].index_text === 'string' ? unb64(r[4].index_text) : r[4],
+          ],
+        });
+      }
+    }
+
     // A.
     const kw = ['ปล่อยเวอร์ชัน', 'publish', 'คำ — with a dash'];
     const a = runBoth({}, [

@@ -3255,6 +3255,56 @@ export async function run(ctx) {
     );
   }
 
+  // ============ hook-surrogate: a lone-surrogate escape in a fact is U+FFFD, not a crash (#212)
+  //
+  // job72, J72-0. A PROJECT fact whose description spells `\ud800` as a YAML escape (the file
+  // is UTF-8, the backslash literal). Python's strict encoder refused it at the hot-index
+  // write, the UserPromptSubmit arm's `except` swallowed that, and the prompt got no memory at
+  // all; Node wrote U+FFFD. Both now read each lone half as U+FFFD and inject the fact, and
+  // SessionStart's index line for it is the same. Pinned per side, then compared.
+  {
+    const id = 'hook-surrogate';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    const projectStore = join(cwd, '.bantamkit', 'memory');
+    mkdirSync(join(projectStore, 'facts'), { recursive: true });
+    writeFileSync(
+      join(projectStore, 'facts', 'release-notes.md'),
+      "---\nname: release-notes\ndescription: \"release \\ud800 notes for the tag\"\ntype: project\n" +
+        "created: '2026-10-01'\nlast_recalled: null\nlinks: []\n---\n\nbody\n",
+    );
+    b.snapshot();
+    const ctxOf = (r) => {
+      const text = dec(r.stdout);
+      return text ? JSON.parse(text).hookSpecificOutput?.additionalContext ?? '' : '';
+    };
+    const sequence = (side) => {
+      const h = home(id, side);
+      const hook = (payload) => runHook(ctx, side, { payload: { cwd, session_id: 'sur', ...payload }, cwd, home: h });
+      const ups = ctxOf(hook({ hook_event_name: 'UserPromptSubmit', prompt: 'write the release notes for the tag' }));
+      const ss = ctxOf(hook({ hook_event_name: 'SessionStart', source: 'startup' }));
+      return {
+        promptLines: ups.split('\n').slice(1),
+        sessionLines: ss.split('\n').filter((l) => l.includes('release-notes')),
+      };
+    };
+    const py = sequence('py');
+    b.restore();
+    const nd = sequence('node');
+    cases.push(
+      ...literalCases(
+        py,
+        nd,
+        'hook-surrogate: PINNED PER SIDE (#212): the lone-surrogate fact is injected and indexed, as U+FFFD',
+        {
+          promptLines: ['[project] [release-notes] (project) release \ufffd notes for the tag'],
+          sessionLines: ['- [[release-notes]] (project) — release \ufffd notes for the tag'],
+        },
+      ),
+      { name: 'hook-surrogate: the injected and the indexed lines are the same on both sides', kind: 'json', expected: py, actual: nd },
+    );
+  }
+
   // ============ native-layer: the hook recalls Claude Code's auto-memory as `[native]` (#199)
   //
   // job68, J68-11 (user ruling 2026-10-15, "A + B"). UserPromptSubmit pools the host's own

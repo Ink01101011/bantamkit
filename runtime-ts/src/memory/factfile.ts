@@ -351,6 +351,34 @@ export function parseFrontmatter(front: string): FactMeta {
     }
     meta[key[1]!] = value;
   }
+  return wellFormedMeta(meta);
+}
+
+/**
+ * Each lone surrogate a lone U+FFFD (#212) — the rule a UTF-8 encode already applies here,
+ * which is how this port wrote U+FFFD to disk while the reference raised. Named once so the
+ * read applies it on purpose rather than leaving it to whichever writer runs first.
+ */
+const LONE_SURROGATES = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
+/** `text` with every lone surrogate replaced by U+FFFD; the reference's `store.well_formed`. */
+export function wellFormed(text: string): string {
+  return text.replace(LONE_SURROGATES, '\ufffd');
+}
+
+/**
+ * THE ONE SEAM (#212): a fact file is UTF-8, so a lone surrogate can only arrive through a
+ * double-quoted YAML escape, and every frontmatter read — the store's, the hot index's, the
+ * native shape's — comes through `parseFrontmatter`. Normalised here, the in-memory fact
+ * holds the same text the reference's `well_formed_value` gives it, and every writer after
+ * (the index, a recall stamp, an MCP reply) agrees with Python instead of with its encoder.
+ * Keys are plain YAML words here (`[A-Za-z_]…`), so only values can hold one.
+ */
+function wellFormedMeta(meta: FactMeta): FactMeta {
+  for (const [k, v] of Object.entries(meta)) {
+    if (typeof v === 'string') meta[k] = wellFormed(v);
+    else if (Array.isArray(v)) meta[k] = v.map((x) => (typeof x === 'string' ? wellFormed(x) : x));
+  }
   return meta;
 }
 

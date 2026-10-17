@@ -16,6 +16,8 @@ import { Memory } from '../dist/memory/component.js';
 import { MemoryStore, MemoryValidationError, NAME_MAX_CHARS } from '../dist/memory/store.js';
 import { loneSurrogateArgument } from '../dist/mcp/pyargs.js';
 import { fromJs } from '../dist/pyjson.js';
+import { wellFormed } from '../dist/memory/factfile.js';
+import { parseNative } from '../dist/storage/hotindex.js';
 
 const fresh = () => mkdtempSync(join(tmpdir(), 'j659-'));
 const files = (root) => (existsSync(join(root, 'facts')) ? readdirSync(join(root, 'facts')).sort() : []);
@@ -135,6 +137,52 @@ for (const [description, body, links, label, code] of [
 
 test('#160 a surrogate pair is text and is saved', () => {
   assert.equal(new MemoryStore(join(fresh(), 'm')).save('project', 'emoji', 'pair \u{1f600} ok', 'b').status, 'saved');
+});
+
+// ------------------------------------------------------------------ #212 surrogates on read
+//
+// A fact file is UTF-8, so a lone surrogate can only come from a YAML escape. This port's UTF-8
+// encoder wrote U+FFFD where the reference raised; the read now applies that rule on purpose,
+// so the fact in memory holds what every writer will put on disk, on both runtimes.
+
+const SURROGATE_FILE =
+  '---\nname: release-notes\ndescription: "release \\ud800 notes"\ntype: project\n' +
+  "created: '2026-08-01'\nlast_recalled: null\nlinks: []\nkeywords:\n- \"\\udfff kw\"\n" +
+  'tags:\n- "t\\ud800"\n---\n\nb\n';
+
+for (const [text, expected] of [
+  ['plain', 'plain'],
+  ['a\ud800b', 'a\ufffdb'],
+  ['x\ud800', 'x\ufffd'],
+  ['\udfffy', '\ufffdy'],
+  ['\ud83d\ude00', '\u{1f600}'],
+  ['\ude00\ud83d', '\ufffd\ufffd'],
+  ['\ud800\ud800\udc00', '\ufffd\u{10000}'],
+  ['\ufeff\ud800', '\ufeff\ufffd'],
+]) {
+  test(`#212 wellFormed is the UTF-8 encoder's rule: ${JSON.stringify(text)}`, () => {
+    assert.equal(wellFormed(text), expected);
+    assert.equal(wellFormed(text), Buffer.from(text, 'utf8').toString('utf8'));
+  });
+}
+
+test('#212 a lone surrogate escape is recalled, read as U+FFFD', async () => {
+  const root = fresh();
+  mkdirSync(join(root, 'store', 'facts'), { recursive: true });
+  mkdirSync(join(root, 'store', 'archive'));
+  mkdirSync(join(root, 'profile'));
+  writeFileSync(join(root, 'store', 'facts', 'release-notes.md'), SURROGATE_FILE, 'utf8');
+  const hits = await Memory.layeredForEval(join(root, 'store'), join(root, 'profile'), 'v2', null).rankAll('release notes');
+  assert.deepEqual(hits.map((h) => h.name), ['release-notes']);
+  assert.equal(hits[0].description, 'release \ufffd notes');
+  assert.deepEqual(hits[0].keywords, ['\ufffd kw']);
+  assert.deepEqual(hits[0].extra, [['tags', ['t\ufffd']]]);
+});
+
+test('#212 a native lone surrogate escape is read as U+FFFD', () => {
+  const p = join(fresh(), 'sn.md');
+  writeFileSync(p, '---\nname: sn\ndescription: "native \\ud800 lone"\nmetadata:\n  type: user\n---\n\nb\n', 'utf8');
+  assert.equal(parseNative(p).description, 'native \ufffd lone');
 });
 
 test('#160 the wire refusal names the argument path', () => {

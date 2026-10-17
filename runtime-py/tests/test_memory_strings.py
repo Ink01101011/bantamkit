@@ -166,6 +166,76 @@ def test_160_a_surrogate_pair_is_text_and_is_saved(tmp_path):
     assert store.save("project", "emoji", "pair \U0001f600 ok", "b").status == "saved"
 
 
+# ------------------------------------------------------------------ #212 surrogates on read
+#
+# A fact file is UTF-8, so a lone surrogate can only come from a YAML escape. PyYAML decodes
+# `"\\ud800"` to a lone code point, which the strict encoder refused at the hot-index write,
+# so one such file took down every recall on its store. The read now applies Node's rule.
+
+_SURROGATE_FILE = (
+    "---\nname: release-notes\ndescription: \"release \\ud800 notes\"\ntype: project\n"
+    "created: '2026-08-01'\nlast_recalled: null\nlinks: []\nkeywords:\n- \"\\udfff kw\"\n"
+    "tags:\n- \"t\\ud800\"\n---\n\nb\n"
+)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("plain", "plain"),
+        ("a\ud800b", "a\ufffdb"),
+        ("x\ud800", "x\ufffd"),
+        ("\udfffy", "\ufffdy"),
+        # PyYAML hands a `\\ud83d\\ude00` escape back as two code points; joined, as JS holds it
+        ("".join(["\ud83d", "\ude00"]), "\U0001f600"),
+        ("".join(["\ude00", "\ud83d"]), "\ufffd\ufffd"),
+        ("".join(["\ud800", "\ud800", "\udc00"]), "\ufffd\U00010000"),
+        ("\ufeff\ud800", "\ufeff\ufffd"),
+    ],
+)
+def test_212_well_formed_is_nodes_rule(text, expected):
+    from bantamkit.memory.store import well_formed
+
+    assert well_formed(text) == expected
+
+
+def test_212_a_lone_surrogate_escape_does_not_take_down_recall(tmp_path):
+    """The issue's own repro: `rank_all` over the store, through the hot index."""
+    (tmp_path / "store" / "facts").mkdir(parents=True)
+    (tmp_path / "store" / "archive").mkdir()
+    (tmp_path / "profile").mkdir()
+    fact_path = tmp_path / "store" / "facts" / "release-notes.md"
+    fact_path.write_text(_SURROGATE_FILE, encoding="utf-8")
+    memory = Memory.layered_for_eval(
+        project=tmp_path / "store", profile=tmp_path / "profile", native=None
+    )
+    hits = memory.rank_all("release notes")
+    assert [h.name for h in hits] == ["release-notes"]
+    assert hits[0].description == "release \ufffd notes"
+    assert hits[0].keywords == ["\ufffd kw"]
+    assert hits[0].extra == {"tags": ["t\ufffd"]}
+
+
+def test_212_the_hot_index_and_index_md_hold_u_fffd(tmp_path):
+    store = MemoryStore(tmp_path / "m")
+    (store.root / "facts" / "release-notes.md").write_text(_SURROGATE_FILE, encoding="utf-8")
+    assert [f.name for f in store.recall("release notes", stamp=False)] == ["release-notes"]
+    assert store.save("project", "other", "a wholly different subject", "b").status == "saved"
+    index = (store.root / "index.md").read_text(encoding="utf-8")
+    assert "- [[release-notes]] (project) — release \ufffd notes\n" in index
+
+
+def test_212_a_native_lone_surrogate_escape_is_read_as_u_fffd(tmp_path):
+    from bantamkit.memory.divergence import parse_fact
+
+    path = tmp_path / "sn.md"
+    path.write_text(
+        "---\nname: sn\ndescription: \"native \\ud800 lone\"\nmetadata:\n  type: user\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    assert parse_fact(path).description == "native \ufffd lone"
+
+
 def test_160_the_wire_refusal_names_the_argument_path():
     assert lone_surrogate_argument({"type": "project", "description": "a\ud800"}) == (
         "argument 'description' holds a lone surrogate (U+D800), which is not text; "

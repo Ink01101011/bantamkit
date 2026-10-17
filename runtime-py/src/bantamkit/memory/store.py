@@ -54,10 +54,10 @@ def load_frontmatter(text: str) -> Any:
     """
     if _CSafeLoader is not None:
         try:
-            return yaml.load(text, Loader=_CSafeLoader)  # noqa: S506 -- a SAFE loader
+            return well_formed_value(yaml.load(text, Loader=_CSafeLoader))  # noqa: S506 -- SAFE
         except Exception:  # noqa: BLE001 -- the pure loader decides what a refusal says
             pass
-    return yaml.safe_load(text)
+    return well_formed_value(yaml.safe_load(text))
 
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
@@ -100,6 +100,42 @@ def lone_surrogate(text: str) -> str | None:
     """`U+XXXX` of the first lone surrogate in `text`, or `None` when it is all text."""
     found = _LONE_SURROGATE.search(text)
     return None if found is None else _codepoint(found.group()[0])
+
+
+def well_formed(text: str) -> str:
+    """`text` with every lone surrogate replaced by U+FFFD, and every split pair joined (#212).
+
+    THE RULE IS NODE'S. A UTF-8 encode in Node writes U+FFFD for each lone surrogate, so the
+    port never crashed on one -- it wrote a different character than it read. CPython's
+    strict encoder raised instead, and a fact whose YAML spelled `"\\ud800"` took down every
+    recall on its store (#212). A UTF-16 round trip is the same rule in Python: `surrogatepass`
+    lets the lone code unit out, `replace` turns each one that is not half of a pair into one
+    U+FFFD. It also JOINS a pair PyYAML hands back as two code points (`"\\ud83d\\ude00"` is
+    two `\\u` escapes, so two `str` code points here and one emoji in a JS string), which is
+    what makes the two runtimes read that text as the same character.
+    """
+    if _LONE_SURROGATE.search(text) is None:
+        return text
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
+def well_formed_value(value: Any) -> Any:
+    """`well_formed` over every string in a parsed frontmatter: values, items and keys (#212).
+
+    THE ONE SEAM. A fact file is UTF-8 on disk, so the only way a lone surrogate gets into a
+    fact is a YAML escape, and every frontmatter this package reads goes through
+    `load_frontmatter` or `divergence.parse_fact`, which both end here. Normalised at the
+    read, nothing downstream -- the hot and cold index, `index.md`, a recall stamp, dream,
+    the native export, the hook log, an MCP reply -- ever holds one, so none of them needs a
+    patch of its own. Anything that is not a str, list or dict (a date, an int) passes as is.
+    """
+    if isinstance(value, str):
+        return well_formed(value)
+    if isinstance(value, list):
+        return [well_formed_value(v) for v in value]
+    if isinstance(value, dict):
+        return {well_formed_value(k): well_formed_value(v) for k, v in value.items()}
+    return value
 
 
 def _not_one_line(text: str) -> str | None:

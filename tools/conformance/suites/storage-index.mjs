@@ -167,6 +167,30 @@ const LOOSE = [
   ['store/facts/n10.md', '---\nname: 10\ndescription: loose number\ntype: project\nlinks: []\n---\n\nb\n'],
   ['store/facts/n9.md', '---\nname: 9\ndescription: loose number\ntype: project\nlinks: []\n---\n\nb\n'],
 ];
+/**
+ * #212: a lone surrogate spelled as a YAML escape. The file is UTF-8 (the backslash is literal);
+ * PyYAML decodes `\ud800` to a lone code point, which the strict UTF-8 encoder refused when
+ * the hot index was written, so one such fact took down every recall on its store. The pair is
+ * the other half: PyYAML hands `\ud83d\ude00` back as TWO code points, a JS string as one
+ * emoji, so both sides must read it as the emoji. Reversed, the two halves are two lone ones.
+ */
+const SURROGATE = [
+  [
+    'store/facts/release-notes.md',
+    fact('release-notes', '"release \\ud800 notes"', 'keywords:\n- "\\udfff kw"\ntags:\n- "t\\ud800"\n'),
+  ],
+  ['store/facts/pair-fact.md', fact('pair-fact', '"pair \\ud83d\\ude00 joined, reversed \\ude00\\ud83d split"')],
+  ['store/facts/plain.md', fact('plain', 'plain neighbour notes')],
+];
+const SURROGATE_NATIVE = [
+  ['native/MEMORY.md', '# Memory index\n'],
+  ['native/sn.md', '---\nname: sn\ndescription: "native \\ud800 lone"\nmetadata:\n  type: user\n---\n\nb\n'],
+];
+/** What both sides must read those escapes as: each lone half one U+FFFD, the pair one emoji. */
+const SURROGATE_LITERAL = {
+  'release-notes': ['release \ufffd notes', ['\ufffd kw'], ['t\ufffd']],
+  'pair-fact': ['pair \u{1F600} joined, reversed \ufffd\ufffd split', [], []],
+};
 const RECALLS = [
   { query: 'release tag' },
   { query: 'RELEASE, Tag!' },
@@ -433,6 +457,31 @@ function scenarios() {
       source: 'native',
       kind: 'native',
       ops: [op('refresh', { mode: 'full' }), op('docs'), op('bytes')],
+    },
+    {
+      label: 'store #212: a lone surrogate in a frontmatter escape is read as U+FFFD',
+      files: SURROGATE,
+      dirs: ['store/facts'],
+      source: 'store',
+      kind: 'facts',
+      ops: [
+        op('refresh', { mode: 'fast' }),
+        op('bytes'),
+        op('shardbytes'),
+        op('docs'),
+        op('recall', { query: 'release notes' }),
+        op('recall', { query: 'pair joined' }),
+        op('lookup', { name: 'release-notes' }),
+        op('refresh', { mode: 'fast' }),
+      ],
+    },
+    {
+      label: 'native #212: a lone surrogate in a native frontmatter escape is read as U+FFFD',
+      files: SURROGATE_NATIVE,
+      dirs: ['native'],
+      source: 'native',
+      kind: 'native',
+      ops: [op('refresh', { mode: 'full' }), op('bytes'), op('docs')],
     },
   ];
 }
@@ -958,6 +1007,42 @@ async function runIn(ctx) {
         actual: [rows[0].indexed && JSON.stringify(rows[0].fast) === JSON.stringify(rows[0].slow), refused(rows[1]), refused(rows[2]), rows[3].indexed],
       });
     }
+    // #212 PER SIDE: a differential stays green if both sides keep the surrogate, or both drop
+    // the fact; these pin WHAT both read, and that the fact is still found by the index.
+    const sur = byLabel('store #212');
+    const surDocs = sideOf(side).beds[sur][all[sur].ops.findIndex((o) => o.op === 'docs')];
+    cases.push({
+      name: `LITERAL: #212 each lone surrogate is U+FFFD and a split pair is one emoji, in the index's docs — ${label(side)}`,
+      kind: 'json',
+      expected: SURROGATE_LITERAL,
+      actual: Object.fromEntries(
+        surDocs.filter(([n]) => n in SURROGATE_LITERAL).map(([n, d]) => [n, [d.description, d.keywords, d.tags]]),
+      ),
+    });
+    cases.push({
+      name: `LITERAL: #212 the surrogate fact is recalled, by the index, and the build did not throw — ${label(side)}`,
+      kind: 'json',
+      expected: [
+        'rebuilt',
+        { fast: ['release-notes', 'plain'], slow: ['release-notes', 'plain'], indexed: true },
+        ['recall', 'pair joined', true, true],
+        'fresh',
+      ],
+      actual: [
+        sideOf(side).beds[sur][0],
+        sideOf(side).beds[sur][4],
+        verdicts(side, sur)[1],
+        sideOf(side).beds[sur][7],
+      ],
+    });
+    const nsur = byLabel('native #212');
+    const nsurDocs = sideOf(side).beds[nsur][2];
+    cases.push({
+      name: `LITERAL: #212 a native lone surrogate is U+FFFD — ${label(side)}`,
+      kind: 'json',
+      expected: ['rebuilt', 'native \ufffd lone'],
+      actual: [sideOf(side).beds[nsur][0], (nsurDocs.find(([n]) => n === 'sn') ?? [null, {}])[1].description],
+    });
     const looseAt = all[loose].ops.findIndex((o) => o.op === 'recall');
     // #199 D3 (J68-5): tied facts break on the name as a STRING — the ranker's `Candidate.name`
     // is `str`, compared by code point — so '10' sorts before '9' on both runtimes, fast path
