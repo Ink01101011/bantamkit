@@ -3,7 +3,7 @@
  * job69 J69-7), Python against Node, over the wire.
  *
  * THE PROPERTY: on an MCP-ONLY host profile — a HOME with no `.claude/`, no hook registered, no
- * native directory, a cwd with no project settings — every one of the fourteen served tools
+ * native directory, a cwd with no project settings — every one of the fifteen served tools
  * answers on both runtimes and no answer is an error: tier 1 runs complete with tiers 2 and 3
  * absent, silently. `bantamkit_status` names the tiers (`storage: core on; hooks off; host data
  * off`), one line per hot index, every log and the last retention run, and the two runtimes
