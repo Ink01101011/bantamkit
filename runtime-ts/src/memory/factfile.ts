@@ -351,7 +351,10 @@ export function parseFrontmatter(front: string): FactMeta {
     }
     meta[key[1]!] = value;
   }
-  return wellFormedMeta(meta);
+  // #212: only a `\u`/`\U` escape can put a surrogate into a strict-UTF-8 file's frontmatter,
+  // so without one there is nothing to normalise and the walk is skipped (the reference's
+  // `store.well_formed_frontmatter` makes the same test).
+  return front.includes('\\u') || front.includes('\\U') ? wellFormedMeta(meta) : meta;
 }
 
 /**

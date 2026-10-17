@@ -54,10 +54,10 @@ def load_frontmatter(text: str) -> Any:
     """
     if _CSafeLoader is not None:
         try:
-            return well_formed_value(yaml.load(text, Loader=_CSafeLoader))  # noqa: S506 -- SAFE
+            return well_formed_frontmatter(text, yaml.load(text, Loader=_CSafeLoader))  # noqa: S506 -- SAFE
         except Exception:  # noqa: BLE001 -- the pure loader decides what a refusal says
             pass
-    return well_formed_value(yaml.safe_load(text))
+    return well_formed_frontmatter(text, yaml.safe_load(text))
 
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
@@ -117,6 +117,20 @@ def well_formed(text: str) -> str:
     if _LONE_SURROGATE.search(text) is None:
         return text
     return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
+def well_formed_frontmatter(source: str, value: Any) -> Any:
+    """`well_formed_value(value)`, skipped when `source` holds no `\\u`/`\\U` escape (#212).
+
+    A fact file is strict UTF-8 on disk, so the only way a surrogate code point reaches a
+    parsed frontmatter is a double-quoted YAML `\\u` or `\\U` escape (`\\x` stops at U+00FF).
+    Without one in the text there is nothing to normalise, and the walk -- which rebuilds every
+    list and dict -- is not paid on every fact of every recall. Node's `parseFrontmatter` makes
+    the same test.
+    """
+    if "\\u" not in source and "\\U" not in source:
+        return value
+    return well_formed_value(value)
 
 
 def well_formed_value(value: Any) -> Any:

@@ -37,7 +37,7 @@ from pathlib import Path
 import yaml
 
 from bantamkit.memory.layers import MEMORY_DIR_ENV, resolve_project_store
-from bantamkit.memory.store import MemoryValidationError, well_formed_value
+from bantamkit.memory.store import MemoryValidationError, well_formed_frontmatter
 
 # Both stores keep a generated roll-up beside the facts. It is derived from them, so
 # comparing it would report the same drift twice, and it carries no frontmatter, so
@@ -548,7 +548,7 @@ def parse_fact(path: str | Path) -> StoredFact:
         )
     try:
         # #212: one lone-surrogate rule for every frontmatter read (`store.well_formed`).
-        meta = well_formed_value(yaml.safe_load(front))
+        meta = well_formed_frontmatter(front, yaml.safe_load(front))
     except yaml.YAMLError as e:
         raise MemoryValidationError(f"malformed fact file {path}: {e}") from e
     if not isinstance(meta, dict):
