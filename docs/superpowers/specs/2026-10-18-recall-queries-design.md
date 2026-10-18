@@ -50,6 +50,7 @@ session's previous prompt to the BM25F query.
 | Q10 | Proof of fidelity | Load the sidecars from the J72-19 cache into the frozen stores. The product's inject must then equal the probe's G6 lists on dev 60 of 60 and on gold 50 of 50. That is a reproduction of the look-6 policy, not a new look. **(default)** |
 | Q11 | W10 / ollama | It stays unmerged on its local branch. Nothing in this amendment loads `node:http` or calls ollama. **(user)** |
 | Q12 | Windows | Not measured. The code is plain file IO with no platform branch. **(default)** |
+| Q13 | Term cache (added after the Q9 miss) | The first product bench missed Q9 (+17 ms p50 with sidecars), because every hook call re-stripped and re-tokenized every qdoc. Fix: a derived cache `<index dir>/<sha16(root)>.qterms.json` per store holding each fact's qdoc token count and term counts, stamped with the sha1 of the sidecar bytes it came from. It is used only when that sha1 matches the current sidecar, otherwise rebuilt and written temp-then-rename, best-effort. Both runtimes write it byte for byte; deleting it loses nothing. Scores are unchanged (dev 60/60, gold 50/50 reproduced). Measured after the fix: sidecar p50 rise +3.3 to +4.4 ms indexed, about 0 to +1.8 ms unindexed. A sidecar starting with a UTF-8 BOM is malformed in both runtimes. **(default)** |
 
 ## Parity and conformance
 
