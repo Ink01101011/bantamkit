@@ -133,6 +133,7 @@ def test_every_served_tool_has_an_asset(tmp_path):
         "build_identity",
         "memory_compact",
         "memory_dream",
+        "memory_queries",
         "memory_recall",
         "memory_save",
         "shiftwork_clock_in",
@@ -556,3 +557,25 @@ def test_clock_out_serves_the_sub_schemas_the_checkpoint_writer_enforces():
         "unit_id" in sentence and "cursor" in sentence
         for sentence in description.replace(";", ".").split(". ")
     )
+
+
+def test_memory_queries_instructions_load():
+    """#207 amendment 3 (Q7): the text `memory_queries {}` hands back, and memory.md's pointer."""
+    from bantamkit.assets import load_skill
+
+    text = load_skill("memory-queries")
+    assert text.startswith("# Likely-prompt queries\n")
+    assert "memory_queries" in text and "never copy more than" in text
+    assert "## Likely-prompt queries" in load_skill("memory")
+
+
+def test_memory_queries_manifest_and_queries_on_memory_save_load():
+    """#207 amendment 3 (Q5/Q6): the fifteenth tool's manifest and `memory_save.queries`."""
+    from bantamkit.assets import load_tool
+
+    t = load_tool("memory_queries")
+    assert t.name == "memory_queries"
+    assert list(t.parameters["properties"]) == ["facts"]
+    assert _asset("memory_queries")["surfaces"] == ["mcp"]
+    q = load_tool("memory_save").parameters["properties"]["queries"]
+    assert q["type"] == "array" and q["items"] == {"type": "string"}

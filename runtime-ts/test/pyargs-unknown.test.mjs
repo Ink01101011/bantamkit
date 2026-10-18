@@ -27,7 +27,7 @@ const known = (name) => {
 };
 
 test('every served asset advertises additionalProperties false at the top level', () => {
-  assert.equal(MCP_TOOLS.length, 14);
+  assert.equal(MCP_TOOLS.length, 15); // + memory_queries (#207 amendment 3)
   for (const name of MCP_TOOLS) assert.equal(asset(name).parameters.additionalProperties, false, name);
 });
 

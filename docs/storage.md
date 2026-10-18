@@ -16,6 +16,7 @@ nothing lost.
 |---|---|---|---|
 | `~/.bantamkit/index/<sha16>.json` | Hot-index HEAD for one fact source | recall, lookup, every store write (write-through) | yes, rebuilt on the next read |
 | `~/.bantamkit/index/<sha16>.postings-NN.json`, `.words-NN.json` | 16 + 16 term-hash shards of that index | same | yes |
+| `~/.bantamkit/index/<sha16>.qterms.json` | #207's term cache: the store's queries sidecar (`~/.bantamkit/queries/<sha16>.json`) with every qdoc already tokenized, stamped with the sha1 of the sidecar bytes it came from (J72-30) | any recall of a store that has a sidecar, in both runtimes, byte for byte | yes; a cache whose sha1 is not the sidecar's is never used, and the next recall rebuilds it |
 | `~/.bantamkit/cold/<name>/` | Cold index: `manifest.json`, `seg-<id>.json`, `shard-NN.json` | `memory_recall(include_archived)`, `shiftwork_status(search)`, Retention | yes, rebuilt from the archives on the next search |
 | `~/.bantamkit/hooks/hook-log.jsonl` + `.N.gz` | The hook log and its rotated segments | the hook | the `.gz` files are history; see *Logs* |
 | `~/.bantamkit/usage/<store>.jsonl` + `.N.gz` | #199's usage ledger | recall and save | it feeds ranking; do not |

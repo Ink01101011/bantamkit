@@ -45,7 +45,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pep440ToSemver } from './version.mjs';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: fourteen tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: fifteen tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -959,6 +959,7 @@ export async function run(ctx) {
     token_ledger: { root: docs, bogus: 1 },
     work_plan: { nodes: [], bogus: 1 },
     shiftwork_plan: { checkpoint, bogus: 1 },
+    memory_queries: { bogus: 1 }, // #207 amendment 3: the fifteenth tool
   };
   add('j67-1-unknown-args', [
     INIT(),
@@ -2069,6 +2070,8 @@ export async function run(ctx) {
       token_ledger: ['Token ledger', RO],
       work_plan: ['Work plan: batch a dependency graph', RO],
       shiftwork_plan: ['Shift work: plan', RO],
+      // #207 amendment 3: the fifteenth tool writes the queries sidecar, never a fact.
+      memory_queries: ['Likely-prompt queries for saved facts', { destructiveHint: false, openWorldHint: false, readOnlyHint: false }],
     };
     const advertised = (side) =>
       Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, [t.title ?? 'absent', t.annotations ?? 'absent']]));
@@ -2488,7 +2491,7 @@ export async function run(ctx) {
     notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
   }
 
-  // ----------------------------------------------- the roster: fourteen tools, pinned per side
+  // ----------------------------------------------- the roster: fifteen tools, pinned per side
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
@@ -2506,7 +2509,8 @@ export async function run(ctx) {
    * as of job `workplan-dag` (W4, W5), which APPENDED `work_plan` and then `shiftwork_plan`
    * behind `token_ledger` — a different fourteen, and the order of those last two is
    * contract, not alphabetising: `runtime-py/tests/data/served-tool-surface.json` pins it as
-   * a golden too. The count alone would not have noticed the swap, which is why the names in
+   * a golden too. It is FIFTEEN as of #207 amendment 3 (job72), which APPENDED `memory_queries`
+   * behind `shiftwork_plan` on both servers. The count alone would not have noticed the swap, which is why the names in
    * order are the literal and the count is a separate case beside it. A tool re-added on ONE
    * side fails `advertisement: id 2` and the literal; a tool re-added on BOTH fails only the
    * literal, which is why it exists.
@@ -2527,6 +2531,7 @@ export async function run(ctx) {
       'token_ledger',
       'work_plan',
       'shiftwork_plan',
+      'memory_queries',
     ];
     const RETIRED = ['bantamkit_read', 'repo_map'];
     const { python, node } = results.get('advertisement');
@@ -2537,15 +2542,15 @@ export async function run(ctx) {
     });
     cases.push({ name: 'roster: the tool names, in order, side to side', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'roster: the fourteen served tool names, in order, as a literal on each side',
+      name: 'roster: the fifteen served tool names, in order, as a literal on each side',
       kind: 'json',
       expected: { python: ROSTER, node: ROSTER },
       actual: { python: toolNames(python), node: toolNames(node) },
     });
     cases.push({
-      name: 'roster: fourteen tools, and neither repo_map nor bantamkit_read among them, on each side',
+      name: 'roster: fifteen tools, and neither repo_map nor bantamkit_read among them, on each side',
       kind: 'json',
-      expected: { python: { count: 14, retired: [] }, node: { count: 14, retired: [] } },
+      expected: { python: { count: 15, retired: [] }, node: { count: 15, retired: [] } },
       actual: { python: rosterOf(python), node: rosterOf(node) },
     });
   }

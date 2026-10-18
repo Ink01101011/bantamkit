@@ -1,0 +1,58 @@
+{
+  "name": "memory_queries",
+  "title": "Likely-prompt queries for saved facts",
+  "description": "Call with {} to list up to 10 facts that have no likely-prompt queries yet, with what to write for them. Call with {\"facts\": [{\"name\", \"layer\"?, \"queries\"}]} to store queries you wrote. Recall matches a prompt against these queries.",
+  "surfaces": [
+    "mcp"
+  ],
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "facts": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "layer": {
+                  "type": "string",
+                  "description": "project, profile, extra:<name> or native; optional: the first layer holding the name"
+                },
+                "queries": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "name",
+                "queries"
+              ]
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Omit to list the facts missing queries"
+      }
+    },
+    "title": "memory_queriesArguments",
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true,
+    "title": "memory_queriesDictOutput"
+  },
+  "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": false
+  }
+}

@@ -612,8 +612,15 @@ function poolWeights(p: Pool, usage: ReadonlyMap<string, number>, context: Reado
   return out;
 }
 
-/** A `Pool` from parsed facts: the files' answer, and the reference for the index's. */
-export function poolOf(facts: readonly Fact[], q: readonly string[]): Pool {
+/**
+ * A `Pool` from parsed facts: the files' answer, and the reference for the index's.
+ *
+ * `everyRow` (#207 amendment 3) keeps every fact as a row, hit or not, as an index's pool does:
+ * once a sidecar holds queries, a row with no query term can still score on its queries, and
+ * the files path must pool what the index path pools. A zero-score row is never admitted and
+ * cannot reorder the others.
+ */
+export function poolOf(facts: readonly Fact[], q: readonly string[], everyRow = false): Pool {
   const held: Array<{ name: string; length: number; type: string; stale: boolean; fact: Fact; mine: Map<string, number> }> = [];
   let total = 0;
   const df = new Map<string, number>(q.map((t) => [t, 0]));
@@ -625,8 +632,8 @@ export function poolOf(facts: readonly Fact[], q: readonly string[]): Pool {
     total += length;
     const mine = new Map<string, number>();
     for (const t of q) if (weights.has(t)) mine.set(t, weights.get(t)!);
-    if (mine.size > 0) {
-      for (const t of mine.keys()) df.set(t, df.get(t)! + 1);
+    for (const t of mine.keys()) df.set(t, df.get(t)! + 1);
+    if (mine.size > 0 || everyRow) {
       held.push({ name, length, type: pyText(fact.type), stale: stale(description), fact, mine });
     }
   }
@@ -654,7 +661,7 @@ export function poolOf(facts: readonly Fact[], q: readonly string[]): Pool {
     facts: held.map((r) => r.fact),
     files: null,
     indexed: false,
-    every: facts.map((fact) => pyText(fact.name)),
+    every: everyRow ? null : facts.map((fact) => pyText(fact.name)),
   };
 }
 
@@ -727,12 +734,12 @@ export function* pooledRanking(
 }
 
 /** One vector per row of the live pool at that layer index, or `null` when the layer cannot say. */
-export type RowsOf = (layer: number, pool: Pool) => Array<Float32Array | null> | null;
+export type RowsOf = (layer: number, pool: Pool) => ReadonlyArray<unknown> | null;
 
 /** One vector per pooled row, layer by layer, or `null` when any layer cannot say. */
-function rowVectors(live: ReadonlyArray<[number, Pool]>, rows: RowsOf | null): Array<Float32Array | null> | null {
+function rowVectors(live: ReadonlyArray<[number, Pool]>, rows: RowsOf | null): unknown[] | null {
   if (rows === null) return null;
-  const out: Array<Float32Array | null> = [];
+  const out: unknown[] = [];
   for (const [i, p] of live) {
     const got = rows(i, p);
     if (got === null || got.length !== p.names.length) return null;
@@ -1402,13 +1409,14 @@ export class MemoryStore {
    * hot index when `indexed` allows it — the head and only the postings shards `q` hashes to,
    * no fact file parsed (user ruling 2026-10-15) — else the files'. The reference's `pool`.
    */
-  pool(q: readonly string[], skipped?: SkippedFact[]): Pool {
+  pool(q: readonly string[], skipped?: SkippedFact[], everyRow = false): Pool {
+    // `everyRow` reaches the files' `poolOf` only: an index's pool is every row already.
     const idx = this.indexed();
     if (idx !== null) {
       const got = MemoryStore.poolIndexed(idx, q);
       if (got !== null) return got;
     }
-    return poolOf(this.candidates(skipped), q);
+    return poolOf(this.candidates(skipped), q, everyRow);
   }
 
   /**

@@ -1372,7 +1372,7 @@ test('the tool is served tenth and its schema is the assets', async () => {
   // about where `skill_audit` sits, and a later tool moving in behind it must not be able
   // to satisfy it.
   assert.equal(listed[9].name, 'skill_audit');
-  assert.equal(listed.length, 14);
+  assert.equal(listed.length, 15); // + memory_queries (#207 amendment 3)
   const asset = JSON.parse(readFileSync(join(repoRoot, 'assets', 'tools', 'skill_audit.json'), 'utf8'));
   const served = listed.find((t) => t.name === 'skill_audit');
   assert.equal(served.description, asset.description);

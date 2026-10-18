@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the fourteen tools, the two resource templates, and the wire.
+ * The MCP surface: the fifteen tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -221,6 +221,7 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'token_ledger',
     'work_plan',
     'shiftwork_plan',
+    'memory_queries',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -263,7 +264,7 @@ test('the retired tools are exactly the ruled ones, none is served, and a call t
     { args: ['--store', freshStore()] },
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
-  assert.equal(names.length, 14);
+  assert.equal(names.length, 15); // + memory_queries (#207 amendment 3)
   for (const name of RETIRED_TOOLS) assert.ok(!names.includes(name), `${name} is still served`);
   for (const [id, name] of [[3, 'bantamkit_read'], [4, 'repo_map']]) {
     const refused = byId(lines, id).result;
@@ -868,7 +869,7 @@ test('build_identity names its runtime and refuses to be compared across lineage
   const id = byId(lines, 2).result.structuredContent;
   assert.equal(id.runtime, 'node');
   assert.equal(id.server_name, 'bantamkit');
-  assert.equal(id.assets_files, 93); // +2: assets/tools/work_plan.json and assets/tools/shiftwork_plan.json, the two work-plan manifests (workplan-dag W3); +1: assets/tools/token_ledger.json (job46 J46-18, AS-1(c)); +1: assets/pricing/default.json (job46 J46-17, AS-1(b))
+  assert.equal(id.assets_files, 95); // +2: assets/tools/memory_queries.json and assets/skills/memory-queries.md (#207 amendment 3); +2: assets/tools/work_plan.json and assets/tools/shiftwork_plan.json, the two work-plan manifests (workplan-dag W3); +1: assets/tools/token_ledger.json (job46 J46-18, AS-1(c)); +1: assets/pricing/default.json (job46 J46-17, AS-1(b))
   assert.match(id.assets_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.code_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.build_id, /^sha256:[0-9a-f]{64}$/);
@@ -967,7 +968,7 @@ test('a __pycache__ in the pack is not a different pack — the half a different
     assert.equal(compiled.assets_digest, clean.assets_digest);
     assert.equal(compiled.build_id, clean.build_id);
     // And the count is the pack as shipped, not the pack as the interpreter left it.
-    assert.equal(compiled.assets_files, 93);
+    assert.equal(compiled.assets_files, 95);
   } finally {
     if (previous === undefined) delete process.env.BANTAMKIT_ASSETS;
     else process.env.BANTAMKIT_ASSETS = previous;
@@ -1060,7 +1061,7 @@ test('--assets-root still answers, and it is the only thing that prints outside 
   const { lines, code } = await session([], { args: ['--assets-root'] });
   assert.equal(code, 0);
   assert.equal(lines[0], ASSETS);
-  assert.equal(lines[1], '93 files');
+  assert.equal(lines[1], '95 files');
 });
 
 // ================================================= the pydantic-shaped argument refusals
@@ -1285,14 +1286,15 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   // AMENDED job69 J69-7 (#204): 6 -> 10, the four storage lines appended after line 6.
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12, read-repair and the usage ledger.
   // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, `touch: none` between the logs and retention.
-  assert.equal(rows.length, 13, report);
+  // AMENDED job72 J72-26 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line LAST.
+  assert.equal(rows.length, 14, report);
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   // job68 J68-12: the version this build's package.json declares, exactly. WAS a stable-only
   // `\d+\.\d+\.\d+` shape, which a prerelease (`0.37.0-beta.1`, npm's spelling) failed.
   const declared = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   assert.match(rows[1], /^version \S+, build sha256:[0-9a-f]{64}$/);
   assert.equal(rows[1].split(',')[0], `version ${declared}`);
-  assert.equal(rows[2], 'serving 14 tools, 1 prompt, 2 resource templates');
+  assert.equal(rows[2], 'serving 15 tools, 1 prompt, 2 resource templates');
   // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
   // walk bound ABOVE the project was invisible on the one surface that reports binding.
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes; bound to ${store}`);
@@ -1318,6 +1320,7 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.equal(rows[10], 'retention: off; last ran never; refused 0');
   assert.equal(rows[11], 'read-repaired: 0 this process');
   assert.match(rows[12], /^usage ledger: .*[\\/]\.bantamkit[\\/]usage[\\/][0-9a-f]{16}\.jsonl \(1 lines, 0 skipped\)$/);
+  assert.equal(rows[13], 'queries: 0 of 1 facts'); // S10 (#207 amendment 3, Q8)
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
   // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
   assert.equal(byId(lines, 3).result.content[0].text, report);
@@ -1392,7 +1395,8 @@ test('the report carries the update line in every one of the five states, and no
     // AMENDED job69 J69-7 (#204): 6 -> 10, the four storage lines after the update line.
     // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12.
     // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13.
-    assert.equal(rows.length, 13, `${state}: ${report}`);
+    // AMENDED job72 J72-26 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line.
+    assert.equal(rows.length, 14, `${state}: ${report}`);
     assert.ok(!report.includes(FOOTER_HEAD), state);
     const other = byId(lines, 4).result;
     assert.ok(!JSON.stringify(other).includes('bantamkit_degraded'), `${state}: a footer rode an unrelated reply`);
@@ -1419,13 +1423,15 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
   assert.equal(rows[6], 'storage: core on; hooks off; host data off');
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): +2, read-repair and the usage ledger before it.
   // AMENDED job70 T200-1 (#200, plan Task 1): the problem block moves down one, below `touch: none`.
-  assert.equal(rows[13], '1 problem:');
+  // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
+  assert.equal(rows[13], 'queries: 0 of 1 facts');
+  assert.equal(rows[14], '1 problem:');
   assert.equal(
-    rows[14],
+    rows[15],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
-  assert.equal(rows.length, 15); // AMENDED job70 T200-1 (#200, plan Task 1): 14 -> 15
+  assert.equal(rows.length, 16); // AMENDED job70 T200-1 (#200, plan Task 1): 14 -> 15; AMENDED job72 J72-26 (#207 amendment 3): 15 -> 16
   /**
    * THE REMEDY NAMES A COMMAND THIS INSTALL ACTUALLY PROVIDES, from outside the server.
    *
@@ -1441,7 +1447,7 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
    */
   const bins = Object.keys(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).bin);
   assert.ok(bins.includes('bantamkit-memory'), `package.json ships no bantamkit-memory bin: ${bins}`);
-  assert.match(rows[14], /`bantamkit-memory compact`/);
+  assert.match(rows[15], /`bantamkit-memory compact`/);
   assert.ok(
     !report.includes('python -m bantamkit.memory'),
     `the degraded report names a command a pure-npm install cannot run:\n${report}`,
@@ -1580,9 +1586,11 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
     'retention: off; last ran never; refused 0',
   ]);
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): +2, read-repair and the usage ledger before it.
-  assert.equal(rows[13], '1 problem:');
+  // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
+  assert.equal(rows[13], 'queries: 0 of 0 facts');
+  assert.equal(rows[14], '1 problem:');
   assert.equal(
-    rows[14],
+    rows[15],
     '- 1 memory layer could not be read (1 kind: extra), so an empty recall is not evidence that ' +
       'nothing is saved — check that those store directories exist and are readable.',
   );
@@ -1852,19 +1860,21 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   assert.equal(rows[6], 'storage: core on; hooks off; host data off');
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): +2, read-repair and the usage ledger before it.
   // AMENDED job70 T200-1 (#200, plan Task 1): the problem block moves down one, below `touch: none`.
-  assert.equal(rows[13], '2 problems:');
+  // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
+  assert.equal(rows[13], 'queries: 0 of 1 facts');
+  assert.equal(rows[14], '2 problems:');
   assert.equal(
-    rows[14],
+    rows[15],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
   assert.equal(
-    rows[15],
+    rows[16],
     `- this server was installed from ${gone}, which no longer exists, so nothing can be ` +
       'refreshed in place there — reinstall bantamkit by name from a package registry and ' +
       'restart the server.',
   );
-  assert.equal(rows.length, 16); // AMENDED job70 T200-1 (#200, plan Task 1): 15 -> 16
+  assert.equal(rows.length, 17); // AMENDED job70 T200-1 (#200, plan Task 1): 15 -> 16; AMENDED job72 J72-26 (#207 amendment 3): 16 -> 17
 
   // The footer shows the FIRST condition, which is still the index one — so the count moved
   // and the sentence did not. That pair is what would break if the order were changed by hand.
@@ -1921,4 +1931,72 @@ test('#133: skill_audit refuses a negative usage count and a budget past 2^53 in
   // the HANDLER's refusal (`budget must not be negative`), not this table's.
   assert.equal(refusal(fromJs({ root: 'x', usage: { 'solo-check': 0 }, budget: 9007199254740991 })), 'accepted');
   assert.equal(refusal(fromJs({ root: 'x', budget: -1 })), 'accepted');
+});
+
+test('memory_queries lists, writes and refuses over MCP (#207 amendment 3, Q5/Q6)', async () => {
+  // The Node twin of `test_memory_queries_lists_writes_and_refuses_over_mcp`. Its own HOME: the
+  // sidecar lands under it, and the count below is of that home's sidecars only.
+  const home = ownHome();
+  const save = { type: 'project', description: 'who owns the payments API', body: 'billing' };
+  const { lines, stderr } = await session(
+    [
+      INIT,
+      INITIALIZED,
+      call(2, 'memory_save', { ...save, name: 'payments-owner', queries: ['who owns pay'] }),
+      call(3, 'memory_save', { type: 'project', name: 'lint-rules', description: 'ruff config', body: 'ruff check' }),
+      call(4, 'memory_save', { ...save, name: 'x-fact', queries: Array(9).fill('q') }),
+      call(5, 'memory_queries', {}),
+      call(6, 'memory_queries', { facts: [{ name: 'lint-rules', queries: ['linter?'] }] }),
+      call(7, 'memory_queries', { facts: [{ name: 'nope', queries: ['x'] }] }),
+      call(8, 'memory_recall', { query: 'linter?' }),
+    ],
+    { args: ['--store', freshStore()], env: { HOME: home, USERPROFILE: home } },
+  );
+  assert.equal(stderr, '');
+  assert.equal(byId(lines, 2).result.content[0].text, "saved 'payments-owner'");
+  assert.equal(byId(lines, 3).result.content[0].text, "saved 'lint-rules'");
+  assert.equal(byId(lines, 4).result.content[0].text, 'error: queries: at most 8 per fact, got 9');
+  const listed = byId(lines, 5).result.structuredContent;
+  assert.equal(listed.result, 'missing');
+  assert.equal(listed.remaining, 1);
+  assert.deepEqual(listed.facts.map((f) => f.name), ['lint-rules']);
+  assert.equal(listed.instructions, readFileSync(join(ASSETS, 'skills', 'memory-queries.md'), 'utf8'));
+  assert.deepEqual(byId(lines, 6).result.structuredContent, { result: 'written', written: 1, remaining: 0 });
+  const refused = byId(lines, 7).result;
+  assert.equal(refused.isError, false);
+  assert.deepEqual(refused.structuredContent, { result: 'error', reason: "facts[0]: no fact named 'nope' in any layer" });
+  assert.ok(byId(lines, 8).result.content[0].text.includes('[lint-rules]'));
+  assert.equal(readdirSync(join(home, '.bantamkit', 'queries')).filter((f) => f.endsWith('.json')).length, 1);
+});
+
+test('the queries line counts the facts that carry queries, LAST before any problems (#207 amendment 3, Q8)', async () => {
+  // The Node twin of `test_the_queries_line_counts_the_facts_that_carry_queries`.
+  const { Memory } = await import('../dist/memory/component.js');
+  const { statusReport } = await import('../dist/mcp/status.js');
+  const home = ownHome();
+  const was = [process.env.HOME, process.env.USERPROFILE];
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    const root = freshStore();
+    const { degradedConditions } = await import('../dist/mcp/status.js');
+    const off = { enabled: false };
+    const report = (m) =>
+      statusReport(m, off, degradedConditions(m, off), new Map([['version', '0'], ['build_id', 'x']]), 15, 1, 2).split('\n');
+    const memory = new Memory(root);
+    memory.save('project', 'a-fact', 'something worth keeping', 'b');
+    assert.equal(report(memory).at(-1), 'queries: 0 of 1 facts');
+    memory.queriesWrite([{ name: 'a-fact', queries: ['what is kept'] }]);
+    assert.equal(report(memory).at(-1), 'queries: 1 of 1 facts');
+    const tight = new Memory(root, { indexBudget: 1 });
+    tight.queriesCoverage = () => {
+      throw new Error('unreadable');
+    };
+    const rows = report(tight);
+    const at = rows.indexOf('queries: unavailable');
+    assert.ok(at > 0, rows.join('\n'));
+    assert.ok(rows[at + 1].endsWith('problem:'), rows.join('\n'));
+  } finally {
+    [process.env.HOME, process.env.USERPROFILE] = was;
+  }
 });

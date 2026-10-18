@@ -38,6 +38,7 @@ import type { EventLog } from '../eventlog.js';
 import { Memory } from '../memory/component.js';
 import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
 import { statusLine } from '../memory/usage.js';
+import { statusLine as queriesStatusLine } from '../memory/queries.js';
 import type { MemoryStore } from '../memory/store.js';
 import { currentCwd, statusLines } from '../storage/tiers.js';
 import { updateLine } from '../updatecheck.js';
@@ -498,10 +499,25 @@ export function statusReport(
     // J68-10: an append that could not be written is counted in `memory/usage` and named here,
     // so an unwritable ledger is visible (#199 D5 error row).
     statusLine(...memory.usageCensus()),
+    // #207 amendment 3 (Q8): how many facts carry likely-prompt queries, LAST, so every line
+    // above keeps its number.
+    queriesLine(memory),
   ];
   if (conditions.length > 0) {
     lines.push(`${plural(conditions.length, 'problem')}:`);
     for (const condition of conditions) lines.push(`- ${condition.sentence}`);
   }
   return lines.join('\n');
+}
+
+/**
+ * S10 `queries: <n> of <m> facts`, or S11 when the walk throws: one line never sinks a status
+ * report. The reference's `_queries_line`.
+ */
+function queriesLine(memory: Memory): string {
+  try {
+    return queriesStatusLine(...memory.queriesCoverage());
+  } catch {
+    return 'queries: unavailable';
+  }
 }

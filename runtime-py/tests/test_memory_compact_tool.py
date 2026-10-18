@@ -42,6 +42,7 @@ SERVED_ORDER = [
     "token_ledger",
     "work_plan",
     "shiftwork_plan",
+    "memory_queries",  # #207 amendment 3: appended last
 ]
 
 
@@ -79,7 +80,7 @@ async def _fill(client, n: int) -> list[str]:
     return replies
 
 
-def test_tools_list_serves_fourteen_in_the_pinned_order(tmp_path):
+def test_tools_list_serves_fifteen_in_the_pinned_order(tmp_path):
     """Order is served, not in the manifest, so it is pinned here as well as in the golden."""
 
     async def scenario():

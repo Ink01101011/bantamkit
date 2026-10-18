@@ -31,6 +31,16 @@ def _nospace(cp: int) -> bool:
     return any(lo <= cp <= hi for lo, hi in _NOSPACE)
 
 
+def strip_nospace(text: str) -> str:
+    """Every code point of a no-space script replaced by one space, on the RAW text (before NFKC).
+
+    Q2's qdoc keeps only the spaced-script tokens of a query: the Thai bigrams were
+    measured as noise (J72-20). The order matters for fidelity: the probe stripped first
+    and tokenized after.
+    """
+    return "".join(" " if _nospace(ord(ch)) else ch for ch in text)
+
+
 def _wordchar(ch: str) -> bool:
     return unicodedata.category(ch)[0] in "LNM"
 
@@ -78,6 +88,9 @@ BM25_B = 0.75
 # Field order IS the summation order; runtime-ts/src/memory/retrieval.ts sums the same way.
 FIELD_BOOST = (("name", 2.0), ("description", 1.0), ("keywords", 2.0))
 SCORE_ROUND = 9
+# #207 amendment 3 (Q2): the weight on the likely-prompt vector. Frozen by gold look 6;
+# never tuned on gold.
+QUERY_WEIGHT = 1.0
 
 
 @dataclass(frozen=True)
@@ -231,17 +244,32 @@ def bm25_scores(query: str, docs: list[Doc]) -> list[float]:
     Rounded to SCORE_ROUND decimals before anyone compares or sorts them, so a last-ulp
     difference between `math.log` and `Math.log` cannot split a ranking between runtimes.
     """
-    q = query_terms(query)
-    if not q or not docs:
+    if not query_terms(query) or not docs:
         return [0.0] * len(docs)
-    rows = [doc_terms(d) for d in docs]
-    df = {t: sum(1 for weights, _ in rows if t in weights) for t in q}
+    return bm25_rows(query, [doc_terms(d) for d in docs])
+
+
+_NO_ROW: tuple[dict[str, float], float] = ({}, 0.0)
+
+
+def bm25_rows(query: str, rows: list[tuple[Mapping[str, float], float] | None]) -> list[float]:
+    """`bm25_scores` over docs already reduced to `doc_terms` rows; `None` is an empty doc.
+
+    The arithmetic of `bm25_scores`, which calls it: the queries vector (#207 Q2) scores the
+    cached rows of `queries.layer_terms` (J72-30) through here, so the cache cannot drift from
+    tokenizing the qdoc in place.
+    """
+    q = query_terms(query)
+    if not q or not rows:
+        return [0.0] * len(rows)
+    full = [_NO_ROW if r is None else r for r in rows]
+    df = {t: sum(1 for weights, _ in full if t in weights) for t in q}
     # A plain loop, not `sum()`: since 3.12 `sum` of floats is compensated, and the port adds
     # one length at a time.
     total = 0.0
-    for _, dl in rows:
+    for _, dl in full:
         total += dl
-    return bm25_pooled(q, len(docs), total, df, rows)
+    return bm25_pooled(q, len(full), total, df, full)
 
 
 class Columns(NamedTuple):
@@ -292,6 +320,38 @@ class Bm25fScorer:
 
 
 BM25F = Bm25fScorer()
+
+
+class QueryScorer:
+    """BM25F over the pooled columns plus `QUERY_WEIGHT` times BM25 of the bare prompt over
+    each row's qdoc (#207 amendment 3, Q2). Dense: `vecs` is one row per pooled row, in row
+    order (`pooled_ranking`'s `rows`): the qdoc's `doc_terms` (`queries.layer_terms`, J72-30),
+    or `None` for a fact with no queries. A row whose name or description holds no prompt term
+    can still be lifted by its queries."""
+
+    dense = True
+
+    def __init__(self, prompt: str) -> None:
+        self.prompt = prompt
+        self.fallback: str | None = None
+
+    def label(self) -> str:
+        return "bm25f+queries"
+
+    def used(self) -> str:
+        return "bm25f+queries"
+
+    def floor(self) -> float:
+        return GATE_FLOOR  # a call-time read, as `Bm25fScorer.floor`
+
+    def column(self, cols: Columns, vecs: list[Any] | None) -> list[float] | None:
+        if vecs is None:
+            return None
+        a = bm25_segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs)
+        b = bm25_rows(self.prompt, vecs)
+        # NOT rounded: the probe summed two rounded columns, and `rank_columns` rounds
+        # `score * weight`.
+        return [x + QUERY_WEIGHT * y for x, y in zip(a, b, strict=True)]
 
 
 # ------------------------------------------------------------------ the gate and the ranker

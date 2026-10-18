@@ -44,6 +44,8 @@
 
 // ------------------------------------------------------------------------- str.strip()
 
+import type { PyValue } from './pyjson.js';
+
 /**
  * The characters `str.isspace()` is true for — what `strip()` and `split()` consume.
  *
@@ -62,6 +64,37 @@ const PY_STRIP = new RegExp(`^${PY_WS_CLASS}+|${PY_WS_CLASS}+$`, 'g');
 /** `str.strip()` with no argument. */
 export function pyStrip(s: string): string {
   return s.replace(PY_STRIP, '');
+}
+
+const PY_LSTRIP = new RegExp(`^${PY_WS_CLASS}+`);
+
+/** `str.lstrip()` with no argument. */
+export function pyLstrip(s: string): string {
+  return s.replace(PY_LSTRIP, '');
+}
+
+/**
+ * Python's truthiness of a decoded JSON value (`bool(x)`): `None`, `False`, `0`, `0.0`, `''`,
+ * `[]` and `{}` are false; everything else, NaN included, is true.
+ */
+export function pyTruthy(v: PyValue | undefined): boolean {
+  if (v === undefined) return false;
+  switch (v.t) {
+    case 'null':
+      return false;
+    case 'bool':
+      return v.v;
+    case 'int':
+      return v.v !== 0n;
+    case 'float':
+      return v.v !== 0 || Number.isNaN(v.v);
+    case 'str':
+      return v.v.length > 0;
+    case 'list':
+      return v.v.length > 0;
+    case 'dict':
+      return v.v.size > 0;
+  }
 }
 
 // ------------------------------------------------------------------------ sorted() on str

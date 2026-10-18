@@ -45,7 +45,7 @@ const HINT_KEYS = new Set(['readOnlyHint', 'destructiveHint', 'idempotentHint', 
 const asset = (name) => JSON.parse(readFileSync(join(ASSETS, 'tools', `${name}.json`), 'utf8'));
 
 test('every served asset carries a title and only MCP hint keys, openWorldHint false', () => {
-  assert.equal(MCP_TOOLS.length, 14);
+  assert.equal(MCP_TOOLS.length, 15); // + memory_queries (#207 amendment 3)
   const readOnly = new Set();
   for (const name of MCP_TOOLS) {
     const a = asset(name);
@@ -153,7 +153,7 @@ for (const eventLog of [false, true]) {
   test(`tools/list advertises each title and the asset hints whatever the log state (log ${eventLog ? 'on' : 'off'})`, async () => {
     const [line] = await exchange([{ jsonrpc: '2.0', id: 1, method: 'tools/list' }], { eventLog });
     const tools = JSON.parse(line).result.tools;
-    assert.equal(tools.length, 14);
+    assert.equal(tools.length, 15); // + memory_queries (#207 amendment 3)
     for (const tool of tools) {
       const a = asset(tool.name);
       assert.equal(tool.title, a.title, tool.name);

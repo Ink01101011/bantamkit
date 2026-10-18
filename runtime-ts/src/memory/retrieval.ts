@@ -18,8 +18,36 @@ const NOSPACE: Array<[number, number]> = [
   [0x3400, 0x4dbf], // CJK Extension A
   [0x4e00, 0x9fff], // CJK Unified
 ];
-const nospace = (cp: number): boolean => NOSPACE.some(([lo, hi]) => cp >= lo && cp <= hi);
+/**
+ * `NOSPACE` as one comparison chain (J72-30): the hook tokenizes every qdoc in a fresh process,
+ * where `NOSPACE.some` and its closure were the hottest frames. Equal to the table for every
+ * code point; `retrieval.test.ts` checks all 0x110000 of them.
+ */
+export const nospace = (cp: number): boolean =>
+  cp >= 0x0e00 &&
+  (cp <= 0x0eff ||
+    (cp >= 0x1000 &&
+      (cp <= 0x109f ||
+        (cp >= 0x1780 &&
+          (cp <= 0x17ff ||
+            (cp >= 0x3040 && (cp <= 0x30ff || (cp >= 0x3400 && (cp <= 0x4dbf || (cp >= 0x4e00 && cp <= 0x9fff))))))))));
+/** The table itself, for the equality test only. */
+export const nospaceTable = (cp: number): boolean => NOSPACE.some(([lo, hi]) => cp >= lo && cp <= hi);
+// Every NOSPACE range is in the BMP and outside the surrogates, so a code-UNIT class matches
+// exactly the code points the table holds, and never half of a pair.
+const NOSPACE_UNITS = /[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g;
 const WORDCHAR = /^[\p{L}\p{N}\p{M}]$/u;
+
+/**
+ * Every code point of a no-space script replaced by one space, on the RAW text (before NFKC).
+ *
+ * Q2's qdoc keeps only the spaced-script tokens of a query: the Thai bigrams were measured as
+ * noise (J72-20). The order matters for fidelity: the probe stripped first and tokenized
+ * after. Iterates CODE POINTS, as Python's str does. The reference's `strip_nospace`.
+ */
+export function stripNospace(text: string): string {
+  return text.replace(NOSPACE_UNITS, ' ');
+}
 
 /**
  * NFKC, lowercase, then words for spaced scripts and character bigrams for the rest.
@@ -27,37 +55,64 @@ const WORDCHAR = /^[\p{L}\p{N}\p{M}]$/u;
  * A list, not a set: BM25 needs term frequency. A no-space run of one character is
  * emitted as that character, so a one-letter Thai query still has a token.
  */
+// ASCII text: NFKC is the identity, `toLowerCase` leaves only [a-z0-9] as word characters, and
+// no code point is a no-space one, so the tokens are exactly the runs of [a-z0-9] (J72-30).
+const ASCII_ONLY = /^[\x00-\x7f]*$/;
+const ASCII_WORDS = /[a-z0-9]+/g;
+
 export function tokenizeV2(text: string): string[] {
+  if (ASCII_ONLY.test(text)) return text.toLowerCase().match(ASCII_WORDS) ?? [];
   const s = text.normalize('NFKC').toLowerCase();
   const out: string[] = [];
-  let word = '';
-  let run: string[] = [];
-  const flushWord = (): void => {
-    if (word) {
-      out.push(word);
-      word = '';
+  // Words and no-space runs are CONTIGUOUS spans of `s`, so they are sliced, not built one
+  // character at a time (J72-30). Iterates CODE POINTS, as Python's str does: a surrogate pair
+  // is one step, a lone surrogate is one step of its own.
+  let wordAt = -1; // start of the open word, or -1
+  let runAt = -1; // start of the open no-space run, or -1 (every no-space code point is one unit)
+  const flushWord = (end: number): void => {
+    if (wordAt >= 0) {
+      out.push(s.slice(wordAt, end));
+      wordAt = -1;
     }
   };
-  const flushRun = (): void => {
-    if (run.length === 1) out.push(run[0]!);
-    else for (let i = 0; i + 1 < run.length; i++) out.push(run[i]! + run[i + 1]!);
-    run = [];
+  const flushRun = (end: number): void => {
+    if (runAt >= 0) {
+      if (end - runAt === 1) out.push(s[runAt]!);
+      else for (let i = runAt; i + 1 < end; i++) out.push(s.slice(i, i + 2));
+      runAt = -1;
+    }
   };
-  for (const ch of s) {
-    // iterates code points, as Python's str does
-    if (nospace(ch.codePointAt(0)!)) {
-      flushWord();
-      run.push(ch);
-    } else if (WORDCHAR.test(ch)) {
-      flushRun();
-      word += ch;
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    const c = s.charCodeAt(i);
+    let step = 1;
+    let cp = c;
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < n) {
+      const d = s.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        cp = (c - 0xd800) * 0x400 + (d - 0xdc00) + 0x10000;
+        step = 2;
+      }
+    }
+    if (nospace(cp)) {
+      flushWord(i);
+      if (runAt < 0) runAt = i;
+    } else if (
+      cp < 0x80
+        ? (cp >= 0x61 && cp <= 0x7a) || (cp >= 0x30 && cp <= 0x39) || (cp >= 0x41 && cp <= 0x5a)
+        : WORDCHAR.test(step === 1 ? s[i]! : s.slice(i, i + 2))
+    ) {
+      flushRun(i);
+      if (wordAt < 0) wordAt = i;
     } else {
-      flushWord();
-      flushRun();
+      flushWord(i);
+      flushRun(i);
     }
+    i += step;
   }
-  flushWord();
-  flushRun();
+  flushWord(n);
+  flushRun(n);
   return out;
 }
 
@@ -75,6 +130,8 @@ export const FIELD_BOOST: ReadonlyArray<[keyof Doc, number]> = [
   ['keywords', 2.0],
 ];
 export const SCORE_ROUND = 9;
+/** #207 amendment 3 (Q2): the weight on the likely-prompt vector. Frozen by gold look 6; never tuned on gold. */
+export const QUERY_WEIGHT = 1.0;
 
 /**
  * Python's `round(x, ndigits)` for a float, ndigits >= 0: CPython's `double_round`.
@@ -273,18 +330,57 @@ export function bm25Pooled(
  * Summation order matches Python's: unique query tokens first-seen, fields in FIELD_BOOST order.
  */
 export function bm25Scores(query: string, docs: Doc[]): number[] {
+  if (queryTerms(query).length === 0 || docs.length === 0) return docs.map(() => 0.0);
+  return bm25Rows(query, docs.map(docTerms));
+}
+
+/**
+ * `bm25Scores` over docs already reduced to `docTerms` rows; `null` is an empty doc.
+ *
+ * The arithmetic of `bm25Scores`, which calls it: the queries vector (#207 Q2) scores the
+ * cached rows of `queries.layerTerms` (J72-30) through here, so the cache cannot drift from
+ * tokenizing the qdoc in place. The postings `bm25Pooled` would build are built straight from
+ * the rows, row order kept (J72-30: a Map per row was this function's cost in a fresh hook),
+ * and handed to the same `bm25Postings`. A row that can `scan` (the cache's in-place view)
+ * reports each of its terms once, first occurrence first. The reference's `bm25_rows`.
+ */
+export function bm25Rows(
+  query: string,
+  rows: ReadonlyArray<readonly [ReadonlyMap<string, number>, number] | null>,
+): number[] {
   const q = queryTerms(query);
-  if (q.length === 0 || docs.length === 0) return docs.map(() => 0.0);
-  const rows = docs.map(docTerms);
-  const df = new Map<string, number>();
-  for (const t of q) {
-    let c = 0;
-    for (const [weights] of rows) if (weights.has(t)) c += 1;
-    df.set(t, c);
-  }
+  if (q.length === 0 || rows.length === 0) return rows.map(() => 0.0);
+  const at = new Map<string, number>(q.map((t, k) => [t, k]));
+  const hits: Array<Array<[number, number]>> = q.map(() => []);
+  const lengths = new Array<number>(rows.length);
   let total = 0;
-  for (const [, dl] of rows) total += dl;
-  return bm25Pooled(q, docs.length, total, df, rows);
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i] ?? null;
+    if (r === null) {
+      lengths[i] = 0.0;
+      total += 0.0;
+      continue;
+    }
+    const [w, dl] = r;
+    lengths[i] = dl;
+    total += dl;
+    const scan = (w as { scan?: (at: ReadonlyMap<string, number>, hit: (k: number, c: number) => void) => void }).scan;
+    if (typeof scan === 'function') {
+      scan.call(w, at, (k, c) => hits[k]!.push([i, c]));
+    } else {
+      for (let k = 0; k < q.length; k += 1) {
+        const v = w.get(q[k]!);
+        if (v !== undefined) hits[k]!.push([i, v]);
+      }
+    }
+  }
+  const df = new Map<string, number>();
+  const postings = new Map<string, Array<[number, number]>>();
+  q.forEach((t, k) => {
+    df.set(t, hits[k]!.length);
+    postings.set(t, hits[k]!);
+  });
+  return bm25Postings(q, rows.length, total, df, lengths, postings);
 }
 
 /** The pooled collection `pooledRanking` hands a scorer: BM25's inputs, in `bm25Segments` order. */
@@ -311,7 +407,7 @@ export interface Scorer {
   label(): string;
   used(): string;
   floor(): number;
-  column(cols: Columns, vecs: ReadonlyArray<Float32Array | null> | null): number[] | null;
+  column(cols: Columns, vecs: ReadonlyArray<unknown> | null): number[] | null;
 }
 
 /** Today's scorer, unchanged: `bm25Segments` over the pooled columns. */
@@ -334,6 +430,36 @@ export class Bm25fScorer implements Scorer {
 
 /** The shared off-path scorer; `fallback` is `null`. */
 export const BM25F = new Bm25fScorer();
+
+/**
+ * BM25F over the pooled columns plus `QUERY_WEIGHT` times BM25 of the bare prompt over each
+ * row's qdoc (#207 amendment 3, Q2). Dense: `vecs` is one row per pooled row, in row order:
+ * the qdoc's `docTerms` (`queries.layerTerms`, J72-30), or `null` for a fact with no queries.
+ * A row whose name or description holds no prompt term can still be lifted by its queries.
+ * The reference's `QueryScorer`.
+ */
+export class QueryScorer implements Scorer {
+  readonly dense = true;
+  fallback: string | null = null;
+  constructor(readonly prompt: string) {}
+  label(): string {
+    return 'bm25f+queries';
+  }
+  used(): string {
+    return 'bm25f+queries';
+  }
+  floor(): number {
+    return GATE_FLOOR; // a call-time read, as `Bm25fScorer.floor`
+  }
+  column(cols: Columns, vecs: ReadonlyArray<unknown> | null): number[] | null {
+    if (vecs === null) return null;
+    const a = bm25Segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs);
+    const b = bm25Rows(this.prompt, vecs as ReadonlyArray<readonly [ReadonlyMap<string, number>, number] | null>);
+    if (a.length !== b.length) throw new Error('zip() argument 2 is shorter than argument 1');
+    // NOT rounded: the probe summed two rounded columns, and `rankColumns` rounds `score * weight`.
+    return a.map((x, i) => x + QUERY_WEIGHT * b[i]!);
+  }
+}
 
 // ------------------------------------------------------------------ the gate and the ranker
 //

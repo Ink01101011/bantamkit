@@ -55,6 +55,8 @@ import type { Fact } from './memory/store.js';
 import { UsageLedger } from './memory/usage.js';
 import { keptCli, keptManifest, keptPrefix } from './npminstall.js';
 import { exclusive } from './storage/lock.js';
+import { parseJson, PyJSONDecodeError, PyValueError, type PyValue } from './pyjson.js';
+import { pyLstrip, pyStrip as pyStripSem, pyTruthy } from './pysem.js';
 import { LogSegment, ROTATE_BYTES } from './storage/logsegment.js';
 import { maybeSpawn as maybeSpawnRetention } from './storage/retention.js';
 import { changed, loadTurn, saveTurn, snapshot } from './touch/bashturn.js';
@@ -127,6 +129,12 @@ const DIST = path.join(HERE, 'memory');
 const SESSION_INJECT_MAX = 3000;
 const PROMPT_INJECT_MAX = 700;
 const PROMPT_MIN_CHARS = 12;
+// #207 amendment 3 (Q3): the session head. A prompt shorter than HEAD_SHORT code points borrows
+// the session's previous prompt (its first HEAD_CUT code points) for its BM25F query; the
+// queries vector keeps the bare prompt. One read of the transcript's last TAIL_BYTES finds it.
+export const HEAD_SHORT = 80;
+export const HEAD_CUT = 500;
+export const TAIL_BYTES = 262144;
 const STOP_NUDGE_MIN_TOOL_CALLS = 20;
 const COMPACT_AT = 0.9; // index >= 90% of budget → compact …
 const COMPACT_TO = 0.8; // … down to 80%, past the no-op band measured in job40 (C6)
@@ -1177,6 +1185,19 @@ function sessionStart(run: HookRun, input: HookInput): void {
   parts.push(
     '[bantamkit] Toolbox is live: mcp__bantamkit__memory_recall reads the body of any fact above; memory_save stores a durable lesson (feedback|user|project|reference — never something derivable from the repo). Repeat reads of an unchanged file are refused once by the filegraph hook; a save nudge fires once at session end when nothing was saved.',
   );
+  // #207 amendment 3 (Q8): S12, only while some fact has no likely-prompt queries, in its own
+  // try — a nudge is never worth a dead session.
+  try {
+    const [n, m] = Memory.layered(cwd, { native: native.dir }).queriesCoverage();
+    if (n < m) {
+      parts.push(
+        `[bantamkit] ${m - n} of ${m} facts have no likely-prompt queries yet; call ` +
+          'mcp__bantamkit__memory_queries with {} to list them and write their queries.',
+      );
+    }
+  } catch (e) {
+    log(run, { event: 'SessionStart', warn: `queries: ${message(e)}` });
+  }
   // LAST, AND ONLY WHEN IT IS TRUE. The toolbox line above is constant boilerplate the agent
   // sees every session; this one appears in one of five states and asks for an action, so it
   // gets the strongest position in the block. Everything above it is unchanged when it is
@@ -1377,6 +1398,104 @@ function promptFingerprint(prompt: string): { sha256: string; chars: number; byt
   };
 }
 
+const NOT_A_PROMPT = ['<', '[Request interrupted'] as const;
+
+/**
+ * `tools/eval/recall/mine_silver._user_text`, the rule the measured head was built with: the
+ * reference's `_user_text`. A `text` block whose value is not a string makes Python's
+ * `"\n".join` raise, which `previousPrompt` turns into no head; so it throws here too.
+ */
+function userText(message: Map<string, PyValue>): string | null {
+  const c = message.get('content');
+  if (c !== undefined && c.t === 'str') return c.v;
+  if (c !== undefined && c.t === 'list') {
+    const parts: string[] = [];
+    for (const b of c.v) {
+      if (b.t !== 'dict') continue;
+      const type = b.v.get('type');
+      if (type === undefined || type.t !== 'str' || type.v !== 'text') continue;
+      const text = b.v.get('text');
+      if (text === undefined) parts.push('');
+      else if (text.t === 'str') parts.push(text.v);
+      else throw new TypeError('sequence item: expected str instance');
+    }
+    return parts.length > 0 ? parts.join('\n') : null;
+  }
+  return null;
+}
+
+/**
+ * The latest main-chain user prompt before `current`, from ONE read of the transcript's last
+ * TAIL_BYTES (#207 amendment 3, Q3; orchestrator ruling 1). The reference's `_previous_prompt`.
+ *
+ * Main chain: `type: user`, not `isSidechain`, not `isMeta` (Python truthiness), with text that
+ * does not start with `<` or `[Request interrupted`. A tail that does not start at byte 0 drops
+ * everything through its first newline (a cut line), even when what is left of it parses.
+ * Records are split on "\n" only, decoded with U+FFFD for bad bytes and the BOM kept (Python's
+ * `errors="replace"`), and parsed with Python's json. A trailing run of prompts equal to
+ * `current` (compared stripped) is dropped. Any failure is '' — the hook never errors here.
+ */
+export function previousPrompt(transcript: string, current: string): string {
+  try {
+    if (!transcript) return '';
+    let raw: Buffer;
+    let start: number;
+    const fd = fs.openSync(transcript, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      start = Math.max(0, size - TAIL_BYTES);
+      const buf = Buffer.alloc(TAIL_BYTES);
+      let got = 0;
+      for (;;) {
+        const n = fs.readSync(fd, buf, got, TAIL_BYTES - got, start + got);
+        if (n <= 0) break;
+        got += n;
+        if (got >= TAIL_BYTES) break;
+      }
+      raw = buf.subarray(0, got);
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (start > 0) {
+      const cut = raw.indexOf(0x0a);
+      raw = cut < 0 ? Buffer.alloc(0) : raw.subarray(cut + 1);
+    }
+    const prompts: string[] = [];
+    for (const line of new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(raw).split('\n')) {
+      let r: PyValue;
+      try {
+        r = parseJson(line);
+      } catch (e) {
+        if (e instanceof PyJSONDecodeError || e instanceof PyValueError) continue;
+        throw e;
+      }
+      if (r.t !== 'dict' || pyTruthy(r.v.get('isSidechain')) || pyTruthy(r.v.get('isMeta'))) continue;
+      const type = r.v.get('type');
+      if (type === undefined || type.t !== 'str' || type.v !== 'user') continue;
+      const msg = r.v.get('message');
+      if (msg === undefined || msg.t !== 'dict') continue;
+      const x = userText(msg.v);
+      if (x === null || !pyStripSem(x) || NOT_A_PROMPT.some((p) => pyLstrip(x).startsWith(p))) continue;
+      prompts.push(pyStripSem(x));
+    }
+    const here = pyStripSem(current);
+    while (prompts.length > 0 && prompts[prompts.length - 1] === here) prompts.pop();
+    return prompts.length > 0 ? prompts[prompts.length - 1]! : '';
+  } catch {
+    return ''; // Q3: any failure is no head
+  }
+}
+
+/**
+ * The BM25F query for a short `prompt`: `prompt + "\n" + prev[:HEAD_CUT]`, or `null` (a long
+ * prompt, or no previous prompt to borrow). Lengths are CODE POINTS. The reference's `_head_query`.
+ */
+export function headQuery(prompt: string, transcript: string): string | null {
+  if (Array.from(prompt).length >= HEAD_SHORT) return null;
+  const prev = previousPrompt(transcript, prompt);
+  return prev ? `${prompt}\n${Array.from(prev).slice(0, HEAD_CUT).join('')}` : null;
+}
+
 function userPromptSubmit(run: HookRun, input: HookInput): void {
   turnOpen(run, input); // #200: before the skip; a command's turn can still run Bash
   const prompt = String(input.prompt || '').trim();
@@ -1398,7 +1517,10 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   // name those files (`W_CONTEXT`), and, when the via path is on, admits one of them past the
   // gate. `null` (no repo, no touches, no graph, any error) is today's recall.
   const touch = touchContext(run, input, m);
-  const ask = (): RecallOutcome => m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false, false, touch);
+  // #207 amendment 3 (Q3): a short prompt borrows the session's previous prompt for its BM25F
+  // terms. `memory_recall` never does; only this payload carries `transcript_path`.
+  const head = headQuery(prompt, String(input.transcript_path || ''));
+  const ask = (): RecallOutcome => m.recallOutcome(prompt, 3, RECALL_MIN_SCORE_RATIO, false, false, touch, head);
   // ONE UNREADABLE FACT COSTS THAT FACT (job65, #119): the recall reads every layer past the
   // files it cannot read and names them in `o.skipped`; one recall, healthy or not. A layer
   // that cannot be LISTED fails exactly as it did.

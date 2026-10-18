@@ -49,6 +49,7 @@ from bantamkit.eventlog import EventLog
 from bantamkit.mcpreport import build_report as build_mcp_report
 from bantamkit.mcpreport import resolve_event_log_path
 from bantamkit.memory import DEFAULT_INDEX_BUDGET, INDEX_PRESSURE_PERCENT, Memory
+from bantamkit.memory import queries as memory_queries_mod
 from bantamkit.memory import usage as memory_usage
 from bantamkit.memory.store import MemoryValidationError
 from bantamkit.pricing import PriceTableError
@@ -1022,11 +1023,23 @@ def status_report(
         # J68-10: an append that could not be written is counted in `memory.usage` and named
         # here, so an unwritable ledger is visible (#199 D5 error row).
         memory_usage.status_line(*memory.usage_census()),
+        # #207 amendment 3 (Q8): how many facts carry likely-prompt queries, LAST, so every
+        # line above keeps its number.
+        _queries_line(memory),
     ]
     if conditions:
         lines.append(f"{_plural(len(conditions), 'problem')}:")
         lines.extend(f"- {condition.sentence}" for condition in conditions)
     return "\n".join(lines)
+
+
+def _queries_line(memory: Memory) -> str:
+    """S10 `queries: <n> of <m> facts`, or S11 when the walk raises: one line never sinks a
+    status report."""
+    try:
+        return memory_queries_mod.status_line(*memory.queries_coverage())
+    except Exception:  # noqa: BLE001 - a status report never raises over one line
+        return "queries: unavailable"
 
 
 class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
@@ -1484,9 +1497,12 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         body: str,
         links: list[str] | None = None,
         keywords: list[str] | None = None,
+        queries: list[str] | None = None,
     ) -> str:
         with _record_raise(log, "memory_save"):
-            outcome = memory.save_outcome(type, name, description, body, links, keywords)
+            outcome = memory.save_outcome(
+                type, name, description, body, links, keywords, queries
+            )
         if log.enabled:
             # Only when a log is actually on: `index_accounting` re-parses `facts/`, and
             # a diagnostic must not put that on the path of an operator who did not ask
@@ -1665,6 +1681,18 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             return plan if plan.get("result") == "error" else {"result": "plan", **plan}
 
         return _noted_dict(_record_result(log, "work_plan", answered))
+
+    def memory_queries(facts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        # #207 amendment 3 (Q6): `{}` lists the facts with no likely-prompt queries and the
+        # instructions for writing theirs; `{"facts": [...]}` writes them. The refusal is the
+        # `{"result": "error", "reason"}` shape `work_plan` uses, recorded the same way.
+        return _noted_dict(
+            _record_result(
+                log,
+                "memory_queries",
+                lambda: memory.queries_missing() if facts is None else memory.queries_write(facts),
+            )
+        )
 
     def shiftwork_plan(checkpoint: str) -> dict[str, Any]:
         return _noted_dict(
@@ -2042,6 +2070,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(token_ledger, "token_ledger"),
         _from_manifest(work_plan, "work_plan"),
         _from_manifest(shiftwork_plan, "shiftwork_plan"),
+        _from_manifest(memory_queries, "memory_queries"),
     ]
 
     server = MCPServer(

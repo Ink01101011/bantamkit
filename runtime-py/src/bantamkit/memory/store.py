@@ -504,8 +504,14 @@ class Pool:
         return out
 
 
-def pool_of(facts: list[Fact], q: list[str]) -> Pool:
-    """A `Pool` from parsed facts: the files' answer, and the reference for the index's."""
+def pool_of(facts: list[Fact], q: list[str], every_row: bool = False) -> Pool:
+    """A `Pool` from parsed facts: the files' answer, and the reference for the index's.
+
+    `every_row` (#207 amendment 3) keeps every fact as a row, hit or not, as an index's pool
+    does: once a sidecar holds queries, a row with no query term can still score on its
+    queries, and the files path must pool what the index path pools. A zero-score row is
+    never admitted and cannot reorder the others.
+    """
     held: list[tuple[str, float, str, bool, Fact, dict[str, float]]] = []
     total = 0.0
     df = dict.fromkeys(q, 0)
@@ -514,9 +520,9 @@ def pool_of(facts: list[Fact], q: list[str]) -> Pool:
         weights, length = doc_terms(doc)
         total += length
         mine = {t: weights[t] for t in q if t in weights}
-        if mine:
-            for t in mine:
-                df[t] += 1
+        for t in mine:
+            df[t] += 1
+        if mine or every_row:
             held.append((doc.name, length, _text(fact.type), stale(doc.description), fact, mine))
     held.sort(key=lambda r: r[0])  # stable: two files claiming a name keep listing order
     type_names = sorted({r[2] for r in held})
@@ -536,7 +542,7 @@ def pool_of(facts: list[Fact], q: list[str]) -> Pool:
         stale=[i for i, r in enumerate(held) if r[3]],
         segs=segs,
         facts=[r[4] for r in held],
-        every=[_text(fact.name) for fact in facts],
+        every=None if every_row else [_text(fact.name) for fact in facts],
     )
 
 
@@ -1450,13 +1456,17 @@ class MemoryStore:
         """
         return self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
 
-    def pool(self, q: list[str], skipped: list[dict[str, str]] | None = None) -> Pool:
+    def pool(
+        self, q: list[str], skipped: list[dict[str, str]] | None = None, every_row: bool = False
+    ) -> Pool:
         """This store's share of a pooled BM25 recall for the query terms `q` (#199 D3).
 
         Through the hot index when `_indexed` allows it, reading the head and only the
         postings shards `q` hashes to -- no fact file is parsed here (user ruling
         2026-10-15: the hook scores on the derived index). Anywhere the index cannot vouch
         for the answer it is the files', exactly as `recall` decided before #199.
+
+        `every_row` reaches the files' `pool_of` only: an index's pool is every row already.
         """
         idx = self._indexed()
         if idx is not None:
@@ -1466,7 +1476,7 @@ class MemoryStore:
                 got = self._pool_indexed(idx, q)
             if got is not None:
                 return got
-        return pool_of(self.candidates(skipped), q)
+        return pool_of(self.candidates(skipped), q, every_row)
 
     @staticmethod
     def _pool_indexed(idx: HotIndex, q: list[str]) -> Pool | None:

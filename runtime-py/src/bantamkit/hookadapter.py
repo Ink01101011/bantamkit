@@ -140,6 +140,13 @@ def _home_dir() -> str:
 SESSION_INJECT_MAX = 3000
 PROMPT_INJECT_MAX = 700
 PROMPT_MIN_CHARS = 12
+# #207 amendment 3 (Q3): the session head. A prompt shorter than HEAD_SHORT code points
+# borrows the session's previous prompt (its first HEAD_CUT code points) for its BM25F
+# query; the queries vector keeps the bare prompt. One read of the transcript's last
+# TAIL_BYTES finds it.
+HEAD_SHORT = 80
+HEAD_CUT = 500
+TAIL_BYTES = 262144
 STOP_NUDGE_MIN_TOOL_CALLS = 20
 COMPACT_AT = 0.9  # index >= 90% of budget -> compact ...
 COMPACT_TO = 0.8  # ... down to 80%, past the no-op band measured in job40 (C6)
@@ -1071,6 +1078,17 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
         "refused once by the filegraph hook; a save nudge fires once at session end when "
         "nothing was saved."
     )
+    # #207 amendment 3 (Q8): S12, only while some fact has no likely-prompt queries, in its
+    # own try -- a nudge is never worth a dead session.
+    try:
+        n, m_ = Memory.layered(cwd, native=native.dir).queries_coverage()
+        if n < m_:
+            parts.append(
+                f"[bantamkit] {m_ - n} of {m_} facts have no likely-prompt queries yet; call "
+                "mcp__bantamkit__memory_queries with {} to list them and write their queries."
+            )
+    except Exception as e:  # noqa: BLE001 - a nudge is never worth a dead session
+        _log(run, {"event": "SessionStart", "warn": f"queries: {_message(e)}"})
     # THE STALE-INSTALL LINE THE NODE MODULE APPENDS LAST IS NOT HERE, AND THAT IS RULED
     # (Q2.4), not forgotten. It is decided from the kept npm install under
     # `~/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json` -- `npminstall.ts`, which
@@ -1263,6 +1281,79 @@ def _prompt_fingerprint(prompt: str) -> dict[str, Any]:
     }
 
 
+_NOT_A_PROMPT = ("<", "[Request interrupted")
+
+
+def _user_text(message: dict[str, Any]) -> str | None:
+    """`tools/eval/recall/mine_silver._user_text`, the rule the measured head was built with."""
+    c = message.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"]
+        return "\n".join(parts) if parts else None
+    return None
+
+
+def _previous_prompt(transcript: str, current: str) -> str:
+    """The latest main-chain user prompt before `current`, from ONE read of the transcript's
+    last TAIL_BYTES (#207 amendment 3, Q3; orchestrator ruling 1).
+
+    Main chain: `type: user`, not `isSidechain`, not `isMeta`, with text that does not start
+    with `<` or `[Request interrupted`. A tail that does not start at byte 0 drops everything
+    through its first newline (a cut line). Records are split on "\n" only. A trailing run of
+    prompts equal to `current` (compared stripped) is dropped: the host may or may not have
+    written the current prompt before this hook runs. Any failure is "" -- the hook never
+    errors here.
+    """
+    try:
+        if not transcript:
+            return ""
+        with open(transcript, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            start = max(0, size - TAIL_BYTES)
+            f.seek(start)
+            raw = f.read(TAIL_BYTES)
+        if start > 0:
+            cut = raw.find(b"\n")
+            raw = b"" if cut < 0 else raw[cut + 1 :]
+        prompts: list[str] = []
+        for line in raw.decode("utf-8", errors="replace").split("\n"):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if (
+                not isinstance(r, dict)
+                or r.get("isSidechain")
+                or r.get("isMeta")
+                or r.get("type") != "user"
+            ):
+                continue
+            msg = r.get("message")
+            if not isinstance(msg, dict):
+                continue
+            x = _user_text(msg)
+            if x is None or not x.strip() or x.lstrip().startswith(_NOT_A_PROMPT):
+                continue
+            prompts.append(x.strip())
+        here = current.strip()
+        while prompts and prompts[-1] == here:
+            prompts.pop()
+        return prompts[-1] if prompts else ""
+    except Exception:  # noqa: BLE001 - Q3: any failure is no head
+        return ""
+
+
+def _head_query(prompt: str, transcript: str) -> str | None:
+    """The BM25F query for a short `prompt`: `prompt + "\n" + prev[:HEAD_CUT]`, or `None`
+    (a long prompt, or no previous prompt to borrow)."""
+    if len(prompt) >= HEAD_SHORT:
+        return None
+    prev = _previous_prompt(transcript, prompt)
+    return f"{prompt}\n{prev[:HEAD_CUT]}" if prev else None
+
+
 def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     _turn_open(run, payload)  # #200: before the skip; a command's turn can still run Bash
     prompt = str(payload.get("prompt") or "").strip()
@@ -1286,7 +1377,10 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     # that name those files (`W_CONTEXT`), and, when the via path is on, admits one of them
     # past the gate. `None` (no repo, no touches, no graph, any error) is today's recall.
     touch = _touch_context(run, payload, m)
-    o = m.recall_outcome(prompt, 3, stamp=False, context=touch)
+    # #207 amendment 3 (Q3): a short prompt borrows the session's previous prompt for its
+    # BM25F terms. `memory_recall` never does; only this payload carries `transcript_path`.
+    head = _head_query(prompt, _js_str(payload.get("transcript_path") or ""))
+    o = m.recall_outcome(prompt, 3, stamp=False, context=touch, head=head)
     skipped = [dict(s) for s in o.skipped]
     degraded: dict[str, Any] = {"skipped": skipped} if skipped else {}
     if touch is not None:

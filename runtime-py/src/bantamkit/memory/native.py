@@ -148,11 +148,14 @@ class NativeStore:
         q: list[str],
         skipped: list[dict[str, str]] | None = None,
         shadow: Any = frozenset(),
+        every_row: bool = False,
     ) -> Pool:
-        """This layer's share of a pooled recall, the `shadow` names taken out before scoring."""
+        """This layer's share of a pooled recall, the `shadow` names taken out before scoring.
+
+        `every_row` reaches `pool_of` only (#207 amendment 3, `store.pool_of`)."""
         idx = self._indexed()
         if idx is None:
-            return pool_of([], q)
+            return pool_of([], q, every_row)
         if skipped is not None:
             skipped.extend(
                 {"file": f, "reason": r} for f, r in sorted(idx.skipped.items())
@@ -160,7 +163,7 @@ class NativeStore:
         got = MemoryStore._pool_indexed(idx, q)
         if got is not None:
             return pool_without(got, shadow)
-        return pool_of(self.candidates(None, shadow), q)
+        return pool_of(self.candidates(None, shadow), q, every_row)
 
     def resolve(self, pool: Pool, row: int) -> Fact | None:
         """The fact a row stands for; `None` when its file no longer says what the index said."""

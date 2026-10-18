@@ -801,6 +801,32 @@ export async function run(ctx) {
     push(N('a', 'sweep', 'hook-session-start'), [], namesIn(hookStrings['session-start'], S));
     push(N('a', 'sweep', 'hook-read-refusal'), [], namesIn(hookStrings['read-refusal'], S));
     push(N('a', 'sweep', 'hook-stop-nudge'), [], namesIn(hookStrings['stop-nudge'], S));
+
+    // -------------------------------------------------------------- (a) #207 amendment 3
+    // S12, the SessionStart queries nudge: the hook bed holds a fact with no queries, so the
+    // sentence must be there (the guard first, as for row 40); the tool it names must be
+    // served, and the call it spells (`with {}`) must be answered with the missing list.
+    const s12 = hookStrings['session-start'].split('\n').find((l) => l.includes('likely-prompt')) ?? null;
+    push(N('a', 'q207', 'S12-was-produced'), 'the SessionStart block carries the queries nudge', s12 ? 'the SessionStart block carries the queries nudge' : 'no S12 line', 'string');
+    push(N('a', 'q207', 'S12-names-only-served-tools'), [], s12 ? namesIn(s12, S) : ['(no S12 line to read)']);
+    push(N('a', 'q207', 'S12-names-memory_queries'), ['memory_queries'], s12 ? [...s12.matchAll(/mcp__bantamkit__(\w+)/g)].map((m) => m[1]) : []);
+    const sQ = await session(ctx, side, { name: 'q207-memory-queries-list', env: S.env, lines: [INIT, INITIALIZED, callTool(2, 'memory_queries', {})] });
+    const listed = outcome(sQ, 2);
+    push(
+      N('a', 'q207', 'memory_queries-called-as-S12-says-{}-lists'),
+      'answered with the missing list',
+      listed.ok && (listed.structured?.result === 'missing' || /"result":\s*"missing"/.test(listed.text)) ? 'answered with the missing list' : `refused: ${brief(listed.text)}`,
+      'string',
+    );
+    // The generator instructions `memory_queries {}` returns: they name `memory_queries` and
+    // `memory_save`'s `queries`, and both must resolve on this side's served surface.
+    const mq = S.skills['memory-queries'] ?? '';
+    const resolves = [];
+    if (!/`memory_queries`/.test(mq)) resolves.push('skill does not name `memory_queries`');
+    else if (!Object.prototype.hasOwnProperty.call(S.tools, 'memory_queries')) resolves.push('tool:memory_queries');
+    if (!/`queries` to `memory_save`/.test(mq)) resolves.push('skill does not name `memory_save`\'s `queries`');
+    else if (!Object.prototype.hasOwnProperty.call(S.tools.memory_save?.inputSchema?.properties ?? {}, 'queries')) resolves.push('parameter:memory_save.queries');
+    push(N('a', 'q207', 'memory-queries-skill-names-memory_queries-and-memory_save.queries'), [], resolves);
   }
 
   // ============================================================ (d) CLAUDE.md commands, from a throwaway worktree

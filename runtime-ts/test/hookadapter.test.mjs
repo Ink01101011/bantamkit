@@ -360,3 +360,174 @@ test(
     assert.ok(!existsSync(join(home, '.bantamkit', 'hooks', 'ledger-probe-session.json')));
   },
 );
+
+// --- #207 amendment 3: the short-prompt session head (Q3) and the queries nudge (Q8) --------
+// The same cases, inputs and expected values as runtime-py/tests/test_hookadapter.py.
+
+const H = await import('../dist/hookadapter.js');
+const TEXT = (text) => ({ type: 'text', text });
+const rec = (text, { content, ...kw } = {}) =>
+  JSON.stringify({ type: 'user', message: { content: content === undefined ? text : content }, ...kw });
+
+test('the head constants', () => {
+  assert.deepEqual([H.HEAD_SHORT, H.HEAD_CUT, H.TAIL_BYTES], [80, 500, 262144]);
+});
+
+test('previousPrompt rules', () => {
+  const t = join(newDir('head'), 't.jsonl');
+  writeFileSync(
+    t,
+    [
+      rec('first prompt'),
+      rec('side', { isSidechain: true }),
+      rec('meta', { isMeta: true }),
+      rec('<command-name>/clear</command-name>'),
+      rec('[Request interrupted by user]'),
+      rec(undefined, { content: [{ type: 'tool_result', content: 'x' }] }),
+      JSON.stringify({ type: 'assistant', message: { content: 'hi' } }),
+      rec(undefined, { content: [TEXT('  second '), TEXT('part')] }),
+      'not json',
+      rec('current'),
+    ].join('\n') + '\n',
+    'utf8',
+  );
+  assert.equal(H.previousPrompt(t, 'current'), 'second \npart');
+  assert.equal(H.previousPrompt(t, '  current '), 'second \npart'); // compared stripped
+  assert.equal(H.previousPrompt(t, 'other'), 'current');
+});
+
+test('previousPrompt drops every trailing copy of the current prompt', () => {
+  const t = join(newDir('head'), 't.jsonl');
+  writeFileSync(t, [rec('before'), rec('now'), rec(' now ')].join('\n') + '\n', 'utf8');
+  assert.equal(H.previousPrompt(t, 'now'), 'before');
+  writeFileSync(t, [rec('now'), rec('before')].join('\n') + '\n', 'utf8');
+  assert.equal(H.previousPrompt(t, 'now'), 'before'); // not yet written: the last one
+});
+
+test('previousPrompt drops the partial first line of the tail', () => {
+  const t = join(newDir('head'), 't.jsonl');
+  const head = rec('x'.repeat(H.TAIL_BYTES + 10)); // this whole line straddles the 256 KiB boundary
+  writeFileSync(t, head + '\n' + rec('kept') + '\n', 'utf8');
+  assert.equal(H.previousPrompt(t, 'now'), 'kept');
+  writeFileSync(t, head + '\n', 'utf8');
+  assert.equal(H.previousPrompt(t, 'now'), '');
+  // the cut line is dropped even when what is left of it parses: the tail starts EXACTLY at a
+  // record's `{`, but the line began earlier (junk ahead of it), so it is not a record
+  const ghost = rec('g'.repeat(H.TAIL_BYTES - 1 - rec('').length));
+  assert.equal(Buffer.byteLength(ghost), H.TAIL_BYTES - 1);
+  writeFileSync(t, 'junk' + ghost + '\n', 'utf8');
+  assert.equal(H.previousPrompt(t, 'now'), '');
+  // a prompt that starts before the tail is not read, even when its line ends inside it
+  writeFileSync(t, rec('y'.repeat(100)) + '\n' + 'z'.repeat(H.TAIL_BYTES - 10) + '\n', 'utf8');
+  assert.equal(H.previousPrompt(t, 'now'), '');
+});
+
+test('previousPrompt never throws', () => {
+  const dir = newDir('head');
+  assert.equal(H.previousPrompt(join(dir, 'missing.jsonl'), 'x'), '');
+  assert.equal(H.previousPrompt(dir, 'x'), ''); // a directory
+  assert.equal(H.previousPrompt('', 'x'), '');
+  const t = join(dir, 'bad.jsonl');
+  writeFileSync(t, Buffer.concat([Buffer.from([0xff, 0xfe, 0x0a]), Buffer.from(rec('ok') + '\n', 'utf8')]));
+  assert.equal(H.previousPrompt(t, 'x'), 'ok');
+  // a text block whose text is not a string sinks the whole read, as Python's join does
+  writeFileSync(t, [rec('ok'), rec(undefined, { content: [TEXT(3)] })].join('\n') + '\n', 'utf8');
+  assert.equal(H.previousPrompt(t, 'x'), '');
+});
+
+test('previousPrompt reads Python truthiness and keeps a BOM line unparsed', () => {
+  const t = join(newDir('head'), 't.jsonl');
+  writeFileSync(
+    t,
+    [
+      rec('kept'),
+      rec('zero is not a sidechain', { isSidechain: 0 }),
+      rec('an empty list is not meta', { isMeta: [] }),
+      rec('a string is a sidechain', { isSidechain: 'yes' }),
+      '﻿' + rec('a BOM is not json'),
+    ].join('\n') + '\n',
+    'utf8',
+  );
+  assert.equal(H.previousPrompt(t, 'x'), 'an empty list is not meta');
+});
+
+test('headQuery only for short prompts', () => {
+  const dir = newDir('head');
+  const t = join(dir, 't.jsonl');
+  writeFileSync(t, rec('p'.repeat(600)) + '\n', 'utf8');
+  assert.equal(H.headQuery('ok?', t), 'ok?\n' + 'p'.repeat(500));
+  assert.notEqual(H.headQuery('x'.repeat(79), t), null);
+  assert.equal(H.headQuery('x'.repeat(80), t), null);
+  assert.notEqual(H.headQuery('\u{1F414}'.repeat(79), t), null); // 79 code points, 158 UTF-16 units
+  assert.equal(H.headQuery('\u{1F414}'.repeat(80), t), null);
+  assert.equal(H.headQuery('ok?', join(dir, 'none.jsonl')), null);
+  assert.equal(H.headQuery('ok?', ''), null);
+  // the cut is code points too
+  writeFileSync(t, rec('\u{1F414}'.repeat(600)) + '\n', 'utf8');
+  assert.equal(H.headQuery('ok?', t), 'ok?\n' + '\u{1F414}'.repeat(500));
+});
+
+/** `_save` of the reference: an in-process save under the bed's HOME. */
+async function saveIn(home, store, type, name, description, body) {
+  const { Memory } = await import('../dist/memory/component.js');
+  const was = [process.env.HOME, process.env.USERPROFILE];
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return new Memory(store).save(type, name, description, body);
+  } finally {
+    [process.env.HOME, process.env.USERPROFILE] = was;
+  }
+}
+
+test('a short prompt borrows the previous prompt for its recall', async () => {
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  await saveIn(home, join(cwd, '.bantamkit', 'memory'), 'reference', 'conformance-gate', 'the gate is zero failures, never a total', 'body');
+  const t = join(newDir('head'), 't.jsonl');
+  writeFileSync(t, rec('what does the conformance gate demand') + '\n', 'utf8');
+  const prompt = 'and how do I run that?';
+  const withHead = runHook({ hook_event_name: 'UserPromptSubmit', prompt, transcript_path: t }, { home, cwd });
+  assert.equal(withHead.status, 0, withHead.stderr);
+  assert.ok(contextOf(withHead).includes('[conformance-gate]'));
+  const without = runHook({ hook_event_name: 'UserPromptSubmit', prompt, session_id: 'another-session' }, { home, cwd });
+  assert.equal(without.status, 0, without.stderr);
+  assert.equal(without.stdout, '');
+  const missing = runHook(
+    { hook_event_name: 'UserPromptSubmit', prompt, transcript_path: join(newDir('head'), 'nope.jsonl'), session_id: 'third-session' },
+    { home, cwd },
+  );
+  assert.equal(missing.status, 0);
+  assert.equal(missing.stdout, '');
+  assert.equal(missing.stderr, '');
+});
+
+const NUDGE =
+  '[bantamkit] 1 of 1 facts have no likely-prompt queries yet; call ' +
+  'mcp__bantamkit__memory_queries with {} to list them and write their queries.';
+
+test('SessionStart nudges while a fact has no queries', async () => {
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  const ctx = () => {
+    const done = runHook({ hook_event_name: 'SessionStart', source: 'startup' }, { home, cwd });
+    assert.equal(done.status, 0, done.stderr);
+    return contextOf(done);
+  };
+  assert.ok(!ctx().includes('likely-prompt queries')); // zero facts: no line
+  const store = join(cwd, '.bantamkit', 'memory');
+  await saveIn(home, store, 'project', 'the-project-fact', 'what this checkout is for', 'body');
+  const got = ctx();
+  assert.ok(got.includes(NUDGE), got);
+  assert.ok(got.indexOf('[bantamkit] Toolbox is live') < got.indexOf(NUDGE));
+  const { Memory } = await import('../dist/memory/component.js');
+  const was = [process.env.HOME, process.env.USERPROFILE];
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    assert.equal(new Memory(store).queriesWrite([{ name: 'the-project-fact', queries: ['what is it'] }]).result, 'written');
+  } finally {
+    [process.env.HOME, process.env.USERPROFILE] = was;
+  }
+  assert.ok(!ctx().includes('likely-prompt queries'));
+});

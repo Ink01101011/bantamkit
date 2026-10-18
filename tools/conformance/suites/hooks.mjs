@@ -3578,6 +3578,119 @@ export async function run(ctx) {
     }
   }
 
+  // ================================================== #207 amendment 3: the head (Q3) and S12 (Q8)
+  //
+  // `recall-queries.mjs` pins `_previous_prompt` / `previousPrompt` and `_head_query` /
+  // `headQuery` as functions; these run the two HOOK PROCESSES, so what is compared is the
+  // injection a real `UserPromptSubmit` makes, and the line a real `SessionStart` adds.
+  // `BANTAMKIT_RETENTION=off` on every run here: nothing below is about retention.
+  const sidecarOf = (h, storeRoot) =>
+    join(h, '.bantamkit', 'queries', `${createHash('sha256').update(realpathSync(storeRoot), 'utf8').digest('hex').slice(0, 16)}.json`);
+  const rec207 = (text, extra = {}) => JSON.stringify({ type: 'user', message: { content: text }, ...extra });
+  const QENV = { BANTAMKIT_RETENTION: 'off' };
+  {
+    // 12. hooks/userpromptsubmit-head. The previous main-chain prompt names `conformance-gate`;
+    // a SIDECHAIN record after it names `windows-eperm` and must not be borrowed; the current
+    // prompt is short and shares no term with either fact.
+    const id = 'q207-head';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    seedStore(ctx, join(cwd, '.bantamkit', 'memory'), [
+      { type: 'reference', name: 'conformance-gate', description: 'the gate is zero failures, never a total' },
+      { type: 'reference', name: 'windows-eperm', description: 'npx install fails on windows with eperm' },
+    ]);
+    const transcript = join(b.root, 't.jsonl');
+    writeFile(
+      transcript,
+      [
+        rec207('what does the conformance gate demand'),
+        rec207('why does npx install fail on windows with eperm', { isSidechain: true }),
+        rec207('<command-name>/compact</command-name>'),
+      ].join('\n') + '\n',
+    );
+    const SHORT = 'and how do I run that?';
+    const LONG = `${SHORT} ${'please explain it step by step and slowly '.repeat(2)}`.trim();
+    if ([...LONG].length < 80) throw new Error('hooks: the long prompt must be at least HEAD_SHORT code points');
+    b.snapshot();
+    const probe = (side) => {
+      const up = (tag, prompt, withTranscript) => {
+        const r = runHook(ctx, side, {
+          payload: {
+            hook_event_name: 'UserPromptSubmit',
+            prompt,
+            cwd,
+            session_id: `${id}-${tag}`,
+            ...(withTranscript ? { transcript_path: transcript } : {}),
+          },
+          cwd,
+          home: home(`${id}-${tag}`, side),
+          env: QENV,
+        });
+        return { exit: r.exit, action: r.last['action'], injected: (r.last['injected'] ?? []).map((x) => x.name), stdout: dec(r.stdout) };
+      };
+      return {
+        head: up('head', SHORT, true),
+        bare: up('bare', SHORT, false),
+        long: up('long', LONG, true),
+        longBare: up('long-bare', LONG, false),
+      };
+    };
+    const py = probe('py');
+    b.restore();
+    const nd = probe('node');
+    cases.push({ name: 'q207-head: four UserPromptSubmit runs (short/long, with/without a transcript), record and stdout, side to side', kind: 'json', expected: py, actual: nd });
+    const pick = (x) => ({ head: x.head.injected, bare: [x.bare.action, x.bare.injected], longSame: JSON.stringify(x.long) === JSON.stringify(x.longBare) });
+    cases.push(
+      ...literalCases(pick(py), pick(nd), 'q207-head: PINNED PER SIDE: a short prompt borrows the previous main-chain prompt (never the sidechain); without a transcript it finds nothing; a long prompt never borrows', {
+        head: ['conformance-gate'],
+        bare: ['none', []],
+        longSame: true,
+      }),
+    );
+  }
+  {
+    // 20. sessionstart/nudge: S12 when n < m; absent when n == m and when m == 0.
+    const S12 = (missing, m) =>
+      `[bantamkit] ${missing} of ${m} facts have no likely-prompt queries yet; call mcp__bantamkit__memory_queries with {} to list them and write their queries.`;
+    const SCENARIOS = [
+      ['one-of-two', ['one-fact', 'two-fact'], ['one-fact'], S12(1, 2)],
+      ['none-of-two', ['one-fact', 'two-fact'], [], S12(2, 2)],
+      ['two-of-two', ['one-fact', 'two-fact'], ['one-fact', 'two-fact'], null],
+      ['no-facts', [], [], null],
+    ];
+    for (const [label, facts, covered, want] of SCENARIOS) {
+      const id = `q207-nudge-${label}`;
+      const b = bed(join(root, id));
+      const cwd = join(b.root, 'cwd');
+      const storeRoot = join(cwd, '.bantamkit', 'memory');
+      mkdirSync(cwd, { recursive: true });
+      if (facts.length) seedStore(ctx, storeRoot, facts.map((n, i) => ({ type: 'project', name: n, description: ['kestrel harbour lantern notes', 'violet anchor timber cobalt'][i] })));
+      else mkdirSync(join(storeRoot, 'facts'), { recursive: true });
+      b.snapshot();
+      const probe = (side) => {
+        const h = home(id, side);
+        if (covered.length) {
+          writeFile(
+            sidecarOf(h, storeRoot),
+            JSON.stringify({ v: 1, facts: Object.fromEntries(covered.map((n) => [n, { queries: [`how ${n}`], sha: '' }])) }),
+          );
+        }
+        const r = runHook(ctx, side, { payload: { hook_event_name: 'SessionStart', source: 'startup', session_id: id, cwd }, cwd, home: h, env: QENV });
+        const out = dec(r.stdout);
+        const context = out ? JSON.parse(out).hookSpecificOutput?.additionalContext ?? '' : '';
+        return { exit: r.exit, lines: context.split('\n').filter((l) => l.includes('likely-prompt')) };
+      };
+      const py = probe('py');
+      b.restore();
+      const nd = probe('node');
+      cases.push({ name: `q207-nudge: ${label} — the SessionStart queries line, side to side`, kind: 'json', expected: py, actual: nd });
+      cases.push(
+        ...literalCases(py, nd, `q207-nudge: PINNED PER SIDE: ${label} — ${want === null ? 'no queries line' : 'S12'}`, { exit: 0, lines: want === null ? [] : [want] }),
+      );
+    }
+  }
+
   notes.push(
     'every hook run in this suite asserted that the adapter followed the throwaway HOME ' +
       '(both HOME and USERPROFILE) before a byte it wrote was read; a run that did not stops the suite',

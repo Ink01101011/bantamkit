@@ -338,7 +338,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
   identically on every OS, so keep it in flavour-explicit functions and drive them against
   `ntpath` from a laptop rather than from a runner.
 - **`realpathSync` does not expand 8.3 short names**; only `realpathSync.native` does.
-- One UTF-8 decoder in the package, with `ignoreBOM: true`, in `pyDecodeUtf8`.
+- One UTF-8 decoder in the package, with `ignoreBOM: true`, in `pyDecodeUtf8`. A leading BOM is kept as U+FEFF, as CPython keeps it, so a BOM'd JSON file is refused where Python refuses it (the #207 sidecar and term cache since J72-31). The fatal `TextDecoder` answers first and the CPython-message validator runs only on a refusal: the two accept the same bytes, checked over 64,028,929 inputs.
 
 ## Where the two runtimes deliberately differ
 

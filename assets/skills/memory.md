@@ -24,6 +24,12 @@ Write it to match the future recall QUERY, not to summarize the body.
 Ask: "what words will future-me search with?" Put related memory names in links.
 Fill keywords with the words the user will actually type, in their language — recall matches those too.
 
+## Likely-prompt queries
+
+When you save, also pass `queries`: three prompts in the user's language and three in English that a user would
+type when this fact is what they need. Short and varied, technical terms kept in English, never more than five
+words copied from the body. When `memory_queries` lists facts without queries, write theirs.
+
 ## On "duplicate" replies
 
 If memory_save answers that a similar memory exists, either update it by

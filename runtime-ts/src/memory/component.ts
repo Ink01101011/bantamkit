@@ -42,7 +42,10 @@ import {
 import { pyHome, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
 import { homedir } from 'node:os';
 import { NATIVE_LAYER, NativeStore } from './native.js';
-import { queryTerms, stale, weightOf } from './retrieval.js';
+import { BM25F, QueryScorer, queryTerms, type Scorer, stale, weightOf } from './retrieval.js';
+import * as queriesMod from './queries.js';
+import { loadSkill } from '../assets.js';
+import { cmpCodepoint } from '../pysem.js';
 import { type TouchContext, viaEnabled, viaLabel, viaPick } from '../touch/context.js';
 import { TouchGraph } from '../touch/graph.js';
 import { TouchLog } from '../touch/log.js';
@@ -86,6 +89,16 @@ const missLine = (name: string): string =>
   `no fact named '${name}' in any layer bound here; matching by words instead:`;
 
 type SkippedInLayer = { layer: string; file: string; reason: string };
+
+/** `memory_queries`' refusal: the shape `work_plan` refuses with (the reference's `_refused`). */
+const refused = (reason: string): Record<string, unknown> => ({ result: 'error', reason });
+
+/** A failure the save's best-effort sidecar write absorbs: the reference's `(BantamError, OSError, UnicodeError)`. */
+const sidecarFailure = (e: unknown): boolean =>
+  e instanceof BantamError ||
+  e instanceof PyOSError ||
+  e instanceof PyUnicodeDecodeError ||
+  e instanceof queriesMod.SidecarWriteError;
 
 /**
  * The closing paragraph of a recall that left fact files out (job65/#119), or `''`: the
@@ -460,8 +473,9 @@ export class Memory {
     body: string,
     links: readonly string[] | null = null,
     keywords: readonly string[] | null = null,
+    queries: readonly string[] | null = null,
   ): string {
-    return this.saveOutcome(type, name, description, body, links, keywords).reply;
+    return this.saveOutcome(type, name, description, body, links, keywords, queries).reply;
   }
 
   /**
@@ -471,6 +485,12 @@ export class Memory {
    * itself. That is the whole of the narrow seam the MCP server needs to log an outcome
    * without matching text, and it moves no wording and no return type — `save()` above
    * still answers `string`, and `assets/tools/memory_save.json` still advertises `str`.
+   *
+   * `queries` (#207 amendment 3, Q5) are the fact's likely prompts. A value outside the limits
+   * refuses the whole save before anything is written (`refused-validation`, `checkQueries`'
+   * sentence). Once the fact is saved they go to the store's sidecar, best-effort: a sidecar
+   * that cannot be written leaves the fact saved and the reply says so. `[]` removes the
+   * fact's entry; `null` (omitted) leaves it as it was.
    */
   saveOutcome(
     type: string,
@@ -479,11 +499,13 @@ export class Memory {
     body: string,
     links: readonly string[] | null = null,
     keywords: readonly string[] | null = null,
+    queries: readonly string[] | null = null,
   ): SaveOutcome {
     const normalized = normalizeName(name);
     const normalizedLinks = (links ?? []).map((link) => normalizeName(link));
     let result;
     try {
+      if (queries !== null) queriesMod.checkQueries(queries);
       // A SPELLING IS NOT A NAME (job65/#156): a name that had to be bent never lands ON
       // ANOTHER FACT. "Deploy Command" used to replace `deploy-command` silently; now, when
       // the bent name is a fact already, the answer is the duplicate nudge naming it and
@@ -536,7 +558,20 @@ export class Memory {
     // The `save` event carries the keywords (#199 D5): read-repair restores them from it when a
     // 0.35.x runtime rewrites the file without the field. Best-effort (#123).
     this.usage().append(result.name as string, 'save', this.store.now(), [...(keywords ?? [])]);
-    return { reply: `saved '${result.name}'${note}`, status: 'saved' };
+    let tail = '';
+    if (queries !== null) {
+      try {
+        const saved = result.name as string;
+        const fact = this.store.lookup(saved, false, []);
+        const sha = queriesMod.factSha(fact !== null ? fact.source : null);
+        const side = queriesMod.sidecarPath(pyHome(), this.store.root);
+        queriesMod.writeEntries(side, new Map([[saved, queries.length > 0 ? [[...queries], sha] as const : null]]));
+      } catch (e) {
+        if (!sidecarFailure(e)) throw e;
+        tail = ` (queries not written: ${queriesMod.WRITE_FAILED})`;
+      }
+    }
+    return { reply: `saved '${result.name}'${note}${tail}`, status: 'saved' };
   }
 
   /**
@@ -627,6 +662,7 @@ export class Memory {
     stamp = true,
     includeArchived = false,
     context: TouchContext | null = null,
+    head: string | null = null,
   ): RecallOutcome {
     // `not 0.0 <= min_ratio <= 1.0`: NaN fails the same chain on both sides.
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
@@ -638,7 +674,7 @@ export class Memory {
       if (named !== null) return named;
       lookup = 'miss';
     }
-    const { picked, reached, unreadable, candidates, skipped } = this.pooled(query, budget, minRatio, context);
+    const { picked, reached, unreadable, candidates, skipped } = this.pooled(query, budget, minRatio, context, head);
     const via = this.viaOf(picked, context);
     if (stamp) {
       this.use(picked.map(([, fact]) => fact), 'recall_hit');
@@ -797,6 +833,7 @@ export class Memory {
     budget: number,
     minRatio: number,
     context: TouchContext | null = null,
+    head: string | null = null,
   ): {
     picked: Array<[string, Fact]>;
     reached: number;
@@ -804,7 +841,18 @@ export class Memory {
     candidates: number;
     skipped: SkippedInLayer[];
   } {
-    const q = queryTerms(query);
+    // LIKELY-PROMPT QUERIES (#207 amendment 3, Q2/Q4). Every layer's sidecar is read first.
+    // When none holds an entry this is the BM25F walk, bit for bit. When any does, every pool
+    // holds every fact as a row (`poolOf(everyRow)`, so the files and the index pool the same
+    // rows) and the column is `QueryScorer`: BM25F over `head ?? query` plus `QUERY_WEIGHT`
+    // times BM25 of the bare `query` over each row's qdoc. Gate, weights and the cap are
+    // unchanged. The reference's `_pooled`.
+    // Each layer's queries as tokenized rows (J72-30): from the derived cache beside the hot
+    // index when it is the sidecar's, else from the sidecar itself.
+    const home = pyHome();
+    const sides = this.layers.map(([, store]) => queriesMod.layerTerms(home, store.root));
+    const everyRow = sides.some((side) => side.size > 0);
+    const q = queryTerms(head === null ? query : head);
     const stores: Array<MemoryStore | NativeStore> = [];
     const pools: Array<Pool | null> = [];
     const left: SkippedFact[][] = [];
@@ -823,9 +871,9 @@ export class Memory {
       left.push(leftOut);
       try {
         if (store instanceof NativeStore) {
-          pools.push(store.pool(q, leftOut, shadow));
+          pools.push(store.pool(q, leftOut, shadow, everyRow));
         } else {
-          const pool = store.pool(q, leftOut);
+          const pool = store.pool(q, leftOut, everyRow);
           for (const name of allNames(pool)) shadow.add(name);
           pools.push(pool);
         }
@@ -847,8 +895,8 @@ export class Memory {
     const repool = (i: number): Pool => {
       try {
         const store = stores[i]!;
-        if (store instanceof NativeStore) return poolOf(store.candidates(left[i]!, shadow), q);
-        return poolOf(store.candidates(left[i]!), q);
+        if (store instanceof NativeStore) return poolOf(store.candidates(left[i]!, shadow), q, everyRow);
+        return poolOf(store.candidates(left[i]!), q, everyRow);
       } catch (e) {
         if (!readable(e) || this.layers[i]![2]) throw e;
         return emptyPool();
@@ -856,7 +904,25 @@ export class Memory {
     };
     const ledger = this.usage();
     const now = this.store.now();
-    const hits = pickHits(stores, pools, q, budget, minRatio, () => ledger.weights(now), repool, true, context?.weights ?? null);
+    let scorer: Scorer = BM25F;
+    let rows: ((i: number, p: Pool) => Array<queriesMod.Row | null>) | null = null;
+    if (everyRow) {
+      scorer = new QueryScorer(query);
+      rows = (i, p) => p.names.map((n) => sides[i]!.get(n) ?? null);
+    }
+    const hits = pickHits(
+      stores,
+      pools,
+      q,
+      budget,
+      minRatio,
+      () => ledger.weights(now),
+      repool,
+      true,
+      context?.weights ?? null,
+      scorer,
+      rows,
+    );
     const skipped: SkippedInLayer[] = [];
     this.layers.forEach(([label], i) => {
       for (const s of left[i]!) skipped.push({ layer: label, ...s });
@@ -924,13 +990,166 @@ export class Memory {
   }
 
   /** What the `UserPromptSubmit` hook would inject for `prompt`, before its byte cap. */
-  injectCandidates(prompt: string): Fact[] {
-    return this.pooled(prompt, 3, RECALL_MIN_SCORE_RATIO).picked.map(([, fact]) => fact);
+  injectCandidates(prompt: string, head: string | null = null): Fact[] {
+    return this.pooled(prompt, 3, RECALL_MIN_SCORE_RATIO, null, head).picked.map(([, fact]) => fact);
   }
 
   /** The ranking past the gate, `depth` deep: what recall@3 is measured on. */
-  rankAll(prompt: string, depth = 50): Fact[] {
-    return this.pooled(prompt, depth, RECALL_MIN_SCORE_RATIO).picked.map(([, fact]) => fact);
+  rankAll(prompt: string, depth = 50, head: string | null = null): Fact[] {
+    return this.pooled(prompt, depth, RECALL_MIN_SCORE_RATIO, null, head).picked.map(([, fact]) => fact);
+  }
+
+  // ------------------------------------------- likely-prompt queries (#207 amendment 3)
+
+  /**
+   * `[layerIndex, label, store, names]` per readable layer, in precedence order. `names` are
+   * the layer's fact names, code-point sorted, minus every name an earlier layer holds: a name
+   * counts once, at its first layer (the native layer's shadow, as `pooled` takes it). A
+   * read-only layer that cannot be read is skipped; the project layer throws, as `pooled` does.
+   * The reference's `_named_facts`.
+   */
+  private namedFacts(): Array<[number, string, MemoryStore | NativeStore, string[]]> {
+    const out: Array<[number, string, MemoryStore | NativeStore, string[]]> = [];
+    const seen = new Set<string>();
+    this.layers.forEach(([label, store, writable], i) => {
+      let names: string[];
+      try {
+        const pool = store instanceof NativeStore ? store.pool([], [], new Set(seen)) : store.pool([], []);
+        names = [...new Set(allNames(pool).map((n) => pyText(n)))].filter((n) => !seen.has(n)).sort(cmpCodepoint);
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
+        if (writable) throw e;
+        return;
+      }
+      for (const n of names) seen.add(n);
+      out.push([i, label, store, names]);
+    });
+    return out;
+  }
+
+  /** `[layerIndex, name]` of every walked name with no entry in its layer's sidecar. */
+  private missingOf(walk: ReadonlyArray<[number, string, MemoryStore | NativeStore, string[]]>): Array<[number, string]> {
+    const home = pyHome();
+    const out: Array<[number, string]> = [];
+    for (const [i, , store, names] of walk) {
+      const side = queriesMod.readSidecar(queriesMod.sidecarPath(home, store.root));
+      for (const n of names) if (!side.has(n)) out.push([i, n]);
+    }
+    return out;
+  }
+
+  /**
+   * `[n, m]`: of the `m` distinct fact names across the readable layers, `n` have queries in
+   * their own layer's sidecar (Q8, `queries.statusLine`). The reference's `queries_coverage`.
+   */
+  queriesCoverage(): [number, number] {
+    const walk = this.namedFacts();
+    let m = 0;
+    for (const [, , , names] of walk) m += names.length;
+    return [m - this.missingOf(walk).length, m];
+  }
+
+  /**
+   * `memory_queries {}` (Q6): up to `limit` facts with no queries, in precedence then name
+   * order, each with its body's first `BODY_EXCERPT` code points, plus the instructions for
+   * writing theirs. A name whose fact cannot be read is passed over and is not counted in
+   * `remaining`. The reference's `queries_missing`.
+   */
+  queriesMissing(limit: number = queriesMod.LIST_LIMIT): Record<string, unknown> {
+    const missing = this.missingOf(this.namedFacts());
+    let remaining = missing.length;
+    const facts: Array<Record<string, string>> = [];
+    for (const [i, name] of missing) {
+      if (facts.length >= limit) break;
+      const [label, store] = this.layers[i]!;
+      const fact = Memory.lookupQuiet(store, name);
+      if (fact === null) {
+        remaining -= 1;
+        continue;
+      }
+      facts.push({
+        layer: label,
+        name,
+        description: pyText(fact.description),
+        body: Array.from(pyText(fact.body)).slice(0, queriesMod.BODY_EXCERPT).join(''),
+      });
+    }
+    return { result: 'missing', facts, remaining, instructions: loadSkill('memory-queries') };
+  }
+
+  private static lookupQuiet(store: MemoryStore | NativeStore, name: string): Fact | null {
+    try {
+      return store.lookup(name, false, []);
+    } catch (e) {
+      if (e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError) return null;
+      throw e;
+    }
+  }
+
+  /**
+   * `memory_queries {"facts": [...]}` (Q6): every item is checked before anything is written,
+   * and the first bad one refuses the whole call (S5-S8). Then one write per layer sidecar; one
+   * that cannot be written is S9. `queries: []` removes an entry. The reference's
+   * `queries_write`; `facts` is the decoded JSON (a dict is a plain object).
+   */
+  queriesWrite(facts: readonly unknown[]): Record<string, unknown> {
+    const labels = this.layers.map(([label]) => label);
+    const plan = new Map<number, Map<string, readonly [string[], string] | null>>();
+    for (let i = 0; i < facts.length; i += 1) {
+      const item = facts[i];
+      const isDict = item !== null && typeof item === 'object' && !Array.isArray(item);
+      const obj = isDict ? (item as Record<string, unknown>) : null;
+      const name = obj !== null && Object.hasOwn(obj, 'name') ? obj['name'] : null;
+      // `layer: null` is omitted, as `item.get("layer")` reads it
+      const layer = obj !== null && Object.hasOwn(obj, 'layer') && obj['layer'] !== null ? obj['layer'] : null;
+      if (
+        obj === null ||
+        typeof name !== 'string' ||
+        name === '' ||
+        !Object.hasOwn(obj, 'queries') ||
+        (layer !== null && typeof layer !== 'string')
+      ) {
+        return refused(`facts[${i}] must be an object with a name and queries`);
+      }
+      if (layer !== null && !labels.includes(layer as string)) {
+        return refused(`facts[${i}]: no layer named '${layer as string}'; layers are ${labels.join(', ')}`);
+      }
+      let at: number | null = null;
+      let fact: Fact | null = null;
+      for (let j = 0; j < this.layers.length; j += 1) {
+        const [label, store] = this.layers[j]!;
+        if (layer !== null && label !== layer) continue;
+        fact = Memory.lookupQuiet(store, name);
+        if (fact !== null) {
+          at = j;
+          break;
+        }
+      }
+      if (at === null || fact === null) {
+        const where = layer === null ? 'any layer' : `layer '${layer as string}'`;
+        return refused(`facts[${i}]: no fact named '${name}' in ${where}`);
+      }
+      let queries: string[];
+      try {
+        queries = queriesMod.checkQueries(obj['queries']);
+      } catch (e) {
+        if (e instanceof MemoryValidationError) return refused(`facts[${i}]: ${e.message}`);
+        throw e;
+      }
+      if (!plan.has(at)) plan.set(at, new Map());
+      plan.get(at)!.set(name, queries.length > 0 ? [[...queries], queriesMod.factSha(fact.source)] : null);
+    }
+    const home = pyHome();
+    for (const [at, entries] of plan) {
+      try {
+        queriesMod.writeEntries(queriesMod.sidecarPath(home, this.layers[at]![1].root), entries);
+      } catch (e) {
+        if (!(e instanceof queriesMod.SidecarWriteError || e instanceof PyOSError)) throw e;
+        return refused(queriesMod.WRITE_FAILED);
+      }
+    }
+    const remaining = this.missingOf(this.namedFacts()).length;
+    return { result: 'written', written: facts.length, remaining };
   }
 
   /** `includeArchived`: each layer's archived matches, in layer order, up to `budget`. */

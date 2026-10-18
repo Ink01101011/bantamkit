@@ -54,7 +54,7 @@ def _calls(tmp_path, calls: list[tuple[str, dict]]) -> list[tuple[bool, str]]:
 def test_every_served_asset_closes_its_top_level_arguments():
     """The schema says what the runtime enforces: `additionalProperties: false`, every tool."""
     assets = _assets()
-    assert len(assets) == 14
+    assert len(assets) == 15  # + memory_queries (#207 amendment 3)
     assert {name: a["parameters"].get("additionalProperties") for name, a in assets.items()} == {
         name: False for name in assets
     }

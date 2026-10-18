@@ -13,6 +13,7 @@ from typing import Any
 from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import load_skill, load_tool
 from bantamkit.client import BantamError
+from bantamkit.memory import queries as _queries
 from bantamkit.memory.dream import SUPERSEDED_HEADING, DreamResult
 from bantamkit.memory.dream import dream as _dream
 from bantamkit.memory.layers import (
@@ -24,7 +25,7 @@ from bantamkit.memory.layers import (
     resolve_project_store,
 )
 from bantamkit.memory.native import NATIVE_LAYER, NativeStore
-from bantamkit.memory.retrieval import query_terms, stale, weight_of
+from bantamkit.memory.retrieval import BM25F, QueryScorer, Scorer, query_terms, stale, weight_of
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
     MIN_RATIO_RANGE,
@@ -34,6 +35,7 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
     Pool,
+    _text,
     pick_hits,
     pool_of,
     utc_now,
@@ -172,6 +174,11 @@ def _skipped_note(
 
 
 _SAVE_SKIPPED_REST = "the duplicate check read every other fact"
+
+
+def _refused(reason: str) -> dict[str, Any]:
+    """`memory_queries`' refusal: the shape `work_plan` refuses with."""
+    return {"result": "error", "reason": reason}
 
 
 @dataclass(frozen=True)
@@ -399,9 +406,10 @@ class Memory:
         body: str,
         links: list[str] | None = None,
         keywords: list[str] | None = None,
+        queries: list[str] | None = None,
     ) -> str:
         """The reply the model reads. Unchanged, and still the tool's advertised return."""
-        return self.save_outcome(type, name, description, body, links, keywords).reply
+        return self.save_outcome(type, name, description, body, links, keywords, queries).reply
 
     def save_outcome(
         self,
@@ -411,6 +419,7 @@ class Memory:
         body: str,
         links: list[str] | None = None,
         keywords: list[str] | None = None,
+        queries: list[str] | None = None,
     ) -> SaveOutcome:
         """`save`, with the branch it took carried out alongside the sentence it wrote.
 
@@ -419,11 +428,19 @@ class Memory:
         an outcome without matching text, and it moves no wording and no return type —
         `save()` above still answers `str`, and `assets/tools/memory_save.json` still
         advertises `str`.
+
+        `queries` (#207 amendment 3, Q5) are the fact's likely prompts. A value outside the
+        limits refuses the whole save before anything is written (`refused-validation`,
+        `queries.check_queries`' sentence). Once the fact is saved they go to the store's
+        sidecar, best-effort: a sidecar that cannot be written leaves the fact saved and the
+        reply says so. `[]` removes the fact's entry; `None` (omitted) leaves it as it was.
         """
         given = name
         name = normalize_name(name)
         links = [normalize_name(link) for link in links or []]
         try:
+            if queries is not None:
+                _queries.check_queries(queries)
             # A SPELLING IS NOT A NAME (job65/#156). The normalisation exists so a model's
             # invented `deploy_command` lands as `deploy-command` instead of burning turns on
             # retries -- and the reply already names the slug it was saved under. What it
@@ -486,7 +503,18 @@ class Memory:
         self.usage().append(
             result.name, "save", self.store._now(), keywords=list(keywords or ())
         )
-        return SaveOutcome(reply=f"saved '{result.name}'" + note, status="saved")
+        tail = ""
+        if queries is not None:
+            try:
+                fact = self.store.lookup(result.name, stamp=False, skipped=[])
+                sha = _queries.fact_sha(fact.source if fact is not None else None)
+                path = _queries.sidecar_path(Path.home(), self.store.root)
+                _queries.write_entries(
+                    path, {result.name: (queries, sha)} if queries else {result.name: None}
+                )
+            except (BantamError, OSError, UnicodeError):
+                tail = f" (queries not written: {_queries.WRITE_FAILED})"
+        return SaveOutcome(reply=f"saved '{result.name}'" + note + tail, status="saved")
 
     def recall(
         self,
@@ -528,6 +556,7 @@ class Memory:
         stamp: bool = True,
         include_archived: bool = False,
         context: _touch_context_mod.TouchContext | None = None,
+        head: str | None = None,
     ) -> RecallOutcome:
         """`recall`, carrying the walk it performed as numbers rather than as prose.
 
@@ -599,6 +628,10 @@ class Memory:
         not pick is appended after every other hit, its header suffixed ` [via <file>]`
         (`via` names it). A via fact is never stamped, repaired or counted as usage: only the
         hook passes `context`, and it passes `stamp=False`. An exact-name hit ignores it.
+
+        `head` (#207 amendment 3, Q3) is the BM25F query text when it is not `query`: the
+        hook's short-prompt session head. Only the pooled ranking reads it; the exact-name
+        walk, the archive and the queries vector keep `query`. `None` everywhere else.
         """
         if not 0.0 <= min_ratio <= 1.0:
             raise MemoryValidationError(MIN_RATIO_RANGE)
@@ -611,7 +644,7 @@ class Memory:
                 return named
             lookup = "miss"
         picked, reached, unreadable, candidates, skipped = self._pooled(
-            query, budget, min_ratio, context
+            query, budget, min_ratio, context, head=head
         )
         via = self._via(picked, context)
         if stamp:
@@ -776,6 +809,7 @@ class Memory:
         budget: int,
         min_ratio: float,
         context: _touch_context_mod.TouchContext | None = None,
+        head: str | None = None,
     ) -> tuple[list[tuple[str, Fact]], int, int, int, list[dict[str, str]]]:
         """The scoring walk (#199 D3): every layer's facts pooled, scored ONCE, gated, ranked.
 
@@ -791,8 +825,20 @@ class Memory:
         Returns `(picked, reached, unreadable, candidates, skipped)`, the counters meaning
         what they meant: a read-only layer that cannot be read is counted `unreadable` and
         holds nothing; the project layer failing raises, as it always did.
+
+        LIKELY-PROMPT QUERIES (#207 amendment 3, Q2/Q4). Every layer's sidecar is read first.
+        When none holds an entry this is the BM25F walk above, bit for bit. When any does,
+        every pool holds every fact as a row (`pool_of(every_row=True)`, so the files and the
+        index pool the same rows) and the column is `retrieval.QueryScorer`: BM25F over
+        `head or query` plus `QUERY_WEIGHT` times BM25 of the bare `query` over each row's
+        qdoc. Gate, weights and the cap are unchanged.
         """
-        q = query_terms(query)
+        home = Path.home()
+        # Each layer's queries as tokenized rows (J72-30): from the derived cache beside the
+        # hot index when it is the sidecar's, else from the sidecar itself.
+        sides = [_queries.layer_terms(home, store.root) for _, store, _ in self._layers]
+        every_row = any(sides)
+        q = query_terms(query if head is None else head)
         stores: list[MemoryStore] = []
         pools: list[Pool | None] = []
         left: list[list[dict[str, str]]] = []
@@ -808,9 +854,9 @@ class Memory:
             native = isinstance(store, NativeStore)
             try:
                 if native:
-                    pool = store.pool(q, skipped=left_out, shadow=shadow)
+                    pool = store.pool(q, skipped=left_out, shadow=shadow, every_row=every_row)
                 else:
-                    pool = store.pool(q, skipped=left_out)
+                    pool = store.pool(q, skipped=left_out, every_row=every_row)
                     shadow.update(pool.all_names())
                 pools.append(pool)
             except (BantamError, OSError, UnicodeDecodeError):
@@ -830,12 +876,20 @@ class Memory:
             try:
                 store = stores[i]
                 if isinstance(store, NativeStore):
-                    return pool_of(store.candidates(left[i], shadow), q)
-                return pool_of(store.candidates(left[i]), q)
+                    return pool_of(store.candidates(left[i], shadow), q, every_row)
+                return pool_of(store.candidates(left[i]), q, every_row)
             except (BantamError, OSError, UnicodeDecodeError):
                 if self._layers[i][2]:
                     raise
                 return Pool(0, 0.0, {})
+
+        scorer: Scorer = BM25F
+        rows: Any = None
+        if every_row:
+            scorer = QueryScorer(query)
+
+            def rows(i: int, p: Pool) -> list[Any]:
+                return [sides[i].get(n) for n in p.names]
 
         ledger = self.usage()
         now = self.store._now()
@@ -849,6 +903,8 @@ class Memory:
             repool,
             dedupe=True,
             context=context.weights if context is not None else None,
+            scorer=scorer,
+            rows=rows,
         )
         skipped = [
             {"layer": label, **s}
@@ -923,13 +979,147 @@ class Memory:
         mem._add_native(native)
         return mem
 
-    def inject_candidates(self, prompt: str) -> list[Fact]:
+    def inject_candidates(self, prompt: str, head: str | None = None) -> list[Fact]:
         """What the `UserPromptSubmit` hook would inject for `prompt`, before its byte cap."""
-        return [fact for _, fact in self._pooled(prompt, 3, RECALL_MIN_SCORE_RATIO)[0]]
+        got = self._pooled(prompt, 3, RECALL_MIN_SCORE_RATIO, head=head)
+        return [fact for _, fact in got[0]]
 
-    def rank_all(self, prompt: str, depth: int = 50) -> list[Fact]:
+    def rank_all(self, prompt: str, depth: int = 50, head: str | None = None) -> list[Fact]:
         """The ranking past the gate, `depth` deep: what recall@3 is measured on."""
-        return [fact for _, fact in self._pooled(prompt, depth, RECALL_MIN_SCORE_RATIO)[0]]
+        got = self._pooled(prompt, depth, RECALL_MIN_SCORE_RATIO, head=head)
+        return [fact for _, fact in got[0]]
+
+    # ------------------------------------------- likely-prompt queries (#207 amendment 3)
+
+    def _named_facts(self) -> list[tuple[int, str, Any, list[str]]]:
+        """`(layer_index, label, store, names)` per readable layer, in precedence order.
+
+        `names` are the layer's fact names, code-point sorted, minus every name an earlier
+        layer holds: a name counts once, at its first layer (the native layer's shadow, as
+        `_pooled` takes it). A read-only layer that cannot be read is skipped; the project
+        layer raises, as `_pooled` does.
+        """
+        out: list[tuple[int, str, Any, list[str]]] = []
+        seen: set[str] = set()
+        for i, (label, store, writable) in enumerate(self._layers):
+            try:
+                if isinstance(store, NativeStore):
+                    pool = store.pool([], skipped=[], shadow=frozenset(seen))
+                else:
+                    pool = store.pool([], skipped=[])
+                names = sorted({_text(n) for n in pool.all_names()} - seen)
+            except (BantamError, OSError, UnicodeDecodeError):
+                if writable:
+                    raise
+                continue
+            seen.update(names)
+            out.append((i, label, store, names))
+        return out
+
+    def _missing(self, walk: list[tuple[int, str, Any, list[str]]]) -> list[tuple[int, str]]:
+        """`(layer_index, name)` of every walked name with no entry in its layer's sidecar."""
+        home = Path.home()
+        out: list[tuple[int, str]] = []
+        for i, _label, store, names in walk:
+            side = _queries.read_sidecar(_queries.sidecar_path(home, store.root))
+            out += [(i, n) for n in names if n not in side]
+        return out
+
+    def queries_coverage(self) -> tuple[int, int]:
+        """`(n, m)`: of the `m` distinct fact names across the readable layers, `n` have
+        queries in their own layer's sidecar (Q8, `queries.status_line`)."""
+        walk = self._named_facts()
+        m = sum(len(names) for _, _, _, names in walk)
+        return m - len(self._missing(walk)), m
+
+    def queries_missing(self, limit: int = _queries.LIST_LIMIT) -> dict[str, Any]:
+        """`memory_queries {}` (Q6): up to `limit` facts with no queries, in precedence then
+        name order, each with its body's first `BODY_EXCERPT` code points, plus the
+        instructions for writing theirs. A name whose fact cannot be read is passed over and
+        is not counted in `remaining`."""
+        missing = self._missing(self._named_facts())
+        remaining = len(missing)
+        facts: list[dict[str, str]] = []
+        for i, name in missing:
+            if len(facts) >= limit:
+                break
+            label, store, _w = self._layers[i]
+            fact = self._lookup_quiet(store, name)
+            if fact is None:
+                remaining -= 1
+                continue
+            facts.append(
+                {
+                    "layer": label,
+                    "name": name,
+                    "description": _text(fact.description),
+                    "body": _text(fact.body)[: _queries.BODY_EXCERPT],
+                }
+            )
+        return {
+            "result": "missing",
+            "facts": facts,
+            "remaining": remaining,
+            "instructions": load_skill("memory-queries"),
+        }
+
+    @staticmethod
+    def _lookup_quiet(store: Any, name: str) -> Fact | None:
+        try:
+            return store.lookup(name, stamp=False, skipped=[])
+        except (BantamError, OSError, UnicodeDecodeError):
+            return None
+
+    def queries_write(self, facts: list[Any]) -> dict[str, Any]:
+        """`memory_queries {"facts": [...]}` (Q6): every item is checked before anything is
+        written, and the first bad one refuses the whole call (S5-S8). Then one write per
+        layer sidecar; one that cannot be written is S9. `queries: []` removes an entry."""
+        labels = [label for label, _, _ in self._layers]
+        plan: dict[int, dict[str, tuple[list[str], str] | None]] = {}
+        for i, item in enumerate(facts):
+            name = item.get("name") if isinstance(item, dict) else None
+            layer = item.get("layer") if isinstance(item, dict) else None
+            if (
+                not isinstance(item, dict)
+                or not isinstance(name, str)
+                or not name
+                or "queries" not in item
+                or (layer is not None and not isinstance(layer, str))
+            ):
+                return _refused(f"facts[{i}] must be an object with a name and queries")
+            if layer is not None and layer not in labels:
+                return _refused(
+                    f"facts[{i}]: no layer named '{layer}'; layers are {', '.join(labels)}"
+                )
+            at: int | None = None
+            fact: Fact | None = None
+            for j, (label, store, _w) in enumerate(self._layers):
+                if layer is not None and label != layer:
+                    continue
+                fact = self._lookup_quiet(store, name)
+                if fact is not None:
+                    at = j
+                    break
+            if at is None:
+                where = "any layer" if layer is None else f"layer '{layer}'"
+                return _refused(f"facts[{i}]: no fact named '{name}' in {where}")
+            try:
+                queries = _queries.check_queries(item["queries"])
+            except MemoryValidationError as e:
+                return _refused(f"facts[{i}]: {e}")
+            assert fact is not None
+            plan.setdefault(at, {})[name] = (
+                (list(queries), _queries.fact_sha(fact.source)) if queries else None
+            )
+        home = Path.home()
+        for at, entries in plan.items():
+            try:
+                path = _queries.sidecar_path(home, self._layers[at][1].root)
+                _queries.write_entries(path, entries)
+            except (OSError, UnicodeError):
+                return _refused(_queries.WRITE_FAILED)
+        remaining = len(self._missing(self._named_facts()))
+        return {"result": "written", "written": len(facts), "remaining": remaining}
 
     def _archived_hits(self, query: str, budget: int, seen: set[str]) -> list[tuple[str, Fact]]:
         """`include_archived`: each layer's archived matches, in layer order, up to `budget`."""

@@ -46,8 +46,8 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   ([docs/hooks.md](https://github.com/Ink01101011/bantamkit/blob/main/docs/hooks.md)).
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
-  [the fourteen tools](#-what-it-serves).
-- **Same answers as the Python server.** The Python server serves the same fourteen tools,
+  [the fifteen tools](#-what-it-serves).
+- **Same answers as the Python server.** The Python server serves the same fifteen tools,
   `bantamkit_status` prompt and two resource templates, and reads and writes the same memory
   store. Every surface is compared between both runtimes by a conformance suite
   (`node tools/conformance/run.mjs --all` in the repository), and every intentional difference
@@ -69,7 +69,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Updating](#-updating) | `--update`, the per-install table, then restart |
 | [Troubleshooting](#-troubleshooting) | Connection closed, timeouts, `ENOENT`, refusals, the wrong store |
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
-| [What it serves](#-what-it-serves) | 14 tools, one prompt, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, one prompt, two resource templates |
 | [Silent version float](#-silent-version-float) | Why two machines run different builds, and `build_identity` |
 | [The operator CLI: `bantamkit-memory`](#-the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archive, restore |
 | [Memory stores are layered by default](#-memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
@@ -291,7 +291,7 @@ whole report.)*
 ```
 bantamkit Active 🟢
 version 0.35.9, build sha256:2fcd4006…
-serving 14 tools, 1 prompt, 2 resource templates
+serving 15 tools, 1 prompt, 2 resource templates
 ```
 
 A version that moved and a `build_id` that did not means you are reading a config, not a process.
@@ -346,7 +346,7 @@ serves. `--which` belongs to the checkout launchers `tools/bantamkit-mcp` and
 
 ## 🧰 What it serves
 
-It serves 14 tools, the `bantamkit_status` prompt and two resource templates
+It serves 15 tools, the `bantamkit_status` prompt and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`), the same as the Python server:
 
 | Tool | What it does |
@@ -355,6 +355,7 @@ It serves 14 tools, the `bantamkit_status` prompt and two resource templates
 | `memory_recall` | retrieve facts matching a query |
 | `memory_compact` | archive the stalest facts to fit the index budget |
 | `memory_dream` | consolidate facts the project and profile layers hold under the same name |
+| `memory_queries` | list the facts that have no likely-prompt queries yet, and store the queries written for them; recall matches a prompt against them |
 | `validate_json` | validate a document against a JSON Schema |
 | `skill_audit` | audit a skill catalogue for findings |
 | `shiftwork_clock_in` | open a unit of work and get its brief |
