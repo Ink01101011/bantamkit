@@ -1,7 +1,7 @@
 {
   "name": "work_plan",
   "title": "Work plan: batch a dependency graph",
-  "description": "Work plan: turn a dependency graph into the batches that may run in parallel. Takes `nodes`, each `{id, depends_on, priority}` — `depends_on` absent or null means none, `priority` defaults to 0 — and answers `{\"result\": \"plan\", \"batches\", \"sequence\", \"width\"}`: batch k holds every node whose dependencies all appear in batches below k, `sequence` is those batches flattened in order, and `width` is the largest batch length — the widest fan-out, which is the number an orchestrator needs to decide whether it can afford the batch. Order inside a batch is priority descending, then the order the nodes were given; both halves are contract, because determinism inside a batch is what two implementations are held to. Empty `nodes` is an ANSWER, not a refusal: no batches, no sequence, width 0. Four refusals, checked in this order and one sentence each: `nodes[<i>].<field> must be ...` for a node whose `id` is not a string, whose `depends_on` is not a list of strings or whose `priority` is not an integer (named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. It reports what the graph permits and decides nothing about what may actually be dispatched together — `depends_on` encodes logical order, not file contention, so a batch this tool calls parallel may still hold work that writes one file. Pure computation over the nodes it was handed: it opens no file and takes no path. Never mutates.",
+  "description": "Work plan: turn a dependency graph you hand it into the batches that may run in parallel — pure computation over `nodes`: no file opened, no path taken, nothing mutated. Use it when the graph is in your hands (tasks with depends_on); use shiftwork_plan when the graph is a shift-work checkpoint on disk, which it reads for you under the same batching rules. Batch k holds every node whose dependencies all sit in batches below k; `sequence` is the batches flattened; `width` is the largest batch — the fan-out an orchestrator must afford. Inside a batch: priority descending, then the order the nodes were given; both halves are contract, so two implementations answer byte-identically. Empty `nodes` is an ANSWER (no batches, width 0), not a refusal. Four refusals, in this order, one sentence each: `nodes[<i>].<field> must be ...` (an id that is not a string, depends_on not a list of strings, priority not an integer — named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. It reports what the graph PERMITS and decides nothing about what is safe to dispatch together: `depends_on` encodes logical order, not file contention.",
   "surfaces": [
     "mcp"
   ],
@@ -39,7 +39,8 @@
           "required": [
             "id"
           ]
-        }
+        },
+        "description": "The graph: one object per task, {id, depends_on?, priority?}. The order given is the tie-break inside a batch after priority."
       }
     },
     "required": [
@@ -51,6 +52,40 @@
   },
   "output_schema": {
     "type": "object",
+    "properties": {
+      "result": {
+        "type": "string",
+        "description": "`plan` on success; `error` with `reason` for one of the four refusals."
+      },
+      "batches": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": "Node ids by wave: batch k holds every node whose dependencies all sit in batches below k."
+      },
+      "sequence": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "The batches flattened in order."
+      },
+      "width": {
+        "type": "integer",
+        "description": "The largest batch length: the widest fan-out."
+      },
+      "reason": {
+        "type": "string",
+        "description": "With result `error`: one sentence saying why the call was refused."
+      }
+    },
+    "required": [
+      "result"
+    ],
     "additionalProperties": true,
     "title": "work_planDictOutput"
   },

@@ -1,7 +1,7 @@
 {
   "name": "shiftwork_plan",
   "title": "Shift work: plan",
-  "description": "Shift-work plan: read-only batch view of a checkpoint — which units its `depends_on` graph permits to run in parallel. Answers `{\"result\": \"plan\", \"batches\", \"ready\", \"sequence\", \"width\", \"cursor\"}`: `ready` is `batches[0]`, the units whose dependencies are all satisfied, and `width` is the largest batch length, the widest fan-out. A `ready` member beyond the cursor is clockable, but only in that order: shiftwork_clock_in briefs any unit in `ready` when `unit_id` names it, and shiftwork_clock_out then accepts that unit because it was briefed — an id that is neither the cursor nor briefed since its own last clock-out is still refused. Units with status `done` or `dropped` are satisfied — dropped from the graph, and edges pointing at them treated as already resolved; `todo`, `in_progress` and `blocked` stay in it. Every unit has priority 0, because the checkpoint schema has no priority field, so order inside a batch is `plan.units` order. Same refusal sentences as `work_plan` for a duplicate id, an unknown dependency or a cycle, and the same refusals `shiftwork_status` gives for a checkpoint it cannot read. It reports what the dependency graph permits; it does not move the cursor, which is echoed unchanged so the single-pointer contract and the batch view can be read side by side. An orchestrator stays responsible for what it actually dispatches: `depends_on` encodes logical order, not file contention. Never mutates.",
+  "description": "Shift-work plan: which units of a checkpoint may run NOW, and in what waves — the batches its `depends_on` graph permits, computed read-only from the file. Call it before dispatching a wave: `ready` (the first batch) is what shiftwork_clock_in will brief, and `width` is how many agents the widest wave needs. A `ready` member beyond the cursor is clockable only once clock-in has briefed it; without that brief, clock-out refuses it. Use shiftwork_status instead when you only want progress counts, and work_plan when the graph is yours to hand over as `nodes` rather than a checkpoint on disk — this tool reads the checkpoint's own plan.units. Units already `done` or `dropped` count as satisfied and are left out of every batch; `todo`, `in_progress` and `blocked` stay in. Order inside a batch is plan.units order, because the checkpoint schema has no priority field. It never moves plan.cursor — the cursor is echoed unchanged so the pointer and the batch view can be read side by side — and never writes anything. Refusals are structured, never exceptions: work_plan's sentences for a duplicate id, an unknown dependency or a cycle, and shiftwork_status's for a checkpoint it cannot read; a plan whose units are all terminal answers an empty `ready`, which is an answer, not a refusal. It reports logical order only: `depends_on` says nothing about two units writing the same file, so the orchestrator still decides what actually runs together.",
   "surfaces": [
     "mcp"
   ],
@@ -9,7 +9,8 @@
     "properties": {
       "checkpoint": {
         "title": "Checkpoint",
-        "type": "string"
+        "type": "string",
+        "description": "Path to the shift-work checkpoint JSON file (by convention .shiftwork/checkpoint.json in the repo the job works on), absolute or relative to the server's working directory. The same file shiftwork_plan, shiftwork_clock_in and shiftwork_clock_out take; it must validate against assets/schemas/shiftwork-checkpoint.json."
       }
     },
     "required": [
@@ -21,6 +22,51 @@
   },
   "output_schema": {
     "type": "object",
+    "properties": {
+      "result": {
+        "type": "string",
+        "description": "`plan` on success; `error` with `reason` when the checkpoint cannot be read or its graph cannot batch."
+      },
+      "batches": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": "Unit ids by wave: batch k holds every non-terminal unit whose dependencies all sit in batches below k."
+      },
+      "ready": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "batches[0] — the units clock_in may brief now; [] when every unit is done or dropped."
+      },
+      "sequence": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "The batches flattened in order."
+      },
+      "width": {
+        "type": "integer",
+        "description": "The largest batch length: the widest fan-out."
+      },
+      "cursor": {
+        "type": "string",
+        "description": "plan.cursor, echoed unchanged."
+      },
+      "reason": {
+        "type": "string",
+        "description": "With result `error`: one sentence saying why the call was refused."
+      }
+    },
+    "required": [
+      "result"
+    ],
     "additionalProperties": true,
     "title": "shiftwork_planDictOutput"
   },

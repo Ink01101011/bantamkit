@@ -1,7 +1,7 @@
 {
   "name": "shiftwork_clock_in",
   "title": "Shift work: clock in",
-  "description": "Shift-work clock-in: schema-validate the checkpoint file and return the brief for the unit at plan.cursor — {unit, role, invariants, handoff, do_not, files} — to hand to the spawned agent verbatim. The unit briefed is the one at plan.cursor, or, when unit_id is given, that unit — either way it must appear in shiftwork_plan's `ready`, the batch the dependency graph says may run now: the cursor unit is held to the same ready test as unit_id. A unit that is not ready (a done or dropped cursor, a cursor whose dependencies have not run, a unit_id naming no unit) is refused with {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and on both paths the refusals of the batch view itself (cycle, unknown dependency, unreadable checkpoint) pass through verbatim; a cursor naming no unit still escalates. Clock-in still never moves plan.cursor; clock_out does. Structured refusals, never exceptions: result=escalate when handoff.open_questions is non-empty, result=success when every unit is done or dropped, result=error when the checkpoint fails validation. Clock-in also WRITES: on result=brief, and only then, it appends one line {event: brief, ts, unit, role} to <checkpoint>.log.jsonl — best-effort: a log it cannot write costs the brief nothing (the brief still returns, no error, only the record is lost). clock_out reads those lines back to write `briefed` on every accounting line, so the ledger is no longer one line per clock-out; a brief line carries `event` and no `status`. See docs/shiftwork.md.",
+  "description": "Shift-work clock-in: validate the checkpoint against the checkpoint schema and return the brief of ONE unit — {unit, role, invariants, handoff, do_not, files} — to hand to the agent you spawn, verbatim. Call it once per unit, right before spawning; use shiftwork_plan first to see the `ready` batch when several units are to run at once, and shiftwork_clock_out, not this tool, when a unit finishes. The unit briefed is plan.cursor, or `unit_id` when given; either way it must be in shiftwork_plan's `ready` — a done or dropped cursor, a cursor whose dependencies have not run, or a `unit_id` naming no unit answers {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and the batch view's own refusals (cycle, unknown dependency, unreadable checkpoint) pass through verbatim. The other outcomes, never exceptions: `escalate` when handoff.open_questions is non-empty (stop and ask the user) or when the cursor names no unit, `success` when every unit is done or dropped, `error` when the checkpoint fails validation. It never moves plan.cursor; clock_out does. What it WRITES: on result=brief, and only then, one line {event: brief, ts, unit, role} appended to <checkpoint>.log.jsonl — best-effort, so a log it cannot write costs the brief nothing. That line is what later lets clock_out accept the unit while the cursor is elsewhere and sets `briefed` on its accounting line. The checkpoint file itself is never modified. See docs/shiftwork.md.",
   "surfaces": [
     "mcp"
   ],
@@ -9,7 +9,8 @@
     "properties": {
       "checkpoint": {
         "title": "Checkpoint",
-        "type": "string"
+        "type": "string",
+        "description": "Path to the shift-work checkpoint JSON file (by convention .shiftwork/checkpoint.json in the repo the job works on), absolute or relative to the server's working directory. The same file shiftwork_plan, shiftwork_clock_in and shiftwork_clock_out take; it must validate against assets/schemas/shiftwork-checkpoint.json."
       },
       "unit_id": {
         "anyOf": [
@@ -21,7 +22,8 @@
           }
         ],
         "default": null,
-        "title": "Unit Id"
+        "title": "Unit Id",
+        "description": "The unit to brief instead of plan.cursor; it must be in shiftwork_plan's `ready` for this checkpoint. Omit it, or pass null, to brief the cursor unit."
       }
     },
     "required": [
@@ -33,6 +35,56 @@
   },
   "output_schema": {
     "type": "object",
+    "properties": {
+      "result": {
+        "type": "string",
+        "description": "`brief` (the unit is yours to spawn), `escalate` (stop and ask: see `reason` and `open_questions`), `success` (every unit done or dropped), or `error` with `reason`."
+      },
+      "unit": {
+        "type": "object",
+        "description": "The plan.units entry briefed: id, role, status, depends_on and its own fields."
+      },
+      "role": {
+        "type": "string",
+        "description": "The unit's role, the key job.roles may bind models to."
+      },
+      "invariants": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "job.constraints: what every unit must keep true."
+      },
+      "handoff": {
+        "type": "object",
+        "description": "The checkpoint's handoff block: next_action, open_questions, do_not, notes."
+      },
+      "do_not": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "handoff.do_not: near-mistakes past sessions made."
+      },
+      "files": {
+        "type": "array",
+        "description": "state.artifacts: the files the job has produced so far."
+      },
+      "open_questions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "With result `escalate`: the questions the orchestrator must put to the user before any unit runs."
+      },
+      "reason": {
+        "type": "string",
+        "description": "With result `escalate`, `success` or `error`: one sentence saying why."
+      }
+    },
+    "required": [
+      "result"
+    ],
     "additionalProperties": true,
     "title": "shiftwork_clock_inDictOutput"
   },
