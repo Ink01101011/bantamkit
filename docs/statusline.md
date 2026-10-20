@@ -82,11 +82,19 @@ ordinary one-column setting.
 **Off is the default** ([eventlog.md](eventlog.md)), so `event log off` is the line most
 operators see until they opt in, and it is the honest one. A bar that printed `Active` from
 no evidence would print `Active` when the server is dead. To get a green bar, turn the log on
-in the server registration:
+in **two** places — the server registration, so the server writes the log:
 
 ```json
 "env": { "BANTAMKIT_EVENT_LOG": "1" }
 ```
+
+**and** the `statusLine` registration, so the bar reads it (see [Registration](#registration)).
+The two are separate processes: Claude Code launches the `statusLine` command itself, and it
+never inherits the MCP server's `env`. With the variable set only on the server, the server
+writes events while the bar still renders `event log off` — and `bantamkit_status` reports
+`event log: on` beside it, because that tool runs inside the server. Any variable that moves
+the store (`BANTAMKIT_MEMORY_DIR`) must be passed to the bar too, or it resolves a different
+log from the one the server writes.
 
 ## Three properties, each the opposite of a defect this product has already measured
 
@@ -269,6 +277,20 @@ which is exactly the condition the ruling states.
 
 Absolute, never relative: Claude Code runs the command from the session's cwd, which is
 wherever the operator happened to start it.
+
+That registration renders `event log off` forever, because the command does not see the MCP
+server's `env`. Give it the variable itself, either inline:
+
+```json
+"command": "BANTAMKIT_EVENT_LOG=on /absolute/path/to/tools/statusline/bantamkit-statusline.sh"
+```
+
+or in the top-level `env` block of `~/.claude/settings.json`, which Claude Code applies to
+every process it starts and which also works where inline `VAR=value` does not (Windows):
+
+```json
+"env": { "BANTAMKIT_EVENT_LOG": "on" }
+```
 
 ### Windows
 
