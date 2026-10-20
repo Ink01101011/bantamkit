@@ -70,11 +70,33 @@ the `j67-1:` block, pins each tool on each side).
 [event log](eventlog.md) (`BANTAMKIT_EVENT_LOG`) is a diagnostic, not a side effect a hint
 describes, so setting it changes no hint (user ruling on #182; until J67-9 the eight turned into
 `readOnlyHint: false, destructiveHint: false, idempotentHint: false` while it was on).
-`memory_recall` is never read-only (it stamps `last_recalled` on the facts it returns), nor is
-`shiftwork_clock_in` (it appends a brief line). `openWorldHint` is `false` on all fourteen:
+`memory_recall` is never read-only (every hit is appended to the usage ledger, and a fact file
+still in the 0.35.x format is rewritten once), nor is `shiftwork_clock_in` (it appends a brief line). `openWorldHint` is `false` on all fourteen:
 none reaches past the local filesystem. Both servers advertise the same hints, log on or off
 (the `j67-2:` block of `wire.mjs` pins each tool on each side, and the `j67-9:` block pins
 `tools/list` identical with and without the log on each side).
+
+**Every served definition is written for the agent that reads it, and a linter says so**
+(#222). The registry at glama.ai grades each tool on the Tool Definition Quality Score
+(<https://tdqs.dev/spec>): six per-tool dimensions and four per-server ones, rolled up as
+`0.7 × (0.6 × mean + 0.4 × min of the per-tool scores) + 0.3 × coherence`, so one weak
+definition pulls the whole server down. The deterministic half of that scorer runs here
+without a model or a key, against either runtime:
+
+```
+npx -y mcp-tdqs@0.2.0 lint --command "node runtime-ts/dist/cli.js --store /tmp/s" --fail-on error
+npx -y mcp-tdqs@0.2.0 lint --command ".venv/bin/bantamkit-mcp --store /tmp/s"       --fail-on error
+```
+
+What it holds: every input property carries a schema `description` (100 % coverage on all
+fifteen tools, where six were at 0 %), every tool whose result is a JSON object serves real
+`output_schema` properties instead of narrating the return shape in prose, and every
+description says when to use the tool, which sibling to use instead, and what it writes
+beyond its annotations. The three `shadow-candidate` warnings it still prints are a cost
+heuristic (a tool with four or more required fields beside a zero-argument one), reported for
+the judged half to confirm or reject, not a defect in the text; that is why the gate is
+`--fail-on error`. The judged half (`tdqs score`) needs a key; the registry re-runs it when a
+published release changes a definition.
 
 ## Shift-work tools
 

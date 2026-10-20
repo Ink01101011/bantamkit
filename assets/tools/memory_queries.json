@@ -1,7 +1,7 @@
 {
   "name": "memory_queries",
   "title": "Likely-prompt queries for saved facts",
-  "description": "Call with {} to list up to 10 facts that have no likely-prompt queries yet, with what to write for them. Call with {\"facts\": [{\"name\", \"layer\"?, \"queries\"}]} to store queries you wrote. Recall matches a prompt against these queries.",
+  "description": "Write, or list the facts that still lack, the likely-prompt queries recall matches a user's prompt against — for each fact, the prompts a user would type when that fact is what they need. Call it with {} at the end of a session that saved facts, or when the session line reports facts without queries: it answers up to 10 facts with no queries yet (layer, name, description, a body excerpt), the writing instructions, and `remaining`. Then call it with {\"facts\": [{name, layer?, queries}]} to store what you wrote. Every item is checked before anything is written and the first bad one refuses the whole call — an unknown name or layer, more than 8 queries, one over 200 characters; `queries: []` removes a fact's entry. No fact file changes: queries live in a per-layer sidecar under ~/.bantamkit/queries/, keyed to the fact's content, so a fact edited later is listed as missing again. memory_save takes `queries` directly for a fact you are saving now; this tool is for facts already on disk.",
   "surfaces": [
     "mcp"
   ],
@@ -16,7 +16,8 @@
               "type": "object",
               "properties": {
                 "name": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "The fact's exact name (its slug)."
                 },
                 "layer": {
                   "type": "string",
@@ -26,7 +27,8 @@
                   "type": "array",
                   "items": {
                     "type": "string"
-                  }
+                  },
+                  "description": "Up to 8 prompts, each at most 200 characters, in the user's language and in English; [] removes the fact's entry."
                 }
               },
               "required": [
@@ -47,6 +49,38 @@
   },
   "output_schema": {
     "type": "object",
+    "properties": {
+      "result": {
+        "type": "string",
+        "description": "`missing` for the list call, `written` for the store call, `error` with `reason` when refused."
+      },
+      "facts": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        },
+        "description": "With `missing`: up to 10 {layer, name, description, body} still without queries."
+      },
+      "remaining": {
+        "type": "integer",
+        "description": "How many facts across the readable layers still have no queries after this call."
+      },
+      "instructions": {
+        "type": "string",
+        "description": "With `missing`: how to write good queries."
+      },
+      "written": {
+        "type": "integer",
+        "description": "With `written`: how many items were stored."
+      },
+      "reason": {
+        "type": "string",
+        "description": "With result `error`: one sentence saying why the call was refused."
+      }
+    },
+    "required": [
+      "result"
+    ],
     "additionalProperties": true,
     "title": "memory_queriesDictOutput"
   },
