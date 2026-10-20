@@ -1,7 +1,7 @@
 {
   "name": "memory_recall",
   "title": "Recall memories",
-  "description": "Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone.",
+  "description": "Search persistent memory for facts a past session saved. Call it BEFORE starting a task that resembles past work, and when the user refers to something decided earlier; use memory_save to add a fact, and memory_compact or memory_dream only to tidy the store — this tool never changes what a fact says. Reads every layer in order — the project store, any read-only grants in .bantamkit/config.yaml, then the machine-wide profile — and returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone. Why it is not read-only: every hit is appended to the usage ledger (~/.bantamkit/usage/<store-id>.jsonl) as a recall event — the staleness order memory_compact archives by — and a project fact file still in the 0.35.x format is rewritten once into the current one; both are best-effort and never fail a recall. A fact file that cannot be read is named in the reply, never silently skipped.",
   "surfaces": [
     "agent",
     "mcp"

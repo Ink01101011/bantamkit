@@ -1,7 +1,7 @@
 {
   "name": "shiftwork_status",
   "title": "Shift work: status",
-  "description": "Shift-work status: read-only progress summary of a checkpoint — units by status, cursor, open-question count, last history entry. Never mutates.",
+  "description": "Shift-work status: where ONE checkpoint file stands — units counted by status, the unit plan.cursor points at, how many handoff.open_questions are waiting, and the last history entry. Call it first when resuming a job or answering 'where is job X'; it is the cheap read before any clock-in. It does not say WHICH units may run now — that is shiftwork_plan, the dependency batches — and it says nothing about the server itself, which is bantamkit_status. Every fact is read from the checkpoint on this call, nothing is cached, and a checkpoint that is missing, not valid JSON or failing the checkpoint schema answers {\"result\": \"error\", \"reason\": \"<sentence>\"} instead of a partial summary — the same refusals shiftwork_plan and shiftwork_clock_in give for that file. Opens only the checkpoint; writes nothing, not even the log shiftwork_clock_in appends to.",
   "surfaces": [
     "mcp"
   ],
@@ -9,7 +9,8 @@
     "properties": {
       "checkpoint": {
         "title": "Checkpoint",
-        "type": "string"
+        "type": "string",
+        "description": "Path to the shift-work checkpoint JSON file (by convention .shiftwork/checkpoint.json in the repo the job works on), absolute or relative to the server's working directory. The same file shiftwork_plan, shiftwork_clock_in and shiftwork_clock_out take; it must validate against assets/schemas/shiftwork-checkpoint.json."
       }
     },
     "required": [
@@ -21,6 +22,45 @@
   },
   "output_schema": {
     "type": "object",
+    "properties": {
+      "result": {
+        "type": "string",
+        "description": "`status` on success; `error` when the checkpoint could not be read or failed the schema, with `reason`."
+      },
+      "cursor": {
+        "type": "string",
+        "description": "The unit id plan.cursor points at."
+      },
+      "units": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "description": "Unit count per status, keys among todo, in_progress, done, blocked, dropped; a status no unit holds is absent."
+      },
+      "open_questions": {
+        "type": "integer",
+        "description": "How many handoff.open_questions are waiting; non-zero means the next clock-in escalates."
+      },
+      "last_history": {
+        "anyOf": [
+          {
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The newest entry of the 5-entry history ring ({unit, outcome, notes?, ...}), or null when the ring is empty."
+      },
+      "reason": {
+        "type": "string",
+        "description": "With result `error`: one sentence saying why the call was refused."
+      }
+    },
+    "required": [
+      "result"
+    ],
     "additionalProperties": true,
     "title": "shiftwork_statusDictOutput"
   },

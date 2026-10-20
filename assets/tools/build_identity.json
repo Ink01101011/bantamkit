@@ -1,7 +1,7 @@
 {
   "name": "build_identity",
   "title": "Build identity",
-  "description": "Which bantamkit build is answering you, readable mid-call. Returns `build_id` — a content fingerprint of the running source and the asset pack it loads — plus the paths it was computed over. Call it when one MCP server name may resolve to more than one install: two endpoints reporting the same `version` are the SAME build only if their `build_id` matches, because a version string moves on release bumps and not on builds. Any fact that cannot be derived comes back as {\"unavailable\": \"<reason>\"} and is named in the `unavailable` list — never omitted, never a placeholder that reads as a value. Takes no arguments and reads no state.",
+  "description": "Which bantamkit build is answering you, readable mid-call. Returns `build_id` — a content fingerprint of the running source and the asset pack it loads — plus the paths it was computed over. Call it when one MCP server name may resolve to more than one install: two endpoints reporting the same `version` are the SAME build only if their `build_id` matches, because a version string moves on release bumps and not on builds. Any fact that cannot be derived comes back as {\"unavailable\": \"<reason>\"} and is named in the `unavailable` list — never omitted, never a placeholder that reads as a value. Takes no arguments and reads no state. Use bantamkit_status when the question is whether the server is healthy or which store it is bound to — that report includes this fingerprint; call this tool when you need only the fingerprint, as JSON, to compare two endpoints.",
   "surfaces": [
     "mcp"
   ],

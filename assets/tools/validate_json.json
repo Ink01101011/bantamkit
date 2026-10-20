@@ -1,7 +1,7 @@
 {
   "name": "validate_json",
   "title": "Validate JSON against a schema",
-  "description": "Validate candidate output text against a JSON Schema. Returns {valid, feedback}; when invalid, feed the feedback back to the model and retry. The output may be any JSON value; otherwise the first fenced block, or the first object or array in the text, is used. $schema selects draft-04, draft-06, draft-07, 2019-09 or 2020-12 (default); $ref resolves only inside the one schema (\"#\", \"#/...\", \"#name\"), so a remote reference or an embedded $id is refused. pattern is Python re syntax, without inline flags, look-behind, backreferences, atomic or possessive groups, conditional groups or \\N{...}; a document's patterns get 500 ms in total.",
+  "description": "Validate candidate output text against a JSON Schema and say what is wrong. Answers {valid, feedback}: when invalid, hand `feedback` back to the model and retry — it says where the document fails and quotes the offending value, clipped to 200 characters; when valid, `feedback` is null. Use it on any JSON a model produced before acting on it; for a shift-work checkpoint call shiftwork_status or shiftwork_clock_in instead, which validate against the shipped checkpoint schema themselves. `output` may be a bare JSON value; otherwise the first fenced code block, else the first object or array in the text, is what gets validated. `$schema` selects draft-04, draft-06, draft-07, 2019-09 or 2020-12 (the default). `$ref` resolves only inside the one schema given (`#`, `#/...`, `#name`): a remote reference or an embedded `$id` is refused with its own sentence, never fetched. `pattern` is Python re syntax without inline flags, look-behind, backreferences, atomic, possessive or conditional groups or \\N{...}, and all of a document's patterns share 500 ms: past that the answer is one refusal sentence naming the pattern that ran out, not a partial validation. Reads nothing but its two arguments and writes nothing.",
   "surfaces": [
     "mcp"
   ],
@@ -9,12 +9,14 @@
     "properties": {
       "output": {
         "title": "Output",
-        "type": "string"
+        "type": "string",
+        "description": "The text to validate, as the model returned it: a JSON value, or prose holding a fenced code block or a JSON object/array."
       },
       "schema": {
         "additionalProperties": true,
         "title": "Schema",
-        "type": "object"
+        "type": "object",
+        "description": "The JSON Schema object (draft-04 through 2020-12) the output must satisfy; `$ref` may only point inside it."
       }
     },
     "required": [
@@ -27,6 +29,27 @@
   },
   "output_schema": {
     "type": "object",
+    "properties": {
+      "valid": {
+        "type": "boolean",
+        "description": "True when the extracted JSON satisfies the schema."
+      },
+      "feedback": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "null when valid; otherwise where the document fails and the clipped offending value, to hand back to the model."
+      }
+    },
+    "required": [
+      "valid",
+      "feedback"
+    ],
     "additionalProperties": true,
     "title": "validate_jsonDictOutput"
   },

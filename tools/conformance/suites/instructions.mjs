@@ -719,9 +719,48 @@ export async function run(ctx) {
     // this sentence names none. Three facts share one word (`osprey`) and nothing else, so
     // the duplicate gate lets all three in and `k: 1` over the three is the floor's own test.
     const recallTool = S.tools.memory_recall ?? { description: '', inputSchema: { properties: {} } };
+
+    // -------------------------------------------------------------- (d) every parameter is described
+    // #222 (TDQS). The registry's scorer grades Parameter Semantics against the schema's own
+    // coverage: a property with no `description` is a parameter the agent has to guess at, and
+    // six of fourteen tools served 0 % (`checkpoint` on four of them). Deterministic, so it is
+    // pinned here on each side rather than left to the judged half: the list of served
+    // properties with no non-empty description, per tool, is expected EMPTY. A nested property
+    // counts too (`handoff_patch.next_action`, `accounting.tokens`, `history_entry.unit`), one
+    // level under `properties` / `items` / `anyOf`, which is where every served schema stops.
+    const undescribed = (schema, at = '') => {
+      const out = [];
+      if (!schema || typeof schema !== 'object') return out;
+      for (const [key, prop] of Object.entries(schema.properties ?? {})) {
+        const here = at ? `${at}.${key}` : key;
+        if (typeof prop.description !== 'string' || prop.description.trim() === '') out.push(here);
+        out.push(...undescribed(prop, here));
+        if (prop.items) out.push(...undescribed(prop.items, `${here}[]`));
+        for (const branch of prop.anyOf ?? []) out.push(...undescribed(branch, here));
+      }
+      return out;
+    };
+    for (const [toolName, tool] of Object.entries(S.tools).sort(([a], [b]) => (a < b ? -1 : 1))) {
+      push(N('d', 'tdqs', `${toolName}-every-input-property-is-described`), [], undescribed(tool.inputSchema));
+    }
+    // The same for the result side: a tool whose answer is a JSON object (not a `result`
+    // string) serves the keys it answers with, each described, so the prose need not.
+    for (const toolName of ['shiftwork_status', 'shiftwork_plan', 'shiftwork_clock_in', 'shiftwork_clock_out', 'work_plan', 'validate_json']) {
+      const out = S.tools[toolName]?.outputSchema ?? {};
+      push(
+        N('d', 'tdqs', `${toolName}-output-schema-names-its-keys`),
+        { described: true, hasKeys: true },
+        { described: undescribed(out).length === 0, hasKeys: Object.keys(out.properties ?? {}).length > 0 },
+      );
+    }
     push(
       N('c', 'j64', 'memory_recall-description-wording'),
-      'Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact\'s name returns that fact alone.',
+      // Amended by #222 (TDQS, 0.36.1): the description now opens by naming the siblings and when
+      // to call this one, discloses the usage-ledger write that makes it non-read-only, and names
+      // the layers it reads; the floor sentence and the exact-name sentence it was written to pin
+      // are still in it, word for word.
+      // WAS: 'Search persistent memory. Call BEFORE starting a task that resembles past work. Returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact\'s name returns that fact alone.'
+      'Search persistent memory for facts a past session saved. Call it BEFORE starting a task that resembles past work, and when the user refers to something decided earlier; use memory_save to add a fact, and memory_compact or memory_dream only to tidy the store — this tool never changes what a fact says. Reads every layer in order — the project store, any read-only grants in .bantamkit/config.yaml, then the machine-wide profile — and returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact\'s name returns that fact alone. Why it is not read-only: every hit is appended to the usage ledger (~/.bantamkit/usage/<store-id>.jsonl) as a recall event — the staleness order memory_compact archives by — and a project fact file still in the 0.35.x format is rewritten once into the current one; both are best-effort and never fail a recall. A fact file that cannot be read is named in the reply, never silently skipped.',
       recallTool.description ?? '',
       'string',
     );
