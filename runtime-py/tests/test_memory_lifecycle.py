@@ -131,3 +131,97 @@ def test_list_cli_refuses_an_unknown_filter_value_as_usage(tmp_path):
     with pytest.raises(SystemExit) as e:
         memory_main(["list", "--outcome", "meh", "--store", str(tmp_path)])
     assert e.value.code == 2
+
+
+def test_candidates_reasons_in_order_and_feedback_done_words_do_not_count(tmp_path):
+    store = _store(tmp_path)
+    store.save("project", "p-done", "a thing", "b", status="done")
+    store.save("project", "p-word", "the release was Shipped yesterday", "b")
+    store.save("feedback", "f-word", "close issues with comment when done", "b")
+    store.save("project", "p-old", "an old project note", "b")
+    store.save("project", "p-both", "merged and closed", "b", status="done")
+    path = store.root / "facts" / "p-old.md"
+    path.write_text(path.read_text().replace("'2026-10-21'", "'2026-01-01'"))
+    got = [(f.name, r) for f, r in store.candidates_done()]
+    assert got == [
+        ("p-both", "status: done"),
+        ("p-done", "status: done"),
+        ("p-word", "done-word 'shipped' in description"),
+    ]
+    got = [(f.name, r) for f, r in store.candidates_done(older_than_days=30, today="2026-10-21")]
+    assert ("p-old", "older than 30d (created 2026-01-01)") in got
+    assert all(n != "f-word" for n, _ in got)
+
+
+def test_candidates_cli_is_a_dry_run_unless_apply(tmp_path, capsys):
+    store = _store(tmp_path)
+    store.save("project", "p-done", "a thing", "b", status="done")
+    store.save("project", "p-live", "another unrelated matter entirely", "b")
+    before = sorted(p.name for p in (store.root / "facts").iterdir())
+    assert memory_main(["candidates", "--store", str(store.root)]) == 0
+    out = capsys.readouterr().out
+    assert out == (
+        f"archive candidates: 1 ({store.root / 'facts'})\n"
+        "p-done\tstatus: done\ta thing\n"
+        "dry run; rerun with --apply to archive these 1\n"
+    )
+    assert sorted(p.name for p in (store.root / "facts").iterdir()) == before
+    assert memory_main(["candidates", "--apply", "--store", str(store.root)]) == 0
+    assert store.archived() == ["p-done"]
+    assert capsys.readouterr().out.splitlines()[-1].startswith("archived 1 — index now ")
+
+
+def _merge_store(tmp_path):
+    store = _store(tmp_path)
+    store.save("feedback", "l-one", "kappa lesson about retries", "one", outcome="error")
+    store.save("feedback", "l-two", "second lesson regarding cache invalidation", "two",
+               links=("l-one",))
+    store.save("feedback", "l-three", "third lesson on naming of branches", "three")
+    store.save("project", "pointer", "points at a lesson", "p", links=("l-two", "elsewhere"))
+    return store
+
+
+def test_merge_dry_run_writes_nothing_and_apply_writes_then_archives(tmp_path, capsys):
+    store = _merge_store(tmp_path)
+    snapshot = {p.name: p.read_bytes() for p in (store.root / "facts").iterdir()}
+    argv = ["merge", "--names", "l-one", "l-two", "l-three", "--name", "kappa-pattern",
+            "--type", "feedback", "--description", "the kappa pattern",
+            "--body", "always kappa", "--store", str(store.root)]
+    assert memory_main(argv) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("consumes:\n  l-one\tfeedback\tkappa lesson about retries\n")
+    assert "produces:\n---\nname: kappa-pattern\n" in out
+    assert "Sources: l-one, l-two, l-three\n" in out
+    assert "links pointing at consumed facts:\n  pointer -> l-two\n" in out
+    assert out.endswith("dry run; rerun with --apply to write\n")
+    assert {p.name: p.read_bytes() for p in (store.root / "facts").iterdir()} == snapshot
+    assert memory_main([*argv, "--apply"]) == 0
+    assert store.archived() == ["l-one", "l-three", "l-two"]
+    [fact] = store.recall("kappa pattern", stamp=False)
+    assert fact.body == "always kappa\n\nSources: l-one, l-two, l-three"
+    # union of the consumed facts' links minus the consumed names: l-two's only link is l-one
+    assert fact.links == []
+
+
+@pytest.mark.parametrize(
+    "names, new, sentence",
+    [
+        (["l-one", "nope"], "x", "merge needs at least two distinct live facts; missing: nope"),
+        (["l-one", "l-one"], "x", "merge needs at least two distinct live facts; missing: none"),
+        (["l-one", "l-two"], "l-one",
+         "cannot merge into 'l-one': it is one of the facts being merged"),
+        (["l-one", "l-two"], "pointer", "cannot merge into 'pointer': a fact of that name exists"),
+    ],
+)
+def test_merge_refusals(tmp_path, names, new, sentence):
+    store = _merge_store(tmp_path)
+    with pytest.raises(MemoryValidationError) as e:
+        store.merge(names, new, "feedback", "d", "b")
+    assert str(e.value) == sentence
+
+
+def test_merge_refuses_an_archived_target_name(tmp_path):
+    store = _merge_store(tmp_path)
+    store.archive("pointer")
+    with pytest.raises(MemoryValidationError, match="a fact of that name exists"):
+        store.merge(["l-one", "l-two"], "pointer", "feedback", "d", "b")

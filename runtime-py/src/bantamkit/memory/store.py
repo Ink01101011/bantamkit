@@ -300,6 +300,17 @@ class ArchivedFact:
 
 
 @dataclass
+class MergeResult:
+    consumed: list[Fact]
+    produced_text: str  # `_fact_text` of the projected fact: the bytes, not a guess
+    linked_from: list[str]  # "<fact> -> <consumed>" lines, sorted
+    applied: bool
+
+
+_DONE_WORD_RE = re.compile(r"\b(" + "|".join(DONE_WORDS) + r")\b", re.IGNORECASE)
+
+
+@dataclass
 class CompactResult:
     """Everything the caller needs to understand what compaction cost.
 
@@ -834,6 +845,97 @@ class MemoryStore:
             facts.append(fact)
         facts.sort(key=lambda f: str(f.name))
         return facts
+
+    def candidates_done(
+        self, older_than_days: int | None = None, today: str | None = None
+    ) -> list[tuple[Fact, str]]:
+        """Facts that look finished, with the first matching reason (#221). Sorted by name.
+        1 `status: done`, any type; 2 a done-word, `type: project` only; 3 age, only when
+        asked and only when `created` is a date. Never writes."""
+        today_s = today or self._today()
+        out: list[tuple[Fact, str]] = []
+        for fact in sorted(self._facts(), key=lambda f: str(f.name)):
+            if fact.status == "done":
+                out.append((fact, "status: done"))
+                continue
+            if fact.type == "project" and (m := _DONE_WORD_RE.search(str(fact.description))):
+                out.append((fact, f"done-word '{m.group(1).lower()}' in description"))
+                continue
+            if older_than_days is not None and isinstance(fact.created, str):
+                try:
+                    age = (date.fromisoformat(today_s) - date.fromisoformat(fact.created[:10])).days
+                except ValueError:
+                    continue
+                if age > older_than_days:
+                    out.append(
+                        (fact, f"older than {older_than_days}d (created {fact.created[:10]})")
+                    )
+        return out
+
+    def merge(
+        self,
+        names: list[str],
+        name: str,
+        type: str,
+        description: str,
+        body: str,
+        outcome: str | None = None,
+        status: str | None = None,
+        apply: bool = False,
+    ) -> MergeResult:
+        """#220. Dry run by default. Apply = `save` the new fact FIRST (duplicate and budget
+        checks run there), then `archive` each original in the given order."""
+        live = {str(f.name): f for f in self._facts()}
+        distinct = list(dict.fromkeys(names))
+        missing = [n for n in distinct if n not in live]
+        if missing or len(distinct) < 2:
+            raise MemoryValidationError(
+                "merge needs at least two distinct live facts; missing: "
+                + (", ".join(missing) if missing else "none")
+            )
+        if name in distinct:
+            raise MemoryValidationError(
+                f"cannot merge into '{name}': it is one of the facts being merged"
+            )
+        if name in live or name in self.archived():
+            raise MemoryValidationError(f"cannot merge into '{name}': a fact of that name exists")
+        if type not in VALID_TYPES:
+            raise MemoryValidationError(
+                f"invalid type '{type}'; must be one of {sorted(VALID_TYPES)}"
+            )
+        _validate_outcome_status(type, outcome, status)
+        consumed = [live[n] for n in distinct]
+        links: list[str] = []
+        for fact in consumed:
+            for link in fact.links:
+                if link not in distinct and link not in links:
+                    links.append(str(link))
+        full_body = body.strip() + "\n\nSources: " + ", ".join(distinct)
+        projected = Fact(
+            name=name,
+            description=description,
+            type=type,
+            body=full_body,
+            links=links,
+            last_recalled=None,
+            created=self._today(),
+            outcome=outcome,
+            status=None if status == "active" else status,
+        )
+        linked_from = sorted(
+            f"{other.name} -> {link}"
+            for other in live.values()
+            if other.name not in distinct
+            for link in other.links
+            if link in distinct
+        )
+        if apply:
+            self.save(
+                type, name, description, full_body, tuple(links), outcome=outcome, status=status
+            )
+            for n in distinct:
+                self.archive(n)
+        return MergeResult(consumed, self._fact_text(projected), linked_from, apply)
 
     def lookup(
         self, name: str, stamp: bool = True, skipped: list[dict[str, str]] | None = None
