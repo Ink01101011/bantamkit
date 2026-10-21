@@ -245,9 +245,10 @@ Expected: all PASS (the existing byte-identity tests in `test_memory.py` prove t
 ```python
 def test_recall_with_outcome_keeps_only_matching_hits(tmp_path):
     store = _store(tmp_path)
-    store.save("feedback", "bad-one", "lesson about zeta failed", "b", outcome="error")
-    store.save("feedback", "good-one", "lesson about zeta worked", "b", outcome="success")
-    store.save("feedback", "plain-one", "lesson about zeta neutral", "b")
+    # Descriptions must NOT be near-duplicates, or save()'s duplicate check refuses the 2nd/3rd (J73-2 finding).
+    store.save("feedback", "bad-one", "lesson zeta pipeline crashed", "b", outcome="error")
+    store.save("feedback", "good-one", "lesson zeta rollout shipped", "b", outcome="success")
+    store.save("feedback", "plain-one", "lesson zeta weekly sync agenda", "b")
     assert [f.name for f in store.recall("lesson zeta", k=5, outcome="error")] == ["bad-one"]
     assert [f.name for f in store.recall("lesson zeta", k=5, outcome="success")] == ["good-one"]
     assert len(store.recall("lesson zeta", k=5)) == 3
@@ -627,7 +628,7 @@ Both handlers let `MemoryValidationError`/`MemoryBudgetExceeded` propagate to `m
 - Test: `runtime-ts/test/lifecycle.test.mjs` (create), `memory-cli.test.mjs`
 
 **Interfaces:**
-- Consumes: every sentence and format from Tasks 1–3, byte for byte.
+- Consumes: every sentence and format from Tasks 1–3, byte for byte. Copy fixture strings from the COMMITTED Python tests (`runtime-py/tests/test_memory_lifecycle.py`), not from this plan's Task 2 text: the recall fixture there was corrected in J73-2.
 - Produces: `Fact.outcome?: FactValue; Fact.status?: FactValue`; `store.save(type, name, description, body, links = [], outcome: string | null = null, status: string | null = null)`; `store.recall(query, k, stamp, minRatio, skipped, outcome: string | null = null)`; `store.listFacts(type, outcome, status)`; `store.candidatesDone(olderThanDays: number | null, today?: string): Array<[Fact, string]>`; `store.merge(names, name, type, description, body, outcome, status, apply): MergeResult`; `memory.saveOutcome(..., links, outcome = null, status = null)`; `memory.recallOutcome(query, k, minRatio, stamp, outcome = null)`.
 
 - [ ] **Step 1: Tests** — `lifecycle.test.mjs` mirrors every Task 1–3 store test with the same literals (same sentences, same bytes for the byte-identity test, same CLI stdout for `list`/`candidates`/`merge` via the `run()` helper copied from `memory-cli.test.mjs`). Example:
@@ -738,8 +739,9 @@ The `merge-dry` row's `/tree` case is the "dry run writes 0 bytes" proof only ag
 
 - [ ] **Step 3: wire.** In `memory-store` after step 19 add:
 ```js
-callTool(20, 'memory_save', { type: 'feedback', name: 'lesson-err', description: 'a lesson that failed on wire', body: 'b', outcome: 'error' }),
-callTool(21, 'memory_save', { type: 'feedback', name: 'lesson-ok', description: 'a lesson that worked on wire', body: 'b', outcome: 'success', status: 'done' }),
+callTool(20, 'memory_save', { type: 'feedback', name: 'lesson-err', description: 'wire lesson: the deploy pipeline crashed', body: 'b', outcome: 'error' }),
+callTool(21, 'memory_save', { type: 'feedback', name: 'lesson-ok', description: 'wire lesson: the staged rollout shipped cleanly', body: 'b', outcome: 'success', status: 'done' }),
+// (descriptions deliberately far apart: near-duplicates are refused by save's duplicate check — J73-2 finding)
 callTool(22, 'memory_recall', { query: 'lesson wire', k: 5, outcome: 'error' }),
 callTool(23, 'memory_save', { type: 'reference', name: 'ref-bad', description: 'a ref with an outcome', body: 'b', outcome: 'success' }),
 callTool(24, 'memory_save', { type: 'project', name: 'bad-status', description: 'a bad status', body: 'b', status: 'gone' }),
