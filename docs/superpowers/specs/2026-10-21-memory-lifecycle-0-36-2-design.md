@@ -107,11 +107,13 @@ Rules, each a one-sentence refusal shared by both runtimes:
 - at least two `--names`, all distinct, each a live fact: `merge needs at least two distinct live facts;
   missing: <list>`;
 - `NEW` is not one of `--names` and is not already a live or archived fact: `cannot merge into '<NEW>': a
-  fact of that name exists` / `… is one of the facts being merged`;
+  fact of that name exists` / `… is one of the facts being merged` / `cannot merge into '<NEW>': it duplicates the live
+  fact '<other>'` (merge runs save's duplicate check itself against every live fact except the ones being merged, on
+  dry run and on apply; nothing is archived when it fires);
 - `--type` is validated as `save` validates it; `--outcome` / `--status` are accepted with the §1 rules;
 - the body written is `<body text>` + `\n\nSources: A, B, C` (the consumed names, in the given order);
   `links` of the new fact = the union of the consumed facts' `links` minus the consumed names;
-- `--apply` writes the new fact through `save` (so the duplicate check and the budget check run — a budget
+- `--apply` writes the new fact through `save` with the merged names exempt from its duplicate check, so the check that runs is merge's own (the budget check still runs — a budget
   refusal here is `save`'s own sentence) **before** archiving any original, then archives each original with
   `archive(name)`. Order matters: a budget refusal leaves every original live and nothing archived.
 - refuses a profile layer or read-only grant with the sentence `compact` uses.

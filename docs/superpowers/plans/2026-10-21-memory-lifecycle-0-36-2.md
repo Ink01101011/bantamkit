@@ -23,6 +23,7 @@
   - `merge needs at least two distinct live facts; missing: <a, b>` (missing names comma-space joined, in given order; when none missing but fewer than two distinct: `missing: none`)
   - `cannot merge into '<NEW>': a fact of that name exists`
   - `cannot merge into '<NEW>': it is one of the facts being merged`
+  - `cannot merge into '<NEW>': it duplicates the live fact '<other>'` (merge runs save's duplicate check itself against every live fact except the ones being merged, on dry run and on apply; nothing is archived when it fires)
 
 ---
 
@@ -679,7 +680,7 @@ Append to the description: ` Optional outcome (error|success) tags a lesson and 
 
 - [ ] **Step 2: Golden.** Edit `served-tool-surface.json` by hand to the new parameter sets and descriptions (there is no regeneration command, on purpose: `test_tool_manifest.py:334`). Run `.venv/bin/python -m pytest runtime-py/tests/test_tool_manifest.py runtime-py/tests/test_served_tool_count_records.py runtime-py/tests/test_tool_annotations.py -q` → PASS.
 
-- [ ] **Step 3: tdqs lint.** `npx -y mcp-tdqs@0.2.0 lint --command "node runtime-ts/dist/cli.js --assets-root" --fail-on error` and the same with `".venv/bin/bantamkit-mcp --assets-root"` → 0 errors, 0 undocumented-parameter warnings.
+- [ ] **Step 3: tdqs lint.** `npx -y mcp-tdqs@0.2.0 lint --command "node runtime-ts/dist/cli.js --store /tmp/s" --fail-on error` and the same with `".venv/bin/bantamkit-mcp --store /tmp/s"` (the form docs/mcp.md:87-88 uses; `--assets-root` prints a path and exits, so it cannot drive lint) → 0 errors, 0 undocumented-parameter warnings.
 
 - [ ] **Step 4: Docs.** `docs/memory.md`: in "save" add a paragraph on `outcome`/`status` and the alias read; in "recall" one on the `outcome` filter; in "The operator CLI" add `list`, `candidates`, `merge` with their exact output shapes, the three reason strings, the dry-run default and the "no hook ever calls these" rule. READMEs: three new table rows (`list [--type] [--outcome] [--status]` / `candidates [--older-than DAYS] [--apply]` / `merge --names ... --name NEW ...`). `assets/skills/memory.md`: one line under "When to save": `Tag a lesson with outcome: error|success; close a project fact by saving it again with status: done.`
 
