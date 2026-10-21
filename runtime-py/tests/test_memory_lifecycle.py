@@ -141,7 +141,8 @@ def test_candidates_reasons_in_order_and_feedback_done_words_do_not_count(tmp_pa
     store.save("project", "p-old", "an old project note", "b")
     store.save("project", "p-both", "merged and closed", "b", status="done")
     path = store.root / "facts" / "p-old.md"
-    path.write_text(path.read_text().replace("'2026-10-21'", "'2026-01-01'"))
+    text = path.read_text(encoding="utf-8").replace("'2026-10-21'", "'2026-01-01'")
+    path.write_text(text, encoding="utf-8")
     got = [(f.name, r) for f, r in store.candidates_done()]
     assert got == [
         ("p-both", "status: done"),
