@@ -90,7 +90,7 @@ def test_the_refusal_names_the_first_unknown_key_and_does_nothing(tmp_path):
             ("memory_recall", {"query": "j67-unknown d"}),
         ],
     )
-    known = "query, k"
+    known = "query, k, outcome"
     assert answers[0] == (
         True,
         f"Error executing tool memory_recall: unknown argument 'zz'; known: {known}",
