@@ -18,6 +18,12 @@ import yaml
 from bantamkit.client import BantamError
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
+VALID_OUTCOMES = ("error", "success")
+VALID_STATUSES = ("active", "done")
+#: The two types a lesson's outcome applies to (#219). `user` and `reference` have none.
+OUTCOME_TYPES = frozenset({"feedback", "project"})
+#: `candidates` done-words (#221): whole-word, case-insensitive, `type: project` only.
+DONE_WORDS = ("done", "shipped", "completed", "closed", "released", "merged")
 # The types whose worth does NOT decay with time-since-last-recall, and which `compact`
 # therefore archives only after every other candidate is exhausted (`_eviction_key`).
 # A TUPLE and not a set: this is compared against a value that came out of YAML uncast, and
@@ -227,6 +233,25 @@ class MemoryBudgetExceeded(BantamError):
     pass
 
 
+def _validate_outcome_status(type: str, outcome: str | None, status: str | None) -> None:
+    """The §1 rules, one sentence each; `None` always passes. Runs AFTER the type check so
+    the type in the second sentence is a valid one."""
+    if outcome is not None:
+        if outcome not in VALID_OUTCOMES:
+            raise MemoryValidationError(
+                f"invalid outcome '{outcome}'; must be one of {list(VALID_OUTCOMES)}"
+            )
+        if type not in OUTCOME_TYPES:
+            raise MemoryValidationError(
+                f"invalid outcome '{outcome}' for type '{type}'; outcome is only for "
+                f"feedback and project facts"
+            )
+    if status is not None and status not in VALID_STATUSES:
+        raise MemoryValidationError(
+            f"invalid status '{status}'; must be one of {list(VALID_STATUSES)}"
+        )
+
+
 @dataclass
 class Fact:
     name: str
@@ -238,6 +263,10 @@ class Fact:
     # ISO date the fact first landed. `None` only on a Fact built in memory before its
     # first write; every Fact read off disk carries one (see `_facts`).
     created: str | None = None
+    # #219 / #221. `None` = not set; `status` None means active and `active` is NEVER
+    # written (`_fact_text`), so a fact saved without either is byte-identical to 0.36.1.
+    outcome: str | None = None
+    status: str | None = None
     # The file this Fact was READ FROM, set by `_facts` and by nothing else; `None` on a
     # Fact built in memory. `compact` moves THIS path (#122): before it moved
     # `facts/<name>.md` derived from the frontmatter, so a hand-edited `stale.md` whose
@@ -587,13 +616,21 @@ class MemoryStore:
     # ---- ops ----
 
     def save(
-        self, type: str, name: str, description: str, body: str, links: tuple[str, ...] = ()
+        self,
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: tuple[str, ...] = (),
+        outcome: str | None = None,
+        status: str | None = None,
     ) -> SaveResult:
         self._ensure_dirs()
         if type not in VALID_TYPES:
             raise MemoryValidationError(
                 f"invalid type '{type}'; must be one of {sorted(VALID_TYPES)}"
             )
+        _validate_outcome_status(type, outcome, status)
         if not NAME_RE.match(name or ""):
             raise MemoryValidationError(f"invalid name '{name}'; must match {NAME_RE.pattern}")
         if not (description or "").strip():
@@ -665,6 +702,8 @@ class MemoryStore:
             # the same event as creating it, and resetting this would let a re-save
             # launder a stale fact into a fresh one.
             created=existing.created if existing is not None else self._today(),
+            outcome=outcome,
+            status=None if status == "active" else status,
         )
         path = self._fact_path(name)
         existed = path.read_text(encoding="utf-8") if path.exists() else None
@@ -1526,14 +1565,29 @@ class MemoryStore:
                         f"(it holds the control character {bad}), read as '{description}'; "
                         f"make it one line"
                     )
+            # memory-keeper / reflexion alias (#219, #221): read-only, never rewritten.
+            nested = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else {}
+            fact_type = meta.get("type", nested.get("type"))
+            if fact_type is None:
+                raise KeyError("type")
+            outcome = meta.get("outcome")
+            if outcome is None:
+                loop = nested.get("loop")
+                outcome = loop if loop in VALID_OUTCOMES else None
+            status = meta.get("status")
+            if status is None:
+                nested_status = nested.get("status")
+                status = "done" if nested_status in ("done", "archived") else None
             return Fact(
                 name=name,
                 description=description,
-                type=meta["type"],
+                type=fact_type,
                 body=body.strip(),
                 links=list(meta.get("links") or []),
                 last_recalled=stamps["last_recalled"],
                 created=stamps["created"] or _mtime_date(path),
+                outcome=outcome,
+                status=status,
                 source=path,
             )
         except (ValueError, KeyError, yaml.YAMLError) as e:
@@ -1607,6 +1661,10 @@ class MemoryStore:
             "last_recalled": fact.last_recalled,
             "links": fact.links,
         }
+        if fact.outcome is not None:
+            meta["outcome"] = fact.outcome
+        if fact.status is not None and fact.status != "active":
+            meta["status"] = fact.status
         return (
             "---\n"
             + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
