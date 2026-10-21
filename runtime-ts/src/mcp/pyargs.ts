@@ -108,9 +108,9 @@ export const SKILL_BUDGET_MAXIMUM = 9007199254740991n;
 export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   memory_save: {
     model: 'memory_saveArguments',
-    fields: [req('type', 'str'), req('name', 'str'), req('description', 'str'), req('body', 'str'), opt('links', 'listStr')],
+    fields: [req('type', 'str'), req('name', 'str'), req('description', 'str'), req('body', 'str'), opt('links', 'listStr'), opt('outcome', 'str'), opt('status', 'str')],
   },
-  memory_recall: { model: 'memory_recallArguments', fields: [req('query', 'str'), opt('k', 'int')] },
+  memory_recall: { model: 'memory_recallArguments', fields: [req('query', 'str'), opt('k', 'int'), opt('outcome', 'str')] },
   validate_json: { model: 'validate_jsonArguments', fields: [req('output', 'str'), req('schema', 'dict')] },
   // `clock_in(checkpoint: str, unit_id: str | None = None)` since job60: the optional field
   // is the same `opt(...)` `shiftwork_clock_out`'s `accounting` already is, and `str` is the

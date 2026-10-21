@@ -76,6 +76,12 @@ export interface ActionSpec {
   /** `__name__` of `type=`, for `invalid %(type)s value: %(value)r`. */
   readonly typeName?: string;
   readonly defaultValue: unknown;
+  /** `choices=` on a `store` action: the metavar becomes `{a,b}` and a value outside is refused. */
+  readonly choices?: readonly string[];
+  /** `nargs='+'` on a `store` action: one or more values, collected into an array. */
+  readonly nargs?: '+';
+  /** `required=True` on an OPTIONAL: no brackets in the usage, and a missing one is reported. */
+  readonly required?: boolean;
   /** `add_subparsers()`'s parsers, in `add_parser` order. Only ever set on `kind: 'subparsers'`. */
   readonly subcommands?: readonly Subcommand[];
 }
@@ -91,6 +97,8 @@ export interface ParserSpec {
    * is skipped in the usage line (and still enforced when parsing), which this reproduces.
    */
   readonly groups: readonly (readonly number[])[];
+  /** Indices into `groups` of the ones made with `required=True`: `(a | b)`, and one must be given. */
+  readonly requiredGroups?: readonly number[];
 }
 
 /**
@@ -358,6 +366,7 @@ const isPositional = (action: ActionSpec): boolean => action.optionStrings.lengt
  */
 const metavarOf = (action: ActionSpec): string => {
   if (action.metavar !== undefined) return action.metavar;
+  if (action.choices !== undefined) return `{${action.choices.join(',')}}`;
   if (action.subcommands !== undefined) return `{${action.subcommands.map((sub) => sub.name).join(',')}}`;
   // `_get_default_metavar_for_positional` is the bare `dest`; the optional one upper-cases it.
   return isPositional(action) ? action.dest : action.dest.toUpperCase();
@@ -365,7 +374,11 @@ const metavarOf = (action: ActionSpec): string => {
 
 /** `_format_args`: the slot(s) an action occupies in the USAGE line. `PARSER` trails ` ...`. */
 const formatArgs = (action: ActionSpec): string =>
-  action.kind === 'subparsers' ? `${metavarOf(action)} ...` : metavarOf(action);
+  action.kind === 'subparsers'
+    ? `${metavarOf(action)} ...`
+    : action.nargs === '+'
+      ? `${metavarOf(action)} [${metavarOf(action)} ...]`
+      : metavarOf(action);
 
 /**
  * `_format_action_invocation` — the left column of the help table.
@@ -376,7 +389,7 @@ const formatArgs = (action: ActionSpec): string =>
 const invocationOf = (action: ActionSpec): string => {
   if (isPositional(action)) return metavarOf(action);
   return action.kind === 'store'
-    ? `${action.optionStrings.join(', ')} ${metavarOf(action)}`
+    ? `${action.optionStrings.join(', ')} ${formatArgs(action)}`
     : action.optionStrings.join(', ');
 };
 
@@ -397,28 +410,29 @@ const invocationOf = (action: ActionSpec): string => {
  */
 function formatActionsUsage(
   actions: readonly ActionSpec[],
-  groups: readonly (readonly ActionSpec[])[],
+  groups: readonly { readonly actions: readonly ActionSpec[]; readonly required: boolean }[],
 ): string {
   const inserts = new Map<number, string>();
   const grouped = new Set<number>();
   for (const group of groups) {
-    const indices = group.map((action) => actions.indexOf(action));
+    const indices = group.actions.map((action) => actions.indexOf(action));
     if (indices.some((index) => index === -1)) continue;
     const start = indices[0]!;
     const end = start + indices.length;
     if (!indices.every((index, offset) => index === start + offset)) continue;
     for (const index of indices) grouped.add(index);
-    inserts.set(start, inserts.has(start) ? `${inserts.get(start)!} [` : '[');
-    inserts.set(end, inserts.has(end) ? `${inserts.get(end)!}]` : ']');
+    const [open, close] = group.required ? ['(', ')'] : ['[', ']'];
+    inserts.set(start, inserts.has(start) ? `${inserts.get(start)!} ${open}` : open);
+    inserts.set(end, inserts.has(end) ? `${inserts.get(end)!}${close}` : close);
     for (let index = start + 1; index < end; index += 1) inserts.set(index, '|');
   }
   const parts: string[] = actions.map((action, index) => {
     if (isPositional(action)) return formatArgs(action);
     const body =
       action.kind === 'store'
-        ? `${action.optionStrings[0]!} ${metavarOf(action)}`
+        ? `${action.optionStrings[0]!} ${formatArgs(action)}`
         : action.optionStrings[0]!;
-    return grouped.has(index) ? body : `[${body}]`;
+    return grouped.has(index) || action.required === true ? body : `[${body}]`;
   });
   for (const index of [...inserts.keys()].sort((a, b) => b - a)) parts.splice(index, 0, inserts.get(index)!);
   let text = parts.join(' ');
@@ -434,7 +448,10 @@ export function formatUsage(spec: ParserSpec, width: number, prefix = 'usage: ')
   // `_format_usage` splits the actions in two and formats the halves SEPARATELY, then joins
   // `optionals + positionals` for the single-line attempt. The order is argparse's, not the
   // declaration order: a positional declared before an option still prints last.
-  const groups = spec.groups.map((group) => group.map((index) => spec.actions[index]!));
+  const groups = spec.groups.map((group, at) => ({
+    actions: group.map((index) => spec.actions[index]!),
+    required: (spec.requiredGroups ?? []).includes(at),
+  }));
   const optionals = spec.actions.filter((action) => !isPositional(action));
   const positionals = spec.actions.filter(isPositional);
   const actionUsage = formatActionsUsage([...optionals, ...positionals], groups);
@@ -723,7 +740,17 @@ export function parseKnownArgs(
 
   /** `_get_value`: `type=` applied, with argparse's two DIFFERENT failure sentences. */
   function convert(action: ActionSpec, raw: string): unknown {
-    if (action.convert === undefined) return raw;
+    if (action.convert === undefined) {
+      // `_check_value`: the choices of a plain-string action, named without quotes (3.12).
+      if (action.choices !== undefined && !action.choices.includes(raw)) {
+        throw argumentError(
+          spec,
+          action,
+          `invalid choice: ${pyRepr(raw)} (choose from ${action.choices.join(', ')})`,
+        );
+      }
+      return raw;
+    }
     try {
       return action.convert(raw);
     } catch (error) {
@@ -763,7 +790,9 @@ export function parseKnownArgs(
       extras.push(...nested.extras);
       return;
     }
-    if (action.kind === 'store' || action.kind === 'positional') {
+    if (action.kind === 'store' && action.nargs === '+') {
+      value = args.map((arg) => convert(action, arg));
+    } else if (action.kind === 'store' || action.kind === 'positional') {
       value = convert(action, args[0]!);
     } else {
       value = true;
@@ -794,7 +823,7 @@ export function parseKnownArgs(
         return startIndex + 1;
       }
       if (explicit !== null) {
-        const argCount = action.kind === 'store' ? 1 : 0;
+        const argCount = action.kind === 'store' ? 1 : 0; // `nargs='+'` takes the glued one
         if (argCount === 0 && !optionString.startsWith('--') && explicit !== '') {
           // A glued single-dash tail: `-hx` is `-h` followed by `-x`. An `=` here, or a
           // tail that is itself an option string, is a value nobody asked for.
@@ -832,7 +861,17 @@ export function parseKnownArgs(
       // `_get_nargs_pattern` strips every `-` for an OPTIONAL, so the pattern is `(A)`:
       // the very next token must be a value, and `--k --store x` is "expected one argument"
       // rather than a store named `--store`.
-      if (pattern[startIndex + 1] !== 'A') throw argumentError(spec, action, 'expected one argument');
+      if (pattern[startIndex + 1] !== 'A') {
+        throw argumentError(spec, action, action.nargs === '+' ? 'expected at least one argument' : 'expected one argument');
+      }
+      if (action.nargs === '+') {
+        // `(A[A]*)` once the `-` are stripped: every consecutive value token belongs to it.
+        let end = startIndex + 1;
+        while (pattern[end] === 'A') end += 1;
+        taken.push({ action, args: argv.slice(startIndex + 1, end) });
+        stop = end;
+        break;
+      }
       taken.push({ action, args: [argv[startIndex + 1]!] });
       stop = startIndex + 2;
       break;
@@ -922,10 +961,16 @@ export function parseKnownArgs(
   // `required=True`, or a subparsers action without it, wants a field here rather than this
   // shorthand.
   const missing = spec.actions
-    .filter((action) => !seenActions.has(action) && isPositional(action))
+    .filter((action) => !seenActions.has(action) && (isPositional(action) || action.required === true))
     .map(actionName);
   if (missing.length > 0) {
     throw argumentError(spec, null, `the following arguments are required: ${missing.join(', ')}`);
+  }
+  for (const at of spec.requiredGroups ?? []) {
+    const members = spec.groups[at]!.map((index) => spec.actions[index]!);
+    if (!members.some((member) => seenNonDefault.has(member))) {
+      throw new ArgvError(spec, `one of the arguments ${members.map(actionName).join(' ')} is required`);
+    }
   }
 
   return { values, extras };

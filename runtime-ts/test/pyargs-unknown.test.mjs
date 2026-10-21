@@ -52,11 +52,11 @@ test('every served tool refuses an unknown key by name', () => {
 
 test('the first unknown key in arrival order is named, ahead of a type error', () => {
   const model = ARG_MODELS.memory_recall;
-  assert.equal(unknownArgument(model, fromJs({ query: 'a', zz: 1, aa: 2 })), "unknown argument 'zz'; known: query, k");
+  assert.equal(unknownArgument(model, fromJs({ query: 'a', zz: 1, aa: 2 })), "unknown argument 'zz'; known: query, k, outcome");
   assert.throws(() => validateArguments(model, fromJs({ query: 123, bogus: 1 })), {
-    message: "unknown argument 'bogus'; known: query, k",
+    message: "unknown argument 'bogus'; known: query, k, outcome",
   });
-  assert.equal(unknownArgument(model, fromJs({ query: 'a', constructor: 1 })), "unknown argument 'constructor'; known: query, k");
+  assert.equal(unknownArgument(model, fromJs({ query: 'a', constructor: 1 })), "unknown argument 'constructor'; known: query, k, outcome");
 });
 
 test('known keys alone still validate', () => {
