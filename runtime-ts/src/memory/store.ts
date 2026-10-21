@@ -869,7 +869,10 @@ export class MemoryStore {
     links: readonly string[] = [],
     outcome: string | null = null,
     status: string | null = null,
+    dupExempt: readonly string[] = [],
   ): SaveResult {
+    // `dupExempt` is `merge`'s and nobody else's: the facts a merge consumes are still live
+    // while it saves, and they cannot be what the new fact duplicates (J73-6).
     this.ensureDirs();
     if (!(VALID_TYPES as readonly string[]).includes(type)) {
       throw new MemoryValidationError(
@@ -919,6 +922,7 @@ export class MemoryStore {
         existing = fact; // same name = update, not duplicate
         continue;
       }
+      if (dupExempt.includes(pyText(fact.name))) continue;
       if (jaccard(newTokens, tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) >= DUPLICATE_JACCARD) {
         return { status: 'duplicate', name, similar: fact.name, ...(skipped.length > 0 ? { skipped } : {}) };
       }
@@ -1079,6 +1083,7 @@ export class MemoryStore {
           continue;
         }
       }
+      // YYYY-MM-DD only, as the reference reads it (`ordinal` refuses every other shape).
       if (olderThanDays !== null && typeof fact.created === 'string') {
         const a = ordinal(todayS);
         const b = ordinal(fact.created.slice(0, 10));
@@ -1126,6 +1131,16 @@ export class MemoryStore {
       );
     }
     validateOutcomeStatus(type, outcome, status);
+    // `save`'s duplicate check, run here so the dry run refuses what `--apply` would, and run
+    // WITHOUT the consumed facts: they are leaving. WAS: `save` compared against them,
+    // answered `duplicate` unwritten, and the originals were archived anyway (J73-6).
+    const newTokens = tokens(`${name} ${description}`);
+    for (const [key, other] of live) {
+      if (distinct.includes(key)) continue;
+      if (jaccard(newTokens, tokens(`${pyText(other.name)} ${pyText(other.description)}`)) >= DUPLICATE_JACCARD) {
+        throw new MemoryValidationError(`cannot merge into '${name}': it duplicates the live fact '${key}'`);
+      }
+    }
     const consumed = distinct.map((n) => live.get(n)!);
     const links: string[] = [];
     for (const fact of consumed) {
@@ -1158,7 +1173,13 @@ export class MemoryStore {
     }
     linkedFrom.sort(cmpCodepoint);
     if (apply) {
-      this.save(type, name, description, fullBody, links, outcome, status);
+      const saved = this.save(type, name, description, fullBody, links, outcome, status, distinct);
+      if (saved.status === 'duplicate') {
+        // a fact landed between the check above and the save
+        throw new MemoryValidationError(
+          `cannot merge into '${name}': it duplicates the live fact '${pyText(saved.similar ?? null)}'`,
+        );
+      }
       for (const n of distinct) this.archive(n);
     }
     return { consumed, producedText: formatFact(projected), linkedFrom, applied: apply };
@@ -1881,7 +1902,8 @@ export class MemoryStore {
       }
       // Memory-keeper alias (#219, #221): read-only, never rewritten.
       const alias = lifecycleOf(meta);
-      if (alias.type === null) throw malformed("'type'");
+      // Only when `type` is ABSENT: a `type:` holding null was read by 0.36.1 and still is.
+      if (!('type' in meta) && alias.type === null) throw malformed("'type'");
       const name = meta['name'] as FactValue;
       const stamps: Record<string, FactValue | FactValue[] | undefined> = {};
       for (const key of ['created', 'last_recalled']) {

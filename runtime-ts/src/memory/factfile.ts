@@ -177,7 +177,7 @@ function factOfParsed(parsed: ParsedFact): Fact {
   const { meta, body } = parsed;
   const alias = lifecycleOf(meta as Record<string, unknown>);
   for (const key of ['name', 'description', 'type']) {
-    if (key === 'type' ? alias.type === null : !(key in meta)) {
+    if (key === 'type' ? !('type' in meta) && alias.type === null : !(key in meta)) {
       throw new FactParseError(
         `formatFact: the frontmatter has no '${key}' key, and a fact must carry name, description and type`,
       );

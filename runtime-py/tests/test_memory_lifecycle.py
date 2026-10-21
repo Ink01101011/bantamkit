@@ -226,3 +226,68 @@ def test_merge_refuses_an_archived_target_name(tmp_path):
     store.archive("pointer")
     with pytest.raises(MemoryValidationError, match="a fact of that name exists"):
         store.merge(["l-one", "l-two"], "pointer", "feedback", "d", "b")
+
+
+# ---- J73-6 review findings -------------------------------------------------------------
+
+
+def test_merge_apply_lands_when_the_new_fact_resembles_the_facts_it_consumes(tmp_path):
+    """WAS (both runtimes): `save`'s duplicate check compared the new fact against the very
+    originals being merged -- still live at that moment -- so merging two lessons into a
+    description close to theirs returned `duplicate` without writing, and `merge` went on to
+    archive every original and print `merged 2 into ...` with exit 0. The consumed facts are
+    leaving; they cannot be what the new fact duplicates."""
+    store = _store(tmp_path)
+    store.save("feedback", "bad-one", "zeta lesson failed", "b", outcome="error")
+    store.save("feedback", "good-one", "zeta rollout worked", "b", outcome="success")
+    # jaccard({zeta, lesson, failed}, bad-one's {bad, one, zeta, lesson, failed}) = 0.6
+    store.merge(["bad-one", "good-one"], "zeta-lesson", "feedback", "zeta lesson failed", "z",
+                apply=True)
+    assert store.archived() == ["bad-one", "good-one"]
+    assert [f.name for f in store.list_facts()] == ["zeta-lesson"]
+
+
+def test_merge_refuses_a_new_fact_that_duplicates_an_unconsumed_one_and_archives_nothing(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    store.save("feedback", "l-one", "first lesson on retries", "b")
+    store.save("feedback", "l-two", "second lesson on caching", "b")
+    store.save("project", "zeta-notes", "notes about the zeta pipeline", "b")
+    for apply in (False, True):
+        with pytest.raises(MemoryValidationError) as e:
+            store.merge(["l-one", "l-two"], "zeta-pipeline", "feedback",
+                        "notes about the zeta pipeline", "z", apply=apply)
+        assert str(e.value) == (
+            "cannot merge into 'zeta-pipeline': it duplicates the live fact 'zeta-notes'"
+        )
+    assert store.archived() == []
+    assert [f.name for f in store.list_facts()] == ["l-one", "l-two", "zeta-notes"]
+
+
+def test_a_fact_whose_type_key_is_null_is_still_read_as_0_36_1_read_it(tmp_path):
+    """The alias falls back to `metadata.type` only when `type` is ABSENT (spec §1). WAS: a
+    `type:` key holding null was treated as absent, so a fact 0.36.1 read became a skipped
+    malformed file on both runtimes."""
+    store = _store(tmp_path)
+    store._ensure_dirs()
+    (store.root / "facts" / "t.md").write_text(
+        "---\nname: t\ndescription: a null type\ntype:\nmetadata:\n  type: feedback\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    skipped: list[dict[str, str]] = []
+    [fact] = store._facts(skipped=skipped)
+    assert (fact.name, fact.type, skipped) == ("t", None, [])
+
+
+@pytest.mark.parametrize("created", ["'20260101'", "'2026-W01-1'", "'2026-1-01'"])
+def test_candidates_age_reads_only_a_yyyy_mm_dd_created(tmp_path, created):
+    """WAS: `date.fromisoformat` accepted CPython 3.11's basic and week-date forms, so the
+    reference aged `20260101` and `2026-W01-1` while the port (and CPython 3.10) did not."""
+    store = _store(tmp_path)
+    store._ensure_dirs()
+    (store.root / "facts" / "c.md").write_text(
+        f"---\nname: c\ndescription: odd created\ntype: user\ncreated: {created}\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    assert store.candidates_done(older_than_days=3, today="2026-10-21") == []

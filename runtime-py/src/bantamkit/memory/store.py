@@ -307,6 +307,7 @@ class MergeResult:
     applied: bool
 
 
+_ISO_DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 _DONE_WORD_RE = re.compile(r"\b(" + "|".join(DONE_WORDS) + r")\b", re.IGNORECASE)
 
 
@@ -635,7 +636,11 @@ class MemoryStore:
         links: tuple[str, ...] = (),
         outcome: str | None = None,
         status: str | None = None,
+        *,
+        _dup_exempt: tuple[str, ...] = (),
     ) -> SaveResult:
+        """`_dup_exempt` is `merge`'s and nobody else's: the facts a merge consumes are still
+        live while it saves, and they cannot be what the new fact duplicates."""
         self._ensure_dirs()
         if type not in VALID_TYPES:
             raise MemoryValidationError(
@@ -687,6 +692,8 @@ class MemoryStore:
             if fact.name == name:
                 existing = fact
                 continue  # same name = update, not duplicate
+            if str(fact.name) in _dup_exempt:
+                continue
             if (
                 _jaccard(new_tokens, tokens(f"{fact.name} {fact.description}"))
                 >= DUPLICATE_JACCARD
@@ -861,7 +868,13 @@ class MemoryStore:
             if fact.type == "project" and (m := _DONE_WORD_RE.search(str(fact.description))):
                 out.append((fact, f"done-word '{m.group(1).lower()}' in description"))
                 continue
-            if older_than_days is not None and isinstance(fact.created, str):
+            # YYYY-MM-DD only: CPython 3.11's `fromisoformat` also takes `20260101` and
+            # `2026-W01-1`, which the port (and CPython 3.10) never aged (J73-6).
+            if (
+                older_than_days is not None
+                and isinstance(fact.created, str)
+                and _ISO_DAY_RE.match(fact.created[:10])
+            ):
                 try:
                     age = (date.fromisoformat(today_s) - date.fromisoformat(fact.created[:10])).days
                 except ValueError:
@@ -904,6 +917,19 @@ class MemoryStore:
                 f"invalid type '{type}'; must be one of {sorted(VALID_TYPES)}"
             )
         _validate_outcome_status(type, outcome, status)
+        # `save`'s duplicate check, run here so the dry run refuses what `--apply` would, and
+        # run WITHOUT the consumed facts: they are leaving, so resembling them is the point of
+        # a merge. WAS: `save` compared against them, returned `duplicate` unwritten, and the
+        # originals were archived under a `merged N` line (J73-6).
+        new_tokens = tokens(f"{name} {description}")
+        for other in live.values():
+            if str(other.name) in distinct:
+                continue
+            other_tokens = tokens(f"{other.name} {other.description}")
+            if _jaccard(new_tokens, other_tokens) >= DUPLICATE_JACCARD:
+                raise MemoryValidationError(
+                    f"cannot merge into '{name}': it duplicates the live fact '{other.name}'"
+                )
         consumed = [live[n] for n in distinct]
         links: list[str] = []
         for fact in consumed:
@@ -930,9 +956,20 @@ class MemoryStore:
             if link in distinct
         )
         if apply:
-            self.save(
-                type, name, description, full_body, tuple(links), outcome=outcome, status=status
+            saved = self.save(
+                type,
+                name,
+                description,
+                full_body,
+                tuple(links),
+                outcome=outcome,
+                status=status,
+                _dup_exempt=tuple(distinct),
             )
+            if saved.status == "duplicate":  # a fact landed between the check and the save
+                raise MemoryValidationError(
+                    f"cannot merge into '{name}': it duplicates the live fact '{saved.similar}'"
+                )
             for n in distinct:
                 self.archive(n)
         return MergeResult(consumed, self._fact_text(projected), linked_from, apply)
@@ -1691,8 +1728,11 @@ class MemoryStore:
                     )
             # memory-keeper / reflexion alias (#219, #221): read-only, never rewritten.
             nested = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else {}
-            fact_type = meta.get("type", nested.get("type"))
-            if fact_type is None:
+            # The alias stands in only when `type` is ABSENT: a `type:` holding null was read
+            # by 0.36.1 and still is (J73-6; WAS `meta.get("type", ...)` + a None check).
+            if "type" in meta:
+                fact_type = meta["type"]
+            elif (fact_type := nested.get("type")) is None:
                 raise KeyError("type")
             outcome = meta.get("outcome")
             if outcome is None:

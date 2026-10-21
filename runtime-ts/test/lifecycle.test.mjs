@@ -262,3 +262,55 @@ test('merge usage errors: a required body group, a required option, a bad choice
   r = run(['merge', '--names']);
   assert.match(r.stderr, /error: argument --names: expected at least one argument\n$/);
 });
+
+// ---- J73-6 review findings (literals copied from test_memory_lifecycle.py) ----------------
+
+test('merge apply lands when the new fact resembles the facts it consumes', () => {
+  const store = makeStore();
+  store.save('feedback', 'bad-one', 'zeta lesson failed', 'b', [], 'error');
+  store.save('feedback', 'good-one', 'zeta rollout worked', 'b', [], 'success');
+  store.merge(['bad-one', 'good-one'], 'zeta-lesson', 'feedback', 'zeta lesson failed', 'z', null, null, true);
+  assert.deepEqual(store.archived(), ['bad-one', 'good-one']);
+  assert.deepEqual(names(store.listFacts()), ['zeta-lesson']);
+});
+
+test('merge refuses a new fact that duplicates an unconsumed one, and archives nothing', () => {
+  const store = makeStore();
+  store.save('feedback', 'l-one', 'first lesson on retries', 'b');
+  store.save('feedback', 'l-two', 'second lesson on caching', 'b');
+  store.save('project', 'zeta-notes', 'notes about the zeta pipeline', 'b');
+  for (const apply of [false, true]) {
+    assert.throws(
+      () => store.merge(['l-one', 'l-two'], 'zeta-pipeline', 'feedback', 'notes about the zeta pipeline', 'z', null, null, apply),
+      { message: "cannot merge into 'zeta-pipeline': it duplicates the live fact 'zeta-notes'" },
+    );
+  }
+  assert.deepEqual(store.archived(), []);
+  assert.deepEqual(names(store.listFacts()), ['l-one', 'l-two', 'zeta-notes']);
+});
+
+test('a fact whose type key is null is still read as 0.36.1 read it', () => {
+  const store = makeStore();
+  mkdirSync(join(store.root, 'facts'), { recursive: true });
+  writeFileSync(
+    join(store.root, 'facts', 't.md'),
+    '---\nname: t\ndescription: a null type\ntype:\nmetadata:\n  type: feedback\n---\n\nb\n',
+    'utf8',
+  );
+  const skipped = [];
+  const facts = store.facts(undefined, skipped);
+  assert.deepEqual([facts.map((f) => [f.name, f.type]), skipped], [[['t', null]], []]);
+});
+
+for (const created of ["'20260101'", "'2026-W01-1'", "'2026-1-01'"]) {
+  test(`candidates age reads only a YYYY-MM-DD created (${created})`, () => {
+    const store = makeStore();
+    mkdirSync(join(store.root, 'facts'), { recursive: true });
+    writeFileSync(
+      join(store.root, 'facts', 'c.md'),
+      `---\nname: c\ndescription: odd created\ntype: user\ncreated: ${created}\n---\n\nb\n`,
+      'utf8',
+    );
+    assert.deepEqual(store.candidatesDone(3, '2026-10-21'), []);
+  });
+}

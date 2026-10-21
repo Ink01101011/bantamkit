@@ -1003,7 +1003,8 @@ that matches. The reasons are tried in this order:
    case-insensitive: `done`, `shipped`, `completed`, `closed`, `released`, `merged`. A
    `feedback` fact is never a candidate by its words, so `close issues when done` stays put.
 3. `older than <N>d (created <date>)`, only with `--older-than DAYS` and only for a fact whose
-   `created` is a date.
+   `created` is a `YYYY-MM-DD` date (`20260101` and `2026-W01-1` are not aged on either
+   runtime).
 
 It is a dry run unless `--apply` is given. `--apply` archives each listed fact by the same move
 `archive` makes, and on the first refusal it stops, names the fact, and says how many were
@@ -1019,12 +1020,15 @@ dry run; rerun with --apply to archive these 1
 `merge` writes one new fact from two or more named facts and archives the originals. It is a
 dry run by default: it prints what it would consume, the exact text of the fact it would write,
 and any link that points at a consumed fact (that link would dangle once the originals leave),
-and writes nothing. With `--apply` it saves the new fact first, so the duplicate and budget
-checks run before any original moves, then archives each original in the order given. The body
+and writes nothing. The duplicate check runs on the dry run too, against every live fact EXCEPT
+the ones being merged (they are leaving, so resembling them is the point): a new fact too close
+to another live fact is refused with `cannot merge into '<NEW>': it duplicates the live fact
+'<other>'`, dry run or not. With `--apply` it saves the new fact first, so the budget check
+runs before any original moves, then archives each original in the order given. The body
 is the given text plus a `Sources: a, b` line, and links from the originals are carried over
 minus the consumed names. A refusal exits 1 and names its cause: fewer than two distinct live
-facts, a missing name, `--name` being one of the merged facts, or a `--name` that is already
-live or archived.
+facts, a missing name, `--name` being one of the merged facts, a `--name` that is already
+live or archived, or a new fact that duplicates a live fact it does not consume.
 
 ```console
 $ python -m bantamkit.memory merge --names bad-one good-one --name rollout-pattern --type feedback --description "the rollout pattern" --body "always stage" --store .bantamkit/memory
