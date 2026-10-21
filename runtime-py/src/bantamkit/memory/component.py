@@ -356,13 +356,29 @@ class Memory:
             yield
 
     def save(
-        self, type: str, name: str, description: str, body: str, links: list[str] | None = None
+        self,
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: list[str] | None = None,
+        outcome: str | None = None,
+        status: str | None = None,
     ) -> str:
         """The reply the model reads. Unchanged, and still the tool's advertised return."""
-        return self.save_outcome(type, name, description, body, links).reply
+        return self.save_outcome(
+            type, name, description, body, links, outcome=outcome, status=status
+        ).reply
 
     def save_outcome(
-        self, type: str, name: str, description: str, body: str, links: list[str] | None = None
+        self,
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: list[str] | None = None,
+        outcome: str | None = None,
+        status: str | None = None,
     ) -> SaveOutcome:
         """`save`, with the branch it took carried out alongside the sentence it wrote.
 
@@ -396,7 +412,9 @@ class Memory:
                     ),
                     status="duplicate",
                 )
-            result = self.store.save(type, name, description, body, tuple(links))
+            result = self.store.save(
+                type, name, description, body, tuple(links), outcome=outcome, status=status
+            )
         except MemoryValidationError as e:
             return SaveOutcome(reply=f"error: {e}", status="refused-validation")
         except MemoryBudgetExceeded as e:
@@ -438,6 +456,7 @@ class Memory:
         query: str,
         k: int | None = None,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
+        outcome: str | None = None,
     ) -> str:
         """`k` is the model asking for *more*, never for less than the store's default.
 
@@ -452,7 +471,7 @@ class Memory:
         The floor is the operator's configured default, not a constant, so a consumer
         who really wants top-1 says so once at construction (`Memory(store, k=1)`).
         """
-        return self.recall_outcome(query, k, min_ratio).reply
+        return self.recall_outcome(query, k, min_ratio, outcome=outcome).reply
 
     def recall_outcome(
         self,
@@ -461,6 +480,7 @@ class Memory:
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
         *,
         stamp: bool = True,
+        outcome: str | None = None,
     ) -> RecallOutcome:
         """`recall`, carrying the walk it performed as numbers rather than as prose.
 
@@ -548,6 +568,7 @@ class Memory:
                     stamp=writable and stamp,
                     min_ratio=min_ratio,
                     skipped=left_out,
+                    outcome=outcome,
                 )
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:

@@ -1,5 +1,6 @@
 import pytest
 
+from bantamkit.memory.__main__ import main as memory_main
 from bantamkit.memory.store import MemoryStore, MemoryValidationError
 
 
@@ -86,3 +87,47 @@ def test_alias_values_outside_the_enums_read_as_absent(tmp_path):
     [fact] = store.recall("reflexion pattern delta", stamp=False)
     assert fact.outcome is None
     assert fact.status == "done"  # `archived` reads as done, per spec §1
+
+
+def test_recall_with_outcome_keeps_only_matching_hits(tmp_path):
+    store = _store(tmp_path)
+    store.save("feedback", "bad-one", "lesson zeta pipeline crashed", "b", outcome="error")
+    store.save("feedback", "good-one", "lesson zeta rollout shipped", "b", outcome="success")
+    store.save("feedback", "plain-one", "lesson zeta weekly sync agenda", "b")
+    assert [f.name for f in store.recall("lesson zeta", k=5, outcome="error")] == ["bad-one"]
+    assert [f.name for f in store.recall("lesson zeta", k=5, outcome="success")] == ["good-one"]
+    assert len(store.recall("lesson zeta", k=5)) == 3
+
+
+def test_list_facts_filters_and_sorts_by_name(tmp_path):
+    store = _store(tmp_path)
+    store.save("feedback", "b-err", "about b", "b", outcome="error")
+    store.save("feedback", "a-ok", "about a", "b", outcome="success")
+    store.save("project", "c-done", "about c", "b", status="done")
+    assert [f.name for f in store.list_facts()] == ["a-ok", "b-err", "c-done"]
+    assert [f.name for f in store.list_facts(outcome="error")] == ["b-err"]
+    assert [f.name for f in store.list_facts(type="project", status="done")] == ["c-done"]
+    assert [f.name for f in store.list_facts(status="active")] == ["a-ok", "b-err"]
+
+
+def test_list_cli_prints_one_line_per_fact(tmp_path, capsys):
+    store = _store(tmp_path)
+    store.save("feedback", "b-err", "about b", "b", outcome="error")
+    store.save("project", "c-done", "about c", "b", status="done")
+    assert memory_main(["list", "--store", str(store.root)]) == 0
+    assert capsys.readouterr().out == (
+        f"facts: 2 ({store.root / 'facts'})\n"
+        "b-err\tfeedback\terror\tactive\tabout b\n"
+        "c-done\tproject\t-\tdone\tabout c\n"
+    )
+    assert memory_main(["list", "--outcome", "error", "--store", str(store.root)]) == 0
+    assert (
+        capsys.readouterr().out
+        == f"facts: 1 ({store.root / 'facts'})\nb-err\tfeedback\terror\tactive\tabout b\n"
+    )
+
+
+def test_list_cli_refuses_an_unknown_filter_value_as_usage(tmp_path):
+    with pytest.raises(SystemExit) as e:
+        memory_main(["list", "--outcome", "meh", "--store", str(tmp_path)])
+    assert e.value.code == 2

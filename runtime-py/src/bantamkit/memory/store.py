@@ -738,6 +738,7 @@ class MemoryStore:
         stamp: bool = True,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
         skipped: list[dict[str, str]] | None = None,
+        outcome: str | None = None,
     ) -> list[Fact]:
         """Top-`k` facts whose name+description share tokens with `query`.
 
@@ -797,6 +798,10 @@ class MemoryStore:
         scored = []
         pool = self._snapshot if self._snapshot is not None else self._facts(skipped=skipped)
         for fact in pool:
+            # The outcome filter runs BEFORE scoring, so `k` and the ratio gate below apply
+            # to the filtered pool, not to the whole store.
+            if outcome is not None and fact.outcome != outcome:
+                continue
             score = len(q & tokens(f"{fact.name} {fact.description}"))
             if score > 0:
                 scored.append((score, fact))
@@ -812,6 +817,23 @@ class MemoryStore:
             for fact in hits:
                 self._stamp(fact)
         return hits
+
+    def list_facts(
+        self, type: str | None = None, outcome: str | None = None, status: str | None = None
+    ) -> list[Fact]:
+        """Live facts, filtered and sorted by name. `status="active"` matches a fact with no
+        status. Reads `facts/` only; archived facts are `archived()`'s."""
+        facts = []
+        for fact in self._facts():
+            if type is not None and fact.type != type:
+                continue
+            if outcome is not None and fact.outcome != outcome:
+                continue
+            if status is not None and (fact.status or "active") != status:
+                continue
+            facts.append(fact)
+        facts.sort(key=lambda f: str(f.name))
+        return facts
 
     def lookup(
         self, name: str, stamp: bool = True, skipped: list[dict[str, str]] | None = None

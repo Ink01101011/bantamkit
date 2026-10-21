@@ -1464,10 +1464,18 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         return f'{document[:-2]},\n  "bantamkit_degraded": {key}\n}}'
 
     def memory_save(
-        type: str, name: str, description: str, body: str, links: list[str] | None = None
+        type: str,
+        name: str,
+        description: str,
+        body: str,
+        links: list[str] | None = None,
+        outcome: str | None = None,
+        status: str | None = None,
     ) -> str:
         with _record_raise(log, "memory_save"):
-            outcome = memory.save_outcome(type, name, description, body, links)
+            outcome_ = memory.save_outcome(
+                type, name, description, body, links, outcome=outcome, status=status
+            )
         if log.enabled:
             # Only when a log is actually on: `index_accounting` re-parses `facts/`, and
             # a diagnostic must not put that on the path of an operator who did not ask
@@ -1477,10 +1485,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             detail: dict[str, Any] = {"budget": budget}
             if index_bytes is not None:
                 detail["index_bytes"] = index_bytes
-            log.record("memory_save", outcome.status, detail)
-        return _noted(outcome.reply)
+            log.record("memory_save", outcome_.status, detail)
+        return _noted(outcome_.reply)
 
-    def memory_recall(query: str, k: int | None = None) -> str:
+    def memory_recall(query: str, k: int | None = None, outcome: str | None = None) -> str:
         if k is not None:
             # Clamped, not refused, and the manifest says so: `assets/tools/memory_recall.json`
             # used to advertise `minimum: 1, maximum: 5` on `k` while this line and the
@@ -1490,19 +1498,19 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             # answer for a stricter one. The description now states the clamp.
             k = max(1, min(k, 5))
         with _record_raise(log, "memory_recall"):
-            outcome = memory.recall_outcome(query, k)
+            outcome_ = memory.recall_outcome(query, k, outcome=outcome)
         detail = {
-            "budget": outcome.budget,
-            "candidates": outcome.candidates,
-            "layers": outcome.layers,
-            "reached": outcome.reached,
-            "returned": outcome.returned,
-            "unreadable": outcome.unreadable,
+            "budget": outcome_.budget,
+            "candidates": outcome_.candidates,
+            "layers": outcome_.layers,
+            "reached": outcome_.reached,
+            "returned": outcome_.returned,
+            "unreadable": outcome_.unreadable,
         }
-        if outcome.source is not None:
-            detail["source"] = outcome.source
-        log.record("memory_recall", outcome.status, detail)
-        return _noted(outcome.reply)
+        if outcome_.source is not None:
+            detail["source"] = outcome_.source
+        log.record("memory_recall", outcome_.status, detail)
+        return _noted(outcome_.reply)
 
     def memory_compact(reserve: int | None = None) -> str:
         """The model's half of compaction; the hook (`docs/hooks.md`) is the automatic half.

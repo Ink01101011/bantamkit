@@ -37,6 +37,9 @@ from bantamkit.client import BantamError
 from bantamkit.memory.layers import discover_project_store
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
+    VALID_OUTCOMES,
+    VALID_STATUSES,
+    VALID_TYPES,
     MemoryBudgetExceeded,
     MemoryStore,
     MemoryValidationError,
@@ -110,8 +113,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=_PROG,
         description=(
-            "Operator lifecycle for a bantamkit memory store: inspect, lint, "
-            "compact, archive and restore. Not an agent surface."
+            "Operator lifecycle for a bantamkit memory store: inspect, list, lint, "
+            "compact, archive, restore, candidates and merge. Not an agent surface."
         ),
     )
     subs = parser.add_subparsers(dest="command", required=True)
@@ -132,6 +135,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         return sub
 
     common(subs.add_parser("status", help="index size, budget, headroom, archive count"))
+    lst = common(subs.add_parser("list", help="one line per live fact, filterable"))
+    lst.add_argument("--type", choices=sorted(VALID_TYPES), default=None, help="keep one type")
+    lst.add_argument(
+        "--outcome", choices=list(VALID_OUTCOMES), default=None, help="keep one outcome"
+    )
+    lst.add_argument(
+        "--status",
+        choices=list(VALID_STATUSES),
+        default=None,
+        help="keep one status (a fact with none is active)",
+    )
     common(subs.add_parser("lint", help="exit 1 if the store is malformed or over budget"))
     compact = common(subs.add_parser("compact", help="archive the stalest facts"))
     compact.add_argument(
@@ -222,6 +236,17 @@ def _cmd_compact(store: MemoryStore, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_list(store: MemoryStore, args: argparse.Namespace) -> int:
+    facts = store.list_facts(type=args.type, outcome=args.outcome, status=args.status)
+    print(f"facts: {len(facts)} ({store.root / 'facts'})")
+    for fact in facts:
+        print(
+            f"{fact.name}\t{fact.type}\t{fact.outcome or '-'}\t{fact.status or 'active'}"
+            f"\t{fact.description}"
+        )
+    return 0
+
+
 def _cmd_archived(store: MemoryStore, args: argparse.Namespace) -> int:
     names = store.archived()
     print(f"archived facts: {len(names)} ({store.root / 'archive'})")
@@ -284,6 +309,7 @@ def _cmd_restore(store: MemoryStore, args: argparse.Namespace) -> int:
 
 _COMMANDS = {
     "status": _cmd_status,
+    "list": _cmd_list,
     "lint": _cmd_lint,
     "compact": _cmd_compact,
     "archived": _cmd_archived,
