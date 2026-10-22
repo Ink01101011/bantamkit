@@ -73,9 +73,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+from .client import BantamError
 from .memory.component import Memory
 from .memory.layers import discover_project_store, resolve_project_store
-from .memory.store import DURABLE_TYPES, Fact, MemoryStore, tokens
+from .memory.store import DURABLE_TYPES, NAME_MAX_CHARS, Fact, MemoryStore, tokens
 
 # The process clock, for the `ms` on every log line. `time.time()` and not `monotonic`,
 # because the Node module reads `Date.now()` here and the two logs are read side by side.
@@ -1728,21 +1731,33 @@ def _post_save(run: HookRun, payload: dict[str, Any]) -> None:
     ledger["saved"] = int(ledger.get("saved") or 0) + 1
     _write_ledger(run, payload.get("session_id"), ledger)
     cwd = str(payload.get("cwd") or os.getcwd())
-    configured, scope = _configured_index_budget(run, cwd)
-    budget_source = "configured" if configured is not None else "default"
-    budget_scope = scope if configured is not None else None
+    configured, _scope = _configured_index_budget(run, cwd)
     m = (
         Memory.layered(cwd)
         if configured is None
         else Memory.layered(cwd, index_budget=_budget_value(configured))
     )
+    _compact_if_needed(run, payload, cwd, m, {"action": "saved"})
+
+
+def _compact_if_needed(
+    run: HookRun, payload: dict[str, Any], cwd: str, m: Memory, record: dict[str, Any]
+) -> None:
+    """The auto-compact tail shared by `_post_save` and the native mirror (#228).
+
+    `record` already carries `action` (and for the mirror `file`, `name`, `nativeBranch`);
+    it is logged as is when the index is under the band.
+    """
+    configured, scope = _configured_index_budget(run, cwd)
+    budget_source = "configured" if configured is not None else "default"
+    budget_scope = scope if configured is not None else None
     size, budget = m.index_accounting()
     if size is None or size < COMPACT_AT * budget:
         _log(
             run,
             {
+                **record,
                 "event": "PostToolUse",
-                "action": "saved",
                 "bytes": size,
                 "budget": budget,
                 "budgetSource": budget_source,
@@ -2282,6 +2297,134 @@ def _maybe_dream(run: HookRun, payload: dict[str, Any]) -> None:
     )
 
 
+# ---------------------------------------------- PostToolUse[Write|Edit|MultiEdit] -> mirror
+# #228: a fact the host writes into its native memory directory is saved, one way, into the
+# project store. One file per call (the one the tool just wrote); never a scan, never a write
+# into the native directory, never a read of MEMORY.md.
+
+MIRROR_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
+#: A `.md` path with a `memory` directory segment (the old Stop-nudge shape).
+_MEMORY_SEGMENT = re.compile(r"[\\/]memory[\\/].*\.md\Z", re.DOTALL)
+_WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
+_MIRROR_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
+_MIRROR_TYPES = ("user", "feedback", "project", "reference")
+
+
+def _mirror_name(value: Any) -> str | None:
+    name = str(value).strip().lower().replace(".", "-").replace("_", "-")
+    if not _MIRROR_NAME.match(name) or len(name) > NAME_MAX_CHARS:
+        return None
+    return name
+
+
+def _mirror_links(meta: dict[str, Any], body: str) -> list[str]:
+    raw: list[str] = []
+    listed = meta.get("links")
+    if isinstance(listed, list):
+        raw.extend(str(x) for x in listed)
+    raw.extend(_WIKILINK.findall(body))
+    out: list[str] = []
+    for item in raw:
+        name = _mirror_name(item)
+        if name is not None and name not in out:
+            out.append(name)
+    return out
+
+
+def _parse_native_fact(text: str) -> tuple[dict[str, Any], str] | None:
+    try:
+        _, front, body = text.split("---\n", 2)
+        meta = yaml.safe_load(front)
+    except (ValueError, yaml.YAMLError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    return meta, body
+
+
+def _mirror_native_write(run: HookRun, payload: dict[str, Any]) -> None:
+    ti = payload.get("tool_input")
+    fp = ti.get("file_path") if isinstance(ti, dict) else None
+    if not isinstance(fp, str) or not fp:
+        return
+    native = _resolve_native_memory(run, payload)
+    base: dict[str, Any] = {"event": "PostToolUse", "file": fp, "nativeBranch": native.branch}
+
+    def skip(reason: str, **more: Any) -> None:
+        _log(run, {"action": "mirror-skipped", **base, **more, "reason": reason})
+
+    inside = False
+    if native.dir is not None and fp.endswith(".md") and os.path.basename(fp) != NATIVE_INDEX:
+        root = os.path.realpath(native.dir)
+        parent = os.path.realpath(os.path.dirname(fp))
+        inside = parent == root or (parent + os.sep).startswith(root.rstrip(os.sep) + os.sep)
+    if not inside:
+        if (
+            fp.endswith(".md")
+            and _MEMORY_SEGMENT.search(fp)
+            and os.path.basename(fp) != NATIVE_INDEX
+        ):
+            skip("not-native")
+        return
+    try:
+        with open(fp, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        skip("frontmatter")
+        return
+    parsed = _parse_native_fact(text)
+    if parsed is None:
+        skip("frontmatter")
+        return
+    meta, raw_body = parsed
+    nested = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else {}
+    if nested.get("source") == "bantamkit":
+        skip("export-stub")
+        return
+    source = meta.get("name")
+    if not (isinstance(source, str) and source):
+        source = os.path.basename(fp)[: -len(".md")]
+    name = _mirror_name(source)
+    if name is None:
+        skip("name")
+        return
+    fact_type = meta.get("type") if isinstance(meta.get("type"), str) else nested.get("type")
+    if fact_type not in _MIRROR_TYPES:
+        fact_type = "project"
+    description = _collapse_whitespace(meta.get("description") or "")
+    if not description:
+        skip("description", name=name)
+        return
+    body = raw_body.strip()
+    if not body:
+        skip("body", name=name)
+        return
+    links = _mirror_links(meta, body)
+    cwd = str(payload.get("cwd") or os.getcwd())
+    configured, _scope = _configured_index_budget(run, cwd)
+    m = (
+        Memory.layered(cwd)
+        if configured is None
+        else Memory.layered(cwd, index_budget=_budget_value(configured))
+    )
+    try:
+        result = m.store.save(fact_type, name, description, body, tuple(links))
+    except BantamError as e:
+        _log(run, {"action": "mirror-refused", **base, "name": name, "reason": str(e)})
+        return
+    ledger = _read_ledger(run, payload.get("session_id"))
+    ledger["saved"] = int(ledger.get("saved") or 0) + 1
+    _write_ledger(run, payload.get("session_id"), ledger)
+    action = "mirrored" if result.status == "saved" else "mirror-duplicate"
+    _compact_if_needed(
+        run,
+        payload,
+        cwd,
+        m,
+        {"action": action, "file": fp, "name": name, "nativeBranch": native.branch},
+    )
+
+
 # -------------------------------------------------------------------------- Stop
 # The experience collector. Once per session, when the session did real work and nothing
 # durable was written, hand the turn back with one instruction. The host's `type:prompt`
@@ -2289,48 +2432,6 @@ def _maybe_dream(run: HookRun, payload: dict[str, Any]) -> None:
 
 _TOOL_USE = re.compile(r'"type":\s*"tool_use"')
 _SAVE_CALL = re.compile(r'"name":\s*"mcp__bantamkit__memory_save"')
-#: The native write tools whose `file_path` can put a fact into a `memory/` directory.
-_SAVE_WRITE_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
-#: The path shape of a native memory write: a `.md` under any `memory/` directory. The class
-#: is backslash-or-slash, spelled as a module constant because a backslash inside an f-string
-#: expression is a syntax error before CPython 3.12 and this package supports 3.11.
-_SAVE_WRITE_PATH = re.compile(r"[\\/]memory[\\/].*\.md\Z", re.DOTALL)
-#: A line can only hold a native write if it names one of the tools; the rest are not parsed.
-_SAVE_LINE_HINT = re.compile(r'"name":\s*"(?:Write|Edit|MultiEdit)"')
-
-
-def _transcript_wrote_memory(text: str) -> bool:
-    """Did the transcript WRITE a native memory file (job65, #169)? Only a `tool_use` counts.
-
-    A Write/Edit/MultiEdit whose `file_path` is a `.md` under a `memory/` directory. Before
-    this a regex over the whole text took ANY `"file_path"` under `memory/` -- a Read of
-    `docs/memory/notes.md` included -- as a save, and silenced the nudge. (A `memory_save`
-    call is still recognised by its tool name, as it always was; that half was never the
-    defect.) Lines are prefiltered on the tool names and only those parsed; a line that does
-    not parse is not a save.
-    """
-    for line in text.split("\n"):
-        if not _SAVE_LINE_HINT.search(line):
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        msg = record.get("message") if isinstance(record, dict) else None
-        content = msg.get("content") if isinstance(msg, dict) else None
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            if block.get("name") not in _SAVE_WRITE_TOOLS:
-                continue
-            ti = block.get("input")
-            fp = ti.get("file_path") if isinstance(ti, dict) else None
-            if isinstance(fp, str) and _SAVE_WRITE_PATH.search(fp):
-                return True
-    return False
-
 
 def _stop(run: HookRun, payload: dict[str, Any]) -> None:
     if payload.get("stop_hook_active"):
@@ -2346,11 +2447,7 @@ def _stop(run: HookRun, payload: dict[str, Any]) -> None:
     except OSError:
         return
     tool_uses = len(_TOOL_USE.findall(text))
-    saved = bool(
-        int(ledger.get("saved") or 0) > 0
-        or _SAVE_CALL.search(text)
-        or _transcript_wrote_memory(text)
-    )
+    saved = bool(int(ledger.get("saved") or 0) > 0 or _SAVE_CALL.search(text))
     if tool_uses < STOP_NUDGE_MIN_TOOL_CALLS or saved:
         _log(run, {"event": "Stop", "action": "pass", "toolUses": tool_uses, "saved": saved})
         return
@@ -2435,6 +2532,8 @@ def run_hook(stdin: Any = None) -> None:
         _append_usage_event(run, payload)
         if payload.get("tool_name") == "mcp__bantamkit__memory_save":
             _post_save(run, payload)
+        elif payload.get("tool_name") in MIRROR_TOOLS:
+            _mirror_native_write(run, payload)
         return
     if event == "PreCompact":
         _pre_compact(run, payload)
