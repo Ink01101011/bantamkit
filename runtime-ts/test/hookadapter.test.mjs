@@ -318,8 +318,9 @@ test('#168: an unparseable stdin is logged as its size and digest, never its tex
   assert.ok(!readFileSync(join(home, '.bantamkit', 'hooks', 'hook-log.jsonl'), 'utf8').includes('hunter2'));
 });
 
-test('#169: a Read under memory/ is not a save; a Write or MultiEdit there is', () => {
-  // RED before job65: the Read set `saved: true` and silenced the nudge.
+test('#169: neither a Read nor an unmirrored Write under memory/ is a save', () => {
+  // RED before job65: the Read set `saved: true` and silenced the nudge. Since #228 a Write
+  // or MultiEdit there is no save either unless the mirror saved it (the ledger says so).
   const home = newDir('home');
   const cwd = newDir('cwd');
   const toolUse = (name, input = {}) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
@@ -336,7 +337,7 @@ test('#169: a Read under memory/ is not a save; a Write or MultiEdit there is', 
     const r = runHook({ hook_event_name: 'Stop', transcript_path: transcript, session_id: `stop-${label}` }, { home, cwd });
     outcomes[label] = [hookLog(home).at(-1).action, r.stdout !== ''];
   }
-  assert.deepEqual(outcomes, { read: ['nudge', true], write: ['pass', false], multiedit: ['pass', false] });
+  assert.deepEqual(outcomes, { read: ['nudge', true], write: ['nudge', true], multiedit: ['nudge', true] });
 });
 
 test(
@@ -359,3 +360,184 @@ test(
     assert.ok(!existsSync(join(home, '.bantamkit', 'hooks', 'ledger-probe-session.json')));
   },
 );
+
+// --- the native memory mirror (#228) -------------------------------------------------------
+
+function nativeBed(label) {
+  const home = newDir(`${label}-home`);
+  const cwd = newDir(`${label}-cwd`);
+  const host = newDir(`${label}-host`);
+  const native = join(host, 'memory');
+  mkdirSync(native, { recursive: true });
+  writeFileSync(join(native, 'MEMORY.md'), '# Memory index\n');
+  const transcript = join(host, 'session.jsonl');
+  writeFileSync(transcript, '');
+  return { home, cwd, native, transcript };
+}
+
+function nativeFact({
+  name = 'lesson-one',
+  description = '"a lesson — with an em dash"',
+  type = 'feedback',
+  body = 'The lesson.\n\n**Why:** because [[other-fact]] said so.\n',
+  extraMeta = '',
+  links = 'links:\n- first-link\n',
+} = {}) {
+  return `---\nname: ${name}\ndescription: ${description}\nmetadata:\n  node_type: memory\n  type: ${type}\n${extraMeta}${links}---\n\n${body}`;
+}
+
+const writePayload = (file, transcript, tool = 'Write') => ({
+  hook_event_name: 'PostToolUse',
+  tool_name: tool,
+  tool_input: { file_path: file, content: 'x' },
+  transcript_path: transcript,
+});
+const mirrorLines = (home) => hookLog(home).filter((l) => String(l.action ?? '').startsWith('mirror'));
+
+async function seedStore(cwd) {
+  const { Memory } = await import('../dist/memory/component.js');
+  const store = join(cwd, '.bantamkit', 'memory');
+  new Memory(store).save('project', 'seed', 'a seed fact so the store exists', 'body');
+  return store;
+}
+
+test('a native write is mirrored into the project store', async () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-write');
+  const store = await seedStore(cwd);
+  const file = join(native, 'lesson-one.md');
+  writeFileSync(file, nativeFact());
+
+  const done = runHook(writePayload(file, transcript), { home, cwd });
+
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(done.stdout, '', 'the mirror emits nothing to the host');
+  const line = mirrorLines(home)[0];
+  assert.equal(line.action, 'mirrored');
+  assert.equal(line.name, 'lesson-one');
+  assert.equal(line.nativeBranch, 'transcript');
+  assert.equal(line.file, file);
+  assert.equal(line.budgetSource, 'default');
+  const text = readFileSync(join(store, 'facts', 'lesson-one.md'), 'utf8');
+  assert.match(text, /type: feedback/);
+  assert.match(text, /description: a lesson — with an em dash/);
+  assert.ok(text.includes('- first-link') && text.includes('- other-fact'));
+  assert.ok(text.includes('The lesson.'));
+  assert.equal(readFileSync(file, 'utf8'), nativeFact(), 'the native file is untouched');
+  assert.equal(ledgerOf(home).saved, 1);
+});
+
+test('an edit replaces the mirrored fact rather than duplicating it', async () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-edit');
+  const file = join(native, 'lesson-one.md');
+  writeFileSync(file, nativeFact());
+  runHook(writePayload(file, transcript), { home, cwd });
+  writeFileSync(file, nativeFact({ body: 'The lesson, revised.\n' }));
+
+  runHook(writePayload(file, transcript, 'Edit'), { home, cwd });
+
+  const store = join(cwd, '.bantamkit', 'memory');
+  assert.deepEqual(readdirSync(join(store, 'facts')).sort(), ['lesson-one.md']);
+  assert.match(readFileSync(join(store, 'facts', 'lesson-one.md'), 'utf8'), /revised/);
+  assert.deepEqual(mirrorLines(home).map((l) => l.action), ['mirrored', 'mirrored']);
+});
+
+test('the export stub is never imported back', () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-stub');
+  const file = join(native, 'stub.md');
+  writeFileSync(file, nativeFact({ name: 'stub', extraMeta: '  source: bantamkit\n' }));
+
+  runHook(writePayload(file, transcript), { home, cwd });
+
+  const line = mirrorLines(home)[0];
+  assert.deepEqual([line.action, line.reason], ['mirror-skipped', 'export-stub']);
+  const facts = join(cwd, '.bantamkit', 'memory', 'facts');
+  assert.ok(!existsSync(facts) || readdirSync(facts).length === 0);
+});
+
+test('a name is normalised and an unusable one is skipped', () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-name');
+  const good = join(native, 'Weird.Name_1.md');
+  writeFileSync(good, nativeFact({ name: 'Weird.Name_1' }));
+  const bad = join(native, 'escape.md');
+  writeFileSync(bad, nativeFact({ name: '../escape' }));
+
+  runHook(writePayload(good, transcript), { home, cwd });
+  runHook(writePayload(bad, transcript), { home, cwd });
+
+  const lines = mirrorLines(home);
+  assert.deepEqual([lines[0].action, lines[0].name], ['mirrored', 'weird-name-1']);
+  assert.deepEqual([lines[1].action, lines[1].reason], ['mirror-skipped', 'name']);
+  assert.ok(!('name' in lines[1]));
+});
+
+test('an unknown type becomes project and an empty body is skipped', () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-type');
+  const typed = join(native, 'odd-type.md');
+  writeFileSync(typed, nativeFact({ name: 'odd-type', type: 'lesson' }));
+  const empty = join(native, 'no-body.md');
+  writeFileSync(empty, nativeFact({ name: 'no-body', body: '' }));
+
+  runHook(writePayload(typed, transcript), { home, cwd });
+  runHook(writePayload(empty, transcript), { home, cwd });
+
+  const lines = mirrorLines(home);
+  assert.equal(lines[0].action, 'mirrored');
+  assert.match(readFileSync(join(cwd, '.bantamkit', 'memory', 'facts', 'odd-type.md'), 'utf8'), /type: project/);
+  assert.deepEqual([lines[1].action, lines[1].reason], ['mirror-skipped', 'body']);
+});
+
+test('MEMORY.md and files outside the native dir are not mirrored', () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-outside');
+  const elsewhere = join(cwd, 'docs', 'memory');
+  mkdirSync(elsewhere, { recursive: true });
+  const note = join(elsewhere, 'notes.md');
+  writeFileSync(note, nativeFact({ name: 'notes' }));
+  const plain = join(cwd, 'README.md');
+  writeFileSync(plain, '# readme\n');
+
+  runHook(writePayload(join(native, 'MEMORY.md'), transcript), { home, cwd });
+  runHook(writePayload(note, transcript), { home, cwd });
+  runHook(writePayload(plain, transcript), { home, cwd });
+
+  const lines = mirrorLines(home);
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.deepEqual([lines[0].action, lines[0].reason], ['mirror-skipped', 'not-native']);
+  assert.ok(!existsSync(join(cwd, '.bantamkit', 'memory')));
+});
+
+test('a budget refusal is logged and the store is unchanged', async () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-refused');
+  const store = await seedStore(cwd);
+  writeFileSync(
+    join(cwd, '.mcp.json'),
+    JSON.stringify({ mcpServers: { bantamkit: { command: 'bantamkit-mcp', args: ['--index-budget', '64'] } } }),
+  );
+  const before = readdirSync(join(store, 'facts')).sort();
+  const file = join(native, 'lesson-one.md');
+  writeFileSync(file, nativeFact());
+
+  const done = runHook(writePayload(file, transcript), { home, cwd });
+
+  assert.equal(done.status, 0, done.stderr);
+  const line = mirrorLines(home)[0];
+  assert.equal(line.action, 'mirror-refused');
+  assert.ok(line.reason);
+  assert.deepEqual(readdirSync(join(store, 'facts')).sort(), before);
+  const ledgerFile = join(home, '.bantamkit', 'hooks', 'ledger-probe-session.json');
+  assert.ok(!existsSync(ledgerFile) || (ledgerOf(home).saved ?? 0) === 0);
+});
+
+test('Stop nudges after a native write that was not mirrored', () => {
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  const toolUse = (name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
+  const lines = Array.from({ length: 20 }, () => toolUse('Bash', { command: 'ls' }));
+  lines.push(toolUse('Write', { file_path: '/home/u/.claude/projects/p/memory/fact.md', content: 'x' }));
+  const transcript = join(cwd, 'stop-native.jsonl');
+  writeFileSync(transcript, lines.join('\n') + '\n');
+
+  const done = runHook({ hook_event_name: 'Stop', transcript_path: transcript, session_id: 'stop-native' }, { home, cwd });
+
+  assert.match(done.stdout, /"decision":\s*"block"/);
+  assert.equal(hookLog(home).filter((l) => l.event === 'Stop').at(-1).action, 'nudge');
+});

@@ -50,7 +50,9 @@ import { fileURLToPath } from 'node:url';
 import { Memory } from './memory/component.js';
 import type { RecallOutcome } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
-import { DURABLE_TYPES, MemoryStore, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
+import { parseFrontmatter, pySplit } from './memory/factfile.js';
+import { pyStrip } from './pysem.js';
+import { DURABLE_TYPES, MemoryStore, NAME_MAX_CHARS, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
 import type { Fact } from './memory/store.js';
 import { keptCli, keptManifest, keptPrefix } from './npminstall.js';
 import {
@@ -1854,12 +1856,22 @@ function postSave(run: HookRun, input: HookInput): void {
   writeLedger(run, input.session_id, ledger);
   const cwd = input.cwd || process.cwd();
   const configured = configuredIndexBudget(run, cwd);
+  const m = Memory.layered(cwd, configured.budget !== undefined ? { indexBudget: configured.budget } : {});
+  compactIfNeeded(run, input, cwd, m, { action: 'saved' });
+}
+
+/**
+ * The auto-compact tail shared by `postSave` and the native mirror (#228). `record` already
+ * carries `action` (and for the mirror `file`, `name`, `nativeBranch`); it is logged as is
+ * when the index is under the band.
+ */
+function compactIfNeeded(run: HookRun, _input: HookInput, cwd: string, m: Memory, record: LogRecord): void {
+  const configured = configuredIndexBudget(run, cwd);
   const budgetSource = configured.budget !== undefined ? 'configured' : 'default';
   const budgetScope = configured.budget !== undefined ? configured.scope : null;
-  const m = Memory.layered(cwd, configured.budget !== undefined ? { indexBudget: configured.budget } : {});
   const [bytes, budget] = m.indexAccounting();
   if (bytes == null || bytes < COMPACT_AT * budget) {
-    log(run, { event: 'PostToolUse', action: 'saved', bytes, budget, budgetSource, budgetScope });
+    log(run, { ...record, event: 'PostToolUse', bytes, budget, budgetSource, budgetScope });
     return;
   }
   // The user ruled compaction automatic (2026-08-24). `compact` archives the stalest facts
@@ -2474,6 +2486,141 @@ function maybeDream(run: HookRun, input: HookInput): void {
   });
 }
 
+// ---------------------------------------------- PostToolUse[Write|Edit|MultiEdit] -> mirror
+// #228: a fact the host writes into its native memory directory is saved, one way, into the
+// project store. One file per call (the one the tool just wrote); never a scan, never a write
+// into the native directory, never a read of MEMORY.md.
+
+const MIRROR_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+/** A `.md` path with a `memory` directory segment (the old Stop-nudge shape). */
+const MEMORY_SEGMENT = /[\\/]memory[\\/][\s\S]*\.md$/;
+const WIKILINK = /\[\[([^\]]+)\]\]/g;
+const MIRROR_NAME = /^[a-z0-9][a-z0-9-]*$/;
+const MIRROR_TYPES = ['user', 'feedback', 'project', 'reference'];
+
+function mirrorName(value: unknown): string | null {
+  const name = pyStrip(pyText(value)).toLowerCase().replace(/[._]/g, '-');
+  if (!MIRROR_NAME.test(name) || name.length > NAME_MAX_CHARS) return null;
+  return name;
+}
+
+function mirrorLinks(meta: Record<string, unknown>, body: string): string[] {
+  const raw: string[] = [];
+  const listed = meta['links'];
+  if (Array.isArray(listed)) raw.push(...listed.map((x) => pyText(x)));
+  for (const m of body.matchAll(WIKILINK)) raw.push(m[1]!);
+  const out: string[] = [];
+  for (const item of raw) {
+    const name = mirrorName(item);
+    if (name !== null && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * `text.split("---\n", 2)` plus the frontmatter mapping, as the store's `_read_fact` reads
+ * it. The port's parser refuses eight YAML shapes by ruling (see `parseFrontmatter`); a file
+ * in one of them is a `frontmatter` skip here, as is a frontmatter with no keys at all
+ * (PyYAML answers `None` for it, which is not a mapping).
+ */
+function parseNativeFact(text: string): [Record<string, unknown>, string] | null {
+  const parts = pySplit(text, '---\n', 2);
+  if (parts.length !== 3) return null;
+  try {
+    const meta = parseFrontmatter(parts[1]!) as unknown as Record<string, unknown>;
+    if (Object.keys(meta).length === 0) return null;
+    return [meta, parts[2]!];
+  } catch {
+    return null;
+  }
+}
+
+/** Python truthiness for the scalars a frontmatter value can be. */
+function pyTruthy(v: unknown): boolean {
+  if (v === null || v === undefined || v === false || v === 0 || v === '') return false;
+  return !(Array.isArray(v) && v.length === 0);
+}
+
+function mirrorNativeWrite(run: HookRun, input: HookInput): void {
+  const ti = input.tool_input;
+  const fp = ti && typeof ti === 'object' ? ti['file_path'] : undefined;
+  if (typeof fp !== 'string' || !fp) return;
+  const native = resolveNativeMemory(run, input);
+  const base = { event: 'PostToolUse', file: fp, nativeBranch: native.branch };
+  const skip = (reason: string, more: LogRecord = {}): void => {
+    log(run, { action: 'mirror-skipped', ...base, ...more, reason });
+  };
+
+  let inside = false;
+  if (native.dir !== null && fp.endsWith('.md') && path.basename(fp) !== NATIVE_INDEX) {
+    const root = realDir(native.dir);
+    const parent = realDir(path.dirname(fp));
+    inside = parent === root || (parent + path.sep).startsWith(root.replace(/[\\/]+$/, '') + path.sep);
+  }
+  if (!inside) {
+    if (fp.endsWith('.md') && MEMORY_SEGMENT.test(fp) && path.basename(fp) !== NATIVE_INDEX) skip('not-native');
+    return;
+  }
+  let text: string;
+  try {
+    text = fs.readFileSync(fp, 'utf8');
+  } catch {
+    skip('frontmatter');
+    return;
+  }
+  const parsed = parseNativeFact(text);
+  if (parsed === null) {
+    skip('frontmatter');
+    return;
+  }
+  const [meta, rawBody] = parsed;
+  const rawNested = meta['metadata'];
+  const nested: Record<string, unknown> =
+    rawNested !== null && typeof rawNested === 'object' && !Array.isArray(rawNested)
+      ? (rawNested as Record<string, unknown>)
+      : {};
+  if (nested['source'] === 'bantamkit') {
+    skip('export-stub');
+    return;
+  }
+  let source: unknown = meta['name'];
+  if (!(typeof source === 'string' && source)) source = path.basename(fp).slice(0, -'.md'.length);
+  const name = mirrorName(source);
+  if (name === null) {
+    skip('name');
+    return;
+  }
+  let factType: unknown = typeof meta['type'] === 'string' ? meta['type'] : nested['type'];
+  if (typeof factType !== 'string' || !MIRROR_TYPES.includes(factType)) factType = 'project';
+  const desc = meta['description'];
+  const description = collapseWhitespace(pyTruthy(desc) ? pyText(desc) : '');
+  if (!description) {
+    skip('description', { name });
+    return;
+  }
+  const body = pyStrip(rawBody);
+  if (!body) {
+    skip('body', { name });
+    return;
+  }
+  const links = mirrorLinks(meta, body);
+  const cwd = input.cwd || process.cwd();
+  const configured = configuredIndexBudget(run, cwd);
+  const m = Memory.layered(cwd, configured.budget !== undefined ? { indexBudget: configured.budget } : {});
+  let result;
+  try {
+    result = m.store.save(factType as string, name, description, body, links);
+  } catch (e) {
+    log(run, { action: 'mirror-refused', ...base, name, reason: message(e) });
+    return;
+  }
+  const ledger = readLedger(run, input.session_id);
+  ledger.saved = (ledger.saved || 0) + 1;
+  writeLedger(run, input.session_id, ledger);
+  const action = result.status === 'saved' ? 'mirrored' : 'mirror-duplicate';
+  compactIfNeeded(run, input, cwd, m, { action, file: fp, name, nativeBranch: native.branch });
+}
+
 // -------------------------------------------------------------------------- Stop
 // The experience collector. Once per session, when the session did real work and nothing
 // durable was written, hand the turn back with one instruction. The host's `type:prompt`
@@ -2489,10 +2636,7 @@ function stop(run: HookRun, input: HookInput): void {
     return;
   }
   const toolUses = (text.match(/"type":\s*"tool_use"/g) || []).length;
-  const saved =
-    (ledger.saved || 0) > 0 ||
-    /"name":\s*"mcp__bantamkit__memory_save"/.test(text) ||
-    transcriptWroteMemory(text);
+  const saved = (ledger.saved || 0) > 0 || /"name":\s*"mcp__bantamkit__memory_save"/.test(text);
   if (toolUses < STOP_NUDGE_MIN_TOOL_CALLS || saved) {
     log(run, { event: 'Stop', action: 'pass', toolUses, saved });
     return;
@@ -2504,47 +2648,6 @@ function stop(run: HookRun, input: HookInput): void {
     decision: 'block',
     reason: `bantamkit: this session made ${toolUses} tool calls and saved no memory. Before stopping, decide whether anything durable was learned that is NOT derivable from the repo, git history, or docs — a correction or preference the user stated (feedback), a fact about ongoing work or a decision (project), a URL/ticket/dashboard (reference). If so, call mcp__bantamkit__memory_save for each (at most 3, description written as the words a future query would use). If nothing qualifies, stop with one line saying so. This nudge fires once per session.`,
   });
-}
-
-/** The native write tools whose `file_path` can put a fact into a `memory/` directory. */
-const SAVE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
-/** The path shape of a native memory write: a `.md` under any `memory/` directory. */
-const SAVE_WRITE_PATH = /[\\/]memory[\\/][\s\S]*\.md$/;
-/** A line can only hold a native write if it names one of the tools; the rest are never parsed. */
-const SAVE_LINE_HINT = /"name":\s*"(?:Write|Edit|MultiEdit)"/;
-
-/**
- * Did the transcript WRITE a native memory file (job65, #169)? Only a `tool_use` counts: a
- * Write/Edit/MultiEdit whose `file_path` is a `.md` under a `memory/` directory. Before this a
- * regex over the whole text took ANY `"file_path"` under `memory/` — a Read of
- * `docs/memory/notes.md` included — as a save, and silenced the nudge. (A `memory_save` call
- * is still recognised by its tool name, as it always was; that half was never the defect.)
- *
- * Lines are prefiltered on the tool names and only those are parsed, so a long transcript
- * costs one regex per line and a `JSON.parse` only where a write could be. A line that does
- * not parse is not a save.
- */
-function transcriptWroteMemory(text: string): boolean {
-  for (const line of text.split('\n')) {
-    if (!SAVE_LINE_HINT.test(line)) continue;
-    let record: unknown;
-    try {
-      record = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const msg = record && typeof record === 'object' ? (record as { message?: unknown }).message : undefined;
-    const content = msg && typeof msg === 'object' ? (msg as { content?: unknown }).content : undefined;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as { type?: unknown; name?: unknown; input?: unknown };
-      if (b.type !== 'tool_use' || typeof b.name !== 'string' || !SAVE_WRITE_TOOLS.has(b.name)) continue;
-      const fp = b.input && typeof b.input === 'object' ? (b.input as { file_path?: unknown }).file_path : undefined;
-      if (typeof fp === 'string' && SAVE_WRITE_PATH.test(fp)) return true;
-    }
-  }
-  return false;
 }
 
 // ---------------------------------------------------------------------- dispatch
@@ -2597,7 +2700,9 @@ export async function runHook(): Promise<void> {
       return input.tool_name === 'Read' ? preToolUseRead(run, input) : undefined;
     case 'PostToolUse':
       appendUsageEvent(run, input); // every tool, not just bantamkit's — it is a usage denominator
-      return input.tool_name === 'mcp__bantamkit__memory_save' ? postSave(run, input) : undefined;
+      if (input.tool_name === 'mcp__bantamkit__memory_save') return postSave(run, input);
+      if (input.tool_name !== undefined && MIRROR_TOOLS.has(input.tool_name)) return mirrorNativeWrite(run, input);
+      return undefined;
     case 'PreCompact':
       return preCompact(run, input);
     case 'PostCompact':
