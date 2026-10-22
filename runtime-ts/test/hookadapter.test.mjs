@@ -541,3 +541,92 @@ test('Stop nudges after a native write that was not mirrored', () => {
   assert.match(done.stdout, /"decision":\s*"block"/);
   assert.equal(hookLog(home).filter((l) => l.event === 'Stop').at(-1).action, 'nudge');
 });
+
+// --- J74-4: divergences found by running both hooks over one bed (#228) --------------------
+
+test('a CRLF native file is mirrored as Python reads it', () => {
+  // Python's text mode translates `\r\n` and a lone `\r` to `\n` before the `---\n` split;
+  // this side read the bytes raw and skipped the file as `frontmatter`.
+  const { home, cwd, native, transcript } = nativeBed('mirror-crlf');
+  const file = join(native, 'crlf.md');
+  writeFileSync(file, '---\r\nname: crlf\r\ndescription: windows line ends\r\n---\r\n\r\nbody one\r\nbody two\rthree\r\n');
+
+  runHook(writePayload(file, transcript), { home, cwd });
+
+  const line = mirrorLines(home)[0];
+  assert.deepEqual([line.action, line.name], ['mirrored', 'crlf']);
+  const text = readFileSync(join(cwd, '.bantamkit', 'memory', 'facts', 'crlf.md'), 'utf8');
+  assert.ok(!text.includes('\r'));
+  assert.ok(text.includes('body one\nbody two\nthree\n'));
+});
+
+test('a frontmatter with no keys is a frontmatter skip', () => {
+  const { home, cwd, native, transcript } = nativeBed('mirror-nokeys');
+  const files = [['braces', '{}\n'], ['empty', ''], ['comment', '# only a comment\n']].map(([label, front]) => {
+    const file = join(native, `${label}.md`);
+    writeFileSync(file, `---\n${front}---\n\nbody\n`);
+    return file;
+  });
+
+  for (const file of files) runHook(writePayload(file, transcript), { home, cwd });
+
+  assert.deepEqual(mirrorLines(home).map((x) => [x.action, x.reason]), Array(3).fill(['mirror-skipped', 'frontmatter']));
+});
+
+test('a falsy or non-scalar description is a description skip', () => {
+  // `false` and `0` are falsy to Python and were mirrored here as 'False' and '0'; a list or
+  // a mapping was mirrored on both sides under two different spellings.
+  const { home, cwd, native, transcript } = nativeBed('mirror-desc');
+  const shapes = {
+    'd-false': 'description: false\n',
+    'd-zero': 'description: 0\n',
+    'd-block': 'description:\n- a\n- b\n',
+    'd-flow': 'description: [a, b]\n',
+    'd-map': 'description:\n  a: 1\n',
+  };
+  for (const [name, front] of Object.entries(shapes)) writeFileSync(join(native, `${name}.md`), `---\nname: ${name}\n${front}---\n\nbody\n`);
+
+  for (const name of Object.keys(shapes)) runHook(writePayload(join(native, `${name}.md`), transcript), { home, cwd });
+
+  assert.deepEqual(
+    mirrorLines(home).map((x) => [x.action, x.reason, x.name]),
+    Object.keys(shapes).map((name) => ['mirror-skipped', 'description', name]),
+  );
+});
+
+test(
+  'a path that does not exist resolves through a link the way realpath does',
+  { skip: process.platform === 'win32' ? 'POSIX symlinks' : false },
+  async () => {
+    const { symlinkSync } = await import('node:fs');
+    const root = newDir('mirror-link');
+    const home = join(root, 'home');
+    const cwd = join(root, 'cwd');
+    const real = join(root, 'real');
+    mkdirSync(join(real, 'memory'), { recursive: true });
+    mkdirSync(home);
+    mkdirSync(cwd);
+    writeFileSync(join(real, 'memory', 'MEMORY.md'), '# index\n');
+    const transcript = join(real, 'session.jsonl');
+    writeFileSync(transcript, '');
+    symlinkSync(real, join(root, 'link'));
+
+    runHook(writePayload(join(root, 'link', 'memory', 'nosuch', 'gone.md'), transcript, 'Edit'), { home, cwd });
+
+    assert.deepEqual(mirrorLines(home).map((x) => [x.action, x.reason]), [['mirror-skipped', 'frontmatter']]);
+  },
+);
+
+test('a path spelled in another case is not the native directory', (t) => {
+  // `os.path.realpath` never folds case; `realpathSync.native` does on a case-insensitive
+  // volume (APFS, NTFS), so this side mirrored a path the reference did not.
+  const { home, cwd, native, transcript } = nativeBed('mirror-case');
+  const file = join(native, 'cased.md');
+  writeFileSync(file, nativeFact({ name: 'cased' }));
+  const spelled = file.replace('mirror-case-host', 'MIRROR-CASE-HOST');
+  if (spelled === file || !existsSync(spelled)) return t.skip('case-sensitive volume: the other spelling is a different path');
+
+  runHook(writePayload(spelled, transcript), { home, cwd });
+
+  assert.deepEqual(mirrorLines(home).map((x) => [x.action, x.reason]), [['mirror-skipped', 'not-native']]);
+});

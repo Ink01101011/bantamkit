@@ -2337,7 +2337,10 @@ def _parse_native_fact(text: str) -> tuple[dict[str, Any], str] | None:
         meta = yaml.safe_load(front)
     except (ValueError, yaml.YAMLError):
         return None
-    if not isinstance(meta, dict):
+    # NO KEYS IS NO FACT (J74-4): `{}` is a dict to PyYAML and an empty or comment-only
+    # frontmatter is `None`; the port refuses `{}` as #120's empty flow mapping. One rule,
+    # spelled the same on both sides, so all three are a `frontmatter` skip.
+    if not isinstance(meta, dict) or not meta:
         return None
     return meta, body
 
@@ -2391,7 +2394,12 @@ def _mirror_native_write(run: HookRun, payload: dict[str, Any]) -> None:
     fact_type = meta.get("type") if isinstance(meta.get("type"), str) else nested.get("type")
     if fact_type not in _MIRROR_TYPES:
         fact_type = "project"
-    description = _collapse_whitespace(meta.get("description") or "")
+    # A list or a mapping is not a description (J74-4): `str()` and `String()` spell one
+    # differently, so neither side may turn it into text.
+    raw_description = meta.get("description")
+    if isinstance(raw_description, (list, dict)):
+        raw_description = None
+    description = _collapse_whitespace(raw_description or "")
     if not description:
         skip("description", name=name)
         return

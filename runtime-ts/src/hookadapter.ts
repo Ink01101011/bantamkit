@@ -50,7 +50,8 @@ import { fileURLToPath } from 'node:url';
 import { Memory } from './memory/component.js';
 import type { RecallOutcome } from './memory/component.js';
 import { discoverProjectStore, resolveProjectStore } from './memory/layers.js';
-import { parseFrontmatter, pySplit } from './memory/factfile.js';
+import { parseFrontmatter, pySplit, pyTruthy as pyTruthyValue } from './memory/factfile.js';
+import { PyScalar } from './memory/pyyaml.js';
 import { pyStrip } from './pysem.js';
 import { DURABLE_TYPES, MemoryStore, NAME_MAX_CHARS, RECALL_MIN_SCORE_RATIO, pyEqualValue, pyText, tokens } from './memory/store.js';
 import type { Fact } from './memory/store.js';
@@ -2535,10 +2536,71 @@ function parseNativeFact(text: string): [Record<string, unknown>, string] | null
   }
 }
 
-/** Python truthiness for the scalars a frontmatter value can be. */
-function pyTruthy(v: unknown): boolean {
-  if (v === null || v === undefined || v === false || v === 0 || v === '') return false;
-  return !(Array.isArray(v) && v.length === 0);
+/**
+ * `os.path.realpath` (POSIX, `strict=False`), ported component for component (J74-4).
+ *
+ * NOT `realpathSync.native`, measured twice on one bed: (1) for a path whose tail does not
+ * exist it throws, and `realDir`'s `path.resolve` fallback then keeps every link in the
+ * prefix (`/tmp` stays `/tmp` on macOS), so an Edit of a missing file under a linked native
+ * directory was `not-native` here and `frontmatter` on the reference; (2) on a
+ * case-insensitive volume it answers the ON-DISK spelling, so `HOST/memory/x.md` was mirrored
+ * here and `not-native` on the reference. Python lstat's each component, follows only links,
+ * appends a component it cannot lstat as is, and never changes case. win32 keeps `realDir`:
+ * `ntpath.realpath` is a different algorithm.
+ */
+function pyRealpath(filename: string): string {
+  if (process.platform === 'win32') return realDir(filename);
+  const seen = new Map<string, string | null>();
+  const joinReal = (start: string, rest: string): [string, boolean] => {
+    let p = start;
+    if (rest.startsWith('/')) {
+      rest = rest.slice(1);
+      p = '/';
+    }
+    while (rest) {
+      const at = rest.indexOf('/');
+      const name = at === -1 ? rest : rest.slice(0, at);
+      rest = at === -1 ? '' : rest.slice(at + 1);
+      if (!name || name === '.') continue;
+      if (name === '..') {
+        if (p) {
+          // `posixpath.split`: head keeps its slashes only when it is nothing but slashes
+          const i = p.lastIndexOf('/') + 1;
+          let head = p.slice(0, i);
+          const tail = p.slice(i);
+          if (head && !/^\/+$/.test(head)) head = head.replace(/\/+$/, '');
+          p = tail === '..' ? path.posix.join(head, '..', '..') : head;
+        } else p = '..';
+        continue;
+      }
+      const next = p ? path.posix.join(p, name) : name;
+      let isLink = false;
+      try {
+        isLink = fs.lstatSync(next).isSymbolicLink();
+      } catch {
+        isLink = false;
+      }
+      if (!isLink) {
+        p = next;
+        continue;
+      }
+      if (seen.has(next)) {
+        const known = seen.get(next)!;
+        if (known !== null) {
+          p = known;
+          continue;
+        }
+        return [path.posix.join(next, rest), false];
+      }
+      seen.set(next, null);
+      const [resolved, ok] = joinReal(p, fs.readlinkSync(next));
+      if (!ok) return [path.posix.join(resolved, rest), false];
+      p = resolved;
+      seen.set(next, p);
+    }
+    return [p, true];
+  };
+  return path.resolve(joinReal('', filename)[0] || '.');
 }
 
 function mirrorNativeWrite(run: HookRun, input: HookInput): void {
@@ -2553,8 +2615,8 @@ function mirrorNativeWrite(run: HookRun, input: HookInput): void {
 
   let inside = false;
   if (native.dir !== null && fp.endsWith('.md') && path.basename(fp) !== NATIVE_INDEX) {
-    const root = realDir(native.dir);
-    const parent = realDir(path.dirname(fp));
+    const root = pyRealpath(native.dir);
+    const parent = pyRealpath(path.dirname(fp));
     inside = parent === root || (parent + path.sep).startsWith(root.replace(/[\\/]+$/, '') + path.sep);
   }
   if (!inside) {
@@ -2563,7 +2625,8 @@ function mirrorNativeWrite(run: HookRun, input: HookInput): void {
   }
   let text: string;
   try {
-    text = fs.readFileSync(fp, 'utf8');
+    // Python's text mode: `\r\n` and a lone `\r` read as `\n` (J74-4, a CRLF file).
+    text = fs.readFileSync(fp, 'utf8').replace(/\r\n?/g, '\n');
   } catch {
     skip('frontmatter');
     return;
@@ -2592,8 +2655,11 @@ function mirrorNativeWrite(run: HookRun, input: HookInput): void {
   }
   let factType: unknown = typeof meta['type'] === 'string' ? meta['type'] : nested['type'];
   if (typeof factType !== 'string' || !MIRROR_TYPES.includes(factType)) factType = 'project';
+  // A list or a mapping is not a description (J74-4); a scalar is falsy the way Python says
+  // (`false`, `0`, `0.0` are `PyScalar`s that carry Python's own answer).
   const desc = meta['description'];
-  const description = collapseWhitespace(pyTruthy(desc) ? pyText(desc) : '');
+  const scalar = desc === null || desc === undefined || typeof desc === 'string' || desc instanceof PyScalar;
+  const description = collapseWhitespace(scalar && pyTruthyValue(desc as never) ? pyText(desc) : '');
   if (!description) {
     skip('description', { name });
     return;

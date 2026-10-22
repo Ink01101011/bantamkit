@@ -2177,3 +2177,112 @@ def test_stop_nudges_after_a_native_write_that_was_not_mirrored(tmp_path):
 
     assert b'"decision":"block"' in done.stdout or b'"decision": "block"' in done.stdout
     assert [x for x in _log_lines(home) if x["event"] == "Stop"][-1]["action"] == "nudge"
+
+
+# --- J74-4: divergences found by running both hooks over one bed (#228) --------------------
+
+
+def test_a_crlf_native_file_is_mirrored_as_python_reads_it(tmp_path):
+    # Text mode translates `\r\n` and a lone `\r` to `\n` before the `---\n` split; the port
+    # read the bytes raw and skipped the file as `frontmatter`.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-crlf")
+    file = native / "crlf.md"
+    file.write_bytes(
+        b"---\r\nname: crlf\r\ndescription: windows line ends\r\n---\r\n"
+        b"\r\nbody one\r\nbody two\rthree\r\n"
+    )
+
+    _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+
+    line = _mirror_lines(home)[0]
+    assert (line["action"], line["name"]) == ("mirrored", "crlf")
+    text = (cwd / ".bantamkit" / "memory" / "facts" / "crlf.md").read_bytes()
+    assert b"\r" not in text
+    assert b"body one\nbody two\nthree\n" in text
+
+
+def test_a_frontmatter_with_no_keys_is_a_frontmatter_skip(tmp_path):
+    # `{}` is a dict to PyYAML and was a `description` skip here, while the port refuses it
+    # (#120's empty flow mapping) as `frontmatter`; an empty or comment-only frontmatter is
+    # `None` to PyYAML. All three are one rule now: no keys, no fact.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-nokeys")
+    files = []
+    for label, front in (("braces", "{}\n"), ("empty", ""), ("comment", "# only a comment\n")):
+        file = native / f"{label}.md"
+        file.write_text(f"---\n{front}---\n\nbody\n", encoding="utf-8")
+        files.append(file)
+
+    for file in files:
+        _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+
+    skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
+    assert skipped == [("mirror-skipped", "frontmatter")] * 3
+
+
+def test_a_falsy_or_non_scalar_description_is_a_description_skip(tmp_path):
+    # `false` and `0` are falsy to Python and were mirrored by the port as 'False' and '0';
+    # a list or a mapping was mirrored on both sides under two different spellings
+    # (`str()` vs `String()`). None of them is a description.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-desc")
+    shapes = {
+        "d-false": "description: false\n",
+        "d-zero": "description: 0\n",
+        "d-block": "description:\n- a\n- b\n",
+        "d-flow": "description: [a, b]\n",
+        "d-map": "description:\n  a: 1\n",
+    }
+    for name, front in shapes.items():
+        text = f"---\nname: {name}\n{front}---\n\nbody\n"
+        (native / f"{name}.md").write_text(text, encoding="utf-8")
+
+    for name in shapes:
+        _run_hook(_write_payload(native / f"{name}.md", transcript), home=home, cwd=cwd)
+
+    assert [(x["action"], x["reason"], x["name"]) for x in _mirror_lines(home)] == [
+        ("mirror-skipped", "description", name) for name in shapes
+    ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_a_path_that_does_not_exist_resolves_through_a_link_the_way_realpath_does(
+    tmp_path,
+):
+    # `os.path.realpath` resolves the existing prefix of a missing path; the port's
+    # `realpathSync` threw and fell back to `path.resolve`, which kept the link, so the
+    # same Edit was `frontmatter` here and `not-native` there.
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    real = tmp_path / "real"
+    (real / "memory").mkdir(parents=True)
+    home.mkdir()
+    cwd.mkdir()
+    (real / "memory" / "MEMORY.md").write_text("# index\n", encoding="utf-8")
+    transcript = real / "session.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    (tmp_path / "link").symlink_to(real)
+
+    missing = tmp_path / "link" / "memory" / "nosuch" / "gone.md"
+    _run_hook(
+        _write_payload(missing, transcript, tool="Edit"),
+        home=home,
+        cwd=cwd,
+    )
+
+    skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
+    assert skipped == [("mirror-skipped", "frontmatter")]
+
+
+def test_a_path_spelled_in_another_case_is_not_the_native_directory(tmp_path):
+    # `os.path.realpath` never folds case; the port's `realpathSync.native` does on a
+    # case-insensitive volume (APFS, NTFS), so the port mirrored a path the reference did not.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-case")
+    file = native / "cased.md"
+    file.write_text(_native_fact(name="cased"), encoding="utf-8")
+    spelled = Path(str(file).replace("mirror-case-host", "MIRROR-CASE-HOST"))
+    if not spelled.exists():
+        pytest.skip("case-sensitive volume: the other spelling is a different path")
+
+    _run_hook(_write_payload(spelled, transcript), home=home, cwd=cwd)
+
+    skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
+    assert skipped == [("mirror-skipped", "not-native")]
