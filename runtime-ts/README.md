@@ -71,7 +71,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
 | [What it serves](#-what-it-serves) | 14 tools, one prompt, two resource templates |
 | [Silent version float](#-silent-version-float) | Why two machines run different builds, and `build_identity` |
-| [The operator CLI: `bantamkit-memory`](#-the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archive, restore |
+| [The operator CLI: `bantamkit-memory`](#-the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archived, archive, restore, list, candidates, merge |
 | [Memory stores are layered by default](#-memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
 | [The asset pack](#-the-asset-pack) | What ships in `assets/` and how it is found |
 | [Where the Python and Node servers differ](#-where-the-python-and-node-servers-differ) | One store; concurrent writes, the YAML shapes only Python reads |
@@ -416,6 +416,9 @@ package called `bantamkit-memory`.
 | `archived` | list what compaction has moved out |
 | `archive NAME` | move one named fact out |
 | `restore NAME` | move an archived fact back |
+| `list [--type] [--outcome] [--status]` | one line per live fact, filterable by type, outcome or status |
+| `candidates [--older-than DAYS] [--apply]` | list facts that look finished; dry run unless `--apply` archives them |
+| `merge --names ... --name NEW ...` | merge named facts into one new fact, archiving the originals; dry run unless `--apply` |
 
 Each takes `--store STORE` or `--start START`; with neither, it resolves the project store the way
 `Memory.layered()` does. It reaches the writable **project** layer only — read-only grants and the

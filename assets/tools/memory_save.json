@@ -1,7 +1,7 @@
 {
   "name": "memory_save",
   "title": "Save a memory",
-  "description": "Save ONE durable fact to persistent memory — a preference the user stated, a decision, the fix that worked — so a future session can recall it. Use it only for facts a future session needs; never for anything derivable from the repo, git history or docs, nor for one-off state of this conversation. To find a fact use memory_recall; to change one, save again under its EXACT name, which replaces it in place; to free room call memory_compact. Refused with nothing written, each with its own sentence: a description too close to an existing fact's (the reply names that fact — save under that SAME name or skip, never rename to force a copy), a spelling that normalises onto an existing name (`Deploy Command` onto `deploy-command`), and a save that would push the always-loaded index over its byte budget (the reply names the remedy). Every save lands in the writable project store (.bantamkit/memory), never in the profile or a read-only grant, and is appended to the usage ledger.",
+  "description": "Save ONE durable fact to persistent memory — a preference the user stated, a decision, the fix that worked — so a future session can recall it. Use it only for facts a future session needs; never for anything derivable from the repo, git history or docs, nor for one-off state of this conversation. To find a fact use memory_recall; to change one, save again under its EXACT name, which replaces it in place; to free room call memory_compact. Refused with nothing written, each with its own sentence: a description too close to an existing fact's (the reply names that fact — save under that SAME name or skip, never rename to force a copy), a spelling that normalises onto an existing name (`Deploy Command` onto `deploy-command`), and a save that would push the always-loaded index over its byte budget (the reply names the remedy). Every save lands in the writable project store (.bantamkit/memory), never in the profile or a read-only grant, and is appended to the usage ledger. Optional outcome (error|success) tags a lesson and status: done closes a project fact; nothing here archives — that is the operator's bantamkit-memory candidates/merge.",
   "surfaces": [
     "agent",
     "mcp"
@@ -44,6 +44,22 @@
           "type": "string"
         },
         "description": "names of related memories"
+      },
+      "outcome": {
+        "type": "string",
+        "enum": [
+          "error",
+          "success"
+        ],
+        "description": "What the lesson records: `error` (a failure to avoid) or `success` (a way that worked). Only on feedback and project facts; refused on user and reference. Read back by `bantamkit-memory list --outcome` and by memory_recall's `outcome` filter."
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "active",
+          "done"
+        ],
+        "description": "Lifecycle of a project fact. Save an existing name with `done` when the work it describes has shipped; `bantamkit-memory candidates` lists done facts for the operator to archive. Absent means active; `active` is never written."
       }
     },
     "additionalProperties": false

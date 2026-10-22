@@ -47,7 +47,44 @@ export interface Fact {
   links: FactValue[];
   last_recalled: FactValue;
   created?: FactValue;
+  /** #219 / #221. Absent or null = not set; `active` is never written (`formatFact`). */
+  outcome?: FactValue;
+  status?: FactValue;
   source?: string;
+}
+
+/** The two outcomes a lesson can carry; the enum `memory_save` accepts (#219). */
+export const VALID_OUTCOMES = ['error', 'success'] as const;
+
+/**
+ * The memory-keeper / reflexion alias (#219, #221), read-only and never rewritten: `type`,
+ * `outcome` and `status` from the top level, falling back to a nested `metadata:` mapping
+ * (`loop` for outcome; `done` or `archived` for a done status). `type` is `null` when neither
+ * level carries one, which the caller turns into its `KeyError` sentence.
+ */
+export function lifecycleOf(meta: Record<string, unknown>): {
+  type: FactValue;
+  outcome: FactValue;
+  status: FactValue;
+} {
+  const raw = meta['metadata'];
+  const nested: Record<string, unknown> =
+    raw !== null && typeof raw === 'object' && Object.getPrototypeOf(raw) === Object.prototype
+      ? (raw as Record<string, unknown>)
+      : {};
+  const nn = (v: unknown): FactValue => (v === undefined ? null : (v as FactValue));
+  const type = meta['type'] !== undefined ? nn(meta['type']) : nn(nested['type']);
+  let outcome = nn(meta['outcome']);
+  if (outcome === null) {
+    const loop = nested['loop'];
+    outcome = typeof loop === 'string' && (VALID_OUTCOMES as readonly string[]).includes(loop) ? loop : null;
+  }
+  let status = nn(meta['status']);
+  if (status === null) {
+    const ns = nested['status'];
+    status = ns === 'done' || ns === 'archived' ? 'done' : null;
+  }
+  return { type, outcome, status };
 }
 
 /** The frontmatter as it comes off disk — exactly the keys the file carries. */
@@ -107,6 +144,10 @@ export function formatFact(fact: Fact | ParsedFact): string {
     ['created', fact.created ?? null],
     ['last_recalled', fact.last_recalled ?? null],
     ['links', fact.links],
+    ...(fact.outcome != null ? ([['outcome', fact.outcome]] as Array<[string, FactValue]>) : []),
+    ...(fact.status != null && fact.status !== 'active'
+      ? ([['status', fact.status]] as Array<[string, FactValue]>)
+      : []),
   ]);
   return '---\n' + front + '---\n\n' + pyStrip(fact.body) + '\n';
 }
@@ -134,8 +175,9 @@ function isParsed(fact: Fact | ParsedFact): fact is ParsedFact {
  */
 function factOfParsed(parsed: ParsedFact): Fact {
   const { meta, body } = parsed;
+  const alias = lifecycleOf(meta as Record<string, unknown>);
   for (const key of ['name', 'description', 'type']) {
-    if (!(key in meta)) {
+    if (key === 'type' ? !('type' in meta) && alias.type === null : !(key in meta)) {
       throw new FactParseError(
         `formatFact: the frontmatter has no '${key}' key, and a fact must carry name, description and type`,
       );
@@ -145,7 +187,9 @@ function factOfParsed(parsed: ParsedFact): Fact {
   return {
     name: one('name'),
     description: one('description'),
-    type: one('type'),
+    type: alias.type,
+    outcome: alias.outcome,
+    status: alias.status,
     created: meta['created'] === undefined ? null : one('created'),
     last_recalled: meta['last_recalled'] === undefined ? null : one('last_recalled'),
     links: pyList(meta['links']),
@@ -285,7 +329,12 @@ export function parseFrontmatter(front: string): FactMeta {
       if (/^-(?: |\n|$)/.test(front.slice(pos + gap))) {
         [value, pos] = scanBlockSequence(front, pos + gap);
       } else {
-        value = null; // `key:` with nothing after it is null in YAML
+        const nested = scanNestedMapping(front, pos);
+        if (nested !== null) {
+          [value, pos] = [nested[0] as unknown as FactValue, nested[1]];
+        } else {
+          value = null; // `key:` with nothing after it is null in YAML
+        }
       }
     } else if (front[pos] === ' ') {
       pos += 1;
@@ -301,6 +350,35 @@ export function parseFrontmatter(front: string): FactMeta {
     meta[key[1]!] = value;
   }
   return meta;
+}
+
+/**
+ * A one-level block mapping of `  key: scalar` lines, which is the shape the memory-keeper
+ * `metadata:` block takes (#219). Anything else indented under a bare `key:` is `null` here,
+ * and the caller's next-line check refuses it as it always did.
+ */
+function scanNestedMapping(front: string, start: number): [Record<string, FactValue | FactValue[]>, number] | null {
+  const out: Record<string, FactValue | FactValue[]> = {};
+  let pos = start;
+  let indent = -1;
+  let any = false;
+  while (pos < front.length) {
+    const eol = front.indexOf('\n', pos);
+    const end = eol === -1 ? front.length : eol;
+    const text = front.slice(pos, end);
+    const m = /^( +)([A-Za-z_][A-Za-z0-9_-]*):(?= |$)/.exec(text);
+    if (m === null || (indent !== -1 && m[1]!.length !== indent)) break;
+    indent = m[1]!.length;
+    const [value, after] = scanNode(text + '\n', m[0].length);
+    const tail = skipTrailingComment(text + '\n', after);
+    if (tail < text.length) {
+      throw new FactParseError(`trailing content after the value of "${m[2]}": ${line(text, tail)}`);
+    }
+    out[m[2]!] = value;
+    any = true;
+    pos = eol === -1 ? front.length : eol + 1;
+  }
+  return any ? [out, pos] : null;
 }
 
 function line(text: string, pos: number): string {

@@ -411,8 +411,10 @@ export class Memory {
     description: string,
     body: string,
     links: readonly string[] | null = null,
+    outcome: string | null = null,
+    status: string | null = null,
   ): string {
-    return this.saveOutcome(type, name, description, body, links).reply;
+    return this.saveOutcome(type, name, description, body, links, outcome, status).reply;
   }
 
   /**
@@ -429,6 +431,8 @@ export class Memory {
     description: string,
     body: string,
     links: readonly string[] | null = null,
+    outcome: string | null = null,
+    status: string | null = null,
   ): SaveOutcome {
     const normalized = normalizeName(name);
     const normalizedLinks = (links ?? []).map((link) => normalizeName(link));
@@ -446,7 +450,7 @@ export class Memory {
           status: 'duplicate',
         };
       }
-      result = this.store.save(type, normalized, description, body, normalizedLinks);
+      result = this.store.save(type, normalized, description, body, normalizedLinks, outcome, status);
     } catch (e) {
       if (e instanceof MemoryValidationError) {
         return { reply: `error: ${e.message}`, status: 'refused-validation' };
@@ -494,8 +498,13 @@ export class Memory {
    * fact. The floor is the operator's configured default, not a constant, so a consumer who
    * really wants top-1 says so once at construction.
    */
-  recall(query: string, k: number | null = null, minRatio = RECALL_MIN_SCORE_RATIO): string {
-    return this.recallOutcome(query, k, minRatio).reply;
+  recall(
+    query: string,
+    k: number | null = null,
+    minRatio = RECALL_MIN_SCORE_RATIO,
+    outcome: string | null = null,
+  ): string {
+    return this.recallOutcome(query, k, minRatio, true, outcome).reply;
   }
 
   /**
@@ -556,6 +565,7 @@ export class Memory {
     k: number | null = null,
     minRatio = RECALL_MIN_SCORE_RATIO,
     stamp = true,
+    outcome: string | null = null,
   ): RecallOutcome {
     // `not 0.0 <= min_ratio <= 1.0`: NaN fails the same chain on both sides.
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
@@ -581,7 +591,7 @@ export class Memory {
       const leftOut: SkippedFact[] = [];
       let facts: Fact[];
       try {
-        facts = store.recall(query, budget, writable && stamp, minRatio, leftOut);
+        facts = store.recall(query, budget, writable && stamp, minRatio, leftOut, outcome);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) {
           throw e;

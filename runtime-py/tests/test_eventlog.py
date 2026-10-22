@@ -127,7 +127,7 @@ async def test_the_record_does_not_move_when_the_reply_wording_does(tmp_path, st
         memory = Memory(store=room / "store")
         path = room / "log.jsonl"
 
-        def outcome(type, name, description, body, links=None, _t=template):
+        def outcome(type, name, description, body, links=None, _t=template, **_kw):
             return SaveOutcome(reply=_t.format(name=name), status=status)
 
         memory.save_outcome = outcome  # type: ignore[method-assign]

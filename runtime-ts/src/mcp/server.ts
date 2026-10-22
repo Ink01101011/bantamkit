@@ -231,6 +231,8 @@ function rpcError(code: number, message: string, data: unknown): Error {
 
 const asDict = (value: PyValue): Map<string, PyValue> => (value.t === 'dict' ? value.v : new Map());
 const asText = (value: PyValue | undefined): string => (value && value.t === 'str' ? value.v : '');
+/** An optional string parameter: absent (or not a string) is `null`, an empty string stays `''`. */
+const asOptText = (value: PyValue | undefined): string | null => (value && value.t === 'str' ? value.v : null);
 
 /**
  * `work_plan`'s `nodes` as `workplan.plan` takes them: the decoded objects, UNCHANGED.
@@ -574,7 +576,7 @@ function runTool(
       const links = args.get('links');
       const asStrings = links && links.t === 'list' ? links.v.map((v) => asText(v)) : null;
       const outcome = recordRaise(log, 'memory_save', () =>
-        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings),
+        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings, asOptText(args.get('outcome')), asOptText(args.get('status'))),
       );
       if (log.enabled) {
         // Only when a log is actually on: `indexAccounting` re-parses `facts/`, and a
@@ -592,7 +594,7 @@ function runTool(
       let k = asInt(args.get('k'));
       // The advertised schema's bounds; clients may ignore it, so the server does not.
       if (k !== null) k = Math.max(1, Math.min(k, 5));
-      const outcome = recordRaise(log, 'memory_recall', () => memory.recallOutcome(asText(args.get('query')), k));
+      const outcome = recordRaise(log, 'memory_recall', () => memory.recallOutcome(asText(args.get('query')), k, undefined, undefined, asOptText(args.get('outcome'))));
       const detail: Record<string, DetailValue> = {
         budget: outcome.budget,
         candidates: outcome.candidates,

@@ -74,7 +74,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [What it serves](#-what-it-serves) | 14 tools, one prompt, two resource templates |
 | [Requirements](#-requirements) | Python and dependencies |
 | [The asset pack](#-the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
-| [The operator CLI: `python -m bantamkit.memory`](#-the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
+| [The operator CLI: `python -m bantamkit.memory`](#-the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore, list, candidates, merge |
 | [Where the Python and Node servers differ](#-where-the-python-and-node-servers-differ) | One store; pdf/.doc/.rtf, CLI name, `build_id`, YAML only PyYAML reads |
 | [Module API](#-module-api) | `import bantamkit`: the library half, measured from the wheel |
 | [Development](#-development) | Clone, test, lint, conformance |
@@ -342,9 +342,13 @@ python -m bantamkit.memory compact    # archive the stalest facts
 python -m bantamkit.memory archived   # list what compaction has moved out
 python -m bantamkit.memory archive <name>
 python -m bantamkit.memory restore <name>
+python -m bantamkit.memory list [--type T] [--outcome error|success] [--status active|done]
+python -m bantamkit.memory candidates [--older-than DAYS] [--apply]
+python -m bantamkit.memory merge --names A B --name NEW --type T --description D --body TEXT [--apply]
 ```
 
-`archive` moves a fact out without deleting it; `restore` brings it back by name.
+`archive` moves a fact out without deleting it; `restore` brings it back by name. `candidates`
+and `merge` are dry runs unless `--apply` is given.
 Full reference: [docs/memory.md → The operator CLI](https://github.com/Ink01101011/bantamkit/blob/main/docs/memory.md#the-operator-cli).
 
 ## 🔀 Where the Python and Node servers differ
