@@ -1202,6 +1202,11 @@ The whole contract, the four-branch resolver and the `native*` log fields are in
 [hooks.md](hooks.md#exporting-into-the-hosts-own-auto-memory-2026-09-20-job62--j62-6);
 this page owns the store the facts come FROM, not the one they go to.
 
+A fact the host writes into that directory travels the other way too, and a mirrored fact is an
+ordinary fact in this store: nothing marks it, it recalls, dedupes, compacts and dreams like any
+other, and the hook log's `mirrored` and `mirror-duplicate` records are the only provenance. A
+host without hooks never produces one.
+
 ### What an empty recall says
 
 `Memory.recall` used to answer every empty result with `no memories matched. Try

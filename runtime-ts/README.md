@@ -41,8 +41,9 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 - **Offline after one install.** The kept install records node and `cli.js` by absolute path,
   so no launch needs npx, the registry or your PATH.
 - **Claude Code hooks, if you want them.** `--install-hooks` puts the memory index in front of
-  each new session, surfaces matching facts on each prompt, and nudges a save at the end of a
-  long session that saved nothing
+  each new session, surfaces matching facts on each prompt, mirrors each fact Claude Code writes
+  into its own auto-memory into the project store (one way, new writes only), and nudges a save at
+  the end of a long session that saved nothing
   ([docs/hooks.md](https://github.com/Ink01101011/bantamkit/blob/main/docs/hooks.md)).
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
