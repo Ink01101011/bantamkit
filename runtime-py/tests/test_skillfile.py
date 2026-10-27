@@ -456,3 +456,33 @@ def test_state_version_must_be_the_integer_one(tmp_path, body):
     sf.state_path(tmp_path).write_text(body, encoding="utf-8")
     with pytest.raises(SkillFileError, match="skills-state.json is not a version 1 skills state"):
         sf.read_state(tmp_path)
+
+
+_REFUSED_BY_THE_PORT = [
+    "metadata: {}",
+    "metadata: {k: 1}",
+    'metadata: {bantamkit-k: "v"}',
+    "metadata:\n  k: {}",
+    "metadata:\n  k: [a, {b: c}]",
+    "description: {x: 1}",
+    "description: &a d",
+    "description: !!str d",
+]
+
+
+@pytest.mark.parametrize("line", _REFUSED_BY_THE_PORT)
+def test_parse_refuses_what_the_ports_reader_refuses(line):
+    # job73 C8: PyYAML reads each of these and the port's reader (#120) refuses them, so a
+    # draft holding `metadata: {}` passed the gate here and failed it in Node. Same sentence now.
+    text = f"---\nname: a-b\n{line}\n---\n\n## Steps\n\n1. x\n"
+    with pytest.raises(SkillFileError, match="^SKILL.md frontmatter is not a readable mapping$"):
+        sf.parse_skill(text)
+    assert sf.is_edited(text)
+
+
+def test_braces_and_ampersands_inside_scalars_are_text():
+    doc = sf.parse_skill(
+        "---\nname: a-b\ndescription: fish & chips!\nmetadata:\n  k: a {b} c\n  j: '{}'\n---\n"
+    )
+    assert doc.description == "fish & chips!"
+    assert doc.metadata == {"k": "a {b} c", "j": "{}"}

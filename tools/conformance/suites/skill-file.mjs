@@ -97,6 +97,30 @@ const RULED_TEXTS = [
   ['a block sequence under a metadata key', '---\nname: a-b\ndescription: d\nmetadata:\n  bantamkit-x:\n  - a\n---\n\n## Steps\n\n1. x\n'],
 ];
 
+/**
+ * THE SAME VERDICT ON WHAT THE PORT'S READER REFUSES (job73 C8). Node's frontmatter reader
+ * (#120) refuses a flow mapping, an anchor, an alias, a tag and a directive wherever it
+ * stands; PyYAML reads them. Unruled: `parse_skill` refuses each with the port's sentence, so
+ * a draft holding `metadata: {}` fails the gate on both sides (before C8 it passed in Python
+ * and failed in Node). A `{` inside a quoted or plain scalar is text on both sides.
+ */
+const FLOW_TEXTS = [
+  ['an empty flow mapping as metadata', '---\nname: a-b\ndescription: d\nmetadata: {}\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping of a non-string', '---\nname: a-b\ndescription: d\nmetadata: {k: 1}\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping of a bantamkit string', '---\nname: a-b\ndescription: d\nmetadata: {bantamkit-k: "v"}\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping over two lines', '---\nname: a-b\ndescription: d\nmetadata: {\n  k: v}\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping under a metadata key', '---\nname: a-b\ndescription: d\nmetadata:\n  k: {}\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping with a comment after it', '---\nname: a-b\ndescription: d\nmetadata:\n  k: {a: 1}  # c\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping inside a flow sequence', '---\nname: a-b\ndescription: d\nmetadata:\n  k: [a, {b: c}]\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping as the description', '---\nname: a-b\ndescription: {x: 1}\n---\n\n## Steps\n\n1. x\n'],
+  ['a flow mapping as the name', '---\nname: {a: b}\n---\n'],
+  ['an anchor', '---\nname: a-b\ndescription: &a d\n---\n\n## Steps\n\n1. x\n'],
+  ['a tag', '---\nname: a-b\ndescription: !!str d\n---\n\n## Steps\n\n1. x\n'],
+  ['an anchor and an alias', '---\nname: &n a-b\ndescription: *n\n---\n\n## Steps\n\n1. x\n'],
+  ['braces inside scalars are text', '---\nname: a-b\ndescription: "{x: 1}"\nmetadata:\n  k: a {b} c\n  j: \'{}\'\n---\n\n## Steps\n\n1. x\n'],
+  ['an ampersand and a bang inside a plain scalar', '---\nname: a-b\ndescription: fish & chips!\n---\n\n## Steps\n\n1. x\n'],
+];
+
 const HASH_TEXTS = [
   '---\nname: a\nmetadata:\n  bantamkit-sha256: "abc"\n---\n\nbody\n',
   '---\nname: a\nmetadata:\n  bantamkit-sha256: "zzz"\n---\n\nbody\n',
@@ -150,6 +174,11 @@ function opList() {
     add(`parse text #${i}`, { op: 'parse', text: t });
     add(`validate text #${i} (dirname a-b)`, { op: 'validate_text', text: t, dirname: 'a-b' });
     add(`edited text #${i}`, { op: 'edited', text: t });
+  });
+  FLOW_TEXTS.forEach(([l, t]) => {
+    add(`port-refused shape: parse ${l}`, { op: 'parse', text: t });
+    add(`port-refused shape: validate ${l}`, { op: 'validate_text', text: t, dirname: 'a-b' });
+    add(`port-refused shape: edited ${l}`, { op: 'edited', text: t });
   });
   HASH_TEXTS.forEach((t, i) => add(`hash text #${i}`, { op: 'hash', text: t }));
   RENDER_DOCS.forEach((d, i) => {
@@ -382,12 +411,14 @@ export async function run(ctx) {
     ['1025 Thai code points', { op: 'validate', doc: doc({ description: 'ก'.repeat(1025) }) },
       ['description is 1025 characters; at most 1024']],
     ['1024 Thai code points pass', { op: 'validate', doc: doc({ description: 'ก'.repeat(1024) }) }, []],
+    ['metadata: {} is refused', { op: 'validate_text', text: FLOW_TEXTS[0][1], dirname: 'a-b' },
+      { error: 'SKILL.md frontmatter is not a readable mapping' }],
     ['hash of a blanked line', { op: 'hash', text: HASH_TEXTS[0] },
       // sha256 of the same text with `""` in place of `"abc"`, computed by node:crypto here
       null],
   ];
   const { createHash } = await import('node:crypto');
-  LIT[4][2] = createHash('sha256').update(HASH_TEXTS[0].replace('"abc"', '""')).digest('hex');
+  LIT[5][2] = createHash('sha256').update(HASH_TEXTS[0].replace('"abc"', '""')).digest('hex');
   const py5 = ctx.runPython(REF, { bed: bed('py-lit'), ops: LIT.map(([, o]) => o) }).results;
   const nd5 = await runNode(ctx, bed('node-lit'), LIT.map(([, o]) => o));
   LIT.forEach(([l, , want], i) => {

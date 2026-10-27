@@ -25,6 +25,8 @@ THE FRONTMATTER READER is the memory store's (`yaml.safe_load` + `well_formed_fr
 here, `parseFrontmatter` in the port). Any frontmatter either reader cannot take as a
 mapping is refused with ONE sentence on both sides, because the two readers' own error
 texts differ (registered in `runtime-ts/src/memory/factfile.ts`).
+What the port's reader refuses wherever it stands (a flow mapping such as `metadata: {}`, an
+anchor, an alias, a tag, a directive) is refused here too, from PyYAML's own tokens (job73 C8).
 One shape is RULED different (`docs/porting.md`, row `skillfile`): a `metadata:` value nested
 below one level is read here and named by `validate`, and refused by the port's reader (#120).
 Both refuse the skill.
@@ -69,6 +71,18 @@ _PLAIN_WORDS = ("yes", "no", "on", "off", "true", "false", "null")
 _HASH_LINE = re.compile(r"[ \t]*bantamkit-sha256:")
 _HEADING_BREAK = re.compile(r"#{1,2}(?:[ \t]|$)")
 _BACKUP_NAME = re.compile(r"(\d{8}T\d{6}\.\d{3}Z)(?:-(\d+))?")
+#: The YAML the port's frontmatter reader (#120) refuses wherever it stands: a flow mapping,
+#: an anchor, an alias, a tag, a directive. PyYAML reads every one, so a SKILL.md holding one
+#: would pass `validate` here and be refused there (`metadata: {}` is the shape a model
+#: writes). Refused here too, with the same sentence, by the scanner's own tokens: a `{`
+#: inside a quoted or plain scalar is no token and is read as text on both sides.
+_PORT_REFUSES = (
+    yaml.FlowMappingStartToken,
+    yaml.AnchorToken,
+    yaml.AliasToken,
+    yaml.TagToken,
+    yaml.DirectiveToken,
+)
 
 #: One counter per process: a temp name is `<target>.<kind>-<pid>-<n>`, never random, so a
 #: retry is reproducible and two writers in one process never share a temp.
@@ -105,6 +119,8 @@ def parse_skill(text: str) -> SkillDoc:
         raise SkillFileError("SKILL.md has no frontmatter at the top of the file")
     front = parts[1]
     try:
+        if any(isinstance(t, _PORT_REFUSES) for t in yaml.scan(front, Loader=yaml.SafeLoader)):
+            raise SkillFileError("SKILL.md frontmatter is not a readable mapping")
         meta = well_formed_frontmatter(front, yaml.safe_load(front))
     except yaml.YAMLError as e:
         raise SkillFileError("SKILL.md frontmatter is not a readable mapping") from e

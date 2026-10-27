@@ -379,3 +379,15 @@ test('state round trip and refusals', () => {
     throwsSentence(() => sf.readState(h), 'skills-state.json is not a version 1 skills state');
   }
 });
+
+test('parse refuses what the reader refuses, as the reference now does (job73 C8)', () => {
+  for (const line of ['metadata: {}', 'metadata: {k: 1}', 'metadata: {bantamkit-k: "v"}', 'metadata:\n  k: {}',
+    'metadata:\n  k: [a, {b: c}]', 'description: {x: 1}', 'description: &a d', 'description: !!str d']) {
+    const text = `---\nname: a-b\n${line}\n---\n\n## Steps\n\n1. x\n`;
+    throwsSentence(() => sf.parseSkill(text), 'SKILL.md frontmatter is not a readable mapping');
+    assert.equal(sf.isEdited(text), true);
+  }
+  const doc = sf.parseSkill("---\nname: a-b\ndescription: fish & chips!\nmetadata:\n  k: a {b} c\n  j: '{}'\n---\n");
+  assert.equal(doc.description, 'fish & chips!');
+  assert.deepEqual(doc.metadata, { k: 'a {b} c', j: '{}' });
+});
