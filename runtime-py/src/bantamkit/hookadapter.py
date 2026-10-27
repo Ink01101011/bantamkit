@@ -1828,11 +1828,13 @@ def _record_touch(run: HookRun, payload: dict[str, Any]) -> None:
     adds one `use` line per fact it named. No rotate here: Retention folds and rotates, so
     this arm pays one locked counter write and one locked append. A write that fails is one
     `touch: miss` hook-log record, which `bantamkit_status` counts. No `git` executable on
-    PATH (`git_on_path`, a stat walk) is "no git": nothing is written either (T200-10, B2).
+    PATH that can run (`git_on_path`: a stat walk, then `git --version` once per
+    `GIT_PROBE_TTL_S`, kept in `<hooks>/git-probe.json`) is "no git": nothing is written
+    either (T200-10, B2; #208).
     """
     try:
         repo = find_repo(str(payload.get("cwd") or os.getcwd()))
-        if repo is None or not git_on_path():
+        if repo is None or not git_on_path(state_dir=run.state):
             return
         session = _js_str(payload.get("session_id") or "")
         seq = next_seq(run.state, session)  # EVERY tool call counts, Bash included

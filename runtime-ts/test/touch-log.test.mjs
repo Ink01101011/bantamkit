@@ -6,13 +6,17 @@
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { TOUCH_LOG_CAP_BYTES, TOUCH_LOG_FOLD_TARGET_BYTES, TOUCH_TAIL_BYTES, TouchLog, boundBody, currentSeq, findRepo, foldCutoff, gitOnPath, nextSeq, relPath, touchReducer, useNames } from '../dist/touch/index.js';
+import { GIT_PROBE_FILE, GIT_PROBE_TTL_S, TOUCH_LOG_CAP_BYTES, TOUCH_LOG_FOLD_TARGET_BYTES, TOUCH_N_CAP, TOUCH_TAIL_BYTES, TouchLog, boundBody, currentSeq, findRepo, foldCutoff, gitOnPath, nextSeq, relPath, repoId, touchReducer, useNames } from '../dist/touch/index.js';
+import { sha16 } from '../dist/storage/hotindex.js';
+
+import { inflight } from './_inflight.mjs';
 
 const CLI = join(dirname(dirname(fileURLToPath(import.meta.url))), 'dist', 'cli.js');
 const tmp = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-touch-log-')));
@@ -148,6 +152,30 @@ test('reducer keeps the last touch per path and drops uses', () => {
   assert.deepEqual(touchReducer(rows), [{ ts: '2026-09-02T00:00:00Z', session: '', seq: 0, op: 'folded', path: 'p', n: 2 }]);
 });
 
+test('reducer clamps an extreme count (208 item 5)', () => {
+  const row = { ts: '2026-09-01T00:00:00Z', session: '', seq: 0, op: 'folded', path: 'p' };
+  assert.deepEqual(touchReducer([{ ...row, n: 1.7e308 }, { ...row, n: 1.7e308 }]).map((r) => r.n), [TOUCH_N_CAP]);
+  assert.deepEqual(touchReducer([{ ...row, n: -1.7e308 }, { ...row, n: -1.7e308 }]).map((r) => r.n), [-TOUCH_N_CAP]);
+  assert.deepEqual(touchReducer([{ ...row, n: TOUCH_N_CAP }, { ...row, n: 3 }]).map((r) => r.n), [TOUCH_N_CAP]);
+  assert.equal(TOUCH_N_CAP, 2 ** 53 - 1);
+  let body = '';
+  for (let i = 0; i < 12000; i++) body += `${JSON.stringify({ ...row, path: `p${i % 3}`, n: 1.7e308 })}\n`;
+  const out = boundBody(Buffer.from(body));
+  assert.ok(out.length <= TOUCH_LOG_FOLD_TARGET_BYTES);
+  assert.deepEqual(out.toString('utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).n), [TOUCH_N_CAP, TOUCH_N_CAP, TOUCH_N_CAP]);
+});
+
+test('boundBody ages by code point, not UTF-16 unit (208 item 4)', () => {
+  let body = '';
+  for (let i = 0; i < 10000; i++) {
+    body += `${JSON.stringify({ ts: '2026-09-01T00:00:00Z', session: '', seq: 0, op: 'folded', path: `src/${i % 2 ? '\u{1F600}' : '\uFF5E'}/f${String(i).padStart(6, '0')}.py`, n: 1 })}\n`;
+  }
+  const kept = boundBody(Buffer.from(body)).toString('utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).path);
+  const hi = kept.filter((p) => p.includes('\uFF5E')).length;
+  assert.equal(kept.filter((p) => p.includes('\u{1F600}')).length, 5000);
+  assert.ok(hi > 0 && hi < 5000);
+});
+
 test('reducer of a fold is the same fold', () => {
   const rows = [
     { ts: '2026-09-01T00:00:00Z', session: 'a', seq: 1, op: 'read', path: 'b' },
@@ -234,6 +262,82 @@ test('gitOnPath is a stat walk', () => {
   assert.equal(gitOnPath(exe, '', true), false); // Windows wants an extension
 });
 
+test('gitOnPath never counts a batch file (208 item 6)', () => {
+  const d = tmp();
+  const [cmd, both] = ['cmd', 'both'].map((n) => join(d, n));
+  for (const x of [cmd, both]) mkdirSync(x);
+  writeFileSync(join(cmd, 'git.cmd'), 'x');
+  writeFileSync(join(cmd, 'git.BAT'), 'x');
+  writeFileSync(join(both, 'git.exe'), 'x');
+  assert.equal(gitOnPath(cmd, '', true), false);
+  assert.equal(gitOnPath(cmd, '.CMD;.BAT', true), false);
+  assert.equal(gitOnPath(`${cmd};${both}`, '', true), true); // the .exe further on is found
+});
+
+function fakeGit(d, code) {
+  // platform-checked: only the tests below call it, and they skip on win32 (a shebang).
+  mkdirSync(d);
+  writeFileSync(join(d, 'git'), `#!/bin/sh\nexit ${code}\n`);
+  chmodSync(join(d, 'git'), 0o755);
+  return d;
+}
+
+test('gitOnPath runs the git it finds (208 item 6)', { skip: process.platform === 'win32' && 'a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead' }, () => {
+  const d = tmp();
+  const ok = fakeGit(join(d, 'ok'), 0);
+  const bad = fakeGit(join(d, 'bad'), 1);
+  const state = join(d, 'st');
+  assert.equal(gitOnPath(ok, '', false), true);
+  assert.equal(gitOnPath(bad, '', false), false);
+  assert.equal(gitOnPath(`${bad}:${ok}`, '', false), false); // the first git is the one git() runs
+  assert.equal(gitOnPath(`${bad}:`, '', false, state), false);
+  const probe = JSON.parse(readFileSync(join(state, GIT_PROBE_FILE), 'utf8'));
+  assert.equal(probe.ok, false);
+  assert.equal(probe.key.length, 16);
+});
+
+test('gitOnPath keeps its answer on disk', { skip: process.platform === 'win32' && 'a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead' }, () => {
+  const d = tmp();
+  const bad = fakeGit(join(d, 'bad'), 1);
+  const state = join(d, 'st');
+  assert.equal(gitOnPath(bad, '', false, state), false);
+  const f = join(state, GIT_PROBE_FILE);
+  const { key } = JSON.parse(readFileSync(f, 'utf8'));
+  writeFileSync(f, JSON.stringify({ key, ok: true })); // a planted answer
+  assert.equal(gitOnPath(`${bad}::`, '', false, state), true); // read, no spawn
+  const old = statSync(f).mtimeMs / 1000 - GIT_PROBE_TTL_S - 5;
+  utimesSync(f, old, old);
+  assert.equal(gitOnPath(`:${bad}`, '', false, state), false); // stale: spawned again
+  writeFileSync(join(bad, 'git'), '#!/bin/sh\nexit 0\n'); // a new git, a new key
+  writeFileSync(f, JSON.stringify({ key, ok: false }));
+  assert.equal(gitOnPath(`${bad}:::`, '', false, state), true);
+});
+
+test('gitOnPath keys the PATH entry as written (208 N1)', { skip: process.platform === 'win32' && 'a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead' }, () => {
+  const d = tmp();
+  const bad = fakeGit(join(d, 'bad'), 1);
+  const st = statSync(join(bad, 'git'), { bigint: true });
+  const entries = [`${d}//bad`, `${d}/./bad`, `${bad}/../bad`, `${bad}/`, `${bad}//`];
+  entries.forEach((e, i) => {
+    const state = join(d, `st${i}`);
+    assert.equal(gitOnPath(e, '', false, state), false);
+    const cand = e.endsWith('/') ? `${e}git` : `${e}/git`;
+    const want = createHash('sha256').update(`${cand}\0${st.mtimeNs}:${st.size}`, 'utf8').digest('hex').slice(0, 16);
+    assert.equal(JSON.parse(readFileSync(join(state, GIT_PROBE_FILE), 'utf8')).key, want, e);
+  });
+  assert.equal(gitOnPath(relative(process.cwd(), bad), '', false, join(d, 'strel')), false); // relative kept relative
+});
+
+test('repoId upper-cases the drive letter (208 item 8)', () => {
+  assert.equal(repoId('c:\\Users\\a\\repo'), repoId('C:\\Users\\a\\repo'));
+  assert.equal(repoId('c:/x'), repoId('C:/x'));
+  assert.notEqual(repoId('/c:/x'), repoId('/C:/x')); // only a leading drive letter
+  const d = tmp();
+  assert.equal(repoId(d), sha16(d));
+  const r = gitRepo(d);
+  assert.equal(findRepo(r).id, sha16(r));
+});
+
 test('foldCutoff names the line past the byte midpoint', () => {
   const row = (s) => `{"ts":"2026-10-17T00:00:0${s}Z","op":"read","path":"p"}\n`;
   assert.equal(foldCutoff(Buffer.alloc(0)), null);
@@ -284,6 +388,27 @@ test('PostToolUse with no git on PATH records nothing', () => {
   const dir = join(home, '.bantamkit', 'touch');
   const [name] = readdirSync(dir).filter((n) => n.endsWith('.jsonl'));
   assert.deepEqual(readFileSync(join(dir, name), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).op), ['read']);
+});
+
+test('PostToolUse with a git that cannot run records nothing (208 item 6)', { skip: process.platform === 'win32' && 'a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead' }, () => {
+  const d = tmp();
+  const home = join(d, 'home');
+  mkdirSync(home);
+  const r = gitRepo(d);
+  const shim = fakeGit(join(d, 'shim'), 1);
+  for (const tool of ['Read', 'Edit']) {
+    const done = spawnSync(process.execPath, [CLI, '--hook'], {
+      input: JSON.stringify({ cwd: r, session_id: 's1', hook_event_name: 'PostToolUse', tool_name: tool, tool_input: { file_path: join(r, 'src', 'a.py') } }),
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home, USERPROFILE: home, PATH: shim },
+    });
+    assert.equal(done.status, 0, done.stderr);
+  }
+  assert.equal(existsSync(join(home, '.bantamkit', 'touch')), false);
+  assert.equal(existsSync(join(home, '.bantamkit', 'hooks', 'ledger-s1.seq.json')), false);
+  const probe = JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', 'git-probe.json'), 'utf8'));
+  assert.equal(probe.ok, false);
+  assert.equal(probe.key.length, 16);
 });
 
 // --- T200-11: the cap holds, no thrash, no fold without the lock (test_touch_log.py's mirror)
@@ -369,4 +494,25 @@ test('parallel appenders on a stuck log lose nothing', async () => {
   assert.equal(race.size, 120, `${120 - race.size} appends lost`);
   assert.ok(statSync(log.path).size <= TOUCH_LOG_CAP_BYTES);
   assert.deepEqual(readdirSync(dirname(log.path)).filter((n) => n.endsWith('.tmp') || n.endsWith('.lock')), []);
+});
+
+test('bound carries an in-flight unlocked line, read to EOF (208 items 2-3)', async () => {
+  // An expired-wait appender that opened the log before the bound's rename and writes after it
+  // (two writes, the second past 64 KiB) loses nothing; the old file's growth is read to EOF.
+  const d = tmp();
+  const log = new TouchLog(d, '0123456789abcdef');
+  mkdirSync(dirname(log.path), { recursive: true });
+  const data = stuck(6000);
+  writeFileSync(log.path, data);
+  const mark = `${log.path}.1.ab.writing`;
+  writeFileSync(mark, '');
+  const late = [
+    '{"ts":"2026-10-17T00:00:09Z","session":"late","seq":1,"op":"read","path":"a.py"}\n',
+    `{"ts":"2026-10-17T00:00:09Z","session":"late","seq":2,"op":"read","path":"${'b'.repeat(70000)}"}\n`,
+  ];
+  const done = inflight(log.path, mark, late);
+  assert.equal(log.bound(), true);
+  await done;
+  assert.deepEqual(readFileSync(log.path), Buffer.concat([boundBody(data), Buffer.from(late.join(''))]));
+  assert.deepEqual(readdirSync(dirname(log.path)), ['0123456789abcdef.jsonl']);
 });
