@@ -727,6 +727,142 @@ def _scan(
     return found
 
 
+def _check_args(check: str, budget: int | None) -> None:
+    """The argument refusals `audit` and `audit_roots` share, in the order both raise them."""
+    if check not in CHECK_FAMILIES:
+        raise SkillAuditError(
+            f"unknown check {check!r}; this tool checks: {', '.join(sorted(CHECK_FAMILIES))}"
+        )
+    if budget is not None and budget < 0:
+        raise SkillAuditError(f"budget must not be negative; got {budget}")
+
+
+def _check_root(root: str | Path) -> Path:
+    """One root's three refusals, the same sentences for `audit` and for each labelled root."""
+    if str(root) == "":
+        # `Path("")` is `Path(".")`, so an empty root audits whatever directory the SERVER
+        # happens to be standing in — a different answer per host, from an argument that
+        # named no directory at all, out of a tool whose whole claim is that it reads `root`
+        # and nothing else. `""` passes JSON-schema `string` and pydantic `str` alike, so it
+        # reaches this function; it is refused here, where the other argument failures are.
+        raise SkillAuditError("root must not be empty; name the directory of skills to scan")
+    base = Path(root)
+    if not base.exists():
+        raise SkillAuditError(f"no such directory: {root}")
+    if not base.is_dir():
+        raise SkillAuditError(f"{root} is a file, not a directory of skills")
+    return base
+
+
+def _findings(
+    found: list[_Skill], check: str, budget: int | None, usage: dict[str, int] | None
+) -> tuple[list[_Skill], int, list[Finding]]:
+    """The findings block `audit` and `audit_roots` share, so a one-root audit's bytes cannot
+    move when the many-root one is added: `(counted, catalogue_bytes, findings)`."""
+    counted = [s for s in found if s.omitted is None]
+    catalogue_bytes = sum(s.bytes for s in counted)
+
+    wanted = CHECK_FAMILIES[check]
+    findings: list[Finding] = []
+    if KIND_SHARED_PHRASE in wanted:
+        findings.extend(_shared_phrase_findings(counted))
+    if KIND_OVER_BUDGET in wanted and budget is not None and catalogue_bytes > budget:
+        over = catalogue_bytes - budget
+        detail = f"{catalogue_bytes} > {budget}, over by {over}"
+        findings.append(Finding(KIND_OVER_BUDGET, (), detail))
+    if KIND_NEVER_INVOKED in wanted and usage is not None:
+        findings.extend(
+            Finding(KIND_NEVER_INVOKED, (skill.id,), "0 calls")
+            for skill in sorted(counted, key=lambda s: s.id)
+            if usage.get(skill.id, 0) == 0
+        )
+    if KIND_FRONTMATTER in wanted:
+        findings.extend(
+            Finding(KIND_FRONTMATTER, (skill.id,), skill.malformed)
+            for skill in sorted(found, key=lambda s: s.id)
+            if skill.malformed is not None
+        )
+    if KIND_NAME_MISMATCH in wanted:
+        findings.extend(
+            Finding(KIND_NAME_MISMATCH, (skill.id,), skill.name)
+            for skill in sorted(counted, key=lambda s: s.id)
+            if skill.name and skill.name != skill.directory
+        )
+    findings.sort(key=lambda f: FINDING_ORDER.index(f.kind))
+    return counted, catalogue_bytes, findings
+
+
+def scan_roots(
+    roots: list[tuple[str, str | Path]],
+    enabled: list[str] | None = None,
+    versions: dict[str, str] | None = None,
+) -> list[_Skill]:
+    """`_scan` over several LABELLED roots, decided as one catalogue (#205).
+
+    Each root is walked and read exactly as `_scan` does. `relpath` gains `<label>/` so an
+    omission's `what` names which root a path is under. `enabled`, the version resolution and
+    the dedupe then run ONCE over the concatenation, in root order: a phrase shared between a
+    plugin skill and a personal one is one finding, and a bare name in two roots is one
+    `duplicate-skill`, the later root winning — which is why the gatherer hands the roots over
+    as `plugins, project, user`: Claude Code serves the PERSONAL copy of a same-name skill.
+
+    A plugin skill never collides with a local one (Amendment A1): the dedupe key is
+    `(marketplace, plugin, name)`, so `alpha:a1` and a personal `a1` are two skills, both
+    counted, exactly as the host namespaces them. Reads the roots and nothing else.
+    """
+    found: list[_Skill] = []
+    version_dirs: list[tuple[str, str, str]] = []
+    for label, root in roots:
+        base = Path(root)
+        files, dirs = _scan_tree(base)
+        for path in files:
+            skill = _load(path, base)
+            skill.relpath = f"{label}/{skill.relpath}"
+            found.append(skill)
+        version_dirs.extend(dirs)
+    version_dirs.sort()
+    _apply_enabled(found, enabled)
+    _resolve_versions(found, version_dirs, versions)
+    _apply_dedupe(found)
+    return found
+
+
+def audit_roots(
+    roots: list[tuple[str, str | Path]],
+    enabled: list[str] | None = None,
+    usage: dict[str, int] | None = None,
+    check: str = "all",
+    budget: int | None = None,
+    versions: dict[str, str] | None = None,
+) -> Audit:
+    """`audit` over several labelled roots as one catalogue — the gatherer's entry (#205).
+
+    Refuses, in this order: `check` and `budget` as `audit` does; an empty `roots`; a label
+    that is empty, holds `/` or repeats; then each root's path with `audit`'s three sentences.
+    `Audit.roots` is the root PATHS in order. The `skill_audit` tool does not call this.
+    """
+    _check_args(check, budget)
+    if not roots:
+        raise SkillAuditError("roots must not be empty; name at least one directory of skills")
+    labels = [label for label, _ in roots]
+    for label in labels:
+        if not label or "/" in label or labels.count(label) > 1:
+            raise SkillAuditError(
+                f"root label {label!r} must be unique, non-empty and hold no '/'"
+            )
+    for _, root in roots:
+        _check_root(root)
+    found = scan_roots(roots, enabled, versions)
+    counted, catalogue_bytes, findings = _findings(found, check, budget, usage)
+    return Audit(
+        roots=tuple(str(root) for _, root in roots),
+        skills=len(counted),
+        catalogue_bytes=catalogue_bytes,
+        findings=tuple(findings),
+        omissions=tuple(_omission_records(found)),
+    )
+
+
 def _shared_phrase_findings(counted: list[_Skill]) -> list[Finding]:
     """Phrases held by two or more skills. Routers are not in this index at all."""
     index: dict[str, list[str]] = {}
@@ -793,56 +929,10 @@ def audit(
     the measurement, and `check` selects which family of FINDINGS is worth reporting on top
     of it.
     """
-    if check not in CHECK_FAMILIES:
-        raise SkillAuditError(
-            f"unknown check {check!r}; this tool checks: {', '.join(sorted(CHECK_FAMILIES))}"
-        )
-    if budget is not None and budget < 0:
-        raise SkillAuditError(f"budget must not be negative; got {budget}")
-    if str(root) == "":
-        # `Path("")` is `Path(".")`, so an empty root audits whatever directory the SERVER
-        # happens to be standing in — a different answer per host, from an argument that
-        # named no directory at all, out of a tool whose whole claim is that it reads `root`
-        # and nothing else. `""` passes JSON-schema `string` and pydantic `str` alike, so it
-        # reaches this function; it is refused here, where the other argument failures are.
-        raise SkillAuditError("root must not be empty; name the directory of skills to scan")
-    base = Path(root)
-    if not base.exists():
-        raise SkillAuditError(f"no such directory: {root}")
-    if not base.is_dir():
-        raise SkillAuditError(f"{root} is a file, not a directory of skills")
-
+    _check_args(check, budget)
+    base = _check_root(root)
     found = _scan(base, enabled, versions)
-    counted = [s for s in found if s.omitted is None]
-    catalogue_bytes = sum(s.bytes for s in counted)
-
-    wanted = CHECK_FAMILIES[check]
-    findings: list[Finding] = []
-    if KIND_SHARED_PHRASE in wanted:
-        findings.extend(_shared_phrase_findings(counted))
-    if KIND_OVER_BUDGET in wanted and budget is not None and catalogue_bytes > budget:
-        over = catalogue_bytes - budget
-        detail = f"{catalogue_bytes} > {budget}, over by {over}"
-        findings.append(Finding(KIND_OVER_BUDGET, (), detail))
-    if KIND_NEVER_INVOKED in wanted and usage is not None:
-        findings.extend(
-            Finding(KIND_NEVER_INVOKED, (skill.id,), "0 calls")
-            for skill in sorted(counted, key=lambda s: s.id)
-            if usage.get(skill.id, 0) == 0
-        )
-    if KIND_FRONTMATTER in wanted:
-        findings.extend(
-            Finding(KIND_FRONTMATTER, (skill.id,), skill.malformed)
-            for skill in sorted(found, key=lambda s: s.id)
-            if skill.malformed is not None
-        )
-    if KIND_NAME_MISMATCH in wanted:
-        findings.extend(
-            Finding(KIND_NAME_MISMATCH, (skill.id,), skill.name)
-            for skill in sorted(counted, key=lambda s: s.id)
-            if skill.name and skill.name != skill.directory
-        )
-    findings.sort(key=lambda f: FINDING_ORDER.index(f.kind))
+    counted, catalogue_bytes, findings = _findings(found, check, budget, usage)
 
     return Audit(
         roots=(str(root),),

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 
 import pytest
 
@@ -264,3 +265,27 @@ def test_a_folded_weight_is_clamped_on_read_and_on_write(tmp_path):
     led.fold("2026-10-01T00:00:00Z")
     text = led.path.read_text(encoding="utf-8")
     assert '"weight":1000000.000000000}' in text and '"weight":0.000000000}' in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows honours no chmod 555 on a directory")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anyway")
+def test_a_read_only_usage_directory_costs_no_lock_wait(tmp_path):
+    # 208 item 7: a real read-only usage dir (chmod 555), not a file in the way. Every save and
+    # recall used to wait out the full 2 s lock wait; now each append gives the lock up at once.
+    import time
+
+    led = UsageLedger(tmp_path, tmp_path / "store")
+    assert led.append("a", "save", "2026-10-15T00:00:00Z")
+    d = led.path.parent
+    d.chmod(0o555)
+    try:
+        t0 = time.monotonic()
+        for k in range(3):
+            assert led.append("a", "recall_hit", f"2026-10-15T00:00:0{k}Z")
+        assert time.monotonic() - t0 < 0.5
+        other = UsageLedger(tmp_path, tmp_path / "other")
+        t0 = time.monotonic()
+        assert other.append("b", "save", "2026-10-15T00:00:00Z") is False
+        assert time.monotonic() - t0 < 0.5
+    finally:
+        d.chmod(0o755)

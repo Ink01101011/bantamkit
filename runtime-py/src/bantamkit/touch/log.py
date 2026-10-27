@@ -12,8 +12,9 @@ A log is bounded on append (T200-10, T200-11): an append that leaves the live fi
 `TOUCH_LOG_CAP_BYTES` calls `bound`, which takes the O_EXCL lock and, ONLY when it is actually
 held, re-reads the file and, still over the cap, writes `bound_body(data)` temp then rename. A
 lock wait that runs out skips the fold (the append itself already went ahead), so no rewrite
-ever runs unlocked; an append made under the lock is never lost to the rename (one whose own 2 s
-lock wait ran out and that lands between the tail read and the rename can be). `bound_body`
+ever runs unlocked, and no append is lost to the rename: one made under the lock cannot overlap
+it, and one whose own 2 s wait ran out is carried over by `storage.logsegment.rewrite_held`
+(its marker, the hard-linked old file read to EOF; #208). `bound_body`
 folds the older half (`fold_cutoff`) and every earlier folded row through `touch_reducer`; when
 that leaves the file over `TOUCH_LOG_FOLD_TARGET_BYTES`, folded rows age out oldest `ts` first
 (ties by path, code-point order) until it fits, and when the newer half alone is over the target
@@ -47,7 +48,14 @@ from pathlib import Path
 from typing import Any
 
 from bantamkit.storage.lock import exclusive
-from bantamkit.storage.logsegment import LogSegment, _is_old, _load, _split, dumps_line
+from bantamkit.storage.logsegment import (
+    LogSegment,
+    _is_old,
+    _load,
+    _split,
+    dumps_line,
+    rewrite_held,
+)
 
 TOUCH_OPS = {
     "Read": "read",
@@ -59,6 +67,10 @@ TOUCH_OPS = {
 TOUCH_TAIL_BYTES = 65536
 TOUCH_LOG_CAP_BYTES = 1_000_000  # the live log's byte cap; equal to `logsegment.ROTATE_BYTES`
 TOUCH_LOG_FOLD_TARGET_BYTES = 750_000  # a fold leaves the log at or under this many bytes
+# A folded row's `n` is clamped to +/- this, per row and per sum (#208 item 5): 2**53 - 1, the
+# largest integer both runtimes read and write exactly, so a fold never writes a number the
+# port cannot (Node's `Infinity` from two `1.7e308` rows, Python's 309-digit integer).
+TOUCH_N_CAP = 9_007_199_254_740_991
 USE_HEADER = re.compile(r"^(?:\[[^\]\n]+\] )*\[([^\]\n]+)\] \([a-z]+\) ")
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")  # the ledger file-name rule, `hookadapter._LEDGER_UNSAFE`
 _RECALL = "mcp__bantamkit__memory_recall"
@@ -94,22 +106,17 @@ class TouchLog:
 
         True when it rewrote. Nothing is written when the lock is not held (the wait ran
         out) or the file is no longer over the cap (another appender folded it first). Bytes
-        an unlocked appender added after the read are carried over verbatim.
+        an unlocked appender added after the read are carried over verbatim, read to EOF once
+        every in-flight unlocked appender is done (`storage.logsegment.rewrite_held`).
         """
         try:
             with exclusive(self.path) as held:
                 if not held:
                     return False
-                data = self.path.read_bytes()
-                if len(data) <= TOUCH_LOG_CAP_BYTES:
-                    return False
-                body = bound_body(data)
-                if os.stat(self.path).st_size > len(data):
-                    with open(self.path, "rb") as f:
-                        f.seek(len(data))
-                        body += f.read()
-                _write_over(self.path, body)
-                return True
+                return rewrite_held(
+                    self.path,
+                    lambda data: bound_body(data) if len(data) > TOUCH_LOG_CAP_BYTES else None,
+                )
         except Exception:  # noqa: BLE001 - the bound is an enhancement; the line is written
             return False
 
@@ -192,22 +199,6 @@ def fold_cutoff(data: bytes) -> str | None:
         if isinstance(ts, str) and ts:
             return ts + "~"
     return None
-
-
-def _write_over(path: Path, data: bytes) -> None:
-    """Temp then rename, as `LogSegment._replace` does."""
-    tmp = f"{path}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def _age(rows: list[dict[str, Any]], budget: int) -> bytes:
@@ -322,12 +313,19 @@ def use_names(tool: str, tool_input: dict[str, Any], response: Any) -> list[tupl
     return []
 
 
+def _clamp(n: int) -> int:
+    return max(-TOUCH_N_CAP, min(TOUCH_N_CAP, n))
+
+
 def _count(v: Any) -> int:
-    """A folded row's `n`; an integral float counts as the integer `JSON.parse` would read."""
+    """A folded row's `n`; an integral float counts as the integer `JSON.parse` would read.
+
+    Clamped to `TOUCH_N_CAP` either way (#208 item 5).
+    """
     if _int(v):
-        return v
+        return _clamp(v)
     if isinstance(v, float) and v.is_integer():
-        return int(v)
+        return _clamp(int(v))
     return 1
 
 
@@ -335,7 +333,8 @@ def touch_reducer(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One folded row per path, in path order, keeping the last `ts` and the touch count.
 
     `use` rows are dropped; an earlier folded row's `n` is added, so a fold of a fold is the
-    same fold.
+    same fold. A count is clamped to `TOUCH_N_CAP` per row and after each sum, so it is
+    always a finite integer both runtimes write the same (#208 item 5).
     """
     by: dict[str, list[Any]] = {}
     for r in rows:
@@ -345,7 +344,7 @@ def touch_reducer(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             ts = r.get("ts") if isinstance(r.get("ts"), str) else ""
             cur = by.setdefault(r["path"], ["", 0])
             cur[0] = max(cur[0], ts)
-            cur[1] += n
+            cur[1] = _clamp(cur[1] + n)
     return [
         {"ts": by[p][0], "session": "", "seq": 0, "op": "folded", "path": p, "n": by[p][1]}
         for p in sorted(by)

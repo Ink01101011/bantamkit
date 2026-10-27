@@ -2288,6 +2288,27 @@ def test_no_git_on_path_records_nothing(tmp_path):
     assert [json.loads(x)["op"] for x in log.read_text(encoding="utf-8").splitlines()] == ["read"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead",
+)
+def test_a_git_that_cannot_run_records_nothing(tmp_path):
+    """#208 item 6: a `git` on PATH that exits 1 (the macOS shim with no Command Line Tools)
+    is no git: nothing recorded, and the answer kept in `<hooks>/git-probe.json`."""
+    home, r, _store = _via_bed(tmp_path)
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "git").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (shim / "git").chmod(0o755)
+    for tool in ("Read", "Edit"):
+        _post(home, r, tool, {"file_path": str(r / "src" / "a.py")}, {"PATH": str(shim)})
+    assert not (home / ".bantamkit" / "touch").exists()
+    assert not (home / ".bantamkit" / "hooks" / "ledger-s1.seq.json").exists()
+    probe_file = home / ".bantamkit" / "hooks" / "git-probe.json"
+    probe = json.loads(probe_file.read_text(encoding="utf-8"))
+    assert probe["ok"] is False and len(probe["key"]) == 16
+
+
 def test_ups_builds_no_context_while_it_cannot_move_the_reply(tmp_path, monkeypatch, capsys):
     """W_CONTEXT 0 and via off: no touch-log read, no graph, the same reply bytes (T200-10)."""
     import io
@@ -2790,3 +2811,42 @@ def test_a_path_spelled_in_another_case_is_not_the_native_directory(tmp_path):
 
     skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
     assert skipped == [("mirror-skipped", "not-native")]
+
+
+# --- #205 Task 5: the skill-audit SessionStart line ----------------------------------------
+
+
+def test_session_start_names_a_new_finding_once_and_then_adds_zero_bytes(tmp_path):
+    """The bar (spec): with nothing new, SessionStart adds 0 bytes. Run it with no record, then
+    twice over one record: the first carries the line LAST, the second equals the first run."""
+    from datetime import UTC, datetime
+
+    from test_skillreport import FULL, LINE, _put, _rec
+
+    home, cwd = _bed(tmp_path, "skillline")
+    # job73 A6: the audit switch ON (conftest pins it off, and off silences the line); the
+    # retention record is stamped now, so the hook's daily child is never spawned.
+    (home / ".bantamkit").mkdir(parents=True, exist_ok=True)
+    (home / ".bantamkit" / "retention.json").write_text(
+        json.dumps({"ran_at": datetime.now(UTC).isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z")}), encoding="utf-8")
+    on = {"BANTAMKIT_SKILL_AUDIT": "on"}
+    start = {"hook_event_name": "SessionStart", "source": "startup"}
+    ctx = lambda o: o["hookSpecificOutput"]["additionalContext"]  # noqa: E731
+    plain = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
+    assert _log_lines(home)[-1]["skillAuditBytes"] == 0
+    _put(home, _rec(FULL))
+    # The ruling (job73 A6): the switch off silences it, over unseen findings, writing nothing.
+    before = (home / ".bantamkit" / "skill-audit.json").read_bytes()
+    off = json.loads(
+        _run_hook(start, home=home, cwd=cwd, env_extra={"BANTAMKIT_SKILL_AUDIT": "off"}).stdout
+    )
+    assert ctx(off) == ctx(plain)
+    assert _log_lines(home)[-1]["skillAuditBytes"] == 0
+    assert (home / ".bantamkit" / "skill-audit.json").read_bytes() == before
+    first = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
+    assert ctx(first) == ctx(plain) + "\n\n" + LINE
+    assert _log_lines(home)[-1]["skillAuditBytes"] == len(LINE.encode("utf-8"))
+    again = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
+    assert ctx(again) == ctx(plain)
+    assert _log_lines(home)[-1]["skillAuditBytes"] == 0

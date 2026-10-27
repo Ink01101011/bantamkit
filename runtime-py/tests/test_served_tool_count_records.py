@@ -499,7 +499,7 @@ def test_claim_still_matches_every_previously_caught_shape() -> None:
     """
     still_good = [
         "bantamkit serves 15 tools",
-        "serving 15 tools, 1 prompt, 2 resource templates",
+        "serving 15 tools, 2 prompts, 2 resource templates",
         "the servers served 15 tools",
         "both launchers answer with fifteen tools",  # adjacent, no token in between
         "the CLI answered with fifteen tools",  # adjacent, past tense

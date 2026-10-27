@@ -22,8 +22,10 @@ at the same moment, scored **0.000** and ranked 791st of 820, while the metric's
 shared vocabulary and fired at different times. It measures vocabulary similarity, and trigger
 collision is not vocabulary similarity. No threshold rescues it.
 
-**It does not read the machine.** `root`, `enabled`, `usage` and `versions` all arrive as
-arguments. A tool that consulted `~/.claude` directly could not be compared across two
+**The tool does not read the machine.** `root`, `enabled`, `usage` and `versions` all arrive as
+arguments. (Since #205 something else does: the `skill_audit` PROMPT and the daily run gather
+those four facts through `skillhost` and hand them to the same pure core. The tool's contract and
+its conformance cases are unchanged; see *As a command and on a schedule* below.) A tool that consulted `~/.claude` directly could not be compared across two
 runtimes, and the conformance gate is the only thing that makes "ported" mean more than
 "written twice". The three optional maps are the three facts a directory of files cannot
 answer: which plugins the host has switched on, how often each skill has fired, and which
@@ -168,6 +170,150 @@ own count (`node tools/ledger/tool-usage.mjs --group skill --json`), `enabled` a
 settings or plugin registry. The reply is ONE JSON document even on a degraded server: the
 footer arrives as a `bantamkit_degraded` key, last, never as prose after the closing brace
 (job66 #124; `docs/status.md`, *The footer*).
+
+## As a command and on a schedule (#205, job73)
+
+The tool above waits to be told what to read, so in practice nobody ran it. Since #205 the same
+audit also runs **as a person's command** (the `skill_audit` MCP prompt) and **once a day on its
+own** (the Retention child), and its result is surfaced in `bantamkit_status` and, when something
+is new, in one SessionStart line. The spec is
+`docs/superpowers/specs/2026-10-15-skill-audit-command-and-auto-design.md` (decisions K1–K3).
+
+**The split.** The `skill_audit` TOOL still reads nothing but `root`. `skillhost`
+(`runtime-py/src/bantamkit/skillhost.py`, `runtime-ts/src/skillhost.ts`) is the layer that reads
+the machine, and only the prompt and the daily run call it. `skillreport` builds the record, the
+proposals, the report, the status line and the SessionStart line. The pure core gained one entry,
+`audit_roots` / `auditRoots`: several labelled roots audited as ONE catalogue.
+
+### The adapters
+
+An adapter answers the host's skill roots, the switched-on plugins, the served version of each
+plugin and the call counts. Adding a host is adding one adapter; the audit does not change.
+
+* **Claude Code** is chosen when `~/.claude` is a directory.
+  * Roots, in this order and only those that exist: `plugins` `~/.claude/plugins/cache`,
+    `project` `<cwd>/.claude/skills` (left out when it is the same directory as the user one),
+    `user` `~/.claude/skills`. A personal skill wins over a project skill of the same name, as
+    Claude Code resolves it, so the later root wins a bare-name tie. A plugin skill is namespaced
+    (`<plugin>:<skill>`) and never collides with a local one: both are counted.
+  * `enabled`: `enabledPlugins` from `~/.claude/settings.json`, then the cwd's
+    `.claude/settings.json` and `.claude/settings.local.json`; for each plugin id the last file
+    that gives it a boolean wins, and the report remembers which file that was. A file that is
+    not strict JSON (a BOM included) is skipped. With no `enabledPlugins` anywhere, nothing is
+    enabled and nothing is proposed.
+  * `versions`: `~/.claude/plugins/installed_plugins.json`; the project-scope install for this
+    cwd first, else the first other entry; the version is the last segment of `installPath`,
+    split on `/` or `\`.
+  * `usage`: the transcript scan below.
+* **Null**, every other host: no roots, `usage: null`. Nothing is called never-invoked without a
+  count, and no change is proposed. The status line says the host has no usage adapter.
+
+The adapter only reads. Nothing in it writes, and nothing anywhere in #205 writes under
+`~/.claude` or edits `settings.json`.
+
+### The transcript scan
+
+`~/.claude/projects/**/*.jsonl` over the last 30 days, the logic of the dev script
+`tools/ledger/tool-usage.mjs --group skill` ported to both runtimes. Kept from the script: a
+`Skill` `tool_use` is counted once per `id` (a resumed session rewrites it verbatim), and
+subagent transcripts under `<session>/subagents/` are walked. Different from the script:
+
+* **No events-log fallback.** Transcripts only.
+* **An mtime pre-filter.** A file last written before the cutoff holds no line after it, so it is
+  not opened; its mtime still counts toward how far back the transcripts reach. In an opened
+  file only lines holding `"Skill"` and `"tool_use"`, or `<command-name>`, are parsed. This is
+  what keeps the daily run under its bar (the script read all 1.08 GB in 3.46 s).
+* **A typed command is a call too** (Amendment A2). A skill the user invokes as `/<name>` leaves
+  no `Skill` tool_use: Claude Code writes a non-meta `type: "user"` record whose string content
+  starts with `<command-name>/<name></command-name>`. It counts once per record `uuid`, and only
+  when `<name>` is a skill the roots hold, so `/clear` and the other built-ins never count. The
+  same tag inside a tool result, a tool input or a request copy is not a command. This record
+  shape was measured on real transcripts; it is not a documented contract.
+* **A `skill` that is not a non-empty string is ignored.** A line that is not strict UTF-8 JSON
+  is skipped and counted; a file that cannot be read is counted as unreadable. A symlinked
+  directory is not walked.
+
+`span_days` is how many whole days back the oldest timestamp or file mtime seen reaches, at most
+30. A host with less than 30 days of transcripts gets counts but no proposals.
+
+### The record
+
+The daily run writes `~/.bantamkit/skill-audit.json`, the same bytes on both runtimes (sorted
+keys, compact JSON, one trailing newline; written to a temp file and renamed under the lock):
+
+`{version: 1, ts, host, roots, skills, catalogue_bytes, findings, omissions, usage, proposals, surfaced}`
+
+or, when there is no skill directory or the gather failed, the error form
+`{version, ts, host, error, surfaced}` (`no skill directory was found for this host`,
+`the gather failed`). A record that is missing, not JSON, of another version or of a shape the
+status line cannot print is treated as absent and recomputed by the next day's run. `surfaced`
+holds the findings the SessionStart line has already shown; each daily run keeps only the keys
+that are still findings.
+
+### When a change is proposed
+
+A plugin is proposed for switching off only when **all three** hold: `usage` is present; the
+transcripts span at least 30 days; **every** skill of that plugin had zero calls in that span.
+Skills in `~/.claude/skills` or `<project>/.claude/skills` cannot be switched off through
+settings; they are reported and never get a diff.
+
+The proposal is a zero-context hunk on the settings file the plugin's `true` won in, the line
+inside `enabledPlugins` with `true` turned to `false` (CRLF line endings are read correctly). When
+that line cannot be located (a minified file, a value on its own line), the report says
+`set enabledPlugins["<id>"] to false in <file> (the line could not be located)` instead. The
+heading says `NOT applied; bantamkit never edits settings.json`.
+
+**Applying it is yours.** The report's last line says to edit the lines by hand, or to save the
+hunks to a file and run `git apply --unidiff-zero <file>` from `/`, because the hunk paths are
+absolute (measured on macOS, job73 A3: from any other directory `git apply` answers "No such
+file", and `-p0` / `--directory=/` answer "invalid path"). **On Windows, edit the line by hand.**
+The paths there are drive paths such as `C:\Users\…`, which that `git apply` recipe was never
+measured against; the edit is one `true` turned to `false` per plugin, at the line number the hunk
+names.
+
+### The command: `skill_audit`, the MCP prompt
+
+The second prompt of both servers, after `bantamkit_status`; in Claude Code it is
+`/mcp__bantamkit__skill_audit`. It gathers and audits **now**, server-side (the stored daily
+record is not read), and inserts one `user` message: the report, a blank line, and
+`Show me this report as it stands. Do not edit settings.json yourself; if a change is proposed
+above, ask me before applying it.` The rendered bytes are identical on both runtimes. On a host
+whose client does not support prompts, the `skill_audit` tool can still be called directly. The
+prompt is not gated by `BANTAMKIT_SKILL_AUDIT`.
+
+### The daily run, the status line and the SessionStart line
+
+* **Daily.** The Retention child (`docs/storage.md`, *Retention*) runs the audit after the sweep,
+  under the same claimed day, at most once a day. It never raises.
+* **Status.** `bantamkit_status` always ends with a `skill audit:` line: `never ran; usage
+  adapter <claude-code|none>`, the last run's skills, catalogue bytes, findings by severity and
+  a usage clause, or why there was no report. Every sentence is in `docs/status.md`. It is never
+  a condition.
+* **SessionStart.** At most one line of at most 200 bytes, only for a `high` finding or a
+  30-days-without-a-call skill that has not been shown before; nothing at all otherwise.
+  `docs/hooks.md`, *The skill-audit line*.
+
+### Turning it off
+
+`BANTAMKIT_SKILL_AUDIT=off` (or `0`, `false`, `no`) stops the daily run and silences the
+SessionStart line; `bantamkit_status` then prints `skill audit: off; …`. It is the audit's own
+switch (user ruling 2026-10-16): `BANTAMKIT_RETENTION=off` stops retention's sweep but not the
+audit. The command works either way.
+
+### The bar, measured
+
+Declared before any number existed: the daily run finishes in **≤ 2 s** on this machine, and
+with nothing new SessionStart adds **0 bytes**.
+
+* `tools/skillaudit/bench-daily.mjs` on an APFS clone of this machine's `~/.claude` (job73 A4,
+  2026-10-27; 32 skills, 10114 catalogue bytes, 78 calls over 30 days in 739 transcripts), 5 warm
+  runs: the Node child (start, claim, audit) median **1003 ms**, the Python child **1201 ms**.
+  PASS. The real `settings.json` sha256 was the same before and after.
+* SessionStart (job73 A5), hook log `bytes` / `skillAuditBytes` on both runtimes: no record
+  `344 / 0`, new findings `545 / 199`, the same record again `344 / 0`. PASS.
+
+Both runtimes are compared by the `skill-host` and `skillaudit` conformance suites and the
+`hooks` suite's `skill-audit-line` scenario (`docs/conformance.md`).
 
 ## First run — 2026-09-05, this machine
 

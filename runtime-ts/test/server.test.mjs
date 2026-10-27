@@ -1167,9 +1167,11 @@ test('the two templates advertise an empty description, as the reference does', 
   assert.deepEqual(byId(lines, 6).result, { resources: [] });
   // `prompts/list` was EMPTY here until U12. It is the one advertisement whose content is
   // pinned in the status section below rather than in this one; what stays here is that the
-  // list is served at all and carries exactly the one registration `SERVED_PROMPTS` counts.
-  assert.equal(byId(lines, 7).result.prompts.length, 1);
+  // list is served at all and carries exactly the registrations `SERVED_PROMPTS` counts.
+  // AMENDED job73 A6 (#205 Task 6): 1 -> 2, `skill_audit` listed after `bantamkit_status`.
+  assert.equal(byId(lines, 7).result.prompts.length, 2);
   assert.equal(byId(lines, 7).result.prompts[0].name, 'bantamkit_status');
+  assert.equal(byId(lines, 7).result.prompts[1].name, 'skill_audit');
 });
 
 test('the advertised capabilities are the reference set, not the SDK default', async () => {
@@ -1287,14 +1289,15 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12, read-repair and the usage ledger.
   // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, `touch: none` between the logs and retention.
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line LAST.
-  assert.equal(rows.length, 14, report);
+  assert.equal(rows.length, 15, report); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line LAST: 14 -> 15
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   // job68 J68-12: the version this build's package.json declares, exactly. WAS a stable-only
   // `\d+\.\d+\.\d+` shape, which a prerelease (`0.37.0-beta.1`, npm's spelling) failed.
   const declared = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   assert.match(rows[1], /^version \S+, build sha256:[0-9a-f]{64}$/);
   assert.equal(rows[1].split(',')[0], `version ${declared}`);
-  assert.equal(rows[2], 'serving 15 tools, 1 prompt, 2 resource templates');
+  // AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
+  assert.equal(rows[2], 'serving 15 tools, 2 prompts, 2 resource templates');
   // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
   // walk bound ABOVE the project was invisible on the one surface that reports binding.
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes; bound to ${store}`);
@@ -1321,6 +1324,7 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.equal(rows[11], 'read-repaired: 0 this process');
   assert.match(rows[12], /^usage ledger: .*[\\/]\.bantamkit[\\/]usage[\\/][0-9a-f]{16}\.jsonl \(1 lines, 0 skipped\)$/);
   assert.equal(rows[13], 'queries: 0 of 1 facts'); // S10 (#207 amendment 3, Q8)
+  assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // job73 A4 (#205 Task 4), the audit switch is off under the runner
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
   // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
   assert.equal(byId(lines, 3).result.content[0].text, report);
@@ -1396,7 +1400,7 @@ test('the report carries the update line in every one of the five states, and no
     // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12.
     // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13.
     // AMENDED job72 J72-26 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line.
-    assert.equal(rows.length, 14, `${state}: ${report}`);
+    assert.equal(rows.length, 15, `${state}: ${report}`); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line LAST: 14 -> 15
     assert.ok(!report.includes(FOOTER_HEAD), state);
     const other = byId(lines, 4).result;
     assert.ok(!JSON.stringify(other).includes('bantamkit_degraded'), `${state}: a footer rode an unrelated reply`);
@@ -1425,13 +1429,14 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
   // AMENDED job70 T200-1 (#200, plan Task 1): the problem block moves down one, below `touch: none`.
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 1 facts');
-  assert.equal(rows[14], '1 problem:');
+  assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
+  assert.equal(rows[15], '1 problem:');
   assert.equal(
-    rows[15],
+    rows[16],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
-  assert.equal(rows.length, 16); // AMENDED job70 T200-1 (#200, plan Task 1): 14 -> 15; AMENDED job72 J72-26 (#207 amendment 3): 15 -> 16
+  assert.equal(rows.length, 17); // AMENDED job70 T200-1 (#200, plan Task 1): 14 -> 15; AMENDED job72 J72-26 (#207 amendment 3): 15 -> 16; AMENDED job73 A4 (#205 Task 4): 16 -> 17
   /**
    * THE REMEDY NAMES A COMMAND THIS INSTALL ACTUALLY PROVIDES, from outside the server.
    *
@@ -1447,7 +1452,7 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
    */
   const bins = Object.keys(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).bin);
   assert.ok(bins.includes('bantamkit-memory'), `package.json ships no bantamkit-memory bin: ${bins}`);
-  assert.match(rows[15], /`bantamkit-memory compact`/);
+  assert.match(rows[16], /`bantamkit-memory compact`/);
   assert.ok(
     !report.includes('python -m bantamkit.memory'),
     `the degraded report names a command a pure-npm install cannot run:\n${report}`,
@@ -1518,7 +1523,9 @@ test('the prompt a PERSON invokes carries the report itself, plus one instructio
     undefined,
   );
   const advertised = byId(lines, 2).result.prompts;
-  assert.equal(advertised.length, 1, 'SERVED_PROMPTS says 1 and the wire must agree');
+  // AMENDED job73 A6 (#205 Task 6): 1 -> 2, the skill audit listed second.
+  assert.equal(advertised.length, 2, 'SERVED_PROMPTS says 2 and the wire must agree');
+  assert.deepEqual(advertised.map((p) => p.name), ['bantamkit_status', 'skill_audit']);
   assert.equal(advertised[0].name, 'bantamkit_status');
   assert.equal(advertised[0].title, 'bantamkit status');
   assert.deepEqual(advertised[0].arguments, []);
@@ -1537,6 +1544,25 @@ test('the prompt a PERSON invokes carries the report itself, plus one instructio
   );
   assert.equal(byId(lines, 4).error.code, -32602);
   assert.equal(byId(lines, 4).error.message, 'Unknown prompt: nosuch');
+  assert.equal(stderr, '');
+});
+
+test('the skill_audit prompt over a home with no .claude is the could-not-run report and the tail', async () => {
+  // #205 Task 6, mirroring test_status_surface.py: `statusSession` runs in its own HOME and an
+  // isolated cwd, neither holding a `.claude/`, so the gather finds no skill root at all.
+  const { lines, stderr } = await statusSession(
+    [INIT, INITIALIZED, { jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name: 'skill_audit' } }],
+    undefined,
+  );
+  const got = byId(lines, 2).result;
+  assert.equal(got.messages.length, 1);
+  assert.equal(got.messages[0].role, 'user');
+  assert.equal(
+    got.messages[0].content.text,
+    'skill audit — could not run: no skill directory was found for this host. The `skill_audit` tool still audits any ' +
+      'directory you name as `root`.\n\nShow me this report as it stands. Do not edit settings.json yourself; if a ' +
+      'change is proposed above, ask me before applying it.',
+  );
   assert.equal(stderr, '');
 });
 
@@ -1588,9 +1614,10 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): +2, read-repair and the usage ledger before it.
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 0 facts');
-  assert.equal(rows[14], '1 problem:');
+  assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
+  assert.equal(rows[15], '1 problem:');
   assert.equal(
-    rows[15],
+    rows[16],
     '- 1 memory layer could not be read (1 kind: extra), so an empty recall is not evidence that ' +
       'nothing is saved — check that those store directories exist and are readable.',
   );
@@ -1862,19 +1889,20 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   // AMENDED job70 T200-1 (#200, plan Task 1): the problem block moves down one, below `touch: none`.
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 1 facts');
-  assert.equal(rows[14], '2 problems:');
+  assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
+  assert.equal(rows[15], '2 problems:');
   assert.equal(
-    rows[15],
+    rows[16],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
   assert.equal(
-    rows[16],
+    rows[17],
     `- this server was installed from ${gone}, which no longer exists, so nothing can be ` +
       'refreshed in place there — reinstall bantamkit by name from a package registry and ' +
       'restart the server.',
   );
-  assert.equal(rows.length, 17); // AMENDED job70 T200-1 (#200, plan Task 1): 15 -> 16; AMENDED job72 J72-26 (#207 amendment 3): 16 -> 17
+  assert.equal(rows.length, 18); // AMENDED job70 T200-1 (#200, plan Task 1): 15 -> 16; AMENDED job72 J72-26 (#207 amendment 3): 16 -> 17; AMENDED job73 A4 (#205 Task 4): 17 -> 18
 
   // The footer shows the FIRST condition, which is still the index one — so the count moved
   // and the sentence did not. That pair is what would break if the order were changed by hand.
@@ -1985,9 +2013,9 @@ test('the queries line counts the facts that carry queries, LAST before any prob
       statusReport(m, off, degradedConditions(m, off), new Map([['version', '0'], ['build_id', 'x']]), 15, 1, 2).split('\n');
     const memory = new Memory(root);
     memory.save('project', 'a-fact', 'something worth keeping', 'b');
-    assert.equal(report(memory).at(-1), 'queries: 0 of 1 facts');
+    assert.equal(report(memory).at(-2), 'queries: 0 of 1 facts'); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line is LAST now
     memory.queriesWrite([{ name: 'a-fact', queries: ['what is kept'] }]);
-    assert.equal(report(memory).at(-1), 'queries: 1 of 1 facts');
+    assert.equal(report(memory).at(-2), 'queries: 1 of 1 facts');
     const tight = new Memory(root, { indexBudget: 1 });
     tight.queriesCoverage = () => {
       throw new Error('unreadable');
@@ -1995,7 +2023,7 @@ test('the queries line counts the facts that carry queries, LAST before any prob
     const rows = report(tight);
     const at = rows.indexOf('queries: unavailable');
     assert.ok(at > 0, rows.join('\n'));
-    assert.ok(rows[at + 1].endsWith('problem:'), rows.join('\n'));
+    assert.ok(rows[at + 1].startsWith('skill audit: ') && rows[at + 2].endsWith('problem:'), rows.join('\n'));
   } finally {
     [process.env.HOME, process.env.USERPROFILE] = was;
   }

@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GUARD = pathToFileURL(path.join(HERE, '_sandbox.mjs')).href;
-const KEYS = ['HOME', 'USERPROFILE', 'BANTAMKIT_INDEX_DIR', 'BANTAMKIT_RETENTION', 'BANTAMKIT_TEST_SANDBOX'];
+const KEYS = ['HOME', 'USERPROFILE', 'BANTAMKIT_INDEX_DIR', 'BANTAMKIT_RETENTION', 'BANTAMKIT_SKILL_AUDIT', 'BANTAMKIT_TEST_SANDBOX'];
 
 /** The env a child that imported the guard sees, given `env` (no inherited marker). */
 function guarded(env) {
@@ -53,6 +53,7 @@ test('run directly, the guard moves HOME, USERPROFILE and the index off the oper
       USERPROFILE: real,
       BANTAMKIT_INDEX_DIR: path.join(real, '.bantamkit', 'index'),
       BANTAMKIT_RETENTION: 'on',
+      BANTAMKIT_SKILL_AUDIT: 'on',
     });
     assert.notEqual(seen.homedir, real);
     assert.ok(!seen.HOME.startsWith(real), seen.HOME);
@@ -62,6 +63,7 @@ test('run directly, the guard moves HOME, USERPROFILE and the index off the oper
     assert.ok(seen.HOME.startsWith(seen.BANTAMKIT_TEST_SANDBOX), seen.HOME);
     assert.ok(seen.BANTAMKIT_INDEX_DIR.startsWith(seen.BANTAMKIT_TEST_SANDBOX), seen.BANTAMKIT_INDEX_DIR);
     assert.equal(seen.BANTAMKIT_RETENTION, 'off');
+    assert.equal(seen.BANTAMKIT_SKILL_AUDIT, 'off');
     // The scratch is gone once the child exits.
     assert.equal(fs.existsSync(seen.BANTAMKIT_TEST_SANDBOX), false);
     assert.deepEqual(fs.readdirSync(real), []);
@@ -76,6 +78,7 @@ test('under the runner (marker set) the guard leaves the environment exactly as 
     USERPROFILE: '/runner/profile',
     BANTAMKIT_INDEX_DIR: '/runner/index',
     BANTAMKIT_RETENTION: 'off',
+    BANTAMKIT_SKILL_AUDIT: 'off',
     BANTAMKIT_TEST_SANDBOX: '/runner/index',
   };
   const seen = guarded(env);

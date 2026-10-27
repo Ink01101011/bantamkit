@@ -15,6 +15,6 @@ from .hotindex import (  # noqa: F401
     shard_of,
 )
 from .lock import LOCK_POLL_MS, LOCK_STALE_MS, LOCK_WAIT_MS, exclusive  # noqa: F401
-from .logsegment import ROTATE_BYTES, LogSegment, dumps_line  # noqa: F401
+from .logsegment import ROTATE_BYTES, LogSegment, dumps_line, rewrite_held, write_over  # noqa: F401
 from .retention import RETENTION_ENV, run_retention  # noqa: F401
 from .tiers import status_lines  # noqa: F401  (`tiers` stays the submodule)

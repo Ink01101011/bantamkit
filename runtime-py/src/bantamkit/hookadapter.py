@@ -1092,6 +1092,14 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             )
     except Exception as e:  # noqa: BLE001 - a nudge is never worth a dead session
         _log(run, {"event": "SessionStart", "warn": f"queries: {_message(e)}"})
+    # #205 (K1): one line, only for a skill-audit finding not shown before; absent otherwise,
+    # so a session with nothing new carries the block it always did (the 0-byte bar). Imported
+    # here, not at the top: the other hook events never pay for the audit's modules.
+    from . import skillreport
+
+    skill_line = skillreport.session_line(run.home)
+    if skill_line:
+        parts.append(skill_line)
     # THE STALE-INSTALL LINE THE NODE MODULE APPENDS LAST IS NOT HERE, AND THAT IS RULED
     # (Q2.4), not forgotten. It is decided from the kept npm install under
     # `~/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json` -- `npminstall.ts`, which
@@ -1174,6 +1182,7 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
                 else {}
             ),
             "storeScope": run.store_scope,
+            "skillAuditBytes": len(skill_line.encode("utf-8")) if skill_line else 0,
             "updateState": None,
             "updateProbe": "node-only",
             "updateBytes": 0,
@@ -1819,11 +1828,13 @@ def _record_touch(run: HookRun, payload: dict[str, Any]) -> None:
     adds one `use` line per fact it named. No rotate here: Retention folds and rotates, so
     this arm pays one locked counter write and one locked append. A write that fails is one
     `touch: miss` hook-log record, which `bantamkit_status` counts. No `git` executable on
-    PATH (`git_on_path`, a stat walk) is "no git": nothing is written either (T200-10, B2).
+    PATH that can run (`git_on_path`: a stat walk, then `git --version` once per
+    `GIT_PROBE_TTL_S`, kept in `<hooks>/git-probe.json`) is "no git": nothing is written
+    either (T200-10, B2; #208).
     """
     try:
         repo = find_repo(str(payload.get("cwd") or os.getcwd()))
-        if repo is None or not git_on_path():
+        if repo is None or not git_on_path(state_dir=run.state):
             return
         session = _js_str(payload.get("session_id") or "")
         seq = next_seq(run.state, session)  # EVERY tool call counts, Bash included
