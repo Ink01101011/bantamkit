@@ -67,6 +67,10 @@ TOUCH_OPS = {
 TOUCH_TAIL_BYTES = 65536
 TOUCH_LOG_CAP_BYTES = 1_000_000  # the live log's byte cap; equal to `logsegment.ROTATE_BYTES`
 TOUCH_LOG_FOLD_TARGET_BYTES = 750_000  # a fold leaves the log at or under this many bytes
+# A folded row's `n` is clamped to +/- this, per row and per sum (#208 item 5): 2**53 - 1, the
+# largest integer both runtimes read and write exactly, so a fold never writes a number the
+# port cannot (Node's `Infinity` from two `1.7e308` rows, Python's 309-digit integer).
+TOUCH_N_CAP = 9_007_199_254_740_991
 USE_HEADER = re.compile(r"^(?:\[[^\]\n]+\] )*\[([^\]\n]+)\] \([a-z]+\) ")
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")  # the ledger file-name rule, `hookadapter._LEDGER_UNSAFE`
 _RECALL = "mcp__bantamkit__memory_recall"
@@ -309,12 +313,19 @@ def use_names(tool: str, tool_input: dict[str, Any], response: Any) -> list[tupl
     return []
 
 
+def _clamp(n: int) -> int:
+    return max(-TOUCH_N_CAP, min(TOUCH_N_CAP, n))
+
+
 def _count(v: Any) -> int:
-    """A folded row's `n`; an integral float counts as the integer `JSON.parse` would read."""
+    """A folded row's `n`; an integral float counts as the integer `JSON.parse` would read.
+
+    Clamped to `TOUCH_N_CAP` either way (#208 item 5).
+    """
     if _int(v):
-        return v
+        return _clamp(v)
     if isinstance(v, float) and v.is_integer():
-        return int(v)
+        return _clamp(int(v))
     return 1
 
 
@@ -322,7 +333,8 @@ def touch_reducer(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One folded row per path, in path order, keeping the last `ts` and the touch count.
 
     `use` rows are dropped; an earlier folded row's `n` is added, so a fold of a fold is the
-    same fold.
+    same fold. A count is clamped to `TOUCH_N_CAP` per row and after each sum, so it is
+    always a finite integer both runtimes write the same (#208 item 5).
     """
     by: dict[str, list[Any]] = {}
     for r in rows:
@@ -332,7 +344,7 @@ def touch_reducer(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             ts = r.get("ts") if isinstance(r.get("ts"), str) else ""
             cur = by.setdefault(r["path"], ["", 0])
             cur[0] = max(cur[0], ts)
-            cur[1] += n
+            cur[1] = _clamp(cur[1] + n)
     return [
         {"ts": by[p][0], "session": "", "seq": 0, "op": "folded", "path": p, "n": by[p][1]}
         for p in sorted(by)

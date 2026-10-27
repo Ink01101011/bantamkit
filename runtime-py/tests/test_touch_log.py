@@ -8,9 +8,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from bantamkit.storage.hotindex import sha16
+from bantamkit.storage.logsegment import dumps_line as dumps
 from bantamkit.touch.log import (
     TOUCH_LOG_CAP_BYTES,
     TOUCH_LOG_FOLD_TARGET_BYTES,
+    TOUCH_N_CAP,
     TOUCH_TAIL_BYTES,
     TouchLog,
     bound_body,
@@ -20,7 +25,14 @@ from bantamkit.touch.log import (
     touch_reducer,
     use_names,
 )
-from bantamkit.touch.repo import find_repo, git_on_path, relpath
+from bantamkit.touch.repo import (
+    GIT_PROBE_FILE,
+    GIT_PROBE_TTL_S,
+    find_repo,
+    git_on_path,
+    relpath,
+    repo_id,
+)
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -153,6 +165,39 @@ def test_reducer_keeps_last_touch_per_path_and_drops_uses():
     ]
 
 
+def test_reducer_clamps_an_extreme_count():
+    """#208 item 5: two `1.7e308` counts sum to a finite integer both runtimes write."""
+    row = {"ts": "2026-09-01T00:00:00Z", "session": "", "seq": 0, "op": "folded", "path": "p"}
+    big = [{**row, "n": 1.7e308}, {**row, "n": 1.7e308}]
+    assert [r["n"] for r in touch_reducer(big)] == [TOUCH_N_CAP]
+    assert [r["n"] for r in touch_reducer([{**row, "n": -1.7e308}] * 2)] == [-TOUCH_N_CAP]
+    assert [r["n"] for r in touch_reducer([{**row, "n": TOUCH_N_CAP}, {**row, "n": 3}])] == [
+        TOUCH_N_CAP
+    ]
+    assert TOUCH_N_CAP == 2**53 - 1
+    body = b"".join(
+        (json.dumps({**row, "path": f"p{i % 3}", "n": 1.7e308}) + "\n").encode()
+        for i in range(12000)
+    )
+    out = bound_body(body)
+    assert len(out) <= TOUCH_LOG_FOLD_TARGET_BYTES
+    assert [json.loads(x)["n"] for x in out.splitlines()] == [TOUCH_N_CAP] * 3
+
+
+def test_bound_body_ages_by_code_point_not_utf16_unit():
+    """#208 item 4: at one `ts`, U+FF5E paths age out before U+1F600 ones (code point order)."""
+    row = {"ts": "2026-09-01T00:00:00Z", "session": "", "seq": 0, "op": "folded", "n": 1}
+    body = b"".join(
+        dumps(
+            {**row, "path": f"src/{chr(0x1F600) if i % 2 else chr(0xFF5E)}/f{i:06d}.py"}
+        )
+        for i in range(10000)
+    )
+    kept = [json.loads(x)["path"] for x in bound_body(body).decode("utf-8").splitlines()]
+    hi = sum(chr(0xFF5E) in p for p in kept)
+    assert sum(chr(0x1F600) in p for p in kept) == 5000 and 0 < hi < 5000
+
+
 def test_reducer_of_a_fold_is_the_same_fold():
     rows = [
         {"ts": "2026-09-01T00:00:00Z", "session": "a", "seq": 1, "op": "read", "path": "b"},
@@ -183,6 +228,76 @@ def test_git_on_path_is_a_stat_walk(tmp_path):
     assert git_on_path(str(win), "", True) is True  # PATHEXT unset: .COM;.EXE;.BAT;.CMD
     assert git_on_path(str(win), ".COM;.BAT", True) is False
     assert git_on_path(str(exe), "", True) is False  # Windows wants an extension
+
+
+def test_git_on_path_never_counts_a_batch_file(tmp_path):
+    """#208 item 6: a no-shell spawn cannot run `git.cmd` / `git.bat` (platform injected)."""
+    cmd, both = tmp_path / "cmd", tmp_path / "both"
+    for d in (cmd, both):
+        d.mkdir()
+    (cmd / "git.cmd").write_text("x", encoding="utf-8")
+    (cmd / "git.BAT").write_text("x", encoding="utf-8")
+    (both / "git.exe").write_text("x", encoding="utf-8")
+    assert git_on_path(str(cmd), "", True) is False
+    assert git_on_path(str(cmd), ".CMD;.BAT", True) is False
+    assert git_on_path(f"{cmd};{both}", "", True) is True  # the .exe further on is found
+
+
+def _fake_git(d: Path, code: int) -> Path:
+    # platform-checked: only the tests below call it, and they skip on win32 (a shebang).
+    d.mkdir()
+    (d / "git").write_text(f"#!/bin/sh\nexit {code}\n", encoding="utf-8")
+    (d / "git").chmod(0o755)
+    return d
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead",
+)
+def test_git_on_path_runs_the_git_it_finds(tmp_path):
+    """#208 item 6: on PATH but exits 1 (the xcrun shim without CLT) is not runnable."""
+    ok, bad, state = _fake_git(tmp_path / "ok", 0), _fake_git(tmp_path / "bad", 1), tmp_path / "st"
+    assert git_on_path(str(ok), "", False) is True
+    assert git_on_path(str(bad), "", False) is False
+    assert git_on_path(f"{bad}:{ok}", "", False) is False  # the first git is the one git() runs
+    assert git_on_path(str(bad) + ":", "", False, str(state)) is False
+    probe = json.loads((state / GIT_PROBE_FILE).read_text(encoding="utf-8"))
+    assert probe["ok"] is False and len(probe["key"]) == 16
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead",
+)
+def test_git_on_path_keeps_its_answer_on_disk(tmp_path):
+    """A probe answer under `GIT_PROBE_TTL_S` old is used without a spawn; an older one is not."""
+    import os
+
+    bad, state = _fake_git(tmp_path / "bad", 1), tmp_path / "st"
+    assert git_on_path(str(bad), "", False, str(state)) is False
+    f = state / GIT_PROBE_FILE
+    key = json.loads(f.read_text(encoding="utf-8"))["key"]
+    f.write_text(json.dumps({"key": key, "ok": True}), encoding="utf-8")  # a planted answer
+    assert git_on_path(str(bad) + "::", "", False, str(state)) is True  # read, no spawn
+    old = f.stat().st_mtime - GIT_PROBE_TTL_S - 5
+    os.utime(f, (old, old))
+    assert git_on_path(":" + str(bad), "", False, str(state)) is False  # stale: spawned again
+    (bad / "git").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")  # a new git, new key
+    f.write_text(json.dumps({"key": key, "ok": False}), encoding="utf-8")
+    assert git_on_path(f"{bad}:::", "", False, str(state)) is True
+
+
+def test_repo_id_upper_cases_the_drive_letter(tmp_path):
+    """#208 item 8: `c:\\x` and `C:\\x` are one repository; a POSIX id is unchanged."""
+    assert repo_id("c:\\Users\\a\\repo") == repo_id("C:\\Users\\a\\repo")
+    assert repo_id("c:/x") == repo_id("C:/x")
+    assert repo_id("/c:/x") != repo_id("/C:/x")  # only a leading drive letter
+    top = str(tmp_path.resolve())
+    assert repo_id(top) == sha16(top)
+    r = _repo(tmp_path)
+    found = find_repo(str(r))
+    assert found is not None and found.id == sha16(str(r.resolve()))
 
 
 def test_fold_cutoff_names_the_line_past_the_byte_midpoint():

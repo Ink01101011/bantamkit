@@ -540,9 +540,30 @@ def run_summary(req: dict[str, Any]) -> dict[str, Any]:
 #     {"op": "append_touch", ...} -> bool   {"op": "bound"} -> bool | "threw"
 #     {"op": "lock"} / {"op": "unlock"} -> null  (`<log>.lock` created fresh / removed)
 #     {"op": "logdir"} -> null              (the log path made a directory)
+#
+# #208 (job73 B2) adds `"probe": [[path, state_dir], ...]` -> `"probe": [[bool, text | null],
+# ...]` (`git_on_path(path, "", False, state_dir)`, then `<state_dir>/git-probe.json` as text)
+# and `"ids": [top, ...]` -> `"ids": [repo_id(top), ...]`. `bodies` answer "threw" when
+# `bound_body` raises.
 
 from bantamkit.touch.log import bound_body, fold_cutoff  # noqa: E402
-from bantamkit.touch.repo import git_on_path  # noqa: E402
+from bantamkit.touch.repo import GIT_PROBE_FILE, git_on_path, repo_id  # noqa: E402
+
+
+def _probe(p: str, state: str) -> list[Any]:
+    ok = git_on_path(p, "", False, state)
+    try:
+        text = (Path(state) / GIT_PROBE_FILE).read_text(encoding="utf-8")
+    except OSError:
+        text = None
+    return [ok, text]
+
+
+def _body(b: str) -> str:
+    try:
+        return base64.b64encode(bound_body(base64.b64decode(b))).decode("ascii")
+    except Exception:  # noqa: BLE001 - the case is what escapes
+        return "threw"
 
 
 def _held_bed(bed: dict[str, Any]) -> list[Any]:
@@ -578,11 +599,10 @@ def run_bound(req: dict[str, Any]) -> dict[str, Any]:
         "git": [git_on_path(p, e, w) for p, e, w in req.get("git", [])],
         "cutoffs": [fold_cutoff(base64.b64decode(b)) for b in req.get("cutoffs", [])],
         "beds": [_log_bed(bed) for bed in req.get("beds", [])],
-        "bodies": [
-            base64.b64encode(bound_body(base64.b64decode(b))).decode("ascii")
-            for b in req.get("bodies", [])
-        ],
+        "bodies": [_body(b) for b in req.get("bodies", [])],
         "held": [_held_bed(bed) for bed in req.get("held", [])],
+        "probe": [_probe(p, st) for p, st in req.get("probe", [])],
+        "ids": [repo_id(t) for t in req.get("ids", [])],
     }
 
 

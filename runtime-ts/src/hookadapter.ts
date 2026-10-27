@@ -1818,8 +1818,9 @@ function turnClose(run: HookRun, input: HookInput): void {
 function recordTouch(run: HookRun, input: HookInput): void {
   try {
     const repo = findRepo(String(input.cwd || process.cwd()));
-    // No `git` executable on PATH (`gitOnPath`, a stat walk) is "no git": nothing is written.
-    if (repo === null || !gitOnPath()) return;
+    // No `git` on PATH that can run (`gitOnPath`: a stat walk, then `git --version` once per
+    // `GIT_PROBE_TTL_S`, kept in `<hooks>/git-probe.json`) is "no git": nothing is written (#208).
+    if (repo === null || !gitOnPath(null, null, null, run.state)) return;
     const session = String(input.session_id || '');
     const seq = nextSeq(run.state, session); // EVERY tool call counts, Bash included
     const tool = typeof input.tool_name === 'string' ? input.tool_name : '';

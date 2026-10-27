@@ -23,6 +23,7 @@ nothing lost.
 | `~/.bantamkit/touch/<repo-id>.jsonl` + `.N.gz` | #200's touch log: one line per Read/Edit/Write, per fact used, per file a Bash turn changed; paths only (`docs/touch.md`) | the hook (PostToolUse, Stop) | it feeds the graph's weak half and the SessionStart summary; deleting it forgets what was touched |
 | `~/.bantamkit/graph/<repo-id>.json` | #200's touch graph, a derived index (file -> facts) | the hook (UserPromptSubmit), `memory_recall({file})` | yes, rebuilt on the next load |
 | `~/.bantamkit/hooks/ledger-<session>.seq.json`, `.turn.json` | #200's per-session tool-call counter and the turn's `git status` snapshot | the hook | yes; Retention's 7-day ledger rule prunes them |
+| `~/.bantamkit/hooks/git-probe.json` | #208's kept answer to "can the `git` on PATH run": `{"key","ok"}`, `key` hashing the candidate's path, mtime and size; believed for 600 s (`docs/touch.md`, *Errors*) | the hook (PostToolUse), both runtimes, byte for byte | yes; the next PostToolUse runs `git --version` again |
 | `~/.bantamkit/retention.json` | When Retention last ran, and its report | the Retention child | yes; Retention then runs at the next session start |
 | `<repo>/.shiftwork/archive/<job>.json.gz` | A closed job, archived | Retention | **no**: once written, it is the only copy |
 

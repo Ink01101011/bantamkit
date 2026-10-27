@@ -36,6 +36,13 @@ export const TOUCH_OPS: ReadonlyMap<string, string> = new Map([
 export const TOUCH_TAIL_BYTES = 65536;
 export const TOUCH_LOG_CAP_BYTES = 1_000_000; // the live log's byte cap; equal to `ROTATE_BYTES`
 export const TOUCH_LOG_FOLD_TARGET_BYTES = 750_000; // a fold leaves the log at or under this many bytes
+/**
+ * A folded row's `n` is clamped to +/- this, per row and per sum (#208 item 5): 2**53 - 1, the
+ * largest integer both runtimes read and write exactly. Two `1.7e308` rows summed to `Infinity`,
+ * `dumpsLine` threw, and the bound never held. Equal to `TOUCH_N_CAP` in the reference.
+ */
+export const TOUCH_N_CAP = Number.MAX_SAFE_INTEGER;
+const clampN = (n: number): number => Math.max(-TOUCH_N_CAP, Math.min(TOUCH_N_CAP, n));
 export const USE_HEADER = /^(?:\[[^\]\n]+\] )*\[([^\]\n]+)\] \([a-z]+\) /;
 const UNSAFE = /[^A-Za-z0-9_-]/g; // the ledger file-name rule, `ledgerPath` in hookadapter
 const RECALL = 'mcp__bantamkit__memory_recall';
@@ -300,7 +307,8 @@ export function useNames(tool: string, toolInput: Record<string, unknown>, respo
 
 /**
  * One folded row per path, in code-point path order, keeping the last `ts` and the touch
- * count; `use` rows are dropped and an earlier folded row's `n` is added.
+ * count; `use` rows are dropped and an earlier folded row's `n` is added. A count is clamped
+ * to `TOUCH_N_CAP` per row and after each sum, so it is always finite (#208 item 5).
  */
 export function touchReducer(rows: Row[]): Row[] {
   const by = new Map<string, [string, number]>();
@@ -309,11 +317,11 @@ export function touchReducer(rows: Row[]): Row[] {
     const p = r['path'];
     if ((op === 'read' || op === 'edit' || op === 'write' || op === 'folded') && typeof p === 'string') {
       const raw = Object.prototype.hasOwnProperty.call(r, 'n') ? r['n'] : 1;
-      const n = op === 'folded' ? (isInt(raw) ? raw : 1) : 1;
+      const n = op === 'folded' ? (isInt(raw) ? clampN(raw) : 1) : 1;
       const ts = typeof r['ts'] === 'string' ? r['ts'] : '';
       const cur = by.get(p) ?? ['', 0];
       if (cmpCodepoint(ts, cur[0]) > 0) cur[0] = ts;
-      cur[1] += n;
+      cur[1] = clampN(cur[1] + n);
       by.set(p, cur);
     }
   }

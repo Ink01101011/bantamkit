@@ -26,7 +26,10 @@ of 0.8), so with the defaults the ranker orders exactly as #199 does.
 ## The touch log
 
 `~/.bantamkit/touch/<repo-id>.jsonl`, a #204 `LogSegment` (append under the O_EXCL lock).
-`<repo-id>` is the first 16 hex characters of SHA-256 over the realpath of the git toplevel.
+`<repo-id>` is the first 16 hex characters of SHA-256 over the realpath of the git toplevel,
+with a leading drive letter upper-cased first (`repo_id` / `repoId`, #208): `c:\x` and `C:\x`
+are one repository on both runtimes, whichever case each one's realpath returns on Windows. A
+POSIX toplevel has no drive letter, so its id is unchanged.
 The toplevel is found by walking up from the event's `cwd` for `.git`, a directory or a
 `gitdir:` file (a linked worktree or a submodule). Finding it costs stats, never a subprocess.
 Outside a git repository nothing is written, not even the counter.
@@ -38,7 +41,7 @@ Line shapes, keys in this order (the bytes are `LogSegment`'s):
 | touch | `{"ts","session","seq","op","path"}`, `op` one of `read`, `edit`, `write` | PostToolUse |
 | bash-turn write | the touch shape plus `"via":"bash-turn","from":<seq>` | Stop |
 | use | `{"ts","session","seq","op":"use","fact","kind"}`, `kind` one of `recall_hit`, `save` | PostToolUse of `mcp__bantamkit__memory_recall` / `memory_save` |
-| folded | `{"ts","session":"","seq":0,"op":"folded","path","n"}` | a fold: Retention, or an append over the cap (*Errors*) |
+| folded | `{"ts","session":"","seq":0,"op":"folded","path","n"}` | a fold: Retention, or an append over the cap (*Errors*). `n` is clamped to +/- `TOUCH_N_CAP` = 2^53 - 1 per row and after each sum (#208): two `n: 1.7e308` rows summed to `Infinity` in Node, its line could not be written and the bound never held, while Python wrote a 309-digit integer Node reads back as a double |
 
 - `path` is repo-relative with `/` separators on every OS. A file outside the toplevel makes no
   line. `NotebookEdit` reads `notebook_path`; the others read `file_path`. MultiEdit and
@@ -232,7 +235,7 @@ context".
 | touch log unwritable | the line is skipped; the hook log gets `{"touch":"miss"}`, and `bantamkit_status` prints `touch: <n> missed writes (hook log)` (`touch: none` when there is no touch directory and no miss) |
 | corrupt line | skipped, and counted on the log's `logs: touch/<repo-id> <bytes> (<n> rotated, <n> skipped)` status line |
 | not inside a git repository | nothing is written; no bash-turn, no summary, no context |
-| `git` not on PATH, inside a repository | nothing is written, not even the counter (T200-10). Whether git is on PATH is a stat walk, never a subprocess, cached per process by PATH and PATHEXT: each non-empty `PATH` entry in order; on POSIX `<dir>/git` must be a regular file with an execute bit (a symlink to one counts), on Windows `<dir>/git<ext>` for each extension of `PATHEXT` (`.COM;.EXE;.BAT;.CMD` when unset). Everything else that needs git is silent too: no bash-turn, no summary, no graph, and `memory_recall({file})` answers the no-match sentence |
+| `git` not on PATH, or one that cannot run, inside a repository | nothing is written, not even the counter (T200-10, #208). A stat walk finds the candidate: each non-empty `PATH` entry in order; on POSIX `<dir>/git` must be a regular file with an execute bit (a symlink to one counts), on Windows `<dir>/git<ext>` for each extension of `PATHEXT` (`.COM;.EXE;.BAT;.CMD` when unset) that a no-shell spawn can run, `.exe` or `.com` only: a `git.cmd` / `git.bat` is never a candidate. No candidate is no git, with no subprocess. The first candidate then runs as `<candidate> --version` (no shell, 2 s bound) and must exit 0: the macOS `/usr/bin/git` shim with no Command Line Tools exits 1, so it is no git. The answer is kept in `~/.bantamkit/hooks/git-probe.json` as `{"key","ok"}` (`key` = sha256 of the candidate's path and `mtime_ns:size`, 16 hex) and believed while the file's mtime is within `GIT_PROBE_TTL_S` = 600 s of now, so the PostToolUse arm pays the spawn (about 10 ms measured on macOS) once per ten minutes, not per call; both runtimes write the same bytes and read each other's. Cached per process too, by PATH and PATHEXT. Everything else that needs git is silent too: no bash-turn, no summary, no graph, and `memory_recall({file})` answers the no-match sentence |
 | log growth | Two folds into one `folded` line per path keeping its last `ts` and count, `use` lines dropped: Retention's through `LogSegment.fold`, and the bound on append. **On append** (T200-10, T200-11): an append that leaves the live log over `TOUCH_LOG_CAP_BYTES = 1,000,000` takes the O_EXCL lock and rewrites the file (temp then rename) as `bound_body` of it, and ONLY while that lock is actually held: when the 2 s wait runs out the fold is skipped (the append itself already went ahead, as every storage writer does), so no rewrite ever runs unlocked and a line appended under the lock is never lost to the rename; and no line an unlocked appender (one whose own 2 s lock wait ran out) writes is lost either: since #208 it writes under a marker, and the bound keeps the old file by a hard link, waits for the markers present after its rename and carries the old file's growth over verbatim, read to EOF (`docs/storage.md`, *Logs*). Before #208 a line landing after the read and before the rename could be lost; the forced probe of `.shiftwork/notes-job73/B1.md` (30 processes x 100 lines, half of them forced unlocked) kept 2,433-2,995 of 3,000 before and 3,000 of 3,000 in every run after, on both runtimes. `bound_body`: (1) every earlier `folded` row and every line with `ts <=` the `ts` of the first object line ending past the byte midpoint (`<=`, so a log written within one second still folds) go to the reducer; the other lines are kept as written. (2) When the kept lines alone are over `TOUCH_LOG_FOLD_TARGET_BYTES = 750,000` (no `ts` past the midpoint, or `ts` out of order) they are folded too. (3) **Aging rule:** while the result is over 750,000 bytes, folded rows are dropped **oldest `ts` first** (ties by path, code-point order). **What it drops:** a dropped row takes that path's touch count and last-touch time with it, so the strong/weak graph and the SessionStart summary forget a path that has not been touched for the longest; in case (2) the kept lines' `session`, `seq`, `via`/`from` and their `use` lines are folded away too. Every rewrite therefore ends at or under 750,000 bytes, whatever the mix of distinct paths, and the next one waits for at least 250,000 bytes of new lines: an append under the cap never rewrites. Before T200-11 a folded block over half the cap (about 4,400 paths of 40 characters) was re-folded into itself on every append, the file stayed over the cap and grew, and under parallel hooks lines were lost (`.shiftwork/notes-job70/T200-10-rereview.md`). Measured (`.shiftwork/notes-job70/T200-11.md`): an ordinary just-over-cap log, the folding append 8.96 ms (Node), a plain one 0.13 ms, 1,000,030 bytes to 495,083; the re-review's stuck log (6,000 folded rows), the folding append 19.48 ms Node / 27.79 ms Python, the plain append after it 0.16 / 0.13 ms, 1,000,032 bytes to 749,976. A fold that fails is silent and never fails the hook. This is the only bound while Retention is off. **Retention** (`docs/storage.md`) folds a log once a live line is older than 30 days (old `use` weight is below 0.23 of a fresh one), and rotates an idle log; with Retention off the 1 MB bound drops `use` rows and session detail sooner than 30 days would. |
 | graph build fails | `w_context` is 0 and no via; recall is #199's |
 
@@ -313,8 +316,13 @@ N=.shiftwork/notes-job70
   `.git`-file worktree; `git` absent from PATH; 20 parallel PostToolUse processes giving `seq`
   1..20 with no gap. The last three were run on macOS at 0d33d03 on both runtimes
   (`.shiftwork/notes-job70/T200-9.md`); the `PATHEXT` rule runs only simulated (`windows: true`
-  over POSIX directories, `touch-bound`). The repo id hashes each runtime's own realpath; whether
-  Python's and Node's realpath agree on a Windows drive letter's case has not been checked.
+  over POSIX directories, `touch-bound`). Since #208 the repo id no longer depends on whether
+  Python's and Node's realpath agree on a Windows drive letter's case: the drive letter is
+  upper-cased before hashing on both sides, held by construction and pinned by `touch-bound`
+  feeding both sides `c:\...` and `C:\...`. STILL UNMEASURED on real Windows: whether the two
+  realpaths agree on anything else (a `\\?\` prefix, a short 8.3 name, a junction, the case of a
+  directory below the drive), any of which would still split the id; that a no-shell spawn of
+  `git.exe` behaves as the probe assumes; and the `git.cmd` rule, which runs only simulated.
 - `W_CONTEXT` is untuned (0.0) and the via path is off: consumer A is inert by default, and
   since T200-10 it costs nothing while it is.
 - Re-reads after a B summary: no data yet.
