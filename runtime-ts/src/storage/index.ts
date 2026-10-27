@@ -4,7 +4,7 @@
  * compare the two. Add one re-export line per module.
  */
 export { LOCK_POLL_MS, LOCK_STALE_MS, LOCK_WAIT_MS, exclusive, type ExclusiveOptions } from './lock.js';
-export { LogSegment, ROTATE_BYTES, dumpsLine, type Row } from './logsegment.js';
+export { LogSegment, ROTATE_BYTES, dumpsLine, rewriteHeld, writeOver, type Row } from './logsegment.js';
 export {
   DUPLICATE,
   FAMILIES,

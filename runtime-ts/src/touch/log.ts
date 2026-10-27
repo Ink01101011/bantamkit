@@ -24,7 +24,7 @@ import { randomBytes } from 'node:crypto';
 
 import { cmpCodepoint } from '../pysem.js';
 import { exclusive } from '../storage/lock.js';
-import { LogSegment, dumpsLine, type Row } from '../storage/logsegment.js';
+import { LogSegment, dumpsLine, rewriteHeld, type Row } from '../storage/logsegment.js';
 
 export const TOUCH_OPS: ReadonlyMap<string, string> = new Map([
   ['Read', 'read'],
@@ -126,29 +126,12 @@ export class TouchLog {
   /**
    * Rewrite the live file as `boundBody` of it, under the lock; `true` when it rewrote. Never
    * throws. Nothing is written when the lock is not held or the file is no longer over the cap;
-   * bytes an unlocked appender added after the read are carried over verbatim.
+   * bytes an unlocked appender added after the read are carried over verbatim, read to EOF once
+   * every in-flight unlocked appender is done (`rewriteHeld`, #208).
    */
   bound(): boolean {
     try {
-      return exclusive(this.path, (held) => {
-        if (!held) return false;
-        const data = fs.readFileSync(this.path);
-        if (data.length <= TOUCH_LOG_CAP_BYTES) return false;
-        let body = boundBody(data);
-        const grown = fs.statSync(this.path).size - data.length;
-        if (grown > 0) {
-          const fd = fs.openSync(this.path, 'r');
-          try {
-            const extra = Buffer.alloc(grown);
-            const n = fs.readSync(fd, extra, 0, grown, data.length);
-            body = Buffer.concat([body, extra.subarray(0, n)]);
-          } finally {
-            fs.closeSync(fd);
-          }
-        }
-        writeOver(this.path, body);
-        return true;
-      });
+      return exclusive(this.path, (held) => held && rewriteHeld(this.path, (data) => (data.length > TOUCH_LOG_CAP_BYTES ? boundBody(data) : null)));
     } catch {
       return false; // the bound is an enhancement; the line is written
     }
@@ -198,23 +181,6 @@ export class TouchLog {
       if (row['session'] === session && isInt(seq) && seq > afterSeq) out.push(row);
     }
     return out;
-  }
-}
-
-/** Temp then rename, as `LogSegment`'s `replace` does. */
-function writeOver(p: string, data: Buffer): void {
-  const tmp = `${p}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  const fd = fs.openSync(tmp, 'wx');
-  try {
-    try {
-      fs.writeSync(fd, data);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.renameSync(tmp, p);
-  } catch (e) {
-    fs.rmSync(tmp, { force: true });
-    throw e;
   }
 }
 

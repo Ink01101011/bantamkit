@@ -305,3 +305,47 @@ def test_parallel_appenders_on_a_stuck_log_lose_nothing(tmp_path):
     assert len(race) == 120, f"{120 - len(race)} appends lost"
     assert log.path.stat().st_size <= TOUCH_LOG_CAP_BYTES
     assert list(log.path.parent.glob("*.tmp")) == [] and not Path(f"{log.path}.lock").exists()
+
+
+def test_bound_carries_an_inflight_unlocked_line_read_to_eof(tmp_path):
+    # 208 items 2-3: an expired-wait appender that opened the log before the bound's rename and
+    # writes after it (two writes, the second past 64 KiB) loses nothing; the growth is read to EOF.
+    import os
+    import threading
+    import time
+
+    log = TouchLog(tmp_path, "0123456789abcdef")
+    log.path.parent.mkdir(parents=True)
+    data = _stuck(6000)
+    log.path.write_bytes(data)
+    mark = Path(f"{log.path}.1.ab.writing")
+    mark.write_bytes(b"")
+    late = [
+        b'{"ts":"2026-10-17T00:00:09Z","session":"late","seq":1,"op":"read","path":"a.py"}\n',
+        b'{"ts":"2026-10-17T00:00:09Z","session":"late","seq":2,"op":"read","path":"%s"}\n'
+        % (b"b" * 70000),
+    ]
+
+    def appender():
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            keeps = [n for n in os.listdir(log.path.parent) if n.endswith(".keep")]
+            try:
+                keep = log.path.parent / keeps[0]
+                if os.stat(keep).st_ino != os.stat(log.path).st_ino:
+                    with open(keep, "ab") as f:
+                        for chunk in late:
+                            f.write(chunk)
+                            f.flush()
+                    break
+            except (IndexError, OSError):
+                pass
+            time.sleep(0.001)
+        mark.unlink()
+
+    t = threading.Thread(target=appender)
+    t.start()
+    assert log.bound() is True
+    t.join()
+    assert log.path.read_bytes() == bound_body(data) + b"".join(late)
+    assert sorted(os.listdir(log.path.parent)) == ["0123456789abcdef.jsonl"]

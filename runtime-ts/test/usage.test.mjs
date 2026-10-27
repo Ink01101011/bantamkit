@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,7 +19,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -299,4 +300,24 @@ test('a folded weight is clamped on read and on write', () => {
   led.fold('2026-10-01T00:00:00Z');
   const text = readFileSync(led.path, 'utf8');
   assert.ok(text.includes('"weight":1000000.000000000}') && text.includes('"weight":0.000000000}'), text);
+});
+
+test('a read-only usage directory costs no lock wait (208 item 7)', { skip: process.platform === 'win32' || process.getuid?.() === 0 ? 'Windows honours no chmod 555 on a directory; root writes anyway' : false }, () => {
+  // A real read-only usage dir (chmod 555), not a file in the way: every save and recall used
+  // to wait out the full 2 s lock wait; now each append gives the lock up at once.
+  const d = tmp();
+  const led = new UsageLedger(d, join(d, 'store'));
+  assert.equal(led.append('a', 'save', '2026-10-15T00:00:00Z'), true);
+  const dir = dirname(led.path);
+  chmodSync(dir, 0o555);
+  try {
+    let t0 = Date.now();
+    for (let k = 0; k < 3; k += 1) assert.equal(led.append('a', 'recall_hit', `2026-10-15T00:00:0${k}Z`), true);
+    assert.ok(Date.now() - t0 < 500);
+    t0 = Date.now();
+    assert.equal(new UsageLedger(d, join(d, 'other')).append('b', 'save', '2026-10-15T00:00:00Z'), false);
+    assert.ok(Date.now() - t0 < 500);
+  } finally {
+    chmodSync(dir, 0o755);
+  }
 });

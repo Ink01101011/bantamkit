@@ -2,8 +2,8 @@
 
 Issue #204, milestone 0.37.0-beta, built in job69 (commits `3fa3f06`..`f780012`, reviewed in
 J69-8). Spec: `docs/superpowers/specs/2026-10-15-storage-layer-design.md`. Both runtimes carry
-the same layer, `runtime-py/src/bantamkit/storage/` and `runtime-ts/src/storage/`, and five
-conformance suites compare them (`storage-log`, `storage-index`, `storage-cold`,
+the same layer, `runtime-py/src/bantamkit/storage/` and `runtime-ts/src/storage/`, and six
+conformance suites compare them (`storage-log`, `storage-lock`, `storage-index`, `storage-cold`,
 `storage-retention`, `storage-tiers`; see `docs/conformance.md`).
 
 **Files stay the source of truth.** Fact Markdown and checkpoint JSON are still what you edit,
@@ -115,7 +115,19 @@ when one of those two calls asks, never by the hook.
 
 ## Logs
 
-`LogSegment` is an append-only JSONL file under the shared O_EXCL lock. The hook log and the
+`LogSegment` is an append-only JSONL file under the shared O_EXCL lock. **No line is lost to a
+rewrite (#208).** A fold, a rotation and the touch bound rewrite the live file only while the
+lock is actually held (a 2 s wait that runs out skips the rewrite; the next call retries). An
+append whose own wait ran out still writes, unlocked, but under a marker
+`<name>.<pid>.<hex>.writing` it creates before opening the log and removes after its line is
+written. The rewrite keeps the old file by a hard link `<name>.<pid>.<hex>.keep`, renames the new
+body in, waits for every marker present after the rename to go (one older than 10 s is a dead
+appender's and is removed; the wait is capped at 5 s), and appends what the old file grew past
+what it read, read to EOF. A file system without hard links is never rewritten. A directory that
+refuses the lock file (`EACCES`, `EPERM`, `EROFS`, no lock file there: a read-only usage or touch
+directory) gives the lock up at once instead of waiting 2 s on every save and recall.
+
+The hook log and the
 usage ledger rotate once an append leaves the live file past 1,000,000 bytes: the live file is
 gzipped whole into `<name>.1.gz` (then `.2.gz`, ...) and a fresh live file starts. Nothing is
 dropped by rotation. To read a log whole, read the segments in number order, then the live
@@ -275,7 +287,11 @@ What was checked statically (J69-8) is listed here so the manual run knows what 
 
 - **The lock** is `open(O_CREAT | O_EXCL)` on `<path>.lock` (`os.open` / `fs.openSync(..., 'wx')`),
   which Windows supports, with a stale-lock break after 10 s and a 2 s wait after which the body
-  runs unlocked.
+  runs unlocked (an append) or is skipped (a rewrite). A delete-pending lock file answers access
+  denied on Windows; it is still there, so the fail-fast rule above keeps waiting for it.
+- **A rewrite** (#208) takes a hard link (`os.link` / `fs.linkSync`, NTFS supports it) and then
+  renames over the live file; a Python appender holding the file open makes that rename fail on
+  Windows, so the rewrite is skipped and retried, and nothing is lost.
 - **Renames** are `os.replace` / `fs.renameSync` onto an existing file. Windows refuses that while
   another process holds the target open without `FILE_SHARE_DELETE`, so a reader holding a HEAD
   open at the instant of a write would make that write fail. A failed write-through is already

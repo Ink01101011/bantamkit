@@ -14,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 
 import { TOUCH_LOG_CAP_BYTES, TOUCH_LOG_FOLD_TARGET_BYTES, TOUCH_TAIL_BYTES, TouchLog, boundBody, currentSeq, findRepo, foldCutoff, gitOnPath, nextSeq, relPath, touchReducer, useNames } from '../dist/touch/index.js';
 
+import { inflight } from './_inflight.mjs';
+
 const CLI = join(dirname(dirname(fileURLToPath(import.meta.url))), 'dist', 'cli.js');
 const tmp = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-touch-log-')));
 
@@ -369,4 +371,25 @@ test('parallel appenders on a stuck log lose nothing', async () => {
   assert.equal(race.size, 120, `${120 - race.size} appends lost`);
   assert.ok(statSync(log.path).size <= TOUCH_LOG_CAP_BYTES);
   assert.deepEqual(readdirSync(dirname(log.path)).filter((n) => n.endsWith('.tmp') || n.endsWith('.lock')), []);
+});
+
+test('bound carries an in-flight unlocked line, read to EOF (208 items 2-3)', async () => {
+  // An expired-wait appender that opened the log before the bound's rename and writes after it
+  // (two writes, the second past 64 KiB) loses nothing; the old file's growth is read to EOF.
+  const d = tmp();
+  const log = new TouchLog(d, '0123456789abcdef');
+  mkdirSync(dirname(log.path), { recursive: true });
+  const data = stuck(6000);
+  writeFileSync(log.path, data);
+  const mark = `${log.path}.1.ab.writing`;
+  writeFileSync(mark, '');
+  const late = [
+    '{"ts":"2026-10-17T00:00:09Z","session":"late","seq":1,"op":"read","path":"a.py"}\n',
+    `{"ts":"2026-10-17T00:00:09Z","session":"late","seq":2,"op":"read","path":"${'b'.repeat(70000)}"}\n`,
+  ];
+  const done = inflight(log.path, mark, late);
+  assert.equal(log.bound(), true);
+  await done;
+  assert.deepEqual(readFileSync(log.path), Buffer.concat([boundBody(data), Buffer.from(late.join(''))]));
+  assert.deepEqual(readdirSync(dirname(log.path)), ['0123456789abcdef.jsonl']);
 });
