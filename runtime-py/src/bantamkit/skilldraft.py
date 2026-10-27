@@ -273,7 +273,10 @@ def _bantamkit_roots(home: str | Path, cwd: str | None) -> list[tuple[str, str]]
 
 
 def _collisions(
-    name: str, host_roots: Sequence[tuple[str, str]], own: Sequence[tuple[str, str]]
+    name: str,
+    host_roots: Sequence[tuple[str, str]],
+    own: Sequence[tuple[str, str]],
+    itself: str | None = None,
 ) -> list[str]:
     if _SAFE_NAME.fullmatch(name) is None:
         return []  # validate names it; a name that is not one is no path to look up
@@ -282,12 +285,16 @@ def _collisions(
         if label == "plugins":
             continue  # a plugin skill is namespaced `<plugin>:<name>`; it never collides
         target = os.path.join(root, name)
+        if itself is not None and _real(target) == itself:
+            continue  # the skill being improved, or a link that resolves to it
         if os.path.lexists(target):
             out.append(f"a skill named {name!r} already exists at {target}")
     return out
 
 
-def _shared(doc: SkillDoc, roots: list[tuple[str, str]], gathered: Any) -> list[str]:
+def _shared(
+    doc: SkillDoc, roots: list[tuple[str, str]], gathered: Any, itself: str | None = None
+) -> list[str]:
     tmp = tempfile.mkdtemp(prefix="bantamkit-draft-")
     try:
         d = os.path.join(tmp, DRAFT_DIR)
@@ -310,13 +317,26 @@ def _shared(doc: SkillDoc, roots: list[tuple[str, str]], gathered: Any) -> list[
         if f.kind != KIND_SHARED_PHRASE or DRAFT_DIR not in f.skills:
             continue
         out.extend(
-            f"trigger phrase {f.detail!r} is shared with {s}" for s in f.skills if s != DRAFT_DIR
+            f"trigger phrase {f.detail!r} is shared with {s}"
+            for s in f.skills
+            if s != DRAFT_DIR and s != itself
         )
     return out
 
 
-def gate(text: str, b: Mapping[str, Any], home: str | Path, cwd: str | None) -> GateResult:
-    """Every reason `text` may not be kept, in the fixed order; `ok` when there is none."""
+def gate(
+    text: str,
+    b: Mapping[str, Any],
+    home: str | Path,
+    cwd: str | None,
+    own: str | Path | None = None,
+) -> GateResult:
+    """Every reason `text` may not be kept, in the fixed order; `ok` when there is none.
+
+    `own` is the directory of the installed skill `text` would become a new version of
+    (Task 10a): that skill is not a collision with itself (nor is a link resolving to it), and
+    its own trigger phrases, or a skill directory of its name, are not shared with it.
+    """
     # A lone surrogate is U+FFFD before any reader sees it: PyYAML refuses one raw and the
     # port's reader takes it, so a raw one would be a different verdict per runtime.
     text = _clean(text)
@@ -327,10 +347,11 @@ def gate(text: str, b: Mapping[str, Any], home: str | Path, cwd: str | None) -> 
     reasons = validate(doc)
     gathered = select_adapter(home).gather(home, cwd, _NO_USAGE_MS)
     host_roots = list(gathered.roots)
-    own = _bantamkit_roots(home, cwd)
-    reasons += _collisions(doc.name, host_roots, own)
-    audit = host_roots + [(label, p) for label, p in own if os.path.isdir(p)]
-    reasons += _shared(doc, audit, gathered)
+    own_roots = _bantamkit_roots(home, cwd)
+    itself = _real(str(own)) if own is not None else None
+    reasons += _collisions(doc.name, host_roots, own_roots, itself)
+    audit = host_roots + [(label, p) for label, p in own_roots if os.path.isdir(p)]
+    reasons += _shared(doc, audit, gathered, os.path.basename(itself) if itself else None)
     reasons += _citations(doc.body, evidence_ids(b))
     return GateResult(not reasons, reasons, doc)
 

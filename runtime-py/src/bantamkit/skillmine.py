@@ -1541,22 +1541,13 @@ def draft_candidate(doc: Mapping[str, Any]) -> dict[str, Any] | None:
     return ready[0] if ready else None
 
 
-def skill_uses(home: str | Path, state: Mapping[str, Any]) -> dict[str, int]:
-    """R10 for probation: per live automatic install, the `recall_hit`/`body_read` rows of any
-    store's usage ledger (`~/.bantamkit/usage/*.jsonl`, rotated segments too) that name it at or
-    after its install. A folded line counts once when its `last` use is at or after it."""
+def use_counts(home: str | Path, since: Mapping[str, int]) -> dict[str, int]:
+    """R10: per name in `since`, the `recall_hit`/`body_read` rows of any store's usage ledger
+    (`~/.bantamkit/usage/*.jsonl`, rotated segments too) that name it at or after
+    `since[name]` (ms). A folded line counts once when its `last` use is at or after it."""
     from bantamkit.memory.usage import _parse
     from bantamkit.storage.logsegment import LogSegment
-    from bantamkit.storage.retention import parse_now
 
-    skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
-    since: dict[str, int] = {}
-    for name, e in skills.items():
-        if isinstance(e, dict) and e.get("auto") is True and isinstance(e.get("at"), str):
-            try:
-                since[name] = parse_now(e["at"])
-            except ValueError:
-                continue
     if not since:
         return {}
     d = os.path.join(str(home), ".bantamkit", "usage")
@@ -1588,6 +1579,91 @@ def skill_uses(home: str | Path, state: Mapping[str, Any]) -> dict[str, int]:
     return uses
 
 
+def _installed_at(state: Mapping[str, Any], auto_only: bool) -> dict[str, int]:
+    from bantamkit.storage.retention import parse_now
+
+    skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
+    out: dict[str, int] = {}
+    for name, e in skills.items():
+        if not isinstance(e, dict) or not isinstance(e.get("at"), str):
+            continue
+        if auto_only and e.get("auto") is not True:
+            continue
+        try:
+            out[name] = parse_now(e["at"])
+        except ValueError:
+            continue
+    return out
+
+
+def skill_uses(home: str | Path, state: Mapping[str, Any]) -> dict[str, int]:
+    """R10 for probation: per live automatic install, its uses since it was installed."""
+    return use_counts(home, _installed_at(state, auto_only=True))
+
+
+def promote_uses(home: str | Path, state: Mapping[str, Any], now_ms: int) -> dict[str, int]:
+    """R10 for promotion: per live skill, its uses in the last `PROMOTE_DAYS` days (and since
+    it was installed)."""
+    from bantamkit.skillpromote import PROMOTE_DAYS
+
+    floor = now_ms - PROMOTE_DAYS * DAY_MS
+    return use_counts(
+        home, {n: max(at, floor) for n, at in _installed_at(state, auto_only=False).items()}
+    )
+
+
+#: The hook log the injections are read from (`hookadapter`'s UserPromptSubmit `inject` rows).
+HOOK_LOG = ("hooks", "hook-log.jsonl")
+
+
+def improve_sources(
+    home: str | Path, pieces: Iterable[Piece], state: Mapping[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """What `skillinstall.stats_step` counts, read off disk (R10's per-session attribution):
+
+    - `uses`: the touch logs' (`~/.bantamkit/touch/*.jsonl`) `use` rows of a use kind, as
+      `{ts, session, fact}`;
+    - `injects`: the hook log's UserPromptSubmit `inject` rows with a session, as
+      `{ts, session, names}` (the injected names);
+    - `turns`: the session pieces of this run, as `{id, ts, ok}`.
+
+    Nothing is read when no skill is installed. Paths and names only (X4)."""
+    from bantamkit.storage.logsegment import LogSegment
+
+    skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
+    out: dict[str, list[dict[str, Any]]] = {"injects": [], "turns": [], "uses": []}
+    if not skills:
+        return out
+    d = os.path.join(str(home), ".bantamkit", "touch")
+    for n in sorted(_listdir(d)):
+        p = os.path.join(d, n)
+        if _LEDGER_NAME.fullmatch(n) is None or not _isfile(p):
+            continue
+        for row in LogSegment(Path(p)).read():
+            if row.get("op") == "use" and row.get("kind") in USE_KINDS:
+                out["uses"].append(
+                    {"fact": row.get("fact"), "session": row.get("session"), "ts": row.get("ts")}
+                )
+    log = os.path.join(str(home), ".bantamkit", *HOOK_LOG)
+    if _isfile(log):
+        for row in LogSegment(Path(log)).read():
+            injected = row.get("injected")
+            if (
+                row.get("event") != "UserPromptSubmit"
+                or row.get("action") != "inject"
+                or not isinstance(injected, list)
+            ):
+                continue
+            names = [x["name"] for x in injected if isinstance(x, dict) and "name" in x]
+            out["injects"].append(
+                {"names": names, "session": row.get("session"), "ts": row.get("ts")}
+            )
+    for piece in pieces:
+        if piece.source == SOURCE_SESSION:
+            out["turns"].append({"id": piece.id, "ok": piece.ok, "ts": piece.ts})
+    return out
+
+
 def _record_events(home: str | Path, events: list[str], now: str) -> None:
     from bantamkit.skillfile import update_state
 
@@ -1608,8 +1684,10 @@ def daily(home: str | Path, cwd: str | None, now: str) -> None:
     Runs only when `BANTAMKIT_SKILL_AUDIT` is not off (Q2). Mines both sources into
     `skill-proposals.json` (and saves the miner cache); then, with an endpoint configured and
     `BANTAMKIT_SKILL_AUTO` on, drafts the ONE best auto-eligible record through the endpoint
-    alone (R11, R12); then `auto_step` and `probation_step`; their events go to
-    `skills-state.json`'s `events` for the SessionStart line. A miner error writes `miner.error`
+    alone (R11, R12); then `auto_step` and `probation_step`; then (Task 10a) `stats_step` off
+    `improve_sources`, `promote_step` off `promote_uses` and `judge_step`, each on its own so
+    one that fails cannot lose the events before it; the events go to `skills-state.json`'s
+    `events` for the SessionStart line. A miner error writes `miner.error`
     over the previous clusters and NOTHING later runs. A proposals file that exists and cannot
     be read is refused: left as it is, and nothing runs.
     """
@@ -1629,7 +1707,15 @@ def _daily(home: str | Path, cwd: str | None, now: str, clock: Any) -> None:
     from bantamkit.skilldraft import default_chain, draft, endpoint_config
     from bantamkit.skillfile import read_state
     from bantamkit.skillhost import select_adapter
-    from bantamkit.skillinstall import auto_enabled, auto_step, draft_entry, probation_step
+    from bantamkit.skillinstall import (
+        auto_enabled,
+        auto_step,
+        draft_entry,
+        judge_step,
+        probation_step,
+        stats_step,
+    )
+    from bantamkit.skillpromote import promote_step
     from bantamkit.storage.retention import parse_now
     from bantamkit.touch.repo import find_repo
 
@@ -1664,6 +1750,20 @@ def _daily(home: str | Path, cwd: str | None, now: str, clock: Any) -> None:
     if proposals_bytes(doc) != written:
         write_proposals(home, doc)
     events += probation_step(state, skill_uses(home, state), home, now)
+    # Task 10a: count, promote, judge. Each step is on its own: one that fails leaves the
+    # events already made to be recorded, and the next day's run tries it again.
+    try:
+        stats_step(state, improve_sources(home, pieces, state), home, now)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        events += promote_step(state, promote_uses(home, state, now_ms), home, cwd, now)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        events += judge_step(state, home, now)
+    except Exception:  # noqa: BLE001
+        pass
     _record_events(home, events, now)
 
 

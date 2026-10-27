@@ -277,12 +277,14 @@ function collisions(
   name: string,
   hostRoots: readonly (readonly [string, string])[],
   own: readonly (readonly [string, string])[],
+  itself: string | null = null,
 ): string[] {
   if (!SAFE_NAME.test(name)) return [];
   const out: string[] = [];
   for (const [label, root] of [...hostRoots, ...own]) {
     if (label === 'plugins') continue; // a plugin skill is namespaced `<plugin>:<name>`
     const target = path.join(root, name);
+    if (itself !== null && real(target) === itself) continue; // the skill being improved, or a link to it
     if (exists(target)) out.push(`a skill named ${pyRepr(name)} already exists at ${target}`);
   }
   return out;
@@ -293,6 +295,7 @@ function shared(
   roots: readonly (readonly [string, string])[],
   enabled: readonly string[],
   versions: Record<string, string> | null,
+  itself: string | null = null,
 ): string[] {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bantamkit-draft-'));
   let findings;
@@ -315,14 +318,18 @@ function shared(
   for (const f of findings) {
     if (f.kind !== KIND_SHARED_PHRASE || !f.skills.includes(DRAFT_DIR)) continue;
     for (const s of f.skills) {
-      if (s !== DRAFT_DIR) out.push(`trigger phrase ${pyRepr(f.detail)} is shared with ${s}`);
+      if (s !== DRAFT_DIR && s !== itself) out.push(`trigger phrase ${pyRepr(f.detail)} is shared with ${s}`);
     }
   }
   return out;
 }
 
 /** Every reason `text` may not be kept, in the fixed order; `ok` when there is none. */
-export function gate(text: string, b: Bundle, home: string, cwd: string | null): GateResult {
+/**
+ * `own` is the directory of the installed skill `text` would become a new version of (Task 10a):
+ * the reference's `gate` says what it leaves out.
+ */
+export function gate(text: string, b: Bundle, home: string, cwd: string | null, own: string | null = null): GateResult {
   // A lone surrogate is U+FFFD before any reader sees it (PyYAML refuses one raw).
   text = clean(text);
   let doc: SkillDoc;
@@ -335,10 +342,11 @@ export function gate(text: string, b: Bundle, home: string, cwd: string | null):
   const reasons = validate(doc);
   const gathered = selectAdapter(home).gather(home, cwd, NO_USAGE_MS);
   const hostRoots = gathered.roots;
-  const own = bantamkitRoots(home, cwd);
-  reasons.push(...collisions(doc.name, hostRoots, own));
-  const audit = [...hostRoots, ...own.filter(([, p]) => isDir(p))];
-  reasons.push(...shared(doc, audit, gathered.enabled, gathered.versions));
+  const ownRoots = bantamkitRoots(home, cwd);
+  const itself = own !== null ? real(own) : null;
+  reasons.push(...collisions(doc.name, hostRoots, ownRoots, itself));
+  const audit = [...hostRoots, ...ownRoots.filter(([, p]) => isDir(p))];
+  reasons.push(...shared(doc, audit, gathered.enabled, gathered.versions, itself !== null ? path.basename(itself) : null));
   reasons.push(...citations(doc.body, evidenceIds(b)));
   return { ok: reasons.length === 0, reasons, doc };
 }

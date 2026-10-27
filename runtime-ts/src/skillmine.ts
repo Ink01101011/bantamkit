@@ -28,7 +28,20 @@ import { parseTs } from './memory/usage.js';
 import { activeDrafter, defaultChain, draft, endpointConfig } from './skilldraft.js';
 import { readState, updateState } from './skillfile.js';
 import { selectAdapter } from './skillhost.js';
-import { AUTO_FROM, AUTO_LIVE_MAX, autoEnabled, autoStep, draftEntry, draftText, firstTs, liveAuto, probationStep } from './skillinstall.js';
+import {
+  AUTO_FROM,
+  AUTO_LIVE_MAX,
+  autoEnabled,
+  autoStep,
+  draftEntry,
+  draftText,
+  firstTs,
+  judgeStep,
+  liveAuto,
+  probationStep,
+  statsStep,
+} from './skillinstall.js';
+import { PROMOTE_DAYS, promoteStep } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
 import { auditEnabled, parseNow } from './storage/retention.js';
 import { TouchLog } from './touch/log.js';
@@ -1489,18 +1502,8 @@ export function draftCandidate(doc: ProposalsDoc): Rec | null {
 
 /** R10 for probation: per live automatic install, its uses at or after the install; the
  * reference's `skill_uses`. */
-export function skillUses(home: string, state: Rec): Record<string, number> {
-  const skills = isObj(state['skills']) ? state['skills'] : {};
-  const since = new Map<string, number>();
-  for (const [name, e] of Object.entries(skills)) {
-    if (isObj(e) && e['auto'] === true && typeof e['at'] === 'string') {
-      try {
-        since.set(name, parseNow(e['at']));
-      } catch {
-        /* not a stamp: never on probation by use */
-      }
-    }
-  }
+/** The reference's `use_counts`: per name in `since`, its usage-ledger uses at or after it. */
+export function useCounts(home: string, since: Map<string, number>): Record<string, number> {
   if (since.size === 0) return {};
   const uses: Record<string, number> = Object.fromEntries([...since.keys()].map((n) => [n, 0]));
   const d = path.join(home, '.bantamkit', 'usage');
@@ -1519,6 +1522,66 @@ export function skillUses(home: string, state: Rec): Record<string, number> {
     }
   }
   return uses;
+}
+
+function installedAt(state: Rec, autoOnly: boolean): Map<string, number> {
+  const skills = isObj(state['skills']) ? state['skills'] : {};
+  const out = new Map<string, number>();
+  for (const [name, e] of Object.entries(skills)) {
+    if (!isObj(e) || typeof e['at'] !== 'string') continue;
+    if (autoOnly && e['auto'] !== true) continue;
+    try {
+      out.set(name, parseNow(e['at']));
+    } catch {
+      /* not a stamp */
+    }
+  }
+  return out;
+}
+
+/** R10 for probation: per live automatic install, its uses since it was installed. */
+export function skillUses(home: string, state: Rec): Record<string, number> {
+  return useCounts(home, installedAt(state, true));
+}
+
+/** R10 for promotion: per live skill, its uses in the last `PROMOTE_DAYS` days. */
+export function promoteUses(home: string, state: Rec, nowMs: number): Record<string, number> {
+  const floor = nowMs - PROMOTE_DAYS * DAY_MS;
+  return useCounts(home, new Map([...installedAt(state, false)].map(([n, at]) => [n, Math.max(at, floor)])));
+}
+
+/** The hook log the injections are read from. */
+export const HOOK_LOG: readonly string[] = ['hooks', 'hook-log.jsonl'];
+
+/** The reference's `improve_sources`: what `statsStep` counts, read off disk. */
+export function improveSources(home: string, pieces: readonly Piece[], state: Rec): { injects: Rec[]; turns: Rec[]; uses: Rec[] } {
+  const skills = isObj(state['skills']) ? state['skills'] : {};
+  const out: { injects: Rec[]; turns: Rec[]; uses: Rec[] } = { injects: [], turns: [], uses: [] };
+  if (Object.keys(skills).length === 0) return out;
+  const d = path.join(home, '.bantamkit', 'touch');
+  for (const n of sortCp(listdir(d))) {
+    const p = path.join(d, n);
+    if (!n.endsWith('.jsonl') || n === '.jsonl' || !isFile(p)) continue;
+    for (const row of new LogSegment(p).read()) {
+      const kind = row['kind'];
+      if (row['op'] === 'use' && typeof kind === 'string' && USE_KINDS.includes(kind)) {
+        out.uses.push({ fact: row['fact'] ?? null, session: row['session'] ?? null, ts: row['ts'] ?? null });
+      }
+    }
+  }
+  const log = path.join(home, '.bantamkit', ...HOOK_LOG);
+  if (isFile(log)) {
+    for (const row of new LogSegment(log).read()) {
+      const injected = row['injected'];
+      if (row['event'] !== 'UserPromptSubmit' || row['action'] !== 'inject' || !Array.isArray(injected)) continue;
+      const names = injected.filter((x) => isObj(x) && Object.hasOwn(x, 'name')).map((x) => (x as Rec)['name']);
+      out.injects.push({ names, session: row['session'] ?? null, ts: row['ts'] ?? null });
+    }
+  }
+  for (const piece of pieces) {
+    if (piece.source === SOURCE_SESSION) out.turns.push({ id: piece.id, ok: piece.ok ?? null, ts: piece.ts });
+  }
+  return out;
 }
 
 function recordEvents(home: string, events: readonly string[], now: string): void {
@@ -1550,12 +1613,14 @@ async function dailyRun(home: string, cwd: string | null, now: string): Promise<
     throw e;
   }
   let doc: ProposalsDoc;
+  let nowMs: number;
+  let pieces: Piece[];
   try {
-    const nowMs = parseNow(now);
+    nowMs = parseNow(now);
     const repo = cwd ? findRepo(cwd) : null;
     const root = repo !== null ? repo.top : (cwd ?? '');
     const cache = MinerCache.forHome(home).load();
-    const pieces = minerPieces(home, root, selectAdapter(home), nowMs, cache);
+    pieces = minerPieces(home, root, selectAdapter(home), nowMs, cache);
     doc = mine(pieces, previous, now, 0);
     cache.save();
   } catch (e) {
@@ -1576,6 +1641,22 @@ async function dailyRun(home: string, cwd: string | null, now: string): Promise<
   const events = autoStep(doc, state, home, now);
   if (!proposalsBytes(doc).equals(written)) writeProposals(home, doc);
   events.push(...probationStep(state, skillUses(home, state), home, now));
+  // Task 10a: count, promote, judge; each on its own (see the reference).
+  try {
+    statsStep(state, improveSources(home, pieces, state), home, now);
+  } catch {
+    /* the next day's run counts again */
+  }
+  try {
+    events.push(...promoteStep(state, promoteUses(home, state, nowMs), home, cwd, now, null));
+  } catch {
+    /* the next day's run tries again */
+  }
+  try {
+    events.push(...judgeStep(state, home, now));
+  } catch {
+    /* the next day's run tries again */
+  }
   recordEvents(home, events, now);
 }
 

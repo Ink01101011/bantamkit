@@ -47,7 +47,7 @@ WORDS = {
     "thirty-five": 35, "thirty-six": 36, "thirty-seven": 37, "thirty-eight": 38,
     "thirty-nine": 39, "forty": 40, "forty-one": 41, "forty-two": 42,
     "forty-three": 43, "forty-four": 44, "forty-five": 45, "forty-six": 46,
-    "forty-seven": 47, "forty-eight": 48,
+    "forty-seven": 47, "forty-eight": 48, "forty-nine": 49,
 }
 
 _HEADING = re.compile(r"^## The ([a-z-]+) suites\s*$", re.MULTILINE)

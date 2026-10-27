@@ -1,0 +1,439 @@
+/**
+ * skill-improve — self-improvement, part 1 (#206 Task 10a), Python against Node: versions, the
+ * counts, the 5-use judge, automatic rollback and the edited guard.
+ *
+ * THE PROPERTY: the two runtimes keep, count, judge and roll back a learned skill's versions
+ * the same way. `skills-state.json` and the skill directories are shared on disk, so the
+ * history files, the restored SKILL.md bytes, every counter and verdict, and every sentence
+ * must agree; and the judge is a decision taken on integers at a fixed bar (`JUDGE_USES` = 5),
+ * so the two sides must take it at the same use, on the same rates.
+ *
+ * HOW. One op list (the table is in `ref/skillimprove_ref.py`) runs in order twice: by the
+ * reference in its own bed and by `runNode` below against `dist/` in another. Each op that
+ * touches a home answers the state and the home's whole tree, the bed masked, so a SKILL.md
+ * not restored, a history file not kept, an edited skill changed or a counter off by one all
+ * show as a difference.
+ *
+ * WHAT THE FIXTURES ARE AIMED AT. The use bar one below and at it (4 never judged, 5 judged);
+ * a success rate one below the base's (3/5 vs 4/5) and equal to it (4/5, and 8/10 against 4/5:
+ * equal after cross-multiplying); a false-fire rate one above (3/5 vs 2/5) and equal; the zero
+ * denominators (a base with no injections, a version with none); an edited skill with a worse
+ * version (never judged) and a new version of it (refused); a rollback whose directory swap
+ * fails (v2 left whole, no verdict); the next number after a rollback (v3, from v1); each count
+ * row in, before the window, after `now`, without a session, and counted once only; the
+ * gate's own-skill variant; the daily run doing all three steps off the ledgers on disk.
+ *
+ * THE LITERALS. A rule both runtimes lose together (`JUDGE_USES = 4`, say) leaves every
+ * differential green, so the constants, the 4-and-5 verdicts and the rollback's bytes are also
+ * pinned per side.
+ */
+import * as fs from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+export const name = 'skill-improve';
+export const summary = 'self-improvement: versions, the counts, the 5-use judge, rollback and the edited guard';
+
+const here = dirname(dirname(fileURLToPath(import.meta.url)));
+const REF = join(here, 'ref', 'skillimprove_ref.py');
+
+const NOW = '2026-10-27T12:00:00.000Z';
+const LATER = '2026-10-28T12:00:00.000Z';
+const MINER_FILES = ['skill-miner-cache.json', 'skill-proposals.json'];
+
+const draft = (n, step = 'Do it', words = 'Does {n}. Use when {n} is asked.') =>
+  `---\nname: ${n}\ndescription: ${words.split('{n}').join(n)}\n---\n\n` +
+  `## When to use\n\nWhen asked.\n\n## Steps\n\n1. ${step} [job1/U1].\n\n## Pitfalls\n\nNone.\n\n## Example\n\nx\n`;
+
+const SOURCES = {
+  injects: [
+    { names: ['sk-c'], session: 'aaaaaaaa-1', ts: '2026-10-27T12:00:01.000Z' },
+    { names: ['sk-c', 'other'], session: 'bbbbbbbb-2', ts: '2026-10-27T12:00:02.000Z' },
+    { names: ['sk-c'], session: 'cccccccc-3', ts: '2026-10-27T12:00:03.000Z' },
+    { names: ['other'], session: 'aaaaaaaa-1', ts: '2026-10-27T12:00:04.000Z' },
+    { names: ['sk-c'], session: '', ts: '2026-10-27T12:00:05.000Z' },
+    { names: ['sk-c'], session: 'dddddddd-4', ts: '2026-10-26T12:00:00.000Z' },
+    { names: ['sk-c'], session: 'eeeeeeee-5', ts: '2026-10-29T12:00:00.000Z' },
+    { names: 'sk-c', session: 'ffffffff-6', ts: '2026-10-27T12:00:06.000Z' },
+    { names: ['sk-c'], session: 'ffffffff-6', ts: 'yesterday' },
+    { names: ['sk-c', 7], session: 'ffffffff-6', ts: '2026-10-27T12:00:07Z' },
+  ],
+  turns: [
+    { id: 'saaaaaaaa#1', ok: true, ts: '2026-10-27T12:00:00.000Z' },
+    { id: 'sbbbbbbbb#1', ok: true, ts: '2026-10-27T11:00:00.000Z' },
+    { id: 'sbbbbbbbb#2', ok: false, ts: '2026-10-27T12:00:00.000Z' },
+    { id: 'sffffffff#2', ok: true, ts: '2026-10-27T12:00:20.000Z' },
+    { id: 'sffffffff#1', ok: true, ts: '2026-10-27T12:00:00.000Z' },
+    { id: 'not-a-turn', ok: true, ts: '2026-10-27T12:00:00.000Z' },
+  ],
+  uses: [
+    { fact: 'sk-c', session: 'aaaaaaaa-1', ts: '2026-10-27T12:00:10.000Z' },
+    { fact: 'sk-c', session: 'bbbbbbbb-2', ts: '2026-10-27T12:00:10.000Z' },
+    { fact: 'sk-c', session: 'zzzzzzzz-9', ts: '2026-10-27T12:00:10.000Z' },
+    { fact: 'sk-c', session: 'ffffffff-6', ts: '2026-10-27T12:00:15.000Z' },
+    { fact: 'other', session: 'cccccccc-3', ts: '2026-10-27T12:00:10.000Z' },
+    { fact: 'sk-c', session: 'aaaaaaaa-1', ts: '2026-10-26T00:00:00.000Z' },
+    { fact: 'sk-c', session: null, ts: '2026-10-27T12:00:10.000Z' },
+    { fact: 'sk-c', session: 'aaaaaaaa-1', ts: '2026-10-27T12:00:10Z', extra: 1 },
+  ],
+};
+
+const RATES = [
+  ['success 3/5 against 4/5 falls: rolled back', { successes: 4, uses: 5 }, { successes: 3, uses: 5 }],
+  ['success 4/5 against 4/5 is equal: kept', { successes: 4, uses: 5 }, { successes: 4, uses: 5 }],
+  ['success 8/10 against 4/5 is equal on integers: kept', { successes: 4, uses: 5 }, { successes: 8, uses: 10 }],
+  ['success 7/9 against 4/5 falls: rolled back', { successes: 4, uses: 5 }, { successes: 7, uses: 9 }],
+  ['false fires 3/5 against 2/5 rise: rolled back', { false_fires: 2, injects: 5, uses: 5 }, { false_fires: 3, injects: 5, uses: 5 }],
+  ['false fires 2/5 against 2/5 are equal: kept', { false_fires: 2, injects: 5, uses: 5 }, { false_fires: 2, injects: 5, uses: 5 }],
+  ['false fires 1/1 against a base with no injections rise: rolled back', { injects: 0, uses: 5 }, { false_fires: 1, injects: 1, uses: 5 }],
+  ['no injections against 1/1: a rate of 0, kept', { false_fires: 1, injects: 1, uses: 5 }, { injects: 0, uses: 5 }],
+  ['a base with no uses: kept', { uses: 0 }, { successes: 0, uses: 5 }],
+];
+
+function opList() {
+  const ops = [];
+  const label = [];
+  const add = (l, op) => {
+    label.push(l);
+    ops.push(op);
+  };
+  add('constants', { op: 'constants' });
+
+  // h1: new versions, the refusals, rollback, the next number
+  const h = 'h1';
+  add('h1: install sk-a', { op: 'install', home: h, name: 'sk-a', text: draft('sk-a'), now: NOW });
+  add('new_version: a bad kind', { op: 'new_version', home: h, name: 'sk-a', text: draft('sk-a', 'Do it better'), now: NOW, kind: 'manual' });
+  add('new_version: not installed', { op: 'new_version', home: h, name: 'nope', text: draft('nope'), now: NOW, kind: 'auto' });
+  add('new_version: named another skill', { op: 'new_version', home: h, name: 'sk-a', text: draft('sk-b'), now: NOW, kind: 'auto' });
+  add('new_version: not a valid skill', { op: 'new_version', home: h, name: 'sk-a', text: draft('sk-a').replace('## Steps', '## Stops'), now: NOW, kind: 'auto' });
+  add('new_version: a bad now', { op: 'new_version', home: h, name: 'sk-a', text: draft('sk-a'), now: 'today', kind: 'auto' });
+  add('new_version: the swap fails, v1 stays', { op: 'new_version', home: h, name: 'sk-a', text: draft('sk-a', 'Do it better'), now: NOW, kind: 'auto', fail_at: 'rename3' });
+  add('new_version: v2, v1 in history', { op: 'new_version', home: h, name: 'sk-a', text: draft('sk-a', 'Do it better'), now: NOW, kind: 'auto' });
+  add('h1: v1 succeeded 4 of 5', { op: 'set_stats', home: h, name: 'sk-a', version: '1', stats: { successes: 4, uses: 5 } });
+  add('h1: v2 succeeded 0 of 4', { op: 'set_stats', home: h, name: 'sk-a', version: '2', stats: { successes: 0, uses: 4 } });
+  add('judge_step: 4 uses are never judged', { op: 'judge_step', home: h, now: NOW });
+  add('h1: v2 reaches 5 uses', { op: 'set_stats', home: h, name: 'sk-a', version: '2', stats: { uses: 5 } });
+  add('judge_step: the rollback fails, v2 stays unjudged', { op: 'judge_step', home: h, now: NOW, fail_at: 'rename3' });
+  add('judge_step: 5 uses are judged, rolled back to v1', { op: 'judge_step', home: h, now: LATER });
+  add('edited: a rolled-back skill is not edited', { op: 'edited', home: h, name: 'sk-a' });
+  add('judge_step: judged once', { op: 'judge_step', home: h, now: LATER });
+  add('new_version: the next number is v3, from v1', { op: 'new_version', home: h, name: 'sk-a', text: draft('sk-a', 'Do it a third way'), now: LATER, kind: 'approved' });
+
+  // h2: the rates, one home per fixture
+  RATES.forEach(([l, one, two], i) => {
+    const r = `r${i}`;
+    add(`${r}: install`, { op: 'install', home: r, name: 'sk-r', text: draft('sk-r'), now: NOW });
+    add(`${r}: v2`, { op: 'new_version', home: r, name: 'sk-r', text: draft('sk-r', 'Do it better'), now: NOW, kind: 'auto' });
+    add(`${r}: v1 stats`, { op: 'set_stats', home: r, name: 'sk-r', version: '1', stats: one });
+    add(`${r}: v2 stats`, { op: 'set_stats', home: r, name: 'sk-r', version: '2', stats: two });
+    add(`judge_step: ${l}`, { op: 'judge_step', home: r, now: NOW });
+  });
+
+  // h3: the edited guard
+  const e = 'h3';
+  add('h3: install sk-e', { op: 'install', home: e, name: 'sk-e', text: draft('sk-e'), now: NOW });
+  add('h3: v2', { op: 'new_version', home: e, name: 'sk-e', text: draft('sk-e', 'Do it better'), now: NOW, kind: 'auto' });
+  add('h3: v1 4 of 5', { op: 'set_stats', home: e, name: 'sk-e', version: '1', stats: { successes: 4, uses: 5 } });
+  add('h3: v2 0 of 9', { op: 'set_stats', home: e, name: 'sk-e', version: '2', stats: { successes: 0, uses: 9 } });
+  add('h3: the user edits sk-e', { op: 'append', home: e, rel: '.bantamkit/skills/sk-e/SKILL.md', text: 'my own line\n' });
+  add('edited: sk-e is edited', { op: 'edited', home: e, name: 'sk-e' });
+  add('judge_step: an edited skill is never judged', { op: 'judge_step', home: e, now: NOW });
+  add('new_version: an edited skill is never versioned', { op: 'new_version', home: e, name: 'sk-e', text: draft('sk-e', 'Do it a third way'), now: NOW, kind: 'auto' });
+
+  // h4: the counts
+  const c = 'h4';
+  add('h4: install sk-c', { op: 'install', home: c, name: 'sk-c', text: draft('sk-c'), now: NOW });
+  add('stats_step: each row in, out, or counted once', { op: 'stats_step', home: c, sources: SOURCES, now: LATER });
+  add('stats_step: the same rows again add nothing', { op: 'stats_step', home: c, sources: SOURCES, now: LATER });
+  add('stats_step: a bad now', { op: 'stats_step', home: c, sources: SOURCES, now: 'today' });
+  add('stats_step: sources of the wrong shape', { op: 'stats_step', home: c, sources: { injects: 'x', turns: null, uses: [1, 'a', null] }, now: LATER });
+  add('h4: v2 of sk-c', { op: 'new_version', home: c, name: 'sk-c', text: draft('sk-c', 'Do it better'), now: LATER, kind: 'auto' });
+  add('stats_step: after the new version, into v2 only', {
+    op: 'stats_step',
+    home: c,
+    sources: { injects: [], turns: [], uses: [{ fact: 'sk-c', session: 's-1', ts: '2026-10-28T12:00:00.000Z' }, { fact: 'sk-c', session: 's-1', ts: '2026-10-28T12:00:00.001Z' }] },
+    now: '2026-10-29T00:00:00.000Z',
+  });
+
+  // h5: the gate's own-skill variant
+  const g = 'h5';
+  const words = 'Does {n}. Use when asked to "ship the thing".';
+  add('h5: install sk-g', { op: 'install', home: g, name: 'sk-g', text: draft('sk-g', 'Do it', words), now: NOW });
+  add('gate: a new version of sk-g without own collides and shares', { op: 'gate', home: g, text: draft('sk-g', 'Do it better', words) });
+  add('gate: with own it passes', { op: 'gate', home: g, text: draft('sk-g', 'Do it better', words), own: 'sk-g' });
+  add('h5: install sk-h with the same phrase', { op: 'install', home: g, name: 'sk-h', text: draft('sk-h', 'Do it', words), now: NOW });
+  add('gate: with own, another skill still shares', { op: 'gate', home: g, text: draft('sk-g', 'Do it better', words), own: 'sk-g' });
+  add('gate: with own, renaming onto another skill collides', { op: 'gate', home: g, text: draft('sk-h', 'Do it better'), own: 'sk-g' });
+
+  // h6: the daily run
+  const d = 'h6';
+  add('h6: ~/.claude exists', { op: 'mkdir', home: d, rel: '.claude' });
+  add('h6: install sk-d', { op: 'install', home: d, name: 'sk-d', text: draft('sk-d'), now: NOW });
+  add('h6: v1 4 of 5', { op: 'set_stats', home: d, name: 'sk-d', version: '1', stats: { successes: 4, uses: 5 } });
+  add('h6: v2', { op: 'new_version', home: d, name: 'sk-d', text: draft('sk-d', 'Do it better'), now: NOW, kind: 'auto' });
+  add('h6: v2 0 of 4', { op: 'set_stats', home: d, name: 'sk-d', version: '2', stats: { successes: 0, uses: 4 } });
+  const usage = Array(3).fill(JSON.stringify({ fact: 'sk-d', kind: 'recall_hit', ts: '2026-10-27T13:00:00Z' })).join('\n') + '\n';
+  add('h6: three uses in the usage ledger', { op: 'write', home: d, rel: '.bantamkit/usage/store.jsonl', text: usage });
+  const touch = [
+    { ts: '2026-10-27T13:00:00Z', session: 's-1', seq: 1, op: 'use', fact: 'sk-d', kind: 'recall_hit' },
+    { ts: '2026-10-27T13:00:00Z', session: 's-1', seq: 2, op: 'use', fact: 'sk-d', kind: 'save' },
+    { ts: '2026-10-27T11:00:00Z', session: 's-1', seq: 3, op: 'use', fact: 'sk-d', kind: 'recall_hit' },
+  ];
+  add('h6: the touch log', { op: 'write', home: d, rel: '.bantamkit/touch/repo.jsonl', text: touch.map((r) => `${JSON.stringify(r)}\n`).join('') });
+  const hooks = [
+    { ts: '2026-10-27T13:00:00.000Z', event: 'UserPromptSubmit', action: 'inject', session: 's-2', injected: [{ name: 'sk-d' }] },
+    { ts: '2026-10-27T13:00:00.000Z', event: 'UserPromptSubmit', action: 'skip', session: 's-2', injected: [{ name: 'sk-d' }] },
+    { ts: '2026-10-27T13:00:01.000Z', event: 'UserPromptSubmit', action: 'inject', session: 's-1', injected: [{ name: 'sk-d' }, { nam: 'x' }] },
+  ];
+  add('h6: the hook log', { op: 'write', home: d, rel: '.bantamkit/hooks/hook-log.jsonl', text: hooks.map((r) => `${JSON.stringify(r)}\n`).join('') });
+  add('daily: counts, promotes, judges', { op: 'daily', home: d, now: LATER });
+  add('daily: the next day adds nothing', { op: 'daily', home: d, now: '2026-10-29T12:00:00.000Z' });
+  return { ops, label };
+}
+
+// ------------------------------------------------------------------------- Node side
+
+function tree(root, bed, skip = []) {
+  const out = {};
+  if (!fs.existsSync(root)) return out;
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      const r = relative(root, p).split(sep).join('/');
+      if (skip.includes(r)) continue;
+      if (e.isSymbolicLink()) {
+        out[r] = `-> ${fs.readlinkSync(p).split(bed).join('<bed>')}`;
+      } else if (e.isDirectory()) {
+        out[`${r}/`] = null;
+        walk(p);
+      } else if (e.isFile()) {
+        let text;
+        try {
+          text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(p));
+        } catch {
+          text = '<not utf-8>';
+        }
+        out[r] = text.split(bed).join('<bed>');
+      }
+    }
+  };
+  walk(root);
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+
+const sub = (v, bed) => {
+  if (typeof v === 'string') return v.split('<bed>').join(bed);
+  if (Array.isArray(v)) return v.map((x) => sub(x, bed));
+  if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, sub(x, bed)]));
+  return v;
+};
+const mask = (v, bed) => {
+  if (typeof v === 'string') return v.split(bed).join('<bed>');
+  if (Array.isArray(v)) return v.map((x) => mask(x, bed));
+  if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mask(x, bed)]));
+  return v;
+};
+
+const cluster = (n) => ({
+  evidence: [{ id: 'job1/U1', ok: true, ts: '2026-01-01T00:00:00Z' }],
+  id: `c-${n}`,
+  keywords: ['k1'],
+  level: 'user',
+  members: 3,
+  source: 'shiftwork',
+  status: 'pending',
+  successes: 3,
+  top: null,
+});
+
+async function runNode(ctx, bed, ops) {
+  const dist = (m) => pathToFileURL(join(ctx.runtimeTs, 'dist', m)).href;
+  const si = await import(dist('skillinstall.js'));
+  const sf = await import(dist('skillfile.js'));
+  const sd = await import(dist('skilldraft.js'));
+  const sm = await import(dist('skillmine.js'));
+  const results = [];
+  for (const raw of ops) {
+    const op = sub(raw, bed);
+    const home = op.home !== undefined ? join(bed, op.home) : bed;
+    if (op.op === 'constants') {
+      results.push([si.JUDGE_USES, si.VERDICT_KEPT, si.VERDICT_ROLLED_BACK, si.HISTORY_DIR, [...si.VERSION_KINDS]]);
+      continue;
+    }
+    if (op.op === 'install') {
+      si.install(cluster(op.name), op.text, null, home, op.now, false);
+      results.push({ tree: mask(tree(home, bed), bed) });
+      continue;
+    }
+    if (op.op === 'mkdir') {
+      fs.mkdirSync(join(home, op.rel), { recursive: true });
+      results.push({});
+      continue;
+    }
+    if (op.op === 'append') {
+      fs.appendFileSync(join(home, op.rel), op.text);
+      results.push({});
+      continue;
+    }
+    if (op.op === 'write') {
+      fs.mkdirSync(dirname(join(home, op.rel)), { recursive: true });
+      fs.writeFileSync(join(home, op.rel), op.text);
+      results.push({});
+      continue;
+    }
+    if (op.op === 'set_stats') {
+      sf.updateState(home, (state) => {
+        const versions = state.skills[op.name].versions;
+        versions[op.version] = { ...(versions[op.version] ?? {}), ...op.stats };
+      });
+      results.push({});
+      continue;
+    }
+    if (op.op === 'edited') {
+      results.push(si.editedByHand(sf.readState(home).skills[op.name]));
+      continue;
+    }
+    if (op.op === 'gate') {
+      const own = op.own ? join(sf.skillsRoot(home), op.own) : null;
+      results.push(mask(sd.gate(op.text, sd.bundle(cluster('x')), home, null, own).reasons, bed));
+      continue;
+    }
+    if (op.op === 'daily') {
+      const saved = { BANTAMKIT_SKILL_AUDIT: process.env.BANTAMKIT_SKILL_AUDIT, BANTAMKIT_SKILL_AUTO: process.env.BANTAMKIT_SKILL_AUTO };
+      process.env.BANTAMKIT_SKILL_AUDIT = 'on';
+      process.env.BANTAMKIT_SKILL_AUTO = 'off';
+      try {
+        await sm.daily(home, null, op.now);
+      } finally {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+      const skip = MINER_FILES.map((n) => `.bantamkit/${n}`);
+      results.push(mask({ state: sf.readState(home), tree: tree(home, bed, skip) }, bed));
+      continue;
+    }
+    const savedRename = sf.seams.rename;
+    if (op.fail_at === 'rename3') {
+      let calls = 0;
+      sf.seams.rename = (s, d) => {
+        calls += 1;
+        if (calls === 3) {
+          const e = new Error('injected');
+          e.code = 'EIO';
+          throw e;
+        }
+        savedRename(s, d);
+      };
+    }
+    let out = {};
+    try {
+      if (op.op === 'new_version') {
+        out.said = si.newVersion(op.name, op.text, home, op.now, op.kind);
+      } else if (op.op === 'stats_step') {
+        const state = sf.readState(home);
+        si.statsStep(state, op.sources, home, op.now);
+        out.returned_state = state;
+      } else if (op.op === 'judge_step') {
+        const state = sf.readState(home);
+        out.events = si.judgeStep(state, home, op.now);
+        out.returned_state = state;
+      } else {
+        throw new Error(`skill-improve: unknown op ${op.op}`);
+      }
+    } catch (e) {
+      if (e instanceof sf.SkillFileError) out = { error: e.message };
+      else if (e instanceof Error && typeof e.code === 'string') out = { error: 'OSError' };
+      else throw e;
+    } finally {
+      sf.seams.rename = savedRename;
+    }
+    out.state = sf.readState(home);
+    if (op.op !== 'stats_step') out.tree = tree(home, bed);
+    results.push(mask(JSON.parse(JSON.stringify(out)), bed));
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------- cases
+
+export async function run(ctx) {
+  const cases = [];
+  const bed = (side) => mkdtempSync(join(ctx.scratch, `skill-improve-${side}-`));
+  const { ops, label } = opList();
+  const py = ctx.runPython(REF, { bed: bed('py'), ops }).results;
+  const nd = await runNode(ctx, bed('node'), ops);
+  ops.forEach((op, i) => {
+    cases.push({ name: label[i], kind: 'json', expected: py[i], actual: nd[i] });
+  });
+
+  // per-side literals: what a change made to BOTH runtimes alike would move
+  const find = (l) => {
+    const i = label.indexOf(l);
+    if (i < 0) throw new Error(`skill-improve: no op labelled ${l}`);
+    return i;
+  };
+  const iFour = find('judge_step: 4 uses are never judged');
+  const iFive = find('judge_step: 5 uses are judged, rolled back to v1');
+  const iInstall = find('h1: install sk-a');
+  const iV2 = find('new_version: v2, v1 in history');
+  const verdicts = RATES.map(([l]) => find(`judge_step: ${l}`));
+  const iStats = find('stats_step: each row in, out, or counted once');
+  const iEdited = find('judge_step: an edited skill is never judged');
+  for (const [side, got] of [
+    ['python', py],
+    ['node', nd],
+  ]) {
+    cases.push({
+      name: `LITERAL: constants [uses, kept, rolled back, history, kinds] — ${side}`,
+      kind: 'json',
+      expected: [5, 'kept', 'rolled back', 'references/history', ['auto', 'approved']],
+      actual: got[0],
+    });
+    cases.push({
+      name: `LITERAL: 4 uses are not judged, 5 are — ${side}`,
+      kind: 'json',
+      expected: [[], false, ['rolled back sk-a to v1'], 'rolled back'],
+      actual: [
+        got[iFour].events,
+        Object.hasOwn(got[iFour].state?.skills?.['sk-a']?.versions?.['2'] ?? {}, 'verdict'),
+        got[iFive].events,
+        got[iFive].state?.skills?.['sk-a']?.versions?.['2']?.verdict ?? null,
+      ],
+    });
+    const skill = (t) => t?.['.bantamkit/skills/sk-a/SKILL.md'] ?? null;
+    cases.push({
+      name: `LITERAL: the rollback restores v1's bytes and keeps v2 in history — ${side}`,
+      kind: 'json',
+      expected: { restored: true, v2kept: true, v1kept: true, version: 1, rolled_back: 2 },
+      actual: {
+        restored: skill(got[iFive].tree) === skill(got[iInstall].tree),
+        v2kept: got[iFive].tree?.['.bantamkit/skills/sk-a/references/history/v2.md'] === skill(got[iV2].tree),
+        v1kept: got[iFive].tree?.['.bantamkit/skills/sk-a/references/history/v1.md'] === skill(got[iInstall].tree),
+        version: got[iFive].state?.skills?.['sk-a']?.version ?? null,
+        rolled_back: got[iFive].state?.skills?.['sk-a']?.rolled_back ?? null,
+      },
+    });
+    cases.push({
+      name: `LITERAL: the verdict of each rate fixture — ${side}`,
+      kind: 'json',
+      expected: ['rolled back', 'kept', 'kept', 'rolled back', 'rolled back', 'kept', 'rolled back', 'kept', 'kept'],
+      actual: verdicts.map((i) => got[i].state?.skills?.['sk-r']?.versions?.['2']?.verdict ?? null),
+    });
+    cases.push({
+      name: `LITERAL: the counts of the one stats fixture — ${side}`,
+      kind: 'json',
+      expected: { false_fires: 1, injects: 4, successes: 3, uses: 5 },
+      actual: got[iStats].state?.skills?.['sk-c']?.versions?.['1'] ?? null,
+    });
+    cases.push({
+      name: `LITERAL: an edited skill is never judged — ${side}`,
+      kind: 'json',
+      expected: [[], false],
+      actual: [got[iEdited].events, Object.hasOwn(got[iEdited].state?.skills?.['sk-e']?.versions?.['2'] ?? {}, 'verdict')],
+    });
+  }
+  return { cases, notes: [] };
+}

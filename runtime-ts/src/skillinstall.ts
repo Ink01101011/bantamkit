@@ -24,6 +24,7 @@ import {
   parseSkill,
   projectSkillsRoot,
   readState,
+  replaceDirAtomic,
   skillsRoot,
   stamp,
   undo as undoDir,
@@ -503,4 +504,321 @@ export function undo(name: string, home: string): string {
     if (Object.hasOwn(fresh, 'removed')) fresh['removed'] = removed;
   });
   return said;
+}
+
+// ------------------------------------------------------------- self-improvement (Task 10a)
+// The reference's comment block states the design: versions, counting, the judge, the
+// edited guard.
+
+export const JUDGE_USES = 5;
+export const VERDICT_KEPT = 'kept';
+export const VERDICT_ROLLED_BACK = 'rolled back';
+export const HISTORY_DIR = 'references/history';
+export const VERSION_KINDS: readonly string[] = ['auto', 'approved'];
+const COUNTERS = ['false_fires', 'injects', 'successes', 'uses'] as const;
+const TURN_ID = /^s([\s\S]{1,8})#([0-9]{1,15})$/u;
+const VERSION_KEY = /^[0-9]{1,15}$/;
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+function dirFiles(root: string): Record<string, Uint8Array> {
+  const out: Record<string, Uint8Array> = {};
+  const walk = (d: string, rel: string): void => {
+    for (const entry of fs.readdirSync(d).sort(cmpCodepoint)) {
+      const p = path.join(d, entry);
+      const st = fs.lstatSync(p);
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(p, `${rel}${entry}/`);
+      else if (st.isFile()) out[`${rel}${entry}`] = fs.readFileSync(p);
+    }
+  };
+  walk(root, '');
+  return out;
+}
+
+function liveText(entry: Rec): [string, Buffer] | null {
+  if (typeof entry['path'] !== 'string') return null;
+  const target = entry['path'];
+  try {
+    return [target, fs.readFileSync(path.join(target, SKILL_FILE))];
+  } catch {
+    return null;
+  }
+}
+
+function editedBytes(raw: Uint8Array, entry: Rec): boolean {
+  let text: string;
+  try {
+    text = UTF8.decode(raw);
+  } catch {
+    return true;
+  }
+  return isEdited(text) || canonicalHash(text) !== entry['sha256'];
+}
+
+/** True when the skill's SKILL.md no longer matches its hash (R8); null without one. */
+export function editedByHand(entry: Rec): boolean | null {
+  const live = liveText(entry);
+  return live === null ? null : editedBytes(live[1], entry);
+}
+
+function tsOf(v: unknown): number | null {
+  try {
+    return parseNow(v);
+  } catch {
+    return null;
+  }
+}
+
+function rows(sources: Rec, key: string): Rec[] {
+  const v = isObj(sources) ? sources[key] : undefined;
+  return Array.isArray(v) ? v.filter(isObj) : [];
+}
+
+type Turn = [number, number, boolean];
+
+const first8 = (s: string): string => Array.from(s).slice(0, 8).join('');
+
+function turnsOf(sources: Rec): Map<string, Turn[]> {
+  const out = new Map<string, Turn[]>();
+  for (const t of rows(sources, 'turns')) {
+    const m = typeof t['id'] === 'string' ? TURN_ID.exec(t['id']) : null;
+    const at = tsOf(t['ts']);
+    if (m === null || at === null) continue;
+    const list = out.get(m[1]!) ?? [];
+    list.push([at, Number(m[2]), t['ok'] === true]);
+    out.set(m[1]!, list);
+  }
+  for (const v of out.values()) v.sort((a, b) => a[0] - b[0] || a[1] - b[1] || Number(a[2]) - Number(b[2]));
+  return out;
+}
+
+function turnOk(turns: Map<string, Turn[]>, session: string, at: number): boolean {
+  let best: Turn | null = null;
+  for (const t of turns.get(first8(session)) ?? []) if (t[0] <= at) best = t;
+  return best !== null && best[2];
+}
+
+/** The reference's `stats_step`: count the new rows of `sources` into each live version. */
+export function statsStep(state: Rec, sources: Rec, home: string, now: string): void {
+  const nowMs = msOf(now);
+  const uses: Array<[string, string, number]> = [];
+  for (const u of rows(sources, 'uses')) {
+    const at = tsOf(u['ts']);
+    if (typeof u['fact'] === 'string' && typeof u['session'] === 'string' && u['session'] && at !== null) {
+      uses.push([u['fact'], u['session'], at]);
+    }
+  }
+  const injects: Array<[Set<string>, string, number]> = [];
+  for (const i of rows(sources, 'injects')) {
+    const at = tsOf(i['ts']);
+    if (Array.isArray(i['names']) && typeof i['session'] === 'string' && i['session'] && at !== null) {
+      injects.push([new Set(i['names'].filter((n): n is string => typeof n === 'string')), i['session'], at]);
+    }
+  }
+  const turns = turnsOf(sources);
+  const skills = isObj(state['skills']) ? state['skills'] : {};
+  const counts = new Map<string, [number, Record<string, number>]>();
+  for (const name of Object.keys(skills).sort(cmpCodepoint)) {
+    const e = skills[name];
+    const n = isObj(e) ? int(e['version']) : null;
+    if (n === null || n < 1 || !isObj(e)) continue;
+    const versions = isObj(e['versions']) ? e['versions'] : {};
+    const v = Object.hasOwn(versions, String(n)) && isObj(versions[String(n)]) ? (versions[String(n)] as Rec) : {};
+    const mark = tsOf(e['counted_to']);
+    const start = typeof v['at'] === 'string' ? tsOf(v['at']) : tsOf(e['at']);
+    if (mark === null && start === null) continue;
+    const inside = (at: number): boolean => at <= nowMs && (mark !== null ? at > mark : at >= start!);
+    const mine = uses.filter(([f, , at]) => f === name && inside(at));
+    const usedIn = new Set(uses.filter(([f]) => f === name).map(([, s]) => s));
+    const fired = injects.filter(([names, , at]) => names.has(name) && inside(at)).map(([, s]) => s);
+    counts.set(name, [
+      n,
+      {
+        false_fires: fired.filter((s) => !usedIn.has(s)).length,
+        injects: fired.length,
+        successes: mine.filter(([, s, at]) => turnOk(turns, s, at)).length,
+        uses: mine.length,
+      },
+    ]);
+  }
+  if (counts.size === 0) return;
+  const written = updateState(home, (fresh) => {
+    const live = fresh.skills as Record<string, unknown>;
+    for (const [name, [n, add]] of counts) {
+      const e = Object.hasOwn(live, name) ? live[name] : undefined;
+      if (!isObj(e) || int(e['version']) !== n) continue;
+      if (!isObj(e['versions'])) e['versions'] = {};
+      const versions = e['versions'] as Rec;
+      let v = Object.hasOwn(versions, String(n)) ? versions[String(n)] : undefined;
+      if (!isObj(v)) {
+        v = {};
+        versions[String(n)] = v;
+      }
+      for (const k of COUNTERS) (v as Rec)[k] = (int((v as Rec)[k]) ?? 0) + add[k]!;
+      e['counted_to'] = now;
+    }
+  });
+  replaceState(state, written);
+}
+
+function carried(oldText: string, docMetadata: Record<string, unknown>): Record<string, string> {
+  let old: Record<string, unknown>;
+  try {
+    old = parseSkill(oldText).metadata;
+  } catch (e) {
+    if (!(e instanceof SkillFileError)) throw e;
+    old = {};
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(old)) if (k.startsWith('bantamkit-') && k !== HASH_KEY && typeof v === 'string') out[k] = v;
+  for (const k of ['bantamkit-evidence', 'bantamkit-keywords']) {
+    const v = Object.hasOwn(docMetadata, k) ? docMetadata[k] : undefined;
+    if (typeof v === 'string') out[k] = v;
+  }
+  return out;
+}
+
+/** The reference's `new_version`: the live skill replaced by `text` as its next version. */
+export function newVersion(name: string, text: string, home: string, now: string, kind: string): string {
+  if (!VERSION_KINDS.includes(kind)) throw new InstallError('kind must be auto or approved');
+  msOf(now);
+  const skills = readState(home).skills;
+  const entry = Object.hasOwn(skills, name) ? skills[name] : undefined;
+  if (!isObj(entry)) throw new InstallError(`no skill named ${pyRepr(name)} is installed`);
+  const live = liveText(entry);
+  if (live === null) throw new InstallError(`skill ${name} has no SKILL.md at ${pyStr(entry['path'])}`);
+  const [target, raw] = live;
+  if (editedBytes(raw, entry)) throw new InstallError(`${name} was edited by hand; it only receives proposed changes`);
+  let doc;
+  try {
+    doc = parseSkill(clean(text));
+  } catch (e) {
+    if (e instanceof SkillFileError) throw new InstallError(e.message);
+    throw e;
+  }
+  const reasons = validate(doc);
+  if (reasons.length > 0) throw new InstallError(reasons[0]!);
+  if (doc.name !== name) throw new InstallError(`the new version is named ${pyRepr(doc.name)}, not ${pyRepr(name)}`);
+  const n = int(entry['version']) || 1;
+  const versions = isObj(entry['versions']) ? entry['versions'] : {};
+  const known = Object.keys(versions).filter((k) => VERSION_KEY.test(k)).map(Number);
+  const m = Math.max(n, ...known) + 1;
+  const updates = carried(UTF8.decode(raw), doc.metadata);
+  updates['bantamkit-version'] = String(m);
+  let newText: string;
+  try {
+    newText = stamp(clean(text), updates);
+  } catch (e) {
+    if (e instanceof SkillFileError) throw new InstallError(e.message);
+    throw e;
+  }
+  const files = dirFiles(target);
+  const hist = `${HISTORY_DIR}/v${n}.md`;
+  if (Object.hasOwn(files, hist) && !Buffer.from(files[hist]!).equals(raw)) {
+    throw new InstallError(`history already holds v${n} of ${name}`);
+  }
+  files[hist] = raw;
+  files[SKILL_FILE] = Buffer.from(newText, 'utf8');
+  replaceDirAtomic(target, files, backupRoot(home), now);
+  try {
+    updateState(home, (fresh) => {
+      const live2 = fresh.skills as Record<string, unknown>;
+      const e = Object.hasOwn(live2, name) ? live2[name] : undefined;
+      if (!isObj(e)) throw new InstallError(`no skill named ${pyRepr(name)} is installed`);
+      if (!isObj(e['versions'])) e['versions'] = {};
+      (e['versions'] as Rec)[String(m)] = { at: now, false_fires: 0, from: n, injects: 0, kind, successes: 0, uses: 0 };
+      e['version'] = m;
+      e['sha256'] = canonicalHash(newText);
+      e['counted_to'] = now;
+    });
+  } catch (e) {
+    undoDir(backupRoot(home), name, target);
+    throw e;
+  }
+  return `updated skill ${name} to v${m}`;
+}
+
+/** Python's `str()` of a JSON value, for the one sentence that prints a path that may be absent. */
+function pyStr(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v === undefined || v === null) return 'None';
+  if (v === true) return 'True';
+  if (v === false) return 'False';
+  return String(v);
+}
+
+function fell(sN: number, uN: number, sF: number, uF: number): boolean {
+  if (uN === 0 || uF === 0) return false;
+  return sN * uF < sF * uN;
+}
+
+function rose(fN: number, iN: number, fF: number, iF: number): boolean {
+  if (iN === 0) return false;
+  if (iF === 0) return fN > 0;
+  return fN * iF > fF * iN;
+}
+
+const tally = (v: Rec, k: string): number => int(v[k]) ?? 0;
+
+/** The reference's `judge_step`: judge every live version with `JUDGE_USES` uses; the events. */
+export function judgeStep(state: Rec, home: string, now: string): string[] {
+  msOf(now);
+  const skills = isObj(state['skills']) ? state['skills'] : {};
+  const verdicts = new Map<string, [number, string, number, string | null]>();
+  const events: string[] = [];
+  for (const name of Object.keys(skills).sort(cmpCodepoint)) {
+    const e = skills[name];
+    if (!isObj(e)) continue;
+    const n = int(e['version']);
+    const versions = isObj(e['versions']) ? e['versions'] : {};
+    const v = n !== null && Object.hasOwn(versions, String(n)) ? versions[String(n)] : undefined;
+    if (n === null || n < 2 || !isObj(v) || Object.hasOwn(v, 'verdict')) continue;
+    const f = int(v['from']) ?? n - 1;
+    const base = Object.hasOwn(versions, String(f)) ? versions[String(f)] : undefined;
+    if (!isObj(base) || tally(v, 'uses') < JUDGE_USES) continue;
+    const live = liveText(e);
+    if (live === null || editedBytes(live[1], e)) continue;
+    const worse =
+      fell(tally(v, 'successes'), tally(v, 'uses'), tally(base, 'successes'), tally(base, 'uses')) ||
+      rose(tally(v, 'false_fires'), tally(v, 'injects'), tally(base, 'false_fires'), tally(base, 'injects'));
+    if (!worse) {
+      verdicts.set(name, [n, VERDICT_KEPT, n, null]);
+      continue;
+    }
+    const [target, raw] = live;
+    let restored: string;
+    try {
+      const old = UTF8.decode(fs.readFileSync(path.join(target, ...HISTORY_DIR.split('/'), `v${f}.md`)));
+      restored = stamp(old, {});
+      const files = dirFiles(target);
+      files[`${HISTORY_DIR}/v${n}.md`] = raw;
+      files[SKILL_FILE] = Buffer.from(restored, 'utf8');
+      replaceDirAtomic(target, files, backupRoot(home), now);
+    } catch (err) {
+      if (err instanceof SkillFileError || err instanceof TypeError || (err instanceof Error && typeof (err as NodeJS.ErrnoException).code === 'string')) continue;
+      throw err;
+    }
+    verdicts.set(name, [n, VERDICT_ROLLED_BACK, f, canonicalHash(restored)]);
+    events.push(`rolled back ${name} to v${f}`);
+  }
+  if (verdicts.size === 0) return events;
+  const written = updateState(home, (fresh) => {
+    const live = fresh.skills as Record<string, unknown>;
+    for (const [name, [n, verdict, f, sha]] of verdicts) {
+      const e = Object.hasOwn(live, name) ? live[name] : undefined;
+      if (!isObj(e) || int(e['version']) !== n) continue;
+      const versions = isObj(e['versions']) ? e['versions'] : null;
+      const v = versions !== null && Object.hasOwn(versions, String(n)) ? versions[String(n)] : undefined;
+      if (!isObj(v)) continue;
+      v['verdict'] = verdict;
+      if (verdict === VERDICT_ROLLED_BACK) {
+        e['version'] = f;
+        e['sha256'] = sha;
+        e['rolled_back'] = n;
+        e['counted_to'] = now;
+      }
+    }
+  });
+  replaceState(state, written);
+  return events;
 }
