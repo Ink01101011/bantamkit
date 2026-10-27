@@ -32,4 +32,4 @@ with (S / "offsets22.jsonl").open("w", encoding="utf-8") as f:
         assert found is not None, r["id"]
         f.write(json.dumps({"id": r["id"], "file": str(t), "offset": found, "prev": r["prev"]}, ensure_ascii=False)
                 + "\n")
-print("rows", len(q), "with transcript", sum(1 for _ in (S / "offsets22.jsonl").open()))
+print("rows", len(q), "with transcript", sum(1 for _ in (S / "offsets22.jsonl").open(encoding="utf-8")))

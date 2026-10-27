@@ -407,9 +407,13 @@ class Memory:
         links: list[str] | None = None,
         keywords: list[str] | None = None,
         queries: list[str] | None = None,
+        outcome: str | None = None,
+        status: str | None = None,
     ) -> str:
         """The reply the model reads. Unchanged, and still the tool's advertised return."""
-        return self.save_outcome(type, name, description, body, links, keywords, queries).reply
+        return self.save_outcome(
+            type, name, description, body, links, keywords, queries, outcome=outcome, status=status
+        ).reply
 
     def save_outcome(
         self,
@@ -420,6 +424,8 @@ class Memory:
         links: list[str] | None = None,
         keywords: list[str] | None = None,
         queries: list[str] | None = None,
+        outcome: str | None = None,
+        status: str | None = None,
     ) -> SaveOutcome:
         """`save`, with the branch it took carried out alongside the sentence it wrote.
 
@@ -462,7 +468,14 @@ class Memory:
                     status="duplicate",
                 )
             result = self.store.save(
-                type, name, description, body, tuple(links), tuple(keywords or ())
+                type,
+                name,
+                description,
+                body,
+                tuple(links),
+                tuple(keywords or ()),
+                outcome=outcome,
+                status=status,
             )
         except MemoryValidationError as e:
             return SaveOutcome(reply=f"error: {e}", status="refused-validation")
@@ -523,6 +536,7 @@ class Memory:
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
         include_archived: bool | None = None,
         file: str | None = None,
+        outcome: str | None = None,
     ) -> str:
         """`k` is the model asking for *more*, never for less than the store's default.
 
@@ -544,7 +558,7 @@ class Memory:
         if query is None:
             raise MemoryValidationError(_recall_file_mod.RECALL_NEEDS_QUERY_OR_FILE)
         return self.recall_outcome(
-            query, k, min_ratio, include_archived=bool(include_archived)
+            query, k, min_ratio, include_archived=bool(include_archived), outcome=outcome
         ).reply
 
     def recall_outcome(
@@ -557,6 +571,7 @@ class Memory:
         include_archived: bool = False,
         context: _touch_context_mod.TouchContext | None = None,
         head: str | None = None,
+        outcome: str | None = None,
     ) -> RecallOutcome:
         """`recall`, carrying the walk it performed as numbers rather than as prose.
 
@@ -644,7 +659,7 @@ class Memory:
                 return named
             lookup = "miss"
         picked, reached, unreadable, candidates, skipped = self._pooled(
-            query, budget, min_ratio, context, head=head
+            query, budget, min_ratio, context, head=head, outcome=outcome
         )
         via = self._via(picked, context)
         if stamp:
@@ -664,6 +679,9 @@ class Memory:
         note = _skipped_note(skipped)
         seen = {fact.name for _, fact in picked}
         archived = self._archived_hits(query, budget, seen) if include_archived else []
+        if outcome is not None:
+            # The outcome filter (#219) holds for the archive's hits as for the live ones.
+            archived = [(label, fact) for label, fact in archived if fact.outcome == outcome]
         if archived or via is not None:
             counts["returned"] = len(picked) + len(archived) + (via is not None)
         if not picked and not archived and via is None:
@@ -810,6 +828,7 @@ class Memory:
         min_ratio: float,
         context: _touch_context_mod.TouchContext | None = None,
         head: str | None = None,
+        outcome: str | None = None,
     ) -> tuple[list[tuple[str, Fact]], int, int, int, list[dict[str, str]]]:
         """The scoring walk (#199 D3): every layer's facts pooled, scored ONCE, gated, ranked.
 
@@ -832,6 +851,10 @@ class Memory:
         index pool the same rows) and the column is `retrieval.QueryScorer`: BM25F over
         `head or query` plus `QUERY_WEIGHT` times BM25 of the bare `query` over each row's
         qdoc. Gate, weights and the cap are unchanged.
+
+        `outcome` (#219, 0.36.2) keeps only facts saved with that outcome, BEFORE scoring, so
+        the gate, the IDF and the budget apply to the filtered pool. A filtered walk pools
+        from the parsed files (`candidates`), never the hot index, which carries no outcome.
         """
         home = Path.home()
         # Each layer's queries as tokenized rows (J72-30): from the derived cache beside the
@@ -853,7 +876,16 @@ class Memory:
             left.append(left_out)
             native = isinstance(store, NativeStore)
             try:
-                if native:
+                if outcome is not None:
+                    got = (
+                        store.candidates(left_out, shadow)
+                        if native
+                        else store.candidates(left_out)
+                    )
+                    if not native:
+                        shadow.update(_text(f.name) for f in got)
+                    pool = pool_of([f for f in got if f.outcome == outcome], q, every_row)
+                elif native:
                     pool = store.pool(q, skipped=left_out, shadow=shadow, every_row=every_row)
                 else:
                     pool = store.pool(q, skipped=left_out, every_row=every_row)
@@ -876,8 +908,12 @@ class Memory:
             try:
                 store = stores[i]
                 if isinstance(store, NativeStore):
-                    return pool_of(store.candidates(left[i], shadow), q, every_row)
-                return pool_of(store.candidates(left[i]), q, every_row)
+                    got = store.candidates(left[i], shadow)
+                else:
+                    got = store.candidates(left[i])
+                if outcome is not None:
+                    got = [f for f in got if f.outcome == outcome]
+                return pool_of(got, q, every_row)
             except (BantamError, OSError, UnicodeDecodeError):
                 if self._layers[i][2]:
                     raise

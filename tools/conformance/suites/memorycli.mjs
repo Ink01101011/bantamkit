@@ -195,6 +195,7 @@
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -351,9 +352,15 @@ function manifest(root) {
 }
 
 /** A fact file's bytes, spelled out so a fixture is bytes and not a call into the product. */
-const factFile = (n, { description = `about ${n}`, type = 'project', created = '2026-08-01', body = `body of ${n}` } = {}) =>
+const factFile = (
+  n,
+  { description = `about ${n}`, type = 'project', created = '2026-08-01', body = `body of ${n}`, outcome, status } = {},
+) =>
   `---\nname: ${n}\ndescription: ${description}\ntype: ${type}\n` +
-  `created: '${created}'\nlast_recalled: null\nlinks: []\n---\n\n${body}\n`;
+  `created: '${created}'\nlast_recalled: null\nlinks: []\n` +
+  (outcome ? `outcome: ${outcome}\n` : '') +
+  (status ? `status: ${status}\n` : '') +
+  `---\n\n${body}\n`;
 
 /**
  * Four facts in which the two STALEST are `feedback`, so a purely temporal eviction order
@@ -434,6 +441,43 @@ const MISNAMED_FILE = {
     'facts/fresh-one.md': factFile('fresh-one', { description: 'the newest fact', created: '2026-10-01', body: 'NEW' }),
     'facts/keep-a.md': factFile('keep-a', { description: 'keep this one', created: '2026-10-02' }),
     'facts/stale.md': factFile('fresh-one', { description: 'the stalest fact', created: '2020-01-01', body: 'OLD' }),
+  },
+};
+/**
+ * The 0.36.2 lifecycle store (#219 #220 #221): one `error` and one `success` lesson, a
+ * `status: done` project, a live project, a `feedback` fact whose description holds a
+ * done-word (never a candidate by its words), and a memory-keeper file whose `metadata:`
+ * block is the only place its type, outcome and status live.
+ */
+const LIFECYCLE = {
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/bad-one.md': factFile('bad-one', { description: 'lesson about zeta failed', type: 'feedback', outcome: 'error' }),
+    'facts/good-one.md': factFile('good-one', { description: 'lesson about zeta worked', type: 'feedback', outcome: 'success' }),
+    'facts/p-done.md': factFile('p-done', { description: 'a finished thing', status: 'done' }),
+    'facts/p-live.md': factFile('p-live', { description: 'a live thing' }),
+    'facts/f-word.md': factFile('f-word', { description: 'close issues when done', type: 'feedback' }),
+    'facts/old-keeper.md': `---\nname: old-keeper\ndescription: a memory-keeper lesson\nmetadata:\n  type: feedback\n  loop: error\n  status: done\n---\n\nbody\n`,
+  },
+};
+/**
+ * J73-6's review findings as fixtures: `created` shapes only CPython 3.11's `fromisoformat`
+ * took (the reference aged them, the port did not), and a `type:` holding null beside a
+ * nested `metadata.type` (0.36.1 read it with type None; the first alias draft skipped it as
+ * malformed on both sides).
+ */
+const ODD_CREATED = {
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/c-iso.md': factFile('c-iso', { description: 'an iso day', type: 'user', created: '2026-01-01' }),
+    'facts/c-basic.md': factFile('c-basic', { description: 'a basic-format day', type: 'user', created: '20260101' }),
+    'facts/c-week.md': factFile('c-week', { description: 'a week date', type: 'user', created: '2026-W01-1' }),
+  },
+};
+const TYPE_NULL = {
+  dirs: ['facts', 'archive'],
+  files: {
+    'facts/t.md': '---\nname: t\ndescription: a null type\ntype:\nmetadata:\n  type: feedback\n---\n\nbody\n',
   },
 };
 /** `seven.md` says `name: 7`: no `facts/7.md` exists for the old move to find. */
@@ -621,6 +665,9 @@ const ARGV_SHAPES = [
  * `{BED}` in an argv element or a cwd is replaced by that side's own root. It is left
  * LITERAL in the transcript header, so the two transcripts carry the same command line.
  */
+/** The tail every `merge` row that writes `zeta-pattern` shares. */
+const MERGE_TAIL = ['--type', 'feedback', '--description', 'the zeta pattern', '--body', 'always zeta'];
+
 function scenarios(symlinksWork) {
   const brokenFacts = (content) => ({ dirs: ['facts', 'archive'], files: { 'facts/bad.md': content } });
   const archived = (names) => ({
@@ -1000,6 +1047,74 @@ function scenarios(symlinksWork) {
         files: { 'proj/.bantamkit/memory/facts/found.md': factFile('found') } },
       [{ argv: ['status'], cwd: '{BED}/proj/sub' }]],
 
+    // ---- list, candidates, merge (0.36.2, #219 #220 #221). Every row carries a typed literal
+    // beside the differential: `stdoutAll` (the step's whole stdout), `treeUnchanged` (the
+    // bed against a fresh copy of its fixture), `refusal` (stderr past the prog), `archived`.
+    ['list-all', LIFECYCLE, [['list', '--store', '{BED}']], { stdoutAll: { 1: [
+      'facts: 6 (<BED>/facts)',
+      'bad-one\tfeedback\terror\tactive\tlesson about zeta failed',
+      'f-word\tfeedback\t-\tactive\tclose issues when done',
+      'good-one\tfeedback\tsuccess\tactive\tlesson about zeta worked',
+      'old-keeper\tfeedback\terror\tdone\ta memory-keeper lesson',
+      'p-done\tproject\t-\tdone\ta finished thing',
+      'p-live\tproject\t-\tactive\ta live thing',
+    ] }, treeUnchanged: true }],
+    ['list-outcome-error', LIFECYCLE, [['list', '--outcome', 'error', '--store', '{BED}']],
+      { stdoutAll: { 1: ['facts: 2 (<BED>/facts)', 'bad-one\tfeedback\terror\tactive\tlesson about zeta failed', 'old-keeper\tfeedback\terror\tdone\ta memory-keeper lesson'] } }],
+    ['list-outcome-success', LIFECYCLE, [['list', '--outcome', 'success', '--store', '{BED}']],
+      { stdoutAll: { 1: ['facts: 1 (<BED>/facts)', 'good-one\tfeedback\tsuccess\tactive\tlesson about zeta worked'] } }],
+    ['list-type-status', LIFECYCLE, [['list', '--type', 'project', '--status', 'active', '--store', '{BED}']],
+      { stdoutAll: { 1: ['facts: 1 (<BED>/facts)', 'p-live\tproject\t-\tactive\ta live thing'] } }],
+    ['list-bad-filter', LIFECYCLE, [['list', '--outcome', 'meh', '--store', '{BED}']], { exits: [2] }],
+    ['list-type-null', TYPE_NULL, [['list', '--store', '{BED}']],
+      { stdoutAll: { 1: ['facts: 1 (<BED>/facts)', 't\tNone\t-\tactive\ta null type'] } }],
+    ['candidates-dry', LIFECYCLE, [['candidates', '--store', '{BED}'], ['archived', '--store', '{BED}']],
+      { archived: [], treeUnchanged: true, stdoutAll: { 1: ['archive candidates: 2 (<BED>/facts)', 'old-keeper\tstatus: done\ta memory-keeper lesson', 'p-done\tstatus: done\ta finished thing', 'dry run; rerun with --apply to archive these 2'] } }],
+    ['candidates-apply', LIFECYCLE, [['candidates', '--apply', '--store', '{BED}'], ['status', '--store', '{BED}']],
+      { archived: ['old-keeper', 'p-done'], exits: [0, 0] }],
+    ['candidates-apply-stops-midway', { ...LIFECYCLE, files: { ...LIFECYCLE.files, 'archive/p-done.md': factFile('p-done', { description: 'an older archived copy' }) } },
+      [['candidates', '--apply', '--store', '{BED}']],
+      { archived: ['old-keeper', 'p-done'], exits: [1],
+        refusal: ["candidates failed at 'p-done': fact 'p-done' is already archived; refusing to overwrite it; 1 already archived\n"],
+        files: { 'facts/p-done.md': factFile('p-done', { description: 'a finished thing', status: 'done' }) } }],
+    ['candidates-odd-created', ODD_CREATED, [['candidates', '--older-than', '3', '--store', '{BED}']],
+      { stdoutAll: { 1: ['archive candidates: 1 (<BED>/facts)', 'c-iso\tolder than 3d (created 2026-01-01)\tan iso day', 'dry run; rerun with --apply to archive these 1'] } }],
+    ['merge-dry', LIFECYCLE, [['merge', '--names', 'bad-one', 'good-one', 'f-word', '--name', 'zeta-pattern', ...MERGE_TAIL, '--store', '{BED}']],
+      { archived: [], treeUnchanged: true }],
+    ['merge-apply-then-restore', LIFECYCLE, [
+      ['merge', '--names', 'bad-one', 'good-one', 'f-word', '--name', 'zeta-pattern', ...MERGE_TAIL, '--apply', '--store', '{BED}'],
+      ['archived', '--store', '{BED}'],
+      ['restore', 'good-one', '--store', '{BED}'],
+      ['list', '--store', '{BED}'],
+    ], { archived: ['bad-one', 'f-word'], archivedAt: { 2: ['bad-one', 'f-word', 'good-one'] }, exits: [0, 0, 0, 0] }],
+    // The J73-6 defect: the new description is bad-one's own, so `save`'s duplicate check
+    // against the (still live) originals answered `duplicate` unwritten, and the originals
+    // were archived anyway under `merged 2`. Literal: the new fact's file exists.
+    ['merge-apply-resembling-originals', LIFECYCLE, [
+      ['merge', '--names', 'bad-one', 'good-one', '--name', 'zeta-lesson', '--type', 'feedback', '--description', 'lesson about zeta failed', '--body', 'z', '--apply', '--store', '{BED}'],
+    ], { archived: ['bad-one', 'good-one'], exits: [0], factsPresent: ['zeta-lesson'] }],
+    ['merge-refuses-duplicate', LIFECYCLE, [
+      ['merge', '--names', 'bad-one', 'good-one', '--name', 'live-two', '--type', 'project', '--description', 'a live thing', '--body', 'b', '--store', '{BED}'],
+      ['merge', '--names', 'bad-one', 'good-one', '--name', 'live-two', '--type', 'project', '--description', 'a live thing', '--body', 'b', '--apply', '--store', '{BED}'],
+    ], { archived: [], exits: [1, 1], treeUnchanged: true,
+      refusal: ["cannot merge into 'live-two': it duplicates the live fact 'p-live'\n", "cannot merge into 'live-two': it duplicates the live fact 'p-live'\n"] }],
+    ['merge-refuses-missing', LIFECYCLE, [['merge', '--names', 'bad-one', 'nope', '--name', 'x', '--type', 'feedback', '--description', 'd', '--body', 'b', '--store', '{BED}']],
+      { archived: [], exits: [1], refusal: ['merge needs at least two distinct live facts; missing: nope\n'] }],
+    ['merge-refuses-one-name-twice', LIFECYCLE, [['merge', '--names', 'bad-one', 'bad-one', '--name', 'x', '--type', 'feedback', '--description', 'd', '--body', 'b', '--apply', '--store', '{BED}']],
+      { archived: [], exits: [1], refusal: ['merge needs at least two distinct live facts; missing: none\n'] }],
+    ['merge-refuses-existing-target', LIFECYCLE, [['merge', '--names', 'bad-one', 'good-one', '--name', 'p-live', '--type', 'feedback', '--description', 'd', '--body', 'b', '--store', '{BED}']],
+      { archived: [], exits: [1], refusal: ["cannot merge into 'p-live': a fact of that name exists\n"] }],
+    ['merge-refuses-a-consumed-target', LIFECYCLE, [['merge', '--names', 'bad-one', 'good-one', '--name', 'good-one', '--type', 'feedback', '--description', 'd', '--body', 'b', '--apply', '--store', '{BED}']],
+      { archived: [], exits: [1], refusal: ["cannot merge into 'good-one': it is one of the facts being merged\n"] }],
+    ['merge-refuses-outcome-on-reference', LIFECYCLE, [['merge', '--names', 'bad-one', 'good-one', '--name', 'r-new', '--type', 'reference', '--description', 'd', '--body', 'b', '--outcome', 'error', '--apply', '--store', '{BED}']],
+      { archived: [], exits: [1], refusal: ["invalid outcome 'error' for type 'reference'; outcome is only for feedback and project facts\n"] }],
+    // Over budget at the save: the order guarantee (save BEFORE any archive) is what leaves
+    // every original live. The budget sits between the index now and the index with the new
+    // line (299 bytes before, 241 after the merge, ~349 at the save), so only the save trips it.
+    ['merge-budget-refusal-archives-nothing', LIFECYCLE, [
+      ['merge', '--names', 'bad-one', 'good-one', '--name', 'zeta-pattern', ...MERGE_TAIL, '--apply', '--budget', '320', '--store', '{BED}'],
+    ], { archived: [], exits: [1], factsAbsent: ['zeta-pattern'] }],
+
     // ---- the sequence, over one store
     //
     // C4 ran thirteen mutations by hand and reported an identical tree at the end. That was
@@ -1348,6 +1463,69 @@ export async function run(ctx) {
           actual: { python: firstLines(pyRuns[i], 'py'), node: firstLines(nodeRuns[i], 'node') },
         });
       }
+    }
+
+    if (extra.stdoutAll) {
+      // THE WHOLE STDOUT OF ONE STEP, AS A LITERAL ON EACH SIDE — 0.36.2 (J73-6). Unlike
+      // `stdoutLines` above (the FIRST n lines), every non-empty line is compared, so a
+      // listing that grows a line it should have filtered out is red, not a matching prefix.
+      for (const [at, lines] of Object.entries(extra.stdoutAll)) {
+        const i = Number(at) - 1;
+        const all = (r, side) => scrubBed(dec(r.stdout), beds[side]).split('\n').filter(Boolean);
+        cases.push({
+          name: `${label}/stdout-lines@${at}: the listing as a literal on each side`,
+          kind: 'json',
+          expected: { python: lines, node: lines },
+          actual: { python: all(pyRuns[i], 'py'), node: all(nodeRuns[i], 'node') },
+        });
+      }
+    }
+
+    if (extra.treeUnchanged) {
+      // THE BED AGAINST A FRESH COPY OF ITS OWN FIXTURE — 0.36.2 (J73-6). `/tree` compares
+      // Python's bed to Node's, so a dry run that wrote the same bytes on both sides stays
+      // green there; this compares each side to what it was handed.
+      const fresh = join(bed, 'fresh');
+      materialise(fresh, spec);
+      const want = manifest(fresh);
+      cases.push({
+        name: `${label}/tree-unchanged: the bed is byte for byte the fixture, as a literal on each side`,
+        kind: 'json',
+        expected: { python: want, node: want },
+        actual: { python: manifest(beds.py), node: manifest(beds.node) },
+      });
+    }
+
+    for (const [key, want] of [['factsPresent', true], ['factsAbsent', false]]) {
+      if (!extra[key]) continue;
+      const present = (b) => extra[key].filter((n) => existsSync(join(b, 'facts', `${n}.md`)) === want);
+      cases.push({
+        name: `${label}/${key}: facts/<name>.md ${want ? 'exists' : 'does not exist'}, as a literal on each side`,
+        kind: 'json',
+        expected: { python: extra[key], node: extra[key] },
+        actual: { python: present(beds.py), node: present(beds.node) },
+      });
+    }
+
+    if (extra.refusal) {
+      // The sentence past `<prog>: ` (or the whole line where nothing precedes it), typed:
+      // the two progs differ by ruling, the sentence must not.
+      const past = (text) => {
+        const m = /^(?:python -m bantamkit\.memory|bantamkit-memory): /.exec(text);
+        return m ? text.slice(m[0].length) : text;
+      };
+      extra.refusal.forEach((line, i) => {
+        if (line === null) return;
+        cases.push({
+          name: `${label}/step-${i + 1}-refusal: the sentence past the prog, as a literal on each side`,
+          kind: 'json',
+          expected: { python: line, node: line },
+          actual: {
+            python: past(scrubBed(dec(pyRuns[i].stderr), beds.py)),
+            node: past(scrubBed(dec(nodeRuns[i].stderr), beds.node)),
+          },
+        });
+      });
     }
 
     if (extra.stderr) {

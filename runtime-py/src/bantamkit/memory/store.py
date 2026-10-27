@@ -61,6 +61,12 @@ def load_frontmatter(text: str) -> Any:
 
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
+VALID_OUTCOMES = ("error", "success")
+VALID_STATUSES = ("active", "done")
+#: The two types a lesson's outcome applies to (#219). `user` and `reference` have none.
+OUTCOME_TYPES = frozenset({"feedback", "project"})
+#: `candidates` done-words (#221): whole-word, case-insensitive, `type: project` only.
+DONE_WORDS = ("done", "shipped", "completed", "closed", "released", "merged")
 # The types whose worth does NOT decay with time-since-last-recall, and which `compact`
 # therefore archives only after every other candidate is exhausted (`_eviction_key`).
 # A TUPLE and not a set: this is compared against a value that came out of YAML uncast, and
@@ -324,6 +330,25 @@ class MemoryBudgetExceeded(BantamError):
     pass
 
 
+def _validate_outcome_status(type: str, outcome: str | None, status: str | None) -> None:
+    """The §1 rules, one sentence each; `None` always passes. Runs AFTER the type check so
+    the type in the second sentence is a valid one."""
+    if outcome is not None:
+        if outcome not in VALID_OUTCOMES:
+            raise MemoryValidationError(
+                f"invalid outcome '{outcome}'; must be one of {list(VALID_OUTCOMES)}"
+            )
+        if type not in OUTCOME_TYPES:
+            raise MemoryValidationError(
+                f"invalid outcome '{outcome}' for type '{type}'; outcome is only for "
+                f"feedback and project facts"
+            )
+    if status is not None and status not in VALID_STATUSES:
+        raise MemoryValidationError(
+            f"invalid status '{status}'; must be one of {list(VALID_STATUSES)}"
+        )
+
+
 @dataclass
 class Fact:
     name: str
@@ -335,6 +360,10 @@ class Fact:
     # ISO date the fact first landed. `None` only on a Fact built in memory before its
     # first write; every Fact read off disk carries one (see `_facts`).
     created: str | None = None
+    # #219 / #221. `None` = not set; `status` None means active and `active` is NEVER
+    # written (`_fact_text`), so a fact saved without either is byte-identical to 0.36.1.
+    outcome: str | None = None
+    status: str | None = None
     # The file this Fact was READ FROM, set by `_facts` and by nothing else; `None` on a
     # Fact built in memory. `compact` moves THIS path (#122): before it moved
     # `facts/<name>.md` derived from the frontmatter, so a hand-edited `stale.md` whose
@@ -359,7 +388,17 @@ class Fact:
 
 
 # The frontmatter keys `_fact_text` writes itself; every other key rides in `Fact.extra`.
-OWNED_KEYS = ("name", "description", "type", "created", "last_recalled", "links", "keywords")
+OWNED_KEYS = (
+    "name",
+    "description",
+    "type",
+    "created",
+    "last_recalled",
+    "links",
+    "keywords",
+    "outcome",
+    "status",
+)
 
 
 @dataclass
@@ -382,6 +421,18 @@ class ArchivedFact:
     index_bytes: int
     last_recalled: str | None
     created: str | None
+
+
+@dataclass
+class MergeResult:
+    consumed: list[Fact]
+    produced_text: str  # `_fact_text` of the projected fact: the bytes, not a guess
+    linked_from: list[str]  # "<fact> -> <consumed>" lines, sorted
+    applied: bool
+
+
+_ISO_DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+_DONE_WORD_RE = re.compile(r"\b(" + "|".join(DONE_WORDS) + r")\b", re.IGNORECASE)
 
 
 @dataclass
@@ -1210,12 +1261,19 @@ class MemoryStore:
         body: str,
         links: tuple[str, ...] = (),
         keywords: tuple[str, ...] = (),
+        outcome: str | None = None,
+        status: str | None = None,
+        *,
+        _dup_exempt: tuple[str, ...] = (),
     ) -> SaveResult:
+        """`_dup_exempt` is `merge`'s and nobody else's: the facts a merge consumes are still
+        live while it saves, and they cannot be what the new fact duplicates."""
         self._ensure_dirs()
         if type not in VALID_TYPES:
             raise MemoryValidationError(
                 f"invalid type '{type}'; must be one of {sorted(VALID_TYPES)}"
             )
+        _validate_outcome_status(type, outcome, status)
         if not NAME_RE.match(name or ""):
             raise MemoryValidationError(f"invalid name '{name}'; must match {NAME_RE.pattern}")
         if not (description or "").strip():
@@ -1262,6 +1320,8 @@ class MemoryStore:
             if fact.name == name:
                 existing = fact
                 continue  # same name = update, not duplicate
+            if str(fact.name) in _dup_exempt:
+                continue
             if (
                 _jaccard(new_tokens, tokens(f"{fact.name} {fact.description}"))
                 >= DUPLICATE_JACCARD
@@ -1291,6 +1351,8 @@ class MemoryStore:
             # the same event as creating it, and resetting this would let a re-save
             # launder a stale fact into a fresh one.
             created=existing.created if existing is not None else self._today(),
+            outcome=outcome,
+            status=None if status == "active" else status,
         )
         path = self._fact_path(name)
         existed = path.read_text(encoding="utf-8") if path.exists() else None
@@ -1325,6 +1387,7 @@ class MemoryStore:
         stamp: bool = True,
         min_ratio: float = RECALL_MIN_SCORE_RATIO,
         skipped: list[dict[str, str]] | None = None,
+        outcome: str | None = None,
     ) -> list[Fact]:
         """Top-`k` facts whose name+description share tokens with `query`.
 
@@ -1382,14 +1445,24 @@ class MemoryStore:
         k = k if k is not None else self.k
         q = query_terms(query)
         ledger = self.usage()
+
+        def facts_pool() -> Pool:
+            # The outcome filter (#219) runs BEFORE scoring, so `k` and the ratio gate apply
+            # to the filtered pool; the hot index carries no outcome, so a filtered recall
+            # pools from the parsed files.
+            got = self.candidates(skipped)
+            if outcome is not None:
+                got = [f for f in got if f.outcome == outcome]
+            return pool_of(got, q)
+
         picked = pick_hits(
             [self],
-            [self.pool(q, skipped=skipped)],
+            [self.pool(q, skipped=skipped) if outcome is None else facts_pool()],
             q,
             k,
             min_ratio,
             lambda: ledger.weights(self._now()),
-            lambda _: pool_of(self.candidates(skipped), q),
+            lambda _: facts_pool(),
         )
         hits = [fact for _, fact in picked]
         if stamp:
@@ -1534,6 +1607,144 @@ class MemoryStore:
         assert pool.files is not None
         name = pool.names[row]
         return self._fact_named(pool.files[row] or f"{name}.md", name)
+
+    def list_facts(
+        self, type: str | None = None, outcome: str | None = None, status: str | None = None
+    ) -> list[Fact]:
+        """Live facts, filtered and sorted by name. `status="active"` matches a fact with no
+        status. Reads `facts/` only; archived facts are `archived()`'s."""
+        facts = []
+        for fact in self._facts():
+            if type is not None and fact.type != type:
+                continue
+            if outcome is not None and fact.outcome != outcome:
+                continue
+            if status is not None and (fact.status or "active") != status:
+                continue
+            facts.append(fact)
+        facts.sort(key=lambda f: str(f.name))
+        return facts
+
+    def candidates_done(
+        self, older_than_days: int | None = None, today: str | None = None
+    ) -> list[tuple[Fact, str]]:
+        """Facts that look finished, with the first matching reason (#221). Sorted by name.
+        1 `status: done`, any type; 2 a done-word, `type: project` only; 3 age, only when
+        asked and only when `created` is a date. Never writes."""
+        today_s = today or self._today()
+        out: list[tuple[Fact, str]] = []
+        for fact in sorted(self._facts(), key=lambda f: str(f.name)):
+            if fact.status == "done":
+                out.append((fact, "status: done"))
+                continue
+            if fact.type == "project" and (m := _DONE_WORD_RE.search(str(fact.description))):
+                out.append((fact, f"done-word '{m.group(1).lower()}' in description"))
+                continue
+            # YYYY-MM-DD only: CPython 3.11's `fromisoformat` also takes `20260101` and
+            # `2026-W01-1`, which the port (and CPython 3.10) never aged (J73-6).
+            if (
+                older_than_days is not None
+                and isinstance(fact.created, str)
+                and _ISO_DAY_RE.match(fact.created[:10])
+            ):
+                try:
+                    age = (date.fromisoformat(today_s) - date.fromisoformat(fact.created[:10])).days
+                except ValueError:
+                    continue
+                if age > older_than_days:
+                    out.append(
+                        (fact, f"older than {older_than_days}d (created {fact.created[:10]})")
+                    )
+        return out
+
+    def merge(
+        self,
+        names: list[str],
+        name: str,
+        type: str,
+        description: str,
+        body: str,
+        outcome: str | None = None,
+        status: str | None = None,
+        apply: bool = False,
+    ) -> MergeResult:
+        """#220. Dry run by default. Apply = `save` the new fact FIRST (duplicate and budget
+        checks run there), then `archive` each original in the given order."""
+        live = {str(f.name): f for f in self._facts()}
+        distinct = list(dict.fromkeys(names))
+        missing = [n for n in distinct if n not in live]
+        if missing or len(distinct) < 2:
+            raise MemoryValidationError(
+                "merge needs at least two distinct live facts; missing: "
+                + (", ".join(missing) if missing else "none")
+            )
+        if name in distinct:
+            raise MemoryValidationError(
+                f"cannot merge into '{name}': it is one of the facts being merged"
+            )
+        if name in live or name in self.archived():
+            raise MemoryValidationError(f"cannot merge into '{name}': a fact of that name exists")
+        if type not in VALID_TYPES:
+            raise MemoryValidationError(
+                f"invalid type '{type}'; must be one of {sorted(VALID_TYPES)}"
+            )
+        _validate_outcome_status(type, outcome, status)
+        # `save`'s duplicate check, run here so the dry run refuses what `--apply` would, and
+        # run WITHOUT the consumed facts: they are leaving, so resembling them is the point of
+        # a merge. WAS: `save` compared against them, returned `duplicate` unwritten, and the
+        # originals were archived under a `merged N` line (J73-6).
+        new_tokens = tokens(f"{name} {description}")
+        for other in live.values():
+            if str(other.name) in distinct:
+                continue
+            other_tokens = tokens(f"{other.name} {other.description}")
+            if _jaccard(new_tokens, other_tokens) >= DUPLICATE_JACCARD:
+                raise MemoryValidationError(
+                    f"cannot merge into '{name}': it duplicates the live fact '{other.name}'"
+                )
+        consumed = [live[n] for n in distinct]
+        links: list[str] = []
+        for fact in consumed:
+            for link in fact.links:
+                if link not in distinct and link not in links:
+                    links.append(str(link))
+        full_body = body.strip() + "\n\nSources: " + ", ".join(distinct)
+        projected = Fact(
+            name=name,
+            description=description,
+            type=type,
+            body=full_body,
+            links=links,
+            last_recalled=None,
+            created=self._today(),
+            outcome=outcome,
+            status=None if status == "active" else status,
+        )
+        linked_from = sorted(
+            f"{other.name} -> {link}"
+            for other in live.values()
+            if other.name not in distinct
+            for link in other.links
+            if link in distinct
+        )
+        if apply:
+            saved = self.save(
+                type,
+                name,
+                description,
+                full_body,
+                tuple(links),
+                outcome=outcome,
+                status=status,
+                _dup_exempt=tuple(distinct),
+            )
+            if saved.status == "duplicate":  # a fact landed between the check and the save
+                raise MemoryValidationError(
+                    f"cannot merge into '{name}': it duplicates the live fact '{saved.similar}'"
+                )
+            for n in distinct:
+                self.archive(n)
+        return MergeResult(consumed, self._fact_text(projected), linked_from, apply)
 
     def lookup(
         self, name: str, stamp: bool = True, skipped: list[dict[str, str]] | None = None
@@ -2303,7 +2514,14 @@ class MemoryStore:
                         f"(it holds the control character {bad}), read as '{description}'; "
                         f"make it one line"
                     )
-            fact_type = meta["type"]
+            # memory-keeper / reflexion alias (#219, #221): read-only, never rewritten.
+            nested = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else {}
+            # The alias stands in only when `type` is ABSENT: a `type:` holding null was read
+            # by 0.36.1 and still is (J73-6; WAS `meta.get("type", ...)` + a None check).
+            if "type" in meta:
+                fact_type = meta["type"]
+            elif (fact_type := nested.get("type")) is None:
+                raise KeyError("type")
             links = list(meta.get("links") or [])
             # #199: absent is `[]`; any other shape -- a scalar, `null`, a list holding a
             # non-string -- refuses the file with this sentence, after the three required
@@ -2313,6 +2531,14 @@ class MemoryStore:
                 raise MemoryValidationError(
                     f"fact '{name}' in {path.name}: keywords must be a list of strings"
                 )
+            outcome = meta.get("outcome")
+            if outcome is None:
+                loop = nested.get("loop")
+                outcome = loop if loop in VALID_OUTCOMES else None
+            status = meta.get("status")
+            if status is None:
+                nested_status = nested.get("status")
+                status = "done" if nested_status in ("done", "archived") else None
             return Fact(
                 name=name,
                 description=description,
@@ -2322,6 +2548,8 @@ class MemoryStore:
                 keywords=list(keywords),
                 last_recalled=stamps["last_recalled"],
                 created=stamps["created"] or _mtime_date(path),
+                outcome=outcome,
+                status=status,
                 source=path,
                 extra={
                     k: v for k, v in meta.items() if isinstance(k, str) and k not in OWNED_KEYS
@@ -2350,6 +2578,11 @@ class MemoryStore:
         # Only when non-empty (#199): a fact that never had keywords keeps its bytes.
         if fact.keywords:
             meta["keywords"] = fact.keywords
+        # #219 / #221 (0.36.2): after `keywords`, before the hand-written keys.
+        if fact.outcome is not None:
+            meta["outcome"] = fact.outcome
+        if fact.status is not None and fact.status != "active":
+            meta["status"] = fact.status
         # After the owned keys, in the order the file had them (#199 Task 6).
         for key, value in fact.extra.items():
             if key not in OWNED_KEYS:

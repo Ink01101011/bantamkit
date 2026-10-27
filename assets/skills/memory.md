@@ -12,6 +12,7 @@ past-you would have used. Do this before acting, not after.
 - The user corrects you or states a preference → type "feedback"
 - A durable fact about the user → "user", about ongoing work → "project",
   a URL/dashboard/ticket → "reference"
+- Tag a lesson with outcome: error|success; close a project fact by saving it again with status: done.
 
 ## When NOT to save
 
