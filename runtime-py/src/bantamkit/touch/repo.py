@@ -6,8 +6,11 @@
 runs git: an argv list, no shell, `GIT_OPTIONAL_LOCKS=0` so a `git status` never takes
 `index.lock` beside the user's own git, `LC_ALL=C`, no terminal prompt, `core.quotepath=off`,
 a `GIT_TIMEOUT_MS` bound, and `None` for every failure (no git on PATH included).
-`git_on_path` answers whether a `git` executable is on PATH by stats alone (the PostToolUse
-arm may not spawn), so "no git" records nothing (spec, Error handling).
+`git_on_path` answers whether a `git` on PATH can actually run: a stat walk finds it, then
+`git --version` runs it once and the answer is kept on disk for `GIT_PROBE_TTL_S` (the
+PostToolUse arm's 2 ms budget cannot pay a spawn per call), so "no git" records nothing (spec,
+Error handling). `repo_id` hashes the toplevel with its drive letter upper-cased, so the two
+runtimes name one repository the same on Windows whatever case each one's realpath gives.
 
 `runtime-ts/src/touch/repo.ts` is the port; `touch-log` compares the two.
 """
@@ -15,14 +18,21 @@ arm may not spawn), so "no git" records nothing (spec, Error handling).
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 
-from bantamkit.storage.hotindex import sha16
+from bantamkit.storage.logsegment import write_over
 
 GIT_TIMEOUT_MS = 2000
 GIT_PATHEXT_DEFAULT = ".COM;.EXE;.BAT;.CMD"  # Windows' own default when PATHEXT is unset
+GIT_PROBE_TTL_S = 600  # how long a `git --version` answer kept on disk stays good
+GIT_PROBE_FILE = "git-probe.json"
+# A no-shell spawn runs only these on Windows: a `git.cmd` / `git.bat` needs `cmd.exe` (#208).
+_WIN_SPAWNABLE = (".exe", ".com")
 _GIT_ENV = {"GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
 
 
@@ -30,7 +40,24 @@ _GIT_ENV = {"GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"
 class Repo:
     top: str  # realpath of the toplevel
     gitdir: str  # the repository's git directory (a worktree's own, for a linked worktree)
-    id: str  # sha16(top)
+    id: str  # repo_id(top)
+
+
+def _drive_upper(top: str) -> str:
+    """`top` with a leading `X:` drive letter upper-cased; any other path unchanged (#208)."""
+    if len(top) >= 2 and top[1] == ":" and top[0].isascii() and top[0].isalpha():
+        return top[0].upper() + top[1:]
+    return top
+
+
+def repo_id(top: str) -> str:
+    """The `<repo-id>`: sha256 of the realpath'd toplevel, drive letter upper-cased, 16 hex.
+
+    `top` is already a realpath (`find_repo` makes it one). On POSIX this is `sha16(top)`, so
+    no existing id moves; on Windows `c:\\x` and `C:\\x` are one repository on both runtimes
+    whichever case each one's realpath returns (#208 item 8). `runtime-ts`'s `repoId` is the port.
+    """
+    return hashlib.sha256(_drive_upper(top).encode("utf-8")).hexdigest()[:16]
 
 
 def find_repo(cwd: str) -> Repo | None:
@@ -42,14 +69,14 @@ def find_repo(cwd: str) -> Repo | None:
         dot = os.path.join(here, ".git")
         try:
             if os.path.isdir(dot):
-                return Repo(here, dot, sha16(here))
+                return Repo(here, dot, repo_id(here))
             if os.path.isfile(dot):
                 with open(dot, "rb") as f:  # bytes: text mode would also end a line at \r
                     first = f.read().decode("utf-8", errors="replace").split("\n")[0].strip()
                 if first.startswith("gitdir:"):
                     gd = first[len("gitdir:") :].strip()
                     gd = gd if os.path.isabs(gd) else os.path.join(here, gd)
-                    return Repo(here, os.path.realpath(gd), sha16(here))
+                    return Repo(here, os.path.realpath(gd), repo_id(here))
         except (OSError, ValueError):
             return None
         parent = os.path.dirname(here)
@@ -59,43 +86,150 @@ def find_repo(cwd: str) -> Repo | None:
 
 
 _GIT_FOUND: dict[tuple[str, str, bool], bool] = {}
+# Win32 `CREATE_NO_WINDOW`: what Node's `windowsHide: true` sets for a console child.
+_CREATE_NO_WINDOW = 0x08000000
 
 
-def git_on_path(
-    path: str | None = None, pathext: str | None = None, windows: bool | None = None
-) -> bool:
-    """Whether a `git` executable is on PATH, by a stat walk: never a subprocess (#200, B2).
+def _no_window() -> dict[str, int]:
+    """The spawn kwargs that keep a git child from flashing a console window (#208 N3).
+
+    platform-checked: `creationflags` is a Windows-only argument, so it is passed only when
+    `sys.platform` is win32; on POSIX the kwargs are empty and the spawn is unchanged. Node
+    passes `windowsHide: true` to both of its git spawns, which is this flag on Windows and
+    nothing elsewhere.
+    """
+    if sys.platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)}
+    return {}
+
+
+def _entry_join(d: str, n: str) -> str:
+    """`<d>/<n>` with the PATH entry `d` exactly as written: never normalized (#208 N1).
+
+    One separator (this OS's) goes between them unless `d` already ends with one (`/` on
+    POSIX, `/` or `\\` on Windows). `/usr//bin`, `./bin` and `a/../bin` are kept as spelled,
+    which is what the kernel resolves when it runs the path, and the candidate string (so
+    the `git-probe.json` key) is the same in both runtimes: `os.path.join` and Node's
+    `path.join` disagreed here (Node normalizes). `runtime-ts`'s `entryJoin` is the port.
+    """
+    ends = ("/", "\\") if os.name == "nt" else ("/",)
+    return d + n if d.endswith(ends) else d + os.sep + n
+
+
+def _git_candidate(p: str, ext: str, win: bool) -> str | None:
+    """The first `git` the stat walk finds on `p`, or None.
 
     Each non-empty `PATH` entry in order (an empty one, the shell's "cwd", is skipped): on
     POSIX `<dir>/git` must be a regular file with an execute bit for this user; on Windows
     `<dir>/git<ext>` for each non-empty extension of `PATHEXT` (`GIT_PATHEXT_DEFAULT` when it
-    is unset or empty) must be a regular file. Cached per process, keyed by the PATH and
-    PATHEXT it read, so a changed PATH is asked again. `runtime-ts`'s `gitOnPath` is the port.
+    is unset or empty) that a no-shell spawn can run (`.exe`, `.com`) must be a regular file.
     """
-    win = os.name == "nt" if windows is None else windows
+    names = (
+        [
+            "git" + e
+            for e in (ext or GIT_PATHEXT_DEFAULT).split(";")
+            if e and e.lower() in _WIN_SPAWNABLE
+        ]
+        if win
+        else ["git"]
+    )
+    for d in p.split(";" if win else ":"):
+        if not d:
+            continue
+        for n in names:
+            c = _entry_join(d, n)
+            try:
+                if os.path.isfile(c) and (win or os.access(c, os.X_OK)):
+                    return c
+            except (OSError, ValueError):
+                continue
+    return None
+
+
+def _probe_key(cand: str) -> str | None:
+    try:
+        st = os.stat(cand)
+    except (OSError, ValueError):
+        return None
+    raw = "\0".join([cand, f"{st.st_mtime_ns}:{st.st_size}"])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _probe_cached(state_dir: str, key: str) -> bool | None:
+    f = os.path.join(state_dir, GIT_PROBE_FILE)
+    try:
+        # abs: a file written this millisecond can read as a hair in the future
+        if not abs(time.time() - os.stat(f).st_mtime) < GIT_PROBE_TTL_S:
+            return None
+        with open(f, "rb") as fh:
+            v = json.loads(fh.read().decode("utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(v, dict) and v.get("key") == key and isinstance(v.get("ok"), bool):
+        return v["ok"]
+    return None
+
+
+def _git_runs(cand: str) -> bool:
+    """`<cand> --version` exits 0 within `GIT_TIMEOUT_MS`: no shell, no stdin, no window."""
+    try:
+        done = subprocess.run(  # noqa: S603 - argv list, no shell
+            [cand, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=GIT_TIMEOUT_MS / 1000,
+            env={**os.environ, **_GIT_ENV},
+            **_no_window(),
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+def git_on_path(
+    path: str | None = None,
+    pathext: str | None = None,
+    windows: bool | None = None,
+    state_dir: str | None = None,
+) -> bool:
+    """Whether a `git` on PATH can run: found by a stat walk, then run once (#200 B2, #208).
+
+    `_git_candidate` finds the first `git`; none is False with no spawn. A `git.cmd` /
+    `git.bat` is never a candidate, because a no-shell spawn (`git` below) cannot run it.
+    The candidate then runs as `<candidate> --version` and must exit 0 within
+    `GIT_TIMEOUT_MS`: the macOS `/usr/bin/git` shim with no Command Line Tools exits 1. The
+    answer is kept in `<state_dir>/git-probe.json` as `{"key","ok"}`, `key` the sha256 of the
+    candidate path and its `mtime_ns:size`, good while the file's mtime is within
+    `GIT_PROBE_TTL_S` of now; a spawn is paid only on a miss. A simulated platform
+    (`windows` not this OS's) never spawns: the stat walk answers. Cached per process, keyed
+    by the PATH and PATHEXT it read.
+    `runtime-ts`'s `gitOnPath` is the port.
+    """
+    real = os.name == "nt"
+    win = real if windows is None else windows
     p = os.environ.get("PATH", "") if path is None else path
     ext = os.environ.get("PATHEXT", "") if pathext is None else pathext
     key = (p, ext if win else "", win)
     hit = _GIT_FOUND.get(key)
     if hit is not None:
         return hit
-    names = (
-        ["git" + e for e in (ext or GIT_PATHEXT_DEFAULT).split(";") if e] if win else ["git"]
-    )
-    found = False
-    for d in p.split(";" if win else ":"):
-        if not d:
-            continue
-        for n in names:
-            c = os.path.join(d, n)
-            try:
-                if os.path.isfile(c) and (win or os.access(c, os.X_OK)):
-                    found = True
-                    break
-            except (OSError, ValueError):
-                continue
-        if found:
-            break
+    cand = _git_candidate(p, ext, win)
+    if cand is None or win != real:
+        found = cand is not None
+    else:
+        pk = _probe_key(cand)
+        cached = None if state_dir is None or pk is None else _probe_cached(state_dir, pk)
+        if cached is not None:
+            found = cached
+        else:
+            found = _git_runs(cand)
+            if state_dir is not None and pk is not None:
+                try:
+                    os.makedirs(state_dir, exist_ok=True)
+                    body = json.dumps({"key": pk, "ok": found}, separators=(",", ":"))
+                    write_over(os.path.join(state_dir, GIT_PROBE_FILE), body.encode("utf-8"))
+                except OSError:
+                    pass  # no cache: the next call spawns again
     _GIT_FOUND[key] = found
     return found
 
@@ -119,6 +253,7 @@ def git(repo: Repo, args: list[str], timeout_ms: int = GIT_TIMEOUT_MS) -> str | 
             capture_output=True,
             timeout=timeout_ms / 1000,
             env={**os.environ, **_GIT_ENV},
+            **_no_window(),
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return None

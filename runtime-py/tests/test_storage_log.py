@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import gzip
 import os
+import sys
 import time
+
+import pytest
 
 from bantamkit.storage import ROTATE_BYTES, LogSegment, exclusive
 from bantamkit.storage import lock as lockmod
@@ -185,3 +188,161 @@ def test_exclusive_breaks_a_stale_lock_and_releases_its_own(tmp_path):
     with exclusive(target) as held:
         assert held is True and lock.exists()
     assert not lock.exists()
+
+
+# ------------------------------------------------------------------ #208: no line lost to a rewrite
+
+
+def _fill(p, n=40):
+    row = b'{"ts":"2026-10-%02dT00:00:00Z","i":%d}\n'
+    p.write_bytes(b"".join(row % (1 + i % 28, i) for i in range(n)))
+
+
+def _sum(rows):
+    return [{"ts": "2026-10-01T00:00:00Z", "n": len(rows)}]
+
+
+def test_a_held_lock_skips_fold_fold_lines_and_rotate(tmp_path):
+    # 208 item 1: once the wait runs out, nothing is rewritten unlocked.
+    p = tmp_path / "x.jsonl"
+    _fill(p)
+    data = p.read_bytes()
+    (tmp_path / "x.jsonl.lock").write_bytes(b"")  # a live holder
+    seg = LogSegment(p, wait_ms=50)
+    seg.fold("2026-10-29", _sum)
+    seg.fold_lines(None, lambda pairs: [])
+    assert seg.rotate(0) is False
+    assert p.read_bytes() == data
+    assert sorted(os.listdir(tmp_path)) == ["x.jsonl", "x.jsonl.lock"]
+
+
+def test_an_unlocked_append_leaves_no_marker(tmp_path):
+    p = tmp_path / "x.jsonl"
+    (tmp_path / "x.jsonl.lock").write_bytes(b"")
+    assert LogSegment(p, wait_ms=0).append({"ts": "a"}) is True
+    assert sorted(os.listdir(tmp_path)) == ["x.jsonl", "x.jsonl.lock"]
+
+
+def test_an_unlocked_append_writes_under_its_marker(tmp_path, monkeypatch):
+    # the marker exists from before the log is opened until after the line is written
+    import builtins
+
+    p = tmp_path / "x.jsonl"
+    (tmp_path / "x.jsonl.lock").write_bytes(b"")
+    seen = []
+    real = builtins.open
+
+    def spy(file, *a, **k):
+        if str(file) == str(p):
+            seen.append(sorted(n for n in os.listdir(tmp_path) if n.endswith(".writing")))
+        return real(file, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", spy)
+    assert LogSegment(p, wait_ms=0).append({"ts": "a"}) is True
+    assert len(seen) == 1 and len(seen[0]) == 1 and seen[0][0].startswith("x.jsonl.")
+    monkeypatch.undo()
+    assert not any(n.endswith(".writing") for n in os.listdir(tmp_path))
+    (tmp_path / "x.jsonl.lock").unlink()
+    seen.clear()
+    monkeypatch.setattr(builtins, "open", spy)
+    assert LogSegment(p).append({"ts": "b"}) is True
+    assert seen == [[]], "a locked append makes no marker"
+
+
+def _inflight(p, payload, mark):
+    """An appender that opened the old file before the rename and writes after it."""
+    import threading
+
+    def run():
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            keeps = [n for n in os.listdir(p.parent) if n.endswith(".keep")]
+            if keeps:
+                keep = p.parent / keeps[0]
+                try:
+                    # renamed: the old file is orphaned, reachable only by its link
+                    if os.stat(keep).st_ino != os.stat(p).st_ino:
+                        with open(keep, "ab") as f:
+                            for chunk in payload:
+                                f.write(chunk)
+                                f.flush()
+                        break
+                except OSError:
+                    pass
+            time.sleep(0.001)
+        os.unlink(mark)
+
+    t = threading.Thread(target=run)
+    t.start()
+    return t
+
+
+def test_an_inflight_unlocked_line_is_carried_over_by_fold_and_rotate(tmp_path):
+    # 208 items 2-3: written to the old file after the rename, before the marker went: kept.
+    for op in ("fold", "rotate"):
+        d = tmp_path / op
+        d.mkdir()
+        p = d / "x.jsonl"
+        _fill(p)
+        mark = d / "x.jsonl.1.ab.writing"
+        mark.write_bytes(b"")
+        big = b'{"ts":"2026-10-30T00:00:00Z","pad":"%s"}\n' % (b"z" * 70000)
+        t = _inflight(p, [b'{"ts":"2026-10-30T00:00:00Z","late":1}\n', big], mark)
+        seg = LogSegment(p)
+        if op == "fold":
+            seg.fold("2026-10-29", _sum)
+            want = b'{"ts":"2026-10-01T00:00:00Z","n":40}\n'
+        else:
+            assert seg.rotate(0) is True
+            want = b""
+        t.join()
+        assert p.read_bytes() == want + b'{"ts":"2026-10-30T00:00:00Z","late":1}\n' + big, op
+        assert sorted(n for n in os.listdir(d) if not n.endswith(".gz")) == ["x.jsonl"], op
+
+
+def test_a_stale_marker_is_removed_and_does_not_hold_the_rewrite(tmp_path):
+    p = tmp_path / "x.jsonl"
+    _fill(p)
+    mark = tmp_path / "x.jsonl.1.ab.writing"
+    mark.write_bytes(b"")
+    old = time.time() - 60
+    os.utime(mark, (old, old))
+    t0 = time.monotonic()
+    LogSegment(p).fold("2026-10-29", _sum)
+    assert time.monotonic() - t0 < 1.0
+    assert p.read_bytes() == b'{"ts":"2026-10-01T00:00:00Z","n":40}\n' and not mark.exists()
+
+
+def test_no_hard_link_no_rewrite(tmp_path, monkeypatch):
+    p = tmp_path / "x.jsonl"
+    _fill(p)
+    data = p.read_bytes()
+
+    def refuse(*a, **k):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "link", refuse)
+    seg = LogSegment(p)
+    seg.fold("2026-10-29", _sum)
+    assert seg.rotate(0) is False
+    assert p.read_bytes() == data and sorted(os.listdir(tmp_path)) == ["x.jsonl"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows honours no chmod 555 on a directory")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes anyway")
+def test_a_read_only_directory_fails_fast(tmp_path):
+    # 208 item 7: a REAL read-only directory (not a file in the way) gives the lock up at once.
+    d = tmp_path / "ro"
+    d.mkdir()
+    (d / "x.jsonl").write_bytes(b"")
+    d.chmod(0o555)
+    try:
+        t0 = time.monotonic()
+        with exclusive(d / "x.jsonl") as held:
+            assert held is False
+        assert LogSegment(d / "x.jsonl").append({"ts": "a"}) is True  # the file itself is writable
+        assert LogSegment(d / "y.jsonl").append({"ts": "a"}) is False  # no file, none can be made
+        assert time.monotonic() - t0 < 0.5
+        assert (d / "x.jsonl").read_bytes() == b'{"ts":"a"}\n'
+    finally:
+        d.chmod(0o755)

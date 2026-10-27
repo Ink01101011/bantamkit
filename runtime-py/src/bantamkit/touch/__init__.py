@@ -28,6 +28,7 @@ from .graph import (  # noqa: F401
 from .log import (  # noqa: F401
     TOUCH_LOG_CAP_BYTES,
     TOUCH_LOG_FOLD_TARGET_BYTES,
+    TOUCH_N_CAP,
     TOUCH_OPS,
     TOUCH_TAIL_BYTES,
     TouchLog,
@@ -58,6 +59,8 @@ from .refs import (  # noqa: F401
 )
 from .repo import (  # noqa: F401
     GIT_PATHEXT_DEFAULT,
+    GIT_PROBE_FILE,
+    GIT_PROBE_TTL_S,
     GIT_TIMEOUT_MS,
     Repo,
     find_repo,
@@ -67,6 +70,7 @@ from .repo import (  # noqa: F401
     ls_files,
     relpath,
     renames,
+    repo_id,
 )
 from .summary import (  # noqa: F401
     COMPACT_FILES,

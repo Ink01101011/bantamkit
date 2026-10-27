@@ -2288,6 +2288,27 @@ def test_no_git_on_path_records_nothing(tmp_path):
     assert [json.loads(x)["op"] for x in log.read_text(encoding="utf-8").splitlines()] == ["read"]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead",
+)
+def test_a_git_that_cannot_run_records_nothing(tmp_path):
+    """#208 item 6: a `git` on PATH that exits 1 (the macOS shim with no Command Line Tools)
+    is no git: nothing recorded, and the answer kept in `<hooks>/git-probe.json`."""
+    home, r, _store = _via_bed(tmp_path)
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "git").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    (shim / "git").chmod(0o755)
+    for tool in ("Read", "Edit"):
+        _post(home, r, tool, {"file_path": str(r / "src" / "a.py")}, {"PATH": str(shim)})
+    assert not (home / ".bantamkit" / "touch").exists()
+    assert not (home / ".bantamkit" / "hooks" / "ledger-s1.seq.json").exists()
+    probe_file = home / ".bantamkit" / "hooks" / "git-probe.json"
+    probe = json.loads(probe_file.read_text(encoding="utf-8"))
+    assert probe["ok"] is False and len(probe["key"]) == 16
+
+
 def test_ups_builds_no_context_while_it_cannot_move_the_reply(tmp_path, monkeypatch, capsys):
     """W_CONTEXT 0 and via off: no touch-log read, no graph, the same reply bytes (T200-10)."""
     import io

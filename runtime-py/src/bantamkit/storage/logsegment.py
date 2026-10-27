@@ -30,6 +30,21 @@ strings, bools and lists, the event log a closed set of tokens. `storage-log` pi
 difference with a `ruling:` case and a per-side literal (docs/porting.md).
 
 A log is an enhancement: no `OSError` leaves `append`, `fold` or `rotate`.
+
+NO LINE IS LOST TO A REWRITE (#208 items 1-3). `fold`, `fold_lines`, `rotate` and the touch
+log's bound rewrite the live file ONLY while the lock is actually held: a wait that runs out
+skips the rewrite (the next call retries). An append whose own wait ran out still writes,
+unlocked, as it always has, but first creates a marker `<path>.<pid>.<hex>.writing` beside the
+log and removes it once its line is written. `rewrite_held` keeps the old file reachable by a
+hard link `<path>.<pid>.<hex>.keep` taken before it reads, renames the new body into place,
+then waits for every marker present after the rename to go and appends whatever the old file
+grew past what it read, read to EOF, onto the new one. An appender that opened the old file
+before the rename has a marker from before that open until after its write, so its line is
+either in what was read or in what is carried over. A marker older than `stale_ms` is a dead
+appender's and is removed; the whole wait is capped at half of `stale_ms`, so the lock is
+never held long enough to be broken as stale. A directory that cannot hold the hard link
+(no link support) is never rewritten. Windows refuses the rename while an appender holds the
+file open, so there the rewrite fails and is retried later; nothing is lost either way.
 """
 
 from __future__ import annotations
@@ -38,12 +53,13 @@ import gzip
 import json
 import os
 import re
+import time
 import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .lock import exclusive
+from .lock import LOCK_POLL_MS, LOCK_STALE_MS, exclusive
 
 ROTATE_BYTES = 1_000_000
 
@@ -79,6 +95,106 @@ def _load(line: str) -> dict[str, Any] | None:
 def _is_old(row: dict[str, Any], older_than: str) -> bool:
     ts = row.get("ts")
     return isinstance(ts, str) and ts < older_than
+
+
+def write_over(target: Path | str, data: bytes) -> None:
+    """`data` to `<target>.<pid>.<hex>.tmp`, then renamed over `target`."""
+    tmp = f"{target}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _mark(path: Path) -> str | None:
+    """An unlocked appender's marker, created before it opens the log; None when refused."""
+    mark = f"{path}.{os.getpid()}.{os.urandom(4).hex()}.writing"
+    try:
+        os.close(os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except OSError:
+        return None
+    return mark
+
+
+def _read_from(path: str, offset: int) -> bytes:
+    """Every byte of `path` from `offset` to EOF."""
+    with open(path, "rb") as f:
+        f.seek(offset)
+        return f.read()
+
+
+def _drain(path: Path, keep: str, offset: int, stale_ms: int, poll_ms: int) -> None:
+    """Wait out the markers present now, then carry the old file's growth onto `path`."""
+    prefix = f"{path.name}."
+    now = time.time()
+    waiting: list[str] = []
+    for name in os.listdir(path.parent):
+        if not name.startswith(prefix):
+            continue
+        full = os.path.join(path.parent, name)
+        if name.endswith(".writing"):
+            waiting.append(full)
+        elif name.endswith(".keep") and full != keep:
+            try:  # a crashed rewriter's link: nothing to carry from it any more
+                if now - os.stat(full).st_mtime > stale_ms / 1000:
+                    os.unlink(full)
+            except OSError:
+                pass
+    deadline = time.monotonic() + stale_ms / 2000
+    while waiting and time.monotonic() < deadline:
+        left = []
+        for mark in waiting:
+            try:
+                if time.time() - os.stat(mark).st_mtime > stale_ms / 1000:
+                    os.unlink(mark)  # its appender died
+                else:
+                    left.append(mark)
+            except OSError:
+                pass  # gone: that appender's line is written
+        waiting = left
+        if waiting:
+            time.sleep(poll_ms / 1000)
+    extra = _read_from(keep, offset)
+    if extra:
+        with open(path, "ab") as f:
+            f.write(extra)
+
+
+def rewrite_held(
+    path: Path | str,
+    build: Callable[[bytes], bytes | None],
+    stale_ms: int = LOCK_STALE_MS,
+    poll_ms: int = LOCK_POLL_MS,
+) -> bool:
+    """Replace the live file by `build(its bytes)`, losing no unlocked appender's line.
+
+    The CALLER holds the lock. `build` answers None for "no rewrite". True when it rewrote.
+    Raises `OSError` (no link support, no file, a refused rename): nothing is lost then.
+    """
+    path = Path(path)
+    keep = f"{path}.{os.getpid()}.{os.urandom(4).hex()}.keep"
+    os.link(path, keep)
+    try:
+        with open(keep, "rb") as f:
+            data = f.read()
+        body = build(data)
+        if body is None:
+            return False
+        write_over(path, body)
+        _drain(path, keep, len(data), stale_ms, poll_ms)
+        return True
+    finally:
+        try:
+            os.unlink(keep)
+        except OSError:
+            pass
 
 
 class LogSegment:
@@ -152,16 +268,24 @@ class LogSegment:
             return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with exclusive(self.path, **self._lock_opts):
-                with open(self.path, "ab+") as f:
-                    end = f.seek(0, os.SEEK_END)
-                    if end > 0:
-                        f.seek(-1, os.SEEK_END)
-                        if f.read(1) != b"\n":
-                            data = b"\n" + data
-                    f.seek(0, os.SEEK_END)
-                    f.write(data)
-                    self.size = end + len(data)
+            with exclusive(self.path, **self._lock_opts) as held:
+                mark = None if held else _mark(self.path)
+                try:
+                    with open(self.path, "ab+") as f:
+                        end = f.seek(0, os.SEEK_END)
+                        if end > 0:
+                            f.seek(-1, os.SEEK_END)
+                            if f.read(1) != b"\n":
+                                data = b"\n" + data
+                        f.seek(0, os.SEEK_END)
+                        f.write(data)
+                        self.size = end + len(data)
+                finally:
+                    if mark is not None:
+                        try:
+                            os.unlink(mark)
+                        except OSError:
+                            pass
             return True
         except OSError:
             return False
@@ -179,6 +303,18 @@ class LogSegment:
             except OSError:
                 pass
             raise
+
+    def _rewrite(self, build: Callable[[bytes], bytes | None]) -> bool:
+        """`rewrite_held` under this log's lock; False, untouched, when the lock is not held."""
+        with exclusive(self.path, **self._lock_opts) as held:
+            if not held:
+                return False
+            return rewrite_held(
+                self.path,
+                build,
+                self._lock_opts.get("stale_ms", LOCK_STALE_MS),
+                self._lock_opts.get("poll_ms", LOCK_POLL_MS),
+            )
 
     def fold(
         self, older_than: str, reducer: Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -217,23 +353,24 @@ class LogSegment:
     ) -> None:
         if not self.path.exists():
             return  # nothing to fold, and maybe no directory to take a lock in
+
+        def body(data: bytes) -> bytes | None:
+            old: list[tuple[dict[str, Any], str]] = []
+            kept: list[str] = []
+            for line in _split(data):
+                row = _load(line)
+                if row is None:
+                    continue
+                if older_than is None or _is_old(row, older_than):
+                    old.append((row, line))
+                else:
+                    kept.append(line)
+            if not old and older_than is not None:
+                return None
+            return build(old) + b"".join(line.encode("utf-8") + b"\n" for line in kept)
+
         try:
-            with exclusive(self.path, **self._lock_opts):
-                old: list[tuple[dict[str, Any], str]] = []
-                kept: list[str] = []
-                for line in _split(self.path.read_bytes()):
-                    row = _load(line)
-                    if row is None:
-                        continue
-                    if older_than is None or _is_old(row, older_than):
-                        old.append((row, line))
-                    else:
-                        kept.append(line)
-                if not old and older_than is not None:
-                    return
-                body = build(old)
-                body += b"".join(line.encode("utf-8") + b"\n" for line in kept)
-                self._replace(self.path, body)
+            self._rewrite(body)
         except OSError:
             pass
 
@@ -241,17 +378,17 @@ class LogSegment:
         """Gzip the live file to the next `<path>.<n>.gz` once it is MORE than `max_bytes`."""
         if not self.path.exists():
             return False
+
+        def body(data: bytes) -> bytes | None:
+            if len(data) <= max_bytes or not data:
+                return None
+            target = Path(f"{self.path}.{len(self.segments()) + 1}.gz")
+            if target.exists():
+                return None
+            self._replace(target, gzip.compress(data, mtime=0))
+            return b""
+
         try:
-            with exclusive(self.path, **self._lock_opts):
-                data = self.path.read_bytes()
-                if len(data) <= max_bytes or not data:
-                    return False
-                target = Path(f"{self.path}.{len(self.segments()) + 1}.gz")
-                if target.exists():
-                    return False
-                self._replace(target, gzip.compress(data, mtime=0))
-                with open(self.path, "wb"):
-                    pass
-                return True
+            return self._rewrite(body)
         except OSError:
             return False

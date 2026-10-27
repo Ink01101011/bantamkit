@@ -4,8 +4,9 @@
  * THE PROPERTIES.
  * 1. No git, nothing recorded (spec, Error handling: "No git, or not inside a repo | Nothing
  *    is recorded"). `git_on_path` / `gitOnPath` answer whether a `git` executable is on PATH by
- *    a stat walk (never a subprocess): POSIX `<dir>/git`, a regular file with an execute bit;
- *    Windows `<dir>/git<ext>` per `PATHEXT` (default `.COM;.EXE;.BAT;.CMD`). As PROCESSES, a
+ *    a stat walk (no subprocess until #208, property 5): POSIX `<dir>/git`, a regular file with
+ *    an execute bit; Windows `<dir>/git<ext>` per `PATHEXT` (default `.COM;.EXE;.BAT;.CMD`,
+ *    `.exe`/`.com` only since #208). As PROCESSES, a
  *    PostToolUse Read and Edit inside a repo with no git on PATH write no counter and no touch
  *    log on either side; the same calls with git reachable through a symlinked PATH dir do.
  * 2. No dead work. While `W_CONTEXT == 0` and via is off, UserPromptSubmit builds no touch
@@ -39,13 +40,25 @@
  * still plain appends, the held-lock
  * log the raw bytes plus one line, `bound` on a directory false.
  *
+ * 5. (#208, job73 B2) Runnable, not just present. `git_on_path` runs the git its stat walk finds
+ *    (`<git> --version`, exit 0 within 2 s): a `git` that exits 1 (the macOS xcrun shim without
+ *    the Command Line Tools) is no git, and the FIRST git found is the one judged. On Windows a
+ *    `git.cmd` / `git.bat` is never a candidate (a no-shell spawn cannot run one). The answer is
+ *    kept in `<state>/git-probe.json` `{"key","ok"}`, the same bytes from both sides, and each
+ *    side reads the other's (a planted `ok: true` under the other's key is believed). `repo_id`
+ *    upper-cases a leading drive letter before hashing (`c:\x` and `C:\x` one id) and leaves a
+ *    POSIX top's id `sha16(top)`. Two `bound_body` beds: folded rows with `n: 1.7e308` (the sum
+ *    is clamped to 2**53 - 1, never `Infinity`), and astral (U+1F600) against high-BMP (U+FF5E)
+ *    paths at one `ts`, so ageing by UTF-16 unit drops the wrong half.
+ *
  * WHAT IT DOES NOT COVER: a real Windows PATH (the Windows rule runs simulated, `windows: true`,
  * over POSIX directories), and two appenders folding at once (the per-runtime race tests in
  * `test_touch_log.py` / `touch-log.test.mjs` run that, as processes).
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'touch-bound';
@@ -87,6 +100,11 @@ function gitBeds(root) {
   writeFileSync(join(winexe, 'git.exe'), 'x');
   const wincmd = d('wincmd');
   writeFileSync(join(wincmd, 'git.CMD'), 'x');
+  const fails = d('fails');
+  writeFileSync(join(fails, 'git'), '#!/bin/sh\nexit 1\n');
+  chmodSync(join(fails, 'git'), 0o755);
+  const winbat = d('winbat');
+  writeFileSync(join(winbat, 'git.bat'), 'x');
   return [
     ['posix: an executable git', exe, '', false],
     ['posix: git without an execute bit', noexec, '', false],
@@ -99,11 +117,16 @@ function gitBeds(root) {
     ['posix: a ;-joined PATH is one entry', `${empty};${exe}`, '', false],
     ['windows: git.exe with PATHEXT .EXE', winexe, '.EXE', true],
     ['windows: git.exe with PATHEXT unset (default)', winexe, '', true],
-    ['windows: git.CMD by the default', wincmd, '', true],
+    ['windows: git.CMD by the default is not spawnable', wincmd, '', true],
     ['windows: git.exe, PATHEXT .COM;.BAT', winexe, '.COM;.BAT', true],
     ['windows: a bare git is not enough', exe, '', true],
     ['windows: ;-joined, empty entries skipped', `;${empty};;${winexe}`, '.exe;.EXE', true],
     ['windows: a :-joined PATH is one entry', `${empty}:${winexe}`, '.EXE', true],
+    ['posix: a git that exits 1', fails, '', false],
+    ['posix: the first git exits 1, a working one later', `${fails}:${exe}`, '', false],
+    ['posix: a working git first, a failing one later', `${exe}:${fails}`, '', false],
+    ['windows: git.bat, then git.exe further on', `${winbat};${wincmd};${winexe}`, '', true],
+    ['windows: git.bat only, PATHEXT .BAT;.CMD', winbat, '.BAT;.CMD', true],
   ];
 }
 
@@ -171,6 +194,22 @@ function outOfOrderLog() {
   return out;
 }
 const STUCK = stuckLog(6000);
+/** #208 item 4: astral and high-BMP paths, one `ts`: code point puts U+FF5E first, UTF-16 units U+1F600. */
+const ASTRAL = '\u{1F600}';
+const HIGH_BMP = '\uFF5E';
+function astralLog() {
+  let out = '';
+  for (let i = 0; i < 10000; i++) {
+    out += line({ ts: '2026-09-01T00:00:00Z', session: '', seq: 0, op: 'folded', path: `src/${i % 2 ? ASTRAL : HIGH_BMP}/f${String(i).padStart(6, '0')}.py`, n: 1 });
+  }
+  return out;
+}
+/** #208 item 5: every folded row `n: 1.7e308`, three paths; the sums overflow a double. */
+function hugeNLog() {
+  let out = '';
+  for (let i = 0; i < 12000; i++) out += `{"ts":"2026-09-01T00:00:00Z","session":"","seq":0,"op":"folded","path":"src/p${i % 3}.py","n":1.7e308}\n`;
+  return out;
+}
 const BODIES = [
   ['the folded block alone over half the cap (6,000 paths)', STUCK],
   ['the folded block alone over the cap (12,000 paths)', stuckLog(12000)],
@@ -178,6 +217,8 @@ const BODIES = [
   ['ts out of order', outOfOrderLog()],
   ['an ordinary log just past the cap', bigLog(40)],
   ['empty', ''],
+  ['astral and high-BMP paths at one ts, aged by code point', astralLog()],
+  ['folded rows with n 1.7e308, the sum clamped', hugeNLog()],
 ];
 /** Four appends after the fold: the slack under the target is under one folded line, so these cross it. */
 const AFTER = [2, 3, 4, 5].map((k) => ({ ...NEW, seq: k, path: `src/new${k}.ts` }));
@@ -249,7 +290,11 @@ function factFile(store, nm, desc) {
   writeFileSync(join(d, `${nm}.md`), `---\nname: ${nm}\ndescription: ${desc}\ntype: project\ncreated: '2026-10-15'\nlast_recalled: null\nlinks: []\n---\n\nbody text\n`);
 }
 
-/** `pathMode`: 'nogit' (an empty bin dir), 'link' (a dir holding a symlink to git), 'inherit'. */
+/**
+ * `pathMode`: 'nogit' (an empty bin dir), 'link' (a dir holding a symlink to git), 'fails' (a
+ * `#!/bin/sh` git that exits 1), 'inherit'. platform-checked: the hook beds are macOS only
+ * (docs/conformance.md); on win32 neither the symlink nor the shebang git would run.
+ */
 function buildHookBed(root) {
   rmSync(root, { recursive: true, force: true });
   const home = join(root, 'home');
@@ -267,13 +312,21 @@ function buildHookBed(root) {
   mkdirSync(join(root, 'gitlink'));
   const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
   symlinkSync(realGit, join(root, 'gitlink', 'git'));
-  return { home: realpathSync.native(home), R: realpathSync.native(R), nogit: join(root, 'nogit'), gitlink: join(root, 'gitlink') };
+  // Outside `root`, made once: the probe key hashes the git's mtime, and both sides must see one git.
+  const fails = join(dirname(root), 'touch-bound-hook-fails');
+  if (!existsSync(join(fails, 'git'))) {
+    mkdirSync(fails, { recursive: true });
+    writeFileSync(join(fails, 'git'), '#!/bin/sh\nexit 1\n');
+    chmodSync(join(fails, 'git'), 0o755);
+  }
+  return { home: realpathSync.native(home), R: realpathSync.native(R), nogit: join(root, 'nogit'), gitlink: join(root, 'gitlink'), fails };
 }
 
 const PROMPT = 'explain the gateway rollout plan please';
 const HOOK_BEDS = [
   { label: 'no git on PATH', path: 'nogit', via: null, events: ['read', 'edit'] },
   { label: 'git through a symlinked PATH dir', path: 'gitlink', via: null, events: ['read', 'edit'] },
+  { label: 'a git on PATH that exits 1 (#208)', path: 'fails', via: null, events: ['read', 'edit'] },
   { label: 'UserPromptSubmit, W_CONTEXT 0 and via off', path: 'inherit', via: null, events: ['edit', 'ups'] },
   { label: 'UserPromptSubmit, BANTAMKIT_VIA=on', path: 'inherit', via: 'on', events: ['edit', 'ups'] },
 ];
@@ -289,6 +342,7 @@ function envFor(bed, b) {
   const env = { HOME: bed.home, USERPROFILE: bed.home, BANTAMKIT_INDEX_DIR: join(bed.home, 'index'), BANTAMKIT_RETENTION: 'off' };
   if (b.path === 'nogit') env.PATH = bed.nogit;
   if (b.path === 'gitlink') env.PATH = bed.gitlink;
+  if (b.path === 'fails') env.PATH = bed.fails;
   if (b.via !== null) env.BANTAMKIT_VIA = b.via;
   return env;
 }
@@ -342,7 +396,14 @@ function hookView(home) {
     /* no hook log */
   }
   const graph = listdir(join(home, '.bantamkit', 'graph'));
+  let probe = null;
+  try {
+    probe = readFileSync(join(home, '.bantamkit', 'hooks', 'git-probe.json'), 'utf8');
+  } catch {
+    /* no probe kept */
+  }
   return {
+    probe,
     touch: names === null ? null : names.map((n) => n.replace(/^[0-9a-f]{16}\.jsonl$/, '<id>.jsonl')),
     ops,
     seq,
@@ -381,24 +442,53 @@ export async function run(ctx) {
     });
   mkBeds(BOUND, 'touch-bound', beds);
   mkBeds(HELD, 'touch-bound-held', held);
+  // #208: the probe file each side writes, then reads from the other; ids by drive letter.
+  const gitRoot = realpathSync.native(join(ctx.scratch, 'touch-bound-git'));
+  const fails = join(gitRoot, 'fails');
+  const probeState = (side) => {
+    const p = join(ctx.scratch, `touch-bound-probe-${side}`);
+    rmSync(p, { recursive: true, force: true });
+    return p;
+  };
+  const stPy = probeState('py');
+  const stNode = probeState('node');
+  const realTop = realpathSync.native(ctx.scratch);
+  const IDS = ['c:\\Users\\a\\repo', 'C:\\Users\\a\\repo', 'C:/Users/a/repo', 'z:\\ไทย\\\u{1F600}', 'Z:\\ไทย\\\u{1F600}', '/c:/x', '/C:/x', '1:\\x', realTop];
   const py = ctx.runPython(REF, {
     suite: 'touch-bound',
+    probe: [[`:${fails}`, stPy]], // a PATH spelling no git bed uses: the per-process cache is keyed by it
+    ids: IDS,
     git: gb.map(([, p, e, w]) => [p, e, w]),
     cutoffs: CUTOFFS.map(([, d]) => b64(d)),
     beds: beds.py,
     bodies: BODIES.map(([, d]) => b64(d)),
     held: held.py,
   });
+  const probeText = (st) => {
+    try {
+      return readFileSync(join(st, touch.GIT_PROBE_FILE), 'utf8');
+    } catch {
+      return null;
+    }
+  };
   const nd = {
+    probe: [[touch.gitOnPath(`:${fails}`, '', false, stNode), probeText(stNode)]],
+    ids: IDS.map((t) => touch.repoId(t)),
     git: gb.map(([, p, e, w]) => touch.gitOnPath(p, e, w)),
     cutoffs: CUTOFFS.map(([, d]) => touch.foldCutoff(Buffer.from(d, 'utf8'))),
     beds: beds.node.map((bed) => runNodeBed(touch, bed)),
-    bodies: BODIES.map(([, d]) => touch.boundBody(Buffer.from(d, 'utf8')).toString('base64')),
+    bodies: BODIES.map(([, d]) => {
+      try {
+        return touch.boundBody(Buffer.from(d, 'utf8')).toString('base64');
+      } catch {
+        return 'threw';
+      }
+    }),
     held: held.node.map((bed) => runNodeHeld(touch, bed)),
   };
   gb.forEach(([label], i) => cases.push({ name: `git_on_path: ${label}`, kind: 'json', expected: py.git[i], actual: nd.git[i] }));
   CUTOFFS.forEach(([label], i) => cases.push({ name: `fold_cutoff: ${label}`, kind: 'json', expected: py.cutoffs[i], actual: nd.cutoffs[i] }));
-  const asBytes = (v) => (v === null ? Buffer.from('<no file>') : Buffer.from(v, 'base64'));
+  const asBytes = (v) => (v === null ? Buffer.from('<no file>') : v === 'threw' ? Buffer.from('<threw>') : Buffer.from(v, 'base64'));
   BOUND.forEach((s, i) => {
     s.ops.forEach((op, j) => {
       cases.push({
@@ -410,8 +500,8 @@ export async function run(ctx) {
     });
   });
 
-  const GIT_EXPECTED = [true, false, false, true, false, false, true, false, false, true, true, true, false, false, true, false];
-  cases.push(...literalCases(py.git, nd.git, 'LITERAL: git_on_path over the sixteen PATHs', GIT_EXPECTED));
+  const GIT_EXPECTED = [true, false, false, true, false, false, true, false, false, true, true, false, false, false, true, false, false, false, true, true, false];
+  cases.push(...literalCases(py.git, nd.git, 'LITERAL: git_on_path over the twenty-one PATHs', GIT_EXPECTED));
   cases.push(
     ...literalCases(py.cutoffs, nd.cutoffs, 'LITERAL: fold_cutoff', [
       null,
@@ -440,6 +530,71 @@ export async function run(ctx) {
   const use = (b) => sideShape(b, 3, 2, ['fact', 'f']).slice(0, 3);
   cases.push(...literalCases(use(py.beds), use(nd.beds), 'LITERAL: a use append folds too', [true, true, true]));
   notes.push(`${gb.length} PATH fixtures, ${CUTOFFS.length} cutoffs, ${BOUND.length} bound beds (cap ${CAP})`);
+
+  // ------------------------------------------------ #208: the probe file, crossed; ids by drive letter
+  cases.push({ name: 'git probe: a git that exits 1, [answer, git-probe.json]', kind: 'json', expected: py.probe[0], actual: nd.probe[0] });
+  // Each side's file planted with `ok: true` under its own key; the OTHER side must believe it.
+  const plant = (st) => {
+    let key = null;
+    try {
+      ({ key } = JSON.parse(readFileSync(join(st, touch.GIT_PROBE_FILE), 'utf8')));
+    } catch {
+      return; // no file kept: nothing to plant, and the crossed case below says so
+    }
+    writeFileSync(join(st, touch.GIT_PROBE_FILE), JSON.stringify({ key, ok: true }));
+  };
+  plant(stPy);
+  plant(stNode);
+  const py2 = ctx.runPython(REF, { suite: 'touch-bound', probe: [[`${fails}::`, stNode]] });
+  const ndCross = touch.gitOnPath(`${fails}:`, '', false, stPy);
+  cases.push({ name: 'git probe: each side believes the other side\'s planted answer', kind: 'json', expected: py2.probe[0][0], actual: ndCross });
+  cases.push(...literalCases([py.probe[0][0], JSON.parse(py.probe[0][1] ?? 'null')?.ok, py2.probe[0][0]], [nd.probe[0][0], JSON.parse(nd.probe[0][1] ?? 'null')?.ok, ndCross], 'LITERAL: probe, [exits 1 is no git, kept as ok false, the other side\'s planted true believed]', [false, false, true]));
+  IDS.forEach((t, i) => cases.push({ name: `repo_id: ${JSON.stringify(t)}`, kind: 'json', expected: py.ids[i], actual: nd.ids[i] }));
+  const sha = (t) => createHash('sha256').update(t, 'utf8').digest('hex').slice(0, 16);
+  const idRule = (ids) => [ids[0] === ids[1], ids[0] === ids[2], ids[3] === ids[4], ids[5] === ids[6], ids[1] === sha(IDS[1]), ids[7] === sha(IDS[7]), ids[8] === sha(realTop)];
+  cases.push(...literalCases(idRule(py.ids), idRule(nd.ids), 'LITERAL: repo_id, [c: = C:, \\ vs / differ, astral path c: = C:, /c: kept, C: hashed as is, 1: kept, POSIX top is sha16]', [true, false, true, false, true, true, true]));
+  notes.push(`1 probe crossed, ${IDS.length} repo ids`);
+
+  // ------------------------------------------------ #208 N1: a PATH entry that is not normalized
+  // Each entry spells the failing git's directory another way. Both sides must key the probe on
+  // the same candidate string (the entry as written), so the file bytes match and each side
+  // believes the other's planted answer. Node's `path.join` normalized these and Python's
+  // `os.path.join` did not, so the two keys differed (B3 N1). The relative spellings resolve
+  // against the cwd, which the reference child inherits from this process.
+  const relFails = relative(process.cwd(), fails);
+  const SPELLED = [
+    ['a doubled separator', `${gitRoot}//fails`],
+    ['a ./ segment', `${gitRoot}/./fails`],
+    ['a dir/.. segment', `${fails}/../fails`],
+    ['a trailing separator', `${fails}/`],
+    ['relative to the cwd', relFails],
+    ['relative, ./ first', `./${relFails}`],
+  ];
+  const spelledState = (side, i) => {
+    const p = join(ctx.scratch, `touch-bound-probe-n1-${side}-${i}`);
+    rmSync(p, { recursive: true, force: true });
+    return p;
+  };
+  const n1Py = SPELLED.map((_, i) => spelledState('py', i));
+  const n1Node = SPELLED.map((_, i) => spelledState('node', i));
+  const pyN1 = ctx.runPython(REF, { suite: 'touch-bound', probe: SPELLED.map(([, e], i) => [e, n1Py[i]]) });
+  const ndN1 = SPELLED.map(([, e], i) => [touch.gitOnPath(e, '', false, n1Node[i]), probeText(n1Node[i])]);
+  SPELLED.forEach(([label], i) => cases.push({ name: `git probe, PATH entry ${label}: [answer, git-probe.json]`, kind: 'json', expected: pyN1.probe[i], actual: ndN1[i] }));
+  n1Py.forEach(plant);
+  n1Node.forEach(plant);
+  // New PATH spellings (an empty entry after it) so neither side's per-process cache answers.
+  const pyN1x = ctx.runPython(REF, { suite: 'touch-bound', probe: SPELLED.map(([, e], i) => [`${e}:`, n1Node[i]]) });
+  const ndN1x = SPELLED.map(([, e], i) => touch.gitOnPath(`${e}::`, '', false, n1Py[i]));
+  SPELLED.forEach(([label], i) => cases.push({ name: `git probe, PATH entry ${label}: each side believes the other side's planted answer`, kind: 'json', expected: pyN1x.probe[i][0], actual: ndN1x[i] }));
+  cases.push(
+    ...literalCases(
+      [pyN1.probe.map((r) => r[0]), pyN1x.probe.map((r) => r[0])],
+      [ndN1.map((r) => r[0]), ndN1x],
+      'LITERAL: un-normalized PATH entries, [each exits 1 as no git, the other side\'s planted true believed]',
+      [SPELLED.map(() => false), SPELLED.map(() => true)],
+    ),
+  );
+  notes.push(`${SPELLED.length} un-normalized PATH entries probed and crossed (#208 N1)`);
 
   // ------------------------------------------------ T200-11: the bound holds, no thrash, no unlocked fold
   BODIES.forEach(([label], i) => cases.push({ name: `bound_body: ${label}`, kind: 'bytes', expected: asBytes(py.bodies[i]), actual: asBytes(nd.bodies[i]) }));
@@ -482,6 +637,16 @@ export async function run(ctx) {
   ];
   cases.push(...literalCases(lockedNoFold(py), lockedNoFold(nd), 'LITERAL: lock held, [raw plus the line, bound false, still unchanged]', [true, false, true]));
   cases.push(...literalCases(py.held[2][1], nd.held[2][1], 'LITERAL: bound on a directory answers false', false));
+  /** #208 item 4: [every astral path kept, some high-BMP kept, some high-BMP aged out]. */
+  const astral = (side) => {
+    const kept = asBytes(side.bodies[6]).toString('utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).path);
+    const hi = kept.filter((p) => p.includes(HIGH_BMP)).length;
+    return [kept.filter((p) => p.includes(ASTRAL)).length === 5000, hi > 0, hi < 5000];
+  };
+  cases.push(...literalCases(astral(py), astral(nd), 'LITERAL: astral paths, [every U+1F600 kept, some U+FF5E kept, some U+FF5E aged out]', [true, true, true]));
+  /** #208 item 5: [no throw, every n 2**53 - 1]. */
+  const huge = (side) => [side.bodies[7] !== 'threw', side.bodies[7] !== 'threw' && asBytes(side.bodies[7]).toString('utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).n).join(',')];
+  cases.push(...literalCases(huge(py), huge(nd), 'LITERAL: n 1.7e308, [no throw, every n clamped to 2**53 - 1]', [true, '9007199254740991,9007199254740991,9007199254740991']));
   notes.push(`${BODIES.length} bound bodies, ${HELD.length} held beds (target ${TARGET})`);
 
   // ----------------------------------------------------------------- hook beds
@@ -493,12 +658,15 @@ export async function run(ctx) {
       const runs = b.events.map((ev) => (side === 'py' ? runHookPy : runHookNode)(ctx, bed, b, payloadOf(ev, bed.R)));
       views[side].push({ ...hookView(bed.home), runs });
     }
-    for (const key of ['touch', 'ops', 'seq', 'graph', 'ups', 'runs']) {
+    for (const key of ['touch', 'ops', 'seq', 'graph', 'ups', 'runs', 'probe']) {
       cases.push({ name: `hook, ${b.label}: ${key}`, kind: 'json', expected: views.py[i][key], actual: views.node[i][key] });
     }
   });
   const pick = (i, f) => [f(views.py[i]), f(views.node[i])];
-  cases.push(...literalCases(...pick(0, (v) => [v.touch, v.seq]), 'LITERAL: no git on PATH, no touch directory and no counter', [null, null]));
+  cases.push(...literalCases(...pick(0, (v) => [v.touch, v.seq, v.probe]), 'LITERAL: no git on PATH, no touch directory, no counter, no probe kept', [null, null, null]));
+  cases.push(
+    ...literalCases(...pick(2, (v) => [v.touch, v.seq, v.probe === null ? null : JSON.parse(v.probe).ok]), 'LITERAL: a git that exits 1, no touch directory, no counter, the probe kept as ok false (#208)', [null, null, false]),
+  );
   cases.push(
     ...literalCases(...pick(1, (v) => [v.ops, v.seq]), 'LITERAL: git through a symlink, two touch lines and the counter', [
       [
@@ -510,18 +678,18 @@ export async function run(ctx) {
   );
   cases.push(
     ...literalCases(
-      ...pick(2, (v) => [v.graph, v.ups.map((r) => 'context' in r), v.runs.map((r) => r.exit)]),
+      ...pick(3, (v) => [v.graph, v.ups.map((r) => 'context' in r), v.runs.map((r) => r.exit)]),
       'LITERAL: default state, no graph directory, no context key, exits 0',
       [null, [false], [0, 0]],
     ),
   );
-  cases.push(...literalCases(...pick(3, (v) => [v.graph, v.ups.map((r) => r.context)]), 'LITERAL: via on, the graph is built and the context counted', [['<id>.json'], [1]]));
+  cases.push(...literalCases(...pick(4, (v) => [v.graph, v.ups.map((r) => r.context)]), 'LITERAL: via on, the graph is built and the context counted', [['<id>.json'], [1]]));
   // The default reply is what the via-on reply is minus its via line: the context moved nothing.
   const reply = (v) => {
     const out = v.runs[v.runs.length - 1].stdout;
     return out ? JSON.parse(out).hookSpecificOutput.additionalContext.split('\n').filter((l) => !l.includes(' [via ')) : null;
   };
-  cases.push(...literalCases(reply(views.py[2]), reply(views.node[2]), 'LITERAL: default reply equals the via-on reply without its via line', reply(views.py[3])));
+  cases.push(...literalCases(reply(views.py[3]), reply(views.node[3]), 'LITERAL: default reply equals the via-on reply without its via line', reply(views.py[4])));
   notes.push(`${HOOK_BEDS.length} hook beds as processes`);
   return { cases, notes };
 }

@@ -5,13 +5,15 @@
  */
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
 import { LOCK_POLL_MS, LOCK_STALE_MS, LOCK_WAIT_MS, LogSegment, ROTATE_BYTES, exclusive } from '../dist/storage/index.js';
+import { inflight } from './_inflight.mjs';
 
 const tmp = () => realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-storage-log-')));
 const bytes = (p) => readFileSync(p);
@@ -205,4 +207,136 @@ test('exclusive breaks a stale lock and releases its own', () => {
   const r = exclusive(join(d, 'x.jsonl'), (h) => [h, existsSync(lock)]);
   assert.deepEqual(r, [true, true]);
   assert.ok(!existsSync(lock));
+});
+
+// ------------------------------------------------------------------ #208: no line lost to a rewrite
+
+const fill = (p, n = 40) =>
+  writeFileSync(p, Array.from({ length: n }, (_, i) => `{"ts":"2026-10-${String(1 + (i % 28)).padStart(2, '0')}T00:00:00Z","i":${i}}\n`).join(''));
+const sumRows = (rows) => [{ ts: '2026-10-01T00:00:00Z', n: rows.length }];
+
+test('a held lock skips fold, foldLines and rotate (208 item 1)', () => {
+  const d = tmp();
+  const p = join(d, 'x.jsonl');
+  fill(p);
+  const data = bytes(p);
+  writeFileSync(`${p}.lock`, ''); // a live holder
+  const seg = new LogSegment(p, { waitMs: 50 });
+  seg.fold('2026-10-29', sumRows);
+  seg.foldLines(null, () => []);
+  assert.equal(seg.rotate(0), false);
+  assert.deepEqual(bytes(p), data);
+  assert.deepEqual(readdirSync(d).sort(), ['x.jsonl', 'x.jsonl.lock']);
+});
+
+test('an unlocked append leaves no marker', () => {
+  const d = tmp();
+  writeFileSync(join(d, 'x.jsonl.lock'), '');
+  assert.equal(new LogSegment(join(d, 'x.jsonl'), { waitMs: 0 }).append({ ts: 'a' }), true);
+  assert.deepEqual(readdirSync(d).sort(), ['x.jsonl', 'x.jsonl.lock']);
+});
+
+test('an unlocked append writes under its marker', () => {
+  // the marker exists from before the log is opened until after the line is written
+  const d = tmp();
+  const p = join(d, 'x.jsonl');
+  writeFileSync(`${p}.lock`, '');
+  const seen = [];
+  const real = fs.openSync;
+  fs.openSync = (f, ...a) => {
+    if (f === p) seen.push(readdirSync(d).filter((n) => n.endsWith('.writing')));
+    return real(f, ...a);
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.equal(new LogSegment(p, { waitMs: 0 }).append({ ts: 'a' }), true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].length, 1);
+    assert.ok(seen[0][0].startsWith('x.jsonl.'));
+    rmSync(`${p}.lock`);
+    seen.length = 0;
+    assert.equal(new LogSegment(p).append({ ts: 'b' }), true);
+    assert.deepEqual(seen, [[]], 'a locked append makes no marker');
+  } finally {
+    fs.openSync = real;
+    syncBuiltinESMExports();
+  }
+  assert.equal(readdirSync(d).some((n) => n.endsWith('.writing')), false);
+});
+
+test('an in-flight unlocked line is carried over by fold and rotate (208 items 2-3)', async () => {
+  for (const op of ['fold', 'rotate']) {
+    const d = tmp();
+    const p = join(d, 'x.jsonl');
+    fill(p);
+    const mark = `${p}.1.ab.writing`;
+    writeFileSync(mark, '');
+    const late = '{"ts":"2026-10-30T00:00:00Z","late":1}\n';
+    const big = `{"ts":"2026-10-30T00:00:00Z","pad":"${'z'.repeat(70000)}"}\n`;
+    const done = inflight(p, mark, [late, big]);
+    const seg = new LogSegment(p);
+    let want = '';
+    if (op === 'fold') {
+      seg.fold('2026-10-29', sumRows);
+      want = '{"ts":"2026-10-01T00:00:00Z","n":40}\n';
+    } else assert.equal(seg.rotate(0), true);
+    await done;
+    assert.equal(bytes(p).toString('utf8'), want + late + big, op);
+    assert.deepEqual(readdirSync(d).filter((n) => !n.endsWith('.gz')), ['x.jsonl'], op);
+  }
+});
+
+test('a stale marker is removed and does not hold the rewrite', () => {
+  const d = tmp();
+  const p = join(d, 'x.jsonl');
+  fill(p);
+  const mark = `${p}.1.ab.writing`;
+  writeFileSync(mark, '');
+  const old = Date.now() / 1000 - 60;
+  utimesSync(mark, old, old);
+  const t0 = Date.now();
+  new LogSegment(p).fold('2026-10-29', sumRows);
+  assert.ok(Date.now() - t0 < 1000);
+  assert.equal(bytes(p).toString('utf8'), '{"ts":"2026-10-01T00:00:00Z","n":40}\n');
+  assert.equal(existsSync(mark), false);
+});
+
+test('no hard link, no rewrite', () => {
+  const d = tmp();
+  const p = join(d, 'x.jsonl');
+  fill(p);
+  const data = bytes(p);
+  const real = fs.linkSync;
+  fs.linkSync = () => {
+    throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+  };
+  syncBuiltinESMExports();
+  try {
+    const seg = new LogSegment(p);
+    seg.fold('2026-10-29', sumRows);
+    assert.equal(seg.rotate(0), false);
+  } finally {
+    fs.linkSync = real;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(bytes(p), data);
+  assert.deepEqual(readdirSync(d), ['x.jsonl']);
+});
+
+test('a read-only directory fails fast (208 item 7)', { skip: process.platform === 'win32' || process.getuid?.() === 0 ? 'Windows honours no chmod 555 on a directory; root writes anyway' : false }, () => {
+  // A REAL read-only directory (not a file in the way) gives the lock up at once.
+  const d = join(tmp(), 'ro');
+  mkdirSync(d);
+  writeFileSync(join(d, 'x.jsonl'), '');
+  chmodSync(d, 0o555);
+  try {
+    const t0 = Date.now();
+    assert.equal(exclusive(join(d, 'x.jsonl'), (held) => held), false);
+    assert.equal(new LogSegment(join(d, 'x.jsonl')).append({ ts: 'a' }), true); // the file itself is writable
+    assert.equal(new LogSegment(join(d, 'y.jsonl')).append({ ts: 'a' }), false); // no file, none can be made
+    assert.ok(Date.now() - t0 < 500);
+    assert.equal(bytes(join(d, 'x.jsonl')).toString('utf8'), '{"ts":"a"}\n');
+  } finally {
+    chmodSync(d, 0o755);
+  }
 });

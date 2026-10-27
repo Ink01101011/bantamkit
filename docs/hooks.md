@@ -361,7 +361,8 @@ matcher-less and paid the same tax. **Bounded since 2026-09-05:** above 4 MB the
 
 Each arm below gained one step for the touch graph (`docs/touch.md`). Every step is inside a
 `try`: a failure is one `{"touch":"miss"}` hook-log record at most, never a failed hook, and
-outside a git repository, or with no `git` executable on PATH (a stat walk, T200-10), each step
+outside a git repository, or with no `git` on PATH that can run (a stat walk, T200-10, then `git --version` once per ten
+minutes, kept in `hooks/git-probe.json`, #208), each step
 does nothing. No registration changed: `PostToolUse` was
 already matcher-less.
 

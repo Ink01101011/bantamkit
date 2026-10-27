@@ -35,6 +35,8 @@ below. Shared by job69 units: append a section, do not reorder the ones above it
 The Node half of `storage-log.mjs` runs the same ops against `dist/storage/index.js`
 with an interpreter written to the same table, and the same reducers.
 
+`storage-lock` (#208) has its op table beside its section, at the end of this file.
+
 ----------------------------------------------------------------------- storage-index
 
     {"suite": "storage-index", "beds": [{"root", "source", "kind", "home", "ops"}, ...],
@@ -613,9 +615,121 @@ def storage_retention(req: dict) -> dict:
     return {"beds": [_retention_bed(b) for b in req.get("beds", [])]}
 
 
+# -------------------------------------------------------------------------- storage-lock (#208)
+#
+#     {"suite": "storage-lock", "node": <node executable>, "beds": [{"home", "ops"}, ...]}
+#       -> {"beds": [[result, ...], ...]}
+#
+# The log is `<home>/.bantamkit/touch/0123456789abcdef.jsonl`, so `bound` reaches it as a
+# `TouchLog`; every other op goes through `LogSegment`.
+#
+#     {"op": "raw", "b64"}                         -> null  (bytes appended verbatim)
+#     {"op": "lock"} / {"op": "unlock"}            -> null  (`<log>.lock` made / removed)
+#     {"op": "fold", "older_than", "wait_ms"?}     -> null  (reducer: one row `{"ts", "n"}`)
+#     {"op": "fold_lines", "wait_ms"?}             -> null  (the whole file to nothing)
+#     {"op": "rotate", "max_bytes", "wait_ms"?}    -> bool
+#     {"op": "bound"}                              -> bool  (`TouchLog.bound`)
+#     {"op": "append", "obj", "wait_ms"?}          -> bool
+#     {"op": "inflight", "chunks": [b64, ...]}     -> null  (marker `<log>.1.ab.writing` made,
+#                                                  `inflight_appender.cjs` started on it)
+#     {"op": "join"}                               -> null  (that appender has exited)
+#     {"op": "bytes"} / {"op": "gz", "n"}          -> b64 | null (`gz` decompressed)
+#     {"op": "listdir"}                            -> sorted names beside the log | null
+#     {"op": "ro"} / {"op": "rw"}                  -> null  (chmod 555 / 755 the log's dir)
+#     {"op": "timed_lock"}                         -> [held, under 500 ms] (default wait)
+#     {"op": "timed_append", "obj", "name"?}       -> [ok, under 500 ms]  (default wait; `name`
+#                                                  another file in the same dir)
+
+
+def _count_reducer(older_than: str):
+    return lambda old: [{"ts": "2026-10-01T00:00:00Z", "n": len(old)}]
+
+
+def _lock_bed(node: str, bed: dict) -> list:
+    import subprocess
+    import time
+
+    from bantamkit.storage import exclusive
+    from bantamkit.touch.log import TouchLog
+
+    log = TouchLog(Path(bed["home"]), "0123456789abcdef")
+    p = log.path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    child = None
+    out: list = []
+
+    def seg(op: dict) -> LogSegment:
+        return LogSegment(p, wait_ms=op["wait_ms"]) if "wait_ms" in op else LogSegment(p)
+
+    for op in bed["ops"]:
+        kind = op["op"]
+        if kind == "raw":
+            with open(p, "ab") as f:
+                f.write(base64.b64decode(op["b64"]))
+            out.append(None)
+        elif kind == "lock":
+            Path(f"{p}.lock").write_bytes(b"")
+            out.append(None)
+        elif kind == "unlock":
+            os.unlink(f"{p}.lock")
+            out.append(None)
+        elif kind == "fold":
+            seg(op).fold(op["older_than"], _count_reducer(op["older_than"]))
+            out.append(None)
+        elif kind == "fold_lines":
+            seg(op).fold_lines(None, lambda pairs: [])
+            out.append(None)
+        elif kind == "rotate":
+            out.append(seg(op).rotate(op["max_bytes"]))
+        elif kind == "bound":
+            out.append(log.bound())
+        elif kind == "append":
+            out.append(seg(op).append(op["obj"]))
+        elif kind == "inflight":
+            mark = f"{p}.1.ab.writing"
+            Path(mark).write_bytes(b"")
+            helper = str(Path(__file__).resolve().parent / "inflight_appender.cjs")
+            child = subprocess.Popen([node, helper, str(p), mark, *op["chunks"]])
+            out.append(None)
+        elif kind == "join":
+            child.wait()
+            out.append(None)
+        elif kind == "bytes":
+            out.append(_b64(_read_or_none(p)))
+        elif kind == "gz":
+            raw = _read_or_none(Path(f"{p}.{op['n']}.gz"))
+            out.append(_b64(gzip.decompress(raw) if raw is not None else None))
+        elif kind == "listdir":
+            try:
+                out.append(sorted(os.listdir(p.parent)))
+            except OSError:
+                out.append(None)
+        elif kind in ("ro", "rw"):
+            p.parent.chmod(0o555 if kind == "ro" else 0o755)
+            out.append(None)
+        elif kind == "timed_lock":
+            t0 = time.monotonic()
+            with exclusive(p) as held:
+                pass
+            out.append([held, time.monotonic() - t0 < 0.5])
+        elif kind == "timed_append":
+            target = p.parent / op["name"] if "name" in op else p
+            t0 = time.monotonic()
+            ok = LogSegment(target).append(op["obj"])
+            out.append([ok, time.monotonic() - t0 < 0.5])
+        else:
+            raise SystemExit(f"storage_ref: unknown storage-lock op {kind!r}")
+    return out
+
+
+def storage_lock(req: dict) -> dict:
+    return {"beds": [_lock_bed(req["node"], b) for b in req.get("beds", [])]}
+
+
 SUITES = {
     "storage-cold": storage_cold,
     "storage-index": storage_index,
+    "storage-lock": storage_lock,
     "storage-log": storage_log,
     "storage-retention": storage_retention,
 }
