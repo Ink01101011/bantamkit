@@ -66,7 +66,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
 | [Update](#-update) | `--update`, then restart the server |
 | [Troubleshooting](#-troubleshooting) | Timeouts, Connection closed, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 15 tools, one prompt, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, two prompts, two resource templates |
 | [Use it as a Python library](#-use-it-as-a-python-library) | `pip install bantamkit` and a minimal agent |
 | [Recommended defaults](#-recommended-defaults) | Which components to attach, measured on four models |
 | [Documentation](#-documentation) | Every page under `docs/` |
@@ -242,7 +242,7 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `--k K` | Default recall budget | `3` | `"--k", "5"` |
 | `--index-budget BYTES` | Memory index byte budget | `24000` | `"--index-budget", "32000"` |
 | `BANTAMKIT_EVENT_LOG` | Logs tool outcomes as JSONL | off; `on` → `<store>/events/mcp.jsonl`; other values are a path | `"env": {"BANTAMKIT_EVENT_LOG": "on"}` |
-| `BANTAMKIT_RETENTION` | The daily Retention job: deletes session read ledgers older than 7 days, folds log lines older than 30 days, archives closed `.shiftwork` jobs 7 days after they close (verified before delete) | on; `off` (or `0`/`false`/`no`) turns it off | `"env": {"BANTAMKIT_RETENTION": "off"}` — [docs/storage.md](docs/storage.md#retention) |
+| `BANTAMKIT_RETENTION` | The daily Retention job: deletes session read ledgers older than 7 days, folds log lines older than 30 days, archives closed `.shiftwork` jobs 7 days after they close (verified before delete). It does not stop the daily skill audit, which has its own switch (next row) | on; `off` (or `0`/`false`/`no`) turns it off | `"env": {"BANTAMKIT_RETENTION": "off"}` — [docs/storage.md](docs/storage.md#retention) |
 | `BANTAMKIT_SKILL_AUDIT` | The daily skill audit (#205): the same once-a-day child audits your skills and writes `~/.bantamkit/skill-audit.json`; `bantamkit_status` prints its last run. Its own switch: with `BANTAMKIT_RETENTION=off` and this on, the child still wakes once a day, audits, and deletes nothing. Off also silences the SessionStart skill-audit line, even over an older record; the `skill_audit` prompt still runs on request | on; `off` (or `0`/`false`/`no`) turns it off | `"env": {"BANTAMKIT_SKILL_AUDIT": "off"}` — [docs/storage.md](docs/storage.md#retention) |
 | `BANTAMKIT_INDEX_DIR` | Where the derived recall indexes live (hot and cold); deleting them loses nothing | `~/.bantamkit/index` | `"env": {"BANTAMKIT_INDEX_DIR": "/abs/scratch/index"}` |
 | `BANTAMKIT_ASSETS` | Your own asset pack (skills, rubrics, schemas) | the pack inside the package | `"env": {"BANTAMKIT_ASSETS": "/abs/my-assets"}` |
@@ -292,8 +292,11 @@ means an old process. Per-install table: [npm README → Updating](runtime-ts/RE
 
 ## 🧰 What it serves
 
-Both servers serve the same 15 tools, the `bantamkit_status` prompt and two resource templates
-(`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
+Both servers serve the same 15 tools, two prompts and two resource templates
+(`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`). The prompts are what a person invokes from
+the host's slash menu: `bantamkit_status` (the status report) and `skill_audit` (#205: gathers the
+skills this host loads, audits them, and inserts the report plus a proposed `settings.json` change
+that is never applied for you; in Claude Code it is `/mcp__bantamkit__skill_audit`):
 
 | Tool | What it does |
 |---|---|

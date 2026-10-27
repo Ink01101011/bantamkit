@@ -71,7 +71,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and variable, with its default |
 | [Update](#-update) | `--update`, pipx, uv, then restart |
 | [Troubleshooting](#-troubleshooting) | Timeouts, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 15 tools, one prompt, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, two prompts, two resource templates |
 | [Requirements](#-requirements) | Python and dependencies |
 | [The asset pack](#-the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
 | [The operator CLI: `python -m bantamkit.memory`](#-the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
@@ -296,7 +296,7 @@ you**; a new version with an old `build_id` means an old process.
 
 ## 🧰 What it serves
 
-It serves 15 tools, the `bantamkit_status` prompt and two resource templates
+It serves 15 tools, two prompts (`bantamkit_status` and `skill_audit`) and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
 
 | Tool | What it does |

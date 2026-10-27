@@ -325,10 +325,11 @@ It needs a live registration, so it **cannot run on CI** and no node pretends
 to. `runtime-py/tests/test_mcpdrift.py` guards the checker's logic on synthetic
 MCP servers it writes itself; the checker guards the machine, run deliberately.
 
-### Resources and the prompt
+### Resources and the prompts
 
-Two resource templates and one prompt, `bantamkit_status`, on both servers
-(`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> res`):
+Two resource templates and two prompts on both servers: `bantamkit_status` (`docs/status.md`) and,
+since #205 (job73), `skill_audit` (`docs/skill-audit.md`, *As a command and on a schedule*), listed in
+that order (`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> res`):
 
 | Resource | Serves |
 |---|---|
