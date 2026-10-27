@@ -6,9 +6,10 @@
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -310,6 +311,21 @@ test('gitOnPath keeps its answer on disk', { skip: process.platform === 'win32' 
   writeFileSync(join(bad, 'git'), '#!/bin/sh\nexit 0\n'); // a new git, a new key
   writeFileSync(f, JSON.stringify({ key, ok: false }));
   assert.equal(gitOnPath(`${bad}:::`, '', false, state), true);
+});
+
+test('gitOnPath keys the PATH entry as written (208 N1)', { skip: process.platform === 'win32' && 'a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead' }, () => {
+  const d = tmp();
+  const bad = fakeGit(join(d, 'bad'), 1);
+  const st = statSync(join(bad, 'git'), { bigint: true });
+  const entries = [`${d}//bad`, `${d}/./bad`, `${bad}/../bad`, `${bad}/`, `${bad}//`];
+  entries.forEach((e, i) => {
+    const state = join(d, `st${i}`);
+    assert.equal(gitOnPath(e, '', false, state), false);
+    const cand = e.endsWith('/') ? `${e}git` : `${e}/git`;
+    const want = createHash('sha256').update(`${cand}\0${st.mtimeNs}:${st.size}`, 'utf8').digest('hex').slice(0, 16);
+    assert.equal(JSON.parse(readFileSync(join(state, GIT_PROBE_FILE), 'utf8')).key, want, e);
+  });
+  assert.equal(gitOnPath(relative(process.cwd(), bad), '', false, join(d, 'strel')), false); // relative kept relative
 });
 
 test('repoId upper-cases the drive letter (208 item 8)', () => {

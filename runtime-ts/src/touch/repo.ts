@@ -78,6 +78,19 @@ function kind(p: string): 'dir' | 'file' | '' {
 
 const GIT_FOUND = new Map<string, boolean>();
 
+/**
+ * `<d>/<n>` with the PATH entry `d` exactly as written: never normalized (#208 N1). Port of
+ * `_entry_join`. One separator (this OS's) goes between them unless `d` already ends with one
+ * (`/` on POSIX, `/` or `\` on Windows). `/usr//bin`, `./bin` and `a/../bin` are kept as
+ * spelled, which is what the kernel resolves when it runs the path, and the candidate string
+ * (so the `git-probe.json` key) is the same in both runtimes: `path.join` normalized here and
+ * Python's `os.path.join` did not, so the two wrote different keys for one git.
+ */
+function entryJoin(d: string, n: string): string {
+  const ends = process.platform === 'win32' ? ['/', '\\'] : ['/'];
+  return ends.some((e) => d.endsWith(e)) ? d + n : d + path.sep + n;
+}
+
 /** The first `git` the stat walk finds on `pth`, or null. Port of `_git_candidate`. */
 function gitCandidate(pth: string, ext: string, win: boolean): string | null {
   const names = win
@@ -89,7 +102,7 @@ function gitCandidate(pth: string, ext: string, win: boolean): string | null {
   for (const d of pth.split(win ? ';' : ':')) {
     if (!d) continue;
     for (const n of names) {
-      const c = path.join(d, n);
+      const c = entryJoin(d, n);
       try {
         if (!fs.statSync(c).isFile()) continue;
         if (!win) fs.accessSync(c, fs.constants.X_OK);

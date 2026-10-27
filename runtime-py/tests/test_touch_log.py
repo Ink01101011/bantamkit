@@ -288,6 +288,57 @@ def test_git_on_path_keeps_its_answer_on_disk(tmp_path):
     assert git_on_path(f"{bad}:::", "", False, str(state)) is True
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a #!/bin/sh git cannot run on Windows; the git.cmd rule is injected instead",
+)
+def test_git_probe_keys_the_path_entry_as_written(tmp_path):
+    """#208 N1: `/usr//bin`, `./bin`, `a/../bin` are never normalized, so Node keys them alike."""
+    import hashlib
+    import os
+
+    bad = _fake_git(tmp_path / "bad", 1)
+    st = (bad / "git").stat()
+    entries = [f"{tmp_path}//bad", f"{tmp_path}/./bad", f"{bad}/../bad", f"{bad}/", f"{bad}//"]
+    for i, e in enumerate(entries):
+        state = tmp_path / f"st{i}"
+        assert git_on_path(e, "", False, str(state)) is False
+        cand = e + "git" if e.endswith("/") else e + "/git"
+        raw = f"{cand}\0{st.st_mtime_ns}:{st.st_size}".encode()
+        want = hashlib.sha256(raw).hexdigest()[:16]
+        got = json.loads((state / GIT_PROBE_FILE).read_text(encoding="utf-8"))["key"]
+        assert got == want, e
+    rel = os.path.relpath(bad)  # a relative entry is kept relative
+    assert git_on_path(rel, "", False, str(tmp_path / "strel")) is False
+
+
+def test_git_spawns_hide_the_console_window_on_windows(monkeypatch):
+    """#208 N3: both git spawns pass `CREATE_NO_WINDOW` on win32 (`windowsHide`), none on POSIX.
+
+    platform-checked: no process is started; `subprocess.run` is replaced and only its kwargs
+    are read, with `sys.platform` set to each value in turn.
+    """
+    import bantamkit.touch.repo as repo_mod
+
+    seen: list[dict] = []
+
+    def fake_run(argv, **kw):
+        seen.append(kw)
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(repo_mod.subprocess, "run", fake_run)
+    r = repo_mod.Repo("/nowhere", "/nowhere/.git", "0" * 16)
+    monkeypatch.setattr(repo_mod.sys, "platform", "win32")
+    assert repo_mod._git_runs("/x/git") is True
+    assert repo_mod.git(r, ["status"]) == ""
+    assert [k.get("creationflags") for k in seen] == [0x08000000, 0x08000000]
+    seen.clear()
+    monkeypatch.setattr(repo_mod.sys, "platform", "darwin")
+    repo_mod._git_runs("/x/git")
+    repo_mod.git(r, ["status"])
+    assert ["creationflags" in k for k in seen] == [False, False]
+
+
 def test_repo_id_upper_cases_the_drive_letter(tmp_path):
     """#208 item 8: `c:\\x` and `C:\\x` are one repository; a POSIX id is unchanged."""
     assert repo_id("c:\\Users\\a\\repo") == repo_id("C:\\Users\\a\\repo")

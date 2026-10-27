@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 
@@ -85,6 +86,34 @@ def find_repo(cwd: str) -> Repo | None:
 
 
 _GIT_FOUND: dict[tuple[str, str, bool], bool] = {}
+# Win32 `CREATE_NO_WINDOW`: what Node's `windowsHide: true` sets for a console child.
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _no_window() -> dict[str, int]:
+    """The spawn kwargs that keep a git child from flashing a console window (#208 N3).
+
+    platform-checked: `creationflags` is a Windows-only argument, so it is passed only when
+    `sys.platform` is win32; on POSIX the kwargs are empty and the spawn is unchanged. Node
+    passes `windowsHide: true` to both of its git spawns, which is this flag on Windows and
+    nothing elsewhere.
+    """
+    if sys.platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)}
+    return {}
+
+
+def _entry_join(d: str, n: str) -> str:
+    """`<d>/<n>` with the PATH entry `d` exactly as written: never normalized (#208 N1).
+
+    One separator (this OS's) goes between them unless `d` already ends with one (`/` on
+    POSIX, `/` or `\\` on Windows). `/usr//bin`, `./bin` and `a/../bin` are kept as spelled,
+    which is what the kernel resolves when it runs the path, and the candidate string (so
+    the `git-probe.json` key) is the same in both runtimes: `os.path.join` and Node's
+    `path.join` disagreed here (Node normalizes). `runtime-ts`'s `entryJoin` is the port.
+    """
+    ends = ("/", "\\") if os.name == "nt" else ("/",)
+    return d + n if d.endswith(ends) else d + os.sep + n
 
 
 def _git_candidate(p: str, ext: str, win: bool) -> str | None:
@@ -108,7 +137,7 @@ def _git_candidate(p: str, ext: str, win: bool) -> str | None:
         if not d:
             continue
         for n in names:
-            c = os.path.join(d, n)
+            c = _entry_join(d, n)
             try:
                 if os.path.isfile(c) and (win or os.access(c, os.X_OK)):
                     return c
@@ -150,6 +179,7 @@ def _git_runs(cand: str) -> bool:
             capture_output=True,
             timeout=GIT_TIMEOUT_MS / 1000,
             env={**os.environ, **_GIT_ENV},
+            **_no_window(),
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return False
@@ -223,6 +253,7 @@ def git(repo: Repo, args: list[str], timeout_ms: int = GIT_TIMEOUT_MS) -> str | 
             capture_output=True,
             timeout=timeout_ms / 1000,
             env={**os.environ, **_GIT_ENV},
+            **_no_window(),
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return None

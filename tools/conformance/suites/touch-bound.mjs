@@ -58,7 +58,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'touch-bound';
@@ -554,6 +554,47 @@ export async function run(ctx) {
   const idRule = (ids) => [ids[0] === ids[1], ids[0] === ids[2], ids[3] === ids[4], ids[5] === ids[6], ids[1] === sha(IDS[1]), ids[7] === sha(IDS[7]), ids[8] === sha(realTop)];
   cases.push(...literalCases(idRule(py.ids), idRule(nd.ids), 'LITERAL: repo_id, [c: = C:, \\ vs / differ, astral path c: = C:, /c: kept, C: hashed as is, 1: kept, POSIX top is sha16]', [true, false, true, false, true, true, true]));
   notes.push(`1 probe crossed, ${IDS.length} repo ids`);
+
+  // ------------------------------------------------ #208 N1: a PATH entry that is not normalized
+  // Each entry spells the failing git's directory another way. Both sides must key the probe on
+  // the same candidate string (the entry as written), so the file bytes match and each side
+  // believes the other's planted answer. Node's `path.join` normalized these and Python's
+  // `os.path.join` did not, so the two keys differed (B3 N1). The relative spellings resolve
+  // against the cwd, which the reference child inherits from this process.
+  const relFails = relative(process.cwd(), fails);
+  const SPELLED = [
+    ['a doubled separator', `${gitRoot}//fails`],
+    ['a ./ segment', `${gitRoot}/./fails`],
+    ['a dir/.. segment', `${fails}/../fails`],
+    ['a trailing separator', `${fails}/`],
+    ['relative to the cwd', relFails],
+    ['relative, ./ first', `./${relFails}`],
+  ];
+  const spelledState = (side, i) => {
+    const p = join(ctx.scratch, `touch-bound-probe-n1-${side}-${i}`);
+    rmSync(p, { recursive: true, force: true });
+    return p;
+  };
+  const n1Py = SPELLED.map((_, i) => spelledState('py', i));
+  const n1Node = SPELLED.map((_, i) => spelledState('node', i));
+  const pyN1 = ctx.runPython(REF, { suite: 'touch-bound', probe: SPELLED.map(([, e], i) => [e, n1Py[i]]) });
+  const ndN1 = SPELLED.map(([, e], i) => [touch.gitOnPath(e, '', false, n1Node[i]), probeText(n1Node[i])]);
+  SPELLED.forEach(([label], i) => cases.push({ name: `git probe, PATH entry ${label}: [answer, git-probe.json]`, kind: 'json', expected: pyN1.probe[i], actual: ndN1[i] }));
+  n1Py.forEach(plant);
+  n1Node.forEach(plant);
+  // New PATH spellings (an empty entry after it) so neither side's per-process cache answers.
+  const pyN1x = ctx.runPython(REF, { suite: 'touch-bound', probe: SPELLED.map(([, e], i) => [`${e}:`, n1Node[i]]) });
+  const ndN1x = SPELLED.map(([, e], i) => touch.gitOnPath(`${e}::`, '', false, n1Py[i]));
+  SPELLED.forEach(([label], i) => cases.push({ name: `git probe, PATH entry ${label}: each side believes the other side's planted answer`, kind: 'json', expected: pyN1x.probe[i][0], actual: ndN1x[i] }));
+  cases.push(
+    ...literalCases(
+      [pyN1.probe.map((r) => r[0]), pyN1x.probe.map((r) => r[0])],
+      [ndN1.map((r) => r[0]), ndN1x],
+      'LITERAL: un-normalized PATH entries, [each exits 1 as no git, the other side\'s planted true believed]',
+      [SPELLED.map(() => false), SPELLED.map(() => true)],
+    ),
+  );
+  notes.push(`${SPELLED.length} un-normalized PATH entries probed and crossed (#208 N1)`);
 
   // ------------------------------------------------ T200-11: the bound holds, no thrash, no unlocked fold
   BODIES.forEach(([label], i) => cases.push({ name: `bound_body: ${label}`, kind: 'bytes', expected: asBytes(py.bodies[i]), actual: asBytes(nd.bodies[i]) }));
