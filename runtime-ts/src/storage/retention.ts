@@ -19,7 +19,9 @@
  *
  * Facts are never archived by age. The event log is not folded (see the reference).
  * `maybeSpawn` starts `retention-child.js <cwd> <home>` detached, at most once per 24 h;
- * `BANTAMKIT_RETENTION=off` makes every entry here a no-op.
+ * `BANTAMKIT_RETENTION=off` makes the sweep a no-op. The same child also runs the daily skill
+ * audit (#205), which has its own switch, `BANTAMKIT_SKILL_AUDIT=off` (Amendment A3), so the
+ * child is spawned unless BOTH are off.
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -31,6 +33,7 @@ import * as zlib from 'node:zlib';
 import { tokenizeV2 } from '../memory/retrieval.js';
 import { reduceUsage, storeId } from '../memory/usage.js';
 import { cmpCodepoint } from '../pysem.js';
+import { daily as dailySkillAudit } from '../skillreport.js';
 import { ColdIndex, ColdIndexError } from './coldindex.js';
 import { INDEX_DIR_ENV, dumpIndex, type IndexDoc } from './hotindex.js';
 import { exclusive } from './lock.js';
@@ -38,6 +41,8 @@ import { LogSegment, type Row } from './logsegment.js';
 import { touchReducer } from '../touch/log.js';
 
 export const RETENTION_ENV = 'BANTAMKIT_RETENTION';
+/** #205 Amendment A3: the daily skill audit's own switch; the child wakes when either is on. */
+export const SKILL_AUDIT_ENV = 'BANTAMKIT_SKILL_AUDIT';
 export const TTL_S = 86_400;
 export const LEDGER_DAYS = 7;
 export const LOG_DAYS = 30;
@@ -73,6 +78,11 @@ const STRICT = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 /** False when `BANTAMKIT_RETENTION` is `off` (or `0`, `false`, `no`), any case. */
 export function enabled(): boolean {
   return !OFF.has((process.env[RETENTION_ENV] ?? '').trim().toLowerCase());
+}
+
+/** False when `BANTAMKIT_SKILL_AUDIT` is `off` (or `0`, `false`, `no`), any case (#205 A3). */
+export function auditEnabled(): boolean {
+  return !OFF.has((process.env[SKILL_AUDIT_ENV] ?? '').trim().toLowerCase());
 }
 
 /** Milliseconds since the epoch for `YYYY-MM-DDTHH:MM:SS[.mmm]Z`; throws otherwise. */
@@ -672,13 +682,14 @@ function hooked(home: string, now: string): boolean {
 }
 
 /**
- * Start the detached child when due; the word says why it did or did not: `off`, `nohome`,
+ * Start the detached child when due; the word says why it did or did not: `off` (the sweep
+ * and the skill audit both opted out), `nohome`,
  * `hooked` (the server, when a hook ran within the TTL), `fresh`, `spawned`, `failed`.
  * `detached` + `stdio: 'ignore'` + `.unref()`, the update probe's pattern. Never throws.
  */
 export function maybeSpawn(home: string, cwd: string, options: { server?: boolean } = {}): string {
   try {
-    if (!enabled()) return 'off';
+    if (!enabled() && !auditEnabled()) return 'off';
     if (!isDir(path.join(home, '.bantamkit'))) return 'nohome';
     const now = nowStamp();
     if (options.server === true && hooked(home, now)) return 'hooked';
@@ -701,9 +712,19 @@ function writeState(home: string, obj: unknown): void {
   fs.renameSync(tmp, p);
 }
 
-/** The detached child, `<cwd> <home>`: claim the day under the lock, run, record. Silent. */
+/**
+ * The detached child, `<cwd> <home>`: claim the day under the lock, run, record. Silent.
+ *
+ * #205 Amendment A3: it wakes when the sweep OR the skill audit is on and claims the day either
+ * way. The sweep runs only when `BANTAMKIT_RETENTION` is not off; with it off the child deletes,
+ * moves or rewrites NOTHING but `retention.json`'s claim and `skill-audit.json` (`skill-host`'s
+ * `child` snapshot case). The audit runs after the sweep, under the same stamp, only when
+ * `BANTAMKIT_SKILL_AUDIT` is not off; it never throws.
+ */
 export function childMain(argv: readonly string[], now: string | null = null): number {
-  if (!enabled() || argv.length < 2) return 0;
+  const sweep = enabled();
+  const audit = auditEnabled();
+  if (!(sweep || audit) || argv.length < 2) return 0;
   const home = argv[1]!;
   if (!isDir(path.join(home, '.bantamkit'))) return 0;
   const stamp = now ?? nowStamp();
@@ -714,12 +735,15 @@ export function childMain(argv: readonly string[], now: string | null = null): n
       return true;
     });
     if (!claimed) return 0;
-    try {
-      const report = runRetention(home, argv.slice(0, 1), stamp);
-      writeState(home, { ran_at: stamp, report });
-    } catch (e) {
-      writeState(home, { ran_at: stamp, error: e instanceof Error ? e.constructor.name : 'Error' });
+    if (sweep) {
+      try {
+        const report = runRetention(home, argv.slice(0, 1), stamp);
+        writeState(home, { ran_at: stamp, report });
+      } catch (e) {
+        writeState(home, { ran_at: stamp, error: e instanceof Error ? e.constructor.name : 'Error' });
+      }
     }
+    if (audit) dailySkillAudit(home, argv[0]!, stamp);
   } catch {
     /* silent: retried at the next day's TTL */
   }

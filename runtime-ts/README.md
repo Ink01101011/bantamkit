@@ -49,7 +49,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
   [the fifteen tools](#-what-it-serves).
 - **Same answers as the Python server.** The Python server serves the same fifteen tools,
-  `bantamkit_status` prompt and two resource templates, and reads and writes the same memory
+  two prompts (`bantamkit_status`, `skill_audit`) and two resource templates, and reads and writes the same memory
   store. Every surface is compared between both runtimes by a conformance suite
   (`node tools/conformance/run.mjs --all` in the repository), and every intentional difference
   is written down as a ruling.
@@ -70,7 +70,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Updating](#-updating) | `--update`, the per-install table, then restart |
 | [Troubleshooting](#-troubleshooting) | Connection closed, timeouts, `ENOENT`, refusals, the wrong store |
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
-| [What it serves](#-what-it-serves) | 15 tools, one prompt, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, two prompts, two resource templates |
 | [Silent version float](#-silent-version-float) | Why two machines run different builds, and `build_identity` |
 | [The operator CLI: `bantamkit-memory`](#-the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archived, archive, restore, list, candidates, merge |
 | [Memory stores are layered by default](#-memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
@@ -285,14 +285,14 @@ startup. In Claude Code: `/mcp` → reconnect. In Claude Desktop: a full restart
 **Verify with `bantamkit_status`, not the install log.** It reports the version and the
 `build_id` of *the code that is answering you*:
 
-*(The first three lines of a capture from this tree's `dist/` at `0.35.9`; line 3 tracks the
-served surface, which this repo gates against a running server — `docs/status.md` has the
-whole report.)*
+*(The first three lines of a capture from this tree's `dist/` at `0.37.0-beta.2` (job73, #205); line 3
+tracks the served surface, which this repo gates against a running server — `docs/status.md` has
+the whole report.)*
 
 ```
 bantamkit Active 🟢
-version 0.35.9, build sha256:2fcd4006…
-serving 15 tools, 1 prompt, 2 resource templates
+version 0.37.0-beta.2, build sha256:88387f91…
+serving 15 tools, 2 prompts, 2 resource templates
 ```
 
 A version that moved and a `build_id` that did not means you are reading a config, not a process.
@@ -347,7 +347,7 @@ serves. `--which` belongs to the checkout launchers `tools/bantamkit-mcp` and
 
 ## 🧰 What it serves
 
-It serves 15 tools, the `bantamkit_status` prompt and two resource templates
+It serves 15 tools, two prompts (`bantamkit_status` and `skill_audit`) and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`), the same as the Python server:
 
 | Tool | What it does |

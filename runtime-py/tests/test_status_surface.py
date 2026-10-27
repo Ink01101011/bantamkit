@@ -33,7 +33,7 @@ pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
 
-from bantamkit import updatecheck  # noqa: E402
+from bantamkit import skillreport, updatecheck  # noqa: E402
 from bantamkit.assets import AssetNotFound, assets_root  # noqa: E402
 from bantamkit.eventlog import EventLog  # noqa: E402
 from bantamkit.mcpserver import (  # noqa: E402
@@ -161,9 +161,11 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     # AMENDED job70 T200-1 (#200, plan Task 1 names the `touch:` line): 12 -> 13, `touch: none`
     # between the logs and retention, so retention and the two lines after it move down one.
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line LAST.
-    assert len(lines) == 14, report
+    # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line LAST.
+    assert len(lines) == 15, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
-    assert lines[2] == "serving 15 tools, 1 prompt, 2 resource templates"
+    # AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
+    assert lines[2] == "serving 15 tools, 2 prompts, 2 resource templates"
     # AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store
     # the walk bound ABOVE the project was invisible on the one surface that reports binding.
     assert lines[3] == (
@@ -195,6 +197,8 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     assert lines[11] == "read-repaired: 0 this process"
     assert lines[12] == f"usage ledger: {memory.usage().path} (0 lines, 0 skipped)"
     assert lines[13] == "queries: 0 of 0 facts"  # S10 (#207 amendment 3, Q8)
+    # job73 A4 (#205 Task 4): conftest pins BANTAMKIT_SKILL_AUDIT=off; the home has no record.
+    assert lines[14] == "skill audit: off; never ran; usage adapter none"
 
 
 def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypatch):
@@ -202,19 +206,21 @@ def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypa
     raises (#207 amendment 3, Q8). The home is `record_home`'s scratch."""
     memory = make_memory(tmp_path)
     memory.save("project", "a-fact", "something worth keeping", "b")
-    assert status_of(build_server(memory)).split("\n")[-1] == "queries: 0 of 1 facts"
+    assert status_of(build_server(memory)).split("\n")[-2] == "queries: 0 of 1 facts"
     memory.queries_write([{"name": "a-fact", "queries": ["what is kept"]}])
-    assert status_of(build_server(memory)).split("\n")[-1] == "queries: 1 of 1 facts"
+    assert status_of(build_server(memory)).split("\n")[-2] == "queries: 1 of 1 facts"
 
     def boom():
         raise OSError("unreadable")
 
     monkeypatch.setattr(memory, "queries_coverage", boom)
-    assert status_of(build_server(memory)).split("\n")[-1] == "queries: unavailable"
+    assert status_of(build_server(memory)).split("\n")[-2] == "queries: unavailable"
     _shrink_the_budget_under_the_index(memory)
     lines = status_of(build_server(memory)).split("\n")
     at = lines.index("queries: unavailable")
-    assert lines[at + 1].endswith("problem:"), lines
+    # AMENDED job73 A4 (#205 Task 4): the `skill audit:` line sits between them.
+    assert lines[at + 1].startswith("skill audit: "), lines
+    assert lines[at + 2].endswith("problem:"), lines
 
 
 def _record(latest: str, checked_at: str = "2026-09-19T21:04:11Z") -> str:
@@ -284,7 +290,8 @@ def test_the_report_carries_the_update_line_in_every_one_of_the_five_states(
     # AMENDED job68 J68-6 (#199, plan Task 6): 10 -> 12, read-repair and the usage ledger.
     # AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, the `touch:` line.
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line.
-    assert len(lines) == 14, lines
+    # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line.
+    assert len(lines) == 15, lines
     assert FOOTER_MARK not in "\n".join(lines)
     assert degraded_conditions(make_memory(tmp_path), EventLog(None)) == []
 
@@ -307,12 +314,48 @@ def test_the_prompt_is_the_person_facing_half_and_carries_the_report_itself(tmp_
             return listed, got
 
     listed, got = run(scenario())
-    assert [p.name for p in listed] == [STATUS_NAME]
+    # AMENDED job73 A6 (#205 Task 6): the skill audit is the second prompt, listed after this one.
+    assert [p.name for p in listed] == [STATUS_NAME, skillreport.SKILL_AUDIT_NAME]
     assert len(listed) == SERVED_PROMPTS
     assert got.messages[0].role == "user"
     text = got.messages[0].content.text
     assert report in text
     assert text != report  # the instruction line is there too
+
+
+def test_the_skill_audit_prompt_on_a_home_with_no_claude_is_the_could_not_run_report(
+    tmp_path, record_home, monkeypatch
+):
+    """#205 Task 6: `prompts/get skill_audit` gathers and audits NOW, server-side. Over a home with
+    no `.claude/` and a cwd with none, the message is the could-not-run sentence and the tail,
+    exactly. The cwd is moved because the project root is read from it. An unknown name is still
+    refused. `runtime-ts/test/server.test.mjs` mirrors this; `skill-host` compares the frames."""
+    from mcp.shared.exceptions import MCPError
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    server = build_server(make_memory(tmp_path))
+
+    async def scenario():
+        async with Client(server) as c:
+            got = await c.get_prompt(skillreport.SKILL_AUDIT_NAME, {})
+            try:
+                await c.get_prompt("nope", {})
+                refused = None
+            except MCPError as e:
+                refused = (e.error.code, e.error.message)
+            return got, refused
+
+    got, refused = run(scenario())
+    assert got.messages[0].role == "user"
+    assert got.messages[0].content.text == (
+        "skill audit — could not run: no skill directory was found for this host. The "
+        "`skill_audit` tool still audits any directory you name as `root`.\n\n"
+        + skillreport.SKILL_AUDIT_PROMPT_TAIL
+    )
+    assert refused == (-32602, "Unknown prompt: nope")
+    assert not (record_home / ".claude").exists()  # it only reads
 
 
 def test_the_advertised_counts_the_report_prints_are_the_counts_on_the_wire(tmp_path):

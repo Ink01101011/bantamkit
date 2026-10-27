@@ -46,6 +46,15 @@
  *      by a number a reader would have to look up. `ghost-kit` is the one whose resolved
  *      version serves NOTHING, so it is also where a runtime that resolved over surviving
  *      skills rather than over directories on disk would count a skill the host never serves.
+ *   6. `audit_roots` (#205): several LABELLED roots audited as ONE catalogue. The fixture as one
+ *      root; the fixture beside a scratch personal root that quotes a fixture phrase, reuses
+ *      the fixture's bare personal name (one `duplicate-skill`, the later root wins) and reuses
+ *      a PLUGIN skill's bare name (Amendment A1: both counted, a plugin skill is namespaced);
+ *      a third root holding a newer version directory of a fixture plugin, so the version
+ *      resolution must run over the concatenation; and every refusal in its order. Then the
+ *      per-side literals: over the fixture as root `x`, `audit_roots`' findings equal
+ *      `audit`'s on EACH side, and the A1 and collision rows' counts are pinned per side, so
+ *      a symmetric regression that moved both runtimes alike still goes red.
  *
  * Every string travels as base64, in both directions. The descriptions in the fixture carry
  * quotes, backslashes and escaped quotes, which is precisely the material a JSON round trip
@@ -66,6 +75,14 @@ const CACHE = join(FIXTURE, 'cache');
 
 const b64 = (text) => Buffer.from(text, 'utf8').toString('base64');
 const unb64 = (text) => Buffer.from(text, 'base64').toString('utf8');
+
+/** Each side against a typed constant: the only shape a symmetric regression reddens. */
+function literalCases(pySide, nodeSide, label, expected, kind = 'json') {
+  return [
+    { name: `${label} — python`, kind, expected, actual: pySide },
+    { name: `${label} — node`, kind, expected, actual: nodeSide },
+  ];
+}
 
 /**
  * The unwrap table. Eleven of these are in both runtimes' own test files as literals; they
@@ -456,11 +473,134 @@ export async function run(ctx) {
     cases.push({ name: `skills/${label}`, kind: 'json', expected: py, actual: node });
   }
 
+  // -------------------------------------------------------------- 6. audit_roots (#205)
+
+  // A personal root built in scratch. `solo-check` collides with the fixture's bare personal
+  // skill (the later root wins); `quoter` quotes the fixture's 'race condition' phrase, so a
+  // shared-trigger-phrase finding has to cross the two roots; `deadlock-hunt` reuses a PLUGIN
+  // skill's bare name, which Amendment A1 says is two skills, both counted.
+  const userRoot = join(ctx.scratch, 'roots-user');
+  const writeSkill = (base, rel, description) => {
+    const file = join(base, rel, 'SKILL.md');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `---\nname: ${rel.split('/').pop()}\ndescription: ${description}\n---\n`, 'utf8');
+  };
+  writeSkill(userRoot, 'solo-check', 'Personal copy of the solo check, which the host serves.');
+  writeSkill(userRoot, 'quoter', "Use when a 'race condition' is suspected in a personal script.");
+  writeSkill(userRoot, 'deadlock-hunt', 'A personal skill that shares a bare name with a plugin skill.');
+  // A second plugin root holding a NEWER version directory of `dup-kit` that serves a skill
+  // the fixture's `1.1.0` does not: resolution must pick `1.2.0` ACROSS roots, so the
+  // fixture's `echo-check` is a `stale-version`. A runtime resolving per root would keep it
+  // counted. (The same name in both versions would not tell them apart: the dedupe after it
+  // drops the older copy either way. Neither would sorting the version directories per root:
+  // the winner is the byte-order MAXIMUM, which no order of the candidates can move.)
+  const newerRoot = join(ctx.scratch, 'roots-newer');
+  writeSkill(newerRoot, 'kit-market/dup-kit/1.2.0/skills/fresh-check', 'Use when the fresh check arrived in 1.2.0.');
+  const fixtureAlone = [['x', CACHE]];
+  const twoRoots = [
+    ['plugins', CACHE],
+    ['user', userRoot],
+  ];
+  const threeRoots = [
+    ['plugins', CACHE],
+    ['newer', newerRoot],
+    ['user', userRoot],
+  ];
+  const rootConfigs = [
+    ['one-root/readme', { roots: fixtureAlone, enabled, usage, check: null, budget: 1024 }],
+    ['two-roots/readme', { roots: twoRoots, enabled, usage, check: null, budget: 1024 }],
+    ['two-roots/enabled-omitted', { roots: twoRoots, enabled: null, usage: null, check: null, budget: null }],
+    ['two-roots/usage-empty', { roots: twoRoots, enabled, usage: {}, check: null, budget: null }],
+    ['two-roots/versions', { roots: twoRoots, enabled, usage, check: null, budget: 1024, versions: served }],
+    ['three-roots/cross-root-version', { roots: threeRoots, enabled, usage, check: null, budget: null }],
+    ['refuse/check-before-roots', { roots: [], enabled: null, usage: null, check: 'phrases', budget: null }],
+    ['refuse/budget-before-roots', { roots: [], enabled: null, usage: null, check: null, budget: -1 }],
+    ['refuse/no-roots', { roots: [], enabled: null, usage: null, check: null, budget: null }],
+    ['refuse/empty-label', { roots: [['', CACHE]], enabled: null, usage: null, check: null, budget: null }],
+    ['refuse/slash-label', { roots: [['a/b', CACHE]], enabled: null, usage: null, check: null, budget: null }],
+    ['refuse/repeated-label', { roots: [['a', CACHE], ['a', userRoot]], enabled: null, usage: null, check: null, budget: null }],
+    ['refuse/label-before-path', { roots: [['a', missing], ['', CACHE]], enabled: null, usage: null, check: null, budget: null }],
+    ['refuse/missing-second-root', { roots: [['a', CACHE], ['b', missing]], enabled: null, usage: null, check: null, budget: null }],
+    ['refuse/file-root', { roots: [['a', plainFile]], enabled: null, usage: null, check: null, budget: null }],
+    ['refuse/empty-root', { roots: [['a', '']], enabled: null, usage: null, check: null, budget: null }],
+  ];
+  const nodeAuditRoots = (config) => {
+    try {
+      return skillaudit
+        .auditRoots(
+          config.roots.map(([label, path]) => ({ label, path })),
+          {
+            enabled: config.enabled,
+            usage: usageMap(config.usage),
+            check: config.check === null ? 'all' : config.check,
+            budget: config.budget,
+            versions: asMap(config.versions ?? null),
+          },
+        )
+        .asJson();
+    } catch (e) {
+      return `${e.constructor.name}: ${e.message}`;
+    }
+  };
+  const pyRoots = ctx
+    .runPython(REF, { op: 'audit_roots', cases: rootConfigs.map(([, c]) => c) })
+    .results.map((py) => ('json' in py ? unb64(py.json) : `${py.error.type}: ${unb64(py.error.message)}`));
+  const nodeRoots = rootConfigs.map(([, c]) => nodeAuditRoots(c));
+  for (let i = 0; i < rootConfigs.length; i += 1) {
+    cases.push({ name: `audit_roots/${rootConfigs[i][0]}`, kind: 'string', expected: pyRoots[i], actual: nodeRoots[i] });
+  }
+
+  // THE PER-SIDE LITERALS. A differential is blind to a regression both runtimes make alike, so
+  // each side is compared to a fact that does not come from the other side.
+  const parsed = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { unparsed: text };
+    }
+  };
+  const at = (name) => rootConfigs.findIndex(([n]) => n === name);
+  const readme = configs.findIndex(([n]) => n === 'readme');
+  const oneRoot = at('one-root/readme');
+  // (a) one root: `audit_roots`' findings are `audit`'s, on each side.
+  cases.push(
+    ...literalCases(
+      parsed(pyRoots[oneRoot]).findings,
+      parsed(nodeRoots[oneRoot]).findings,
+      'audit_roots/one-root findings equal audit\'s over the same root',
+      parsed('json' in pyAudits[readme] ? unb64(pyAudits[readme].json) : '{}').findings,
+    ),
+  );
+  // (b) the collision and Amendment A1, as constants: over two roots with `enabled`, the
+  // fixture's 20 counted skills lose `solo-check` to the user copy and gain `quoter` and the
+  // personal `deadlock-hunt` — 22, with the plugin `deadlock-hunt` still counted beside it.
+  const shape = (text) => {
+    const doc = parsed(text);
+    const dup = (doc.omissions ?? []).find((o) => o.subject === 'duplicate-skill');
+    const shared = (doc.findings ?? []).find(
+      (f) => f.kind === 'shared-trigger-phrase' && f.detail === 'race condition',
+    );
+    return {
+      skills: doc.skills,
+      duplicate_what: dup === undefined ? null : dup.what.split(', ').filter((w) => !w.startsWith('plugins/kit-market/')),
+      race_condition_holders: shared === undefined ? null : shared.skills,
+    };
+  };
+  const two = at('two-roots/readme');
+  cases.push(
+    ...literalCases(shape(pyRoots[two]), shape(nodeRoots[two]), 'audit_roots/two-roots collision and A1 counts', {
+      skills: 22,
+      duplicate_what: ['plugins/personal/skills/solo-check/SKILL.md'],
+      race_condition_holders: ['quoter', 'trigger-kit:quoted-edge', 'trigger-kit:race-debug', 'trigger-kit:race-review'],
+    }),
+  );
+
   notes.push(
     `fixture: ${CACHE} — 28 SKILL.md, 20 counted, 2261 catalogue bytes, ` +
       `5 omission records over 8 files`,
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +
-      `${phraseTexts.length} phrase texts, 4 per-file tables, ` +
+      `${phraseTexts.length} phrase texts, 4 per-file tables, ${rootConfigs.length} audit_roots ` +
+      `documents with 4 per-side literals, ` +
       `${UNICODE_VERSION_TEXTS.length} RULED (the Unicode version under \`isalpha\`/\`\\p{L}\`) ` +
       `with ${UNICODE_VERSION_TEXTS.length} literal companions and ${UNICODE_VERSION_TWINS.length} ` +
       `NON-ruled ascii twins, each with its own both-sides literal`,

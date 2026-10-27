@@ -30,6 +30,7 @@ from bantamkit import (
     selfupdate,
     shiftwork,
     skillaudit,
+    skillreport,
     tokenledger,
     updatecheck,
     workplan,
@@ -676,7 +677,7 @@ STATUS_PROMPT_TAIL = (
 #: THE WIRE by `test_status_surface.py`, which drives a real `prompts/list` and
 #: `resources/templates/list` and fails if a registration is added or removed without
 #: moving these — so they are a declaration, not a guess.
-SERVED_PROMPTS = 1
+SERVED_PROMPTS = 2
 SERVED_RESOURCE_TEMPLATES = 2
 
 #: `INDEX_PRESSURE_PERCENT` is re-exported here, where it used to be DEFINED, so that
@@ -1026,6 +1027,9 @@ def status_report(
         # #207 amendment 3 (Q8): how many facts carry likely-prompt queries, LAST, so every
         # line above keeps its number.
         _queries_line(memory),
+        # #205 Task 4: the last daily skill audit, after every earlier line so each keeps its
+        # number. Not a condition: it never flips line 1, as the storage block never does.
+        skillreport.status_line(Path.home()),
     ]
     if conditions:
         lines.append(f"{_plural(len(conditions), 'problem')}:")
@@ -2108,10 +2112,11 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     # sees it with no tool round trip, and it is true as of the moment they asked.
     # AN UNKNOWN PROMPT NAME IS INVALID PARAMS (#198, user ruling 2026-10-15). The SDK's
     # `get_prompt` raises a bare `ValueError("Unknown prompt: <name>")`, which its dispatcher
-    # answers with `code: 0` — a default nobody chose, and not the port's `-32602`. One prompt
-    # is registered, so the name is checked here and refused with the same sentence as an
-    # `MCPError`, which the dispatcher passes through with its own code. `_handle_get_prompt`
-    # reaches `self.get_prompt` at call time, so the instance attribute is what answers.
+    # answers with `code: 0` — a default nobody chose, and not the port's `-32602`. Two prompts
+    # are registered (#205 added `skill_audit`), so the name is checked here and refused with
+    # the same sentence as an `MCPError`, which the dispatcher passes through with its own
+    # code. `_handle_get_prompt` reaches `self.get_prompt` at call time, so the instance
+    # attribute is what answers.
     # `data` is SET to `None` rather than left out: stdio serialises with `exclude_unset`,
     # so an explicit `None` is the `"data": null` the port's frame carries, byte for byte,
     # and `MCPError(code, message)` alone would drop the key.
@@ -2120,7 +2125,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     async def get_prompt(
         name: str, arguments: dict[str, Any] | None = None, context: Any = None
     ) -> Any:
-        if name != STATUS_NAME:
+        if name not in (STATUS_NAME, skillreport.SKILL_AUDIT_NAME):
             message = f"Unknown prompt: {name}"
             refusal = MCPError(INVALID_PARAMS, message)
             refusal.error = ErrorData(code=INVALID_PARAMS, message=message, data=None)
@@ -2146,6 +2151,22 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             memory, log, conditions, len(tools), SERVED_PROMPTS, SERVED_RESOURCE_TEMPLATES
         )
         return f"{report}\n\n{STATUS_PROMPT_TAIL}"
+
+    @server.prompt(
+        name=skillreport.SKILL_AUDIT_NAME,
+        title=skillreport.SKILL_AUDIT_PROMPT_TITLE,
+        description=skillreport.SKILL_AUDIT_PROMPT_DESCRIPTION,
+    )
+    def skill_audit_prompt() -> str:
+        # #205 Task 6: a PERSON's command (`/mcp__bantamkit__skill_audit` in Claude Code). It
+        # gathers and audits NOW, server-side, so the report is in the message the host inserts
+        # -- the stored daily record is not read. It never edits settings.json: the diff is a
+        # proposal (K2). Its own switch does not gate it: the command still works with
+        # `BANTAMKIT_SKILL_AUDIT=off` (spec, Opt-out row).
+        from bantamkit.storage.retention import now_stamp
+
+        record = skillreport.run_live(Path.home(), storage_tiers.current_cwd(), now_stamp())
+        return f"{skillreport.render_report(record)}\n\n{skillreport.SKILL_AUDIT_PROMPT_TAIL}"
 
     @server.resource("bantamkit://skills/{name}")
     def skill_resource(name: str) -> str:

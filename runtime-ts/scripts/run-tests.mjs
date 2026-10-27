@@ -56,6 +56,8 @@ const status =
       ...process.env,
       BANTAMKIT_INDEX_DIR: indexDir,
       BANTAMKIT_RETENTION: 'off',
+      // #205 Amendment A3: the daily skill audit wakes the same child on its own switch.
+      BANTAMKIT_SKILL_AUDIT: 'off',
       BANTAMKIT_TEST_SANDBOX: indexDir,
     },
   }).status ?? 1;

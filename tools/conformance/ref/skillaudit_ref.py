@@ -15,6 +15,10 @@ disagree and the reason `Audit.as_json` names its two arguments.
                                "budget": int|null, "versions": {str: str}|null}]}
         -> {"results": [{"json": b64} | {"error": {"type": str, "message": b64}}]}
 
+    {"op": "audit_roots", "cases": [{"roots": [[label, path]], "enabled", "usage", "check",
+                                     "budget", "versions"}]}
+        -> the same answer shape as `audit` (#205: several labelled roots, one catalogue)
+
     {"op": "unwrap", "values": [b64]}       -> {"results": [b64]}
     {"op": "phrases", "texts": [b64]}       -> {"results": [[b64]]}
     {"op": "skills",  "root": str, "enabled": [str]|null, "versions": {str: str}|null}
@@ -63,6 +67,25 @@ def op_audit(payload: dict) -> dict:
         try:
             answer = skillaudit.audit(
                 case["root"],
+                enabled=case.get("enabled"),
+                usage=case.get("usage"),
+                check="all" if case.get("check") is None else case["check"],
+                budget=case.get("budget"),
+                versions=case.get("versions"),
+            )
+        except Exception as exc:  # noqa: BLE001 — the refusal IS the comparison
+            results.append(failure(exc))
+            continue
+        results.append({"json": b64(answer.as_json())})
+    return {"results": results}
+
+
+def op_audit_roots(payload: dict) -> dict:
+    results = []
+    for case in payload["cases"]:
+        try:
+            answer = skillaudit.audit_roots(
+                [(label, path) for label, path in case["roots"]],
                 enabled=case.get("enabled"),
                 usage=case.get("usage"),
                 check="all" if case.get("check") is None else case["check"],
@@ -130,6 +153,7 @@ def op_unicode(_payload: dict) -> dict:
 
 OPS = {
     "audit": op_audit,
+    "audit_roots": op_audit_roots,
     "unwrap": op_unwrap,
     "phrases": op_phrases,
     "skills": op_skills,

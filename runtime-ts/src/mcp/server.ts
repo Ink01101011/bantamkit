@@ -27,6 +27,7 @@
  * part of the wire and no asset carries it.
  */
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,6 +59,16 @@ import {
 import * as docread from '../docread.js';
 import * as repomap from '../repomap.js';
 import * as skillaudit from '../skillaudit.js';
+import {
+  renderReport,
+  runLive,
+  SKILL_AUDIT_NAME,
+  SKILL_AUDIT_PROMPT_DESCRIPTION,
+  SKILL_AUDIT_PROMPT_TAIL,
+  SKILL_AUDIT_PROMPT_TITLE,
+} from '../skillreport.js';
+import { currentCwd } from '../storage/tiers.js';
+import { nowStamp } from '../storage/retention.js';
 import { PriceTableError } from '../pricing.js';
 import * as tokenledger from '../tokenledger.js';
 import { EventLog, type DetailValue } from '../eventlog.js';
@@ -1214,6 +1225,14 @@ export function buildServer(
         name: STATUS_NAME,
         title: STATUS_PROMPT_TITLE,
       },
+      {
+        // #205 Task 6: the skill audit as a person's command, listed after the status prompt
+        // because the reference registers it second.
+        arguments: [],
+        description: SKILL_AUDIT_PROMPT_DESCRIPTION,
+        name: SKILL_AUDIT_NAME,
+        title: SKILL_AUDIT_PROMPT_TITLE,
+      },
     ],
   }));
 
@@ -1222,10 +1241,21 @@ export function buildServer(
   // it with no tool round trip, and it is true as of the moment they asked.
   server.setRequestHandler(GetPromptRequestSchema, (request) => {
     // The reference's `PromptManager` raises for an unregistered name, which the SDK turns
-    // into a JSON-RPC error; the TS SDK does the same for a handler that throws. One name is
-    // registered, so anything else is unknown.
-    if (request.params.name !== STATUS_NAME) {
+    // into a JSON-RPC error; the TS SDK does the same for a handler that throws. Two names are
+    // registered (#205 added `skill_audit`), so anything else is unknown.
+    if (request.params.name !== STATUS_NAME && request.params.name !== SKILL_AUDIT_NAME) {
       throw rpcError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`, null);
+    }
+    if (request.params.name === SKILL_AUDIT_NAME) {
+      // Gathers and audits NOW, server-side; it never edits settings.json (K2), and its own
+      // switch does not gate it (spec, Opt-out row: the command still works).
+      const record = runLive(homedir(), currentCwd(), nowStamp());
+      return {
+        description: SKILL_AUDIT_PROMPT_DESCRIPTION,
+        messages: [
+          { content: { text: `${renderReport(record)}\n\n${SKILL_AUDIT_PROMPT_TAIL}`, type: 'text' as const }, role: 'user' as const },
+        ],
+      };
     }
     const conditions = degradedConditions(memory, log);
     const report = statusReport(

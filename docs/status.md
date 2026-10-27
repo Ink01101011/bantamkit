@@ -30,25 +30,32 @@ declares `claude/channel`.
 |---|---|---|
 | `bantamkit_status` (tool) | the model | the report below, as the tool result |
 | `bantamkit_status` (prompt) | **a person** — a slash command in the host's own menu | the report, plus one instruction line, as a `user` message |
+| `skill_audit` (prompt, #205) | **a person** — `/mcp__bantamkit__skill_audit` in Claude Code | the skill audit report and a proposed `settings.json` diff, as a `user` message — never applied ([skill-audit.md](skill-audit.md#as-a-command-and-on-a-schedule)) |
 | the degraded footer | nobody — it rides on other tools' results | one line, **only when something is wrong** |
 
 A tool is what the model can call; a prompt is what a person can invoke. `prompts/list` was
 empty on both runtimes while both advertised `hasPrompts: true`, so the prompt is a new
-surface rather than an addition to an existing list.
+surface rather than an addition to an existing list. Since #205 (job73) `prompts/list` holds two
+prompts, `bantamkit_status` then `skill_audit`, in that order on both runtimes; an unknown name is
+still refused with `Unknown prompt: <name>` and `-32602`. The table keeps its title: the
+`skill_audit` prompt is not a status surface, it is listed here because it shares the prompt list.
 
 ## The report
 
 Six lines plus the four-line storage block when healthy (see the 2026-10-16 amendment below),
 `\n`-joined, no trailing newline:
 
-*(RE-CAPTURED 2026-10-16 by J69-8 from a live run of this tree at `f780012` plus J69-8's
-uncommitted retention fixes (`0.36.0` content) — both runtimes, over stdio, `tools/call
-bantamkit_status`, in a scratch `HOME` with no `~/.bantamkit`, `BANTAMKIT_RETENTION` and
-`BANTAMKIT_INDEX_DIR` unset, against a two-fact project store
-(`env -u BANTAMKIT_RETENTION -u BANTAMKIT_INDEX_DIR TMPDIR=<scratch> node
-.shiftwork/notes-job67/J67-7-probe.mjs <node|py> status`). Previously captured at `1928ae0`. The two captures are
-byte-identical except the `build` digest on line 2, which [porting.md](porting.md) already
-rules divergent; the scratch directory is shown as `<project>`. **Line 3 is re-captured and
+*(RE-CAPTURED 2026-10-27 by job73 A7 from a live run of this tree at `649edf4` (#205) —
+both runtimes, over stdio, `tools/call bantamkit_status`, in a scratch `HOME` with no
+`~/.bantamkit`, with `BANTAMKIT_RETENTION=off`, `BANTAMKIT_SKILL_AUDIT=off` and
+`BANTAMKIT_INDEX_DIR=<scratch>/index`, against a two-fact project store
+(`BANTAMKIT_RETENTION=off BANTAMKIT_SKILL_AUDIT=off TMPDIR=<scratch> node
+.shiftwork/notes-job67/J67-7-probe.mjs <node|py> status`). Previously captured at `f780012`
+(J69-8) and `1928ae0`. The two captures are byte-identical except the `build` digest on
+line 2, which [porting.md](porting.md) already rules divergent, the version spelling on line 2
+(`0.37.0-beta.2` on the port, the PEP 440 `0.37.0b2` on the reference), and the store id in
+the `usage ledger` path, which hashes the scratch directory; the scratch directory is shown as
+`<project>` and the scratch home as `<home>`. **Line 3 is re-captured and
 never hand-edited**: the tool count is a live claim this repo gates
 (`runtime-py/tests/test_served_tool_count_records.py`), so it tracks the surface rather than
 the capture date. Its current value is the one
@@ -59,35 +66,50 @@ record last held — a scratch `HOME` has no record, so it says `update: never c
 
 ```
 bantamkit Active 🟢
-version 0.36.0, build sha256:eaf1c3ad295ce280e188885c881760aadc03dc99822da1f563b0caf503db8998
-serving 15 tools, 1 prompt, 2 resource templates
+version 0.37.0-beta.2, build sha256:88387f91cb9b5108e16a3e3729e35260a1fb594a7696d32d1cb6eff4da732434
+serving 15 tools, 2 prompts, 2 resource templates
 memory: 2 facts in the project store, index 87 of 24000 bytes; bound to <project>/.bantamkit/memory
 event log: off
 update: never checked.
 storage: core on; hooks off; host data off
-index facts project: 2 docs, 3406 bytes, persisted
+index facts project: 2 docs, 3434 bytes, persisted
 logs: none
-retention: last ran never; refused 0
+touch: none
+retention: off; last ran never; refused 0
+read-repaired: 0 this process
+usage ledger: <home>/.bantamkit/usage/d2e9bdbb6177df0c.jsonl (0 lines, 0 skipped)
+queries: 0 of 2 facts
+skill audit: off; never ran; usage adapter none
 ```
 
-(The Node capture; the Python one differs only in the `build` digest. With
-`BANTAMKIT_RETENTION=off` the last line reads `retention: off; last ran never; refused 0`.)
+(The Node capture. With `BANTAMKIT_RETENTION` unset the retention line reads
+`retention: last ran never; refused 0`, and with `BANTAMKIT_SKILL_AUDIT` unset the last line reads
+`skill audit: never ran; usage adapter none` — this scratch `HOME` has no `~/.claude`, so the
+Null adapter answers.)
 
 When something is wrong, line 1 changes and a block is appended:
 
 ```
 bantamkit Degraded 🟠
-version 0.35.9, build sha256:2fcd…
-serving 15 tools, 1 prompt, 2 resource templates
+version 0.37.0-beta.2, build sha256:88387f91cb9b5108e16a3e3729e35260a1fb594a7696d32d1cb6eff4da732434
+serving 15 tools, 2 prompts, 2 resource templates
 memory: 2 facts in the project store, index 87 of 70 bytes; bound to <project>/.bantamkit/memory
 event log: off
 update: never checked.
+storage: core on; hooks off; host data off
+index facts project: 2 docs, 3434 bytes, persisted
+logs: none
+touch: none
+retention: off; last ran never; refused 0
+read-repaired: 0 this process
+usage ledger: <home>/.bantamkit/usage/780a633a3d2ea442.jsonl (0 lines, 0 skipped)
+queries: 0 of 2 facts
+skill audit: off; never ran; usage adapter none
 1 problem:
 - the memory index is 87 bytes of a 70-byte budget, so it is full and every save is refused until it is compacted — archive or shorten facts with `bantamkit-memory compact`.
 ```
 
-(The four storage lines, which sit between `update:` and the problem block, are left out of
-this example; it is the 1928ae0 capture with `--index-budget 70`; the Node spelling of the remedy is shown, the
+(It is the same 2026-10-27 capture with `--index-budget 70`; the Node spelling of the remedy is shown, the
 reference names `python -m bantamkit.memory compact` — the `index-budget-low` row of
 [porting.md](porting.md).)
 
@@ -109,6 +131,7 @@ Field by field:
 | `index` | one per memory layer whose `facts/` is a directory | `index facts <layer kind>: <n> doc(s), <bytes> bytes, persisted\|in-memory` |
 | `logs` | `~/.bantamkit/hooks/hook-log.jsonl`, `~/.bantamkit/usage/*.jsonl` | `logs: <name> <bytes> (<n> rotated, <n> skipped)` per log, or `logs: none` |
 | `retention` | `~/.bantamkit/retention.json`, `BANTAMKIT_RETENTION` | `retention: [off; ]last ran <iso>\|never; refused <n>` |
+| `skill audit` | `~/.bantamkit/skill-audit.json`, `BANTAMKIT_SKILL_AUDIT` (#205, job73 A4; the LAST line, after `queries`) | `skill audit: [off; ]never ran; usage adapter <claude-code\|none>`, `…the last record is unreadable; the next run recomputes it`, `…last ran <ts>; no report — <error>`, or `…last ran <ts> on <host>; <n> skill(s), <b> catalogue bytes; findings <h> high, <m> medium, <l> low; <usage clause>`. The `<usage clause>` is one of `usage: none — <host> has no usage adapter, so nothing is called never-invoked`, `usage over <d> days (a proposed change needs 30)` or `usage over 30 days; <n> change(s) proposed`. The `off; ` prefix reads the AUDIT switch, not retention's. Never a condition |
 | `read-repaired` | `Memory.repaired` (#199 Task 6) | `read-repaired: <n> this process` |
 | `usage ledger` | the first layer's `~/.bantamkit/usage/<store id>.jsonl`, and the process's missed-append count for that path (J68-10) | `usage ledger: <path> (<lines> lines, <skipped> skipped)`; `, <missed> missed writes` is added before the `)` only when an append could not be written — see `docs/memory.md`, *Recall by meaning* |
 | problems | one `- ` line per condition, worst first | |

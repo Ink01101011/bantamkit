@@ -948,34 +948,33 @@ function decide(
   return found;
 }
 
+/** One decided `Skill` as the exported `ScannedSkill` record `scan` and `scanRoots` hand back. */
+const toScanned = (s: Skill): ScannedSkill => ({
+  id: skillId(s),
+  relpath: s.relpath,
+  directory: s.directory,
+  marketplace: s.marketplace,
+  plugin: s.plugin,
+  version: s.version,
+  description: s.description,
+  name: s.name,
+  router: s.router,
+  omitted: s.omitted,
+  malformed: s.malformed,
+  phrases: s.phrases,
+  bytes: descriptionBytes(s),
+});
+
 export function scan(
   root: string,
   enabled: readonly string[] | null = null,
   versions: ReadonlyMap<string, string> | null = null,
 ): ScannedSkill[] {
-  return decide(root, enabled, versions).map((s) => ({
-    id: skillId(s),
-    relpath: s.relpath,
-    directory: s.directory,
-    marketplace: s.marketplace,
-    plugin: s.plugin,
-    version: s.version,
-    description: s.description,
-    name: s.name,
-    router: s.router,
-    omitted: s.omitted,
-    malformed: s.malformed,
-    phrases: s.phrases,
-    bytes: descriptionBytes(s),
-  }));
+  return decide(root, enabled, versions).map(toScanned);
 }
 
-export function audit(root: string, options: AuditOptions = {}): Audit {
-  const enabled = options.enabled ?? null;
-  const usage = options.usage ?? null;
-  const check = options.check ?? 'all';
-  const budget = options.budget === undefined || options.budget === null ? null : BigInt(options.budget);
-  const versions = options.versions ?? null;
+/** The argument refusals `audit` and `auditRoots` share, in the order both raise them. */
+function checkArgs(check: string, budget: bigint | null): void {
   if (!Object.prototype.hasOwnProperty.call(CHECK_FAMILIES, check)) {
     throw new SkillAuditError(
       `unknown check ${reprValue({ t: 'str', v: check })}; this tool checks: ` +
@@ -983,6 +982,10 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
     );
   }
   if (budget !== null && budget < 0n) throw new SkillAuditError(`budget must not be negative; got ${budget}`);
+}
+
+/** One root's three refusals, the same sentences for `audit` and for each labelled root. */
+function checkRoot(root: string): void {
   // `Path("")` is `Path(".")` on the reference, so an empty root audited whatever directory
   // the SERVER happened to be standing in — a different answer per host, out of a tool whose
   // whole claim is that it reads `root` and nothing else — while `statSync('')` throws here
@@ -996,8 +999,18 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
     throw new SkillAuditError(`no such directory: ${root}`);
   }
   if (!stats.isDirectory()) throw new SkillAuditError(`${root} is a file, not a directory of skills`);
+}
 
-  const found = decide(root, enabled, versions);
+/**
+ * The findings block `audit` and `auditRoots` share, so a one-root audit's bytes cannot move
+ * when the many-root one is added. `_findings` on the reference.
+ */
+function findingsOf(
+  found: readonly Skill[],
+  check: string,
+  budget: bigint | null,
+  usage: ReadonlyMap<string, number | bigint> | null,
+): { counted: Skill[]; catalogueBytes: number; findings: Finding[] } {
   const counted = found.filter((s) => s.omitted === null);
   const catalogueBytes = counted.reduce((sum, s) => sum + descriptionBytes(s), 0);
 
@@ -1035,6 +1048,97 @@ export function audit(root: string, options: AuditOptions = {}): Audit {
   }
   // `list.sort` is stable on both sides, so within a kind the order above survives.
   findings.sort((a, b) => FINDING_ORDER.indexOf(a.kind as never) - FINDING_ORDER.indexOf(b.kind as never));
+  return { counted, catalogueBytes, findings };
+}
+
+export function audit(root: string, options: AuditOptions = {}): Audit {
+  const enabled = options.enabled ?? null;
+  const usage = options.usage ?? null;
+  const check = options.check ?? 'all';
+  const budget = options.budget === undefined || options.budget === null ? null : BigInt(options.budget);
+  const versions = options.versions ?? null;
+  checkArgs(check, budget);
+  checkRoot(root);
+
+  const found = decide(root, enabled, versions);
+  const { counted, catalogueBytes, findings } = findingsOf(found, check, budget, usage);
 
   return new Audit([root], counted.length, catalogueBytes, findings, omissionRecords(found));
+}
+
+// ------------------------------------------------------------------- the labelled roots
+
+/** One directory of skills and the label its `relpath`s carry (#205). */
+export interface LabelledRoot {
+  readonly label: string;
+  readonly path: string;
+}
+
+/**
+ * `decide` over several LABELLED roots, as one catalogue. `scan_roots` on the reference.
+ *
+ * Each root is walked and read exactly as `decide` does; `relpath` gains `<label>/`. `enabled`,
+ * the version resolution and the dedupe then run ONCE over the concatenation, in root order, so
+ * a bare name in two roots is one `duplicate-skill` and the later root wins. A plugin skill
+ * never collides with a local one (Amendment A1): the dedupe key carries marketplace and plugin.
+ */
+function decideMany(
+  roots: readonly LabelledRoot[],
+  enabled: readonly string[] | null,
+  versions: ReadonlyMap<string, string> | null,
+): Skill[] {
+  const found: Skill[] = [];
+  const versionDirs: string[][] = [];
+  for (const { label, path: root } of roots) {
+    const tree = scanTree(root);
+    for (const parts of tree.files) {
+      const skill = load(root, parts);
+      skill.relpath = `${label}/${skill.relpath}`;
+      found.push(skill);
+    }
+    versionDirs.push(...tree.versions);
+  }
+  versionDirs.sort(cmpParts);
+  applyEnabled(found, enabled);
+  resolveVersions(found, versionDirs, versions);
+  applyDedupe(found);
+  return found;
+}
+
+export function scanRoots(
+  roots: readonly LabelledRoot[],
+  enabled: readonly string[] | null = null,
+  versions: ReadonlyMap<string, string> | null = null,
+): ScannedSkill[] {
+  return decideMany(roots, enabled, versions).map(toScanned);
+}
+
+/**
+ * `audit` over several labelled roots as one catalogue — the gatherer's entry (#205).
+ * Refuses, in this order: `check` and `budget`; an empty `roots`; a label that is empty, holds
+ * `/` or repeats; then each root's path. `Audit.roots` is the root PATHS in order.
+ */
+export function auditRoots(roots: readonly LabelledRoot[], options: AuditOptions = {}): Audit {
+  const check = options.check ?? 'all';
+  const budget = options.budget === undefined || options.budget === null ? null : BigInt(options.budget);
+  checkArgs(check, budget);
+  if (roots.length === 0) throw new SkillAuditError('roots must not be empty; name at least one directory of skills');
+  const labels = roots.map((r) => r.label);
+  for (const label of labels) {
+    if (label === '' || label.includes('/') || labels.filter((l) => l === label).length > 1) {
+      throw new SkillAuditError(
+        `root label ${reprValue({ t: 'str', v: label })} must be unique, non-empty and hold no '/'`,
+      );
+    }
+  }
+  for (const { path: root } of roots) checkRoot(root);
+  const found = decideMany(roots, options.enabled ?? null, options.versions ?? null);
+  const { counted, catalogueBytes, findings } = findingsOf(found, check, budget, options.usage ?? null);
+  return new Audit(
+    roots.map((r) => r.path),
+    counted.length,
+    catalogueBytes,
+    findings,
+    omissionRecords(found),
+  );
 }
