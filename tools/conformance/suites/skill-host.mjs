@@ -36,6 +36,12 @@
  * before and after, and the ONLY changes allowed are `retention.json`'s claim and
  * `skill-audit.json` (Amendment A3; J69-6's incident class — the most important case here).
  *
+ * TASK 5 (the SessionStart line). Every bed runs `daily`, `line` twice (the second must be null:
+ * the first wrote `surfaced`), `daily` a day later and `line` again (still null: the next day's
+ * run keeps the keys still found). The `session-line` bed puts hand-made records first: the
+ * five-finding cap (199 bytes), all surfaced, a 29-day span, a Thai item clipped on a code
+ * point, an error record and a corrupt file (silent, the file unchanged), a malformed finding.
+ *
  * THE LITERALS. A change made on both sides alike (a 30-day window moved to 29, say) leaves
  * every differential green, so the counts, the spans, the adapter and the version choice are
  * pinned per side.
@@ -179,6 +185,8 @@ function bedFiles(label) {
       return { cwd: null, files: [['home/.keep', B(''), 1]] };
     case 'daily-trap':
       return { cwd: 'proj', files: trapFiles() };
+    case 'session-line':
+      return { cwd: null, files: [['home/.keep', B(''), 1]] };
     default:
       throw new Error(label);
   }
@@ -247,9 +255,33 @@ function trapFiles() {
 }
 
 const REPORT_BEDS = ['report-full', 'report-young', 'report-mixed', 'report-minified', 'report-armed'];
-const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS, 'daily-trap'];
+const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS, 'daily-trap', 'session-line'];
 const LATER = '2026-10-17T00:00:00.000Z';
 const SAME_DAY = '2026-10-16T12:00:00.000Z';
+
+// Task 5: the hand-made records of the `session-line` bed (the plan's FULL / LINE).
+const lineRec = (findings, span = 30, surfaced = []) => ({
+  version: 1, ts: 't', host: 'claude-code', roots: [], skills: 1, catalogue_bytes: 1, findings, omissions: [], proposals: [],
+  usage: { calls: 0, counts: {}, span_days: span, transcripts: 1, unreadable: 0, skipped_lines: 0 }, surfaced,
+});
+const HIGH = { kind: 'shared-trigger-phrase', severity: 'high', skills: ['alpha:a1', 'beta:b2'], detail: 'deploy the thing' };
+const never = (s) => ({ kind: 'never-invoked', severity: 'low', skills: [s], detail: '0 calls' });
+const FULL = [HIGH, never('alpha:a1'), never('alpha:a2'), never('beta:b2'), never('proj')];
+const KEY = (f) => `${f.kind}\t${f.skills.join(',')}\t${f.detail}`;
+const TAIL = ' — /mcp__bantamkit__skill_audit has the report.';
+const LINE =
+  '[bantamkit] skill audit: 5 new — shared-trigger-phrase: alpha:a1, beta:b2; ' +
+  `alpha:a1 30 days without a call; alpha:a2 30 days without a call; +2 more${TAIL}`;
+const LINE_RECORDS = [
+  ['line FULL', lineRec(FULL), 2],
+  ['line all surfaced', lineRec(FULL, 30, FULL.map(KEY)), 1],
+  ['line span 29', lineRec([never('x')], 29), 1],
+  ['line span 30', lineRec([never('x')], 30), 1],
+  ['line Thai clip', lineRec([{ ...HIGH, skills: ['ก'.repeat(80)] }]), 1],
+  ['line error record', { version: 1, ts: 't', host: 'none', error: 'x', surfaced: [] }, 1],
+  ['line corrupt', '{not json', 1],
+  ['line malformed finding', lineRec([{ kind: 'x', severity: 'high', skills: 'alpha', detail: 'd' }, HIGH]), 1],
+];
 
 function buildBed(base, label) {
   rmSync(base, { recursive: true, force: true });
@@ -348,6 +380,15 @@ function buildBed(base, label) {
       ops.push({ op: 'spawn', home, env: { BANTAMKIT_RETENTION: r, BANTAMKIT_SKILL_AUDIT: s }, tag: `spawn retention=${r ?? 'on'} audit=${s ?? 'on'}` });
     }
   }
+  // ------------------------------------------------------------------ Task 5 ops
+  const line = (tag, record, calls) => ({ op: 'line', home, record: record === null ? null : b64(typeof record === 'string' ? record : JSON.stringify(record)), calls, tag });
+  ops.push(
+    { op: 'daily', ...at, tag: 'daily before line' },
+    line('line after daily', null, 2),
+    { op: 'daily', home, cwd: cwdAbs, now: LATER, tag: 'daily after line' },
+    line('line after the next daily', null, 1),
+  );
+  if (label === 'session-line') for (const [tag, record, calls] of LINE_RECORDS) ops.push(line(tag, record, calls));
   const kept = settings === null ? null : { path: join(base, settings), bytes: files.find(([rel]) => rel === settings)[1] };
   return { ops, kept };
 }
@@ -461,6 +502,14 @@ export async function run(ctx) {
   };
   const nodeOne = (op) => {
     if (['put', 'resurface', 'daily', 'status', 'child', 'spawn'].includes(op.op)) return task4(op);
+    if (op.op === 'line') {
+      if (op.record !== null) {
+        mkdirSync(dirname(R.statePath(op.home)), { recursive: true });
+        writeFileSync(R.statePath(op.home), Buffer.from(op.record, 'base64'));
+      }
+      const got = Array.from({ length: op.calls }, () => R.sessionLine(op.home));
+      return dumpIndex({ lines: got, file: readOr(R.statePath(op.home)) });
+    }
     const now = parseNow(op.now);
     if (op.op === 'usage') return dumpIndex(H.countSkillUsage(op.projects, now, H.USAGE_DAYS, op.known === null ? null : new Set(op.known)).summary());
     if (op.op === 'record' || op.op === 'render') {
@@ -511,6 +560,7 @@ export async function run(ctx) {
           ? maskText(s)
           : JSON.parse(mask(s));
     answers[label] = { py: py.map((s, i) => read(ops[i], s)), nd: nd.map((s, i) => read(ops[i], s)), kept: { py: pyKept, nd: ndKept } };
+    answers[label].ops = ops;
     answers[label].tag = Object.fromEntries(ops.map((o, i) => [o.tag, i]).filter(([t]) => t !== undefined));
     ops.forEach((o, i) => {
       if (o.op === 'put') return;
@@ -677,6 +727,37 @@ export async function run(ctx) {
     const r = T('daily-trap', 'child retention on, audit on')(a, s);
     return r.audit === null ? null : JSON.parse(r.audit).ts;
   });
+
+  // ------------------------------------------------------------------- Task 5 literals
+  const L = (tag) => T('session-line', tag);
+  literal('session-line FULL: the first line is exactly LINE (199 bytes), the second is null', [LINE, null, 199], (a, s) => {
+    const r = L('line FULL')(a, s);
+    return [...r.lines, Buffer.byteLength(r.lines[0] ?? '')];
+  });
+  literal('session-line FULL: surfaced holds all five keys after the line, sorted', [...FULL.map(KEY)].sort(cmpCp), (a, s) => JSON.parse(L('line FULL')(a, s).file).surfaced);
+  literal('session-line all surfaced: null, the file unchanged (nothing new adds 0 bytes)', [[null], JSON.stringify(lineRec(FULL, 30, FULL.map(KEY)))], (a, s) => {
+    const r = L('line all surfaced')(a, s);
+    return [r.lines, r.file];
+  });
+  literal('session-line span 29: a never-invoked finding waits for 30 days', [null], (a, s) => L('line span 29')(a, s).lines);
+  literal('session-line span 30: it is named at 30', [`[bantamkit] skill audit: 1 new — x 30 days without a call${TAIL}`], (a, s) => L('line span 30')(a, s).lines);
+  literal(
+    'session-line Thai clip: clipped on a code point, ellipsis, within 200 bytes',
+    [`[bantamkit] skill audit: 1 new — shared-trigger-phrase: ${'ก'.repeat(30)}…${TAIL}`, true],
+    (a, s) => {
+      const l = L('line Thai clip')(a, s).lines[0];
+      return [l, l !== null && Buffer.byteLength(l) <= 200];
+    },
+  );
+  literal('session-line error record and corrupt file: silent, the corrupt file unchanged', [[null], [null], '{not json'], (a, s) => [L('line error record')(a, s).lines, L('line corrupt')(a, s).lines, L('line corrupt')(a, s).file]);
+  literal('session-line a malformed finding is skipped, the well-formed one named', [`[bantamkit] skill audit: 1 new — shared-trigger-phrase: alpha:a1, beta:b2${TAIL}`], (a, s) => L('line malformed finding')(a, s).lines);
+  literal('every bed: the second line call is null, and after the next day\'s daily still null (nothing repeats)', BEDS.map(() => [null, [null]]), (a, s) =>
+    BEDS.map((bed) => [T(bed, 'line after daily')(a, s).lines[1], T(bed, 'line after the next daily')(a, s).lines]),
+  );
+  literal('report-full: the daily record names its new findings once', true, (a, s) => typeof T('report-full', 'line after daily')(a, s).lines[0] === 'string');
+  literal('every line any bed made is at most 200 UTF-8 bytes', true, (a, s) =>
+    BEDS.every((bed) => a[bed][s].every((ans, i) => a[bed].ops[i].op !== 'line' || ans.lines.every((l) => l === null || Buffer.byteLength(l) <= 200))),
+  );
 
   notes.push(`${BEDS.length} beds, both runtimes, over identical paths under ${join(ctx.scratch, 'skill-host')}`);
   return { cases, notes };

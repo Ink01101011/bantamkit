@@ -20,7 +20,11 @@ the `skill audit:` line `bantamkit_status` prints. Its `off; ` prefix reads the 
 (`BANTAMKIT_SKILL_AUDIT`, Amendment A3), not retention's.
 
 `runtime-ts/src/skillreport.ts` is the port; `tools/conformance/suites/skill-host.mjs`
-compares the two (ops `record`, `render`, `propose`, `daily`, `status`, `child`).
+compares the two (ops `record`, `render`, `propose`, `daily`, `status`, `child`, `line`).
+
+THE SESSIONSTART LINE (Task 5). `session_line` reads the record and names, in one line of at most
+`LINE_MAX_BYTES` bytes, the surfaceable findings whose `surface_key` is not yet in `surfaced`,
+then adds those keys, so nothing repeats; with nothing new it returns None and writes nothing.
 """
 
 from __future__ import annotations
@@ -364,3 +368,101 @@ def status_line(home: Path | str) -> str:
         )
     except Exception:  # noqa: BLE001 - a status line never fails the report
         return unreadable
+
+
+# --------------------------------------------------------------------- the SessionStart line
+
+LINE_MAX_BYTES = 200
+COMMAND = "/mcp__bantamkit__skill_audit"
+_TAIL = f" — {COMMAND} has the report."
+_ELLIPSIS = "…"
+
+
+def _b(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def _clip(text: str, room: int) -> str:
+    """The longest prefix of whole code points that fits `room` bytes with the ellipsis."""
+    out = ""
+    for ch in text:  # code points, as Node's `for (const ch of text)`
+        if _b(out + ch) + _b(_ELLIPSIS) > room:
+            break
+        out += ch
+    return out + _ELLIPSIS
+
+
+def _well_formed(f: dict[str, Any]) -> bool:
+    """A finding the line can name and `surfaced` can key: `read_state` checks only that each
+    finding is an object, so a hand-edited one is skipped here, the same way on both sides."""
+    skills = f.get("skills")
+    return (
+        isinstance(f.get("kind"), str)
+        and isinstance(f.get("detail"), str)
+        and isinstance(skills, list)
+        and all(isinstance(s, str) for s in skills)
+    )
+
+
+def surfaceable(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """The findings worth a SessionStart line (spec K1): every `high` one, and `never-invoked`
+    only once the transcripts span `USAGE_DAYS` days. Record order."""
+    usage = record.get("usage")
+    long_enough = isinstance(usage, dict) and usage.get("span_days", 0) >= USAGE_DAYS
+    return [
+        f
+        for f in record.get("findings", [])
+        if _well_formed(f)
+        and (f.get("severity") == "high" or (f.get("kind") == "never-invoked" and long_enough))
+    ]
+
+
+def _item(f: dict[str, Any]) -> str:
+    if f["kind"] == "never-invoked" and f["skills"]:
+        return f"{f['skills'][0]} {USAGE_DAYS} days without a call"
+    return f"{f['kind']}: {', '.join(f['skills']) if f['skills'] else f['detail']}"
+
+
+def render_line(items: list[str]) -> str:
+    """`[bantamkit] skill audit: N new — a; b; +k more — <command> has the report.`, at most
+    `LINE_MAX_BYTES` UTF-8 bytes. Whole items while they fit; a first item that cannot fit is
+    clipped on a code point."""
+    head = f"[bantamkit] skill audit: {len(items)} new — "
+    room = LINE_MAX_BYTES - _b(head) - _b(_TAIL)
+    body = ""
+    for i, item in enumerate(items):
+        left = len(items) - i - 1
+        more = f"; +{left} more" if left else ""
+        cand = item if not body else f"{body}; {item}"
+        if _b(cand + more) <= room:
+            body = cand
+            continue
+        body = f"{body}; +{len(items) - i} more" if body else _clip(item, room - _b(more)) + more
+        break
+    return head + body + _TAIL
+
+
+def session_line(home: Path | str) -> str | None:
+    """One line for SessionStart, only for what `surfaced` has not seen (K1). None — and no
+    write — when nothing is new, so SessionStart adds 0 bytes. Otherwise the shown keys join
+    `surfaced` under the lock, if the record is still the one read (same `ts`). Never raises."""
+    try:
+        record = read_state(home)
+        if record is None or "error" in record:
+            return None
+        shown = set(record["surfaced"])
+        new = [f for f in surfaceable(record) if surface_key(f) not in shown]
+        if not new:
+            return None
+        line = render_line([_item(f) for f in new])
+        path = state_path(home)
+        with exclusive(path) as held:
+            if held:
+                again = read_state(home)
+                if again is not None and "error" not in again and again["ts"] == record["ts"]:
+                    keys = set(again["surfaced"]) | {surface_key(f) for f in new}
+                    again["surfaced"] = sorted(keys)
+                    _write(path, again)
+        return line
+    except Exception:  # noqa: BLE001 - a line this cannot make is no line, never a dead session
+        return None

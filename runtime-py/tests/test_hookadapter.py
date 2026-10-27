@@ -2790,3 +2790,25 @@ def test_a_path_spelled_in_another_case_is_not_the_native_directory(tmp_path):
 
     skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
     assert skipped == [("mirror-skipped", "not-native")]
+
+
+# --- #205 Task 5: the skill-audit SessionStart line ----------------------------------------
+
+
+def test_session_start_names_a_new_finding_once_and_then_adds_zero_bytes(tmp_path):
+    """The bar (spec): with nothing new, SessionStart adds 0 bytes. Run it with no record, then
+    twice over one record: the first carries the line LAST, the second equals the first run."""
+    from test_skillreport import FULL, LINE, _put, _rec
+
+    home, cwd = _bed(tmp_path, "skillline")
+    start = {"hook_event_name": "SessionStart", "source": "startup"}
+    ctx = lambda o: o["hookSpecificOutput"]["additionalContext"]  # noqa: E731
+    plain = json.loads(_run_hook(start, home=home, cwd=cwd).stdout)
+    assert _log_lines(home)[-1]["skillAuditBytes"] == 0
+    _put(home, _rec(FULL))
+    first = json.loads(_run_hook(start, home=home, cwd=cwd).stdout)
+    assert ctx(first) == ctx(plain) + "\n\n" + LINE
+    assert _log_lines(home)[-1]["skillAuditBytes"] == len(LINE.encode("utf-8"))
+    again = json.loads(_run_hook(start, home=home, cwd=cwd).stdout)
+    assert ctx(again) == ctx(plain)
+    assert _log_lines(home)[-1]["skillAuditBytes"] == 0

@@ -282,3 +282,107 @@ def test_daily_never_raises(tmp_path):
     (home / ".claude" / "skills").mkdir(parents=True)
     skillreport.daily(home, None, NOW)
     assert not (home / ".bantamkit").exists()
+
+
+# --- Task 5: the SessionStart line -------------------------------------------------------
+
+
+def _rec(findings, span=30, surfaced=()):
+    return {"version": 1, "ts": "t", "host": "claude-code", "roots": [], "skills": 1,
+            "catalogue_bytes": 1, "findings": findings, "omissions": [], "proposals": [],
+            "usage": {"calls": 0, "counts": {}, "span_days": span, "transcripts": 1,
+                      "unreadable": 0, "skipped_lines": 0},
+            "surfaced": list(surfaced)}
+
+
+HIGH = {"kind": "shared-trigger-phrase", "severity": "high", "skills": ["alpha:a1", "beta:b2"],
+        "detail": "deploy the thing"}
+
+
+def _never(s):
+    return {"kind": "never-invoked", "severity": "low", "skills": [s], "detail": "0 calls"}
+
+
+FULL = [HIGH, _never("alpha:a1"), _never("alpha:a2"), _never("beta:b2"), _never("proj")]
+LINE = ("[bantamkit] skill audit: 5 new — shared-trigger-phrase: alpha:a1, beta:b2; "
+        "alpha:a1 30 days without a call; alpha:a2 30 days without a call; +2 more — "
+        "/mcp__bantamkit__skill_audit has the report.")
+
+
+def _put(home, rec):
+    skillreport.state_path(home).parent.mkdir(parents=True, exist_ok=True)
+    skillreport.state_path(home).write_text(json.dumps(rec), encoding="utf-8")
+
+
+def test_the_line_is_capped_and_then_silent(tmp_path):
+    _put(tmp_path, _rec(FULL))
+    line = skillreport.session_line(tmp_path)
+    assert line == LINE and len(line.encode()) == 199 <= skillreport.LINE_MAX_BYTES
+    assert skillreport.session_line(tmp_path) is None
+    stored = skillreport.read_state(tmp_path)
+    assert stored["surfaced"] == sorted(skillreport.surface_key(f) for f in FULL)
+
+
+def test_nothing_new_is_none_and_writes_nothing(tmp_path):
+    keys = [skillreport.surface_key(f) for f in FULL]
+    _put(tmp_path, _rec(FULL, surfaced=keys))
+    before = skillreport.state_path(tmp_path).read_bytes()
+    assert skillreport.session_line(tmp_path) is None
+    assert skillreport.state_path(tmp_path).read_bytes() == before
+
+
+def test_never_invoked_waits_for_30_days(tmp_path):
+    _put(tmp_path, _rec([_never("x")], span=29))
+    assert skillreport.session_line(tmp_path) is None
+    _put(tmp_path, _rec([_never("x")], span=30))
+    assert skillreport.session_line(tmp_path) == (
+        "[bantamkit] skill audit: 1 new — x 30 days without a call — "
+        "/mcp__bantamkit__skill_audit has the report."
+    )
+
+
+def test_one_long_item_is_clipped_on_a_code_point(tmp_path):
+    long = {**HIGH, "skills": ["ก" * 80]}
+    _put(tmp_path, _rec([long]))
+    line = skillreport.session_line(tmp_path)
+    raw = line.encode()
+    assert len(raw) <= 200 and "…" in line
+    raw.decode("utf-8")  # no split code point
+
+
+def test_a_finding_shown_once_is_never_shown_again_but_a_new_one_is(tmp_path):
+    _put(tmp_path, _rec([HIGH]))
+    assert skillreport.session_line(tmp_path) is not None
+    stored = skillreport.read_state(tmp_path)
+    stored["findings"].append(_never("late"))
+    _put(tmp_path, stored)
+    assert skillreport.session_line(tmp_path) == (
+        "[bantamkit] skill audit: 1 new — late 30 days without a call — "
+        "/mcp__bantamkit__skill_audit has the report."
+    )
+    assert skillreport.session_line(tmp_path) is None
+
+
+def test_no_record_an_error_record_or_a_corrupt_file_is_silent(tmp_path):
+    assert skillreport.session_line(tmp_path) is None
+    assert not skillreport.state_path(tmp_path).exists()
+    _put(tmp_path, {"version": 1, "ts": "t", "host": "none", "error": "x", "surfaced": []})
+    assert skillreport.session_line(tmp_path) is None
+    skillreport.state_path(tmp_path).write_bytes(b"{not json")
+    assert skillreport.session_line(tmp_path) is None
+    assert skillreport.state_path(tmp_path).read_bytes() == b"{not json"
+
+
+def test_a_malformed_finding_is_skipped_not_fatal(tmp_path):
+    bad = {"kind": "x", "severity": "high", "skills": "alpha", "detail": "d"}
+    _put(tmp_path, _rec([bad, HIGH]))
+    assert skillreport.session_line(tmp_path) == (
+        "[bantamkit] skill audit: 1 new — shared-trigger-phrase: alpha:a1, beta:b2 — "
+        "/mcp__bantamkit__skill_audit has the report."
+    )
+
+
+def test_render_line_items_never_overflow():
+    for n in range(0, 40):
+        items = [f"item-{i} " + "x" * (i * 7 % 90) for i in range(n)]
+        assert len(skillreport.render_line(items).encode()) <= skillreport.LINE_MAX_BYTES

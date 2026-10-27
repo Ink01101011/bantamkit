@@ -62,6 +62,7 @@ import { parseJson, PyJSONDecodeError, PyValueError, type PyValue } from './pyjs
 import { pyLstrip, pyStrip as pyStripSem, pyTruthy } from './pysem.js';
 import { LogSegment, ROTATE_BYTES } from './storage/logsegment.js';
 import { maybeSpawn as maybeSpawnRetention } from './storage/retention.js';
+import { sessionLine } from './skillreport.js';
 import { changed, loadTurn, saveTurn, snapshot } from './touch/bashturn.js';
 import { TOUCH_WINDOW, type TouchContext, contextWeights, viaEnabled, window as touchWindow } from './touch/context.js';
 import { W_CONTEXT } from './memory/retrieval.js';
@@ -1201,6 +1202,11 @@ function sessionStart(run: HookRun, input: HookInput): void {
   } catch (e) {
     log(run, { event: 'SessionStart', warn: `queries: ${message(e)}` });
   }
+  // #205 (K1): one line, only for a skill-audit finding not shown before; absent otherwise, so a
+  // session with nothing new carries the block it always did (the 0-byte bar). Before the
+  // stale-install line, which stays LAST by its own ruling.
+  const skillLine = sessionLine(run.home);
+  if (skillLine) parts.push(skillLine);
   // LAST, AND ONLY WHEN IT IS TRUE. The toolbox line above is constant boilerplate the agent
   // sees every session; this one appears in one of five states and asks for an action, so it
   // gets the strongest position in the block. Everything above it is unchanged when it is
@@ -1281,6 +1287,7 @@ function sessionStart(run: HookRun, input: HookInput): void {
         }
       : {}),
     storeScope: run.storeScope,
+    skillAuditBytes: Buffer.byteLength(skillLine ?? ''),
     // The stale-install signal, in three fields so the claim "it fired / it stayed quiet / it
     // asked the registry" is a number the operator can rerun rather than a sentence. `state` is
     // one of `updatecheck`'s five (or `null` when there is no kept install to compare);

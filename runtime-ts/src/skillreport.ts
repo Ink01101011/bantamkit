@@ -8,6 +8,10 @@
  * `statusLine` is the `skill audit:` line of `bantamkit_status`, its `off; ` prefix reading
  * `BANTAMKIT_SKILL_AUDIT` (Amendment A3). Ops `daily`, `status`, `child` in the suite.
  *
+ * THE SESSIONSTART LINE (Task 5): `sessionLine` names, in one line of at most `LINE_MAX_BYTES`
+ * UTF-8 bytes, the surfaceable findings whose `surfaceKey` is not yet in `surfaced`, then adds
+ * those keys, so nothing repeats; with nothing new it returns null and writes nothing. Op `line`.
+ *
  * K2: it REPORTS and PROPOSES a `settings.json` diff; it never edits the file — nothing here
  * opens a file for writing. A plugin is proposed only when usage is present, the transcripts span
  * at least `USAGE_DAYS` days, and every one of its counted skills had zero calls. Skills outside
@@ -355,5 +359,97 @@ export function statusLine(home: string): string {
     );
   } catch {
     return unreadable;
+  }
+}
+
+// --------------------------------------------------------------------- the SessionStart line
+
+export const LINE_MAX_BYTES = 200;
+export const COMMAND = '/mcp__bantamkit__skill_audit';
+const TAIL = ` — ${COMMAND} has the report.`;
+const ELLIPSIS = '…';
+const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
+
+/** The longest prefix of whole code points that fits `room` bytes with the ellipsis. */
+function clip(text: string, room: number): string {
+  let out = '';
+  for (const ch of text) {
+    if (bytes(out + ch) + bytes(ELLIPSIS) > room) break;
+    out += ch;
+  }
+  return out + ELLIPSIS;
+}
+
+/** Python's `_well_formed`: a finding the line can name and `surfaced` can key. */
+function wellFormed(f: Record<string, unknown>): boolean {
+  const skills = f['skills'];
+  return (
+    typeof f['kind'] === 'string' &&
+    typeof f['detail'] === 'string' &&
+    Array.isArray(skills) &&
+    skills.every((s) => typeof s === 'string')
+  );
+}
+
+/** Every `high` finding, and `never-invoked` only once usage spans `USAGE_DAYS` days. Record order. */
+export function surfaceable(record: AuditRecord): FindingDict[] {
+  const usage = record.usage;
+  const longEnough = isRecord(usage) && (usage.span_days ?? 0) >= USAGE_DAYS;
+  return record.findings.filter((f) => {
+    const d = f as unknown as Record<string, unknown>;
+    return wellFormed(d) && (d['severity'] === 'high' || (d['kind'] === 'never-invoked' && longEnough));
+  });
+}
+
+function item(f: FindingDict): string {
+  if (f.kind === 'never-invoked' && f.skills.length) return `${f.skills[0]} ${USAGE_DAYS} days without a call`;
+  return `${f.kind}: ${f.skills.length ? f.skills.join(', ') : f.detail}`;
+}
+
+/** Python's `render_line`: whole items while they fit; a first item that cannot is clipped. */
+export function renderLine(items: string[]): string {
+  const head = `[bantamkit] skill audit: ${items.length} new — `;
+  const room = LINE_MAX_BYTES - bytes(head) - bytes(TAIL);
+  let body = '';
+  for (const [i, it] of items.entries()) {
+    const left = items.length - i - 1;
+    const more = left ? `; +${left} more` : '';
+    const cand = body ? `${body}; ${it}` : it;
+    if (bytes(cand + more) <= room) {
+      body = cand;
+      continue;
+    }
+    body = body ? `${body}; +${items.length - i} more` : clip(it, room - bytes(more)) + more;
+    break;
+  }
+  return head + body + TAIL;
+}
+
+/**
+ * One line for SessionStart, only for what `surfaced` has not seen (K1). null — and no write —
+ * when nothing is new, so SessionStart adds 0 bytes. Otherwise the shown keys join `surfaced`
+ * under the lock, if the record is still the one read (same `ts`). Never throws.
+ */
+export function sessionLine(home: string): string | null {
+  try {
+    const record = readState(home);
+    if (record === null || 'error' in record) return null;
+    const shown = new Set(record.surfaced);
+    const fresh = surfaceable(record).filter((f) => !shown.has(surfaceKey(f)));
+    if (!fresh.length) return null;
+    const line = renderLine(fresh.map(item));
+    const p = statePath(home);
+    exclusive(p, (held) => {
+      if (!held) return;
+      const again = readState(home);
+      if (again !== null && !('error' in again) && again.ts === record.ts) {
+        const keys = new Set([...again.surfaced, ...fresh.map((f) => surfaceKey(f))]);
+        again.surfaced = [...keys].sort(cmpCodepoint);
+        writeRecord(p, again);
+      }
+    });
+    return line;
+  } catch {
+    return null;
   }
 }

@@ -266,3 +266,80 @@ test('daily never throws', () => {
   R.daily(home, null, NOW);
   assert.equal(fs.existsSync(path.join(home, '.bantamkit')), false);
 });
+
+// --- Task 5: the SessionStart line ---------------------------------------------------------
+
+const { FULL, HIGH, LINE, never, put, rec } = await import('./_skillline.mjs');
+const one = (body) => `[bantamkit] skill audit: 1 new — ${body} — /mcp__bantamkit__skill_audit has the report.`;
+
+test('the line is capped and then silent', () => {
+  const home = tmp();
+  put(home, rec(FULL));
+  const line = R.sessionLine(home);
+  assert.equal(line, LINE);
+  assert.equal(Buffer.byteLength(line), 199);
+  assert.ok(Buffer.byteLength(line) <= R.LINE_MAX_BYTES);
+  assert.equal(R.sessionLine(home), null);
+  const keys = FULL.map((f) => R.surfaceKey(f)).sort();
+  assert.deepEqual(R.readState(home).surfaced, keys);
+});
+
+test('nothing new is null and writes nothing', () => {
+  const home = tmp();
+  put(home, rec(FULL, 30, FULL.map((f) => R.surfaceKey(f))));
+  const before = fs.readFileSync(R.statePath(home));
+  assert.equal(R.sessionLine(home), null);
+  assert.deepEqual(fs.readFileSync(R.statePath(home)), before);
+});
+
+test('never-invoked waits for 30 days', () => {
+  const home = tmp();
+  put(home, rec([never('x')], 29));
+  assert.equal(R.sessionLine(home), null);
+  put(home, rec([never('x')], 30));
+  assert.equal(R.sessionLine(home), one('x 30 days without a call'));
+});
+
+test('one long item is clipped on a code point', () => {
+  const home = tmp();
+  put(home, rec([{ ...HIGH, skills: ['ก'.repeat(80)] }]));
+  const line = R.sessionLine(home);
+  const raw = Buffer.from(line, 'utf8');
+  assert.ok(raw.length <= 200 && line.includes('…'));
+  assert.equal(new TextDecoder('utf-8', { fatal: true }).decode(raw), line);
+});
+
+test('a finding shown once is never shown again, but a new one is', () => {
+  const home = tmp();
+  put(home, rec([HIGH]));
+  assert.notEqual(R.sessionLine(home), null);
+  const stored = R.readState(home);
+  stored.findings.push(never('late'));
+  put(home, stored);
+  assert.equal(R.sessionLine(home), one('late 30 days without a call'));
+  assert.equal(R.sessionLine(home), null);
+});
+
+test('no record, an error record or a corrupt file is silent', () => {
+  const home = tmp();
+  assert.equal(R.sessionLine(home), null);
+  assert.equal(fs.existsSync(R.statePath(home)), false);
+  put(home, { version: 1, ts: 't', host: 'none', error: 'x', surfaced: [] });
+  assert.equal(R.sessionLine(home), null);
+  fs.writeFileSync(R.statePath(home), '{not json');
+  assert.equal(R.sessionLine(home), null);
+  assert.equal(fs.readFileSync(R.statePath(home), 'utf8'), '{not json');
+});
+
+test('a malformed finding is skipped, not fatal', () => {
+  const home = tmp();
+  put(home, rec([{ kind: 'x', severity: 'high', skills: 'alpha', detail: 'd' }, HIGH]));
+  assert.equal(R.sessionLine(home), one('shared-trigger-phrase: alpha:a1, beta:b2'));
+});
+
+test('renderLine never overflows', () => {
+  for (let n = 0; n < 40; n++) {
+    const items = Array.from({ length: n }, (_, i) => `item-${i} ` + 'x'.repeat((i * 7) % 90));
+    assert.ok(Buffer.byteLength(R.renderLine(items)) <= R.LINE_MAX_BYTES);
+  }
+});

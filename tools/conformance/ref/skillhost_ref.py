@@ -34,6 +34,13 @@ Task 4 (the daily run). An op's `env` is applied for that op only (a value null 
 `child` runs `retention.child_main([cwd, home], now)` in process; `fresh` first removes both
 state files (or only `skill-audit.json`), BEFORE the snapshot is taken.
 
+Task 5 (the SessionStart line):
+
+    {"op": "line", "home", "record": b64 | null, "calls": n}
+        -> b64(dumps({"lines": [session_line(home)] * n, "file": skill-audit.json | null}))
+
+`record`, when given, is written as the state file's bytes first (so a corrupt file is one).
+
 `dumps` is `storage.hotindex.dumps`, which `hotindex.ts` `dumpIndex` mirrors byte for byte.
 """
 
@@ -148,9 +155,20 @@ def _task4(op: dict) -> str | None:
     raise ValueError(f"unknown op {op['op']!r}")
 
 
+def _line(op: dict) -> str:
+    path = skillreport.state_path(op["home"])
+    if op.get("record") is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(base64.b64decode(op["record"]))
+    lines = [skillreport.session_line(op["home"]) for _ in range(op["calls"])]
+    return _b64(dumps({"lines": lines, "file": _read(path)}))
+
+
 def _one(op: dict) -> str | None:
     if op["op"] in ("put", "resurface", "daily", "status", "child", "spawn"):
         return _task4(op)
+    if op["op"] == "line":
+        return _line(op)
     now = parse_now(op["now"])
     if op["op"] == "usage":
         known = None if op.get("known") is None else frozenset(op["known"])

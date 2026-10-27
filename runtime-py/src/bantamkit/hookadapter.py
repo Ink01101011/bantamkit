@@ -1092,6 +1092,14 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             )
     except Exception as e:  # noqa: BLE001 - a nudge is never worth a dead session
         _log(run, {"event": "SessionStart", "warn": f"queries: {_message(e)}"})
+    # #205 (K1): one line, only for a skill-audit finding not shown before; absent otherwise,
+    # so a session with nothing new carries the block it always did (the 0-byte bar). Imported
+    # here, not at the top: the other hook events never pay for the audit's modules.
+    from . import skillreport
+
+    skill_line = skillreport.session_line(run.home)
+    if skill_line:
+        parts.append(skill_line)
     # THE STALE-INSTALL LINE THE NODE MODULE APPENDS LAST IS NOT HERE, AND THAT IS RULED
     # (Q2.4), not forgotten. It is decided from the kept npm install under
     # `~/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json` -- `npminstall.ts`, which
@@ -1174,6 +1182,7 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
                 else {}
             ),
             "storeScope": run.store_scope,
+            "skillAuditBytes": len(skill_line.encode("utf-8")) if skill_line else 0,
             "updateState": None,
             "updateProbe": "node-only",
             "updateBytes": 0,

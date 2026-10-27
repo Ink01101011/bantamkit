@@ -4080,6 +4080,64 @@ export async function run(ctx) {
     }
   }
 
+  {
+    // 21. sessionstart/skill-audit (#205 Task 5): one line for a new finding, then 0 bytes. Per
+    // side: SessionStart with no record, then twice over a home holding the plan's FULL record.
+    // The first carries the 199-byte line as its last part; the second is the no-record block
+    // byte for byte, and the log's `skillAuditBytes` reads 0, 199, 0.
+    const never = (x) => ({ kind: 'never-invoked', severity: 'low', skills: [x], detail: '0 calls' });
+    const FULL = [
+      { kind: 'shared-trigger-phrase', severity: 'high', skills: ['alpha:a1', 'beta:b2'], detail: 'deploy the thing' },
+      never('alpha:a1'),
+      never('alpha:a2'),
+      never('beta:b2'),
+      never('proj'),
+    ];
+    const RECORD = {
+      version: 1, ts: 't', host: 'claude-code', roots: [], skills: 1, catalogue_bytes: 1, findings: FULL, omissions: [], proposals: [],
+      usage: { calls: 0, counts: {}, span_days: 30, transcripts: 1, unreadable: 0, skipped_lines: 0 }, surfaced: [],
+    };
+    const LINE =
+      '[bantamkit] skill audit: 5 new — shared-trigger-phrase: alpha:a1, beta:b2; alpha:a1 30 days without a call; ' +
+      'alpha:a2 30 days without a call; +2 more — /mcp__bantamkit__skill_audit has the report.';
+    const id = 'skill-audit-line';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    b.snapshot();
+    const probe = (side) => {
+      const h = home(id, side);
+      const start = () => {
+        const r = runHook(ctx, side, { payload: { hook_event_name: 'SessionStart', source: 'startup', session_id: id, cwd }, cwd, home: h, env: QENV });
+        const out = dec(r.stdout);
+        return { exit: r.exit, context: out ? JSON.parse(out).hookSpecificOutput?.additionalContext ?? null : null, skillAuditBytes: r.last.skillAuditBytes, bytes: r.last.bytes };
+      };
+      const plain = start();
+      writeFile(join(h, '.bantamkit', 'skill-audit.json'), JSON.stringify(RECORD));
+      const first = start();
+      const again = start();
+      return { plain, first, again };
+    };
+    const py = probe('py');
+    b.restore();
+    const nd = probe('node');
+    cases.push({ name: 'skill-audit-line: SessionStart with no record, then twice over FULL — stdout and log fields, side to side', kind: 'json', expected: py, actual: nd });
+    const pick = (x) => ({
+      first: x.first.context === `${x.plain.context}\n\n${LINE}`,
+      againIsPlain: x.again.context === x.plain.context,
+      skillAuditBytes: [x.plain.skillAuditBytes, x.first.skillAuditBytes, x.again.skillAuditBytes],
+      exits: [x.plain.exit, x.first.exit, x.again.exit],
+    });
+    cases.push(
+      ...literalCases(pick(py), pick(nd), 'skill-audit-line: PINNED PER SIDE: the line once, last; then the no-record block byte for byte (0 bytes added)', {
+        first: true,
+        againIsPlain: true,
+        skillAuditBytes: [0, 199, 0],
+        exits: [0, 0, 0],
+      }),
+    );
+  }
+
   notes.push(
     'every hook run in this suite asserted that the adapter followed the throwaway HOME ' +
       '(both HOME and USERPROFILE) before a byte it wrote was read; a run that did not stops the suite',
