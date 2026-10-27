@@ -726,7 +726,7 @@ async function sessionFixture(ctx, base) {
   // turn 2: a system-reminder span; a commit whose result has no is_error
   a.prompt(at(6), `fix the parser again <system-reminder>${PLANT}</system-reminder> please`);
   a.call(at(7), 'Edit', { file_path: parse }, 'a3');
-  a.call(at(8), 'Bash', { command: "git commit -m 'parser'" }, 'c1');
+  a.call(at(8), 'Bash', { command: `git add src && git commit -m "$(cat <<'EOF'\nfix(parser): keep the lexer state (#9)\n\nbody\nEOF\n)"` }, 'c1');
   a.result(at(8), 'c1', undefined);
   // turn 3: corrected in English; tests pass, then fail
   a.prompt(at(9), 'no, the lexer too');
@@ -790,6 +790,37 @@ async function sessionFixture(ctx, base) {
   mkdirSync(nullHome, { recursive: true });
   return { home, fileA, work, nullHome, appended: new Transcript(SA, work).prompt(at(30), 'stop').call(at(31), 'Read', { file_path: parse }, 'z1').text() };
 }
+
+/**
+ * job73 C8 — the commit subject (R4, the Q8 ruling keeps it in full in `evidence.md`): the first
+ * line of the first `git commit`'s `-m`, read off the command the agent wrote (never its output).
+ */
+const COMMIT_COMMANDS = [
+  "git commit -m \"fix(x): one (#1)\"",
+  "git add a && git commit -m 'single quoted' && git push",
+  "git commit -am \"am flags\"",
+  "git commit -m\"glued\"",
+  "git commit --message=\"long form\"",
+  "git commit --message 'long two'",
+  "git commit -m \"$(cat <<'EOF'\nfeat(skills): heredoc subject (#206)\n\nbody line\n\nCo-Authored-By: x\nEOF\n)\" -- a b",
+  "git commit -m \"$(cat <<EOF\n\n  padded subject  \nEOF\n)\"",
+  "git commit -F msg.txt",
+  "git commit --amend --no-edit",
+  "git commit -m",
+  "git commit -m ; echo x",
+  "git commit -m \"\n\nsecond line is subject\"",
+  "git commit -m \"esc \\\"q\\\" \\\\ \\$HOME\"",
+  "git commit -m unquoted word",
+  "git commit -q -m 'after q' -m 'body'",
+  "git commit -c HEAD -m x",
+  "git commit -Sm signed",
+  "echo git commit -m 'echoed' | cat",
+  "git -C repo commit -m 'not matched form'",
+  "git commit -m 'ไทย 😀 subject'",
+  "git commit -m \"a \\\n b\"",
+  "git commit -m 'unterminated",
+  "git commit -m \"$(cat <<-'END'\n\tsub\n\tEND\n)\""
+];
 
 function runNodeSessions(sm, host, payload) {
   const out = { session_runs: [], miner_runs: [] };
@@ -910,6 +941,28 @@ async function sessionCases(ctx, base) {
       kind: 'json',
       expected: [true, true, true, true],
       actual: phases.map(([, x]) => JSON.stringify(pick(x).session_runs[0].pieces) === JSON.stringify(pick(x).session_runs[1].pieces)),
+    });
+  }
+  const subj = both(() => ({ commit_subjects: COMMIT_COMMANDS }));
+  const ndSubjects = COMMIT_COMMANDS.map((c) => sm.commitSubject(c));
+  COMMIT_COMMANDS.forEach((c, i) =>
+    cases.push({ name: `commit subject #${i}: ${JSON.stringify(c).slice(0, 60)}`, kind: 'json', expected: subj.py.commit_subjects[i], actual: ndSubjects[i] }),
+  );
+  for (const [side, got, pieces] of [
+    ['python', subj.py.commit_subjects, cold.py.session_runs[0].pieces],
+    ['node', ndSubjects, cold.nd.session_runs[0].pieces],
+  ]) {
+    cases.push({
+      name: `LITERAL: commit subjects of [plain, heredoc, --amend, -F, glued, -c before -m, the first of two -m] — ${side}`,
+      kind: 'json',
+      expected: ['fix(x): one (#1)', 'feat(skills): heredoc subject (#206)', null, null, 'glued', 'x', 'after q'],
+      actual: [got[0], got[6], got[9], got[8], got[3], got[16], got[15]],
+    });
+    cases.push({
+      name: `LITERAL: session commit subjects by id (a failed commit has none) — ${side}`,
+      kind: 'json',
+      expected: [['sa1b2c3d4#3', ['fix(parser): keep the lexer state (#9)']], ['sa1b2c3d4#6', []]],
+      actual: pieces.filter((p) => p.id === 'sa1b2c3d4#3' || p.id === 'sa1b2c3d4#6').map((p) => [p.id, p.commits]),
     });
   }
   const pieces = cold.py.session_runs[0].pieces.length;

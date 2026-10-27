@@ -812,3 +812,25 @@ test('minerPieces adds the window repo tops', () => {
 test('task 4b constants', () => {
   assert.deepEqual([sm.EVIDENCE_PROMPT_CHARS, sm.MINE_DAYS, sm.CACHE_NAME], [500, 30, 'skill-miner-cache.json']);
 });
+
+test('commitSubject (job73 C8): the first line of the first -m, read off the command', () => {
+  const heredoc = "git add a && git commit -m \"$(cat <<'EOF'\nfeat(x): the subject (#1)\n\nbody\nEOF\n)\"";
+  for (const [command, subject] of [
+    ['git commit -m "fix: one"', 'fix: one'],
+    ["git commit -am 'two words'", 'two words'],
+    ['git commit -m"glued"', 'glued'],
+    ['git commit --message=three', 'three'],
+    [heredoc, 'feat(x): the subject (#1)'],
+    ['git commit -m "\n\n  second  "', 'second'],
+    ['git commit -F msg.txt', null],
+    ['git commit --amend --no-edit', null],
+    ['git commit -m ; echo x', null],
+    ['git commit -c HEAD -m after', 'after'],
+    ['ls -la', null],
+  ]) {
+    assert.equal(sm.commitSubject(command), subject, command);
+  }
+  const p = { id: 's1#1', source: 'session', ts: 't', repo: '', prompt: 'p', tools: [], paths: new Set(), ok: null, signals: {}, failure: null, commits: ['feat: a'] };
+  assert.deepEqual(sm.pieceDict(p).commits, ['feat: a']);
+  assert.deepEqual(sm.pieceDict({ ...p, commits: undefined }).commits, []);
+});

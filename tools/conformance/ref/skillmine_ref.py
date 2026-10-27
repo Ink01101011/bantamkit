@@ -31,6 +31,8 @@ Task 4b adds, also optional:
       -> {"session_runs": [{"pieces", "bytes_read", "cache_hex"}, ...],
           "miner_runs": [{"doc", "hex", "pieces"}, ...]}
 
+job73 C8 adds `{"commit_subjects": [command, ...]} -> {"commit_subjects": [str | null, ...]}`.
+
 `session_runs` mine `<home>/.claude/projects` through `select_adapter(home)` with the cache at
 `cache` (loaded first; saved after when `save`). `miner_runs` run `miner_pieces` and `mine`.
 
@@ -53,6 +55,7 @@ from bantamkit.skillmine import (
     Piece,
     ProposalsError,
     Signature,
+    commit_subject,
     doc_freq,
     meets,
     mine,
@@ -142,6 +145,7 @@ def main() -> None:
             out["reads"].append(["none"] if got is None else ["ok", got])
         except ProposalsError as e:
             out["reads"].append(["error", str(e)])
+    out["commit_subjects"] = [commit_subject(c) for c in payload.get("commit_subjects", [])]
     from bantamkit.storage.retention import parse_now
 
     out["session_runs"] = []

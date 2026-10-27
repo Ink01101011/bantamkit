@@ -975,3 +975,40 @@ def test_miner_pieces_adds_the_window_repo_tops(tmp_path: Path) -> None:
 )
 def test_task4b_constants(name: str, value: object) -> None:
     assert getattr(skillmine, name) == value
+
+
+# ---- job73 C8: commit subjects (R4; the Q8 ruling keeps them in full in evidence.md)
+
+_HEREDOC_COMMIT = (
+    "git add a && git commit -m \"$(cat <<'EOF'\nfeat(x): the subject (#1)\n\nbody\nEOF\n)\""
+)
+
+
+@pytest.mark.parametrize(
+    ("command", "subject"),
+    [
+        ('git commit -m "fix: one"', "fix: one"),
+        ("git commit -am 'two words'", "two words"),
+        ('git commit -m"glued"', "glued"),
+        ("git commit --message=three", "three"),
+        (_HEREDOC_COMMIT, "feat(x): the subject (#1)"),
+        ('git commit -m "\n\n  second  "', "second"),
+        ("git commit -F msg.txt", None),
+        ("git commit --amend --no-edit", None),
+        ("git commit -m ; echo x", None),
+        ("git commit -c HEAD -m after", "after"),
+        ("ls -la", None),
+    ],
+)
+def test_commit_subject(command, subject):
+    assert skillmine.commit_subject(command) == subject
+
+
+def test_a_successful_commit_carries_its_subject_and_a_failed_one_none():
+    piece = Piece("s1#1", "session", "2026-01-01T00:00:00Z", "", "p", commits=("feat: a",))
+    assert piece.as_dict()["commits"] == ["feat: a"]
+    assert skillmine._piece_from(piece.as_dict()) == piece
+    old = piece.as_dict()
+    del old["commits"]  # a cache entry written before the field: read as no commits
+    assert skillmine._piece_from(old).commits == ()
+    assert skillmine._piece_from({**piece.as_dict(), "commits": [1]}) is None

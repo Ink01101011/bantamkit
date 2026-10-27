@@ -105,9 +105,13 @@ class Piece:
     ok: bool | None = None
     signals: Mapping[str, bool] = field(default_factory=dict)
     failure: str | None = None
+    #: The subjects of the turn's successful `git commit`s, each the first line of its `-m`
+    #: argument (R4: the agent's input, never the command's output). Sessions only.
+    commits: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "commits": list(self.commits),
             "failure": self.failure,
             "id": self.id,
             "ok": self.ok,
@@ -914,6 +918,127 @@ def _ts_ms(value: Any) -> int | None:
         return None
 
 
+# ---- commit subjects (R4): the first line of a `git commit`'s `-m` argument, read off the
+# command the agent wrote. A small shell-word reader, the same in both runtimes: blanks are
+# space and tab (a backslash-newline is one too), `'...'` is literal, `"..."` drops a backslash
+# before a double quote, a backslash, `$`, a backtick or a newline, a bare backslash escapes
+# the next character, and an unquoted one of
+# `;&|()<>` or a newline ends the command. The value of the FIRST `-m <w>`, `-m<w>`,
+# `-<flags>m <w>`, `--message <w>` or `--message=<w>` after `git commit` is the message; a
+# value that opens `$(cat <<EOF` (the delimiter bare or quoted, `<<-` too) is the heredoc's
+# lines up to the delimiter line. The subject is the first line that is not blank, stripped.
+
+_SHELL_STOP = frozenset(";&|()<>\n")
+_DQ_ESCAPES = frozenset('"\\$`\n')
+#: Short options whose value follows them: a cluster reaching one of these holds no `-m`.
+_VALUE_FLAGS = frozenset("FCct")
+_HEREDOC = re.compile(r"\"?\$\(cat[ \t]*<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\n")
+
+
+def _blank(s: str, i: int) -> int:
+    while i < len(s):
+        if s[i] in " \t":
+            i += 1
+        elif s.startswith("\\\n", i):
+            i += 2
+        else:
+            break
+    return i
+
+
+def _shell_word(s: str, i: int) -> tuple[str, int]:
+    out: list[str] = []
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c in " \t" or c in _SHELL_STOP:
+            break
+        if c == "'":
+            j = s.find("'", i + 1)
+            j = n if j == -1 else j
+            out.append(s[i + 1 : j])
+            i = j + 1
+        elif c == '"':
+            i += 1
+            while i < n and s[i] != '"':
+                if s[i] == "\\" and i + 1 < n and s[i + 1] in _DQ_ESCAPES:
+                    if s[i + 1] != "\n":
+                        out.append(s[i + 1])
+                    i += 2
+                else:
+                    out.append(s[i])
+                    i += 1
+            i += 1
+        elif c == "\\" and i + 1 < n:
+            if s[i + 1] != "\n":
+                out.append(s[i + 1])
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out), min(i, n)
+
+
+def _message_at(s: str, i: int) -> str | None:
+    """The message whose value starts at raw offset `i`: a heredoc's lines, else one word."""
+    m = _HEREDOC.match(s, i)
+    if m is not None:
+        lines = []
+        for line in s[m.end() :].split("\n"):
+            if line.strip(" \t") == m.group(2):
+                break
+            lines.append(line)
+        return "\n".join(lines)
+    if i >= len(s) or s[i] in _SHELL_STOP:
+        return None
+    return _shell_word(s, i)[0]
+
+
+def _option_value(s: str, start: int, word: str, end: int) -> tuple[bool, str | None]:
+    """`(is a message option, its message)` for the word `s[start:end]` read as `word`."""
+    if word in ("-m", "--message"):
+        return True, _message_at(s, _blank(s, end))
+    if word.startswith("--message="):
+        if s.startswith("--message=", start):
+            return True, _message_at(s, start + len("--message="))
+        return True, word[len("--message=") :]
+    if len(word) < 2 or word[0] != "-" or word[1] == "-":
+        return False, None
+    for k in range(1, len(word)):
+        c = word[k]
+        if c == "m":
+            if k + 1 == len(word):
+                return True, _message_at(s, _blank(s, end))
+            if s.startswith(word[: k + 1], start):
+                return True, _message_at(s, start + k + 1)
+            return True, word[k + 1 :]
+        if c in _VALUE_FLAGS or not ("a" <= c <= "z" or "A" <= c <= "Z"):
+            return False, None
+    return False, None
+
+
+def commit_subject(command: str) -> str | None:
+    """The subject of the first `git commit` in `command`, or None when it names no message."""
+    m = _COMMIT.search(command)
+    if m is None:
+        return None
+    i = m.end()
+    while True:
+        i = _blank(command, i)
+        if i >= len(command) or command[i] in _SHELL_STOP:
+            return None
+        start = i
+        word, i = _shell_word(command, i)
+        found, message = _option_value(command, start, word, i)
+        if found:
+            if message is None:
+                return None
+            for line in message.split("\n"):
+                if line.strip():
+                    return _well_formed(line.strip())
+            return None
+
+
 def _new_turn(rec: Mapping[str, Any], sid: str, n: int, prompt: str) -> dict[str, Any]:
     cwd = rec.get("cwd")
     ts = rec.get("timestamp")
@@ -925,6 +1050,7 @@ def _new_turn(rec: Mapping[str, Any], sid: str, n: int, prompt: str) -> dict[str
         "prompt": prompt,
         "results": {},
         "session": sid,
+        "subjects": {},
         "test": None,
         "tools": [],
         "ts": ts if isinstance(ts, str) else "",
@@ -1015,6 +1141,13 @@ def _close(
         if corrected:
             failure = "corrected in the next turn: " + _cut(nxt)
     ok: bool | None = True if any(signals.values()) else (False if failure else None)
+    subjects = turn.get("subjects")
+    subjects = subjects if isinstance(subjects, dict) else {}
+    commits: list[str] = []
+    for t in turn["commits"]:
+        subject = subjects.get(t)
+        if results.get(t) is False and isinstance(subject, str) and subject not in commits:
+            commits.append(subject)
     key, repo = ctx.repo(turn["cwd"])
     next_ms = None if nxt is None and not interrupted else _ts_ms(next_ts)
     return Piece(
@@ -1028,6 +1161,7 @@ def _close(
         ok=ok,
         signals=signals,
         failure=failure if ok is False else None,
+        commits=tuple(commits),
     )
 
 
@@ -1061,6 +1195,9 @@ def _feed(
             if name == BASH_TOOL and isinstance(bid, str) and isinstance(command, str):
                 if _COMMIT.search(command):
                     turn["commits"].append(bid)
+                    subject = commit_subject(command)
+                    if subject is not None:
+                        turn.setdefault("subjects", {})[bid] = subject
                 if _TESTS.search(command):
                     turn["test"] = bid
         return
@@ -1126,6 +1263,8 @@ def _piece_from(d: Any) -> Piece | None:
             and all(isinstance(t, str) for t in d["tools"])
             and all(isinstance(t, str) for t in d["paths"])
             and (d["failure"] is None or isinstance(d["failure"], str))
+            and isinstance(d.get("commits", []), list)
+            and all(isinstance(t, str) for t in d.get("commits", []))
         ):
             return None
         return Piece(
@@ -1139,6 +1278,7 @@ def _piece_from(d: Any) -> Piece | None:
             ok=ok,
             signals=dict(signals),
             failure=d["failure"],
+            commits=tuple(d.get("commits", [])),
         )
     except (KeyError, TypeError):
         return None

@@ -69,6 +69,8 @@ export interface Piece {
   readonly ok: boolean | null;
   readonly signals: Readonly<Record<string, boolean>>;
   readonly failure: string | null;
+  /** The subjects of the turn's successful `git commit`s (R4, the agent's input). Sessions only; absent is none. */
+  readonly commits?: readonly string[];
 }
 
 export interface Signature {
@@ -84,6 +86,7 @@ export function pieceDict(p: Piece): Record<string, unknown> {
   const signals: Record<string, boolean> = {};
   for (const k of sortCp(Object.keys(p.signals))) signals[k] = p.signals[k]!;
   return {
+    commits: [...(p.commits ?? [])],
     failure: p.failure,
     id: p.id,
     ok: p.ok,
@@ -858,6 +861,7 @@ function tsMs(value: unknown): number | null {
 
 interface Turn {
   commits: string[];
+  subjects?: Record<string, string>;
   cwd: string;
   id: string;
   inpaths: string[];
@@ -883,6 +887,113 @@ interface CacheEntry {
   size: number;
 }
 
+// ---- commit subjects (R4): the reference's `commit_subject` and its comment, line for line.
+const SHELL_STOP = new Set([';', '&', '|', '(', ')', '<', '>', '\n']);
+const DQ_ESCAPES = new Set(['"', '\\', '$', '`', '\n']);
+/** Short options whose value follows them: a cluster reaching one of these holds no `-m`. */
+const VALUE_FLAGS = new Set(['F', 'C', 'c', 't']);
+const HEREDOC = /"?\$\(cat[ \t]*<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\n/y;
+
+function blankAt(s: string, i: number): number {
+  while (i < s.length) {
+    if (s[i] === ' ' || s[i] === '\t') i += 1;
+    else if (s.startsWith('\\\n', i)) i += 2;
+    else break;
+  }
+  return i;
+}
+
+function shellWord(s: string, i: number): [string, number] {
+  let out = '';
+  const n = s.length;
+  while (i < n) {
+    const c = s[i]!;
+    if (c === ' ' || c === '\t' || SHELL_STOP.has(c)) break;
+    if (c === "'") {
+      let j = s.indexOf("'", i + 1);
+      if (j === -1) j = n;
+      out += s.slice(i + 1, j);
+      i = j + 1;
+    } else if (c === '"') {
+      i += 1;
+      while (i < n && s[i] !== '"') {
+        if (s[i] === '\\' && i + 1 < n && DQ_ESCAPES.has(s[i + 1]!)) {
+          if (s[i + 1] !== '\n') out += s[i + 1];
+          i += 2;
+        } else {
+          out += s[i];
+          i += 1;
+        }
+      }
+      i += 1;
+    } else if (c === '\\' && i + 1 < n) {
+      if (s[i + 1] !== '\n') out += s[i + 1];
+      i += 2;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return [out, Math.min(i, n)];
+}
+
+function messageAt(s: string, i: number): string | null {
+  HEREDOC.lastIndex = i;
+  const m = HEREDOC.exec(s);
+  if (m !== null) {
+    const lines: string[] = [];
+    for (const line of s.slice(m.index + m[0].length).split('\n')) {
+      if (line.replace(/^[ \t]+|[ \t]+$/g, '') === m[2]) break;
+      lines.push(line);
+    }
+    return lines.join('\n');
+  }
+  if (i >= s.length || SHELL_STOP.has(s[i]!)) return null;
+  return shellWord(s, i)[0];
+}
+
+function optionValue(s: string, start: number, word: string, end: number): [boolean, string | null] {
+  if (word === '-m' || word === '--message') return [true, messageAt(s, blankAt(s, end))];
+  if (word.startsWith('--message=')) {
+    if (s.startsWith('--message=', start)) return [true, messageAt(s, start + '--message='.length)];
+    return [true, word.slice('--message='.length)];
+  }
+  if (word.length < 2 || word[0] !== '-' || word[1] === '-') return [false, null];
+  for (let k = 1; k < word.length; k += 1) {
+    const c = word[k]!;
+    if (c === 'm') {
+      if (k + 1 === word.length) return [true, messageAt(s, blankAt(s, end))];
+      if (s.startsWith(word.slice(0, k + 1), start)) return [true, messageAt(s, start + k + 1)];
+      return [true, word.slice(k + 1)];
+    }
+    if (VALUE_FLAGS.has(c) || !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return [false, null];
+  }
+  return [false, null];
+}
+
+/** The subject of the first `git commit` in `command`, or null when it names no message. */
+export function commitSubject(command: string): string | null {
+  const m = COMMIT.exec(command);
+  if (m === null) return null;
+  let i = m.index + m[0].length;
+  for (;;) {
+    i = blankAt(command, i);
+    if (i >= command.length || SHELL_STOP.has(command[i]!)) return null;
+    const start = i;
+    let word: string;
+    [word, i] = shellWord(command, i);
+    const [found, message] = optionValue(command, start, word, i);
+    if (found) {
+      if (message === null) return null;
+      for (const line of message.split('\n')) {
+        const t = pyStrip(line);
+        if (t) return wellFormed(t);
+      }
+      return null;
+    }
+  }
+}
+
 function newTurn(rec: Rec, sid: string, n: number, prompt: string): Turn {
   const cwd = rec['cwd'];
   const ts = rec['timestamp'];
@@ -894,6 +1005,7 @@ function newTurn(rec: Rec, sid: string, n: number, prompt: string): Turn {
     prompt,
     results: {},
     session: sid,
+    subjects: {},
     test: null,
     tools: [],
     ts: typeof ts === 'string' ? ts : '',
@@ -968,6 +1080,12 @@ function close(turn: Turn, nxt: string | null, interrupted: boolean, nextTs: unk
     if (corrected) failure = `corrected in the next turn: ${cutCp(nxt)}`;
   }
   const ok: boolean | null = Object.values(signals).some((v) => v) ? true : failure !== null ? false : null;
+  const subjects = isObj(turn.subjects) ? turn.subjects : {};
+  const commits: string[] = [];
+  for (const t of turn.commits) {
+    const subject = Object.hasOwn(subjects, t) ? subjects[t] : undefined;
+    if (results[t] === false && typeof subject === 'string' && !commits.includes(subject)) commits.push(subject);
+  }
   const [key, repo] = ctx.repo(turn.cwd);
   const nextMs = nxt === null && !interrupted ? null : tsMs(nextTs);
   return {
@@ -981,6 +1099,7 @@ function close(turn: Turn, nxt: string | null, interrupted: boolean, nextTs: unk
     ok,
     signals,
     failure: ok === false ? failure : null,
+    commits,
   };
 }
 
@@ -1008,7 +1127,11 @@ function feed(rec: unknown, state: ParseState, sidDefault: string, ctx: Context,
       const bid = b['id'];
       const command = given['command'];
       if (name === BASH_TOOL && typeof bid === 'string' && typeof command === 'string') {
-        if (COMMIT.test(command)) turn.commits.push(bid);
+        if (COMMIT.test(command)) {
+          turn.commits.push(bid);
+          const subject = commitSubject(command);
+          if (subject !== null) (turn.subjects ??= {})[bid] = subject;
+        }
         if (TESTS.test(command)) turn.test = bid;
       }
     }
@@ -1058,6 +1181,7 @@ const freshState = (): ParseState => ({ cwds: {}, ordinals: {}, turn: null });
 function pieceFrom(d: unknown): Piece | null {
   if (!isObj(d)) return null;
   const { signals, ok, tools, paths, failure } = d;
+  const commits = d['commits'] ?? [];
   const strs = (xs: unknown): xs is string[] => Array.isArray(xs) && xs.every((x) => typeof x === 'string');
   for (const k of ['id', 'source', 'ts', 'repo', 'prompt']) if (typeof d[k] !== 'string') return null;
   if (
@@ -1066,7 +1190,8 @@ function pieceFrom(d: unknown): Piece | null {
     !(ok === null || typeof ok === 'boolean') ||
     !strs(tools) ||
     !strs(paths) ||
-    !(failure === null || typeof failure === 'string')
+    !(failure === null || typeof failure === 'string') ||
+    !strs(commits)
   ) {
     return null;
   }
@@ -1081,6 +1206,7 @@ function pieceFrom(d: unknown): Piece | null {
     ok,
     signals: { ...(signals as Record<string, boolean>) },
     failure,
+    commits: [...commits],
   };
 }
 
