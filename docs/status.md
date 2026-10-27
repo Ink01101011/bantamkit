@@ -109,6 +109,7 @@ Field by field:
 | `index` | one per memory layer whose `facts/` is a directory | `index facts <layer kind>: <n> doc(s), <bytes> bytes, persisted\|in-memory` |
 | `logs` | `~/.bantamkit/hooks/hook-log.jsonl`, `~/.bantamkit/usage/*.jsonl` | `logs: <name> <bytes> (<n> rotated, <n> skipped)` per log, or `logs: none` |
 | `retention` | `~/.bantamkit/retention.json`, `BANTAMKIT_RETENTION` | `retention: [off; ]last ran <iso>\|never; refused <n>` |
+| `skill audit` | `~/.bantamkit/skill-audit.json`, `BANTAMKIT_SKILL_AUDIT` (#205, job73 A4; the LAST line, after `queries`) | `skill audit: [off; ]never ran; usage adapter <claude-code\|none>`, `…the last record is unreadable; the next run recomputes it`, `…last ran <ts>; no report — <error>`, or `…last ran <ts> on <host>; <n> skill(s), <b> catalogue bytes; findings <h> high, <m> medium, <l> low; <usage clause>`. The `off; ` prefix reads the AUDIT switch, not retention's. Never a condition |
 | `read-repaired` | `Memory.repaired` (#199 Task 6) | `read-repaired: <n> this process` |
 | `usage ledger` | the first layer's `~/.bantamkit/usage/<store id>.jsonl`, and the process's missed-append count for that path (J68-10) | `usage ledger: <path> (<lines> lines, <skipped> skipped)`; `, <missed> missed writes` is added before the `)` only when an append could not be written — see `docs/memory.md`, *Recall by meaning* |
 | problems | one `- ` line per condition, worst first | |

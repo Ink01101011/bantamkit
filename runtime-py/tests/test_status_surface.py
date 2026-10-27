@@ -161,7 +161,8 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     # AMENDED job70 T200-1 (#200, plan Task 1 names the `touch:` line): 12 -> 13, `touch: none`
     # between the logs and retention, so retention and the two lines after it move down one.
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line LAST.
-    assert len(lines) == 14, report
+    # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line LAST.
+    assert len(lines) == 15, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
     assert lines[2] == "serving 15 tools, 1 prompt, 2 resource templates"
     # AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store
@@ -195,6 +196,8 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     assert lines[11] == "read-repaired: 0 this process"
     assert lines[12] == f"usage ledger: {memory.usage().path} (0 lines, 0 skipped)"
     assert lines[13] == "queries: 0 of 0 facts"  # S10 (#207 amendment 3, Q8)
+    # job73 A4 (#205 Task 4): conftest pins BANTAMKIT_SKILL_AUDIT=off; the home has no record.
+    assert lines[14] == "skill audit: off; never ran; usage adapter none"
 
 
 def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypatch):
@@ -202,19 +205,21 @@ def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypa
     raises (#207 amendment 3, Q8). The home is `record_home`'s scratch."""
     memory = make_memory(tmp_path)
     memory.save("project", "a-fact", "something worth keeping", "b")
-    assert status_of(build_server(memory)).split("\n")[-1] == "queries: 0 of 1 facts"
+    assert status_of(build_server(memory)).split("\n")[-2] == "queries: 0 of 1 facts"
     memory.queries_write([{"name": "a-fact", "queries": ["what is kept"]}])
-    assert status_of(build_server(memory)).split("\n")[-1] == "queries: 1 of 1 facts"
+    assert status_of(build_server(memory)).split("\n")[-2] == "queries: 1 of 1 facts"
 
     def boom():
         raise OSError("unreadable")
 
     monkeypatch.setattr(memory, "queries_coverage", boom)
-    assert status_of(build_server(memory)).split("\n")[-1] == "queries: unavailable"
+    assert status_of(build_server(memory)).split("\n")[-2] == "queries: unavailable"
     _shrink_the_budget_under_the_index(memory)
     lines = status_of(build_server(memory)).split("\n")
     at = lines.index("queries: unavailable")
-    assert lines[at + 1].endswith("problem:"), lines
+    # AMENDED job73 A4 (#205 Task 4): the `skill audit:` line sits between them.
+    assert lines[at + 1].startswith("skill audit: "), lines
+    assert lines[at + 2].endswith("problem:"), lines
 
 
 def _record(latest: str, checked_at: str = "2026-09-19T21:04:11Z") -> str:
@@ -284,7 +289,8 @@ def test_the_report_carries_the_update_line_in_every_one_of_the_five_states(
     # AMENDED job68 J68-6 (#199, plan Task 6): 10 -> 12, read-repair and the usage ledger.
     # AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, the `touch:` line.
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line.
-    assert len(lines) == 14, lines
+    # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line.
+    assert len(lines) == 15, lines
     assert FOOTER_MARK not in "\n".join(lines)
     assert degraded_conditions(make_memory(tmp_path), EventLog(None)) == []
 

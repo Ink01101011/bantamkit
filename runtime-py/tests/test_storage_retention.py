@@ -437,3 +437,60 @@ def test_compact_without_keep_is_unchanged(tmp_path):
     assert cold.compact(lambda d: True) is None
     assert cold.compact(lambda d: False) == "000002"
     assert cold.docs() == {}
+
+
+# ----------------------------------------- #205 Amendment A3: the skill audit's own switch
+
+
+def _stat_tree(base: Path) -> dict[str, tuple[str, int]]:
+    out: dict[str, tuple[str, int]] = {}
+    for dirpath, dirs, files in os.walk(base):
+        for name in dirs + files:
+            p = Path(dirpath) / name
+            st = p.lstat()
+            if p.is_dir():
+                out[p.relative_to(base).as_posix()] = ("dir", 0)  # adds and removes show as paths
+            else:
+                digest = hashlib.sha256(p.read_bytes()).hexdigest()
+                out[p.relative_to(base).as_posix()] = (digest, st.st_mtime_ns)
+    return out
+
+
+def test_retention_off_audit_on_touches_only_the_claim_and_the_audit_record(bed, monkeypatch):
+    """J69-6's incident class: with the sweep off the child must delete, move or rewrite
+    nothing but `retention.json`'s claim and `skill-audit.json`, over the whole trap."""
+    monkeypatch.setenv(retention.RETENTION_ENV, "off")
+    monkeypatch.delenv(retention.SKILL_AUDIT_ENV, raising=False)
+    skill = bed / "home/.claude/skills/solo/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\ndescription: d\n---\n", encoding="utf-8")
+    before = _stat_tree(bed)
+    assert retention.child_main([str(bed / "a"), str(bed / "home")], now=NOW) == 0
+    after = _stat_tree(bed)
+    changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+    assert changed == [
+        "home/.bantamkit/retention.json",
+        "home/.bantamkit/skill-audit.json",
+    ]
+    assert json.loads((bed / "home/.bantamkit/retention.json").read_text(encoding="utf-8")) == {
+        "ran_at": NOW
+    }
+
+
+def test_the_child_is_spawned_when_either_switch_is_on(tmp_path, monkeypatch):
+    (tmp_path / ".bantamkit").mkdir()
+    (tmp_path / ".bantamkit" / "retention.json").write_text(
+        json.dumps({"ran_at": retention.now_stamp()}), encoding="utf-8"
+    )
+    for sweep, audit, word in (
+        ("off", "off", "off"),
+        ("off", None, "fresh"),
+        (None, "off", "fresh"),
+        ("OFF", "No", "off"),
+    ):
+        for env, value in ((retention.RETENTION_ENV, sweep), (retention.SKILL_AUDIT_ENV, audit)):
+            if value is None:
+                monkeypatch.delenv(env, raising=False)
+            else:
+                monkeypatch.setenv(env, value)
+        assert retention.maybe_spawn(tmp_path, str(tmp_path)) == word, (sweep, audit)

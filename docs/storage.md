@@ -233,6 +233,18 @@ covers the hooks, and the MCP entry's `env` covers the server.
 The test runners on both sides and the conformance harness set it suite-wide; a retention test
 turns it back on only for its own scratch home.
 
+**AMENDED 2026-10-27 (job73 A4, #205 Amendment A3): the same child runs the daily skill audit, on
+its own switch.** `BANTAMKIT_SKILL_AUDIT=off` (same spellings) stops the audit; it is on by
+default. The spawn and the child now stand down only when BOTH switches are off. Inside the child
+the sweep runs only when `BANTAMKIT_RETENTION` is not off, then the audit runs, under the same
+claimed day, only when `BANTAMKIT_SKILL_AUDIT` is not off. With retention off and the audit on,
+the child writes `retention.json`'s claim (`{"ran_at": …}`, no `report`) and
+`~/.bantamkit/skill-audit.json`, and deletes, moves or rewrites nothing else: the `skill-host`
+conformance suite snapshots every path and mtime of a retention trap around that run and pins it.
+So with retention off `bantamkit_status` can read `retention: off; last ran <iso>`: the stamp is
+the day's claim, not a sweep. The test runners and the harness pin `BANTAMKIT_SKILL_AUDIT=off`
+suite-wide, beside `BANTAMKIT_RETENTION=off`.
+
 ## Numbers, and where they come from
 
 The bar was declared before any number existed (spec, *Bar*).

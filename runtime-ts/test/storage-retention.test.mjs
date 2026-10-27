@@ -354,3 +354,64 @@ test('compact without keep is unchanged', () => {
   assert.equal(cold.compact(() => false), '000002');
   assert.equal(cold.docs().size, 0);
 });
+
+// ----------------------------------------- #205 Amendment A3: the skill audit's own switch
+
+function statTree(base) {
+  const out = {};
+  const walk = (d) => {
+    for (const n of fs.readdirSync(d)) {
+      const p = path.join(d, n);
+      const st = fs.lstatSync(p, { bigint: true });
+      const rel = path.relative(base, p).split(path.sep).join('/');
+      if (st.isDirectory()) {
+        out[rel] = 'dir'; // adds and removes show as paths
+        walk(p);
+      } else out[rel] = `${createHash('sha256').update(fs.readFileSync(p)).digest('hex')} ${st.mtimeNs}`;
+    }
+  };
+  walk(base);
+  return out;
+}
+
+const withAudit = (t, value) => {
+  const saved = process.env.BANTAMKIT_SKILL_AUDIT;
+  if (value === undefined) delete process.env.BANTAMKIT_SKILL_AUDIT;
+  else process.env.BANTAMKIT_SKILL_AUDIT = value;
+  t.after(() => (saved === undefined ? delete process.env.BANTAMKIT_SKILL_AUDIT : (process.env.BANTAMKIT_SKILL_AUDIT = saved)));
+};
+
+test('retention off, audit on: the child touches only the claim and the audit record (J69-6 class)', (t) => {
+  const base = bed(t);
+  process.env.BANTAMKIT_RETENTION = 'off';
+  withAudit(t, undefined);
+  const skillMd = path.join(base, 'home/.claude/skills/solo/SKILL.md');
+  fs.mkdirSync(path.dirname(skillMd), { recursive: true });
+  fs.writeFileSync(skillMd, '---\ndescription: d\n---\n');
+  const before = statTree(base);
+  assert.equal(retention.childMain([path.join(base, 'a'), path.join(base, 'home')], NOW), 0);
+  const after = statTree(base);
+  const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();
+  assert.deepEqual(changed, ['home/.bantamkit/retention.json', 'home/.bantamkit/skill-audit.json']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(base, 'home/.bantamkit/retention.json'), 'utf8')), { ran_at: NOW });
+});
+
+test('the child is spawned when either switch is on', (t) => {
+  const d = bed(t);
+  const home = path.join(d, 'h3');
+  fs.mkdirSync(path.join(home, '.bantamkit'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.bantamkit', 'retention.json'), JSON.stringify({ ran_at: retention.nowStamp() }));
+  withAudit(t, undefined);
+  for (const [sweep, audit, word] of [
+    ['off', 'off', 'off'],
+    ['off', undefined, 'fresh'],
+    [undefined, 'off', 'fresh'],
+    ['OFF', 'No', 'off'],
+  ]) {
+    for (const [k, v] of [['BANTAMKIT_RETENTION', sweep], ['BANTAMKIT_SKILL_AUDIT', audit]]) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    assert.equal(retention.maybeSpawn(home, home), word, `${sweep} ${audit}`);
+  }
+});

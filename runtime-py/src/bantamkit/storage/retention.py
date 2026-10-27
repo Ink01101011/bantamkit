@@ -30,8 +30,10 @@ row as unreadable (J69-6 deviation, `.shiftwork/notes-job69/J69-6.md`).
 THE TRIGGER. `maybe_spawn` starts `python -m bantamkit.storage.retention <cwd>` detached and
 silent, at most once per 24 h (`home/.bantamkit/retention.json` `{"ran_at"}`); the SessionStart
 hook calls it, and the MCP server calls it with `server=True`, which stands down when a hook
-wrote `hooks/hook-log.jsonl` within the TTL. `BANTAMKIT_RETENTION=off` makes every entry here a
-no-op. `runtime-ts/src/storage/retention.ts` is the port; `storage-retention` compares them.
+wrote `hooks/hook-log.jsonl` within the TTL. `BANTAMKIT_RETENTION=off` makes the sweep a no-op;
+the same child also runs the daily skill audit (#205), which has its own switch,
+`BANTAMKIT_SKILL_AUDIT=off`, so the child is spawned unless BOTH are off.
+`runtime-ts/src/storage/retention.ts` is the port; `storage-retention` compares them.
 """
 
 from __future__ import annotations
@@ -58,6 +60,9 @@ from .lock import exclusive
 from .logsegment import LogSegment
 
 RETENTION_ENV = "BANTAMKIT_RETENTION"
+# #205 Amendment A3 (user ruling 2026-10-16): the daily skill audit has its own switch. The child
+# wakes when EITHER is on; inside it the sweep follows RETENTION_ENV and the audit this one.
+SKILL_AUDIT_ENV = "BANTAMKIT_SKILL_AUDIT"
 TTL_S = 86_400
 LEDGER_DAYS = 7
 LOG_DAYS = 30
@@ -89,6 +94,11 @@ def _load_json(data: bytes) -> Any:
 def enabled() -> bool:
     """False when `BANTAMKIT_RETENTION` is `off` (or `0`, `false`, `no`), any case."""
     return os.environ.get(RETENTION_ENV, "").strip().lower() not in _OFF
+
+
+def audit_enabled() -> bool:
+    """False when `BANTAMKIT_SKILL_AUDIT` is `off` (or `0`, `false`, `no`), any case (#205 A3)."""
+    return os.environ.get(SKILL_AUDIT_ENV, "").strip().lower() not in _OFF
 
 
 def parse_now(now: str) -> int:
@@ -673,12 +683,12 @@ def _hooked(home: Path, now: str) -> bool:
 def maybe_spawn(home: Path | str, cwd: str, *, server: bool = False) -> str:
     """Start the detached child when due. The word says why it did or did not.
 
-    `off` (opted out), `nohome` (no `~/.bantamkit`: an install makes it, not this), `hooked`
-    (the server, when a hook ran within the TTL), `fresh` (ran within 24 h), `spawned`,
-    `failed`. Never raises.
+    `off` (both the sweep and the skill audit opted out), `nohome` (no `~/.bantamkit`: an
+    install makes it, not this), `hooked` (the server, when a hook ran within the TTL),
+    `fresh` (ran within 24 h), `spawned`, `failed`. Never raises.
     """
     try:
-        if not enabled():
+        if not enabled() and not audit_enabled():
             return "off"
         home = Path(home)
         if not (home / ".bantamkit").is_dir():
@@ -723,8 +733,17 @@ def child_main(argv: list[str], now: str | None = None) -> int:
 
     Silent; exit 0. Both arguments are required: without a home named by the spawner the
     child does nothing rather than guess one.
+
+    #205 Amendment A3: the child wakes when the sweep OR the skill audit is on, and claims the
+    day either way (one TTL for both). The sweep runs only when `BANTAMKIT_RETENTION` is not
+    off; with it off the child deletes, moves or rewrites NOTHING but `retention.json`'s claim
+    and `skill-audit.json` (J69-6's incident class: `skill-host`'s `child` snapshot case pins
+    it). The audit runs after the sweep, under the same stamp, only when
+    `BANTAMKIT_SKILL_AUDIT` is not off; it never raises, so it never costs the retention record.
     """
-    if not enabled() or len(argv) < 2:
+    sweep = enabled()
+    audit = audit_enabled()
+    if not (sweep or audit) or len(argv) < 2:
         return 0
     home = Path(argv[1])
     if not (home / ".bantamkit").is_dir():
@@ -736,11 +755,16 @@ def child_main(argv: list[str], now: str | None = None) -> int:
                 return 0
             _write_state(home, {"ran_at": stamp})
         roots = [Path(a) for a in argv[:1]]
-        try:
-            report = run_retention(home, roots, stamp)
-            _write_state(home, {"ran_at": stamp, "report": report})
-        except Exception as e:  # noqa: BLE001 - recorded, retried at the next day's TTL
-            _write_state(home, {"ran_at": stamp, "error": type(e).__name__})
+        if sweep:
+            try:
+                report = run_retention(home, roots, stamp)
+                _write_state(home, {"ran_at": stamp, "report": report})
+            except Exception as e:  # noqa: BLE001 - recorded, retried at the next day's TTL
+                _write_state(home, {"ran_at": stamp, "error": type(e).__name__})
+        if audit:
+            from bantamkit.skillreport import daily
+
+            daily(home, argv[0], stamp)
     except OSError:
         pass
     return 0

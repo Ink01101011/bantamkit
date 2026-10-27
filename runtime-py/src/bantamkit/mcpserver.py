@@ -30,6 +30,7 @@ from bantamkit import (
     selfupdate,
     shiftwork,
     skillaudit,
+    skillreport,
     tokenledger,
     updatecheck,
     workplan,
@@ -1026,6 +1027,9 @@ def status_report(
         # #207 amendment 3 (Q8): how many facts carry likely-prompt queries, LAST, so every
         # line above keeps its number.
         _queries_line(memory),
+        # #205 Task 4: the last daily skill audit, after every earlier line so each keeps its
+        # number. Not a condition: it never flips line 1, as the storage block never does.
+        skillreport.status_line(Path.home()),
     ]
     if conditions:
         lines.append(f"{_plural(len(conditions), 'problem')}:")

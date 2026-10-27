@@ -5,9 +5,11 @@ compares the two runtimes. Every path is under `tmp_path`: nothing here reads a 
 """
 
 import hashlib
+import json
 
 from bantamkit import skillaudit, skillreport
 from bantamkit.skillhost import Gathered, UsageScan
+from bantamkit.storage import retention
 
 NOW = "2026-10-16T00:00:00.000Z"
 SETTINGS = '{\n  "enabledPlugins": {\n    "alpha@mk": true,\n    "beta@mk": true\n  }\n}\n'
@@ -168,3 +170,115 @@ def test_run_live_never_raises(tmp_path, monkeypatch):
 def test_run_live_over_a_home_with_no_claude_is_the_null_report(tmp_path):
     rec = skillreport.run_live(tmp_path, None, NOW)
     assert rec["host"] == "none" and rec["error"] == skillreport.NO_ROOTS
+
+
+# ------------------------------------------------------------- Task 4: the daily run
+
+
+def _home_with_claude(tmp_path):
+    home = tmp_path / "home"
+    (home / ".bantamkit").mkdir(parents=True)
+    p = home / ".claude" / "skills" / "solo" / "SKILL.md"
+    p.parent.mkdir(parents=True)
+    p.write_text('---\ndescription: Use "x" now\n---\n', encoding="utf-8")
+    return home
+
+
+def test_daily_writes_the_record_and_keeps_surfaced_that_still_apply(tmp_path):
+    home = _home_with_claude(tmp_path)
+    skillreport.daily(home, None, NOW)
+    raw = skillreport.state_path(home).read_bytes()
+    assert raw.endswith(b"}\n") and b"\r" not in raw
+    rec = skillreport.read_state(home)
+    assert rec["host"] == "claude-code" and rec["surfaced"] == [] and rec["ts"] == NOW
+    key = skillreport.surface_key(rec["findings"][0])
+    assert key == "never-invoked\tsolo\t0 calls"
+    rec["surfaced"] = ["gone\t\t", key]
+    skillreport.state_path(home).write_text(json.dumps(rec), encoding="utf-8")
+    skillreport.daily(home, None, "2026-10-17T00:00:00.000Z")
+    assert skillreport.read_state(home)["surfaced"] == [key]
+    assert not list((home / ".bantamkit").glob("*.tmp"))
+    assert not list((home / ".bantamkit").glob("*.lock"))
+
+
+def test_corrupt_or_wrong_version_is_recomputed(tmp_path, monkeypatch):
+    monkeypatch.delenv("BANTAMKIT_SKILL_AUDIT", raising=False)
+    home = _home_with_claude(tmp_path)
+    for bad in (
+        '{"version": 9}',
+        "not json",
+        '﻿{"version": 1}',
+        '{"version": true, "ts": "t", "host": "h", "surfaced": [], "error": "e"}',
+        '{"version": 1, "ts": "t", "host": "h", "surfaced": [1], "error": "e"}',
+        '{"version": 1, "ts": "t", "host": "h", "surfaced": [], "skills": 1.5}',
+    ):
+        skillreport.state_path(home).write_text(bad, encoding="utf-8")
+        assert skillreport.read_state(home) is None, bad
+        assert skillreport.status_line(home) == (
+            "skill audit: the last record is unreadable; the next run recomputes it"
+        )
+    skillreport.daily(home, None, NOW)
+    assert skillreport.read_state(home)["version"] == 1
+
+
+def test_a_whole_float_reads_as_the_integer_json_parse_makes_it(tmp_path):
+    home = _home_with_claude(tmp_path)
+    skillreport.state_path(home).write_text(
+        '{"version": 1.0, "ts": "t", "host": "h", "surfaced": [], "error": "e"}', encoding="utf-8"
+    )
+    assert skillreport.read_state(home)["version"] == 1
+
+
+def test_status_lines(tmp_path, monkeypatch):
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    monkeypatch.setenv("BANTAMKIT_SKILL_AUDIT", "off")
+    monkeypatch.delenv("BANTAMKIT_RETENTION", raising=False)
+    assert skillreport.status_line(bare) == "skill audit: off; never ran; usage adapter none"
+    # Amendment A3: the prefix reads the AUDIT switch, never retention's.
+    monkeypatch.delenv("BANTAMKIT_SKILL_AUDIT")
+    monkeypatch.setenv("BANTAMKIT_RETENTION", "off")
+    assert skillreport.status_line(bare) == "skill audit: never ran; usage adapter none"
+    home = _home_with_claude(tmp_path)
+    assert skillreport.status_line(home) == "skill audit: never ran; usage adapter claude-code"
+    skillreport.daily(home, None, NOW)
+    assert skillreport.status_line(home) == (
+        "skill audit: last ran 2026-10-16T00:00:00.000Z on claude-code; 1 skill, 11 catalogue "
+        "bytes; findings 0 high, 0 medium, 1 low; usage over 0 days (a proposed change needs 30)"
+    )
+    skillreport.state_path(home).write_text(
+        json.dumps({"version": 1, "ts": NOW, "host": "none", "error": "boom", "surfaced": []}),
+        encoding="utf-8",
+    )
+    assert skillreport.status_line(home) == (
+        "skill audit: last ran 2026-10-16T00:00:00.000Z; no report — boom"
+    )
+
+
+def test_the_retention_child_runs_the_audit_under_the_claimed_day(tmp_path, monkeypatch):
+    monkeypatch.delenv("BANTAMKIT_SKILL_AUDIT", raising=False)
+    monkeypatch.setenv("BANTAMKIT_RETENTION", "off")
+    home = _home_with_claude(tmp_path)
+    assert retention.child_main([str(tmp_path), str(home)], now=NOW) == 0
+    assert skillreport.read_state(home)["ts"] == NOW
+    assert json.loads(retention.state_path(home).read_text(encoding="utf-8")) == {"ran_at": NOW}
+    # The claimed day holds: a second child the same day neither sweeps nor audits again.
+    skillreport.state_path(home).unlink()
+    assert retention.child_main([str(tmp_path), str(home)], now="2026-10-16T12:00:00.000Z") == 0
+    assert not skillreport.state_path(home).exists()
+
+
+def test_skill_audit_off_stops_the_daily_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_AUDIT", "off")
+    monkeypatch.delenv("BANTAMKIT_RETENTION", raising=False)
+    home = _home_with_claude(tmp_path)
+    retention.child_main([str(tmp_path), str(home)], now=NOW)
+    assert not skillreport.state_path(home).exists()
+    assert "report" in json.loads(retention.state_path(home).read_text(encoding="utf-8"))
+
+
+def test_daily_never_raises(tmp_path):
+    home = tmp_path / "home"  # no `.bantamkit`: the write fails, the run is silent
+    (home / ".claude" / "skills").mkdir(parents=True)
+    skillreport.daily(home, None, NOW)
+    assert not (home / ".bantamkit").exists()

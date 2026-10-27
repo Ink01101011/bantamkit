@@ -115,8 +115,13 @@ def _retention_off(monkeypatch):
     drives either with a cwd inside this checkout would archive this checkout's jobs. The
     retention tests delete the variable themselves, over a scratch HOME. It is in
     `os.environ`, so every subprocess a node spawns inherits it.
+
+    #205 Amendment A3: the same child also runs the daily skill audit, which has its own switch
+    and wakes the child even with retention off. It is pinned off here for the same reason; the
+    skill-audit tests delete it themselves, over a scratch HOME.
     """
     monkeypatch.setenv("BANTAMKIT_RETENTION", "off")
+    monkeypatch.setenv("BANTAMKIT_SKILL_AUDIT", "off")
 
 
 class FakeClient:

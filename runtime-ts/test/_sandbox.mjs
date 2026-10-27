@@ -11,7 +11,7 @@
  * So when the marker is absent this module, before any other import of the test file is
  * evaluated (ES modules evaluate their imports in source order), points HOME and USERPROFILE
  * (Windows reads the second, not the first) at a fresh scratch home, the index at a scratch
- * dir, and turns Retention off — every value OVERRIDDEN, not defaulted, because an operator
+ * dir, and turns Retention and the daily skill audit off — every value OVERRIDDEN, not defaulted, because an operator
  * shell may carry any of them pointing at real data. Under the runner it does nothing, so
  * `npm test` behaves exactly as before. The scratch is removed when the process exits.
  */
@@ -31,6 +31,7 @@ if (!process.env[SANDBOX_ENV]) {
   process.env.USERPROFILE = home;
   process.env.BANTAMKIT_INDEX_DIR = index;
   process.env.BANTAMKIT_RETENTION = 'off';
+  process.env.BANTAMKIT_SKILL_AUDIT = 'off'; // #205 A3: the audit wakes the same child
   process.env[SANDBOX_ENV] = scratch;
   process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 }

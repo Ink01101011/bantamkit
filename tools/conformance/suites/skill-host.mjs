@@ -27,12 +27,22 @@
  * would group under, so the plugin-only grouping is reachable (D5). Each side's run must leave
  * every settings file byte-identical: K2, the report never edits it.
  *
+ * TASK 4 (the daily run). Every bed also gets a `.bantamkit/` and runs `status` (never ran, with
+ * and without `BANTAMKIT_SKILL_AUDIT=off`), `daily` (the bytes of `skill-audit.json`), `status`
+ * again, and `status` over a corrupt file, a wrong version and an error record. `report-full`
+ * and `claude-full` also carry `surfaced` over (`resurface`, then `daily` a day later). The
+ * `daily-trap` bed runs the Retention child in process (`child`) over a retention trap: with
+ * `BANTAMKIT_RETENTION=off` and the audit on, every path and mtime under the bed is snapshotted
+ * before and after, and the ONLY changes allowed are `retention.json`'s claim and
+ * `skill-audit.json` (Amendment A3; J69-6's incident class — the most important case here).
+ *
  * THE LITERALS. A change made on both sides alike (a 30-day window moved to 29, say) leaves
  * every differential green, so the counts, the spans, the adapter and the version choice are
  * pinned per side.
  */
-import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'skill-host';
@@ -44,7 +54,8 @@ const NOW = '2026-10-16T00:00:00.000Z';
 const NOW_S = Date.parse(NOW) / 1000;
 const DAY_S = 86_400;
 const B = (s) => (Buffer.isBuffer(s) ? s : Buffer.from(s, 'utf8'));
-const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
+const unb64 = (s) => (s === null ? null : Buffer.from(s, 'base64').toString('utf8'));
+const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
 const WIN = process.platform === 'win32';
 const ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
 
@@ -166,6 +177,8 @@ function bedFiles(label) {
       return reportBed(label, plugins, P);
     case 'null':
       return { cwd: null, files: [['home/.keep', B(''), 1]] };
+    case 'daily-trap':
+      return { cwd: 'proj', files: trapFiles() };
     default:
       throw new Error(label);
   }
@@ -200,8 +213,43 @@ function reportBed(label, plugins, P) {
   return { cwd: 'proj', files, settings: 'home/.claude/settings.json' };
 }
 
+/** Task 4: a retention trap the sweep WOULD change: a ledger past its 7 days, a hook-log line past
+ * 30, an idle usage log, a closed job 8 days old. With the sweep off none of it may move. */
+function trapFiles() {
+  const checkpoint = B(
+    JSON.stringify(
+      {
+        version: 1,
+        job: { id: 'closed8', goal: 'closed8', done_definition: 'd', constraints: [] },
+        state: { repo: { branch: 'b', head_sha: 'h', dirty: false }, artifacts: [], external: [] },
+        plan: { cursor: 'U1', units: [{ id: 'U1', title: 'u', brief_path: 'b1.md', status: 'done', role: 'implementer', depends_on: [], verify: 'true' }] },
+        handoff: { next_action: 'x', open_questions: [], do_not: [], notes: '' },
+        history: [],
+        retro: [],
+      },
+      null,
+      2,
+    ),
+  );
+  const hook = B(
+    `${JSON.stringify({ ts: '2026-08-01T10:00:00.000Z', ms: 1, event: 'SessionStart' })}\n` +
+      `${JSON.stringify({ ts: '2026-10-15T10:00:00.000Z', ms: 1, event: 'SessionStart' })}\n`,
+  );
+  return [
+    ['home/.claude/skills/solo/SKILL.md', B(skill('Use "x" now.')), 1],
+    ['home/.claude/projects/p/s.jsonl', lines(use('t1', 'solo')), 1],
+    ['home/.bantamkit/hooks/ledger-old.json', B('{"seen":{}}'), 8],
+    ['home/.bantamkit/hooks/hook-log.jsonl', hook, 0],
+    ['home/.bantamkit/usage/idle.jsonl', B('{"ts":"2026-09-10T00:00:00Z","fact":"g","kind":"seed"}\n'), 31],
+    ['proj/.shiftwork/checkpoint-closed8.json', checkpoint, 8],
+    ['proj/.shiftwork/briefs-closed8/U1.md', B('brief\n'), 8],
+  ];
+}
+
 const REPORT_BEDS = ['report-full', 'report-young', 'report-mixed', 'report-minified', 'report-armed'];
-const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS];
+const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS, 'daily-trap'];
+const LATER = '2026-10-17T00:00:00.000Z';
+const SAME_DAY = '2026-10-16T12:00:00.000Z';
 
 function buildBed(base, label) {
   rmSync(base, { recursive: true, force: true });
@@ -258,8 +306,71 @@ function buildBed(base, label) {
       { op: 'propose', ...at, usage: {}, span_days: 30 },
     );
   }
+  // ------------------------------------------------------------------ Task 4 ops
+  mkdirSync(join(home, '.bantamkit'), { recursive: true });
+  const state = join(home, '.bantamkit', 'skill-audit.json');
+  const put = (text) => ({ op: 'put', path: state, data: b64(text) });
+  const on = { BANTAMKIT_SKILL_AUDIT: null };
+  const off = { BANTAMKIT_SKILL_AUDIT: 'off' };
+  ops.push(
+    { op: 'status', home, env: on, tag: 'status never ran' },
+    { op: 'status', home, env: off, tag: 'status never ran, audit off' },
+    { op: 'status', home, env: { BANTAMKIT_SKILL_AUDIT: null, BANTAMKIT_RETENTION: 'off' }, tag: 'status never ran, retention off' },
+    { op: 'daily', ...at, tag: 'daily' },
+    { op: 'status', home, env: on, tag: 'status ran' },
+    { op: 'status', home, env: off, tag: 'status ran, audit off' },
+  );
+  if (label === 'report-full' || label === 'claude-full') {
+    ops.push({ op: 'resurface', home, tag: 'resurface' }, { op: 'daily', home, cwd: cwdAbs, now: LATER, tag: 'daily carries surfaced' });
+  }
+  ops.push(
+    put('not json'),
+    { op: 'status', home, env: on, tag: 'status corrupt' },
+    put('{"version": 2, "ts": "t", "host": "h", "surfaced": [], "error": "e"}'),
+    { op: 'status', home, env: on, tag: 'status wrong version' },
+    put('{"version": 1.0, "ts": "2026-10-16T00:00:00.000Z", "host": "claude-code", "surfaced": [], "error": "the gather failed"}'),
+    { op: 'status', home, env: off, tag: 'status error record, audit off' },
+    put('\ufeff{}'),
+    { op: 'status', home, env: on, tag: 'status BOM' },
+  );
+  if (label === 'daily-trap') {
+    const child = (tag, now, env, fresh) => ({ op: 'child', base, home, cwd: cwdAbs, now, env: { BANTAMKIT_INDEX_DIR: join(base, 'idx'), ...env }, fresh, tag });
+    ops.push(
+      child('child retention off, audit on', NOW, { BANTAMKIT_RETENTION: 'off', BANTAMKIT_SKILL_AUDIT: null }, 'both'),
+      child('child again the same day', SAME_DAY, { BANTAMKIT_RETENTION: 'off', BANTAMKIT_SKILL_AUDIT: null }, 'audit'),
+      child('child retention off, audit off', NOW, { BANTAMKIT_RETENTION: 'off', BANTAMKIT_SKILL_AUDIT: 'off' }, 'both'),
+      child('child retention on, audit off', NOW, { BANTAMKIT_RETENTION: null, BANTAMKIT_SKILL_AUDIT: 'off' }, 'both'),
+      child('child retention on, audit on', LATER, { BANTAMKIT_RETENTION: null, BANTAMKIT_SKILL_AUDIT: null }, 'both'),
+    );
+    // A3 (1): the hook spawns the child when EITHER switch is on. retention.json is stamped at
+    // the wall clock first, so the word is `off` or `fresh` and no child is ever started.
+    for (const [r, s] of [['off', 'off'], ['off', null], [null, 'off'], ['OFF', 'No']]) {
+      ops.push({ op: 'spawn', home, env: { BANTAMKIT_RETENTION: r, BANTAMKIT_SKILL_AUDIT: s }, tag: `spawn retention=${r ?? 'on'} audit=${s ?? 'on'}` });
+    }
+  }
   const kept = settings === null ? null : { path: join(base, settings), bytes: files.find(([rel]) => rel === settings)[1] };
   return { ops, kept };
+}
+
+/** Every path under `base` → `<sha256|link target> <mtime ns>`, or `dir`: the `child` op's snapshot,
+ * the same walk as the reference's `_snapshot`. Paths are ASCII here, so `<` is code-point order. */
+const cmpCp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+function snapshot(base) {
+  const out = new Map();
+  const walk = (d) => {
+    for (const n of readdirSync(d)) {
+      const p = join(d, n);
+      const st = lstatSync(p, { bigint: true });
+      const rel = relative(base, p).split(sep).join('/');
+      if (st.isSymbolicLink()) out.set(rel, `link ${readlinkSync(p)} ${st.mtimeNs}`);
+      else if (st.isDirectory()) {
+        out.set(rel, 'dir'); // a directory's mtime moves with any lock file; adds and removes show as paths
+        walk(p);
+      } else out.set(rel, `${createHash('sha256').update(readFileSync(p)).digest('hex')} ${st.mtimeNs}`);
+    }
+  };
+  walk(base);
+  return out;
 }
 
 /** Whether a side left the bed's settings file byte-identical (K2: the report never edits it). */
@@ -288,7 +399,68 @@ export async function run(ctx) {
   const { parseNow } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href);
   const R = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillreport.js')).href);
   const { scanRoots } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillaudit.js')).href);
+  const RT = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href);
+  const withEnv = (env, fn) => {
+    const saved = Object.fromEntries(Object.keys(env ?? {}).map((k) => [k, process.env[k]]));
+    try {
+      for (const [k, v] of Object.entries(env ?? {})) {
+        if (v === null) delete process.env[k];
+        else process.env[k] = v;
+      }
+      return fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+  const readOr = (p) => {
+    try {
+      return readFileSync(p, 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  const task4 = (op) => {
+    if (op.op === 'put') {
+      mkdirSync(dirname(op.path), { recursive: true });
+      writeFileSync(op.path, Buffer.from(op.data, 'base64'));
+      return '';
+    }
+    if (op.op === 'resurface') {
+      const rec = JSON.parse(readFileSync(R.statePath(op.home), 'utf8'));
+      rec.surfaced = [...rec.findings.map((f) => R.surfaceKey(f)), 'gone\t\t'];
+      writeFileSync(R.statePath(op.home), JSON.stringify(rec));
+      return '';
+    }
+    if (op.op === 'daily') {
+      R.daily(op.home, op.cwd, op.now);
+      return readOr(R.statePath(op.home));
+    }
+    if (op.op === 'status') return withEnv(op.env, () => R.statusLine(op.home));
+    if (op.op === 'spawn') {
+      writeFileSync(RT.statePath(op.home), JSON.stringify({ ran_at: RT.nowStamp() }));
+      return withEnv(op.env, () => RT.maybeSpawn(op.home, op.home));
+    }
+    // child
+    const rm = (p) => {
+      try {
+        unlinkSync(p);
+      } catch {
+        /* absent */
+      }
+    };
+    if (op.fresh === 'both' || op.fresh === 'audit') rm(R.statePath(op.home));
+    if (op.fresh === 'both') rm(RT.statePath(op.home));
+    const before = snapshot(op.base);
+    withEnv(op.env, () => RT.childMain([op.cwd, op.home], op.now));
+    const after = snapshot(op.base);
+    const changed = [...new Set([...before.keys(), ...after.keys()])].filter((k) => before.get(k) !== after.get(k)).sort(cmpCp);
+    return dumpIndex({ audit: readOr(R.statePath(op.home)), state: readOr(RT.statePath(op.home)), changed });
+  };
   const nodeOne = (op) => {
+    if (['put', 'resurface', 'daily', 'status', 'child', 'spawn'].includes(op.op)) return task4(op);
     const now = parseNow(op.now);
     if (op.op === 'usage') return dumpIndex(H.countSkillUsage(op.projects, now, H.USAGE_DAYS, op.known === null ? null : new Set(op.known)).summary());
     if (op.op === 'record' || op.op === 'render') {
@@ -332,16 +504,25 @@ export async function run(ctx) {
     // rendered report holds it raw, with `/` as the separator so the literals read one way.
     const mask = (s) => s.split(JSON.stringify(base).slice(1, -1)).join('<BED>');
     const maskText = (s) => s.split(base).join('<BED>').split('\\').join('/');
-    const read = (o, s) => (o.op === 'render' ? maskText(s) : JSON.parse(mask(s)));
+    const read = (o, s) =>
+      s === null || o.op === 'put' || o.op === 'resurface'
+        ? s
+        : o.op === 'render' || o.op === 'status' || o.op === 'spawn'
+          ? maskText(s)
+          : JSON.parse(mask(s));
     answers[label] = { py: py.map((s, i) => read(ops[i], s)), nd: nd.map((s, i) => read(ops[i], s)), kept: { py: pyKept, nd: ndKept } };
+    answers[label].tag = Object.fromEntries(ops.map((o, i) => [o.tag, i]).filter(([t]) => t !== undefined));
     ops.forEach((o, i) => {
+      if (o.op === 'put') return;
       const what =
-        o.op === 'usage'
+        o.tag !== undefined
+          ? o.tag
+          : o.op === 'usage'
           ? `usage known=${o.known === null ? 'null' : o.known.length}`
           : o.op === 'propose'
             ? `propose usage=${o.usage === null ? 'null' : 'measured'} span=${o.span_days}`
             : `${o.op}${o.no_usage ? ' no_usage' : ''}`;
-      cases.push({ name: `${label} — ${what}`, kind: 'string', expected: py[i], actual: nd[i] });
+      cases.push({ name: `${label} — ${what}`, kind: 'string', expected: py[i] ?? '<null>', actual: nd[i] ?? '<null>' });
     });
   }
 
@@ -443,6 +624,59 @@ export async function run(ctx) {
   for (const label of REPORT_BEDS) {
     literal(`${label}: settings.json byte-identical after the run (K2)`, 'byte-identical', (a, s) => a[label].kept[s]);
   }
+
+  // ------------------------------------------------------------------- Task 4 literals
+  const T = (bed, tag) => (a, side) => a[bed][side][a[bed].tag[tag]];
+  literal('null: never ran, audit off, is exactly the off sentence', 'skill audit: off; never ran; usage adapter none', T('null', 'status never ran, audit off'));
+  literal('null: retention off does NOT print the off prefix (A3: the prefix reads the audit switch)', 'skill audit: never ran; usage adapter none', T('null', 'status never ran, retention off'));
+  literal(
+    'report-full: the status line after the daily run',
+    'skill audit: last ran 2026-10-16T00:00:00.000Z on claude-code; 6 skills, 97 catalogue bytes; findings 1 high, 0 medium, 5 low; usage over 30 days; 1 change proposed',
+    T('report-full', 'status ran'),
+  );
+  literal('report-full: the daily record is the record op\'s record', true, (a, s) => JSON.stringify(T('report-full', 'daily')(a, s)) === JSON.stringify(a['report-full'][s][3]));
+  literal('report-full: surfaced keeps every key still a finding, drops the gone one, sorted', true, (a, s) => {
+    const r = T('report-full', 'daily carries surfaced')(a, s);
+    const keys = r.findings.map((f) => `${f.kind}\t${f.skills.join(',')}\t${f.detail}`).sort(cmpCp);
+    return keys.length > 0 && JSON.stringify(r.surfaced) === JSON.stringify(keys) && r.ts === LATER;
+  });
+  literal('claude-full: a corrupt record is unreadable', 'skill audit: the last record is unreadable; the next run recomputes it', T('claude-full', 'status corrupt'));
+  literal('claude-full: a wrong version is unreadable', 'skill audit: the last record is unreadable; the next run recomputes it', T('claude-full', 'status wrong version'));
+  literal('claude-full: an error record (version 1.0 reads as 1)', 'skill audit: off; last ran 2026-10-16T00:00:00.000Z; no report — the gather failed', T('claude-full', 'status error record, audit off'));
+  literal('claude-full: a BOM is unreadable', 'skill audit: the last record is unreadable; the next run recomputes it', T('claude-full', 'status BOM'));
+  literal('null: the daily record is the no-roots error record', { host: 'none', error: 'no skill directory was found for this host', surfaced: [] }, (a, s) => {
+    const r = T('null', 'daily')(a, s);
+    return { host: r.host, error: r.error, surfaced: r.surfaced };
+  });
+  // THE MOST IMPORTANT CASE (Amendment A3, J69-6's class): retention off, audit on — over a trap
+  // the sweep would change, the child touches only the claim and the audit record.
+  literal(
+    'daily-trap: retention off, audit on changes ONLY retention.json\'s claim and skill-audit.json',
+    { changed: ['home/.bantamkit/retention.json', 'home/.bantamkit/skill-audit.json'], state: `{"ran_at":"${NOW}"}\n`, audited: NOW },
+    (a, s) => {
+      const r = T('daily-trap', 'child retention off, audit on')(a, s);
+      return { changed: r.changed, state: r.state, audited: r.audit === null ? null : JSON.parse(r.audit).ts };
+    },
+  );
+  literal('daily-trap: a second child the same day neither audits nor sweeps (the claimed TTL)', { audit: null, changed: [] }, (a, s) => {
+    const r = T('daily-trap', 'child again the same day')(a, s);
+    return { audit: r.audit, changed: r.changed };
+  });
+  literal('daily-trap: both switches off — the child does nothing at all', { audit: null, state: null, changed: [] }, T('daily-trap', 'child retention off, audit off'));
+  literal('daily-trap: retention on, audit off — the sweep runs, no audit record', { audit: null, deleted: true }, (a, s) => {
+    const r = T('daily-trap', 'child retention on, audit off')(a, s);
+    const st = r.state === null ? null : JSON.parse(r.state);
+    return { audit: r.audit, deleted: st !== null && st.report.deleted.some((p) => p.split('\\').join('/').endsWith('home/.bantamkit/hooks/ledger-old.json')) };
+  });
+  literal(
+    'daily-trap: the spawn stands down only when BOTH switches are off (A3)',
+    ['off', 'fresh', 'fresh', 'off'],
+    (a, s) => ['spawn retention=off audit=off', 'spawn retention=off audit=on', 'spawn retention=on audit=off', 'spawn retention=OFF audit=No'].map((t) => T('daily-trap', t)(a, s)),
+  );
+  literal('daily-trap: both on — the audit runs under the claimed stamp', LATER, (a, s) => {
+    const r = T('daily-trap', 'child retention on, audit on')(a, s);
+    return r.audit === null ? null : JSON.parse(r.audit).ts;
+  });
 
   notes.push(`${BEDS.length} beds, both runtimes, over identical paths under ${join(ctx.scratch, 'skill-host')}`);
   return { cases, notes };

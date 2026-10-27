@@ -296,6 +296,9 @@ if (!process.env.BANTAMKIT_INDEX_DIR) process.env.BANTAMKIT_INDEX_DIR = join(scr
 // deletes under the HOME and archives `.shiftwork` jobs under the cwd it is given, and a suite
 // may run with the checkout as its cwd. `storage-retention` turns it back on per call.
 process.env.BANTAMKIT_RETENTION = 'off';
+// #205 Amendment A3: the daily skill audit wakes the same child on its own switch. `skill-host`
+// turns it back on per call.
+process.env.BANTAMKIT_SKILL_AUDIT = 'off';
 const ctx = { python, repoRoot, runtimeTs: join(repoRoot, 'runtime-ts'), scratch, runPython, options };
 
 let totals = { cases: 0, bytes: 0, strings: 0, json: 0, failed: 0, rulings: 0 };

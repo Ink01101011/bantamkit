@@ -13,19 +13,29 @@ Skills outside a plugin (`~/.claude/skills`, `<project>/.claude/skills`) cannot 
 in settings, so they are reported and never proposed: the grouping takes plugin skills only,
 and a proposal needs the settings file that switched its plugin on.
 
+THE DAILY RUN (Task 4). `daily` is what the Retention child calls once a day (K1): it runs
+`run_live` and writes `~/.bantamkit/skill-audit.json` as `dumps(record) + "\n"`, temp-then-rename
+under `exclusive`, keeping the previous `surfaced` keys that are still findings. `status_line` is
+the `skill audit:` line `bantamkit_status` prints. Its `off; ` prefix reads the AUDIT switch
+(`BANTAMKIT_SKILL_AUDIT`, Amendment A3), not retention's.
+
 `runtime-ts/src/skillreport.ts` is the port; `tools/conformance/suites/skill-host.mjs`
-compares the two (ops `record`, `render`, `propose`).
+compares the two (ops `record`, `render`, `propose`, `daily`, `status`, `child`).
 """
 
 from __future__ import annotations
 
+import json
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from bantamkit import skillaudit
 from bantamkit.skillhost import HOST_NONE, USAGE_DAYS, Gathered, select_adapter
-from bantamkit.storage.retention import parse_now
+from bantamkit.storage.hotindex import dumps
+from bantamkit.storage.lock import exclusive
+from bantamkit.storage.retention import audit_enabled, parse_now
 
 STATE_NAME = "skill-audit.json"
 STATE_VERSION = 1
@@ -226,3 +236,131 @@ def render_report(record: dict[str, Any]) -> str:
         )
     lines += _diff_lines(record)
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------------- the daily run
+
+
+def state_path(home: Path | str) -> Path:
+    return Path(home) / ".bantamkit" / STATE_NAME
+
+
+def _refuse_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")  # `JSON.parse` refuses NaN/Infinity; so does this
+
+
+_SAFE = 2**53 - 1
+
+
+def _js_float(text: str) -> float | int:
+    """`1.0` is the number 1 to `JSON.parse`; so it is here, or the two runtimes would print
+    one record differently. A float that is not a whole number stays a float."""
+    f = float(text)
+    return int(f) if f.is_integer() and abs(f) <= _SAFE else f
+
+
+def _is_int(v: Any) -> bool:
+    """`Number.isSafeInteger`: a whole number a JS number holds exactly (bool is not one)."""
+    return type(v) is int and abs(v) <= _SAFE
+
+
+def read_state(home: Path | str) -> dict[str, Any] | None:
+    """The stored record, or None: missing, unreadable, not JSON, `version != 1`, or a shape
+    the status line cannot print. A None is recomputed by the next day's run."""
+    try:
+        doc = json.loads(
+            state_path(home).read_bytes().decode("utf-8"),
+            parse_constant=_refuse_constant,
+            parse_float=_js_float,
+        )
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not _is_int(doc.get("version")):
+        return None
+    if doc["version"] != STATE_VERSION:
+        return None
+    if not isinstance(doc.get("ts"), str) or not isinstance(doc.get("host"), str):
+        return None
+    surfaced = doc.get("surfaced")
+    if not isinstance(surfaced, list) or not all(isinstance(s, str) for s in surfaced):
+        return None
+    if "error" in doc:
+        return doc if isinstance(doc["error"], str) else None
+    findings = doc.get("findings")
+    usage = doc.get("usage")
+    ok = (
+        _is_int(doc.get("skills"))
+        and _is_int(doc.get("catalogue_bytes"))
+        and isinstance(findings, list)
+        and all(isinstance(f, dict) for f in findings)
+        and isinstance(doc.get("proposals"), list)
+        and isinstance(doc.get("roots"), list)
+        and isinstance(doc.get("omissions"), list)
+        and (usage is None or (isinstance(usage, dict) and _is_int(usage.get("span_days"))))
+    )
+    return doc if ok else None
+
+
+def surface_key(finding: dict[str, Any]) -> str:
+    """`kind<TAB>skills,joined<TAB>detail`: what `surfaced` remembers was already shown."""
+    skills = finding.get("skills")
+    joined = ",".join(skills) if isinstance(skills, list) else ""
+    return f"{finding.get('kind')}\t{joined}\t{finding.get('detail')}"
+
+
+def _write(path: Path, record: dict[str, Any]) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(dumps(record) + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def daily(home: Path | str, cwd: str | None, now: str) -> None:
+    """The once-a-day run the Retention child makes (K1). Silent; never raises."""
+    try:
+        record = run_live(home, cwd, now)
+        path = state_path(home)
+        with exclusive(path) as held:
+            if not held:
+                return
+            prev = read_state(home)
+            if prev is not None and "findings" in record:
+                keys = {surface_key(f) for f in record["findings"]}
+                record["surfaced"] = sorted(k for k in prev["surfaced"] if k in keys)
+            _write(path, record)
+    except Exception:  # noqa: BLE001 - recomputed at the next day's run
+        pass
+
+
+def status_line(home: Path | str) -> str:
+    """The `skill audit:` line of `bantamkit_status`. Never raises."""
+    prefix = "" if audit_enabled() else "off; "
+    unreadable = f"skill audit: {prefix}the last record is unreadable; the next run recomputes it"
+    try:
+        if not os.path.lexists(state_path(home)):
+            return f"skill audit: {prefix}never ran; usage adapter {select_adapter(home).host}"
+        record = read_state(home)
+        if record is None:
+            return unreadable
+        if "error" in record:
+            return f"skill audit: {prefix}last ran {record['ts']}; no report — {record['error']}"
+        sev = Counter(f.get("severity") for f in record["findings"])
+        usage = record["usage"]
+        if usage is None:
+            clause = (
+                f"usage: none — {record['host']} has no usage adapter, "
+                "so nothing is called never-invoked"
+            )
+        elif usage["span_days"] < USAGE_DAYS:
+            clause = f"usage over {usage['span_days']} days (a proposed change needs {USAGE_DAYS})"
+        else:
+            clause = (
+                f"usage over {USAGE_DAYS} days; "
+                f"{_plural(len(record['proposals']), 'change')} proposed"
+            )
+        return (
+            f"skill audit: {prefix}last ran {record['ts']} on {record['host']}; "
+            f"{_plural(record['skills'], 'skill')}, {record['catalogue_bytes']} catalogue bytes; "
+            f"findings {sev['high']} high, {sev['medium']} medium, {sev['low']} low; {clause}"
+        )
+    except Exception:  # noqa: BLE001 - a status line never fails the report
+        return unreadable

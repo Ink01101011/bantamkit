@@ -3,6 +3,11 @@
  * `runtime-py/src/bantamkit/skillreport.py`, whose docstring carries the contract;
  * `tools/conformance/suites/skill-host.mjs` compares the two (ops `record`, `render`, `propose`).
  *
+ * THE DAILY RUN (Task 4): `daily` writes `~/.bantamkit/skill-audit.json` (`dumpIndex(record) + '\n'`,
+ * temp-then-rename under `exclusive`), keeping the previous `surfaced` keys that are still findings;
+ * `statusLine` is the `skill audit:` line of `bantamkit_status`, its `off; ` prefix reading
+ * `BANTAMKIT_SKILL_AUDIT` (Amendment A3). Ops `daily`, `status`, `child` in the suite.
+ *
  * K2: it REPORTS and PROPOSES a `settings.json` diff; it never edits the file — nothing here
  * opens a file for writing. A plugin is proposed only when usage is present, the transcripts span
  * at least `USAGE_DAYS` days, and every one of its counted skills had zero calls. Skills outside
@@ -14,13 +19,16 @@
  * is the FIRST colon; `strip(" \t")` strips spaces and tabs only.
  */
 import fs from 'node:fs';
+import path from 'node:path';
 
 import { cmpCodepoint } from './pysem.js';
 import { auditRoots, scanRoots } from './skillaudit.js';
 import type { FindingDict, LabelledRoot, OmissionDict, ScannedSkill } from './skillaudit.js';
 import { Gathered, HOST_NONE, USAGE_DAYS, selectAdapter } from './skillhost.js';
 import type { UsageSummary } from './skillhost.js';
-import { parseNow } from './storage/retention.js';
+import { dumpIndex } from './storage/hotindex.js';
+import { exclusive } from './storage/lock.js';
+import { auditEnabled, parseNow } from './storage/retention.js';
 
 export const STATE_NAME = 'skill-audit.json';
 export const STATE_VERSION = 1;
@@ -241,4 +249,111 @@ export function renderReport(record: SkillRecord): string {
   }
   lines.push(...diffLines(record));
   return lines.join('\n');
+}
+
+// ------------------------------------------------------------------------- the daily run
+
+export function statePath(home: string): string {
+  return path.join(home, '.bantamkit', STATE_NAME);
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+/** Python's `_is_int`: a whole number a JS number holds exactly; `true` is not one. */
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
+
+/**
+ * The stored record, or null: missing, unreadable, not JSON, `version !== 1`, or a shape the
+ * status line cannot print. A null is recomputed by the next day's run. The bytes are decoded
+ * with a FATAL decoder that keeps a leading U+FEFF, so a BOM is refused, as Python refuses it.
+ */
+export function readState(home: string): SkillRecord | null {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(statePath(home))));
+  } catch {
+    return null;
+  }
+  if (!isRecord(doc) || !isInt(doc['version']) || doc['version'] !== STATE_VERSION) return null;
+  if (typeof doc['ts'] !== 'string' || typeof doc['host'] !== 'string') return null;
+  const surfaced = doc['surfaced'];
+  if (!Array.isArray(surfaced) || !surfaced.every((s) => typeof s === 'string')) return null;
+  if (Object.hasOwn(doc, 'error')) return typeof doc['error'] === 'string' ? (doc as unknown as ErrorRecord) : null;
+  const findings = doc['findings'];
+  const usage = doc['usage'];
+  const ok =
+    isInt(doc['skills']) &&
+    isInt(doc['catalogue_bytes']) &&
+    Array.isArray(findings) &&
+    findings.every(isRecord) &&
+    Array.isArray(doc['proposals']) &&
+    Array.isArray(doc['roots']) &&
+    Array.isArray(doc['omissions']) &&
+    (usage === null || (isRecord(usage) && isInt(usage['span_days'])));
+  return ok ? (doc as unknown as AuditRecord) : null;
+}
+
+/** `kind<TAB>skills,joined<TAB>detail`: what `surfaced` remembers was already shown. */
+export function surfaceKey(finding: FindingDict | Record<string, unknown>): string {
+  const f = finding as Record<string, unknown>;
+  const skills = Array.isArray(f['skills']) ? (f['skills'] as unknown[]).join(',') : '';
+  return `${String(f['kind'] ?? 'None')}\t${skills}\t${String(f['detail'] ?? 'None')}`;
+}
+
+function writeRecord(p: string, record: SkillRecord): void {
+  const tmp = `${p}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${dumpIndex(record)}\n`, 'utf8');
+  fs.renameSync(tmp, p);
+}
+
+/** The once-a-day run the Retention child makes (K1). Silent; never throws. */
+export function daily(home: string, cwd: string | null, now: string): void {
+  try {
+    const record = runLive(home, cwd, now);
+    const p = statePath(home);
+    exclusive(p, (held) => {
+      if (!held) return;
+      const prev = readState(home);
+      if (prev !== null && !('error' in record)) {
+        const keys = new Set(record.findings.map((f) => surfaceKey(f)));
+        record.surfaced = prev.surfaced.filter((k) => keys.has(k)).sort(cmpCodepoint);
+      }
+      writeRecord(p, record);
+    });
+  } catch {
+    /* recomputed at the next day's run */
+  }
+}
+
+/** The `skill audit:` line of `bantamkit_status`. Never throws. */
+export function statusLine(home: string): string {
+  const prefix = auditEnabled() ? '' : 'off; ';
+  const unreadable = `skill audit: ${prefix}the last record is unreadable; the next run recomputes it`;
+  try {
+    let exists = true;
+    try {
+      fs.lstatSync(statePath(home));
+    } catch {
+      exists = false;
+    }
+    if (!exists) return `skill audit: ${prefix}never ran; usage adapter ${skillreportDeps.selectAdapter(home).host}`;
+    const record = readState(home);
+    if (record === null) return unreadable;
+    if ('error' in record) return `skill audit: ${prefix}last ran ${record.ts}; no report — ${record.error}`;
+    const sev = new Map<unknown, number>();
+    for (const f of record.findings) sev.set(f.severity, (sev.get(f.severity) ?? 0) + 1);
+    const usage = record.usage;
+    const clause =
+      usage === null
+        ? `usage: none — ${record.host} has no usage adapter, so nothing is called never-invoked`
+        : usage.span_days < USAGE_DAYS
+          ? `usage over ${usage.span_days} days (a proposed change needs ${USAGE_DAYS})`
+          : `usage over ${USAGE_DAYS} days; ${plural(record.proposals.length, 'change')} proposed`;
+    return (
+      `skill audit: ${prefix}last ran ${record.ts} on ${record.host}; ` +
+      `${plural(record.skills, 'skill')}, ${record.catalogue_bytes} catalogue bytes; ` +
+      `findings ${sev.get('high') ?? 0} high, ${sev.get('medium') ?? 0} medium, ${sev.get('low') ?? 0} low; ${clause}`
+    );
+  } catch {
+    return unreadable;
+  }
 }

@@ -153,3 +153,116 @@ test('runLive over a home with no .claude is the null report', () => {
   assert.equal(rec.host, 'none');
   assert.equal(rec.error, R.NO_ROOTS);
 });
+
+// ------------------------------------------------------------- Task 4: the daily run
+
+const retention = await import('../dist/storage/retention.js');
+
+function homeWithClaude() {
+  const dir = tmp();
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(path.join(home, '.bantamkit'), { recursive: true });
+  const p = path.join(home, '.claude', 'skills', 'solo', 'SKILL.md');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, '---\ndescription: Use "x" now\n---\n');
+  return { dir, home };
+}
+
+/** Set (or delete, with undefined) env vars until `t` ends. */
+function env(t, vars) {
+  for (const [k, v] of Object.entries(vars)) {
+    const saved = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+    t.after(() => (saved === undefined ? delete process.env[k] : (process.env[k] = saved)));
+  }
+}
+
+test('daily writes the record and keeps surfaced that still apply', () => {
+  const { home } = homeWithClaude();
+  R.daily(home, null, NOW);
+  const raw = fs.readFileSync(R.statePath(home), 'utf8');
+  assert.ok(raw.endsWith('}\n') && !raw.includes('\r'));
+  const rec = R.readState(home);
+  assert.equal(rec.host, 'claude-code');
+  assert.deepEqual(rec.surfaced, []);
+  assert.equal(rec.ts, NOW);
+  const key = R.surfaceKey(rec.findings[0]);
+  assert.equal(key, 'never-invoked\tsolo\t0 calls');
+  rec.surfaced = ['gone\t\t', key];
+  fs.writeFileSync(R.statePath(home), JSON.stringify(rec));
+  R.daily(home, null, '2026-10-17T00:00:00.000Z');
+  assert.deepEqual(R.readState(home).surfaced, [key]);
+  assert.deepEqual(fs.readdirSync(path.join(home, '.bantamkit')).filter((n) => n.endsWith('.tmp') || n.endsWith('.lock')), []);
+});
+
+test('corrupt or wrong version is recomputed', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined });
+  const { home } = homeWithClaude();
+  for (const bad of [
+    '{"version": 9}',
+    'not json',
+    '﻿{"version": 1}',
+    '{"version": true, "ts": "t", "host": "h", "surfaced": [], "error": "e"}',
+    '{"version": 1, "ts": "t", "host": "h", "surfaced": [1], "error": "e"}',
+    '{"version": 1, "ts": "t", "host": "h", "surfaced": [], "skills": 1.5}',
+  ]) {
+    fs.writeFileSync(R.statePath(home), bad);
+    assert.equal(R.readState(home), null, bad);
+    assert.equal(R.statusLine(home), 'skill audit: the last record is unreadable; the next run recomputes it');
+  }
+  R.daily(home, null, NOW);
+  assert.equal(R.readState(home).version, 1);
+});
+
+test('a whole float reads as the integer JSON.parse makes it', () => {
+  const { home } = homeWithClaude();
+  fs.writeFileSync(R.statePath(home), '{"version": 1.0, "ts": "t", "host": "h", "surfaced": [], "error": "e"}');
+  assert.equal(R.readState(home).version, 1);
+});
+
+test('status lines', (t) => {
+  const bare = tmp();
+  env(t, { BANTAMKIT_SKILL_AUDIT: 'off', BANTAMKIT_RETENTION: undefined });
+  assert.equal(R.statusLine(bare), 'skill audit: off; never ran; usage adapter none');
+  // Amendment A3: the prefix reads the AUDIT switch, never retention's.
+  delete process.env.BANTAMKIT_SKILL_AUDIT;
+  process.env.BANTAMKIT_RETENTION = 'off';
+  assert.equal(R.statusLine(bare), 'skill audit: never ran; usage adapter none');
+  const { home } = homeWithClaude();
+  assert.equal(R.statusLine(home), 'skill audit: never ran; usage adapter claude-code');
+  R.daily(home, null, NOW);
+  assert.equal(
+    R.statusLine(home),
+    'skill audit: last ran 2026-10-16T00:00:00.000Z on claude-code; 1 skill, 11 catalogue bytes; findings 0 high, 0 medium, 1 low; usage over 0 days (a proposed change needs 30)',
+  );
+  fs.writeFileSync(R.statePath(home), JSON.stringify({ version: 1, ts: NOW, host: 'none', error: 'boom', surfaced: [] }));
+  assert.equal(R.statusLine(home), 'skill audit: last ran 2026-10-16T00:00:00.000Z; no report — boom');
+});
+
+test('the retention child runs the audit under the claimed day', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined, BANTAMKIT_RETENTION: 'off' });
+  const { dir, home } = homeWithClaude();
+  assert.equal(retention.childMain([dir, home], NOW), 0);
+  assert.equal(R.readState(home).ts, NOW);
+  assert.deepEqual(JSON.parse(fs.readFileSync(retention.statePath(home), 'utf8')), { ran_at: NOW });
+  // The claimed day holds: a second child the same day neither sweeps nor audits again.
+  fs.unlinkSync(R.statePath(home));
+  assert.equal(retention.childMain([dir, home], '2026-10-16T12:00:00.000Z'), 0);
+  assert.equal(fs.existsSync(R.statePath(home)), false);
+});
+
+test('BANTAMKIT_SKILL_AUDIT=off stops the daily run', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: 'off', BANTAMKIT_RETENTION: undefined, BANTAMKIT_INDEX_DIR: path.join(tmp(), 'idx') });
+  const { dir, home } = homeWithClaude();
+  retention.childMain([dir, home], NOW);
+  assert.equal(fs.existsSync(R.statePath(home)), false);
+  assert.ok('report' in JSON.parse(fs.readFileSync(retention.statePath(home), 'utf8')));
+});
+
+test('daily never throws', () => {
+  const home = path.join(tmp(), 'home');
+  fs.mkdirSync(path.join(home, '.claude', 'skills'), { recursive: true });
+  R.daily(home, null, NOW);
+  assert.equal(fs.existsSync(path.join(home, '.bantamkit')), false);
+});
