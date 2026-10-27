@@ -16,11 +16,22 @@
  * `skillhost` (`ref/skillhost_ref.py`); the port runs `dist/skillhost.js` in process. Both
  * answers are the product's own serialisation (`hotindex.dumps` / `dumpIndex`).
  *
+ * TASK 3 (`skillreport`). Every bed is also run through `record` and `render` (`run_live`, the
+ * stored record and the report a person reads), and the `report-*` beds hold the disable
+ * proposals: `report-full` proposes exactly `alpha@mk`, with the settings line located;
+ * `report-young` spans 12 days (D2), `report-mixed` has one alpha skill called (D3),
+ * `report-minified` cannot be located, `report-armed` holds `"alpha@mk": true` under another key
+ * first, CRLF (D4). D1 (usage is null) is unobservable through `record` — `build_record` hands a
+ * missing measurement a span of 0, which the span condition already refuses — so a `propose` op
+ * shows it on its own at 30 days. `report-full` also switches on `"@"`, the id a personal skill
+ * would group under, so the plugin-only grouping is reachable (D5). Each side's run must leave
+ * every settings file byte-identical: K2, the report never edits it.
+ *
  * THE LITERALS. A change made on both sides alike (a 30-day window moved to 29, say) leaves
  * every differential green, so the counts, the spans, the adapter and the version choice are
  * pinned per side.
  */
-import { chmodSync, mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -147,6 +158,12 @@ function bedFiles(label) {
           ['home/.claude/projects/p/linked.jsonl', 'outside/y.jsonl'],
         ],
       };
+    case 'report-full':
+    case 'report-young':
+    case 'report-mixed':
+    case 'report-minified':
+    case 'report-armed':
+      return reportBed(label, plugins, P);
     case 'null':
       return { cwd: null, files: [['home/.keep', B(''), 1]] };
     default:
@@ -154,11 +171,41 @@ function bedFiles(label) {
   }
 }
 
-const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null'];
+/** Task 3's beds: proposals, each diff condition on its own, and where the settings line is. */
+function reportBed(label, plugins, P) {
+  const enabled = { 'alpha@mk': true, 'beta@mk': true, 'gamma@mk': false, '@': true };
+  let settings = B(JSON.stringify({ enabledPlugins: enabled }, null, 2));
+  if (label === 'report-minified') settings = B(JSON.stringify({ enabledPlugins: enabled }));
+  if (label === 'report-armed') {
+    settings = B(
+      '{\r\n  "otherPlugins": {\r\n    "alpha@mk": true\r\n  },\r\n' +
+        '  "enabledPlugins": {\r\n    "alpha@mk" : true ,\r\n    "beta@mk": true\r\n  }\r\n}\r\n',
+    );
+  }
+  const recent =
+    label === 'report-young'
+      ? [use('t1', 'beta:b1', '2026-10-04T00:00:00.000Z')]
+      : label === 'report-mixed'
+        ? [use('t1', 'beta:b1'), use('t2', 'alpha:a2')]
+        : [use('t1', 'beta:b1')];
+  const files = [
+    ...plugins,
+    ['home/.claude/skills/solo/SKILL.md', B(skill('Solo.')), 1],
+    ['proj/.claude/skills/proj/SKILL.md', B(skill('Project.')), 1],
+    ['home/.claude/settings.json', settings, 1],
+    [`${P}/p1/s.jsonl`, lines(...recent), 0],
+  ];
+  // A file last written 40 days ago is not read, but proves the transcripts reach back 30 days.
+  if (label !== 'report-young') files.push([`${P}/p2/old.jsonl`, lines(use('t9', 'alpha:a1', '2026-09-06T00:00:00.000Z')), 40]);
+  return { cwd: 'proj', files, settings: 'home/.claude/settings.json' };
+}
+
+const REPORT_BEDS = ['report-full', 'report-young', 'report-mixed', 'report-minified', 'report-armed'];
+const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS];
 
 function buildBed(base, label) {
   rmSync(base, { recursive: true, force: true });
-  const { cwd, files, links = [] } = bedFiles(label);
+  const { cwd, files, links = [], settings = null } = bedFiles(label);
   const cwdAbs = cwd === null ? null : join(base, cwd);
   if (cwdAbs !== null) mkdirSync(cwdAbs, { recursive: true });
   for (const [rel, data0, age, special] of files) {
@@ -195,14 +242,35 @@ function buildBed(base, label) {
     symlinkSync(join(base, target), join(base, rel));
   }
   const home = join(base, 'home');
-  return {
-    ops: [
-      { op: 'gather', home, cwd: cwdAbs, now: NOW },
-      { op: 'usage', projects: join(home, '.claude', 'projects'), now: NOW, known: null },
-      { op: 'usage', projects: join(home, '.claude', 'projects'), now: NOW, known: ['alpha:a1', 'proj', 'solo'] },
-    ],
-  };
+  const at = { home, cwd: cwdAbs, now: NOW };
+  const ops = [
+    { op: 'gather', ...at },
+    { op: 'usage', projects: join(home, '.claude', 'projects'), now: NOW, known: null },
+    { op: 'usage', projects: join(home, '.claude', 'projects'), now: NOW, known: ['alpha:a1', 'proj', 'solo'] },
+    { op: 'record', ...at },
+    { op: 'render', ...at },
+  ];
+  if (label === 'report-full') {
+    ops.push(
+      { op: 'record', ...at, no_usage: true },
+      { op: 'render', ...at, no_usage: true },
+      { op: 'propose', ...at, usage: null, span_days: 30 },
+      { op: 'propose', ...at, usage: {}, span_days: 30 },
+    );
+  }
+  const kept = settings === null ? null : { path: join(base, settings), bytes: files.find(([rel]) => rel === settings)[1] };
+  return { ops, kept };
 }
+
+/** Whether a side left the bed's settings file byte-identical (K2: the report never edits it). */
+const untouched = (kept) => {
+  if (kept === null) return 'no settings file in this bed';
+  try {
+    return readFileSync(kept.path).equals(kept.bytes) ? 'byte-identical' : 'CHANGED';
+  } catch {
+    return 'GONE';
+  }
+};
 
 /** chmod back, so the harness can remove the scratch. platform-checked: restoring `0o644` is a no-op
  * wherever the `0o000` above was skipped (win32, root), so it needs no platform branch. */
@@ -218,9 +286,28 @@ export async function run(ctx) {
   const H = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillhost.js')).href);
   const { dumpIndex } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'hotindex.js')).href);
   const { parseNow } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href);
+  const R = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillreport.js')).href);
+  const { scanRoots } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillaudit.js')).href);
   const nodeOne = (op) => {
     const now = parseNow(op.now);
     if (op.op === 'usage') return dumpIndex(H.countSkillUsage(op.projects, now, H.USAGE_DAYS, op.known === null ? null : new Set(op.known)).summary());
+    if (op.op === 'record' || op.op === 'render') {
+      let rec;
+      if (op.no_usage) {
+        const g = H.selectAdapter(op.home).gather(op.home, op.cwd, now);
+        rec = R.buildRecord(new H.Gathered(g.host, g.roots, g.enabled, g.versions, g.sources, null), op.now);
+      } else {
+        rec = R.runLive(op.home, op.cwd, op.now);
+      }
+      return op.op === 'record' ? dumpIndex(rec) : R.renderReport(rec);
+    }
+    if (op.op === 'propose') {
+      const g = H.selectAdapter(op.home).gather(op.home, op.cwd, now);
+      const versions = g.versions === null ? null : new Map(Object.entries(g.versions));
+      const found = scanRoots(g.roots.map(([label, path]) => ({ label, path })), [...g.enabled], versions);
+      const usage = op.usage === null ? null : new Map(Object.entries(op.usage));
+      return dumpIndex(R.propose(found, usage, op.span_days, g.sources));
+    }
     return dumpIndex(H.selectAdapter(op.home).gather(op.home, op.cwd, now).asDict());
   };
 
@@ -229,8 +316,9 @@ export async function run(ctx) {
   const answers = {};
   for (const label of BEDS) {
     const base = join(ctx.scratch, 'skill-host', label);
-    const { ops } = buildBed(base, label);
+    const { ops, kept } = buildBed(base, label);
     const py = ctx.runPython(REF, { ops }).answers.map(unb64);
+    const pyKept = untouched(kept);
     release(base);
     buildBed(base, label);
     let nd;
@@ -239,11 +327,20 @@ export async function run(ctx) {
     } finally {
       release(base);
     }
-    // The bed's path as it appears inside a JSON string (backslashes escaped on win32).
+    const ndKept = untouched(kept);
+    // The bed's path as it appears inside a JSON string (backslashes escaped on win32); a
+    // rendered report holds it raw, with `/` as the separator so the literals read one way.
     const mask = (s) => s.split(JSON.stringify(base).slice(1, -1)).join('<BED>');
-    answers[label] = { py: py.map((s) => JSON.parse(mask(s))), nd: nd.map((s) => JSON.parse(mask(s))) };
+    const maskText = (s) => s.split(base).join('<BED>').split('\\').join('/');
+    const read = (o, s) => (o.op === 'render' ? maskText(s) : JSON.parse(mask(s)));
+    answers[label] = { py: py.map((s, i) => read(ops[i], s)), nd: nd.map((s, i) => read(ops[i], s)), kept: { py: pyKept, nd: ndKept } };
     ops.forEach((o, i) => {
-      const what = o.op === 'usage' ? `usage known=${o.known === null ? 'null' : o.known.length}` : 'gather';
+      const what =
+        o.op === 'usage'
+          ? `usage known=${o.known === null ? 'null' : o.known.length}`
+          : o.op === 'propose'
+            ? `propose usage=${o.usage === null ? 'null' : 'measured'} span=${o.span_days}`
+            : `${o.op}${o.no_usage ? ' no_usage' : ''}`;
       cases.push({ name: `${label} — ${what}`, kind: 'string', expected: py[i], actual: nd[i] });
     });
   }
@@ -307,6 +404,46 @@ export async function run(ctx) {
   else {
     literal('claude-full a mode-000 transcript is unreadable, not a transcript', 1, (a, s) => A('claude-full', 1)(a, s).unreadable);
   }
+  // ------------------------------------------------------------------- Task 3 literals
+  const R3 = (bed) => (a, side) => a[bed][side][3];
+  const T3 = (bed) => (a, side) => a[bed][side][4];
+  literal('report-full proposes exactly alpha@mk (beta called, gamma off, "@" holds no plugin skill)', ['alpha@mk'], (a, s) => R3('report-full')(a, s).proposals.map((p) => p.plugin));
+  literal(
+    'report-full render holds exactly the five diff lines',
+    ['--- <BED>/home/.claude/settings.json', '+++ <BED>/home/.claude/settings.json', '@@ -3 +3 @@', '-    "alpha@mk": true,', '+    "alpha@mk": false,'],
+    (a, s) => T3('report-full')(a, s).split('\n').filter((l) => /^(--- |\+\+\+ |@@ |-    |\+    )/.test(l)),
+  );
+  literal('report-full render says the change is NOT applied', true, (a, s) => T3('report-full')(a, s).includes('proposed change — NOT applied; bantamkit never edits settings.json:'));
+  literal('report-young render ends with the span sentence (D2)', true, (a, s) => T3('report-young')(a, s).endsWith('proposed change: none — the transcripts span 12 days; a change needs 30'));
+  literal('report-young: 12 days of transcripts propose nothing (D2)', [], (a, s) => R3('report-young')(a, s).proposals);
+  literal('report-mixed: one called alpha skill keeps alpha, one called beta skill keeps beta (D3)', [], (a, s) => R3('report-mixed')(a, s).proposals);
+  literal('report-minified: not located, the hand-edit sentence instead', [[null], true], (a, s) => [
+    R3('report-minified')(a, s).proposals.map((p) => p.line),
+    T3('report-minified')(a, s).includes('set enabledPlugins["alpha@mk"] to false in <BED>/home/.claude/settings.json (the line could not be located)'),
+  ]);
+  literal('report-armed: the line inside enabledPlugins, not the earlier one (D4)', [6, '    "alpha@mk" : false ,'], (a, s) => {
+    const p = R3('report-armed')(a, s).proposals[0];
+    return p === undefined ? 'no proposal' : [p.line, p.after];
+  });
+  literal('report-full no_usage: no proposal, the no-adapter sentence (D1 through record)', [[], true], (a, s) => [
+    a['report-full'][s][5].proposals,
+    a['report-full'][s][6].endsWith('proposed change: none — this host has no usage adapter, so no skill is called never-invoked and nothing is proposed'),
+  ]);
+  literal('report-full propose: usage null at 30 days proposes nothing (D1 on its own)', [], (a, s) => a['report-full'][s][7]);
+  literal('report-full propose: an empty measurement at 30 days proposes every enabled plugin', ['alpha@mk', 'beta@mk'], (a, s) => a['report-full'][s][8].map((p) => p.plugin));
+  literal(
+    'null render is the could-not-run sentence',
+    'skill audit — could not run: no skill directory was found for this host. The `skill_audit` tool still audits any directory you name as `root`.',
+    (a, s) => T3('null')(a, s),
+  );
+  literal('claude-young: a claude-code home with no skill directory is the no-roots error record', { host: 'claude-code', error: 'no skill directory was found for this host' }, (a, s) => {
+    const r = R3('claude-young')(a, s);
+    return { host: r.host, error: r.error };
+  });
+  for (const label of REPORT_BEDS) {
+    literal(`${label}: settings.json byte-identical after the run (K2)`, 'byte-identical', (a, s) => a[label].kept[s]);
+  }
+
   notes.push(`${BEDS.length} beds, both runtimes, over identical paths under ${join(ctx.scratch, 'skill-host')}`);
   return { cases, notes };
 }
