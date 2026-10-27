@@ -2,7 +2,7 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, '.')
 import search_rules as S
-rows = [json.loads(x) for x in open(sys.argv[1])]
+rows = [json.loads(x) for x in open(sys.argv[1], encoding="utf-8")]
 c = [r for r in rows if r['kind'] != 'BASE-B']
 def show(tag, r):
     if r is None: print(f"{tag:28s} none"); return

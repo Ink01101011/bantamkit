@@ -6,7 +6,7 @@ C, N = Path(sys.argv[1]), Path(sys.argv[2])
 d = lib.Data(C, N)
 bad = [ (it['set'], it['key']) for it in d.items if lib.policy(it, d.names[it['native']], None, 'BASE-B', {}) != it['product_inject']]
 print('BASE-B == product inject_candidates:', len(d.items) - len(bad), 'of', len(d.items), bad[:5])
-emb = json.loads(Path(sys.argv[3]).read_text())
+emb = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
 mis = []
 for it in d.items:
     if it['set'] != 'gold': continue

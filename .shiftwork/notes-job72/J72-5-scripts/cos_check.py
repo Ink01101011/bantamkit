@@ -9,7 +9,7 @@ for f in (P / "cache").glob("*.facts.npz"):
     if not (C / f.name).exists(): os.symlink(f, C / f.name)
 for m in ["bge-m3", "qwen3-embedding:0.6b", "snowflake-arctic-embed2"]:
     shutil.copy(P / "cache" / f"{lib.slug(m)}.queries.npz", C / f"dev-{lib.slug(m)}.queries.npz")
-src = open(Path(__file__).parent / "dev_targets.py").read()
+src = open(Path(__file__).parent / "dev_targets.py", encoding="utf-8").read()
 s = src[src.index("def dev_cos"):src.index("targets, prov, stats")]
 d = lib.Data(P / "cache", P.parent / "notes-job68")
 natives = d.natives
