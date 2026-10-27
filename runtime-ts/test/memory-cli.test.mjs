@@ -361,15 +361,18 @@ test('an empty --store is a refusal, not a store at the current directory', () =
 test('the help is argparse’s: a choices row, indented children, and two sections', () => {
   assert.deepEqual(run(['-h']), {
     stdout:
-      'usage: bantamkit-memory [-h] {status,lint,compact,archived,archive,restore} ...\n' +
+      'usage: bantamkit-memory [-h] {status,list,lint,compact,candidates,merge,archived,archive,restore} ...\n' +
       '\n' +
-      'Operator lifecycle for a bantamkit memory store: inspect, lint, compact, archive and restore. Not an agent surface.\n' +
+      'Operator lifecycle for a bantamkit memory store: inspect, list, lint, compact, archive, restore, candidates and merge. Not an agent surface.\n' +
       '\n' +
       'positional arguments:\n' +
-      '  {status,lint,compact,archived,archive,restore}\n' +
+      '  {status,list,lint,compact,candidates,merge,archived,archive,restore}\n' +
       '    status              index size, budget, headroom, archive count\n' +
+      '    list                one line per live fact, filterable\n' +
       '    lint                exit 1 if the store is malformed or over budget\n' +
       '    compact             archive the stalest facts\n' +
+      '    candidates          list facts that look finished; --apply archives them\n' +
+      '    merge               merge named facts into one new fact, archiving the originals\n' +
       '    archived            list what compaction has moved out\n' +
       '    archive             move one named fact out\n' +
       '    restore             move an archived fact back\n' +
@@ -430,7 +433,7 @@ test('the usage line wraps at len(prefix) + len(prog) + 1, which is where the pr
 
 test('every argv failure carries the reference sentence, the right prog, and exit 2', () => {
   const usageTop =
-    'usage: bantamkit-memory [-h] {status,lint,compact,archived,archive,restore} ...\n';
+    'usage: bantamkit-memory [-h] {status,list,lint,compact,candidates,merge,archived,archive,restore} ...\n';
   const usageStatus =
     'usage: bantamkit-memory status [-h] [--store STORE | --start START] [--budget BYTES]\n';
   const usageRestore =
@@ -448,14 +451,14 @@ test('every argv failure carries the reference sentence, the right prog, and exi
       ['bogus'],
       usageTop,
       "bantamkit-memory: error: argument command: invalid choice: 'bogus' " +
-        '(choose from status, lint, compact, archived, archive, restore)',
+        '(choose from status, list, lint, compact, candidates, merge, archived, archive, restore)',
     ],
     // No prefix matching on a subcommand: `st` is not `status`.
     [
       ['st'],
       usageTop,
       "bantamkit-memory: error: argument command: invalid choice: 'st' " +
-        '(choose from status, lint, compact, archived, archive, restore)',
+        '(choose from status, list, lint, compact, candidates, merge, archived, archive, restore)',
     ],
     // Leftovers a SUB-parser handed back are reported by the TOP parser, under the top usage.
     [['status', 'extra'], usageTop, 'bantamkit-memory: error: unrecognized arguments: extra'],

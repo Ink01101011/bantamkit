@@ -78,13 +78,17 @@ import {
   type ParserSpec,
 } from '../pyargparse.js';
 import { discoverProjectStore } from './layers.js';
-import { pyJoin, PyOSError } from './pyfs.js';
+import { pyJoin, PyOSError, pyReadText } from './pyfs.js';
+import { pyTruthy } from './factfile.js';
 import {
   DEFAULT_INDEX_BUDGET,
   MemoryBudgetExceeded,
   MemoryStore,
   MemoryValidationError,
   pyText,
+  VALID_OUTCOMES,
+  VALID_STATUSES,
+  VALID_TYPES,
 } from './store.js';
 
 /** The Node operator's spelling of the reference's `python -m bantamkit.memory`. */
@@ -163,21 +167,45 @@ const common = (extra: readonly ActionSpec[] = []): readonly ActionSpec[] => [
   ...extra,
 ];
 
-const sub = (name: string, actions: readonly ActionSpec[]): ParserSpec => ({
+const sub = (
+  name: string,
+  actions: readonly ActionSpec[],
+  more: Pick<ParserSpec, 'groups' | 'requiredGroups'> = { groups: [[1, 2]] },
+): ParserSpec => ({
   prog: `${PROG} ${name}`,
   // `add_parser` takes no `description=` in the reference, so the sub-help has no paragraph
   // between its usage line and its first section. An empty string is that absence.
   description: '',
   actions,
-  groups: [[1, 2]],
+  ...more,
 });
+
+/** `--type {…}`, `--outcome {…}`, `--status {…}`: a plain-string option with `choices=`. */
+const choice = (
+  flag: string,
+  dest: string,
+  choices: readonly string[],
+  help: string,
+  required = false,
+): ActionSpec => ({
+  optionStrings: [flag],
+  dest,
+  kind: 'store',
+  help,
+  choices,
+  defaultValue: null,
+  ...(required ? { required: true } : {}),
+});
+
+/** `sorted(VALID_TYPES)` — `VALID_TYPES` is already in that order. */
+const TYPES: readonly string[] = VALID_TYPES;
 
 /** `_parse_args`'s parser, as DATA — the one description of this command line. */
 const PARSER: ParserSpec = {
   prog: PROG,
   description:
-    'Operator lifecycle for a bantamkit memory store: inspect, lint, compact, ' +
-    'archive and restore. Not an agent surface.',
+    'Operator lifecycle for a bantamkit memory store: inspect, list, lint, compact, ' +
+    'archive, restore, candidates and merge. Not an agent surface.',
   actions: [
     {
       optionStrings: ['-h', '--help'],
@@ -196,6 +224,16 @@ const PARSER: ParserSpec = {
       defaultValue: null,
       subcommands: [
         { name: 'status', help: 'index size, budget, headroom, archive count', parser: sub('status', common()) },
+        {
+          name: 'list',
+          help: 'one line per live fact, filterable',
+          parser: sub('list', [
+            ...common(),
+            choice('--type', 'type', TYPES, 'keep one type'),
+            choice('--outcome', 'outcome', VALID_OUTCOMES, 'keep one outcome'),
+            choice('--status', 'status', VALID_STATUSES, 'keep one status (a fact with none is active)'),
+          ]),
+        },
         {
           name: 'lint',
           help: 'exit 1 if the store is malformed or over budget',
@@ -222,6 +260,92 @@ const PARSER: ParserSpec = {
                 defaultValue: null,
               },
             ]),
+          ),
+        },
+        {
+          name: 'candidates',
+          help: 'list facts that look finished; --apply archives them',
+          parser: sub(
+            'candidates',
+            common([
+              {
+                optionStrings: ['--older-than'],
+                dest: 'older_than',
+                metavar: 'DAYS',
+                kind: 'store',
+                help: 'also list facts created more than DAYS days ago',
+                convert: nonnegative,
+                typeName: '_nonnegative',
+                defaultValue: null,
+              },
+              {
+                optionStrings: ['--apply'],
+                dest: 'apply',
+                kind: 'storeTrue',
+                help: 'archive the listed facts (default: dry run)',
+                defaultValue: false,
+              },
+            ]),
+          ),
+        },
+        {
+          name: 'merge',
+          help: 'merge named facts into one new fact, archiving the originals',
+          parser: sub(
+            'merge',
+            common([
+              {
+                optionStrings: ['--names'],
+                dest: 'names',
+                metavar: 'NAME',
+                kind: 'store',
+                nargs: '+',
+                required: true,
+                help: 'facts to consume (two or more)',
+                defaultValue: null,
+              },
+              {
+                optionStrings: ['--name'],
+                dest: 'name',
+                kind: 'store',
+                required: true,
+                help: 'name of the new fact',
+                defaultValue: null,
+              },
+              choice('--type', 'type', TYPES, 'type of the new fact', true),
+              {
+                optionStrings: ['--description'],
+                dest: 'description',
+                kind: 'store',
+                required: true,
+                help: 'one-line description of the new fact',
+                defaultValue: null,
+              },
+              {
+                optionStrings: ['--body'],
+                dest: 'body',
+                kind: 'store',
+                help: 'body text of the new fact',
+                defaultValue: null,
+              },
+              {
+                optionStrings: ['--body-file'],
+                dest: 'body_file',
+                kind: 'store',
+                help: 'file holding the body text',
+                defaultValue: null,
+              },
+              choice('--outcome', 'outcome', VALID_OUTCOMES, 'outcome of the new fact'),
+              choice('--status', 'status', VALID_STATUSES, 'status of the new fact'),
+              {
+                optionStrings: ['--apply'],
+                dest: 'apply',
+                kind: 'storeTrue',
+                help: 'write the new fact and archive the originals (default: dry run)',
+                defaultValue: false,
+              },
+            ]),
+            { groups: [[1, 2], [8, 9]], requiredGroups: [1] },
           ),
         },
         {
@@ -270,6 +394,15 @@ interface Args {
   budget: number;
   reserve: number | null;
   name: string;
+  type: string | null;
+  outcome: string | null;
+  status: string | null;
+  olderThan: number | null;
+  apply: boolean;
+  names: string[];
+  description: string;
+  body: string | null;
+  bodyFile: string | null;
 }
 
 function parse(argv: readonly string[]): Args {
@@ -281,6 +414,15 @@ function parse(argv: readonly string[]): Args {
     budget: values['budget'] as number,
     reserve: (values['reserve'] ?? null) as number | null,
     name: values['name'] as string,
+    type: (values['type'] ?? null) as string | null,
+    outcome: (values['outcome'] ?? null) as string | null,
+    status: (values['status'] ?? null) as string | null,
+    olderThan: (values['older_than'] ?? null) as number | null,
+    apply: (values['apply'] ?? false) as boolean,
+    names: (values['names'] ?? []) as string[],
+    description: values['description'] as string,
+    body: (values['body'] ?? null) as string | null,
+    bodyFile: (values['body_file'] ?? null) as string | null,
   };
 }
 
@@ -364,6 +506,70 @@ function cmdCompact(store: MemoryStore, args: Args): number {
     out(`  ${pyText(fact.name)} (${pyText(fact.type)}, ${fact.indexBytes} bytes)`);
   }
   out(`restore one with: ${PROG} restore <name> --store ${store.root}`);
+  return 0;
+}
+
+function cmdList(store: MemoryStore, args: Args): number {
+  const facts = store.listFacts(args.type, args.outcome, args.status);
+  out(`facts: ${facts.length} (${pyJoin(store.root, 'facts')})`);
+  for (const fact of facts) {
+    const outcome = pyTruthy(fact.outcome ?? null) ? pyText(fact.outcome) : '-';
+    const status = pyTruthy(fact.status ?? null) ? pyText(fact.status) : 'active';
+    out(`${pyText(fact.name)}\t${pyText(fact.type)}\t${outcome}\t${status}\t${pyText(fact.description)}`);
+  }
+  return 0;
+}
+
+function cmdCandidates(store: MemoryStore, args: Args): number {
+  const found = store.candidatesDone(args.olderThan);
+  out(`archive candidates: ${found.length} (${pyJoin(store.root, 'facts')})`);
+  for (const [fact, reason] of found) out(`${pyText(fact.name)}\t${reason}\t${pyText(fact.description)}`);
+  if (!args.apply) {
+    out(`dry run; rerun with --apply to archive these ${found.length}`);
+    return 0;
+  }
+  let done = 0;
+  for (const [fact] of found) {
+    try {
+      store.archive(pyText(fact.name));
+    } catch (error) {
+      if (error instanceof MemoryValidationError) {
+        err(`candidates failed at '${pyText(fact.name)}': ${error.message}; ${done} already archived`);
+        return 1;
+      }
+      throw error;
+    }
+    done += 1;
+  }
+  out(`archived ${done} — index now ${size(store)}/${store.indexBudget} bytes`);
+  return 0;
+}
+
+function cmdMerge(store: MemoryStore, args: Args): number {
+  const body = args.body !== null ? args.body : pyReadText(args.bodyFile!);
+  const result = store.merge(
+    args.names,
+    args.name,
+    args.type!,
+    args.description,
+    body,
+    args.outcome,
+    args.status,
+    args.apply,
+  );
+  out('consumes:');
+  for (const fact of result.consumed) {
+    out(`  ${pyText(fact.name)}\t${pyText(fact.type)}\t${pyText(fact.description)}`);
+  }
+  out('produces:');
+  process.stdout.write(result.producedText);
+  out('links pointing at consumed facts:');
+  for (const line of result.linkedFrom) out(`  ${line}`);
+  if (!result.applied) {
+    out('dry run; rerun with --apply to write');
+    return 0;
+  }
+  out(`merged ${result.consumed.length} into '${args.name}' — index now ${size(store)}/${store.indexBudget} bytes`);
   return 0;
 }
 
@@ -456,8 +662,11 @@ function cmdRestore(store: MemoryStore, args: Args): number {
 
 const COMMANDS: Record<string, (store: MemoryStore, args: Args) => number> = {
   status: cmdStatus,
+  list: cmdList,
   lint: cmdLint,
   compact: cmdCompact,
+  candidates: cmdCandidates,
+  merge: cmdMerge,
   archived: cmdArchived,
   archive: cmdArchive,
   restore: cmdRestore,

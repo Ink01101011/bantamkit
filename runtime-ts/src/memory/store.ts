@@ -47,7 +47,18 @@ import { BantamError } from '../errors.js';
 import { ColdIndex, ColdIndexError } from '../storage/coldindex.js';
 import { HotIndex, INDEX_DIR_ENV, type IndexDoc } from '../storage/hotindex.js';
 import type { Fact, FactValue } from './factfile.js';
-import { extraOf, formatFact, parseFrontmatter, pyList, pySplit, pyStrip, pyTruthy, todayLocal } from './factfile.js';
+import {
+  extraOf,
+  formatFact,
+  lifecycleOf,
+  parseFrontmatter,
+  pyList,
+  pySplit,
+  pyStrip,
+  pyTruthy,
+  todayLocal,
+  VALID_OUTCOMES,
+} from './factfile.js';
 import { PyScalar } from './pyyaml.js';
 import {
   BM25F,
@@ -185,6 +196,35 @@ export function bantamkitDirFor(path: string): string | null {
     if (pyName(candidate) === '.bantamkit') return candidate;
   }
   return null;
+}
+
+export { VALID_OUTCOMES };
+export const VALID_STATUSES = ['active', 'done'] as const;
+/** The two types a lesson's outcome applies to (#219). `user` and `reference` have none. */
+export const OUTCOME_TYPES = ['feedback', 'project'] as const;
+/** `candidates` done-words (#221): whole-word, case-insensitive, `type: project` only. */
+export const DONE_WORDS = ['done', 'shipped', 'completed', 'closed', 'released', 'merged'] as const;
+/** Python's `\b(...)\b`: a boundary is a change of `\w` (Unicode letters, digits, `_`). */
+const DONE_WORD_RE = new RegExp(`(?<![\\p{L}\\p{N}_])(${DONE_WORDS.join('|')})(?![\\p{L}\\p{N}_])`, 'iu');
+
+/** `list(VALID_OUTCOMES)` as Python prints it: `['error', 'success']`. */
+const pyListText = (items: readonly string[]): string => `[${items.map((t) => `'${t}'`).join(', ')}]`;
+
+/** The §1 rules, one sentence each; `null` always passes. Runs AFTER the type check. */
+function validateOutcomeStatus(type: string, outcome: string | null, status: string | null): void {
+  if (outcome !== null) {
+    if (!(VALID_OUTCOMES as readonly string[]).includes(outcome)) {
+      throw new MemoryValidationError(`invalid outcome '${outcome}'; must be one of ${pyListText(VALID_OUTCOMES)}`);
+    }
+    if (!(OUTCOME_TYPES as readonly string[]).includes(type)) {
+      throw new MemoryValidationError(
+        `invalid outcome '${outcome}' for type '${type}'; outcome is only for feedback and project facts`,
+      );
+    }
+  }
+  if (status !== null && !(VALID_STATUSES as readonly string[]).includes(status)) {
+    throw new MemoryValidationError(`invalid status '${status}'; must be one of ${pyListText(VALID_STATUSES)}`);
+  }
 }
 
 /** `sorted(VALID_TYPES)` is what the error message interpolates, so the order is load-bearing. */
@@ -404,6 +444,15 @@ const NOT_WRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS']);
 
 export class MemoryValidationError extends BantamError {}
 export class MemoryBudgetExceeded extends BantamError {}
+
+export interface MergeResult {
+  consumed: Fact[];
+  /** `formatFact` of the projected fact: the bytes, not a guess. */
+  producedText: string;
+  /** `<fact> -> <consumed>` lines, sorted. */
+  linkedFrom: string[];
+  applied: boolean;
+}
 
 export interface SaveResult {
   status: 'saved' | 'duplicate';
@@ -1196,13 +1245,19 @@ export class MemoryStore {
     body: string,
     links: readonly string[] = [],
     keywords: readonly string[] = [],
+    outcome: string | null = null,
+    status: string | null = null,
+    dupExempt: readonly string[] = [],
   ): SaveResult {
+    // `dupExempt` is `merge`'s and nobody else's: the facts a merge consumes are still live
+    // while it saves, and they cannot be what the new fact duplicates (J73-6).
     this.ensureDirs();
     if (!(VALID_TYPES as readonly string[]).includes(type)) {
       throw new MemoryValidationError(
         `invalid type '${type}'; must be one of [${VALID_TYPES.map((t) => `'${t}'`).join(', ')}]`,
       );
     }
+    validateOutcomeStatus(type, outcome, status);
     if (!NAME_RE.test(name || '')) {
       throw new MemoryValidationError(`invalid name '${name}'; must match ${NAME_PATTERN}`);
     }
@@ -1246,6 +1301,7 @@ export class MemoryStore {
         existing = fact; // same name = update, not duplicate
         continue;
       }
+      if (dupExempt.includes(pyText(fact.name))) continue;
       if (jaccard(newTokens, tokens(`${pyText(fact.name)} ${pyText(fact.description)}`)) >= DUPLICATE_JACCARD) {
         return { status: 'duplicate', name, similar: fact.name, ...(skipped.length > 0 ? { skipped } : {}) };
       }
@@ -1275,6 +1331,8 @@ export class MemoryStore {
       // An update keeps the date the fact first landed: rewriting a fact is not the same
       // event as creating it, and resetting this would launder a stale fact into a fresh one.
       created: existing !== null ? existing.created ?? null : this.today(),
+      outcome,
+      status: status === 'active' ? null : status,
     };
     const path = this.factPath(name);
     const existed = pyExists(path) ? pyReadText(path) : null;
@@ -1332,19 +1390,27 @@ export class MemoryStore {
     stamp = true,
     minRatio = RECALL_MIN_SCORE_RATIO,
     skipped?: SkippedFact[],
+    outcome: string | null = null,
   ): Fact[] {
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
     const limit = k ?? this.k;
     const q = queryTerms(query);
     const ledger = this.usage();
+    // The outcome filter (#219) runs BEFORE scoring, so `k` and the ratio gate apply to the
+    // filtered pool; the hot index carries no outcome, so a filtered recall pools the files.
+    const factsPool = (): Pool => {
+      let got = this.candidates(skipped);
+      if (outcome !== null) got = got.filter((f) => f.outcome === outcome);
+      return poolOf(got, q);
+    };
     const hits = pickHits(
       [this],
-      [this.pool(q, skipped)],
+      [outcome === null ? this.pool(q, skipped) : factsPool()],
       q,
       limit,
       minRatio,
       () => ledger.weights(this.now()),
-      () => poolOf(this.candidates(skipped), q),
+      () => factsPool(),
     ).map(([, fact]) => fact);
     if (stamp) this.use(ledger, hits, 'recall_hit');
     return hits;
@@ -1472,6 +1538,152 @@ export class MemoryStore {
     if (pool.facts !== null) return pool.facts[row]!;
     const name = pool.names[row]!;
     return this.factNamed(pool.files![row] || `${name}.md`, name);
+  }
+
+  /**
+   * Live facts, filtered and sorted by name. `status: 'active'` matches a fact with no
+   * status. Reads `facts/` only; archived facts are `archived()`'s.
+   */
+  listFacts(type: string | null = null, outcome: string | null = null, status: string | null = null): Fact[] {
+    const facts: Fact[] = [];
+    for (const fact of this.facts()) {
+      if (type !== null && fact.type !== type) continue;
+      if (outcome !== null && fact.outcome !== outcome) continue;
+      if (status !== null && (pyTruthy(fact.status ?? null) ? fact.status : 'active') !== status) continue;
+      facts.push(fact);
+    }
+    return facts.sort((a, b) => cmpCodepoint(pyText(a.name), pyText(b.name)));
+  }
+
+  /**
+   * Facts that look finished, with the first matching reason (#221). Sorted by name.
+   * 1 `status: done`, any type; 2 a done-word, `type: project` only; 3 age, only when asked
+   * and only when `created` is a date. Never writes.
+   */
+  candidatesDone(olderThanDays: number | null = null, today?: string): Array<[Fact, string]> {
+    const todayS = today || this.today();
+    const out: Array<[Fact, string]> = [];
+    const ordinal = (iso: string): number | null => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+      if (m === null) return null;
+      const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+      const t = new Date(Date.UTC(y, mo - 1, d));
+      if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return null;
+      return Math.round(t.getTime() / 86_400_000);
+    };
+    const sorted = [...this.facts()].sort((a, b) => cmpCodepoint(pyText(a.name), pyText(b.name)));
+    for (const fact of sorted) {
+      if (fact.status === 'done') {
+        out.push([fact, 'status: done']);
+        continue;
+      }
+      if (fact.type === 'project') {
+        const m = DONE_WORD_RE.exec(pyText(fact.description));
+        if (m !== null) {
+          out.push([fact, `done-word '${m[1]!.toLowerCase()}' in description`]);
+          continue;
+        }
+      }
+      // YYYY-MM-DD only, as the reference reads it (`ordinal` refuses every other shape).
+      if (olderThanDays !== null && typeof fact.created === 'string') {
+        const a = ordinal(todayS);
+        const b = ordinal(fact.created.slice(0, 10));
+        if (a === null || b === null) continue;
+        if (a - b > olderThanDays) {
+          out.push([fact, `older than ${olderThanDays}d (created ${fact.created.slice(0, 10)})`]);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * #220. Dry run by default. Apply = `save` the new fact FIRST (duplicate and budget checks
+   * run there), then `archive` each original in the given order.
+   */
+  merge(
+    names: readonly string[],
+    name: string,
+    type: string,
+    description: string,
+    body: string,
+    outcome: string | null = null,
+    status: string | null = null,
+    apply = false,
+  ): MergeResult {
+    const live = new Map<string, Fact>();
+    for (const f of this.facts()) live.set(pyText(f.name), f);
+    const distinct = [...new Set(names)];
+    const missing = distinct.filter((n) => !live.has(n));
+    if (missing.length > 0 || distinct.length < 2) {
+      throw new MemoryValidationError(
+        'merge needs at least two distinct live facts; missing: ' + (missing.length > 0 ? missing.join(', ') : 'none'),
+      );
+    }
+    if (distinct.includes(name)) {
+      throw new MemoryValidationError(`cannot merge into '${name}': it is one of the facts being merged`);
+    }
+    if (live.has(name) || this.archived().includes(name)) {
+      throw new MemoryValidationError(`cannot merge into '${name}': a fact of that name exists`);
+    }
+    if (!(VALID_TYPES as readonly string[]).includes(type)) {
+      throw new MemoryValidationError(
+        `invalid type '${type}'; must be one of [${VALID_TYPES.map((t) => `'${t}'`).join(', ')}]`,
+      );
+    }
+    validateOutcomeStatus(type, outcome, status);
+    // `save`'s duplicate check, run here so the dry run refuses what `--apply` would, and run
+    // WITHOUT the consumed facts: they are leaving. WAS: `save` compared against them,
+    // answered `duplicate` unwritten, and the originals were archived anyway (J73-6).
+    const newTokens = tokens(`${name} ${description}`);
+    for (const [key, other] of live) {
+      if (distinct.includes(key)) continue;
+      if (jaccard(newTokens, tokens(`${pyText(other.name)} ${pyText(other.description)}`)) >= DUPLICATE_JACCARD) {
+        throw new MemoryValidationError(`cannot merge into '${name}': it duplicates the live fact '${key}'`);
+      }
+    }
+    const consumed = distinct.map((n) => live.get(n)!);
+    const links: string[] = [];
+    for (const fact of consumed) {
+      for (const link of fact.links) {
+        if (!(typeof link === 'string' && (distinct.includes(link) || links.includes(link)))) {
+          links.push(pyText(link));
+        }
+      }
+    }
+    const fullBody = pyStrip(body) + '\n\nSources: ' + distinct.join(', ');
+    const projected: Fact = {
+      name,
+      description,
+      type,
+      body: fullBody,
+      links,
+      last_recalled: null,
+      created: this.today(),
+      outcome,
+      status: status === 'active' ? null : status,
+    };
+    const linkedFrom: string[] = [];
+    for (const other of live.values()) {
+      if (typeof other.name === 'string' && distinct.includes(other.name)) continue;
+      for (const link of other.links) {
+        if (typeof link === 'string' && distinct.includes(link)) {
+          linkedFrom.push(`${pyText(other.name)} -> ${link}`);
+        }
+      }
+    }
+    linkedFrom.sort(cmpCodepoint);
+    if (apply) {
+      const saved = this.save(type, name, description, fullBody, links, [], outcome, status, distinct);
+      if (saved.status === 'duplicate') {
+        // a fact landed between the check above and the save
+        throw new MemoryValidationError(
+          `cannot merge into '${name}': it duplicates the live fact '${pyText(saved.similar ?? null)}'`,
+        );
+      }
+      for (const n of distinct) this.archive(n);
+    }
+    return { consumed, producedText: formatFact(projected), linkedFrom, applied: apply };
   }
 
   /**
@@ -2393,9 +2605,13 @@ export class MemoryStore {
       } catch (e) {
         throw malformed(e instanceof Error ? e.message : String(e));
       }
-      for (const key of ['name', 'description', 'type']) {
+      for (const key of ['name', 'description']) {
         if (!(key in meta)) throw malformed(`'${key}'`);
       }
+      // Memory-keeper alias (#219, #221): read-only, never rewritten.
+      const alias = lifecycleOf(meta);
+      // Only when `type` is ABSENT: a `type:` holding null was read by 0.36.1 and still is.
+      if (!('type' in meta) && alias.type === null) throw malformed("'type'");
       const name = meta['name'] as FactValue;
       const stamps: Record<string, FactValue | FactValue[] | undefined> = {};
       for (const key of ['created', 'last_recalled']) {
@@ -2442,7 +2658,7 @@ export class MemoryStore {
       return {
         name,
         description,
-        type: meta['type'] as FactValue,
+        type: alias.type,
         body: pyStrip(parts[2]!),
         links,
         keywords: [...(keywords as string[])],
@@ -2454,6 +2670,8 @@ export class MemoryStore {
         // falsy in Python too, while `created: 2026-08-23` is a truthy `date` (now its text)
         // and is kept.
         created: pyTruthy(rawCreated) ? (rawCreated as FactValue) : pyMtimeDate(path),
+        outcome: alias.outcome,
+        status: alias.status,
         source: path,
       };
     }

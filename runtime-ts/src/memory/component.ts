@@ -474,8 +474,10 @@ export class Memory {
     links: readonly string[] | null = null,
     keywords: readonly string[] | null = null,
     queries: readonly string[] | null = null,
+    outcome: string | null = null,
+    status: string | null = null,
   ): string {
-    return this.saveOutcome(type, name, description, body, links, keywords, queries).reply;
+    return this.saveOutcome(type, name, description, body, links, keywords, queries, outcome, status).reply;
   }
 
   /**
@@ -500,6 +502,8 @@ export class Memory {
     links: readonly string[] | null = null,
     keywords: readonly string[] | null = null,
     queries: readonly string[] | null = null,
+    outcome: string | null = null,
+    status: string | null = null,
   ): SaveOutcome {
     const normalized = normalizeName(name);
     const normalizedLinks = (links ?? []).map((link) => normalizeName(link));
@@ -518,7 +522,7 @@ export class Memory {
           status: 'duplicate',
         };
       }
-      result = this.store.save(type, normalized, description, body, normalizedLinks, keywords ?? []);
+      result = this.store.save(type, normalized, description, body, normalizedLinks, keywords ?? [], outcome, status);
     } catch (e) {
       if (e instanceof MemoryValidationError) {
         return { reply: `error: ${e.message}`, status: 'refused-validation' };
@@ -588,11 +592,12 @@ export class Memory {
     minRatio = RECALL_MIN_SCORE_RATIO,
     includeArchived: boolean | null = null,
     file: string | null = null,
+    outcome: string | null = null,
   ): string {
     // `file` (#200): the server handler's three branches, in its order (the reference's `recall`).
     if (file !== null) return this.recallFile(file, k, query).reply;
     if (query === null) throw new MemoryValidationError(recallFileMod.RECALL_NEEDS_QUERY_OR_FILE);
-    return this.recallOutcome(query, k, minRatio, true, includeArchived === true).reply;
+    return this.recallOutcome(query, k, minRatio, true, includeArchived === true, null, null, outcome).reply;
   }
 
   /**
@@ -663,6 +668,7 @@ export class Memory {
     includeArchived = false,
     context: TouchContext | null = null,
     head: string | null = null,
+    outcome: string | null = null,
   ): RecallOutcome {
     // `not 0.0 <= min_ratio <= 1.0`: NaN fails the same chain on both sides.
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
@@ -674,7 +680,7 @@ export class Memory {
       if (named !== null) return named;
       lookup = 'miss';
     }
-    const { picked, reached, unreadable, candidates, skipped } = this.pooled(query, budget, minRatio, context, head);
+    const { picked, reached, unreadable, candidates, skipped } = this.pooled(query, budget, minRatio, context, head, outcome);
     const via = this.viaOf(picked, context);
     if (stamp) {
       this.use(picked.map(([, fact]) => fact), 'recall_hit');
@@ -692,7 +698,9 @@ export class Memory {
     };
     const lead = lookup === 'miss' ? `${missLine(name)}\n\n` : '';
     const note = skippedNote(skipped);
-    const archived = includeArchived ? this.archivedHits(query, budget, picked) : [];
+    let archived = includeArchived ? this.archivedHits(query, budget, picked) : [];
+    // The outcome filter (#219) holds for the archive's hits as for the live ones.
+    if (outcome !== null) archived = archived.filter(([, fact]) => fact.outcome === outcome);
     if (archived.length > 0 || via !== null) counts.returned = picked.length + archived.length + (via !== null ? 1 : 0);
     if (picked.length === 0 && archived.length === 0 && via === null) {
       const [status, reply] = this.nothingToReport();
@@ -834,6 +842,7 @@ export class Memory {
     minRatio: number,
     context: TouchContext | null = null,
     head: string | null = null,
+    outcome: string | null = null,
   ): {
     picked: Array<[string, Fact]>;
     reached: number;
@@ -847,6 +856,9 @@ export class Memory {
     // rows) and the column is `QueryScorer`: BM25F over `head ?? query` plus `QUERY_WEIGHT`
     // times BM25 of the bare `query` over each row's qdoc. Gate, weights and the cap are
     // unchanged. The reference's `_pooled`.
+    // `outcome` (#219, 0.36.2) keeps only facts saved with that outcome, BEFORE scoring, so the
+    // gate, the IDF and the budget apply to the filtered pool; a filtered walk pools from the
+    // parsed files (`candidates`), never the hot index, which carries no outcome.
     // Each layer's queries as tokenized rows (J72-30): from the derived cache beside the hot
     // index when it is the sidecar's, else from the sidecar itself.
     const home = pyHome();
@@ -870,7 +882,12 @@ export class Memory {
       stores.push(store);
       left.push(leftOut);
       try {
-        if (store instanceof NativeStore) {
+        if (outcome !== null) {
+          const native = store instanceof NativeStore;
+          const got = native ? store.candidates(leftOut, shadow) : store.candidates(leftOut);
+          if (!native) for (const f of got) shadow.add(pyText(f.name));
+          pools.push(poolOf(got.filter((f) => f.outcome === outcome), q, everyRow));
+        } else if (store instanceof NativeStore) {
           pools.push(store.pool(q, leftOut, shadow, everyRow));
         } else {
           const pool = store.pool(q, leftOut, everyRow);
@@ -895,8 +912,9 @@ export class Memory {
     const repool = (i: number): Pool => {
       try {
         const store = stores[i]!;
-        if (store instanceof NativeStore) return poolOf(store.candidates(left[i]!, shadow), q, everyRow);
-        return poolOf(store.candidates(left[i]!), q, everyRow);
+        let got = store instanceof NativeStore ? store.candidates(left[i]!, shadow) : store.candidates(left[i]!);
+        if (outcome !== null) got = got.filter((f) => f.outcome === outcome);
+        return poolOf(got, q, everyRow);
       } catch (e) {
         if (!readable(e) || this.layers[i]![2]) throw e;
         return emptyPool();

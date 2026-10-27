@@ -528,6 +528,17 @@ export async function run(ctx) {
     // description states the clamp and these two, with `k: 99` above, are the clamp compared.
     callTool(18, 'memory_recall', { query: 'budget probe', k: 0 }),
     callTool(19, 'memory_recall', { query: 'budget probe', k: -1 }),
+    // 0.36.2 (#219): `outcome`/`status` on save, `outcome` on recall, and the three refusals.
+    // The two lessons' descriptions are deliberately FAR apart: near-duplicates are refused by
+    // save's duplicate check, and the second save would fail for the wrong reason (J73-2).
+    callTool(20, 'memory_save', { type: 'feedback', name: 'lesson-err', description: 'wire lesson: the deploy pipeline crashed', body: 'b', outcome: 'error' }),
+    callTool(21, 'memory_save', { type: 'feedback', name: 'lesson-ok', description: 'wire lesson: the staged rollout shipped cleanly', body: 'b', outcome: 'success', status: 'done' }),
+    callTool(22, 'memory_recall', { query: 'lesson wire', k: 5, outcome: 'error' }),
+    callTool(23, 'memory_save', { type: 'reference', name: 'ref-bad', description: 'a ref with an outcome', body: 'b', outcome: 'success' }),
+    callTool(24, 'memory_save', { type: 'project', name: 'bad-status', description: 'a bad status', body: 'b', status: 'gone' }),
+    callTool(25, 'memory_save', { type: 'project', name: 'bad-outcome', description: 'a bad outcome', body: 'b', outcome: 'meh' }),
+    callTool(26, 'memory_recall', { query: 'lesson wire', k: 5, outcome: 'success' }),
+    callTool(27, 'memory_recall', { query: 'lesson wire', k: 5 }),
   ]);
 
   // #199 (job68 J68-3): `keywords` through the MCP argument layer — pydantic on one side,
@@ -1964,6 +1975,49 @@ export async function run(ctx) {
           ...J66_4_MATCHED_URIS.map((_, i) => JSON.stringify(JSON.parse(res.get(String(10 + J66_4_UNKNOWN_URIS.length + i)) ?? '{}').error ?? 'missing')),
           served(res.get('60')),
         ],
+      });
+    }
+  }
+
+  // ----------------------------- 0.36.2 (#219): outcome and status on the wire, as literals
+
+  /**
+   * The per-id loop compares ids 20-27 of `memory-store` side to side; these pin each side
+   * against the spec's own sentences and names, because a filter dropped from both runtimes
+   * (or a refusal both stopped making) keeps the differential green.
+   */
+  {
+    const memSide = results.get('memory-store');
+    const hit = (name, description) => `[${name}] (feedback) ${description}\nb`;
+    const ERR = hit('lesson-err', 'wire lesson: the deploy pipeline crashed');
+    const OK = hit('lesson-ok', 'wire lesson: the staged rollout shipped cleanly');
+    for (const [label, key] of [['the reference', 'python'], ['the port', 'node']]) {
+      const side = memSide[key];
+      cases.push({
+        name: `j73-6: #219 ${label} saves a lesson with outcome, and one with outcome and status (literal)`,
+        kind: 'json',
+        expected: ["saved 'lesson-err'", "saved 'lesson-ok'"],
+        actual: [toolTextOf(side, 20), toolTextOf(side, 21)],
+      });
+      cases.push({
+        name: `j73-6: #219 ${label} memory_recall(outcome) keeps only the matching lesson, each way (literal)`,
+        kind: 'json',
+        expected: { error: ERR, success: OK, unfiltered: true },
+        actual: {
+          error: toolTextOf(side, 22),
+          success: toolTextOf(side, 26),
+          unfiltered: [ERR, OK].every((t) => (toolTextOf(side, 27) ?? '').includes(t)),
+        },
+      });
+      cases.push({
+        name: `j73-6: #219 ${label} refuses an outcome on a reference, an unknown status and an unknown outcome in the spec's sentences (literal)`,
+        kind: 'json',
+        expected: [
+          "error: invalid outcome 'success' for type 'reference'; outcome is only for feedback and project facts",
+          "error: invalid status 'gone'; must be one of ['active', 'done']",
+          "error: invalid outcome 'meh'; must be one of ['error', 'success']",
+        ],
+        actual: [toolTextOf(side, 23), toolTextOf(side, 24), toolTextOf(side, 25)],
       });
     }
   }

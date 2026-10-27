@@ -553,6 +553,11 @@ description`, scored by #199's tokenizer, never gated and never stamped; an exac
 query still answers alone. Without the flag nothing changes, and the hook never asks for
 archived facts. Compared by `storage-cold` and the `wire` `memory-archived` session.
 
+**The `outcome` filter (0.36.2, #219).** `memory_recall` takes `outcome: error|success`
+and keeps only facts saved with that outcome, so `outcome: error` answers "what failed
+before" and `success` answers "what worked". A fact with no outcome is dropped from the
+answer; omit the argument for the normal search.
+
 #### lookup (job64, J64-4)
 
 `MemoryStore.lookup(name, stamp=True)` / `lookup(name, stamp = true)` is the
@@ -689,6 +694,18 @@ than raising:
   name had to be bent AND the slug is already a fact, the reply is the duplicate nudge
   naming it and nothing is written: only the exact slug updates a fact.
 - Saving under an existing `name` is an **update**, never a duplicate.
+- **Outcome and status (0.36.2, #219, #221).** `outcome` is `error` (a failure to avoid)
+  or `success` (a way that worked). It is accepted on `feedback` and `project` facts only;
+  `user` and `reference` refuse it with `invalid outcome '<o>' for type '<t>'; outcome is
+  only for feedback and project facts`. `status` is `active` or `done`: save an existing
+  name again with `status: done` when the work it describes has shipped. `active` is never
+  written, so a fact saved with neither field is written exactly as 0.36.1 wrote it. Neither
+  field archives anything; `done` only makes a project fact a candidate for the operator's
+  [`candidates`](#list-candidates-and-merge-0362-219-220-221).
+- **The alias read.** A fact written by the memory-keeper or reflexion plugin keeps these
+  under `metadata:` as `loop: error|success` and a nested `status: done|archived`. It is read
+  without being rewritten: `metadata.outcome` wins over `loop`, and a nested `done` or
+  `archived` reads as `status: done`.
 
 ## Dedupe: what a "duplicate" reply means
 
@@ -1089,6 +1106,9 @@ python -m bantamkit.memory compact  [...] [--reserve BYTES]
 python -m bantamkit.memory archived [...]
 python -m bantamkit.memory archive NAME  [...]
 python -m bantamkit.memory restore NAME [...]
+python -m bantamkit.memory list       [--type T] [--outcome error|success] [--status active|done] [...]
+python -m bantamkit.memory candidates [--older-than DAYS] [--apply] [...]
+python -m bantamkit.memory merge --names NAME NAME [NAME ...] --name NEW --type T --description D (--body TEXT | --body-file FILE) [--outcome O] [--status S] [--apply] [...]
 ```
 
 With neither `--store` nor `--start`, it resolves the project store the same way
@@ -1205,6 +1225,82 @@ Running `compact` twice in a row archives nothing the second time, because
 save in between** — the target is a standing invariant about the current facts,
 not a fixed watermark, so a save that lands between two compactions can legitimately
 give the second one work to do.
+
+### `list`, `candidates` and `merge` (0.36.2, #219 #220 #221)
+
+`list [--type T] [--outcome error|success] [--status active|done]` prints the live facts,
+filtered. The header names the facts directory; then one tab-separated line per fact: name,
+type, outcome (`-` when none), status (`active` when none), description. The header is shown
+below as `<store>/facts` because the real one is an absolute path:
+
+```console
+$ python -m bantamkit.memory list --store .bantamkit/memory
+facts: 3 (<store>/facts)
+bad-one	feedback	error	active	the deploy pipeline crashed on rollout
+f-word	feedback	-	active	close issues when done
+good-one	feedback	success	active	staged rollout finished without incident
+```
+
+`candidates` lists the facts that look finished, sorted by name, each with the first reason
+that matches. The reasons are tried in this order:
+
+1. `status: done`, for any type.
+2. `done-word '<word>' in description`, for `project` facts only. The words are whole words,
+   case-insensitive: `done`, `shipped`, `completed`, `closed`, `released`, `merged`. A
+   `feedback` fact is never a candidate by its words, so `close issues when done` stays put.
+3. `older than <N>d (created <date>)`, only with `--older-than DAYS` and only for a fact whose
+   `created` is a `YYYY-MM-DD` date (`20260101` and `2026-W01-1` are not aged on either
+   runtime).
+
+It is a dry run unless `--apply` is given. `--apply` archives each listed fact by the same move
+`archive` makes, and on the first refusal it stops, names the fact, and says how many were
+already archived (exit 1).
+
+```console
+$ python -m bantamkit.memory candidates --store .bantamkit/memory
+archive candidates: 1 (<store>/facts)
+p-done	status: done	a finished thing
+dry run; rerun with --apply to archive these 1
+```
+
+`merge` writes one new fact from two or more named facts and archives the originals. It is a
+dry run by default: it prints what it would consume, the exact text of the fact it would write,
+and any link that points at a consumed fact (that link would dangle once the originals leave),
+and writes nothing. The duplicate check runs on the dry run too, against every live fact EXCEPT
+the ones being merged (they are leaving, so resembling them is the point): a new fact too close
+to another live fact is refused with `cannot merge into '<NEW>': it duplicates the live fact
+'<other>'`, dry run or not. With `--apply` it saves the new fact first, so the budget check
+runs before any original moves, then archives each original in the order given. The body
+is the given text plus a `Sources: a, b` line, and links from the originals are carried over
+minus the consumed names. A refusal exits 1 and names its cause: fewer than two distinct live
+facts, a missing name, `--name` being one of the merged facts, a `--name` that is already
+live or archived, or a new fact that duplicates a live fact it does not consume.
+
+```console
+$ python -m bantamkit.memory merge --names bad-one good-one --name rollout-pattern --type feedback --description "the rollout pattern" --body "always stage" --store .bantamkit/memory
+consumes:
+  bad-one	feedback	the deploy pipeline crashed on rollout
+  good-one	feedback	staged rollout finished without incident
+produces:
+---
+name: rollout-pattern
+description: the rollout pattern
+type: feedback
+created: '<date>'
+last_recalled: null
+links: []
+---
+
+always stage
+
+Sources: bad-one, good-one
+links pointing at consumed facts:
+dry run; rerun with --apply to write
+```
+
+Neither the hooks nor the MCP server calls `list`, `candidates` or `merge`; they are operator
+commands. The only write they make is the one `--apply` asks for, and nothing in `save` removes
+a fact: `status: done` only makes a fact a candidate.
 
 ## Layers
 
@@ -1396,6 +1492,11 @@ not own and that prunes itself. bantamkit never writes the host's
 The whole contract, the four-branch resolver and the `native*` log fields are in
 [hooks.md](hooks.md#exporting-into-the-hosts-own-auto-memory-2026-09-20-job62--j62-6);
 this page owns the store the facts come FROM, not the one they go to.
+
+A fact the host writes into that directory travels the other way too, and a mirrored fact is an
+ordinary fact in this store: nothing marks it, it recalls, dedupes, compacts and dreams like any
+other, and the hook log's `mirrored` and `mirror-duplicate` records are the only provenance. A
+host without hooks never produces one.
 
 ### What an empty recall says
 

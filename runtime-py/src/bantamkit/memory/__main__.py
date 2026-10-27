@@ -37,6 +37,9 @@ from bantamkit.client import BantamError
 from bantamkit.memory.layers import discover_project_store
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
+    VALID_OUTCOMES,
+    VALID_STATUSES,
+    VALID_TYPES,
     MemoryBudgetExceeded,
     MemoryStore,
     MemoryValidationError,
@@ -110,8 +113,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=_PROG,
         description=(
-            "Operator lifecycle for a bantamkit memory store: inspect, lint, "
-            "compact, archive and restore. Not an agent surface."
+            "Operator lifecycle for a bantamkit memory store: inspect, list, lint, "
+            "compact, archive, restore, candidates and merge. Not an agent surface."
         ),
     )
     subs = parser.add_subparsers(dest="command", required=True)
@@ -132,6 +135,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         return sub
 
     common(subs.add_parser("status", help="index size, budget, headroom, archive count"))
+    lst = common(subs.add_parser("list", help="one line per live fact, filterable"))
+    lst.add_argument("--type", choices=sorted(VALID_TYPES), default=None, help="keep one type")
+    lst.add_argument(
+        "--outcome", choices=list(VALID_OUTCOMES), default=None, help="keep one outcome"
+    )
+    lst.add_argument(
+        "--status",
+        choices=list(VALID_STATUSES),
+        default=None,
+        help="keep one status (a fact with none is active)",
+    )
     common(subs.add_parser("lint", help="exit 1 if the store is malformed or over budget"))
     compact = common(subs.add_parser("compact", help="archive the stalest facts"))
     compact.add_argument(
@@ -145,6 +159,46 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "headroom to leave below the budget (default: the budget minus its 90 percent "
             "warning line, plus the largest index line kept; capped at half the budget)"
         ),
+    )
+    cand = common(
+        subs.add_parser("candidates", help="list facts that look finished; --apply archives them")
+    )
+    cand.add_argument(
+        "--older-than",
+        type=_nonnegative,
+        default=None,
+        metavar="DAYS",
+        help="also list facts created more than DAYS days ago",
+    )
+    cand.add_argument(
+        "--apply", action="store_true", help="archive the listed facts (default: dry run)"
+    )
+    merge = common(
+        subs.add_parser(
+            "merge", help="merge named facts into one new fact, archiving the originals"
+        )
+    )
+    merge.add_argument(
+        "--names", nargs="+", required=True, metavar="NAME", help="facts to consume (two or more)"
+    )
+    merge.add_argument("--name", required=True, help="name of the new fact")
+    merge.add_argument(
+        "--type", required=True, choices=sorted(VALID_TYPES), help="type of the new fact"
+    )
+    merge.add_argument("--description", required=True, help="one-line description of the new fact")
+    body = merge.add_mutually_exclusive_group(required=True)
+    body.add_argument("--body", help="body text of the new fact")
+    body.add_argument("--body-file", help="file holding the body text")
+    merge.add_argument(
+        "--outcome", choices=list(VALID_OUTCOMES), default=None, help="outcome of the new fact"
+    )
+    merge.add_argument(
+        "--status", choices=list(VALID_STATUSES), default=None, help="status of the new fact"
+    )
+    merge.add_argument(
+        "--apply",
+        action="store_true",
+        help="write the new fact and archive the originals (default: dry run)",
     )
     common(subs.add_parser("archived", help="list what compaction has moved out"))
     archive = common(subs.add_parser("archive", help="move one named fact out"))
@@ -222,6 +276,70 @@ def _cmd_compact(store: MemoryStore, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_list(store: MemoryStore, args: argparse.Namespace) -> int:
+    facts = store.list_facts(type=args.type, outcome=args.outcome, status=args.status)
+    print(f"facts: {len(facts)} ({store.root / 'facts'})")
+    for fact in facts:
+        print(
+            f"{fact.name}\t{fact.type}\t{fact.outcome or '-'}\t{fact.status or 'active'}"
+            f"\t{fact.description}"
+        )
+    return 0
+
+
+def _cmd_candidates(store: MemoryStore, args: argparse.Namespace) -> int:
+    found = store.candidates_done(older_than_days=args.older_than)
+    print(f"archive candidates: {len(found)} ({store.root / 'facts'})")
+    for fact, reason in found:
+        print(f"{fact.name}\t{reason}\t{fact.description}")
+    if not args.apply:
+        print(f"dry run; rerun with --apply to archive these {len(found)}")
+        return 0
+    done = 0
+    for fact, _ in found:
+        try:
+            store.archive(str(fact.name))
+        except MemoryValidationError as e:
+            print(
+                f"candidates failed at '{fact.name}': {e}; {done} already archived",
+                file=sys.stderr,
+            )
+            return 1
+        done += 1
+    print(f"archived {done} — index now {_size(store)}/{store.index_budget} bytes")
+    return 0
+
+
+def _cmd_merge(store: MemoryStore, args: argparse.Namespace) -> int:
+    body = args.body if args.body is not None else Path(args.body_file).read_text(encoding="utf-8")
+    result = store.merge(
+        args.names,
+        args.name,
+        args.type,
+        args.description,
+        body,
+        outcome=args.outcome,
+        status=args.status,
+        apply=args.apply,
+    )
+    print("consumes:")
+    for fact in result.consumed:
+        print(f"  {fact.name}\t{fact.type}\t{fact.description}")
+    print("produces:")
+    print(result.produced_text, end="")
+    print("links pointing at consumed facts:")
+    for line in result.linked_from:
+        print(f"  {line}")
+    if not result.applied:
+        print("dry run; rerun with --apply to write")
+        return 0
+    print(
+        f"merged {len(result.consumed)} into '{args.name}' — "
+        f"index now {_size(store)}/{store.index_budget} bytes"
+    )
+    return 0
+
+
 def _cmd_archived(store: MemoryStore, args: argparse.Namespace) -> int:
     names = store.archived()
     print(f"archived facts: {len(names)} ({store.root / 'archive'})")
@@ -284,8 +402,11 @@ def _cmd_restore(store: MemoryStore, args: argparse.Namespace) -> int:
 
 _COMMANDS = {
     "status": _cmd_status,
+    "list": _cmd_list,
     "lint": _cmd_lint,
     "compact": _cmd_compact,
+    "candidates": _cmd_candidates,
+    "merge": _cmd_merge,
     "archived": _cmd_archived,
     "archive": _cmd_archive,
     "restore": _cmd_restore,

@@ -234,6 +234,8 @@ function rpcError(code: number, message: string, data: unknown): Error {
 
 const asDict = (value: PyValue): Map<string, PyValue> => (value.t === 'dict' ? value.v : new Map());
 const asText = (value: PyValue | undefined): string => (value && value.t === 'str' ? value.v : '');
+/** An optional string parameter: absent (or not a string) is `null`, an empty string stays `''`. */
+const asOptText = (value: PyValue | undefined): string | null => (value && value.t === 'str' ? value.v : null);
 
 /**
  * `work_plan`'s `nodes` as `workplan.plan` takes them: the decoded objects, UNCHANGED.
@@ -582,7 +584,7 @@ function runTool(
       const prompts = args.get('queries');
       const queries = prompts && prompts.t === 'list' ? prompts.v.map((v) => asText(v)) : null;
       const outcome = recordRaise(log, 'memory_save', () =>
-        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings, keywords, queries),
+        memory.saveOutcome(asText(args.get('type')), asText(args.get('name')), asText(args.get('description')), asText(args.get('body')), asStrings, keywords, queries, asOptText(args.get('outcome')), asOptText(args.get('status'))),
       );
       if (log.enabled) {
         // Only when a log is actually on: `indexAccounting` re-parses `facts/`, and a
@@ -613,7 +615,8 @@ function runTool(
       const outcome = recordRaise(log, 'memory_recall', () => {
         if (file !== null) return memory.recallFile(file, k, query);
         if (query === null) throw new MemoryValidationError(RECALL_NEEDS_QUERY_OR_FILE);
-        return memory.recallOutcome(query, k, undefined, true, includeArchived);
+        // `outcome` (#219, 0.36.2) filters the scored walk; `file` mode ignores it.
+        return memory.recallOutcome(query, k, undefined, true, includeArchived, null, null, asOptText(args.get('outcome')));
       });
       const detail: Record<string, DetailValue> = {
         budget: outcome.budget,

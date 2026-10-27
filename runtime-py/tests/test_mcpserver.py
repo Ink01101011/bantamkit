@@ -453,7 +453,7 @@ def test_recall_k_clamped_to_advertised_bounds(tmp_path):
     # clamp under test has not moved — it still happens in the handler, before the
     # component sees `k` at all.
     class Probe(Memory):
-        def recall_outcome(self, query, k=None):
+        def recall_outcome(self, query, k=None, **kwargs):
             seen["k"] = k
             return RecallOutcome(
                 reply="ok",

@@ -1884,7 +1884,7 @@ def _tool_use(name: str, **tool_input) -> str:
     return json.dumps({"type": "assistant", "message": message})
 
 
-def test_169_a_read_under_memory_is_not_a_save_but_a_write_there_is(tmp_path):
+def test_169_neither_a_read_nor_an_unmirrored_write_under_memory_is_a_save(tmp_path):
     """RED before job65: the Read below set `saved: true` and silenced the nudge."""
     home, cwd = _bed(tmp_path, "stop-read")
     bash = [_tool_use("Bash") for _ in range(30)]
@@ -1901,8 +1901,9 @@ def test_169_a_read_under_memory_is_not_a_save_but_a_write_there_is(tmp_path):
         outcomes[label] = (_log_lines(home)[-1]["action"], done.stdout != b"")
     assert outcomes == {
         "read": ("nudge", True),
-        "write": ("pass", False),
-        "multiedit": ("pass", False),
+        # #228: a native write is no longer a save by itself; only the mirror's ledger is.
+        "write": ("nudge", True),
+        "multiedit": ("nudge", True),
     }
 
 
@@ -2482,3 +2483,310 @@ def test_session_start_nudges_while_a_fact_has_no_queries(tmp_path, monkeypatch)
     w = Memory(store).queries_write([{"name": "the-project-fact", "queries": ["what is it"]}])
     assert w["result"] == "written"
     assert "likely-prompt queries" not in ctx()
+
+
+# --- 7b. PostToolUse[Write|Edit|MultiEdit] — the native memory mirror (#228) -------------
+
+
+def _native_bed(tmp_path: Path, label: str) -> tuple[Path, Path, Path, Path]:
+    """home, cwd, native dir (dirname(transcript)/memory), transcript path."""
+    home, cwd = _bed(tmp_path, label)
+    host = tmp_path / f"{label}-host"
+    native = host / "memory"
+    native.mkdir(parents=True)
+    (native / "MEMORY.md").write_text("# Memory index\n", encoding="utf-8")
+    transcript = host / "session.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    return home, cwd, native, transcript
+
+
+def _native_fact(
+    name: str = "lesson-one",
+    description: str = '"a lesson — with an em dash"',
+    type_: str = "feedback",
+    body: str = "The lesson.\n\n**Why:** because [[other-fact]] said so.\n",
+    extra_meta: str = "",
+    links: str = "links:\n- first-link\n",
+) -> str:
+    return (
+        f"---\nname: {name}\ndescription: {description}\nmetadata:\n  node_type: memory\n"
+        f"  type: {type_}\n{extra_meta}{links}---\n\n{body}"
+    )
+
+
+def _write_payload(file: Path, transcript: Path, tool: str = "Write") -> dict:
+    return {
+        "hook_event_name": "PostToolUse",
+        "tool_name": tool,
+        "tool_input": {"file_path": str(file), "content": "x"},
+        "transcript_path": str(transcript),
+    }
+
+
+def _mirror_lines(home: Path) -> list[dict]:
+    return [x for x in _log_lines(home) if str(x.get("action", "")).startswith("mirror")]
+
+
+def test_a_native_write_is_mirrored_into_the_project_store(tmp_path):
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-write")
+    store = cwd / ".bantamkit" / "memory"
+    _save(store, "project", "seed", "a seed fact so the store exists", "body")
+    file = native / "lesson-one.md"
+    file.write_text(_native_fact(), encoding="utf-8")
+
+    done = _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == b"", "the mirror emits nothing to the host"
+    line = _mirror_lines(home)[0]
+    assert line["action"] == "mirrored"
+    assert line["name"] == "lesson-one"
+    assert line["nativeBranch"] == "transcript"
+    assert line["file"] == str(file)
+    assert line["budgetSource"] == "default"
+    text = (store / "facts" / "lesson-one.md").read_text(encoding="utf-8")
+    assert "type: feedback" in text
+    assert "description: a lesson — with an em dash" in text
+    assert "- first-link" in text and "- other-fact" in text
+    assert "The lesson." in text
+    assert file.read_text(encoding="utf-8") == _native_fact(), "the native file is untouched"
+    ledger_file = home / ".bantamkit" / "hooks" / "ledger-probe-session.json"
+    ledger = json.loads(ledger_file.read_text(encoding="utf-8"))
+    assert ledger["saved"] == 1
+
+
+def test_an_edit_replaces_the_mirrored_fact_rather_than_duplicating_it(tmp_path):
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-edit")
+    store = cwd / ".bantamkit" / "memory"
+    file = native / "lesson-one.md"
+    file.write_text(_native_fact(), encoding="utf-8")
+    _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+    file.write_text(_native_fact(body="The lesson, revised.\n"), encoding="utf-8")
+
+    _run_hook(_write_payload(file, transcript, tool="Edit"), home=home, cwd=cwd)
+
+    facts = sorted(p.name for p in (store / "facts").iterdir())
+    assert facts == ["lesson-one.md"]
+    assert "revised" in (store / "facts" / "lesson-one.md").read_text(encoding="utf-8")
+    assert [x["action"] for x in _mirror_lines(home)] == ["mirrored", "mirrored"]
+
+
+def test_the_export_stub_is_never_imported_back(tmp_path):
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-stub")
+    file = native / "stub.md"
+    file.write_text(_native_fact(name="stub", extra_meta="  source: bantamkit\n"), encoding="utf-8")
+
+    _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+
+    line = _mirror_lines(home)[0]
+    assert (line["action"], line["reason"]) == ("mirror-skipped", "export-stub")
+    assert not (cwd / ".bantamkit" / "memory" / "facts").exists() or not list(
+        (cwd / ".bantamkit" / "memory" / "facts").iterdir()
+    )
+
+
+def test_a_name_is_normalised_and_an_unusable_one_is_skipped(tmp_path):
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-name")
+    good = native / "Weird.Name_1.md"
+    good.write_text(_native_fact(name="Weird.Name_1"), encoding="utf-8")
+    bad = native / "escape.md"
+    bad.write_text(_native_fact(name="../escape"), encoding="utf-8")
+
+    _run_hook(_write_payload(good, transcript), home=home, cwd=cwd)
+    _run_hook(_write_payload(bad, transcript), home=home, cwd=cwd)
+
+    lines = _mirror_lines(home)
+    assert (lines[0]["action"], lines[0]["name"]) == ("mirrored", "weird-name-1")
+    assert (lines[1]["action"], lines[1]["reason"]) == ("mirror-skipped", "name")
+    assert "name" not in lines[1]
+
+
+def test_an_unknown_type_becomes_project_and_an_empty_body_is_skipped(tmp_path):
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-type")
+    typed = native / "odd-type.md"
+    typed.write_text(_native_fact(name="odd-type", type_="lesson"), encoding="utf-8")
+    empty = native / "no-body.md"
+    empty.write_text(_native_fact(name="no-body", body=""), encoding="utf-8")
+
+    _run_hook(_write_payload(typed, transcript), home=home, cwd=cwd)
+    _run_hook(_write_payload(empty, transcript), home=home, cwd=cwd)
+
+    lines = _mirror_lines(home)
+    assert lines[0]["action"] == "mirrored"
+    odd = cwd / ".bantamkit" / "memory" / "facts" / "odd-type.md"
+    assert "type: project" in odd.read_text(encoding="utf-8")
+    assert (lines[1]["action"], lines[1]["reason"]) == ("mirror-skipped", "body")
+
+
+def test_memory_md_and_files_outside_the_native_dir_are_not_mirrored(tmp_path):
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-outside")
+    elsewhere = cwd / "docs" / "memory"
+    elsewhere.mkdir(parents=True)
+    note = elsewhere / "notes.md"
+    note.write_text(_native_fact(name="notes"), encoding="utf-8")
+    plain = cwd / "README.md"
+    plain.write_text("# readme\n", encoding="utf-8")
+
+    _run_hook(_write_payload(native / "MEMORY.md", transcript), home=home, cwd=cwd)
+    _run_hook(_write_payload(note, transcript), home=home, cwd=cwd)
+    _run_hook(_write_payload(plain, transcript), home=home, cwd=cwd)
+
+    lines = _mirror_lines(home)
+    assert len(lines) == 1, lines
+    assert (lines[0]["action"], lines[0]["reason"]) == ("mirror-skipped", "not-native")
+    assert not (cwd / ".bantamkit" / "memory").exists()
+
+
+def test_a_budget_refusal_is_logged_and_the_store_is_unchanged(tmp_path):
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-refused")
+    store = cwd / ".bantamkit" / "memory"
+    _save(store, "project", "seed", "a seed fact so the store exists", "body")
+    _register(cwd, "--index-budget", "64")
+    before = sorted(p.name for p in (store / "facts").iterdir())
+    file = native / "lesson-one.md"
+    file.write_text(_native_fact(), encoding="utf-8")
+
+    done = _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+
+    assert done.returncode == 0, done.stderr
+    line = _mirror_lines(home)[0]
+    assert line["action"] == "mirror-refused"
+    assert line["reason"]
+    assert sorted(p.name for p in (store / "facts").iterdir()) == before
+    assert not (home / ".bantamkit" / "hooks" / "ledger-probe-session.json").exists() or json.loads(
+        (home / ".bantamkit" / "hooks" / "ledger-probe-session.json").read_text(encoding="utf-8")
+    ).get("saved", 0) == 0
+
+
+def test_stop_nudges_after_a_native_write_that_was_not_mirrored(tmp_path):
+    home, cwd = _bed(tmp_path, "stop-native")
+    transcript = tmp_path / "stop-native.jsonl"
+    tool_use = lambda name, inp: json.dumps(  # noqa: E731
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]},
+        }
+    )
+    lines = [tool_use("Bash", {"command": "ls"}) for _ in range(20)]
+    fact = "/home/u/.claude/projects/p/memory/fact.md"
+    lines.append(tool_use("Write", {"file_path": fact, "content": "x"}))
+    transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    done = _run_hook(
+        {"hook_event_name": "Stop", "transcript_path": str(transcript)},
+        home=home,
+        cwd=cwd,
+        session="stop-native",
+    )
+
+    assert b'"decision":"block"' in done.stdout or b'"decision": "block"' in done.stdout
+    assert [x for x in _log_lines(home) if x["event"] == "Stop"][-1]["action"] == "nudge"
+
+
+# --- J74-4: divergences found by running both hooks over one bed (#228) --------------------
+
+
+def test_a_crlf_native_file_is_mirrored_as_python_reads_it(tmp_path):
+    # Text mode translates `\r\n` and a lone `\r` to `\n` before the `---\n` split; the port
+    # read the bytes raw and skipped the file as `frontmatter`.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-crlf")
+    file = native / "crlf.md"
+    file.write_bytes(
+        b"---\r\nname: crlf\r\ndescription: windows line ends\r\n---\r\n"
+        b"\r\nbody one\r\nbody two\rthree\r\n"
+    )
+
+    _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+
+    line = _mirror_lines(home)[0]
+    assert (line["action"], line["name"]) == ("mirrored", "crlf")
+    text = (cwd / ".bantamkit" / "memory" / "facts" / "crlf.md").read_bytes()
+    assert b"\r" not in text
+    assert b"body one\nbody two\nthree\n" in text
+
+
+def test_a_frontmatter_with_no_keys_is_a_frontmatter_skip(tmp_path):
+    # `{}` is a dict to PyYAML and was a `description` skip here, while the port refuses it
+    # (#120's empty flow mapping) as `frontmatter`; an empty or comment-only frontmatter is
+    # `None` to PyYAML. All three are one rule now: no keys, no fact.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-nokeys")
+    files = []
+    for label, front in (("braces", "{}\n"), ("empty", ""), ("comment", "# only a comment\n")):
+        file = native / f"{label}.md"
+        file.write_text(f"---\n{front}---\n\nbody\n", encoding="utf-8")
+        files.append(file)
+
+    for file in files:
+        _run_hook(_write_payload(file, transcript), home=home, cwd=cwd)
+
+    skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
+    assert skipped == [("mirror-skipped", "frontmatter")] * 3
+
+
+def test_a_falsy_or_non_scalar_description_is_a_description_skip(tmp_path):
+    # `false` and `0` are falsy to Python and were mirrored by the port as 'False' and '0';
+    # a list or a mapping was mirrored on both sides under two different spellings
+    # (`str()` vs `String()`). None of them is a description.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-desc")
+    shapes = {
+        "d-false": "description: false\n",
+        "d-zero": "description: 0\n",
+        "d-block": "description:\n- a\n- b\n",
+        "d-flow": "description: [a, b]\n",
+        "d-map": "description:\n  a: 1\n",
+    }
+    for name, front in shapes.items():
+        text = f"---\nname: {name}\n{front}---\n\nbody\n"
+        (native / f"{name}.md").write_text(text, encoding="utf-8")
+
+    for name in shapes:
+        _run_hook(_write_payload(native / f"{name}.md", transcript), home=home, cwd=cwd)
+
+    assert [(x["action"], x["reason"], x["name"]) for x in _mirror_lines(home)] == [
+        ("mirror-skipped", "description", name) for name in shapes
+    ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_a_path_that_does_not_exist_resolves_through_a_link_the_way_realpath_does(
+    tmp_path,
+):
+    # `os.path.realpath` resolves the existing prefix of a missing path; the port's
+    # `realpathSync` threw and fell back to `path.resolve`, which kept the link, so the
+    # same Edit was `frontmatter` here and `not-native` there.
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    real = tmp_path / "real"
+    (real / "memory").mkdir(parents=True)
+    home.mkdir()
+    cwd.mkdir()
+    (real / "memory" / "MEMORY.md").write_text("# index\n", encoding="utf-8")
+    transcript = real / "session.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    (tmp_path / "link").symlink_to(real)
+
+    missing = tmp_path / "link" / "memory" / "nosuch" / "gone.md"
+    _run_hook(
+        _write_payload(missing, transcript, tool="Edit"),
+        home=home,
+        cwd=cwd,
+    )
+
+    skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
+    assert skipped == [("mirror-skipped", "frontmatter")]
+
+
+def test_a_path_spelled_in_another_case_is_not_the_native_directory(tmp_path):
+    # `os.path.realpath` never folds case; the port's `realpathSync.native` does on a
+    # case-insensitive volume (APFS, NTFS), so the port mirrored a path the reference did not.
+    home, cwd, native, transcript = _native_bed(tmp_path, "mirror-case")
+    file = native / "cased.md"
+    file.write_text(_native_fact(name="cased"), encoding="utf-8")
+    spelled = Path(str(file).replace("mirror-case-host", "MIRROR-CASE-HOST"))
+    if not spelled.exists():
+        pytest.skip("case-sensitive volume: the other spelling is a different path")
+
+    _run_hook(_write_payload(spelled, transcript), home=home, cwd=cwd)
+
+    skipped = [(x["action"], x["reason"]) for x in _mirror_lines(home)]
+    assert skipped == [("mirror-skipped", "not-native")]

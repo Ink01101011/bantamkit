@@ -1498,10 +1498,20 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         links: list[str] | None = None,
         keywords: list[str] | None = None,
         queries: list[str] | None = None,
+        outcome: str | None = None,
+        status: str | None = None,
     ) -> str:
         with _record_raise(log, "memory_save"):
-            outcome = memory.save_outcome(
-                type, name, description, body, links, keywords, queries
+            outcome_ = memory.save_outcome(
+                type,
+                name,
+                description,
+                body,
+                links,
+                keywords,
+                queries,
+                outcome=outcome,
+                status=status,
             )
         if log.enabled:
             # Only when a log is actually on: `index_accounting` re-parses `facts/`, and
@@ -1512,14 +1522,15 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             detail: dict[str, Any] = {"budget": budget}
             if index_bytes is not None:
                 detail["index_bytes"] = index_bytes
-            log.record("memory_save", outcome.status, detail)
-        return _noted(outcome.reply)
+            log.record("memory_save", outcome_.status, detail)
+        return _noted(outcome_.reply)
 
     def memory_recall(
         query: str | None = None,
         k: int | None = None,
         include_archived: bool | None = None,
         file: str | None = None,
+        outcome: str | None = None,
     ) -> str:
         if k is not None:
             # Clamped, not refused, and the manifest says so: `assets/tools/memory_recall.json`
@@ -1535,28 +1546,31 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             # byte for byte today's (and a `Memory` without the keyword still serves).
             # `file` (#200, E1-C): the facts linked to one tracked file; a `query` beside it is
             # ignored and the reply says so. Neither is the one refusal this tool adds.
+            # `outcome` (#219, 0.36.2) filters the scored walk; `file` mode ignores it.
             if file is not None:
-                outcome = memory.recall_file(file, k, query)
+                outcome_ = memory.recall_file(file, k, query)
             elif query is None:
                 raise MemoryValidationError(RECALL_NEEDS_QUERY_OR_FILE)
             elif include_archived:
-                outcome = memory.recall_outcome(query, k, include_archived=True)
+                outcome_ = memory.recall_outcome(
+                    query, k, include_archived=True, outcome=outcome
+                )
             else:
-                outcome = memory.recall_outcome(query, k)
+                outcome_ = memory.recall_outcome(query, k, outcome=outcome)
         detail = {
-            "budget": outcome.budget,
-            "candidates": outcome.candidates,
-            "layers": outcome.layers,
-            "reached": outcome.reached,
-            "returned": outcome.returned,
-            "unreadable": outcome.unreadable,
+            "budget": outcome_.budget,
+            "candidates": outcome_.candidates,
+            "layers": outcome_.layers,
+            "reached": outcome_.reached,
+            "returned": outcome_.returned,
+            "unreadable": outcome_.unreadable,
         }
-        if outcome.source is not None:
-            detail["source"] = outcome.source
+        if outcome_.source is not None:
+            detail["source"] = outcome_.source
         if file is not None:
             detail["file"] = True
-        log.record("memory_recall", outcome.status, detail)
-        return _noted(outcome.reply)
+        log.record("memory_recall", outcome_.status, detail)
+        return _noted(outcome_.reply)
 
     def memory_compact(reserve: int | None = None) -> str:
         """The model's half of compaction; the hook (`docs/hooks.md`) is the automatic half.

@@ -82,7 +82,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
@@ -549,6 +549,389 @@ export async function run(ctx) {
       actual: { exit: nd.exit, stderr: dec(nd.stderr) },
     });
     notes.push(`native-export: ${JSON.stringify(NATIVE_FIELDS(nd.last))}`);
+  }
+
+  // ======================================= #228, the mirror: a native write lands in the store
+  //
+  // B's other direction (job74). A Write/Edit/MultiEdit of a fact file in the host's own
+  // auto-memory directory is saved, one way, into the project store; the hook log is the only
+  // provenance. Three beds, each BUILT afresh per side at the same absolute path (a `cpSync`
+  // restore would not carry the edges bed's symlinks faithfully):
+  //   native-mirror        — the plan's eight payloads, the ledger, and the Stop that follows
+  //   native-mirror-edges  — what J74-4 found by running both hooks: CRLF, `{}`, falsy and
+  //                          non-scalar descriptions, a missing file, links (realpath), a
+  //                          `memory2/` sibling, NAME_MAX_CHARS, a backslash path, case
+  //   native-mirror-ruled  — the one divergence left: a shape only PyYAML reads
+  // Every outcome that matters is PINNED PER SIDE against a literal; the side-to-side cases are
+  // there for the bytes. `created` in a mirrored fact is today's date on both sides, so a run
+  // that crosses midnight between the two sides would flicker the facts comparison — not
+  // masked, by design.
+  // MUTATION EVIDENCE: `.shiftwork/notes-job74/J74-4-mutants.md`.
+  {
+    const mirrorRecords = (r) =>
+      r.records
+        .filter((x) => x.event === 'PostToolUse' && String(x.action ?? '').startsWith('mirror'))
+        .map((x) => Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'ts' && k !== 'ms')));
+    const tuples = (records) => records.map((x) => [x.action, x.reason ?? null, x.name ?? null]);
+    const fieldSets = (records) => records.map((x) => Object.keys(x).sort());
+    const post = (side, h, cwd, transcript, sessionId) => (tool, file, t = transcript) =>
+      runHook(ctx, side, {
+        payload: {
+          hook_event_name: 'PostToolUse',
+          tool_name: tool,
+          session_id: sessionId,
+          cwd,
+          transcript_path: t,
+          tool_input: { file_path: file, content: 'x' },
+          tool_response: {},
+        },
+        cwd,
+        home: h,
+      });
+    const quiet = (runs) => runs.every((r) => r.exit === 0 && r.stdout.length === 0);
+
+    // ------------------------------------------------------------------ native-mirror
+    const id = 'native-mirror';
+    const broot = join(root, id);
+    const cwd = join(broot, 'cwd');
+    const store = join(cwd, '.bantamkit', 'memory');
+    const host = join(broot, 'host');
+    const nativeDir = join(host, 'memory');
+    const transcript = join(host, 'session.jsonl');
+    const lesson = (body) =>
+      '---\nname: lesson\n' +
+      'description: "a lesson — with an em dash, café 中文, AP1827-41958 สภากาชาดไทย … — fix done"\n' +
+      'metadata:\n  node_type: memory\n  type: feedback\nlinks:\n- first-link\n- Second_Link\n- ../bad\n---\n\n' +
+      body;
+    const build = (budget) => {
+      rmSync(broot, { recursive: true, force: true });
+      mkdirSync(cwd, { recursive: true });
+      seedStore(ctx, store, [{ type: 'project', name: 'seed', description: 'a seed fact so the store exists' }]);
+      if (budget) {
+        writeFile(
+          join(cwd, '.mcp.json'),
+          JSON.stringify({ mcpServers: { bantamkit: { command: 'bantamkit-mcp', args: ['--index-budget', budget] } } }),
+        );
+      }
+      writeFile(join(nativeDir, 'MEMORY.md'), '# Memory index\n');
+      writeFile(transcript, '');
+      writeFile(join(nativeDir, 'lesson.md'), lesson('The lesson.\n\n**Why:** because [[other]] said so.\n'));
+      writeFile(
+        join(nativeDir, 'stub.md'),
+        '---\nname: stub\ndescription: an export\nmetadata:\n  source: bantamkit\n  type: project\n---\n\nexport body\n',
+      );
+      writeFile(join(nativeDir, 'Weird.Name_1.md'), '---\ndescription: a name from the file name\ntype: user\n---\n\nweird body\n');
+      writeFile(
+        join(nativeDir, 'escape.md'),
+        '---\nname: ../escape\ndescription: a name that must never be joined into a path\n---\n\nbody\n',
+      );
+      writeFile(join(nativeDir, 'nobody.md'), '---\nname: nobody\ndescription: no body at all\n---\n\n   \n');
+      writeFile(join(cwd, 'docs', 'memory', 'notes.md'), '---\nname: notes\ndescription: a doc under memory/\n---\n\nnotes\n');
+    };
+    const bash = Array.from({ length: 30 }, () =>
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: {} }] } }),
+    );
+    const sequence = (side) => {
+      build();
+      const h = home(id, side);
+      const hook = post(side, h, cwd, transcript, id);
+      const runs = [];
+      let untouched = true;
+      const step = (tool, file) => {
+        const before = treeOf(nativeDir);
+        runs.push(hook(tool, file));
+        untouched = untouched && JSON.stringify(treeOf(nativeDir)) === JSON.stringify(before);
+      };
+      step('Write', join(nativeDir, 'lesson.md'));
+      writeFile(join(nativeDir, 'lesson.md'), lesson('The lesson, revised by an Edit.\n\nStill [[other]].\n'));
+      step('Edit', join(nativeDir, 'lesson.md'));
+      step('Write', join(nativeDir, 'stub.md'));
+      step('MultiEdit', join(nativeDir, 'Weird.Name_1.md'));
+      step('Write', join(nativeDir, 'escape.md'));
+      step('Write', join(nativeDir, 'nobody.md'));
+      step('Write', join(nativeDir, 'MEMORY.md'));
+      step('Write', join(cwd, 'docs', 'memory', 'notes.md'));
+      const ledger = JSON.parse(readFileSync(join(h, '.bantamkit', 'hooks', `ledger-${id}.json`), 'utf8'));
+      // The Stop that follows, on the SAME session: the mirror counted through the ledger, so
+      // a transcript of 30 Bash calls and no memory_save passes.
+      const t = join(broot, `t-${side}.jsonl`);
+      writeFileSync(t, bash.join('\n') + '\n');
+      const stop = runHook(ctx, side, {
+        payload: { hook_event_name: 'Stop', cwd, session_id: id, transcript_path: t },
+        cwd,
+        home: h,
+      });
+      const last = runs[runs.length - 1];
+      return {
+        records: mirrorRecords(last),
+        facts: treeOf(join(store, 'facts')),
+        saved: ledger.saved,
+        quiet: quiet(runs),
+        untouched,
+        stop: { action: stop.last['action'], blocked: dec(stop.stdout).includes('"decision":"block"') },
+      };
+    };
+    const refused = (side) => {
+      build('64');
+      const h = home(`${id}-refused`, side);
+      const before = treeOf(join(store, 'facts'));
+      const r = post(side, h, cwd, transcript, `${id}-refused`)('Write', join(nativeDir, 'lesson.md'));
+      const ledgerPath = join(h, '.bantamkit', 'hooks', `ledger-${id}-refused.json`);
+      return {
+        tuples: tuples(mirrorRecords(r)).map(([action, , name]) => [action, name]),
+        reason: mirrorRecords(r)[0]?.reason ?? null,
+        factsUnchanged: JSON.stringify(treeOf(join(store, 'facts'))) === JSON.stringify(before),
+        saved: existsSync(ledgerPath) ? JSON.parse(readFileSync(ledgerPath, 'utf8')).saved ?? 0 : 0,
+        quiet: quiet([r]),
+      };
+    };
+    const py = sequence('py');
+    const nd = sequence('node');
+    const pyRefused = refused('py');
+    const ndRefused = refused('node');
+    const withoutBytes = (records) => records.map(({ bytes: _bytes, ...rest }) => rest);
+
+    cases.push(
+      {
+        name: 'native-mirror: every byte the mirror wrote into the project store, side to side',
+        kind: 'json',
+        expected: py.facts,
+        actual: nd.facts,
+      },
+      {
+        name: 'native-mirror: the mirror records (minus ts/ms/bytes), side to side',
+        kind: 'json',
+        expected: withoutBytes(py.records),
+        actual: withoutBytes(nd.records),
+      },
+      ...literalCases(
+        tuples(py.records),
+        tuples(nd.records),
+        'native-mirror: PINNED PER SIDE: the eight payloads give seven records (MEMORY.md gives none)',
+        [
+          ['mirrored', null, 'lesson'],
+          ['mirrored', null, 'lesson'],
+          ['mirror-skipped', 'export-stub', null],
+          ['mirrored', null, 'weird-name-1'],
+          ['mirror-skipped', 'name', null],
+          ['mirror-skipped', 'body', 'nobody'],
+          ['mirror-skipped', 'not-native', null],
+        ],
+      ),
+      ...literalCases(
+        fieldSets(py.records),
+        fieldSets(nd.records),
+        'native-mirror: PINNED PER SIDE: a mirrored record carries the postSave budget fields, a skip carries its reason',
+        [
+          ['action', 'budget', 'budgetScope', 'budgetSource', 'bytes', 'event', 'file', 'name', 'nativeBranch'],
+          ['action', 'budget', 'budgetScope', 'budgetSource', 'bytes', 'event', 'file', 'name', 'nativeBranch'],
+          ['action', 'event', 'file', 'nativeBranch', 'reason'],
+          ['action', 'budget', 'budgetScope', 'budgetSource', 'bytes', 'event', 'file', 'name', 'nativeBranch'],
+          ['action', 'event', 'file', 'nativeBranch', 'reason'],
+          ['action', 'event', 'file', 'name', 'nativeBranch', 'reason'],
+          ['action', 'event', 'file', 'nativeBranch', 'reason'],
+        ],
+      ),
+      ...literalCases(
+        { facts: Object.keys(py.facts).sort(), lesson: py.facts['lesson.md'] ?? null },
+        { facts: Object.keys(nd.facts).sort(), lesson: nd.facts['lesson.md'] ?? null },
+        'native-mirror: PINNED PER SIDE: three facts, and the edited lesson is the one on disk with every link rule applied',
+        {
+          facts: ['lesson.md', 'seed.md', 'weird-name-1.md'],
+          lesson:
+            '---\nname: lesson\n' +
+            // PyYAML's emitter folds the long plain scalar at its width; the port's codec does too
+            'description: a lesson — with an em dash, café 中文, AP1827-41958 สภากาชาดไทย … — fix\n  done\n' +
+            `type: feedback\ncreated: '${py.facts['lesson.md']?.match(/^created: '(.*)'$/m)?.[1] ?? '<none>'}'\n` +
+            'last_recalled: null\nlinks:\n- first-link\n- second-link\n- other\n---\n\n' +
+            'The lesson, revised by an Edit.\n\nStill [[other]].\n',
+        },
+      ),
+      ...literalCases(
+        { saved: py.saved, quiet: py.quiet, untouched: py.untouched, stop: py.stop },
+        { saved: nd.saved, quiet: nd.quiet, untouched: nd.untouched, stop: nd.stop },
+        'native-mirror: PINNED PER SIDE: three mirrors bump the ledger, nothing is printed, the native directory is never written, and the Stop that follows passes',
+        { saved: 3, quiet: true, untouched: true, stop: { action: 'pass', blocked: false } },
+      ),
+      ...literalCases(
+        { ...pyRefused, reason: typeof pyRefused.reason === 'string' && pyRefused.reason.length > 0 },
+        { ...ndRefused, reason: typeof ndRefused.reason === 'string' && ndRefused.reason.length > 0 },
+        'native-mirror: PINNED PER SIDE: under --index-budget 64 the save is refused, logged with a reason, the store and the ledger unchanged',
+        { tuples: [['mirror-refused', 'lesson']], reason: true, factsUnchanged: true, saved: 0, quiet: true },
+      ),
+      {
+        name: 'native-mirror: the refusal reason is the store’s own sentence, side to side',
+        kind: 'string',
+        expected: pyRefused.reason ?? '<none>',
+        actual: ndRefused.reason ?? '<none>',
+      },
+    );
+
+    // ------------------------------------------------------------ native-mirror-edges
+    {
+      const eid = 'native-mirror-edges';
+      const eroot = join(root, eid);
+      const ecwd = join(eroot, 'cwd');
+      const estore = join(ecwd, '.bantamkit', 'memory');
+      const ehost = join(eroot, 'host');
+      const enative = join(ehost, 'memory');
+      const etranscript = join(ehost, 'session.jsonl');
+      const fact = (name, description, body = '\nbody\n') =>
+        `---\n${name === null ? '' : `name: ${name}\n`}${description}---\n${body}`;
+      const ebuild = () => {
+        rmSync(eroot, { recursive: true, force: true });
+        mkdirSync(ecwd, { recursive: true });
+        writeFile(join(enative, 'MEMORY.md'), '# Memory index\n');
+        writeFile(etranscript, '');
+        writeFile(join(enative, 'crlf.md'), '---\r\nname: crlf\r\ndescription: windows line ends\r\n---\r\n\r\nbody one\r\nbody two\r\n');
+        writeFile(join(enative, 'braces.md'), '---\n{}\n---\n\nbody\n');
+        writeFile(join(enative, 'd-false.md'), fact('d-false', 'description: false\n'));
+        writeFile(join(enative, 'd-list.md'), fact('d-list', 'description:\n- a\n- b\n'));
+        writeFile(join(enative, 'via-link.md'), fact('via-link', 'description: reached through a linked native dir\n'));
+        writeFile(join(ehost, 'memory2', 'x.md'), fact('x', 'description: a sibling, not the native dir\n'));
+        writeFile(join(enative, 'long.md'), fact('a'.repeat(129), 'description: one over NAME_MAX_CHARS\n'));
+        writeFile(join(enative, 'max.md'), fact('b'.repeat(128), 'description: exactly NAME_MAX_CHARS\n'));
+        writeFile(join(enative, 'cased.md'), fact('cased', 'description: spelled in another case\n'));
+        symlinkSync(ehost, join(eroot, 'linkhost'));
+      };
+      const esequence = (side) => {
+        ebuild();
+        const h = home(eid, side);
+        const hook = post(side, h, ecwd, etranscript, eid);
+        const runs = [
+          hook('Write', join(enative, 'crlf.md')),
+          hook('Write', join(enative, 'braces.md')),
+          hook('Write', join(enative, 'd-false.md')),
+          hook('Write', join(enative, 'd-list.md')),
+          hook('Edit', join(enative, 'gone.md')),
+          // the host names its directory through a link; the tool writes the real path
+          hook('Write', join(enative, 'via-link.md'), join(eroot, 'linkhost', 'session.jsonl')),
+          // a missing directory under the link: realpath resolves the existing prefix
+          hook('Edit', join(eroot, 'linkhost', 'memory', 'nosuch', 'gone.md')),
+          hook('Write', join(ehost, 'memory2', 'x.md')),
+          hook('Write', join(enative, 'long.md')),
+          hook('Write', join(enative, 'max.md')),
+          hook('Write', 'C:\\Users\\u\\.claude\\projects\\p\\memory\\fact.md'),
+          hook('Write', join(enative, 'cased.md').replace(`${sep}host${sep}`, `${sep}HOST${sep}`)),
+        ];
+        return { records: mirrorRecords(runs[runs.length - 1]), facts: treeOf(join(estore, 'facts')), quiet: quiet(runs) };
+      };
+      const epy = esequence('py');
+      const end = esequence('node');
+      cases.push(
+        {
+          name: 'native-mirror-edges: every byte the mirror wrote, side to side',
+          kind: 'json',
+          expected: epy.facts,
+          actual: end.facts,
+        },
+        {
+          name: 'native-mirror-edges: the mirror records (minus ts/ms/bytes), side to side',
+          kind: 'json',
+          expected: withoutBytes(epy.records),
+          actual: withoutBytes(end.records),
+        },
+        ...literalCases(
+          { tuples: tuples(epy.records), quiet: epy.quiet, crlf: epy.facts['crlf.md']?.includes('\r') ?? null },
+          { tuples: tuples(end.records), quiet: end.quiet, crlf: end.facts['crlf.md']?.includes('\r') ?? null },
+          'native-mirror-edges: PINNED PER SIDE (J74-4): CRLF reads as LF, no keys and a non-text description are skips, realpath resolves a missing tail through the link, memory2/ is silent, a backslash or other-case spelling is not native',
+          {
+            tuples: [
+              ['mirrored', null, 'crlf'],
+              ['mirror-skipped', 'frontmatter', null],
+              ['mirror-skipped', 'description', 'd-false'],
+              ['mirror-skipped', 'description', 'd-list'],
+              ['mirror-skipped', 'frontmatter', null],
+              ['mirrored', null, 'via-link'],
+              ['mirror-skipped', 'frontmatter', null],
+              ['mirror-skipped', 'name', null],
+              ['mirrored', null, 'b'.repeat(128)],
+              ['mirror-skipped', 'not-native', null],
+              ['mirror-skipped', 'not-native', null],
+            ],
+            quiet: true,
+            crlf: false,
+          },
+        ),
+      );
+    }
+
+    // ------------------------------------------------------------ native-mirror-ruled
+    {
+      const rid = 'native-mirror-ruled';
+      const rroot = join(root, rid);
+      const rcwd = join(rroot, 'cwd');
+      const rnative = join(rroot, 'host', 'memory');
+      const rtranscript = join(rroot, 'host', 'session.jsonl');
+      const shapes = {
+        // #120's flow mapping
+        'flow.md': '---\nname: flow\ndescription: a flow mapping\nmetadata: {type: user}\n---\n\nbody\n',
+        // a block sequence indented under its key
+        'indented.md': '---\nname: indented\ndescription: an indented list\nlinks:\n  - alpha\n---\n\nbody\n',
+        // the memory-keeper shape: a list two levels down (2 of 460 real native files, 2026-10-22)
+        'keeper.md':
+          '---\nname: keeper\ndescription: a keeper file\nmetadata:\n  type: feedback\n  links:\n    - alpha\n---\n\nbody\n',
+      };
+      const rsequence = (side) => {
+        rmSync(rroot, { recursive: true, force: true });
+        mkdirSync(rcwd, { recursive: true });
+        writeFile(join(rnative, 'MEMORY.md'), '# Memory index\n');
+        writeFile(rtranscript, '');
+        for (const [file, text] of Object.entries(shapes)) writeFile(join(rnative, file), text);
+        const before = treeOf(rnative);
+        const hook = post(side, home(rid, side), rcwd, rtranscript, rid);
+        const runs = Object.keys(shapes).map((file) => hook('Write', join(rnative, file)));
+        return {
+          tuples: tuples(mirrorRecords(runs[runs.length - 1])),
+          bit: { quiet: quiet(runs), untouched: JSON.stringify(treeOf(rnative)) === JSON.stringify(before) },
+        };
+      };
+      const rpy = rsequence('py');
+      const rnd = rsequence('node');
+      cases.push(
+        {
+          name: 'native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes',
+          kind: 'json',
+          expected: rpy.tuples,
+          actual: rnd.tuples,
+          ruling:
+            'RULED DIFFERENT, and carried in `docs/porting.md` (job74 J74-4, #228). The port’s ' +
+            'frontmatter parser refuses, by #120’s standing ruling, every YAML shape it does not ' +
+            'implement — a flow mapping, a block sequence indented under its key, a list two ' +
+            'levels down — and PyYAML reads them. A native file in one of those shapes is ' +
+            'therefore mirrored by the reference and skipped as `frontmatter` by the port. ' +
+            'Making them agree means porting the scanner (#120 says no) or making the reference ' +
+            'drop a fact it can read. The skip is logged and nothing is written on either side.',
+        },
+        ...literalCases(
+          rpy.tuples,
+          rnd.tuples,
+          'native-mirror-ruled: the reference mirrors every ruled shape',
+          [
+            ['mirrored', null, 'flow'],
+            ['mirrored', null, 'indented'],
+            ['mirrored', null, 'keeper'],
+          ],
+        ).slice(0, 1),
+        ...literalCases(
+          rpy.tuples,
+          rnd.tuples,
+          'native-mirror-ruled: the port skips every ruled shape as frontmatter',
+          [
+            ['mirror-skipped', 'frontmatter', null],
+            ['mirror-skipped', 'frontmatter', null],
+            ['mirror-skipped', 'frontmatter', null],
+          ],
+        ).slice(1),
+        {
+          name: 'native-mirror-ruled: the bit the ruling does not license — exit 0, nothing printed, the native directory untouched, side to side',
+          kind: 'json',
+          expected: rpy.bit,
+          actual: rnd.bit,
+        },
+        ...literalCases(rpy.bit, rnd.bit, 'native-mirror-ruled: that bit against a literal', { quiet: true, untouched: true }),
+      );
+    }
   }
 
   // ============================================ A, the export: the one divergence, and its bit
@@ -2979,8 +3362,10 @@ export async function run(ctx) {
   //   (d) #119: one truncated PROJECT fact — UserPromptSubmit used to print 0 bytes; it now
   //       injects the healthy facts of both layers, and SessionStart's project block holds.
   //   (e) #168: an unparseable stdin is logged as its byte length and sha256, never its text.
-  //   (f) #169: the Stop nudge is suppressed only by a real save — memory_save, or a
-  //       Write/Edit/MultiEdit of a `.md` under `memory/` — and NOT by a Read under `memory/`.
+  //   (f) #169, AMENDED #228 (job74): the Stop nudge is suppressed only by a real save — a
+  //       memory_save in the transcript, or the ledger's `saved` count, which the PostToolUse
+  //       mirror bumps — and NOT by a Read, a Grep, or (since #228) a Write/Edit under
+  //       `memory/` merely being present in the transcript.
   //   (g) #192: a regular file the hook may not read (chmod 000) is never ledgered and its
   //       retry is never refused. Withheld as uid 0 (root reads a 000 file) and on win32
   //       (the mode is advisory there), with a note, exactly as `shiftwork` withholds its
@@ -3045,8 +3430,11 @@ export async function run(ctx) {
         writeUnderMemory: [toolUse('Write', { file_path: '/home/u/.claude/projects/p/memory/fact.md', content: 'x' })],
         editUnderMemory: [toolUse('Edit', { file_path: 'C:\\\\u\\\\memory\\\\fact.md', old_string: 'a', new_string: 'b' })],
         memorySave: [toolUse('mcp__bantamkit__memory_save', { name: 'n' })],
+        // #228: the same Write tail, on a session whose ledger the mirror already bumped
+        mirrored: [toolUse('Write', { file_path: '/home/u/.claude/projects/p/memory/fact.md', content: 'x' })],
       };
       const stop = {};
+      writeFile(join(h, '.bantamkit', 'hooks', 'ledger-stop-mirrored.json'), JSON.stringify({ reads: {}, saved: 1 }));
       for (const [label, tail] of Object.entries(tails)) {
         const t = join(b.root, `t-${side}-${label}.jsonl`);
         writeFileSync(t, [...bash, ...tail].join('\n') + '\n');
@@ -3156,14 +3544,15 @@ export async function run(ctx) {
       ...literalCases(
         py.stop,
         nd.stop,
-        'hook-degrade: PINNED PER SIDE (#169): only a memory_save or a Write/Edit of memory/*.md silences the Stop nudge — a Read or a Grep under memory/ does not',
+        'hook-degrade: PINNED PER SIDE (#169, amended #228): only a memory_save silences the Stop nudge — a Write/Edit under memory/ is mirrored by PostToolUse and counted through the ledger, not by its presence in the transcript',
         {
           none: { action: 'nudge', blocked: true },
           readUnderMemory: { action: 'nudge', blocked: true },
           grepUnderMemory: { action: 'nudge', blocked: true },
-          writeUnderMemory: { action: 'pass', blocked: false },
-          editUnderMemory: { action: 'pass', blocked: false },
+          writeUnderMemory: { action: 'nudge', blocked: true },
+          editUnderMemory: { action: 'nudge', blocked: true },
           memorySave: { action: 'pass', blocked: false },
+          mirrored: { action: 'pass', blocked: false },
         },
       ),
     );
