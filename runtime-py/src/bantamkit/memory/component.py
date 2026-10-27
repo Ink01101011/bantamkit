@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +26,7 @@ from bantamkit.memory.layers import (
 )
 from bantamkit.memory.native import NATIVE_LAYER, NativeStore
 from bantamkit.memory.retrieval import BM25F, QueryScorer, Scorer, query_terms, stale, weight_of
+from bantamkit.memory.skills import SKILL_LAYER, SkillStore, skill_roots
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
     MIN_RATIO_RANGE,
@@ -261,9 +262,14 @@ def _layer_label(root: Path) -> str:
     return root.name
 
 
+#: The read-only layers that are not bantamkit stores: they list their own files, take the
+#: `shadow` of every bantamkit layer before them, and are never written.
+_READ_ONLY = (NativeStore, SkillStore)
+
+
 def _count(store: Any) -> int:
-    """A layer's fact count: `facts/*.md` for a bantamkit store, the listing for the native one."""
-    return store.count() if isinstance(store, NativeStore) else count_facts(store.root)
+    """A layer's fact count: `facts/*.md` for a bantamkit store, the listing for a read-only one."""
+    return store.count() if isinstance(store, _READ_ONLY) else count_facts(store.root)
 
 
 class Memory:
@@ -358,8 +364,23 @@ class Memory:
         profile_root = _profile_store()
         if not _same_directory(profile_root, project_root):
             mem._layers.append(("profile", MemoryStore(profile_root, k=k, create=False), False))
+        mem._add_skills(skill_roots(project_root, Path.home()), only_present=True)
         mem._add_native(native)
         return mem
+
+    def _add_skills(self, roots: list[Path], only_present: bool = False) -> None:
+        """bantamkit's learned skills (#206, X8) as a read-only layer, after `profile` and
+        before `native`: bantamkit's own data before the host's.
+
+        `only_present`: bound only when some root is a directory, so a machine with no skill
+        has exactly the layers it had before the layer existed. A short-lived hook sees a
+        skill the moment it is installed; a long-lived server binds its layers once.
+        """
+        if not roots:
+            return
+        if only_present and not any(r.is_dir() for r in roots):
+            return
+        self._layers.append((SKILL_LAYER, SkillStore(roots), False))
 
     def _add_native(self, native: str | Path | None) -> None:
         """The host's auto-memory as the last, read-only layer, when a directory was resolved."""
@@ -874,7 +895,7 @@ class Memory:
             left_out: list[dict[str, str]] = []
             stores.append(store)
             left.append(left_out)
-            native = isinstance(store, NativeStore)
+            native = isinstance(store, _READ_ONLY)
             try:
                 if outcome is not None:
                     got = (
@@ -882,11 +903,14 @@ class Memory:
                         if native
                         else store.candidates(left_out)
                     )
-                    if not native:
+                    if not native or isinstance(store, SkillStore):
                         shadow.update(_text(f.name) for f in got)
                     pool = pool_of([f for f in got if f.outcome == outcome], q, every_row)
                 elif native:
                     pool = store.pool(q, skipped=left_out, shadow=shadow, every_row=every_row)
+                    if isinstance(store, SkillStore):
+                        # a skill is bantamkit's own: the host's copy of a name never answers
+                        shadow.update(pool.all_names())
                 else:
                     pool = store.pool(q, skipped=left_out, every_row=every_row)
                     shadow.update(pool.all_names())
@@ -907,7 +931,7 @@ class Memory:
         def repool(i: int) -> Pool:
             try:
                 store = stores[i]
-                if isinstance(store, NativeStore):
+                if isinstance(store, _READ_ONLY):
                     got = store.candidates(left[i], shadow)
                 else:
                     got = store.candidates(left[i])
@@ -999,19 +1023,22 @@ class Memory:
         profile: str | Path,
         engine: str = "v2",
         native: str | Path | None = None,
+        skills: Sequence[str | Path] | None = None,
     ) -> Memory:
         """A project + profile memory over two COPIES, for `tools/eval/recall/score.py`.
 
         No grant and no home-directory profile is consulted. `engine` names the scorer; this
         runtime has one, `v2` (BM25F + gate + ranker); `v1` is the eval's own baseline.
         `native` (#199 J68-11) adds a COPY of an auto-memory directory as the last layer, so
-        the eval scores both views: A without it, B with it.
+        the eval scores both views: A without it, B with it. `skills` (#206) adds skill roots
+        as the `[skill]` layer before it, bound even when none is there yet.
         """
         if engine != "v2":
             raise ValueError(f"unknown engine: {engine!r}")
         mem = cls(project)
         mem._show_layers = True
         mem._layers.append(("profile", MemoryStore(profile, k=mem.k, create=False), False))
+        mem._add_skills([Path(r) for r in skills or ()])
         mem._add_native(native)
         return mem
 
@@ -1039,7 +1066,7 @@ class Memory:
         seen: set[str] = set()
         for i, (label, store, writable) in enumerate(self._layers):
             try:
-                if isinstance(store, NativeStore):
+                if isinstance(store, _READ_ONLY):
                     pool = store.pool([], skipped=[], shadow=frozenset(seen))
                 else:
                     pool = store.pool([], skipped=[])
@@ -1307,8 +1334,8 @@ class Memory:
 
     @classmethod
     def _layer_count(cls, store: Any) -> int | None:
-        """`_fact_count` for one bound layer; the native layer counts its own listing."""
-        if not isinstance(store, NativeStore):
+        """`_fact_count` for one bound layer; a read-only layer counts its own listing."""
+        if not isinstance(store, _READ_ONLY):
             return cls._fact_count(store.root)
         try:
             return store.count()
