@@ -30,6 +30,7 @@ from bantamkit import (
     selfupdate,
     shiftwork,
     skillaudit,
+    skillmine,
     skillreport,
     tokenledger,
     updatecheck,
@@ -960,6 +961,7 @@ def status_report(
     tools: int,
     prompts: int,
     templates: int,
+    sampling: bool = False,
 ) -> str:
     """The whole answer `bantamkit_status` returns — prose, for a person, in a transcript.
 
@@ -1030,6 +1032,10 @@ def status_report(
         # #205 Task 4: the last daily skill audit, after every earlier line so each keeps its
         # number. Not a condition: it never flips line 1, as the storage block never does.
         skillreport.status_line(Path.home()),
+        # #206 Task 8: the experience miner's last daily run, after the audit line so every
+        # earlier line keeps its number. `sampling` stays False until the server drafts through
+        # MCP sampling (Task 11 passes the client's declared capability).
+        skillmine.status_line(Path.home(), sampling),
     ]
     if conditions:
         lines.append(f"{_plural(len(conditions), 'problem')}:")

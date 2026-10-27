@@ -720,8 +720,15 @@ function writeState(home: string, obj: unknown): void {
  * moves or rewrites NOTHING but `retention.json`'s claim and `skill-audit.json` (`skill-host`'s
  * `child` snapshot case). The audit runs after the sweep, under the same stamp, only when
  * `BANTAMKIT_SKILL_AUDIT` is not off; it never throws.
+ *
+ * #206 Task 8: the experience miner (`skillmine.daily`) runs after the audit, under the same
+ * switch and stamp; it may draft through an endpoint, so this is async. With the sweep off the
+ * only files the child may then change are the claim, `skill-audit.json`,
+ * `skill-proposals.json`, `skill-miner-cache.json`, `skills-state.json`, `skill-drafts.jsonl`,
+ * and paths under `~/.bantamkit/skills`, `~/.bantamkit/skill-backups` and
+ * `<project>/.bantamkit/skills` (`skill-miner`'s snapshot case).
  */
-export function childMain(argv: readonly string[], now: string | null = null): number {
+export async function childMain(argv: readonly string[], now: string | null = null): Promise<number> {
   const sweep = enabled();
   const audit = auditEnabled();
   if (!(sweep || audit) || argv.length < 2) return 0;
@@ -743,7 +750,13 @@ export function childMain(argv: readonly string[], now: string | null = null): n
         writeState(home, { ran_at: stamp, error: e instanceof Error ? e.constructor.name : 'Error' });
       }
     }
-    if (audit) dailySkillAudit(home, argv[0]!, stamp);
+    if (audit) {
+      dailySkillAudit(home, argv[0]!, stamp);
+      // #206 Task 8: the experience miner after the audit, under the same claimed day. Imported
+      // here, not at the top, so a hook that only imports this module never loads the miner.
+      const { daily: dailyMiner } = await import('../skillmine.js');
+      await dailyMiner(home, argv[0]!, stamp);
+    }
   } catch {
     /* silent: retried at the next day's TTL */
   }

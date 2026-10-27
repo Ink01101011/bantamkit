@@ -58,6 +58,11 @@ const status =
       BANTAMKIT_RETENTION: 'off',
       // #205 Amendment A3: the daily skill audit wakes the same child on its own switch.
       BANTAMKIT_SKILL_AUDIT: 'off',
+      // #206 Task 8: that child now mines, drafts and installs; no test installs or reaches an
+      // endpoint unless it sets these itself.
+      BANTAMKIT_SKILL_AUTO: 'off',
+      BANTAMKIT_LLM_URL: '',
+      BANTAMKIT_LLM_MODEL: '',
       BANTAMKIT_TEST_SANDBOX: indexDir,
     },
   }).status ?? 1;

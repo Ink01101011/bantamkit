@@ -1492,3 +1492,224 @@ def miner_pieces(
                 work.append(p)
     work.sort(key=lambda p: (p.ts, p.id))
     return work + sessions
+
+
+# ------------------------------------------------------------- the daily run (Task 8)
+
+#: The `skills-state.json` events the SessionStart line reads (C12): the newest kept.
+EVENTS_KEEP = 32
+#: The usage-ledger kinds that count as a use of a skill (R10).
+USE_KINDS = ("recall_hit", "body_read")
+_LEDGER_NAME = re.compile(r"[\s\S]+\.jsonl")
+
+
+def error_name(e: BaseException) -> str:
+    """The word `miner.error` holds: `OSError` for any filesystem error (Node's errors carry an
+    errno `code` and a `syscall`, never Python's subclass names), else the class name."""
+    return "OSError" if isinstance(e, OSError) else type(e).__name__
+
+
+def _failed_doc(previous: Mapping[str, Any] | None, now: str, ms: int, error: str) -> dict:
+    """The proposals file after a miner error: the previous clusters kept as they were (their
+    statuses and rejections must survive a failed day), `miner.error` set."""
+    clusters = previous.get("clusters") if isinstance(previous, Mapping) else None
+    return {
+        "clusters": list(clusters) if isinstance(clusters, list) else [],
+        "miner": {"error": error, "ms": ms, "pieces": {SOURCE_SESSION: 0, SOURCE_SHIFTWORK: 0}},
+        "ts": now,
+        "version": PROPOSALS_VERSION,
+    }
+
+
+def draft_candidate(doc: Mapping[str, Any]) -> dict[str, Any] | None:
+    """R12: the one record the daily child drafts — auto-eligible, still installable, with no
+    passing draft yet; most successes, then the oldest first member, then the id."""
+    from bantamkit.skillinstall import AUTO_FROM, _draft_text, _first_ts
+
+    clusters = doc.get("clusters") if isinstance(doc.get("clusters"), list) else []
+    ready = [
+        r
+        for r in clusters
+        if isinstance(r, dict)
+        and r.get("auto_eligible") is True
+        and r.get("status") in AUTO_FROM
+        and isinstance(r.get("id"), str)
+        and _int(r.get("successes")) is not None
+        and _draft_text(r) is None
+    ]
+    ready.sort(key=lambda r: (-_int(r["successes"]), _first_ts(r), r["id"]))  # type: ignore[operator]
+    return ready[0] if ready else None
+
+
+def skill_uses(home: str | Path, state: Mapping[str, Any]) -> dict[str, int]:
+    """R10 for probation: per live automatic install, the `recall_hit`/`body_read` rows of any
+    store's usage ledger (`~/.bantamkit/usage/*.jsonl`, rotated segments too) that name it at or
+    after its install. A folded line counts once when its `last` use is at or after it."""
+    from bantamkit.memory.usage import _parse
+    from bantamkit.storage.logsegment import LogSegment
+    from bantamkit.storage.retention import parse_now
+
+    skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
+    since: dict[str, int] = {}
+    for name, e in skills.items():
+        if isinstance(e, dict) and e.get("auto") is True and isinstance(e.get("at"), str):
+            try:
+                since[name] = parse_now(e["at"])
+            except ValueError:
+                continue
+    if not since:
+        return {}
+    d = os.path.join(str(home), ".bantamkit", "usage")
+    uses = dict.fromkeys(since, 0)
+    for n in sorted(_listdir(d)):
+        p = os.path.join(d, n)
+        if _LEDGER_NAME.fullmatch(n) is None or not _isfile(p):
+            continue
+        for row in LogSegment(Path(p)).read():
+            fact = row.get("fact")
+            if not isinstance(fact, str) or fact not in since:
+                continue
+            kind = row.get("kind")
+            ts = (
+                row.get("ts")
+                if kind in USE_KINDS
+                else row.get("last")
+                if kind == "folded"
+                else None
+            )
+            if not isinstance(ts, str):
+                continue
+            try:
+                at = int(_parse(ts)) * 1000
+            except ValueError:
+                continue
+            if at >= since[fact]:
+                uses[fact] += 1
+    return uses
+
+
+def _record_events(home: str | Path, events: list[str], now: str) -> None:
+    from bantamkit.skillfile import update_state
+
+    if not events:
+        return
+
+    def change(state: dict[str, Any]) -> None:
+        old = state.get("events") if isinstance(state.get("events"), list) else []
+        state["events"] = [*old, *({"at": now, "event": e} for e in events)][-EVENTS_KEEP:]
+
+    update_state(home, change)
+
+
+def daily(home: str | Path, cwd: str | None, now: str) -> None:
+    """The miner's once-a-day run, in the Retention child after #205's audit under the same
+    claimed day. Silent; never raises.
+
+    Runs only when `BANTAMKIT_SKILL_AUDIT` is not off (Q2). Mines both sources into
+    `skill-proposals.json` (and saves the miner cache); then, with an endpoint configured and
+    `BANTAMKIT_SKILL_AUTO` on, drafts the ONE best auto-eligible record through the endpoint
+    alone (R11, R12); then `auto_step` and `probation_step`; their events go to
+    `skills-state.json`'s `events` for the SessionStart line. A miner error writes `miner.error`
+    over the previous clusters and NOTHING later runs. A proposals file that exists and cannot
+    be read is refused: left as it is, and nothing runs.
+    """
+    import time
+
+    from bantamkit.storage.retention import audit_enabled
+
+    if not audit_enabled():
+        return
+    try:
+        _daily(home, cwd, now, time.monotonic_ns)
+    except Exception:  # noqa: BLE001 - the next day's run tries again; no hook or tool fails
+        pass
+
+
+def _daily(home: str | Path, cwd: str | None, now: str, clock: Any) -> None:
+    from bantamkit.skilldraft import default_chain, draft, endpoint_config
+    from bantamkit.skillfile import read_state
+    from bantamkit.skillhost import select_adapter
+    from bantamkit.skillinstall import auto_enabled, auto_step, draft_entry, probation_step
+    from bantamkit.storage.retention import parse_now
+    from bantamkit.touch.repo import find_repo
+
+    t0 = clock()
+    try:
+        previous = read_proposals(home)
+    except ProposalsError:
+        return
+    try:
+        now_ms = parse_now(now)
+        repo = find_repo(cwd) if cwd else None
+        root = repo.top if repo is not None else (cwd or "")
+        cache = MinerCache.for_home(home).load()
+        pieces = miner_pieces(home, root, select_adapter(home), now_ms, cache)
+        doc = mine(pieces, previous, now, 0)
+        cache.save()
+    except Exception as e:  # noqa: BLE001 - recorded, and the later steps do not run
+        ms = (clock() - t0) // 1_000_000
+        write_proposals(home, _failed_doc(previous, now, ms, error_name(e)))
+        return
+    doc["miner"]["ms"] = (clock() - t0) // 1_000_000
+    write_proposals(home, doc)
+    written = proposals_bytes(doc)
+    if endpoint_config() is not None and auto_enabled():
+        rec = draft_candidate(doc)
+        if rec is not None:
+            out = draft(rec, default_chain(None, host_agent=False), home, cwd, now)
+            if out.ok:
+                rec["draft"] = draft_entry(out.drafter, out.text, now)
+    state = read_state(home)
+    events = auto_step(doc, state, home, now)
+    if proposals_bytes(doc) != written:
+        write_proposals(home, doc)
+    events += probation_step(state, skill_uses(home, state), home, now)
+    _record_events(home, events, now)
+
+
+def status_line(home: str | Path, sampling: bool = False) -> str:
+    """The `skills:` line of `bantamkit_status`, after the `skill audit:` line. Never raises.
+
+    `<p>` is `off; ` when the miner's switch (`BANTAMKIT_SKILL_AUDIT`) is off; the drafter is
+    the one a draft made now would reach first (`sampling` when the client declared it).
+    """
+    from bantamkit.skilldraft import active_drafter
+    from bantamkit.skillfile import read_state
+    from bantamkit.skillinstall import AUTO_LIVE_MAX, live_auto
+    from bantamkit.storage.retention import audit_enabled
+
+    p = "" if audit_enabled() else "off; "
+    tail = f"; drafter {active_drafter(sampling)}"
+    try:
+        doc = read_proposals(home)
+    except ProposalsError as e:
+        return f"skills: {p}miner refused: {e}{tail}"
+    except Exception:  # noqa: BLE001 - a status line never fails the report
+        return f"skills: {p}miner refused: {PROPOSALS_NAME} is not readable{tail}"
+    if doc is None:
+        return f"skills: {p}miner never ran{tail}"
+    miner = doc.get("miner") if isinstance(doc.get("miner"), dict) else {}
+    ts = doc["ts"] if isinstance(doc.get("ts"), str) else "?"
+    error = miner.get("error")
+    if error is not None:
+        return f"skills: {p}miner failed at {ts}: {error if isinstance(error, str) else '?'}{tail}"
+    pending = sum(
+        1 for r in doc["clusters"] if isinstance(r, dict) and r.get("status") == "pending"
+    )
+    try:
+        state = read_state(home)
+        live = str(len(live_auto(state)))
+        promoted = str(
+            sum(
+                1
+                for e in state["skills"].values()
+                if isinstance(e, dict) and e.get("promoted") not in (None, False)
+            )
+        )
+    except Exception:  # noqa: BLE001 - an unreadable state is said, never guessed
+        live = promoted = "?"
+    ms = _int(miner.get("ms"))
+    return (
+        f"skills: {p}mined {ts} in {'?' if ms is None else ms} ms; {pending} pending, "
+        f"{live} of {AUTO_LIVE_MAX} auto-installed live, {promoted} promoted{tail}"
+    )

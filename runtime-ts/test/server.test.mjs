@@ -1289,7 +1289,7 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12, read-repair and the usage ledger.
   // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, `touch: none` between the logs and retention.
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line LAST.
-  assert.equal(rows.length, 15, report); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line LAST: 14 -> 15
+  assert.equal(rows.length, 16, report); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line LAST: 14 -> 15; AMENDED job73 C9 (#206 Task 8): the `skills:` line LAST: 15 -> 16
   assert.equal(rows[0], REPORT_LINE_1_ACTIVE);
   // job68 J68-12: the version this build's package.json declares, exactly. WAS a stable-only
   // `\d+\.\d+\.\d+` shape, which a prerelease (`0.37.0-beta.1`, npm's spelling) failed.
@@ -1325,6 +1325,7 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.match(rows[12], /^usage ledger: .*[\\/]\.bantamkit[\\/]usage[\\/][0-9a-f]{16}\.jsonl \(1 lines, 0 skipped\)$/);
   assert.equal(rows[13], 'queries: 0 of 1 facts'); // S10 (#207 amendment 3, Q8)
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // job73 A4 (#205 Task 4), the audit switch is off under the runner
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // job73 C9 (#206 Task 8), the miner follows the audit switch
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
   // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
   assert.equal(byId(lines, 3).result.content[0].text, report);
@@ -1400,7 +1401,7 @@ test('the report carries the update line in every one of the five states, and no
     // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): 10 -> 12.
     // AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13.
     // AMENDED job72 J72-26 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line.
-    assert.equal(rows.length, 15, `${state}: ${report}`); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line LAST: 14 -> 15
+    assert.equal(rows.length, 16, `${state}: ${report}`); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line LAST: 14 -> 15; AMENDED job73 C9 (#206 Task 8): the `skills:` line LAST: 15 -> 16
     assert.ok(!report.includes(FOOTER_HEAD), state);
     const other = byId(lines, 4).result;
     assert.ok(!JSON.stringify(other).includes('bantamkit_degraded'), `${state}: a footer rode an unrelated reply`);
@@ -1430,13 +1431,14 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 1 facts');
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
-  assert.equal(rows[15], '1 problem:');
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
+  assert.equal(rows[16], '1 problem:');
   assert.equal(
-    rows[16],
+    rows[17],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
-  assert.equal(rows.length, 17); // AMENDED job70 T200-1 (#200, plan Task 1): 14 -> 15; AMENDED job72 J72-26 (#207 amendment 3): 15 -> 16; AMENDED job73 A4 (#205 Task 4): 16 -> 17
+  assert.equal(rows.length, 18); // AMENDED job70 T200-1 (#200, plan Task 1): 14 -> 15; AMENDED job72 J72-26 (#207 amendment 3): 15 -> 16; AMENDED job73 A4 (#205 Task 4): 16 -> 17; AMENDED job73 C9 (#206 Task 8): 17 -> 18
   /**
    * THE REMEDY NAMES A COMMAND THIS INSTALL ACTUALLY PROVIDES, from outside the server.
    *
@@ -1452,7 +1454,7 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
    */
   const bins = Object.keys(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).bin);
   assert.ok(bins.includes('bantamkit-memory'), `package.json ships no bantamkit-memory bin: ${bins}`);
-  assert.match(rows[16], /`bantamkit-memory compact`/);
+  assert.match(rows[17], /`bantamkit-memory compact`/);
   assert.ok(
     !report.includes('python -m bantamkit.memory'),
     `the degraded report names a command a pure-npm install cannot run:\n${report}`,
@@ -1615,9 +1617,10 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 0 facts');
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
-  assert.equal(rows[15], '1 problem:');
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
+  assert.equal(rows[16], '1 problem:');
   assert.equal(
-    rows[16],
+    rows[17],
     '- 1 memory layer could not be read (1 kind: extra), so an empty recall is not evidence that ' +
       'nothing is saved — check that those store directories exist and are readable.',
   );
@@ -1890,19 +1893,20 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 1 facts');
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
-  assert.equal(rows[15], '2 problems:');
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
+  assert.equal(rows[16], '2 problems:');
   assert.equal(
-    rows[16],
+    rows[17],
     `- the memory index is ${INDEX_BYTES} bytes of a ${DEGRADED_BUDGET}-byte budget, so the next save is close to ` +
       'being refused — archive or shorten facts with `bantamkit-memory compact`.',
   );
   assert.equal(
-    rows[17],
+    rows[18],
     `- this server was installed from ${gone}, which no longer exists, so nothing can be ` +
       'refreshed in place there — reinstall bantamkit by name from a package registry and ' +
       'restart the server.',
   );
-  assert.equal(rows.length, 18); // AMENDED job70 T200-1 (#200, plan Task 1): 15 -> 16; AMENDED job72 J72-26 (#207 amendment 3): 16 -> 17; AMENDED job73 A4 (#205 Task 4): 17 -> 18
+  assert.equal(rows.length, 19); // AMENDED job70 T200-1 (#200, plan Task 1): 15 -> 16; AMENDED job72 J72-26 (#207 amendment 3): 16 -> 17; AMENDED job73 A4 (#205 Task 4): 17 -> 18; AMENDED job73 C9 (#206 Task 8): 18 -> 19
 
   // The footer shows the FIRST condition, which is still the index one — so the count moved
   // and the sentence did not. That pair is what would break if the order were changed by hand.
@@ -2013,9 +2017,9 @@ test('the queries line counts the facts that carry queries, LAST before any prob
       statusReport(m, off, degradedConditions(m, off), new Map([['version', '0'], ['build_id', 'x']]), 15, 1, 2).split('\n');
     const memory = new Memory(root);
     memory.save('project', 'a-fact', 'something worth keeping', 'b');
-    assert.equal(report(memory).at(-2), 'queries: 0 of 1 facts'); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line is LAST now
+    assert.equal(report(memory).at(-3), 'queries: 0 of 1 facts'); // AMENDED job73 A4 (#205 Task 4): the `skill audit:` line is LAST now; AMENDED job73 C9 (#206 Task 8): -2 -> -3, the `skills:` line after it
     memory.queriesWrite([{ name: 'a-fact', queries: ['what is kept'] }]);
-    assert.equal(report(memory).at(-2), 'queries: 1 of 1 facts');
+    assert.equal(report(memory).at(-3), 'queries: 1 of 1 facts');
     const tight = new Memory(root, { indexBudget: 1 });
     tight.queriesCoverage = () => {
       throw new Error('unreadable');
@@ -2023,7 +2027,7 @@ test('the queries line counts the facts that carry queries, LAST before any prob
     const rows = report(tight);
     const at = rows.indexOf('queries: unavailable');
     assert.ok(at > 0, rows.join('\n'));
-    assert.ok(rows[at + 1].startsWith('skill audit: ') && rows[at + 2].endsWith('problem:'), rows.join('\n'));
+    assert.ok(rows[at + 1].startsWith('skill audit: ') && rows[at + 2].startsWith('skills: ') && rows[at + 3].endsWith('problem:'), rows.join('\n')); // AMENDED job73 C9 (#206 Task 8)
   } finally {
     [process.env.HOME, process.env.USERPROFILE] = was;
   }

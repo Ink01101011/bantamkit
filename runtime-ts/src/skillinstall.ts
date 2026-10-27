@@ -313,7 +313,7 @@ export function draftEntry(drafter: string | null, text: string | null, now: str
   return { drafter, ok: true, text, ts: now };
 }
 
-function draftText(rec: Rec): string | null {
+export function draftText(rec: Rec): string | null {
   const d = rec['draft'];
   return isObj(d) && d['ok'] === true && typeof d['text'] === 'string' ? d['text'] : null;
 }
@@ -333,7 +333,7 @@ function autoReady(rec: unknown): rec is Rec {
   );
 }
 
-function firstTs(rec: Rec): string {
+export function firstTs(rec: Rec): string {
   const ts = (Array.isArray(rec['evidence']) ? rec['evidence'] : [])
     .filter((e): e is Rec => isObj(e) && typeof e['ts'] === 'string')
     .map((e) => e['ts'] as string);

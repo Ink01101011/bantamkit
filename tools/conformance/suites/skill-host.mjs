@@ -474,6 +474,21 @@ export async function run(ctx) {
       }
     }
   };
+  const withEnvAsync = async (env, fn) => {
+    const saved = Object.fromEntries(Object.keys(env ?? {}).map((k) => [k, process.env[k]]));
+    try {
+      for (const [k, v] of Object.entries(env ?? {})) {
+        if (v === null) delete process.env[k];
+        else process.env[k] = v;
+      }
+      return await fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
   const readOr = (p) => {
     try {
       return readFileSync(p, 'utf8');
@@ -481,7 +496,7 @@ export async function run(ctx) {
       return null;
     }
   };
-  const task4 = (op) => {
+  const task4 = async (op) => {
     if (op.op === 'put') {
       mkdirSync(dirname(op.path), { recursive: true });
       writeFileSync(op.path, Buffer.from(op.data, 'base64'));
@@ -513,13 +528,15 @@ export async function run(ctx) {
     if (op.fresh === 'both' || op.fresh === 'audit') rm(R.statePath(op.home));
     if (op.fresh === 'both') rm(RT.statePath(op.home));
     const before = snapshot(op.base);
-    withEnv(op.env, () => RT.childMain([op.cwd, op.home], op.now));
+    // job73 C9 (#206 Task 8): `childMain` is async (the miner may draft through an endpoint), so
+    // the env is held across the await and the snapshot is taken after it settles.
+    await withEnvAsync(op.env, () => RT.childMain([op.cwd, op.home], op.now));
     const after = snapshot(op.base);
     const changed = [...new Set([...before.keys(), ...after.keys()])].filter((k) => before.get(k) !== after.get(k)).sort(cmpCp);
     return dumpIndex({ audit: readOr(R.statePath(op.home)), state: readOr(RT.statePath(op.home)), changed });
   };
-  const nodeOne = (op) => {
-    if (['put', 'resurface', 'daily', 'status', 'child', 'spawn'].includes(op.op)) return task4(op);
+  const nodeOne = async (op) => {
+    if (['put', 'resurface', 'daily', 'status', 'child', 'spawn'].includes(op.op)) return await task4(op);
     if (op.op === 'line') {
       if (op.record !== null) {
         mkdirSync(dirname(R.statePath(op.home)), { recursive: true });
@@ -562,7 +579,8 @@ export async function run(ctx) {
     buildBed(base, label);
     let nd;
     try {
-      nd = ops.map(nodeOne);
+      nd = [];
+      for (const op of ops) nd.push(await nodeOne(op));
     } finally {
       release(base);
     }
@@ -719,8 +737,15 @@ export async function run(ctx) {
   // THE MOST IMPORTANT CASE (Amendment A3, J69-6's class): retention off, audit on — over a trap
   // the sweep would change, the child touches only the claim and the audit record.
   literal(
-    'daily-trap: retention off, audit on changes ONLY retention.json\'s claim and skill-audit.json',
-    { changed: ['home/.bantamkit/retention.json', 'home/.bantamkit/skill-audit.json'], state: `{"ran_at":"${NOW}"}\n`, audited: NOW },
+    // AMENDED job73 C9 (#206 Task 8): the experience miner runs after the audit, under the same
+    // switch, and writes its proposals file and its cache (with no endpoint and the auto switch
+    // pinned off, nothing else); `skill-miner`'s `daily` cases pin the whole file list.
+    'daily-trap: retention off, audit on changes ONLY retention.json\'s claim, skill-audit.json and the miner\'s two files',
+    {
+      changed: ['home/.bantamkit/retention.json', 'home/.bantamkit/skill-audit.json', 'home/.bantamkit/skill-miner-cache.json', 'home/.bantamkit/skill-proposals.json'],
+      state: `{"ran_at":"${NOW}"}\n`,
+      audited: NOW,
+    },
     (a, s) => {
       const r = T('daily-trap', 'child retention off, audit on')(a, s);
       return { changed: r.changed, state: r.state, audited: r.audit === null ? null : JSON.parse(r.audit).ts };

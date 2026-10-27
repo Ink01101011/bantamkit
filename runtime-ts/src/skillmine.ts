@@ -24,7 +24,13 @@ import { dumpJson, fromJs } from './pyjson.js';
 import { cmpCodepoint, pyLstrip, pyStrip } from './pysem.js';
 import { exclusive } from './storage/lock.js';
 import { HOST_CLAUDE_CODE, jsonlFiles } from './skillhost.js';
-import { parseNow } from './storage/retention.js';
+import { parseTs } from './memory/usage.js';
+import { activeDrafter, defaultChain, draft, endpointConfig } from './skilldraft.js';
+import { readState, updateState } from './skillfile.js';
+import { selectAdapter } from './skillhost.js';
+import { AUTO_FROM, AUTO_LIVE_MAX, autoEnabled, autoStep, draftEntry, draftText, firstTs, liveAuto, probationStep } from './skillinstall.js';
+import { LogSegment } from './storage/logsegment.js';
+import { auditEnabled, parseNow } from './storage/retention.js';
 import { TouchLog } from './touch/log.js';
 import { findRepo, relPath, type Repo } from './touch/repo.js';
 
@@ -1434,4 +1440,171 @@ export function minerPieces(home: string, root: string, adapter: { host: string 
     }
   }
   return [...work.sort(byTsId), ...sessions];
+}
+
+// ------------------------------------------------------------- the daily run (Task 8)
+
+/** The `skills-state.json` events the SessionStart line reads (C12): the newest kept. */
+export const EVENTS_KEEP = 32;
+/** The usage-ledger kinds that count as a use of a skill (R10). */
+export const USE_KINDS: readonly string[] = ['recall_hit', 'body_read'];
+
+/** The word `miner.error` holds: `OSError` for any filesystem error (an errno `code` and a
+ * `syscall`), else the class name — the reference's `error_name`. */
+export function errorName(e: unknown): string {
+  if (e instanceof Error) {
+    const x = e as NodeJS.ErrnoException;
+    if (typeof x.code === 'string' && typeof x.syscall === 'string') return 'OSError';
+    return e.name;
+  }
+  return 'Error';
+}
+
+function failedDoc(previous: ProposalsDoc | null, now: string, ms: number, error: string): ProposalsDoc {
+  const clusters = previous !== null && Array.isArray(previous['clusters']) ? [...previous['clusters']] : [];
+  return { clusters, miner: { error, ms, pieces: { [SOURCE_SESSION]: 0, [SOURCE_SHIFTWORK]: 0 } }, ts: now, version: PROPOSALS_VERSION };
+}
+
+/** R12: the one record the daily child drafts; the reference's `draft_candidate`. */
+export function draftCandidate(doc: ProposalsDoc): Rec | null {
+  const clusters = Array.isArray(doc['clusters']) ? doc['clusters'] : [];
+  const ready = clusters.filter(
+    (r): r is Rec =>
+      isObj(r) &&
+      r['auto_eligible'] === true &&
+      typeof r['status'] === 'string' &&
+      AUTO_FROM.includes(r['status']) &&
+      typeof r['id'] === 'string' &&
+      nonNegInt(r['successes']) !== null &&
+      draftText(r) === null,
+  );
+  ready.sort(
+    (a, b) =>
+      (nonNegInt(b['successes']) as number) - (nonNegInt(a['successes']) as number) ||
+      cmpCodepoint(firstTs(a), firstTs(b)) ||
+      cmpCodepoint(a['id'] as string, b['id'] as string),
+  );
+  return ready[0] ?? null;
+}
+
+/** R10 for probation: per live automatic install, its uses at or after the install; the
+ * reference's `skill_uses`. */
+export function skillUses(home: string, state: Rec): Record<string, number> {
+  const skills = isObj(state['skills']) ? state['skills'] : {};
+  const since = new Map<string, number>();
+  for (const [name, e] of Object.entries(skills)) {
+    if (isObj(e) && e['auto'] === true && typeof e['at'] === 'string') {
+      try {
+        since.set(name, parseNow(e['at']));
+      } catch {
+        /* not a stamp: never on probation by use */
+      }
+    }
+  }
+  if (since.size === 0) return {};
+  const uses: Record<string, number> = Object.fromEntries([...since.keys()].map((n) => [n, 0]));
+  const d = path.join(home, '.bantamkit', 'usage');
+  for (const n of sortCp(listdir(d))) {
+    const p = path.join(d, n);
+    if (!n.endsWith('.jsonl') || n === '.jsonl' || !isFile(p)) continue;
+    for (const row of new LogSegment(p).read()) {
+      const fact = row['fact'];
+      if (typeof fact !== 'string' || !since.has(fact)) continue;
+      const kind = row['kind'];
+      const ts = typeof kind === 'string' && USE_KINDS.includes(kind) ? row['ts'] : kind === 'folded' ? row['last'] : undefined;
+      if (typeof ts !== 'string') continue;
+      const at = parseTs(ts);
+      if (Number.isNaN(at)) continue;
+      if (at >= since.get(fact)!) uses[fact] = uses[fact]! + 1;
+    }
+  }
+  return uses;
+}
+
+function recordEvents(home: string, events: readonly string[], now: string): void {
+  if (events.length === 0) return;
+  updateState(home, (state) => {
+    const old = Array.isArray(state['events']) ? state['events'] : [];
+    state['events'] = [...old, ...events.map((e) => ({ at: now, event: e }))].slice(-EVENTS_KEEP);
+  });
+}
+
+/** The miner's once-a-day run in the Retention child; the reference's `daily` states every rule. */
+export async function daily(home: string, cwd: string | null, now: string): Promise<void> {
+  if (!auditEnabled()) return;
+  try {
+    await dailyRun(home, cwd, now);
+  } catch {
+    /* the next day's run tries again; no hook or tool fails */
+  }
+}
+
+async function dailyRun(home: string, cwd: string | null, now: string): Promise<void> {
+  const t0 = process.hrtime.bigint();
+  const elapsed = (): number => Number((process.hrtime.bigint() - t0) / 1_000_000n);
+  let previous: ProposalsDoc | null;
+  try {
+    previous = readProposals(home);
+  } catch (e) {
+    if (e instanceof ProposalsError) return;
+    throw e;
+  }
+  let doc: ProposalsDoc;
+  try {
+    const nowMs = parseNow(now);
+    const repo = cwd ? findRepo(cwd) : null;
+    const root = repo !== null ? repo.top : (cwd ?? '');
+    const cache = MinerCache.forHome(home).load();
+    const pieces = minerPieces(home, root, selectAdapter(home), nowMs, cache);
+    doc = mine(pieces, previous, now, 0);
+    cache.save();
+  } catch (e) {
+    writeProposals(home, failedDoc(previous, now, elapsed(), errorName(e)));
+    return;
+  }
+  (doc['miner'] as Rec)['ms'] = elapsed();
+  writeProposals(home, doc);
+  const written = proposalsBytes(doc);
+  if (endpointConfig() !== null && autoEnabled()) {
+    const rec = draftCandidate(doc);
+    if (rec !== null) {
+      const out = await draft(rec, defaultChain(null, false), home, cwd, now);
+      if (out.ok) rec['draft'] = draftEntry(out.drafter, out.text, now);
+    }
+  }
+  const state = readState(home) as Rec;
+  const events = autoStep(doc, state, home, now);
+  if (!proposalsBytes(doc).equals(written)) writeProposals(home, doc);
+  events.push(...probationStep(state, skillUses(home, state), home, now));
+  recordEvents(home, events, now);
+}
+
+/** The `skills:` line of `bantamkit_status`; the reference's `status_line`. Never throws. */
+export function statusLine(home: string, sampling = false): string {
+  const p = auditEnabled() ? '' : 'off; ';
+  const tail = `; drafter ${activeDrafter(sampling)}`;
+  let doc: ProposalsDoc | null;
+  try {
+    doc = readProposals(home);
+  } catch (e) {
+    if (e instanceof ProposalsError) return `skills: ${p}miner refused: ${e.message}${tail}`;
+    return `skills: ${p}miner refused: ${PROPOSALS_NAME} is not readable${tail}`;
+  }
+  if (doc === null) return `skills: ${p}miner never ran${tail}`;
+  const miner = isObj(doc['miner']) ? doc['miner'] : {};
+  const ts = typeof doc['ts'] === 'string' ? doc['ts'] : '?';
+  if (miner['error'] !== null && miner['error'] !== undefined) return `skills: ${p}miner failed at ${ts}: ${typeof miner['error'] === 'string' ? miner['error'] : '?'}${tail}`;
+  const pending = (doc['clusters'] as unknown[]).filter((r) => isObj(r) && r['status'] === 'pending').length;
+  let live: string;
+  let promoted: string;
+  try {
+    const state = readState(home) as Rec;
+    live = String(liveAuto(state).length);
+    promoted = String(Object.values(state['skills'] as Rec).filter((e) => isObj(e) && e['promoted'] !== null && e['promoted'] !== undefined && e['promoted'] !== false).length);
+  } catch {
+    live = '?';
+    promoted = '?';
+  }
+  const ms = nonNegInt(miner['ms']);
+  return `skills: ${p}mined ${ts} in ${ms === null ? '?' : ms} ms; ${pending} pending, ${live} of ${AUTO_LIVE_MAX} auto-installed live, ${promoted} promoted${tail}`;
 }

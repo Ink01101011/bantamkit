@@ -299,6 +299,11 @@ process.env.BANTAMKIT_RETENTION = 'off';
 // #205 Amendment A3: the daily skill audit wakes the same child on its own switch. `skill-host`
 // turns it back on per call.
 process.env.BANTAMKIT_SKILL_AUDIT = 'off';
+// #206 Task 8: that child now mines, drafts and installs. No suite installs a skill or reaches an
+// endpoint unless it says so per call: the auto switch is off and no endpoint is named.
+process.env.BANTAMKIT_SKILL_AUTO = 'off';
+delete process.env.BANTAMKIT_LLM_URL;
+delete process.env.BANTAMKIT_LLM_MODEL;
 const ctx = { python, repoRoot, runtimeTs: join(repoRoot, 'runtime-ts'), scratch, runPython, options };
 
 let totals = { cases: 0, bytes: 0, strings: 0, json: 0, failed: 0, rulings: 0 };

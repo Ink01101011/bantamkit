@@ -54,8 +54,9 @@
  * the signals are pinned PER SIDE, so a change made to both runtimes alike is still red.
  */
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
@@ -656,10 +657,12 @@ export async function run(ctx) {
   }
   const part3 = await sessionCases(ctx, base);
   cases.push(...part3.cases);
+  const part4 = await dailyCases(ctx, base);
+  cases.push(...part4.cases);
   const n = py.pieces[0].length;
   return {
     cases,
-    notes: [`${n} shiftwork pieces in the main fixture, ${PAIRS.length} similarity pairs`, part3.note],
+    notes: [`${n} shiftwork pieces in the main fixture, ${PAIRS.length} similarity pairs`, part3.note, part4.note],
   };
 }
 
@@ -970,3 +973,389 @@ async function sessionCases(ctx, base) {
 }
 
 const py0 = (x) => x.py;
+
+// --------------------------------------------------------------------------- part 4
+
+/*
+ * PART 4 (Task 8): the daily miner in the Retention child, and its status line.
+ *
+ * THE PROPERTY: the two children, over the same bed, change the same files; with the sweep off
+ * those are ONLY the claim, `skill-audit.json`, the miner's files and skill directories (J69-6,
+ * extended from #205 A3 — the most important case here), while a full run mines, drafts once
+ * through the endpoint, installs on twice the bar and removes an unused automatic install whose
+ * probation ended. A miner error is written as `miner.error` over the previous clusters and NO
+ * later step runs; an unreadable proposals file is left alone; the audit switch off mines nothing;
+ * the auto switch off drafts and installs nothing. The status line has one form per state.
+ *
+ * HOW. Every bed is built at ONE path under the scratch and rebuilt before each side; the
+ * `old-skill` a bed starts with is installed by the port's `install` while it is built (setup,
+ * not the thing measured; `skill-install` compares the installer). One stub endpoint process
+ * serves both sides and logs which side asked. `miner.ms` and the status line's `in <n> ms` are
+ * wall time and are masked before the compare; nothing else is.
+ */
+const DNOW = '2026-10-27T00:00:00.000Z';
+const DNAME = 'fixing-lexer-crashes';
+const DFILL = ['amber', 'birch', 'cedar', 'delta', 'ember', 'fjord', 'grove'];
+// platform-checked: the stub's SIGTERM handler only exits; on Windows `kill()` is TerminateProcess,
+// the handler does not run, and the process still ends. Every request is logged before it is answered.
+const DSTUB = `
+import { createServer } from 'node:http';
+import { appendFileSync } from 'node:fs';
+const [log, answer] = [process.argv[2], process.argv[3]];
+const server = createServer((req, res) => {
+  req.resume();
+  req.on('end', () => {
+    const [, side, scenario] = req.url.split('/');
+    appendFileSync(log, JSON.stringify({ side, scenario }) + '\\n');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: answer }, finish_reason: 'stop' }] }));
+  });
+});
+server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + '\\n'));
+process.on('SIGTERM', () => process.exit(0));
+`;
+
+const dGood = () =>
+  `---\nname: ${DNAME}\ndescription: Fixes lexer crashes. Use when the lexer crashes.\n---\n\n` +
+  '## When to use\n\nThe lexer crashes on input.\n\n## Steps\n\n1. Read the crash [j/U1].\n' +
+  '2. Fix the token table [j/U2].\n\n## Pitfalls\n\nNone.\n\n## Example\n\nx\n';
+const dDraft = (name) =>
+  `---\nname: ${name}\ndescription: Does ${name}. Use when ${name} is asked.\n---\n\n` +
+  '## When to use\n\nWhen asked.\n\n## Steps\n\n1. Do it [job1/U1].\n\n## Pitfalls\n\nNone.\n\n## Example\n\nx\n';
+function dRecord(name, okDraft) {
+  const rec = {
+    auto_bar: 6,
+    auto_eligible: true,
+    bar: 3,
+    eligible: true,
+    evidence: Array.from({ length: 6 }, (_, i) => ({
+      commits: [],
+      failure: null,
+      id: `job1/U${i + 1}`,
+      ok: true,
+      paths: ['src/a.py'],
+      prompt: 'p'.repeat(40),
+      repo: '/r/.git',
+      signals: { commit: true, tests: false },
+      source: 'shiftwork',
+      tools: ['Read', 'Edit'],
+      ts: '2026-01-01T00:00:00Z',
+    })),
+    id: `c-${name}`,
+    keywords: ['k0', 'k1'],
+    level: 'user',
+    members: 6,
+    pitfalls: [],
+    repos: [],
+    source: 'shiftwork',
+    status: 'pending',
+    steps: [],
+    successes: 6,
+    top: null,
+  };
+  if (okDraft) rec.draft = { drafter: 'endpoint m', ok: true, text: dDraft(name), ts: DNOW };
+  return rec;
+}
+
+/** One bed: `home/` with `.bantamkit/`, `proj/` a repo whose job `j` holds six done units of one
+ * kind (twice the shiftwork bar) and seven unrelated ones, and the retention trap. */
+function dailyBed(dir, si, opts = {}) {
+  rmSync(dir, { recursive: true, force: true });
+  const home = join(dir, 'home');
+  const proj = join(dir, 'proj');
+  mkdirSync(join(home, '.bantamkit'), { recursive: true });
+  mkdirSync(join(proj, '.git'), { recursive: true });
+  const ids = [...Array.from({ length: 6 }, (_, i) => `U${i + 1}`), ...DFILL.map((_, i) => `F${i + 1}`)];
+  const titles = [...Array(6).fill('fix the lexer crash'), ...DFILL.map((w) => `${w} ${w}notes`)];
+  const plan = { cursor: 'U1', units: ids.map((id, i) => ({ id, title: titles[i], brief_path: 'x.md', status: 'done', role: 'implementer', depends_on: [], verify: 'true' })) };
+  write(join(proj, '.shiftwork', 'checkpoint-j.json'), JSON.stringify({ version: 1, job: { id: 'j', goal: 'g', done_definition: 'd', constraints: [] }, plan, history: [] }));
+  write(join(proj, '.shiftwork', 'checkpoint-j.json.log.jsonl'), ids.map((u, i) => JSON.stringify({ unit: u, role: 'implementer', status: 'done', ts: `2026-10-0${1 + (i % 9)}T00:00:00Z` })).join('\n') + '\n');
+  const aged = (p, data, days) => {
+    write(p, data);
+    const t = Date.parse(DNOW) / 1000 - days * 86_400;
+    utimesSync(p, t, t);
+  };
+  aged(join(home, '.bantamkit', 'hooks', 'ledger-old.json'), '{"seen":{}}', 8);
+  aged(join(home, '.bantamkit', 'usage', 'idle.jsonl'), '{"ts":"2026-09-10T00:00:00Z","fact":"g","kind":"seed"}\n', 31);
+  if (opts.oldSkill) si.install(dRecord('old-skill', false), dDraft('old-skill'), null, home, '2026-09-26T00:00:00.000Z', true);
+  if (opts.proposals !== undefined) write(join(home, '.bantamkit', 'skill-proposals.json'), opts.proposals);
+  if (opts.cacheDir) mkdirSync(join(home, '.bantamkit', 'skill-miner-cache.json'));
+  if (opts.state !== undefined) write(join(home, '.bantamkit', 'skills-state.json'), opts.state);
+  return { dir, home, proj };
+}
+
+function startDailyStub(scratch) {
+  const script = join(scratch, 'skill-miner-stub.mjs');
+  const log = join(scratch, 'skill-miner-requests.jsonl');
+  writeFileSync(script, DSTUB);
+  writeFileSync(log, '');
+  const child = spawn(process.execPath, [script, log, dGood()], { stdio: ['ignore', 'pipe', 'inherit'] });
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    child.on('error', reject);
+    child.stdout.on('data', (d) => {
+      buf += d;
+      if (buf.includes('\n')) resolve({ child, log, port: Number(buf.trim()) });
+    });
+  });
+}
+
+function dSnapshot(base) {
+  const out = new Map();
+  const walk = (d) => {
+    for (const n of readdirSync(d)) {
+      const p = join(d, n);
+      const st = lstatSync(p, { bigint: true });
+      const rel = relative(base, p).split(sep).join('/');
+      if (st.isDirectory()) {
+        out.set(rel, 'dir');
+        walk(p);
+      } else out.set(rel, `${createHash('sha256').update(readFileSync(p)).digest('hex')} ${st.mtimeNs}`);
+    }
+  };
+  walk(base);
+  return out;
+}
+
+async function withEnvAsync(env, fn) {
+  const saved = Object.fromEntries(Object.keys(env ?? {}).map((k) => [k, process.env[k]]));
+  try {
+    for (const [k, v] of Object.entries(env ?? {})) {
+      if (v === null) delete process.env[k];
+      else process.env[k] = v;
+    }
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+const readOrNull = (p) => {
+  try {
+    return readFileSync(p, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+async function runNodeDaily(sm, RT, ops) {
+  const out = [];
+  for (const o of ops) {
+    if (o.op === 'child') {
+      const before = dSnapshot(o.base);
+      await withEnvAsync(o.env, () => RT.childMain([o.cwd, o.home], o.now));
+      const after = dSnapshot(o.base);
+      out.push({ changed: [...new Set([...before.keys(), ...after.keys()])].filter((k) => before.get(k) !== after.get(k)).sort(cmpCp) });
+    } else if (o.op === 'daily') {
+      await withEnvAsync(o.env, () => sm.daily(o.home, o.cwd, o.now));
+      out.push(null);
+    } else if (o.op === 'status') {
+      out.push(await withEnvAsync(o.env, () => sm.statusLine(o.home, o.sampling)));
+    } else if (o.op === 'read') {
+      out.push(o.paths.map(readOrNull));
+    } else throw new Error(o.op);
+  }
+  return out;
+}
+
+const cmpCp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const maskMs = (x) => (typeof x === 'string' ? x.replace(/"ms": \d+/g, '"ms": 0').replace(/ in \d+ ms;/g, ' in <ms> ms;') : x);
+const maskAll = (v) => (Array.isArray(v) ? v.map(maskAll) : v !== null && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, maskAll(x)])) : maskMs(v));
+
+async function dailyCases(ctx, base) {
+  const sm = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillmine.js')).href);
+  const si = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillinstall.js')).href);
+  const RT = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href);
+  const root = join(base, 'daily');
+  const stub = await startDailyStub(ctx.scratch);
+  const B = (name) => join(root, name);
+  const bk = (name, file) => join(B(name), 'home', '.bantamkit', file);
+  const sides = {};
+  const SCEN = ['full', 'autooff', 'error', 'refused', 'audoff', 'st-never', 'st-mined', 'st-failed', 'st-badstate', 'st-wrongver', 'st-corrupt'];
+  const ready = dRecord('ready-skill', true);
+  const mined = JSON.stringify({ version: 1, ts: DNOW, miner: { error: null, ms: 42, pieces: { session: 0, shiftwork: 5 } }, clusters: ['pending', 'pending', 'new', 'rejected', 'pending'].map((status) => ({ status })) });
+  const state = JSON.stringify({ version: 1, skills: { a: { auto: true }, b: { auto: true, promoted: { mode: 'symlink' } }, c: { auto: false, promoted: { mode: 'copy' } }, d: { auto: false, promoted: null } } });
+  const build = () => {
+    dailyBed(B('full'), si, { oldSkill: true });
+    dailyBed(B('autooff'), si);
+    dailyBed(B('error'), si, { proposals: JSON.stringify({ version: 1, clusters: [ready], ts: 't' }), cacheDir: true });
+    dailyBed(B('refused'), si, { proposals: '{not json' });
+    dailyBed(B('audoff'), si);
+    dailyBed(B('st-never'), si);
+    dailyBed(B('st-mined'), si, { proposals: mined, state });
+    dailyBed(B('st-failed'), si, { proposals: JSON.stringify({ version: 1, ts: DNOW, clusters: [], miner: { error: 'OSError', ms: 3, pieces: {} } }) });
+    dailyBed(B('st-badstate'), si, { proposals: mined, state: '[]' });
+    dailyBed(B('st-wrongver'), si, { proposals: '{"version": 2, "clusters": []}' });
+    dailyBed(B('st-corrupt'), si, { proposals: '﻿{"version": 1, "clusters": []}' });
+  };
+  const opsFor = (side) => {
+    const env = (name, extra = {}) => ({
+      HOME: join(B(name), 'home'),
+      USERPROFILE: join(B(name), 'home'),
+      BANTAMKIT_INDEX_DIR: join(B(name), 'idx'),
+      BANTAMKIT_RETENTION: 'off',
+      BANTAMKIT_SKILL_AUDIT: null,
+      BANTAMKIT_SKILL_AUTO: 'off',
+      BANTAMKIT_LLM_URL: null,
+      BANTAMKIT_LLM_MODEL: null,
+      ...extra,
+    });
+    const endpoint = (scenario) => ({ BANTAMKIT_LLM_URL: `http://127.0.0.1:${stub.port}/${side}/${scenario}`, BANTAMKIT_LLM_MODEL: 'm' });
+    const at = (name) => ({ base: B(name), home: join(B(name), 'home'), cwd: join(B(name), 'proj'), now: DNOW });
+    const status = (name, extra = {}, sampling = false, tag = `${name} status ${JSON.stringify(extra)} ${sampling}`) => ({ op: 'status', home: join(B(name), 'home'), sampling, env: env(name, extra), tag });
+    const read = (name, files, tag) => ({ op: 'read', paths: files, tag: `${name} ${tag}` });
+    return [
+      { op: 'child', ...at('full'), env: env('full', { BANTAMKIT_SKILL_AUTO: 'on', ...endpoint('full') }), tag: 'full child' },
+      read('full', [bk('full', 'skill-proposals.json'), bk('full', 'skills-state.json'), bk('full', 'skill-drafts.jsonl'), join(B('full'), 'proj', '.bantamkit', 'skills', DNAME, 'SKILL.md'), join(B('full'), 'proj', '.bantamkit', 'skills', DNAME, 'references', 'evidence.md')], 'files'),
+      status('full', endpoint('full'), false, 'full status'),
+      { op: 'child', ...at('autooff'), env: env('autooff', endpoint('autooff')), tag: 'autooff child' },
+      read('autooff', [bk('autooff', 'skill-proposals.json'), bk('autooff', 'skill-drafts.jsonl'), bk('autooff', 'skills-state.json')], 'files'),
+      { op: 'child', ...at('error'), env: env('error', { BANTAMKIT_SKILL_AUTO: 'on' }), tag: 'error child' },
+      read('error', [bk('error', 'skill-proposals.json'), join(B('error'), 'home', '.bantamkit', 'skills', 'ready-skill', 'SKILL.md')], 'files'),
+      status('error'),
+      { op: 'daily', ...at('refused'), env: env('refused'), tag: 'refused daily' },
+      read('refused', [bk('refused', 'skill-proposals.json'), bk('refused', 'skill-miner-cache.json')], 'files'),
+      status('refused'),
+      { op: 'daily', ...at('audoff'), env: env('audoff', { BANTAMKIT_SKILL_AUDIT: 'off' }), tag: 'audoff daily' },
+      read('audoff', [bk('audoff', 'skill-proposals.json'), bk('audoff', 'skill-miner-cache.json')], 'files after daily'),
+      { op: 'child', ...at('audoff'), env: env('audoff', { BANTAMKIT_SKILL_AUDIT: 'off', BANTAMKIT_RETENTION: null }), tag: 'audoff child' },
+      status('st-never'),
+      status('st-never', { BANTAMKIT_SKILL_AUDIT: 'OFF' }),
+      status('st-never', { BANTAMKIT_LLM_URL: 'http://127.0.0.1:9', BANTAMKIT_LLM_MODEL: 'qwen' }),
+      status('st-never', { BANTAMKIT_LLM_URL: 'http://127.0.0.1:9', BANTAMKIT_LLM_MODEL: 'qwen' }, true),
+      status('st-mined'),
+      status('st-failed', { BANTAMKIT_SKILL_AUDIT: 'off' }),
+      status('st-badstate'),
+      status('st-wrongver'),
+      status('st-corrupt'),
+    ];
+  };
+  let py;
+  let nd;
+  try {
+    build();
+    const pyOps = opsFor('py');
+    py = maskAll(ctx.runPython(REF, { daily: pyOps }).daily);
+    build();
+    const ndOps = opsFor('node');
+    nd = maskAll(await runNodeDaily(sm, RT, ndOps));
+    sides.tags = ndOps.map((o) => o.tag);
+  } finally {
+    // platform-checked: `kill('SIGTERM')` only ends the stub; on win32 it is TerminateProcess and
+    // the handler does not run, but every request was logged before it was answered.
+    stub.child.kill('SIGTERM');
+  }
+  const asked = readFileSync(stub.log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const cases = [];
+  sides.tags.forEach((tag, i) => cases.push({ name: `daily — ${tag}`, kind: 'json', expected: py[i], actual: nd[i] }));
+  const T = (ans, tag) => ans[sides.tags.indexOf(tag)];
+  const FULL_CHANGED = [
+    'home/.bantamkit/retention.json',
+    'home/.bantamkit/skill-audit.json',
+    'home/.bantamkit/skill-drafts.jsonl',
+    'home/.bantamkit/skill-miner-cache.json',
+    'home/.bantamkit/skill-proposals.json',
+    'home/.bantamkit/skills-state.json',
+    'home/.bantamkit/skills/old-skill',
+    'home/.bantamkit/skills/old-skill/SKILL.md',
+    'home/.bantamkit/skills/old-skill/references',
+    'home/.bantamkit/skills/old-skill/references/evidence.md',
+    'proj/.bantamkit',
+    'proj/.bantamkit/skills',
+    `proj/.bantamkit/skills/${DNAME}`,
+    `proj/.bantamkit/skills/${DNAME}/SKILL.md`,
+    `proj/.bantamkit/skills/${DNAME}/references`,
+    `proj/.bantamkit/skills/${DNAME}/references/evidence.md`,
+  ];
+  const STATUS = [
+    'skills: miner never ran; drafter host agent',
+    'skills: off; miner never ran; drafter host agent',
+    'skills: miner never ran; drafter endpoint qwen',
+    'skills: miner never ran; drafter sampling',
+    `skills: mined ${DNOW} in <ms> ms; 3 pending, 2 of 5 auto-installed live, 2 promoted; drafter host agent`,
+    `skills: off; miner failed at ${DNOW}: OSError; drafter host agent`,
+    `skills: mined ${DNOW} in <ms> ms; 3 pending, ? of 5 auto-installed live, ? promoted; drafter host agent`,
+    'skills: miner refused: skill-proposals.json is not a version 1 proposals file; drafter host agent',
+    'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent',
+  ];
+  for (const [side, ans, tagSide] of [
+    ['python', py, 'py'],
+    ['node', nd, 'node'],
+  ]) {
+    const full = T(ans, 'full child').changed;
+    const backups = full.filter((p) => p.startsWith('home/.bantamkit/skill-backups/'));
+    cases.push({
+      name: `LITERAL: J69-6 — retention off, a full run changes ONLY the claim, the audit record, the miner's files and skill directories — ${side}`,
+      kind: 'json',
+      expected: { changed: FULL_CHANGED, backup_of_old_skill: true },
+      actual: { changed: full.filter((p) => !backups.includes(p)), backup_of_old_skill: backups.some((p) => p.includes('/old-skill')) },
+    });
+    const [prop, st, drafts, skillMd] = T(ans, 'full files');
+    const fullDoc = prop === null ? null : JSON.parse(prop);
+    const fullState = st === null ? null : JSON.parse(st);
+    cases.push({
+      name: `LITERAL: a full run drafts ONCE through the endpoint, installs on twice the bar and removes the expired one — ${side}`,
+      kind: 'json',
+      expected: {
+        asked: 1,
+        drafts: [{ drafter: 'endpoint m', ok: true }],
+        status: 'installed',
+        skills: [DNAME],
+        events: [`installed skill ${DNAME}`, 'removed unused skill old-skill'],
+        stamped: true,
+        line: `skills: mined ${DNOW} in <ms> ms; 0 pending, 1 of 5 auto-installed live, 0 promoted; drafter endpoint m`,
+      },
+      actual: {
+        asked: asked.filter((r) => r.side === tagSide && r.scenario === 'full').length,
+        drafts: drafts === null ? null : drafts.split('\n').filter(Boolean).map((l) => ((r) => ({ drafter: r.drafter, ok: r.ok }))(JSON.parse(l))),
+        status: fullDoc?.clusters.find((c) => c.successes === 6)?.status ?? null,
+        skills: fullState === null ? null : Object.keys(fullState.skills),
+        events: fullState?.events?.map((e) => e.event) ?? null,
+        stamped: skillMd !== null && skillMd.includes('bantamkit-sha256:'),
+        line: T(ans, 'full status'),
+      },
+    });
+    const [aProp, aDrafts, aState] = T(ans, 'autooff files');
+    cases.push({
+      name: `LITERAL: the auto switch off — mined, pending, never drafted, nothing installed — ${side}`,
+      kind: 'json',
+      expected: { asked: 0, status: 'pending', drafts: null, state: null },
+      actual: {
+        asked: asked.filter((r) => r.side === tagSide && r.scenario === 'autooff').length,
+        status: aProp === null ? null : JSON.parse(aProp).clusters.find((c) => c.successes === 6)?.status ?? null,
+        drafts: aDrafts,
+        state: aState,
+      },
+    });
+    const [eProp, eSkill] = T(ans, 'error files');
+    const eDoc = eProp === null ? null : JSON.parse(eProp);
+    cases.push({
+      name: `LITERAL: a miner error — miner.error OSError over the previous clusters, no later step (no install) — ${side}`,
+      kind: 'json',
+      expected: { error: 'OSError', ts: DNOW, clusters: [ready], installed: null, line: `skills: miner failed at ${DNOW}: OSError; drafter host agent` },
+      actual: { error: eDoc?.miner?.error ?? null, ts: eDoc?.ts ?? null, clusters: eDoc?.clusters ?? null, installed: eSkill, line: T(ans, 'error status {} false') },
+    });
+    cases.push({
+      name: `LITERAL: an unreadable proposals file is left as it is and nothing runs — ${side}`,
+      kind: 'json',
+      expected: [['{not json', null], 'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent'],
+      actual: [T(ans, 'refused files'), T(ans, 'refused status {} false')],
+    });
+    cases.push({
+      name: `LITERAL: BANTAMKIT_SKILL_AUDIT=off — neither daily nor the child (sweep on) mines — ${side}`,
+      kind: 'json',
+      expected: { daily: [null, null], child: false },
+      actual: { daily: T(ans, 'audoff files after daily'), child: T(ans, 'audoff child').changed.some((p) => p.includes('skill-proposals') || p.includes('skill-miner-cache')) },
+    });
+    cases.push({
+      name: `LITERAL: the status line, one form per state — ${side}`,
+      kind: 'json',
+      expected: STATUS,
+      actual: sides.tags.filter((t) => t.startsWith('st-')).map((t) => T(ans, t)),
+    });
+  }
+  return { cases, note: `${sides.tags.length} daily ops per side; the stub answered ${asked.length} requests` };
+}

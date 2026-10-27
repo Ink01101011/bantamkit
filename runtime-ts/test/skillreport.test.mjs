@@ -240,22 +240,22 @@ test('status lines', (t) => {
   assert.equal(R.statusLine(home), 'skill audit: last ran 2026-10-16T00:00:00.000Z; no report — boom');
 });
 
-test('the retention child runs the audit under the claimed day', (t) => {
+test('the retention child runs the audit under the claimed day', async (t) => {
   env(t, { BANTAMKIT_SKILL_AUDIT: undefined, BANTAMKIT_RETENTION: 'off' });
   const { dir, home } = homeWithClaude();
-  assert.equal(retention.childMain([dir, home], NOW), 0);
+  assert.equal(await retention.childMain([dir, home], NOW), 0);
   assert.equal(R.readState(home).ts, NOW);
   assert.deepEqual(JSON.parse(fs.readFileSync(retention.statePath(home), 'utf8')), { ran_at: NOW });
   // The claimed day holds: a second child the same day neither sweeps nor audits again.
   fs.unlinkSync(R.statePath(home));
-  assert.equal(retention.childMain([dir, home], '2026-10-16T12:00:00.000Z'), 0);
+  assert.equal(await retention.childMain([dir, home], '2026-10-16T12:00:00.000Z'), 0);
   assert.equal(fs.existsSync(R.statePath(home)), false);
 });
 
-test('BANTAMKIT_SKILL_AUDIT=off stops the daily run', (t) => {
+test('BANTAMKIT_SKILL_AUDIT=off stops the daily run', async (t) => {
   env(t, { BANTAMKIT_SKILL_AUDIT: 'off', BANTAMKIT_RETENTION: undefined, BANTAMKIT_INDEX_DIR: path.join(tmp(), 'idx') });
   const { dir, home } = homeWithClaude();
-  retention.childMain([dir, home], NOW);
+  await retention.childMain([dir, home], NOW);
   assert.equal(fs.existsSync(R.statePath(home)), false);
   assert.ok('report' in JSON.parse(fs.readFileSync(retention.statePath(home), 'utf8')));
 });

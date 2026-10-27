@@ -122,6 +122,11 @@ def _retention_off(monkeypatch):
     """
     monkeypatch.setenv("BANTAMKIT_RETENTION", "off")
     monkeypatch.setenv("BANTAMKIT_SKILL_AUDIT", "off")
+    # #206 Task 8: that child now mines, drafts and installs. No test installs a skill or
+    # reaches an endpoint unless it sets these itself.
+    monkeypatch.setenv("BANTAMKIT_SKILL_AUTO", "off")
+    monkeypatch.delenv("BANTAMKIT_LLM_URL", raising=False)
+    monkeypatch.delenv("BANTAMKIT_LLM_MODEL", raising=False)
 
 
 class FakeClient:

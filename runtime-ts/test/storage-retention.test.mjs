@@ -257,7 +257,7 @@ test('an archive that reads back wrong deletes nothing', (t) => {
   assert.ok(report.refused.some((x) => x.reason === 'archive did not verify'));
 });
 
-test('opt-out changes nothing', (t) => {
+test('opt-out changes nothing', async (t) => {
   const base = bed(t);
   process.env.BANTAMKIT_RETENTION = 'off';
   const before = tree(base);
@@ -265,7 +265,7 @@ test('opt-out changes nothing', (t) => {
   assert.deepEqual(tree(base), before);
   assert.deepEqual(report, { archived: [], compacted: [], deleted: [], folded: [], refused: [], rotated: [] });
   assert.equal(retention.maybeSpawn(path.join(base, 'home'), path.join(base, 'a')), 'off');
-  assert.equal(retention.childMain([path.join(base, 'a'), path.join(base, 'home')], NOW), 0);
+  assert.equal(await retention.childMain([path.join(base, 'a'), path.join(base, 'home')], NOW), 0);
   assert.equal(fs.existsSync(path.join(base, 'home/.bantamkit/retention.json')), false);
 });
 
@@ -277,11 +277,11 @@ test('a second run is a no-op on the tree', (t) => {
   assert.deepEqual(tree(base), once);
 });
 
-test('the TTL is once a day', (t) => {
+test('the TTL is once a day', async (t) => {
   const base = bed(t);
   const home = path.join(base, 'home');
   assert.equal(retention.due(home, NOW), true);
-  assert.equal(retention.childMain([path.join(base, 'a'), home], NOW), 0);
+  assert.equal(await retention.childMain([path.join(base, 'a'), home], NOW), 0);
   const state = JSON.parse(fs.readFileSync(path.join(home, '.bantamkit/retention.json'), 'utf8'));
   assert.equal(state.ran_at, NOW);
   assert.ok(state.report.archived.length > 0);
@@ -295,12 +295,12 @@ test('the TTL is once a day', (t) => {
   assert.equal(retention.maybeSpawn(home, path.join(base, 'a')), 'fresh');
 });
 
-test('no home means no child and no directory', (t) => {
+test('no home means no child and no directory', async (t) => {
   const d = bed(t);
   const bare = path.join(d, 'bare');
   fs.mkdirSync(bare);
   assert.equal(retention.maybeSpawn(bare, bare), 'nohome');
-  assert.equal(retention.childMain([bare, bare], NOW), 0);
+  assert.equal(await retention.childMain([bare, bare], NOW), 0);
   assert.equal(fs.existsSync(path.join(bare, '.bantamkit')), false);
 });
 
@@ -381,7 +381,7 @@ const withAudit = (t, value) => {
   t.after(() => (saved === undefined ? delete process.env.BANTAMKIT_SKILL_AUDIT : (process.env.BANTAMKIT_SKILL_AUDIT = saved)));
 };
 
-test('retention off, audit on: the child touches only the claim and the audit record (J69-6 class)', (t) => {
+test('retention off, audit on: the child touches only the claim and the audit record (J69-6 class)', async (t) => {
   const base = bed(t);
   process.env.BANTAMKIT_RETENTION = 'off';
   withAudit(t, undefined);
@@ -389,10 +389,16 @@ test('retention off, audit on: the child touches only the claim and the audit re
   fs.mkdirSync(path.dirname(skillMd), { recursive: true });
   fs.writeFileSync(skillMd, '---\ndescription: d\n---\n');
   const before = statTree(base);
-  assert.equal(retention.childMain([path.join(base, 'a'), path.join(base, 'home')], NOW), 0);
+  assert.equal(await retention.childMain([path.join(base, 'a'), path.join(base, 'home')], NOW), 0);
   const after = statTree(base);
   const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => before[k] !== after[k]).sort();
-  assert.deepEqual(changed, ['home/.bantamkit/retention.json', 'home/.bantamkit/skill-audit.json']);
+  // AMENDED job73 C9 (#206 Task 8): the miner runs after the audit and writes its two files.
+  assert.deepEqual(changed, [
+    'home/.bantamkit/retention.json',
+    'home/.bantamkit/skill-audit.json',
+    'home/.bantamkit/skill-miner-cache.json',
+    'home/.bantamkit/skill-proposals.json',
+  ]);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(base, 'home/.bantamkit/retention.json'), 'utf8')), { ran_at: NOW });
 });
 

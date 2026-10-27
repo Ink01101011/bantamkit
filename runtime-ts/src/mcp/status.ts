@@ -40,6 +40,7 @@ import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
 import { statusLine } from '../memory/usage.js';
 import { statusLine as queriesStatusLine } from '../memory/queries.js';
 import type { MemoryStore } from '../memory/store.js';
+import { statusLine as minerStatusLine } from '../skillmine.js';
 import { statusLine as skillStatusLine } from '../skillreport.js';
 import { currentCwd, statusLines } from '../storage/tiers.js';
 import { updateLine } from '../updatecheck.js';
@@ -454,6 +455,7 @@ export function statusReport(
   tools: number,
   prompts: number,
   templates: number,
+  sampling = false,
 ): string {
   const build = identity.get('build_id');
   const facts = Memory['factCount'](memory.store.root);
@@ -506,6 +508,10 @@ export function statusReport(
     // #205 Task 4: the last daily skill audit, after every earlier line so each keeps its number.
     // Not a condition: it never flips line 1, as the storage block never does.
     skillStatusLine(homedir()),
+    // #206 Task 8: the experience miner's last daily run, after the audit line so every earlier
+    // line keeps its number. `sampling` stays false until the server drafts through MCP sampling
+    // (Task 11 passes the client's declared capability).
+    minerStatusLine(homedir(), sampling),
   ];
   if (conditions.length > 0) {
     lines.push(`${plural(conditions.length, 'problem')}:`);
