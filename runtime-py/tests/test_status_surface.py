@@ -33,7 +33,7 @@ pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
 
-from bantamkit import updatecheck  # noqa: E402
+from bantamkit import skillreport, updatecheck  # noqa: E402
 from bantamkit.assets import AssetNotFound, assets_root  # noqa: E402
 from bantamkit.eventlog import EventLog  # noqa: E402
 from bantamkit.mcpserver import (  # noqa: E402
@@ -164,7 +164,8 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line LAST.
     assert len(lines) == 15, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
-    assert lines[2] == "serving 15 tools, 1 prompt, 2 resource templates"
+    # AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
+    assert lines[2] == "serving 15 tools, 2 prompts, 2 resource templates"
     # AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store
     # the walk bound ABOVE the project was invisible on the one surface that reports binding.
     assert lines[3] == (
@@ -313,12 +314,48 @@ def test_the_prompt_is_the_person_facing_half_and_carries_the_report_itself(tmp_
             return listed, got
 
     listed, got = run(scenario())
-    assert [p.name for p in listed] == [STATUS_NAME]
+    # AMENDED job73 A6 (#205 Task 6): the skill audit is the second prompt, listed after this one.
+    assert [p.name for p in listed] == [STATUS_NAME, skillreport.SKILL_AUDIT_NAME]
     assert len(listed) == SERVED_PROMPTS
     assert got.messages[0].role == "user"
     text = got.messages[0].content.text
     assert report in text
     assert text != report  # the instruction line is there too
+
+
+def test_the_skill_audit_prompt_on_a_home_with_no_claude_is_the_could_not_run_report(
+    tmp_path, record_home, monkeypatch
+):
+    """#205 Task 6: `prompts/get skill_audit` gathers and audits NOW, server-side. Over a home with
+    no `.claude/` and a cwd with none, the message is the could-not-run sentence and the tail,
+    exactly. The cwd is moved because the project root is read from it. An unknown name is still
+    refused. `runtime-ts/test/server.test.mjs` mirrors this; `skill-host` compares the frames."""
+    from mcp.shared.exceptions import MCPError
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    server = build_server(make_memory(tmp_path))
+
+    async def scenario():
+        async with Client(server) as c:
+            got = await c.get_prompt(skillreport.SKILL_AUDIT_NAME, {})
+            try:
+                await c.get_prompt("nope", {})
+                refused = None
+            except MCPError as e:
+                refused = (e.error.code, e.error.message)
+            return got, refused
+
+    got, refused = run(scenario())
+    assert got.messages[0].role == "user"
+    assert got.messages[0].content.text == (
+        "skill audit — could not run: no skill directory was found for this host. The "
+        "`skill_audit` tool still audits any directory you name as `root`.\n\n"
+        + skillreport.SKILL_AUDIT_PROMPT_TAIL
+    )
+    assert refused == (-32602, "Unknown prompt: nope")
+    assert not (record_home / ".claude").exists()  # it only reads
 
 
 def test_the_advertised_counts_the_report_prints_are_the_counts_on_the_wire(tmp_path):

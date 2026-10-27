@@ -4105,35 +4105,50 @@ export async function run(ctx) {
     const cwd = join(b.root, 'cwd');
     mkdirSync(cwd, { recursive: true });
     b.snapshot();
+    // job73 A6: the audit switch ON for these starts (the harness runs with it off, and off now
+    // silences the line). `retention.json` is stamped at the wall clock first, so the hook's
+    // daily child is never spawned (`fresh`) and cannot rewrite the record under the probe.
+    const AUDIT_ON = { ...QENV, BANTAMKIT_SKILL_AUDIT: null };
+    const AUDIT_OFF = { ...QENV, BANTAMKIT_SKILL_AUDIT: 'off' };
     const probe = (side) => {
       const h = home(id, side);
-      const start = () => {
-        const r = runHook(ctx, side, { payload: { hook_event_name: 'SessionStart', source: 'startup', session_id: id, cwd }, cwd, home: h, env: QENV });
+      writeFile(join(h, '.bantamkit', 'retention.json'), JSON.stringify({ ran_at: new Date().toISOString() }));
+      const start = (env = AUDIT_ON) => {
+        const r = runHook(ctx, side, { payload: { hook_event_name: 'SessionStart', source: 'startup', session_id: id, cwd }, cwd, home: h, env });
         const out = dec(r.stdout);
         return { exit: r.exit, context: out ? JSON.parse(out).hookSpecificOutput?.additionalContext ?? null : null, skillAuditBytes: r.last.skillAuditBytes, bytes: r.last.bytes };
       };
       const plain = start();
-      writeFile(join(h, '.bantamkit', 'skill-audit.json'), JSON.stringify(RECORD));
+      const state = join(h, '.bantamkit', 'skill-audit.json');
+      // The orchestrator's ruling (job73 A6): with the audit switch off, a record that still holds
+      // unseen findings is NOT named, and `surfaced` is not written.
+      writeFile(state, JSON.stringify(RECORD));
+      const off = start(AUDIT_OFF);
+      const offFile = readFileSync(state, 'utf8') === JSON.stringify(RECORD);
       const first = start();
       const again = start();
-      return { plain, first, again };
+      return { plain, off, offFile, first, again };
     };
     const py = probe('py');
     b.restore();
     const nd = probe('node');
-    cases.push({ name: 'skill-audit-line: SessionStart with no record, then twice over FULL — stdout and log fields, side to side', kind: 'json', expected: py, actual: nd });
+    cases.push({ name: 'skill-audit-line: SessionStart with no record, once over FULL with the audit off, then twice with it on — stdout and log fields, side to side', kind: 'json', expected: py, actual: nd });
     const pick = (x) => ({
       first: x.first.context === `${x.plain.context}\n\n${LINE}`,
       againIsPlain: x.again.context === x.plain.context,
-      skillAuditBytes: [x.plain.skillAuditBytes, x.first.skillAuditBytes, x.again.skillAuditBytes],
-      exits: [x.plain.exit, x.first.exit, x.again.exit],
+      offIsPlain: x.off.context === x.plain.context,
+      offLeavesTheRecord: x.offFile,
+      skillAuditBytes: [x.plain.skillAuditBytes, x.off.skillAuditBytes, x.first.skillAuditBytes, x.again.skillAuditBytes],
+      exits: [x.plain.exit, x.off.exit, x.first.exit, x.again.exit],
     });
     cases.push(
-      ...literalCases(pick(py), pick(nd), 'skill-audit-line: PINNED PER SIDE: the line once, last; then the no-record block byte for byte (0 bytes added)', {
+      ...literalCases(pick(py), pick(nd), 'skill-audit-line: PINNED PER SIDE: silent with the audit off; the line once, last; then the no-record block byte for byte (0 bytes added)', {
         first: true,
         againIsPlain: true,
-        skillAuditBytes: [0, 199, 0],
-        exits: [0, 0, 0],
+        offIsPlain: true,
+        offLeavesTheRecord: true,
+        skillAuditBytes: [0, 0, 199, 0],
+        exits: [0, 0, 0, 0],
       }),
     );
   }

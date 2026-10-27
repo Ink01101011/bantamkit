@@ -42,6 +42,15 @@
  * five-finding cap (199 bytes), all surfaced, a 29-day span, a Thai item clipped on a code
  * point, an error record and a corrupt file (silent, the file unchanged), a malformed finding.
  *
+ * TASK 6 (the `skill_audit` MCP prompt). Two wire sessions, driven as `storage-tiers` drives them
+ * (`ref/wire_ref.py` against `wire.mjs`'s `runNode`), over a bed rebuilt before each side at one
+ * path: `claude-full` with its transcript stamps and mtimes moved to the wall clock (the server's
+ * `now` is live), and `null`. Each session sends `prompts/list`, `prompts/get skill_audit`,
+ * `prompts/get bantamkit_status`, `prompts/get nope` and `tools/call bantamkit_status`; every frame
+ * is compared as canonical JSON with the build digest masked. Literals per side: the prompt names
+ * in order, the `null` bed's prompt text, `-32602` for `nope`, status line 3 (`2 prompts`), and
+ * the settings file byte-identical after the prompt ran (K2).
+ *
  * THE LITERALS. A change made on both sides alike (a 30-day window moved to 29, say) leaves
  * every differential green, so the counts, the spans, the adapter and the version choice are
  * pinned per side.
@@ -51,11 +60,15 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSyn
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { pep440ToSemver } from './version.mjs';
+import { runNode } from './wire.mjs';
+
 export const name = 'skill-host';
 export const summary = 'skill audit host adapters: roots, enabled plugins, versions, 30-day Skill and typed-command counts';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const REF = join(here, 'ref', 'skillhost_ref.py');
+const WIRE_REF = join(here, 'ref', 'wire_ref.py');
 const NOW = '2026-10-16T00:00:00.000Z';
 const NOW_S = Date.parse(NOW) / 1000;
 const DAY_S = 86_400;
@@ -281,6 +294,9 @@ const LINE_RECORDS = [
   ['line error record', { version: 1, ts: 't', host: 'none', error: 'x', surfaced: [] }, 1],
   ['line corrupt', '{not json', 1],
   ['line malformed finding', lineRec([{ kind: 'x', severity: 'high', skills: 'alpha', detail: 'd' }, HIGH]), 1],
+  // job73 A6 (orchestrator ruling): the audit switch off silences the line, even over an older
+  // record holding unseen findings, and `surfaced` is not written.
+  ['line FULL, audit off', lineRec(FULL), 2, { BANTAMKIT_SKILL_AUDIT: 'off' }],
 ];
 
 function buildBed(base, label) {
@@ -381,14 +397,16 @@ function buildBed(base, label) {
     }
   }
   // ------------------------------------------------------------------ Task 5 ops
-  const line = (tag, record, calls) => ({ op: 'line', home, record: record === null ? null : b64(typeof record === 'string' ? record : JSON.stringify(record)), calls, tag });
+  // `env` defaults to the audit switch ON: the harness runs with it off, and since job73 A6 off
+  // silences the line.
+  const line = (tag, record, calls, env = on) => ({ op: 'line', home, record: record === null ? null : b64(typeof record === 'string' ? record : JSON.stringify(record)), calls, env, tag });
   ops.push(
     { op: 'daily', ...at, tag: 'daily before line' },
     line('line after daily', null, 2),
     { op: 'daily', home, cwd: cwdAbs, now: LATER, tag: 'daily after line' },
     line('line after the next daily', null, 1),
   );
-  if (label === 'session-line') for (const [tag, record, calls] of LINE_RECORDS) ops.push(line(tag, record, calls));
+  if (label === 'session-line') for (const [tag, record, calls, env] of LINE_RECORDS) ops.push(line(tag, record, calls, env));
   const kept = settings === null ? null : { path: join(base, settings), bytes: files.find(([rel]) => rel === settings)[1] };
   return { ops, kept };
 }
@@ -507,7 +525,7 @@ export async function run(ctx) {
         mkdirSync(dirname(R.statePath(op.home)), { recursive: true });
         writeFileSync(R.statePath(op.home), Buffer.from(op.record, 'base64'));
       }
-      const got = Array.from({ length: op.calls }, () => R.sessionLine(op.home));
+      const got = withEnv(op.env, () => Array.from({ length: op.calls }, () => R.sessionLine(op.home)));
       return dumpIndex({ lines: got, file: readOr(R.statePath(op.home)) });
     }
     const now = parseNow(op.now);
@@ -750,6 +768,10 @@ export async function run(ctx) {
     },
   );
   literal('session-line error record and corrupt file: silent, the corrupt file unchanged', [[null], [null], '{not json'], (a, s) => [L('line error record')(a, s).lines, L('line corrupt')(a, s).lines, L('line corrupt')(a, s).file]);
+  literal('session-line audit off: silent over unseen findings, surfaced not written (job73 A6 ruling)', [[null, null], JSON.stringify(lineRec(FULL))], (a, s) => {
+    const r = L('line FULL, audit off')(a, s);
+    return [r.lines, r.file];
+  });
   literal('session-line a malformed finding is skipped, the well-formed one named', [`[bantamkit] skill audit: 1 new — shared-trigger-phrase: alpha:a1, beta:b2${TAIL}`], (a, s) => L('line malformed finding')(a, s).lines);
   literal('every bed: the second line call is null, and after the next day\'s daily still null (nothing repeats)', BEDS.map(() => [null, [null]]), (a, s) =>
     BEDS.map((bed) => [T(bed, 'line after daily')(a, s).lines[1], T(bed, 'line after the next daily')(a, s).lines]),
@@ -758,6 +780,134 @@ export async function run(ctx) {
   literal('every line any bed made is at most 200 UTF-8 bytes', true, (a, s) =>
     BEDS.every((bed) => a[bed][s].every((ans, i) => a[bed].ops[i].op !== 'line' || ans.lines.every((l) => l === null || Buffer.byteLength(l) <= 200))),
   );
+
+
+  // ------------------------------------------------------------------- Task 6: the prompt, over the wire
+  const { dumpJson, parseJson } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'pyjson.js')).href);
+  const canonical = (frame) => (frame === undefined ? 'MISSING' : dumpJson(parseJson(JSON.stringify(frame)), { sortKeys: true, indent: 2 }));
+  const maskBuild = (text) => text.replace(/build sha256:[0-9a-f]{64}/g, 'build sha256:<masked>');
+  const semverPy = (text) => text.replace(/(version )([0-9][0-9A-Za-z.]*)(, build)/g, (_, x, v, y) => x + pep440ToSemver(v) + y);
+  const rpc = (id, method, params) => JSON.stringify({ jsonrpc: '2.0', id, method, params });
+  const INIT = rpc(1, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'conformance', version: '0' } });
+  const INITIALIZED = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  const WIRE_LINES = [
+    INIT,
+    INITIALIZED,
+    rpc(2, 'prompts/list', {}),
+    rpc(3, 'prompts/get', { name: 'skill_audit' }),
+    rpc(4, 'prompts/get', { name: 'bantamkit_status' }),
+    rpc(5, 'prompts/get', { name: 'nope' }),
+    rpc(6, 'tools/call', { name: 'bantamkit_status', arguments: {} }),
+  ];
+  const NOW_MS = Date.parse(NOW);
+  /** A bed for a LIVE server: every ISO stamp in a file and every mtime moved by (wall clock - NOW). */
+  const wireBed = (base, label) => {
+    rmSync(base, { recursive: true, force: true });
+    const wallMs = Date.now();
+    const shift = wallMs - NOW_MS;
+    const { cwd, files } = bedFiles(label);
+    const cwdAbs = join(base, cwd ?? '.');
+    mkdirSync(cwdAbs, { recursive: true });
+    for (const [rel, data, age, special] of files) {
+      const p = join(base, rel);
+      mkdirSync(dirname(p), { recursive: true });
+      // latin1 round-trips every byte, so the 0xff lines stay exactly as they are.
+      const moved = data.toString('latin1').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g, (t) => new Date(Date.parse(t) + shift).toISOString());
+      writeFileSync(p, Buffer.from(moved, 'latin1'));
+      const when = Math.trunc(wallMs / 1000) - Math.trunc(age * DAY_S);
+      utimesSync(p, when, when);
+      // platform-checked: as in `buildBed`, the chmod is skipped on win32 and under root, and no
+      // wire literal depends on it (the differential compares the two sides over the same bed).
+      if (special === 'unreadable' && !WIN && !ROOT) chmodSync(p, 0o000);
+    }
+    const home = join(base, 'home');
+    mkdirSync(join(home, '.bantamkit'), { recursive: true });
+    return {
+      spec: {
+        name: `skill-host prompt ${label}`,
+        argv: ['--store', join(base, 'store')],
+        cwd: cwdAbs,
+        env: {
+          HOME: home,
+          USERPROFILE: home,
+          BANTAMKIT_INDEX_DIR: join(base, 'idx'),
+          BANTAMKIT_RETENTION: 'off',
+          BANTAMKIT_SKILL_AUDIT: 'off',
+          BANTAMKIT_MEMORY_DIR: null,
+          BANTAMKIT_EVENT_LOG: null,
+          CLAUDE_COWORK_MEMORY_PATH_OVERRIDE: null,
+        },
+        lines: WIRE_LINES,
+      },
+      settings: join(home, '.claude', 'settings.json'),
+    };
+  };
+  const byId = (frames) => {
+    const map = new Map();
+    for (const line of frames) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && parsed.id !== undefined) map.set(parsed.id, parsed);
+      } catch {
+        /* a non-frame line is MISSING in the comparison */
+      }
+    }
+    return map;
+  };
+  const wire = {};
+  for (const label of ['claude-full', 'null']) {
+    const base = join(ctx.scratch, 'skill-host-wire', label);
+    let { spec, settings } = wireBed(base, label);
+    const before = readOr(settings);
+    let py;
+    try {
+      [py] = ctx.runPython(WIRE_REF, { sessions: [{ ...spec, lines: spec.lines.map(b64) }] }).sessions;
+    } finally {
+      release(base);
+    }
+    const pyKept = readOr(settings) === before ? 'byte-identical' : 'CHANGED';
+    ({ spec, settings } = wireBed(base, label));
+    let nd;
+    try {
+      nd = await runNode(spec);
+    } finally {
+      release(base);
+    }
+    const ndKept = readOr(settings) === before ? 'byte-identical' : 'CHANGED';
+    wire[label] = { py: byId(py.frames.map(unb64)), nd: byId(nd.frames), kept: { py: pyKept, nd: ndKept } };
+    for (const id of [2, 3, 4, 5, 6]) {
+      cases.push({
+        name: `prompt wire ${label}: id ${id}`,
+        kind: 'string',
+        expected: semverPy(maskBuild(canonical(wire[label].py.get(id)))),
+        actual: maskBuild(canonical(wire[label].nd.get(id))),
+      });
+    }
+  }
+  const W = (label, id) => (side) => wire[label][side].get(id);
+  const wireLiteral = (what, expected, get) => {
+    for (const side of ['py', 'nd']) {
+      cases.push({ name: `LITERAL: prompt wire ${what} — ${side === 'py' ? 'python' : 'node'}`, kind: 'json', expected, actual: get(side) });
+    }
+  };
+  const PROMPT_TAIL = 'Show me this report as it stands. Do not edit settings.json yourself; if a change is proposed above, ask me before applying it.';
+  wireLiteral('prompts/list names, bantamkit_status first', ['bantamkit_status', 'skill_audit'], (s) => (W('claude-full', 2)(s)?.result?.prompts ?? []).map((p) => p.name));
+  wireLiteral(
+    'null: the skill_audit prompt text is the could-not-run sentence and the tail',
+    `skill audit — could not run: no skill directory was found for this host. The \`skill_audit\` tool still audits any directory you name as \`root\`.\n\n${PROMPT_TAIL}`,
+    (s) => W('null', 3)(s)?.result?.messages?.[0]?.content?.text ?? null,
+  );
+  wireLiteral('claude-full: the prompt carries the live report, then the tail', [true, true, 'user'], (s) => {
+    const m = W('claude-full', 3)(s)?.result?.messages?.[0];
+    const text = m?.content?.text ?? '';
+    return [text.startsWith('skill audit — claude-code, '), text.endsWith(`\n\n${PROMPT_TAIL}`), m?.role ?? null];
+  });
+  wireLiteral('an unknown prompt is -32602 with the sentence', [-32602, 'Unknown prompt: nope'], (s) => {
+    const e = W('claude-full', 5)(s)?.error;
+    return [e?.code ?? null, e?.message ?? null];
+  });
+  wireLiteral('status line 3 counts 2 prompts', 'serving 15 tools, 2 prompts, 2 resource templates', (s) => (W('claude-full', 6)(s)?.result?.content?.[0]?.text ?? '').split('\n')[2] ?? null);
+  wireLiteral('claude-full: settings.json byte-identical after the prompt ran (K2)', 'byte-identical', (s) => wire['claude-full'].kept[s]);
 
   notes.push(`${BEDS.length} beds, both runtimes, over identical paths under ${join(ctx.scratch, 'skill-host')}`);
   return { cases, notes };

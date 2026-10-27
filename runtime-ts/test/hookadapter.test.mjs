@@ -814,11 +814,21 @@ test('SessionStart names a new skill-audit finding once, then adds zero bytes', 
   const start = { hook_event_name: 'SessionStart', source: 'startup' };
   const ctx = (r) => JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
   const last = () => JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', 'hook-log.jsonl'), 'utf8').trim().split('\n').at(-1));
-  const plain = ctx(runHook(start, { home, cwd }));
+  // job73 A6: the audit switch ON (the sandbox pins it off, and off silences the line); the
+  // retention record is stamped now, so the hook's daily child is never spawned.
+  mkdirSync(join(home, '.bantamkit'), { recursive: true });
+  writeFileSync(join(home, '.bantamkit', 'retention.json'), JSON.stringify({ ran_at: new Date().toISOString() }));
+  const env = { BANTAMKIT_SKILL_AUDIT: 'on' };
+  const plain = ctx(runHook(start, { home, cwd, env }));
   assert.equal(last().skillAuditBytes, 0);
   put(home, rec(FULL));
-  assert.equal(ctx(runHook(start, { home, cwd })), `${plain}\n\n${LINE}`);
+  // The ruling (job73 A6): the switch off silences it, over unseen findings, writing nothing.
+  const before = readFileSync(join(home, '.bantamkit', 'skill-audit.json'));
+  assert.equal(ctx(runHook(start, { home, cwd, env: { BANTAMKIT_SKILL_AUDIT: 'off' } })), plain);
+  assert.equal(last().skillAuditBytes, 0);
+  assert.deepEqual(readFileSync(join(home, '.bantamkit', 'skill-audit.json')), before);
+  assert.equal(ctx(runHook(start, { home, cwd, env })), `${plain}\n\n${LINE}`);
   assert.equal(last().skillAuditBytes, Buffer.byteLength(LINE));
-  assert.equal(ctx(runHook(start, { home, cwd })), plain);
+  assert.equal(ctx(runHook(start, { home, cwd, env })), plain);
   assert.equal(last().skillAuditBytes, 0);
 });

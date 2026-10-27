@@ -272,7 +272,8 @@ test('daily never throws', () => {
 const { FULL, HIGH, LINE, never, put, rec } = await import('./_skillline.mjs');
 const one = (body) => `[bantamkit] skill audit: 1 new — ${body} — /mcp__bantamkit__skill_audit has the report.`;
 
-test('the line is capped and then silent', () => {
+test('the line is capped and then silent', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined }); // the sandbox pins it off, and off silences the line (job73 A6)
   const home = tmp();
   put(home, rec(FULL));
   const line = R.sessionLine(home);
@@ -284,7 +285,8 @@ test('the line is capped and then silent', () => {
   assert.deepEqual(R.readState(home).surfaced, keys);
 });
 
-test('nothing new is null and writes nothing', () => {
+test('nothing new is null and writes nothing', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined }); // the sandbox pins it off, and off silences the line (job73 A6)
   const home = tmp();
   put(home, rec(FULL, 30, FULL.map((f) => R.surfaceKey(f))));
   const before = fs.readFileSync(R.statePath(home));
@@ -292,7 +294,8 @@ test('nothing new is null and writes nothing', () => {
   assert.deepEqual(fs.readFileSync(R.statePath(home)), before);
 });
 
-test('never-invoked waits for 30 days', () => {
+test('never-invoked waits for 30 days', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined }); // the sandbox pins it off, and off silences the line (job73 A6)
   const home = tmp();
   put(home, rec([never('x')], 29));
   assert.equal(R.sessionLine(home), null);
@@ -300,7 +303,8 @@ test('never-invoked waits for 30 days', () => {
   assert.equal(R.sessionLine(home), one('x 30 days without a call'));
 });
 
-test('one long item is clipped on a code point', () => {
+test('one long item is clipped on a code point', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined }); // the sandbox pins it off, and off silences the line (job73 A6)
   const home = tmp();
   put(home, rec([{ ...HIGH, skills: ['ก'.repeat(80)] }]));
   const line = R.sessionLine(home);
@@ -309,7 +313,8 @@ test('one long item is clipped on a code point', () => {
   assert.equal(new TextDecoder('utf-8', { fatal: true }).decode(raw), line);
 });
 
-test('a finding shown once is never shown again, but a new one is', () => {
+test('a finding shown once is never shown again, but a new one is', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined }); // the sandbox pins it off, and off silences the line (job73 A6)
   const home = tmp();
   put(home, rec([HIGH]));
   assert.notEqual(R.sessionLine(home), null);
@@ -320,7 +325,8 @@ test('a finding shown once is never shown again, but a new one is', () => {
   assert.equal(R.sessionLine(home), null);
 });
 
-test('no record, an error record or a corrupt file is silent', () => {
+test('no record, an error record or a corrupt file is silent', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined }); // the sandbox pins it off, and off silences the line (job73 A6)
   const home = tmp();
   assert.equal(R.sessionLine(home), null);
   assert.equal(fs.existsSync(R.statePath(home)), false);
@@ -331,10 +337,22 @@ test('no record, an error record or a corrupt file is silent', () => {
   assert.equal(fs.readFileSync(R.statePath(home), 'utf8'), '{not json');
 });
 
-test('a malformed finding is skipped, not fatal', () => {
+test('a malformed finding is skipped, not fatal', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined }); // the sandbox pins it off, and off silences the line (job73 A6)
   const home = tmp();
   put(home, rec([{ kind: 'x', severity: 'high', skills: 'alpha', detail: 'd' }, HIGH]));
   assert.equal(R.sessionLine(home), one('shared-trigger-phrase: alpha:a1, beta:b2'));
+});
+
+test('the audit switch off silences the line and writes nothing (job73 A6 ruling)', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: 'off' });
+  const home = tmp();
+  put(home, rec(FULL));
+  const before = fs.readFileSync(R.statePath(home));
+  assert.equal(R.sessionLine(home), null);
+  assert.deepEqual(fs.readFileSync(R.statePath(home)), before);
+  delete process.env.BANTAMKIT_SKILL_AUDIT;
+  assert.equal(R.sessionLine(home), LINE);
 });
 
 test('renderLine never overflows', () => {

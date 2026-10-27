@@ -25,6 +25,11 @@ compares the two (ops `record`, `render`, `propose`, `daily`, `status`, `child`,
 THE SESSIONSTART LINE (Task 5). `session_line` reads the record and names, in one line of at most
 `LINE_MAX_BYTES` bytes, the surfaceable findings whose `surface_key` is not yet in `surfaced`,
 then adds those keys, so nothing repeats; with nothing new it returns None and writes nothing.
+With `BANTAMKIT_SKILL_AUDIT=off` it returns None and writes nothing, even over an older record that
+still holds unseen findings: the switch silences the line too (orchestrator ruling, job73 A6).
+
+THE PROMPT (Task 6). `skill_audit` is the second MCP prompt on both servers: `prompts/get` returns
+`render_report(run_live(home, cwd, now)) + "\n\n" + SKILL_AUDIT_PROMPT_TAIL` as one user message.
 """
 
 from __future__ import annotations
@@ -46,6 +51,20 @@ STATE_VERSION = 1
 NO_ROOTS = "no skill directory was found for this host"
 GATHER_FAILED = "the gather failed"
 NOT_APPLIED = "NOT applied; bantamkit never edits settings.json"
+
+#: The `skill_audit` MCP prompt (#205 Task 6). A PERSON's command (`/mcp__bantamkit__skill_audit`
+#: in Claude Code); both servers serve these bytes.
+SKILL_AUDIT_NAME = "skill_audit"
+SKILL_AUDIT_PROMPT_TITLE = "bantamkit skill audit"
+SKILL_AUDIT_PROMPT_DESCRIPTION = (
+    "Audit the skills this host loads: catalogue bytes, shared trigger phrases, malformed "
+    "frontmatter and, where the host keeps transcripts, skills with no call in 30 days. Inserts "
+    "the report and a proposed settings.json change that is never applied for you."
+)
+SKILL_AUDIT_PROMPT_TAIL = (
+    "Show me this report as it stands. Do not edit settings.json yourself; if a change is "
+    "proposed above, ask me before applying it."
+)
 
 
 def _plural(count: int, word: str) -> str:
@@ -445,8 +464,11 @@ def render_line(items: list[str]) -> str:
 def session_line(home: Path | str) -> str | None:
     """One line for SessionStart, only for what `surfaced` has not seen (K1). None — and no
     write — when nothing is new, so SessionStart adds 0 bytes. Otherwise the shown keys join
-    `surfaced` under the lock, if the record is still the one read (same `ts`). Never raises."""
+    `surfaced` under the lock, if the record is still the one read (same `ts`). Never raises.
+    `BANTAMKIT_SKILL_AUDIT=off` silences it: None, nothing written, whatever the record holds."""
     try:
+        if not audit_enabled():
+            return None
         record = read_state(home)
         if record is None or "error" in record:
             return None

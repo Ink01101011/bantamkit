@@ -1167,9 +1167,11 @@ test('the two templates advertise an empty description, as the reference does', 
   assert.deepEqual(byId(lines, 6).result, { resources: [] });
   // `prompts/list` was EMPTY here until U12. It is the one advertisement whose content is
   // pinned in the status section below rather than in this one; what stays here is that the
-  // list is served at all and carries exactly the one registration `SERVED_PROMPTS` counts.
-  assert.equal(byId(lines, 7).result.prompts.length, 1);
+  // list is served at all and carries exactly the registrations `SERVED_PROMPTS` counts.
+  // AMENDED job73 A6 (#205 Task 6): 1 -> 2, `skill_audit` listed after `bantamkit_status`.
+  assert.equal(byId(lines, 7).result.prompts.length, 2);
   assert.equal(byId(lines, 7).result.prompts[0].name, 'bantamkit_status');
+  assert.equal(byId(lines, 7).result.prompts[1].name, 'skill_audit');
 });
 
 test('the advertised capabilities are the reference set, not the SDK default', async () => {
@@ -1294,7 +1296,8 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   const declared = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   assert.match(rows[1], /^version \S+, build sha256:[0-9a-f]{64}$/);
   assert.equal(rows[1].split(',')[0], `version ${declared}`);
-  assert.equal(rows[2], 'serving 15 tools, 1 prompt, 2 resource templates');
+  // AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
+  assert.equal(rows[2], 'serving 15 tools, 2 prompts, 2 resource templates');
   // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
   // walk bound ABOVE the project was invisible on the one surface that reports binding.
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes; bound to ${store}`);
@@ -1520,7 +1523,9 @@ test('the prompt a PERSON invokes carries the report itself, plus one instructio
     undefined,
   );
   const advertised = byId(lines, 2).result.prompts;
-  assert.equal(advertised.length, 1, 'SERVED_PROMPTS says 1 and the wire must agree');
+  // AMENDED job73 A6 (#205 Task 6): 1 -> 2, the skill audit listed second.
+  assert.equal(advertised.length, 2, 'SERVED_PROMPTS says 2 and the wire must agree');
+  assert.deepEqual(advertised.map((p) => p.name), ['bantamkit_status', 'skill_audit']);
   assert.equal(advertised[0].name, 'bantamkit_status');
   assert.equal(advertised[0].title, 'bantamkit status');
   assert.deepEqual(advertised[0].arguments, []);
@@ -1539,6 +1544,25 @@ test('the prompt a PERSON invokes carries the report itself, plus one instructio
   );
   assert.equal(byId(lines, 4).error.code, -32602);
   assert.equal(byId(lines, 4).error.message, 'Unknown prompt: nosuch');
+  assert.equal(stderr, '');
+});
+
+test('the skill_audit prompt over a home with no .claude is the could-not-run report and the tail', async () => {
+  // #205 Task 6, mirroring test_status_surface.py: `statusSession` runs in its own HOME and an
+  // isolated cwd, neither holding a `.claude/`, so the gather finds no skill root at all.
+  const { lines, stderr } = await statusSession(
+    [INIT, INITIALIZED, { jsonrpc: '2.0', id: 2, method: 'prompts/get', params: { name: 'skill_audit' } }],
+    undefined,
+  );
+  const got = byId(lines, 2).result;
+  assert.equal(got.messages.length, 1);
+  assert.equal(got.messages[0].role, 'user');
+  assert.equal(
+    got.messages[0].content.text,
+    'skill audit — could not run: no skill directory was found for this host. The `skill_audit` tool still audits any ' +
+      'directory you name as `root`.\n\nShow me this report as it stands. Do not edit settings.json yourself; if a ' +
+      'change is proposed above, ask me before applying it.',
+  );
   assert.equal(stderr, '');
 });
 

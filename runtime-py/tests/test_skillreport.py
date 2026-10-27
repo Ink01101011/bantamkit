@@ -7,6 +7,8 @@ compares the two runtimes. Every path is under `tmp_path`: nothing here reads a 
 import hashlib
 import json
 
+import pytest
+
 from bantamkit import skillaudit, skillreport
 from bantamkit.skillhost import Gathered, UsageScan
 from bantamkit.storage import retention
@@ -314,7 +316,13 @@ def _put(home, rec):
     skillreport.state_path(home).write_text(json.dumps(rec), encoding="utf-8")
 
 
-def test_the_line_is_capped_and_then_silent(tmp_path):
+@pytest.fixture
+def audit_on(monkeypatch):
+    """conftest pins `BANTAMKIT_SKILL_AUDIT=off`, and since job73 A6 off silences the line."""
+    monkeypatch.delenv("BANTAMKIT_SKILL_AUDIT", raising=False)
+
+
+def test_the_line_is_capped_and_then_silent(tmp_path, audit_on):
     _put(tmp_path, _rec(FULL))
     line = skillreport.session_line(tmp_path)
     assert line == LINE and len(line.encode()) == 199 <= skillreport.LINE_MAX_BYTES
@@ -323,7 +331,7 @@ def test_the_line_is_capped_and_then_silent(tmp_path):
     assert stored["surfaced"] == sorted(skillreport.surface_key(f) for f in FULL)
 
 
-def test_nothing_new_is_none_and_writes_nothing(tmp_path):
+def test_nothing_new_is_none_and_writes_nothing(tmp_path, audit_on):
     keys = [skillreport.surface_key(f) for f in FULL]
     _put(tmp_path, _rec(FULL, surfaced=keys))
     before = skillreport.state_path(tmp_path).read_bytes()
@@ -331,7 +339,7 @@ def test_nothing_new_is_none_and_writes_nothing(tmp_path):
     assert skillreport.state_path(tmp_path).read_bytes() == before
 
 
-def test_never_invoked_waits_for_30_days(tmp_path):
+def test_never_invoked_waits_for_30_days(tmp_path, audit_on):
     _put(tmp_path, _rec([_never("x")], span=29))
     assert skillreport.session_line(tmp_path) is None
     _put(tmp_path, _rec([_never("x")], span=30))
@@ -341,7 +349,7 @@ def test_never_invoked_waits_for_30_days(tmp_path):
     )
 
 
-def test_one_long_item_is_clipped_on_a_code_point(tmp_path):
+def test_one_long_item_is_clipped_on_a_code_point(tmp_path, audit_on):
     long = {**HIGH, "skills": ["ก" * 80]}
     _put(tmp_path, _rec([long]))
     line = skillreport.session_line(tmp_path)
@@ -350,7 +358,7 @@ def test_one_long_item_is_clipped_on_a_code_point(tmp_path):
     raw.decode("utf-8")  # no split code point
 
 
-def test_a_finding_shown_once_is_never_shown_again_but_a_new_one_is(tmp_path):
+def test_a_finding_shown_once_is_never_shown_again_but_a_new_one_is(tmp_path, audit_on):
     _put(tmp_path, _rec([HIGH]))
     assert skillreport.session_line(tmp_path) is not None
     stored = skillreport.read_state(tmp_path)
@@ -363,7 +371,7 @@ def test_a_finding_shown_once_is_never_shown_again_but_a_new_one_is(tmp_path):
     assert skillreport.session_line(tmp_path) is None
 
 
-def test_no_record_an_error_record_or_a_corrupt_file_is_silent(tmp_path):
+def test_no_record_an_error_record_or_a_corrupt_file_is_silent(tmp_path, audit_on):
     assert skillreport.session_line(tmp_path) is None
     assert not skillreport.state_path(tmp_path).exists()
     _put(tmp_path, {"version": 1, "ts": "t", "host": "none", "error": "x", "surfaced": []})
@@ -373,13 +381,25 @@ def test_no_record_an_error_record_or_a_corrupt_file_is_silent(tmp_path):
     assert skillreport.state_path(tmp_path).read_bytes() == b"{not json"
 
 
-def test_a_malformed_finding_is_skipped_not_fatal(tmp_path):
+def test_a_malformed_finding_is_skipped_not_fatal(tmp_path, audit_on):
     bad = {"kind": "x", "severity": "high", "skills": "alpha", "detail": "d"}
     _put(tmp_path, _rec([bad, HIGH]))
     assert skillreport.session_line(tmp_path) == (
         "[bantamkit] skill audit: 1 new — shared-trigger-phrase: alpha:a1, beta:b2 — "
         "/mcp__bantamkit__skill_audit has the report."
     )
+
+
+def test_the_audit_switch_off_silences_the_line_and_writes_nothing(tmp_path, monkeypatch):
+    """Orchestrator ruling (job73 A6): with `BANTAMKIT_SKILL_AUDIT=off` an older record that still
+    holds unseen findings is not named, and `surfaced` is not written."""
+    monkeypatch.setenv("BANTAMKIT_SKILL_AUDIT", "off")
+    _put(tmp_path, _rec(FULL))
+    before = skillreport.state_path(tmp_path).read_bytes()
+    assert skillreport.session_line(tmp_path) is None
+    assert skillreport.state_path(tmp_path).read_bytes() == before
+    monkeypatch.delenv("BANTAMKIT_SKILL_AUDIT")
+    assert skillreport.session_line(tmp_path) == LINE
 
 
 def test_render_line_items_never_overflow():

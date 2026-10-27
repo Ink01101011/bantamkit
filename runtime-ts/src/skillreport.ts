@@ -11,6 +11,11 @@
  * THE SESSIONSTART LINE (Task 5): `sessionLine` names, in one line of at most `LINE_MAX_BYTES`
  * UTF-8 bytes, the surfaceable findings whose `surfaceKey` is not yet in `surfaced`, then adds
  * those keys, so nothing repeats; with nothing new it returns null and writes nothing. Op `line`.
+ * `BANTAMKIT_SKILL_AUDIT=off` silences it too: null and no write, even over an older record that
+ * still holds unseen findings (orchestrator ruling, job73 A6).
+ *
+ * THE PROMPT (Task 6): `skill_audit`, the second MCP prompt, answers
+ * `renderReport(runLive(home, cwd, now)) + '\n\n' + SKILL_AUDIT_PROMPT_TAIL` as one user message.
  *
  * K2: it REPORTS and PROPOSES a `settings.json` diff; it never edits the file — nothing here
  * opens a file for writing. A plugin is proposed only when usage is present, the transcripts span
@@ -39,6 +44,17 @@ export const STATE_VERSION = 1;
 export const NO_ROOTS = 'no skill directory was found for this host';
 export const GATHER_FAILED = 'the gather failed';
 export const NOT_APPLIED = 'NOT applied; bantamkit never edits settings.json';
+
+/** The `skill_audit` MCP prompt (#205 Task 6), a PERSON's command; both servers serve these bytes. */
+export const SKILL_AUDIT_NAME = 'skill_audit';
+export const SKILL_AUDIT_PROMPT_TITLE = 'bantamkit skill audit';
+export const SKILL_AUDIT_PROMPT_DESCRIPTION =
+  'Audit the skills this host loads: catalogue bytes, shared trigger phrases, malformed ' +
+  'frontmatter and, where the host keeps transcripts, skills with no call in 30 days. Inserts ' +
+  'the report and a proposed settings.json change that is never applied for you.';
+export const SKILL_AUDIT_PROMPT_TAIL =
+  'Show me this report as it stands. Do not edit settings.json yourself; if a change is ' +
+  'proposed above, ask me before applying it.';
 
 /** The injection point a unit test overrides, as `retentionFs` is overridden. */
 export const skillreportDeps = { selectAdapter };
@@ -429,9 +445,11 @@ export function renderLine(items: string[]): string {
  * One line for SessionStart, only for what `surfaced` has not seen (K1). null — and no write —
  * when nothing is new, so SessionStart adds 0 bytes. Otherwise the shown keys join `surfaced`
  * under the lock, if the record is still the one read (same `ts`). Never throws.
+ * `BANTAMKIT_SKILL_AUDIT=off` silences it: null, nothing written, whatever the record holds.
  */
 export function sessionLine(home: string): string | null {
   try {
+    if (!auditEnabled()) return null;
     const record = readState(home);
     if (record === null || 'error' in record) return null;
     const shown = new Set(record.surfaced);

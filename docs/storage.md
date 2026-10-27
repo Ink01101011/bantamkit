@@ -245,6 +245,14 @@ So with retention off `bantamkit_status` can read `retention: off; last ran <iso
 the day's claim, not a sweep. The test runners and the harness pin `BANTAMKIT_SKILL_AUDIT=off`
 suite-wide, beside `BANTAMKIT_RETENTION=off`.
 
+**The switch silences the SessionStart line too (job73 A6, orchestrator ruling).** With
+`BANTAMKIT_SKILL_AUDIT=off` the SessionStart skill-audit line is never shown, even when an
+older `skill-audit.json` written before opting out still holds findings nobody has seen, and
+`surfaced` is not written; turning the switch back on shows them once. The person's command (the
+`skill_audit` MCP prompt) is not gated: it gathers and audits on request either way. Pinned per
+side by the `skill-host` suite's `line FULL, audit off` and the `hooks` suite's
+`skill-audit-line` scenario.
+
 ## Numbers, and where they come from
 
 The bar was declared before any number existed (spec, *Bar*).

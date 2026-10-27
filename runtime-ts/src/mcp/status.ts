@@ -84,7 +84,7 @@ export const STATUS_PROMPT_TAIL =
  * wire session drives a real `prompts/list` and `resources/templates/list` against both
  * runtimes, so a registration added or removed without moving these fails the suite.
  */
-export const SERVED_PROMPTS = 1;
+export const SERVED_PROMPTS = 2;
 export const SERVED_RESOURCE_TEMPLATES = 2;
 
 /**

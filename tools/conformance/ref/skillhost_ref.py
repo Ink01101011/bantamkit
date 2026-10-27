@@ -36,10 +36,12 @@ state files (or only `skill-audit.json`), BEFORE the snapshot is taken.
 
 Task 5 (the SessionStart line):
 
-    {"op": "line", "home", "record": b64 | null, "calls": n}
+    {"op": "line", "home", "record": b64 | null, "calls": n, "env"}
         -> b64(dumps({"lines": [session_line(home)] * n, "file": skill-audit.json | null}))
 
 `record`, when given, is written as the state file's bytes first (so a corrupt file is one).
+`env` is applied around the calls (the suite passes `BANTAMKIT_SKILL_AUDIT` unset, or `off`:
+since job73 A6 the switch silences the line, and the harness itself runs with it off).
 
 `dumps` is `storage.hotindex.dumps`, which `hotindex.ts` `dumpIndex` mirrors byte for byte.
 """
@@ -160,7 +162,9 @@ def _line(op: dict) -> str:
     if op.get("record") is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(base64.b64decode(op["record"]))
-    lines = [skillreport.session_line(op["home"]) for _ in range(op["calls"])]
+    lines = _with_env(
+        op.get("env"), lambda: [skillreport.session_line(op["home"]) for _ in range(op["calls"])]
+    )
     return _b64(dumps({"lines": lines, "file": _read(path)}))
 
 
