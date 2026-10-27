@@ -2,7 +2,7 @@
 
 Task 4a of `docs/superpowers/plans/2026-10-27-skills-from-experience.md` — the shiftwork
 source (R1, R2, R6, R7) and the signature every source shares; Task 5 — clustering, the X1
-bars and the proposals file. The transcript source comes later (Task 4b).
+bars and the proposals file; Task 4b — the transcript source (below, "sessions").
 
 A **piece of work** from shiftwork is one unit's LAST clock-out line in a job's ledger
 (`<checkpoint>.log.jsonl`), live under `<root>/.shiftwork/` or archived by #204's Retention
@@ -34,6 +34,20 @@ twice the bar for the installer, recurring steps, pitfalls from failed members, 
 level from the repo keys. `proposals` turns them into the `skill-proposals.json` document,
 carrying identity, status and rejection memory from the previous document; only
 `write_proposals` writes, temp-then-rename under the storage lock.
+
+**Sessions** (Task 4b): a piece is one user turn of a Claude Code transcript — a prompt (R3:
+a `type: "user"` record that is not `isMeta`, not `isCompactSummary`, carries no
+`toolUseResult`, is not `isSidechain` and is not under `subagents/`; its string content or its
+`text` blocks, with every `CUT_TAGS` span cut out) through the record before the next prompt,
+holding at least one `tool_use`. X4 is held by construction: the only facts read from a tool
+result are which call it answers and its `is_error` flag; the agent's tool names, the file
+arguments of Read/Edit/Write and a Bash command's text (matched, never stored) are structure.
+The signals (R5): `commit`, `tests` (the LAST test run in the turn), `uncorrected` (Q1's word
+list, or the interrupt marker; a last turn has none). The `MinerCache` keeps each transcript's
+offset and open turn, so an unchanged file is not read and a grown one is read from where the
+last run stopped. Measured shapes (job73 C6 Step 0) added `bash-*`, `task-notification` and
+`local-command-caveat` to the cut list: a `!` command's output and a background task's result
+arrive as non-meta user records.
 
 `runtime-ts/src/skillmine.ts` is the port;
 `tools/conformance/suites/skill-miner.mjs` compares the two.
@@ -783,3 +797,558 @@ def write_proposals(home: str | Path, doc: Mapping[str, Any]) -> Path:
                 pass
             raise
     return path
+
+
+# ------------------------------------------------------------- sessions (Task 4b)
+
+#: A user prompt is cut to this many code points in a piece of work (and so in every file
+#: the miner writes): the plan's `EVIDENCE_PROMPT_CHARS`.
+EVIDENCE_PROMPT_CHARS = 500
+#: The transcript window: a transcript last written before it is not read, and a turn that
+#: starts before it is not a piece. #205's `skillhost.USAGE_DAYS`, so the miner and the audit
+#: look at the same month.
+MINE_DAYS = 30
+DAY_MS = 86_400_000
+CACHE_NAME = "skill-miner-cache.json"
+CACHE_VERSION = 1
+#: Q1's default: a next prompt that starts with (or is) one of these corrects the turn before.
+CORRECTIONS = (
+    "no",
+    "nope",
+    "wrong",
+    "stop",
+    "don't",
+    "do not",
+    "that's not",
+    "undo",
+    "revert",
+    "ไม่",
+    "อย่า",
+    "ผิด",
+    "หยุด",
+)
+INTERRUPT = "[Request interrupted by user"
+#: R3: spans the harness writes into a user record; none of them is the user's own words.
+#: `bash-*` and `task-notification` are measured additions (C6 Step 0): a `!` command's
+#: output and a background task's result arrive as non-meta user records.
+CUT_TAGS = (
+    "system-reminder",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+    "bash-input",
+    "bash-stdout",
+    "bash-stderr",
+    "task-notification",
+)
+#: R4: the tools whose input names a file the agent touched.
+PATH_TOOLS = ("Read", "Edit", "MultiEdit", "Write", "NotebookEdit")
+PATH_KEYS = ("file_path", "path", "notebook_path")
+BASH_TOOL = "Bash"
+#: R5. Word edges are spelled as ASCII classes and blanks as `[ \t]`, never `\b`/`\s`,
+#: whose meaning differs between Python and JavaScript.
+_COMMIT = re.compile(r"(?<![A-Za-z0-9_])git[ \t]+commit(?![A-Za-z0-9_])")
+_TESTS = re.compile(
+    r"(?<![A-Za-z0-9_])(?:pytest|npm[ \t]+test|npm[ \t]+run[ \t]+test|node[ \t]+--test"
+    r"|go[ \t]+test|cargo[ \t]+test|jest|vitest)(?![A-Za-z0-9_])|run\.mjs"
+)
+_CUT = re.compile(r"<(" + "|".join(CUT_TAGS) + r")>[\s\S]*?(?:</\1>|\Z)")
+_WORD_CHAR = re.compile(r"[a-z0-9]")
+_QUOTES = re.compile("[‘’]")
+_SUBAGENTS = "subagents"
+
+
+def _well_formed(text: str) -> str:
+    return _LONE_SURROGATE.sub("�", text)
+
+
+def _cut(text: str, n: int = EVIDENCE_PROMPT_CHARS) -> str:
+    return text[:n]
+
+
+def _user_text(content: Any) -> str | None:
+    """R3: the string content, or the `text` blocks joined by `\\n`; tool results never."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    texts = [
+        b["text"]
+        for b in content
+        if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+    ]
+    return "\n".join(texts) if texts else None
+
+
+def clean_prompt(text: str) -> str:
+    """The user's own words: every `CUT_TAGS` span cut out (an unclosed one to the end),
+    then stripped."""
+    return _CUT.sub("", text).strip()
+
+
+def is_correction(prompt: str) -> bool:
+    """Q1: NFKC, lower-cased, curly apostrophes made straight, leading blanks dropped; a
+    correction word is the whole prompt or is followed by anything but `[a-z0-9]`."""
+    import unicodedata
+
+    s = _QUOTES.sub("'", unicodedata.normalize("NFKC", prompt).lower()).lstrip()
+    if s.startswith(INTERRUPT.lower()):
+        return True
+    for word in CORRECTIONS:
+        if s.startswith(word) and (
+            len(s) == len(word) or _WORD_CHAR.fullmatch(s[len(word)]) is None
+        ):
+            return True
+    return False
+
+
+def _ts_ms(value: Any) -> int | None:
+    from bantamkit.storage.retention import parse_now
+
+    try:
+        return parse_now(value)
+    except ValueError:
+        return None
+
+
+def _new_turn(rec: Mapping[str, Any], sid: str, n: int, prompt: str) -> dict[str, Any]:
+    cwd = rec.get("cwd")
+    ts = rec.get("timestamp")
+    return {
+        "commits": [],
+        "cwd": cwd if isinstance(cwd, str) else "",
+        "id": f"s{sid[:8]}#{n}",
+        "inpaths": [],
+        "prompt": prompt,
+        "results": {},
+        "session": sid,
+        "test": None,
+        "tools": [],
+        "ts": ts if isinstance(ts, str) else "",
+    }
+
+
+class _Context:
+    """Per-run lookups shared by every transcript: repo keys by cwd, touch rows by repo."""
+
+    def __init__(self, home: str) -> None:
+        self.home = home
+        self._repos: dict[str, tuple[str, Any]] = {}
+        self._rows: dict[str, list[dict[str, Any]]] = {}
+
+    def repo(self, cwd: str) -> tuple[str, Any]:
+        if cwd not in self._repos:
+            from bantamkit.touch.repo import find_repo
+
+            self._repos[cwd] = (repo_key(cwd), find_repo(cwd)) if cwd else ("", None)
+        return self._repos[cwd]
+
+    def rows(self, repo_id: str) -> list[dict[str, Any]]:
+        if repo_id not in self._rows:
+            from bantamkit.touch.log import TouchLog
+
+            self._rows[repo_id] = TouchLog(self.home, repo_id).read()
+        return self._rows[repo_id]
+
+
+def _turn_paths(
+    turn: Mapping[str, Any], repo: Any, next_ms: int | None, ctx: _Context
+) -> frozenset[str]:
+    """R4: the touch log's rows of the session in `[start, next prompt)` (the start floored to
+    the second the log writes), or, when the log holds no row of the session at all, the
+    file arguments of the turn's Read/Edit/Write calls. Repo-relative; nothing outside a repo."""
+    if repo is None:
+        return frozenset()
+    from bantamkit.touch.repo import relpath
+
+    start = _ts_ms(turn["ts"])
+    rows = [
+        r
+        for r in ctx.rows(repo.id)
+        if r.get("session") == turn["session"]
+        and r.get("op") not in ("use", "folded")
+        and isinstance(r.get("path"), str)
+        and r["path"]
+    ]
+    if rows:
+        out: set[str] = set()
+        if start is None:
+            return frozenset()
+        floor = start // 1000 * 1000
+        for r in rows:
+            t = _ts_ms(r.get("ts"))
+            if t is not None and t >= floor and (next_ms is None or t < next_ms):
+                out.add(r["path"])
+        return frozenset(out)
+    out = set()
+    for p in turn["inpaths"]:
+        full = p if os.path.isabs(p) else os.path.join(turn["cwd"], p)
+        rel = relpath(repo, full)
+        if rel is not None:
+            out.add(rel)
+    return frozenset(out)
+
+
+def _close(
+    turn: Mapping[str, Any], nxt: str | None, interrupted: bool, next_ts: Any, ctx: _Context
+) -> Piece | None:
+    """The piece a turn makes once the record after it is known (`nxt` the next prompt,
+    `interrupted` the harness's marker, neither: the session's last turn). None without a
+    tool call (R1) or without a readable start time."""
+    if not turn["tools"] or _ts_ms(turn["ts"]) is None:
+        return None
+    results = turn["results"]
+    signals = {
+        "commit": any(results.get(t) is False for t in turn["commits"]),
+        "tests": turn["test"] is not None and results.get(turn["test"]) is False,
+    }
+    failure = None
+    if interrupted:
+        signals["uncorrected"] = False
+        failure = "interrupted by the user"
+    elif nxt is not None:
+        corrected = is_correction(nxt)
+        signals["uncorrected"] = not corrected
+        if corrected:
+            failure = "corrected in the next turn: " + _cut(nxt)
+    ok: bool | None = True if any(signals.values()) else (False if failure else None)
+    key, repo = ctx.repo(turn["cwd"])
+    next_ms = None if nxt is None and not interrupted else _ts_ms(next_ts)
+    return Piece(
+        id=turn["id"],
+        source=SOURCE_SESSION,
+        ts=turn["ts"],
+        repo=key,
+        prompt=turn["prompt"],
+        tools=tuple(turn["tools"]),
+        paths=_turn_paths(turn, repo, next_ms, ctx),
+        ok=ok,
+        signals=signals,
+        failure=failure if ok is False else None,
+    )
+
+
+def _feed(
+    rec: Any, state: dict[str, Any], sid_default: str, ctx: _Context, out: list[Piece]
+) -> None:
+    """One transcript record into the parse state; a closed turn's piece into `out`."""
+    if not isinstance(rec, dict) or rec.get("isSidechain") is True:
+        return
+    kind = rec.get("type")
+    turn = state["turn"]
+    message = rec.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if kind == "assistant":
+        if turn is None or not isinstance(content, list):
+            return
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "tool_use":
+                continue
+            name = b.get("name")
+            if not isinstance(name, str):
+                continue
+            turn["tools"].append(name)
+            given = b.get("input") if isinstance(b.get("input"), dict) else {}
+            if name in PATH_TOOLS:
+                for k in PATH_KEYS:
+                    if isinstance(given.get(k), str) and given[k]:
+                        turn["inpaths"].append(given[k])
+            bid = b.get("id")
+            command = given.get("command")
+            if name == BASH_TOOL and isinstance(bid, str) and isinstance(command, str):
+                if _COMMIT.search(command):
+                    turn["commits"].append(bid)
+                if _TESTS.search(command):
+                    turn["test"] = bid
+        return
+    if kind != "user":
+        return
+    # Only the two booleans of a tool result are read (X4): which call it answers, and
+    # whether it is an error. Never its content.
+    if turn is not None and isinstance(content, list):
+        wanted = set(turn["commits"]) | ({turn["test"]} if turn["test"] else set())
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
+                continue
+            tid = b.get("tool_use_id")
+            if isinstance(tid, str) and tid in wanted:
+                turn["results"][tid] = b.get("is_error") is True
+    if rec.get("isMeta") is True or rec.get("isCompactSummary") is True or "toolUseResult" in rec:
+        return
+    text = _user_text(content)
+    if text is None:
+        return
+    prompt = clean_prompt(_well_formed(text))
+    if not prompt:
+        return
+    if prompt.startswith(INTERRUPT):
+        if turn is not None:
+            piece = _close(turn, None, True, rec.get("timestamp"), ctx)
+            if piece is not None:
+                out.append(piece)
+            state["turn"] = None
+        return
+    if turn is not None:
+        piece = _close(turn, prompt, False, rec.get("timestamp"), ctx)
+        if piece is not None:
+            out.append(piece)
+    sid = rec.get("sessionId")
+    if not (isinstance(sid, str) and sid):
+        sid = sid_default
+    n = state["ordinals"].get(sid, 0) + 1
+    state["ordinals"][sid] = n
+    state["turn"] = _new_turn(rec, sid, n, _cut(prompt))
+    cwd = state["turn"]["cwd"]
+    ts = _ts_ms(state["turn"]["ts"])
+    if cwd and ts is not None and ts > state["cwds"].get(cwd, -1):
+        state["cwds"][cwd] = ts
+
+
+def _fresh_state() -> dict[str, Any]:
+    return {"cwds": {}, "ordinals": {}, "turn": None}
+
+
+def _piece_from(d: Any) -> Piece | None:
+    """A cached piece back, or None when the entry is not one the miner wrote."""
+    try:
+        signals = d["signals"]
+        ok = d["ok"]
+        if not (
+            isinstance(signals, dict)
+            and all(isinstance(v, bool) for v in signals.values())
+            and (ok is None or isinstance(ok, bool))
+            and all(isinstance(d[k], str) for k in ("id", "source", "ts", "repo", "prompt"))
+            and isinstance(d["tools"], list)
+            and isinstance(d["paths"], list)
+            and all(isinstance(t, str) for t in d["tools"])
+            and all(isinstance(t, str) for t in d["paths"])
+            and (d["failure"] is None or isinstance(d["failure"], str))
+        ):
+            return None
+        return Piece(
+            id=d["id"],
+            source=d["source"],
+            ts=d["ts"],
+            repo=d["repo"],
+            prompt=d["prompt"],
+            tools=tuple(d["tools"]),
+            paths=frozenset(d["paths"]),
+            ok=ok,
+            signals=dict(signals),
+            failure=d["failure"],
+        )
+    except (KeyError, TypeError):
+        return None
+
+
+class MinerCache:
+    """`<home>/.bantamkit/skill-miner-cache.json`: per transcript `{size, mtime_ms, offset,
+    open_turn, pieces}`. It holds only what a `Piece` holds (X4-clean: the open turn's state
+    is the prompt, tool names, file arguments, call ids and two booleans per call), so it is
+    evidence too. An unreadable cache is an empty one: it only saves work.
+
+    `bytes_read` counts the transcript bytes the last runs read (the test seam)."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.entries: dict[str, dict[str, Any]] = {}
+        self.bytes_read = 0
+
+    @classmethod
+    def for_home(cls, home: str | Path) -> MinerCache:
+        return cls(Path(home) / ".bantamkit" / CACHE_NAME)
+
+    def load(self) -> MinerCache:
+        try:
+            with open(self.path, "rb") as fh:
+                doc = _load_json(fh.read().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return self
+        entries = doc.get("transcripts") if isinstance(doc, dict) else None
+        if _int(doc.get("version") if isinstance(doc, dict) else None) != CACHE_VERSION:
+            return self
+        if isinstance(entries, dict):
+            self.entries = {k: v for k, v in entries.items() if isinstance(v, dict)}
+        return self
+
+    def doc(self) -> dict[str, Any]:
+        return {
+            "transcripts": {k: self.entries[k] for k in sorted(self.entries)},
+            "version": CACHE_VERSION,
+        }
+
+    def save(self) -> Path:
+        """Temp-then-rename under the storage lock."""
+        from bantamkit.storage.lock import exclusive
+
+        data = proposals_bytes(self.doc())
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with exclusive(self.path):
+            tmp = f"{self.path}.{os.getpid()}.tmp"
+            try:
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        return self.path
+
+
+def _transcripts(projects: str) -> list[str]:
+    """#205's walk (sorted, never through a symlinked directory); `subagents/` skipped (R3)."""
+    from bantamkit.skillhost import _jsonl_files
+
+    out = []
+    for p in _jsonl_files(Path(projects)):
+        rel = os.path.relpath(str(p), projects).replace(os.sep, "/").split("/")
+        if _SUBAGENTS not in rel[:-1]:
+            out.append(str(p))
+    return out
+
+
+def _entry_ok(e: Mapping[str, Any]) -> bool:
+    st = e.get("open_turn")
+    return (
+        all(_int(e.get(k)) is not None for k in ("size", "mtime_ms", "offset"))
+        and isinstance(e.get("pieces"), list)
+        and isinstance(st, dict)
+        and isinstance(st.get("ordinals"), dict)
+        and isinstance(st.get("cwds"), dict)
+        and (st.get("turn") is None or isinstance(st.get("turn"), dict))
+    )
+
+
+def _mine_file(
+    path: str, size: int, mtime_ms: int, cache: MinerCache, ctx: _Context
+) -> dict[str, Any]:
+    entry = cache.entries.get(path)
+    if entry is not None and not _entry_ok(entry):
+        entry = None
+    if entry is not None and entry["size"] == size and entry["mtime_ms"] == mtime_ms:
+        return entry
+    if entry is not None and size > entry["size"] and entry["offset"] <= size:
+        offset = entry["offset"]
+        state = json.loads(json.dumps(entry["open_turn"]))
+        pieces = list(entry["pieces"])
+    else:  # new, shrunk or replaced: read whole
+        offset, state, pieces = 0, _fresh_state(), []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            data = fh.read()
+    except OSError:
+        # Unreadable now: an entry that never matches, so the next run tries again.
+        return {"mtime_ms": -1, "offset": 0, "open_turn": _fresh_state(), "pieces": [], "size": -1}
+    cache.bytes_read += len(data)
+    end = data.rfind(b"\n") + 1  # a line still being written waits for the next run
+    sid_default = os.path.basename(path)[: -len(".jsonl")]
+    new: list[Piece] = []
+    for line in data[:end].split(b"\n"):
+        try:
+            rec = _load_json(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            continue
+        _feed(rec, state, sid_default, ctx, new)
+    pieces += [p.as_dict() for p in new]
+    return {
+        "mtime_ms": mtime_ms,
+        "offset": offset + end,
+        "open_turn": state,
+        "pieces": pieces,
+        "size": size,
+    }
+
+
+def session_pieces(home: str | Path, adapter: Any, now_ms: int, cache: MinerCache) -> list[Piece]:
+    """Every session piece of work in the window (R1-R7), sorted by `(ts, id)`.
+
+    With `NullAdapter` there is no transcript source: `[]` (shiftwork is the only one). With
+    `ClaudeCodeAdapter`, `<home>/.claude/projects` is walked as #205 walks it, `subagents/`
+    skipped. A transcript unchanged since `cache` saw it is not read; one that grew is read
+    from the cached offset (transcripts are append-only); one that shrank or was replaced is
+    read whole. `cache.entries` is updated in place (the caller saves it); a transcript that
+    left the window or the disk leaves the cache. An id seen twice keeps its first piece.
+    """
+    from bantamkit.skillhost import HOST_CLAUDE_CODE
+
+    if getattr(adapter, "host", None) != HOST_CLAUDE_CODE:
+        return []
+    home = str(home)
+    projects = os.path.join(home, ".claude", "projects")
+    cutoff = now_ms - MINE_DAYS * DAY_MS
+    ctx = _Context(home)
+    kept: dict[str, dict[str, Any]] = {}
+    for path in _transcripts(projects):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        mtime_ms = st.st_mtime_ns // 1_000_000
+        if mtime_ms < cutoff:
+            continue
+        kept[path] = _mine_file(path, st.st_size, mtime_ms, cache, ctx)
+    cache.entries = kept
+    out: list[Piece] = []
+    seen: set[str] = set()
+    for entry in kept.values():
+        found = [q for q in (_piece_from(d) for d in entry["pieces"]) if q is not None]
+        turn = entry["open_turn"]["turn"]
+        if turn is not None:
+            last = _close(turn, None, False, None, ctx)
+            if last is not None:
+                found.append(last)
+        for p in found:
+            t = _ts_ms(p.ts)
+            if p.id in seen or t is None or t < cutoff:
+                continue
+            seen.add(p.id)
+            out.append(p)
+    out.sort(key=lambda p: (p.ts, p.id))
+    return out
+
+
+def session_tops(cache: MinerCache, now_ms: int) -> list[str]:
+    """The distinct repository tops the window's prompts ran in (each worktree its own),
+    code-point order: where a `.shiftwork/` may live besides the miner's own root."""
+    from bantamkit.touch.repo import find_repo
+
+    cutoff = now_ms - MINE_DAYS * DAY_MS
+    tops: set[str] = set()
+    for entry in cache.entries.values():
+        cwds = entry.get("open_turn", {}).get("cwds", {})
+        for cwd, ts in cwds.items():
+            if isinstance(ts, int) and ts >= cutoff:
+                repo = find_repo(cwd)
+                if repo is not None:
+                    tops.add(repo.top)
+    return sorted(tops)
+
+
+def miner_pieces(
+    home: str | Path, root: str | Path, adapter: Any, now_ms: int, cache: MinerCache
+) -> list[Piece]:
+    """Both sources: the session pieces, then the shiftwork pieces of the miner's root and of
+    every repository top the window's transcripts name, each root once (realpath). A shiftwork
+    id two roots share keeps the first root's piece."""
+    sessions = session_pieces(home, adapter, now_ms, cache)
+    roots: list[str] = []
+    for r in [str(root), *session_tops(cache, now_ms)]:
+        real = _realpath(r)
+        if real is not None and real not in roots:
+            roots.append(real)
+    seen: set[str] = set()
+    work: list[Piece] = []
+    for r in roots:
+        for p in shiftwork_pieces(r):
+            if p.id not in seen:
+                seen.add(p.id)
+                work.append(p)
+    work.sort(key=lambda p: (p.ts, p.id))
+    return work + sessions

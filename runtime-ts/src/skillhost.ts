@@ -176,7 +176,7 @@ function* walk(root: string): Generator<[string[], string[]]> {
   }
 }
 
-function jsonlFiles(root: string): string[] {
+export function jsonlFiles(root: string): string[] {
   const out: string[] = [];
   for (const [rel, files] of walk(root)) {
     for (const f of files) if (f.endsWith('.jsonl')) out.push(path.join(root, ...rel, f));

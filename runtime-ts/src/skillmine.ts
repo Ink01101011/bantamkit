@@ -21,9 +21,12 @@ import zlib from 'node:zlib';
 
 import { tokenizeV2 } from './memory/retrieval.js';
 import { dumpJson, fromJs } from './pyjson.js';
-import { cmpCodepoint, pyStrip } from './pysem.js';
+import { cmpCodepoint, pyLstrip, pyStrip } from './pysem.js';
 import { exclusive } from './storage/lock.js';
-import { findRepo } from './touch/repo.js';
+import { HOST_CLAUDE_CODE, jsonlFiles } from './skillhost.js';
+import { parseNow } from './storage/retention.js';
+import { TouchLog } from './touch/log.js';
+import { findRepo, relPath, type Repo } from './touch/repo.js';
 
 export const SOURCE_SHIFTWORK = 'shiftwork';
 export const SOURCE_SESSION = 'session';
@@ -766,4 +769,543 @@ export function writeProposals(home: string, doc: ProposalsDoc): string {
     }
   });
   return file;
+}
+
+// ------------------------------------------------------------- sessions (Task 4b)
+
+/** A user prompt is cut to this many code points in a piece of work (`EVIDENCE_PROMPT_CHARS`). */
+export const EVIDENCE_PROMPT_CHARS = 500;
+/** The transcript window, #205's `USAGE_DAYS`. */
+export const MINE_DAYS = 30;
+export const DAY_MS = 86_400_000;
+export const CACHE_NAME = 'skill-miner-cache.json';
+export const CACHE_VERSION = 1;
+/** Q1's default: a next prompt that starts with (or is) one of these corrects the turn before. */
+export const CORRECTIONS: readonly string[] = [
+  'no',
+  'nope',
+  'wrong',
+  'stop',
+  "don't",
+  'do not',
+  "that's not",
+  'undo',
+  'revert',
+  'ไม่',
+  'อย่า',
+  'ผิด',
+  'หยุด',
+];
+export const INTERRUPT = '[Request interrupted by user';
+/** R3 plus the measured `bash-*` and `task-notification` spans (the module docstring in Python). */
+export const CUT_TAGS: readonly string[] = [
+  'system-reminder',
+  'command-name',
+  'command-message',
+  'command-args',
+  'local-command-stdout',
+  'local-command-stderr',
+  'local-command-caveat',
+  'bash-input',
+  'bash-stdout',
+  'bash-stderr',
+  'task-notification',
+];
+export const PATH_TOOLS: readonly string[] = ['Read', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit'];
+export const PATH_KEYS: readonly string[] = ['file_path', 'path', 'notebook_path'];
+export const BASH_TOOL = 'Bash';
+const COMMIT = /(?<![A-Za-z0-9_])git[ \t]+commit(?![A-Za-z0-9_])/;
+const TESTS =
+  /(?<![A-Za-z0-9_])(?:pytest|npm[ \t]+test|npm[ \t]+run[ \t]+test|node[ \t]+--test|go[ \t]+test|cargo[ \t]+test|jest|vitest)(?![A-Za-z0-9_])|run\.mjs/;
+const CUT = new RegExp(`<(${CUT_TAGS.join('|')})>[\\s\\S]*?(?:</\\1>|$)`, 'g');
+const WORD_CHAR = /^[a-z0-9]$/;
+const QUOTES = /[‘’]/g;
+const LONE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+const SUBAGENTS = 'subagents';
+
+const wellFormed = (text: string): string => text.replace(LONE, '�');
+const cutCp = (text: string, n: number = EVIDENCE_PROMPT_CHARS): string => Array.from(text).slice(0, n).join('');
+
+function userText(content: unknown): string | null {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  const texts = content.filter((b) => isObj(b) && b['type'] === 'text' && typeof b['text'] === 'string').map((b) => (b as Rec)['text'] as string);
+  return texts.length > 0 ? texts.join('\n') : null;
+}
+
+/** The user's own words: every `CUT_TAGS` span cut out (an unclosed one to the end), stripped. */
+export function cleanPrompt(text: string): string {
+  return pyStrip(text.replace(CUT, ''));
+}
+
+/** Q1: NFKC, lower-cased, curly apostrophes straight, leading blanks dropped; whole word or a non-`[a-z0-9]` after it. */
+export function isCorrection(prompt: string): boolean {
+  const s = pyLstrip(prompt.normalize('NFKC').toLowerCase().replace(QUOTES, "'"));
+  if (s.startsWith(INTERRUPT.toLowerCase())) return true;
+  for (const word of CORRECTIONS) {
+    if (s.startsWith(word) && (s.length === word.length || !WORD_CHAR.test(s[word.length]!))) return true;
+  }
+  return false;
+}
+
+function tsMs(value: unknown): number | null {
+  try {
+    return parseNow(value);
+  } catch {
+    return null;
+  }
+}
+
+interface Turn {
+  commits: string[];
+  cwd: string;
+  id: string;
+  inpaths: string[];
+  prompt: string;
+  results: Record<string, boolean>;
+  session: string;
+  test: string | null;
+  tools: string[];
+  ts: string;
+}
+
+interface ParseState {
+  cwds: Record<string, number>;
+  ordinals: Record<string, number>;
+  turn: Turn | null;
+}
+
+interface CacheEntry {
+  mtime_ms: number;
+  offset: number;
+  open_turn: ParseState;
+  pieces: unknown[];
+  size: number;
+}
+
+function newTurn(rec: Rec, sid: string, n: number, prompt: string): Turn {
+  const cwd = rec['cwd'];
+  const ts = rec['timestamp'];
+  return {
+    commits: [],
+    cwd: typeof cwd === 'string' ? cwd : '',
+    id: `s${Array.from(sid).slice(0, 8).join('')}#${n}`,
+    inpaths: [],
+    prompt,
+    results: {},
+    session: sid,
+    test: null,
+    tools: [],
+    ts: typeof ts === 'string' ? ts : '',
+  };
+}
+
+/** Per-run lookups shared by every transcript: repo keys by cwd, touch rows by repo. */
+class Context {
+  private readonly repos = new Map<string, [string, Repo | null]>();
+  private readonly touch = new Map<string, Record<string, unknown>[]>();
+
+  constructor(readonly home: string) {}
+
+  repo(cwd: string): [string, Repo | null] {
+    let got = this.repos.get(cwd);
+    if (got === undefined) {
+      got = cwd ? [repoKey(cwd), findRepo(cwd)] : ['', null];
+      this.repos.set(cwd, got);
+    }
+    return got;
+  }
+
+  rows(repoId: string): Record<string, unknown>[] {
+    let got = this.touch.get(repoId);
+    if (got === undefined) {
+      got = new TouchLog(this.home, repoId).read() as Record<string, unknown>[];
+      this.touch.set(repoId, got);
+    }
+    return got;
+  }
+}
+
+/** R4: the session's touch-log rows in `[start floored to the second, next prompt)`, else the Read/Edit/Write arguments. */
+function turnPaths(turn: Turn, repo: Repo | null, nextMs: number | null, ctx: Context): Set<string> {
+  if (repo === null) return new Set();
+  const start = tsMs(turn.ts);
+  const rows = ctx
+    .rows(repo.id)
+    .filter((r) => r['session'] === turn.session && r['op'] !== 'use' && r['op'] !== 'folded' && typeof r['path'] === 'string' && r['path'] !== '');
+  const out = new Set<string>();
+  if (rows.length > 0) {
+    if (start === null) return out;
+    const floor = Math.floor(start / 1000) * 1000;
+    for (const r of rows) {
+      const t = tsMs(r['ts']);
+      if (t !== null && t >= floor && (nextMs === null || t < nextMs)) out.add(r['path'] as string);
+    }
+    return out;
+  }
+  for (const p of turn.inpaths) {
+    const full = path.isAbsolute(p) ? p : path.join(turn.cwd, p);
+    const rel = relPath(repo, full);
+    if (rel !== null) out.add(rel);
+  }
+  return out;
+}
+
+function close(turn: Turn, nxt: string | null, interrupted: boolean, nextTs: unknown, ctx: Context): Piece | null {
+  if (turn.tools.length === 0 || tsMs(turn.ts) === null) return null;
+  const results = turn.results;
+  const signals: Record<string, boolean> = {
+    commit: turn.commits.some((t) => results[t] === false),
+    tests: turn.test !== null && results[turn.test] === false,
+  };
+  let failure: string | null = null;
+  if (interrupted) {
+    signals['uncorrected'] = false;
+    failure = 'interrupted by the user';
+  } else if (nxt !== null) {
+    const corrected = isCorrection(nxt);
+    signals['uncorrected'] = !corrected;
+    if (corrected) failure = `corrected in the next turn: ${cutCp(nxt)}`;
+  }
+  const ok: boolean | null = Object.values(signals).some((v) => v) ? true : failure !== null ? false : null;
+  const [key, repo] = ctx.repo(turn.cwd);
+  const nextMs = nxt === null && !interrupted ? null : tsMs(nextTs);
+  return {
+    id: turn.id,
+    source: SOURCE_SESSION,
+    ts: turn.ts,
+    repo: key,
+    prompt: turn.prompt,
+    tools: [...turn.tools],
+    paths: turnPaths(turn, repo, nextMs, ctx),
+    ok,
+    signals,
+    failure: ok === false ? failure : null,
+  };
+}
+
+/** One transcript record into the parse state; a closed turn's piece into `out`. */
+function feed(rec: unknown, state: ParseState, sidDefault: string, ctx: Context, out: Piece[]): void {
+  if (!isObj(rec) || rec['isSidechain'] === true) return;
+  const kind = rec['type'];
+  const turn = state.turn;
+  const message = rec['message'];
+  const content = isObj(message) ? message['content'] : undefined;
+  if (kind === 'assistant') {
+    if (turn === null || !Array.isArray(content)) return;
+    for (const b of content) {
+      if (!isObj(b) || b['type'] !== 'tool_use') continue;
+      const name = b['name'];
+      if (typeof name !== 'string') continue;
+      turn.tools.push(name);
+      const given = isObj(b['input']) ? b['input'] : {};
+      if (PATH_TOOLS.includes(name)) {
+        for (const k of PATH_KEYS) {
+          const v = given[k];
+          if (typeof v === 'string' && v) turn.inpaths.push(v);
+        }
+      }
+      const bid = b['id'];
+      const command = given['command'];
+      if (name === BASH_TOOL && typeof bid === 'string' && typeof command === 'string') {
+        if (COMMIT.test(command)) turn.commits.push(bid);
+        if (TESTS.test(command)) turn.test = bid;
+      }
+    }
+    return;
+  }
+  if (kind !== 'user') return;
+  // Only the two booleans of a tool result are read (X4): which call it answers, and whether it is an error.
+  if (turn !== null && Array.isArray(content)) {
+    const wanted = new Set(turn.commits);
+    if (turn.test) wanted.add(turn.test);
+    for (const b of content) {
+      if (!isObj(b) || b['type'] !== 'tool_result') continue;
+      const tid = b['tool_use_id'];
+      if (typeof tid === 'string' && wanted.has(tid)) turn.results[tid] = b['is_error'] === true;
+    }
+  }
+  if (rec['isMeta'] === true || rec['isCompactSummary'] === true || Object.hasOwn(rec, 'toolUseResult')) return;
+  const text = userText(content);
+  if (text === null) return;
+  const prompt = cleanPrompt(wellFormed(text));
+  if (!prompt) return;
+  if (prompt.startsWith(INTERRUPT)) {
+    if (turn !== null) {
+      const piece = close(turn, null, true, rec['timestamp'], ctx);
+      if (piece !== null) out.push(piece);
+      state.turn = null;
+    }
+    return;
+  }
+  if (turn !== null) {
+    const piece = close(turn, prompt, false, rec['timestamp'], ctx);
+    if (piece !== null) out.push(piece);
+  }
+  let sid = rec['sessionId'];
+  if (!(typeof sid === 'string' && sid)) sid = sidDefault;
+  const n = (state.ordinals[sid as string] ?? 0) + 1;
+  state.ordinals[sid as string] = n;
+  const fresh = newTurn(rec, sid as string, n, cutCp(prompt));
+  state.turn = fresh;
+  const ts = tsMs(fresh.ts);
+  if (fresh.cwd && ts !== null && ts > (state.cwds[fresh.cwd] ?? -1)) state.cwds[fresh.cwd] = ts;
+}
+
+const freshState = (): ParseState => ({ cwds: {}, ordinals: {}, turn: null });
+
+/** A cached piece back, or null when the entry is not one the miner wrote. */
+function pieceFrom(d: unknown): Piece | null {
+  if (!isObj(d)) return null;
+  const { signals, ok, tools, paths, failure } = d;
+  const strs = (xs: unknown): xs is string[] => Array.isArray(xs) && xs.every((x) => typeof x === 'string');
+  for (const k of ['id', 'source', 'ts', 'repo', 'prompt']) if (typeof d[k] !== 'string') return null;
+  if (
+    !isObj(signals) ||
+    !Object.values(signals).every((v) => typeof v === 'boolean') ||
+    !(ok === null || typeof ok === 'boolean') ||
+    !strs(tools) ||
+    !strs(paths) ||
+    !(failure === null || typeof failure === 'string')
+  ) {
+    return null;
+  }
+  return {
+    id: d['id'] as string,
+    source: d['source'] as string,
+    ts: d['ts'] as string,
+    repo: d['repo'] as string,
+    prompt: d['prompt'] as string,
+    tools: [...tools],
+    paths: new Set(paths),
+    ok,
+    signals: { ...(signals as Record<string, boolean>) },
+    failure,
+  };
+}
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= Number.MAX_SAFE_INTEGER;
+
+/**
+ * `<home>/.bantamkit/skill-miner-cache.json`: per transcript `{size, mtime_ms, offset, open_turn, pieces}`,
+ * X4-clean like a `Piece`. An unreadable cache is an empty one. `bytesRead` is the test seam.
+ */
+export class MinerCache {
+  entries: Record<string, CacheEntry> = {};
+  bytesRead = 0;
+
+  constructor(readonly path: string) {}
+
+  static forHome(home: string): MinerCache {
+    return new MinerCache(path.join(home, '.bantamkit', CACHE_NAME));
+  }
+
+  load(): MinerCache {
+    let doc: unknown;
+    try {
+      const text = decode(fs.readFileSync(this.path));
+      if (text === null) return this;
+      doc = loadJson(text);
+    } catch {
+      return this;
+    }
+    if (!isObj(doc) || doc['version'] !== CACHE_VERSION) return this;
+    const entries = doc['transcripts'];
+    if (isObj(entries)) {
+      this.entries = {};
+      for (const [k, v] of Object.entries(entries)) if (isObj(v)) this.entries[k] = v as unknown as CacheEntry;
+    }
+    return this;
+  }
+
+  doc(): Record<string, unknown> {
+    const transcripts: Record<string, unknown> = {};
+    for (const k of sortCp(Object.keys(this.entries))) transcripts[k] = this.entries[k];
+    return { transcripts, version: CACHE_VERSION };
+  }
+
+  /** Temp-then-rename under the storage lock. */
+  save(): string {
+    const file = this.path;
+    const data = proposalsBytes(this.doc());
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    exclusive(file, () => {
+      const tmp = `${file}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(tmp, data);
+        fs.renameSync(tmp, file);
+      } catch (e) {
+        try {
+          fs.unlinkSync(tmp);
+        } catch {
+          /* nothing was written */
+        }
+        throw e;
+      }
+    });
+    return file;
+  }
+}
+
+/** #205's walk; `subagents/` skipped (R3). */
+function transcripts(projects: string): string[] {
+  return jsonlFiles(projects).filter((p) => !path.relative(projects, p).split(path.sep).slice(0, -1).includes(SUBAGENTS));
+}
+
+function entryOk(e: Rec): boolean {
+  const st = e['open_turn'];
+  return (
+    ['size', 'mtime_ms', 'offset'].every((k) => isCount(e[k])) &&
+    Array.isArray(e['pieces']) &&
+    isObj(st) &&
+    isObj(st['ordinals']) &&
+    isObj(st['cwds']) &&
+    (st['turn'] === null || st['turn'] === undefined || isObj(st['turn']))
+  );
+}
+
+function readFrom(file: string, offset: number): Buffer {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const parts: Buffer[] = [];
+    let pos = offset;
+    for (;;) {
+      const buf = Buffer.alloc(1 << 20);
+      const n = fs.readSync(fd, buf, 0, buf.length, pos);
+      if (n === 0) break;
+      parts.push(buf.subarray(0, n));
+      pos += n;
+    }
+    return Buffer.concat(parts);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function mineFile(file: string, size: number, mtimeMs: number, cache: MinerCache, ctx: Context): CacheEntry {
+  let entry: CacheEntry | null = cache.entries[file] ?? null;
+  if (entry !== null && !entryOk(entry as unknown as Rec)) entry = null;
+  if (entry !== null && entry.size === size && entry.mtime_ms === mtimeMs) return entry;
+  let offset: number;
+  let state: ParseState;
+  let pieces: unknown[];
+  if (entry !== null && size > entry.size && entry.offset <= size) {
+    offset = entry.offset;
+    state = JSON.parse(JSON.stringify(entry.open_turn)) as ParseState;
+    if (state.turn === undefined) state.turn = null;
+    pieces = [...entry.pieces];
+  } else {
+    offset = 0;
+    state = freshState();
+    pieces = [];
+  }
+  let data: Buffer;
+  try {
+    data = readFrom(file, offset);
+  } catch {
+    // Unreadable now: an entry that never matches, so the next run tries again.
+    return { mtime_ms: -1, offset: 0, open_turn: freshState(), pieces: [], size: -1 };
+  }
+  cache.bytesRead += data.length;
+  const end = data.lastIndexOf(0x0a) + 1; // a line still being written waits for the next run
+  const sidDefault = path.basename(file).slice(0, -'.jsonl'.length);
+  const found: Piece[] = [];
+  let start = 0;
+  while (start < end) {
+    let stop = data.indexOf(0x0a, start);
+    if (stop < 0 || stop > end) stop = end;
+    const text = decode(data.subarray(start, stop));
+    start = stop + 1;
+    if (text === null) continue;
+    let rec: unknown;
+    try {
+      rec = loadJson(text);
+    } catch {
+      continue;
+    }
+    feed(rec, state, sidDefault, ctx, found);
+  }
+  return { mtime_ms: mtimeMs, offset: offset + end, open_turn: state, pieces: [...pieces, ...found.map(pieceDict)], size };
+}
+
+const byTsId = (a: Piece, b: Piece): number => cmpCodepoint(a.ts, b.ts) || cmpCodepoint(a.id, b.id);
+
+/**
+ * Every session piece of work in the window (R1-R7), sorted by `(ts, id)`. `NullAdapter`: `[]`.
+ * `cache.entries` is updated in place (the caller saves it). Port of `session_pieces`.
+ */
+export function sessionPieces(home: string, adapter: { host: string }, nowMs: number, cache: MinerCache): Piece[] {
+  if (adapter.host !== HOST_CLAUDE_CODE) return [];
+  const projects = path.join(home, '.claude', 'projects');
+  const cutoff = nowMs - MINE_DAYS * DAY_MS;
+  const ctx = new Context(home);
+  const kept: Record<string, CacheEntry> = {};
+  for (const file of transcripts(projects)) {
+    let size: number;
+    let mtimeMs: number;
+    try {
+      const st = fs.statSync(file, { bigint: true });
+      size = Number(st.size);
+      mtimeMs = Number(st.mtimeNs / 1_000_000n);
+    } catch {
+      continue;
+    }
+    if (mtimeMs < cutoff) continue;
+    kept[file] = mineFile(file, size, mtimeMs, cache, ctx);
+  }
+  cache.entries = kept;
+  const out: Piece[] = [];
+  const seen = new Set<string>();
+  for (const entry of Object.values(kept)) {
+    const found = entry.pieces.map(pieceFrom).filter((p): p is Piece => p !== null);
+    const turn = entry.open_turn.turn;
+    if (turn !== null && turn !== undefined) {
+      const last = close(turn, null, false, null, ctx);
+      if (last !== null) found.push(last);
+    }
+    for (const p of found) {
+      const t = tsMs(p.ts);
+      if (seen.has(p.id) || t === null || t < cutoff) continue;
+      seen.add(p.id);
+      out.push(p);
+    }
+  }
+  return out.sort(byTsId);
+}
+
+/** The distinct repository tops the window's prompts ran in, code-point order. */
+export function sessionTops(cache: MinerCache, nowMs: number): string[] {
+  const cutoff = nowMs - MINE_DAYS * DAY_MS;
+  const tops = new Set<string>();
+  for (const entry of Object.values(cache.entries)) {
+    const cwds = isObj(entry.open_turn) && isObj(entry.open_turn.cwds) ? entry.open_turn.cwds : {};
+    for (const [cwd, ts] of Object.entries(cwds)) {
+      if (Number.isInteger(ts) && ts >= cutoff) {
+        const repo = findRepo(cwd);
+        if (repo !== null) tops.add(repo.top);
+      }
+    }
+  }
+  return sortCp(tops);
+}
+
+/** Both sources: shiftwork pieces of the root and the window's repo tops (first root wins an id), then sessions. */
+export function minerPieces(home: string, root: string, adapter: { host: string }, nowMs: number, cache: MinerCache): Piece[] {
+  const sessions = sessionPieces(home, adapter, nowMs, cache);
+  const roots: string[] = [];
+  for (const r of [root, ...sessionTops(cache, nowMs)]) {
+    const real = pyRealpath(r);
+    if (!roots.includes(real)) roots.push(real);
+  }
+  const seen = new Set<string>();
+  const work: Piece[] = [];
+  for (const r of roots) {
+    for (const p of shiftworkPieces(r)) {
+      if (!seen.has(p.id)) {
+        seen.add(p.id);
+        work.push(p);
+      }
+    }
+  }
+  return [...work.sort(byTsId), ...sessions];
 }
