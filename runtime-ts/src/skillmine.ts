@@ -1,10 +1,10 @@
 /**
- * The experience miner (#206): pieces of work, their signature and their similarity.
+ * The experience miner (#206): pieces of work, their signature, clusters and proposals.
  *
  * Port of `runtime-py/src/bantamkit/skillmine.py` (Task 4a of
- * `docs/superpowers/plans/2026-10-27-skills-from-experience.md`); the module docstring there
- * states the rules (R1, R2, R6, R7, the brief, the named paths, the signature and the exact
- * weighted Jaccard). `tools/conformance/suites/skill-miner.mjs` compares the two runtimes.
+ * `docs/superpowers/plans/2026-10-27-skills-from-experience.md`, and Task 5); the module
+ * docstring there states the rules (R1, R2, R6, R7, the brief, the named paths, the signature,
+ * the exact weighted Jaccard, the clusters, the X1 bars and the proposals document). `tools/conformance/suites/skill-miner.mjs` compares the two runtimes.
  *
  * Parity details done on purpose: every sort is code-point order (`cmpCodepoint`), never
  * UTF-16; text is strict UTF-8 with a BOM kept (so a BOM'd JSON file is refused, as Python
@@ -12,14 +12,17 @@
  * U+2028 and friends); the path separators are an explicit ASCII class, never `\s`; and the
  * similarity is an integer fraction, never a float.
  *
- * Read-only: nothing here writes anything.
+ * Only `writeProposals` writes, temp-then-rename under the storage lock.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
 import { tokenizeV2 } from './memory/retrieval.js';
+import { dumpJson, fromJs } from './pyjson.js';
 import { cmpCodepoint, pyStrip } from './pysem.js';
+import { exclusive } from './storage/lock.js';
 import { findRepo } from './touch/repo.js';
 
 export const SOURCE_SHIFTWORK = 'shiftwork';
@@ -421,4 +424,346 @@ export function similarity(a: Signature, b: Signature): [number, number] {
 export function meets(sim: readonly [number, number]): boolean {
   const [num, den] = sim;
   return den > 0 && num * SIM_MIN[1] >= den * SIM_MIN[0];
+}
+
+// ------------------------------------------------------------------ clusters (Task 5)
+
+/** X1: successful repeats a cluster needs before it is proposed, per source. */
+export const SHIFTWORK_BAR = 3;
+export const SESSION_BAR = 5;
+/** The installer acts on twice the X1 repeats. */
+export const AUTO_FACTOR = 2;
+/** At most this many clusters are offered (`pending`) at once. */
+export const PENDING_MAX = 3;
+/** A rejected cluster is offered again once its successes reach this multiple of `rejected_at`. */
+export const REJECT_FACTOR = 2;
+/** An n-gram in at least this share of a cluster's successful members is a recurring step. */
+export const STEP_SHARE: readonly [number, number] = [1, 2];
+
+export const PROPOSALS_NAME = 'skill-proposals.json';
+export const PROPOSALS_VERSION = 1;
+export const LEVEL_PROJECT = 'project';
+export const LEVEL_USER = 'user';
+export const STATUSES: readonly string[] = ['new', 'pending', 'drafted', 'installed', 'rejected', 'failed'];
+const BARS: ReadonlyMap<string, number> = new Map([
+  [SOURCE_SHIFTWORK, SHIFTWORK_BAR],
+  [SOURCE_SESSION, SESSION_BAR],
+]);
+
+/** `skill-proposals.json` exists and is not a version-1 proposals document. */
+export class ProposalsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProposalsError';
+  }
+}
+
+export interface Cluster {
+  readonly id: string;
+  readonly source: string;
+  readonly members: readonly Piece[];
+  readonly successes: number;
+  readonly bar: number;
+  readonly autoBar: number;
+  readonly keywords: readonly string[];
+  readonly steps: readonly string[];
+  readonly pitfalls: readonly (readonly [string, string | null])[];
+  readonly evidence: readonly string[];
+  readonly repos: readonly string[];
+  readonly level: string;
+  readonly top: string | null;
+}
+
+export type ProposalsDoc = Record<string, unknown>;
+
+/** `Buffer.from(text)` writes a lone surrogate as U+FFFD; Python's side does the same by hand. */
+export function sha16(text: string): string {
+  return crypto.createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex').slice(0, 16);
+}
+
+/** The tool n-grams in order of appearance: by start position, then by size. */
+function ngramSeq(tools: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < tools.length; i += 1) {
+    for (const k of NGRAM_SIZES) if (i + k <= tools.length) out.push(tools.slice(i, i + k).join('>'));
+  }
+  return out;
+}
+
+function count(into: Map<string, number>, xs: Iterable<string>): void {
+  for (const x of xs) into.set(x, (into.get(x) ?? 0) + 1);
+}
+
+function makeCluster(source: string, members: Piece[], sigs: Signature[]): Cluster {
+  const ok: number[] = [];
+  members.forEach((p, i) => {
+    if (p.ok === true) ok.push(i);
+  });
+  const successes = ok.length;
+  const bar = BARS.get(source)!;
+  const kw = new Map<string, number>();
+  const share = new Map<string, number>();
+  for (const i of ok) {
+    count(kw, sigs[i]!.keywords);
+    count(share, sigs[i]!.ngrams);
+  }
+  const ranked = [...kw].sort((a, b) => b[1] - a[1] || cmpCodepoint(a[0], b[0]));
+  const [num, den] = STEP_SHARE;
+  const steps: string[] = [];
+  for (const i of ok) {
+    for (const g of ngramSeq(members[i]!.tools)) {
+      if (!steps.includes(g) && (share.get(g) ?? 0) * den >= successes * num) steps.push(g);
+    }
+  }
+  const keys = new Set(ok.map((i) => members[i]!.repo));
+  const level = keys.size === 1 && !keys.has('') ? LEVEL_PROJECT : LEVEL_USER;
+  let top: string | null = null;
+  if (level === LEVEL_PROJECT) {
+    const [key] = [...keys] as [string];
+    if (path.basename(key) === '.git') top = path.dirname(key);
+  }
+  return {
+    id: sha16(members[0]!.id),
+    source,
+    members,
+    successes,
+    bar,
+    autoBar: AUTO_FACTOR * bar,
+    keywords: ranked.slice(0, KEYWORDS_TOP).map(([t]) => t),
+    steps,
+    pitfalls: members.filter((p) => p.ok === false).map((p) => [p.id, p.failure] as const),
+    evidence: members.map((p) => p.id),
+    repos: sortCp([...keys].filter((k) => k !== '')),
+    level,
+    top,
+  };
+}
+
+/**
+ * Leader clustering, per source (shiftwork, then session), pieces in `(ts, id)` order: a piece
+ * joins the cluster whose LEADER is the most similar among those that meet `SIM_MIN` (a tie
+ * goes to the older cluster), else it leads a new one. Python's `cluster`.
+ */
+export function cluster(pieces: Iterable<Piece>): Cluster[] {
+  const all = [...pieces];
+  const out: Cluster[] = [];
+  for (const source of [SOURCE_SHIFTWORK, SOURCE_SESSION]) {
+    const group = all
+      .filter((p) => p.source === source)
+      .sort((a, b) => cmpCodepoint(a.ts, b.ts) || cmpCodepoint(a.id, b.id));
+    if (group.length === 0) continue;
+    const [df, n] = docFreq(group);
+    const sigs = group.map((p) => signature(p, df, n));
+    const leaders: Signature[] = [];
+    const groups: number[][] = [];
+    sigs.forEach((s, i) => {
+      let best = -1;
+      let bestSim: [number, number] = [0, 1];
+      leaders.forEach((lead, c) => {
+        const sim = similarity(lead, s);
+        if (meets(sim) && (best < 0 || sim[0] * bestSim[1] > bestSim[0] * sim[1])) {
+          best = c;
+          bestSim = sim;
+        }
+      });
+      if (best < 0) {
+        leaders.push(s);
+        groups.push([i]);
+      } else {
+        groups[best]!.push(i);
+      }
+    });
+    for (const idxs of groups) {
+      out.push(
+        makeCluster(
+          source,
+          idxs.map((i) => group[i]!),
+          idxs.map((i) => sigs[i]!),
+        ),
+      );
+    }
+  }
+  return out;
+}
+
+type PRec = Record<string, unknown>;
+
+function validRecord(rec: unknown): rec is PRec {
+  return isObj(rec) && typeof rec['id'] === 'string' && typeof rec['source'] === 'string' && Array.isArray(rec['evidence']);
+}
+
+function recordIds(rec: PRec): Set<string> {
+  const out = new Set<string>();
+  for (const e of rec['evidence'] as unknown[]) if (isObj(e) && typeof e['id'] === 'string') out.add(e['id']);
+  return out;
+}
+
+/** The previous record of the same source sharing the most evidence ids (ties: lower id). */
+export function matchPrevious(c: Cluster, previous: Iterable<unknown>): PRec | null {
+  const ids = new Set(c.evidence);
+  let best: PRec | null = null;
+  let bestN = 0;
+  for (const rec of previous) {
+    if (!validRecord(rec) || rec['source'] !== c.source) continue;
+    let n = 0;
+    for (const id of recordIds(rec)) if (ids.has(id)) n += 1;
+    if (n > bestN || (n > 0 && n === bestN && best !== null && cmpCodepoint(rec['id'] as string, best['id'] as string) < 0)) {
+      best = rec;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+/** A non-negative integer a JSON reader on either side holds exactly (`3.0` counts). */
+function nonNegInt(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > Number.MAX_SAFE_INTEGER) return null;
+  return v === 0 ? 0 : v; // -0 (from `-0.0`) is written `0`, as Python's int(-0.0) is
+}
+
+/** The `skill-proposals.json` document; Python's `proposals` states every rule. */
+export function proposals(clusters: Iterable<Cluster>, previous: unknown, now: string, ms = 0): ProposalsDoc {
+  const list = [...clusters];
+  const records =
+    isObj(previous) && Array.isArray(previous['clusters']) ? (previous['clusters'] as unknown[]).filter(validRecord) : [];
+  const counts = { [SOURCE_SHIFTWORK]: 0, [SOURCE_SESSION]: 0 } as Record<string, number>;
+  for (const c of list) counts[c.source] = (counts[c.source] ?? 0) + c.members.length;
+  let unclaimed: PRec[] = records;
+  const used = new Set<string>();
+  const rows: [Cluster, string, PRec | null][] = [];
+  const order = [...list].sort((a, b) => b.successes - a.successes || cmpCodepoint(a.id, b.id));
+  for (const c of order) {
+    const prev = matchPrevious(c, unclaimed);
+    if (prev !== null) unclaimed = unclaimed.filter((r) => r !== prev);
+    let cid = prev !== null ? (prev['id'] as string) : c.id;
+    while (used.has(cid)) cid = sha16(cid);
+    used.add(cid);
+    rows.push([c, cid, prev]);
+  }
+  rows.sort((a, b) => b[0].successes - a[0].successes || cmpCodepoint(a[1], b[1]));
+
+  const out: PRec[] = [];
+  const wants: string[] = [];
+  for (const [c, cid, prev] of rows) {
+    const eligible = c.successes >= c.bar;
+    let carried = prev !== null ? prev['status'] : 'new';
+    if (typeof carried !== 'string' || !STATUSES.includes(carried)) carried = 'new';
+    const rejectedAt = prev !== null ? nonNegInt(prev['rejected_at']) : null;
+    let want: string;
+    if (carried === 'rejected') {
+      const again = rejectedAt !== null && c.successes >= REJECT_FACTOR * rejectedAt;
+      want = eligible && again ? 'offer' : 'rejected';
+    } else if (carried === 'pending') {
+      want = eligible ? 'keep' : 'new';
+    } else if (carried === 'new') {
+      want = eligible ? 'offer' : 'new';
+    } else {
+      want = carried as string;
+    }
+    const rec: PRec = {
+      auto_bar: c.autoBar,
+      auto_eligible: c.successes >= c.autoBar,
+      bar: c.bar,
+      eligible,
+      evidence: c.members.map(pieceDict),
+      id: cid,
+      keywords: [...c.keywords],
+      level: c.level,
+      members: c.members.length,
+      pitfalls: c.pitfalls.map(([id, failure]) => ({ failure, id })),
+      repos: [...c.repos],
+      source: c.source,
+      status: 'new',
+      steps: [...c.steps],
+      successes: c.successes,
+      top: c.top,
+    };
+    if (rejectedAt !== null) rec['rejected_at'] = rejectedAt;
+    if (prev !== null && Object.prototype.hasOwnProperty.call(prev, 'draft')) rec['draft'] = prev['draft'];
+    out.push(rec);
+    wants.push(want);
+  }
+  let pending = 0;
+  out.forEach((rec, i) => {
+    if (wants[i] !== 'keep' && wants[i] !== 'offer') rec['status'] = wants[i];
+  });
+  for (const group of ['keep', 'offer']) {
+    out.forEach((rec, i) => {
+      if (wants[i] !== group) return;
+      rec['status'] = pending < PENDING_MAX ? 'pending' : 'new';
+      if (rec['status'] === 'pending') pending += 1;
+    });
+  }
+  return {
+    clusters: out.filter((r) => (r['members'] as number) >= 2 || r['status'] !== 'new'),
+    miner: {
+      error: null,
+      ms,
+      pieces: { [SOURCE_SESSION]: counts[SOURCE_SESSION], [SOURCE_SHIFTWORK]: counts[SOURCE_SHIFTWORK] },
+    },
+    ts: now,
+    version: PROPOSALS_VERSION,
+  };
+}
+
+/** `proposals(cluster(pieces), previous, now, ms)`. */
+export function mine(pieces: Iterable<Piece>, previous: unknown, now: string, ms = 0): ProposalsDoc {
+  return proposals(cluster(pieces), previous, now, ms);
+}
+
+// --------------------------------------------------------------------- the proposals file
+
+export function proposalsPath(home: string): string {
+  return path.join(home, '.bantamkit', PROPOSALS_NAME);
+}
+
+/** Indented, sorted keys, UTF-8; a lone surrogate becomes U+FFFD in the encoding. */
+export function proposalsBytes(doc: ProposalsDoc): Buffer {
+  return Buffer.from(`${dumpJson(fromJs(doc), { indent: 2, sortKeys: true, ensureAscii: false })}\n`, 'utf8');
+}
+
+/** The previous proposals document, null when there is none; a non-version-1 file is REFUSED. */
+export function readProposals(home: string): ProposalsDoc | null {
+  let raw: Buffer;
+  try {
+    raw = fs.readFileSync(proposalsPath(home));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
+  }
+  let doc: unknown;
+  const text = decode(raw);
+  try {
+    if (text === null) throw new Error('not UTF-8');
+    doc = loadJson(text);
+  } catch {
+    throw new ProposalsError(`${PROPOSALS_NAME} is not readable JSON`);
+  }
+  const version = isObj(doc) ? doc['version'] : undefined;
+  if (version !== PROPOSALS_VERSION || !isObj(doc) || !Array.isArray(doc['clusters'])) {
+    throw new ProposalsError(`${PROPOSALS_NAME} is not a version ${PROPOSALS_VERSION} proposals file`);
+  }
+  return doc;
+}
+
+/** Temp-then-rename under the storage lock; the path written. */
+export function writeProposals(home: string, doc: ProposalsDoc): string {
+  const file = proposalsPath(home);
+  const data = proposalsBytes(doc);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  exclusive(file, () => {
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tmp, data);
+      fs.renameSync(tmp, file);
+    } catch (e) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* nothing was written */
+      }
+      throw e;
+    }
+  });
+  return file;
 }

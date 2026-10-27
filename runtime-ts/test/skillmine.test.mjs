@@ -4,7 +4,7 @@
  */
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -293,4 +293,253 @@ test('plan constants', () => {
   ]);
   assert.deepEqual(sm.SIM_MIN, [1, 2]);
   assert.deepEqual(sm.KEYWORD_DF_MAX, [1, 2]);
+});
+
+// ------------------------------------------------------------------ clusters (Task 5)
+
+const NOW = '2026-10-27T00:00:00.000Z';
+const REPO_A = '/r/a/.git';
+
+const wp = (id, prompt, ok = true, o = {}) => ({
+  id,
+  source: o.source ?? 'shiftwork',
+  ts: o.ts ?? id,
+  repo: o.repo ?? REPO_A,
+  prompt,
+  tools: o.tools ?? [],
+  paths: new Set(),
+  ok,
+  signals: {},
+  failure: o.failure ?? null,
+});
+
+/** `[word, successes, failures]` groups, each one cluster, plus unrelated filler pieces. */
+function corpus(groups, source = 'shiftwork', fillers = 6) {
+  const out = [];
+  let n = 0;
+  const ts = () => `2026-01-01T00:00:${String(++n).padStart(2, '0')}Z`;
+  for (const [word, ok, failed] of groups) {
+    for (let i = 0; i < ok + failed; i += 1) {
+      out.push(
+        wp(`${word}/${String(i).padStart(2, '0')}`, `${word} lexer${word} crash${word}`, i < ok, {
+          ts: ts(),
+          source,
+          failure: i < ok ? null : `${word} attempt ${i} failed`,
+        }),
+      );
+    }
+  }
+  for (let i = 0; i < fillers; i += 1) {
+    out.push(wp(`zz/${String(i).padStart(2, '0')}`, `filler${i} odd${i}`, true, { ts: ts(), source }));
+  }
+  return out;
+}
+
+const byWord = (doc) => Object.fromEntries(doc.clusters.map((c) => [c.evidence[0].id.split('/')[0], c]));
+
+test('shiftwork bar at two and three', () => {
+  const got = byWord(sm.mine(corpus([['alpha', 2, 0], ['bravo', 3, 0]]), null, NOW));
+  assert.equal(got.alpha.eligible, false);
+  assert.equal(got.alpha.status, 'new');
+  assert.equal(got.bravo.eligible, true);
+  assert.equal(got.bravo.status, 'pending');
+  assert.deepEqual([got.bravo.bar, got.bravo.auto_bar], [3, 6]);
+});
+
+test('failed members are pitfalls and do not count', () => {
+  const got = byWord(sm.mine(corpus([['bravo', 3, 2]]), null, NOW)).bravo;
+  assert.deepEqual([got.successes, got.members, got.eligible], [3, 5, true]);
+  assert.deepEqual(got.pitfalls, [
+    { failure: 'bravo attempt 3 failed', id: 'bravo/03' },
+    { failure: 'bravo attempt 4 failed', id: 'bravo/04' },
+  ]);
+  const two = byWord(sm.mine(corpus([['bravo', 2, 3]]), null, NOW)).bravo;
+  assert.deepEqual([two.successes, two.eligible], [2, false]);
+});
+
+test('session bar at four and five', () => {
+  const got = byWord(sm.mine(corpus([['alpha', 4, 0], ['bravo', 5, 0]], 'session', 10), null, NOW));
+  assert.equal(got.alpha.eligible, false);
+  assert.equal(got.bravo.eligible, true);
+  assert.equal(got.bravo.bar, 5);
+  assert.equal(got.bravo.auto_eligible, false);
+});
+
+test('auto bar is twice the bar', () => {
+  const sw = byWord(sm.mine(corpus([['alpha', 5, 0], ['bravo', 6, 0]], 'shiftwork', 8), null, NOW));
+  assert.deepEqual([sw.alpha.auto_eligible, sw.bravo.auto_eligible], [false, true]);
+  const se = byWord(sm.mine(corpus([['alpha', 9, 0], ['bravo', 10, 0]], 'session', 4), null, NOW));
+  assert.deepEqual([se.alpha.auto_eligible, se.bravo.auto_eligible], [false, true]);
+});
+
+test('a rejected cluster waits until it has doubled', () => {
+  const first = sm.mine(corpus([['bravo', 3, 0]]), null, NOW);
+  const prev = { ...first, clusters: [{ ...byWord(first).bravo, status: 'rejected', rejected_at: 3 }] };
+  const five = byWord(sm.mine(corpus([['bravo', 5, 0]], 'shiftwork', 8), prev, NOW)).bravo;
+  assert.deepEqual([five.status, five.rejected_at], ['rejected', 3]);
+  const six = byWord(sm.mine(corpus([['bravo', 6, 0]], 'shiftwork', 8), prev, NOW)).bravo;
+  assert.deepEqual([six.status, six.rejected_at], ['pending', 3]);
+  assert.equal(six.id, first.clusters[0].id);
+  assert.equal(five.id, first.clusters[0].id);
+});
+
+test('pending cap keeps the fourth new', () => {
+  const groups = [
+    ['alpha', 6, 0],
+    ['bravo', 5, 0],
+    ['charlie', 4, 0],
+    ['delta', 3, 0],
+  ];
+  const words = ['alpha', 'bravo', 'charlie', 'delta'];
+  const doc = sm.mine(corpus(groups), null, NOW);
+  const got = byWord(doc);
+  assert.deepEqual(
+    words.map((w) => got[w].status),
+    ['pending', 'pending', 'pending', 'new'],
+  );
+  const prev = { ...doc, clusters: doc.clusters.map((c) => (c === got.alpha ? { ...c, status: 'drafted' } : c)) };
+  const again = byWord(sm.mine(corpus(groups), prev, NOW));
+  assert.deepEqual(
+    words.map((w) => again[w].status),
+    ['drafted', 'pending', 'pending', 'pending'],
+  );
+});
+
+test('level from the repo keys', () => {
+  const fill = [0, 1, 2, 3].map((i) => wp(`z/${i}`, `filler${i}`));
+  const one = [0, 1, 2].map((i) => wp(`a/${i}`, 'alpha lexer crash'));
+  let got = sm.mine([...one, ...fill], null, NOW).clusters[0];
+  assert.deepEqual([got.level, got.repos, got.top], ['project', [REPO_A], '/r/a']);
+  const two = [0, 1, 2].map((i) => wp(`a/${i}`, 'alpha lexer crash', true, { repo: ['/r/a/.git', '/r/b/.git'][i % 2] }));
+  got = sm.mine([...two, ...fill], null, NOW).clusters[0];
+  assert.deepEqual([got.level, got.repos, got.top], ['user', ['/r/a/.git', '/r/b/.git'], null]);
+  const none = [0, 1, 2].map((i) => wp(`a/${i}`, 'alpha lexer crash', true, { repo: '' }));
+  got = sm.mine([...none, ...fill], null, NOW).clusters[0];
+  assert.deepEqual([got.level, got.repos], ['user', []]);
+});
+
+test('two worktrees of one repo are project level', () => {
+  const base = tmp();
+  const main = join(base, 'main');
+  mkdirSync(join(main, '.git', 'worktrees', 'wt'), { recursive: true });
+  writeFileSync(join(main, '.git', 'worktrees', 'wt', 'commondir'), '../..\n');
+  const wt = join(base, 'wt');
+  mkdirSync(wt);
+  writeFileSync(join(wt, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'wt')}\n`);
+  for (const [root, units] of [
+    [main, ['M1', 'M2', 'F1', 'F2']],
+    [wt, ['W1', 'F3', 'F4']],
+  ]) {
+    const sw = join(root, '.shiftwork');
+    mkdirSync(sw);
+    writeFileSync(
+      join(sw, 'checkpoint-j.json'),
+      ckpt(
+        `j${root === main ? 'main' : 'wt'}`,
+        units.map((u) => [u, u[0] !== 'F' ? 'fix the lexer crash' : `filler ${u} odd${u}`, 'x.md']),
+      ),
+    );
+    writeFileSync(join(sw, 'checkpoint-j.json.log.jsonl'), units.map((u, i) => line(u, 'done', `2026-01-0${i + 1}T00:00:00Z`)).join('\n'));
+  }
+  const pieces = [...sm.shiftworkPieces(main), ...sm.shiftworkPieces(wt)];
+  const got = sm.mine(pieces, null, NOW).clusters.filter((c) => c.successes === 3);
+  assert.equal(got.length, 1);
+  assert.equal(got[0].level, 'project');
+  assert.equal(got[0].top, realpathSync(main));
+});
+
+test('identity survives the leader leaving', () => {
+  const doc = sm.mine(corpus([['bravo', 4, 0]]), null, NOW);
+  const later = corpus([['bravo', 4, 0]]).filter((p) => p.id !== 'bravo/00');
+  const got = sm.mine(later, doc, NOW).clusters[0];
+  assert.equal(got.id, doc.clusters[0].id);
+  assert.notEqual(got.id, sm.sha16('bravo/01'));
+});
+
+test('match previous ties go to the lower id', () => {
+  const fill = [0, 1, 2].map((i) => wp(`z/${i}`, `filler${i}`));
+  const c = sm.cluster([wp('a/1', 'x y'), wp('a/2', 'x y'), ...fill])[0];
+  assert.deepEqual(c.evidence, ['a/1', 'a/2']);
+  const recs = [
+    { id: 'b', source: 'shiftwork', evidence: [{ id: 'a/1' }] },
+    { id: 'a', source: 'shiftwork', evidence: [{ id: 'a/2' }] },
+    { id: '0', source: 'session', evidence: [{ id: 'a/1' }, { id: 'a/2' }] },
+  ];
+  assert.equal(sm.matchPrevious(c, recs).id, 'a');
+  assert.equal(sm.matchPrevious(c, recs.slice(2)), null);
+});
+
+test('steps are n-grams in half the successes, in order', () => {
+  const seq = ['Read', 'Edit', 'Bash'];
+  const s = { source: 'session' };
+  const pieces = [
+    wp('s/1', 'alpha lexer', true, { ...s, tools: seq }),
+    wp('s/2', 'alpha lexer', true, { ...s, tools: ['Grep', ...seq] }),
+    wp('s/3', 'alpha lexer', true, { ...s, tools: ['Read', 'Edit'] }),
+    wp('s/4', 'alpha lexer', true, { ...s, tools: ['Read', 'Edit', 'Write'] }),
+    wp('s/5', 'alpha lexer', false, { ...s, tools: ['Read', 'Edit', 'Write'] }),
+    ...[0, 1, 2, 3, 4, 5].map((i) => wp(`z/${i}`, `filler${i}`, true, s)),
+  ];
+  const c = sm.cluster(pieces).filter((x) => x.members.length === 5)[0];
+  assert.deepEqual(c.steps, ['Read>Edit', 'Read>Edit>Bash', 'Edit>Bash']);
+});
+
+test('leader ties go to the older cluster', () => {
+  const fill = [0, 1, 2, 3, 4, 5].map((i) => wp(`z/${i}`, `filler${i}`));
+  const got = sm.cluster([wp('1', 'alpha bravo'), wp('2', 'charlie delta'), wp('3', 'alpha bravo charlie delta'), ...fill]);
+  assert.deepEqual(
+    got[0].members.map((m) => m.id),
+    ['1', '3'],
+  );
+});
+
+test('singletons are not written but a carried status is', () => {
+  const two = [wp('a/1', 'alpha'), wp('b/1', 'bravo')];
+  let doc = sm.mine(two, null, NOW);
+  assert.deepEqual(doc.clusters, []);
+  assert.deepEqual(doc.miner, { error: null, ms: 0, pieces: { session: 0, shiftwork: 2 } });
+  const prev = {
+    version: 1,
+    clusters: [{ id: 'x', source: 'shiftwork', status: 'rejected', rejected_at: 3, evidence: [{ id: 'a/1' }] }],
+  };
+  doc = sm.mine(two, prev, NOW);
+  assert.deepEqual(
+    doc.clusters.map((c) => [c.id, c.status]),
+    [['x', 'rejected']],
+  );
+});
+
+test('proposals file round trip and refusal', () => {
+  const home = tmp();
+  assert.equal(sm.readProposals(home), null);
+  const doc = sm.mine(corpus([['bravo', 3, 0]]), null, NOW);
+  const file = sm.writeProposals(home, doc);
+  assert.equal(file, join(home, '.bantamkit', 'skill-proposals.json'));
+  const bytes = readFileSync(file);
+  assert.deepEqual(bytes, sm.proposalsBytes(doc));
+  assert.equal(bytes.subarray(-2).toString(), '}\n');
+  assert.deepEqual(sm.readProposals(home), JSON.parse(JSON.stringify(doc)));
+  assert.deepEqual(
+    readdirSync(join(home, '.bantamkit')).filter((f) => f.endsWith('.tmp') || f.endsWith('.lock')),
+    [],
+  );
+  writeFileSync(file, '{"version": 2, "clusters": []}');
+  assert.throws(() => sm.readProposals(home), /is not a version 1 proposals file/);
+  writeFileSync(file, Buffer.from([0xef, 0xbb, 0xbf, 0x7b, 0x7d]));
+  assert.throws(() => sm.readProposals(home), /is not readable JSON/);
+});
+
+test('a lone surrogate is written as the replacement character', () => {
+  const fill = [0, 1, 2].map((i) => wp(`z${i}`, `filler${i}`));
+  const doc = sm.mine([wp('a\ud800', 'alpha'), wp('b', 'alpha'), ...fill], null, NOW);
+  assert.ok(sm.proposalsBytes(doc).includes(Buffer.from('a�')));
+  assert.equal(doc.clusters[0].id, sm.sha16('a�'));
+});
+
+test('task 5 constants', () => {
+  assert.deepEqual(
+    [sm.SHIFTWORK_BAR, sm.SESSION_BAR, sm.AUTO_FACTOR, sm.PENDING_MAX, sm.REJECT_FACTOR],
+    [3, 5, 2, 3, 2],
+  );
+  assert.deepEqual(sm.STEP_SHARE, [1, 2]);
 });

@@ -336,3 +336,301 @@ def test_plan_constants(name: str) -> None:
         "KEYWORD_DF_MAX": (1, 2),
     }
     assert getattr(skillmine, name) == expected[name]
+
+
+# ------------------------------------------------------------------ clusters (Task 5)
+
+NOW = "2026-10-27T00:00:00.000Z"
+REPO_A = "/r/a/.git"
+
+
+def _wp(
+    pid: str,
+    prompt: str,
+    ok: bool | None = True,
+    *,
+    ts: str = "",
+    source: str = "shiftwork",
+    repo: str = REPO_A,
+    tools: tuple[str, ...] = (),
+    failure: str | None = None,
+) -> Piece:
+    return Piece(
+        id=pid,
+        source=source,
+        ts=ts or pid,
+        repo=repo,
+        prompt=prompt,
+        tools=tools,
+        ok=ok,
+        failure=failure,
+    )
+
+
+def _corpus(
+    groups: list[tuple[str, int, int]], source: str = "shiftwork", fillers: int = 6
+) -> list[Piece]:
+    """`(word, successes, failures)` groups, each one cluster, plus unrelated filler pieces."""
+    out: list[Piece] = []
+    n = 0
+    for word, ok, failed in groups:
+        for i in range(ok + failed):
+            n += 1
+            out.append(
+                _wp(
+                    f"{word}/{i:02d}",
+                    f"{word} lexer{word} crash{word}",
+                    i < ok,
+                    ts=f"2026-01-01T00:00:{n:02d}Z",
+                    source=source,
+                    failure=None if i < ok else f"{word} attempt {i} failed",
+                )
+            )
+    for i in range(fillers):
+        n += 1
+        out.append(
+            _wp(f"zz/{i:02d}", f"filler{i} odd{i}", ts=f"2026-01-01T00:00:{n:02d}Z", source=source)
+        )
+    return out
+
+
+def _by_word(doc: dict) -> dict[str, dict]:
+    return {c["evidence"][0]["id"].split("/")[0]: c for c in doc["clusters"]}
+
+
+def test_shiftwork_bar_at_two_and_three() -> None:
+    got = _by_word(skillmine.mine(_corpus([("alpha", 2, 0), ("bravo", 3, 0)]), None, NOW))
+    assert not got["alpha"]["eligible"] and got["alpha"]["status"] == "new"
+    assert got["bravo"]["eligible"] and got["bravo"]["status"] == "pending"
+    assert got["bravo"]["bar"] == 3 and got["bravo"]["auto_bar"] == 6
+
+
+def test_failed_members_are_pitfalls_and_do_not_count() -> None:
+    got = _by_word(skillmine.mine(_corpus([("bravo", 3, 2)]), None, NOW))["bravo"]
+    assert (got["successes"], got["members"], got["eligible"]) == (3, 5, True)
+    assert got["pitfalls"] == [
+        {"failure": "bravo attempt 3 failed", "id": "bravo/03"},
+        {"failure": "bravo attempt 4 failed", "id": "bravo/04"},
+    ]
+    two = _by_word(skillmine.mine(_corpus([("bravo", 2, 3)]), None, NOW))["bravo"]
+    assert (two["successes"], two["eligible"]) == (2, False)
+
+
+def test_session_bar_at_four_and_five() -> None:
+    got = _by_word(
+        skillmine.mine(_corpus([("alpha", 4, 0), ("bravo", 5, 0)], "session", 10), None, NOW)
+    )
+    assert not got["alpha"]["eligible"] and got["bravo"]["eligible"]
+    assert got["bravo"]["bar"] == 5 and not got["bravo"]["auto_eligible"]
+
+
+def test_auto_bar_is_twice_the_bar() -> None:
+    sw = _by_word(skillmine.mine(_corpus([("alpha", 5, 0), ("bravo", 6, 0)], fillers=8), None, NOW))
+    assert not sw["alpha"]["auto_eligible"] and sw["bravo"]["auto_eligible"]
+    se = _by_word(
+        skillmine.mine(_corpus([("alpha", 9, 0), ("bravo", 10, 0)], "session", 4), None, NOW)
+    )
+    assert not se["alpha"]["auto_eligible"] and se["bravo"]["auto_eligible"]
+
+
+def _rejected(doc: dict, word: str, at: int) -> dict:
+    rec = dict(_by_word(doc)[word])
+    rec["status"] = "rejected"
+    rec["rejected_at"] = at
+    return {**doc, "clusters": [rec]}
+
+
+def test_a_rejected_cluster_waits_until_it_has_doubled() -> None:
+    first = skillmine.mine(_corpus([("bravo", 3, 0)]), None, NOW)
+    prev = _rejected(first, "bravo", 3)
+    five = _by_word(skillmine.mine(_corpus([("bravo", 5, 0)], fillers=8), prev, NOW))["bravo"]
+    assert five["status"] == "rejected" and five["rejected_at"] == 3
+    six = _by_word(skillmine.mine(_corpus([("bravo", 6, 0)], fillers=8), prev, NOW))["bravo"]
+    assert six["status"] == "pending" and six["rejected_at"] == 3
+    assert six["id"] == five["id"] == first["clusters"][0]["id"]
+
+
+def test_pending_cap_keeps_the_fourth_new() -> None:
+    doc = skillmine.mine(
+        _corpus([("alpha", 6, 0), ("bravo", 5, 0), ("charlie", 4, 0), ("delta", 3, 0)]), None, NOW
+    )
+    got = _by_word(doc)
+    assert [got[w]["status"] for w in ("alpha", "bravo", "charlie", "delta")] == [
+        "pending",
+        "pending",
+        "pending",
+        "new",
+    ]
+    # One leaves `pending` (approved and drafted): the fourth is offered on the next run.
+    prev = {
+        **doc,
+        "clusters": [
+            {**c, "status": "drafted"} if c is got["alpha"] else c for c in doc["clusters"]
+        ],
+    }
+    again = _by_word(
+        skillmine.mine(
+            _corpus([("alpha", 6, 0), ("bravo", 5, 0), ("charlie", 4, 0), ("delta", 3, 0)]),
+            prev,
+            NOW,
+        )
+    )
+    assert [again[w]["status"] for w in ("alpha", "bravo", "charlie", "delta")] == [
+        "drafted",
+        "pending",
+        "pending",
+        "pending",
+    ]
+
+
+def test_level_from_the_repo_keys() -> None:
+    one = [_wp(f"a/{i}", "alpha lexer crash", repo=REPO_A) for i in range(3)]
+    fill = [_wp(f"z/{i}", f"filler{i}") for i in range(4)]
+    got = skillmine.mine(one + fill, None, NOW)["clusters"][0]
+    assert (got["level"], got["repos"], got["top"]) == ("project", [REPO_A], "/r/a")
+    two = [
+        _wp(f"a/{i}", "alpha lexer crash", repo=["/r/a/.git", "/r/b/.git"][i % 2]) for i in range(3)
+    ]
+    got = skillmine.mine(two + fill, None, NOW)["clusters"][0]
+    assert (got["level"], got["repos"], got["top"]) == ("user", ["/r/a/.git", "/r/b/.git"], None)
+    none = [_wp(f"a/{i}", "alpha lexer crash", repo="") for i in range(3)]
+    got = skillmine.mine(none + fill, None, NOW)["clusters"][0]
+    assert (got["level"], got["repos"]) == ("user", [])
+
+
+def test_two_worktrees_of_one_repo_are_project_level(tmp_path: Path) -> None:
+    main = tmp_path / "main"
+    (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    (main / ".git" / "worktrees" / "wt" / "commondir").write_text("../..\n", encoding="utf-8")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n", encoding="utf-8")
+    for root, units in ((main, ["M1", "M2", "F1", "F2"]), (wt, ["W1", "F3", "F4"])):
+        sw = root / ".shiftwork"
+        sw.mkdir()
+        (sw / "checkpoint-j.json").write_text(
+            _ckpt(
+                f"j{root.name}",
+                [
+                    (u, "fix the lexer crash" if u[0] != "F" else f"filler {u} odd{u}", "x.md")
+                    for u in units
+                ],
+            ),
+            encoding="utf-8",
+        )
+        (sw / "checkpoint-j.json.log.jsonl").write_text(
+            "\n".join(_line(u, "done", f"2026-01-0{i + 1}T00:00:00Z") for i, u in enumerate(units)),
+            encoding="utf-8",
+        )
+    pieces = skillmine.shiftwork_pieces(main) + skillmine.shiftwork_pieces(wt)
+    got = [c for c in skillmine.mine(pieces, None, NOW)["clusters"] if c["successes"] == 3]
+    assert len(got) == 1
+    assert got[0]["level"] == "project"
+    assert got[0]["top"] == os.path.realpath(main)
+
+
+def test_identity_survives_the_leader_leaving() -> None:
+    doc = skillmine.mine(_corpus([("bravo", 4, 0)]), None, NOW)
+    old = doc["clusters"][0]
+    later = [p for p in _corpus([("bravo", 4, 0)]) if p.id != "bravo/00"]
+    got = skillmine.mine(later, doc, NOW)["clusters"][0]
+    assert got["id"] == old["id"] != skillmine._sha16("bravo/01")
+
+
+def test_match_previous_ties_go_to_the_lower_id() -> None:
+    fill = [_wp(f"z/{i}", f"filler{i}") for i in range(3)]
+    c = skillmine.cluster([_wp("a/1", "x y"), _wp("a/2", "x y"), *fill])[0]
+    assert c.evidence == ("a/1", "a/2")
+    recs = [
+        {"id": "b", "source": "shiftwork", "evidence": [{"id": "a/1"}]},
+        {"id": "a", "source": "shiftwork", "evidence": [{"id": "a/2"}]},
+        {"id": "0", "source": "session", "evidence": [{"id": "a/1"}, {"id": "a/2"}]},
+    ]
+    assert skillmine.match_previous(c, recs)["id"] == "a"
+    assert skillmine.match_previous(c, recs[2:]) is None
+
+
+def test_steps_are_ngrams_in_half_the_successes_in_order() -> None:
+    seq = ("Read", "Edit", "Bash")
+    pieces = [
+        _wp("s/1", "alpha lexer", source="session", tools=seq),
+        _wp("s/2", "alpha lexer", source="session", tools=("Grep",) + seq),
+        _wp("s/3", "alpha lexer", source="session", tools=("Read", "Edit")),
+        _wp("s/4", "alpha lexer", source="session", tools=("Read", "Edit", "Write")),
+        _wp("s/5", "alpha lexer", False, source="session", tools=("Read", "Edit", "Write")),
+    ] + [_wp(f"z/{i}", f"filler{i}", source="session") for i in range(6)]
+    c = [c for c in skillmine.cluster(pieces) if len(c.members) == 5][0]
+    assert c.steps == ("Read>Edit", "Read>Edit>Bash", "Edit>Bash")
+
+
+def test_leader_ties_go_to_the_older_cluster() -> None:
+    a = _wp("1", "alpha bravo", tools=())
+    b = _wp("2", "charlie delta", tools=())
+    c = _wp("3", "alpha bravo charlie delta", tools=())
+    fill = [_wp(f"z/{i}", f"filler{i}") for i in range(6)]
+    got = skillmine.cluster([a, b, c, *fill])
+    assert [m.id for m in got[0].members] == ["1", "3"]
+
+
+def test_singletons_are_not_written_but_a_carried_status_is() -> None:
+    doc = skillmine.mine([_wp("a/1", "alpha"), _wp("b/1", "bravo")], None, NOW)
+    assert doc["clusters"] == []
+    assert doc["miner"] == {"error": None, "ms": 0, "pieces": {"session": 0, "shiftwork": 2}}
+    prev = {
+        "version": 1,
+        "clusters": [
+            {
+                "id": "x",
+                "source": "shiftwork",
+                "status": "rejected",
+                "rejected_at": 3,
+                "evidence": [{"id": "a/1"}],
+            }
+        ],
+    }
+    doc = skillmine.mine([_wp("a/1", "alpha"), _wp("b/1", "bravo")], prev, NOW)
+    assert [(c["id"], c["status"]) for c in doc["clusters"]] == [("x", "rejected")]
+
+
+def test_proposals_file_round_trip_and_refusal(tmp_path: Path) -> None:
+    assert skillmine.read_proposals(tmp_path) is None
+    doc = skillmine.mine(_corpus([("bravo", 3, 0)]), None, NOW)
+    path = skillmine.write_proposals(tmp_path, doc)
+    assert path == tmp_path / ".bantamkit" / "skill-proposals.json"
+    assert path.read_bytes() == skillmine.proposals_bytes(doc)
+    assert path.read_bytes().endswith(b"}\n")
+    assert skillmine.read_proposals(tmp_path) == doc
+    assert not list(path.parent.glob("*.tmp")) and not list(path.parent.glob("*.lock"))
+    path.write_text('{"version": 2, "clusters": []}', encoding="utf-8")
+    with pytest.raises(skillmine.ProposalsError, match="is not a version 1 proposals file"):
+        skillmine.read_proposals(tmp_path)
+    path.write_bytes(b"\xef\xbb\xbf{}")
+    with pytest.raises(skillmine.ProposalsError, match="is not readable JSON"):
+        skillmine.read_proposals(tmp_path)
+
+
+def test_a_lone_surrogate_is_written_as_replacement_character() -> None:
+    doc = skillmine.mine(
+        [_wp("a\ud800", "alpha"), _wp("b", "alpha")]
+        + [_wp(f"z{i}", f"filler{i}") for i in range(3)],
+        None,
+        NOW,
+    )
+    data = skillmine.proposals_bytes(doc)
+    assert "a�".encode() in data
+    assert doc["clusters"][0]["id"] == skillmine._sha16("a�")
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SHIFTWORK_BAR", 3),
+        ("SESSION_BAR", 5),
+        ("AUTO_FACTOR", 2),
+        ("PENDING_MAX", 3),
+        ("REJECT_FACTOR", 2),
+        ("STEP_SHARE", (1, 2)),
+    ],
+)
+def test_task5_constants(name: str, value: object) -> None:
+    assert getattr(skillmine, name) == value
