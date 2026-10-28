@@ -77,6 +77,14 @@ set -euo pipefail
 # "stop before publishing", which is a decision this script makes and not a flag it passes on.
 unset npm_config_dry_run || true
 
+# Every server this script starts -- the npx cold start, the npm and PyPI roster probes -- would
+# otherwise start the detached daily Retention child (#204), which since 0.37.0 also runs the
+# skill audit (#205), the miner (#206) and, with BANTAMKIT_SKILL_AUTO on, installs. The roster
+# probes run with the operator's REAL home, so from a plain terminal (where none of these is set)
+# a release would sweep and mine the operator's own ~/.bantamkit. A release measures artifacts;
+# it never acts on the operator's data. job69's J69-6 is what an unpinned sweep costs.
+export BANTAMKIT_RETENTION=off BANTAMKIT_SKILL_AUDIT=off BANTAMKIT_SKILL_AUTO=off
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 

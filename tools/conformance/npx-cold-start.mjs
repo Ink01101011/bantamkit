@@ -246,6 +246,12 @@ function npxSession({
     // Anything that would make the server bind to the developer's real store or pack.
     delete env.BANTAMKIT_MEMORY_DIR;
     delete env.BANTAMKIT_ASSETS;
+    // The server starts the detached daily Retention child (#204), which since 0.37.0 also runs
+    // the skill audit (#205) and the miner (#206) for seconds after the session ends. It writes
+    // into this scratch HOME while the bed is being removed (ENOTEMPTY at the rmSync below), and
+    // it is not what this gate measures. Pinned off here, as every other harness pins it.
+    env.BANTAMKIT_RETENTION = 'off';
+    env.BANTAMKIT_SKILL_AUDIT = 'off';
 
     const started = process.hrtime.bigint();
     let firstFrameAt = null;
@@ -737,6 +743,8 @@ if (wantOffline) {
   const launchEnv = { ...process.env, HOME: keptHome, USERPROFILE: keptHome, PATH: GUI_PATH, ...NETWORK_CUT };
   delete launchEnv.BANTAMKIT_MEMORY_DIR;
   delete launchEnv.BANTAMKIT_ASSETS;
+  launchEnv.BANTAMKIT_RETENTION = 'off'; // the daily child, as in runNpx above
+  launchEnv.BANTAMKIT_SKILL_AUDIT = 'off';
   const keptCliJs = join(keptDir, 'node_modules', pkg.name, 'dist', 'cli.js');
 
   console.log('\n[offline] that kept install launched as `<abs node> cli.js`, network cut, login-less PATH');
