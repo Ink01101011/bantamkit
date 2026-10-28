@@ -285,7 +285,7 @@ promoted. Nothing else is deleted, moved or rewritten. The `skill-miner` suite's
 a full day (mine, draft, install, probation removal) over a retention trap and pins that list;
 the `skill-host` suite's `child` case pins the four files a run with nothing to install writes.
 In 0.37.0 `BANTAMKIT_SKILL_AUTO` is off by default, so a default child mines and surfaces but
-neither drafts, installs nor edits a skill. The test runners and the harness pin
+neither drafts, installs, edits nor promotes a skill (job73 C15: promotion follows the switch too). The test runners and the harness pin
 `BANTAMKIT_SKILL_AUTO=off` and unset `BANTAMKIT_LLM_URL`/`BANTAMKIT_LLM_MODEL` suite-wide.
 
 ## Numbers, and where they come from

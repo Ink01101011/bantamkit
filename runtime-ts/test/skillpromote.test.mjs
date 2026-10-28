@@ -82,7 +82,37 @@ test('the budget env', () => {
   }
 });
 
-test('two uses wait, three promote as a symlink to the source', () => {
+/** Automatic promotion follows BANTAMKIT_SKILL_AUTO (job73 ruling): `promoteStep` tests opt in. */
+function withAuto(value, fn) {
+  const saved = process.env[si.AUTO_ENV];
+  if (value === null) delete process.env[si.AUTO_ENV];
+  else process.env[si.AUTO_ENV] = value;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env[si.AUTO_ENV];
+    else process.env[si.AUTO_ENV] = saved;
+  }
+}
+
+for (const raw of [null, '', 'off', '0', 'banana', 'on please']) {
+  test(`promoteStep with BANTAMKIT_SKILL_AUTO=${JSON.stringify(raw)} promotes and records nothing`, () =>
+    withAuto(raw, () => {
+      const home = claudeHome();
+      install(home, 'skill-a');
+      install(home, 'skill-b');
+      const before = readFileSync(sf.statePath(home));
+      const state = sf.readState(home);
+      assert.deepEqual(sp.promoteStep(state, { 'skill-a': 3, 'skill-b': 9 }, home, null, NOW, 1), []);
+      assert.deepEqual(readFileSync(sf.statePath(home)), before);
+      assert.ok(!existsSync(join(home, '.claude', 'skills')));
+      assert.ok(!('promote_refused' in state.skills['skill-a']));
+      // the person asking still promotes: `promote` never reads the switch
+      assert.equal(sp.promote('skill-a', home, null, NOW, 8192).reason, 'promoted skill skill-a');
+    }));
+}
+
+test('two uses wait, three promote as a symlink to the source', () => withAuto('on', () => {
   const home = claudeHome();
   const src = install(home, 'skill-a');
   install(home, 'skill-b');
@@ -95,7 +125,7 @@ test('two uses wait, three promote as a symlink to the source', () => {
   assert.ok(!lexists(linkOf(home, 'skill-b')));
   assert.equal(state.skills['skill-a'].promoted.mode, 'symlink');
   assert.ok(!('promoted' in state.skills['skill-b']));
-});
+}));
 
 test('the budget refuses one byte over and passes exactly at it', () => {
   const home = claudeHome();
@@ -216,7 +246,7 @@ test('a project skill links into the project', () => {
   assert.ok(!lexists(linkOf(home, 'skill-p')));
 });
 
-test('a refusal is recorded and not retried the same day', () => {
+test('a refusal is recorded and not retried the same day', () => withAuto('on', () => {
   const home = claudeHome();
   install(home, 'skill-a');
   const state = sf.readState(home);
@@ -225,7 +255,7 @@ test('a refusal is recorded and not retried the same day', () => {
   assert.deepEqual(sp.promoteStep(state, { 'skill-a': 3 }, home, null, '2026-10-27T23:59:59.999Z'), []);
   assert.deepEqual(sp.promoteStep(state, { 'skill-a': 3 }, home, null, NEXT, 8192), ['promoted skill skill-a']);
   assert.ok(!('promote_refused' in state.skills['skill-a']));
-});
+}));
 
 test('unknown and unpromoted names', () => {
   const home = claudeHome();

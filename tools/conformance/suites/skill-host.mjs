@@ -52,6 +52,16 @@
  * prompts` since job73 C12 added `skill_propose`), and the settings file byte-identical after the
  * prompt ran (K2).
  *
+ * #206'S SKILLS (spec Component 7, job73 C15). The `generated` bed (not on win32: it holds a
+ * directory symlink) gives the audit bantamkit's own roots: a stamped skill in the `[skill]` layer
+ * sharing a quoted phrase with a host skill, an unstamped one placed by hand, a stamped project
+ * skill, a skill promoted by SYMLINK (counted once, at its source) and one promoted by COPY
+ * (counted once, at `~/.claude/skills`; the source a `duplicate-skill`), over 30 days of
+ * transcripts with no call to any of them but a typed `/gen-linked` (its name is known from the
+ * bantamkit root, since the walk never follows the link). Literals per side: the root order, `generated`,
+ * `layer`, the catalogue bytes (the layer's left out), the never-invoked ids (none for the
+ * layer), the duplicate omission, the `(generated)` mark and the two report lines.
+ *
  * THE LITERALS. A change made on both sides alike (a 30-day window moved to 29, say) leaves
  * every differential green, so the counts, the spans, the adapter and the version choice are
  * pinned per side.
@@ -201,6 +211,25 @@ function bedFiles(label) {
       return { cwd: 'proj', files: trapFiles() };
     case 'session-line':
       return { cwd: null, files: [['home/.keep', B(''), 1]] };
+    case 'generated': {
+      const gen = (d) => B(`---\nname: ${d.split(' ')[0]}\ndescription: ${d}\nmetadata:\n  bantamkit-generated-by: bantamkit\n  bantamkit-sha256: "x"\n---\n\n## Steps\n\n1. x\n`);
+      return {
+        cwd: 'proj',
+        files: [
+          ['home/.claude/skills/solo/SKILL.md', B(skill('Use when you "ship the release" today.')), 1],
+          ['home/.bantamkit/skills/gen-layer/SKILL.md', gen('gen-layer Use when asked to "ship the release".'), 1],
+          ['home/.bantamkit/skills/plain/SKILL.md', B(skill('Placed by hand.')), 1],
+          ['home/.bantamkit/skills/gen-linked/SKILL.md', gen('gen-linked Promoted by a link.'), 1],
+          ['home/.bantamkit/skills/gen-copy/SKILL.md', gen('gen-copy Promoted by a copy.'), 1],
+          ['home/.claude/skills/gen-copy/SKILL.md', gen('gen-copy Promoted by a copy.'), 1],
+          ['proj/.bantamkit/skills/gen-proj/SKILL.md', gen('gen-proj A project skill.'), 1],
+          // A typed `/gen-linked` is a call: the name is known from the bantamkit root.
+          [`${P}/p1/s.jsonl`, lines(use('t1', 'solo'), typed('gen-linked', 'u1')), 0],
+          [`${P}/p2/old.jsonl`, lines(use('t9', 'solo', '2026-09-06T00:00:00.000Z')), 40],
+        ],
+        links: [['home/.claude/skills/gen-linked', 'home/.bantamkit/skills/gen-linked']],
+      };
+    }
     default:
       throw new Error(label);
   }
@@ -269,7 +298,7 @@ function trapFiles() {
 }
 
 const REPORT_BEDS = ['report-full', 'report-young', 'report-mixed', 'report-minified', 'report-armed'];
-const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS, 'daily-trap', 'session-line'];
+const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS, 'daily-trap', 'session-line', ...(WIN ? [] : ['generated'])];
 const LATER = '2026-10-17T00:00:00.000Z';
 const SAME_DAY = '2026-10-16T12:00:00.000Z';
 
@@ -552,7 +581,7 @@ export async function run(ctx) {
       let rec;
       if (op.no_usage) {
         const g = H.selectAdapter(op.home).gather(op.home, op.cwd, now);
-        rec = R.buildRecord(new H.Gathered(g.host, g.roots, g.enabled, g.versions, g.sources, null), op.now);
+        rec = R.buildRecord(new H.Gathered(g.host, g.roots, g.enabled, g.versions, g.sources, null), op.now, R.ownRoots(op.home, op.cwd));
       } else {
         rec = R.runLive(op.home, op.cwd, op.now);
       }
@@ -771,6 +800,38 @@ export async function run(ctx) {
     const r = T('daily-trap', 'child retention on, audit on')(a, s);
     return r.audit === null ? null : JSON.parse(r.audit).ts;
   });
+
+  // ---------------------------------------------- #206 Component 7 literals (job73 C15)
+  if (!WIN) {
+    const G = (i) => (a, side) => a.generated[side][i];
+    literal('generated: roots in order plugins, bantamkit-project, bantamkit-user, user', ['bantamkit-project', 'bantamkit-user', 'user'], (a, s) => G(3)(a, s).roots.map(([l]) => l));
+    literal(
+      'generated: the stamped skills are generated, the unpromoted bantamkit ones are the [skill] layer',
+      { generated: ['gen-copy', 'gen-layer', 'gen-linked', 'gen-proj'], layer: ['gen-layer', 'gen-proj', 'plain'] },
+      (a, s) => ({ generated: G(3)(a, s).generated ?? null, layer: G(3)(a, s).layer ?? null }),
+    );
+    literal(
+      'generated: six skills counted once each; the layer is not in the catalogue bytes; the copy source is the one duplicate',
+      { skills: 6, catalogue_bytes: [38, 30, 28].reduce((x, y) => x + y), omissions: [{ count: 1, size: 28, subject: 'duplicate-skill', what: 'bantamkit-user/gen-copy/SKILL.md' }] },
+      (a, s) => ({ skills: G(3)(a, s).skills, catalogue_bytes: G(3)(a, s).catalogue_bytes, omissions: G(3)(a, s).omissions }),
+    );
+    literal(
+      'generated: never-invoked names the host-loaded skills only (the layer has no Skill calls to count; a typed /gen-linked is a call)',
+      [['gen-copy']],
+      (a, s) => G(3)(a, s).findings.filter((f) => f.kind === 'never-invoked').map((f) => f.skills),
+    );
+    literal(
+      'generated: the report marks a generated skill in a finding and names both lists',
+      [
+        '- high shared-trigger-phrase: gen-layer (generated), solo — ship the release',
+        'generated by bantamkit (bantamkit-generated-by): 4 — gen-copy, gen-layer, gen-linked, gen-proj',
+        "in bantamkit's [skill] layer only, so not in the catalogue bytes and never called never-invoked: 3 — gen-layer, gen-proj, plain",
+      ],
+      (a, s) => G(4)(a, s).split('\n').filter((l) => l.includes('generated') || l.includes('[skill] layer')).filter((l) => !l.startsWith('- low')),
+    );
+  } else {
+    notes.push('generated bed skipped on win32: a directory symlink needs a privilege the runner may lack');
+  }
 
   // ------------------------------------------------------------------- Task 5 literals
   const L = (tag) => T('session-line', tag);

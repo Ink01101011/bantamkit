@@ -349,7 +349,12 @@ class ClaudeCodeAdapter:
         candidates.append(("user", user))
         roots = tuple((label, str(p)) for label, p in candidates if p.is_dir())
         enabled, sources = _enabled(home, cwd)
-        known = known_skills([p for _, p in roots])
+        # job73 C15 (#206 Component 7): a typed `/<name>` of a skill bantamkit promoted by
+        # symlink names a directory under `.bantamkit/skills` (the walk never follows the link),
+        # so those roots' names are known too; the audit reads them as roots (`skillreport`).
+        own = [Path(cwd) / ".bantamkit" / "skills"] if cwd is not None else []
+        own.append(home / ".bantamkit" / "skills")
+        known = known_skills([p for _, p in roots] + [str(p) for p in own if p.is_dir()])
         return Gathered(
             HOST_CLAUDE_CODE,
             roots,

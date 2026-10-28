@@ -247,7 +247,7 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `--k K` | Default recall budget | `3` | `"--k", "5"` |
 | `--index-budget BYTES` | Memory index byte budget | `24000` | `"--index-budget", "32000"` |
 | `BANTAMKIT_EVENT_LOG` | Logs tool outcomes as JSONL | off; `on` → `<store>/events/mcp.jsonl`; other values are a path | `"env": {"BANTAMKIT_EVENT_LOG": "on"}` |
-| `BANTAMKIT_SKILL_AUTO` | Skills from experience (#206): lets the daily run install a skill it mined and make low-risk edits to installed skills on its own. Off, the same work waits for you as proposals in the `skill_propose` prompt | **off** in 0.37.0; `on` (or `1`/`true`/`yes`) opts in | `"env": {"BANTAMKIT_SKILL_AUTO": "on"}` |
+| `BANTAMKIT_SKILL_AUTO` | Skills from experience (#206): lets the daily run install a skill it mined, make low-risk edits to installed skills and promote a much-used one to a native link on its own. Off, the same work waits for you as proposals in the `skill_propose` prompt | **off** in 0.37.0; `on` (or `1`/`true`/`yes`) opts in | `"env": {"BANTAMKIT_SKILL_AUTO": "on"}` |
 | `BANTAMKIT_ASSETS` | Your own asset pack (skills, rubrics, schemas) | the pack inside the package | `"env": {"BANTAMKIT_ASSETS": "/abs/my-assets"}` |
 | `BANTAMKIT_HOST_LOG_ROOT` | Where `--mcp-report` finds the host's MCP logs | macOS `~/Library/Caches/claude-cli-nodejs`; elsewhere unset | `BANTAMKIT_HOST_LOG_ROOT=/abs/logs bantamkit-mcp --mcp-report` |
 | `BANTAMKIT_PRICES` | Price table for the token ledger | `pricing/default.json` in the asset pack | `"env": {"BANTAMKIT_PRICES": "/abs/prices.json"}` |

@@ -19,9 +19,10 @@ in an answer is masked back to `<bed>`.
         plus "state", "tree"
     {"op": "edited", "home", "name"}                  -> edited_by_hand(state entry)
     {"op": "gate", "home", "text", "own"?}            -> the gate's reasons (`own`: a skill name)
-    {"op": "daily", "home", "now"}                    -> {"state", "tree"} (`BANTAMKIT_SKILL_AUDIT=on`,
-        `BANTAMKIT_SKILL_AUTO=off` for the op; `tree` leaves out the miner's own two files, whose
-        `ms` is a wall time)
+    {"op": "daily", "home", "now", "env"?}            -> {"state", "tree"} (`BANTAMKIT_SKILL_AUDIT=on`,
+        `BANTAMKIT_SKILL_AUTO=<env>` for the op, `off` when `env` is absent (job73 C15: automatic
+        promotion follows it); `tree` leaves out the miner's own two files, whose `ms` is a wall
+        time)
 
 Part 2 (#206 Task 10b):
 
@@ -202,7 +203,7 @@ def run(bed: Path, op: dict):
     if kind == "daily":
         saved = {k: os.environ.get(k) for k in ("BANTAMKIT_SKILL_AUDIT", "BANTAMKIT_SKILL_AUTO")}
         os.environ["BANTAMKIT_SKILL_AUDIT"] = "on"
-        os.environ["BANTAMKIT_SKILL_AUTO"] = "off"
+        os.environ["BANTAMKIT_SKILL_AUTO"] = op.get("env") or "off"
         try:
             sm.daily(home, None, op["now"])
         finally:

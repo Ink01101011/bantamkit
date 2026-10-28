@@ -14,14 +14,16 @@ before the op runs; every path in an answer is masked back to `<bed>`.
     {"op": "promote", "home", "name", "cwd"?, "now", "budget", "symlink_fails"?, "env"?}
         -> {"result": {ok, mode, reason}} | {"error"}, plus "state", "tree"
     {"op": "demote", "home", "name"}                       -> {"said"} | {"error"}, plus "state", "tree"
-    {"op": "promote_step", "home", "uses", "cwd"?, "now", "budget", "symlink_fails"?}
+    {"op": "promote_step", "home", "uses", "cwd"?, "now", "budget", "symlink_fails"?, "auto"?}
         -> {"events", "state"} | {"error"}, plus "tree"
     {"op": "layer", "home"}                                -> the `[skill]` layer's offered names
 
 `symlink_fails` makes the symlink call raise: `EPERM`, `EACCES`, `ENOENT` (an errno), or
 `WIN1314` (Windows' privilege error: an `OSError` whose `winerror` is 1314; libuv reports the
 same failure as `EPERM`, which is what the Node side raises). `env` is the value of
-`BANTAMKIT_SKILL_BUDGET` for that op (absent or null: unset). `tree` is every file and symlink
+`BANTAMKIT_SKILL_BUDGET` for that op (absent or null: unset). `auto` (job73 C15) is the value
+of `BANTAMKIT_SKILL_AUTO` for that op (absent or null: UNSET, the 0.37.0 default, off — not the
+harness's pinned `off`); automatic promotion follows it. `tree` is every file and symlink
 under the op's home: a file's text, a symlink as `-> <its target>`, a directory as `<path>/`.
 
     {"bed": <dir>, "ops": [...]} -> {"results": [...]}
@@ -129,6 +131,11 @@ def run(bed: Path, op: dict):
         os.environ.pop(sp.BUDGET_ENV, None)
     else:
         os.environ[sp.BUDGET_ENV] = op["env"]
+    saved_auto = os.environ.get(si.AUTO_ENV)
+    if op.get("auto") is None:
+        os.environ.pop(si.AUTO_ENV, None)
+    else:
+        os.environ[si.AUTO_ENV] = op["auto"]
     try:
         if kind == "constants":
             return [
@@ -195,6 +202,10 @@ def run(bed: Path, op: dict):
             os.environ.pop(sp.BUDGET_ENV, None)
         else:
             os.environ[sp.BUDGET_ENV] = saved_env
+        if saved_auto is None:
+            os.environ.pop(si.AUTO_ENV, None)
+        else:
+            os.environ[si.AUTO_ENV] = saved_auto
 
 
 def main() -> None:

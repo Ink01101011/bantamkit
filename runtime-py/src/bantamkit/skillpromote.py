@@ -41,6 +41,10 @@ touches the source in `.bantamkit/skills`.
 
 Promotion is automatic in the daily run (`promote_step`, Q5 default): a live skill with at
 least `PROMOTE_USES` uses in the last `PROMOTE_DAYS` days; the caller counts the uses (R10).
+Like the automatic installs and edits, it follows `BANTAMKIT_SKILL_AUTO`
+(`skillinstall.auto_enabled`, OFF by default in 0.37.0; job73 ruling): with the switch off,
+`promote_step` promotes nothing and records nothing as refused. `promote` itself (what
+`skill_propose promote <name>` calls) never reads the switch, because the person asked.
 
 `runtime-ts/src/skillpromote.ts` is the port; `tools/conformance/suites/skill-promote.mjs`
 compares the two.
@@ -66,7 +70,7 @@ from bantamkit.skillfile import (
     write_dir_atomic,
 )
 from bantamkit.skillhost import HOST_CLAUDE_CODE, Gathered, select_adapter
-from bantamkit.skillinstall import _int, _iso, _ms, _remove_dir
+from bantamkit.skillinstall import _int, _iso, _ms, _remove_dir, auto_enabled
 
 PROMOTE_USES = 3
 PROMOTE_DAYS = 30
@@ -338,9 +342,13 @@ def promote_step(
 
     `uses[name]` is the caller's count over that window (R10). A refusal is recorded on the
     skill (`promote_refused`) and that skill is not tried again the same UTC day. `state` is
-    read for the decisions and replaced in place by the state written.
+    read for the decisions and replaced in place by the state written. With
+    `BANTAMKIT_SKILL_AUTO` off (the 0.37.0 default) it does nothing at all: no promotion, no
+    refusal recorded, no gather.
     """
     now_ms = _ms(now)
+    if not auto_enabled():
+        return []
     today = _iso(now_ms)[:10]
     skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
     due = [

@@ -107,7 +107,7 @@ after #205's audit and under the same switch (`BANTAMKIT_SKILL_AUDIT`):
 3. **Install** at most one (`BANTAMKIT_SKILL_AUTO` on only; see *Installing*).
 4. **Probation**: remove an unused automatic install whose 30 days are up.
 5. **Count** each live version's uses, successes, injections and false fires.
-6. **Promote** a skill used 3 times in 30 days (see *Promotion*).
+6. **Promote** a skill used 3 times in 30 days (`BANTAMKIT_SKILL_AUTO` on only; see *Promotion*).
 7. **Improve** installed skills from the signals (see *Self-improvement*).
 8. **Judge** a version used 5 times against the one before it, and roll it back if it is worse.
 9. Record the events for the SessionStart line.
@@ -190,8 +190,8 @@ source is never touched. A link or copy that was changed after promotion is not 
 told to remove it yourself or keep it.
 
 **Automatic promotion follows `BANTAMKIT_SKILL_AUTO`** (orchestrator ruling 2026-10-28,
-implemented by job73 C15): with the switch off (the default) the daily run promotes nothing, and
-`skill_propose promote <name>` still promotes on request.
+implemented by job73 C15): with the switch off (the default) the daily run promotes nothing and
+records nothing as refused, and `skill_propose promote <name>` still promotes on request.
 
 ## Self-improvement (X10)
 
@@ -249,10 +249,11 @@ A refusal is a sentence in the answer, never an RPC error.
   pending proposals, the live automatic installs of 5, the promoted skills, the active drafter
   and whether `auto` is on (`docs/status.md`).
 - Every skill bantamkit writes carries `bantamkit-generated-by: bantamkit`, so it can be told
-  apart from one you wrote. **Not yet read by anything:** the spec's "#205's audit tracks
-  generated skills through `bantamkit-generated-by`" is not implemented — #205's audit gathers
-  the host's roots only (`~/.claude/skills`, `<project>/.claude/skills`, plugins), never
-  `.bantamkit/skills`, and does not descend the symlink a promotion makes (job73 C14 review).
+  apart from one you wrote. #205's skill audit reads it (spec Component 7, job73 C15): its
+  record and report also audit `.bantamkit/skills` (project and user), list the stamped skills
+  as `generated` and mark them `(generated)` in each finding, and keep a skill that is only in
+  the `[skill]` layer out of the catalogue bytes and out of `never-invoked`. A promoted skill is
+  counted once, as the host loads it (`docs/skill-audit.md`, *The adapters*).
 
 ## The switches
 

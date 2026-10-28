@@ -15,7 +15,7 @@ import { auditRoots } from './skillaudit.js';
 import { readState, SKILL_FILE, SkillFileError, updateState, writeDirAtomic } from './skillfile.js';
 import type { SkillsState } from './skillfile.js';
 import { Gathered, HOST_CLAUDE_CODE, selectAdapter } from './skillhost.js';
-import { InstallError, iso } from './skillinstall.js';
+import { autoEnabled, InstallError, iso } from './skillinstall.js';
 import { parseNow } from './storage/retention.js';
 
 export const PROMOTE_USES = 3;
@@ -326,7 +326,9 @@ function refusedToday(entry: Rec, today: string): boolean {
  * Promote every live skill with `PROMOTE_USES` uses in the last `PROMOTE_DAYS`; the events.
  * `uses[name]` is the caller's count over that window (R10). A refusal is recorded on the
  * skill (`promote_refused`) and that skill is not tried again the same UTC day. `state` is
- * read for the decisions and replaced in place by the state written.
+ * read for the decisions and replaced in place by the state written. With
+ * `BANTAMKIT_SKILL_AUTO` off (the 0.37.0 default) it does nothing at all: no promotion, no
+ * refusal recorded, no gather (job73 ruling; `promote` itself never reads the switch).
  */
 export function promoteStep(
   state: Rec,
@@ -338,6 +340,7 @@ export function promoteStep(
   opts: PromoteOptions = {},
 ): string[] {
   const nowMs = msOf(now);
+  if (!autoEnabled()) return [];
   const today = iso(nowMs).slice(0, 10);
   const skills = isObj(state['skills']) ? state['skills'] : {};
   const due = Object.keys(skills)

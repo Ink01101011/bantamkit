@@ -11,8 +11,8 @@ Task 3 (`skillreport`):
     {"op": "propose", "home", "cwd", "now", "usage": {..} | null, "span_days"}
                                                         -> b64(dumps(propose(...)))
 
-`record`/`render` are `run_live`; with `no_usage` they gather, drop `usage` and build — the only
-way a bed with roots has no measurement. `propose` scans the gathered roots and calls
+`record`/`render` are `run_live`; with `no_usage` they gather, drop `usage` and build over the
+same `own_roots` (job73 C15) — the only way a bed with roots has no measurement. `propose` scans the gathered roots and calls
 `propose` with the usage and span given, so a missing measurement can be shown at 30 days.
 
 Task 4 (the daily run). An op's `env` is applied for that op only (a value null unsets it):
@@ -185,7 +185,8 @@ def _one(op: dict) -> str | None:
     if op["op"] in ("record", "render"):
         if op.get("no_usage"):
             g = skillhost.select_adapter(op["home"]).gather(op["home"], op["cwd"], now)
-            rec = skillreport.build_record(dataclasses.replace(g, usage=None), op["now"])
+            own = skillreport.own_roots(op["home"], op["cwd"])
+            rec = skillreport.build_record(dataclasses.replace(g, usage=None), op["now"], own)
         else:
             rec = skillreport.run_live(op["home"], op["cwd"], op["now"])
         return _b64(dumps(rec) if op["op"] == "record" else skillreport.render_report(rec))

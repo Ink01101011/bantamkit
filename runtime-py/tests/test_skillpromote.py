@@ -91,7 +91,31 @@ def test_budget_env(monkeypatch, raw, want):
     assert sp.skill_budget() == want
 
 
-def test_two_uses_wait_three_promote_as_a_symlink_to_the_source(home):
+@pytest.fixture
+def auto_on(monkeypatch):
+    """Automatic promotion follows BANTAMKIT_SKILL_AUTO (job73 ruling): step tests opt in."""
+    monkeypatch.setenv(si.AUTO_ENV, "on")
+
+
+@pytest.mark.parametrize("raw", [None, "", "off", "0", "banana", "on please"])
+def test_promote_step_with_the_switch_off_promotes_and_records_nothing(home, monkeypatch, raw):
+    if raw is None:
+        monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    else:
+        monkeypatch.setenv(si.AUTO_ENV, raw)
+    install(home, "skill-a")
+    install(home, "skill-b")
+    before = sf.state_path(home).read_bytes()
+    state = sf.read_state(home)
+    assert sp.promote_step(state, {"skill-a": 3, "skill-b": 9}, home, None, NOW, 1) == []
+    assert sf.state_path(home).read_bytes() == before
+    assert not (home / ".claude" / "skills").exists()
+    assert "promote_refused" not in state["skills"]["skill-a"]
+    # the person asking still promotes: `promote` never reads the switch
+    assert sp.promote("skill-a", home, None, NOW, 8192).reason == "promoted skill skill-a"
+
+
+def test_two_uses_wait_three_promote_as_a_symlink_to_the_source(home, auto_on):
     src = install(home, "skill-a")
     install(home, "skill-b")
     state = sf.read_state(home)
@@ -224,7 +248,7 @@ def test_a_project_skill_links_into_the_project(home, tmp_path):
     assert not os.path.lexists(home / ".claude" / "skills" / "skill-p")
 
 
-def test_a_refusal_is_recorded_and_not_retried_the_same_day(home):
+def test_a_refusal_is_recorded_and_not_retried_the_same_day(home, auto_on):
     install(home, "skill-a")
     state = sf.read_state(home)
     assert sp.promote_step(state, {"skill-a": 3}, home, None, NOW, 1) == []

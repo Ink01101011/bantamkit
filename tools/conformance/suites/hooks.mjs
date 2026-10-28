@@ -4153,6 +4153,100 @@ export async function run(ctx) {
     );
   }
 
+  {
+    // 22. sessionstart/skills (#206 Task 11; job73 C15, the C14 review's blocker 1): the skills
+    // line beside #205's audit line. Per side: SessionStart with nothing, once over a home holding
+    // the FULL audit record, one skills-state event and one pending proposal with the audit
+    // switch off (both lines silent, nothing written), then twice with it on. The first carries
+    // BOTH lines, the audit line first and the skills line after it (Python: the last two parts;
+    // Node: before the stale-install line, absent here); the second is the plain block byte for
+    // byte. The log's `skillAuditBytes` and `skillProposeBytes` read 0, 0, N, 0.
+    const never = (x) => ({ kind: 'never-invoked', severity: 'low', skills: [x], detail: '0 calls' });
+    const FULL = [
+      { kind: 'shared-trigger-phrase', severity: 'high', skills: ['alpha:a1', 'beta:b2'], detail: 'deploy the thing' },
+      never('alpha:a1'),
+      never('alpha:a2'),
+      never('beta:b2'),
+      never('proj'),
+    ];
+    const RECORD = {
+      version: 1, ts: 't', host: 'claude-code', roots: [], skills: 1, catalogue_bytes: 1, findings: FULL, omissions: [], proposals: [],
+      usage: { calls: 0, counts: {}, span_days: 30, transcripts: 1, unreadable: 0, skipped_lines: 0 }, surfaced: [],
+    };
+    const STATE = `${JSON.stringify({ events: [{ at: '2026-10-27T00:00:00.000Z', event: 'installed skill sk-a' }], skills: {}, version: 1 }, null, 2)}\n`;
+    const PROPOSALS = `${JSON.stringify({ clusters: [{ id: 'c-abc', status: 'pending' }], version: 1 }, null, 2)}\n`;
+    const AUDIT_LINE =
+      '[bantamkit] skill audit: 5 new — shared-trigger-phrase: alpha:a1, beta:b2; alpha:a1 30 days without a call; ' +
+      'alpha:a2 30 days without a call; +2 more — /mcp__bantamkit__skill_audit has the report.';
+    const SKILLS_LINE =
+      '[bantamkit] skills: installed sk-a on probation (undo: /mcp__bantamkit__skill_propose undo sk-a); new proposal c-abc — /mcp__bantamkit__skill_propose lists them.';
+    const id = 'skills-line';
+    const b = bed(join(root, id));
+    const cwd = join(b.root, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    b.snapshot();
+    const AUDIT_ON = { ...QENV, BANTAMKIT_SKILL_AUDIT: null };
+    const AUDIT_OFF = { ...QENV, BANTAMKIT_SKILL_AUDIT: 'off' };
+    const probe = (side) => {
+      const h = home(id, side);
+      writeFile(join(h, '.bantamkit', 'retention.json'), JSON.stringify({ ran_at: new Date().toISOString() }));
+      const start = (env = AUDIT_ON) => {
+        const r = runHook(ctx, side, { payload: { hook_event_name: 'SessionStart', source: 'startup', session_id: id, cwd }, cwd, home: h, env });
+        const out = dec(r.stdout);
+        return {
+          exit: r.exit,
+          context: out ? JSON.parse(out).hookSpecificOutput?.additionalContext ?? null : null,
+          skillAuditBytes: r.last.skillAuditBytes,
+          skillProposeBytes: r.last.skillProposeBytes ?? null,
+          bytes: r.last.bytes,
+        };
+      };
+      const plain = start();
+      const audit = join(h, '.bantamkit', 'skill-audit.json');
+      const state = join(h, '.bantamkit', 'skills-state.json');
+      writeFile(audit, JSON.stringify(RECORD));
+      writeFile(state, STATE);
+      writeFile(join(h, '.bantamkit', 'skill-proposals.json'), PROPOSALS);
+      const off = start(AUDIT_OFF);
+      const offFiles = readFileSync(audit, 'utf8') === JSON.stringify(RECORD) && readFileSync(state, 'utf8') === STATE;
+      const first = start();
+      const surfaced = JSON.parse(readFileSync(state, 'utf8')).surfaced ?? null;
+      const again = start();
+      return { plain, off, offFiles, first, surfaced, again };
+    };
+    const py = probe('py');
+    b.restore();
+    const nd = probe('node');
+    cases.push({
+      name: 'skills-line: SessionStart with nothing, once over an audit record, a skills event and a pending proposal with the audit off, then twice with it on — stdout, log fields and surfaced, side to side',
+      kind: 'json',
+      expected: py,
+      actual: nd,
+    });
+    const pick = (x) => ({
+      first: x.first.context === `${x.plain.context}\n\n${AUDIT_LINE}\n\n${SKILLS_LINE}`,
+      againIsPlain: x.again.context === x.plain.context,
+      offIsPlain: x.off.context === x.plain.context,
+      offLeavesTheFiles: x.offFiles,
+      surfaced: x.surfaced,
+      skillAuditBytes: [x.plain.skillAuditBytes, x.off.skillAuditBytes, x.first.skillAuditBytes, x.again.skillAuditBytes],
+      skillProposeBytes: [x.plain.skillProposeBytes, x.off.skillProposeBytes, x.first.skillProposeBytes, x.again.skillProposeBytes],
+      exits: [x.plain.exit, x.off.exit, x.first.exit, x.again.exit],
+    });
+    cases.push(
+      ...literalCases(pick(py), pick(nd), 'skills-line: PINNED PER SIDE: silent with the audit off; the audit line then the skills line, once; then the plain block byte for byte (0 bytes added)', {
+        first: true,
+        againIsPlain: true,
+        offIsPlain: true,
+        offLeavesTheFiles: true,
+        surfaced: ['event\t2026-10-27T00:00:00.000Z\tinstalled skill sk-a', 'pending\tc-abc'],
+        skillAuditBytes: [0, 0, 199, 0],
+        skillProposeBytes: [0, 0, Buffer.byteLength(SKILLS_LINE), 0],
+        exits: [0, 0, 0, 0],
+      }),
+    );
+  }
+
   notes.push(
     'every hook run in this suite asserted that the adapter followed the throwaway HOME ' +
       '(both HOME and USERPROFILE) before a byte it wrote was read; a run that did not stops the suite',

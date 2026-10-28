@@ -301,10 +301,11 @@ function jsonl(p, rows) {
   writeFileSync(p, rows.map((r) => `${JSON.stringify(r)}\n`).join(''));
 }
 
-test('daily counts, promotes and judges', async () => {
+// AMENDED job73 C15: automatic promotion follows BANTAMKIT_SKILL_AUTO; the judge does not.
+for (const auto of ['on', 'off']) test(`daily counts, promotes and judges (BANTAMKIT_SKILL_AUTO=${auto})`, async () => {
   const saved = [process.env.BANTAMKIT_SKILL_AUDIT, process.env.BANTAMKIT_SKILL_AUTO];
   process.env.BANTAMKIT_SKILL_AUDIT = 'on';
-  process.env.BANTAMKIT_SKILL_AUTO = 'off';
+  process.env.BANTAMKIT_SKILL_AUTO = auto;
   try {
     const h = home();
     mkdirSync(join(h, '.claude'));
@@ -326,6 +327,13 @@ test('daily counts, promotes and judges', async () => {
     const e = state.skills['sk-one'];
     assert.deepEqual(e.versions['2'], { at: NOW, false_fires: 1, from: 1, injects: 1, kind: 'auto', successes: 0, uses: 5, verdict: 'rolled back' });
     assert.equal(e.version, 1);
+    if (auto === 'off') {
+      assert.ok(!('promoted' in e) && !('promote_refused' in e));
+      assert.deepEqual(state.events.map((x) => x.event), ['rolled back sk-one to v1']);
+      assert.ok(!existsSync(join(h, '.claude/skills')));
+      assert.ok(existsSync(join(d, 'references/history/v2.md')));
+      return;
+    }
     assert.equal(e.promoted.mode, 'symlink');
     assert.deepEqual(
       state.events.map((x) => x.event),

@@ -24,6 +24,11 @@
  * leaving a promoted skill out and taking a demoted one back; a host with no `~/.claude`; a
  * project-level link.
  *
+ * AUTOMATIC PROMOTION FOLLOWS `BANTAMKIT_SKILL_AUTO` (job73 C15, orchestrator ruling 2026-10-28).
+ * A `promote_step` op carries `auto`, the switch for that op (absent: unset, the default off);
+ * unset, `off` and `banana` promote nothing and record nothing, `on` promotes. `promote` itself
+ * (what `skill_propose promote <name>` calls) never reads it.
+ *
  * THE LITERALS. A rule both runtimes lose together (`>=` for `>` at the budget, say) leaves
  * every differential green, so the constants, the at-budget pair, the link target, the
  * copy modes and the step's events are also pinned per side.
@@ -94,7 +99,7 @@ function opList() {
   // h3: no Claude Code
   add('h3: install x-one (no ~/.claude)', { op: 'install', home: 'h3', name: 'x-one', level: 'user', now: NOW });
   add('promote x-one: Claude Code only', { op: 'promote', home: 'h3', name: 'x-one', now: NOW, budget: 8192 });
-  add('promote_step on h3: the refusal is recorded', { op: 'promote_step', home: 'h3', uses: { 'x-one': 3 }, now: NOW, budget: 8192 });
+  add('promote_step on h3: the refusal is recorded', { op: 'promote_step', auto: 'on', home: 'h3', uses: { 'x-one': 3 }, now: NOW, budget: 8192 });
 
   // h4: a project-level skill
   add('h4: ~/.claude exists', { op: 'mkdir', home: 'h4', rel: '.claude' });
@@ -106,13 +111,18 @@ function opList() {
   const s = 'h5';
   add('h5: ~/.claude exists', { op: 'mkdir', home: s, rel: '.claude' });
   for (const n of ['s-two', 's-three', 's-zbig']) add(`h5: install ${n}`, { op: 'install', home: s, name: n, level: 'user', now: NOW });
+  for (const auto of [null, 'off', 'banana']) {
+    add(`promote_step: BANTAMKIT_SKILL_AUTO=${JSON.stringify(auto)} promotes and records nothing`, {
+      op: 'promote_step', auto, home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5 }, now: NOW, budget: 70,
+    });
+  }
   add('promote_step: 2 uses waits, 3 promotes, the next is over budget', {
-    op: 'promote_step', home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5, 'not-installed': 9 }, now: NOW, budget: 70,
+    op: 'promote_step', auto: 'on', home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5, 'not-installed': 9 }, now: NOW, budget: 70,
   });
-  add('promote_step: the same UTC day at 23:59:59.999 does not retry', { op: 'promote_step', home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5 }, now: LATER, budget: 1000 });
-  add('promote_step: the next day retries and promotes', { op: 'promote_step', home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5 }, now: NEXT, budget: 1000 });
-  add('promote_step: uses of the wrong type count as none', { op: 'promote_step', home: s, uses: { 's-two': '3' }, now: NEXT, budget: 1000 });
-  add('promote_step: a bad now', { op: 'promote_step', home: s, uses: {}, now: 'yesterday', budget: 1000 });
+  add('promote_step: the same UTC day at 23:59:59.999 does not retry', { op: 'promote_step', auto: 'on', home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5 }, now: LATER, budget: 1000 });
+  add('promote_step: the next day retries and promotes', { op: 'promote_step', auto: 'on', home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5 }, now: NEXT, budget: 1000 });
+  add('promote_step: uses of the wrong type count as none', { op: 'promote_step', auto: 'on', home: s, uses: { 's-two': '3' }, now: NEXT, budget: 1000 });
+  add('promote_step: a bad now', { op: 'promote_step', auto: 'on', home: s, uses: {}, now: 'yesterday', budget: 1000 });
   return { ops, label };
 }
 
@@ -197,6 +207,9 @@ async function runNode(ctx, bed, ops) {
     const savedEnv = process.env[sp.BUDGET_ENV];
     if (op.env === undefined || op.env === null) delete process.env[sp.BUDGET_ENV];
     else process.env[sp.BUDGET_ENV] = op.env;
+    const savedAuto = process.env.BANTAMKIT_SKILL_AUTO;
+    if (op.auto === undefined || op.auto === null) delete process.env.BANTAMKIT_SKILL_AUTO;
+    else process.env.BANTAMKIT_SKILL_AUTO = op.auto;
     try {
       if (op.op === 'constants') {
         results.push([sp.PROMOTE_USES, sp.PROMOTE_DAYS, sp.BUDGET_DEFAULT, sp.BUDGET_ENV, sp.MODE_SYMLINK, sp.MODE_COPY]);
@@ -263,6 +276,8 @@ async function runNode(ctx, bed, ops) {
     } finally {
       if (savedEnv === undefined) delete process.env[sp.BUDGET_ENV];
       else process.env[sp.BUDGET_ENV] = savedEnv;
+      if (savedAuto === undefined) delete process.env.BANTAMKIT_SKILL_AUTO;
+      else process.env.BANTAMKIT_SKILL_AUTO = savedAuto;
     }
   }
   return results;
@@ -295,6 +310,8 @@ export async function run(ctx) {
   const copies = ['promote c-one: EPERM copies', 'promote c-two: EACCES copies', 'promote c-three: Windows 1314 copies', 'promote c-four: ENOENT refuses, nothing copied'].map(find);
   const iDemote = find('demote p-one: the link goes, the source stays');
   const iInstallOne = find('h1: install p-one');
+  const iOffs = [null, 'off', 'banana'].map((a) => find(`promote_step: BANTAMKIT_SKILL_AUTO=${JSON.stringify(a)} promotes and records nothing`));
+  const iBeforeOff = find('h5: install s-zbig');
   for (const [side, got] of [
     ['python', py],
     ['node', nd],
@@ -331,6 +348,20 @@ export async function run(ctx) {
       kind: 'json',
       expected: ['copy', 'copy', 'copy', null],
       actual: copies.map((i) => (got[i].result ? got[i].result.mode : 'error')),
+    });
+    cases.push({
+      name: `LITERAL: automatic promotion follows BANTAMKIT_SKILL_AUTO: unset, off and banana promote and record nothing — ${side}`,
+      kind: 'json',
+      expected: [
+        [[], false, true],
+        [[], false, true],
+        [[], false, true],
+      ],
+      actual: iOffs.map((i) => [
+        got[i].events ?? got[i],
+        JSON.stringify(got[i].state ?? null).includes('promote'),
+        JSON.stringify(got[i].tree ?? null) === JSON.stringify(got[iBeforeOff].tree ?? null),
+      ]),
     });
     cases.push({
       name: `LITERAL: the daily step's events [first, same day, next day] — ${side}`,

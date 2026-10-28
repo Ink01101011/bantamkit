@@ -166,29 +166,35 @@ function opList() {
   add('gate: with own, another skill still shares', { op: 'gate', home: g, text: draft('sk-g', 'Do it better', words), own: 'sk-g' });
   add('gate: with own, renaming onto another skill collides', { op: 'gate', home: g, text: draft('sk-h', 'Do it better'), own: 'sk-g' });
 
-  // h6: the daily run
-  const d = 'h6';
-  add('h6: ~/.claude exists', { op: 'mkdir', home: d, rel: '.claude' });
-  add('h6: install sk-d', { op: 'install', home: d, name: 'sk-d', text: draft('sk-d'), now: NOW });
-  add('h6: v1 4 of 5', { op: 'set_stats', home: d, name: 'sk-d', version: '1', stats: { successes: 4, uses: 5 } });
-  add('h6: v2', { op: 'new_version', home: d, name: 'sk-d', text: draft('sk-d', 'Do it better'), now: NOW, kind: 'auto' });
-  add('h6: v2 0 of 4', { op: 'set_stats', home: d, name: 'sk-d', version: '2', stats: { successes: 0, uses: 4 } });
-  const usage = Array(3).fill(JSON.stringify({ fact: 'sk-d', kind: 'recall_hit', ts: '2026-10-27T13:00:00Z' })).join('\n') + '\n';
-  add('h6: three uses in the usage ledger', { op: 'write', home: d, rel: '.bantamkit/usage/store.jsonl', text: usage });
-  const touch = [
-    { ts: '2026-10-27T13:00:00Z', session: 's-1', seq: 1, op: 'use', fact: 'sk-d', kind: 'recall_hit' },
-    { ts: '2026-10-27T13:00:00Z', session: 's-1', seq: 2, op: 'use', fact: 'sk-d', kind: 'save' },
-    { ts: '2026-10-27T11:00:00Z', session: 's-1', seq: 3, op: 'use', fact: 'sk-d', kind: 'recall_hit' },
-  ];
-  add('h6: the touch log', { op: 'write', home: d, rel: '.bantamkit/touch/repo.jsonl', text: touch.map((r) => `${JSON.stringify(r)}\n`).join('') });
-  const hooks = [
-    { ts: '2026-10-27T13:00:00.000Z', event: 'UserPromptSubmit', action: 'inject', session: 's-2', injected: [{ name: 'sk-d' }] },
-    { ts: '2026-10-27T13:00:00.000Z', event: 'UserPromptSubmit', action: 'skip', session: 's-2', injected: [{ name: 'sk-d' }] },
-    { ts: '2026-10-27T13:00:01.000Z', event: 'UserPromptSubmit', action: 'inject', session: 's-1', injected: [{ name: 'sk-d' }, { nam: 'x' }] },
-  ];
-  add('h6: the hook log', { op: 'write', home: d, rel: '.bantamkit/hooks/hook-log.jsonl', text: hooks.map((r) => `${JSON.stringify(r)}\n`).join('') });
-  add('daily: counts, promotes, judges', { op: 'daily', home: d, now: LATER });
-  add('daily: the next day adds nothing', { op: 'daily', home: d, now: '2026-10-29T12:00:00.000Z' });
+  // h6: the daily run (AMENDED job73 C15: automatic promotion follows BANTAMKIT_SKILL_AUTO, so
+  // the daily op carries `env`; h6 opts in, h7 is the same home with the switch off, then on)
+  const dailyBed = (d) => {
+    add(`${d}: ~/.claude exists`, { op: 'mkdir', home: d, rel: '.claude' });
+    add(`${d}: install sk-d`, { op: 'install', home: d, name: 'sk-d', text: draft('sk-d'), now: NOW });
+    add(`${d}: v1 4 of 5`, { op: 'set_stats', home: d, name: 'sk-d', version: '1', stats: { successes: 4, uses: 5 } });
+    add(`${d}: v2`, { op: 'new_version', home: d, name: 'sk-d', text: draft('sk-d', 'Do it better'), now: NOW, kind: 'auto' });
+    add(`${d}: v2 0 of 4`, { op: 'set_stats', home: d, name: 'sk-d', version: '2', stats: { successes: 0, uses: 4 } });
+    const usage = Array(3).fill(JSON.stringify({ fact: 'sk-d', kind: 'recall_hit', ts: '2026-10-27T13:00:00Z' })).join('\n') + '\n';
+    add(`${d}: three uses in the usage ledger`, { op: 'write', home: d, rel: '.bantamkit/usage/store.jsonl', text: usage });
+    const touch = [
+      { ts: '2026-10-27T13:00:00Z', session: 's-1', seq: 1, op: 'use', fact: 'sk-d', kind: 'recall_hit' },
+      { ts: '2026-10-27T13:00:00Z', session: 's-1', seq: 2, op: 'use', fact: 'sk-d', kind: 'save' },
+      { ts: '2026-10-27T11:00:00Z', session: 's-1', seq: 3, op: 'use', fact: 'sk-d', kind: 'recall_hit' },
+    ];
+    add(`${d}: the touch log`, { op: 'write', home: d, rel: '.bantamkit/touch/repo.jsonl', text: touch.map((r) => `${JSON.stringify(r)}\n`).join('') });
+    const hooks = [
+      { ts: '2026-10-27T13:00:00.000Z', event: 'UserPromptSubmit', action: 'inject', session: 's-2', injected: [{ name: 'sk-d' }] },
+      { ts: '2026-10-27T13:00:00.000Z', event: 'UserPromptSubmit', action: 'skip', session: 's-2', injected: [{ name: 'sk-d' }] },
+      { ts: '2026-10-27T13:00:01.000Z', event: 'UserPromptSubmit', action: 'inject', session: 's-1', injected: [{ name: 'sk-d' }, { nam: 'x' }] },
+    ];
+    add(`${d}: the hook log`, { op: 'write', home: d, rel: '.bantamkit/hooks/hook-log.jsonl', text: hooks.map((r) => `${JSON.stringify(r)}\n`).join('') });
+  };
+  dailyBed('h6');
+  add('daily: counts, promotes, judges', { op: 'daily', home: 'h6', now: LATER, env: 'on' });
+  add('daily: the next day adds nothing', { op: 'daily', home: 'h6', now: '2026-10-29T12:00:00.000Z', env: 'on' });
+  dailyBed('h7');
+  add('daily: BANTAMKIT_SKILL_AUTO=off counts and judges, promotes nothing', { op: 'daily', home: 'h7', now: LATER, env: 'off' });
+  add('daily: the next day with the switch on promotes', { op: 'daily', home: 'h7', now: '2026-10-29T12:00:00.000Z', env: 'on' });
   part2(add);
   return { ops, label };
 }
@@ -508,7 +514,7 @@ async function runNode(ctx, bed, ops) {
     if (op.op === 'daily') {
       const saved = { BANTAMKIT_SKILL_AUDIT: process.env.BANTAMKIT_SKILL_AUDIT, BANTAMKIT_SKILL_AUTO: process.env.BANTAMKIT_SKILL_AUTO };
       process.env.BANTAMKIT_SKILL_AUDIT = 'on';
-      process.env.BANTAMKIT_SKILL_AUTO = 'off';
+      process.env.BANTAMKIT_SKILL_AUTO = op.env ?? 'off';
       try {
         await sm.daily(home, null, op.now);
       } finally {
@@ -613,6 +619,9 @@ export async function run(ctx) {
   const verdicts = RATES.map(([l]) => find(`judge_step: ${l}`));
   const iStats = find('stats_step: each row in, out, or counted once');
   const iEdited = find('judge_step: an edited skill is never judged');
+  const iDailyOn = find('daily: counts, promotes, judges');
+  const iDailyOff = find('daily: BANTAMKIT_SKILL_AUTO=off counts and judges, promotes nothing');
+  const iDailyNext = find('daily: the next day with the switch on promotes');
   for (const [side, got] of [
     ['python', py],
     ['node', nd],
@@ -658,6 +667,22 @@ export async function run(ctx) {
       kind: 'json',
       expected: { false_fires: 1, injects: 4, successes: 3, uses: 5 },
       actual: got[iStats].state?.skills?.['sk-c']?.versions?.['1'] ?? null,
+    });
+    const promotedOf = (r) => [
+      r?.state?.skills?.['sk-d']?.promoted?.mode ?? null,
+      Object.hasOwn(r?.state?.skills?.['sk-d'] ?? {}, 'promote_refused'),
+      r?.tree?.['.claude/skills/sk-d'] ?? null,
+      (r?.state?.events ?? []).map((x) => x.event),
+    ];
+    cases.push({
+      name: `LITERAL: the daily run promotes only with BANTAMKIT_SKILL_AUTO on [on, off, then on] — ${side}`,
+      kind: 'json',
+      expected: [
+        ['symlink', false, '-> ../../.bantamkit/skills/sk-d', ['promoted skill sk-d', 'rolled back sk-d to v1']],
+        [null, false, null, ['rolled back sk-d to v1']],
+        ['symlink', false, '-> ../../.bantamkit/skills/sk-d', ['rolled back sk-d to v1', 'promoted skill sk-d']],
+      ],
+      actual: [iDailyOn, iDailyOff, iDailyNext].map((i) => promotedOf(got[i])),
     });
     cases.push({
       name: `LITERAL: an edited skill is never judged — ${side}`,

@@ -358,9 +358,11 @@ def _jsonl(p: Path, rows: list[dict]) -> None:
     p.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
 
 
-def test_daily_counts_promotes_and_judges(tmp_path, monkeypatch):
+@pytest.mark.parametrize("auto", ["on", "off"])
+def test_daily_counts_promotes_and_judges(tmp_path, monkeypatch, auto):
+    # AMENDED job73 C15: automatic promotion follows BANTAMKIT_SKILL_AUTO; the judge does not.
     monkeypatch.setenv("BANTAMKIT_SKILL_AUDIT", "on")
-    monkeypatch.setenv("BANTAMKIT_SKILL_AUTO", "off")
+    monkeypatch.setenv("BANTAMKIT_SKILL_AUTO", auto)
     (tmp_path / ".claude").mkdir()
     d = installed(tmp_path)
     set_stats(tmp_path, "sk-one", "1", {"successes": 4, "uses": 5})
@@ -412,6 +414,12 @@ def test_daily_counts_promotes_and_judges(tmp_path, monkeypatch):
         "successes": 0, "uses": 5, "verdict": "rolled back",
     }  # fmt: skip
     assert e["version"] == 1
+    if auto == "off":
+        assert "promoted" not in e and "promote_refused" not in e
+        assert [x["event"] for x in state["events"]] == ["rolled back sk-one to v1"]
+        assert not (tmp_path / ".claude/skills").exists()
+        assert (d / "references/history/v2.md").is_file()
+        return
     assert e["promoted"]["mode"] == "symlink"
     assert [x["event"] for x in state["events"]] == [
         "promoted skill sk-one",

@@ -30,6 +30,26 @@ still holds unseen findings: the switch silences the line too (orchestrator ruli
 
 THE PROMPT (Task 6). `skill_audit` is the second MCP prompt on both servers: `prompts/get` returns
 `render_report(run_live(home, cwd, now)) + "\n\n" + SKILL_AUDIT_PROMPT_TAIL` as one user message.
+
+#206'S SKILLS (spec Component 7: "#205's audit tracks generated skills through
+`bantamkit-generated-by`"; job73 C15). `run_live` audits bantamkit's own skills roots too —
+`<cwd>/.bantamkit/skills` (`bantamkit-project`) and `~/.bantamkit/skills` (`bantamkit-user`),
+those that exist, one root once by real path — placed after `plugins` and before the host's
+`project` and `user`, so the dedupe (the later root wins a bare name) keeps the copy the host
+loads: a skill promoted by COPY is counted once, at `~/.claude/skills`, and its source is a
+`duplicate-skill` omission; a skill promoted by SYMLINK is counted once at its source, because
+the audit never descends a symlinked directory. Two lists join the record:
+
+- `generated`: every counted skill outside a plugin whose `SKILL.md` metadata carries a
+  `bantamkit-generated-by` string — bantamkit wrote it — wherever it lives;
+- `layer`: every counted skill in a bantamkit root that no host root links to. It is in
+  bantamkit's `[skill]` recall layer only, so the host loads none of it: its bytes are NOT in
+  `catalogue_bytes`, and no `never-invoked` finding is made for it (its uses are recalls in
+  the usage ledger, not the transcripts' `Skill` calls). Its phrases still collide: a trigger
+  shared with a host skill is the same ambiguity either way.
+
+The report names both, and marks a generated skill `(generated)` in each finding line. A record
+written before this (no `generated` key) renders as it did.
 """
 
 from __future__ import annotations
@@ -51,6 +71,12 @@ STATE_VERSION = 1
 NO_ROOTS = "no skill directory was found for this host"
 GATHER_FAILED = "the gather failed"
 NOT_APPLIED = "NOT applied; bantamkit never edits settings.json"
+#: Component 7 (#206): the labels of bantamkit's own skills roots, and the stamp that marks a
+#: skill bantamkit wrote (`skillinstall.GENERATED_BY` is its value).
+OWN_PROJECT = "bantamkit-project"
+OWN_USER = "bantamkit-user"
+GENERATED_KEY = "bantamkit-generated-by"
+_HOST_LOCAL = ("project", "user")
 
 #: The `skill_audit` MCP prompt (#205 Task 6). A PERSON's command (`/mcp__bantamkit__skill_audit`
 #: in Claude Code); both servers serve these bytes.
@@ -142,30 +168,104 @@ def _error(now: str, host: str, error: str) -> dict[str, Any]:
     return {"version": STATE_VERSION, "ts": now, "host": host, "error": error, "surfaced": []}
 
 
-def build_record(g: Gathered, now: str) -> dict[str, Any]:
-    """The stored record (`skill-audit.json`, written by the daily run), or its error form."""
-    if not g.roots:
+def own_roots(home: Path | str, cwd: str | None) -> list[tuple[str, str]]:
+    """bantamkit's skills roots that exist: `<cwd>/.bantamkit/skills`, then `~/.bantamkit/skills`;
+    a root whose real path was already listed is left out (a cwd at the home)."""
+    candidates = []
+    if cwd is not None:
+        candidates.append((OWN_PROJECT, str(Path(cwd) / ".bantamkit" / "skills")))
+    candidates.append((OWN_USER, str(Path(home) / ".bantamkit" / "skills")))
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for label, p in candidates:
+        if not os.path.isdir(p) or os.path.realpath(p) in seen:
+            continue
+        seen.add(os.path.realpath(p))
+        out.append((label, p))
+    return out
+
+
+def _stamped(path: str) -> bool:
+    """Whether the `SKILL.md` at `path` carries a `bantamkit-generated-by` string. Any failure
+    to read or parse it is False: the audit already reports an unreadable or malformed file."""
+    from bantamkit.skillfile import parse_skill
+
+    try:
+        doc = parse_skill(Path(path).read_bytes().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - unreadable, not UTF-8 or not an X9 shape
+        return False
+    value = doc.metadata.get(GENERATED_KEY)
+    return isinstance(value, str) and value != ""
+
+
+def _ownership(found: list[Any], roots: list[tuple[str, str]]) -> tuple[list[str], list[str], int]:
+    """`(generated ids, layer ids, layer bytes)` over the counted skills outside a plugin."""
+    where = dict(roots)
+    host = [where[label] for label in _HOST_LOCAL if label in where]
+    generated: set[str] = set()
+    layer: set[str] = set()
+    layer_bytes = 0
+    for s in found:
+        if s.omitted is not None or s.in_plugin:
+            continue
+        label, _, rest = s.relpath.partition("/")
+        path = os.path.join(where[label], rest)
+        if _stamped(path):
+            generated.add(s.id)
+        if label not in (OWN_PROJECT, OWN_USER):
+            continue
+        real = os.path.realpath(os.path.dirname(path))
+        linked = any(
+            os.path.islink(os.path.join(r, s.directory))
+            and os.path.realpath(os.path.join(r, s.directory)) == real
+            for r in host
+        )
+        if not linked:
+            layer.add(s.id)
+            layer_bytes += s.bytes
+    return sorted(generated), sorted(layer), layer_bytes
+
+
+def build_record(g: Gathered, now: str, own: list[tuple[str, str]] | None = None) -> dict[str, Any]:
+    """The stored record (`skill-audit.json`, written by the daily run), or its error form.
+
+    `own` is `own_roots(home, cwd)`: bantamkit's skills roots, audited after the plugins and
+    before the host's project and user roots (Component 7, see the module docstring)."""
+    own = list(own or [])
+    host_roots = [(label, path) for label, path in g.roots]
+    roots = [r for r in host_roots if r[0] == "plugins"] + own
+    roots += [r for r in host_roots if r[0] != "plugins"]
+    if not roots:
         return _error(now, g.host, NO_ROOTS)
-    roots = [(label, path) for label, path in g.roots]
     counts = None if g.usage is None else g.usage.counts
     found = skillaudit.scan_roots(roots, list(g.enabled), g.versions)
     result = skillaudit.audit_roots(
         roots, enabled=list(g.enabled), usage=counts, versions=g.versions
     )
     span = 0 if g.usage is None else g.usage.span_days
-    return {
+    generated, layer, layer_bytes = _ownership(found, roots)
+    findings = [
+        f.as_dict()
+        for f in result.findings
+        if not (f.kind == skillaudit.KIND_NEVER_INVOKED and f.skills and f.skills[0] in layer)
+    ]
+    record: dict[str, Any] = {
         "version": STATE_VERSION,
         "ts": now,
         "host": g.host,
         "roots": [list(r) for r in roots],
         "skills": result.skills,
-        "catalogue_bytes": result.catalogue_bytes,
-        "findings": [f.as_dict() for f in result.findings],
+        "catalogue_bytes": result.catalogue_bytes - layer_bytes,
+        "findings": findings,
         "omissions": [o.as_dict() for o in result.omissions],
         "usage": None if g.usage is None else g.usage.summary(),
         "proposals": propose(found, counts, span, g.sources),
         "surfaced": [],
     }
+    if generated or layer:
+        record["generated"] = generated
+        record["layer"] = layer
+    return record
 
 
 def run_live(home: Path | str, cwd: str | None, now: str) -> dict[str, Any]:
@@ -174,7 +274,8 @@ def run_live(home: Path | str, cwd: str | None, now: str) -> dict[str, Any]:
     try:
         adapter = select_adapter(home)
         host = adapter.host
-        return build_record(adapter.gather(home, cwd, parse_now(now)), now)
+        g = adapter.gather(home, cwd, parse_now(now))
+        return build_record(g, now, own_roots(home, cwd))
     except Exception:  # noqa: BLE001 - the report says it failed; no hook or tool fails
         return _error(now, host, GATHER_FAILED)
 
@@ -246,10 +347,22 @@ def render_report(record: dict[str, Any]) -> str:
             f"{_plural(usage['transcripts'], 'transcript')} ({usage['unreadable']} unreadable, "
             f"{usage['skipped_lines']} lines skipped)"
         )
+    generated = record.get("generated") or []
+    layer = record.get("layer") or []
     lines.append(f"findings: {sev['high']} high, {sev['medium']} medium, {sev['low']} low")
     for f in record["findings"]:
-        who = ", ".join(f["skills"]) if f["skills"] else "the catalogue"
+        named = [f"{s} (generated)" if s in generated else s for s in f["skills"]]
+        who = ", ".join(named) if named else "the catalogue"
         lines.append(f"- {f['severity']} {f['kind']}: {who} — {f['detail']}")
+    if generated:
+        lines.append(
+            f"generated by bantamkit ({GENERATED_KEY}): {len(generated)} — " + ", ".join(generated)
+        )
+    if layer:
+        lines.append(
+            f"in bantamkit's [skill] layer only, so not in the catalogue bytes and never "
+            f"called never-invoked: {len(layer)} — " + ", ".join(layer)
+        )
     if record["omissions"]:
         lines.append(
             "omissions: "
