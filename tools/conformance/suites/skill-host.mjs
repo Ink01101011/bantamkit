@@ -649,15 +649,17 @@ export async function run(ctx) {
     }
   };
   const A = (bed, i) => (a, side) => a[bed][side][i];
-  literal('claude-full Skill tool_use counts (dedupe by id, subagents, a numeric skill ignored)', { 'beta:b1': 2, solo: 3 }, (a, s) => A('claude-full', 1)(a, s).counts);
+  // The mode-000 fixture remains readable on Windows and when run as root.
+  const extraReadableTranscript = WIN || ROOT ? 1 : 0;
+  literal('claude-full Skill tool_use counts (dedupe by id, subagents, a numeric skill ignored)', { 'beta:b1': 2, solo: 3 + extraReadableTranscript }, (a, s) => A('claude-full', 1)(a, s).counts);
   literal(
     'claude-full gather counts (A2: typed /alpha:a1 deduped by uuid, typed /proj, /clear and the meta record not counted)',
-    { 'alpha:a1': 1, 'beta:b1': 2, proj: 1, solo: 3 },
+    { 'alpha:a1': 1, 'beta:b1': 2, proj: 1, solo: 3 + extraReadableTranscript },
     (a, s) => A('claude-full', 0)(a, s).usage.counts,
   );
   literal(
     'claude-full transcripts read, lines skipped, span',
-    { transcripts: 3, skipped_lines: 3, span_days: 30 },
+    { transcripts: 3 + extraReadableTranscript, skipped_lines: 3, span_days: 30 },
     (a, s) => {
       const u = A('claude-full', 1)(a, s);
       return { transcripts: u.transcripts, skipped_lines: u.skipped_lines, span_days: u.span_days };

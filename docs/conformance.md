@@ -13,6 +13,13 @@ node tools/conformance/run.mjs --list
 Exit code is `0` on pass, `1` on any failure, `2` on a usage error or a missing reference
 interpreter.
 
+The skill suites mask temporary roots both as raw paths and as JSON-escaped paths inside
+state-file snapshots. This matters on Windows, where backslashes are escaped in JSON.
+Relative symlink fixtures and assertions use the platform's path separators; tree keys
+remain slash-separated. The Python skill-file and CLI references decode the harness's JSON
+requests as UTF-8 so non-ASCII skills and working directories survive the pipe on Windows.
+This does not change the runtime's encoding settings or normalize its output bytes.
+
 ## Why a Python lives inside a Node port's test tooling
 
 It is a **development-time** dependency of the harness. The shipped package declares

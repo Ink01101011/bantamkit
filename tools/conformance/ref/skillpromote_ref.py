@@ -57,7 +57,8 @@ def sub(v, bed: str):
 
 def mask(v, bed: str):
     if isinstance(v, str):
-        return v.replace(bed, "<bed>")
+        escaped = json.dumps(bed, ensure_ascii=False)[1:-1]
+        return v.replace(escaped, "<bed>").replace(bed, "<bed>")
     if isinstance(v, list):
         return [mask(x, bed) for x in v]
     if isinstance(v, dict):

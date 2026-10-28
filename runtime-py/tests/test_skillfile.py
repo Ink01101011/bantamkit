@@ -437,6 +437,38 @@ def test_state_round_trip_and_refusals(tmp_path):
         sf.read_state(tmp_path)
 
 
+def test_repeated_state_writes_replace_previous_contents(tmp_path):
+    sf.write_state(tmp_path, {"skills": {"old-skill": {"description": "old" * 100}}})
+    expected = {"version": 1, "skills": {"new-skill": {}}}
+    sf.write_state(tmp_path, expected)
+    assert sf.read_state(tmp_path) == expected
+    assert sf.state_path(tmp_path).read_bytes() == sf.state_bytes(expected)
+    assert os.listdir(sf.state_path(tmp_path).parent) == ["skills-state.json"]
+
+
+@pytest.mark.parametrize("step", ["write", "fsync", "rename"])
+def test_failed_state_update_preserves_previous_bytes(tmp_path, monkeypatch, step):
+    sf.write_state(tmp_path, {"skills": {"old-skill": {}}})
+    previous = sf.state_path(tmp_path).read_bytes()
+    real_write = sf._write
+
+    def fail(*args):
+        if step == "write":
+            real_write(*args)
+        raise OSError("injected state write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sf, f"_{step}", fail)
+        with pytest.raises(OSError, match="injected state write failure"):
+            sf.update_state(tmp_path, lambda state: state["skills"].update(new={}))
+    assert sf.state_path(tmp_path).read_bytes() == previous
+    assert os.listdir(sf.state_path(tmp_path).parent) == ["skills-state.json"]
+    assert sf.update_state(tmp_path, lambda state: state["skills"].update(new={})) == {
+        "version": 1,
+        "skills": {"old-skill": {}, "new": {}},
+    }
+
+
 def test_parse_reads_a_block_sequence_under_a_metadata_key():
     # RULED as above: the port refuses it.
     seq = sf.parse_skill('---\nname: a\nmetadata:\n  k:\n  - a\n  - b\n  j: "x"\n---\n')

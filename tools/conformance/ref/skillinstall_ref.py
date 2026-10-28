@@ -51,7 +51,8 @@ def sub(v, bed: str):
 
 def mask(v, bed: str):
     if isinstance(v, str):
-        return v.replace(bed, "<bed>")
+        escaped = json.dumps(bed, ensure_ascii=False)[1:-1]
+        return v.replace(escaped, "<bed>").replace(bed, "<bed>")
     if isinstance(v, list):
         return [mask(x, bed) for x in v]
     if isinstance(v, dict):
@@ -107,7 +108,7 @@ def run(bed: Path, op: dict):
         if kind == "edit":
             p = home / op["rel"]
             p.write_bytes(p.read_bytes().replace(op["find"].encode(), op["replace"].encode()))
-            return {"tree": tree(home, b)}
+            return {"tree": mask(tree(home, b), b)}
         if op.get("fail_at") == "rename2":
             calls = [0]
 

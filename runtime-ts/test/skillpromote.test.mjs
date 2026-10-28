@@ -120,7 +120,7 @@ test('two uses wait, three promote as a symlink to the source', () => withAuto('
   assert.deepEqual(sp.promoteStep(state, { 'skill-a': 3, 'skill-b': 2 }, home, null, NOW, 8192), ['promoted skill skill-a']);
   const link = linkOf(home, 'skill-a');
   assert.ok(lstatSync(link).isSymbolicLink());
-  assert.equal(readlinkSync(link), '../../.bantamkit/skills/skill-a');
+  assert.equal(readlinkSync(link), join('..', '..', '.bantamkit', 'skills', 'skill-a'));
   assert.equal(realpathSync(link), realpathSync(src));
   assert.ok(!lexists(linkOf(home, 'skill-b')));
   assert.equal(state.skills['skill-a'].promoted.mode, 'symlink');
@@ -242,7 +242,7 @@ test('a project skill links into the project', () => {
   mkdirSync(top);
   install(home, 'skill-p', 'project', top);
   assert.ok(sp.promote('skill-p', home, top, NOW, 8192).ok);
-  assert.equal(readlinkSync(join(top, '.claude', 'skills', 'skill-p')), '../../.bantamkit/skills/skill-p');
+  assert.equal(readlinkSync(join(top, '.claude', 'skills', 'skill-p')), join('..', '..', '.bantamkit', 'skills', 'skill-p'));
   assert.ok(!lexists(linkOf(home, 'skill-p')));
 });
 

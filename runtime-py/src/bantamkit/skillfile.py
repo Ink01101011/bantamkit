@@ -318,7 +318,8 @@ def _write(path: str, data: bytes) -> None:
 
 
 def _rename(src: str, dst: str) -> None:
-    os.rename(src, dst)
+    # Match Node's fs.renameSync: existing files are replaced on Windows too.
+    os.replace(src, dst)
 
 
 def _temp(target: Path | str, kind: str) -> str:

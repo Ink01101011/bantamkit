@@ -124,7 +124,7 @@ def test_two_uses_wait_three_promote_as_a_symlink_to_the_source(home, auto_on):
     ]
     link = home / ".claude" / "skills" / "skill-a"
     assert link.is_symlink()
-    assert os.readlink(link) == "../../.bantamkit/skills/skill-a"
+    assert os.readlink(link) == os.path.normpath("../../.bantamkit/skills/skill-a")
     assert os.path.realpath(link) == os.path.realpath(src)
     assert not (home / ".claude" / "skills" / "skill-b").exists()
     assert state["skills"]["skill-a"]["promoted"]["mode"] == "symlink"
@@ -244,7 +244,7 @@ def test_a_project_skill_links_into_the_project(home, tmp_path):
     got = sp.promote("skill-p", home, str(top), NOW, 8192)
     assert got.ok
     link = top / ".claude" / "skills" / "skill-p"
-    assert os.readlink(link) == "../../.bantamkit/skills/skill-p"
+    assert os.readlink(link) == os.path.normpath("../../.bantamkit/skills/skill-p")
     assert not os.path.lexists(home / ".claude" / "skills" / "skill-p")
 
 

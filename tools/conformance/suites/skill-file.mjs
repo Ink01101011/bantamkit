@@ -225,6 +225,8 @@ const DIR_OPS = [
   ['backup stamp without milliseconds', { op: 'stamp_dir', now: '2026-01-02T03:04:05Z' }],
   ['state write', { op: 'state_write', state: { version: 9, skills: { b: { n: 1, s: 'ไทย' }, a: {}, '😀': [1, 'x'] }, extra: true } }],
   ['state read back', { op: 'state_read' }],
+  ['state overwrite with shorter data', { op: 'state_write', state: { version: 9, skills: { c: {} } } }],
+  ['state read after overwrite', { op: 'state_read' }],
   ['state read refuses bad JSON', { op: 'state_read', raw: b64('{bad') }],
   ['state read refuses version 2', { op: 'state_read', raw: b64('{"version": 2, "skills": {}}') }],
   ['state read refuses version 1.0', { op: 'state_read', raw: b64('{"version": 1.0, "skills": {}}') }],
@@ -401,6 +403,15 @@ export async function run(ctx) {
   const py4 = ctx.runPython(REF, { bed: bed('py-dir'), ops: DIR_OPS.map(([, o]) => o) }).results;
   const nd4 = await runNode(ctx, bed('node-dir'), DIR_OPS.map(([, o]) => o));
   DIR_OPS.forEach(([l], i) => cases.push({ name: l, kind: 'json', expected: py4[i], actual: nd4[i] }));
+  const stateOverwrite = DIR_OPS.findIndex(([l]) => l === 'state read after overwrite');
+  for (const [side, results] of [['python', py4], ['node', nd4]]) {
+    cases.push({
+      name: `literal (${side}): overwriting state replaces the previous contents`,
+      kind: 'json',
+      expected: { state: { version: 1, skills: { c: {} } } },
+      actual: results[stateOverwrite],
+    });
+  }
 
   // 4. per-side literals: the answers a symmetric regression would move on both sides at once
   const LIT = [

@@ -73,7 +73,7 @@ def child_env(overrides: dict[str, str | None]) -> dict[str, str]:
 
 
 def main() -> None:
-    payload = json.load(sys.stdin)
+    payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     argv = [str(a) for a in payload.get("argv", [])]
     cwd = payload.get("cwd") or str(REPO_ROOT)
     timeout = float(payload.get("timeout", 60))

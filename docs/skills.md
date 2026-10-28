@@ -162,6 +162,12 @@ removed for disuse.
 install). Undoing an install marks its proposal rejected, so the daily run does not install it
 again.
 
+The installed-skill state is written to a temporary file, synced, and atomically
+replaces `skills-state.json` while holding the storage lock. This supports repeated
+updates on Windows as well as POSIX systems; Python previously refused to rename
+over an existing state file on Windows. A failed write, sync or replacement keeps
+the previous state bytes and removes the temporary file, so the update can be retried.
+
 ## The `[skill]` layer (X8)
 
 An installed skill is first delivered through recall: #199's scorer and gate match each prompt
