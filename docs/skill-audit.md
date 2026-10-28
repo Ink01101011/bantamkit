@@ -211,6 +211,15 @@ plugin and the call counts. Adding a host is adding one adapter; the audit does 
 The adapter only reads. Nothing in it writes, and nothing anywhere in #205 writes under
 `~/.claude` or edits `settings.json`.
 
+**Known limit (job73 C10/C14): a symlinked skill directory is not counted.** Neither runtime's
+audit descends a symlinked directory inside a root, so the report, its findings and its
+`catalogue_bytes` leave out a personal or project skill that is a symlink — and a skill #206
+promoted to a native link is exactly that. #206's promotion budget therefore counts every
+symlinked skill directory directly inside the project and user roots itself
+([skills.md](skills.md#promotion-and-demotion)). The audit's own count is a follow-up. #206's
+promotion is also the one thing in bantamkit that writes under `~/.claude` (the link, or a copy,
+at `~/.claude/skills/<name>`); nothing ever edits `settings.json`.
+
 ### The transcript scan
 
 `~/.claude/projects/**/*.jsonl` over the last 30 days, the logic of the dev script

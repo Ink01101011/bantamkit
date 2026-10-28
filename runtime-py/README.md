@@ -71,7 +71,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and variable, with its default |
 | [Update](#-update) | `--update`, pipx, uv, then restart |
 | [Troubleshooting](#-troubleshooting) | Timeouts, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 15 tools, two prompts, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, three prompts, two resource templates |
 | [Requirements](#-requirements) | Python and dependencies |
 | [The asset pack](#-the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
 | [The operator CLI: `python -m bantamkit.memory`](#-the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
@@ -247,6 +247,7 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `--k K` | Default recall budget | `3` | `"--k", "5"` |
 | `--index-budget BYTES` | Memory index byte budget | `24000` | `"--index-budget", "32000"` |
 | `BANTAMKIT_EVENT_LOG` | Logs tool outcomes as JSONL | off; `on` → `<store>/events/mcp.jsonl`; other values are a path | `"env": {"BANTAMKIT_EVENT_LOG": "on"}` |
+| `BANTAMKIT_SKILL_AUTO` | Skills from experience (#206): lets the daily run install a skill it mined and make low-risk edits to installed skills on its own. Off, the same work waits for you as proposals in the `skill_propose` prompt | **off** in 0.37.0; `on` (or `1`/`true`/`yes`) opts in | `"env": {"BANTAMKIT_SKILL_AUTO": "on"}` |
 | `BANTAMKIT_ASSETS` | Your own asset pack (skills, rubrics, schemas) | the pack inside the package | `"env": {"BANTAMKIT_ASSETS": "/abs/my-assets"}` |
 | `BANTAMKIT_HOST_LOG_ROOT` | Where `--mcp-report` finds the host's MCP logs | macOS `~/Library/Caches/claude-cli-nodejs`; elsewhere unset | `BANTAMKIT_HOST_LOG_ROOT=/abs/logs bantamkit-mcp --mcp-report` |
 | `BANTAMKIT_PRICES` | Price table for the token ledger | `pricing/default.json` in the asset pack | `"env": {"BANTAMKIT_PRICES": "/abs/prices.json"}` |
@@ -296,7 +297,7 @@ you**; a new version with an old `build_id` means an old process.
 
 ## 🧰 What it serves
 
-It serves 15 tools, two prompts (`bantamkit_status` and `skill_audit`) and two resource templates
+It serves 15 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_propose`) and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
 
 | Tool | What it does |

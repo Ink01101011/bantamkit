@@ -31,6 +31,7 @@ declares `claude/channel`.
 | `bantamkit_status` (tool) | the model | the report below, as the tool result |
 | `bantamkit_status` (prompt) | **a person** — a slash command in the host's own menu | the report, plus one instruction line, as a `user` message |
 | `skill_audit` (prompt, #205) | **a person** — `/mcp__bantamkit__skill_audit` in Claude Code | the skill audit report and a proposed `settings.json` diff, as a `user` message — never applied ([skill-audit.md](skill-audit.md#as-a-command-and-on-a-schedule)) |
+| `skill_propose` (prompt, #206) | **a person** — `/mcp__bantamkit__skill_propose [action] [target] [level]` in Claude Code | the skill proposals, the skills waiting on the person and the installed skills, or the answer to one action (approve, reject, undo, promote, demote), as a `user` message ([skills.md](skills.md#the-command-skill_propose)) |
 | the degraded footer | nobody — it rides on other tools' results | one line, **only when something is wrong** |
 
 A tool is what the model can call; a prompt is what a person can invoke. `prompts/list` was
@@ -39,13 +40,18 @@ surface rather than an addition to an existing list. Since #205 (job73) `prompts
 prompts, `bantamkit_status` then `skill_audit`, in that order on both runtimes; an unknown name is
 still refused with `Unknown prompt: <name>` and `-32602`. The table keeps its title: the
 `skill_audit` prompt is not a status surface, it is listed here because it shares the prompt list.
+**Amendment, 2026-10-28 (#206, job73 C14):** `prompts/list` now holds three prompts,
+`bantamkit_status`, `skill_audit`, then `skill_propose`, in that order on both runtimes
+(`SERVED_PROMPTS = 3`). `skill_propose` is not a status surface either.
 
 ## The report
 
 Six lines plus the four-line storage block when healthy (see the 2026-10-16 amendment below),
 `\n`-joined, no trailing newline:
 
-*(RE-CAPTURED 2026-10-27 by job73 A7 from a live run of this tree at `649edf4` (#205) —
+*(RE-CAPTURED 2026-10-28 by job73 C14 from a live run of this tree at `67cb0a8` (#206), the same
+way, with `BANTAMKIT_SKILL_AUTO` unset, which adds the last line, `skills:`. Before that,
+captured 2026-10-27 by job73 A7 from a live run of this tree at `649edf4` (#205) —
 both runtimes, over stdio, `tools/call bantamkit_status`, in a scratch `HOME` with no
 `~/.bantamkit`, with `BANTAMKIT_RETENTION=off`, `BANTAMKIT_SKILL_AUDIT=off` and
 `BANTAMKIT_INDEX_DIR=<scratch>/index`, against a two-fact project store
@@ -66,45 +72,50 @@ record last held — a scratch `HOME` has no record, so it says `update: never c
 
 ```
 bantamkit Active 🟢
-version 0.37.0-beta.2, build sha256:88387f91cb9b5108e16a3e3729e35260a1fb594a7696d32d1cb6eff4da732434
-serving 15 tools, 2 prompts, 2 resource templates
+version 0.37.0-beta.2, build sha256:7d76bc782599961f1e8037ec9a8c59850098e93d1b9c8d7e6855090d9510c896
+serving 15 tools, 3 prompts, 2 resource templates
 memory: 2 facts in the project store, index 87 of 24000 bytes; bound to <project>/.bantamkit/memory
 event log: off
 update: never checked.
 storage: core on; hooks off; host data off
-index facts project: 2 docs, 3434 bytes, persisted
+index facts project: 2 docs, 3443 bytes, persisted
 logs: none
 touch: none
 retention: off; last ran never; refused 0
 read-repaired: 0 this process
-usage ledger: <home>/.bantamkit/usage/d2e9bdbb6177df0c.jsonl (0 lines, 0 skipped)
+usage ledger: <home>/.bantamkit/usage/c79e5e6f461683a2.jsonl (0 lines, 0 skipped)
 queries: 0 of 2 facts
 skill audit: off; never ran; usage adapter none
+skills: off; miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)
 ```
 
 (The Node capture. With `BANTAMKIT_RETENTION` unset the retention line reads
-`retention: last ran never; refused 0`, and with `BANTAMKIT_SKILL_AUDIT` unset the last line reads
-`skill audit: never ran; usage adapter none` — this scratch `HOME` has no `~/.claude`, so the
-Null adapter answers.)
+`retention: last ran never; refused 0`, and with `BANTAMKIT_SKILL_AUDIT` unset the `skill audit`
+line reads `skill audit: never ran; usage adapter none` — this scratch `HOME` has no `~/.claude`, so the
+Null adapter answers — and the last line drops its `off; ` too:
+`skills: miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)`.
+With `BANTAMKIT_SKILL_AUTO=on` the last clause reads `auto on`. All three variants were captured
+on both runtimes at `67cb0a8` and are byte-identical across them.)
 
 When something is wrong, line 1 changes and a block is appended:
 
 ```
 bantamkit Degraded 🟠
-version 0.37.0-beta.2, build sha256:88387f91cb9b5108e16a3e3729e35260a1fb594a7696d32d1cb6eff4da732434
-serving 15 tools, 2 prompts, 2 resource templates
+version 0.37.0-beta.2, build sha256:7d76bc782599961f1e8037ec9a8c59850098e93d1b9c8d7e6855090d9510c896
+serving 15 tools, 3 prompts, 2 resource templates
 memory: 2 facts in the project store, index 87 of 70 bytes; bound to <project>/.bantamkit/memory
 event log: off
 update: never checked.
 storage: core on; hooks off; host data off
-index facts project: 2 docs, 3434 bytes, persisted
+index facts project: 2 docs, 3443 bytes, persisted
 logs: none
 touch: none
 retention: off; last ran never; refused 0
 read-repaired: 0 this process
-usage ledger: <home>/.bantamkit/usage/780a633a3d2ea442.jsonl (0 lines, 0 skipped)
+usage ledger: <home>/.bantamkit/usage/5d0bab52f9bbee88.jsonl (0 lines, 0 skipped)
 queries: 0 of 2 facts
 skill audit: off; never ran; usage adapter none
+skills: off; miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)
 1 problem:
 - the memory index is 87 bytes of a 70-byte budget, so it is full and every save is refused until it is compacted — archive or shorten facts with `bantamkit-memory compact`.
 ```
@@ -132,6 +143,7 @@ Field by field:
 | `logs` | `~/.bantamkit/hooks/hook-log.jsonl`, `~/.bantamkit/usage/*.jsonl` | `logs: <name> <bytes> (<n> rotated, <n> skipped)` per log, or `logs: none` |
 | `retention` | `~/.bantamkit/retention.json`, `BANTAMKIT_RETENTION` | `retention: [off; ]last ran <iso>\|never; refused <n>` |
 | `skill audit` | `~/.bantamkit/skill-audit.json`, `BANTAMKIT_SKILL_AUDIT` (#205, job73 A4; the LAST line, after `queries`) | `skill audit: [off; ]never ran; usage adapter <claude-code\|none>`, `…the last record is unreadable; the next run recomputes it`, `…last ran <ts>; no report — <error>`, or `…last ran <ts> on <host>; <n> skill(s), <b> catalogue bytes; findings <h> high, <m> medium, <l> low; <usage clause>`. The `<usage clause>` is one of `usage: none — <host> has no usage adapter, so nothing is called never-invoked`, `usage over <d> days (a proposed change needs 30)` or `usage over 30 days; <n> change(s) proposed`. The `off; ` prefix reads the AUDIT switch, not retention's. Never a condition |
+| `skills` | `~/.bantamkit/skill-proposals.json`, `~/.bantamkit/skills-state.json`, `BANTAMKIT_SKILL_AUDIT`, `BANTAMKIT_SKILL_AUTO`, `BANTAMKIT_LLM_URL`/`BANTAMKIT_LLM_MODEL`, the client's `sampling` capability (#206, job73 C9/C13b; the LAST line, after `skill audit`) | `skills: [off; ]<miner>; drafter <d>; <auto>`. `<miner>` is `miner never ran`, `miner refused: <sentence>` (the proposals file exists but is not a version-1 proposals file; it is never overwritten), `miner failed at <ts>: <error>` (`OSError` for any filesystem error, else the error's class name), or `mined <ts> in <ms> ms; <n> pending, <a> of 5 auto-installed live, <q> promoted` (`?` for `a` and `q` when the state file is unreadable). `<d>` is `sampling` (the client declared it), `endpoint <model>` (`BANTAMKIT_LLM_URL` and `BANTAMKIT_LLM_MODEL` both set) or `host agent`. `<auto>` is `auto on` or `auto off (BANTAMKIT_SKILL_AUTO=on to opt in)`, off by default in 0.37.0 ([skills.md](skills.md#the-switches)). The `off; ` prefix reads the MINER's switch, which is `BANTAMKIT_SKILL_AUDIT`. Never a condition |
 | `read-repaired` | `Memory.repaired` (#199 Task 6) | `read-repaired: <n> this process` |
 | `usage ledger` | the first layer's `~/.bantamkit/usage/<store id>.jsonl`, and the process's missed-append count for that path (J68-10) | `usage ledger: <path> (<lines> lines, <skipped> skipped)`; `, <missed> missed writes` is added before the `)` only when an append could not be written — see `docs/memory.md`, *Recall by meaning* |
 | problems | one `- ` line per condition, worst first | |

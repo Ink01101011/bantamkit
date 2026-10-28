@@ -26,6 +26,13 @@ nothing lost.
 | `~/.bantamkit/hooks/git-probe.json` | #208's kept answer to "can the `git` on PATH run": `{"key","ok"}`, `key` hashing the candidate's path, mtime and size; believed for 600 s (`docs/touch.md`, *Errors*) | the hook (PostToolUse), both runtimes, byte for byte | yes; the next PostToolUse runs `git --version` again |
 | `~/.bantamkit/retention.json` | When Retention last ran, and its report | the Retention child | yes; Retention then runs at the next session start |
 | `<repo>/.shiftwork/archive/<job>.json.gz` | A closed job, archived | Retention | **no**: once written, it is the only copy |
+| `~/.bantamkit/skill-proposals.json` | #206's proposals: one evidence bundle per cluster of repeated work, its status, its stored draft (`docs/skills.md`) | the daily miner in the Retention child; `skill_propose` | yes, but a rejection is remembered here: deleting it lets a rejected cluster be offered again |
+| `~/.bantamkit/skill-miner-cache.json` | #206's per-transcript read offsets and the pieces already mined | the daily miner | yes; the next run reads every transcript in its 30-day window again |
+| `~/.bantamkit/skills-state.json` | #206's installed skills: level, versions and their counts, probation, promotion, pending changes, the `events` and `surfaced` the SessionStart line reads | the daily miner, `skill_propose`, the hook (`surfaced` only) | **no**: it is what makes undo, probation, the judge and the auto caps work |
+| `~/.bantamkit/skill-drafts.jsonl` + `.N.gz` | #206's drafts log: one line per draft attempt (drafter, verdict, gate reasons); never the draft text | the drafter | yes |
+| `~/.bantamkit/skill-backups/<name>/<stamp>/` | #206's backup of a skill directory before every change bantamkit makes to it | the installer | **no**: undo restores from here; nothing prunes it |
+| `~/.bantamkit/skill-handoff/<id>/SKILL.md` | #206's host-agent hand-off: where the agent writes a draft for `skill_propose approve` | the host agent | yes; it is removed after an install |
+| `~/.bantamkit/skills/<name>/`, `<project>/.bantamkit/skills/<name>/` | #206's skills, in the Agent Skills format (`SKILL.md`, `references/evidence.md`, `references/history/v<N>.md`) | the installer; you | **no**: these are the skills; use `skill_propose undo <name>` |
 
 `<sha16>` is the first 16 hex characters of the SHA-256 of the source directory's real path, so
 two checkouts of one repo get two indexes and a symlinked path gets the same one. The index is
@@ -265,6 +272,21 @@ older `skill-audit.json` written before opting out still holds findings nobody h
 `skill_audit` MCP prompt) is not gated: it gathers and audits on request either way. Pinned per
 side by the `skill-host` suite's `line FULL, audit off` and the `hooks` suite's
 `skill-audit-line` scenario.
+
+**AMENDED 2026-10-28 (job73 C9/C14, #206): the same child then runs the experience miner.** After
+the audit, under the same claimed day and the same switch (`BANTAMKIT_SKILL_AUDIT`; plan Q2), the
+child runs `skillmine.daily`: it mines, writes the proposals, and then runs the installer's steps
+(`docs/skills.md`, *The daily run*). With retention off and the audit on, the J69-6 list of what
+the child may change grows to: `retention.json`'s claim, `skill-audit.json`,
+`skill-miner-cache.json`, `skill-proposals.json`, `skills-state.json`, `skill-drafts.jsonl`, and
+paths under `~/.bantamkit/skills`, `~/.bantamkit/skill-backups` and `<project>/.bantamkit/skills`
+— plus the native link under `~/.claude/skills` or `<project>/.claude/skills` when a skill is
+promoted. Nothing else is deleted, moved or rewritten. The `skill-miner` suite's J69-6 case runs
+a full day (mine, draft, install, probation removal) over a retention trap and pins that list;
+the `skill-host` suite's `child` case pins the four files a run with nothing to install writes.
+In 0.37.0 `BANTAMKIT_SKILL_AUTO` is off by default, so a default child mines and surfaces but
+neither drafts, installs nor edits a skill. The test runners and the harness pin
+`BANTAMKIT_SKILL_AUTO=off` and unset `BANTAMKIT_LLM_URL`/`BANTAMKIT_LLM_MODEL` suite-wide.
 
 ## Numbers, and where they come from
 
