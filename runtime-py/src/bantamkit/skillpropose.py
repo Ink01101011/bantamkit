@@ -149,9 +149,28 @@ def _proposal_lines(r: Mapping[str, Any]) -> list[str]:
     ]
 
 
+def _tuning(state: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Description tunes waiting on a drafter (Task 10b's `entry.tune`), by name."""
+    out = {}
+    for name in sorted(_skills(state)):
+        t = _skills(state)[name].get("tune")
+        if isinstance(t, dict) and _strs(t.get("kinds")):
+            out[name] = t
+    return out
+
+
+def _tune_kinds(t: Mapping[str, Any]) -> list[str]:
+    from bantamkit.skilldraft import TUNE_KINDS
+
+    return [k for k in TUNE_KINDS if k in _strs(t.get("kinds"))]
+
+
 def _waiting_lines(name: str, p: Mapping[str, Any]) -> list[str]:
     if p["kind"] == "remove":
         what = "remove it (unused through probation, but edited by hand, so never removed for you)"
+    elif p["kind"] == "merge":
+        other = p.get("with") if isinstance(p.get("with"), str) else "?"
+        what = f"merge it with {other} (the two are put in front of the same sessions)"
     else:
         what = f"a proposed {p['kind']} change"
     out = [f"- {name}: {what}"]
@@ -198,6 +217,7 @@ def render_list(home: str | Path) -> str:
         out.append(f"The installed skills could not be read: {e}.")
     pending = _pending(doc)
     waiting = _waiting(state)
+    tuning = _tuning(state)
     skills = _skills(state)
     if not out and not pending and not waiting and not skills:
         return EMPTY
@@ -213,6 +233,13 @@ def render_list(home: str | Path) -> str:
         lines += ["", "Waiting on you:"]
         for name, p in waiting:
             lines += _waiting_lines(name, p)
+    if tuning:
+        lines += ["", "Waiting on a drafter (applied without asking once drafted):"]
+        for name, t in tuning.items():
+            lines += [
+                f"- {name}: {' and '.join(_tune_kinds(t))} its description",
+                f"  draft it: {COMMAND} approve {name}   drop it: {COMMAND} reject {name}",
+            ]
     lines.append("")
     if skills:
         lines.append("Installed:")
@@ -380,15 +407,145 @@ def _approve_item(name: str, p: Mapping[str, Any], home: str | Path, now: str) -
 
         update_state(home, change)
         return f"removed skill {name}.\nundo: {COMMAND} undo {name}"
+    if p["kind"] == "merge":
+        other = p.get("with") if isinstance(p.get("with"), str) else "?"
+        return (
+            f"merging {name} with {other} is not done for you: merge them by hand, then "
+            f"{COMMAND} reject {name}"
+        )
     text = p.get("text")
     if not isinstance(text, str):
         return f"the proposed {p['kind']} change to {name} carries no text to apply"
+    base = p.get("base") if isinstance(p.get("base"), str) else None
     try:
-        said = new_version(name, text, home, now, "approved")
+        said = new_version(name, text, home, now, "approved", base)
     except SkillFileError as e:
         return f"could not apply the proposed change to {name}: {e}"
     _drop_proposal(home, name)
     return said
+
+
+#: The hand-off name of a tune: never a proposal id (16 hex digits), never a skill name.
+TUNE_HANDOFF = "tune-"
+
+
+def _tune_handoff_text(name: str, kinds: list[str], handoff: Mapping[str, Any], path: Path) -> str:
+    return (
+        f"No sampling client or endpoint drafted the tune of {name}, so you draft it.\n\n"
+        f"1. Write ONE file, {path}, with your own file tools, following these instructions:\n\n"
+        f"{handoff['instructions']}\n"
+        f"2. Then run {COMMAND} approve {name} again. bantamkit takes only the description from "
+        f"the file, gates the skill with it and applies it as {name}'s next version. Write "
+        "nothing else."
+    )
+
+
+def _approve_tune(
+    name: str,
+    entry: Mapping[str, Any],
+    t: Mapping[str, Any],
+    home: str | Path,
+    cwd: str | None,
+    now: str,
+    sampler: Sampler | None,
+) -> str:
+    """A description tune the daily run could not draft: drafted here (sampling, the endpoint,
+    then the host agent's hand-off file), gated, and applied without asking (it is low risk);
+    on a skill edited by hand it becomes a proposed change instead."""
+    from bantamkit.skilldraft import (
+        DRAFTER_HOST,
+        DraftOutcome,
+        default_chain,
+        drafts_log,
+        improve,
+        improve_bundle,
+        improve_check,
+    )
+    from bantamkit.skillfile import SkillFileError, parse_skill, update_state
+    from bantamkit.skillinstall import _csv, _live_text, _tally, apply_text
+    from bantamkit.skillmine import ProposalsError, read_proposals
+    from bantamkit.storage.logsegment import LogSegment
+
+    kinds = _tune_kinds(t)
+    live = _live_text(entry)
+    if live is None:
+        return f"skill {name} has no SKILL.md at {entry.get('path')}"
+    target, raw = live
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"skill {name} is not UTF-8 text"
+    try:
+        ids = _csv(parse_skill(text).metadata.get("bantamkit-evidence"))
+    except SkillFileError as e:
+        return f"could not read skill {name}: {e}"
+    cid = entry["cluster"] if isinstance(entry.get("cluster"), str) else ""
+    try:
+        doc = read_proposals(home)
+    except ProposalsError:
+        doc = None
+    rec = next((r for r in _records(doc) if r["id"] == cid), None)
+    b = improve_bundle(rec, cid, ids)
+    versions = entry.get("versions") if isinstance(entry.get("versions"), dict) else {}
+    v = versions.get(str(_int(entry.get("version"))))
+    v = v if isinstance(v, dict) else {}
+    counts = {k: _tally(v, k) for k in ("false_fires", "injects", "misses")}
+    staged = handoff_path(home, TUNE_HANDOFF + name)
+    if staged.is_file():
+        try:
+            answer = staged.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            return f"{staged} is not UTF-8 text; nothing was applied"
+        final, reasons = improve_check(answer, text, b, home, cwd, target)
+        outcome = DraftOutcome(DRAFTER_HOST, final is not None, final, reasons, [])
+        LogSegment(drafts_log(home)).append(outcome.log_line(now, b["cluster"]))
+        if final is None:
+            return _gate_failed(
+                f"The SKILL.md at {staged}",
+                reasons,
+                f"Fix it and run {COMMAND} approve {name} again.",
+            ).replace("nothing was installed", "nothing was applied")
+    else:
+        out = improve(
+            kinds, text, b, counts, default_chain(sampler, host_agent=True), home, cwd, now, target
+        )
+        if out.handoff is not None:
+            return _tune_handoff_text(name, kinds, out.handoff, staged)
+        if not out.ok or out.text is None:
+            return _gate_failed(
+                f"The draft from {out.drafter}",
+                out.reasons,
+                f"It was discarded and logged; the tune of {name} still waits.",
+            ).replace("nothing was installed", "nothing was applied")
+        final = out.text
+    event, reasons = apply_text(name, final, home, cwd, now, b)
+    if event is None:
+        return "\n".join([f"could not apply the tune of {name}:"] + [f"- {r}" for r in reasons])
+
+    def drop(fresh: dict[str, Any]) -> None:
+        e = fresh["skills"].get(name)
+        if isinstance(e, dict):
+            e.pop("tune", None)
+
+    update_state(home, drop)
+    shutil.rmtree(staged.parent, ignore_errors=True)
+    if event.startswith("improved skill "):
+        return f"{event}, its description tuned ({' and '.join(kinds)})"
+    return (
+        f"{name} was edited by hand, so its tuned description waits on you as a proposed "
+        f"change: {COMMAND} list shows it"
+    )
+
+
+def _drop_tune(home: str | Path, name: str) -> None:
+    from bantamkit.skillfile import update_state
+
+    def change(fresh: dict[str, Any]) -> None:
+        e = fresh["skills"].get(name)
+        if isinstance(e, dict):
+            e.pop("tune", None)
+
+    update_state(home, change)
 
 
 def _drop_proposal(home: str | Path, name: str, status: str | None = None) -> None:
@@ -463,9 +620,16 @@ def render(
                 f"rejected proposal {target}; it is offered again once it has "
                 f"{2 * successes} successes"
             )
-        item = dict(_waiting(_state(home))).get(target)
+        st = _state(home)
+        item = dict(_waiting(st)).get(target)
         if item is None:
-            return f"no pending proposal or change is named '{target}'"
+            t = _tuning(st).get(target)
+            if t is None:
+                return f"no pending proposal or change is named '{target}'"
+            if action == "approve":
+                return _approve_tune(target, _skills(st)[target], t, home, cwd, now, sampler)
+            _drop_tune(home, target)
+            return f"kept skill {target} as it is; the tune of its description is dropped"
         if action == "approve":
             return _approve_item(target, item, home, now)
         _drop_proposal(home, target, "rejected")
@@ -532,6 +696,10 @@ def event_item(event: str) -> str:
         ("removed unused skill ", "removed unused {} (undo: " + COMMAND + " undo {})"),
         ("proposed removing edited skill ", "{} unused but edited: removal waits on you"),
         ("promoted skill ", "promoted {} (undo: " + COMMAND + " demote {})"),
+        ("improved skill ", "improved {}"),
+        ("proposed a change to ", "a change to {} waits on you"),
+        ("proposed merging ", "merging {} waits on you"),
+        ("waiting on a drafter to tune ", "{} waits on a drafter (" + COMMAND + " approve {})"),
     ):
         if event.startswith(prefix):
             name = event[len(prefix) :]

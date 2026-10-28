@@ -23,6 +23,20 @@ in an answer is masked back to `<bed>`.
         `BANTAMKIT_SKILL_AUTO=off` for the op; `tree` leaves out the miner's own two files, whose
         `ms` is a wall time)
 
+Part 2 (#206 Task 10b):
+
+    {"op": "constants2"} -> [TUNE_MIN_INJECTS, FALSE_FIRE_TUNE, MISS_TUNE, PITFALL_CHARS,
+        TOGETHER_SESSIONS, TOGETHER_SHARE, ITEM_KINDS, TUNE_KINDS]
+    {"op": "improve_prompt", "kinds", "text", "doc", "ids", "counts"} -> [system, user]
+    {"op": "diff", "old", "new"} -> skill_diff
+    {"op": "pitfall", "id", "failure"} -> pitfall_line
+    {"op": "improve_step", "home", "sources", "doc", "now", "drafter"?}
+        -> {"events", "returned_state"} | {"error"}, plus "state", "tree". `drafter`: absent is no
+        drafter; `{"answer": <text>}` a stub labelled `endpoint stub`; `"unreachable"` one that
+        cannot be reached.
+    {"op": "render", "home", "action", "target", "now", "answer"?} -> {"said"}, plus "state",
+        "tree" (`answer`: a sampling client that answers it)
+
 `fail_at: "rename3"` makes the third rename of the op raise (an OSError; the Node side raises an
 Error with an errno code): the backup is in, the live directory is aside, the new one is not.
 `tree` is every file and symlink under the op's home: a file's text, a symlink as
@@ -105,6 +119,18 @@ def cluster(name: str) -> dict:
     }
 
 
+class Stub:
+    label = "endpoint stub"
+
+    def __init__(self, answer):
+        self.answer = answer
+
+    def ask(self, system, user):
+        if self.answer is None:
+            raise OSError("unreachable")
+        return self.answer
+
+
 def run(bed: Path, op: dict):
     b = str(bed)
     op = sub(op, b)
@@ -121,6 +147,31 @@ def run(bed: Path, op: dict):
     if kind == "install":
         si.install(cluster(op["name"]), op["text"], None, home, op["now"], False)
         return {"tree": mask(tree(home, b), b)}
+    if kind == "constants2":
+        return [
+            si.TUNE_MIN_INJECTS,
+            list(si.FALSE_FIRE_TUNE),
+            si.MISS_TUNE,
+            si.PITFALL_CHARS,
+            si.TOGETHER_SESSIONS,
+            list(si.TOGETHER_SHARE),
+            list(si.ITEM_KINDS),
+            list(sd.TUNE_KINDS),
+        ]
+    if kind == "improve_prompt":
+        b = sd.improve_bundle(op["doc"], "c-x", op["ids"])
+        return list(sd.improve_prompt(op["kinds"], op["text"], b, op["counts"]))
+    if kind == "diff":
+        return si.skill_diff(op["old"], op["new"])
+    if kind == "pitfall":
+        return si.pitfall_line(op["id"], op["failure"])
+    if kind == "render":
+        from bantamkit import skillpropose as sp
+
+        answer = op.get("answer")
+        sampler = (lambda s, u: answer) if answer is not None else None
+        said = sp.render(op["action"], op["target"], None, home, None, op["now"], sampler)
+        return mask({"said": said, "state": sf.read_state(home), "tree": tree(home, b)}, b)
     if kind == "mkdir":
         (home / op["rel"]).mkdir(parents=True, exist_ok=True)
         return {}
@@ -179,6 +230,14 @@ def run(bed: Path, op: dict):
         elif kind == "stats_step":
             state = sf.read_state(home)
             si.stats_step(state, op["sources"], home, op["now"])
+            out["returned_state"] = state
+        elif kind == "improve_step":
+            state = sf.read_state(home)
+            d = op.get("drafter")
+            chain = [] if d is None else [Stub(None if d == "unreachable" else d["answer"])]
+            out["events"] = si.improve_step(
+                state, op["sources"], op.get("doc"), home, None, op["now"], chain
+            )
             out["returned_state"] = state
         elif kind == "judge_step":
             state = sf.read_state(home)

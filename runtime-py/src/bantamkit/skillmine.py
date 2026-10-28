@@ -1625,7 +1625,8 @@ def improve_sources(
       `{ts, session, fact}`;
     - `injects`: the hook log's UserPromptSubmit `inject` rows with a session, as
       `{ts, session, names}` (the injected names);
-    - `turns`: the session pieces of this run, as `{id, ts, ok}`.
+    - `turns`: the session pieces of this run, as `{id, ts, ok, failure, tools}` (Task 10b's
+      Pitfalls and different-steps signals read the last two).
 
     Nothing is read when no skill is installed. Paths and names only (X4)."""
     from bantamkit.storage.logsegment import LogSegment
@@ -1660,7 +1661,15 @@ def improve_sources(
             )
     for piece in pieces:
         if piece.source == SOURCE_SESSION:
-            out["turns"].append({"id": piece.id, "ok": piece.ok, "ts": piece.ts})
+            out["turns"].append(
+                {
+                    "failure": piece.failure,
+                    "id": piece.id,
+                    "ok": piece.ok,
+                    "tools": list(piece.tools),
+                    "ts": piece.ts,
+                }
+            )
     return out
 
 
@@ -1685,7 +1694,8 @@ def daily(home: str | Path, cwd: str | None, now: str) -> None:
     `skill-proposals.json` (and saves the miner cache); then, with an endpoint configured and
     `BANTAMKIT_SKILL_AUTO` on, drafts the ONE best auto-eligible record through the endpoint
     alone (R11, R12); then `auto_step` and `probation_step`; then (Task 10a) `stats_step` off
-    `improve_sources`, `promote_step` off `promote_uses` and `judge_step`, each on its own so
+    `improve_sources`, `promote_step` off `promote_uses`, (Task 10b) `improve_step` with the
+    endpoint as its only drafter, and `judge_step`, each on its own so
     one that fails cannot lose the events before it; the events go to `skills-state.json`'s
     `events` for the SessionStart line. A miner error writes `miner.error`
     over the previous clusters and NOTHING later runs. A proposals file that exists and cannot
@@ -1711,6 +1721,7 @@ def _daily(home: str | Path, cwd: str | None, now: str, clock: Any) -> None:
         auto_enabled,
         auto_step,
         draft_entry,
+        improve_step,
         judge_step,
         probation_step,
         stats_step,
@@ -1752,12 +1763,21 @@ def _daily(home: str | Path, cwd: str | None, now: str, clock: Any) -> None:
     events += probation_step(state, skill_uses(home, state), home, now)
     # Task 10a: count, promote, judge. Each step is on its own: one that fails leaves the
     # events already made to be recorded, and the next day's run tries it again.
+    sources: dict[str, Any] = {}
     try:
-        stats_step(state, improve_sources(home, pieces, state), home, now)
+        sources = improve_sources(home, pieces, state)
+        stats_step(state, sources, home, now)
     except Exception:  # noqa: BLE001
         pass
     try:
         events += promote_step(state, promote_uses(home, state, now_ms), home, cwd, now)
+    except Exception:  # noqa: BLE001
+        pass
+    # Task 10b: the improvement signals, before the judge, so a version made today is never
+    # judged on the day it is made.
+    try:
+        chain = default_chain(None, host_agent=False)
+        events += improve_step(state, sources, doc, home, cwd, now, chain)
     except Exception:  # noqa: BLE001
         pass
     try:

@@ -19,12 +19,30 @@ import {
   draft,
   draftsLog,
   gate,
+  improve,
+  improveBundle,
+  improveCheck,
   logLine,
+  TUNE_KINDS,
   type Handoff,
 } from './skilldraft.js';
-import { backupDir, backupRoot, readState, SkillFileError, updateState, type SkillsState } from './skillfile.js';
+import { backupDir, backupRoot, parseSkill, readState, SkillFileError, updateState, type SkillsState } from './skillfile.js';
 import { HOST_CLAUDE_CODE, selectAdapter } from './skillhost.js';
-import { draftEntry, draftText, install, InstallError, installRoot, newVersion, removeDir, skillText, undo } from './skillinstall.js';
+import {
+  _liveText,
+  _tally,
+  applyText,
+  csv,
+  draftEntry,
+  draftText,
+  install,
+  InstallError,
+  installRoot,
+  newVersion,
+  removeDir,
+  skillText,
+  undo,
+} from './skillinstall.js';
 import { PENDING_MAX, ProposalsError, readProposals, writeProposals } from './skillmine.js';
 import { demote, promote } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
@@ -112,6 +130,19 @@ function waiting(state: SkillsState | null): [string, Rec][] {
   return out;
 }
 
+/** Description tunes waiting on a drafter (Task 10b's `entry.tune`), by name. */
+function tuning(state: SkillsState | null): Map<string, Rec> {
+  const all = skills(state);
+  const out = new Map<string, Rec>();
+  for (const name of [...all.keys()].sort(cmpCodepoint)) {
+    const t = all.get(name)!['tune'];
+    if (isObj(t) && strs(t['kinds']).length > 0) out.set(name, t);
+  }
+  return out;
+}
+
+const tuneKinds = (t: Rec): string[] => TUNE_KINDS.filter((k) => strs(t['kinds']).includes(k));
+
 function stateOrNull(home: string): SkillsState | null {
   try {
     return readState(home);
@@ -148,10 +179,13 @@ function proposalLines(r: Rec): string[] {
 }
 
 function waitingLines(name: string, p: Rec): string[] {
+  const other = str(p['with']) ? p['with'] : '?';
   const what =
     p['kind'] === 'remove'
       ? 'remove it (unused through probation, but edited by hand, so never removed for you)'
-      : `a proposed ${p['kind'] as string} change`;
+      : p['kind'] === 'merge'
+        ? `merge it with ${other} (the two are put in front of the same sessions)`
+        : `a proposed ${p['kind'] as string} change`;
   const out = [`- ${name}: ${what}`];
   const diff = p['diff'];
   if (str(diff) && diff) out.push('  ```diff', ...diff.split('\n').map((line) => `  ${line}`), '  ```');
@@ -188,6 +222,7 @@ export function renderList(home: string): string {
   }
   const open = pending(doc);
   const items = waiting(state);
+  const tunes = tuning(state);
   const live = skills(state);
   if (!out.length && !open.length && !items.length && !live.size) return EMPTY;
   const lines = ['bantamkit skill proposals', '', ...out, ...(out.length ? [''] : [])];
@@ -200,6 +235,15 @@ export function renderList(home: string): string {
   if (items.length) {
     lines.push('', 'Waiting on you:');
     for (const [name, p] of items) lines.push(...waitingLines(name, p));
+  }
+  if (tunes.size) {
+    lines.push('', 'Waiting on a drafter (applied without asking once drafted):');
+    for (const [name, t] of tunes) {
+      lines.push(
+        `- ${name}: ${tuneKinds(t).join(' and ')} its description`,
+        `  draft it: ${COMMAND} approve ${name}   drop it: ${COMMAND} reject ${name}`,
+      );
+    }
   }
   lines.push('');
   if (live.size) {
@@ -305,6 +349,97 @@ async function approveProposal(
   return installNow(rec, doc, out.text, level, home, now);
 }
 
+/** The hand-off name of a tune: never a proposal id (16 hex digits), never a skill name. */
+export const TUNE_HANDOFF = 'tune-';
+
+function tuneHandoffText(name: string, handoff: Handoff, p: string): string {
+  return (
+    `No sampling client or endpoint drafted the tune of ${name}, so you draft it.\n\n` +
+    `1. Write ONE file, ${p}, with your own file tools, following these instructions:\n\n` +
+    `${handoff.instructions}\n` +
+    `2. Then run ${COMMAND} approve ${name} again. bantamkit takes only the description from ` +
+    `the file, gates the skill with it and applies it as ${name}'s next version. Write ` +
+    'nothing else.'
+  );
+}
+
+const applyFailed = (s: string): string => s.replace('nothing was installed', 'nothing was applied');
+
+/** The reference's `_approve_tune`. */
+async function approveTune(name: string, entry: Rec, t: Rec, home: string, cwd: string | null, now: string, sampler: Sampler | null): Promise<string> {
+  const kinds = tuneKinds(t);
+  const live = _liveText(entry);
+  if (live === null) return `skill ${name} has no SKILL.md at ${entry['path'] === undefined || entry['path'] === null ? 'None' : String(entry['path'])}`;
+  const [target, raw] = live;
+  let text: string;
+  let ids: string[];
+  try {
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
+  } catch {
+    return `skill ${name} is not UTF-8 text`;
+  }
+  try {
+    ids = csv(parseSkill(text).metadata['bantamkit-evidence']);
+  } catch (e) {
+    if (e instanceof SkillFileError) return `could not read skill ${name}: ${e.message}`;
+    throw e;
+  }
+  const cid = str(entry['cluster']) ? entry['cluster'] : '';
+  let doc: Rec | null = null;
+  try {
+    doc = readProposals(home);
+  } catch (e) {
+    if (!(e instanceof ProposalsError)) throw e;
+  }
+  const rec = records(doc).find((r) => r['id'] === cid) ?? null;
+  const b = improveBundle(rec, cid, ids);
+  const versions = isObj(entry['versions']) ? entry['versions'] : {};
+  const vk = String(int(entry['version']));
+  const v: Rec = Object.hasOwn(versions, vk) && isObj(versions[vk]) ? (versions[vk] as Rec) : {};
+  const counts = { false_fires: _tally(v, 'false_fires'), injects: _tally(v, 'injects'), misses: _tally(v, 'misses') };
+  const staged = handoffPath(home, TUNE_HANDOFF + name);
+  let final: string;
+  let isFile = false;
+  try {
+    isFile = fs.statSync(staged).isFile();
+  } catch {
+    isFile = false;
+  }
+  if (isFile) {
+    let answer: string;
+    try {
+      answer = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(staged));
+    } catch {
+      return `${staged} is not UTF-8 text; nothing was applied`;
+    }
+    const [got, reasons] = improveCheck(answer, text, b, home, cwd, target);
+    const outcome = { drafter: DRAFTER_HOST, ok: got !== null, text: got, reasons, unreachable: [], handoff: null };
+    new LogSegment(draftsLog(home)).append(logLine(outcome, now, b.cluster));
+    if (got === null) return applyFailed(gateFailed(`The SKILL.md at ${staged}`, reasons, `Fix it and run ${COMMAND} approve ${name} again.`));
+    final = got;
+  } else {
+    const out = await improve(kinds, text, b, counts, defaultChain(sampler, true), home, cwd, now, target);
+    if (out.handoff !== null) return tuneHandoffText(name, out.handoff, staged);
+    if (!out.ok || out.text === null) {
+      return applyFailed(gateFailed(`The draft from ${String(out.drafter)}`, out.reasons, `It was discarded and logged; the tune of ${name} still waits.`));
+    }
+    final = out.text;
+  }
+  const [event, reasons] = applyText(name, final, home, cwd, now, b);
+  if (event === null) return [`could not apply the tune of ${name}:`, ...reasons.map((r) => `- ${r}`)].join('\n');
+  dropTune(home, name);
+  fs.rmSync(path.dirname(staged), { recursive: true, force: true });
+  if (event.startsWith('improved skill ')) return `${event}, its description tuned (${kinds.join(' and ')})`;
+  return `${name} was edited by hand, so its tuned description waits on you as a proposed change: ${COMMAND} list shows it`;
+}
+
+function dropTune(home: string, name: string): void {
+  updateState(home, (fresh) => {
+    const e = fresh.skills[name];
+    if (isObj(e)) delete e['tune'];
+  });
+}
+
 function dropProposal(home: string, name: string, status: string | null = null): void {
   updateState(home, (fresh) => {
     const entry = fresh.skills[name];
@@ -348,11 +483,16 @@ function approveItem(name: string, p: Rec, home: string, now: string): string {
     });
     return `removed skill ${name}.\nundo: ${COMMAND} undo ${name}`;
   }
+  if (p['kind'] === 'merge') {
+    const other = str(p['with']) ? p['with'] : '?';
+    return `merging ${name} with ${other} is not done for you: merge them by hand, then ${COMMAND} reject ${name}`;
+  }
   const text = p['text'];
   if (!str(text)) return `the proposed ${p['kind'] as string} change to ${name} carries no text to apply`;
+  const base = str(p['base']) ? p['base'] : null;
   let said: string;
   try {
-    said = newVersion(name, text, home, now, 'approved');
+    said = newVersion(name, text, home, now, 'approved', base);
   } catch (e) {
     if (!(e instanceof SkillFileError)) throw e;
     return `could not apply the proposed change to ${name}: ${e.message}`;
@@ -398,8 +538,15 @@ export async function render(
       writeProposals(home, doc);
       return `rejected proposal ${target}; it is offered again once it has ${2 * successes} successes`;
     }
-    const item = new Map(waiting(stateOrNull(home))).get(target);
-    if (item === undefined) return `no pending proposal or change is named '${target}'`;
+    const st = stateOrNull(home);
+    const item = new Map(waiting(st)).get(target);
+    if (item === undefined) {
+      const t = tuning(st).get(target);
+      if (t === undefined) return `no pending proposal or change is named '${target}'`;
+      if (action === 'approve') return approveTune(target, skills(st).get(target)!, t, home, cwd, now, sampler);
+      dropTune(home, target);
+      return `kept skill ${target} as it is; the tune of its description is dropped`;
+    }
     if (action === 'approve') return approveItem(target, item, home, now);
     dropProposal(home, target, 'rejected');
     return `kept skill ${target}; the proposed ${item['kind'] as string} change is dropped`;
@@ -474,6 +621,10 @@ export function eventItem(event: string): string {
     ['removed unused skill ', (n) => `removed unused ${n} (undo: ${COMMAND} undo ${n})`],
     ['proposed removing edited skill ', (n) => `${n} unused but edited: removal waits on you`],
     ['promoted skill ', (n) => `promoted ${n} (undo: ${COMMAND} demote ${n})`],
+    ['improved skill ', (n) => `improved ${n}`],
+    ['proposed a change to ', (n) => `a change to ${n} waits on you`],
+    ['proposed merging ', (n) => `merging ${n} waits on you`],
+    ['waiting on a drafter to tune ', (n) => `${n} waits on a drafter (${COMMAND} approve ${n})`],
   ];
   for (const [prefix, fmt] of forms) if (event.startsWith(prefix)) return fmt(event.slice(prefix.length));
   return event;

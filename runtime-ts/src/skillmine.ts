@@ -36,6 +36,7 @@ import {
   draftEntry,
   draftText,
   firstTs,
+  improveStep,
   judgeStep,
   liveAuto,
   probationStep,
@@ -1579,7 +1580,9 @@ export function improveSources(home: string, pieces: readonly Piece[], state: Re
     }
   }
   for (const piece of pieces) {
-    if (piece.source === SOURCE_SESSION) out.turns.push({ id: piece.id, ok: piece.ok ?? null, ts: piece.ts });
+    if (piece.source === SOURCE_SESSION) {
+      out.turns.push({ failure: piece.failure ?? null, id: piece.id, ok: piece.ok ?? null, tools: [...piece.tools], ts: piece.ts });
+    }
   }
   return out;
 }
@@ -1642,13 +1645,21 @@ async function dailyRun(home: string, cwd: string | null, now: string): Promise<
   if (!proposalsBytes(doc).equals(written)) writeProposals(home, doc);
   events.push(...probationStep(state, skillUses(home, state), home, now));
   // Task 10a: count, promote, judge; each on its own (see the reference).
+  let sources: Rec = {};
   try {
-    statsStep(state, improveSources(home, pieces, state), home, now);
+    sources = improveSources(home, pieces, state);
+    statsStep(state, sources, home, now);
   } catch {
     /* the next day's run counts again */
   }
   try {
     events.push(...promoteStep(state, promoteUses(home, state, nowMs), home, cwd, now, null));
+  } catch {
+    /* the next day's run tries again */
+  }
+  // Task 10b: the improvement signals, before the judge (see the reference).
+  try {
+    events.push(...(await improveStep(state, sources, doc, home, cwd, now, defaultChain(null, false))));
   } catch {
     /* the next day's run tries again */
   }

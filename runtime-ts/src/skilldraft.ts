@@ -523,3 +523,130 @@ export function promptSha256(b: Bundle): string {
   const [system, user] = prompt(b);
   return createHash('sha256').update(Buffer.from(`${system}\0${user}`, 'utf8')).digest('hex');
 }
+
+// ---------------------------------------------------------------- improvement (Task 10b)
+//
+// The reference's design note: a drafter tunes a live skill's DESCRIPTION only; only the
+// description of its answer is spliced into the skill bantamkit holds, and the result passes
+// the same gate as a new skill (with `own`).
+
+export const TUNE_NARROW = 'narrow';
+export const TUNE_WIDEN = 'widen';
+export const TUNE_KINDS: readonly string[] = [TUNE_NARROW, TUNE_WIDEN];
+
+export const IMPROVE_SYSTEM =
+  'You improve the description of one Agent Skill from evidence of how it was used. ' +
+  'You answer with the text of one SKILL.md file and nothing else.';
+
+export const IMPROVE_NARROW =
+  'The skill below was put in front of sessions that did not use it: its description matches ' +
+  'requests it does not serve. Rewrite its description so it names the work in the evidence ' +
+  'more precisely, and drop the words that drew the other requests.';
+
+export const IMPROVE_WIDEN =
+  'Work the skill below covers was done without it: its description missed those requests. ' +
+  'Rewrite its description so it also matches the words of the requests in the evidence.';
+
+export const IMPROVE_TAIL =
+  'Change only the description. Keep the name, the metadata and the body exactly as they are. ' +
+  'The description stays at most 1024 characters, third person, ending with Use when... and ' +
+  'no steps. Answer with the whole SKILL.md text only: no preamble, no explanation, no code ' +
+  'fence around it.';
+
+/** The reference's `improve_bundle`: the record's bundle plus an empty entry per cited id. */
+export function improveBundle(cluster: Record<string, unknown> | null, clusterId: string, ids: readonly string[]): Bundle {
+  const b: Bundle =
+    cluster !== null
+      ? bundle(cluster)
+      : { cluster: clean(clusterId), evidence: [], keywords: [], level: '', pitfalls: [], steps: [] };
+  const have = evidenceIds(b);
+  for (const i of ids) {
+    if (typeof i !== 'string' || !i || have.has(clean(i))) continue;
+    have.add(clean(i));
+    b.evidence.push({ id: clean(i), paths: [], prompt: '', signals: {}, tools: [] });
+  }
+  return b;
+}
+
+/** `[system, user]` for a description tune; `kinds` in `TUNE_KINDS` order. */
+export function improvePrompt(
+  kinds: readonly string[],
+  skillText: string,
+  b: Bundle,
+  counts: Record<string, number>,
+): [string, string] {
+  const parts = kinds.includes(TUNE_NARROW) ? [IMPROVE_NARROW] : [];
+  if (kinds.includes(TUNE_WIDEN)) parts.push(IMPROVE_WIDEN);
+  parts.push(IMPROVE_TAIL);
+  const c = (k: string): number => counts[k] ?? 0;
+  const user =
+    parts.join('\n\n') +
+    `\n\nThe counts: ${c('injects')} injections, ${c('false_fires')} of them in a session ` +
+    `that never used it; ${c('misses')} pieces of its work done without it.\n\n` +
+    `The skill now:\n\n\`\`\`markdown\n${clean(skillText)}\`\`\`\n\n` +
+    `The evidence bundle:\n\n\`\`\`json\n${bundleJson(b)}\n\`\`\`\n`;
+  return [IMPROVE_SYSTEM, user];
+}
+
+/** `skillText` with the description of `answer`; SkillFileError when it has none to take. */
+export function spliceDescription(answer: string, skillText: string): string {
+  const got = parseSkill(unfence(answer));
+  const doc = parseSkill(clean(skillText));
+  return render({ name: doc.name, description: got.description, metadata: doc.metadata, body: doc.body });
+}
+
+/** `[spliced text, []]` when the answer's description, in the skill, passes the gate. */
+export function improveCheck(
+  answer: string,
+  skillText: string,
+  b: Bundle,
+  home: string,
+  cwd: string | null,
+  own: string,
+): [string | null, string[]] {
+  let text: string;
+  try {
+    text = spliceDescription(answer, skillText);
+  } catch (e) {
+    if (e instanceof SkillFileError) return [null, [e.message]];
+    throw e;
+  }
+  const g = gate(text, b, home, cwd, own);
+  return [g.ok ? text : null, g.reasons];
+}
+
+/** The X5 walk for a description tune (as `draft`); one drafts-log line. */
+export async function improve(
+  kinds: readonly string[],
+  skillText: string,
+  b: Bundle,
+  counts: Record<string, number>,
+  chain: readonly ChainLink[],
+  home: string,
+  cwd: string | null,
+  now: string,
+  own: string,
+): Promise<DraftOutcome> {
+  const [system, user] = improvePrompt(kinds, skillText, b, counts);
+  const unreachable: string[] = [];
+  let outcome: DraftOutcome | null = null;
+  for (const d of chain) {
+    if (d instanceof HostAgentDrafter) {
+      outcome = { drafter: d.label, ok: false, text: null, reasons: [], unreachable, handoff: { bundle: b, instructions: user, target: own } };
+      break;
+    }
+    let answer: string;
+    try {
+      answer = await d.ask(system, user);
+    } catch {
+      unreachable.push(d.label);
+      continue;
+    }
+    const [text, reasons] = improveCheck(answer, skillText, b, home, cwd, own);
+    outcome = { drafter: d.label, ok: text !== null, text, reasons, unreachable, handoff: null };
+    break;
+  }
+  if (outcome === null) outcome = { drafter: null, ok: false, text: null, reasons: [], unreachable, handoff: null };
+  new LogSegment(draftsLog(home)).append(logLine(outcome, now, b.cluster));
+  return outcome;
+}

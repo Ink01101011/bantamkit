@@ -531,3 +531,141 @@ def prompt_sha256(b: Mapping[str, Any]) -> str:
     """SHA-256 of the UTF-8 system message, a NUL, and the user message: the per-side literal."""
     system, user = prompt(b)
     return hashlib.sha256(f"{system}\0{user}".encode()).hexdigest()
+
+
+# ---------------------------------------------------------------- improvement (Task 10b)
+#
+# A drafter tunes a live skill's DESCRIPTION only (X10's low-risk edits): it is sent the skill
+# as it stands, the counts behind the tune and the X4 bundle, and only the description of its
+# answer is kept (`splice_description`), spliced into the skill bantamkit already holds, so a
+# drafter can never change a step, a pitfall or a metadata key. The result passes the same gate
+# as a new skill (with `own`, so the skill does not collide with itself).
+
+TUNE_NARROW = "narrow"
+TUNE_WIDEN = "widen"
+TUNE_KINDS = (TUNE_NARROW, TUNE_WIDEN)
+
+IMPROVE_SYSTEM = (
+    "You improve the description of one Agent Skill from evidence of how it was used. "
+    "You answer with the text of one SKILL.md file and nothing else."
+)
+
+IMPROVE_NARROW = (
+    "The skill below was put in front of sessions that did not use it: its description matches "
+    "requests it does not serve. Rewrite its description so it names the work in the evidence "
+    "more precisely, and drop the words that drew the other requests."
+)
+
+IMPROVE_WIDEN = (
+    "Work the skill below covers was done without it: its description missed those requests. "
+    "Rewrite its description so it also matches the words of the requests in the evidence."
+)
+
+IMPROVE_TAIL = (
+    "Change only the description. Keep the name, the metadata and the body exactly as they are. "
+    "The description stays at most 1024 characters, third person, ending with Use when... and "
+    "no steps. Answer with the whole SKILL.md text only: no preamble, no explanation, no code "
+    "fence around it."
+)
+
+
+def improve_bundle(
+    cluster: Mapping[str, Any] | None, cluster_id: str, ids: Sequence[str]
+) -> dict[str, Any]:
+    """The bundle an improvement is gated and drafted against: the cluster's record when the
+    proposals file still holds it, plus an empty entry for every id the skill already cites
+    (`ids`), so a step that cited a piece now out of the miner's window still passes."""
+    if cluster is not None:
+        b = bundle(cluster)
+    else:
+        b = {
+            "cluster": _clean(cluster_id),
+            "evidence": [],
+            "keywords": [],
+            "level": "",
+            "pitfalls": [],
+            "steps": [],
+        }
+    have = evidence_ids(b)
+    for i in ids:
+        if isinstance(i, str) and i and _clean(i) not in have:
+            have.add(_clean(i))
+            b["evidence"].append(
+                {"id": _clean(i), "paths": [], "prompt": "", "signals": {}, "tools": []}
+            )
+    return b
+
+
+def improve_prompt(
+    kinds: Sequence[str], skill_text: str, b: Mapping[str, Any], counts: Mapping[str, int]
+) -> tuple[str, str]:
+    """`(system, user)` for a description tune; `kinds` in `TUNE_KINDS` order."""
+    parts = [IMPROVE_NARROW] if TUNE_NARROW in kinds else []
+    if TUNE_WIDEN in kinds:
+        parts.append(IMPROVE_WIDEN)
+    parts.append(IMPROVE_TAIL)
+    c = {k: counts.get(k, 0) for k in ("false_fires", "injects", "misses")}
+    user = (
+        "\n\n".join(parts)
+        + f"\n\nThe counts: {c['injects']} injections, {c['false_fires']} of them in a session "
+        f"that never used it; {c['misses']} pieces of its work done without it.\n\n"
+        f"The skill now:\n\n```markdown\n{_clean(skill_text)}```\n\n"
+        f"The evidence bundle:\n\n```json\n{bundle_json(b)}\n```\n"
+    )
+    return IMPROVE_SYSTEM, user
+
+
+def splice_description(answer: str, skill_text: str) -> str:
+    """`skill_text` with the description of `answer` (a SKILL.md); SkillFileError when the
+    answer has none to take."""
+    got = parse_skill(unfence(answer))
+    doc = parse_skill(_clean(skill_text))
+    return render(SkillDoc(doc.name, got.description, doc.metadata, doc.body))
+
+
+def improve_check(
+    answer: str, skill_text: str, b: Mapping[str, Any], home: str | Path, cwd: str | None, own: Any
+) -> tuple[str | None, list[str]]:
+    """`(spliced text, [])` when the answer's description, in the skill, passes the gate;
+    `(None, reasons)` otherwise."""
+    try:
+        text = splice_description(answer, skill_text)
+    except SkillFileError as e:
+        return None, [str(e)]
+    g = gate(text, b, home, cwd, own=own)
+    return (text if g.ok else None), g.reasons
+
+
+def improve(
+    kinds: Sequence[str],
+    skill_text: str,
+    b: Mapping[str, Any],
+    counts: Mapping[str, int],
+    chain: Sequence[Any],
+    home: str | Path,
+    cwd: str | None,
+    now: str,
+    own: Any,
+) -> DraftOutcome:
+    """The X5 walk for a description tune (as `draft`): the first drafter that answers ends it,
+    pass or fail; the host agent ends it with the prompt to answer. One drafts-log line."""
+    system, user = improve_prompt(kinds, skill_text, b, counts)
+    unreachable: list[str] = []
+    outcome: DraftOutcome | None = None
+    for d in chain:
+        if isinstance(d, HostAgentDrafter):
+            handoff = {"bundle": b, "instructions": user, "target": str(own)}
+            outcome = DraftOutcome(d.label, False, None, [], unreachable, handoff)
+            break
+        try:
+            answer = d.ask(system, user)
+        except Exception:  # noqa: BLE001 — every failure to answer is "unreachable" (R11)
+            unreachable.append(d.label)
+            continue
+        text, reasons = improve_check(answer, skill_text, b, home, cwd, own)
+        outcome = DraftOutcome(d.label, text is not None, text, reasons, unreachable)
+        break
+    if outcome is None:
+        outcome = DraftOutcome(None, False, None, [], unreachable)
+    LogSegment(drafts_log(home)).append(outcome.log_line(now, b["cluster"]))
+    return outcome

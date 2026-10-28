@@ -46,6 +46,7 @@ compares the two.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import os
 import re
@@ -475,7 +476,11 @@ def probation_step(
         raw = (target / SKILL_FILE).read_bytes()
         try:
             text = raw.decode("utf-8")
-            edited = is_edited(text) or canonical_hash(text) != e.get("sha256")
+            edited = (
+                e.get("edited") is True
+                or is_edited(text)
+                or canonical_hash(text) != e.get("sha256")
+            )
         except UnicodeDecodeError:
             edited = True
         if edited:
@@ -638,10 +643,17 @@ def _edited_bytes(raw: bytes, entry: Mapping[str, Any]) -> bool:
     return is_edited(text) or canonical_hash(text) != entry.get("sha256")
 
 
+def _edited(raw: bytes, entry: Mapping[str, Any]) -> bool:
+    """Edited by hand now (R8), or ever (`edited`, kept once a person's change was approved
+    over a hand-edited skill: X10's "never changed automatically again")."""
+    return entry.get("edited") is True or _edited_bytes(raw, entry)
+
+
 def edited_by_hand(entry: Mapping[str, Any]) -> bool | None:
-    """True when the skill's SKILL.md no longer matches its hash (R8); None without one."""
+    """True when the skill's SKILL.md no longer matches its hash (R8), or once was (`edited`);
+    None without a SKILL.md."""
     live = _live_text(entry)
-    return None if live is None else _edited_bytes(live[1], entry)
+    return None if live is None else _edited(live[1], entry)
 
 
 def _ts(v: Any) -> int | None:
@@ -777,7 +789,9 @@ def _carried(old_text: str, doc_metadata: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
-def new_version(name: str, text: str, home: str | Path, now: str, kind: str) -> str:
+def new_version(
+    name: str, text: str, home: str | Path, now: str, kind: str, base: str | None = None
+) -> str:
     """The live skill `name` replaced by `text` as its next version; one sentence.
 
     Refused (InstallError) when `kind` is not `auto` or `approved`, the skill is not
@@ -796,7 +810,12 @@ def new_version(name: str, text: str, home: str | Path, now: str, kind: str) -> 
     if live is None:
         raise InstallError(f"skill {name} has no SKILL.md at {entry.get('path')}")
     target, raw = live
-    if _edited_bytes(raw, entry):
+    if base is not None and hashlib.sha256(raw).hexdigest() != base:
+        raise InstallError(
+            f"{name} changed after this change was proposed; reject it and wait for a new one"
+        )
+    was_edited = _edited(raw, entry)
+    if was_edited and not (kind == "approved" and base is not None):
         raise InstallError(f"{name} was edited by hand; it only receives proposed changes")
     try:
         doc = parse_skill(_clean(text))
@@ -843,6 +862,8 @@ def new_version(name: str, text: str, home: str | Path, now: str, kind: str) -> 
         e["version"] = m
         e["sha256"] = canonical_hash(new_text)
         e["counted_to"] = now
+        if was_edited:
+            e["edited"] = True
 
     try:
         update_state(home, change)
@@ -899,7 +920,7 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
         if not isinstance(base, dict) or _tally(v, "uses") < JUDGE_USES:
             continue
         live = _live_text(e)
-        if live is None or _edited_bytes(live[1], e):
+        if live is None or _edited(live[1], e):
             continue
         worse = _fell(
             _tally(v, "successes"), _tally(v, "uses"),
@@ -940,6 +961,480 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
                 e["sha256"] = sha
                 e["rolled_back"] = n
                 e["counted_to"] = now
+
+    written = update_state(home, change)
+    state.clear()
+    state.update(written)
+    return events
+
+
+# ------------------------------------------------------------- self-improvement (Task 10b)
+#
+# THE SIGNALS (`improve_step`, spec X10's table), each read once: rows after the skill's
+# `improved_to` watermark (else from the live version's `at`, else the install's) and up to `now`.
+#   - FALSE FIRE: the live version has `injects >= TUNE_MIN_INJECTS` and
+#     `false_fires / injects > FALSE_FIRE_TUNE` (integers) -> NARROW its description.
+#   - MISS: a session piece of the skill's cluster (the proposals record `entry.cluster`) in whose
+#     session the skill was neither injected nor used; the live version's `misses` reach
+#     `MISS_TUNE` -> WIDEN: the record's keywords that occur in the missed prompts join
+#     `bantamkit-keywords` (at most `KEYWORDS_MAX`), and the description is widened.
+#   - USED, THEN CORRECTED: a use whose turn (the session's latest piece at or before it) failed
+#     -> one `## Pitfalls` line `- [<id>] <the correcting prompt's first line, or the failure>`
+#     cut to `PITFALL_CHARS` code points, AND a proposed `## Steps` change.
+#   - USED AND SUCCEEDED THROUGH DIFFERENT STEPS: the turn's tool n-grams share less than
+#     `STEP_SHARE` with the record's recurring steps -> a proposed `## Steps` change.
+#   - FIRE TOGETHER: two live skills injected together in at least `TOGETHER_SESSIONS` sessions,
+#     that being at least half of each one's injecting sessions -> a proposed merge.
+# THE SPLIT BY RISK. The keyword widening and the Pitfalls line are deterministic and apply in
+# the run; the description tunes need a drafter (`skilldraft.improve`, description only). With
+# none that answers, the tune waits as `entry.tune = {at, kinds}` for the command to draft with
+# the host agent and apply without asking. Everything a run applies to one skill is ONE new
+# version (`auto`), gated first (`own` = the skill); a draft that fails the gate is logged and
+# dropped, and the deterministic part is then gated and applied alone. A `## Steps` change and a
+# merge NEED THE USER: `entry.proposal = {at, kind, status: "pending", ...}` (one slot per
+# skill; a pending one is never replaced). A text proposal carries `text`, a unified `diff` and
+# `base` (SHA-256 of the SKILL.md bytes it was built on): approving it applies it as an
+# `approved` version only while the file is still those bytes.
+# THE EDITED GUARD. On a skill edited by hand (`_edited`) nothing applies: the would-be version
+# becomes an `improve` proposal, and an approved change keeps `edited` on the entry for good.
+
+TUNE_MIN_INJECTS = 5
+FALSE_FIRE_TUNE = (1, 2)
+MISS_TUNE = 2
+PITFALL_CHARS = 200
+TOGETHER_SESSIONS = 5
+TOGETHER_SHARE = (1, 2)
+#: The needs-user item kinds `entry.proposal` may hold.
+ITEM_KINDS = ("improve", "merge", "remove", "steps")
+PITFALLS = "## Pitfalls"
+STEPS = "## Steps"
+_HEADING = re.compile(r"#{1,2}(?:[ \t]|$)")
+_NUMBERED = re.compile(r"[ \t]{0,3}[0-9]{1,9}[.)](?:[ \t]|$)")
+_EDGE = re.compile(r"^[ \t]+|[ \t]+$")
+
+
+def pitfall_line(evidence_id: str, failure: str) -> str:
+    """`- [<id>] <note>`: the correcting prompt's first line (or the failure's), cut."""
+    note = failure[len(CORRECTED) :] if failure.startswith(CORRECTED) else failure
+    note = _EDGE.sub("", _clean(note).split("\n")[0])
+    return f"- [{_clean(evidence_id)}] {_cut(note, PITFALL_CHARS)}"
+
+
+def append_to_section(body: str, heading: str, lines: list[str]) -> str:
+    """`lines` after the last non-blank line of the `heading` section (a section of only
+    `None.` has it replaced), or a new section at the end of the body."""
+    ls = body.split("\n")
+    idx = next((i for i, line in enumerate(ls) if line.rstrip(" \t") == heading), None)
+    if idx is None:
+        return (body.rstrip("\n") + "\n\n" if body else "") + heading + "\n\n" + "\n".join(lines)
+    end = idx + 1
+    while end < len(ls) and _HEADING.match(ls[end]) is None:
+        end += 1
+    content = [k for k in range(idx + 1, end) if ls[k].strip(" \t")]
+    if len(content) == 1 and ls[content[0]].strip(" \t") == "None.":
+        ls[content[0] : content[0] + 1] = lines
+        return "\n".join(ls)
+    at = content[-1] + 1 if content else idx + 1
+    ins = list(lines) if content else ["", *lines]
+    if at < len(ls) and ls[at].strip(" \t"):
+        ins.append("")
+    ls[at:at] = ins
+    return "\n".join(ls)
+
+
+def next_step_number(body: str) -> int:
+    ls = body.split("\n")
+    idx = next((i for i, line in enumerate(ls) if line.rstrip(" \t") == STEPS), None)
+    if idx is None:
+        return 1
+    n = 0
+    for line in ls[idx + 1 :]:
+        if _HEADING.match(line):
+            break
+        n += _NUMBERED.match(line) is not None
+    return n + 1
+
+
+def _plain(text: str) -> list[str]:
+    """The lines a diff compares: name, description and body, without the metadata bantamkit
+    restamps on every write."""
+    from bantamkit.skillfile import SkillDoc, render
+
+    try:
+        doc = parse_skill(text)
+        text = render(SkillDoc(doc.name, doc.description, {}, doc.body))
+    except SkillFileError:
+        pass
+    ls = text.split("\n")
+    if ls and ls[-1] == "":
+        ls.pop()
+    return ls
+
+
+def skill_diff(old: str, new: str) -> str:
+    """One unified hunk (3 lines of context) from the first to the last differing line."""
+    a, b = _plain(old), _plain(new)
+    if a == b:
+        return ""
+    p = 0
+    while p < len(a) and p < len(b) and a[p] == b[p]:
+        p += 1
+    s = 0
+    while s < len(a) - p and s < len(b) - p and a[len(a) - 1 - s] == b[len(b) - 1 - s]:
+        s += 1
+    lo = max(0, p - 3)
+    hi_a = min(len(a), len(a) - s + 3)
+    hi_b = len(b) - s + (hi_a - (len(a) - s))
+    out = ["--- a/SKILL.md", "+++ b/SKILL.md", f"@@ -{lo + 1},{hi_a - lo} +{lo + 1},{hi_b - lo} @@"]
+    out += [" " + x for x in a[lo:p]]
+    out += ["-" + x for x in a[p : len(a) - s]]
+    out += ["+" + x for x in b[p : len(b) - s]]
+    out += [" " + x for x in a[len(a) - s : hi_a]]
+    return "\n".join(out)
+
+
+def _csv(v: Any) -> list[str]:
+    return [x for x in v.split(",") if x] if isinstance(v, str) else []
+
+
+def _with(text: str, body: str | None, metadata: Mapping[str, str]) -> str:
+    from bantamkit.skillfile import SkillDoc, render
+
+    doc = parse_skill(text)
+    return render(
+        SkillDoc(
+            doc.name,
+            doc.description,
+            {**doc.metadata, **metadata},
+            doc.body if body is None else body,
+        )
+    )
+
+
+def _proposal(kind: str, raw: bytes, old: str, text: str, now: str) -> dict[str, Any]:
+    return {
+        "at": now,
+        "base": hashlib.sha256(raw).hexdigest(),
+        "diff": skill_diff(old, text),
+        "kind": kind,
+        "status": "pending",
+        "text": text,
+    }
+
+
+def _slot_free(e: Mapping[str, Any]) -> bool:
+    p = e.get("proposal")
+    return not (isinstance(p, dict) and p.get("status") == "pending")
+
+
+def _session_turns(
+    sources: Mapping[str, Any],
+) -> dict[str, list[tuple[int, int, Any, str, Any, list[str]]]]:
+    """Per session prefix: `(ts ms, ordinal, ok, id, failure, tools)` of each turn, sorted."""
+    out: dict[str, list[tuple[int, int, Any, str, Any, list[str]]]] = {}
+    for t in _rows(sources, "turns"):
+        m = _TURN_ID.fullmatch(t["id"]) if isinstance(t.get("id"), str) else None
+        at = _ts(t.get("ts"))
+        if m is None or at is None:
+            continue
+        out.setdefault(m.group(1), []).append(
+            (at, int(m.group(2)), t.get("ok"), t["id"], t.get("failure"), _strs(t.get("tools")))
+        )
+    for v in out.values():
+        v.sort(key=lambda r: (r[0], r[1]))
+    return out
+
+
+def apply_text(
+    name: str, text: str, home: str | Path, cwd: str | None, now: str, b: Mapping[str, Any]
+) -> tuple[str | None, list[str]]:
+    """A low-risk change: gated (`own` = the skill), then the next `auto` version, or, on a
+    skill edited by hand, an `improve` proposal. `(event, reasons)`; a gate failure is logged."""
+    from bantamkit.skilldraft import DraftOutcome, drafts_log, gate
+    from bantamkit.storage.logsegment import LogSegment
+
+    entry = read_state(home)["skills"].get(name)
+    live = _live_text(entry) if isinstance(entry, dict) else None
+    if live is None:
+        return None, [f"no skill named {name!r} is installed"]
+    target, raw = live
+    g = gate(text, b, home, cwd, own=target)
+    if not g.ok:
+        LogSegment(drafts_log(home)).append(
+            DraftOutcome(None, False, None, g.reasons, []).log_line(now, b["cluster"])
+        )
+        return None, g.reasons
+    if _edited(raw, entry):  # type: ignore[arg-type]
+        if not _slot_free(entry):  # type: ignore[arg-type]
+            return None, [f"a change to {name} already waits on you"]
+        prop = _proposal("improve", raw, raw.decode("utf-8", "replace"), text, now)
+
+        def put(fresh: dict[str, Any]) -> None:
+            e = fresh["skills"].get(name)
+            if isinstance(e, dict) and _slot_free(e):
+                e["proposal"] = prop
+
+        update_state(home, put)
+        return f"proposed a change to {name}", []
+    try:
+        said = new_version(name, text, home, now, "auto")
+    except InstallError as err:
+        return None, [str(err)]
+    return "improved skill " + said[len("updated skill ") :], []
+
+
+def improve_step(
+    state: dict[str, Any],
+    sources: Mapping[str, Any],
+    doc: Mapping[str, Any] | None,
+    home: str | Path,
+    cwd: str | None,
+    now: str,
+    chain: list[Any],
+) -> list[str]:
+    """The X10 signals for every live skill (see above); the events. `chain` holds the drafters
+    that may answer in this process (the daily child: the endpoint, when configured). `state`
+    is read for the decisions and replaced in place by the state written."""
+    from bantamkit.memory.retrieval import tokenize_v2
+    from bantamkit.skilldraft import TUNE_KINDS, TUNE_NARROW, TUNE_WIDEN, improve, improve_bundle
+    from bantamkit.skillmine import STEP_SHARE, ngrams
+
+    now_ms = _ms(now)
+    skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
+    records: dict[str, dict[str, Any]] = {}
+    clusters = doc.get("clusters") if isinstance(doc, Mapping) else None
+    for r in clusters if isinstance(clusters, list) else []:
+        if isinstance(r, dict) and isinstance(r.get("id"), str):
+            records.setdefault(r["id"], r)
+    uses = [
+        (u["fact"], u["session"], at)
+        for u in _rows(sources, "uses")
+        if isinstance(u.get("fact"), str)
+        and isinstance(u.get("session"), str)
+        and u["session"]
+        and (at := _ts(u.get("ts"))) is not None
+        and at <= now_ms
+    ]
+    injects = [
+        ({n for n in i["names"] if isinstance(n, str)}, i["session"], at)
+        for i in _rows(sources, "injects")
+        if isinstance(i.get("names"), list)
+        and isinstance(i.get("session"), str)
+        and i["session"]
+        and (at := _ts(i.get("ts"))) is not None
+        and at <= now_ms
+    ]
+    turns = _session_turns(sources)
+    events: list[str] = []
+    marks: dict[str, tuple[int, int, list[str], dict[str, Any] | None, dict[str, Any] | None]] = {}
+    for name in sorted(skills):
+        e = skills[name]
+        n = _int(e.get("version")) if isinstance(e, dict) else None
+        live = _live_text(e) if n is not None and n >= 1 else None
+        if live is None:
+            continue
+        target, raw = live
+        try:
+            text = raw.decode("utf-8")
+            sdoc = parse_skill(text)
+        except (UnicodeDecodeError, SkillFileError):
+            continue
+        versions = e.get("versions") if isinstance(e.get("versions"), dict) else {}
+        v = versions.get(str(n)) if isinstance(versions.get(str(n)), dict) else {}
+        mark = _ts(e.get("improved_to"))
+        start = _ts(v.get("at")) if isinstance(v.get("at"), str) else _ts(e.get("at"))
+        if mark is None and start is None:
+            continue
+
+        def inside(at: int, mark: int | None = mark, start: int | None = start) -> bool:
+            return at > mark if mark is not None else at >= start  # type: ignore[operator]
+
+        rec = records.get(e["cluster"]) if isinstance(e.get("cluster"), str) else None
+        seen = {s[:8] for f, s, _ in uses if f == name}
+        seen |= {s[:8] for names, s, _ in injects if name in names}
+        missed: list[dict[str, Any]] = []
+        for ev in (rec.get("evidence") or []) if rec is not None else []:
+            if not isinstance(ev, dict) or not isinstance(ev.get("id"), str):
+                continue
+            m = _TURN_ID.fullmatch(ev["id"])
+            at = _ts(ev.get("ts"))
+            if m is None or at is None or at > now_ms or not inside(at) or m.group(1) in seen:
+                continue
+            missed.append(ev)
+        misses = _tally(v, "misses") + len(missed)
+        tried = set(_strs(v.get("tried")))
+        inj, ff = _tally(v, "injects"), _tally(v, "false_fires")
+        tunes = []
+        if inj >= TUNE_MIN_INJECTS and ff * FALSE_FIRE_TUNE[1] > inj * FALSE_FIRE_TUNE[0]:
+            tunes.append(TUNE_NARROW)
+        if misses >= MISS_TUNE:
+            tunes.append(TUNE_WIDEN)
+        tunes = [t for t in tunes if t not in tried]
+        pits: list[tuple[str, str]] = []
+        steps_from: tuple[int, str, str] | None = None
+        recurring = set(_strs(rec.get("steps"))) if rec is not None else set()
+        done: set[str] = set()
+        for _f, s, at in sorted(
+            (u for u in uses if u[0] == name and inside(u[2])), key=lambda u: (u[2], u[1])
+        ):
+            turn = None
+            for t in turns.get(s[:8], []):
+                if t[0] <= at:
+                    turn = t
+            if turn is None or turn[3] in done:
+                continue
+            done.add(turn[3])
+            tid = turn[3]
+            if turn[2] is False and isinstance(turn[4], str) and turn[4]:
+                if f"[{tid}]" not in text:
+                    pits.append((tid, turn[4]))
+                    if steps_from is None:
+                        note = pitfall_line(tid, turn[4]).split("] ", 1)[1]
+                        steps_from = (
+                            turn[0],
+                            tid,
+                            f"Before you finish, check for what [{tid}] was corrected for: {note}",
+                        )
+            elif turn[2] is True and recurring:
+                grams = ngrams(turn[5])
+                num, den = STEP_SHARE
+                if grams and len(grams & recurring) * den < len(grams) * num and steps_from is None:
+                    steps_from = (turn[0], tid, f"It also worked as {' > '.join(turn[5])} [{tid}].")
+        kw = _csv(sdoc.metadata.get("bantamkit-keywords"))
+        new_kw = list(kw)
+        if TUNE_WIDEN in tunes and rec is not None:
+            words = {
+                t
+                for ev in missed
+                if isinstance(ev.get("prompt"), str)
+                for t in tokenize_v2(ev["prompt"])
+            }
+            for k in _strs(rec.get("keywords")):
+                if len(new_kw) >= KEYWORDS_MAX:
+                    break
+                if k in words and k not in new_kw and "," not in k:
+                    new_kw.append(k)
+        ids = _csv(sdoc.metadata.get("bantamkit-evidence"))
+        new_ids = ids + [i for i, _ in pits if i not in ids]
+        b = improve_bundle(
+            rec, e.get("cluster") if isinstance(e.get("cluster"), str) else "", new_ids
+        )
+        changed = new_kw != kw or bool(pits)
+        det = text
+        if changed:
+            body = (
+                append_to_section(sdoc.body, PITFALLS, [pitfall_line(i, f) for i, f in pits])
+                if pits
+                else None
+            )
+            det = _with(
+                text,
+                body,
+                {"bantamkit-evidence": ",".join(new_ids), "bantamkit-keywords": ",".join(new_kw)},
+            )
+        final = det if changed else None
+        wait: list[str] = []
+        if tunes:
+            counts = {"false_fires": ff, "injects": inj, "misses": misses}
+            out = improve(tunes, det, b, counts, chain, home, cwd, now, target) if chain else None
+            if out is None or out.drafter is None:
+                wait = [k for k in TUNE_KINDS if k in tunes]
+            elif out.ok and out.text is not None:
+                final = out.text
+        if final is not None:
+            event, _ = apply_text(name, final, home, cwd, now, b)
+            if event is None and final is not det and changed:
+                event, _ = apply_text(name, det, home, cwd, now, b)
+            if event is not None:
+                events.append(event)
+        if wait:
+            old = e.get("tune") if isinstance(e.get("tune"), dict) else {}
+            kinds = [k for k in TUNE_KINDS if k in wait or k in _strs(old.get("kinds"))]
+            if kinds != [k for k in TUNE_KINDS if k in _strs(old.get("kinds"))]:
+                events.append(f"waiting on a drafter to tune {name}")
+            tune = {"at": old["at"] if isinstance(old.get("at"), str) else now, "kinds": kinds}
+        else:
+            tune = None
+        prop = None
+        if steps_from is not None:
+            fresh = read_state(home)["skills"].get(name)
+            now_live = _live_text(fresh) if isinstance(fresh, dict) else None
+            if now_live is not None and _slot_free(fresh):  # type: ignore[arg-type]
+                try:
+                    cur = now_live[1].decode("utf-8")
+                    cdoc = parse_skill(cur)
+                    line = f"{next_step_number(cdoc.body)}. {steps_from[2]}"
+                    cids = _csv(cdoc.metadata.get("bantamkit-evidence"))
+                    if steps_from[1] not in cids:
+                        cids.append(steps_from[1])
+                    ptext = _with(
+                        cur,
+                        append_to_section(cdoc.body, STEPS, [line]),
+                        {"bantamkit-evidence": ",".join(cids)},
+                    )
+                    prop = _proposal("steps", now_live[1], cur, ptext, now)
+                    events.append(f"proposed a change to {name}")
+                except (UnicodeDecodeError, SkillFileError):
+                    prop = None
+        marks[name] = (n, misses, sorted(tried | set(tunes)), tune, prop)
+
+    # two skills that fire together: a proposed merge, on the first name
+    fired: dict[str, set[str]] = {}
+    for names, s, _ in injects:
+        for nm in names:
+            if nm in skills:
+                fired.setdefault(nm, set()).add(s)
+    merges: dict[str, str] = {}
+    num, den = TOGETHER_SHARE
+    for a in sorted(fired):
+        for b2 in sorted(fired):
+            if b2 <= a or a in merges:
+                continue
+            co = len(fired[a] & fired[b2])
+            if (
+                co < TOGETHER_SESSIONS
+                or co * den < len(fired[a]) * num
+                or co * den < len(fired[b2]) * num
+            ):
+                continue
+            ea = skills.get(a)
+            if (
+                not isinstance(ea, dict)
+                or not _slot_free(ea)
+                or (marks.get(a) and marks[a][4] is not None)
+            ):
+                continue
+            pa = ea.get("proposal")
+            if isinstance(pa, dict) and pa.get("kind") == "merge" and pa.get("with") == b2:
+                continue
+            merges[a] = b2
+            events.append(f"proposed merging {a} with {b2}")
+    if not marks and not merges:
+        return events
+
+    def change(fresh: dict[str, Any]) -> None:
+        for name, (n, misses, tried, tune, prop) in marks.items():
+            e = fresh["skills"].get(name)
+            if not isinstance(e, dict):
+                continue
+            e["improved_to"] = now
+            if not isinstance(e.get("versions"), dict):
+                e["versions"] = {}
+            v = e["versions"].get(str(n))
+            if not isinstance(v, dict):
+                v = e["versions"][str(n)] = {}
+            if misses:
+                v["misses"] = misses
+            if tried:
+                v["tried"] = tried
+            if tune is not None:
+                e["tune"] = tune
+            if prop is not None and _slot_free(e):
+                e["proposal"] = prop
+        for a, b2 in merges.items():
+            e = fresh["skills"].get(a)
+            if isinstance(e, dict) and _slot_free(e):
+                e["proposal"] = {"at": now, "kind": "merge", "status": "pending", "with": b2}
 
     written = update_state(home, change)
     state.clear()

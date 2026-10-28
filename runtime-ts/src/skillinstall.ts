@@ -8,6 +8,7 @@
  *
  * Counts are in CODE POINTS and every sort is by code point (`cmpCodepoint`), as Python's are.
  */
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -33,6 +34,12 @@ import {
   writeDirAtomic,
 } from './skillfile.js';
 import type { SkillsState } from './skillfile.js';
+import { render as renderSkill } from './skillfile.js';
+import { tokenizeV2 } from './memory/retrieval.js';
+import { TUNE_KINDS, TUNE_NARROW, TUNE_WIDEN, draftsLog, gate, improve, improveBundle, logLine } from './skilldraft.js';
+import type { Bundle, ChainLink } from './skilldraft.js';
+import { STEP_SHARE, ngrams } from './skillmine.js';
+import { LogSegment } from './storage/logsegment.js';
 import { parseNow } from './storage/retention.js';
 
 export const AUTO_ENV = 'BANTAMKIT_SKILL_AUTO';
@@ -419,7 +426,7 @@ export function probationStep(state: Rec, uses: Record<string, unknown>, home: s
     let edited: boolean;
     try {
       const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw);
-      edited = isEdited(text) || canonicalHash(text) !== e['sha256'];
+      edited = e['edited'] === true || isEdited(text) || canonicalHash(text) !== e['sha256'];
     } catch (err) {
       if (!(err instanceof TypeError)) throw err;
       edited = true;
@@ -555,10 +562,15 @@ function editedBytes(raw: Uint8Array, entry: Rec): boolean {
   return isEdited(text) || canonicalHash(text) !== entry['sha256'];
 }
 
-/** True when the skill's SKILL.md no longer matches its hash (R8); null without one. */
+/** Edited by hand now (R8), or ever (`edited`: X10's "never changed automatically again"). */
+function editedNow(raw: Uint8Array, entry: Rec): boolean {
+  return entry['edited'] === true || editedBytes(raw, entry);
+}
+
+/** True when the skill's SKILL.md no longer matches its hash (R8), or once was; null without one. */
 export function editedByHand(entry: Rec): boolean | null {
   const live = liveText(entry);
-  return live === null ? null : editedBytes(live[1], entry);
+  return live === null ? null : editedNow(live[1], entry);
 }
 
 function tsOf(v: unknown): number | null {
@@ -679,7 +691,7 @@ function carried(oldText: string, docMetadata: Record<string, unknown>): Record<
 }
 
 /** The reference's `new_version`: the live skill replaced by `text` as its next version. */
-export function newVersion(name: string, text: string, home: string, now: string, kind: string): string {
+export function newVersion(name: string, text: string, home: string, now: string, kind: string, base: string | null = null): string {
   if (!VERSION_KINDS.includes(kind)) throw new InstallError('kind must be auto or approved');
   msOf(now);
   const skills = readState(home).skills;
@@ -688,7 +700,13 @@ export function newVersion(name: string, text: string, home: string, now: string
   const live = liveText(entry);
   if (live === null) throw new InstallError(`skill ${name} has no SKILL.md at ${pyStr(entry['path'])}`);
   const [target, raw] = live;
-  if (editedBytes(raw, entry)) throw new InstallError(`${name} was edited by hand; it only receives proposed changes`);
+  if (base !== null && createHash('sha256').update(raw).digest('hex') !== base) {
+    throw new InstallError(`${name} changed after this change was proposed; reject it and wait for a new one`);
+  }
+  const wasEdited = editedNow(raw, entry);
+  if (wasEdited && !(kind === 'approved' && base !== null)) {
+    throw new InstallError(`${name} was edited by hand; it only receives proposed changes`);
+  }
   let doc;
   try {
     doc = parseSkill(clean(text));
@@ -730,6 +748,7 @@ export function newVersion(name: string, text: string, home: string, now: string
       e['version'] = m;
       e['sha256'] = canonicalHash(newText);
       e['counted_to'] = now;
+      if (wasEdited) e['edited'] = true;
     });
   } catch (e) {
     undoDir(backupRoot(home), name, target);
@@ -777,7 +796,7 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
     const base = Object.hasOwn(versions, String(f)) ? versions[String(f)] : undefined;
     if (!isObj(base) || tally(v, 'uses') < JUDGE_USES) continue;
     const live = liveText(e);
-    if (live === null || editedBytes(live[1], e)) continue;
+    if (live === null || editedNow(live[1], e)) continue;
     const worse =
       fell(tally(v, 'successes'), tally(v, 'uses'), tally(base, 'successes'), tally(base, 'uses')) ||
       rose(tally(v, 'false_fires'), tally(v, 'injects'), tally(base, 'false_fires'), tally(base, 'injects'));
@@ -817,6 +836,409 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
         e['rolled_back'] = n;
         e['counted_to'] = now;
       }
+    }
+  });
+  replaceState(state, written);
+  return events;
+}
+
+// ------------------------------------------------------------- self-improvement (Task 10b)
+//
+// The reference's design note (`skillinstall.py`, Task 10b) is the description: the signals,
+// the split by risk, one `auto` version per skill per run, the needs-user proposals and the
+// edited guard.
+
+export const TUNE_MIN_INJECTS = 5;
+export const FALSE_FIRE_TUNE: readonly [number, number] = [1, 2];
+export const MISS_TUNE = 2;
+export const PITFALL_CHARS = 200;
+export const TOGETHER_SESSIONS = 5;
+export const TOGETHER_SHARE: readonly [number, number] = [1, 2];
+export const ITEM_KINDS: readonly string[] = ['improve', 'merge', 'remove', 'steps'];
+export const PITFALLS = '## Pitfalls';
+export const STEPS = '## Steps';
+const HEADING = /^#{1,2}(?:[ \t]|$)/;
+const NUMBERED = /^[ \t]{0,3}[0-9]{1,9}[.)](?:[ \t]|$)/;
+const EDGE = /^[ \t]+|[ \t]+$/g;
+const stripSpaceTab = (s: string): string => s.replace(/^[ \t]+|[ \t]+$/g, '');
+
+/** `- [<id>] <note>`: the correcting prompt's first line (or the failure's), cut. */
+export function pitfallLine(evidenceId: string, failure: string): string {
+  const note0 = failure.startsWith(CORRECTED) ? failure.slice(CORRECTED.length) : failure;
+  const note = clean(note0).split('\n')[0]!.replace(EDGE, '');
+  return `- [${clean(evidenceId)}] ${cut(note, PITFALL_CHARS)}`;
+}
+
+/** The reference's `append_to_section`. */
+export function appendToSection(body: string, heading: string, lines: readonly string[]): string {
+  const ls = body.split('\n');
+  const idx = ls.findIndex((line) => line.replace(/[ \t]+$/, '') === heading);
+  if (idx < 0) return (body ? body.replace(/\n+$/, '') + '\n\n' : '') + heading + '\n\n' + lines.join('\n');
+  let end = idx + 1;
+  while (end < ls.length && !HEADING.test(ls[end]!)) end += 1;
+  const content: number[] = [];
+  for (let k = idx + 1; k < end; k++) if (stripSpaceTab(ls[k]!)) content.push(k);
+  if (content.length === 1 && stripSpaceTab(ls[content[0]!]!) === 'None.') {
+    ls.splice(content[0]!, 1, ...lines);
+    return ls.join('\n');
+  }
+  const at = content.length > 0 ? content[content.length - 1]! + 1 : idx + 1;
+  const ins = content.length > 0 ? [...lines] : ['', ...lines];
+  if (at < ls.length && stripSpaceTab(ls[at]!)) ins.push('');
+  ls.splice(at, 0, ...ins);
+  return ls.join('\n');
+}
+
+export function nextStepNumber(body: string): number {
+  const ls = body.split('\n');
+  const idx = ls.findIndex((line) => line.replace(/[ \t]+$/, '') === STEPS);
+  if (idx < 0) return 1;
+  let n = 0;
+  for (const line of ls.slice(idx + 1)) {
+    if (HEADING.test(line)) break;
+    if (NUMBERED.test(line)) n += 1;
+  }
+  return n + 1;
+}
+
+function plainLines(text: string): string[] {
+  let t = text;
+  try {
+    const doc = parseSkill(text);
+    t = renderSkill({ name: doc.name, description: doc.description, metadata: {}, body: doc.body });
+  } catch (e) {
+    if (!(e instanceof SkillFileError)) throw e;
+  }
+  const ls = t.split('\n');
+  if (ls.length > 0 && ls[ls.length - 1] === '') ls.pop();
+  return ls;
+}
+
+/** The reference's `skill_diff`: one unified hunk with 3 lines of context. */
+export function skillDiff(oldText: string, newText: string): string {
+  const a = plainLines(oldText);
+  const b = plainLines(newText);
+  if (a.length === b.length && a.every((x, i) => x === b[i])) return '';
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p += 1;
+  let s = 0;
+  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s += 1;
+  const lo = Math.max(0, p - 3);
+  const hiA = Math.min(a.length, a.length - s + 3);
+  const hiB = b.length - s + (hiA - (a.length - s));
+  return [
+    '--- a/SKILL.md',
+    '+++ b/SKILL.md',
+    `@@ -${lo + 1},${hiA - lo} +${lo + 1},${hiB - lo} @@`,
+    ...a.slice(lo, p).map((x) => ' ' + x),
+    ...a.slice(p, a.length - s).map((x) => '-' + x),
+    ...b.slice(p, b.length - s).map((x) => '+' + x),
+    ...a.slice(a.length - s, hiA).map((x) => ' ' + x),
+  ].join('\n');
+}
+
+export const csv = (v: unknown): string[] => (typeof v === 'string' ? v.split(',').filter((x) => x) : []);
+
+function withMeta(text: string, body: string | null, metadata: Record<string, string>): string {
+  const doc = parseSkill(text);
+  return renderSkill({ name: doc.name, description: doc.description, metadata: { ...doc.metadata, ...metadata }, body: body ?? doc.body });
+}
+
+function proposalOf(kind: string, raw: Uint8Array, old: string, text: string, now: string): Rec {
+  return {
+    at: now,
+    base: createHash('sha256').update(raw).digest('hex'),
+    diff: skillDiff(old, text),
+    kind,
+    status: 'pending',
+    text,
+  };
+}
+
+function slotFree(e: Rec): boolean {
+  const p = e['proposal'];
+  return !(isObj(p) && p['status'] === 'pending');
+}
+
+type STurn = [number, number, unknown, string, unknown, string[]];
+
+function sessionTurns(sources: Rec): Map<string, STurn[]> {
+  const out = new Map<string, STurn[]>();
+  for (const t of rows(sources, 'turns')) {
+    const m = typeof t['id'] === 'string' ? TURN_ID.exec(t['id']) : null;
+    const at = tsOf(t['ts']);
+    if (m === null || at === null) continue;
+    const list = out.get(m[1]!) ?? [];
+    list.push([at, Number(m[2]), t['ok'], t['id'] as string, t['failure'], strs(t['tools'])]);
+    out.set(m[1]!, list);
+  }
+  for (const v of out.values()) v.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  return out;
+}
+
+export { liveText as _liveText, tally as _tally };
+
+/** The reference's `apply_text`: gated, then the next `auto` version, or an `improve`
+ * proposal on a skill edited by hand. `[event, reasons]`; a gate failure is logged. */
+export function applyText(name: string, text: string, home: string, cwd: string | null, now: string, b: Bundle): [string | null, string[]] {
+  const skills = readState(home).skills;
+  const entry = Object.hasOwn(skills, name) ? skills[name] : undefined;
+  const live = isObj(entry) ? liveText(entry) : null;
+  if (live === null || !isObj(entry)) return [null, [`no skill named ${pyRepr(name)} is installed`]];
+  const [target, raw] = live;
+  const g = gate(text, b, home, cwd, target);
+  if (!g.ok) {
+    const o = { drafter: null, ok: false, text: null, reasons: g.reasons, unreachable: [], handoff: null };
+    new LogSegment(draftsLog(home)).append(logLine(o, now, b.cluster));
+    return [null, g.reasons];
+  }
+  if (editedNow(raw, entry)) {
+    if (!slotFree(entry)) return [null, [`a change to ${name} already waits on you`]];
+    const prop = proposalOf('improve', raw, raw.toString('utf8'), text, now);
+    updateState(home, (fresh) => {
+      const live2 = fresh.skills as Record<string, unknown>;
+      const e = Object.hasOwn(live2, name) ? live2[name] : undefined;
+      if (isObj(e) && slotFree(e)) e['proposal'] = prop;
+    });
+    return [`proposed a change to ${name}`, []];
+  }
+  let said: string;
+  try {
+    said = newVersion(name, text, home, now, 'auto');
+  } catch (e) {
+    if (e instanceof InstallError) return [null, [e.message]];
+    throw e;
+  }
+  return ['improved skill ' + said.slice('updated skill '.length), []];
+}
+
+type Mark = [number, number, string[], Rec | null, Rec | null];
+
+/** The reference's `improve_step`: the X10 signals for every live skill; the events. */
+export async function improveStep(
+  state: Rec,
+  sources: Rec,
+  doc: Rec | null,
+  home: string,
+  cwd: string | null,
+  now: string,
+  chain: readonly ChainLink[],
+): Promise<string[]> {
+  const nowMs = msOf(now);
+  const skills = isObj(state['skills']) ? state['skills'] : {};
+  const records = new Map<string, Rec>();
+  const clusters = isObj(doc) ? doc['clusters'] : undefined;
+  for (const r of Array.isArray(clusters) ? clusters : []) {
+    if (isObj(r) && typeof r['id'] === 'string' && !records.has(r['id'])) records.set(r['id'], r);
+  }
+  const uses: Array<[string, string, number]> = [];
+  for (const u of rows(sources, 'uses')) {
+    const at = tsOf(u['ts']);
+    if (typeof u['fact'] === 'string' && typeof u['session'] === 'string' && u['session'] && at !== null && at <= nowMs) {
+      uses.push([u['fact'], u['session'], at]);
+    }
+  }
+  const injects: Array<[Set<string>, string, number]> = [];
+  for (const i of rows(sources, 'injects')) {
+    const at = tsOf(i['ts']);
+    if (Array.isArray(i['names']) && typeof i['session'] === 'string' && i['session'] && at !== null && at <= nowMs) {
+      injects.push([new Set(i['names'].filter((n): n is string => typeof n === 'string')), i['session'], at]);
+    }
+  }
+  const turns = sessionTurns(sources);
+  const events: string[] = [];
+  const marks = new Map<string, Mark>();
+  for (const name of Object.keys(skills).sort(cmpCodepoint)) {
+    const e = skills[name];
+    if (!isObj(e)) continue;
+    const n = int(e['version']);
+    const live = n !== null && n >= 1 ? liveText(e) : null;
+    if (live === null || n === null) continue;
+    const [target, raw] = live;
+    let text: string;
+    let sdoc;
+    try {
+      text = UTF8.decode(raw);
+      sdoc = parseSkill(text);
+    } catch (err) {
+      if (err instanceof TypeError || err instanceof SkillFileError) continue;
+      throw err;
+    }
+    const versions = isObj(e['versions']) ? e['versions'] : {};
+    const vv = Object.hasOwn(versions, String(n)) ? versions[String(n)] : undefined;
+    const v: Rec = isObj(vv) ? vv : {};
+    const mark = tsOf(e['improved_to']);
+    const start = typeof v['at'] === 'string' ? tsOf(v['at']) : tsOf(e['at']);
+    if (mark === null && start === null) continue;
+    const inside = (at: number): boolean => (mark !== null ? at > mark : at >= start!);
+    const rec = typeof e['cluster'] === 'string' ? records.get(e['cluster']) ?? null : null;
+    const seen = new Set<string>();
+    for (const [f, s] of uses) if (f === name) seen.add(first8(s));
+    for (const [names, s] of injects) if (names.has(name)) seen.add(first8(s));
+    const missed: Rec[] = [];
+    const evs = rec !== null && Array.isArray(rec['evidence']) ? rec['evidence'] : [];
+    for (const ev of evs) {
+      if (!isObj(ev) || typeof ev['id'] !== 'string') continue;
+      const m = TURN_ID.exec(ev['id']);
+      const at = tsOf(ev['ts']);
+      if (m === null || at === null || at > nowMs || !inside(at) || seen.has(m[1]!)) continue;
+      missed.push(ev);
+    }
+    const misses = tally(v, 'misses') + missed.length;
+    const tried = new Set(strs(v['tried']));
+    const inj = tally(v, 'injects');
+    const ff = tally(v, 'false_fires');
+    let tunes: string[] = [];
+    if (inj >= TUNE_MIN_INJECTS && ff * FALSE_FIRE_TUNE[1] > inj * FALSE_FIRE_TUNE[0]) tunes.push(TUNE_NARROW);
+    if (misses >= MISS_TUNE) tunes.push(TUNE_WIDEN);
+    tunes = tunes.filter((t) => !tried.has(t));
+    const pits: Array<[string, string]> = [];
+    let stepsFrom: [number, string, string] | null = null;
+    const recurring = new Set(rec !== null ? strs(rec['steps']) : []);
+    const done = new Set<string>();
+    const mine = uses
+      .filter((u) => u[0] === name && inside(u[2]))
+      .sort((x, y) => x[2] - y[2] || cmpCodepoint(x[1], y[1]));
+    for (const [, s, at] of mine) {
+      let turn: STurn | null = null;
+      for (const t of turns.get(first8(s)) ?? []) if (t[0] <= at) turn = t;
+      if (turn === null || done.has(turn[3])) continue;
+      done.add(turn[3]);
+      const tid = turn[3];
+      if (turn[2] === false && typeof turn[4] === 'string' && turn[4]) {
+        if (!text.includes(`[${tid}]`)) {
+          pits.push([tid, turn[4]]);
+          if (stepsFrom === null) {
+            const line = pitfallLine(tid, turn[4]);
+            const note = line.slice(line.indexOf('] ') + 2);
+            stepsFrom = [turn[0], tid, `Before you finish, check for what [${tid}] was corrected for: ${note}`];
+          }
+        }
+      } else if (turn[2] === true && recurring.size > 0) {
+        const grams = ngrams(turn[5]);
+        const [num, den] = STEP_SHARE;
+        let shared = 0;
+        for (const g of grams) if (recurring.has(g)) shared += 1;
+        if (grams.size > 0 && shared * den < grams.size * num && stepsFrom === null) {
+          stepsFrom = [turn[0], tid, `It also worked as ${turn[5].join(' > ')} [${tid}].`];
+        }
+      }
+    }
+    const kw = csv(sdoc.metadata['bantamkit-keywords']);
+    const newKw = [...kw];
+    if (tunes.includes(TUNE_WIDEN) && rec !== null) {
+      const words = new Set<string>();
+      for (const ev of missed) if (typeof ev['prompt'] === 'string') for (const t of tokenizeV2(ev['prompt'])) words.add(t);
+      for (const k of strs(rec['keywords'])) {
+        if (newKw.length >= KEYWORDS_MAX) break;
+        if (words.has(k) && !newKw.includes(k) && !k.includes(',')) newKw.push(k);
+      }
+    }
+    const ids = csv(sdoc.metadata['bantamkit-evidence']);
+    const newIds = [...ids, ...pits.map(([i]) => i).filter((i) => !ids.includes(i))];
+    const b = improveBundle(rec, typeof e['cluster'] === 'string' ? e['cluster'] : '', newIds);
+    const changed = newKw.length !== kw.length || newKw.some((k, i) => k !== kw[i]) || pits.length > 0;
+    let det = text;
+    if (changed) {
+      const body = pits.length > 0 ? appendToSection(sdoc.body, PITFALLS, pits.map(([i, f]) => pitfallLine(i, f))) : null;
+      det = withMeta(text, body, { 'bantamkit-evidence': newIds.join(','), 'bantamkit-keywords': newKw.join(',') });
+    }
+    let final: string | null = changed ? det : null;
+    let wait: string[] = [];
+    if (tunes.length > 0) {
+      const counts = { false_fires: ff, injects: inj, misses };
+      const out = chain.length > 0 ? await improve(tunes, det, b, counts, chain, home, cwd, now, target) : null;
+      if (out === null || out.drafter === null) wait = TUNE_KINDS.filter((k) => tunes.includes(k));
+      else if (out.ok && out.text !== null) final = out.text;
+    }
+    if (final !== null) {
+      let [event] = applyText(name, final, home, cwd, now, b);
+      if (event === null && final !== det && changed) [event] = applyText(name, det, home, cwd, now, b);
+      if (event !== null) events.push(event);
+    }
+    let tune: Rec | null = null;
+    if (wait.length > 0) {
+      const old: Rec = isObj(e['tune']) ? e['tune'] : {};
+      const oldKinds = TUNE_KINDS.filter((k) => strs(old['kinds']).includes(k));
+      const kinds = TUNE_KINDS.filter((k) => wait.includes(k) || oldKinds.includes(k));
+      if (kinds.length !== oldKinds.length) events.push(`waiting on a drafter to tune ${name}`);
+      tune = { at: typeof old['at'] === 'string' ? old['at'] : now, kinds };
+    }
+    let prop: Rec | null = null;
+    if (stepsFrom !== null) {
+      const fs2 = readState(home).skills;
+      const fresh = Object.hasOwn(fs2, name) ? fs2[name] : undefined;
+      const nowLive = isObj(fresh) ? liveText(fresh) : null;
+      if (nowLive !== null && isObj(fresh) && slotFree(fresh)) {
+        try {
+          const cur = UTF8.decode(nowLive[1]);
+          const cdoc = parseSkill(cur);
+          const line = `${nextStepNumber(cdoc.body)}. ${stepsFrom[2]}`;
+          const cids = csv(cdoc.metadata['bantamkit-evidence']);
+          if (!cids.includes(stepsFrom[1])) cids.push(stepsFrom[1]);
+          const ptext = withMeta(cur, appendToSection(cdoc.body, STEPS, [line]), { 'bantamkit-evidence': cids.join(',') });
+          prop = proposalOf('steps', nowLive[1], cur, ptext, now);
+          events.push(`proposed a change to ${name}`);
+        } catch (err) {
+          if (!(err instanceof TypeError || err instanceof SkillFileError)) throw err;
+          prop = null;
+        }
+      }
+    }
+    marks.set(name, [n, misses, [...new Set([...tried, ...tunes])].sort(cmpCodepoint), tune, prop]);
+  }
+
+  // two skills that fire together: a proposed merge, on the first name
+  const fired = new Map<string, Set<string>>();
+  for (const [names, s] of injects) {
+    for (const nm of names) {
+      if (!Object.hasOwn(skills, nm)) continue;
+      const set = fired.get(nm) ?? new Set<string>();
+      set.add(s);
+      fired.set(nm, set);
+    }
+  }
+  const merges = new Map<string, string>();
+  const [num, den] = TOGETHER_SHARE;
+  const names = [...fired.keys()].sort(cmpCodepoint);
+  for (const a of names) {
+    for (const b2 of names) {
+      if (cmpCodepoint(b2, a) <= 0 || merges.has(a)) continue;
+      const sa = fired.get(a)!;
+      const sb = fired.get(b2)!;
+      let co = 0;
+      for (const s of sa) if (sb.has(s)) co += 1;
+      if (co < TOGETHER_SESSIONS || co * den < sa.size * num || co * den < sb.size * num) continue;
+      const ea = skills[a];
+      if (!isObj(ea) || !slotFree(ea) || (marks.has(a) && marks.get(a)![4] !== null)) continue;
+      const pa = ea['proposal'];
+      if (isObj(pa) && pa['kind'] === 'merge' && pa['with'] === b2) continue;
+      merges.set(a, b2);
+      events.push(`proposed merging ${a} with ${b2}`);
+    }
+  }
+  if (marks.size === 0 && merges.size === 0) return events;
+  const written = updateState(home, (fresh) => {
+    const live = fresh.skills as Record<string, unknown>;
+    for (const [name, [n, misses, tried, tune, prop]] of marks) {
+      const e = Object.hasOwn(live, name) ? live[name] : undefined;
+      if (!isObj(e)) continue;
+      e['improved_to'] = now;
+      if (!isObj(e['versions'])) e['versions'] = {};
+      const vs = e['versions'] as Rec;
+      let v = Object.hasOwn(vs, String(n)) ? vs[String(n)] : undefined;
+      if (!isObj(v)) {
+        v = {};
+        vs[String(n)] = v;
+      }
+      if (misses) (v as Rec)['misses'] = misses;
+      if (tried.length > 0) (v as Rec)['tried'] = tried;
+      if (tune !== null) e['tune'] = tune;
+      if (prop !== null && slotFree(e)) e['proposal'] = prop;
+    }
+    for (const [a, b2] of merges) {
+      const e = Object.hasOwn(live, a) ? live[a] : undefined;
+      if (isObj(e) && slotFree(e)) e['proposal'] = { at: now, kind: 'merge', status: 'pending', with: b2 };
     }
   });
   replaceState(state, written);
