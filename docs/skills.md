@@ -248,8 +248,11 @@ A refusal is a sentence in the answer, never an RPC error.
 - **`bantamkit_status`:** the last line, `skills: …` — when the miner ran and in how long, the
   pending proposals, the live automatic installs of 5, the promoted skills, the active drafter
   and whether `auto` is on (`docs/status.md`).
-- #205's audit sees bantamkit's skills like any other and can tell them apart by
-  `bantamkit-generated-by`.
+- Every skill bantamkit writes carries `bantamkit-generated-by: bantamkit`, so it can be told
+  apart from one you wrote. **Not yet read by anything:** the spec's "#205's audit tracks
+  generated skills through `bantamkit-generated-by`" is not implemented — #205's audit gathers
+  the host's roots only (`~/.claude/skills`, `<project>/.claude/skills`, plugins), never
+  `.bantamkit/skills`, and does not descend the symlink a promotion makes (job73 C14 review).
 
 ## The switches
 
@@ -298,6 +301,9 @@ so.
   at the undone number.
 - A long-lived MCP server binds the `[skill]` layer only if a skills directory existed when it
   started.
+- A `## Steps` proposal is built deterministically (one added step citing the turn's id, which
+  joins `bantamkit-evidence`) and is not run through the drafter's gate; approving it runs the
+  format rules only. The spec says every edit passes the gate; today only the low-risk edits do.
 - The Windows paths — the copy promotion and its rollback, the CRLF `SKILL.md`, the rename over an
   open file, the host-agent hand-off — are covered by injected failures on macOS but have not
   been run on Windows. Manual step: on Windows, with and without Developer Mode, run `npm test`
