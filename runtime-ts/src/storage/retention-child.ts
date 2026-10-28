@@ -8,4 +8,4 @@
  */
 import { childMain } from './retention.js';
 
-process.exitCode = childMain(process.argv.slice(2));
+process.exitCode = await childMain(process.argv.slice(2));

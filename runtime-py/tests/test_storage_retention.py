@@ -468,9 +468,12 @@ def test_retention_off_audit_on_touches_only_the_claim_and_the_audit_record(bed,
     assert retention.child_main([str(bed / "a"), str(bed / "home")], now=NOW) == 0
     after = _stat_tree(bed)
     changed = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+    # AMENDED job73 C9 (#206 Task 8): the miner runs after the audit and writes its two files.
     assert changed == [
         "home/.bantamkit/retention.json",
         "home/.bantamkit/skill-audit.json",
+        "home/.bantamkit/skill-miner-cache.json",
+        "home/.bantamkit/skill-proposals.json",
     ]
     assert json.loads((bed / "home/.bantamkit/retention.json").read_text(encoding="utf-8")) == {
         "ran_at": NOW

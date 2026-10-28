@@ -32,6 +32,9 @@ if (!process.env[SANDBOX_ENV]) {
   process.env.BANTAMKIT_INDEX_DIR = index;
   process.env.BANTAMKIT_RETENTION = 'off';
   process.env.BANTAMKIT_SKILL_AUDIT = 'off'; // #205 A3: the audit wakes the same child
+  process.env.BANTAMKIT_SKILL_AUTO = 'off'; // #206 Task 8: that child now installs skills
+  delete process.env.BANTAMKIT_LLM_URL; // ... and may draft through a named endpoint
+  delete process.env.BANTAMKIT_LLM_MODEL;
   process.env[SANDBOX_ENV] = scratch;
   process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 }

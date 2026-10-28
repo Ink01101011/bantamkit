@@ -39,9 +39,10 @@ import {
   resolveProjectStore,
   type StoreBinding,
 } from './layers.js';
-import { pyHome, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
+import { pyHome, pyIsDir, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
 import { homedir } from 'node:os';
 import { NATIVE_LAYER, NativeStore } from './native.js';
+import { SKILL_LAYER, SkillStore, skillRoots } from './skills.js';
 import { BM25F, QueryScorer, queryTerms, type Scorer, stale, weightOf } from './retrieval.js';
 import * as queriesMod from './queries.js';
 import { loadSkill } from '../assets.js';
@@ -222,11 +223,18 @@ export interface MemoryOptions {
   native?: string | null;
 }
 
-type Layer = [label: string, store: MemoryStore | NativeStore, writable: boolean];
+/** The read-only layers that are not bantamkit stores (`_READ_ONLY` in the reference). */
+type ReadOnlyStore = NativeStore | SkillStore;
+type LayerStore = MemoryStore | ReadOnlyStore;
+type Layer = [label: string, store: LayerStore, writable: boolean];
 
-/** A layer's fact count: `facts/*.md` for a bantamkit store, the listing for the native one. */
-function countOf(store: MemoryStore | NativeStore): number {
-  return store instanceof NativeStore ? store.count() : countFacts(store.root);
+function isReadOnly(store: LayerStore): store is ReadOnlyStore {
+  return store instanceof NativeStore || store instanceof SkillStore;
+}
+
+/** A layer's fact count: `facts/*.md` for a bantamkit store, the listing for a read-only one. */
+function countOf(store: LayerStore): number {
+  return isReadOnly(store) ? store.count() : countFacts(store.root);
 }
 
 /**
@@ -451,8 +459,20 @@ export class Memory {
         false,
       ]);
     }
+    mem.addSkills(skillRoots(binding.path, pyHome()), true);
     mem.addNative(options.native ?? null);
     return mem;
+  }
+
+  /**
+   * bantamkit's learned skills (#206, X8) as a read-only layer, after `profile` and before
+   * `native`. `onlyPresent`: bound only when some root is a directory. The reference's
+   * `_add_skills`.
+   */
+  private addSkills(roots: readonly string[], onlyPresent = false): void {
+    if (roots.length === 0) return;
+    if (onlyPresent && !roots.some((r) => pyIsDir(r))) return;
+    this.layers.push([SKILL_LAYER, new SkillStore(roots), false]);
   }
 
   /** The host's auto-memory as the last, read-only layer, when a directory was resolved. */
@@ -722,7 +742,7 @@ export class Memory {
   }
 
   /** `[label, store, writable]` per layer, in precedence order (the touch graph's input). */
-  layerStores(): ReadonlyArray<readonly [string, MemoryStore | NativeStore, boolean]> {
+  layerStores(): ReadonlyArray<readonly [string, LayerStore, boolean]> {
     return this.layers.map(([label, store, writable]) => [label, store, writable] as const);
   }
 
@@ -865,7 +885,7 @@ export class Memory {
     const sides = this.layers.map(([, store]) => queriesMod.layerTerms(home, store.root));
     const everyRow = sides.some((side) => side.size > 0);
     const q = queryTerms(head === null ? query : head);
-    const stores: Array<MemoryStore | NativeStore> = [];
+    const stores: LayerStore[] = [];
     const pools: Array<Pool | null> = [];
     const left: SkippedFact[][] = [];
     let reached = 0;
@@ -883,12 +903,15 @@ export class Memory {
       left.push(leftOut);
       try {
         if (outcome !== null) {
-          const native = store instanceof NativeStore;
+          const native = isReadOnly(store);
           const got = native ? store.candidates(leftOut, shadow) : store.candidates(leftOut);
-          if (!native) for (const f of got) shadow.add(pyText(f.name));
+          if (!native || store instanceof SkillStore) for (const f of got) shadow.add(pyText(f.name));
           pools.push(poolOf(got.filter((f) => f.outcome === outcome), q, everyRow));
-        } else if (store instanceof NativeStore) {
-          pools.push(store.pool(q, leftOut, shadow, everyRow));
+        } else if (isReadOnly(store)) {
+          const pool = store.pool(q, leftOut, shadow, everyRow);
+          // a skill is bantamkit's own: the host's copy of a name never answers
+          if (store instanceof SkillStore) for (const name of allNames(pool)) shadow.add(name);
+          pools.push(pool);
         } else {
           const pool = store.pool(q, leftOut, everyRow);
           for (const name of allNames(pool)) shadow.add(name);
@@ -912,7 +935,7 @@ export class Memory {
     const repool = (i: number): Pool => {
       try {
         const store = stores[i]!;
-        let got = store instanceof NativeStore ? store.candidates(left[i]!, shadow) : store.candidates(left[i]!);
+        let got = isReadOnly(store) ? store.candidates(left[i]!, shadow) : store.candidates(left[i]!);
         if (outcome !== null) got = got.filter((f) => f.outcome === outcome);
         return poolOf(got, q, everyRow);
       } catch (e) {
@@ -998,11 +1021,18 @@ export class Memory {
    * A project + profile memory over two COPIES, for `tools/eval/recall/score.py` — no grant
    * and no home-directory profile is consulted. The reference's `layered_for_eval`.
    */
-  static layeredForEval(project: string, profile: string, engine = 'v2', native: string | null = null): Memory {
+  static layeredForEval(
+    project: string,
+    profile: string,
+    engine = 'v2',
+    native: string | null = null,
+    skills: readonly string[] | null = null,
+  ): Memory {
     if (engine !== 'v2') throw new Error(`unknown engine: ${JSON.stringify(engine)}`);
     const mem = new Memory(project);
     mem.showLayers = true;
     mem.layers.push(['profile', new MemoryStore(profile, { k: mem.k, create: false }), false]);
+    mem.addSkills(skills ?? []);
     mem.addNative(native);
     return mem;
   }
@@ -1026,13 +1056,13 @@ export class Memory {
    * read-only layer that cannot be read is skipped; the project layer throws, as `pooled` does.
    * The reference's `_named_facts`.
    */
-  private namedFacts(): Array<[number, string, MemoryStore | NativeStore, string[]]> {
-    const out: Array<[number, string, MemoryStore | NativeStore, string[]]> = [];
+  private namedFacts(): Array<[number, string, LayerStore, string[]]> {
+    const out: Array<[number, string, LayerStore, string[]]> = [];
     const seen = new Set<string>();
     this.layers.forEach(([label, store, writable], i) => {
       let names: string[];
       try {
-        const pool = store instanceof NativeStore ? store.pool([], [], new Set(seen)) : store.pool([], []);
+        const pool = isReadOnly(store) ? store.pool([], [], new Set(seen)) : store.pool([], []);
         names = [...new Set(allNames(pool).map((n) => pyText(n)))].filter((n) => !seen.has(n)).sort(cmpCodepoint);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
@@ -1046,7 +1076,7 @@ export class Memory {
   }
 
   /** `[layerIndex, name]` of every walked name with no entry in its layer's sidecar. */
-  private missingOf(walk: ReadonlyArray<[number, string, MemoryStore | NativeStore, string[]]>): Array<[number, string]> {
+  private missingOf(walk: ReadonlyArray<[number, string, LayerStore, string[]]>): Array<[number, string]> {
     const home = pyHome();
     const out: Array<[number, string]> = [];
     for (const [i, , store, names] of walk) {
@@ -1095,7 +1125,7 @@ export class Memory {
     return { result: 'missing', facts, remaining, instructions: loadSkill('memory-queries') };
   }
 
-  private static lookupQuiet(store: MemoryStore | NativeStore, name: string): Fact | null {
+  private static lookupQuiet(store: LayerStore, name: string): Fact | null {
     try {
       return store.lookup(name, false, []);
     } catch (e) {
@@ -1553,9 +1583,9 @@ export class Memory {
     }
   }
 
-  /** `factCount` for one bound layer; the native layer counts its own listing. */
-  private static layerCount(store: MemoryStore | NativeStore): number | null {
-    if (!(store instanceof NativeStore)) return Memory.factCount(store.root);
+  /** `factCount` for one bound layer; a read-only layer counts its own listing. */
+  private static layerCount(store: LayerStore): number | null {
+    if (!isReadOnly(store)) return Memory.factCount(store.root);
     try {
       return store.count();
     } catch (e) {

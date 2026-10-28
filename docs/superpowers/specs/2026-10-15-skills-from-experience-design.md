@@ -81,6 +81,14 @@ metadata:
      `bantamkit-sha256`. A skill the user has edited is proposed for removal instead.
    - A backup of every installed skill is kept, so undo always works.
    - **Opt-out:** `BANTAMKIT_SKILL_AUTO=off`.
+   - **AMENDED 2026-10-28 (orchestrator ruling R-AUTO-DEFAULT, posted to #206; job73 C13b/C14):** in `0.37.0`
+     this is an **opt-in**, not an opt-out. The user ruled on 2026-10-27 that #205 and #206 ship as stable
+     `0.37.0` with no `beta.3`, so the real-use bar below cannot have been met, and the release train's own rule
+     applies: automatic installation ships OFF by default. `BANTAMKIT_SKILL_AUTO` is on only for `on`, `1`,
+     `true` or `yes` (any case); unset, empty, `off` and any other value mean off, so a typo never opts anyone in.
+     Off also stops the automatic low-risk edits of X10 (they become proposals) and, by the same ruling,
+     automatic promotion; proposals, the `skill_propose` command, the judge and its automatic rollback still
+     run. See `docs/skills.md`, *The switches*.
 4. **Delivery (X8).**
    - **`[skill]` recall layer:** #199's scorer and gate match the prompt against each skill's description and
      keywords; one line is injected; the body is read through `memory_recall`. No new tool.

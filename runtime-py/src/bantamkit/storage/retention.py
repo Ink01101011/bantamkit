@@ -740,6 +740,13 @@ def child_main(argv: list[str], now: str | None = None) -> int:
     and `skill-audit.json` (J69-6's incident class: `skill-host`'s `child` snapshot case pins
     it). The audit runs after the sweep, under the same stamp, only when
     `BANTAMKIT_SKILL_AUDIT` is not off; it never raises, so it never costs the retention record.
+
+    #206 Task 8: the experience miner (`skillmine.daily`) runs after the audit, under the same
+    switch and stamp. With the sweep off, the only files the child may then change are the
+    claim, `skill-audit.json`, `skill-proposals.json`, `skill-miner-cache.json`,
+    `skills-state.json`, `skill-drafts.jsonl`, and paths under `~/.bantamkit/skills`,
+    `~/.bantamkit/skill-backups` and `<project>/.bantamkit/skills` (`skill-miner`'s snapshot
+    case pins it).
     """
     sweep = enabled()
     audit = audit_enabled()
@@ -762,9 +769,12 @@ def child_main(argv: list[str], now: str | None = None) -> int:
             except Exception as e:  # noqa: BLE001 - recorded, retried at the next day's TTL
                 _write_state(home, {"ran_at": stamp, "error": type(e).__name__})
         if audit:
+            from bantamkit import skillmine
             from bantamkit.skillreport import daily
 
             daily(home, argv[0], stamp)
+            # #206 Task 8: the experience miner after the audit, under the same claimed day.
+            skillmine.daily(home, argv[0], stamp)
     except OSError:
         pass
     return 0

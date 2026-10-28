@@ -176,7 +176,7 @@ function* walk(root: string): Generator<[string[], string[]]> {
   }
 }
 
-function jsonlFiles(root: string): string[] {
+export function jsonlFiles(root: string): string[] {
   const out: string[] = [];
   for (const [rel, files] of walk(root)) {
     for (const f of files) if (f.endsWith('.jsonl')) out.push(path.join(root, ...rel, f));
@@ -394,7 +394,11 @@ export class ClaudeCodeAdapter implements Adapter {
     candidates.push(['user', user]);
     const roots = candidates.filter(([, p]) => isDir(p));
     const [enabled, sources] = enabledPlugins(home, cwd);
-    const known = knownSkills(roots.map(([, p]) => p));
+    // job73 C15 (#206 Component 7): a typed `/<name>` of a skill bantamkit promoted by symlink
+    // names a directory under `.bantamkit/skills` (the walk never follows the link), so those
+    // roots' names are known too; the audit reads them as roots of its own (`skillreport`).
+    const own = [...(cwd !== null ? [path.join(cwd, '.bantamkit', 'skills')] : []), path.join(home, '.bantamkit', 'skills')];
+    const known = knownSkills([...roots.map(([, p]) => p), ...own.filter(isDir)]);
     return new Gathered(
       HOST_CLAUDE_CODE,
       roots,

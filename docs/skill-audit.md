@@ -211,6 +211,38 @@ plugin and the call counts. Adding a host is adding one adapter; the audit does 
 The adapter only reads. Nothing in it writes, and nothing anywhere in #205 writes under
 `~/.claude` or edits `settings.json`.
 
+**bantamkit's own skills (#206, spec Component 7; job73 C15).** The record and the report
+(not the `skill_audit` tool, which audits the one `root` it is given) also read bantamkit's
+skills roots, `<project>/.bantamkit/skills` and `~/.bantamkit/skills`, labelled
+`bantamkit-project` and `bantamkit-user` and placed after `plugins` and before the host's
+`project` and `user`. The spec's sentence is "#205's audit tracks generated skills through
+`bantamkit-generated-by`", and it is held this way:
+
+* A counted skill outside a plugin whose `SKILL.md` metadata carries a `bantamkit-generated-by`
+  string is listed in the record's `generated` and marked `(generated)` in each finding line.
+* A counted skill in a bantamkit root that no host root links to lives only in bantamkit's
+  `[skill]` recall layer, so the host does not load it: it is listed in `layer`, its bytes
+  are left out of `catalogue_bytes`, and no `never-invoked` finding is made for it (its uses
+  are recalls in the usage ledger, not `Skill` calls in the transcripts). Its phrases still
+  count: a trigger shared with a host skill is the same ambiguity.
+* A promotion is counted once. A symlink at `~/.claude/skills/<name>` is not descended, so the
+  skill is counted at its source and is not in `layer`; the adapter also takes the bantamkit
+  roots' names as known skills, so a typed `/<name>` of a promoted skill is a call. A copy (Windows without the symlink
+  right) is a real directory in the later root, so the dedupe keeps the copy the host loads
+  and names the source a `duplicate-skill` omission.
+
+`generated` and `layer` are written only when one of them is not empty, so a record and a report
+over a home with no bantamkit skills are byte for byte what they were before.
+
+**Known limit (job73 C10/C14): any other symlinked skill directory is not counted.** Neither
+runtime's audit descends a symlinked directory inside a root, so the report, its findings and
+its `catalogue_bytes` leave out a personal or project skill that is a symlink and does not point
+into a bantamkit root. #206's promotion budget counts every symlinked skill directory directly
+inside the project and user roots itself ([skills.md](skills.md#promotion-and-demotion)); the
+audit's own count of those is a follow-up. #206's promotion is also the one thing in bantamkit
+that writes under `~/.claude` (the link, or a copy, at `~/.claude/skills/<name>`); nothing ever
+edits `settings.json`.
+
 ### The transcript scan
 
 `~/.claude/projects/**/*.jsonl` over the last 30 days, the logic of the dev script
@@ -242,6 +274,8 @@ The daily run writes `~/.bantamkit/skill-audit.json`, the same bytes on both run
 keys, compact JSON, one trailing newline; written to a temp file and renamed under the lock):
 
 `{version: 1, ts, host, roots, skills, catalogue_bytes, findings, omissions, usage, proposals, surfaced}`
+
+plus `generated` and `layer` when bantamkit's own skills are present (see *The adapters*).
 
 or, when there is no skill directory or the gather failed, the error form
 `{version, ts, host, error, surfaced}` (`no skill directory was found for this host`,

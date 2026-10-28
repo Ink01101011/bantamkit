@@ -48,8 +48,19 @@
  * `now` is live), and `null`. Each session sends `prompts/list`, `prompts/get skill_audit`,
  * `prompts/get bantamkit_status`, `prompts/get nope` and `tools/call bantamkit_status`; every frame
  * is compared as canonical JSON with the build digest masked. Literals per side: the prompt names
- * in order, the `null` bed's prompt text, `-32602` for `nope`, status line 3 (`2 prompts`), and
- * the settings file byte-identical after the prompt ran (K2).
+ * in order, the `null` bed's prompt text, `-32602` for `nope`, status line 3 (`2 prompts`; `3
+ * prompts` since job73 C12 added `skill_propose`), and the settings file byte-identical after the
+ * prompt ran (K2).
+ *
+ * #206'S SKILLS (spec Component 7, job73 C15). The `generated` bed (not on win32: it holds a
+ * directory symlink) gives the audit bantamkit's own roots: a stamped skill in the `[skill]` layer
+ * sharing a quoted phrase with a host skill, an unstamped one placed by hand, a stamped project
+ * skill, a skill promoted by SYMLINK (counted once, at its source) and one promoted by COPY
+ * (counted once, at `~/.claude/skills`; the source a `duplicate-skill`), over 30 days of
+ * transcripts with no call to any of them but a typed `/gen-linked` (its name is known from the
+ * bantamkit root, since the walk never follows the link). Literals per side: the root order, `generated`,
+ * `layer`, the catalogue bytes (the layer's left out), the never-invoked ids (none for the
+ * layer), the duplicate omission, the `(generated)` mark and the two report lines.
  *
  * THE LITERALS. A change made on both sides alike (a 30-day window moved to 29, say) leaves
  * every differential green, so the counts, the spans, the adapter and the version choice are
@@ -200,6 +211,25 @@ function bedFiles(label) {
       return { cwd: 'proj', files: trapFiles() };
     case 'session-line':
       return { cwd: null, files: [['home/.keep', B(''), 1]] };
+    case 'generated': {
+      const gen = (d) => B(`---\nname: ${d.split(' ')[0]}\ndescription: ${d}\nmetadata:\n  bantamkit-generated-by: bantamkit\n  bantamkit-sha256: "x"\n---\n\n## Steps\n\n1. x\n`);
+      return {
+        cwd: 'proj',
+        files: [
+          ['home/.claude/skills/solo/SKILL.md', B(skill('Use when you "ship the release" today.')), 1],
+          ['home/.bantamkit/skills/gen-layer/SKILL.md', gen('gen-layer Use when asked to "ship the release".'), 1],
+          ['home/.bantamkit/skills/plain/SKILL.md', B(skill('Placed by hand.')), 1],
+          ['home/.bantamkit/skills/gen-linked/SKILL.md', gen('gen-linked Promoted by a link.'), 1],
+          ['home/.bantamkit/skills/gen-copy/SKILL.md', gen('gen-copy Promoted by a copy.'), 1],
+          ['home/.claude/skills/gen-copy/SKILL.md', gen('gen-copy Promoted by a copy.'), 1],
+          ['proj/.bantamkit/skills/gen-proj/SKILL.md', gen('gen-proj A project skill.'), 1],
+          // A typed `/gen-linked` is a call: the name is known from the bantamkit root.
+          [`${P}/p1/s.jsonl`, lines(use('t1', 'solo'), typed('gen-linked', 'u1')), 0],
+          [`${P}/p2/old.jsonl`, lines(use('t9', 'solo', '2026-09-06T00:00:00.000Z')), 40],
+        ],
+        links: [['home/.claude/skills/gen-linked', 'home/.bantamkit/skills/gen-linked']],
+      };
+    }
     default:
       throw new Error(label);
   }
@@ -268,7 +298,7 @@ function trapFiles() {
 }
 
 const REPORT_BEDS = ['report-full', 'report-young', 'report-mixed', 'report-minified', 'report-armed'];
-const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS, 'daily-trap', 'session-line'];
+const BEDS = ['claude-full', 'claude-young', 'two-shapes', 'no-settings', 'project-scope', ...(WIN ? [] : ['links']), 'null', ...REPORT_BEDS, 'daily-trap', 'session-line', ...(WIN ? [] : ['generated'])];
 const LATER = '2026-10-17T00:00:00.000Z';
 const SAME_DAY = '2026-10-16T12:00:00.000Z';
 
@@ -474,6 +504,21 @@ export async function run(ctx) {
       }
     }
   };
+  const withEnvAsync = async (env, fn) => {
+    const saved = Object.fromEntries(Object.keys(env ?? {}).map((k) => [k, process.env[k]]));
+    try {
+      for (const [k, v] of Object.entries(env ?? {})) {
+        if (v === null) delete process.env[k];
+        else process.env[k] = v;
+      }
+      return await fn();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
   const readOr = (p) => {
     try {
       return readFileSync(p, 'utf8');
@@ -481,7 +526,7 @@ export async function run(ctx) {
       return null;
     }
   };
-  const task4 = (op) => {
+  const task4 = async (op) => {
     if (op.op === 'put') {
       mkdirSync(dirname(op.path), { recursive: true });
       writeFileSync(op.path, Buffer.from(op.data, 'base64'));
@@ -513,13 +558,15 @@ export async function run(ctx) {
     if (op.fresh === 'both' || op.fresh === 'audit') rm(R.statePath(op.home));
     if (op.fresh === 'both') rm(RT.statePath(op.home));
     const before = snapshot(op.base);
-    withEnv(op.env, () => RT.childMain([op.cwd, op.home], op.now));
+    // job73 C9 (#206 Task 8): `childMain` is async (the miner may draft through an endpoint), so
+    // the env is held across the await and the snapshot is taken after it settles.
+    await withEnvAsync(op.env, () => RT.childMain([op.cwd, op.home], op.now));
     const after = snapshot(op.base);
     const changed = [...new Set([...before.keys(), ...after.keys()])].filter((k) => before.get(k) !== after.get(k)).sort(cmpCp);
     return dumpIndex({ audit: readOr(R.statePath(op.home)), state: readOr(RT.statePath(op.home)), changed });
   };
-  const nodeOne = (op) => {
-    if (['put', 'resurface', 'daily', 'status', 'child', 'spawn'].includes(op.op)) return task4(op);
+  const nodeOne = async (op) => {
+    if (['put', 'resurface', 'daily', 'status', 'child', 'spawn'].includes(op.op)) return await task4(op);
     if (op.op === 'line') {
       if (op.record !== null) {
         mkdirSync(dirname(R.statePath(op.home)), { recursive: true });
@@ -534,7 +581,7 @@ export async function run(ctx) {
       let rec;
       if (op.no_usage) {
         const g = H.selectAdapter(op.home).gather(op.home, op.cwd, now);
-        rec = R.buildRecord(new H.Gathered(g.host, g.roots, g.enabled, g.versions, g.sources, null), op.now);
+        rec = R.buildRecord(new H.Gathered(g.host, g.roots, g.enabled, g.versions, g.sources, null), op.now, R.ownRoots(op.home, op.cwd));
       } else {
         rec = R.runLive(op.home, op.cwd, op.now);
       }
@@ -562,7 +609,8 @@ export async function run(ctx) {
     buildBed(base, label);
     let nd;
     try {
-      nd = ops.map(nodeOne);
+      nd = [];
+      for (const op of ops) nd.push(await nodeOne(op));
     } finally {
       release(base);
     }
@@ -719,8 +767,15 @@ export async function run(ctx) {
   // THE MOST IMPORTANT CASE (Amendment A3, J69-6's class): retention off, audit on — over a trap
   // the sweep would change, the child touches only the claim and the audit record.
   literal(
-    'daily-trap: retention off, audit on changes ONLY retention.json\'s claim and skill-audit.json',
-    { changed: ['home/.bantamkit/retention.json', 'home/.bantamkit/skill-audit.json'], state: `{"ran_at":"${NOW}"}\n`, audited: NOW },
+    // AMENDED job73 C9 (#206 Task 8): the experience miner runs after the audit, under the same
+    // switch, and writes its proposals file and its cache (with no endpoint and the auto switch
+    // pinned off, nothing else); `skill-miner`'s `daily` cases pin the whole file list.
+    'daily-trap: retention off, audit on changes ONLY retention.json\'s claim, skill-audit.json and the miner\'s two files',
+    {
+      changed: ['home/.bantamkit/retention.json', 'home/.bantamkit/skill-audit.json', 'home/.bantamkit/skill-miner-cache.json', 'home/.bantamkit/skill-proposals.json'],
+      state: `{"ran_at":"${NOW}"}\n`,
+      audited: NOW,
+    },
     (a, s) => {
       const r = T('daily-trap', 'child retention off, audit on')(a, s);
       return { changed: r.changed, state: r.state, audited: r.audit === null ? null : JSON.parse(r.audit).ts };
@@ -745,6 +800,38 @@ export async function run(ctx) {
     const r = T('daily-trap', 'child retention on, audit on')(a, s);
     return r.audit === null ? null : JSON.parse(r.audit).ts;
   });
+
+  // ---------------------------------------------- #206 Component 7 literals (job73 C15)
+  if (!WIN) {
+    const G = (i) => (a, side) => a.generated[side][i];
+    literal('generated: roots in order plugins, bantamkit-project, bantamkit-user, user', ['bantamkit-project', 'bantamkit-user', 'user'], (a, s) => G(3)(a, s).roots.map(([l]) => l));
+    literal(
+      'generated: the stamped skills are generated, the unpromoted bantamkit ones are the [skill] layer',
+      { generated: ['gen-copy', 'gen-layer', 'gen-linked', 'gen-proj'], layer: ['gen-layer', 'gen-proj', 'plain'] },
+      (a, s) => ({ generated: G(3)(a, s).generated ?? null, layer: G(3)(a, s).layer ?? null }),
+    );
+    literal(
+      'generated: six skills counted once each; the layer is not in the catalogue bytes; the copy source is the one duplicate',
+      { skills: 6, catalogue_bytes: [38, 30, 28].reduce((x, y) => x + y), omissions: [{ count: 1, size: 28, subject: 'duplicate-skill', what: 'bantamkit-user/gen-copy/SKILL.md' }] },
+      (a, s) => ({ skills: G(3)(a, s).skills, catalogue_bytes: G(3)(a, s).catalogue_bytes, omissions: G(3)(a, s).omissions }),
+    );
+    literal(
+      'generated: never-invoked names the host-loaded skills only (the layer has no Skill calls to count; a typed /gen-linked is a call)',
+      [['gen-copy']],
+      (a, s) => G(3)(a, s).findings.filter((f) => f.kind === 'never-invoked').map((f) => f.skills),
+    );
+    literal(
+      'generated: the report marks a generated skill in a finding and names both lists',
+      [
+        '- high shared-trigger-phrase: gen-layer (generated), solo — ship the release',
+        'generated by bantamkit (bantamkit-generated-by): 4 — gen-copy, gen-layer, gen-linked, gen-proj',
+        "in bantamkit's [skill] layer only, so not in the catalogue bytes and never called never-invoked: 3 — gen-layer, gen-proj, plain",
+      ],
+      (a, s) => G(4)(a, s).split('\n').filter((l) => l.includes('generated') || l.includes('[skill] layer')).filter((l) => !l.startsWith('- low')),
+    );
+  } else {
+    notes.push('generated bed skipped on win32: a directory symlink needs a privilege the runner may lack');
+  }
 
   // ------------------------------------------------------------------- Task 5 literals
   const L = (tag) => T('session-line', tag);
@@ -891,7 +978,8 @@ export async function run(ctx) {
     }
   };
   const PROMPT_TAIL = 'Show me this report as it stands. Do not edit settings.json yourself; if a change is proposed above, ask me before applying it.';
-  wireLiteral('prompts/list names, bantamkit_status first', ['bantamkit_status', 'skill_audit'], (s) => (W('claude-full', 2)(s)?.result?.prompts ?? []).map((p) => p.name));
+  // AMENDED job73 C12 (#206 Task 11): `skill_propose` is listed third.
+  wireLiteral('prompts/list names, bantamkit_status first', ['bantamkit_status', 'skill_audit', 'skill_propose'], (s) => (W('claude-full', 2)(s)?.result?.prompts ?? []).map((p) => p.name));
   wireLiteral(
     'null: the skill_audit prompt text is the could-not-run sentence and the tail',
     `skill audit — could not run: no skill directory was found for this host. The \`skill_audit\` tool still audits any directory you name as \`root\`.\n\n${PROMPT_TAIL}`,
@@ -906,7 +994,8 @@ export async function run(ctx) {
     const e = W('claude-full', 5)(s)?.error;
     return [e?.code ?? null, e?.message ?? null];
   });
-  wireLiteral('status line 3 counts 2 prompts', 'serving 15 tools, 2 prompts, 2 resource templates', (s) => (W('claude-full', 6)(s)?.result?.content?.[0]?.text ?? '').split('\n')[2] ?? null);
+  // AMENDED job73 C12 (#206 Task 11): 2 -> 3 prompts.
+  wireLiteral('status line 3 counts 3 prompts', 'serving 15 tools, 3 prompts, 2 resource templates', (s) => (W('claude-full', 6)(s)?.result?.content?.[0]?.text ?? '').split('\n')[2] ?? null);
   wireLiteral('claude-full: settings.json byte-identical after the prompt ran (K2)', 'byte-identical', (s) => wire['claude-full'].kept[s]);
 
   notes.push(`${BEDS.length} beds, both runtimes, over identical paths under ${join(ctx.scratch, 'skill-host')}`);

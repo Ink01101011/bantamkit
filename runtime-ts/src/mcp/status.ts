@@ -40,6 +40,7 @@ import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
 import { statusLine } from '../memory/usage.js';
 import { statusLine as queriesStatusLine } from '../memory/queries.js';
 import type { MemoryStore } from '../memory/store.js';
+import { statusLine as minerStatusLine } from '../skillmine.js';
 import { statusLine as skillStatusLine } from '../skillreport.js';
 import { currentCwd, statusLines } from '../storage/tiers.js';
 import { updateLine } from '../updatecheck.js';
@@ -84,7 +85,7 @@ export const STATUS_PROMPT_TAIL =
  * wire session drives a real `prompts/list` and `resources/templates/list` against both
  * runtimes, so a registration added or removed without moving these fails the suite.
  */
-export const SERVED_PROMPTS = 2;
+export const SERVED_PROMPTS = 3;
 export const SERVED_RESOURCE_TEMPLATES = 2;
 
 /**
@@ -454,6 +455,7 @@ export function statusReport(
   tools: number,
   prompts: number,
   templates: number,
+  sampling = false,
 ): string {
   const build = identity.get('build_id');
   const facts = Memory['factCount'](memory.store.root);
@@ -506,6 +508,10 @@ export function statusReport(
     // #205 Task 4: the last daily skill audit, after every earlier line so each keeps its number.
     // Not a condition: it never flips line 1, as the storage block never does.
     skillStatusLine(homedir()),
+    // #206 Task 8: the experience miner's last daily run, after the audit line so every earlier
+    // line keeps its number. `sampling` is the client's declared capability (Task 11): the drafter
+    // a `skill_propose` approve would reach first.
+    minerStatusLine(homedir(), sampling),
   ];
   if (conditions.length > 0) {
     lines.push(`${plural(conditions.length, 'problem')}:`);

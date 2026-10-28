@@ -49,7 +49,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
   [the fifteen tools](#-what-it-serves).
 - **Same answers as the Python server.** The Python server serves the same fifteen tools,
-  two prompts (`bantamkit_status`, `skill_audit`) and two resource templates, and reads and writes the same memory
+  three prompts (`bantamkit_status`, `skill_audit`, `skill_propose`) and two resource templates, and reads and writes the same memory
   store. Every surface is compared between both runtimes by a conformance suite
   (`node tools/conformance/run.mjs --all` in the repository), and every intentional difference
   is written down as a ruling.
@@ -70,7 +70,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Updating](#-updating) | `--update`, the per-install table, then restart |
 | [Troubleshooting](#-troubleshooting) | Connection closed, timeouts, `ENOENT`, refusals, the wrong store |
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
-| [What it serves](#-what-it-serves) | 15 tools, two prompts, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, three prompts, two resource templates |
 | [Silent version float](#-silent-version-float) | Why two machines run different builds, and `build_identity` |
 | [The operator CLI: `bantamkit-memory`](#-the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archived, archive, restore, list, candidates, merge |
 | [Memory stores are layered by default](#-memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
@@ -285,14 +285,14 @@ startup. In Claude Code: `/mcp` → reconnect. In Claude Desktop: a full restart
 **Verify with `bantamkit_status`, not the install log.** It reports the version and the
 `build_id` of *the code that is answering you*:
 
-*(The first three lines of a capture from this tree's `dist/` at `0.37.0-beta.2` (job73, #205); line 3
-tracks the served surface, which this repo gates against a running server — `docs/status.md` has
-the whole report.)*
+*(The first three lines of a capture from this tree's `dist/` at `0.37.0-beta.2` (job73, #206, at
+`67cb0a8`); line 3 tracks the served surface, which this repo gates against a running server —
+`docs/status.md` has the whole report.)*
 
 ```
 bantamkit Active 🟢
-version 0.37.0-beta.2, build sha256:88387f91…
-serving 15 tools, 2 prompts, 2 resource templates
+version 0.37.0-beta.2, build sha256:7d76bc78…
+serving 15 tools, 3 prompts, 2 resource templates
 ```
 
 A version that moved and a `build_id` that did not means you are reading a config, not a process.
@@ -332,6 +332,7 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `--k K` | Default recall budget | `3` | `"--k", "5"` |
 | `--index-budget BYTES` | Memory index byte budget | `24000` | `"--index-budget", "32000"` |
 | `BANTAMKIT_EVENT_LOG` | Logs tool outcomes as JSONL | off; `on` → `<store>/events/mcp.jsonl`; other values are a path | `"env": {"BANTAMKIT_EVENT_LOG": "on"}` |
+| `BANTAMKIT_SKILL_AUTO` | Skills from experience (#206): lets the daily run install a skill it mined, make low-risk edits to installed skills and promote a much-used one to a native link on its own. Off, the same work waits for you as proposals in the `skill_propose` prompt | **off** in 0.37.0; `on` (or `1`/`true`/`yes`) opts in | `"env": {"BANTAMKIT_SKILL_AUTO": "on"}` |
 | `BANTAMKIT_ASSETS` | Your own asset pack (skills, rubrics, schemas) | the pack inside the package | `"env": {"BANTAMKIT_ASSETS": "/abs/my-assets"}` |
 | `BANTAMKIT_HOST_LOG_ROOT` | Where `--mcp-report` finds the host's MCP logs | macOS `~/Library/Caches/claude-cli-nodejs`; elsewhere unset | `BANTAMKIT_HOST_LOG_ROOT=/abs/logs bantamkit-mcp --mcp-report` |
 | `BANTAMKIT_PRICES` | Price table for the token ledger | `pricing/default.json` in the asset pack | `"env": {"BANTAMKIT_PRICES": "/abs/prices.json"}` |
@@ -347,7 +348,7 @@ serves. `--which` belongs to the checkout launchers `tools/bantamkit-mcp` and
 
 ## 🧰 What it serves
 
-It serves 15 tools, two prompts (`bantamkit_status` and `skill_audit`) and two resource templates
+It serves 15 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_propose`) and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`), the same as the Python server:
 
 | Tool | What it does |

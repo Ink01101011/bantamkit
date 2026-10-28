@@ -327,8 +327,9 @@ MCP servers it writes itself; the checker guards the machine, run deliberately.
 
 ### Resources and the prompts
 
-Two resource templates and two prompts on both servers: `bantamkit_status` (`docs/status.md`) and,
-since #205 (job73), `skill_audit` (`docs/skill-audit.md`, *As a command and on a schedule*), listed in
+Two resource templates and three prompts on both servers: `bantamkit_status` (`docs/status.md`),
+since #205 (job73) `skill_audit` (`docs/skill-audit.md`, *As a command and on a schedule*), and since
+#206 (job73) `skill_propose` (`docs/skills.md`, *The command*), listed in
 that order (`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> res`):
 
 | Resource | Serves |

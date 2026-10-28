@@ -116,7 +116,7 @@ test('#147: a null optional field is the field left out', async () => {
   const got = byId(await ask([rpc(2, 'tools/call', { name: 'work_plan', arguments: null }), rpc(3, 'prompts/list', { cursor: null })], 2));
   assert.equal(JSON.parse(got.get('2')).result.isError, true, 'served: work_plan itself names the missing `nodes`');
   assert.match(JSON.parse(got.get('2')).result.content[0].text, /nodes/);
-  assert.equal(JSON.parse(got.get('3')).result.prompts.length, 2); // AMENDED job73 A6 (#205 Task 6): 1 -> 2, `skill_audit`
+  assert.equal(JSON.parse(got.get('3')).result.prompts.length, 3); // AMENDED job73 A6 (#205 Task 6): 1 -> 2, `skill_audit`; C12 (#206 Task 11): 2 -> 3, `skill_propose`
 });
 
 test('#178: before initialize only ping is served; an accepted initialize opens the rest', async () => {

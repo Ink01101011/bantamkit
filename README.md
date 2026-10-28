@@ -66,7 +66,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
 | [Update](#-update) | `--update`, then restart the server |
 | [Troubleshooting](#-troubleshooting) | Timeouts, Connection closed, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 15 tools, two prompts, two resource templates |
+| [What it serves](#-what-it-serves) | 15 tools, three prompts, two resource templates |
 | [Use it as a Python library](#-use-it-as-a-python-library) | `pip install bantamkit` and a minimal agent |
 | [Recommended defaults](#-recommended-defaults) | Which components to attach, measured on four models |
 | [Documentation](#-documentation) | Every page under `docs/` |
@@ -244,6 +244,9 @@ Flags go in the entry's `args`; environment variables in its `env` block (or
 | `BANTAMKIT_EVENT_LOG` | Logs tool outcomes as JSONL | off; `on` → `<store>/events/mcp.jsonl`; other values are a path | `"env": {"BANTAMKIT_EVENT_LOG": "on"}` |
 | `BANTAMKIT_RETENTION` | The daily Retention job: deletes session read ledgers older than 7 days, folds log lines older than 30 days, archives closed `.shiftwork` jobs 7 days after they close (verified before delete). It does not stop the daily skill audit, which has its own switch (next row) | on; `off` (or `0`/`false`/`no`) turns it off | `"env": {"BANTAMKIT_RETENTION": "off"}` — [docs/storage.md](docs/storage.md#retention) |
 | `BANTAMKIT_SKILL_AUDIT` | The daily skill audit (#205): the same once-a-day child audits your skills and writes `~/.bantamkit/skill-audit.json`; `bantamkit_status` prints its last run. Its own switch: with `BANTAMKIT_RETENTION=off` and this on, the child still wakes once a day, audits, and deletes nothing. Off also silences the SessionStart skill-audit line, even over an older record; the `skill_audit` prompt still runs on request | on; `off` (or `0`/`false`/`no`) turns it off | `"env": {"BANTAMKIT_SKILL_AUDIT": "off"}` — [docs/storage.md](docs/storage.md#retention) |
+| `BANTAMKIT_SKILL_AUTO` | Skills from experience (#206): lets the daily run INSTALL a skill it mined (twice the bar, a gated draft, one a day, five live, 30 days of probation) and make the low-risk EDITS to installed skills (keyword widening, a Pitfalls line, a drafted description) and PROMOTE a skill used 3 times in 30 days to a native link, on its own. Off, the same work waits for you as proposals in the `skill_propose` prompt; the judge still rolls back a change of bantamkit's that made things worse. `bantamkit_status`'s `skills:` line ends with `auto on` or `auto off (BANTAMKIT_SKILL_AUTO=on to opt in)` | **off** in 0.37.0; `on` (or `1`/`true`/`yes`, any case) opts in, and any other value leaves it off | `"env": {"BANTAMKIT_SKILL_AUTO": "on"}` |
+| `BANTAMKIT_LLM_URL`, `BANTAMKIT_LLM_MODEL` | Skills from experience (#206): an OpenAI-compatible endpoint (`<url>/chat/completions`) bantamkit itself may ask to draft a skill, after MCP sampling and before the host agent. Both must be set. No key is sent but `Bearer none`, which local endpoints (Ollama, LM Studio) accept. The daily run drafts through it only when `BANTAMKIT_SKILL_AUTO` is on | unset: no endpoint | `"env": {"BANTAMKIT_LLM_URL": "http://localhost:11434/v1", "BANTAMKIT_LLM_MODEL": "qwen2.5-coder"}` — [docs/skills.md](docs/skills.md#the-drafter) |
+| `BANTAMKIT_SKILL_BUDGET` | Skills from experience (#206): the catalogue budget in bytes (the summed `description` bytes of every skill the host loads) that promoting a skill to a native link may not exceed | `8192`; any value that is not 1–15 digits falls back to it | `"env": {"BANTAMKIT_SKILL_BUDGET": "12000"}` |
 | `BANTAMKIT_INDEX_DIR` | Where the derived recall indexes live (hot and cold); deleting them loses nothing | `~/.bantamkit/index` | `"env": {"BANTAMKIT_INDEX_DIR": "/abs/scratch/index"}` |
 | `BANTAMKIT_ASSETS` | Your own asset pack (skills, rubrics, schemas) | the pack inside the package | `"env": {"BANTAMKIT_ASSETS": "/abs/my-assets"}` |
 | `BANTAMKIT_HOST_LOG_ROOT` | Where `--mcp-report` finds the host's MCP logs | macOS `~/Library/Caches/claude-cli-nodejs`; elsewhere unset | `BANTAMKIT_HOST_LOG_ROOT=/abs/logs bantamkit-mcp --mcp-report` |
@@ -292,11 +295,14 @@ means an old process. Per-install table: [npm README → Updating](runtime-ts/RE
 
 ## 🧰 What it serves
 
-Both servers serve the same 15 tools, two prompts and two resource templates
+Both servers serve the same 15 tools, three prompts and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`). The prompts are what a person invokes from
-the host's slash menu: `bantamkit_status` (the status report) and `skill_audit` (#205: gathers the
+the host's slash menu: `bantamkit_status` (the status report), `skill_audit` (#205: gathers the
 skills this host loads, audits them, and inserts the report plus a proposed `settings.json` change
-that is never applied for you; in Claude Code it is `/mcp__bantamkit__skill_audit`):
+that is never applied for you; in Claude Code it is `/mcp__bantamkit__skill_audit`) and
+`skill_propose` (#206: lists the skills bantamkit proposes from your repeated, successful work and
+the ones it installed, and approves, rejects, undoes, promotes or demotes one; in Claude Code it is
+`/mcp__bantamkit__skill_propose`, see [docs/skills.md](docs/skills.md)):
 
 | Tool | What it does |
 |---|---|
@@ -384,6 +390,7 @@ Measured on the bundled 22-task suite across four models, 528 runs each. Numbers
 | [Status](docs/status.md) | `bantamkit_status`, line by line, and the degraded footer |
 | [Token ledger](docs/ledger.md) | `token_ledger`: what a session cost, and the price table |
 | [Skill audit](docs/skill-audit.md) | `skill_audit`: what the skill catalogue costs every session |
+| [Skills from experience](docs/skills.md) | `skill_propose`: skills bantamkit mines from repeated, successful work, the `[skill]` layer, promotion and self-improvement |
 | [Shift-work](docs/shiftwork.md) | Checkpoint contract and clock-in/clock-out driver (experimental) |
 | [Porting](docs/porting.md) | The Node port, `PyScalar`, and where the two runtimes deliberately differ |
 | [Conformance](docs/conformance.md) | The two-runtime diff harness and what a `ruling:` pins |

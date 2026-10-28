@@ -17,6 +17,12 @@
  * THE PROMPT (Task 6): `skill_audit`, the second MCP prompt, answers
  * `renderReport(runLive(home, cwd, now)) + '\n\n' + SKILL_AUDIT_PROMPT_TAIL` as one user message.
  *
+ * #206'S SKILLS (spec Component 7, job73 C15): `runLive` audits bantamkit's own skills roots too
+ * (`bantamkit-project`, `bantamkit-user`), after `plugins` and before the host's `project` and
+ * `user`; the record gains `generated` (counted skills whose metadata carries a
+ * `bantamkit-generated-by` string) and `layer` (counted skills in a bantamkit root no host root
+ * links to: not in `catalogue_bytes`, never `never-invoked`). The reference's docstring says why.
+ *
  * K2: it REPORTS and PROPOSES a `settings.json` diff; it never edits the file — nothing here
  * opens a file for writing. A plugin is proposed only when usage is present, the transcripts span
  * at least `USAGE_DAYS` days, and every one of its counted skills had zero calls. Skills outside
@@ -31,8 +37,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { cmpCodepoint } from './pysem.js';
-import { auditRoots, scanRoots } from './skillaudit.js';
+import { auditRoots, KIND_NEVER_INVOKED, scanRoots } from './skillaudit.js';
 import type { FindingDict, LabelledRoot, OmissionDict, ScannedSkill } from './skillaudit.js';
+import { parseSkill } from './skillfile.js';
 import { Gathered, HOST_NONE, USAGE_DAYS, selectAdapter } from './skillhost.js';
 import type { UsageSummary } from './skillhost.js';
 import { dumpIndex } from './storage/hotindex.js';
@@ -44,6 +51,11 @@ export const STATE_VERSION = 1;
 export const NO_ROOTS = 'no skill directory was found for this host';
 export const GATHER_FAILED = 'the gather failed';
 export const NOT_APPLIED = 'NOT applied; bantamkit never edits settings.json';
+/** Component 7 (#206): the labels of bantamkit's own skills roots, and the stamp of a skill it wrote. */
+export const OWN_PROJECT = 'bantamkit-project';
+export const OWN_USER = 'bantamkit-user';
+export const GENERATED_KEY = 'bantamkit-generated-by';
+const HOST_LOCAL = ['project', 'user'];
 
 /** The `skill_audit` MCP prompt (#205 Task 6), a PERSON's command; both servers serve these bytes. */
 export const SKILL_AUDIT_NAME = 'skill_audit';
@@ -80,6 +92,9 @@ export interface AuditRecord {
   usage: UsageSummary | null;
   proposals: Proposal[];
   surfaced: string[];
+  /** Component 7: present only when a bantamkit-written or `[skill]`-layer skill was counted. */
+  generated?: string[];
+  layer?: string[];
 }
 
 export interface ErrorRecord {
@@ -167,27 +182,120 @@ const errorRecord = (now: string, host: string, error: string): ErrorRecord => (
 });
 
 /** The stored record (`skill-audit.json`, written by the daily run), or its error form. */
-export function buildRecord(g: Gathered, now: string): SkillRecord {
-  if (g.roots.length === 0) return errorRecord(now, g.host, NO_ROOTS);
-  const roots: LabelledRoot[] = g.roots.map(([label, path]) => ({ label, path }));
+const realOr = (p: string): string | null => {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+};
+const isDir = (p: string): boolean => {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+const isLink = (p: string): boolean => {
+  try {
+    return fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+};
+
+/** bantamkit's skills roots that exist: `<cwd>/.bantamkit/skills`, then `~/.bantamkit/skills`; a
+ * root whose real path was already listed is left out (a cwd at the home). */
+export function ownRoots(home: string, cwd: string | null): [string, string][] {
+  const candidates: [string, string][] = [];
+  if (cwd !== null) candidates.push([OWN_PROJECT, path.join(cwd, '.bantamkit', 'skills')]);
+  candidates.push([OWN_USER, path.join(home, '.bantamkit', 'skills')]);
+  const out: [string, string][] = [];
+  const seen = new Set<string>();
+  for (const [label, p] of candidates) {
+    const real = isDir(p) ? realOr(p) : null;
+    if (real === null || seen.has(real)) continue;
+    seen.add(real);
+    out.push([label, p]);
+  }
+  return out;
+}
+
+/** Whether the `SKILL.md` at `file` carries a `bantamkit-generated-by` string; any failure is false. */
+function stamped(file: string): boolean {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(file));
+    const value = parseSkill(text).metadata[GENERATED_KEY];
+    return typeof value === 'string' && value !== '';
+  } catch {
+    return false; // unreadable, not UTF-8 or not an X9 shape: the audit already reports it
+  }
+}
+
+/** `[generated ids, layer ids, layer bytes]` over the counted skills outside a plugin. */
+function ownership(found: readonly ScannedSkill[], roots: [string, string][]): [string[], string[], number] {
+  const where = new Map(roots);
+  const host = HOST_LOCAL.filter((l) => where.has(l)).map((l) => where.get(l)!);
+  const generated = new Set<string>();
+  const layer = new Set<string>();
+  let layerBytes = 0;
+  for (const s of found) {
+    if (s.omitted !== null || s.plugin !== '') continue;
+    const slash = s.relpath.indexOf('/');
+    const label = s.relpath.slice(0, slash);
+    const file = path.join(where.get(label)!, s.relpath.slice(slash + 1));
+    if (stamped(file)) generated.add(s.id);
+    if (label !== OWN_PROJECT && label !== OWN_USER) continue;
+    const real = realOr(path.dirname(file));
+    const linked = host.some((r) => {
+      const p = path.join(r, s.directory);
+      return isLink(p) && real !== null && realOr(p) === real;
+    });
+    if (!linked) {
+      layer.add(s.id);
+      layerBytes += s.bytes;
+    }
+  }
+  return [[...generated].sort(cmpCodepoint), [...layer].sort(cmpCodepoint), layerBytes];
+}
+
+/**
+ * The stored record (`skill-audit.json`, written by the daily run), or its error form. `own` is
+ * `ownRoots(home, cwd)`: bantamkit's skills roots, audited after the plugins and before the
+ * host's project and user roots (Component 7).
+ */
+export function buildRecord(g: Gathered, now: string, own: [string, string][] = []): SkillRecord {
+  const hostRoots: [string, string][] = g.roots.map(([l, p]) => [l, p]);
+  const all: [string, string][] = [...hostRoots.filter(([l]) => l === 'plugins'), ...own, ...hostRoots.filter(([l]) => l !== 'plugins')];
+  if (all.length === 0) return errorRecord(now, g.host, NO_ROOTS);
+  const roots: LabelledRoot[] = all.map(([label, path]) => ({ label, path }));
   const counts = g.usage === null ? null : g.usage.counts;
   const versions = g.versions === null ? null : new Map(Object.entries(g.versions));
   const found = scanRoots(roots, [...g.enabled], versions);
   const result = auditRoots(roots, { enabled: [...g.enabled], usage: counts, versions });
   const span = g.usage === null ? 0 : g.usage.spanDays;
-  return {
+  const [generated, layer, layerBytes] = ownership(found, all);
+  const findings = result.findings
+    .map((f) => f.asDict())
+    .filter((f) => !(f.kind === KIND_NEVER_INVOKED && f.skills.length > 0 && layer.includes(f.skills[0]!)));
+  const record: AuditRecord = {
     version: STATE_VERSION,
     ts: now,
     host: g.host,
-    roots: g.roots.map(([l, p]) => [l, p]),
+    roots: all,
     skills: result.skills,
-    catalogue_bytes: result.catalogueBytes,
-    findings: result.findings.map((f) => f.asDict()),
+    catalogue_bytes: result.catalogueBytes - layerBytes,
+    findings,
     omissions: result.omissions.map((o) => o.asDict()),
     usage: g.usage === null ? null : g.usage.summary(),
     proposals: propose(found, counts, span, g.sources),
     surfaced: [],
   };
+  if (generated.length > 0 || layer.length > 0) {
+    record.generated = generated;
+    record.layer = layer;
+  }
+  return record;
 }
 
 /** Gather and audit now. Never throws: a failure is the error record (spec, "Gather fails"). */
@@ -196,7 +304,7 @@ export function runLive(home: string, cwd: string | null, now: string): SkillRec
   try {
     const adapter = skillreportDeps.selectAdapter(home);
     host = adapter.host;
-    return buildRecord(adapter.gather(home, cwd, parseNow(now)), now);
+    return buildRecord(adapter.gather(home, cwd, parseNow(now)), now, ownRoots(home, cwd));
   } catch {
     // The report says it failed; no hook or tool fails.
     return errorRecord(now, host, GATHER_FAILED);
@@ -259,10 +367,17 @@ export function renderReport(record: SkillRecord): string {
         `${usage.skipped_lines} lines skipped)`,
     );
   }
+  const generated = record.generated ?? [];
+  const layer = record.layer ?? [];
   lines.push(`findings: ${sev.get('high') ?? 0} high, ${sev.get('medium') ?? 0} medium, ${sev.get('low') ?? 0} low`);
   for (const f of record.findings) {
-    const who = f.skills.length > 0 ? f.skills.join(', ') : 'the catalogue';
+    const named = f.skills.map((s) => (generated.includes(s) ? `${s} (generated)` : s));
+    const who = named.length > 0 ? named.join(', ') : 'the catalogue';
     lines.push(`- ${f.severity} ${f.kind}: ${who} — ${f.detail}`);
+  }
+  if (generated.length > 0) lines.push(`generated by bantamkit (${GENERATED_KEY}): ${generated.length} — ${generated.join(', ')}`);
+  if (layer.length > 0) {
+    lines.push(`in bantamkit's [skill] layer only, so not in the catalogue bytes and never called never-invoked: ${layer.length} — ${layer.join(', ')}`);
   }
   if (record.omissions.length > 0) {
     lines.push('omissions: ' + record.omissions.map((o) => `${o.subject} ${o.count} (${o.size} bytes)`).join('; '));

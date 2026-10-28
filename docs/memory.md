@@ -1324,6 +1324,7 @@ means there is no `native` layer.
 | `project` | nearest `.bantamkit/memory` at or above `start` (default cwd) | yes — saves, recall stamps, `compact`, `lint` |
 | `extra:<name>` | each path listed in `.bantamkit/config.yaml` | never |
 | `profile` | `~/.bantamkit/memory` | never |
+| `skill` | `<project>/.bantamkit/skills`, then `~/.bantamkit/skills` — bantamkit's learned skills (#206), bound only when one of the two is a directory | never |
 | `native` | Claude Code's auto-memory directory, when one is found | never |
 
 ### The `[native]` layer: Claude Code's auto-memory (#199)
@@ -1367,6 +1368,42 @@ layer, and its hits are tagged `[native]`:
   42.6–42.9 ms with the layer and 40.7–41.2 ms on 0.36.0, so all of #199 costs
   1.6–2.1 ms. Python took 360.7–361.3 ms with the layer and 358.4–360.2 ms without
   it. The command is in `.shiftwork/notes-job68/J68-11.md`.
+
+### The `[skill]` layer: bantamkit's learned skills (#206)
+
+The skills bantamkit installs from repeated, successful work (`docs/skills.md`) reach the
+agent first through recall, not through the host's skill catalogue. The layer sits after
+`profile` and before `native` (bantamkit's own data before the host's), and its hits are
+tagged `[skill]`:
+
+```
+[skill] [fixing-windows-encoding] (skill) Fixes UTF-8 decode failures in tests on Windows. Use when a test passes on macOS but fails on Windows with UnicodeDecodeError.
+```
+
+- **What is read.** Every `<root>/<name>/SKILL.md` under `<project top>/.bantamkit/skills`
+  (only when the project store's parent is a `.bantamkit` directory) and then
+  `~/.bantamkit/skills`. The prompt is scored against the skill's `name`, its `description`
+  and the comma-separated `metadata.bantamkit-keywords` (as `keywords`) by the same BM25F and
+  the same gate as every other layer. The type is `skill`, which `W_TYPE` does not list, so it
+  weighs `W_TYPE_OTHER`; no #199 constant changed. The body is read through `memory_recall`
+  by name.
+- **Bound only when present.** The layer exists only when one of the two roots is a
+  directory, so a machine with no skill has exactly the layers it had before #206. A
+  short-lived hook sees a new skill at once; a long-lived MCP server binds its layers once, so
+  it sees the FIRST skills directory only after a restart.
+- **Left out.** A skill `skills-state.json` records as promoted (its native link carries it;
+  injecting it too would pay for it twice), a hidden directory, a directory `skillfile` is
+  building or has set aside, and a directory with no `SKILL.md` are left out silently. A
+  `SKILL.md` that is not UTF-8, cannot be read, does not parse or breaks a format rule is left
+  out and named in `skipped`, like a broken fact file. Two roots holding one name keep the
+  first.
+- **Shadowing.** Any bantamkit layer's name drops a skill of that name before scoring, and a
+  skill's name drops a `native` fact of that name.
+- **Read-only, no hot index.** No stamp, no read-repair, no save, no compaction, no `dream`.
+  A use is a `recall_hit` or `body_read` by name in the usage ledger, which is how the
+  installer counts uses for probation, promotion and the judge. A skill is a directory and
+  must be validated whole before it is offered, so the layer parses every `SKILL.md` on each
+  recall and writes no index (about 0.25 ms per skill, measured by job73 C4 with 20 skills).
 
 ### Discovery
 

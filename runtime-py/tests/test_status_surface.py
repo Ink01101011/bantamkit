@@ -33,7 +33,7 @@ pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
 
-from bantamkit import skillreport, updatecheck  # noqa: E402
+from bantamkit import skillpropose, skillreport, updatecheck  # noqa: E402
 from bantamkit.assets import AssetNotFound, assets_root  # noqa: E402
 from bantamkit.eventlog import EventLog  # noqa: E402
 from bantamkit.mcpserver import (  # noqa: E402
@@ -162,10 +162,12 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     # between the logs and retention, so retention and the two lines after it move down one.
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line LAST.
     # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line LAST.
-    assert len(lines) == 15, report
+    # AMENDED job73 C9 (#206 Task 8): 15 -> 16, the `skills:` line LAST.
+    assert len(lines) == 16, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
     # AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
-    assert lines[2] == "serving 15 tools, 2 prompts, 2 resource templates"
+    # AMENDED job73 C12 (#206 Task 11): 2 prompts -> 3, `skill_propose` listed third.
+    assert lines[2] == "serving 15 tools, 3 prompts, 2 resource templates"
     # AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store
     # the walk bound ABOVE the project was invisible on the one surface that reports binding.
     assert lines[3] == (
@@ -199,6 +201,12 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     assert lines[13] == "queries: 0 of 0 facts"  # S10 (#207 amendment 3, Q8)
     # job73 A4 (#205 Task 4): conftest pins BANTAMKIT_SKILL_AUDIT=off; the home has no record.
     assert lines[14] == "skill audit: off; never ran; usage adapter none"
+    # job73 C9 (#206 Task 8): the miner follows the audit switch; no endpoint is configured.
+    # AMENDED job73 C13b: the line ends with the auto switch (off by default, pinned off here).
+    assert lines[15] == (
+        "skills: off; miner never ran; drafter host agent; "
+        "auto off (BANTAMKIT_SKILL_AUTO=on to opt in)"
+    )
 
 
 def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypatch):
@@ -206,21 +214,24 @@ def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypa
     raises (#207 amendment 3, Q8). The home is `record_home`'s scratch."""
     memory = make_memory(tmp_path)
     memory.save("project", "a-fact", "something worth keeping", "b")
-    assert status_of(build_server(memory)).split("\n")[-2] == "queries: 0 of 1 facts"
+    # AMENDED job73 C9 (#206 Task 8): [-2] -> [-3], the `skills:` line after the audit line.
+    assert status_of(build_server(memory)).split("\n")[-3] == "queries: 0 of 1 facts"
     memory.queries_write([{"name": "a-fact", "queries": ["what is kept"]}])
-    assert status_of(build_server(memory)).split("\n")[-2] == "queries: 1 of 1 facts"
+    assert status_of(build_server(memory)).split("\n")[-3] == "queries: 1 of 1 facts"
 
     def boom():
         raise OSError("unreadable")
 
     monkeypatch.setattr(memory, "queries_coverage", boom)
-    assert status_of(build_server(memory)).split("\n")[-2] == "queries: unavailable"
+    assert status_of(build_server(memory)).split("\n")[-3] == "queries: unavailable"
     _shrink_the_budget_under_the_index(memory)
     lines = status_of(build_server(memory)).split("\n")
     at = lines.index("queries: unavailable")
     # AMENDED job73 A4 (#205 Task 4): the `skill audit:` line sits between them.
     assert lines[at + 1].startswith("skill audit: "), lines
-    assert lines[at + 2].endswith("problem:"), lines
+    # AMENDED job73 C9 (#206 Task 8): the `skills:` line follows it.
+    assert lines[at + 2].startswith("skills: "), lines
+    assert lines[at + 3].endswith("problem:"), lines
 
 
 def _record(latest: str, checked_at: str = "2026-09-19T21:04:11Z") -> str:
@@ -291,7 +302,8 @@ def test_the_report_carries_the_update_line_in_every_one_of_the_five_states(
     # AMENDED job70 T200-1 (#200, plan Task 1): 12 -> 13, the `touch:` line.
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line.
     # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line.
-    assert len(lines) == 15, lines
+    # AMENDED job73 C9 (#206 Task 8): 15 -> 16, the `skills:` line.
+    assert len(lines) == 16, lines
     assert FOOTER_MARK not in "\n".join(lines)
     assert degraded_conditions(make_memory(tmp_path), EventLog(None)) == []
 
@@ -315,7 +327,12 @@ def test_the_prompt_is_the_person_facing_half_and_carries_the_report_itself(tmp_
 
     listed, got = run(scenario())
     # AMENDED job73 A6 (#205 Task 6): the skill audit is the second prompt, listed after this one.
-    assert [p.name for p in listed] == [STATUS_NAME, skillreport.SKILL_AUDIT_NAME]
+    # AMENDED job73 C12 (#206 Task 11): `skill_propose` is the third, listed after the audit.
+    assert [p.name for p in listed] == [
+        STATUS_NAME,
+        skillreport.SKILL_AUDIT_NAME,
+        skillpropose.SKILL_PROPOSE_NAME,
+    ]
     assert len(listed) == SERVED_PROMPTS
     assert got.messages[0].role == "user"
     text = got.messages[0].content.text
