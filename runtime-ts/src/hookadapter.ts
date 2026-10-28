@@ -1126,7 +1126,7 @@ function message(e: unknown): string {
 }
 
 // ---------------------------------------------------------------- SessionStart
-function sessionStart(run: HookRun, input: HookInput): void {
+function sessionStart(run: HookRun, input: HookInput, proposeLine: (home: string) => string | null): void {
   const cwd = input.cwd || process.cwd();
   const parts: string[] = [];
   const profileFacts = countFacts(run.profile);
@@ -1207,6 +1207,11 @@ function sessionStart(run: HookRun, input: HookInput): void {
   // stale-install line, which stays LAST by its own ruling.
   const skillLine = sessionLine(run.home);
   if (skillLine) parts.push(skillLine);
+  // #206 Task 11: the skills line — an install, a probation removal, a promotion, a rollback or a
+  // newly pending proposal, each named once with its undo route. After #205's line and before
+  // the stale-install line; absent when nothing is new, so the 0-byte bar holds for both.
+  const skillsLine = proposeLine(run.home);
+  if (skillsLine) parts.push(skillsLine);
   // LAST, AND ONLY WHEN IT IS TRUE. The toolbox line above is constant boilerplate the agent
   // sees every session; this one appears in one of five states and asks for an action, so it
   // gets the strongest position in the block. Everything above it is unchanged when it is
@@ -1288,6 +1293,7 @@ function sessionStart(run: HookRun, input: HookInput): void {
       : {}),
     storeScope: run.storeScope,
     skillAuditBytes: Buffer.byteLength(skillLine ?? ''),
+    skillProposeBytes: Buffer.byteLength(skillsLine ?? ''),
     // The stale-install signal, in three fields so the claim "it fired / it stayed quiet / it
     // asked the registry" is a number the operator can rerun rather than a sentence. `state` is
     // one of `updatecheck`'s five (or `null` when there is no kept install to compare);
@@ -3088,7 +3094,9 @@ export async function runHook(): Promise<void> {
   applyRegistrationStorePin(run, input.cwd || process.cwd());
   switch (ev) {
     case 'SessionStart':
-      return sessionStart(run, input);
+      // #206 Task 11: the skills line's module is loaded here, on SessionStart only, so no other
+      // hook event pays for the modules the `skill_propose` command needs.
+      return sessionStart(run, input, await proposeLineFn());
     case 'UserPromptSubmit':
       return userPromptSubmit(run, input);
     case 'PreToolUse':
@@ -3109,6 +3117,15 @@ export async function runHook(): Promise<void> {
       return stop(run, input);
     default:
       log(run, { event: ev, action: 'ignored' });
+  }
+}
+
+/** `skillpropose.sessionLine`, or a silent stand-in when the module cannot be loaded. */
+async function proposeLineFn(): Promise<(home: string) => string | null> {
+  try {
+    return (await import('./skillpropose.js')).sessionLine;
+  } catch {
+    return () => null;
   }
 }
 

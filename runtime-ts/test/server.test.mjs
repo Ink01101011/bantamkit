@@ -1169,9 +1169,11 @@ test('the two templates advertise an empty description, as the reference does', 
   // pinned in the status section below rather than in this one; what stays here is that the
   // list is served at all and carries exactly the registrations `SERVED_PROMPTS` counts.
   // AMENDED job73 A6 (#205 Task 6): 1 -> 2, `skill_audit` listed after `bantamkit_status`.
-  assert.equal(byId(lines, 7).result.prompts.length, 2);
+  // AMENDED job73 C12 (#206 Task 11): 2 -> 3, `skill_propose` listed third.
+  assert.equal(byId(lines, 7).result.prompts.length, 3);
   assert.equal(byId(lines, 7).result.prompts[0].name, 'bantamkit_status');
   assert.equal(byId(lines, 7).result.prompts[1].name, 'skill_audit');
+  assert.equal(byId(lines, 7).result.prompts[2].name, 'skill_propose');
 });
 
 test('the advertised capabilities are the reference set, not the SDK default', async () => {
@@ -1297,7 +1299,8 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.match(rows[1], /^version \S+, build sha256:[0-9a-f]{64}$/);
   assert.equal(rows[1].split(',')[0], `version ${declared}`);
   // AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
-  assert.equal(rows[2], 'serving 15 tools, 2 prompts, 2 resource templates');
+  // AMENDED job73 C12 (#206 Task 11): 2 prompts -> 3, `skill_propose`.
+  assert.equal(rows[2], 'serving 15 tools, 3 prompts, 2 resource templates');
   // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
   // walk bound ABOVE the project was invisible on the one surface that reports binding.
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes; bound to ${store}`);
@@ -1526,8 +1529,9 @@ test('the prompt a PERSON invokes carries the report itself, plus one instructio
   );
   const advertised = byId(lines, 2).result.prompts;
   // AMENDED job73 A6 (#205 Task 6): 1 -> 2, the skill audit listed second.
-  assert.equal(advertised.length, 2, 'SERVED_PROMPTS says 2 and the wire must agree');
-  assert.deepEqual(advertised.map((p) => p.name), ['bantamkit_status', 'skill_audit']);
+  // AMENDED job73 C12 (#206 Task 11): 2 -> 3, the skill proposals listed third.
+  assert.equal(advertised.length, 3, 'SERVED_PROMPTS says 3 and the wire must agree');
+  assert.deepEqual(advertised.map((p) => p.name), ['bantamkit_status', 'skill_audit', 'skill_propose']);
   assert.equal(advertised[0].name, 'bantamkit_status');
   assert.equal(advertised[0].title, 'bantamkit status');
   assert.deepEqual(advertised[0].arguments, []);

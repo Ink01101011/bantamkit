@@ -33,7 +33,7 @@ pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
 
-from bantamkit import skillreport, updatecheck  # noqa: E402
+from bantamkit import skillpropose, skillreport, updatecheck  # noqa: E402
 from bantamkit.assets import AssetNotFound, assets_root  # noqa: E402
 from bantamkit.eventlog import EventLog  # noqa: E402
 from bantamkit.mcpserver import (  # noqa: E402
@@ -166,7 +166,8 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     assert len(lines) == 16, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
     # AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
-    assert lines[2] == "serving 15 tools, 2 prompts, 2 resource templates"
+    # AMENDED job73 C12 (#206 Task 11): 2 prompts -> 3, `skill_propose` listed third.
+    assert lines[2] == "serving 15 tools, 3 prompts, 2 resource templates"
     # AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store
     # the walk bound ABOVE the project was invisible on the one surface that reports binding.
     assert lines[3] == (
@@ -322,7 +323,12 @@ def test_the_prompt_is_the_person_facing_half_and_carries_the_report_itself(tmp_
 
     listed, got = run(scenario())
     # AMENDED job73 A6 (#205 Task 6): the skill audit is the second prompt, listed after this one.
-    assert [p.name for p in listed] == [STATUS_NAME, skillreport.SKILL_AUDIT_NAME]
+    # AMENDED job73 C12 (#206 Task 11): `skill_propose` is the third, listed after the audit.
+    assert [p.name for p in listed] == [
+        STATUS_NAME,
+        skillreport.SKILL_AUDIT_NAME,
+        skillpropose.SKILL_PROPOSE_NAME,
+    ]
     assert len(listed) == SERVED_PROMPTS
     assert got.messages[0].role == "user"
     text = got.messages[0].content.text

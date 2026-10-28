@@ -67,6 +67,14 @@ import {
   SKILL_AUDIT_PROMPT_TAIL,
   SKILL_AUDIT_PROMPT_TITLE,
 } from '../skillreport.js';
+import {
+  ARGUMENTS as SKILL_PROPOSE_ARGUMENTS,
+  render as renderSkillPropose,
+  SAMPLING_MAX_TOKENS,
+  SKILL_PROPOSE_NAME,
+  SKILL_PROPOSE_PROMPT_DESCRIPTION,
+  SKILL_PROPOSE_PROMPT_TITLE,
+} from '../skillpropose.js';
 import { currentCwd } from '../storage/tiers.js';
 import { nowStamp } from '../storage/retention.js';
 import { PriceTableError } from '../pricing.js';
@@ -532,6 +540,7 @@ function runTool(
   version: string,
   log: EventLog,
   documents: DocumentCache,
+  sampling = false,
 ): { value: PyValue; wrapped: boolean } {
   /**
    * The footer for right now — recomputed per call, never cached.
@@ -715,6 +724,7 @@ function runTool(
           MCP_TOOLS.length,
           SERVED_PROMPTS,
           SERVED_RESOURCE_TEMPLATES,
+          sampling,
         ),
       );
       return { value: { t: 'str', v: report }, wrapped: true };
@@ -1233,18 +1243,68 @@ export function buildServer(
         name: SKILL_AUDIT_NAME,
         title: SKILL_AUDIT_PROMPT_TITLE,
       },
+      {
+        // #206 Task 11: the skill proposals as a person's command, third because the reference
+        // registers it third. Its three arguments are optional; each is `description, name,
+        // required` because that is the order the reference's `PromptArgument` dumps in.
+        arguments: SKILL_PROPOSE_ARGUMENTS.map(([name, description]) => ({ description, name, required: false })),
+        description: SKILL_PROPOSE_PROMPT_DESCRIPTION,
+        name: SKILL_PROPOSE_NAME,
+        title: SKILL_PROPOSE_PROMPT_TITLE,
+      },
     ],
   }));
+
+  /**
+   * #206 Task 11 (R11): whether this server may ask its client for a completion. Only a client
+   * that DECLARED `sampling` is ever sent `sampling/createMessage`.
+   */
+  const samplingDeclared = (): boolean => server.getClientCapabilities()?.sampling !== undefined;
+  /** One `sampling/createMessage`; the answer's text, or null when it holds none. */
+  const sample = async (system: string, user: string): Promise<string | null> => {
+    // `_meta: {}` is sent because the reference's SDK sends it on every request it makes; the
+    // `skill-propose` wire case compares the request byte for byte.
+    const result = await server.createMessage({
+      _meta: {},
+      messages: [{ role: 'user', content: { type: 'text', text: user } }],
+      systemPrompt: system,
+      maxTokens: SAMPLING_MAX_TOKENS,
+    });
+    const content = result.content as { type?: string; text?: unknown };
+    return content?.type === 'text' && typeof content.text === 'string' ? content.text : null;
+  };
 
   // IT CARRIES THE ANSWER, not an instruction to go and get it. `prompts/get` runs
   // server-side, so the report is already in the message the host inserts: the operator sees
   // it with no tool round trip, and it is true as of the moment they asked.
-  server.setRequestHandler(GetPromptRequestSchema, (request) => {
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     // The reference's `PromptManager` raises for an unregistered name, which the SDK turns
     // into a JSON-RPC error; the TS SDK does the same for a handler that throws. Two names are
     // registered (#205 added `skill_audit`), so anything else is unknown.
-    if (request.params.name !== STATUS_NAME && request.params.name !== SKILL_AUDIT_NAME) {
+    if (
+      request.params.name !== STATUS_NAME &&
+      request.params.name !== SKILL_AUDIT_NAME &&
+      request.params.name !== SKILL_PROPOSE_NAME
+    ) {
       throw rpcError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`, null);
+    }
+    if (request.params.name === SKILL_PROPOSE_NAME) {
+      // Acts NOW, server-side, and answers one user message; a refusal is a sentence in it.
+      // Sampling is offered to the drafter only when the client declared it (R11).
+      const args = request.params.arguments ?? {};
+      const text = await renderSkillPropose(
+        args['action'],
+        args['target'],
+        args['level'],
+        homedir(),
+        currentCwd(),
+        nowStamp(),
+        samplingDeclared() ? sample : null,
+      );
+      return {
+        description: SKILL_PROPOSE_PROMPT_DESCRIPTION,
+        messages: [{ content: { text, type: 'text' as const }, role: 'user' as const }],
+      };
     }
     if (request.params.name === SKILL_AUDIT_NAME) {
       // Gathers and audits NOW, server-side; it never edits settings.json (K2), and its own
@@ -1266,6 +1326,7 @@ export function buildServer(
       MCP_TOOLS.length,
       SERVED_PROMPTS,
       SERVED_RESOURCE_TEMPLATES,
+      samplingDeclared(),
     );
     return {
       description: STATUS_PROMPT_DESCRIPTION,
@@ -1358,7 +1419,7 @@ export function buildServer(
       const model = SERVED.has(name) ? ARG_MODELS[name] : undefined;
       if (model === undefined) throw new BantamError(`Unknown tool: ${name}`);
       const bound = validateArguments(model, args);
-      const { value, wrapped } = runTool(name, memory, bound, version, log, documents);
+      const { value, wrapped } = runTool(name, memory, bound, version, log, documents, samplingDeclared());
       // `_convert_to_content` runs BEFORE the `{"result": ...}` wrap, so a str tool's text
       // block is the RAW STRING and a dict tool's is `to_json(..., indent=2)`.
       text = value.t === 'str' ? value.v : sdkJson(value, 2);

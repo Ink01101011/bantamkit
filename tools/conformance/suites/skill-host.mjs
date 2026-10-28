@@ -48,8 +48,9 @@
  * `now` is live), and `null`. Each session sends `prompts/list`, `prompts/get skill_audit`,
  * `prompts/get bantamkit_status`, `prompts/get nope` and `tools/call bantamkit_status`; every frame
  * is compared as canonical JSON with the build digest masked. Literals per side: the prompt names
- * in order, the `null` bed's prompt text, `-32602` for `nope`, status line 3 (`2 prompts`), and
- * the settings file byte-identical after the prompt ran (K2).
+ * in order, the `null` bed's prompt text, `-32602` for `nope`, status line 3 (`2 prompts`; `3
+ * prompts` since job73 C12 added `skill_propose`), and the settings file byte-identical after the
+ * prompt ran (K2).
  *
  * THE LITERALS. A change made on both sides alike (a 30-day window moved to 29, say) leaves
  * every differential green, so the counts, the spans, the adapter and the version choice are
@@ -916,7 +917,8 @@ export async function run(ctx) {
     }
   };
   const PROMPT_TAIL = 'Show me this report as it stands. Do not edit settings.json yourself; if a change is proposed above, ask me before applying it.';
-  wireLiteral('prompts/list names, bantamkit_status first', ['bantamkit_status', 'skill_audit'], (s) => (W('claude-full', 2)(s)?.result?.prompts ?? []).map((p) => p.name));
+  // AMENDED job73 C12 (#206 Task 11): `skill_propose` is listed third.
+  wireLiteral('prompts/list names, bantamkit_status first', ['bantamkit_status', 'skill_audit', 'skill_propose'], (s) => (W('claude-full', 2)(s)?.result?.prompts ?? []).map((p) => p.name));
   wireLiteral(
     'null: the skill_audit prompt text is the could-not-run sentence and the tail',
     `skill audit — could not run: no skill directory was found for this host. The \`skill_audit\` tool still audits any directory you name as \`root\`.\n\n${PROMPT_TAIL}`,
@@ -931,7 +933,8 @@ export async function run(ctx) {
     const e = W('claude-full', 5)(s)?.error;
     return [e?.code ?? null, e?.message ?? null];
   });
-  wireLiteral('status line 3 counts 2 prompts', 'serving 15 tools, 2 prompts, 2 resource templates', (s) => (W('claude-full', 6)(s)?.result?.content?.[0]?.text ?? '').split('\n')[2] ?? null);
+  // AMENDED job73 C12 (#206 Task 11): 2 -> 3 prompts.
+  wireLiteral('status line 3 counts 3 prompts', 'serving 15 tools, 3 prompts, 2 resource templates', (s) => (W('claude-full', 6)(s)?.result?.content?.[0]?.text ?? '').split('\n')[2] ?? null);
   wireLiteral('claude-full: settings.json byte-identical after the prompt ran (K2)', 'byte-identical', (s) => wire['claude-full'].kept[s]);
 
   notes.push(`${BEDS.length} beds, both runtimes, over identical paths under ${join(ctx.scratch, 'skill-host')}`);

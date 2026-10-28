@@ -1100,6 +1100,15 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
     skill_line = skillreport.session_line(run.home)
     if skill_line:
         parts.append(skill_line)
+    # #206 Task 11: the skills line -- an install, a probation removal, a promotion, a rollback
+    # or a newly pending proposal, each named once with its undo route. After #205's line, and
+    # absent when nothing is new, so the 0-byte bar holds for both. Imported here for the same
+    # reason as `skillreport`.
+    from . import skillpropose
+
+    propose_line = skillpropose.session_line(run.home)
+    if propose_line:
+        parts.append(propose_line)
     # THE STALE-INSTALL LINE THE NODE MODULE APPENDS LAST IS NOT HERE, AND THAT IS RULED
     # (Q2.4), not forgotten. It is decided from the kept npm install under
     # `~/.bantamkit/mcp/node_modules/bantamkit-mcp/package.json` -- `npminstall.ts`, which
@@ -1183,6 +1192,7 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             ),
             "storeScope": run.store_scope,
             "skillAuditBytes": len(skill_line.encode("utf-8")) if skill_line else 0,
+            "skillProposeBytes": len(propose_line.encode("utf-8")) if propose_line else 0,
             "updateState": None,
             "updateProbe": "node-only",
             "updateBytes": 0,

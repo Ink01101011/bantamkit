@@ -192,7 +192,7 @@ export function skillText(cluster: Rec, text: string): string {
 let counter = 0;
 
 /** Out of the way in one rename (a name the `[skill]` layer passes over), then deleted. */
-function removeDir(target: string): void {
+export function removeDir(target: string): void {
   counter += 1;
   const aside = `${target}.old-${process.pid}-${counter}`;
   fs.renameSync(target, aside);

@@ -31,6 +31,7 @@ from bantamkit import (
     shiftwork,
     skillaudit,
     skillmine,
+    skillpropose,
     skillreport,
     tokenledger,
     updatecheck,
@@ -61,6 +62,7 @@ from bantamkit.touch.recallfile import RECALL_NEEDS_QUERY_OR_FILE
 
 try:
     from mcp.server import MCPServer
+    from mcp.server.mcpserver import Context
     from mcp.server.mcpserver.exceptions import ResourceError
     from mcp.server.mcpserver.tools import Tool as SDKTool
     from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
@@ -69,6 +71,7 @@ try:
     from pydantic import Field
 except ImportError:  # surfaced as a clear SystemExit in main()
     MCPServer = None  # type: ignore[assignment]
+    Context = None  # type: ignore[assignment,misc]
     MCPError = None  # type: ignore[assignment,misc]
     INVALID_PARAMS = -32602
     ErrorData = None  # type: ignore[assignment,misc]
@@ -678,7 +681,7 @@ STATUS_PROMPT_TAIL = (
 #: THE WIRE by `test_status_surface.py`, which drives a real `prompts/list` and
 #: `resources/templates/list` and fails if a registration is added or removed without
 #: moving these — so they are a declaration, not a guess.
-SERVED_PROMPTS = 2
+SERVED_PROMPTS = 3
 SERVED_RESOURCE_TEMPLATES = 2
 
 #: `INDEX_PRESSURE_PERCENT` is re-exported here, where it used to be DEFINED, so that
@@ -930,6 +933,43 @@ def degraded_conditions(memory: Memory, log: EventLog) -> list[Condition]:
     return [condition for condition in found if condition is not None]
 
 
+#: #206 Task 11: the `skill_propose` prompt's argument descriptions, by name.
+_PROPOSE_ARGS = dict(skillpropose.ARGUMENTS)
+
+
+def _sampling_declared(ctx: Any) -> bool:
+    """Whether the client of this request declared the `sampling` capability (R11) and can be
+    asked. False for no context at all, so a handler called without a session never asks one."""
+    try:
+        caps = ctx.session.client_capabilities
+        # The 2026-07-28 protocol has no back-channel for a server's own request: a client
+        # that declared sampling there still cannot be asked, so it is not counted.
+        reachable = getattr(ctx.session, "can_send_request", True)
+    except Exception:  # noqa: BLE001 - no session, no capability
+        return False
+    return caps is not None and getattr(caps, "sampling", None) is not None and reachable is True
+
+
+async def _sample(ctx: Any, system: str, user: str) -> str | None:
+    """One `sampling/createMessage`: `DRAFT_SYSTEM` as the system prompt, the drafter's user
+    message, `SAMPLING_MAX_TOKENS`. The answer's text, or None when it holds none (the
+    drafter then counts sampling unreachable). The SDK marks sampling deprecated as of the
+    2026-07-28 protocol; a client that declares it is still asked."""
+    import warnings
+
+    from mcp.types import SamplingMessage, TextContent
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = await ctx.session.create_message(
+            messages=[SamplingMessage(role="user", content=TextContent(type="text", text=user))],
+            max_tokens=skillpropose.SAMPLING_MAX_TOKENS,
+            system_prompt=system,
+        )
+    content = result.content
+    return content.text if isinstance(content, TextContent) else None
+
+
 def degraded_notice(conditions: list[Condition]) -> str:
     """The one line other tools' results carry when something is wrong. `""` when nothing is.
 
@@ -1033,8 +1073,8 @@ def status_report(
         # number. Not a condition: it never flips line 1, as the storage block never does.
         skillreport.status_line(Path.home()),
         # #206 Task 8: the experience miner's last daily run, after the audit line so every
-        # earlier line keeps its number. `sampling` stays False until the server drafts through
-        # MCP sampling (Task 11 passes the client's declared capability).
+        # earlier line keeps its number. `sampling` is the client's declared capability (Task
+        # 11): the drafter a `skill_propose` approve would reach first.
         skillmine.status_line(Path.home(), sampling),
     ]
     if conditions:
@@ -1743,7 +1783,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         )
         return _noted_dict(identity)
 
-    def bantamkit_status() -> str:
+    def bantamkit_status(ctx: Context) -> str:
         """The one surface every host renders, answering "is this thing working".
 
         NO FOOTER ON THIS ONE, and the omission is the design rather than an oversight:
@@ -1765,6 +1805,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                 len(tools),
                 SERVED_PROMPTS,
                 SERVED_RESOURCE_TEMPLATES,
+                _sampling_declared(ctx),
             )
 
     def bantamkit_read(
@@ -2131,7 +2172,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     async def get_prompt(
         name: str, arguments: dict[str, Any] | None = None, context: Any = None
     ) -> Any:
-        if name not in (STATUS_NAME, skillreport.SKILL_AUDIT_NAME):
+        if name not in (STATUS_NAME, skillreport.SKILL_AUDIT_NAME, skillpropose.SKILL_PROPOSE_NAME):
             message = f"Unknown prompt: {name}"
             refusal = MCPError(INVALID_PARAMS, message)
             refusal.error = ErrorData(code=INVALID_PARAMS, message=message, data=None)
@@ -2151,10 +2192,16 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             "rather than ask a model to go and check."
         ),
     )
-    def bantamkit_status_prompt() -> str:
+    def bantamkit_status_prompt(ctx: Context) -> str:
         conditions = degraded_conditions(memory, log)
         report = status_report(
-            memory, log, conditions, len(tools), SERVED_PROMPTS, SERVED_RESOURCE_TEMPLATES
+            memory,
+            log,
+            conditions,
+            len(tools),
+            SERVED_PROMPTS,
+            SERVED_RESOURCE_TEMPLATES,
+            _sampling_declared(ctx),
         )
         return f"{report}\n\n{STATUS_PROMPT_TAIL}"
 
@@ -2173,6 +2220,38 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
 
         record = skillreport.run_live(Path.home(), storage_tiers.current_cwd(), now_stamp())
         return f"{skillreport.render_report(record)}\n\n{skillreport.SKILL_AUDIT_PROMPT_TAIL}"
+
+    @server.prompt(
+        name=skillpropose.SKILL_PROPOSE_NAME,
+        title=skillpropose.SKILL_PROPOSE_PROMPT_TITLE,
+        description=skillpropose.SKILL_PROPOSE_PROMPT_DESCRIPTION,
+    )
+    async def skill_propose_prompt(
+        ctx: Context,
+        action: Annotated[str | None, Field(description=_PROPOSE_ARGS["action"])] = None,
+        target: Annotated[str | None, Field(description=_PROPOSE_ARGS["target"])] = None,
+        level: Annotated[str | None, Field(description=_PROPOSE_ARGS["level"])] = None,
+    ) -> str:
+        # #206 Task 11: a PERSON's command (`/mcp__bantamkit__skill_propose` in Claude Code),
+        # listed third. It acts NOW, server-side, and answers one user message; a refusal is a
+        # sentence in it, never an RPC error. `render` is synchronous (the drafter's chain is),
+        # so it runs in a worker thread and reaches MCP sampling back on this loop -- and only
+        # when the client declared the capability (R11): no request goes to a client that did
+        # not.
+        import anyio
+
+        from bantamkit.storage.retention import now_stamp
+
+        send = None
+        if _sampling_declared(ctx):
+
+            def send(system: str, user: str) -> str | None:
+                return anyio.from_thread.run(_sample, ctx, system, user)
+
+        home, cwd, now = Path.home(), storage_tiers.current_cwd(), now_stamp()
+        return await anyio.to_thread.run_sync(
+            lambda: skillpropose.render(action, target, level, home, cwd, now, send)
+        )
 
     @server.resource("bantamkit://skills/{name}")
     def skill_resource(name: str) -> str:

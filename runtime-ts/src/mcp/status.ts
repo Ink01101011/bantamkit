@@ -85,7 +85,7 @@ export const STATUS_PROMPT_TAIL =
  * wire session drives a real `prompts/list` and `resources/templates/list` against both
  * runtimes, so a registration added or removed without moving these fails the suite.
  */
-export const SERVED_PROMPTS = 2;
+export const SERVED_PROMPTS = 3;
 export const SERVED_RESOURCE_TEMPLATES = 2;
 
 /**
@@ -509,8 +509,8 @@ export function statusReport(
     // Not a condition: it never flips line 1, as the storage block never does.
     skillStatusLine(homedir()),
     // #206 Task 8: the experience miner's last daily run, after the audit line so every earlier
-    // line keeps its number. `sampling` stays false until the server drafts through MCP sampling
-    // (Task 11 passes the client's declared capability).
+    // line keeps its number. `sampling` is the client's declared capability (Task 11): the drafter
+    // a `skill_propose` approve would reach first.
     minerStatusLine(homedir(), sampling),
   ];
   if (conditions.length > 0) {

@@ -832,3 +832,34 @@ test('SessionStart names a new skill-audit finding once, then adds zero bytes', 
   assert.equal(ctx(runHook(start, { home, cwd, env })), plain);
   assert.equal(last().skillAuditBytes, 0);
 });
+
+// --- #206 Task 11: the skills SessionStart line --------------------------------------------
+
+test('SessionStart names a skills event once, after the skill-audit line', async () => {
+  // After #205's line, each named once; with nothing new SessionStart is the block it always was
+  // (0 bytes added), and `skillProposeBytes` says how many each time. Mirrors test_hookadapter.py.
+  const { FULL, LINE, put, rec } = await import('./_skillline.mjs');
+  const home = newDir('home');
+  const cwd = newDir('cwd');
+  const start = { hook_event_name: 'SessionStart', source: 'startup' };
+  const ctx = (r) => JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  const last = () => JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', 'hook-log.jsonl'), 'utf8').trim().split('\n').at(-1));
+  mkdirSync(join(home, '.bantamkit'), { recursive: true });
+  writeFileSync(join(home, '.bantamkit', 'retention.json'), JSON.stringify({ ran_at: new Date().toISOString() }));
+  const env = { BANTAMKIT_SKILL_AUDIT: 'on' };
+  const plain = ctx(runHook(start, { home, cwd, env }));
+  assert.equal(last().skillProposeBytes, 0);
+  put(home, rec(FULL));
+  writeFileSync(
+    join(home, '.bantamkit', 'skills-state.json'),
+    JSON.stringify({ version: 1, skills: {}, events: [{ at: '2026-10-27T00:00:00.000Z', event: 'installed skill fixing-a' }] }),
+  );
+  const skills =
+    '[bantamkit] skills: installed fixing-a on probation (undo: /mcp__bantamkit__skill_propose undo fixing-a) — /mcp__bantamkit__skill_propose lists them.';
+  assert.equal(ctx(runHook(start, { home, cwd, env: { BANTAMKIT_SKILL_AUDIT: 'off' } })), plain);
+  assert.equal(last().skillProposeBytes, 0);
+  assert.equal(ctx(runHook(start, { home, cwd, env })), `${plain}\n\n${LINE}\n\n${skills}`);
+  assert.equal(last().skillProposeBytes, Buffer.byteLength(skills));
+  assert.equal(ctx(runHook(start, { home, cwd, env })), plain);
+  assert.equal(last().skillProposeBytes, 0);
+});

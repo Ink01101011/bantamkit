@@ -2850,3 +2850,45 @@ def test_session_start_names_a_new_finding_once_and_then_adds_zero_bytes(tmp_pat
     again = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
     assert ctx(again) == ctx(plain)
     assert _log_lines(home)[-1]["skillAuditBytes"] == 0
+
+
+# --- #206 Task 11: the skills SessionStart line ---------------------------------------------
+
+
+def test_session_start_names_a_skills_event_once_after_the_audit_line(tmp_path):
+    """The skills line sits after #205's line, each named once; with nothing new SessionStart is
+    the block it always was (0 bytes added), and `skillProposeBytes` says how many each time."""
+    from datetime import UTC, datetime
+
+    from test_skillreport import FULL, LINE, _put, _rec
+
+    home, cwd = _bed(tmp_path, "skillsline")
+    (home / ".bantamkit").mkdir(parents=True, exist_ok=True)
+    (home / ".bantamkit" / "retention.json").write_text(
+        json.dumps({"ran_at": datetime.now(UTC).isoformat(timespec="milliseconds")
+                    .replace("+00:00", "Z")}), encoding="utf-8")
+    on = {"BANTAMKIT_SKILL_AUDIT": "on"}
+    start = {"hook_event_name": "SessionStart", "source": "startup"}
+    ctx = lambda o: o["hookSpecificOutput"]["additionalContext"]  # noqa: E731
+    plain = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
+    assert _log_lines(home)[-1]["skillProposeBytes"] == 0
+    _put(home, _rec(FULL))
+    (home / ".bantamkit" / "skills-state.json").write_text(
+        json.dumps({"version": 1, "skills": {}, "events": [
+            {"at": "2026-10-27T00:00:00.000Z", "event": "installed skill fixing-a"}]}),
+        encoding="utf-8")
+    skills = (
+        "[bantamkit] skills: installed fixing-a on probation (undo: "
+        "/mcp__bantamkit__skill_propose undo fixing-a) — /mcp__bantamkit__skill_propose lists them."
+    )
+    off = json.loads(
+        _run_hook(start, home=home, cwd=cwd, env_extra={"BANTAMKIT_SKILL_AUDIT": "off"}).stdout
+    )
+    assert ctx(off) == ctx(plain)
+    assert _log_lines(home)[-1]["skillProposeBytes"] == 0
+    first = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
+    assert ctx(first) == ctx(plain) + "\n\n" + LINE + "\n\n" + skills
+    assert _log_lines(home)[-1]["skillProposeBytes"] == len(skills.encode("utf-8"))
+    again = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
+    assert ctx(again) == ctx(plain)
+    assert _log_lines(home)[-1]["skillProposeBytes"] == 0
