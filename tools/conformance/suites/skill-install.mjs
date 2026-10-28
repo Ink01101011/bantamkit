@@ -253,7 +253,10 @@ const sub = (v, bed) => {
   return v;
 };
 const mask = (v, bed) => {
-  if (typeof v === 'string') return v.split(bed).join('<bed>');
+  if (typeof v === 'string') {
+    const escaped = JSON.stringify(bed).slice(1, -1);
+    return v.split(escaped).join('<bed>').split(bed).join('<bed>');
+  }
   if (Array.isArray(v)) return v.map((x) => mask(x, bed));
   if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mask(x, bed)]));
   return v;
@@ -289,7 +292,7 @@ async function runNode(ctx, bed, ops) {
       if (op.op === 'edit') {
         const p = join(home, op.rel);
         fs.writeFileSync(p, fs.readFileSync(p, 'utf8').split(op.find).join(op.replace));
-        results.push({ tree: tree(home, bed) });
+        results.push({ tree: mask(tree(home, bed), bed) });
         continue;
       }
       if (op.fail_at === 'write3') {

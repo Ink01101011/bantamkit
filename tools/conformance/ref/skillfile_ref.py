@@ -205,7 +205,7 @@ def run(bed: Path, op: dict):
 
 
 def main() -> None:
-    req = json.loads(sys.stdin.read())
+    req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     bed = Path(req["bed"])
     json.dump({"results": [run(bed, op) for op in req["ops"]]}, sys.stdout)
 

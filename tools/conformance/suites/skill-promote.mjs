@@ -76,9 +76,9 @@ function opList() {
   add('demote: unknown name', { op: 'demote', home: h, name: 'nope' });
   add('h1: a foreign skill at p-three', { op: 'write', home: h, rel: '.claude/skills/p-three/SKILL.md', text: '---\nname: p-three\ndescription: mine\n---\nbody\n' });
   add('promote p-three: a foreign directory is never replaced', { op: 'promote', home: h, name: 'p-three', now: NOW, budget: 8192 });
-  add('h1: a foreign symlink at p-one', { op: 'symlink', home: h, rel: '.claude/skills/p-one', target: '../../elsewhere' });
+  add('h1: a foreign symlink at p-one', { op: 'symlink', home: h, rel: '.claude/skills/p-one', target: join('..', '..', 'elsewhere') });
   add('promote p-one: a foreign symlink is never replaced', { op: 'promote', home: h, name: 'p-one', now: NOW, budget: 8192 });
-  add('h1: a second, user-made link to p-two', { op: 'symlink', home: h, rel: '.claude/skills/p-two-x', target: '../../.bantamkit/skills/p-two' });
+  add('h1: a second, user-made link to p-two', { op: 'symlink', home: h, rel: '.claude/skills/p-two-x', target: join('..', '..', '.bantamkit', 'skills', 'p-two') });
   add('demote p-two: unchanged link removed', { op: 'demote', home: h, name: 'p-two' });
 
   // h2: the copy path
@@ -162,7 +162,10 @@ const sub = (v, bed) => {
   return v;
 };
 const mask = (v, bed) => {
-  if (typeof v === 'string') return v.split(bed).join('<bed>');
+  if (typeof v === 'string') {
+    const escaped = JSON.stringify(bed).slice(1, -1);
+    return v.split(escaped).join('<bed>').split(bed).join('<bed>');
+  }
   if (Array.isArray(v)) return v.map((x) => mask(x, bed));
   if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mask(x, bed)]));
   return v;
@@ -336,7 +339,7 @@ export async function run(ctx) {
     cases.push({
       name: `LITERAL: the link is relative, and demotion leaves the source byte-identical — ${side}`,
       kind: 'json',
-      expected: { link: '-> ../../.bantamkit/skills/p-one', source: true, gone: true },
+      expected: { link: `-> ${join('..', '..', '.bantamkit', 'skills', 'p-one')}`, source: true, gone: true },
       actual: {
         link: got[iAt].tree?.['.claude/skills/p-one'] ?? null,
         source: JSON.stringify(src(got[iDemote].tree ?? {})) === JSON.stringify(src(got[iInstallOne].tree ?? {})),

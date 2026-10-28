@@ -417,7 +417,10 @@ const sub = (v, bed) => {
   return v;
 };
 const mask = (v, bed) => {
-  if (typeof v === 'string') return v.split(bed).join('<bed>');
+  if (typeof v === 'string') {
+    const escaped = JSON.stringify(bed).slice(1, -1);
+    return v.split(escaped).join('<bed>').split(bed).join('<bed>');
+  }
   if (Array.isArray(v)) return v.map((x) => mask(x, bed));
   if (v !== null && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mask(x, bed)]));
   return v;
@@ -678,9 +681,9 @@ export async function run(ctx) {
       name: `LITERAL: the daily run promotes only with BANTAMKIT_SKILL_AUTO on [on, off, then on] — ${side}`,
       kind: 'json',
       expected: [
-        ['symlink', false, '-> ../../.bantamkit/skills/sk-d', ['promoted skill sk-d', 'rolled back sk-d to v1']],
+        ['symlink', false, `-> ${join('..', '..', '.bantamkit', 'skills', 'sk-d')}`, ['promoted skill sk-d', 'rolled back sk-d to v1']],
         [null, false, null, ['rolled back sk-d to v1']],
-        ['symlink', false, '-> ../../.bantamkit/skills/sk-d', ['rolled back sk-d to v1', 'promoted skill sk-d']],
+        ['symlink', false, `-> ${join('..', '..', '.bantamkit', 'skills', 'sk-d')}`, ['rolled back sk-d to v1', 'promoted skill sk-d']],
       ],
       actual: [iDailyOn, iDailyOff, iDailyNext].map((i) => promotedOf(got[i])),
     });

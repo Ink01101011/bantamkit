@@ -380,6 +380,39 @@ test('state round trip and refusals', () => {
   }
 });
 
+test('repeated state writes replace previous contents', () => {
+  const h = tmp();
+  sf.writeState(h, { skills: { 'old-skill': { description: 'old'.repeat(100) } } });
+  const expected = { version: 1, skills: { 'new-skill': {} } };
+  sf.writeState(h, expected);
+  assert.deepEqual(sf.readState(h), expected);
+  assert.deepEqual(readFileSync(sf.statePath(h)), sf.stateBytes(expected));
+  assert.deepEqual(readdirSync(join(h, '.bantamkit')), ['skills-state.json']);
+});
+
+for (const step of ['write', 'fsync', 'rename']) {
+  test(`failed state update at ${step} preserves previous bytes`, () => {
+    const h = tmp();
+    sf.writeState(h, { skills: { 'old-skill': {} } });
+    const previous = readFileSync(sf.statePath(h));
+    const saved = { ...sf.seams };
+    sf.seams[step] = (...args) => {
+      if (step === 'write') saved.write(...args);
+      throw new Error('injected state write failure');
+    };
+    try {
+      assert.throws(() => sf.updateState(h, (state) => { state.skills.new = {}; }), /injected state write failure/);
+    } finally {
+      Object.assign(sf.seams, saved);
+    }
+    assert.deepEqual(readFileSync(sf.statePath(h)), previous);
+    assert.deepEqual(readdirSync(join(h, '.bantamkit')), ['skills-state.json']);
+    assert.deepEqual(sf.updateState(h, (state) => { state.skills.new = {}; }), {
+      version: 1, skills: { 'old-skill': {}, new: {} },
+    });
+  });
+}
+
 test('parse refuses what the reader refuses, as the reference now does (job73 C8)', () => {
   for (const line of ['metadata: {}', 'metadata: {k: 1}', 'metadata: {bantamkit-k: "v"}', 'metadata:\n  k: {}',
     'metadata:\n  k: [a, {b: c}]', 'description: {x: 1}', 'description: &a d', 'description: !!str d']) {
