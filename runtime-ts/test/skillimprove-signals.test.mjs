@@ -23,6 +23,20 @@ const DESC = 'Does sk-one. Use when sk-one is asked.';
 const NARROW = 'Does sk-one for parsers only. Use when a parser of sk-one is asked.';
 const home = () => mkdtempSync(join(tmpdir(), 'skillsignals-'));
 
+// AMENDED job73 C13b: automatic edits follow BANTAMKIT_SKILL_AUTO, OFF by default in 0.37.0 (and
+// pinned off by the runner); these tests are of the automatic path, so they opt in. The off
+// path is tested below with the switch unset.
+process.env[si.AUTO_ENV] = 'on';
+const withAuto = async (value, fn) => {
+  if (value === undefined) delete process.env[si.AUTO_ENV];
+  else process.env[si.AUTO_ENV] = value;
+  try {
+    await fn();
+  } finally {
+    process.env[si.AUTO_ENV] = 'on';
+  }
+};
+
 const draft = (name = 'sk-one', desc = DESC, steps = '1. Do it [job1/U1].') =>
   `---\nname: ${name}\ndescription: ${desc}\n---\n\n## When to use\n\nWhen asked.\n\n## Steps\n\n${steps}\n\n` +
   '## Pitfalls\n\nNone.\n\n## Example\n\nx\n';
@@ -216,6 +230,67 @@ test('a correction adds one pitfall and proposes a steps change', async () => {
   assert.deepEqual((await step(h, { sources: corrected(), now: '2026-10-29T12:00:00.000Z' }))[0], []);
   assert.equal(await sp.render('approve', 'sk-one', null, h, null, LATER), 'updated skill sk-one to v3');
   assert.ok(skill(h).includes('2. Before you finish'));
+});
+
+test('auto off makes no version and proposes the same signals (job73 C13b)', async () => {
+  for (const value of [undefined, 'off', 'banana']) {
+    await withAuto(value, async () => {
+      const h = home();
+      const target = installed(h);
+      const before = readFileSync(join(target, 'SKILL.md'));
+      const [events, state] = await step(h, { sources: corrected() });
+      assert.deepEqual(events, ['proposed a change to sk-one']);
+      assert.deepEqual(readFileSync(join(target, 'SKILL.md')), before);
+      const entry = state.skills['sk-one'];
+      assert.equal(entry.version, 1);
+      assert.equal(existsSync(join(target, si.HISTORY_DIR)), false);
+      assert.deepEqual([entry.proposal.kind, entry.proposal.status], ['improve', 'pending']);
+      assert.ok(
+        entry.proposal.text.includes(
+          '## Steps\n\n1. Do it [job1/U1].\n2. Before you finish, check for what [s1111aaaa#1] ' +
+            'was corrected for: no, use the other parser\n\n## Pitfalls\n\n' +
+            '- [s1111aaaa#1] no, use the other parser\n\n## Example',
+        ),
+      );
+      const said = await sp.render('approve', 'sk-one', null, h, null, LATER);
+      assert.equal(said, 'updated skill sk-one to v2');
+      const after = sf.readState(h).skills['sk-one'];
+      assert.deepEqual([after.version, after.versions['2'].kind], [2, 'approved']);
+      assert.ok(skill(h).includes('- [s1111aaaa#1] no, use the other parser'));
+    });
+  }
+});
+
+test('auto off: a drafted narrow is proposed, a tune with no drafter waits', async () => {
+  await withAuto(undefined, async () => {
+    const h = home();
+    installed(h);
+    setV(h, 'sk-one', { injects: 5, false_fires: 3 });
+    let [events, state] = await step(h, { chain: [new Stub(draft('sk-one', NARROW))] });
+    assert.deepEqual(events, ['proposed a change to sk-one']);
+    assert.equal(state.skills['sk-one'].version, 1);
+    assert.ok(state.skills['sk-one'].proposal.text.includes(NARROW));
+    assert.ok(skill(h).includes(DESC));
+    const other = home();
+    installed(other);
+    setV(other, 'sk-one', { injects: 5, false_fires: 3 });
+    [events, state] = await step(other);
+    assert.deepEqual(events, ['waiting on a drafter to tune sk-one']);
+    assert.deepEqual(state.skills['sk-one'].tune.kinds, ['narrow']);
+    assert.equal(state.skills['sk-one'].version, 1);
+  });
+});
+
+test('auto off: the judge still rolls back', async () => {
+  await withAuto(undefined, async () => {
+    const h = home();
+    installed(h);
+    si.newVersion('sk-one', draft('sk-one', NARROW), h, LATER, 'auto');
+    setV(h, 'sk-one', { uses: 5, successes: 5 });
+    setV(h, 'sk-one', { uses: 5, successes: 1 }, '2');
+    assert.deepEqual(si.judgeStep(sf.readState(h), h, '2026-10-29T12:00:00.000Z'), ['rolled back sk-one to v1']);
+    assert.ok(skill(h).includes(DESC));
+  });
 });
 
 test('a pitfall note is cut to 200 code points', async () => {

@@ -592,8 +592,8 @@ export async function run(ctx) {
       kind: 'json',
       expected: {
         line3: 'serving 15 tools, 3 prompts, 2 resource templates',
-        plain: 'skills: off; mined 2026-10-27T12:00:00.000Z in 0 ms; 1 pending, 0 of 5 auto-installed live, 0 promoted; drafter host agent',
-        sampled: 'skills: off; mined 2026-10-27T12:00:00.000Z in 0 ms; 0 pending, 0 of 5 auto-installed live, 0 promoted; drafter sampling',
+        plain: 'skills: off; mined 2026-10-27T12:00:00.000Z in 0 ms; 1 pending, 0 of 5 auto-installed live, 0 promoted; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+        sampled: 'skills: off; mined 2026-10-27T12:00:00.000Z in 0 ms; 0 pending, 0 of 5 auto-installed live, 0 promoted; drafter sampling; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
         askedPlain: 0,
       },
       actual: {

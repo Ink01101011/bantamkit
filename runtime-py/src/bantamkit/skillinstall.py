@@ -23,7 +23,8 @@ PROJECT-level skill (its directory may be committed to a public repo, Q8) and to
 `EVIDENCE_USER_CHARS` in a user-level one.
 
 THE AUTO RULE (`auto_step`). At most one install per run, and only when ALL hold:
-`BANTAMKIT_SKILL_AUTO` is not `off` (or `0`, `false`, `no`, any case); the cluster has twice the
+`BANTAMKIT_SKILL_AUTO` is `on` (or `1`, `true`, `yes`, any case, trimmed: it is OFF by default
+in 0.37.0, and any other value, unset or empty included, leaves it off); the cluster has twice the
 X1 repeats (`auto_eligible` and `successes >= auto_bar`); its stored draft passed the gate;
 fewer than `AUTO_PER_DAY` automatic installs on `now`'s UTC date; fewer than `AUTO_LIVE_MAX`
 live automatic installs. Candidates are tried best first (most successes, then the oldest
@@ -82,6 +83,9 @@ from bantamkit.skillfile import (
 from bantamkit.storage.retention import parse_now
 
 AUTO_ENV = "BANTAMKIT_SKILL_AUTO"
+#: The `skills:` status line's last clause, by the switch (0.37.0: off unless opted in).
+AUTO_SAID_ON = "auto on"
+AUTO_SAID_OFF = f"auto off ({AUTO_ENV}=on to opt in)"
 AUTO_PER_DAY = 1
 AUTO_LIVE_MAX = 5
 PROBATION_DAYS = 30
@@ -101,7 +105,10 @@ AUTO_FROM = ("new", "pending", "drafted")
 AUTO_DATES_KEEP = 32
 CORRECTED = "corrected in the next turn: "
 
-_OFF = ("off", "0", "false", "no")
+#: The only values that turn automatic installs and edits on (0.37.0: opt-in). Any other value,
+#: `off`/`0`/`false`/`no`, an empty one, an unknown word or none at all, leaves them off — the
+#: parse `BANTAMKIT_EVENT_LOG`'s in-store switch uses, so a typo never opts anyone in.
+_ON = ("on", "1", "true", "yes")
 _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 _SAFE_INT = 2**53 - 1
 
@@ -120,8 +127,13 @@ class Installed:
 
 
 def auto_enabled() -> bool:
-    """False when `BANTAMKIT_SKILL_AUTO` is `off` (or `0`, `false`, `no`), any case."""
-    return os.environ.get(AUTO_ENV, "").strip().lower() not in _OFF
+    """True only when `BANTAMKIT_SKILL_AUTO` is `on` (or `1`, `true`, `yes`), any case, trimmed.
+
+    The default is OFF (#206 release train: the real-use bar was not met before 0.37.0, so the
+    default changed). It gates the automatic installs (`auto_step`), the daily draft for them,
+    and the automatic edits of `improve_step`; the judge and its rollback do not read it.
+    """
+    return os.environ.get(AUTO_ENV, "").strip().lower() in _ON
 
 
 def _clean(s: str) -> str:
@@ -997,6 +1009,10 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
 # `approved` version only while the file is still those bytes.
 # THE EDITED GUARD. On a skill edited by hand (`_edited`) nothing applies: the would-be version
 # becomes an `improve` proposal, and an approved change keeps `edited` on the entry for good.
+# THE SWITCH (0.37.0). Automatic edits follow `BANTAMKIT_SKILL_AUTO` (`auto_enabled`, OFF by
+# default): with it off, nothing applies either — the run's would-be version becomes an
+# `improve` proposal, a `## Steps` line due in the same run rides in that one proposal, and a
+# tune with no drafter still waits as `entry.tune`. The judge and its rollback still run.
 
 TUNE_MIN_INJECTS = 5
 FALSE_FIRE_TUNE = (1, 2)
@@ -1111,6 +1127,17 @@ def _with(text: str, body: str | None, metadata: Mapping[str, str]) -> str:
     )
 
 
+def _with_step(text: str, tid: str, step: str) -> str:
+    """`text` with `step` added as the next numbered line of `## Steps`, `tid` in its evidence."""
+    doc = parse_skill(text)
+    line = f"{next_step_number(doc.body)}. {step}"
+    ids = _csv(doc.metadata.get("bantamkit-evidence"))
+    if tid not in ids:
+        ids.append(tid)
+    body = append_to_section(doc.body, STEPS, [line])
+    return _with(text, body, {"bantamkit-evidence": ",".join(ids)})
+
+
 def _proposal(kind: str, raw: bytes, old: str, text: str, now: str) -> dict[str, Any]:
     return {
         "at": now,
@@ -1146,10 +1173,17 @@ def _session_turns(
 
 
 def apply_text(
-    name: str, text: str, home: str | Path, cwd: str | None, now: str, b: Mapping[str, Any]
+    name: str,
+    text: str,
+    home: str | Path,
+    cwd: str | None,
+    now: str,
+    b: Mapping[str, Any],
+    auto: bool = True,
 ) -> tuple[str | None, list[str]]:
     """A low-risk change: gated (`own` = the skill), then the next `auto` version, or, on a
-    skill edited by hand, an `improve` proposal. `(event, reasons)`; a gate failure is logged."""
+    skill edited by hand or with `auto` false (automatic edits off), an `improve` proposal.
+    `(event, reasons)`; a gate failure is logged."""
     from bantamkit.skilldraft import DraftOutcome, drafts_log, gate
     from bantamkit.storage.logsegment import LogSegment
 
@@ -1164,7 +1198,7 @@ def apply_text(
             DraftOutcome(None, False, None, g.reasons, []).log_line(now, b["cluster"])
         )
         return None, g.reasons
-    if _edited(raw, entry):  # type: ignore[arg-type]
+    if not auto or _edited(raw, entry):  # type: ignore[arg-type]
         if not _slot_free(entry):  # type: ignore[arg-type]
             return None, [f"a change to {name} already waits on you"]
         prop = _proposal("improve", raw, raw.decode("utf-8", "replace"), text, now)
@@ -1200,6 +1234,7 @@ def improve_step(
     from bantamkit.skillmine import STEP_SHARE, ngrams
 
     now_ms = _ms(now)
+    auto = auto_enabled()
     skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
     records: dict[str, dict[str, Any]] = {}
     clusters = doc.get("clusters") if isinstance(doc, Mapping) else None
@@ -1342,11 +1377,25 @@ def improve_step(
             elif out.ok and out.text is not None:
                 final = out.text
         if final is not None:
-            event, _ = apply_text(name, final, home, cwd, now, b)
-            if event is None and final is not det and changed:
-                event, _ = apply_text(name, det, home, cwd, now, b)
+            drafted = final is not det
+            folded = False
+            if not auto and steps_from is not None:
+                # automatic edits off: this change becomes the skill's ONE proposal, so the
+                # steps line rides in it rather than being dropped for want of a free slot
+                try:
+                    final_s = _with_step(final, steps_from[1], steps_from[2])
+                    det_s = _with_step(det, steps_from[1], steps_from[2]) if drafted else final_s
+                except (UnicodeDecodeError, SkillFileError):
+                    pass
+                else:
+                    final, det, folded = final_s, det_s, True
+            event, _ = apply_text(name, final, home, cwd, now, b, auto)
+            if event is None and drafted and changed:
+                event, _ = apply_text(name, det, home, cwd, now, b, auto)
             if event is not None:
                 events.append(event)
+                if folded:
+                    steps_from = None
         if wait:
             old = e.get("tune") if isinstance(e.get("tune"), dict) else {}
             kinds = [k for k in TUNE_KINDS if k in wait or k in _strs(old.get("kinds"))]
@@ -1362,16 +1411,7 @@ def improve_step(
             if now_live is not None and _slot_free(fresh):  # type: ignore[arg-type]
                 try:
                     cur = now_live[1].decode("utf-8")
-                    cdoc = parse_skill(cur)
-                    line = f"{next_step_number(cdoc.body)}. {steps_from[2]}"
-                    cids = _csv(cdoc.metadata.get("bantamkit-evidence"))
-                    if steps_from[1] not in cids:
-                        cids.append(steps_from[1])
-                    ptext = _with(
-                        cur,
-                        append_to_section(cdoc.body, STEPS, [line]),
-                        {"bantamkit-evidence": ",".join(cids)},
-                    )
+                    ptext = _with_step(cur, steps_from[1], steps_from[2])
                     prop = _proposal("steps", now_live[1], cur, ptext, now)
                     events.append(f"proposed a change to {name}")
                 except (UnicodeDecodeError, SkillFileError):

@@ -30,10 +30,11 @@ Part 2 (#206 Task 10b):
     {"op": "improve_prompt", "kinds", "text", "doc", "ids", "counts"} -> [system, user]
     {"op": "diff", "old", "new"} -> skill_diff
     {"op": "pitfall", "id", "failure"} -> pitfall_line
-    {"op": "improve_step", "home", "sources", "doc", "now", "drafter"?}
+    {"op": "improve_step", "home", "sources", "doc", "now", "drafter"?, "env"?}
         -> {"events", "returned_state"} | {"error"}, plus "state", "tree". `drafter`: absent is no
         drafter; `{"answer": <text>}` a stub labelled `endpoint stub`; `"unreachable"` one that
-        cannot be reached.
+        cannot be reached. `env` (job73 C13b): the value of `BANTAMKIT_SKILL_AUTO` for the op;
+        absent or null is UNSET (the 0.37.0 default, off), not the harness's pinned `off`.
     {"op": "render", "home", "action", "target", "now", "answer"?} -> {"said"}, plus "state",
         "tree" (`answer`: a sampling client that answers it)
 
@@ -235,9 +236,20 @@ def run(bed: Path, op: dict):
             state = sf.read_state(home)
             d = op.get("drafter")
             chain = [] if d is None else [Stub(None if d == "unreachable" else d["answer"])]
-            out["events"] = si.improve_step(
-                state, op["sources"], op.get("doc"), home, None, op["now"], chain
-            )
+            saved_auto = os.environ.get(si.AUTO_ENV)
+            if op.get("env") is None:
+                os.environ.pop(si.AUTO_ENV, None)
+            else:
+                os.environ[si.AUTO_ENV] = op["env"]
+            try:
+                out["events"] = si.improve_step(
+                    state, op["sources"], op.get("doc"), home, None, op["now"], chain
+                )
+            finally:
+                if saved_auto is None:
+                    os.environ.pop(si.AUTO_ENV, None)
+                else:
+                    os.environ[si.AUTO_ENV] = saved_auto
             out["returned_state"] = state
         elif kind == "judge_step":
             state = sf.read_state(home)

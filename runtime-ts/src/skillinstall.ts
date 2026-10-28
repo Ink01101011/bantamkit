@@ -43,6 +43,9 @@ import { LogSegment } from './storage/logsegment.js';
 import { parseNow } from './storage/retention.js';
 
 export const AUTO_ENV = 'BANTAMKIT_SKILL_AUTO';
+/** The `skills:` status line's last clause, by the switch (0.37.0: off unless opted in). */
+export const AUTO_SAID_ON = 'auto on';
+export const AUTO_SAID_OFF = `auto off (${AUTO_ENV}=on to opt in)`;
 export const AUTO_PER_DAY = 1;
 export const AUTO_LIVE_MAX = 5;
 export const PROBATION_DAYS = 30;
@@ -59,7 +62,9 @@ export const AUTO_FROM: readonly string[] = ['new', 'pending', 'drafted'];
 export const AUTO_DATES_KEEP = 32;
 export const CORRECTED = 'corrected in the next turn: ';
 
-const OFF = new Set(['off', '0', 'false', 'no']);
+/** The only values that turn automatic installs and edits on (0.37.0: opt-in). Any other
+ * value, `off`/`0`/`false`/`no`, an empty one, an unknown word or none at all, leaves them off. */
+const ON = new Set(['on', '1', 'true', 'yes']);
 const LONE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 type Rec = Record<string, unknown>;
@@ -79,8 +84,11 @@ export interface Installed {
   entry: Rec;
 }
 
+/** The reference's `auto_enabled`: true only when `BANTAMKIT_SKILL_AUTO` is `on` (or `1`,
+ * `true`, `yes`), any case, trimmed. OFF by default; it gates the automatic installs, their
+ * daily draft and `improveStep`'s automatic edits, never the judge or its rollback. */
 export function autoEnabled(): boolean {
-  return !OFF.has((process.env[AUTO_ENV] ?? '').trim().toLowerCase());
+  return ON.has((process.env[AUTO_ENV] ?? '').trim().toLowerCase());
 }
 
 const clean = (s: string): string => s.replace(LONE, '�');
@@ -944,6 +952,15 @@ function withMeta(text: string, body: string | null, metadata: Record<string, st
   return renderSkill({ name: doc.name, description: doc.description, metadata: { ...doc.metadata, ...metadata }, body: body ?? doc.body });
 }
 
+/** The reference's `_with_step`: `step` as the next numbered `## Steps` line, `tid` in the evidence. */
+function withStep(text: string, tid: string, step: string): string {
+  const doc = parseSkill(text);
+  const line = `${nextStepNumber(doc.body)}. ${step}`;
+  const ids = csv(doc.metadata['bantamkit-evidence']);
+  if (!ids.includes(tid)) ids.push(tid);
+  return withMeta(text, appendToSection(doc.body, STEPS, [line]), { 'bantamkit-evidence': ids.join(',') });
+}
+
 function proposalOf(kind: string, raw: Uint8Array, old: string, text: string, now: string): Rec {
   return {
     at: now,
@@ -979,8 +996,9 @@ function sessionTurns(sources: Rec): Map<string, STurn[]> {
 export { liveText as _liveText, tally as _tally };
 
 /** The reference's `apply_text`: gated, then the next `auto` version, or an `improve`
- * proposal on a skill edited by hand. `[event, reasons]`; a gate failure is logged. */
-export function applyText(name: string, text: string, home: string, cwd: string | null, now: string, b: Bundle): [string | null, string[]] {
+ * proposal on a skill edited by hand or with `auto` false (automatic edits off).
+ * `[event, reasons]`; a gate failure is logged. */
+export function applyText(name: string, text: string, home: string, cwd: string | null, now: string, b: Bundle, auto = true): [string | null, string[]] {
   const skills = readState(home).skills;
   const entry = Object.hasOwn(skills, name) ? skills[name] : undefined;
   const live = isObj(entry) ? liveText(entry) : null;
@@ -992,7 +1010,7 @@ export function applyText(name: string, text: string, home: string, cwd: string 
     new LogSegment(draftsLog(home)).append(logLine(o, now, b.cluster));
     return [null, g.reasons];
   }
-  if (editedNow(raw, entry)) {
+  if (!auto || editedNow(raw, entry)) {
     if (!slotFree(entry)) return [null, [`a change to ${name} already waits on you`]];
     const prop = proposalOf('improve', raw, raw.toString('utf8'), text, now);
     updateState(home, (fresh) => {
@@ -1025,6 +1043,7 @@ export async function improveStep(
   chain: readonly ChainLink[],
 ): Promise<string[]> {
   const nowMs = msOf(now);
+  const auto = autoEnabled();
   const skills = isObj(state['skills']) ? state['skills'] : {};
   const records = new Map<string, Rec>();
   const clusters = isObj(doc) ? doc['clusters'] : undefined;
@@ -1152,9 +1171,25 @@ export async function improveStep(
       else if (out.ok && out.text !== null) final = out.text;
     }
     if (final !== null) {
-      let [event] = applyText(name, final, home, cwd, now, b);
-      if (event === null && final !== det && changed) [event] = applyText(name, det, home, cwd, now, b);
-      if (event !== null) events.push(event);
+      const drafted = final !== det;
+      let folded = false;
+      if (!auto && stepsFrom !== null) {
+        // automatic edits off: this change becomes the skill's ONE proposal, so the steps
+        // line rides in it rather than being dropped for want of a free slot
+        try {
+          const finalS = withStep(final, stepsFrom[1], stepsFrom[2]);
+          const detS = drafted ? withStep(det, stepsFrom[1], stepsFrom[2]) : finalS;
+          [final, det, folded] = [finalS, detS, true];
+        } catch (err) {
+          if (!(err instanceof SkillFileError)) throw err;
+        }
+      }
+      let [event] = applyText(name, final, home, cwd, now, b, auto);
+      if (event === null && drafted && changed) [event] = applyText(name, det, home, cwd, now, b, auto);
+      if (event !== null) {
+        events.push(event);
+        if (folded) stepsFrom = null;
+      }
     }
     let tune: Rec | null = null;
     if (wait.length > 0) {
@@ -1172,11 +1207,7 @@ export async function improveStep(
       if (nowLive !== null && isObj(fresh) && slotFree(fresh)) {
         try {
           const cur = UTF8.decode(nowLive[1]);
-          const cdoc = parseSkill(cur);
-          const line = `${nextStepNumber(cdoc.body)}. ${stepsFrom[2]}`;
-          const cids = csv(cdoc.metadata['bantamkit-evidence']);
-          if (!cids.includes(stepsFrom[1])) cids.push(stepsFrom[1]);
-          const ptext = withMeta(cur, appendToSection(cdoc.body, STEPS, [line]), { 'bantamkit-evidence': cids.join(',') });
+          const ptext = withStep(cur, stepsFrom[1], stepsFrom[2]);
           prop = proposalOf('steps', nowLive[1], cur, ptext, now);
           events.push(`proposed a change to ${name}`);
         } catch (err) {

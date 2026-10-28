@@ -202,7 +202,11 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     # job73 A4 (#205 Task 4): conftest pins BANTAMKIT_SKILL_AUDIT=off; the home has no record.
     assert lines[14] == "skill audit: off; never ran; usage adapter none"
     # job73 C9 (#206 Task 8): the miner follows the audit switch; no endpoint is configured.
-    assert lines[15] == "skills: off; miner never ran; drafter host agent"
+    # AMENDED job73 C13b: the line ends with the auto switch (off by default, pinned off here).
+    assert lines[15] == (
+        "skills: off; miner never ran; drafter host agent; "
+        "auto off (BANTAMKIT_SKILL_AUTO=on to opt in)"
+    )
 
 
 def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypatch):

@@ -131,6 +131,7 @@ function opList() {
   const h = 'h1';
   add('auto: one below the auto bar, a forged flag each way, at the plain bar', {
     op: 'auto',
+    env: 'on',
     home: h,
     now: NOW,
     proposals: {
@@ -144,6 +145,7 @@ function opList() {
   });
   add('auto: no draft, a failed gate, rejected, installed, failed', {
     op: 'auto',
+    env: 'on',
     home: h,
     now: NOW,
     proposals: {
@@ -159,6 +161,14 @@ function opList() {
   for (const env of ['off', 'OFF', ' 0 ', 'false', 'no']) {
     add(`auto: BANTAMKIT_SKILL_AUTO=${JSON.stringify(env)} installs nothing`, { op: 'auto', home: h, now: NOW, env, proposals: { clusters: [record('skill-a', 8)] } });
   }
+  // job73 C13b: OFF by default in 0.37.0 — only on/1/true/yes (any case, trimmed) opt in; unset,
+  // empty and any unknown word leave it off. Each on spelling gets its own home (one a day).
+  for (const env of [null, '', 'banana', 'enabled', 'on please']) {
+    add(`auto: BANTAMKIT_SKILL_AUTO=${JSON.stringify(env)} (default off) installs nothing`, { op: 'auto', home: 'h0', now: NOW, env, proposals: { clusters: [record('skill-a', 8)] } });
+  }
+  for (const [i, env] of [' ON ', '1', 'true', 'YES', 'On'].entries()) {
+    add(`auto: BANTAMKIT_SKILL_AUTO=${JSON.stringify(env)} opts in`, { op: 'auto', home: `hon${i}`, now: NOW, env, proposals: { clusters: [record('skill-a', 8)] } });
+  }
   add('mkdir a skill dir named taken', { op: 'mkdir', home: h, rel: '.bantamkit/skills/taken' });
   add('auto: a name already on disk is failed, the next installed (best first)', {
     op: 'auto',
@@ -167,14 +177,14 @@ function opList() {
     env: 'on',
     proposals: { clusters: [record('skill-b', 7), record('skill-a', 8), record('taken', 9), record('skill-c', 7, { ts: '2025-12-31T00:00:00Z' })] },
   });
-  add('auto: the same UTC day at 23:59:59.999 installs nothing', { op: 'auto', home: h, now: '2026-10-27T23:59:59.999Z', proposals: { clusters: [record('skill-c', 7, { ts: '2025-12-31T00:00:00Z' }), record('skill-b', 7)] } });
-  add('auto: the next day, oldest first on a tie', { op: 'auto', home: h, now: at(1), proposals: { clusters: [record('skill-b', 7), record('skill-c', 7, { ts: '2025-12-31T00:00:00Z' })] } });
+  add('auto: the same UTC day at 23:59:59.999 installs nothing', { op: 'auto', env: 'on', home: h, now: '2026-10-27T23:59:59.999Z', proposals: { clusters: [record('skill-c', 7, { ts: '2025-12-31T00:00:00Z' }), record('skill-b', 7)] } });
+  add('auto: the next day, oldest first on a tie', { op: 'auto', env: 'on', home: h, now: at(1), proposals: { clusters: [record('skill-b', 7), record('skill-c', 7, { ts: '2025-12-31T00:00:00Z' })] } });
   for (const [i, n] of [[2, 'skill-d'], [3, 'skill-e'], [4, 'skill-f']]) {
-    add(`auto: day ${i} installs ${n}`, { op: 'auto', home: h, now: at(i), proposals: { clusters: [record(n)] } });
+    add(`auto: day ${i} installs ${n}`, { op: 'auto', env: 'on', home: h, now: at(i), proposals: { clusters: [record(n)] } });
   }
-  add('auto: five live, the sixth waits', { op: 'auto', home: h, now: at(5), proposals: { clusters: [record('skill-g')] } });
+  add('auto: five live, the sixth waits', { op: 'auto', env: 'on', home: h, now: at(5), proposals: { clusters: [record('skill-g')] } });
   add('undo the first auto install', { op: 'undo', home: h, name: 'skill-a' });
-  add('auto: four live, the sixth goes in', { op: 'auto', home: h, now: at(6), proposals: { clusters: [record('skill-g')] } });
+  add('auto: four live, the sixth goes in', { op: 'auto', env: 'on', home: h, now: at(6), proposals: { clusters: [record('skill-g')] } });
 
   // h2: probation and undo
   const p = 'h2';
@@ -362,6 +372,8 @@ export async function run(ctx) {
   const iAfter = find('auto: four live, the sixth goes in');
   const iBar = find('auto: one below the auto bar, a forged flag each way, at the plain bar');
   const iOff = find('auto: BANTAMKIT_SKILL_AUTO="off" installs nothing');
+  const iDefaults = [null, '', 'banana', 'enabled', 'on please'].map((e) => find(`auto: BANTAMKIT_SKILL_AUTO=${JSON.stringify(e)} (default off) installs nothing`));
+  const iOns = [' ON ', '1', 'true', 'YES', 'On'].map((e) => find(`auto: BANTAMKIT_SKILL_AUTO=${JSON.stringify(e)} opts in`));
   const iDay30 = find('probation on day 30: unused removed, edited proposed, used and approved kept');
   const iUndo = find('undo the probation removal: back byte for byte');
   const iHalf = find('install fails at the directory rename: nothing left');
@@ -393,6 +405,12 @@ export async function run(ctx) {
       kind: 'json',
       expected: [[], [], ['installed skill skill-a'], [], ['installed skill skill-c'], [], ['installed skill skill-g']],
       actual: [iBar, iOff, iFirst, iSame, iNext, iSixth, iAfter].map((i) => got[i].events),
+    });
+    cases.push({
+      name: `LITERAL: BANTAMKIT_SKILL_AUTO is off unless on/1/true/yes [unset, "", banana, enabled, "on please" | " ON ", 1, true, YES, On] — ${side}`,
+      kind: 'json',
+      expected: [[], [], [], [], [], ['installed skill skill-a'], ['installed skill skill-a'], ['installed skill skill-a'], ['installed skill skill-a'], ['installed skill skill-a']],
+      actual: [...iDefaults, ...iOns].map((i) => got[i].events ?? null),
     });
     cases.push({
       name: `LITERAL: probation day 30 and the undo after it — ${side}`,

@@ -84,7 +84,9 @@ def record(
 
 @pytest.fixture(autouse=True)
 def _auto_on(monkeypatch):
-    monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    # AMENDED job73 C13b: automatic installs are OFF by default in 0.37.0, so the tests of the
+    # auto rule opt in explicitly (unset used to mean on)
+    monkeypatch.setenv(si.AUTO_ENV, "on")
 
 
 def target(home: Path, name: str) -> Path:
@@ -234,6 +236,30 @@ def test_five_live_the_sixth_waits(tmp_path):
 def test_skill_auto_off(tmp_path, monkeypatch, value):
     monkeypatch.setenv(si.AUTO_ENV, value)
     assert si.auto_step({"clusters": [record("a-b")]}, sf.read_state(tmp_path), tmp_path, NOW) == []
+
+
+@pytest.mark.parametrize("value", [None, "", "banana", "enabled", "on please", " "])
+def test_skill_auto_is_off_by_default_and_on_unknown(tmp_path, monkeypatch, value):
+    """0.37.0: unset, empty and any unknown word leave automatic installs off (job73 C13b)."""
+    if value is None:
+        monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    else:
+        monkeypatch.setenv(si.AUTO_ENV, value)
+    assert si.auto_enabled() is False
+    props = {"clusters": [record("a-b")]}
+    assert si.auto_step(props, sf.read_state(tmp_path), tmp_path, NOW) == []
+    assert props["clusters"][0]["status"] == "pending"
+    assert not target(tmp_path, "a-b").exists()
+
+
+@pytest.mark.parametrize("value", ["on", " ON ", "1", "true", "True", "yes", "YES"])
+def test_skill_auto_opt_in_spellings(tmp_path, monkeypatch, value):
+    monkeypatch.setenv(si.AUTO_ENV, value)
+    assert si.auto_enabled() is True
+    state = sf.read_state(tmp_path)
+    assert si.auto_step({"clusters": [record("a-b")]}, state, tmp_path, NOW) == [
+        "installed skill a-b"
+    ]
 
 
 def test_a_refused_candidate_is_failed_and_the_next_is_tried(tmp_path):

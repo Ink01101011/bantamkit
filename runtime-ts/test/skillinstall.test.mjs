@@ -75,7 +75,9 @@ const files = (dir) => {
 const throwsSentence = (fn, re) =>
   assert.throws(fn, (e) => e instanceof si.InstallError && re.test(e.message));
 
-delete process.env[si.AUTO_ENV];
+// AMENDED job73 C13b: automatic installs are OFF by default in 0.37.0, so the tests of the
+// auto rule opt in explicitly (unset used to mean on)
+process.env[si.AUTO_ENV] = 'on';
 
 test('install stamps, writes and records', () => {
   const h = home();
@@ -204,7 +206,37 @@ test('BANTAMKIT_SKILL_AUTO off', () => {
     try {
       assert.deepEqual(si.autoStep({ clusters: [record('a-b')] }, sf.readState(h), h, NOW), []);
     } finally {
-      delete process.env[si.AUTO_ENV];
+      process.env[si.AUTO_ENV] = 'on';
+    }
+  }
+});
+
+test('BANTAMKIT_SKILL_AUTO is off by default and on an unknown value (0.37.0)', () => {
+  for (const value of [undefined, '', 'banana', 'enabled', 'on please', ' ']) {
+    const h = home();
+    if (value === undefined) delete process.env[si.AUTO_ENV];
+    else process.env[si.AUTO_ENV] = value;
+    try {
+      assert.equal(si.autoEnabled(), false);
+      const props = { clusters: [record('a-b')] };
+      assert.deepEqual(si.autoStep(props, sf.readState(h), h, NOW), []);
+      assert.equal(props.clusters[0].status, 'pending');
+      assert.equal(existsSync(join(sf.skillsRoot(h), 'a-b')), false);
+    } finally {
+      process.env[si.AUTO_ENV] = 'on';
+    }
+  }
+});
+
+test('BANTAMKIT_SKILL_AUTO opt-in spellings', () => {
+  for (const value of ['on', ' ON ', '1', 'true', 'True', 'yes', 'YES']) {
+    const h = home();
+    process.env[si.AUTO_ENV] = value;
+    try {
+      assert.equal(si.autoEnabled(), true);
+      assert.deepEqual(si.autoStep({ clusters: [record('a-b')] }, sf.readState(h), h, NOW), ['installed skill a-b']);
+    } finally {
+      process.env[si.AUTO_ENV] = 'on';
     }
   }
 });

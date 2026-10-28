@@ -140,6 +140,8 @@ async function withStub(fn) {
   }
 }
 
+// AMENDED job73 C13b: the skills line ends with the auto switch; the harness pins it off.
+const OFF = '; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)';
 const SWITCHES = ['BANTAMKIT_RETENTION', 'BANTAMKIT_SKILL_AUDIT', si.AUTO_ENV, 'BANTAMKIT_LLM_URL', 'BANTAMKIT_LLM_MODEL'];
 async function withEnv(env, fn) {
   const saved = Object.fromEntries(SWITCHES.map((k) => [k, process.env[k]]));
@@ -228,7 +230,7 @@ test('J69-6: retention off changes only the listed files', async () => {
       assert.equal(c.draft.drafter, 'endpoint m');
       const line = sm.statusLine(b.home);
       assert.ok(line.startsWith('skills: mined 2026-10-27T00:00:00.000Z in '), line);
-      assert.ok(line.endsWith(' ms; 0 pending, 1 of 5 auto-installed live, 0 promoted; drafter endpoint m'), line);
+      assert.ok(line.endsWith(' ms; 0 pending, 1 of 5 auto-installed live, 0 promoted; drafter endpoint m; auto on'), line);
     });
   });
 });
@@ -255,7 +257,7 @@ test('a miner error is recorded and no later step runs', async () => {
     assert.equal(doc.ts, NOW);
     assert.deepEqual(doc.clusters, [ready]);
     assert.ok(!existsSync(join(b.home, '.bantamkit', 'skills')));
-    assert.equal(sm.statusLine(b.home), `skills: miner failed at ${NOW}: OSError; drafter host agent`);
+    assert.equal(sm.statusLine(b.home), `skills: miner failed at ${NOW}: OSError; drafter host agent; auto on`);
   });
 });
 
@@ -266,7 +268,7 @@ test('an unreadable proposals file is left alone', async () => {
     await sm.daily(b.home, b.proj, NOW);
     assert.equal(readFileSync(bk(b.home, sm.PROPOSALS_NAME), 'utf8'), '{not json');
     assert.ok(!existsSync(bk(b.home, sm.CACHE_NAME)));
-    assert.equal(sm.statusLine(b.home), 'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent');
+    assert.equal(sm.statusLine(b.home), 'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent' + OFF);
   });
 });
 
@@ -274,12 +276,19 @@ test('an unreadable proposals file is left alone', async () => {
 
 test('status: never ran, and off', async () => {
   const h = mkdtempSync(join(tmpdir(), 'skillmine-status-'));
-  await withEnv({}, () => assert.equal(sm.statusLine(h), 'skills: miner never ran; drafter host agent'));
-  await withEnv({ BANTAMKIT_SKILL_AUDIT: 'OFF' }, () => assert.equal(sm.statusLine(h), 'skills: off; miner never ran; drafter host agent'));
+  await withEnv({}, () => assert.equal(sm.statusLine(h), 'skills: miner never ran; drafter host agent' + OFF));
+  await withEnv({ BANTAMKIT_SKILL_AUDIT: 'OFF' }, () => assert.equal(sm.statusLine(h), 'skills: off; miner never ran; drafter host agent' + OFF));
   await withEnv({ BANTAMKIT_SKILL_AUDIT: 'OFF', BANTAMKIT_LLM_URL: 'http://127.0.0.1:9', BANTAMKIT_LLM_MODEL: 'qwen' }, () => {
-    assert.equal(sm.statusLine(h, true), 'skills: off; miner never ran; drafter sampling');
-    assert.equal(sm.statusLine(h), 'skills: off; miner never ran; drafter endpoint qwen');
+    assert.equal(sm.statusLine(h, true), 'skills: off; miner never ran; drafter sampling' + OFF);
+    assert.equal(sm.statusLine(h), 'skills: off; miner never ran; drafter endpoint qwen' + OFF);
   });
+});
+
+test('status: says whether auto is on and how to opt in (job73 C13b)', async () => {
+  const h = mkdtempSync(join(tmpdir(), 'skillmine-status-'));
+  for (const [value, said] of [[null, OFF], ['', OFF], ['banana', OFF], ['off', OFF], [' On ', '; auto on'], ['1', '; auto on']]) {
+    await withEnv({ [si.AUTO_ENV]: value }, () => assert.equal(sm.statusLine(h), 'skills: miner never ran; drafter host agent' + said));
+  }
 });
 
 test('status: mined counts pending, live autos and promoted', async () => {
@@ -292,9 +301,9 @@ test('status: mined counts pending, live autos and promoted', async () => {
   };
   put(bk(h, sf.STATE_NAME), JSON.stringify(state));
   await withEnv({}, () => {
-    assert.equal(sm.statusLine(h), `skills: mined ${NOW} in 42 ms; 3 pending, 2 of 5 auto-installed live, 2 promoted; drafter host agent`);
+    assert.equal(sm.statusLine(h), `skills: mined ${NOW} in 42 ms; 3 pending, 2 of 5 auto-installed live, 2 promoted; drafter host agent${OFF}`);
     put(bk(h, sf.STATE_NAME), '[]');
-    assert.equal(sm.statusLine(h), `skills: mined ${NOW} in 42 ms; 3 pending, ? of 5 auto-installed live, ? promoted; drafter host agent`);
+    assert.equal(sm.statusLine(h), `skills: mined ${NOW} in 42 ms; 3 pending, ? of 5 auto-installed live, ? promoted; drafter host agent${OFF}`);
   });
 });
 
@@ -302,7 +311,7 @@ test('status: a wrong version is refused', async () => {
   const h = mkdtempSync(join(tmpdir(), 'skillmine-status-'));
   put(bk(h, sm.PROPOSALS_NAME), '{"version": 2, "clusters": []}');
   await withEnv({}, () =>
-    assert.equal(sm.statusLine(h), 'skills: miner refused: skill-proposals.json is not a version 1 proposals file; drafter host agent'),
+    assert.equal(sm.statusLine(h), 'skills: miner refused: skill-proposals.json is not a version 1 proposals file; drafter host agent' + OFF),
   );
 });
 

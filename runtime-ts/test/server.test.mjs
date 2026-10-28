@@ -1328,7 +1328,7 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.match(rows[12], /^usage ledger: .*[\\/]\.bantamkit[\\/]usage[\\/][0-9a-f]{16}\.jsonl \(1 lines, 0 skipped\)$/);
   assert.equal(rows[13], 'queries: 0 of 1 facts'); // S10 (#207 amendment 3, Q8)
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // job73 A4 (#205 Task 4), the audit switch is off under the runner
-  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // job73 C9 (#206 Task 8), the miner follows the audit switch
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)'); // AMENDED job73 C13b: the auto switch clause; // job73 C9 (#206 Task 8), the miner follows the audit switch
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
   // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
   assert.equal(byId(lines, 3).result.content[0].text, report);
@@ -1434,7 +1434,7 @@ test('the same store one byte of budget tighter reports Degraded, and names the 
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 1 facts');
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
-  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)'); // AMENDED job73 C13b: the auto switch clause; // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
   assert.equal(rows[16], '1 problem:');
   assert.equal(
     rows[17],
@@ -1621,7 +1621,7 @@ test('a memory layer that cannot be listed is reported by KIND — never by the 
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 0 facts');
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
-  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)'); // AMENDED job73 C13b: the auto switch clause; // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
   assert.equal(rows[16], '1 problem:');
   assert.equal(
     rows[17],
@@ -1897,7 +1897,7 @@ test('a real install whose `file:` origin is gone says so — on the wire, in th
   // AMENDED job72 J72-26 (#207 amendment 3, Q8): the problem block moves down one, below `queries:`.
   assert.equal(rows[13], 'queries: 0 of 1 facts');
   assert.equal(rows[14], 'skill audit: off; never ran; usage adapter none'); // AMENDED job73 A4 (#205 Task 4): the problem block moves down one
-  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent'); // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
+  assert.equal(rows[15], 'skills: off; miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)'); // AMENDED job73 C13b: the auto switch clause; // AMENDED job73 C9 (#206 Task 8): the problem block moves down one
   assert.equal(rows[16], '2 problems:');
   assert.equal(
     rows[17],

@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from bantamkit import skilldraft as sd
 from bantamkit import skillfile as sf
 from bantamkit import skillinstall as si
@@ -44,6 +46,14 @@ def record(name: str = "sk-one", evidence: list | None = None, keywords=None, st
         "successes": 3,
         "top": None,
     }
+
+
+@pytest.fixture(autouse=True)
+def _auto_on(monkeypatch):
+    # AMENDED job73 C13b: automatic edits follow BANTAMKIT_SKILL_AUTO, OFF by default in 0.37.0
+    # (and pinned off by conftest); these tests are of the automatic path, so they opt in.
+    # The off path is tested below with the switch unset.
+    monkeypatch.setenv(si.AUTO_ENV, "on")
 
 
 def installed(home: Path, name: str = "sk-one") -> Path:
@@ -265,6 +275,71 @@ def test_a_correction_adds_one_pitfall_and_proposes_a_steps_change(tmp_path):
     assert said == "updated skill sk-one to v3"
     assert "2. Before you finish" in skill(tmp_path)
     assert sf.read_state(tmp_path)["skills"]["sk-one"]["versions"]["3"]["kind"] == "approved"
+
+
+@pytest.mark.parametrize("value", [None, "off", "banana"])
+def test_auto_off_makes_no_version_and_proposes_the_same_signals(tmp_path, monkeypatch, value):
+    """job73 C13b: with BANTAMKIT_SKILL_AUTO off (the 0.37.0 default) nothing applies; the
+    pitfall AND the step of one correction become the skill's ONE proposal; approving it
+    applies both as an approved version."""
+    if value is None:
+        monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    else:
+        monkeypatch.setenv(si.AUTO_ENV, value)
+    target = installed(tmp_path)
+    before = (target / "SKILL.md").read_bytes()
+    events, state = step(tmp_path, sources=corrected())
+    assert events == ["proposed a change to sk-one"]
+    assert (target / "SKILL.md").read_bytes() == before
+    entry = state["skills"]["sk-one"]
+    assert entry["version"] == 1
+    assert not (target / si.HISTORY_DIR).exists()
+    p = entry["proposal"]
+    assert (p["kind"], p["status"]) == ("improve", "pending")
+    assert (
+        "## Steps\n\n1. Do it [job1/U1].\n2. Before you finish, check for what [s1111aaaa#1] "
+        "was corrected for: no, use the other parser\n\n## Pitfalls\n\n"
+        "- [s1111aaaa#1] no, use the other parser\n\n## Example"
+    ) in p["text"]
+    said = sp.render("approve", "sk-one", None, tmp_path, None, LATER)
+    assert said == "updated skill sk-one to v2"
+    after = sf.read_state(tmp_path)["skills"]["sk-one"]
+    assert (after["version"], after["versions"]["2"]["kind"]) == (2, "approved")
+    assert "- [s1111aaaa#1] no, use the other parser" in skill(tmp_path)
+
+
+def test_auto_off_a_drafted_narrow_is_proposed_and_a_tune_with_no_drafter_waits(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    installed(tmp_path)
+    set_v(tmp_path, "sk-one", {"injects": 5, "false_fires": 3})
+    events, state = step(tmp_path, chain=[Stub(draft(desc=NARROW))])
+    assert events == ["proposed a change to sk-one"]
+    assert state["skills"]["sk-one"]["version"] == 1
+    assert NARROW in state["skills"]["sk-one"]["proposal"]["text"]
+    assert DESC in skill(tmp_path)
+    other = tmp_path / "other"
+    installed(other)
+    set_v(other, "sk-one", {"injects": 5, "false_fires": 3})
+    events, state = step(other)
+    assert events == ["waiting on a drafter to tune sk-one"]
+    assert state["skills"]["sk-one"]["tune"]["kinds"] == ["narrow"]
+    assert state["skills"]["sk-one"]["version"] == 1
+
+
+def test_auto_off_the_judge_still_rolls_back(tmp_path, monkeypatch):
+    """The judge and its rollback only undo bantamkit's own change: they do not read the switch."""
+    monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    installed(tmp_path)
+    si.new_version("sk-one", draft(desc=NARROW), tmp_path, LATER, "auto")
+    set_v(tmp_path, "sk-one", {"uses": 5, "successes": 5})
+    set_v(tmp_path, "sk-one", {"uses": 5, "successes": 1}, "2")
+    state = sf.read_state(tmp_path)
+    assert si.judge_step(state, tmp_path, "2026-10-29T12:00:00.000Z") == [
+        "rolled back sk-one to v1"
+    ]
+    assert DESC in skill(tmp_path)
 
 
 def test_a_pitfall_note_is_cut_to_200_code_points(tmp_path):

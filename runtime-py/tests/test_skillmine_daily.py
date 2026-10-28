@@ -23,6 +23,8 @@ from bantamkit import skillinstall as si
 from bantamkit import skillmine as sm
 from bantamkit.storage import retention
 
+#: AMENDED job73 C13b: the line ends with the auto switch; the harness pins it off.
+OFF = "; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)"
 NOW = "2026-10-27T00:00:00.000Z"
 DAY_S = 86_400
 NAME = "fixing-lexer-crashes"
@@ -259,7 +261,7 @@ def test_j69_6_retention_off_changes_only_the_listed_files(
     assert c["status"] == "installed" and c["draft"]["drafter"] == "endpoint m"
     assert sm.status_line(home).startswith("skills: mined 2026-10-27T00:00:00.000Z in ")
     assert sm.status_line(home).endswith(
-        " ms; 0 pending, 1 of 5 auto-installed live, 0 promoted; drafter endpoint m"
+        " ms; 0 pending, 1 of 5 auto-installed live, 0 promoted; drafter endpoint m; auto on"
     )
 
 
@@ -285,7 +287,9 @@ def test_a_miner_error_is_recorded_and_no_later_step_runs(tmp_path: Path, monkey
     assert doc["miner"]["error"] == "OSError" and doc["ts"] == NOW
     assert doc["clusters"] == [ready]  # kept as they were
     assert not (home / ".bantamkit" / "skills").exists()  # auto_step did not run
-    assert sm.status_line(home) == f"skills: miner failed at {NOW}: OSError; drafter host agent"
+    assert sm.status_line(home) == (
+        f"skills: miner failed at {NOW}: OSError; drafter host agent; auto on"
+    )
 
 
 def test_an_unreadable_proposals_file_is_left_alone(tmp_path: Path) -> None:
@@ -296,6 +300,7 @@ def test_an_unreadable_proposals_file_is_left_alone(tmp_path: Path) -> None:
     assert not bk(home, sm.CACHE_NAME).exists()
     assert sm.status_line(home) == (
         "skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent"
+        + OFF
     )
 
 
@@ -303,13 +308,35 @@ def test_an_unreadable_proposals_file_is_left_alone(tmp_path: Path) -> None:
 
 
 def test_status_never_ran_and_off(tmp_path: Path, monkeypatch) -> None:
-    assert sm.status_line(tmp_path) == "skills: miner never ran; drafter host agent"
+    assert sm.status_line(tmp_path) == "skills: miner never ran; drafter host agent" + OFF
     monkeypatch.setenv("BANTAMKIT_SKILL_AUDIT", "OFF")
-    assert sm.status_line(tmp_path) == "skills: off; miner never ran; drafter host agent"
+    assert sm.status_line(tmp_path) == "skills: off; miner never ran; drafter host agent" + OFF
     monkeypatch.setenv("BANTAMKIT_LLM_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("BANTAMKIT_LLM_MODEL", "qwen")
-    assert sm.status_line(tmp_path, True) == "skills: off; miner never ran; drafter sampling"
-    assert sm.status_line(tmp_path) == "skills: off; miner never ran; drafter endpoint qwen"
+    assert sm.status_line(tmp_path, True) == "skills: off; miner never ran; drafter sampling" + OFF
+    assert sm.status_line(tmp_path) == "skills: off; miner never ran; drafter endpoint qwen" + OFF
+
+
+@pytest.mark.parametrize(
+    ("value", "said"),
+    [
+        (None, OFF),
+        ("", OFF),
+        ("banana", OFF),
+        ("off", OFF),
+        (" On ", "; auto on"),
+        ("1", "; auto on"),
+    ],
+)
+def test_status_says_whether_auto_is_on_and_how_to_opt_in(
+    tmp_path: Path, monkeypatch, value, said
+):
+    """job73 C13b: OFF by default in 0.37.0; the line names the switch that opts in."""
+    if value is None:
+        monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    else:
+        monkeypatch.setenv(si.AUTO_ENV, value)
+    assert sm.status_line(tmp_path) == "skills: miner never ran; drafter host agent" + said
 
 
 def test_status_mined_counts_pending_live_autos_and_promoted(tmp_path: Path) -> None:
@@ -328,12 +355,12 @@ def test_status_mined_counts_pending_live_autos_and_promoted(tmp_path: Path) -> 
     _put(bk(tmp_path, sf.STATE_NAME), json.dumps(state))
     assert sm.status_line(tmp_path) == (
         f"skills: mined {NOW} in 42 ms; 3 pending, 2 of 5 auto-installed live, 2 promoted; "
-        "drafter host agent"
+        "drafter host agent" + OFF
     )
     _put(bk(tmp_path, sf.STATE_NAME), "[]")
     assert sm.status_line(tmp_path) == (
         f"skills: mined {NOW} in 42 ms; 3 pending, ? of 5 auto-installed live, ? promoted; "
-        "drafter host agent"
+        "drafter host agent" + OFF
     )
 
 
@@ -341,7 +368,7 @@ def test_status_wrong_version_is_refused(tmp_path: Path) -> None:
     _put(bk(tmp_path, sm.PROPOSALS_NAME), '{"version": 2, "clusters": []}')
     assert sm.status_line(tmp_path) == (
         "skills: miner refused: skill-proposals.json is not a version 1 proposals file; "
-        "drafter host agent"
+        "drafter host agent" + OFF
     )
 
 

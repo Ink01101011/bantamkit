@@ -252,46 +252,47 @@ function part2(add) {
   const n = 'n1';
   add('n1: install sk-n', { op: 'install', home: n, name: 'sk-n', text: draft('sk-n'), now: NOW });
   add('n1: 4 injects, 4 false', { op: 'set_stats', home: n, name: 'sk-n', version: '1', stats: { injects: 4, false_fires: 4 } });
-  add('improve_step: 4 injects never tune', { op: 'improve_step', home: n, sources: {}, now: LATER, drafter: { answer: narrowed('sk-n') } });
+  add('improve_step: 4 injects never tune', { op: 'improve_step', env: 'on', home: n, sources: {}, now: LATER, drafter: { answer: narrowed('sk-n') } });
   add('n1: 5 injects, 3 false', { op: 'set_stats', home: n, name: 'sk-n', version: '1', stats: { injects: 5, false_fires: 3 } });
-  add('improve_step: 5 injects, 3 false: narrowed as v2', { op: 'improve_step', home: n, sources: {}, now: DAY3, drafter: { answer: narrowed('sk-n') } });
+  add('improve_step: 5 injects, 3 false: narrowed as v2', { op: 'improve_step', env: 'on', home: n, sources: {}, now: DAY3, drafter: { answer: narrowed('sk-n') } });
   add('n2: install sk-n', { op: 'install', home: 'n2', name: 'sk-n', text: draft('sk-n'), now: NOW });
   add('n2: 5 injects, 2 false', { op: 'set_stats', home: 'n2', name: 'sk-n', version: '1', stats: { injects: 5, false_fires: 2 } });
-  add('improve_step: 5 injects, 2 false never tune', { op: 'improve_step', home: 'n2', sources: {}, now: LATER, drafter: { answer: narrowed('sk-n') } });
+  add('improve_step: 5 injects, 2 false never tune', { op: 'improve_step', env: 'on', home: 'n2', sources: {}, now: LATER, drafter: { answer: narrowed('sk-n') } });
   add('n3: install sk-n', { op: 'install', home: 'n3', name: 'sk-n', text: draft('sk-n'), now: NOW });
   add('n3: 5 injects, 3 false', { op: 'set_stats', home: 'n3', name: 'sk-n', version: '1', stats: { injects: 5, false_fires: 3 } });
-  add('improve_step: a narrow that fails the gate', { op: 'improve_step', home: 'n3', sources: {}, now: LATER, drafter: { answer: draft('sk-n').replace('Does sk-n.', 'x'.repeat(1100)) } });
+  add('improve_step: a narrow that fails the gate', { op: 'improve_step', env: 'on', home: 'n3', sources: {}, now: LATER, drafter: { answer: draft('sk-n').replace('Does sk-n.', 'x'.repeat(1100)) } });
   add('n4: install sk-n', { op: 'install', home: 'n4', name: 'sk-n', text: draft('sk-n'), now: NOW });
   add('n4: 5 injects, 3 false', { op: 'set_stats', home: 'n4', name: 'sk-n', version: '1', stats: { injects: 5, false_fires: 3 } });
-  add('improve_step: an unreachable drafter: the tune waits', { op: 'improve_step', home: 'n4', sources: {}, now: LATER, drafter: 'unreachable' });
+  add('improve_step: an unreachable drafter: the tune waits', { op: 'improve_step', env: 'on', home: 'n4', sources: {}, now: LATER, drafter: 'unreachable' });
 
   // t: no drafter, the command drafts
   const t = 't1';
   add('t1: install sk-t', { op: 'install', home: t, name: 'sk-t', text: draft('sk-t'), now: NOW });
   add('t1: 5 injects, 3 false', { op: 'set_stats', home: t, name: 'sk-t', version: '1', stats: { injects: 5, false_fires: 3 } });
-  add('improve_step: no drafter, the narrow waits', { op: 'improve_step', home: t, sources: {}, now: LATER });
+  add('improve_step: no drafter, the narrow waits', { op: 'improve_step', env: 'on', home: t, sources: {}, now: LATER });
   add('render: list shows the waiting tune', { op: 'render', home: t, action: 'list', target: null, now: LATER });
   add('render: approve the tune: the host agent hand-off', { op: 'render', home: t, action: 'approve', target: 'sk-t', now: LATER });
   add('t1: the agent writes the file', { op: 'write', home: t, rel: '.bantamkit/skill-handoff/tune-sk-t/SKILL.md', text: narrowed('sk-t') });
   add('render: approve the tune again: applied', { op: 'render', home: t, action: 'approve', target: 'sk-t', now: LATER });
   add('t2: install sk-t', { op: 'install', home: 't2', name: 'sk-t', text: draft('sk-t'), now: NOW });
   add('t2: 5 injects, 3 false', { op: 'set_stats', home: 't2', name: 'sk-t', version: '1', stats: { injects: 5, false_fires: 3 } });
-  add('t2: the narrow waits', { op: 'improve_step', home: 't2', sources: {}, now: LATER });
+  add('t2: the narrow waits', { op: 'improve_step', env: 'on', home: 't2', sources: {}, now: LATER });
   add('render: approve the tune through sampling', { op: 'render', home: 't2', action: 'approve', target: 'sk-t', now: LATER, answer: narrowed('sk-t') });
   add('t3: install sk-t', { op: 'install', home: 't3', name: 'sk-t', text: draft('sk-t'), now: NOW });
   add('t3: 5 injects, 3 false', { op: 'set_stats', home: 't3', name: 'sk-t', version: '1', stats: { injects: 5, false_fires: 3 } });
-  add('t3: the narrow waits', { op: 'improve_step', home: 't3', sources: {}, now: LATER });
+  add('t3: the narrow waits', { op: 'improve_step', env: 'on', home: 't3', sources: {}, now: LATER });
   add('render: reject drops the tune', { op: 'render', home: 't3', action: 'reject', target: 'sk-t', now: LATER });
 
   // m: misses
   add('m1: install sk-m', { op: 'install', home: 'm1', name: 'sk-m', text: draft('sk-m'), now: NOW });
-  add('improve_step: 1 miss never widens', { op: 'improve_step', home: 'm1', sources: {}, doc: missedDoc('sk-m', 1), now: LATER });
-  add('improve_step: the same miss is counted once', { op: 'improve_step', home: 'm1', sources: {}, doc: missedDoc('sk-m', 1), now: DAY3 });
+  add('improve_step: 1 miss never widens', { op: 'improve_step', env: 'on', home: 'm1', sources: {}, doc: missedDoc('sk-m', 1), now: LATER });
+  add('improve_step: the same miss is counted once', { op: 'improve_step', env: 'on', home: 'm1', sources: {}, doc: missedDoc('sk-m', 1), now: DAY3 });
   add('m2: install sk-m', { op: 'install', home: 'm2', name: 'sk-m', text: draft('sk-m'), now: NOW });
-  add('improve_step: 2 misses widen the keywords', { op: 'improve_step', home: 'm2', sources: {}, doc: missedDoc('sk-m', 2), now: LATER });
+  add('improve_step: 2 misses widen the keywords', { op: 'improve_step', env: 'on', home: 'm2', sources: {}, doc: missedDoc('sk-m', 2), now: LATER });
   add('m3: install sk-m', { op: 'install', home: 'm3', name: 'sk-m', text: draft('sk-m'), now: NOW });
   add('improve_step: a session that injected or used it is no miss', {
     op: 'improve_step',
+    env: 'on',
     home: 'm3',
     sources: { injects: [{ names: ['sk-m'], session: '1111aaaa-x', ts: AFTER }], uses: [{ fact: 'sk-m', session: '2222aaaa-y', ts: AFTER }] },
     doc: missedDoc('sk-m', 2),
@@ -300,14 +301,14 @@ function part2(add) {
 
   // c: a correction after a use
   add('c1: install sk-c', { op: 'install', home: 'c1', name: 'sk-c', text: draft('sk-c'), now: NOW });
-  add('improve_step: a correction: a pitfall applied, a steps change proposed', { op: 'improve_step', home: 'c1', sources: corrected('sk-c'), now: LATER });
-  add('improve_step: the same correction is never added twice', { op: 'improve_step', home: 'c1', sources: corrected('sk-c'), now: DAY3 });
+  add('improve_step: a correction: a pitfall applied, a steps change proposed', { op: 'improve_step', env: 'on', home: 'c1', sources: corrected('sk-c'), now: LATER });
+  add('improve_step: the same correction is never added twice', { op: 'improve_step', env: 'on', home: 'c1', sources: corrected('sk-c'), now: DAY3 });
   add('render: list shows the steps change and its diff', { op: 'render', home: 'c1', action: 'list', target: null, now: DAY3 });
   add('render: approve the steps change', { op: 'render', home: 'c1', action: 'approve', target: 'sk-c', now: DAY3 });
   add('c2: install sk-c', { op: 'install', home: 'c2', name: 'sk-c', text: draft('sk-c'), now: NOW });
-  add('improve_step: a 300-code-point correction', { op: 'improve_step', home: 'c2', sources: corrected('sk-c', 'ก'.repeat(300)), now: LATER });
+  add('improve_step: a 300-code-point correction', { op: 'improve_step', env: 'on', home: 'c2', sources: corrected('sk-c', 'ก'.repeat(300)), now: LATER });
   add('c3: install sk-c', { op: 'install', home: 'c3', name: 'sk-c', text: draft('sk-c'), now: NOW });
-  add('improve_step: c3 proposes', { op: 'improve_step', home: 'c3', sources: corrected('sk-c'), now: LATER });
+  add('improve_step: c3 proposes', { op: 'improve_step', env: 'on', home: 'c3', sources: corrected('sk-c'), now: LATER });
   add('c3: the file changes after the proposal', { op: 'append', home: 'c3', rel: '.bantamkit/skills/sk-c/SKILL.md', text: 'later\n' });
   add('render: approve a proposal whose file changed', { op: 'render', home: 'c3', action: 'approve', target: 'sk-c', now: LATER });
 
@@ -315,9 +316,9 @@ function part2(add) {
   const steps = { clusters: [rec('sk-s', null, null, ['Read>Edit', 'Edit>Bash'])] };
   const used = (tools) => ({ turns: [{ id: 's1111aaaa#1', ok: true, tools, ts: AFTER }], uses: [{ fact: 'sk-s', session: '1111aaaa-x', ts: AFTER }] });
   add('s1: install sk-s', { op: 'install', home: 's1', name: 'sk-s', text: draft('sk-s'), now: NOW });
-  add('improve_step: different steps: a proposal only', { op: 'improve_step', home: 's1', sources: used(['Grep', 'Write', 'Grep']), doc: steps, now: LATER });
+  add('improve_step: different steps: a proposal only', { op: 'improve_step', env: 'on', home: 's1', sources: used(['Grep', 'Write', 'Grep']), doc: steps, now: LATER });
   add('s2: install sk-s', { op: 'install', home: 's2', name: 'sk-s', text: draft('sk-s'), now: NOW });
-  add('improve_step: shared steps: nothing', { op: 'improve_step', home: 's2', sources: used(['Read', 'Edit', 'Bash']), doc: steps, now: LATER });
+  add('improve_step: shared steps: nothing', { op: 'improve_step', env: 'on', home: 's2', sources: used(['Read', 'Edit', 'Bash']), doc: steps, now: LATER });
 
   // g: two skills that fire together
   for (const [h, k, extra, l] of [
@@ -327,10 +328,10 @@ function part2(add) {
   ]) {
     add(`${h}: install sk-ma`, { op: 'install', home: h, name: 'sk-ma', text: draft('sk-ma'), now: NOW });
     add(`${h}: install sk-mb`, { op: 'install', home: h, name: 'sk-mb', text: draft('sk-mb'), now: NOW });
-    add(`improve_step: ${l}`, { op: 'improve_step', home: h, sources: together(k, extra), now: LATER });
+    add(`improve_step: ${l}`, { op: 'improve_step', env: 'on', home: h, sources: together(k, extra), now: LATER });
   }
   add('render: approve the merge: never done for you', { op: 'render', home: 'g1', action: 'approve', target: 'sk-ma', now: LATER });
-  add('improve_step: a merge is not proposed twice', { op: 'improve_step', home: 'g1', sources: together(5), now: DAY3 });
+  add('improve_step: a merge is not proposed twice', { op: 'improve_step', env: 'on', home: 'g1', sources: together(5), now: DAY3 });
 
   // e: the edited guard
   add('e1: install sk-x', { op: 'install', home: 'e1', name: 'sk-x', text: draft('sk-x'), now: NOW });
@@ -338,6 +339,7 @@ function part2(add) {
   add('e1: 5 injects, 3 false', { op: 'set_stats', home: 'e1', name: 'sk-x', version: '1', stats: { injects: 5, false_fires: 3 } });
   add('improve_step: on an edited skill everything is a proposal', {
     op: 'improve_step',
+    env: 'on',
     home: 'e1',
     sources: corrected('sk-x'),
     now: LATER,
@@ -346,8 +348,30 @@ function part2(add) {
   add('render: approve the change to the edited skill', { op: 'render', home: 'e1', action: 'approve', target: 'sk-x', now: LATER });
   add('edited: still edited after the approval', { op: 'edited', home: 'e1', name: 'sk-x' });
   add('e1: v2 9 injects, 9 false', { op: 'set_stats', home: 'e1', name: 'sk-x', version: '2', stats: { injects: 9, false_fires: 9 } });
-  add('improve_step: an approved edited skill still only gets proposals', { op: 'improve_step', home: 'e1', sources: {}, now: DAY3, drafter: { answer: narrowed('sk-x') } });
+  add('improve_step: an approved edited skill still only gets proposals', { op: 'improve_step', env: 'on', home: 'e1', sources: {}, now: DAY3, drafter: { answer: narrowed('sk-x') } });
   add('new_version: an automatic version of the edited skill is refused', { op: 'new_version', home: 'e1', name: 'sk-x', text: draft('sk-x'), now: DAY3, kind: 'auto' });
+
+  // x (job73 C13b): BANTAMKIT_SKILL_AUTO is OFF by default in 0.37.0 and gates the automatic
+  // edits too: no version is made, the same signals become the skill's one proposal (a steps
+  // line due in the same run rides in it), a tune with no drafter still waits
+  add('x1: install sk-c', { op: 'install', home: 'x1', name: 'sk-c', text: draft('sk-c'), now: NOW });
+  add('improve_step: auto unset: the correction is proposed, pitfall and step together', { op: 'improve_step', home: 'x1', sources: corrected('sk-c'), now: LATER });
+  add('render: auto unset: list shows the one change', { op: 'render', home: 'x1', action: 'list', target: null, now: LATER });
+  add('render: auto unset: approve applies it as v2', { op: 'render', home: 'x1', action: 'approve', target: 'sk-c', now: LATER });
+  add('x2: install sk-n', { op: 'install', home: 'x2', name: 'sk-n', text: draft('sk-n'), now: NOW });
+  add('x2: 5 injects, 3 false', { op: 'set_stats', home: 'x2', name: 'sk-n', version: '1', stats: { injects: 5, false_fires: 3 } });
+  add('improve_step: auto off: a drafted narrow is proposed', { op: 'improve_step', env: 'off', home: 'x2', sources: {}, now: LATER, drafter: { answer: narrowed('sk-n') } });
+  add('x3: install sk-m', { op: 'install', home: 'x3', name: 'sk-m', text: draft('sk-m'), now: NOW });
+  add('improve_step: auto "banana": the widened keywords are proposed, the tune waits', { op: 'improve_step', env: 'banana', home: 'x3', sources: {}, doc: missedDoc('sk-m', 2), now: LATER });
+  add('x4: install sk-t', { op: 'install', home: 'x4', name: 'sk-t', text: draft('sk-t'), now: NOW });
+  add('x4: 5 injects, 3 false', { op: 'set_stats', home: 'x4', name: 'sk-t', version: '1', stats: { injects: 5, false_fires: 3 } });
+  add('improve_step: auto " OFF ", no drafter: the narrow waits', { op: 'improve_step', env: ' OFF ', home: 'x4', sources: {}, now: LATER });
+  add('x5: install sk-s', { op: 'install', home: 'x5', name: 'sk-s', text: draft('sk-s'), now: NOW });
+  add('improve_step: auto "": different steps: a steps proposal as before', { op: 'improve_step', env: '', home: 'x5', sources: used(['Grep', 'Write', 'Grep']), doc: steps, now: LATER });
+  for (const [h, env] of [['x6', ' Yes '], ['x7', '1'], ['x8', 'TRUE']]) {
+    add(`${h}: install sk-c`, { op: 'install', home: h, name: 'sk-c', text: draft('sk-c'), now: NOW });
+    add(`improve_step: auto ${JSON.stringify(env)}: the pitfall applied as v2`, { op: 'improve_step', env, home: h, sources: corrected('sk-c'), now: LATER });
+  }
 }
 
 // ------------------------------------------------------------------------- Node side
@@ -533,7 +557,15 @@ async function runNode(ctx, bed, ops) {
                   },
                 },
               ];
-        out.events = await si.improveStep(state, op.sources, op.doc ?? null, home, null, op.now, chain);
+        const savedAuto = process.env[si.AUTO_ENV];
+        if (op.env === undefined || op.env === null) delete process.env[si.AUTO_ENV];
+        else process.env[si.AUTO_ENV] = op.env;
+        try {
+          out.events = await si.improveStep(state, op.sources, op.doc ?? null, home, null, op.now, chain);
+        } finally {
+          if (savedAuto === undefined) delete process.env[si.AUTO_ENV];
+          else process.env[si.AUTO_ENV] = savedAuto;
+        }
         out.returned_state = state;
       } else if (op.op === 'judge_step') {
         const state = sf.readState(home);
@@ -645,6 +677,14 @@ export async function run(ctx) {
     g1: find('improve_step: five sessions: a merge proposed'),
     g1approve: find('render: approve the merge: never done for you'),
     edited: find('improve_step: on an edited skill everything is a proposal'),
+    x1: find('improve_step: auto unset: the correction is proposed, pitfall and step together'),
+    x1list: find('render: auto unset: list shows the one change'),
+    x1approve: find('render: auto unset: approve applies it as v2'),
+    x2: find('improve_step: auto off: a drafted narrow is proposed'),
+    x3: find('improve_step: auto "banana": the widened keywords are proposed, the tune waits'),
+    x4: find('improve_step: auto " OFF ", no drafter: the narrow waits'),
+    x5: find('improve_step: auto "": different steps: a steps proposal as before'),
+    on: ['x6', 'x7', 'x8'].map((h, i) => find(`improve_step: auto ${JSON.stringify([' Yes ', '1', 'TRUE'][i])}: the pitfall applied as v2`)),
   };
   const skillOf = (r, n) => r?.tree?.[`.bantamkit/skills/${n}/SKILL.md`] ?? null;
   for (const [side, got] of [
@@ -704,6 +744,61 @@ export async function run(ctx) {
         got[i2.edited].state?.skills?.['sk-x']?.proposal?.kind ?? null,
         (skillOf(got[i2.edited], 'sk-x') ?? '').endsWith('my own line\n') && !(skillOf(got[i2.edited], 'sk-x') ?? '').includes('s1111aaaa#1'),
       ],
+    });
+    const x = (i, n) => got[i]?.state?.skills?.[n] ?? {};
+    const x1 = x(i2.x1, 'sk-c');
+    const unchanged = (i, h, n) => skillOf(got[i], n) === skillOf(got[find(`${h}: install ${n}`)], n);
+    cases.push({
+      name: `LITERAL: auto unset: no version, ONE improve proposal holding the pitfall AND the step — ${side}`,
+      kind: 'json',
+      expected: [['proposed a change to sk-c'], 1, true, 'improve', 'pending', true, true],
+      actual: [
+        got[i2.x1].events,
+        x1.version ?? null,
+        unchanged(i2.x1, 'x1', 'sk-c'),
+        x1.proposal?.kind ?? null,
+        x1.proposal?.status ?? null,
+        (x1.proposal?.text ?? '').includes(
+          '## Steps\n\n1. Do it [job1/U1].\n2. Before you finish, check for what [s1111aaaa#1] was corrected for: no, use the other parser\n\n## Pitfalls\n\n- [s1111aaaa#1] no, use the other parser\n\n## Example',
+        ),
+        (got[i2.x1list].said ?? '').includes('+2. Before you finish'),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: auto unset: approving the proposal makes v2, approved — ${side}`,
+      kind: 'json',
+      expected: [2, 'approved', true],
+      actual: [
+        x(i2.x1approve, 'sk-c').version ?? null,
+        x(i2.x1approve, 'sk-c').versions?.['2']?.kind ?? null,
+        (skillOf(got[i2.x1approve], 'sk-c') ?? '').includes('- [s1111aaaa#1] no, use the other parser'),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: auto off / "banana" / " OFF " / "": proposals and a waiting tune, never a version — ${side}`,
+      kind: 'json',
+      expected: [
+        [['proposed a change to sk-n'], 1, true, 'improve', true],
+        [['proposed a change to sk-m', 'waiting on a drafter to tune sk-m'], 1, true, 'improve', true],
+        [['waiting on a drafter to tune sk-t'], 1, true, null, ['narrow']],
+        [['proposed a change to sk-s'], 1, true, 'steps', true],
+      ],
+      actual: [
+        [i2.x2, 'x2', 'sk-n', (p) => (p?.text ?? '').includes(NARROW('sk-n'))],
+        [i2.x3, 'x3', 'sk-m', (p) => (p?.text ?? '').includes('bantamkit-keywords: "k1,lexer,tokens"')],
+        [i2.x4, 'x4', 'sk-t', () => x(i2.x4, 'sk-t').tune?.kinds ?? null],
+        [i2.x5, 'x5', 'sk-s', (p) => (p?.text ?? '').includes('It also worked as Grep > Write > Grep [s1111aaaa#1].')],
+      ].map(([i, h, n, f]) => [got[i].events, x(i, n).version ?? null, unchanged(i, h, n), x(i, n).proposal?.kind ?? null, f(x(i, n).proposal)]),
+    });
+    cases.push({
+      name: `LITERAL: auto " Yes " / "1" / "TRUE": the pitfall applied as v2, the step proposed — ${side}`,
+      kind: 'json',
+      expected: [
+        [['improved skill sk-c to v2', 'proposed a change to sk-c'], 2, 'steps'],
+        [['improved skill sk-c to v2', 'proposed a change to sk-c'], 2, 'steps'],
+        [['improved skill sk-c to v2', 'proposed a change to sk-c'], 2, 'steps'],
+      ],
+      actual: i2.on.map((i) => [got[i].events, x(i, 'sk-c').version ?? null, x(i, 'sk-c').proposal?.kind ?? null]),
     });
   }
   return { cases, notes: [] };

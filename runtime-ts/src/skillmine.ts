@@ -31,6 +31,8 @@ import { selectAdapter } from './skillhost.js';
 import {
   AUTO_FROM,
   AUTO_LIVE_MAX,
+  AUTO_SAID_OFF,
+  AUTO_SAID_ON,
   autoEnabled,
   autoStep,
   draftEntry,
@@ -1674,7 +1676,7 @@ async function dailyRun(home: string, cwd: string | null, now: string): Promise<
 /** The `skills:` line of `bantamkit_status`; the reference's `status_line`. Never throws. */
 export function statusLine(home: string, sampling = false): string {
   const p = auditEnabled() ? '' : 'off; ';
-  const tail = `; drafter ${activeDrafter(sampling)}`;
+  const tail = `; drafter ${activeDrafter(sampling)}; ${autoEnabled() ? AUTO_SAID_ON : AUTO_SAID_OFF}`;
   let doc: ProposalsDoc | null;
   try {
     doc = readProposals(home);

@@ -1791,15 +1791,24 @@ def status_line(home: str | Path, sampling: bool = False) -> str:
     """The `skills:` line of `bantamkit_status`, after the `skill audit:` line. Never raises.
 
     `<p>` is `off; ` when the miner's switch (`BANTAMKIT_SKILL_AUDIT`) is off; the drafter is
-    the one a draft made now would reach first (`sampling` when the client declared it).
+    the one a draft made now would reach first (`sampling` when the client declared it); the
+    last clause says whether automatic installs and edits are on (`BANTAMKIT_SKILL_AUTO`, off
+    by default) and, when off, how to opt in.
     """
     from bantamkit.skilldraft import active_drafter
     from bantamkit.skillfile import read_state
-    from bantamkit.skillinstall import AUTO_LIVE_MAX, live_auto
+    from bantamkit.skillinstall import (
+        AUTO_LIVE_MAX,
+        AUTO_SAID_OFF,
+        AUTO_SAID_ON,
+        auto_enabled,
+        live_auto,
+    )
     from bantamkit.storage.retention import audit_enabled
 
     p = "" if audit_enabled() else "off; "
-    tail = f"; drafter {active_drafter(sampling)}"
+    said = AUTO_SAID_ON if auto_enabled() else AUTO_SAID_OFF
+    tail = f"; drafter {active_drafter(sampling)}; {said}"
     try:
         doc = read_proposals(home)
     except ProposalsError as e:

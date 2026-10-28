@@ -1231,6 +1231,8 @@ async function dailyCases(ctx, base) {
       status('st-badstate'),
       status('st-wrongver'),
       status('st-corrupt'),
+      status('st-never', { BANTAMKIT_SKILL_AUTO: null }),
+      status('st-never', { BANTAMKIT_SKILL_AUTO: ' On ' }),
     ];
   };
   let py;
@@ -1271,15 +1273,17 @@ async function dailyCases(ctx, base) {
     `proj/.bantamkit/skills/${DNAME}/references/evidence.md`,
   ];
   const STATUS = [
-    'skills: miner never ran; drafter host agent',
-    'skills: off; miner never ran; drafter host agent',
-    'skills: miner never ran; drafter endpoint qwen',
-    'skills: miner never ran; drafter sampling',
-    `skills: mined ${DNOW} in <ms> ms; 3 pending, 2 of 5 auto-installed live, 2 promoted; drafter host agent`,
-    `skills: off; miner failed at ${DNOW}: OSError; drafter host agent`,
-    `skills: mined ${DNOW} in <ms> ms; 3 pending, ? of 5 auto-installed live, ? promoted; drafter host agent`,
-    'skills: miner refused: skill-proposals.json is not a version 1 proposals file; drafter host agent',
-    'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent',
+    'skills: miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+    'skills: off; miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+    'skills: miner never ran; drafter endpoint qwen; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+    'skills: miner never ran; drafter sampling; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+    `skills: mined ${DNOW} in <ms> ms; 3 pending, 2 of 5 auto-installed live, 2 promoted; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)`,
+    `skills: off; miner failed at ${DNOW}: OSError; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)`,
+    `skills: mined ${DNOW} in <ms> ms; 3 pending, ? of 5 auto-installed live, ? promoted; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)`,
+    'skills: miner refused: skill-proposals.json is not a version 1 proposals file; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+    'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+    'skills: miner never ran; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+    'skills: miner never ran; drafter host agent; auto on',
   ];
   for (const [side, ans, tagSide] of [
     ['python', py, 'py'],
@@ -1306,7 +1310,7 @@ async function dailyCases(ctx, base) {
         skills: [DNAME],
         events: [`installed skill ${DNAME}`, 'removed unused skill old-skill'],
         stamped: true,
-        line: `skills: mined ${DNOW} in <ms> ms; 0 pending, 1 of 5 auto-installed live, 0 promoted; drafter endpoint m`,
+        line: `skills: mined ${DNOW} in <ms> ms; 0 pending, 1 of 5 auto-installed live, 0 promoted; drafter endpoint m; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)`,
       },
       actual: {
         asked: asked.filter((r) => r.side === tagSide && r.scenario === 'full').length,
@@ -1335,13 +1339,13 @@ async function dailyCases(ctx, base) {
     cases.push({
       name: `LITERAL: a miner error — miner.error OSError over the previous clusters, no later step (no install) — ${side}`,
       kind: 'json',
-      expected: { error: 'OSError', ts: DNOW, clusters: [ready], installed: null, line: `skills: miner failed at ${DNOW}: OSError; drafter host agent` },
+      expected: { error: 'OSError', ts: DNOW, clusters: [ready], installed: null, line: `skills: miner failed at ${DNOW}: OSError; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)` },
       actual: { error: eDoc?.miner?.error ?? null, ts: eDoc?.ts ?? null, clusters: eDoc?.clusters ?? null, installed: eSkill, line: T(ans, 'error status {} false') },
     });
     cases.push({
       name: `LITERAL: an unreadable proposals file is left as it is and nothing runs — ${side}`,
       kind: 'json',
-      expected: [['{not json', null], 'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent'],
+      expected: [['{not json', null], 'skills: miner refused: skill-proposals.json is not readable JSON; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)'],
       actual: [T(ans, 'refused files'), T(ans, 'refused status {} false')],
     });
     cases.push({
