@@ -39,7 +39,7 @@
  * ctx = { python, repoRoot, runtimeTs, scratch, runPython(scriptPath, payload) }
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -169,16 +169,37 @@ const REF_TIMEOUT_MS = Number(process.env.BANTAMKIT_CONFORMANCE_REF_TIMEOUT_MS ?
  *
  * `env` is merged over the parent environment, so a suite can pin `TZ` and compare a
  * LOCAL-clock answer across runtimes instead of comparing two guesses about local time.
+ *
+ * STDIN IS A FILE, NOT `input:`. MEASURED 2026-10-29 (#246, #238), Node 25.2.1 on macOS
+ * arm64: `spawnSync(..., { input })` with a payload larger than the pipe buffer, into a child
+ * that starts reading late (a reference imports `bantamkit` first), left the child blocked in
+ * `sys.stdin.read()` forever in 7 of 200 calls while pytest ran beside it, and 0 of 200
+ * without load. A bare `python -c` repro with no bantamkit in it hung the same way. With the
+ * payload in a file handed over as fd 0, the same load gave 0 of 200. The real hangs it
+ * explains: `skilldraft_ref.py` (199,583 bytes in) and `skillpropose_ref.py` (71,738 bytes),
+ * each with nothing on stdout or stderr until the bound below killed it, and a faulthandler
+ * stack showing the child parked at `sys.stdin.read()`. The references still read stdin;
+ * only what stands behind it changed, and a regular file always reaches EOF.
  */
+let payloadSeq = 0;
 function runPython(scriptPath, payload, env = {}) {
-  const r = spawnSync(python, [scriptPath], {
-    input: JSON.stringify(payload),
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-    env: { ...process.env, ...env },
-    timeout: REF_TIMEOUT_MS,
-    killSignal: 'SIGKILL',
-  });
+  const payloadPath = join(scratch, `ref-payload-${process.pid}-${(payloadSeq += 1)}.json`);
+  writeFileSync(payloadPath, JSON.stringify(payload));
+  const stdin = openSync(payloadPath, 'r');
+  let r;
+  try {
+    r = spawnSync(python, [scriptPath], {
+      stdio: [stdin, 'pipe', 'pipe'],
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      env: { ...process.env, ...env },
+      timeout: REF_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+    });
+  } finally {
+    closeSync(stdin);
+    rmSync(payloadPath, { force: true });
+  }
   // The timeout arm comes FIRST, because `spawnSync` reports it as an ordinary `r.error`
   // and the generic message below would blame the interpreter for being unlaunchable when
   // it launched fine and then stopped answering. Those are different failures and they

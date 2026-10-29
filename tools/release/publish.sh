@@ -387,27 +387,72 @@ ok "preflight clean"
 # The four gates this repository runs, all of them, every time. ZERO FAILURES is the bar -- a
 # pass count is a function of repo content and is never an expectation. All four run even after
 # one fails, so a single run tells you everything that is wrong.
+#
+# TWO LANES (#238). pytest runs in the background, beside ruff -> npm test -> conformance in
+# the foreground; they share no file one of them writes. Run one after another they took
+# ~18.5 min, nearly all of it conformance (~10.8 min) and pytest (~7.3 min). pytest's output
+# goes to its own log, printed whole once it ends, so the terminal reads one gate at a time.
+#
+# THE NODE BUILD RUNS ONCE, FIRST, ALONE. `npm test`'s `pretest` is `npm run build`, and tsc
+# REWRITES every file of `runtime-ts/dist/`, which pytest executes
+# (`test_served_tool_count_records.py` launches `dist/cli.js`). `build-for-pack.mjs` measured
+# that a rewrite of a tree under test fails the run while load alone does not. So the build
+# happens before the lanes split, and the npm gate is `npm test --ignore-scripts`, which runs
+# the same `test` script without its pre-script. It is the same check `npm test` made.
 
 phase "phase 1/8  test -- the four gates (0 failures is the bar)"
 
+PHASE1_START=$SECONDS
 GATE_FAILED=0
 GATE_FAILED_NAMES=""
-gate() { # label, then the command
-  local label="$1"; shift
-  say "  --- $label"
-  if "$@"; then
-    ok "$label"
+gate_result() { # label, exit status
+  if [ "$2" -eq 0 ]; then
+    ok "$1"
   else
     GATE_FAILED=$((GATE_FAILED + 1))
     GATE_FAILED_NAMES="$GATE_FAILED_NAMES
-           - $label"
-    bad "$label"
+           - $1"
+    bad "$1"
   fi
 }
-gate "pytest runtime-py/tests" "$VENV_PY" -m pytest "$REPO/runtime-py/tests" -q
+gate() { # label, then the command
+  local label="$1"; shift
+  say "  --- $label"
+  local status=0
+  "$@" || status=$?
+  gate_result "$label" "$status"
+}
+
+NPM_GATE="npm test (runtime-ts)"
+say "  --- npm run build (runtime-ts): npm test's pretest, run once before the lanes split"
+NODE_BUILT=1
+(cd "$REPO/runtime-ts" && npm run build) || NODE_BUILT=0
+
+PYTEST_LABEL="pytest runtime-py/tests"
+PYTEST_LOG="$SCRATCH/gate-pytest.log"
+"$VENV_PY" -m pytest "$REPO/runtime-py/tests" -q >"$PYTEST_LOG" 2>&1 &
+PYTEST_PID=$!
+# Interrupted mid-phase, the background lane would outlive the script and keep writing into a
+# scratch directory that `cleanup` is removing.
+trap 'kill "$PYTEST_PID" 2>/dev/null || true; cleanup' EXIT
+say "  --- $PYTEST_LABEL: started in the background (pid $PYTEST_PID); its log prints when it ends"
+
 gate "ruff check runtime-py tools" "$RUFF" check "$REPO/runtime-py" "$REPO/tools"
-gate "npm test (runtime-ts)" bash -c "cd '$REPO/runtime-ts' && npm test"
+if [ "$NODE_BUILT" -eq 1 ]; then
+  gate "$NPM_GATE" bash -c "cd '$REPO/runtime-ts' && npm test --ignore-scripts"
+else
+  say "  --- $NPM_GATE"
+  gate_result "$NPM_GATE (its build failed, above)" 1
+fi
 gate "conformance --all" node "$REPO/tools/conformance/run.mjs" --all
+
+say "  --- $PYTEST_LABEL (ran beside the gates above)"
+PYTEST_STATUS=0
+wait "$PYTEST_PID" || PYTEST_STATUS=$?
+trap cleanup EXIT
+cat "$PYTEST_LOG"
+gate_result "$PYTEST_LABEL" "$PYTEST_STATUS"
+note "phase 1 took $(( (SECONDS - PHASE1_START) / 60 ))m $(( (SECONDS - PHASE1_START) % 60 ))s"
 
 if [ "$GATE_FAILED" -gt 0 ]; then
   die "$GATE_FAILED gate(s) failed:$GATE_FAILED_NAMES

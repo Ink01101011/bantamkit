@@ -149,6 +149,10 @@ closed.listen(0, '127.0.0.1', () => {
   closed.close(() => server.listen(0, '127.0.0.1', () => process.stdout.write(server.address().port + ' ' + closedPort + '\\n')));
 });
 process.on('SIGTERM', () => process.exit(0));
+// The parent holds the other end of stdin. When it exits by any road -- a \`die()\` on a stuck
+// reference never reaches the suite's \`finally\` -- the pipe closes and the stub goes with it.
+process.stdin.on('end', () => process.exit(0));
+process.stdin.resume();
 `;
 
 function startStub(scratch, answers) {
@@ -156,7 +160,7 @@ function startStub(scratch, answers) {
   const log = join(scratch, 'skill-draft-requests.jsonl');
   writeFileSync(script, STUB);
   writeFileSync(log, '');
-  const child = spawn(process.execPath, [script, log, JSON.stringify(answers)], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, [script, log, JSON.stringify(answers)], { stdio: ['pipe', 'pipe', 'inherit'] });
   return new Promise((resolve, reject) => {
     let buf = '';
     child.on('error', reject);
