@@ -67,6 +67,11 @@ def main() -> None:
     for call in req["calls"]:
         if call["op"] == "labels":
             results.append([label for label, _, _ in mem._layers])
+        elif call["op"] == "install":
+            target = Path(req["start"]) / ".bantamkit/skills/late-skill/SKILL.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(call["text"], encoding="utf-8")
+            results.append(None)
         elif call["op"] == "recall":
             o = mem.recall_outcome(call["q"], call.get("k"), stamp=call["stamp"])
             results.append(_outcome(o))

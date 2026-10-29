@@ -31,6 +31,8 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFile
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { run as runLateMcp } from '../lib/skill-late-mcp.mjs';
+
 export const name = 'skill-layer';
 export const summary = 'the [skill] recall layer: order, gate, shadow, promoted, invalid, read-only';
 
@@ -106,6 +108,8 @@ const SCENARIOS = [
     calls: [
       ['the layers, in order', { op: 'labels' }],
       ['a recall', recall('deploy')],
+      ['install after binding', { op: 'install', text: skill('late-skill', 'Diagnoses late installation failures') }],
+      ['recall newly installed skill', recall('late-skill')],
     ],
   },
   {
@@ -176,6 +180,10 @@ async function runNode(ctx, req, env) {
     const mem = mod.Memory.layered(req.start, options);
     const results = req.calls.map((call) => {
       if (call.op === 'labels') return mem.layerLabels();
+      if (call.op === 'install') {
+        materialise(req.start, { '.bantamkit/skills/late-skill/SKILL.md': call.text }, []);
+        return null;
+      }
       return outcome(mem.recallOutcome(call.q, call.k, store.RECALL_MIN_SCORE_RATIO, call.stamp));
     });
     const usage = join(env.HOME, '.bantamkit', 'usage');
@@ -245,6 +253,7 @@ export async function run(ctx) {
     // read-only, per side: a symmetric write into a skills dir leaves the differential green
     for (const side of ['py', 'node']) {
       const s = sides[side];
+      if (sc.calls.some(([, call]) => call.op === 'install')) continue;
       cases.push({
         name: `literal (${side === 'py' ? 'python' : 'node'}): ${sc.label}: recall wrote nothing into a skills directory`,
         kind: 'json',
@@ -284,6 +293,8 @@ export async function run(ctx) {
       actual: answers[1][side].got.results[0],
     });
   }
+  for (const side of ['py', 'node']) cases.push({ name: `late skill (${side})`, kind: 'json', expected: true, actual: answers[1][side].got.results[3].reply.includes('Read the failing line.') });
+  cases.push(...(await runLateMcp(ctx)).cases);
   return { cases, notes: [] };
 }
 
