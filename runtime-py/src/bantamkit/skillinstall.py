@@ -549,11 +549,14 @@ def undo(name: str, home: str | Path) -> str:
     target = Path(src["path"])
     said = undo_dir(backup_root(home), name, target)
     restored = None
+    restored_version = None
     if os.path.isfile(target / SKILL_FILE):
         try:
-            stored = parse_skill((target / SKILL_FILE).read_bytes().decode("utf-8")).metadata.get(
-                HASH_KEY
-            )
+            metadata = parse_skill((target / SKILL_FILE).read_bytes().decode("utf-8")).metadata
+            stored = metadata.get(HASH_KEY)
+            raw_version = metadata.get("bantamkit-version")
+            if isinstance(raw_version, str) and re.fullmatch(r"[1-9][0-9]*", raw_version):
+                restored_version = int(raw_version)
             restored = stored if isinstance(stored, str) else None
         except (SkillFileError, UnicodeDecodeError):
             restored = None
@@ -574,6 +577,8 @@ def undo(name: str, home: str | Path) -> str:
                 fresh["skills"][name] = entry
             if restored is not None:
                 entry["sha256"] = restored
+            if restored_version is not None:
+                entry["version"] = restored_version
         if "removed" in fresh:
             fresh["removed"] = removed
 

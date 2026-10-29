@@ -485,10 +485,14 @@ export function undo(name: string, home: string): string {
   const target = src['path'];
   const said = undoDir(backupRoot(home), name, target);
   let restored: string | null = null;
+  let restoredVersion: number | null = null;
   if (isFile(path.join(target, SKILL_FILE))) {
     try {
       const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(path.join(target, SKILL_FILE)));
-      const stored = parseSkill(text).metadata[HASH_KEY];
+      const metadata = parseSkill(text).metadata;
+      const stored = metadata[HASH_KEY];
+      const rawVersion = metadata["bantamkit-version"];
+      if (typeof rawVersion === "string" && /^[1-9][0-9]*$/.test(rawVersion)) restoredVersion = Number(rawVersion);
       restored = typeof stored === 'string' ? stored : null;
     } catch (e) {
       if (!(e instanceof SkillFileError) && !(e instanceof TypeError)) throw e;
@@ -515,6 +519,7 @@ export function undo(name: string, home: string): string {
         skills[name] = entry;
       }
       if (restored !== null) (entry as Rec)['sha256'] = restored;
+      if (restoredVersion !== null) (entry as Rec)['version'] = restoredVersion;
     }
     if (Object.hasOwn(fresh, 'removed')) fresh['removed'] = removed;
   });
