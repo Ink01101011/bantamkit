@@ -304,8 +304,6 @@ so.
 - A skill promoted by **copy** is not refreshed when bantamkit makes a new version, rolls one
   back or applies an approved change; the copy keeps the old text until it is demoted and
   promoted again.
-- `undo` after an automatic improvement restores the directory but leaves the state's `version`
-  at the undone number.
 - A long-lived MCP server binds the `[skill]` layer only if a skills directory existed when it
   started.
 - A `## Steps` proposal is built deterministically (one added step citing the turn's id, which

@@ -228,7 +228,9 @@ def run(bed: Path, op: dict):
         sf._rename = rename
     out: dict = {}
     try:
-        if kind == "new_version":
+        if kind == "undo":
+            out["said"] = si.undo(op["name"], home)
+        elif kind == "new_version":
             out["said"] = si.new_version(op["name"], op["text"], home, op["now"], op["kind"])
         elif kind == "stats_step":
             state = sf.read_state(home)

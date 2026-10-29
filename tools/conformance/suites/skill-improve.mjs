@@ -99,6 +99,9 @@ function opList() {
     ops.push(op);
   };
   add('constants', { op: 'constants' });
+  add('undo: install', { op: 'install', home: 'undo240', name: 'sk-u', text: draft('sk-u'), now: NOW });
+  add('undo: auto v2', { op: 'new_version', home: 'undo240', name: 'sk-u', text: draft('sk-u', 'Better'), now: LATER, kind: 'auto' });
+  add('undo: restores version', { op: 'undo', home: 'undo240', name: 'sk-u' });
 
   // h1: new versions, the refusals, rollback, the next number
   const h = 'h1';
@@ -545,7 +548,9 @@ async function runNode(ctx, bed, ops) {
     }
     let out = {};
     try {
-      if (op.op === 'new_version') {
+      if (op.op === 'undo') {
+        out.said = si.undo(op.name, home);
+      } else if (op.op === 'new_version') {
         out.said = si.newVersion(op.name, op.text, home, op.now, op.kind);
       } else if (op.op === 'stats_step') {
         const state = sf.readState(home);
@@ -629,6 +634,7 @@ export async function run(ctx) {
     ['python', py],
     ['node', nd],
   ]) {
+    cases.push({ name: `LITERAL: undo restores version — ${side}`, kind: 'json', expected: 1, actual: got[find('undo: restores version')].state?.skills?.['sk-u']?.version });
     cases.push({
       name: `LITERAL: constants [uses, kept, rolled back, history, kinds] — ${side}`,
       kind: 'json',
