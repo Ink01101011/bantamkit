@@ -207,6 +207,20 @@ function opList() {
   add('refused: undo an unknown skill', R('h4', 'undo', 'nope'));
   add('reject: rejected_at is the successes', R('h4', 'reject', 'target=c-below'));
 
+  // A valid stored draft becomes stale when a differently named skill claims its phrase.
+  const staleDraft = draft('stale-a').replace('Use when stale-a is asked.', 'Use when asked about "deployment failure".');
+  const staleRecord = record('stale-a', 6, { stored: true });
+  staleRecord.draft.text = staleDraft;
+  claude('regate');
+  add('stored draft before catalogue change', {
+    op: 'put', home: 'regate', rel: '.bantamkit/skill-proposals.json', text: proposals([staleRecord]),
+  });
+  add('install a later skill sharing the trigger', {
+    op: 'put', home: 'regate', rel: '.bantamkit/skills/later-a/SKILL.md',
+    text: staleDraft.replace('name: stale-a', 'name: later-a'),
+  });
+  add('stored draft fails current catalogue gate', R('regate', 'approve', 'c-stale-a'));
+
   // h5: sampling
   claude('h5');
   add('h5: two proposals with no draft', { op: 'put', home: 'h5', rel: '.bantamkit/skill-proposals.json', text: proposals([record('sampled-a'), record('sampled-b')]) });
@@ -507,6 +521,17 @@ export async function run(ctx) {
         'bantamkit skill proposals: nothing is pending and no skill is installed. The daily run proposes a skill once the same work has succeeded 3 times in shiftwork units or 5 times in sessions.',
       ],
       actual: got[0],
+    });
+    const stale = got[find('stored draft fails current catalogue gate')];
+    cases.push({
+      name: `LITERAL: stored draft re-gated — ${side}`,
+      kind: 'json',
+      expected: { refused: true, shared: true, installed: false },
+      actual: {
+        refused: stale.text.includes('did not pass the gate, so nothing was installed'),
+        shared: stale.text.includes("trigger phrase 'deployment failure' is shared with later-a"),
+        installed: stale.tree.some((l) => l.startsWith('.bantamkit/skills/stale-a/')),
+      },
     });
     const listed = got[find('list: a full home')].text;
     cases.push({

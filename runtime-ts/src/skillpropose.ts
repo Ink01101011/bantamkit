@@ -318,7 +318,11 @@ async function approveProposal(
     return `proposal ${cid} has not cleared its bar: ${num(rec['successes'])} of ${num(rec['bar'])} successes`;
   }
   const stored = draftText(rec);
-  if (stored !== null) return installNow(rec, doc, stored, level, home, now);
+  if (stored !== null) {
+    const g = gate(stored, bundle(rec), home, cwd);
+    if (!g.ok) return gateFailed('The stored draft', g.reasons, `proposal ${cid} stays as it is.`);
+    return installNow(rec, doc, stored, level, home, now);
+  }
   const staged = handoffPath(home, cid);
   let isFile = false;
   try {

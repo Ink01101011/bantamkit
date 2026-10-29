@@ -347,6 +347,13 @@ def _approve_proposal(
         )
     text = _draft_text(rec)
     if text is not None:
+        g = gate(text, bundle(rec), home, cwd)
+        if not g.ok:
+            return _gate_failed(
+                "The stored draft",
+                g.reasons,
+                f"proposal {cid} stays as it is.",
+            )
         return _install(rec, doc, text, level, home, now)
     staged = handoff_path(home, cid)
     if staged.is_file():
