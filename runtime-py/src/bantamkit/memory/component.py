@@ -302,6 +302,7 @@ class Memory:
         # comment below, and `mcpserver.main`'s bare-TTY guard.
         self.store = MemoryStore(store, index_budget=index_budget, k=k, create=False)
         self.k = k
+        self._pending_skills: list[Path] = []
         self._layers: list[tuple[str, MemoryStore, bool]] = [("project", self.store, True)]
         self._show_layers = False
         # How this store came to be the store, captured once. It is still captured here and
@@ -374,11 +375,12 @@ class Memory:
 
         `only_present`: bound only when some root is a directory, so a machine with no skill
         has exactly the layers it had before the layer existed. A short-lived hook sees a
-        skill the moment it is installed; a long-lived server binds its layers once.
+        skill the moment it is installed; a long-lived server retries on recall.
         """
         if not roots:
             return
         if only_present and not any(r.is_dir() for r in roots):
+            self._pending_skills = roots
             return
         self._layers.append((SKILL_LAYER, SkillStore(roots), False))
 
@@ -671,6 +673,14 @@ class Memory:
         """
         if not 0.0 <= min_ratio <= 1.0:
             raise MemoryValidationError(MIN_RATIO_RANGE)
+        if self._pending_skills and any(r.is_dir() for r in self._pending_skills):
+            layer = (SKILL_LAYER, SkillStore(self._pending_skills), False)
+            position = next(
+                (i for i, (label, _, _) in enumerate(self._layers) if label == NATIVE_LAYER),
+                len(self._layers),
+            )
+            self._layers.insert(position, layer)
+            self._pending_skills = []
         budget = self.k if k is None else max(k, self.k)
         name = query.strip()
         lookup: str | None = None

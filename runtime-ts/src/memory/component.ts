@@ -359,6 +359,7 @@ export class Memory {
   readonly store: MemoryStore;
   readonly k: number;
   private readonly layers: Layer[];
+  private pendingSkills: readonly string[] = [];
   private showLayers = false;
   /**
    * How this store came to be the store, captured once. It is still captured here and not
@@ -471,7 +472,10 @@ export class Memory {
    */
   private addSkills(roots: readonly string[], onlyPresent = false): void {
     if (roots.length === 0) return;
-    if (onlyPresent && !roots.some((r) => pyIsDir(r))) return;
+    if (onlyPresent && !roots.some((r) => pyIsDir(r))) {
+      this.pendingSkills = roots;
+      return;
+    }
     this.layers.push([SKILL_LAYER, new SkillStore(roots), false]);
   }
 
@@ -692,6 +696,11 @@ export class Memory {
   ): RecallOutcome {
     // `not 0.0 <= min_ratio <= 1.0`: NaN fails the same chain on both sides.
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
+    if (this.pendingSkills.some((r) => pyIsDir(r))) {
+      const native = this.layers.findIndex(([label]) => label === NATIVE_LAYER);
+      this.layers.splice(native < 0 ? this.layers.length : native, 0, [SKILL_LAYER, new SkillStore(this.pendingSkills), false]);
+      this.pendingSkills = [];
+    }
     const budget = k === null ? this.k : Math.max(k, this.k);
     const name = pyStrip(query);
     let lookup: string | null = null;
