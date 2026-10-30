@@ -22,6 +22,7 @@ to the same table:
     {"op": "state_write", "state"}               -> {"tree"}
     {"op": "state_read", "raw"?}                 -> {"state"} | {"error"}
     {"op": "state_plant", "plant"}               -> {"error"?, "tree", "victim", "state"} | {"skipped"}
+    {"op": "plant_old", "plant"}                 -> {"error"?, "tree", "live", "planted"} | {"skipped"}
 
     {"bed": <dir>, "ops": [...]} -> {"results": [...]}
 
@@ -40,6 +41,10 @@ temp name the next state write will use (the temp seam is pinned to `<target>.<k
 the name an attacker predicts), writes again, answers, then removes what it planted. `victim`
 and `state` are the bytes left as UTF-8 text. A side that cannot make a symlink answers
 `{"skipped": true}`. In `tree` a symlink is the string `"symlink"`, never its target's bytes.
+`plant_old` does the same for the name a replace sets the live skill aside under: it writes
+`skills/p-q`, plants an empty `dir` (the entry a bare POSIX rename replaces) or a `symlink` to
+`<bed>/victim` at `skills/p-q.old-planted`, replaces, answers what `SKILL.md` and the planted
+entry are left as (`"dir"`, `"symlink"` or `"gone"`), then removes the skill and the plant.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -235,6 +241,48 @@ def run(bed: Path, op: dict):
         out["victim"] = victim.read_text(encoding="utf-8")
         out["state"] = sf.state_path(home).read_text(encoding="utf-8")
         planted.unlink(missing_ok=True)  # a writer that follows the link renames it away
+        victim.unlink()
+        return out
+    if kind == "plant_old":
+        target = bed / "skills" / "p-q"
+        sf.write_dir_atomic(target, {"SKILL.md": b"live\n"})
+        victim = bed / "victim"
+        victim.write_bytes(b"KEEP")
+        planted = Path(f"{target}.old-planted")
+        if op["plant"] == "symlink":
+            try:
+                os.symlink(victim, planted)
+            except OSError:
+                shutil.rmtree(target)
+                victim.unlink()
+                return {"skipped": True}
+        else:
+            planted.mkdir()
+        saved_temp = sf._temp
+        sf._temp = lambda target, k: f"{target}.{k}-planted"
+        try:
+            out = guarded(
+                bed,
+                lambda: (
+                    sf.replace_dir_atomic(
+                        target, {"SKILL.md": b"new\n"}, bed / "backups", "2026-10-29T00:00:00Z"
+                    )
+                    and None
+                ),
+            )
+        finally:
+            sf._temp = saved_temp
+        out["tree"] = tree(bed)
+        out["live"] = (target / "SKILL.md").read_text(encoding="utf-8")
+        out["planted"] = (
+            "symlink" if planted.is_symlink() else "dir" if planted.is_dir() else "gone"
+        )
+        if planted.is_symlink():
+            planted.unlink()
+        else:
+            shutil.rmtree(planted, ignore_errors=True)
+        shutil.rmtree(target)
+        shutil.rmtree(bed / "backups" / "p-q", ignore_errors=True)
         victim.unlink()
         return out
     raise SystemExit(f"skillfile_ref: unknown op {kind!r}")

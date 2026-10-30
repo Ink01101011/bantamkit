@@ -363,17 +363,35 @@ function copyTree(src: string, dst: string): void {
   }
 }
 
+/**
+ * `target` moved into a fresh dir only this call made; [that dir, where `target` now is].
+ * A rename onto the bare temp name would replace an empty dir planted there (POSIX allows it),
+ * so the name is claimed by an exclusive mkdir and `target` goes inside it (#250).
+ */
+function setAside(target: string): [string, string] {
+  const old = temp(target, 'old');
+  mkdirTemp(old);
+  const moved = path.join(old, path.basename(target));
+  try {
+    seams.rename(target, moved);
+  } catch (e) {
+    rmTree(old);
+    throw e;
+  }
+  return [old, moved];
+}
+
 function swapIn(tmp: string, target: string): void {
   if (!lexists(target)) {
     seams.rename(tmp, target);
     return;
   }
-  const old = temp(target, 'old');
-  seams.rename(target, old);
+  const [old, moved] = setAside(target);
   try {
     seams.rename(tmp, target);
   } catch (e) {
-    seams.rename(old, target);
+    seams.rename(moved, target);
+    rmTree(old);
     throw e;
   }
   rmTree(old);
@@ -488,11 +506,7 @@ export function undo(root: string, name: string, target: string): string {
     absent = false;
   }
   if (absent) {
-    if (lexists(target)) {
-      const old = temp(target, 'old');
-      seams.rename(target, old);
-      rmTree(old);
-    }
+    if (lexists(target)) rmTree(setAside(target)[0]);
     rmTree(backup);
     return `removed ${name}; it did not exist before ${entry}`;
   }

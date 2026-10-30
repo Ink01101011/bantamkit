@@ -408,17 +408,34 @@ def _copy_tree(src: Path, dst: str) -> None:
             _write(d, s.read_bytes())
 
 
+def _set_aside(target: Path) -> tuple[str, str]:
+    """`target` moved into a fresh dir only this call made; (that dir, where `target` now is).
+
+    A rename onto the bare temp name would replace an empty dir planted there (POSIX allows
+    it), so the name is claimed by an exclusive mkdir and `target` goes inside it (#250).
+    """
+    old = _temp(target, "old")
+    _mkdir_temp(old)
+    moved = os.path.join(old, target.name)
+    try:
+        _rename(str(target), moved)
+    except BaseException:
+        shutil.rmtree(old, ignore_errors=True)
+        raise
+    return old, moved
+
+
 def _swap_in(tmp: str, target: Path) -> None:
     """`tmp` renamed to `target`, the old `target` (if any) aside first and back on failure."""
     if not os.path.lexists(target):
         _rename(tmp, str(target))
         return
-    old = _temp(target, "old")
-    _rename(str(target), old)
+    old, moved = _set_aside(target)
     try:
         _rename(tmp, str(target))
     except BaseException:
-        _rename(old, str(target))
+        _rename(moved, str(target))
+        shutil.rmtree(old, ignore_errors=True)
         raise
     shutil.rmtree(old, ignore_errors=True)
 
@@ -519,8 +536,7 @@ def undo(backup_root: Path | str, name: str, target: Path | str) -> str:
     backup = Path(backup_root) / name / entry
     if (backup / ABSENT_MARKER).is_file():
         if os.path.lexists(target):
-            old = _temp(target, "old")
-            _rename(str(target), old)
+            old, _ = _set_aside(target)
             shutil.rmtree(old, ignore_errors=True)
         shutil.rmtree(backup, ignore_errors=True)
         return f"removed {name}; it did not exist before {entry}"

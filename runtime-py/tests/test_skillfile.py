@@ -519,6 +519,74 @@ def test_a_taken_temp_dir_is_refused_not_removed(tmp_path, monkeypatch):
     assert sorted(os.listdir(root / "c-d")) == [taken.name]
 
 
+def _plant_old(at: Path, plant: str, victim: Path) -> None:
+    if plant == "dir":
+        (at / "theirs").mkdir(parents=True)
+        (at / "theirs").rmdir()  # an EMPTY dir: the one a bare rename would replace
+    else:
+        try:
+            os.symlink(victim, at)
+        except OSError:
+            pytest.skip("this platform will not make a symlink here")
+
+
+def _planted_old_left(at: Path, plant: str, victim: Path) -> None:
+    if plant == "dir":
+        assert at.is_dir() and not at.is_symlink() and os.listdir(at) == []
+    else:
+        assert os.readlink(at) == str(victim)
+
+
+@pytest.mark.parametrize("plant", ["dir", "symlink"])
+def test_replace_refuses_a_taken_old_name_and_leaves_it_alone(tmp_path, monkeypatch, plant):
+    # #250: the live skill was renamed onto the bare `.old-` name, which on POSIX replaces an
+    # empty dir planted there; the rmtree after the swap then removed what took its place.
+    target = tmp_path / "skills" / "a-b"
+    sf.write_dir_atomic(target, {"SKILL.md": b"live\n"})
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"KEEP")
+    _planted_temp(monkeypatch)
+    at = Path(f"{target}.old-planted")
+    _plant_old(at, plant, victim)
+    with pytest.raises(SkillFileError) as e:
+        sf.replace_dir_atomic(target, {"SKILL.md": b"new\n"}, tmp_path / "backups", NOW)
+    assert str(e.value) == f"temp path {at} already exists; refusing to write through it"
+    assert (target / "SKILL.md").read_bytes() == b"live\n"
+    assert victim.read_bytes() == b"KEEP"
+    _planted_old_left(at, plant, victim)
+    assert sorted(os.listdir(target.parent)) == sorted(["a-b", at.name])
+    assert (
+        not (tmp_path / "backups" / "a-b").exists()
+        or os.listdir(tmp_path / "backups" / "a-b") == []
+    )
+
+
+@pytest.mark.parametrize("plant", ["dir", "symlink"])
+def test_undo_of_an_install_refuses_a_taken_old_name(tmp_path, monkeypatch, plant):
+    root = tmp_path / "backups"
+    target = tmp_path / "skills" / "c-d"
+    sf.backup_absent(root, "c-d", NOW)
+    sf.write_dir_atomic(target, {"SKILL.md": b"c\n"})
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"KEEP")
+    _planted_temp(monkeypatch)
+    at = Path(f"{target}.old-planted")
+    _plant_old(at, plant, victim)
+    with pytest.raises(SkillFileError, match="already exists; refusing to write through it"):
+        sf.undo(root, "c-d", target)
+    assert (target / "SKILL.md").read_bytes() == b"c\n"
+    _planted_old_left(at, plant, victim)
+    assert len(os.listdir(root / "c-d")) == 1  # the backup is not spent
+
+
+def test_a_swap_leaves_no_old_dir_behind(tmp_path):
+    target = tmp_path / "skills" / "a-b"
+    sf.write_dir_atomic(target, {"SKILL.md": b"v1\n"})
+    sf.replace_dir_atomic(target, {"SKILL.md": b"v2\n"}, tmp_path / "backups", NOW)
+    assert os.listdir(target.parent) == ["a-b"]
+    assert (target / "SKILL.md").read_bytes() == b"v2\n"
+
+
 def test_parse_reads_a_block_sequence_under_a_metadata_key():
     # RULED as above: the port refuses it.
     seq = sf.parse_skill('---\nname: a\nmetadata:\n  k:\n  - a\n  - b\n  j: "x"\n---\n')
