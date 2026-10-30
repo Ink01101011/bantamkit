@@ -5,7 +5,7 @@
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { test } from 'node:test';
@@ -412,6 +412,137 @@ for (const step of ['write', 'fsync', 'rename']) {
     });
   });
 }
+
+// The real name is `<target>.<kind>-<pid>-<n>`: predictable, so pin it the way an attacker
+// would predict it.
+const withPlantedTemp = (fn) => {
+  const saved = { ...sf.seams };
+  sf.seams.temp = (target, kind) => `${target}.${kind}-planted`;
+  try {
+    return fn();
+  } finally {
+    Object.assign(sf.seams, saved);
+  }
+};
+
+for (const plant of ['symlink', 'file']) {
+  // #250: the temp was opened 'w' through a symlink, so a planted link overwrote its target
+  // with the state bytes.
+  test(`state write refuses a taken temp (${plant}) and leaves it alone`, (t) => {
+    const root = tmp();
+    const home = join(root, 'home');
+    sf.writeState(home, { skills: { 'old-skill': {} } });
+    const previous = readFileSync(sf.statePath(home));
+    const victim = join(root, 'victim');
+    writeFileSync(victim, 'KEEP');
+    const planted = `${sf.statePath(home)}.tmp-planted`;
+    if (plant === 'symlink') {
+      try {
+        symlinkSync(victim, planted);
+      } catch {
+        t.skip('this platform will not make a symlink here');
+        return;
+      }
+    } else writeFileSync(planted, 'THEIRS');
+    withPlantedTemp(() =>
+      throwsSentence(
+        () => sf.writeState(home, { skills: { injected: {} } }),
+        `temp path ${planted} already exists; refusing to write through it`,
+      ),
+    );
+    assert.equal(readFileSync(victim, 'utf8'), 'KEEP');
+    assert.deepEqual(readFileSync(sf.statePath(home)), previous);
+    if (plant === 'symlink') assert.equal(readlinkSync(planted), victim);
+    else assert.equal(readFileSync(planted, 'utf8'), 'THEIRS');
+    assert.ok(lstatSync(planted));
+  });
+}
+
+test('a taken temp dir is refused, not removed', () => {
+  const root = join(tmp(), 'backups');
+  const taken = join(root, 'c-d', `${sf.backupStamp(NOW)}.tmp-planted`);
+  mkdirSync(join(taken, 'theirs'), { recursive: true });
+  withPlantedTemp(() => {
+    throwsSentence(() => sf.backupAbsent(root, 'c-d', NOW), /already exists; refusing to write through it$/);
+    assert.ok(statSync(join(taken, 'theirs')).isDirectory());
+    throwsSentence(
+      () => sf.writeDirAtomic(join(root, 'c-d', sf.backupStamp(NOW)), { 'SKILL.md': Buffer.from('x') }),
+      /already exists; refusing to write through it$/,
+    );
+  });
+  assert.deepEqual(readdirSync(join(root, 'c-d')), [`${sf.backupStamp(NOW)}.tmp-planted`]);
+});
+
+// An EMPTY dir is the one a bare rename onto the `.old-` name would replace (POSIX allows it).
+const plantOld = (t, at, plant, victim) => {
+  if (plant === 'dir') {
+    mkdirSync(at);
+    return true;
+  }
+  try {
+    symlinkSync(victim, at);
+    return true;
+  } catch {
+    t.skip('this platform will not make a symlink here');
+    return false;
+  }
+};
+const plantedOldLeft = (at, plant, victim) => {
+  if (plant === 'dir') {
+    assert.ok(lstatSync(at).isDirectory());
+    assert.deepEqual(readdirSync(at), []);
+  } else assert.equal(readlinkSync(at), victim);
+};
+
+for (const plant of ['dir', 'symlink']) {
+  // #250: the live skill was renamed onto the bare `.old-` name, which on POSIX replaces an
+  // empty dir planted there; the rmtree after the swap then removed what took its place.
+  test(`replace refuses a taken old name (${plant}) and leaves it alone`, (t) => {
+    const root = tmp();
+    const target = join(root, 'skills', 'a-b');
+    sf.writeDirAtomic(target, { 'SKILL.md': Buffer.from('live\n') });
+    const victim = join(root, 'victim');
+    writeFileSync(victim, 'KEEP');
+    const at = `${target}.old-planted`;
+    if (!plantOld(t, at, plant, victim)) return;
+    withPlantedTemp(() =>
+      throwsSentence(
+        () => sf.replaceDirAtomic(target, { 'SKILL.md': Buffer.from('new\n') }, join(root, 'backups'), NOW),
+        `temp path ${at} already exists; refusing to write through it`,
+      ),
+    );
+    assert.equal(readFileSync(join(target, 'SKILL.md'), 'utf8'), 'live\n');
+    assert.equal(readFileSync(victim, 'utf8'), 'KEEP');
+    plantedOldLeft(at, plant, victim);
+    assert.deepEqual(readdirSync(join(root, 'skills')).sort(), ['a-b', 'a-b.old-planted']);
+    assert.deepEqual(readdirSync(join(root, 'backups', 'a-b')), []);
+  });
+
+  test(`undo of an install refuses a taken old name (${plant})`, (t) => {
+    const root = tmp();
+    const backups = join(root, 'backups');
+    const target = join(root, 'skills', 'c-d');
+    sf.backupAbsent(backups, 'c-d', NOW);
+    sf.writeDirAtomic(target, { 'SKILL.md': Buffer.from('c\n') });
+    const victim = join(root, 'victim');
+    writeFileSync(victim, 'KEEP');
+    const at = `${target}.old-planted`;
+    if (!plantOld(t, at, plant, victim)) return;
+    withPlantedTemp(() => throwsSentence(() => sf.undo(backups, 'c-d', target), /already exists; refusing to write through it$/));
+    assert.equal(readFileSync(join(target, 'SKILL.md'), 'utf8'), 'c\n');
+    plantedOldLeft(at, plant, victim);
+    assert.equal(readdirSync(join(backups, 'c-d')).length, 1); // the backup is not spent
+  });
+}
+
+test('a swap leaves no old dir behind', () => {
+  const root = tmp();
+  const target = join(root, 'skills', 'a-b');
+  sf.writeDirAtomic(target, { 'SKILL.md': Buffer.from('v1\n') });
+  sf.replaceDirAtomic(target, { 'SKILL.md': Buffer.from('v2\n') }, join(root, 'backups'), NOW);
+  assert.deepEqual(readdirSync(join(root, 'skills')), ['a-b']);
+  assert.equal(readFileSync(join(target, 'SKILL.md'), 'utf8'), 'v2\n');
+});
 
 test('parse refuses what the reader refuses, as the reference now does (job73 C8)', () => {
   for (const line of ['metadata: {}', 'metadata: {k: 1}', 'metadata: {bantamkit-k: "v"}', 'metadata:\n  k: {}',

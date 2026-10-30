@@ -247,7 +247,15 @@ export const seams = {
     fs.fsyncSync(fd);
   },
   write(file: string, data: Uint8Array): void {
-    const fd = fs.openSync(file, 'w', 0o644);
+    // 'wx': a temp name is predictable, so an entry already at it (a planted symlink, a
+    // file another writer owns) is refused, never truncated or followed (#250).
+    let fd: number;
+    try {
+      fd = fs.openSync(file, 'wx', 0o644);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw taken(file);
+      throw e;
+    }
     try {
       let off = 0;
       while (off < data.length) off += fs.writeSync(fd, data, off, data.length - off);
@@ -259,11 +267,25 @@ export const seams = {
   rename(src: string, dst: string): void {
     fs.renameSync(src, dst);
   },
+  temp(target: string, kind: string): string {
+    counter += 1;
+    return `${target}.${kind}-${process.pid}-${counter}`;
+  },
 };
 
-function temp(target: string, kind: string): string {
-  counter += 1;
-  return `${target}.${kind}-${process.pid}-${counter}`;
+const temp = (target: string, kind: string): string => seams.temp(target, kind);
+
+const taken = (p: string): SkillFileError =>
+  new SkillFileError(`temp path ${p} already exists; refusing to write through it`);
+
+/** A fresh temp dir, refused like `seams.write` when its name is already taken. */
+function mkdirTemp(p: string): void {
+  try {
+    fs.mkdirSync(p);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw taken(p);
+    throw e;
+  }
 }
 
 const rmTree = (p: string): void => {
@@ -302,7 +324,7 @@ function build(target: string, files: Record<string, Uint8Array>): string {
   for (const rel of rels) checkRel(rel);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tmp = temp(target, 'tmp');
-  fs.mkdirSync(tmp);
+  mkdirTemp(tmp);
   try {
     for (const rel of rels) {
       const file = path.join(tmp, ...rel.split('/'));
@@ -327,16 +349,36 @@ export function writeDirAtomic(target: string, files: Record<string, Uint8Array>
   }
 }
 
+/** Directories and regular files into the existing `dst`; a symlink is not followed or copied. */
 function copyTree(src: string, dst: string): void {
-  fs.mkdirSync(dst);
   for (const entry of fs.readdirSync(src).sort(cmpCodepoint)) {
     const s = path.join(src, entry);
     const d = path.join(dst, entry);
     const st = fs.lstatSync(s);
     if (st.isSymbolicLink()) continue;
-    if (st.isDirectory()) copyTree(s, d);
-    else if (st.isFile()) seams.write(d, fs.readFileSync(s));
+    if (st.isDirectory()) {
+      fs.mkdirSync(d);
+      copyTree(s, d);
+    } else if (st.isFile()) seams.write(d, fs.readFileSync(s));
   }
+}
+
+/**
+ * `target` moved into a fresh dir only this call made; [that dir, where `target` now is].
+ * A rename onto the bare temp name would replace an empty dir planted there (POSIX allows it),
+ * so the name is claimed by an exclusive mkdir and `target` goes inside it (#250).
+ */
+function setAside(target: string): [string, string] {
+  const old = temp(target, 'old');
+  mkdirTemp(old);
+  const moved = path.join(old, path.basename(target));
+  try {
+    seams.rename(target, moved);
+  } catch (e) {
+    rmTree(old);
+    throw e;
+  }
+  return [old, moved];
 }
 
 function swapIn(tmp: string, target: string): void {
@@ -344,12 +386,12 @@ function swapIn(tmp: string, target: string): void {
     seams.rename(tmp, target);
     return;
   }
-  const old = temp(target, 'old');
-  seams.rename(target, old);
+  const [old, moved] = setAside(target);
   try {
     seams.rename(tmp, target);
   } catch (e) {
-    seams.rename(old, target);
+    seams.rename(moved, target);
+    rmTree(old);
     throw e;
   }
   rmTree(old);
@@ -381,6 +423,7 @@ function newBackup(root: string, name: string, now: string, fill: (tmp: string) 
     final = path.join(home, `${base}-${n}`);
   }
   const tmp = temp(final, 'tmp');
+  mkdirTemp(tmp); // outside the try: a taken name is not ours to remove
   try {
     fill(tmp);
     seams.rename(tmp, final);
@@ -392,10 +435,7 @@ function newBackup(root: string, name: string, now: string, fill: (tmp: string) 
 }
 
 export function backupAbsent(root: string, name: string, now: string): string {
-  return newBackup(root, name, now, (tmp) => {
-    fs.mkdirSync(tmp);
-    seams.write(path.join(tmp, ABSENT_MARKER), new Uint8Array(0));
-  });
+  return newBackup(root, name, now, (tmp) => seams.write(path.join(tmp, ABSENT_MARKER), new Uint8Array(0)));
 }
 
 export function backupDir(root: string, target: string, now: string): string {
@@ -466,16 +506,13 @@ export function undo(root: string, name: string, target: string): string {
     absent = false;
   }
   if (absent) {
-    if (lexists(target)) {
-      const old = temp(target, 'old');
-      seams.rename(target, old);
-      rmTree(old);
-    }
+    if (lexists(target)) rmTree(setAside(target)[0]);
     rmTree(backup);
     return `removed ${name}; it did not exist before ${entry}`;
   }
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tmp = temp(target, 'tmp');
+  mkdirTemp(tmp); // outside the try: a taken name is not ours to remove
   try {
     copyTree(backup, tmp);
     swapIn(tmp, target);
@@ -504,6 +541,7 @@ function writeFileAtomic(file: string, data: Uint8Array): void {
     seams.write(tmp, data);
     seams.rename(tmp, file);
   } catch (e) {
+    if (e instanceof SkillFileError) throw e; // the temp name was taken: what sits there is not ours to unlink
     try {
       fs.unlinkSync(tmp);
     } catch {

@@ -18,13 +18,15 @@
  * every name rule (doubled, leading, trailing hyphen, upper case, non-ASCII, generic words
  * and a name that only CONTAINS one); nested and non-string metadata; CRLF, a BOM and a
  * block-scalar description; every refusal sentence; the one ruled shape (RULED_TEXTS); names YAML would resolve to a bool, an
- * int or a date; a write that fails at each seam.
+ * int or a date; a write that fails at each seam; a symlink and a file planted at the next temp
+ * name (#250), which must be refused with the victim, the planted entry and the state untouched,
+ * and an empty dir or a symlink planted at the name a replace sets the live skill aside under.
  *
  * THE LITERALS. A rule both runtimes lose together (the doubled-hyphen rule, say) leaves every
  * differential green, so the doubled-hyphen sentence, the 1025-character sentence and one
  * stamped hash are also pinned per side against a literal.
  */
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -233,6 +235,10 @@ const DIR_OPS = [
   ['state read refuses version true', { op: 'state_read', raw: b64('{"version": true, "skills": {}}') }],
   ['state read refuses skills as a list', { op: 'state_read', raw: b64('{"version": 1, "skills": []}') }],
   ['state read refuses a BOM', { op: 'state_read', raw: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"version": 1, "skills": {}}')]).toString('base64') }],
+  ['state write refuses a symlink planted at its temp', { op: 'state_plant', plant: 'symlink' }],
+  ['state write refuses a file planted at its temp', { op: 'state_plant', plant: 'file' }],
+  ['replace refuses an empty dir planted at its old name', { op: 'plant_old', plant: 'dir' }],
+  ['replace refuses a symlink planted at its old name', { op: 'plant_old', plant: 'symlink' }],
 ];
 
 // ------------------------------------------------------------------------- Node side
@@ -255,7 +261,8 @@ function tree(bed) {
       if (e.isDirectory()) {
         out[`${r}/`] = null;
         walk(p);
-      } else if (e.isFile()) out[r] = readFileSync(p).toString('base64');
+      } else if (e.isSymbolicLink()) out[r] = 'symlink';
+      else if (e.isFile()) out[r] = readFileSync(p).toString('base64');
     }
   };
   walk(bed);
@@ -351,6 +358,71 @@ async function runNode(ctx, bed, ops) {
           writeFileSync(sf.statePath(home), Buffer.from(op.raw, 'base64'));
         }
         return guarded(() => ({ state: sf.readState(home) }));
+      case 'state_plant': {
+        sf.writeState(home, { skills: { before: {} } });
+        const victim = join(bed, 'victim');
+        writeFileSync(victim, 'KEEP');
+        const planted = `${sf.statePath(home)}.tmp-planted`;
+        if (op.plant === 'symlink') {
+          try {
+            symlinkSync(victim, planted);
+          } catch {
+            unlinkSync(victim);
+            return { skipped: true };
+          }
+        } else writeFileSync(planted, 'THEIRS');
+        const savedTemp = sf.seams.temp;
+        sf.seams.temp = (target, k) => `${target}.${k}-planted`;
+        let out;
+        try {
+          out = guarded(() => sf.writeState(home, { skills: { injected: {} } }));
+        } finally {
+          sf.seams.temp = savedTemp;
+        }
+        out = { ...out, tree: tree(bed), victim: readFileSync(victim, 'utf8'), state: readFileSync(sf.statePath(home), 'utf8') };
+        rmSync(planted, { force: true }); // a writer that follows the link renames it away
+        unlinkSync(victim);
+        return out;
+      }
+      case 'plant_old': {
+        const target = join(bed, 'skills', 'p-q');
+        sf.writeDirAtomic(target, { 'SKILL.md': Buffer.from('live\n') });
+        const victim = join(bed, 'victim');
+        writeFileSync(victim, 'KEEP');
+        const planted = `${target}.old-planted`;
+        if (op.plant === 'symlink') {
+          try {
+            symlinkSync(victim, planted);
+          } catch {
+            rmSync(target, { recursive: true });
+            unlinkSync(victim);
+            return { skipped: true };
+          }
+        } else mkdirSync(planted);
+        const savedTemp = sf.seams.temp;
+        sf.seams.temp = (t, k) => `${t}.${k}-planted`;
+        let out;
+        try {
+          out = guarded(() => {
+            sf.replaceDirAtomic(target, { 'SKILL.md': Buffer.from('new\n') }, backups, '2026-10-29T00:00:00Z');
+          });
+        } finally {
+          sf.seams.temp = savedTemp;
+        }
+        let left = 'gone';
+        try {
+          const st = lstatSync(planted);
+          left = st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'dir' : 'gone';
+        } catch {
+          left = 'gone';
+        }
+        out = { ...out, tree: tree(bed), live: readFileSync(join(target, 'SKILL.md'), 'utf8'), planted: left };
+        rmSync(planted, { recursive: true, force: true });
+        rmSync(target, { recursive: true });
+        rmSync(join(backups, 'p-q'), { recursive: true, force: true });
+        unlinkSync(victim);
+        return out;
+      }
       default:
         throw new Error(`skill-file: unknown op ${op.op}`);
     }
@@ -411,6 +483,39 @@ export async function run(ctx) {
       expected: { state: { version: 1, skills: { c: {} } } },
       actual: results[stateOverwrite],
     });
+  }
+
+  // the planted temp (#250), per side: a regression that follows the link on BOTH sides leaves
+  // the differential green, so the refusal, the victim and the state are pinned to literals
+  const plantedSentence = `temp path ${['<bed>', 'home', '.bantamkit', 'skills-state.json.tmp-planted'].join(sep)} already exists; refusing to write through it`;
+  const beforeState = '{\n  "skills": {\n    "before": {}\n  },\n  "version": 1\n}\n';
+  for (const plant of ['symlink', 'file']) {
+    const at = DIR_OPS.findIndex(([, o]) => o.op === 'state_plant' && o.plant === plant);
+    for (const [side, results] of [['python', py4], ['node', nd4]]) {
+      const r = results[at];
+      const skipped = plant === 'symlink' && process.platform === 'win32' && r.skipped === true;
+      cases.push({
+        name: `literal (${side}): a ${plant} planted at the state temp is refused and left alone`,
+        kind: 'json',
+        expected: skipped ? { skipped: true } : { error: plantedSentence, victim: 'KEEP', state: beforeState, planted: plant === 'symlink' ? 'symlink' : Buffer.from('THEIRS').toString('base64') },
+        actual: skipped ? r : { error: r.error, victim: r.victim, state: r.state, planted: r.tree?.['home/.bantamkit/skills-state.json.tmp-planted'] },
+      });
+    }
+  }
+
+  const oldSentence = `temp path ${['<bed>', 'skills', 'p-q.old-planted'].join(sep)} already exists; refusing to write through it`;
+  for (const plant of ['dir', 'symlink']) {
+    const at = DIR_OPS.findIndex(([, o]) => o.op === 'plant_old' && o.plant === plant);
+    for (const [side, results] of [['python', py4], ['node', nd4]]) {
+      const r = results[at];
+      const skipped = plant === 'symlink' && process.platform === 'win32' && r.skipped === true;
+      cases.push({
+        name: `literal (${side}): a ${plant} planted at the old name is refused and left alone`,
+        kind: 'json',
+        expected: skipped ? { skipped: true } : { error: oldSentence, live: 'live\n', planted: plant },
+        actual: skipped ? r : { error: r.error, live: r.live, planted: r.planted },
+      });
+    }
   }
 
   // 4. per-side literals: the answers a symmetric regression would move on both sides at once
