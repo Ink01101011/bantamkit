@@ -73,7 +73,7 @@ checked before the first upload is checked before the first upload:
 | phase | what it does |
 |---|---|
 | 0 preflight | version sites agree, tree clean, toolchain present, PyPI credential present, **and both registries asked what they already carry** |
-| 1 test | the four gates. 0 failures is the bar |
+| 1 test | the four gates, in two lanes: pytest in the background beside ruff → npm test → conformance `--all`. Every gate reports even when one fails; 0 failures is the bar. Measured 2026-10-30 on one commit (macOS arm64): median 1036 s one after another, 682 s in two lanes |
 | 2 build | both artifacts, into a **clean directory named for the version** |
 | 3 prepublish | `npx-cold-start.mjs`, `twine check`, and the asset pack inside each artifact **hashed** against `assets/` |
 | 4 npm | `npm publish --access public` (plus `--tag beta` for a prerelease, see below), output streamed live |
