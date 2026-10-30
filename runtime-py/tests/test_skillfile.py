@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -467,6 +468,55 @@ def test_failed_state_update_preserves_previous_bytes(tmp_path, monkeypatch, ste
         "version": 1,
         "skills": {"old-skill": {}, "new": {}},
     }
+
+
+def _planted_temp(monkeypatch):
+    # The real name is `<target>.<kind>-<pid>-<n>`: predictable, so pin it the way an
+    # attacker would predict it.
+    monkeypatch.setattr(sf, "_temp", lambda target, kind: f"{target}.{kind}-planted")
+
+
+@pytest.mark.parametrize("plant", ["symlink", "file"])
+def test_state_write_refuses_a_taken_temp_and_leaves_it_alone(tmp_path, monkeypatch, plant):
+    # #250: the temp was opened O_TRUNC through a symlink, so a planted link overwrote its
+    # target with the state bytes.
+    home = tmp_path / "home"
+    sf.write_state(home, {"skills": {"old-skill": {}}})
+    previous = sf.state_path(home).read_bytes()
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"KEEP")
+    _planted_temp(monkeypatch)
+    planted = f"{sf.state_path(home)}.tmp-planted"
+    if plant == "symlink":
+        try:
+            os.symlink(victim, planted)
+        except OSError:
+            pytest.skip("this platform will not make a symlink here")
+    else:
+        Path(planted).write_bytes(b"THEIRS")
+    with pytest.raises(SkillFileError) as e:
+        sf.write_state(home, {"skills": {"injected": {}}})
+    assert str(e.value) == f"temp path {planted} already exists; refusing to write through it"
+    assert victim.read_bytes() == b"KEEP"
+    assert sf.state_path(home).read_bytes() == previous
+    assert os.path.lexists(planted)
+    if plant == "symlink":
+        assert os.readlink(planted) == str(victim)
+    else:
+        assert Path(planted).read_bytes() == b"THEIRS"
+
+
+def test_a_taken_temp_dir_is_refused_not_removed(tmp_path, monkeypatch):
+    _planted_temp(monkeypatch)
+    root = tmp_path / "backups"
+    taken = root / "c-d" / f"{sf.backup_stamp(NOW)}.tmp-planted"
+    (taken / "theirs").mkdir(parents=True)
+    with pytest.raises(SkillFileError, match="already exists; refusing to write through it"):
+        sf.backup_absent(root, "c-d", NOW)
+    assert (taken / "theirs").is_dir()
+    with pytest.raises(SkillFileError, match="already exists; refusing to write through it"):
+        sf.write_dir_atomic(root / "c-d" / sf.backup_stamp(NOW), {"SKILL.md": b"x"})
+    assert sorted(os.listdir(root / "c-d")) == [taken.name]
 
 
 def test_parse_reads_a_block_sequence_under_a_metadata_key():

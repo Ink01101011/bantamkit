@@ -5,7 +5,7 @@
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { test } from 'node:test';
@@ -412,6 +412,66 @@ for (const step of ['write', 'fsync', 'rename']) {
     });
   });
 }
+
+// The real name is `<target>.<kind>-<pid>-<n>`: predictable, so pin it the way an attacker
+// would predict it.
+const withPlantedTemp = (fn) => {
+  const saved = { ...sf.seams };
+  sf.seams.temp = (target, kind) => `${target}.${kind}-planted`;
+  try {
+    return fn();
+  } finally {
+    Object.assign(sf.seams, saved);
+  }
+};
+
+for (const plant of ['symlink', 'file']) {
+  // #250: the temp was opened 'w' through a symlink, so a planted link overwrote its target
+  // with the state bytes.
+  test(`state write refuses a taken temp (${plant}) and leaves it alone`, (t) => {
+    const root = tmp();
+    const home = join(root, 'home');
+    sf.writeState(home, { skills: { 'old-skill': {} } });
+    const previous = readFileSync(sf.statePath(home));
+    const victim = join(root, 'victim');
+    writeFileSync(victim, 'KEEP');
+    const planted = `${sf.statePath(home)}.tmp-planted`;
+    if (plant === 'symlink') {
+      try {
+        symlinkSync(victim, planted);
+      } catch {
+        t.skip('this platform will not make a symlink here');
+        return;
+      }
+    } else writeFileSync(planted, 'THEIRS');
+    withPlantedTemp(() =>
+      throwsSentence(
+        () => sf.writeState(home, { skills: { injected: {} } }),
+        `temp path ${planted} already exists; refusing to write through it`,
+      ),
+    );
+    assert.equal(readFileSync(victim, 'utf8'), 'KEEP');
+    assert.deepEqual(readFileSync(sf.statePath(home)), previous);
+    if (plant === 'symlink') assert.equal(readlinkSync(planted), victim);
+    else assert.equal(readFileSync(planted, 'utf8'), 'THEIRS');
+    assert.ok(lstatSync(planted));
+  });
+}
+
+test('a taken temp dir is refused, not removed', () => {
+  const root = join(tmp(), 'backups');
+  const taken = join(root, 'c-d', `${sf.backupStamp(NOW)}.tmp-planted`);
+  mkdirSync(join(taken, 'theirs'), { recursive: true });
+  withPlantedTemp(() => {
+    throwsSentence(() => sf.backupAbsent(root, 'c-d', NOW), /already exists; refusing to write through it$/);
+    assert.ok(statSync(join(taken, 'theirs')).isDirectory());
+    throwsSentence(
+      () => sf.writeDirAtomic(join(root, 'c-d', sf.backupStamp(NOW)), { 'SKILL.md': Buffer.from('x') }),
+      /already exists; refusing to write through it$/,
+    );
+  });
+  assert.deepEqual(readdirSync(join(root, 'c-d')), [`${sf.backupStamp(NOW)}.tmp-planted`]);
+});
 
 test('parse refuses what the reader refuses, as the reference now does (job73 C8)', () => {
   for (const line of ['metadata: {}', 'metadata: {k: 1}', 'metadata: {bantamkit-k: "v"}', 'metadata:\n  k: {}',

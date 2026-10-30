@@ -21,6 +21,7 @@ to the same table:
     {"op": "stamp_dir", "now"}                   -> {"stamp"} | {"error"}
     {"op": "state_write", "state"}               -> {"tree"}
     {"op": "state_read", "raw"?}                 -> {"state"} | {"error"}
+    {"op": "state_plant", "plant"}               -> {"error"?, "tree", "victim", "state"} | {"skipped"}
 
     {"bed": <dir>, "ops": [...]} -> {"results": [...]}
 
@@ -33,6 +34,12 @@ file's bytes as base64. A non-`SkillFileError` failure (the injected one) answer
 it (so a partial temp dir exists), `fsync` fails every fsync, `rename` fails every rename,
 `rename2` fails only the second rename (old aside, new in fails, old must come back).
 A metadata value that is not str/list/dict travels as `{"py": type(v).__name__}`.
+
+`state_plant` (#250) writes a state, plants a `symlink` to `<bed>/victim` (or a `file`) at the
+temp name the next state write will use (the temp seam is pinned to `<target>.<kind>-planted`,
+the name an attacker predicts), writes again, answers, then removes what it planted. `victim`
+and `state` are the bytes left as UTF-8 text. A side that cannot make a symlink answers
+`{"skipped": true}`. In `tree` a symlink is the string `"symlink"`, never its target's bytes.
 """
 
 from __future__ import annotations
@@ -78,6 +85,9 @@ def tree(bed: Path) -> dict:
             out[Path(dirpath, n).relative_to(bed).as_posix() + "/"] = None
         for n in filenames:
             p = Path(dirpath, n)
+            if p.is_symlink():
+                out[p.relative_to(bed).as_posix()] = "symlink"
+                continue
             out[p.relative_to(bed).as_posix()] = base64.b64encode(p.read_bytes()).decode("ascii")
     return dict(sorted(out.items()))
 
@@ -201,6 +211,32 @@ def run(bed: Path, op: dict):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(base64.b64decode(op["raw"]))
         return guarded(bed, lambda: {"state": sf.read_state(bed / "home")})
+    if kind == "state_plant":
+        home = bed / "home"
+        sf.write_state(home, {"skills": {"before": {}}})
+        victim = bed / "victim"
+        victim.write_bytes(b"KEEP")
+        planted = Path(f"{sf.state_path(home)}.tmp-planted")
+        if op["plant"] == "symlink":
+            try:
+                os.symlink(victim, planted)
+            except OSError:
+                victim.unlink()
+                return {"skipped": True}
+        else:
+            planted.write_bytes(b"THEIRS")
+        saved_temp = sf._temp
+        sf._temp = lambda target, k: f"{target}.{k}-planted"
+        try:
+            out = guarded(bed, lambda: sf.write_state(home, {"skills": {"injected": {}}}))
+        finally:
+            sf._temp = saved_temp
+        out["tree"] = tree(bed)
+        out["victim"] = victim.read_text(encoding="utf-8")
+        out["state"] = sf.state_path(home).read_text(encoding="utf-8")
+        planted.unlink(missing_ok=True)  # a writer that follows the link renames it away
+        victim.unlink()
+        return out
     raise SystemExit(f"skillfile_ref: unknown op {kind!r}")
 
 

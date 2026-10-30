@@ -306,8 +306,18 @@ def _fsync(fd: int) -> None:
     os.fsync(fd)
 
 
+def _taken(path: str) -> SkillFileError:
+    return SkillFileError(f"temp path {path} already exists; refusing to write through it")
+
+
 def _write(path: str, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o644)
+    # O_EXCL: a temp name is predictable, so an entry already at it (a planted symlink, a
+    # file another writer owns) is refused, never truncated or followed (#250).
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags, 0o644)
+    except FileExistsError:
+        raise _taken(path) from None
     try:
         view = memoryview(data)
         while view:
@@ -324,6 +334,14 @@ def _rename(src: str, dst: str) -> None:
 
 def _temp(target: Path | str, kind: str) -> str:
     return f"{target}.{kind}-{os.getpid()}-{next(_counter)}"
+
+
+def _mkdir_temp(path: str) -> None:
+    """A fresh temp dir, refused like `_write` when its name is already taken."""
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        raise _taken(path) from None
 
 
 def _check_rel(rel: str) -> list[str]:
@@ -346,7 +364,7 @@ def _build(target: Path, files: dict[str, bytes]) -> str:
         _check_rel(rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = _temp(target, "tmp")
-    os.mkdir(tmp)
+    _mkdir_temp(tmp)
     try:
         for rel in rels:
             path = os.path.join(tmp, *rel.split("/"))
@@ -376,14 +394,15 @@ def write_dir_atomic(target: Path | str, files: dict[str, bytes]) -> None:
 
 
 def _copy_tree(src: Path, dst: str) -> None:
-    """Directories and regular files, bytes as they are; a symlink is not followed or copied."""
-    os.mkdir(dst)
+    """Directories and regular files into the existing `dst`, bytes as they are; a symlink is
+    not followed or copied."""
     for entry in sorted(os.listdir(src)):
         s = src / entry
         d = os.path.join(dst, entry)
         if s.is_symlink():
             continue
         if s.is_dir():
+            os.mkdir(d)
             _copy_tree(s, d)
         elif s.is_file():
             _write(d, s.read_bytes())
@@ -427,6 +446,7 @@ def _new_backup(backup_root: Path | str, name: str, now: str, fill: Callable[[st
         n += 1
         final = home / f"{base}-{n}"
     tmp = _temp(final, "tmp")
+    _mkdir_temp(tmp)  # outside the try: a taken name is not ours to remove
     try:
         fill(tmp)
         _rename(tmp, str(final))
@@ -440,7 +460,6 @@ def backup_absent(backup_root: Path | str, name: str, now: str) -> Path:
     """A backup saying "nothing was here", taken before an install; `undo` then removes."""
 
     def fill(tmp: str) -> None:
-        os.mkdir(tmp)
         _write(os.path.join(tmp, ABSENT_MARKER), b"")
 
     return _new_backup(backup_root, name, now, fill)
@@ -507,6 +526,7 @@ def undo(backup_root: Path | str, name: str, target: Path | str) -> str:
         return f"removed {name}; it did not exist before {entry}"
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = _temp(target, "tmp")
+    _mkdir_temp(tmp)  # outside the try: a taken name is not ours to remove
     try:
         _copy_tree(backup, tmp)
         _swap_in(tmp, target)
@@ -535,6 +555,8 @@ def _write_file_atomic(path: Path, data: bytes) -> None:
     try:
         _write(tmp, data)
         _rename(tmp, str(path))
+    except SkillFileError:
+        raise  # the temp name was taken: what sits there is not ours to unlink
     except BaseException:
         try:
             os.unlink(tmp)
