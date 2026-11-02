@@ -497,8 +497,10 @@ def draft(
     home: str | Path,
     cwd: str | None,
     now: str,
+    own: str | Path | None = None,
 ) -> DraftOutcome:
-    """Walk `chain` for one proposals record; log the outcome; never write a skill."""
+    """Walk `chain` for one proposals record; log the outcome; never write a skill. `own` is
+    passed to the gate (#247: a split's halves are gated with the skill being split as `own`)."""
     b = bundle(cluster)
     system, user = prompt(b)
     unreachable: list[str] = []
@@ -518,7 +520,7 @@ def draft(
             unreachable.append(d.label)
             continue
         text = unfence(answer)
-        g = gate(text, b, home, cwd)
+        g = gate(text, b, home, cwd, own=own)
         outcome = DraftOutcome(d.label, g.ok, text if g.ok else None, g.reasons, unreachable)
         break
     if outcome is None:

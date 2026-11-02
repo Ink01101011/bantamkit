@@ -1014,6 +1014,15 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
 #     `STEP_SHARE` with the record's recurring steps -> a proposed `## Steps` change.
 #   - FIRE TOGETHER: two live skills injected together in at least `TOGETHER_SESSIONS` sessions,
 #     that being at least half of each one's injecting sessions -> a proposed merge.
+#   - ONE COVERS TWO CLUSTERS (#247): the skill's evidence ids (`bantamkit-evidence`) fall, as
+#     the miner clustered them today (the proposals document), into two or more records in each
+#     of which that evidence alone holds at least the record's own X1 `bar` of SUCCESSFUL pieces
+#     -> a proposed split, `entry.proposal = {at, kind: "split", status: "pending", into:
+#     [id, id], successes}`: the two records with the most such pieces (ties: id order), and
+#     the sum of the two records' own `successes`. No new similarity: the miner's clusters and
+#     bars decide. A rejected split (`entry.split_rejected_at`, that sum when it was rejected or
+#     undone) is not offered again until the sum reaches `REJECT_FACTOR` times it, the
+#     proposals' own rule for a rejected cluster.
 # THE SPLIT BY RISK. The keyword widening and the Pitfalls line are deterministic and apply in
 # the run; the description tunes need a drafter (`skilldraft.improve`, description only). With
 # none that answers, the tune waits as `entry.tune = {at, kinds}` for the command to draft with
@@ -1038,7 +1047,7 @@ PITFALL_CHARS = 200
 TOGETHER_SESSIONS = 5
 TOGETHER_SHARE = (1, 2)
 #: The needs-user item kinds `entry.proposal` may hold.
-ITEM_KINDS = ("improve", "merge", "remove", "steps")
+ITEM_KINDS = ("improve", "merge", "remove", "split", "steps")
 PITFALLS = "## Pitfalls"
 STEPS = "## Steps"
 _HEADING = re.compile(r"#{1,2}(?:[ \t]|$)")
@@ -1232,6 +1241,73 @@ def apply_text(
     except InstallError as err:
         return None, [str(err)]
     return "improved skill " + said[len("updated skill ") :], []
+
+
+def split_halves(
+    entry: Mapping[str, Any], doc: Mapping[str, Any] | None
+) -> list[tuple[str, int, int]]:
+    """`[(record id, k, the record's successes)]`: each proposals record in which the live
+    skill's evidence ids hold `k` successful pieces, `k` at least the record's own bar; most
+    `k` first, ties by id. A record naming no `successes` counts `k`."""
+    live = _live_text(entry)
+    if live is None:
+        return []
+    try:
+        ids = set(_csv(parse_skill(live[1].decode("utf-8")).metadata.get("bantamkit-evidence")))
+    except (UnicodeDecodeError, SkillFileError):
+        return []
+    clusters = doc.get("clusters") if isinstance(doc, Mapping) else None
+    out: list[tuple[str, int, int]] = []
+    seen: set[str] = set()
+    for r in clusters if isinstance(clusters, list) else []:
+        if not isinstance(r, dict) or not isinstance(r.get("id"), str) or r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        bar = _int(r.get("bar"))
+        if bar is None or bar < 1:
+            continue
+        hit = {
+            ev["id"]
+            for ev in (r.get("evidence") if isinstance(r.get("evidence"), list) else [])
+            if isinstance(ev, dict)
+            and ev.get("ok") is True
+            and isinstance(ev.get("id"), str)
+            and ev["id"] in ids
+        }
+        if len(hit) >= bar:
+            n = _int(r.get("successes"))
+            out.append((r["id"], len(hit), len(hit) if n is None else n))
+    out.sort(key=lambda h: (-h[1], h[0]))
+    return out
+
+
+def split_offers(
+    skills: Mapping[str, Any],
+    doc: Mapping[str, Any] | None,
+    marks: Mapping[str, Any],
+    merges: Mapping[str, str],
+) -> dict[str, tuple[list[str], int]]:
+    """name -> (the two records, their summed successes) for every live skill a split is
+    offered for: its slot free, no other proposal made for it in this run, not rejected below
+    the doubling."""
+    from bantamkit.skillmine import REJECT_FACTOR
+
+    out: dict[str, tuple[list[str], int]] = {}
+    for name in sorted(skills):
+        e = skills[name]
+        if not isinstance(e, dict) or not _slot_free(e) or name in merges:
+            continue
+        if marks.get(name) and marks[name][4] is not None:
+            continue
+        halves = split_halves(e, doc)
+        if len(halves) < 2:
+            continue
+        total = halves[0][2] + halves[1][2]
+        was = _int(e.get("split_rejected_at"))
+        if was is not None and total < REJECT_FACTOR * was:
+            continue
+        out[name] = ([halves[0][0], halves[1][0]], total)
+    return out
 
 
 def improve_step(
@@ -1466,7 +1542,10 @@ def improve_step(
                 continue
             merges[a] = b2
             events.append(f"proposed merging {a} with {b2}")
-    if not marks and not merges:
+    splits = split_offers(skills, doc, marks, merges)
+    for name in sorted(splits):
+        events.append(f"proposed splitting {name}")
+    if not marks and not merges and not splits:
         return events
 
     def change(fresh: dict[str, Any]) -> None:
@@ -1492,6 +1571,16 @@ def improve_step(
             e = fresh["skills"].get(a)
             if isinstance(e, dict) and _slot_free(e):
                 e["proposal"] = {"at": now, "kind": "merge", "status": "pending", "with": b2}
+        for name, (into, total) in splits.items():
+            e = fresh["skills"].get(name)
+            if isinstance(e, dict) and _slot_free(e):
+                e["proposal"] = {
+                    "at": now,
+                    "into": into,
+                    "kind": "split",
+                    "status": "pending",
+                    "successes": total,
+                }
 
     written = update_state(home, change)
     state.clear()

@@ -38,7 +38,7 @@ import { render as renderSkill } from './skillfile.js';
 import { tokenizeV2 } from './memory/retrieval.js';
 import { TUNE_KINDS, TUNE_NARROW, TUNE_WIDEN, draftsLog, gate, improve, improveBundle, logLine } from './skilldraft.js';
 import type { Bundle, ChainLink } from './skilldraft.js';
-import { STEP_SHARE, ngrams } from './skillmine.js';
+import { REJECT_FACTOR, STEP_SHARE, ngrams } from './skillmine.js';
 import { LogSegment } from './storage/logsegment.js';
 import { parseNow } from './storage/retention.js';
 
@@ -877,7 +877,7 @@ export const MISS_TUNE = 2;
 export const PITFALL_CHARS = 200;
 export const TOGETHER_SESSIONS = 5;
 export const TOGETHER_SHARE: readonly [number, number] = [1, 2];
-export const ITEM_KINDS: readonly string[] = ['improve', 'merge', 'remove', 'steps'];
+export const ITEM_KINDS: readonly string[] = ['improve', 'merge', 'remove', 'split', 'steps'];
 export const PITFALLS = '## Pitfalls';
 export const STEPS = '## Steps';
 const HEADING = /^#{1,2}(?:[ \t]|$)/;
@@ -1046,6 +1046,55 @@ export function applyText(name: string, text: string, home: string, cwd: string 
 }
 
 type Mark = [number, number, string[], Rec | null, Rec | null];
+
+/** `[(record id, k, the record's successes)]`: each proposals record in which the live skill's
+ * evidence ids hold `k` successful pieces, `k` at least the record's own bar; most `k` first, ties
+ * by id. A record naming no `successes` counts `k` (#247). */
+export function splitHalves(entry: Rec, doc: unknown): Array<[string, number, number]> {
+  const live = liveText(entry);
+  if (live === null) return [];
+  let ids: Set<string>;
+  try {
+    ids = new Set(csv(parseSkill(UTF8.decode(live[1])).metadata['bantamkit-evidence']));
+  } catch (err) {
+    if (err instanceof TypeError || err instanceof SkillFileError) return [];
+    throw err;
+  }
+  const clusters = isObj(doc) ? doc['clusters'] : undefined;
+  const out: Array<[string, number, number]> = [];
+  const seen = new Set<string>();
+  for (const r of Array.isArray(clusters) ? clusters : []) {
+    if (!isObj(r) || typeof r['id'] !== 'string' || seen.has(r['id'])) continue;
+    seen.add(r['id']);
+    const bar = int(r['bar']);
+    if (bar === null || bar < 1) continue;
+    const hit = new Set<string>();
+    for (const ev of Array.isArray(r['evidence']) ? r['evidence'] : []) {
+      if (isObj(ev) && ev['ok'] === true && typeof ev['id'] === 'string' && ids.has(ev['id'])) hit.add(ev['id']);
+    }
+    if (hit.size >= bar) out.push([r['id'], hit.size, int(r['successes']) ?? hit.size]);
+  }
+  out.sort((a, b) => b[1] - a[1] || cmpCodepoint(a[0], b[0]));
+  return out;
+}
+
+/** name -> [the two records, their summed successes] for every live skill a split is offered for: its
+ * slot free, no other proposal made for it in this run, not rejected below the doubling. */
+export function splitOffers(skills: Rec, doc: unknown, marks: Map<string, Mark>, merges: Map<string, string>): Map<string, [string[], number]> {
+  const out = new Map<string, [string[], number]>();
+  for (const name of Object.keys(skills).sort(cmpCodepoint)) {
+    const e = skills[name];
+    if (!isObj(e) || !slotFree(e) || merges.has(name)) continue;
+    if (marks.has(name) && marks.get(name)![4] !== null) continue;
+    const halves = splitHalves(e, doc);
+    if (halves.length < 2) continue;
+    const total = halves[0]![2] + halves[1]![2];
+    const was = int(e['split_rejected_at']);
+    if (was !== null && total < REJECT_FACTOR * was) continue;
+    out.set(name, [[halves[0]![0], halves[1]![0]], total]);
+  }
+  return out;
+}
 
 /** The reference's `improve_step`: the X10 signals for every live skill; the events. */
 export async function improveStep(
@@ -1263,7 +1312,9 @@ export async function improveStep(
       events.push(`proposed merging ${a} with ${b2}`);
     }
   }
-  if (marks.size === 0 && merges.size === 0) return events;
+  const splits = splitOffers(skills, doc, marks, merges);
+  for (const name of [...splits.keys()].sort(cmpCodepoint)) events.push(`proposed splitting ${name}`);
+  if (marks.size === 0 && merges.size === 0 && splits.size === 0) return events;
   const written = updateState(home, (fresh) => {
     const live = fresh.skills as Record<string, unknown>;
     for (const [name, [n, misses, tried, tune, prop]] of marks) {
@@ -1285,6 +1336,10 @@ export async function improveStep(
     for (const [a, b2] of merges) {
       const e = Object.hasOwn(live, a) ? live[a] : undefined;
       if (isObj(e) && slotFree(e)) e['proposal'] = { at: now, kind: 'merge', status: 'pending', with: b2 };
+    }
+    for (const [name, [into, total]] of splits) {
+      const e = Object.hasOwn(live, name) ? live[name] : undefined;
+      if (isObj(e) && slotFree(e)) e['proposal'] = { at: now, into, kind: 'split', status: 'pending', successes: total };
     }
   });
   replaceState(state, written);
