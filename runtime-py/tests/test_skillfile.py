@@ -506,6 +506,21 @@ def test_state_write_refuses_a_taken_temp_and_leaves_it_alone(tmp_path, monkeypa
         assert Path(planted).read_bytes() == b"THEIRS"
 
 
+def test_an_orphaned_temp_is_passed_over_not_a_lockout(tmp_path, monkeypatch):
+    # A writer killed between write and rename leaves its temp; a later process given the
+    # same pid predicts the same name. It is passed over and left alone, never written through.
+    home = tmp_path / "home"
+    sf.write_state(home, {"skills": {"old-skill": {}}})
+    names = iter(range(1, 100))
+    monkeypatch.setattr(sf, "_temp", lambda target, kind: f"{target}.{kind}-{next(names)}")
+    orphan = Path(f"{sf.state_path(home)}.tmp-1")
+    orphan.write_bytes(b"THEIRS")
+    sf.write_state(home, {"skills": {"new": {}}})
+    assert sf.read_state(home)["skills"] == {"new": {}}
+    assert orphan.read_bytes() == b"THEIRS"
+    assert sorted(os.listdir(home / ".bantamkit")) == ["skills-state.json", orphan.name]
+
+
 def test_a_taken_temp_dir_is_refused_not_removed(tmp_path, monkeypatch):
     _planted_temp(monkeypatch)
     root = tmp_path / "backups"

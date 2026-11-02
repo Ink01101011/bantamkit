@@ -27,7 +27,7 @@
  * stamped hash are also pinned per side against a literal.
  */
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const name = 'skill-file';
@@ -237,6 +237,8 @@ const DIR_OPS = [
   ['state read refuses a BOM', { op: 'state_read', raw: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"version": 1, "skills": {}}')]).toString('base64') }],
   ['state write refuses a symlink planted at its temp', { op: 'state_plant', plant: 'symlink' }],
   ['state write refuses a file planted at its temp', { op: 'state_plant', plant: 'file' }],
+  ['state write passes over seven orphaned temps', { op: 'state_orphans', count: 7 }],
+  ['state write refuses after eight taken temps', { op: 'state_orphans', count: 8 }],
   ['replace refuses an empty dir planted at its old name', { op: 'plant_old', plant: 'dir' }],
   ['replace refuses a symlink planted at its old name', { op: 'plant_old', plant: 'symlink' }],
 ];
@@ -384,6 +386,28 @@ async function runNode(ctx, bed, ops) {
         unlinkSync(victim);
         return out;
       }
+      case 'state_orphans': {
+        sf.writeState(home, { skills: { before: {} } });
+        const base = sf.statePath(home);
+        const orphans = Array.from({ length: op.count }, (_, i) => `${base}.tmp-o${i + 1}`);
+        for (const o of orphans) writeFileSync(o, 'THEIRS');
+        let n = 0;
+        const savedTemp = sf.seams.temp;
+        sf.seams.temp = (target, k) => `${target}.${k}-o${(n += 1)}`;
+        let out;
+        try {
+          out = guarded(() => sf.writeState(home, { skills: { injected: {} } }));
+        } finally {
+          sf.seams.temp = savedTemp;
+        }
+        out = {
+          ...out,
+          state: readFileSync(base, 'utf8'),
+          orphans: orphans.map((o) => [basename(o), readFileSync(o, 'utf8') === 'THEIRS']),
+        };
+        for (const o of orphans) unlinkSync(o);
+        return out;
+      }
       case 'plant_old': {
         const target = join(bed, 'skills', 'p-q');
         sf.writeDirAtomic(target, { 'SKILL.md': Buffer.from('live\n') });
@@ -499,6 +523,26 @@ export async function run(ctx) {
         kind: 'json',
         expected: skipped ? { skipped: true } : { error: plantedSentence, victim: 'KEEP', state: beforeState, planted: plant === 'symlink' ? 'symlink' : Buffer.from('THEIRS').toString('base64') },
         actual: skipped ? r : { error: r.error, victim: r.victim, state: r.state, planted: r.tree?.['home/.bantamkit/skills-state.json.tmp-planted'] },
+      });
+    }
+  }
+
+  // An orphaned temp (#250 follow-up): a taken name is passed over, never written through, and
+  // only TEMP_TRIES (8) taken names in a row are refused. Pinned per side, since both sides
+  // losing the retry together would leave the differential green.
+  const injected = '{\n  "skills": {\n    "injected": {}\n  },\n  "version": 1\n}\n';
+  const orphanNames = (count) => Array.from({ length: count }, (_, i) => [`skills-state.json.tmp-o${i + 1}`, true]);
+  for (const [count, expected] of [
+    [7, { state: injected, orphans: orphanNames(7) }],
+    [8, { error: `temp path ${['<bed>', 'home', '.bantamkit', 'skills-state.json.tmp-o8'].join(sep)} already exists; refusing to write through it`, state: beforeState, orphans: orphanNames(8) }],
+  ]) {
+    const at = DIR_OPS.findIndex(([, o]) => o.op === 'state_orphans' && o.count === count);
+    for (const [side, results] of [['python', py4], ['node', nd4]]) {
+      cases.push({
+        name: `literal (${side}): ${count} orphaned temps ${count === 7 ? 'are passed over' : 'are refused'}, each left alone`,
+        kind: 'json',
+        expected,
+        actual: results[at],
       });
     }
   }

@@ -555,7 +555,7 @@ def undo(name: str, home: str | Path) -> str:
             metadata = parse_skill((target / SKILL_FILE).read_bytes().decode("utf-8")).metadata
             stored = metadata.get(HASH_KEY)
             raw_version = metadata.get("bantamkit-version")
-            if isinstance(raw_version, str) and re.fullmatch(r"[1-9][0-9]*", raw_version):
+            if isinstance(raw_version, str) and re.fullmatch(r"[1-9][0-9]{0,14}", raw_version):
                 restored_version = int(raw_version)
             restored = stored if isinstance(stored, str) else None
         except (SkillFileError, UnicodeDecodeError):
@@ -568,7 +568,8 @@ def undo(name: str, home: str | Path) -> str:
             removed.pop(name, None)
         else:
             entry = fresh["skills"].get(name)
-            if not isinstance(entry, dict):
+            came_back = not isinstance(entry, dict)
+            if came_back:
                 entry = removed.pop(name, None)
                 if not isinstance(entry, dict):
                     return
@@ -579,6 +580,17 @@ def undo(name: str, home: str | Path) -> str:
                 entry["sha256"] = restored
             if restored_version is not None:
                 entry["version"] = restored_version
+            elif not came_back:
+                # The restored file names no version (hand-edited before an approved change).
+                # A live entry whose version records `from` was last changed by `new_version`,
+                # whose backup this undo just put back: that is the version now live (#240).
+                versions = entry.get("versions")
+                record = (
+                    versions.get(str(entry.get("version"))) if isinstance(versions, dict) else None
+                )
+                was = _int(record.get("from")) if isinstance(record, dict) else None
+                if was is not None and was >= 1:
+                    entry["version"] = was
         if "removed" in fresh:
             fresh["removed"] = removed
 

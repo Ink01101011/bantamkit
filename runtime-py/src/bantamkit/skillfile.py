@@ -306,8 +306,12 @@ def _fsync(fd: int) -> None:
     os.fsync(fd)
 
 
+class _Taken(SkillFileError):
+    """A temp name already held by an entry this call did not make."""
+
+
 def _taken(path: str) -> SkillFileError:
-    return SkillFileError(f"temp path {path} already exists; refusing to write through it")
+    return _Taken(f"temp path {path} already exists; refusing to write through it")
 
 
 def _write(path: str, data: bytes) -> None:
@@ -344,6 +348,26 @@ def _mkdir_temp(path: str) -> None:
         raise _taken(path) from None
 
 
+# How many temp names one write tries before it refuses. A taken name is passed over, never
+# written through (#250): an orphan a killed writer left under a recycled pid must not block
+# every later writer, so only a run of taken names this long is refused.
+TEMP_TRIES = 8
+
+
+def _claim(target: Path | str, kind: str, make: Callable[[str], None]) -> str:
+    """A temp name beside `target` that `make` created exclusively; the last refusal if none."""
+    for _ in range(TEMP_TRIES - 1):
+        path = _temp(target, kind)
+        try:
+            make(path)
+        except _Taken:
+            continue
+        return path
+    path = _temp(target, kind)
+    make(path)
+    return path
+
+
 def _check_rel(rel: str) -> list[str]:
     parts = rel.split("/")
     if (
@@ -363,8 +387,7 @@ def _build(target: Path, files: dict[str, bytes]) -> str:
     for rel in rels:
         _check_rel(rel)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _temp(target, "tmp")
-    _mkdir_temp(tmp)
+    tmp = _claim(target, "tmp", _mkdir_temp)
     try:
         for rel in rels:
             path = os.path.join(tmp, *rel.split("/"))
@@ -414,8 +437,7 @@ def _set_aside(target: Path) -> tuple[str, str]:
     A rename onto the bare temp name would replace an empty dir planted there (POSIX allows
     it), so the name is claimed by an exclusive mkdir and `target` goes inside it (#250).
     """
-    old = _temp(target, "old")
-    _mkdir_temp(old)
+    old = _claim(target, "old", _mkdir_temp)
     moved = os.path.join(old, target.name)
     try:
         _rename(str(target), moved)
@@ -462,8 +484,7 @@ def _new_backup(backup_root: Path | str, name: str, now: str, fill: Callable[[st
     while os.path.lexists(final):
         n += 1
         final = home / f"{base}-{n}"
-    tmp = _temp(final, "tmp")
-    _mkdir_temp(tmp)  # outside the try: a taken name is not ours to remove
+    tmp = _claim(final, "tmp", _mkdir_temp)  # outside the try: a taken name is not ours to remove
     try:
         fill(tmp)
         _rename(tmp, str(final))
@@ -541,8 +562,7 @@ def undo(backup_root: Path | str, name: str, target: Path | str) -> str:
         shutil.rmtree(backup, ignore_errors=True)
         return f"removed {name}; it did not exist before {entry}"
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _temp(target, "tmp")
-    _mkdir_temp(tmp)  # outside the try: a taken name is not ours to remove
+    tmp = _claim(target, "tmp", _mkdir_temp)  # outside the try: a taken name is not ours to remove
     try:
         _copy_tree(backup, tmp)
         _swap_in(tmp, target)
@@ -566,18 +586,28 @@ def history_add(skill_dir: Path | str, version: int) -> None:
     _write_file_atomic(dst, data)
 
 
-def _write_file_atomic(path: Path, data: bytes) -> None:
-    tmp = _temp(path, "tmp")
+def _unlink_quietly(path: str) -> None:
     try:
-        _write(tmp, data)
-        _rename(tmp, str(path))
-    except SkillFileError:
-        raise  # the temp name was taken: what sits there is not ours to unlink
-    except BaseException:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _write_file_atomic(path: Path, data: bytes) -> None:
+    def make(tmp: str) -> None:
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+            _write(tmp, data)
+        except _Taken:
+            raise  # what sits at a taken name is not ours to unlink
+        except BaseException:
+            _unlink_quietly(tmp)
+            raise
+
+    tmp = _claim(path, "tmp", make)
+    try:
+        _rename(tmp, str(path))
+    except BaseException:
+        _unlink_quietly(tmp)
         raise
 
 

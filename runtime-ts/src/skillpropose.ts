@@ -320,7 +320,21 @@ async function approveProposal(
   const stored = draftText(rec);
   if (stored !== null) {
     const g = gate(stored, bundle(rec), home, cwd);
-    if (!g.ok) return gateFailed('The stored draft', g.reasons, `proposal ${cid} stays as it is.`);
+    if (!g.ok) {
+      // A draft that passed when mined can fail now (a skill took its name since). Kept, it
+      // would be refused on every approve; discarded, the next approve drafts anew.
+      const was = rec['draft'] as Rec;
+      delete rec['draft'];
+      const drafter = typeof was['drafter'] === 'string' ? was['drafter'] : null;
+      const outcome = { drafter, ok: false, text: null, reasons: g.reasons, unreachable: [], handoff: null };
+      new LogSegment(draftsLog(home)).append(logLine(outcome, now, cid));
+      writeProposals(home, doc);
+      return gateFailed(
+        'The stored draft',
+        g.reasons,
+        `It was discarded and logged; run ${COMMAND} approve ${cid} again to draft anew.`,
+      );
+    }
     return installNow(rec, doc, stored, level, home, now);
   }
   const staged = handoffPath(home, cid);

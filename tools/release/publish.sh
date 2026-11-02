@@ -430,11 +430,19 @@ NODE_BUILT=1
 
 PYTEST_LABEL="pytest runtime-py/tests"
 PYTEST_LOG="$SCRATCH/gate-pytest.log"
-"$VENV_PY" -m pytest "$REPO/runtime-py/tests" -q >"$PYTEST_LOG" 2>&1 &
-PYTEST_PID=$!
 # Interrupted mid-phase, the background lane would outlive the script and keep writing into a
-# scratch directory that `cleanup` is removing.
-trap 'kill "$PYTEST_PID" 2>/dev/null || true; cleanup' EXIT
+# scratch directory that `cleanup` is removing. Killing pytest's pid alone leaves the servers and
+# hook children it spawned running, so the lane gets its own process group (`set -m`): the trap
+# ends the whole group and waits for it before `cleanup` runs.
+set -m
+"$VENV_PY" -m pytest "$REPO/runtime-py/tests" -q </dev/null >"$PYTEST_LOG" 2>&1 &
+PYTEST_PID=$!
+set +m
+stop_pytest() {
+  kill -- "-$PYTEST_PID" 2>/dev/null || true
+  wait "$PYTEST_PID" 2>/dev/null || true
+}
+trap 'stop_pytest; cleanup' EXIT
 say "  --- $PYTEST_LABEL: started in the background (pid $PYTEST_PID); its log prints when it ends"
 
 gate "ruff check runtime-py tools" "$RUFF" check "$REPO/runtime-py" "$REPO/tools"

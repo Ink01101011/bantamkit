@@ -349,10 +349,17 @@ def _approve_proposal(
     if text is not None:
         g = gate(text, bundle(rec), home, cwd)
         if not g.ok:
+            # A draft that passed when mined can fail now (a skill took its name since). Kept,
+            # it would be refused on every approve; discarded, the next approve drafts anew.
+            stored = rec.pop("draft")
+            drafter = stored.get("drafter") if isinstance(stored.get("drafter"), str) else None
+            outcome = DraftOutcome(drafter, False, None, g.reasons, [])
+            LogSegment(drafts_log(home)).append(outcome.log_line(now, cid))
+            write_proposals(home, doc)
             return _gate_failed(
                 "The stored draft",
                 g.reasons,
-                f"proposal {cid} stays as it is.",
+                f"It was discarded and logged; run {COMMAND} approve {cid} again to draft anew.",
             )
         return _install(rec, doc, text, level, home, now)
     staged = handoff_path(home, cid)

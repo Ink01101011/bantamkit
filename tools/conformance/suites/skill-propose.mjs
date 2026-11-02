@@ -220,6 +220,7 @@ function opList() {
     text: staleDraft.replace('name: stale-a', 'name: later-a'),
   });
   add('stored draft fails current catalogue gate', R('regate', 'approve', 'c-stale-a'));
+  add('approve the stale proposal again: drafted anew, never the stored refusal', R('regate', 'approve', 'c-stale-a'));
 
   // h5: sampling
   claude('h5');
@@ -531,6 +532,22 @@ export async function run(ctx) {
         refused: stale.text.includes('did not pass the gate, so nothing was installed'),
         shared: stale.text.includes("trigger phrase 'deployment failure' is shared with later-a"),
         installed: stale.tree.some((l) => l.startsWith('.bantamkit/skills/stale-a/')),
+      },
+    });
+    // The refused draft is dropped and logged, so the next approve is not refused the same way
+    // forever: it drafts anew (here the host agent's hand-off).
+    const again = got[find('approve the stale proposal again: drafted anew, never the stored refusal')];
+    const fileOf = (r, rel) => (r.tree.find((l) => l.startsWith(`${rel}: `)) ?? '').slice(rel.length + 2);
+    cases.push({
+      name: `LITERAL: a stored draft the gate refuses is discarded and logged — ${side}`,
+      kind: 'json',
+      expected: { discarded: true, kept: false, logged: true, again: false, handoff: true },
+      actual: {
+        discarded: stale.text.endsWith(`It was discarded and logged; run ${COMMAND} approve c-stale-a again to draft anew.`),
+        kept: fileOf(stale, '.bantamkit/skill-proposals.json').includes('"draft"'),
+        logged: /"cluster": ?"c-stale-a"[^\n]*"drafter": ?"endpoint m"[^\n]*"ok": ?false/.test(fileOf(stale, '.bantamkit/skill-drafts.jsonl')),
+        again: again.text.startsWith('The stored draft'),
+        handoff: again.text.includes('so you draft it'),
       },
     });
     const listed = got[find('list: a full home')].text;
