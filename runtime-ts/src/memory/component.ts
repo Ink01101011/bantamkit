@@ -479,6 +479,20 @@ export class Memory {
     this.layers.push([SKILL_LAYER, new SkillStore(roots), false]);
   }
 
+  /**
+   * The `[skill]` layer `addSkills` held back, bound once a root has appeared. Called on entry
+   * to every public reader of `layers`, never between two reads in one call: a layer inserted
+   * mid-call would shift the indexes that call already holds. The reference's
+   * `_bind_pending_skills`.
+   */
+  private bindPendingSkills(): void {
+    if (this.pendingSkills.some((r) => pyIsDir(r))) {
+      const native = this.layers.findIndex(([label]) => label === NATIVE_LAYER);
+      this.layers.splice(native < 0 ? this.layers.length : native, 0, [SKILL_LAYER, new SkillStore(this.pendingSkills), false]);
+      this.pendingSkills = [];
+    }
+  }
+
   /** The host's auto-memory as the last, read-only layer, when a directory was resolved. */
   private addNative(native: string | null): void {
     if (native !== null && pyStrip(native)) this.layers.push([NATIVE_LAYER, new NativeStore(native), false]);
@@ -696,11 +710,7 @@ export class Memory {
   ): RecallOutcome {
     // `not 0.0 <= min_ratio <= 1.0`: NaN fails the same chain on both sides.
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
-    if (this.pendingSkills.some((r) => pyIsDir(r))) {
-      const native = this.layers.findIndex(([label]) => label === NATIVE_LAYER);
-      this.layers.splice(native < 0 ? this.layers.length : native, 0, [SKILL_LAYER, new SkillStore(this.pendingSkills), false]);
-      this.pendingSkills = [];
-    }
+    this.bindPendingSkills();
     const budget = k === null ? this.k : Math.max(k, this.k);
     const name = pyStrip(query);
     let lookup: string | null = null;
@@ -752,6 +762,7 @@ export class Memory {
 
   /** `[label, store, writable]` per layer, in precedence order (the touch graph's input). */
   layerStores(): ReadonlyArray<readonly [string, LayerStore, boolean]> {
+    this.bindPendingSkills();
     return this.layers.map(([label, store, writable]) => [label, store, writable] as const);
   }
 
@@ -762,6 +773,7 @@ export class Memory {
    * `git ls-files` with no edges. Nothing is stamped: facts are found with `lookup(name, false)`.
    */
   recallFile(file: string, k: number | null = null, query: string | null = null): RecallOutcome {
+    this.bindPendingSkills();
     const rf = recallFileMod;
     const budget = k === null ? this.k : Math.max(k, this.k);
     const ignored = query === null ? '' : `\n${rf.QUERY_IGNORED}`;
@@ -1048,11 +1060,13 @@ export class Memory {
 
   /** What the `UserPromptSubmit` hook would inject for `prompt`, before its byte cap. */
   injectCandidates(prompt: string, head: string | null = null): Fact[] {
+    this.bindPendingSkills();
     return this.pooled(prompt, 3, RECALL_MIN_SCORE_RATIO, null, head).picked.map(([, fact]) => fact);
   }
 
   /** The ranking past the gate, `depth` deep: what recall@3 is measured on. */
   rankAll(prompt: string, depth = 50, head: string | null = null): Fact[] {
+    this.bindPendingSkills();
     return this.pooled(prompt, depth, RECALL_MIN_SCORE_RATIO, null, head).picked.map(([, fact]) => fact);
   }
 
@@ -1113,6 +1127,7 @@ export class Memory {
    * `remaining`. The reference's `queries_missing`.
    */
   queriesMissing(limit: number = queriesMod.LIST_LIMIT): Record<string, unknown> {
+    this.bindPendingSkills();
     const missing = this.missingOf(this.namedFacts());
     let remaining = missing.length;
     const facts: Array<Record<string, string>> = [];
@@ -1150,6 +1165,7 @@ export class Memory {
    * `queries_write`; `facts` is the decoded JSON (a dict is a plain object).
    */
   queriesWrite(facts: readonly unknown[]): Record<string, unknown> {
+    this.bindPendingSkills();
     const labels = this.layers.map(([label]) => label);
     const plan = new Map<number, Map<string, readonly [string[], string] | null>>();
     for (let i = 0; i < facts.length; i += 1) {

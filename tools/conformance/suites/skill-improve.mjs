@@ -102,6 +102,17 @@ function opList() {
   add('undo: install', { op: 'install', home: 'undo240', name: 'sk-u', text: draft('sk-u'), now: NOW });
   add('undo: auto v2', { op: 'new_version', home: 'undo240', name: 'sk-u', text: draft('sk-u', 'Better'), now: LATER, kind: 'auto' });
   add('undo: restores version', { op: 'undo', home: 'undo240', name: 'sk-u' });
+  // The restored file's bantamkit-version is a number only up to 15 digits, as a version key
+  // is: past that Number() and int() part ways, and Node would write 1e20 or null.
+  // A file naming no usable version falls back to the `from` of the version it undid.
+  const huge = (digits) => digits === 0 ? draft('sk-h') : draft('sk-h').replace('---\n\n', `metadata:\n  bantamkit-version: "${'9'.repeat(digits)}"\n---\n\n`);
+  for (const digits of [15, 16, 400, 0]) {
+    const hh = `undo-huge-${digits}`;
+    add(`${hh}: install`, { op: 'install', home: hh, name: 'sk-h', text: draft('sk-h'), now: NOW });
+    add(`${hh}: auto v2`, { op: 'new_version', home: hh, name: 'sk-h', text: draft('sk-h', 'Better'), now: LATER, kind: 'auto' });
+    add(`${hh}: the backup's version is ${digits} digits`, { op: 'write', home: hh, rel: '.bantamkit/skill-backups/sk-h/20261028T120000.000Z/SKILL.md', text: huge(digits) });
+    add(`${hh}: undo`, { op: 'undo', home: hh, name: 'sk-h' });
+  }
 
   // h1: new versions, the refusals, rollback, the next number
   const h = 'h1';
@@ -634,6 +645,14 @@ export async function run(ctx) {
     ['python', py],
     ['node', nd],
   ]) {
+    for (const [digits, want] of [[15, 999999999999999], [16, 1], [400, 1], [0, 1]]) {
+      cases.push({
+        name: `LITERAL: undo of v2 restoring ${digits === 0 ? 'no' : `a ${digits}-digit`} bantamkit-version is v${want === 1 ? '1, the from it undid' : want} — ${side}`,
+        kind: 'json',
+        expected: want,
+        actual: got[find(`undo-huge-${digits}: undo`)].state?.skills?.['sk-h']?.version,
+      });
+    }
     cases.push({ name: `LITERAL: undo restores version — ${side}`, kind: 'json', expected: 1, actual: got[find('undo: restores version')].state?.skills?.['sk-u']?.version });
     cases.push({
       name: `LITERAL: constants [uses, kept, rolled back, history, kinds] — ${side}`,

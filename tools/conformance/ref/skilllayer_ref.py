@@ -66,7 +66,9 @@ def main() -> None:
     results = []
     for call in req["calls"]:
         if call["op"] == "labels":
-            results.append([label for label, _, _ in mem._layers])
+            results.append([label for label, _, _ in mem.layer_stores()])
+        elif call["op"] == "inject":
+            results.append([fact.name for fact in mem.inject_candidates(call["q"])])
         elif call["op"] == "install":
             target = Path(req["start"]) / ".bantamkit/skills/late-skill/SKILL.md"
             target.parent.mkdir(parents=True, exist_ok=True)

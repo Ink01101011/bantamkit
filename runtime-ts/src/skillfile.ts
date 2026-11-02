@@ -275,8 +275,11 @@ export const seams = {
 
 const temp = (target: string, kind: string): string => seams.temp(target, kind);
 
+/** A temp name already held by an entry this call did not make. */
+class Taken extends SkillFileError {}
+
 const taken = (p: string): SkillFileError =>
-  new SkillFileError(`temp path ${p} already exists; refusing to write through it`);
+  new Taken(`temp path ${p} already exists; refusing to write through it`);
 
 /** A fresh temp dir, refused like `seams.write` when its name is already taken. */
 function mkdirTemp(p: string): void {
@@ -286,6 +289,30 @@ function mkdirTemp(p: string): void {
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw taken(p);
     throw e;
   }
+}
+
+/**
+ * How many temp names one write tries before it refuses. A taken name is passed over, never
+ * written through (#250): an orphan a killed writer left under a recycled pid must not block
+ * every later writer, so only a run of taken names this long is refused.
+ */
+export const TEMP_TRIES = 8;
+
+/** A temp name beside `target` that `make` created exclusively; the last refusal if none. */
+function claim(target: string, kind: string, make: (p: string) => void): string {
+  for (let i = 1; i < TEMP_TRIES; i += 1) {
+    const p = temp(target, kind);
+    try {
+      make(p);
+    } catch (e) {
+      if (e instanceof Taken) continue;
+      throw e;
+    }
+    return p;
+  }
+  const p = temp(target, kind);
+  make(p);
+  return p;
 }
 
 const rmTree = (p: string): void => {
@@ -323,8 +350,7 @@ function build(target: string, files: Record<string, Uint8Array>): string {
   const rels = Object.keys(files).sort(cmpCodepoint);
   for (const rel of rels) checkRel(rel);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = temp(target, 'tmp');
-  mkdirTemp(tmp);
+  const tmp = claim(target, 'tmp', mkdirTemp);
   try {
     for (const rel of rels) {
       const file = path.join(tmp, ...rel.split('/'));
@@ -369,8 +395,7 @@ function copyTree(src: string, dst: string): void {
  * so the name is claimed by an exclusive mkdir and `target` goes inside it (#250).
  */
 function setAside(target: string): [string, string] {
-  const old = temp(target, 'old');
-  mkdirTemp(old);
+  const old = claim(target, 'old', mkdirTemp);
   const moved = path.join(old, path.basename(target));
   try {
     seams.rename(target, moved);
@@ -422,8 +447,7 @@ function newBackup(root: string, name: string, now: string, fill: (tmp: string) 
     n += 1;
     final = path.join(home, `${base}-${n}`);
   }
-  const tmp = temp(final, 'tmp');
-  mkdirTemp(tmp); // outside the try: a taken name is not ours to remove
+  const tmp = claim(final, 'tmp', mkdirTemp); // outside the try: a taken name is not ours to remove
   try {
     fill(tmp);
     seams.rename(tmp, final);
@@ -511,8 +535,7 @@ export function undo(root: string, name: string, target: string): string {
     return `removed ${name}; it did not exist before ${entry}`;
   }
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const tmp = temp(target, 'tmp');
-  mkdirTemp(tmp); // outside the try: a taken name is not ours to remove
+  const tmp = claim(target, 'tmp', mkdirTemp); // outside the try: a taken name is not ours to remove
   try {
     copyTree(backup, tmp);
     swapIn(tmp, target);
@@ -535,18 +558,27 @@ export function historyAdd(skillDir: string, version: number): void {
   writeFileAtomic(dst, data);
 }
 
-function writeFileAtomic(file: string, data: Uint8Array): void {
-  const tmp = temp(file, 'tmp');
+const unlinkQuietly = (p: string): void => {
   try {
-    seams.write(tmp, data);
+    fs.unlinkSync(p);
+  } catch {
+    /* nothing was written */
+  }
+};
+
+function writeFileAtomic(file: string, data: Uint8Array): void {
+  const tmp = claim(file, 'tmp', (p) => {
+    try {
+      seams.write(p, data);
+    } catch (e) {
+      if (!(e instanceof Taken)) unlinkQuietly(p); // what sits at a taken name is not ours to unlink
+      throw e;
+    }
+  });
+  try {
     seams.rename(tmp, file);
   } catch (e) {
-    if (e instanceof SkillFileError) throw e; // the temp name was taken: what sits there is not ours to unlink
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      /* nothing was written */
-    }
+    unlinkQuietly(tmp);
     throw e;
   }
 }

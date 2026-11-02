@@ -375,7 +375,8 @@ class Memory:
 
         `only_present`: bound only when some root is a directory, so a machine with no skill
         has exactly the layers it had before the layer existed. A short-lived hook sees a
-        skill the moment it is installed; a long-lived server retries on recall.
+        skill the moment it is installed; a long-lived server retries on each public read
+        (`_bind_pending_skills`).
         """
         if not roots:
             return
@@ -383,6 +384,21 @@ class Memory:
             self._pending_skills = roots
             return
         self._layers.append((SKILL_LAYER, SkillStore(roots), False))
+
+    def _bind_pending_skills(self) -> None:
+        """The `[skill]` layer `_add_skills` held back, bound once a root has appeared.
+
+        Called on entry to every public reader of `_layers`, never between two reads in one
+        call: a layer inserted mid-call would shift the indexes that call already holds.
+        """
+        if self._pending_skills and any(r.is_dir() for r in self._pending_skills):
+            layer = (SKILL_LAYER, SkillStore(self._pending_skills), False)
+            position = next(
+                (i for i, (label, _, _) in enumerate(self._layers) if label == NATIVE_LAYER),
+                len(self._layers),
+            )
+            self._layers.insert(position, layer)
+            self._pending_skills = []
 
     def _add_native(self, native: str | Path | None) -> None:
         """The host's auto-memory as the last, read-only layer, when a directory was resolved."""
@@ -673,14 +689,7 @@ class Memory:
         """
         if not 0.0 <= min_ratio <= 1.0:
             raise MemoryValidationError(MIN_RATIO_RANGE)
-        if self._pending_skills and any(r.is_dir() for r in self._pending_skills):
-            layer = (SKILL_LAYER, SkillStore(self._pending_skills), False)
-            position = next(
-                (i for i, (label, _, _) in enumerate(self._layers) if label == NATIVE_LAYER),
-                len(self._layers),
-            )
-            self._layers.insert(position, layer)
-            self._pending_skills = []
+        self._bind_pending_skills()
         budget = self.k if k is None else max(k, self.k)
         name = query.strip()
         lookup: str | None = None
@@ -739,6 +748,7 @@ class Memory:
 
     def layer_stores(self) -> list[tuple[str, Any, bool]]:
         """`(label, store, writable)` per layer, in precedence order (the touch graph's input)."""
+        self._bind_pending_skills()
         return list(self._layers)
 
     def recall_file(
@@ -758,6 +768,7 @@ class Memory:
         `store.lookup(name, stamp=False)`, and a name no layer holds any more is passed over.
         `status` is `answered` when a fact is shown, else `none`.
         """
+        self._bind_pending_skills()
         rf = _recall_file_mod
         budget = self.k if k is None else max(k, self.k)
         ignored = "" if query is None else f"\n{rf.QUERY_IGNORED}"
@@ -1054,11 +1065,13 @@ class Memory:
 
     def inject_candidates(self, prompt: str, head: str | None = None) -> list[Fact]:
         """What the `UserPromptSubmit` hook would inject for `prompt`, before its byte cap."""
+        self._bind_pending_skills()
         got = self._pooled(prompt, 3, RECALL_MIN_SCORE_RATIO, head=head)
         return [fact for _, fact in got[0]]
 
     def rank_all(self, prompt: str, depth: int = 50, head: str | None = None) -> list[Fact]:
         """The ranking past the gate, `depth` deep: what recall@3 is measured on."""
+        self._bind_pending_skills()
         got = self._pooled(prompt, depth, RECALL_MIN_SCORE_RATIO, head=head)
         return [fact for _, fact in got[0]]
 
@@ -1110,6 +1123,7 @@ class Memory:
         name order, each with its body's first `BODY_EXCERPT` code points, plus the
         instructions for writing theirs. A name whose fact cannot be read is passed over and
         is not counted in `remaining`."""
+        self._bind_pending_skills()
         missing = self._missing(self._named_facts())
         remaining = len(missing)
         facts: list[dict[str, str]] = []
@@ -1147,6 +1161,7 @@ class Memory:
         """`memory_queries {"facts": [...]}` (Q6): every item is checked before anything is
         written, and the first bad one refuses the whole call (S5-S8). Then one write per
         layer sidecar; one that cannot be written is S9. `queries: []` removes an entry."""
+        self._bind_pending_skills()
         labels = [label for label, _, _ in self._layers]
         plan: dict[int, dict[str, tuple[list[str], str] | None]] = {}
         for i, item in enumerate(facts):

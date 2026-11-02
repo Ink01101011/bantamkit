@@ -23,6 +23,7 @@ to the same table:
     {"op": "state_read", "raw"?}                 -> {"state"} | {"error"}
     {"op": "state_plant", "plant"}               -> {"error"?, "tree", "victim", "state"} | {"skipped"}
     {"op": "plant_old", "plant"}                 -> {"error"?, "tree", "live", "planted"} | {"skipped"}
+    {"op": "state_orphans", "count"}             -> {"error"?, "state", "orphans"}
 
     {"bed": <dir>, "ops": [...]} -> {"results": [...]}
 
@@ -45,6 +46,9 @@ and `state` are the bytes left as UTF-8 text. A side that cannot make a symlink 
 `skills/p-q`, plants an empty `dir` (the entry a bare POSIX rename replaces) or a `symlink` to
 `<bed>/victim` at `skills/p-q.old-planted`, replaces, answers what `SKILL.md` and the planted
 entry are left as (`"dir"`, `"symlink"` or `"gone"`), then removes the skill and the plant.
+`state_orphans` pins the temp seam to `<target>.<kind>-o<n>`, n counting from 1, leaves a file
+`THEIRS` at the first `count` of those names (what writers killed mid-write leave behind), writes
+a state, answers it, the orphans' names and whether each still holds `THEIRS`, then removes them.
 """
 
 from __future__ import annotations
@@ -242,6 +246,25 @@ def run(bed: Path, op: dict):
         out["state"] = sf.state_path(home).read_text(encoding="utf-8")
         planted.unlink(missing_ok=True)  # a writer that follows the link renames it away
         victim.unlink()
+        return out
+    if kind == "state_orphans":
+        home = bed / "home"
+        sf.write_state(home, {"skills": {"before": {}}})
+        base = str(sf.state_path(home))
+        orphans = [Path(f"{base}.tmp-o{n}") for n in range(1, op["count"] + 1)]
+        for o in orphans:
+            o.write_bytes(b"THEIRS")
+        seq = iter(range(1, 1000))
+        saved_temp = sf._temp
+        sf._temp = lambda target, k: f"{target}.{k}-o{next(seq)}"
+        try:
+            out = guarded(bed, lambda: sf.write_state(home, {"skills": {"injected": {}}}))
+        finally:
+            sf._temp = saved_temp
+        out["state"] = sf.state_path(home).read_text(encoding="utf-8")
+        out["orphans"] = [[o.name, o.read_bytes() == b"THEIRS"] for o in orphans]
+        for o in orphans:
+            o.unlink()
         return out
     if kind == "plant_old":
         target = bed / "skills" / "p-q"

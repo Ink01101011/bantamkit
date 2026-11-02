@@ -109,6 +109,8 @@ const SCENARIOS = [
       ['the layers, in order', { op: 'labels' }],
       ['a recall', recall('deploy')],
       ['install after binding', { op: 'install', text: skill('late-skill', 'Diagnoses late installation failures') }],
+      ['inject before any recall sees the late skill', { op: 'inject', q: 'late installation failures' }],
+      ['the layers after the install, before any recall', { op: 'labels' }],
       ['recall newly installed skill', recall('late-skill')],
     ],
   },
@@ -179,7 +181,8 @@ async function runNode(ctx, req, env) {
     if (req.native !== null) options.native = req.native;
     const mem = mod.Memory.layered(req.start, options);
     const results = req.calls.map((call) => {
-      if (call.op === 'labels') return mem.layerLabels();
+      if (call.op === 'labels') return mem.layerStores().map(([label]) => label);
+      if (call.op === 'inject') return mem.injectCandidates(call.q).map((fact) => fact.name);
       if (call.op === 'install') {
         materialise(req.start, { '.bantamkit/skills/late-skill/SKILL.md': call.text }, []);
         return null;
@@ -293,7 +296,18 @@ export async function run(ctx) {
       actual: answers[1][side].got.results[0],
     });
   }
-  for (const side of ['py', 'node']) cases.push({ name: `late skill (${side})`, kind: 'json', expected: true, actual: answers[1][side].got.results[3].reply.includes('Read the failing line.') });
+  for (const side of ['py', 'node']) cases.push({ name: `late skill (${side})`, kind: 'json', expected: true, actual: answers[1][side].got.results[5].reply.includes('Read the failing line.') });
+  // A layer bound only by recall left inject, status and queries on the startup layers until
+  // some recall happened: the hook's first read after an install must see the skill.
+  for (const side of ['py', 'node']) {
+    const r = answers[1][side].got.results;
+    cases.push({
+      name: `late skill reaches inject and the layer list before any recall (${side})`,
+      kind: 'json',
+      expected: { inject: true, layers: true },
+      actual: { inject: r[3].includes('late-skill'), layers: r[4].includes('skill') },
+    });
+  }
   cases.push(...(await runLateMcp(ctx)).cases);
   return { cases, notes: [] };
 }

@@ -492,7 +492,7 @@ export function undo(name: string, home: string): string {
       const metadata = parseSkill(text).metadata;
       const stored = metadata[HASH_KEY];
       const rawVersion = metadata["bantamkit-version"];
-      if (typeof rawVersion === "string" && /^[1-9][0-9]*$/.test(rawVersion)) restoredVersion = Number(rawVersion);
+      if (typeof rawVersion === "string" && /^[1-9][0-9]{0,14}$/.test(rawVersion)) restoredVersion = Number(rawVersion);
       restored = typeof stored === 'string' ? stored : null;
     } catch (e) {
       if (!(e instanceof SkillFileError) && !(e instanceof TypeError)) throw e;
@@ -507,6 +507,7 @@ export function undo(name: string, home: string): string {
       delete removed[name];
     } else {
       let entry = Object.hasOwn(skills, name) ? skills[name] : undefined;
+      const cameBack = !isObj(entry);
       if (!isObj(entry)) {
         entry = Object.hasOwn(removed, name) ? removed[name] : undefined;
         delete removed[name];
@@ -520,6 +521,15 @@ export function undo(name: string, home: string): string {
       }
       if (restored !== null) (entry as Rec)['sha256'] = restored;
       if (restoredVersion !== null) (entry as Rec)['version'] = restoredVersion;
+      else if (!cameBack) {
+        // The restored file names no version (hand-edited before an approved change). A live
+        // entry whose version records `from` was last changed by `newVersion`, whose backup
+        // this undo just put back: that is the version now live (#240).
+        const versions = (entry as Rec)['versions'];
+        const record = isObj(versions) ? (versions as Rec)[String((entry as Rec)['version'])] : undefined;
+        const was = isObj(record) ? int((record as Rec)['from']) : null;
+        if (was !== null && was >= 1) (entry as Rec)['version'] = was;
+      }
     }
     if (Object.hasOwn(fresh, 'removed')) fresh['removed'] = removed;
   });
