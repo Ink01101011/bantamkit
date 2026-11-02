@@ -55,12 +55,22 @@
  *      per-side literals: over the fixture as root `x`, `audit_roots`' findings equal
  *      `audit`'s on EACH side, and the A1 and collision rows' counts are pinned per side, so
  *      a symmetric regression that moved both runtimes alike still goes red.
+ *   7. SYMLINKED SKILL DIRECTORIES (#245, #234 N4). A scratch personal root and a project root
+ *      (not on win32: a directory symlink needs a privilege the runner may lack) holding: a link
+ *      to a skill outside the root (counted, under the link's name), a second link to that one
+ *      directory (not counted twice), a link to a sibling real skill (the alias dropped), a
+ *      link to the root itself and a link from inside the outside skill to ITS parent (the two
+ *      cycles: walked once, never looped), and a dangling link (no crash, nothing counted); the
+ *      project root holds a link into the personal root's real skill, so the dedupe by real path
+ *      runs ACROSS roots. Compared: `audit` over the personal root, `audit_roots` over
+ *      `project, user`, and the per-file table; then per-side literals pin the counted ids and
+ *      the headline, so a regression both runtimes made alike still goes red.
  *
  * Every string travels as base64, in both directions. The descriptions in the fixture carry
  * quotes, backslashes and escaped quotes, which is precisely the material a JSON round trip
  * through two different encoders is most likely to launder.
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -595,7 +605,111 @@ export async function run(ctx) {
     }),
   );
 
+  // ------------------------------------------------- 7. symlinked skill directories (#245)
+  let linkCases = 0;
+  if (process.platform === 'win32') {
+    notes.push('links bed skipped on win32: a directory symlink needs a privilege the runner may lack');
+  } else {
+    const linkBase = join(ctx.scratch, 'links');
+    const lUser = join(linkBase, 'user');
+    const lProject = join(linkBase, 'project');
+    const lOutside = join(linkBase, 'outside');
+    writeSkill(lUser, 'real-a', 'Use when the real skill A is wanted.');
+    writeSkill(lOutside, 'ext-b', 'Use when the outside skill B is wanted.');
+    mkdirSync(lProject, { recursive: true });
+    const dirLink = (target, at) => symlinkSync(target, at, 'dir');
+    dirLink(join('..', 'outside', 'ext-b'), join(lUser, 'linked-b')); // counted, the fix
+    dirLink(join('..', 'outside', 'ext-b'), join(lUser, 'twin-b')); // a second link: not twice
+    dirLink('real-a', join(lUser, 'alias-a')); // a sibling's alias: dropped
+    // The root itself, three times: a cycle. Three names make an unguarded walk 3^n paths deep
+    // before the OS gives up on the link chain (ELOOP), so a missing guard HANGS this suite
+    // rather than passing it on the strength of the alias drop.
+    for (const loop of ['loop', 'loop2', 'loop3']) dirLink('.', join(lUser, loop));
+    dirLink('..', join(lOutside, 'ext-b', 'up')); // back to the outside's parent: a cycle
+    dirLink(join('..', 'nowhere'), join(lUser, 'dangling')); // dangling: no crash
+    dirLink(join('..', 'user', 'real-a'), join(lProject, 'shared-a')); // across roots: dropped
+    const linkConfigs = [
+      ['user', { root: lUser, enabled: null, usage: {}, check: null, budget: null }],
+    ];
+    const linkRootConfigs = [
+      ['project-user', { roots: [['project', lProject], ['user', lUser]], enabled: null, usage: {}, check: null, budget: null }],
+    ];
+    const pyL = ctx.runPython(REF, { op: 'audit', cases: linkConfigs.map(([, c]) => c) }).results
+      .map((py) => ('json' in py ? unb64(py.json) : `${py.error.type}: ${unb64(py.error.message)}`));
+    const nodeL = linkConfigs.map(([, c]) => {
+      try {
+        return skillaudit.audit(c.root, { enabled: null, usage: usageMap(c.usage), check: 'all', budget: null }).asJson();
+      } catch (e) {
+        return `${e.constructor.name}: ${e.message}`;
+      }
+    });
+    const pyLR = ctx.runPython(REF, { op: 'audit_roots', cases: linkRootConfigs.map(([, c]) => c) }).results
+      .map((py) => ('json' in py ? unb64(py.json) : `${py.error.type}: ${unb64(py.error.message)}`));
+    const nodeLR = linkRootConfigs.map(([, c]) => nodeAuditRoots(c));
+    const pyTable = ctx.runPython(REF, { op: 'skills', root: lUser, enabled: null, versions: null }).results
+      .map((r) => ({ id: unb64(r.id), relpath: unb64(r.relpath), bytes: r.bytes, omitted: r.omitted }));
+    let nodeTable;
+    try {
+      nodeTable = skillaudit.scan(lUser, null, null).map((r) => ({ id: r.id, relpath: r.relpath, bytes: r.bytes, omitted: r.omitted }));
+    } catch (e) {
+      nodeTable = `${e.constructor.name}: ${e.message}`;
+    }
+    const before = cases.length;
+    cases.push({ name: 'links/audit user', kind: 'string', expected: pyL[0], actual: nodeL[0] });
+    cases.push({ name: 'links/audit_roots project, user', kind: 'string', expected: pyLR[0], actual: nodeLR[0] });
+    cases.push({ name: 'links/per-file table', kind: 'json', expected: pyTable, actual: nodeTable });
+    const headline = (text) => {
+      const doc = parsed(text);
+      return {
+        skills: doc.skills ?? null,
+        catalogue_bytes: doc.catalogue_bytes ?? null,
+        counted: (doc.findings ?? []).filter((f) => f.kind === 'never-invoked').map((f) => f.skills[0]),
+        omissions: doc.omissions ?? null,
+      };
+    };
+    // `usage: {}` makes every counted skill a `never-invoked` finding, so its ids ARE the
+    // counted set. `linked-b` is the outside skill under the link's name, counted once although
+    // `twin-b` reaches it too; `alias-a` and the project's `shared-a` are `real-a`'s aliases.
+    const bytesA = Buffer.byteLength('Use when the real skill A is wanted.');
+    const bytesB = Buffer.byteLength('Use when the outside skill B is wanted.');
+    const want = { skills: 2, catalogue_bytes: bytesA + bytesB, counted: ['linked-b', 'real-a'], omissions: [] };
+    cases.push(...literalCases(headline(pyL[0]), headline(nodeL[0]), 'links/user: the linked skill counted once, aliases and cycles not', want));
+    cases.push(...literalCases(headline(pyLR[0]), headline(nodeLR[0]), 'links/project, user: an alias across roots is not counted twice', want));
+    cases.push(
+      ...literalCases(
+        Array.isArray(pyTable) ? pyTable.map((r) => r.relpath) : pyTable,
+        Array.isArray(nodeTable) ? nodeTable.map((r) => r.relpath) : nodeTable,
+        'links/per-file table: one row per real directory, the first name in path order',
+        ['linked-b/SKILL.md', 'real-a/SKILL.md'],
+      ),
+    );
+    // A version `skills/` directory that will not OPEN declares nothing on either side: `os.walk`
+    // never yields a directory its `scandir` refused, and the port used to record the version
+    // before trying to read it, so `1.0` lost to an unreadable `2.0` there and only there.
+    // POSIX only (mode 000), and skipped when the scratch runs as root.
+    const permRoot = join(linkBase, 'perm');
+    writeSkill(permRoot, 'mk/kit/1.0/skills/kept', 'Use when the readable version serves.');
+    mkdirSync(join(permRoot, 'mk', 'kit', '2.0', 'skills'), { recursive: true });
+    chmodSync(join(permRoot, 'mk', 'kit', '2.0', 'skills'), 0o000);
+    if (process.getuid && process.getuid() !== 0) {
+      const permCfg = { root: permRoot, enabled: null, usage: {}, check: null, budget: null };
+      const pyP = ctx.runPython(REF, { op: 'audit', cases: [permCfg] }).results
+        .map((py) => ('json' in py ? unb64(py.json) : `${py.error.type}: ${unb64(py.error.message)}`))[0];
+      let nodeP;
+      try {
+        nodeP = skillaudit.audit(permRoot, { enabled: null, usage: usageMap({}), check: 'all', budget: null }).asJson();
+      } catch (e) {
+        nodeP = `${e.constructor.name}: ${e.message}`;
+      }
+      cases.push({ name: 'links/an unreadable version skills/ declares nothing', kind: 'string', expected: pyP, actual: nodeP });
+      cases.push(...literalCases(parsed(pyP).skills ?? null, parsed(nodeP).skills ?? null, 'links/an unreadable newer version does not win: 1 skill', 1));
+    }
+    chmodSync(join(permRoot, 'mk', 'kit', '2.0', 'skills'), 0o755);
+    linkCases = cases.length - before;
+  }
+
   notes.push(
+    `links bed (#245): ${linkCases} cases`,
     `fixture: ${CACHE} — 28 SKILL.md, 20 counted, 2261 catalogue bytes, ` +
       `5 omission records over 8 files`,
     `${cases.length} cases: ${configs.length} documents, ${UNWRAP_VALUES.length} unwrap values, ` +

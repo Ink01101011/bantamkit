@@ -187,8 +187,8 @@ directory is copied instead and its tree hash recorded.
 Promotion is the only step that costs standing context, so it alone is refused when the summed
 `description` bytes of every skill the host loads would exceed the **catalogue budget**: 8192
 bytes, or `BANTAMKIT_SKILL_BUDGET` (user ruling Q4). The count includes every symlinked skill
-directory in the project and user roots, which #205's audit itself does not descend
-(`docs/skill-audit.md`, known limit). A refusal is recorded with its reason and not retried the
+directory in the project and user roots, once per real directory (#205's audit follows them
+since #245, `docs/skill-audit.md`). A refusal is recorded with its reason and not retried the
 same day. Promotion is Claude Code only.
 
 **Demotion** (`skill_propose demote <name>`, or `undo` of a promoted skill) removes the link; the

@@ -32,6 +32,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1401,4 +1402,45 @@ test('a usage value that is not an integer is refused the way pydantic refuses i
   const never = JSON.parse(doc).findings.filter((f) => f.kind === 'never-invoked').map((f) => f.skills[0]);
   assert.ok(!never.includes('solo-check'), doc);
   await client.close();
+});
+
+// ------------------------------------------------------- #245: symlinked skill directories
+
+const skillAt = (base, rel, description) => {
+  mkdirSync(join(base, rel), { recursive: true });
+  writeFileSync(join(base, rel, 'SKILL.md'), `---\nname: ${rel.split('/').pop()}\ndescription: ${description}\n---\n`);
+};
+
+test('a symlinked skill dir is counted once; cycles and a dangling link are safe (#245)', { skip: process.platform === 'win32' }, () => {
+  const base = room();
+  const user = join(base, 'user');
+  const project = join(base, 'project');
+  const outside = join(base, 'outside');
+  skillAt(user, 'real-a', 'Use when A.');
+  skillAt(outside, 'ext-b', 'Use when B.');
+  mkdirSync(project, { recursive: true });
+  symlinkSync(join('..', 'outside', 'ext-b'), join(user, 'linked-b'), 'dir');
+  symlinkSync(join('..', 'outside', 'ext-b'), join(user, 'twin-b'), 'dir');
+  symlinkSync('real-a', join(user, 'alias-a'), 'dir');
+  symlinkSync('.', join(user, 'loop'), 'dir');
+  symlinkSync('..', join(outside, 'ext-b', 'up'), 'dir');
+  symlinkSync(join('..', 'nowhere'), join(user, 'dangling'), 'dir');
+  symlinkSync(join('..', 'user', 'real-a'), join(project, 'shared-a'), 'dir');
+  const found = skillaudit.scan(user);
+  assert.deepEqual(found.map((s) => [s.relpath, s.omitted]), [['linked-b/SKILL.md', null], ['real-a/SKILL.md', null]]);
+  const one = skillaudit.audit(user);
+  assert.deepEqual([one.skills, one.catalogueBytes, one.omissions.length], [2, 22, 0]);
+  const many = skillaudit.auditRoots([{ label: 'project', path: project }, { label: 'user', path: user }]);
+  assert.deepEqual([many.skills, many.catalogueBytes, many.omissions.length], [2, 22, 0]);
+});
+
+test('a promotion link is still counted once, at its source (#245)', { skip: process.platform === 'win32' }, () => {
+  const base = room();
+  const own = join(base, 'own');
+  const user = join(base, 'user');
+  skillAt(own, 'p', 'Use when P.');
+  mkdirSync(user, { recursive: true });
+  symlinkSync(join('..', 'own', 'p'), join(user, 'p'), 'dir');
+  const found = skillaudit.scanRoots([{ label: 'bantamkit-user', path: own }, { label: 'user', path: user }]);
+  assert.deepEqual(found.map((s) => [s.relpath, s.omitted]), [['bantamkit-user/p/SKILL.md', null]]);
 });

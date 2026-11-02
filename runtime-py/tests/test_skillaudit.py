@@ -1561,3 +1561,46 @@ def test_a_budget_past_2_pow_53_is_refused_by_the_schema_and_the_boundary_is_not
     is_error, text = call(server, root=str(CACHE), budget=2**53 - 1)
     assert not is_error
     assert json.loads(text)["skills"] >= 1
+
+
+# ------------------------------------------------------- #245: symlinked skill directories
+
+
+def _skill_at(base: Path, rel: str, description: str) -> None:
+    (base / rel).mkdir(parents=True, exist_ok=True)
+    (base / rel / "SKILL.md").write_text(
+        f"---\nname: {rel.split('/')[-1]}\ndescription: {description}\n---\n", encoding="utf-8"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a directory symlink needs a privilege")
+def test_a_symlinked_skill_dir_is_counted_once_and_cycles_and_dangling_are_safe(tmp_path):
+    user, project, outside = tmp_path / "user", tmp_path / "project", tmp_path / "outside"
+    _skill_at(user, "real-a", "Use when A.")
+    _skill_at(outside, "ext-b", "Use when B.")
+    project.mkdir()
+    (user / "linked-b").symlink_to(Path("..", "outside", "ext-b"), target_is_directory=True)
+    (user / "twin-b").symlink_to(Path("..", "outside", "ext-b"), target_is_directory=True)
+    (user / "alias-a").symlink_to("real-a", target_is_directory=True)
+    (user / "loop").symlink_to(".", target_is_directory=True)
+    (outside / "ext-b" / "up").symlink_to("..", target_is_directory=True)
+    (user / "dangling").symlink_to(Path("..", "nowhere"), target_is_directory=True)
+    (project / "shared-a").symlink_to(Path("..", "user", "real-a"), target_is_directory=True)
+
+    found = skillaudit._scan(user)
+    assert [s.relpath for s in found] == ["linked-b/SKILL.md", "real-a/SKILL.md"]
+    assert [s.omitted for s in found] == [None, None]
+    one = skillaudit.audit(user)
+    assert (one.skills, one.catalogue_bytes, one.omissions) == (2, 22, ())
+    many = skillaudit.audit_roots([("project", project), ("user", user)])
+    assert (many.skills, many.catalogue_bytes, many.omissions) == (2, 22, ())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a directory symlink needs a privilege")
+def test_a_promotion_link_is_still_counted_once_at_its_source(tmp_path):
+    own, user = tmp_path / "own", tmp_path / "user"
+    _skill_at(own, "p", "Use when P.")
+    user.mkdir()
+    (user / "p").symlink_to(Path("..", "own", "p"), target_is_directory=True)
+    found = skillaudit.scan_roots([("bantamkit-user", own), ("user", user)])
+    assert [(s.relpath, s.omitted) for s in found] == [("bantamkit-user/p/SKILL.md", None)]
