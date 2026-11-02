@@ -285,6 +285,14 @@ def _remove_dir(target: Path) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
+def _refreshed(said: str, name: str, home: str | Path) -> str:
+    """`said`, plus what refreshing the skill's promoted copy had to report (#244)."""
+    from bantamkit.skillpromote import refresh_copy
+
+    note = refresh_copy(name, home)
+    return said if note is None else f"{said}; {note}"
+
+
 def _drop_backup(backup: Path) -> None:
     """The backup an install took, and its name's directory when that leaves it empty."""
     shutil.rmtree(backup, ignore_errors=True)
@@ -595,7 +603,7 @@ def undo(name: str, home: str | Path) -> str:
             fresh["removed"] = removed
 
     update_state(home, change)
-    return said
+    return _refreshed(said, name, home)
 
 
 # ------------------------------------------------------------- self-improvement (Task 10a)
@@ -899,7 +907,7 @@ def new_version(
     except BaseException:
         undo_dir(backup_root(home), name, target)
         raise
-    return f"updated skill {name} to v{m}"
+    return _refreshed(f"updated skill {name} to v{m}", name, home)
 
 
 def _fell(s_n: int, u_n: int, s_f: int, u_f: int) -> bool:
@@ -933,6 +941,7 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
     _ms(now)
     skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
     verdicts: dict[str, tuple[int, str, int, str | None]] = {}
+    rolled: dict[str, int] = {}
     events: list[str] = []
     for name in sorted(skills):
         e = skills[name]
@@ -972,6 +981,7 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
         except (OSError, UnicodeDecodeError, SkillFileError):
             continue
         verdicts[name] = (n, VERDICT_ROLLED_BACK, f, canonical_hash(restored))
+        rolled[name] = len(events)
         events.append(f"rolled back {name} to v{f}")
     if not verdicts:
         return events
@@ -992,8 +1002,10 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
                 e["counted_to"] = now
 
     written = update_state(home, change)
+    for name, i in rolled.items():
+        events[i] = _refreshed(events[i], name, home)
     state.clear()
-    state.update(written)
+    state.update(read_state(home) if rolled else written)
     return events
 
 

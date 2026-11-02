@@ -195,6 +195,15 @@ same day. Promotion is Claude Code only.
 source is never touched. A link or copy that was changed after promotion is not removed: you are
 told to remove it yourself or keep it.
 
+**A copy follows its source** (#244). A symlink always shows the source's current text; a copy
+is refreshed by every write bantamkit makes to the source: a new version (automatic or an
+approved change), a rollback, and `undo`. The new copy is built beside the old one and swapped in
+by one rename, and its tree hash is recorded again. A copy that was changed or removed after
+promotion is not bantamkit's to overwrite: it is left as it is, and the sentence that reports
+the write says so (`; left the promoted copy at <path> as it is: it was changed after
+promotion`). A copy the swap could not replace keeps its old text, the sentence says so, and the
+next write tries again.
+
 **Automatic promotion follows `BANTAMKIT_SKILL_AUTO`** (orchestrator ruling 2026-10-28,
 implemented by job73 C15): with the switch off (the default) the daily run promotes nothing and
 records nothing as refused, and `skill_propose promote <name>` still promotes on request.
@@ -301,9 +310,6 @@ so.
 
 ## Known limits (job73 C14 review)
 
-- A skill promoted by **copy** is not refreshed when bantamkit makes a new version, rolls one
-  back or applies an approved change; the copy keeps the old text until it is demoted and
-  promoted again.
 - A `## Steps` proposal is built deterministically (one added step citing the turn's id, which
   joins `bantamkit-evidence`) and is not run through the drafter's gate; approving it runs the
   format rules only. The spec says every edit passes the gate; today only the low-risk edits do.

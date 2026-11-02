@@ -24,6 +24,13 @@
  * leaving a promoted skill out and taking a demoted one back; a host with no `~/.claude`; a
  * project-level link.
  *
+ * A COPY FOLLOWS ITS SOURCE (#244). In h6 three skills are promoted by copy and one by symlink;
+ * an automatic new version, a rollback by the judge, an undo and an approved change must each
+ * leave the copy byte-identical to the source (and the recorded hash current, so the demotion
+ * after them still removes it), a copy edited by hand must be left as it is with the sentence
+ * saying so, and a symlink needs nothing. Pinned per side too: a refresh both runtimes lose
+ * together leaves every differential green.
+ *
  * AUTOMATIC PROMOTION FOLLOWS `BANTAMKIT_SKILL_AUTO` (job73 C15, orchestrator ruling 2026-10-28).
  * A `promote_step` op carries `auto`, the switch for that op (absent: unset, the default off);
  * unset, `off` and `banana` promote nothing and record nothing, `on` promotes. `promote` itself
@@ -95,6 +102,25 @@ function opList() {
   add('demote c-two: a changed copy is refused', { op: 'demote', home: c, name: 'c-two' });
   add('h2: someone adds a file to the c-three copy', { op: 'write', home: c, rel: '.claude/skills/c-three/notes.md', text: 'n\n' });
   add('demote c-three: a file added is a change', { op: 'demote', home: c, name: 'c-three' });
+
+  // h6: every write to the source refreshes a copy (#244)
+  const r = 'h6';
+  add('h6: ~/.claude exists', { op: 'mkdir', home: r, rel: '.claude' });
+  for (const n of ['r-one', 'r-two', 'r-three', 'r-four']) add(`h6: install ${n}`, { op: 'install', home: r, name: n, level: 'user', now: NOW });
+  for (const n of ['r-one', 'r-two', 'r-three']) add(`promote ${n}: EPERM copies`, { op: 'promote', home: r, name: n, now: NOW, budget: 8192, symlink_fails: 'EPERM' });
+  add('promote r-four: a symlink', { op: 'promote', home: r, name: 'r-four', now: NOW, budget: 8192 });
+  add('new_version r-one (auto): the copy is refreshed', { op: 'new_version', home: r, name: 'r-one', text: draft2('r-one'), now: NOW, kind: 'auto' });
+  add('h6: v2 of r-one fares worse than v1', {
+    op: 'set_counts', home: r, name: 'r-one',
+    versions: { 1: { false_fires: 0, injects: 0, successes: 5, uses: 5 }, 2: { false_fires: 0, injects: 0, successes: 0, uses: 5 } },
+  });
+  add('judge: the rollback refreshes the copy', { op: 'judge', home: r, now: LATER });
+  add('undo r-one: the restore refreshes the copy', { op: 'undo', home: r, name: 'r-one' });
+  add('demote r-one: the refreshed copy is still bantamkit\'s', { op: 'demote', home: r, name: 'r-one' });
+  add('h6: someone edits the r-two copy', { op: 'append', home: r, rel: '.claude/skills/r-two/SKILL.md', text: 'mine now\n' });
+  add('new_version r-two: an edited copy is left as it is, and said so', { op: 'new_version', home: r, name: 'r-two', text: draft2('r-two'), now: NOW, kind: 'auto' });
+  add('new_version r-three (approved): the copy is refreshed', { op: 'new_version', home: r, name: 'r-three', text: draft2('r-three'), now: NOW, kind: 'approved' });
+  add('new_version r-four: a symlink needs no refresh', { op: 'new_version', home: r, name: 'r-four', text: draft2('r-four'), now: NOW, kind: 'auto' });
 
   // h3: no Claude Code
   add('h3: install x-one (no ~/.claude)', { op: 'install', home: 'h3', name: 'x-one', level: 'user', now: NOW });
@@ -174,6 +200,10 @@ const mask = (v, bed) => {
 const draft = (n) =>
   `---\nname: ${n}\ndescription: Does ${n}. Use when ${n} is asked.\n---\n\n` +
   '## When to use\n\nWhen asked.\n\n## Steps\n\n1. Do it [job1/U1].\n\n## Pitfalls\n\nNone.\n\n## Example\n\nx\n';
+
+const draft2 = (n) =>
+  `---\nname: ${n}\ndescription: Does ${n}. Use when ${n} is asked.\n---\n\n` +
+  '## When to use\n\nWhen asked.\n\n## Steps\n\n1. Do it [job1/U1].\n2. Check it [job1/U1].\n\n## Pitfalls\n\nNone.\n\n## Example\n\nx\n';
 
 const cluster = (n, level, top) => ({
   evidence: [{ id: 'job1/U1', ok: true, ts: '2026-01-01T00:00:00Z' }],
@@ -262,6 +292,20 @@ async function runNode(ctx, bed, ops) {
           out.result = { mode: got.mode, ok: got.ok, reason: got.reason };
         } else if (op.op === 'demote') {
           out.said = sp.demote(op.name, home);
+        } else if (op.op === 'new_version') {
+          out.said = si.newVersion(op.name, op.text, home, op.now, op.kind);
+        } else if (op.op === 'undo') {
+          out.said = si.undo(op.name, home);
+        } else if (op.op === 'set_counts') {
+          sf.updateState(home, (fresh) => {
+            const e = fresh.skills[op.name];
+            if (e.versions === undefined || e.versions === null) e.versions = {};
+            for (const [k, v] of Object.entries(op.versions)) e.versions[k] = { ...(e.versions[k] ?? {}), ...v };
+          });
+        } else if (op.op === 'judge') {
+          const state = sf.readState(home);
+          out.events = si.judgeStep(state, home, op.now);
+          out.returned_state = state;
         } else if (op.op === 'promote_step') {
           const state = sf.readState(home);
           out.events = sp.promoteStep(state, op.uses, home, cwd, op.now, op.budget ?? null, { symlink });
@@ -351,6 +395,40 @@ export async function run(ctx) {
       kind: 'json',
       expected: ['copy', 'copy', 'copy', null],
       actual: copies.map((i) => (got[i].result ? got[i].result.mode : 'error')),
+    });
+    const under = (t, prefix) =>
+      JSON.stringify(Object.entries(t ?? {}).filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k.slice(prefix.length), v]));
+    const same = (i, n) => under(got[i].tree, `.bantamkit/skills/${n}/`) === under(got[i].tree, `.claude/skills/${n}/`);
+    const iEditR2 = find('h6: someone edits the r-two copy');
+    const iLeft = find('new_version r-two: an edited copy is left as it is, and said so');
+    cases.push({
+      name: `LITERAL: every write to the source refreshes its copy; an edited copy is left and said so — ${side}`,
+      kind: 'json',
+      expected: {
+        refreshed: [true, true, true, true],
+        rolled: true,
+        demoted: 'demoted skill r-one',
+        left: [false, true, 'updated skill r-two to v2; left the promoted copy at <bed>/h6/.claude/skills/r-two as it is: it was changed after promotion'],
+        link: '-> ' + join('..', '..', '.bantamkit', 'skills', 'r-four'),
+        plain: 'updated skill r-four to v2',
+      },
+      actual: {
+        refreshed: [
+          ['new_version r-one (auto): the copy is refreshed', 'r-one'],
+          ['judge: the rollback refreshes the copy', 'r-one'],
+          ['undo r-one: the restore refreshes the copy', 'r-one'],
+          ['new_version r-three (approved): the copy is refreshed', 'r-three'],
+        ].map(([l, n]) => same(find(l), n)),
+        rolled: JSON.stringify(got[find('judge: the rollback refreshes the copy')].events ?? null) === JSON.stringify(['rolled back r-one to v1']),
+        demoted: got[find("demote r-one: the refreshed copy is still bantamkit's")].said ?? got[find("demote r-one: the refreshed copy is still bantamkit's")],
+        left: [
+          same(iLeft, 'r-two'),
+          (got[iLeft].tree?.['.claude/skills/r-two/SKILL.md'] ?? null) === `${got[iEditR2 - 1].tree?.['.claude/skills/r-two/SKILL.md'] ?? ''}mine now\n`,
+          got[iLeft].said ?? got[iLeft],
+        ],
+        link: got[find('new_version r-four: a symlink needs no refresh')].tree?.['.claude/skills/r-four'] ?? null,
+        plain: got[find('new_version r-four: a symlink needs no refresh')].said ?? null,
+      },
     });
     cases.push({
       name: `LITERAL: automatic promotion follows BANTAMKIT_SKILL_AUTO: unset, off and banana promote and record nothing — ${side}`,

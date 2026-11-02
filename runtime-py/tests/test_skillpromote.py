@@ -267,3 +267,158 @@ def test_unknown_and_unpromoted_names(home):
     install(home, "skill-a")
     with pytest.raises(sp.PromoteError, match="skill skill-a is not promoted"):
         sp.demote("skill-a", home)
+
+
+# ------------------------------------------------------------- #244: a copy follows its source
+
+
+def draft2(name: str) -> str:
+    step = "1. Do it [job1/U1].\n"
+    return draft(name).replace(step, step + "2. Check it [job1/U1].\n")
+
+
+def copy_of(home: Path, name: str) -> Path:
+    return home / ".claude" / "skills" / name
+
+
+def promoted_by_copy(home: Path, name: str) -> Path:
+    src = install(home, name)
+    got = sp.promote(name, home, None, NOW, 8192, symlink=raising(errno.EPERM))
+    assert (got.ok, got.mode) == (True, "copy")
+    return src
+
+
+def recorded(home: Path, name: str) -> str:
+    return sf.read_state(home)["skills"][name]["promoted"]["tree_sha256"]
+
+
+def test_new_version_refreshes_the_copy_and_its_recorded_hash(home):
+    src = promoted_by_copy(home, "skill-a")
+    assert si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto") == (
+        "updated skill skill-a to v2"
+    )
+    copy = copy_of(home, "skill-a")
+    assert snapshot(copy) == snapshot(src)
+    assert "2. Check it" in (copy / "SKILL.md").read_text(encoding="utf-8")
+    assert recorded(home, "skill-a") == sp.tree_hash(copy)
+    assert sp.demote("skill-a", home) == "demoted skill skill-a"
+
+
+def test_an_approved_change_refreshes_the_copy(home):
+    src = promoted_by_copy(home, "skill-a")
+    si.new_version("skill-a", draft2("skill-a"), home, NOW, "approved")
+    assert snapshot(copy_of(home, "skill-a")) == snapshot(src)
+
+
+def test_a_rollback_and_an_undo_refresh_the_copy(home):
+    src = promoted_by_copy(home, "skill-a")
+    si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto")
+
+    def counts(fresh):
+        vs = fresh["skills"]["skill-a"].setdefault("versions", {})
+        vs.setdefault("1", {}).update(uses=5, successes=5, injects=0, false_fires=0)
+        vs["2"].update(uses=5, successes=0, injects=0, false_fires=0)
+
+    sf.update_state(home, counts)
+    state = sf.read_state(home)
+    assert si.judge_step(state, home, NEXT) == ["rolled back skill-a to v1"]
+    copy = copy_of(home, "skill-a")
+    assert snapshot(copy) == snapshot(src)
+    assert "2. Check it" not in (copy / "SKILL.md").read_text(encoding="utf-8")
+    # the state handed back carries the refreshed hash, so a caller writing it loses nothing
+    assert state["skills"]["skill-a"]["promoted"]["tree_sha256"] == sp.tree_hash(copy)
+    assert recorded(home, "skill-a") == sp.tree_hash(copy)
+
+    si.undo("skill-a", home)  # the newest backup is v2, taken by the rollback
+    assert "2. Check it" in (copy / "SKILL.md").read_text(encoding="utf-8")
+    assert snapshot(copy) == snapshot(src)
+    assert recorded(home, "skill-a") == sp.tree_hash(copy)
+
+
+def test_a_copy_edited_by_hand_is_left_as_it_is_and_said_so(home):
+    src = promoted_by_copy(home, "skill-a")
+    copy = copy_of(home, "skill-a")
+    with (copy / "SKILL.md").open("a", encoding="utf-8") as f:
+        f.write("mine now\n")
+    mine = snapshot(copy)
+    before = recorded(home, "skill-a")
+    said = si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto")
+    assert said == (
+        f"updated skill skill-a to v2; left the promoted copy at {copy} as it is: "
+        "it was changed after promotion"
+    )
+    assert snapshot(copy) == mine
+    assert snapshot(src) != mine
+    assert recorded(home, "skill-a") == before
+
+
+def test_a_removed_copy_is_not_brought_back(home):
+    promoted_by_copy(home, "skill-a")
+    copy = copy_of(home, "skill-a")
+    si._remove_dir(copy)
+    said = si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto")
+    assert said.endswith("as it is: it was changed after promotion")
+    assert not os.path.lexists(copy)
+
+
+def test_a_failed_swap_keeps_the_old_copy_and_the_next_write_refreshes(home, monkeypatch):
+    src = promoted_by_copy(home, "skill-a")
+    copy = copy_of(home, "skill-a")
+    old = snapshot(copy)
+    before = recorded(home, "skill-a")
+
+    def refuse(target, files):
+        raise PermissionError(errno.EACCES, "denied")
+
+    monkeypatch.setattr(sp, "rewrite_dir_atomic", refuse)
+    said = si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto")
+    assert said == (
+        f"updated skill skill-a to v2; could not refresh the promoted copy at {copy}: EACCES"
+    )
+    assert snapshot(copy) == old
+    assert recorded(home, "skill-a") == before
+    monkeypatch.undo()
+    si.undo("skill-a", home)  # the source goes back to v1, and the copy still matches its record
+    si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto")
+    assert snapshot(copy) == snapshot(src)
+
+
+def test_a_symlink_needs_no_refresh(home):
+    install(home, "skill-a")
+    assert sp.promote("skill-a", home, None, NOW, 8192).mode == "symlink"
+    assert si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto") == (
+        "updated skill skill-a to v2"
+    )
+    assert copy_of(home, "skill-a").is_symlink()
+
+
+def test_a_copy_already_matching_the_source_only_has_its_record_brought_up(home):
+    src = promoted_by_copy(home, "skill-a")
+    si.new_version("skill-a", draft2("skill-a"), home, NOW, "auto")
+
+    def stale(fresh):
+        fresh["skills"]["skill-a"]["promoted"]["tree_sha256"] = "0" * 64
+
+    sf.update_state(home, stale)
+    assert sp.refresh_copy("skill-a", home) is None
+    assert recorded(home, "skill-a") == sp.tree_hash(src)
+
+
+def test_refresh_of_no_copy_says_nothing(home):
+    assert sp.refresh_copy("nope", home) is None
+    install(home, "skill-a")
+    assert sp.refresh_copy("skill-a", home) is None
+
+
+def test_rewrite_dir_atomic_replaces_in_place_and_refuses_what_is_not_a_directory(tmp_path):
+    d = tmp_path / "d"
+    sf.write_dir_atomic(d, {"a.md": b"old", "sub/b.md": b"b"})
+    sf.rewrite_dir_atomic(d, {"a.md": b"new"})
+    assert snapshot(d) == {"a.md": b"new"}
+    assert sorted(os.listdir(tmp_path)) == ["d"]
+    with pytest.raises(sf.SkillFileError, match="no skill at"):
+        sf.rewrite_dir_atomic(tmp_path / "missing", {"a.md": b"x"})
+    os.symlink(d, tmp_path / "link", target_is_directory=True)
+    with pytest.raises(sf.SkillFileError, match="no skill at"):
+        sf.rewrite_dir_atomic(tmp_path / "link", {"a.md": b"x"})
+    assert snapshot(d) == {"a.md": b"new"}

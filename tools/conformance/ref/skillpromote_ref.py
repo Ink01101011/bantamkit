@@ -17,6 +17,11 @@ before the op runs; every path in an answer is masked back to `<bed>`.
     {"op": "promote_step", "home", "uses", "cwd"?, "now", "budget", "symlink_fails"?, "auto"?}
         -> {"events", "state"} | {"error"}, plus "tree"
     {"op": "layer", "home"}                                -> the `[skill]` layer's offered names
+    {"op": "new_version", "home", "name", "text", "now", "kind"} -> {"said"} | {"error"}, plus "state", "tree"
+    {"op": "undo", "home", "name"}                         -> {"said"} | {"error"}, plus "state", "tree"
+    {"op": "set_counts", "home", "name", "versions"}       -> {}, plus "state", "tree" (each
+        `versions[k]` merged into the entry's version record k: the judge's counters)
+    {"op": "judge", "home", "now"}                         -> {"events", "returned_state"}, plus "state", "tree"
 
 `symlink_fails` makes the symlink call raise: `EPERM`, `EACCES`, `ENOENT` (an errno), or
 `WIN1314` (Windows' privilege error: an `OSError` whose `winerror` is 1314; libuv reports the
@@ -185,6 +190,24 @@ def run(bed: Path, op: dict):
                 out["result"] = got.as_dict()
             elif kind == "demote":
                 out["said"] = sp.demote(op["name"], home)
+            elif kind == "new_version":
+                out["said"] = si.new_version(op["name"], op["text"], home, op["now"], op["kind"])
+            elif kind == "undo":
+                out["said"] = si.undo(op["name"], home)
+            elif kind == "set_counts":
+
+                def counts(fresh: dict) -> None:
+                    e = fresh["skills"][op["name"]]
+                    if e.get("versions") is None:
+                        e["versions"] = {}
+                    for k, v in op["versions"].items():
+                        e["versions"][k] = {**(e["versions"].get(k) or {}), **v}
+
+                sf.update_state(home, counts)
+            elif kind == "judge":
+                state = sf.read_state(home)
+                out["events"] = si.judge_step(state, home, op["now"])
+                out["returned_state"] = state
             elif kind == "promote_step":
                 state = sf.read_state(home)
                 out["events"] = sp.promote_step(

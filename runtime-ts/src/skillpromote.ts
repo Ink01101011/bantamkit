@@ -12,7 +12,7 @@ import * as path from 'node:path';
 
 import { cmpCodepoint, pyRepr } from './pysem.js';
 import { auditRoots } from './skillaudit.js';
-import { readState, SKILL_FILE, SkillFileError, updateState, writeDirAtomic } from './skillfile.js';
+import { readState, rewriteDirAtomic, SKILL_FILE, SkillFileError, updateState, writeDirAtomic } from './skillfile.js';
 import type { SkillsState } from './skillfile.js';
 import { Gathered, HOST_CLAUDE_CODE, selectAdapter } from './skillhost.js';
 import { autoEnabled, InstallError, iso } from './skillinstall.js';
@@ -144,7 +144,10 @@ function files(root: string): Record<string, Uint8Array> {
 
 /** SHA-256 over `<rel>\0<sha256 of the bytes>\n` per file, code-point order of `rel`. */
 export function treeHash(root: string): string {
-  const got = files(root);
+  return filesHash(files(root));
+}
+
+function filesHash(got: Record<string, Uint8Array>): string {
   const lines = Object.keys(got)
     .sort(cmpCodepoint)
     .map((rel) => `${rel}\0${createHash('sha256').update(got[rel]!).digest('hex')}\n`)
@@ -283,6 +286,43 @@ function removeDir(target: string): void {
   } catch {
     /* best effort, as the reference's ignore_errors */
   }
+}
+
+/**
+ * Bring the COPY a promotion made of `name` up to its source's current files (#244); the
+ * reference's `refresh_copy` is the description. Null when there is nothing to say (no copy,
+ * or refreshed); the sentence when the copy was left as it is.
+ */
+export function refreshCopy(name: string, home: string): string | null {
+  const entry = entryOf(home, name);
+  if (entry === null) return null;
+  const rec = record(entry);
+  if (rec === null || rec['mode'] !== MODE_COPY || typeof rec['link'] !== 'string') return null;
+  const source = entry['path'] as string;
+  if (!isFile(path.join(source, SKILL_FILE))) return null;
+  const link = rec['link'];
+  const got = files(source);
+  const want = filesHash(got);
+  const have = isDir(link) && !isLink(link) ? treeHash(link) : null;
+  if (have === null || (have !== rec['tree_sha256'] && have !== want)) {
+    return `left the promoted copy at ${link} as it is: it was changed after promotion`;
+  }
+  if (have !== want) {
+    try {
+      rewriteDirAtomic(link, got);
+    } catch (e) {
+      if (e instanceof SkillFileError) return `could not refresh the promoted copy at ${link}: ${e.message}`;
+      if (!isOsError(e)) throw e;
+      return `could not refresh the promoted copy at ${link}: ${codeOf(e)}`;
+    }
+  }
+  if (rec['tree_sha256'] === want) return null;
+  updateState(home, (state: SkillsState) => {
+    const live = own(state.skills as Rec, name);
+    const r = isObj(live) ? record(live) : null;
+    if (r !== null && r['mode'] === MODE_COPY && r['link'] === link) r['tree_sha256'] = want;
+  });
+  return null;
 }
 
 /** Remove the native link (a copy only while unchanged); the source is never touched. */
