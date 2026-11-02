@@ -388,6 +388,29 @@ function part2(add) {
   add('improve_step: auto " OFF ", no drafter: the narrow waits', { op: 'improve_step', env: ' OFF ', home: 'x4', sources: {}, now: LATER });
   add('x5: install sk-s', { op: 'install', home: 'x5', name: 'sk-s', text: draft('sk-s'), now: NOW });
   add('improve_step: auto "": different steps: a steps proposal as before', { op: 'improve_step', env: '', home: 'x5', sources: used(['Grep', 'Write', 'Grep']), doc: steps, now: LATER });
+  // #243 (#234 N1): a `## Steps` proposal passes the drafter's gate like every other edit. A
+  // correction that names `[notes]` puts a step citing `notes`, which is no evidence id, so the
+  // gate refuses it: the step is logged and dropped, the pitfall still goes on alone
+  const bracket = 'see [notes] first';
+  add('c4: install sk-c', { op: 'install', home: 'c4', name: 'sk-c', text: draft('sk-c'), now: NOW });
+  add('improve_step: #243 a step that fails the gate is not proposed', { op: 'improve_step', env: 'on', home: 'c4', sources: corrected('sk-c', bracket), now: LATER });
+  add('x9: install sk-c', { op: 'install', home: 'x9', name: 'sk-c', text: draft('sk-c'), now: NOW });
+  add('improve_step: #243 auto unset: a failing step is not folded, the pitfall is proposed alone', { op: 'improve_step', home: 'x9', sources: corrected('sk-c', bracket), now: LATER });
+  // the folded step is gated against the evidence it cites: its own turn, which joins
+  // `bantamkit-evidence` (a different-steps turn is in no cluster record)
+  const widenSteps = {
+    clusters: [
+      rec(
+        'sk-w',
+        [1, 2].map((j) => ({ id: `s${j}${j}${j}${j}aaaa#1`, ok: true, prompt: 'fix the lexer tokens', ts: AFTER })),
+        ['k1', 'lexer', 'tokens'],
+        ['Read>Edit', 'Edit>Bash'],
+      ),
+    ],
+  };
+  const usedW = { turns: [{ id: 's3333aaaa#1', ok: true, tools: ['Grep', 'Write', 'Grep'], ts: AFTER }], uses: [{ fact: 'sk-w', session: '3333aaaa-z', ts: AFTER }] };
+  add('x10: install sk-w', { op: 'install', home: 'x10', name: 'sk-w', text: draft('sk-w'), now: NOW });
+  add('improve_step: #243 auto unset: a different-steps line folds into the widening', { op: 'improve_step', home: 'x10', sources: usedW, doc: widenSteps, now: LATER });
   for (const [h, env] of [['x6', ' Yes '], ['x7', '1'], ['x8', 'TRUE']]) {
     add(`${h}: install sk-c`, { op: 'install', home: h, name: 'sk-c', text: draft('sk-c'), now: NOW });
     add(`improve_step: auto ${JSON.stringify(env)}: the pitfall applied as v2`, { op: 'improve_step', env, home: h, sources: corrected('sk-c'), now: LATER });
@@ -737,6 +760,9 @@ export async function run(ctx) {
     x3: find('improve_step: auto "banana": the widened keywords are proposed, the tune waits'),
     x4: find('improve_step: auto " OFF ", no drafter: the narrow waits'),
     x5: find('improve_step: auto "": different steps: a steps proposal as before'),
+    c4: find('improve_step: #243 a step that fails the gate is not proposed'),
+    x9: find('improve_step: #243 auto unset: a failing step is not folded, the pitfall is proposed alone'),
+    x10: find('improve_step: #243 auto unset: a different-steps line folds into the widening'),
     on: ['x6', 'x7', 'x8'].map((h, i) => find(`improve_step: auto ${JSON.stringify([' Yes ', '1', 'TRUE'][i])}: the pitfall applied as v2`)),
   };
   const skillOf = (r, n) => r?.tree?.[`.bantamkit/skills/${n}/SKILL.md`] ?? null;
@@ -842,6 +868,51 @@ export async function run(ctx) {
         [i2.x4, 'x4', 'sk-t', () => x(i2.x4, 'sk-t').tune?.kinds ?? null],
         [i2.x5, 'x5', 'sk-s', (p) => (p?.text ?? '').includes('It also worked as Grep > Write > Grep [s1111aaaa#1].')],
       ].map(([i, h, n, f]) => [got[i].events, x(i, n).version ?? null, unchanged(i, h, n), x(i, n).proposal?.kind ?? null, f(x(i, n).proposal)]),
+    });
+    const failed = (i) =>
+      (got[i]?.tree?.['.bantamkit/skill-drafts.jsonl'] ?? '')
+        .split('\n')
+        .filter((l) => l)
+        .map((l) => JSON.parse(l))
+        .map((r) => [r.ok, r.reasons]);
+    const refused = [false, ['step 2 cites notes, which is not in the evidence']];
+    cases.push({
+      name: `LITERAL: #243 a ## Steps proposal the gate refuses is logged, never proposed; the pitfall still applies — ${side}`,
+      kind: 'json',
+      expected: [['improved skill sk-c to v2'], 2, null, true, false, [refused]],
+      actual: [
+        got[i2.c4].events,
+        x(i2.c4, 'sk-c').version ?? null,
+        x(i2.c4, 'sk-c').proposal ?? null,
+        (skillOf(got[i2.c4], 'sk-c') ?? '').includes('- [s1111aaaa#1] see [notes] first'),
+        (skillOf(got[i2.c4], 'sk-c') ?? '').includes('2. Before you finish'),
+        failed(i2.c4),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: #243 auto unset: a refused step is not folded; the pitfall is proposed alone — ${side}`,
+      kind: 'json',
+      expected: [['proposed a change to sk-c'], 1, 'improve', true, false, [refused]],
+      actual: [
+        got[i2.x9].events,
+        x(i2.x9, 'sk-c').version ?? null,
+        x(i2.x9, 'sk-c').proposal?.kind ?? null,
+        (x(i2.x9, 'sk-c').proposal?.text ?? '').includes('- [s1111aaaa#1] see [notes] first'),
+        (x(i2.x9, 'sk-c').proposal?.text ?? '').includes('2. Before you finish'),
+        failed(i2.x9),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: #243 auto unset: a folded different-steps line is gated against its own turn — ${side}`,
+      kind: 'json',
+      expected: [['proposed a change to sk-w', 'waiting on a drafter to tune sk-w'], 'improve', true, true, []],
+      actual: [
+        got[i2.x10].events,
+        x(i2.x10, 'sk-w').proposal?.kind ?? null,
+        (x(i2.x10, 'sk-w').proposal?.text ?? '').includes('bantamkit-keywords: "k1,lexer,tokens"'),
+        (x(i2.x10, 'sk-w').proposal?.text ?? '').includes('2. It also worked as Grep > Write > Grep [s3333aaaa#1].'),
+        failed(i2.x10),
+      ],
     });
     cases.push({
       name: `LITERAL: auto " Yes " / "1" / "TRUE": the pitfall applied as v2, the step proposed — ${side}`,

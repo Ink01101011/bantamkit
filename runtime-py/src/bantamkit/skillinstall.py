@@ -1166,6 +1166,32 @@ def _proposal(kind: str, raw: bytes, old: str, text: str, now: str) -> dict[str,
     }
 
 
+def _steps_gate(
+    text: str,
+    target: str | Path,
+    rec: Mapping[str, Any] | None,
+    b: Mapping[str, Any],
+    home: str | Path,
+    cwd: str | None,
+    now: str,
+) -> bool:
+    """A `## Steps` proposal passes the drafter's `gate` (`own` = the skill) like every other
+    edit, against the bundle of the ids the proposed text cites; a failure is logged."""
+    from bantamkit.skilldraft import DraftOutcome, drafts_log, gate, improve_bundle
+    from bantamkit.storage.logsegment import LogSegment
+
+    try:
+        ids = _csv(parse_skill(text).metadata.get("bantamkit-evidence"))
+    except SkillFileError:
+        ids = []
+    g = gate(text, improve_bundle(rec, b["cluster"], ids), home, cwd, own=target)
+    if not g.ok:
+        LogSegment(drafts_log(home)).append(
+            DraftOutcome(None, False, None, g.reasons, []).log_line(now, b["cluster"])
+        )
+    return g.ok
+
+
 def _slot_free(e: Mapping[str, Any]) -> bool:
     p = e.get("proposal")
     return not (isinstance(p, dict) and p.get("status") == "pending")
@@ -1396,6 +1422,7 @@ def improve_step(
         if final is not None:
             drafted = final is not det
             folded = False
+            gb, unfolded = b, (final, det)
             if not auto and steps_from is not None:
                 # automatic edits off: this change becomes the skill's ONE proposal, so the
                 # steps line rides in it rather than being dropped for want of a free slot
@@ -1406,9 +1433,18 @@ def improve_step(
                     pass
                 else:
                     final, det, folded = final_s, det_s, True
-            event, _ = apply_text(name, final, home, cwd, now, b, auto)
+                    # the step cites its turn, which joins the evidence it is gated against
+                    gb = improve_bundle(rec, b["cluster"], [*new_ids, steps_from[1]])
+            event, _ = apply_text(name, final, home, cwd, now, gb, auto)
             if event is None and drafted and changed:
-                event, _ = apply_text(name, det, home, cwd, now, b, auto)
+                event, _ = apply_text(name, det, home, cwd, now, gb, auto)
+            if event is None and folded:
+                # the step failed the gate with the change: the change goes on alone, the
+                # step is gated again as its own proposal below
+                folded = False
+                event, _ = apply_text(name, unfolded[0], home, cwd, now, b, auto)
+                if event is None and drafted and changed:
+                    event, _ = apply_text(name, unfolded[1], home, cwd, now, b, auto)
             if event is not None:
                 events.append(event)
                 if folded:
@@ -1429,10 +1465,11 @@ def improve_step(
                 try:
                     cur = now_live[1].decode("utf-8")
                     ptext = _with_step(cur, steps_from[1], steps_from[2])
+                except (UnicodeDecodeError, SkillFileError):
+                    ptext = None
+                if ptext is not None and _steps_gate(ptext, now_live[0], rec, b, home, cwd, now):
                     prop = _proposal("steps", now_live[1], cur, ptext, now)
                     events.append(f"proposed a change to {name}")
-                except (UnicodeDecodeError, SkillFileError):
-                    prop = None
         marks[name] = (n, misses, sorted(tried | set(tunes)), tune, prop)
 
     # two skills that fire together: a proposed merge, on the first name
