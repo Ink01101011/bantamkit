@@ -135,6 +135,8 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
       opt('accounting', 'dict'),
       // #260: `follow_ups: list[dict[str, Any]] | None = None` on the reference.
       opt('follow_ups', 'listDict'),
+      // #261: `agreements: dict[str, Any] | None = None` on the reference.
+      opt('agreements', 'dict'),
     ],
   },
   shiftwork_status: { model: 'shiftwork_statusArguments', fields: [req('checkpoint', 'str'), opt('search', 'str')] },
