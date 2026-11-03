@@ -151,6 +151,15 @@ export async function run(ctx) {
     ['token_ledger', { root: LEDGER_FIXTURE }],
     ['work_plan', { nodes: [] }],
     ['memory_queries', {}], // #207 amendment 3: lists, writes nothing
+    // #226: a dry run, which writes nothing.
+    [
+      'shiftwork_draft',
+      {
+        job: { id: 'tier-job', goal: 'g', done_definition: 'd', constraints: [] },
+        tickets: [{ id: 'T1', title: 't', role: 'implementer', verify: 'true', data_shape: 'none', brief: 'b' }],
+        repo: { branch: 'main', head_sha: 'abc1234', dirty: false },
+      },
+    ],
     ['bantamkit_status', {}],
   ];
   const FIRST_TOOL_ID = 3;
