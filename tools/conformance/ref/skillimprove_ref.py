@@ -7,7 +7,8 @@ Any string in an op may hold `<bed>`, replaced by the bed's path before the op r
 in an answer is masked back to `<bed>`.
 
     {"op": "constants"} -> [JUDGE_USES, VERDICT_KEPT, VERDICT_ROLLED_BACK, HISTORY_DIR, VERSION_KINDS]
-    {"op": "install", "home", "name", "text", "now"}  -> {"tree"} (an approved, user-level install)
+    {"op": "install", "home", "name", "text", "now", "cluster"?}  -> {"tree"} (an approved,
+        user-level install; `cluster`: the proposals record it is installed from, #247)
     {"op": "mkdir", "home", "rel"}                    -> {}
     {"op": "append", "home", "rel", "text"}           -> {}
     {"op": "write", "home", "rel", "text"}            -> {} (parents made)
@@ -37,7 +38,8 @@ Part 2 (#206 Task 10b):
         cannot be reached. `env` (job73 C13b): the value of `BANTAMKIT_SKILL_AUTO` for the op;
         absent or null is UNSET (the 0.37.0 default, off), not the harness's pinned `off`.
     {"op": "render", "home", "action", "target", "now", "answer"?} -> {"said"}, plus "state",
-        "tree" (`answer`: a sampling client that answers it)
+        "tree" (`answer`: a sampling client that answers it; `answers`: one that answers each
+        request with the next, #247's two-draft split)
 
 `fail_at: "rename3"` makes the third rename of the op raise (an OSError; the Node side raises an
 Error with an errno code): the backup is in, the live directory is aside, the new one is not.
@@ -148,7 +150,7 @@ def run(bed: Path, op: dict):
             list(si.VERSION_KINDS),
         ]
     if kind == "install":
-        si.install(cluster(op["name"]), op["text"], None, home, op["now"], False)
+        si.install(op.get("cluster") or cluster(op["name"]), op["text"], None, home, op["now"], False)
         return {"tree": mask(tree(home, b), b)}
     if kind == "constants2":
         return [
@@ -173,6 +175,9 @@ def run(bed: Path, op: dict):
 
         answer = op.get("answer")
         sampler = (lambda s, u: answer) if answer is not None else None
+        if op.get("answers") is not None:
+            queue = list(op["answers"])
+            sampler = lambda s, u: queue.pop(0)  # noqa: E731
         said = sp.render(op["action"], op["target"], None, home, None, op["now"], sampler)
         return mask({"said": said, "state": sf.read_state(home), "tree": tree(home, b)}, b)
     if kind == "mkdir":

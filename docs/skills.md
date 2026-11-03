@@ -217,6 +217,7 @@ records nothing as refused, and `skill_propose promote <name>` still promotes on
 | Used, then corrected or failed | a use in a turn that failed | a `## Pitfalls` line citing the evidence id (≤ 200 code points); a `## Steps` change proposed |
 | Used, succeeded, different steps | the turn's tool n-grams share less than half with the cluster's steps | a `## Steps` change proposed |
 | Fire together | two skills injected together in ≥ 5 sessions, at least half of EACH one's injecting sessions | a merge proposed (advice only: approving it tells you to merge by hand) |
+| One covers two clusters (#247) | the skill's evidence ids (`bantamkit-evidence`) fall, as the miner clustered them that day, into two clusters in each of which they alone hold that cluster's own X1 bar of successful pieces (3 shiftwork, 5 session) | a split proposed |
 
 - **Low risk, applied automatically when `BANTAMKIT_SKILL_AUTO` is on:** keyword and description
   tuning, and a new Pitfalls line. The deterministic parts and the drafter's description become
@@ -224,7 +225,7 @@ records nothing as refused, and `skill_propose promote <name>` still promotes on
   `skill_propose approve <name>` drafts it.
 - **With the switch off (the default)** the same change becomes a proposal that waits on you, and
   a `## Steps` change due in the same run is folded into that one proposal.
-- **Needs you, always:** any `## Steps` change, a merge, and removal outside probation. A
+- **Needs you, always:** any `## Steps` change, a merge, a split, and removal outside probation. A
   proposal carries its full text, a unified diff, and the hash of the file it was built on;
   approving it applies exactly that text, and is refused if the file changed since.
 - **A `## Steps` change is gated too** (the same gate as a draft, against the evidence the skill
@@ -237,9 +238,28 @@ records nothing as refused, and `skill_propose promote <name>` still promotes on
   whatever the switch says: they only undo bantamkit's own change.
 - **A skill you edited** is never changed automatically again. Approving a proposed change on it
   applies that change and keeps it marked as edited.
-- **Not implemented in 0.37.0:** a split ("one skill covers two clusters"): the spec gives no
-  rule for it (C13 Q2, follow-up). Shiftwork units are not attributed to skills, so an escalated
-  unit is not a signal yet.
+- **A proposed split (#247)** takes the skill's one proposal slot,
+  `{kind: "split", into: [<cluster>, <cluster>], successes}`: the two clusters holding the most
+  of its successful evidence, and the sum of their own successes. No new similarity measure: the
+  miner's clustering and its X1 bars decide. `skill_propose approve <name>` drafts one skill per
+  cluster exactly as a proposal is drafted (a stored draft, the host agent's file at
+  `~/.bantamkit/skill-handoff/<cluster>/SKILL.md`, sampling, the endpoint), gates each with the
+  skill being split as its own (it is going away), installs the first before gating the second
+  (so the two cannot share a name or a trigger phrase), then removes the skill with a backup. A
+  failure anywhere installs nothing and leaves the skill as it was. The skill's versions, counts
+  and history stay with it under `removed` (with `split: {at, into, names, successes}`); the two
+  new skills start at v1 with no counts and no promotion (a promoted skill is demoted first,
+  as removal does). `undo <name>` removes the two (each with a backup), puts the skill back from
+  the split's backup, sets its own cluster back to `installed` and the other to `rejected`, and
+  counts as a rejection. `reject <name>` drops it; a rejected or undone split
+  (`split_rejected_at`) is offered again only when the two clusters' successes reach twice that
+  number, the rule a rejected proposal follows.
+- **Not implemented:** shiftwork units are not attributed to skills, so an escalated unit is not
+  a signal yet (#247 part B, waiting on a ruling): a unit's ledger line and checkpoint record its
+  brief, status and accounting, but nothing that says which skill was injected into it or called
+  in it; the records that do (the touch log's `use` rows, the hook log's injections) are keyed by
+  the session, which the ledger does not name, and the subagent transcripts are left out of the
+  miner by R3.
 - **Known limit:** most skills are used rarely, so one improve-and-judge cycle can take weeks.
 
 ## The command: `skill_propose`
@@ -323,7 +343,7 @@ so.
 `skill-file` (the format, the hash, the atomic write, backup and undo), `llm-client` (Node's
 endpoint client), `skill-miner` (pieces, X4, signals, cache, bars, proposals, the daily run and
 its status line), `skill-layer`, `skill-draft` (bundle, prompt, gate, the X5 chain),
-`skill-install`, `skill-promote`, `skill-improve` (versions, the judge, rollback, the signals and
-the split by risk) and `skill-propose` (the command, sampling over the wire, the SessionStart
+`skill-install`, `skill-promote`, `skill-improve` (versions, the judge, rollback, the signals,
+the split by risk, and the proposed split of #247) and `skill-propose` (the command, sampling over the wire, the SessionStart
 line). Their rows in `docs/conformance.md` list what each compares and the mutations that turned
 it red.

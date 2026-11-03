@@ -483,13 +483,15 @@ export function logLine(o: DraftOutcome, ts: string, cluster: string): Record<st
   };
 }
 
-/** Walk `chain` for one proposals record; log the outcome; never write a skill. */
+/** Walk `chain` for one proposals record; log the outcome; never write a skill. `own` is passed
+ * to the gate (#247: a split's halves are gated with the skill being split as `own`). */
 export async function draft(
   cluster: Record<string, unknown>,
   chain: readonly ChainLink[],
   home: string,
   cwd: string | null,
   now: string,
+  own: string | null = null,
 ): Promise<DraftOutcome> {
   const b = bundle(cluster);
   const [system, user] = prompt(b);
@@ -509,7 +511,7 @@ export async function draft(
       continue;
     }
     const text = unfence(answer);
-    const g = gate(text, b, home, cwd);
+    const g = gate(text, b, home, cwd, own);
     outcome = { drafter: d.label, ok: g.ok, text: g.ok ? text : null, reasons: g.reasons, unreachable, handoff: null };
     break;
   }

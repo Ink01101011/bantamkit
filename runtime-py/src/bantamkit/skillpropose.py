@@ -171,6 +171,12 @@ def _waiting_lines(name: str, p: Mapping[str, Any]) -> list[str]:
     elif p["kind"] == "merge":
         other = p.get("with") if isinstance(p.get("with"), str) else "?"
         what = f"merge it with {other} (the two are put in front of the same sessions)"
+    elif p["kind"] == "split":
+        into = _strs(p.get("into"))
+        what = (
+            f"split it in two, drafted from clusters {' and '.join(into) or '?'} "
+            f"({_num(p.get('successes'))} successes in the two clusters)"
+        )
     else:
         what = f"a proposed {p['kind']} change"
     out = [f"- {name}: {what}"]
@@ -392,6 +398,177 @@ def _approve_proposal(
     return _install(rec, doc, out.text, level, home, now)
 
 
+def _split_handoff_text(
+    name: str, todo: list[tuple[str, Mapping[str, Any]]], home: str | Path
+) -> str:
+    from bantamkit.skilldraft import bundle_json
+
+    out = [
+        f"No sampling client or endpoint drafted the split of {name}, so you draft it: one "
+        "skill per cluster, each with its own name and its own trigger phrases.",
+        "",
+    ]
+    for k, (cid, handoff) in enumerate(todo, start=1):
+        out += [
+            f"{k}. Write ONE file, {handoff_path(home, cid)}, with your own file tools, following "
+            "these instructions:",
+            "",
+            handoff["instructions"],
+            "",
+            f"The evidence bundle of cluster {cid}:",
+            "",
+            f"```json\n{bundle_json(handoff['bundle'])}\n```",
+            "",
+        ]
+    out.append(
+        f"{len(todo) + 1}. Then run {COMMAND} approve {name} again. bantamkit gates each file, "
+        f"installs both skills and removes {name} (undo: {COMMAND} undo {name}). Write nothing "
+        "else."
+    )
+    return "\n".join(out)
+
+
+def _approve_split(
+    name: str,
+    p: Mapping[str, Any],
+    home: str | Path,
+    cwd: str | None,
+    now: str,
+    sampler: Sampler | None,
+) -> str:
+    """#247: a split approved. Each of the two clusters is drafted like a proposal (its stored
+    draft, then the host agent's staged file, then the chain), gated with the skill being split
+    as `own` (it is going away), the first installed before the second is gated (so the two
+    cannot share a name or a trigger), then the skill is removed with a backup. Anything that
+    fails leaves the skill as it was and nothing of the split installed."""
+    from bantamkit.skilldraft import (
+        DRAFTER_HOST,
+        DraftOutcome,
+        bundle,
+        default_chain,
+        draft,
+        drafts_log,
+        gate,
+    )
+    from bantamkit.skillfile import SkillFileError, backup_dir, backup_root, update_state
+    from bantamkit.skillinstall import _draft_text, _remove_dir, draft_entry, install, undo
+    from bantamkit.skillmine import ProposalsError, read_proposals, write_proposals
+    from bantamkit.skillpromote import demote
+    from bantamkit.storage.logsegment import LogSegment
+
+    entry = _skills(_state(home)).get(name, {})
+    own = Path(entry["path"]) if isinstance(entry.get("path"), str) else None
+    into = _strs(p.get("into"))
+    try:
+        doc = read_proposals(home)
+    except ProposalsError as e:
+        return f"could not split {name}: {e}"
+    recs = [next((r for r in _records(doc) if r["id"] == cid), None) for cid in into]
+    if own is None or not own.is_dir() or len(into) != 2 or doc is None or None in recs:
+        return (
+            f"the split of {name} no longer matches the mined clusters; "
+            f"{COMMAND} reject {name} drops it"
+        )
+    texts: list[str | None] = []
+    kept: list[bool] = []
+    todo: list[tuple[str, Mapping[str, Any]]] = []
+    for rec in recs:
+        assert rec is not None
+        cid = rec["id"]
+        text = _draft_text(rec)
+        staged = handoff_path(home, cid)
+        drafter = None
+        if text is None and staged.is_file():
+            try:
+                text = staged.read_bytes().decode("utf-8")
+            except UnicodeDecodeError:
+                return f"{staged} is not UTF-8 text; nothing was split"
+            drafter = DRAFTER_HOST
+        stored = text is not None
+        if text is None:
+            out = draft(rec, default_chain(sampler, host_agent=True), home, cwd, now, own=own)
+            if out.handoff is not None:
+                todo.append((cid, out.handoff))
+                texts.append(None)
+                kept.append(False)
+                continue
+            if not out.ok or out.text is None:
+                return _gate_failed(
+                    f"The draft of cluster {cid} from {out.drafter}",
+                    out.reasons,
+                    f"It was discarded and logged; {name} stays as it is.",
+                )
+            rec["draft"] = draft_entry(out.drafter, out.text, now)
+            text = out.text
+            stored = True
+        elif drafter is not None:
+            g = gate(text, bundle(rec), home, cwd, own=own)
+            LogSegment(drafts_log(home)).append(
+                DraftOutcome(drafter, g.ok, text if g.ok else None, g.reasons, []).log_line(
+                    now, cid
+                )
+            )
+        texts.append(text)
+        kept.append(stored)
+    if todo:
+        write_proposals(home, doc)
+        return _split_handoff_text(name, todo, home)
+    level = entry.get("level") if entry.get("level") in ("project", "user") else None
+    done: list[str] = []
+
+    def back_out() -> None:
+        for n in reversed(done):
+            try:
+                undo(n, home)
+            except SkillFileError:
+                pass
+
+    for rec, text, was_stored in zip(recs, texts, kept, strict=True):
+        assert rec is not None and text is not None
+        g = gate(text, bundle(rec), home, cwd, own=own)
+        if not g.ok:
+            back_out()
+            if was_stored:
+                # kept, it would be refused on every approve; dropped, the next one drafts anew
+                rec.pop("draft", None)
+                write_proposals(home, doc)
+            return _gate_failed(
+                f"The SKILL.md for cluster {rec['id']}",
+                g.reasons,
+                f"Nothing was split; {name} stays as it is.",
+            )
+        try:
+            got = install(rec, text, level, home, now, auto=False)
+        except SkillFileError as e:
+            back_out()
+            return f"could not split {name}: {e}"
+        done.append(got.name)
+    if isinstance(entry.get("promoted"), dict):
+        try:
+            demote(name, home)
+        except SkillFileError as e:
+            back_out()
+            return f"could not split {name}: {e}"
+    backup_dir(backup_root(home), own, now)
+    _remove_dir(own)
+    split = {"at": now, "into": into, "names": list(done), "successes": p.get("successes")}
+
+    def change(fresh: dict[str, Any]) -> None:
+        e = fresh["skills"].pop(name, None)
+        if isinstance(e, dict):
+            e.pop("proposal", None)
+            e["split"] = split
+            if not isinstance(fresh.get("removed"), dict):
+                fresh["removed"] = {}
+            fresh["removed"][name] = e
+
+    update_state(home, change)
+    write_proposals(home, doc)
+    for cid in into:
+        shutil.rmtree(handoff_path(home, cid).parent, ignore_errors=True)
+    return f"split skill {name} into {' and '.join(done)}.\nundo: {COMMAND} undo {name}"
+
+
 def _approve_item(name: str, p: Mapping[str, Any], home: str | Path, now: str) -> str:
     """A needs-user item: `remove` takes the skill away (with a backup, so undo restores it);
     any item carrying a `text` becomes the skill's next version, `approved`."""
@@ -576,6 +753,86 @@ def _drop_proposal(home: str | Path, name: str, status: str | None = None) -> No
     update_state(home, change)
 
 
+def _undo_split(name: str, split: Mapping[str, Any], home: str | Path, now: str) -> str:
+    """A split undone: the two skills it installed are removed (each with a backup, so `undo
+    <half>` brings one back), the split skill is put back from the backup the split took, the
+    split counts as rejected, and the two clusters' records go back: the skill's own cluster to
+    `installed`, the other to `rejected`."""
+    from bantamkit.skillfile import SkillFileError, backup_dir, backup_root, update_state
+    from bantamkit.skillinstall import _remove_dir, undo
+    from bantamkit.skillmine import ProposalsError, read_proposals, write_proposals
+    from bantamkit.skillpromote import demote
+
+    names = _strs(split.get("names"))
+    into = _strs(split.get("into"))
+    n = _int(split.get("successes")) or 0
+    try:
+        for half in names:
+            e = _skills(_state(home)).get(half)
+            if e is None or not isinstance(e.get("path"), str):
+                continue
+            if isinstance(e.get("promoted"), dict):
+                demote(half, home)
+            target = Path(e["path"])
+            if target.is_dir():
+                backup_dir(backup_root(home), target, now)
+                _remove_dir(target)
+
+            def drop(fresh: dict[str, Any], half: str = half) -> None:
+                got = fresh["skills"].pop(half, None)
+                if isinstance(got, dict):
+                    got.pop("proposal", None)
+                    if not isinstance(fresh.get("removed"), dict):
+                        fresh["removed"] = {}
+                    fresh["removed"][half] = got
+
+            update_state(home, drop)
+        said = undo(name, home)
+    except SkillFileError as e:
+        return str(e)
+    cluster: list[Any] = [None]
+
+    def back(fresh: dict[str, Any]) -> None:
+        e = fresh["skills"].get(name)
+        if isinstance(e, dict):
+            e.pop("split", None)
+            e["split_rejected_at"] = n
+            cluster[0] = e.get("cluster")
+
+    update_state(home, back)
+    try:
+        doc = read_proposals(home)
+    except ProposalsError:
+        doc = None
+    if doc is not None:
+        for rec in _records(doc):
+            if rec["id"] not in into:
+                continue
+            if rec["id"] == cluster[0]:
+                rec["status"] = "installed"
+            else:
+                rec["status"] = "rejected"
+                rec["rejected_at"] = _int(rec.get("successes")) or 0
+        write_proposals(home, doc)
+    removed = f"; {' and '.join(names)} removed" if names else ""
+    return f"{said}{removed}; the split is marked rejected"
+
+
+def _reject_split(home: str | Path, name: str, p: Mapping[str, Any]) -> None:
+    """A split rejected (or undone) is remembered by its summed count, so the daily run offers
+    it again only once that count has doubled (`skillinstall.split_offers`)."""
+    from bantamkit.skillfile import update_state
+
+    n = _int(p.get("successes")) or 0
+
+    def change(fresh: dict[str, Any]) -> None:
+        entry = fresh["skills"].get(name)
+        if isinstance(entry, dict):
+            entry["split_rejected_at"] = n
+
+    update_state(home, change)
+
+
 def _state(home: str | Path) -> dict[str, Any] | None:
     from bantamkit.skillfile import SkillFileError, read_state
 
@@ -645,8 +902,16 @@ def render(
             _drop_tune(home, target)
             return f"kept skill {target} as it is; the tune of its description is dropped"
         if action == "approve":
+            if item["kind"] == "split":
+                return _approve_split(target, item, home, cwd, now, sampler)
             return _approve_item(target, item, home, now)
         _drop_proposal(home, target, "rejected")
+        if item["kind"] == "split":
+            _reject_split(home, target, item)
+            return (
+                f"kept skill {target}; the proposed split is dropped and offered again once "
+                f"{2 * (_int(item.get('successes')) or 0)} successes are in the two clusters"
+            )
         return f"kept skill {target}; the proposed {item['kind']} change is dropped"
     if action == "promote":
         try:
@@ -662,6 +927,11 @@ def render(
     # newest backup is put back. An install undone marks its proposal rejected, so the daily
     # run does not install it again.
     entry = _skills(_state(home)).get(target)
+    st = _state(home)
+    gone = st.get("removed") if st is not None and isinstance(st.get("removed"), dict) else {}
+    if entry is None and isinstance(gone.get(target), dict):
+        if isinstance(gone[target].get("split"), dict):
+            return _undo_split(target, gone[target]["split"], home, now)
     try:
         if entry is not None and isinstance(entry.get("promoted"), dict):
             return demote(target, home)
@@ -713,6 +983,7 @@ def event_item(event: str) -> str:
         ("improved skill ", "improved {}"),
         ("proposed a change to ", "a change to {} waits on you"),
         ("proposed merging ", "merging {} waits on you"),
+        ("proposed splitting ", "splitting {} waits on you"),
         ("waiting on a drafter to tune ", "{} waits on a drafter (" + COMMAND + " approve {})"),
     ):
         if event.startswith(prefix):
