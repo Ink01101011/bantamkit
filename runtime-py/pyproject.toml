@@ -80,12 +80,15 @@ dependencies = ["httpx>=0.27", "jsonschema>=4.21", "pyyaml>=6.0"]
 # preflight with "the repo venv cannot 'import build'") and nothing declared it, so every
 # release hit the same refusal and fixed it by hand. Added 2026-09-21, J62-15.
 dev = ["pytest>=8.0", "ruff>=0.4", "hatchling>=1.24", "build>=1.0"]
-# Upper bound measured, not guessed: 2.0.0 and 2.0.1 wrap a tool crash as
-# `Error executing tool <name>: <exc>`, which runtime-ts/src/mcp/server.ts mirrors.
-# 2.1.0 added an UnexpectedToolError branch that drops the `: <exc>` suffix, so the
-# crash text stops reaching the client and `--suite workplan` goes red on the
-# reference while the port still carries it. Raise this only together with the port.
-mcp = ["mcp>=2.0,<2.1"]
+# Bounds measured, not guessed (#268). The floor is 2.3.0, the wheel `pip-audit` reports
+# clean; it also has `UnexpectedToolError` (absent in 2.0.x), which `mcpserver._Tool` imports.
+# The cap protects the private names `mcpstdio.serve_stdio` reaches: `_claim_fd`,
+# `_open_stdin_diversion` and `_UnownedTextWrapper` in `mcp/server/stdio.py`, and
+# `MCPServer._lowlevel_server`; all four are unchanged in 2.3.0. From 2.1 the SDK drops the
+# `: <exc>` suffix from a tool crash; `mcpserver._Tool.run` re-attaches it, so the text is
+# still the one runtime-ts/src/mcp/server.ts mirrors. Raise the cap only after rerunning
+# `--suite wire` and `--suite workplan` against the new wheel.
+mcp = ["mcp>=2.3,<2.4"]
 
 [project.scripts]
 bantamkit-mcp = "bantamkit.mcpserver:main"

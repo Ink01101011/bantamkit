@@ -1397,7 +1397,8 @@ name is the final answer (J65-11 Q1).
 
 **(zzz) `runtime-py/src/bantamkit/mcpstdio.py` reaches four private SDK names.** They are
 `_claim_fd`, `_open_stdin_diversion`, `_UnownedTextWrapper` and `_lowlevel_server`, and they are
-needed to answer #160's lone surrogate. This is safe under the `mcp<2.1` cap. Any SDK bump must
+needed to answer #160's lone surrogate. This is safe under the `mcp<2.1` cap (since #268 the cap is `mcp>=2.3,<2.4`;
+all four names are unchanged in 2.3.0). Any SDK bump must
 rerun `--suite wire`: the `j65-9-strings` ids 6 and 7 go red if the wrapper stops working. A lone
 surrogate outside `params.arguments` is still dropped by the Python SDK, the same #148 class as
 the malformed frames in (ttt) (J65-9 Q1/Q2).
@@ -1492,13 +1493,13 @@ puts both runtimes on one splitting rule and adds an `install-host-text` seed wi
 
 **(ffff) Node's request guard rides a TS-private SDK name (J66-4 Q6).** `guardRequests` wraps
 `Protocol._requestHandlers`. It throws at startup if the map is gone, and the SDK is pinned exactly
-at 1.31.0. Any SDK bump must rerun `--suite wire`. This is the Node twin of (zzz).
+at 1.32.2 (bumped from 1.31.0 in #268; `--suite wire` rerun green). Any SDK bump must rerun `--suite wire`. This is the Node twin of (zzz).
 
 **(gggg) Packaging and install follow-ups.**
-- `runtime-ts/package-lock.json` still resolves five transitive advisories: fast-uri (high),
-  proxy-addr (critical), hono, ip-address and qs, all `fixAvailable`. The lock is not packed, and
-  a fresh consumer install audits clean (J66-1), so only the dev/CI tree is affected. The fix is
-  `npm audit fix` in its own unit.
+- Done in #268: `runtime-ts/package-lock.json` used to resolve five transitive advisories
+  (fast-uri, proxy-addr, hono, ip-address, qs). `npm audit fix` (no `--force`) moved it to
+  body-parser 2.4.0, fast-uri 3.1.9, zod 4.6.7 and qs 6.17.1, and `npm audit` now reports 0
+  vulnerabilities in the repo and in a packed install.
 - `load_tool` on a malformed file inside `tools/`: Python raises `KeyError`; Node returns
   `undefined` fields.
 - Python `--update`, `--install*` and a bare server still need the `[mcp]` extra (J66-2 Q2).

@@ -620,9 +620,13 @@ node tools/conformance/npx-cold-start.mjs --offline    # + the no-network arms (
 The conformance harness shells out to a CPython for the reference side. That is a
 **development-time** dependency of the test tooling; nothing under `tools/` ships, and
 `files: ["dist", "assets"]` is the whole published surface. Runtime dependencies: exactly one,
-`@modelcontextprotocol/sdk`, pinned to `1.31.0`, the first release outside advisory
-GHSA-6qxp-vccf-f47h (`>= 1.12.0, < 1.31.0`, the SDK's OAuth client, which this package never
-imports).
+`@modelcontextprotocol/sdk`, pinned to `1.32.2`. 1.31.0 was the first release outside advisory
+GHSA-6qxp-vccf-f47h (`>= 1.12.0, < 1.31.0`, the SDK's OAuth client); 1.32.0 is the first outside
+GHSA-22jm-h49p-29qw, GHSA-46jr-4wx8-v453, GHSA-6prh-2h8m-c8cw and GHSA-rvq5-wwqv-78pq
+(experimental tasks, HTTP request memory, cross-origin redirects, bearer-token audience). None is
+reachable here: the server is stdio-only and the package imports none of the HTTP, OAuth or client
+code. The lock also moves the transitive `body-parser` (>= 2.4.0, GHSA-27r3-jxmh-p828) and
+`fast-uri` (>= 3.1.9) past their advisories, and `npm audit` reports 0 vulnerabilities.
 
 ## 📏 Measurements and history
 

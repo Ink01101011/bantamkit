@@ -229,8 +229,52 @@ class _Lines:
                 await self.write_stream.send(SessionMessage(response))
 
 
+class _Writes:
+    """The SDK's write stream, with `"_meta": {}` kept on `sampling/createMessage` (#268).
+
+    `mcp` 2.0.x set `params["_meta"]` on every request it sent (`mcp/shared/
+    jsonrpc_dispatcher.py`, ~line 362), so the 0.37.2 server's one server-to-client request,
+    `sampling/createMessage` (`mcpserver._sample`), carried `"_meta": {}`. 2.3.0 writes it only
+    when non-empty and otherwise pops it (`jsonrpc_dispatcher.py:394-397`), so passing
+    `_meta={}` from the caller cannot keep it. The port sends it on purpose
+    (`runtime-ts/src/mcp/server.ts`, `sample`) and `--suite skill-propose` (`wire sampled`)
+    compares the request. Here, after the dispatcher, a `sampling/createMessage` request whose
+    params lack `_meta` gets `"_meta": {}` as the first key, where the port puts it; every other
+    frame passes through untouched.
+
+    Dropping the empty `_meta`, as the SDK now does, is a wire change that has to land in BOTH
+    runtimes together with the conformance case; it is a deliberate follow-up to #268, not a
+    bug in this class.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    async def send(self, item: SessionMessage) -> None:
+        msg = item.message
+        if (
+            isinstance(msg, types.JSONRPCRequest)
+            and msg.method == "sampling/createMessage"
+            and isinstance(msg.params, dict)
+            and "_meta" not in msg.params
+        ):
+            msg.params = {"_meta": {}, **msg.params}
+        await self._inner.send(item)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    async def __aenter__(self) -> _Writes:
+        await self._inner.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool | None:
+        return await self._inner.__aexit__(*exc)
+
+
 async def serve_stdio(server: Any) -> None:
-    """`server.run_stdio_async()`, with the reader wrapped (see the module docstring)."""
+    """`server.run_stdio_async()`, with the reader wrapped (see the module docstring) and the
+    writer wrapped (`_Writes`)."""
     tools = frozenset(tool.name for tool in await server.list_tools())
     buffer, release = _sdk_stdio._claim_fd(0, sys.stdin, "rb", _sdk_stdio._open_stdin_diversion)
     try:
@@ -239,7 +283,11 @@ async def serve_stdio(server: Any) -> None:
         async with _sdk_stdio.stdio_server(stdin=lines) as (read_stream, write_stream):  # type: ignore[arg-type]
             lines.write_stream = write_stream
             lowlevel = server._lowlevel_server
-            await lowlevel.run(read_stream, write_stream, lowlevel.create_initialization_options())
+            # `experimental: {}` is advertised on purpose; the port declares it too
+            # (runtime-ts/src/mcp/server.ts). `mcp` 2.0.x defaulted a missing argument to `{}`;
+            # 2.3.0 passes `None` through and the key vanishes from `initialize` (#268).
+            options = lowlevel.create_initialization_options(experimental_capabilities={})
+            await lowlevel.run(read_stream, _Writes(write_stream), options)
     except* (BrokenPipeError, ConnectionResetError):
         # The host closed its read end (#181): the session is over, exactly as on stdin EOF.
         pass

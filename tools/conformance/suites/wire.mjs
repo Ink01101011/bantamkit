@@ -2742,7 +2742,7 @@ export async function run(ctx) {
       expected: py.mcp_sdk_version,
       actual: nd.mcp_sdk_version,
       ruling:
-        'RULED DIFFERENT. `mcp` 2.0.0 against `@modelcontextprotocol/sdk` 1.31.0 — two ' +
+        'RULED DIFFERENT. `mcp` 2.3.0 against `@modelcontextprotocol/sdk` 1.32.2 — two ' +
         'unrelated version lineages, and the field exists precisely so a caller can see which ' +
         'one answered. Reported as environment and kept OUT of `build_id`, exactly as the ' +
         'reference keeps it out. The case above is the one that has teeth: it asserts BOTH ' +
@@ -3464,7 +3464,7 @@ export async function run(ctx) {
       actual: errorsOf(node),
       ruling:
         'RULED DIFFERENT — SDK lineage, not reachable from this package. Both answer -32601 ' +
-        '"Method not found". `mcp` 2.0.0 attaches `data: "<method>"`; the TS SDK 1.31.0 builds ' +
+        '"Method not found". `mcp` 2.3.0 attaches `data: "<method>"`; the TS SDK 1.32.2 builds ' +
         'that response inside `Protocol._onrequest` before any handler exists, so there is no ' +
         'seam to add the field from. Registering a handler per method would only move the ' +
         'problem to the next unregistered method, which is unbounded.',
