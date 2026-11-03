@@ -443,11 +443,13 @@
                   "properties": {
                     "kind": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "description": "What sort of thing: commit, file, pr, run-output."
                     },
                     "ref": {
                       "type": "string",
-                      "minLength": 1
+                      "minLength": 1,
+                      "description": "Where it is: a SHA, a path, a URL."
                     }
                   }
                 },

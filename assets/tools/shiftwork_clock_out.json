@@ -91,7 +91,7 @@
             "items": {
               "type": "object",
               "required": ["kind", "ref"],
-              "properties": {"kind": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1}}
+              "properties": {"kind": {"type": "string", "minLength": 1, "description": "What sort of thing: commit, file, pr, run-output."}, "ref": {"type": "string", "minLength": 1, "description": "Where it is: a SHA, a path, a URL."}}
             },
             "description": "What the unit produced, [{kind, ref}] (a commit, a file, a run output). Recorded with the unit's attempt, and handed to every unit that depends on it as upstream[].last."
           }
