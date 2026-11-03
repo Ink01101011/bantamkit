@@ -1,6 +1,6 @@
 # Shift-work investigation flavor: hypotheses first, a replay by another role before a conclusion
 
-Date: 2026-11-03. Status: proposed, design-level (open decisions marked). Chain: 7 of 8
+Date: 2026-11-03. Status: implemented (#264, job76); open decisions settled below. Chain: 7 of 8
 (needs unit results #259, follow-ups #260, review independence #263). Borrowed from
 `ex-workflow/investigation`, as specification only (route B).
 
@@ -34,6 +34,11 @@ a `done` replay of it, and a reviewing unit (#263) in another role is `done`.
 **Open decisions (to settle before implementing):** whether `procedure` is compared as text
 or by hash of the command; whether a refuted hypothesis needs a replay too; the exact
 sentences for D4.
+
+**Settled (user ruling 2026-11-03, job76):** `procedure` is compared as exact text; a
+refuted hypothesis needs no replay (only `supported` is checked); the D4 sentences are
+the orchestrator's and are pinned in the shiftwork conformance suite — listed in
+`docs/shiftwork.md`, *Investigation flavor*.
 
 ## Surfaces
 

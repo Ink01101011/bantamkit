@@ -44,6 +44,46 @@
           "items": {"type": "string", "minLength": 1},
           "description": "OPTIONAL (#225). The irreversible verbs the user granted for this job (merge, tag, publish, ...), written once at plan time. Declared, clock_in escalates on a unit whose `irreversible` verb is not listed; absent keeps today's behaviour."
         },
+        "kind": {
+          "type": "string",
+          "enum": ["investigation"],
+          "description": "OPTIONAL (#264). `investigation`: the job answers `question` by testing `hypotheses` in run units, each supported claim replayed by another role before `conclusion` may say resolved. Absent = today's job."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL (#264). The question an investigation answers."
+        },
+        "hypotheses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "claim", "falsified_by"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1, "description": "What a run's `tests` and the conclusion's `supported` name."},
+              "claim": {"type": "string", "minLength": 1, "description": "What the hypothesis says is true."},
+              "falsified_by": {"type": "string", "minLength": 1, "description": "The observation that would refute it, written before any run."}
+            }
+          },
+          "description": "OPTIONAL (#264). An investigation declares at least two, or one with `single_hypothesis_rationale`; the batch view, clock_in and clock_out refuse one that does not."
+        },
+        "single_hypothesis_rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "OPTIONAL (#264). Why an investigation tests only one hypothesis."
+        },
+        "conclusion": {
+          "type": "object",
+          "required": ["outcome", "evidence"],
+          "additionalProperties": false,
+          "properties": {
+            "outcome": {"type": "string", "enum": ["resolved", "inconclusive", "stopped"], "description": "`resolved` needs `supported`, a done run testing it, a done replay of that run, and a done review of either; the other two are never refused."},
+            "supported": {"type": "string", "minLength": 1, "description": "The hypothesis id the evidence supports."},
+            "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Refs to what was observed: run outputs, commits, files."}
+          },
+          "description": "OPTIONAL (#264). Set only through clock_out's `conclusion`, by a unit with `concludes: true`."
+        },
         "agreements": {
           "type": "array",
           "maxItems": 20,
@@ -126,6 +166,25 @@
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
                 "description": "Unit ids this unit reviews (#263). Optional. Each must be declared, be in this unit's depends_on, and have a different role from this unit; the batch view, clock_in and clock_out refuse a checkpoint that breaks any of the three."
+              },
+              "tests": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "description": "OPTIONAL (#264). The hypothesis ids this run unit tests; each must be declared. A run clocked out done must report a `produced` item of kind `run-output`."
+              },
+              "procedure": {
+                "type": "string",
+                "minLength": 1,
+                "description": "OPTIONAL (#264). The command or brief path a run follows; a replay must name the same text exactly."
+              },
+              "replay_of": {
+                "type": "string",
+                "minLength": 1,
+                "description": "OPTIONAL (#264). The run this unit repeats: it must be declared, name a procedure equal to this unit's, and be in another role."
+              },
+              "concludes": {
+                "type": "boolean",
+                "description": "OPTIONAL (#264). The unit whose clock_out may set job.conclusion."
               },
               "irreversible": {
                 "type": "string",

@@ -274,6 +274,41 @@
         "default": null,
         "title": "Agreements",
         "description": "A lesson this unit wants every later brief to carry (#261): retire by exact text, then adopt. Refused, nothing written, for text not on the list or a result over 20; each applied change is recorded in retro[]."
+      },
+      "conclusion": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "evidence"],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": ["resolved", "inconclusive", "stopped"],
+                "description": "`inconclusive` and `stopped` are never refused; `resolved` needs the evidence below."
+              },
+              "supported": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The hypothesis id the evidence supports; required for `resolved`."
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Refs to what was observed: run outputs, commits, files."
+              }
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Conclusion",
+        "description": "An investigation's answer (#264), written to job.conclusion. Only a unit with `concludes: true` may send it; `resolved` is refused unless `supported` has a done run, a done replay of that run in another role, and a done review of either. A run unit (`tests` or `replay_of`) clocked out done must report a `run-output` in history_entry.produced."
       }
     },
     "required": [

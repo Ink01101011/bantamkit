@@ -311,6 +311,8 @@ export interface ClockOptions {
   followUps?: unknown;
   /** #261: `{adopt?, retire?}`, as `shiftwork_clock_out`'s `agreements` hands it. */
   agreements?: unknown;
+  /** #264: `{outcome, supported?, evidence}`, as `shiftwork_clock_out`'s `conclusion` hands it. */
+  conclusion?: unknown;
 }
 
 /**
@@ -487,6 +489,110 @@ function reviewsRefusal(units: readonly PyDict[], declaredDeps: ReadonlyMap<PyDi
   return null;
 }
 
+/** #264: the hypothesis ids `job.hypotheses` declares, in order. */
+function hypothesisIds(doc: PyDict): string[] {
+  const declared = subDict(doc, 'job').v.get('hypotheses');
+  if (declared === undefined || declared.t !== 'list') return [];
+  return declared.v.map((h) => text(field(h as PyDict, 'id')));
+}
+
+/**
+ * #264: the sentence for an investigation whose plan cannot be trusted, or null.
+ *
+ * The hypothesis count (only under `job.kind: investigation`), then per unit in `plan.units`
+ * order its `tests`, then its `replay_of` — first fault wins. A replay repeats the run's
+ * `procedure` as exact text (user ruling, job76). `_investigation_refusal` in `shiftwork.py`.
+ */
+function investigationRefusal(doc: PyDict, units: readonly PyDict[]): string | null {
+  const job = subDict(doc, 'job');
+  const hypotheses = hypothesisIds(doc);
+  const kind = job.v.get('kind');
+  if (kind !== undefined && kind.t === 'str' && kind.v === 'investigation') {
+    const rationale = pyTruthy(job.v.get('single_hypothesis_rationale'));
+    if (hypotheses.length < 2 && !(hypotheses.length === 1 && rationale)) {
+      return (
+        `investigation declares ${hypotheses.length} hypotheses; it needs two, ` +
+        'or one with job.single_hypothesis_rationale'
+      );
+    }
+  }
+  const byId = new Map(units.map((unit) => [text(field(unit, 'id')), unit] as const));
+  for (const unit of units) {
+    const id = text(field(unit, 'id'));
+    for (const tested of strings(unit.v.get('tests'))) {
+      if (!hypotheses.includes(tested)) return `unit ${id} tests ${tested}, which no hypothesis declares`;
+    }
+    const replayed = unit.v.get('replay_of');
+    if (replayed === undefined || replayed.t === 'null') continue;
+    const name = pyFormat(replayed);
+    const target = replayed.t === 'str' ? byId.get(replayed.v) : undefined;
+    if (target === undefined) return `unit ${id} replays ${name}, which no unit declares`;
+    const role = text(field(unit, 'role'));
+    if (text(field(target, 'role')) === role) {
+      return `unit ${id} replays ${name} in the same role ${role}; a replay needs another role`;
+    }
+    const procedure = target.v.get('procedure');
+    if (procedure === undefined || procedure.t === 'null') return `unit ${id} replays ${name}, which names no procedure`;
+    const mine = unit.v.get('procedure');
+    if (mine === undefined || mine.t !== procedure.t || mine.v !== procedure.v) {
+      return `unit ${id} replays ${name} with a different procedure`;
+    }
+  }
+  return null;
+}
+
+/** #264/D2: a run (`tests` or `replay_of`) clocked out done must say what it observed. */
+function runOutputRefusal(unit: PyDict, status: string, historyEntry: unknown): string | null {
+  if (status !== 'done' || !(pyTruthy(unit.v.get('tests')) || pyTruthy(unit.v.get('replay_of')))) return null;
+  const produced = asPatch(historyEntry).get('produced');
+  const items = produced !== undefined && produced.t === 'list' ? produced.v : [];
+  const observed = items.some((p) => {
+    if (p.t !== 'dict') return false;
+    const kind = p.v.get('kind');
+    return kind !== undefined && kind.t === 'str' && kind.v === 'run-output';
+  });
+  return observed ? null : `run ${text(field(unit, 'id'))} produced no run-output; record what it observed`;
+}
+
+/**
+ * #264/D4: who may conclude, and what `resolved` needs — judged on the plan as it will be
+ * once this clock-out lands (this unit at `status`). A refuted hypothesis needs no replay
+ * (user ruling, job76). `_conclusion_refusal` in `shiftwork.py`, same order, same sentences.
+ */
+function conclusionRefusal(doc: PyDict, unit: PyDict, status: string, conclusion: PyValue): string | null {
+  if (!pyTruthy(unit.v.get('concludes'))) {
+    return `unit ${text(field(unit, 'id'))} does not conclude; job.conclusion is set only by a unit with concludes: true`;
+  }
+  if (conclusion.t !== 'dict') return null;
+  const outcome = conclusion.v.get('outcome');
+  if (outcome === undefined || outcome.t !== 'str' || outcome.v !== 'resolved') return null;
+  const supported = conclusion.v.get('supported');
+  if (supported === undefined || supported.t === 'null') return 'a resolved conclusion names no supported hypothesis';
+  const name = pyFormat(supported);
+  if (supported.t !== 'str' || !hypothesisIds(doc).includes(supported.v)) {
+    return `conclusion supports ${name}, which no hypothesis declares`;
+  }
+  const done = (other: PyDict): boolean => (other === unit ? status : text(field(other, 'status'))) === 'done';
+  const units = subList(subDict(doc, 'plan'), 'units').v.map((u) => u as PyDict);
+  const idOf = (u: PyDict): string => text(field(u, 'id'));
+  const runs = new Set(units.filter((u) => strings(u.v.get('tests')).includes(supported.v) && done(u)).map(idOf));
+  if (runs.size === 0) return `conclusion supports ${name}, but no run testing it is done`;
+  const replayOf = (u: PyDict): string | null => {
+    const value = u.v.get('replay_of');
+    return value !== undefined && value.t === 'str' ? value.v : null;
+  };
+  const replays = new Set(
+    units.filter((u) => {
+      const of = replayOf(u);
+      return of !== null && runs.has(of) && done(u);
+    }).map(idOf),
+  );
+  if (replays.size === 0) return `conclusion supports ${name}, but no run testing it has a done replay`;
+  const reviewed = (u: PyDict): boolean => strings(u.v.get('reviews')).some((r) => runs.has(r) || replays.has(r));
+  if (!units.some((u) => done(u) && reviewed(u))) return `conclusion supports ${name}, but no review of its runs is done`;
+  return null;
+}
+
 /** A batch-view refusal; `review` marks #263's, which `clockOut` must refuse by name. */
 type ViewRefusal = { result: 'error'; reason: string; review?: true };
 
@@ -513,6 +619,9 @@ function batchView(doc: PyDict): View {
   // #263: read where the graph is, before the core; `planBatches` and `clockIn` pass it through.
   const reviews = reviewsRefusal(units, declaredDeps);
   if (reviews !== null) return { result: 'error', reason: reviews, review: true };
+  // #264: an investigation's plan is a property of the graph too, refused by name the same way.
+  const investigation = investigationRefusal(doc, units);
+  if (investigation !== null) return { result: 'error', reason: investigation, review: true };
   const nodes: PlanNode[] = [];
   for (const u of units) {
     if (terminal(u)) continue;
@@ -1390,6 +1499,15 @@ function clockOutLocked(
 
   const relay = relayRefusal(asPatch(handoffPatch));
   if (relay !== null) return errorResult(relay);
+  const unobserved = runOutputRefusal(unit, status, historyEntry);
+  if (unobserved !== null) return errorResult(unobserved);
+  // `conclusion is not None`: the MCP layer hands an absent argument over as a tagged None.
+  const conclusion = options.conclusion === null || options.conclusion === undefined ? null : asPyValue(options.conclusion);
+  if (conclusion !== null && conclusion.t !== 'null') {
+    const refused = conclusionRefusal(doc, unit, status, conclusion);
+    if (refused !== null) return errorResult(refused);
+    subDict(doc, 'job').v.set('conclusion', conclusion);
+  }
 
   if (followUps.length > 0) {
     const refused = followUpsRefusal(path, doc, unit, followUps);

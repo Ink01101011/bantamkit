@@ -890,6 +890,45 @@ before #225 validates and behaves unchanged. Both runtimes, gated by the
 `node tools/conformance/run.mjs --suite shiftwork`; disabling the three checks on
 either side reddens 27 cases.
 
+#### Investigation flavor: hypotheses first, a replay by another role (#264)
+
+`job.kind: "investigation"` turns a job into a question answered by evidence:
+`job.question`, `job.hypotheses: [{id, claim, falsified_by}]` (at least two, or one
+with `job.single_hypothesis_rationale`), and on units `tests: [hypothesis ids]`,
+`procedure` (a command or brief path), `replay_of: <run id>` and `concludes: true`.
+Template: `tools/shiftwork/example-investigation-checkpoint.json`. The batch view,
+`shiftwork_clock_in` and `shiftwork_clock_out` refuse an untrustworthy plan, first
+fault wins (the hypothesis count, then per unit `tests`, then `replay_of`):
+
+    investigation declares <n> hypotheses; it needs two, or one with job.single_hypothesis_rationale
+    unit <id> tests <h>, which no hypothesis declares
+    unit <id> replays <r>, which no unit declares
+    unit <id> replays <r> in the same role <role>; a replay needs another role
+    unit <id> replays <r>, which names no procedure
+    unit <id> replays <r> with a different procedure
+
+A replay's `procedure` is compared as exact text. A run (`tests` or `replay_of`)
+clocked out `done` must report a `{kind: "run-output"}` item in
+`history_entry.produced`, else `run <id> produced no run-output; record what it
+observed`. `shiftwork_clock_out`'s `conclusion: {outcome, supported?, evidence}`
+writes `job.conclusion`, only from a unit with `concludes: true`; `inconclusive` and
+`stopped` are never refused past that. `resolved` is judged on the plan as it will
+be after this clock-out, and refused, nothing written, in this order:
+
+    unit <id> does not conclude; job.conclusion is set only by a unit with concludes: true
+    a resolved conclusion names no supported hypothesis
+    conclusion supports <h>, which no hypothesis declares
+    conclusion supports <h>, but no run testing it is done
+    conclusion supports <h>, but no run testing it has a done replay
+    conclusion supports <h>, but no review of its runs is done
+
+Only `supported` is checked: a refuted hypothesis needs no replay (user ruling,
+job76). The review is a done unit whose `reviews` names a run or replay of
+`supported`; #263 already holds it to another role. Both runtimes, gated by the
+`investigation/*` sessions and per-side literals in the shiftwork suite; disabling
+the three checks on either side reddens 66 cases. Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-investigation-design.md`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to
