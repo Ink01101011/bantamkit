@@ -1397,7 +1397,8 @@ name is the final answer (J65-11 Q1).
 
 **(zzz) `runtime-py/src/bantamkit/mcpstdio.py` reaches four private SDK names.** They are
 `_claim_fd`, `_open_stdin_diversion`, `_UnownedTextWrapper` and `_lowlevel_server`, and they are
-needed to answer #160's lone surrogate. This is safe under the `mcp<2.1` cap. Any SDK bump must
+needed to answer #160's lone surrogate. This is safe under the `mcp<2.1` cap (since #268 the cap is `mcp>=2.3,<2.4`;
+all four names are unchanged in 2.3.0). Any SDK bump must
 rerun `--suite wire`: the `j65-9-strings` ids 6 and 7 go red if the wrapper stops working. A lone
 surrogate outside `params.arguments` is still dropped by the Python SDK, the same #148 class as
 the malformed frames in (ttt) (J65-9 Q1/Q2).

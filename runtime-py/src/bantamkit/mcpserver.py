@@ -63,7 +63,7 @@ from bantamkit.touch.recallfile import RECALL_NEEDS_QUERY_OR_FILE
 try:
     from mcp.server import MCPServer
     from mcp.server.mcpserver import Context
-    from mcp.server.mcpserver.exceptions import ResourceError
+    from mcp.server.mcpserver.exceptions import ResourceError, ToolError, UnexpectedToolError
     from mcp.server.mcpserver.tools import Tool as SDKTool
     from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
     from mcp.shared.exceptions import MCPError
@@ -79,6 +79,8 @@ except ImportError:  # surfaced as a clear SystemExit in main()
     Field = None  # type: ignore[assignment]
     FuncMetadata = object  # type: ignore[assignment,misc]
     ResourceError = None  # type: ignore[assignment]
+    ToolError = None  # type: ignore[assignment,misc]
+    UnexpectedToolError = None  # type: ignore[assignment,misc]
     SDKTool = None  # type: ignore[assignment]
 
 _INSTALL_HINT = 'bantamkit-mcp needs the MCP extra: pip install "bantamkit[mcp]"'
@@ -1151,7 +1153,7 @@ class _ArgMetadata(FuncMetadata):  # type: ignore[misc,valid-type]
         `unitId` for `unit_id` ran the call as if the argument had never been sent. The
         sentence is `unknown argument '<key>'; known: <fields in schema order>` (`(none)`
         for a tool that takes no argument), naming the first unknown key in arrival order;
-        `Tool.run` prefixes `Error executing tool <name>: ` and answers `isError: true`,
+        `_Tool.run` prefixes `Error executing tool <name>: ` and answers `isError: true`,
         exactly as for a pydantic refusal, and the handler never runs. NOT `extra="forbid"`:
         that would be pydantic's `extra_forbidden` frame listing EVERY unknown key after the
         type errors, and the port would have to reproduce it. The port says the same sentence
@@ -1301,6 +1303,43 @@ def _document_key(path: str) -> tuple[str, int, int] | None:
         return None
 
 
+class _Tool(SDKTool if SDKTool is not None else object):  # type: ignore[misc]
+    """The SDK's tool, answering a crash with the 0.37.2 text: `Error executing tool <name>: <exc>`.
+
+    `mcp` 2.1 changed `Tool.run` (`mcp/server/mcpserver/tools/base.py`): an exception that is
+    not `ToolError`, `ResourceError` or `MCPError` -- raised by the tool body, or by a custom
+    `validate_arguments` -- is re-raised as `UnexpectedToolError("Error executing tool
+    <name>")` with no `: <exc>` suffix, the original kept as `__cause__`. 2.0.x answered
+    `ToolError(f"Error executing tool {name}: {e}")` for every exception, and the port still
+    does (`runtime-ts/src/mcp/server.ts`). Measured under 2.3.0 without this class:
+    `work_plan` with a node lacking `id` answered `Error executing tool work_plan` where the
+    port says `...: 'id'` (`--suite workplan` `tool/no-id`), `_ArgMetadata`'s
+    `unknown argument '<key>'; known: ...` sentence (#133) was lost on every tool, and so was
+    `memory_recall needs a query or a file.` -- 46 differed cases in `--suite wire`.
+
+    THE PROPERTY: what reaches the client is byte-for-byte what 0.37.2 sent. A crash is
+    re-raised as a plain `ToolError` carrying the cause's text, which
+    `MCPServer._handle_call_tool` (`mcp/server/mcpserver/server.py`) answers as `str(exc)`
+    with `isError: true`. `MCPError` and every `ToolError` the SDK already suffixes (pydantic
+    `ValidationError`, a deliberate `ToolError`/`ResourceError`) pass through untouched. A
+    side effect, also the 0.37.2 behaviour: the SDK logs a `ToolError` at INFO, not with
+    `logger.exception`, so a crash prints no traceback to stderr under the default logging.
+
+    Adopting the SDK's crash-hiding policy -- dropping the suffix -- is a design change that
+    has to land in BOTH runtimes together with the conformance cases; it is a deliberate
+    follow-up to #268, not a bug in this class.
+    """
+
+    async def run(
+        self, arguments: dict[str, Any], context: Any, convert_result: bool = False
+    ) -> Any:
+        try:
+            return await super().run(arguments, context, convert_result=convert_result)
+        except UnexpectedToolError as exc:
+            cause = exc.__cause__
+            raise ToolError(f"Error executing tool {self.name}: {cause}") from cause
+
+
 def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     """Bind one handler to its manifest entry — description, BOTH schemas, and the surface.
 
@@ -1344,7 +1383,7 @@ def _from_manifest(fn: Callable[..., Any], name: str) -> Any:
     # not a side effect a hint describes (user ruling (b) on #182 Q1, job67 J67-9), so a
     # read-only tool is `readOnlyHint: true` with the log on or off; the port does the same.
     hints = asset.get("annotations")
-    tool = SDKTool.from_function(
+    tool = _Tool.from_function(
         fn,
         name=asset["name"],
         title=asset.get("title"),

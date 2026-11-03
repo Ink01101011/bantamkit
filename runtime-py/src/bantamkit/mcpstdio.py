@@ -239,7 +239,11 @@ async def serve_stdio(server: Any) -> None:
         async with _sdk_stdio.stdio_server(stdin=lines) as (read_stream, write_stream):  # type: ignore[arg-type]
             lines.write_stream = write_stream
             lowlevel = server._lowlevel_server
-            await lowlevel.run(read_stream, write_stream, lowlevel.create_initialization_options())
+            # `experimental: {}` is advertised on purpose; the port declares it too
+            # (runtime-ts/src/mcp/server.ts). `mcp` 2.0.x defaulted a missing argument to `{}`;
+            # 2.3.0 passes `None` through and the key vanishes from `initialize` (#268).
+            options = lowlevel.create_initialization_options(experimental_capabilities={})
+            await lowlevel.run(read_stream, write_stream, options)
     except* (BrokenPipeError, ConnectionResetError):
         # The host closed its read end (#181): the session is over, exactly as on stdin EOF.
         pass

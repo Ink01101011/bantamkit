@@ -6,8 +6,9 @@ worktree has none, and a venv borrowed from another checkout tests THAT
 checkout's source, so make this tree's own first (docs/install.md):
 `python3 -m venv .venv && .venv/bin/pip install -e "runtime-py[dev,mcp]"`.
 That resolves the `mcp` SDK inside the bound runtime-py/pyproject.toml declares,
-which is upper-capped on purpose: a newer SDK drops the `: <exc>` suffix from a
-tool crash and `--all` goes red on the reference, not the port.
+which is upper-capped on purpose: `runtime-py/src/bantamkit/mcpstdio.py` reaches four
+private SDK names, and a new minor must be rerun against `--suite wire` before the
+cap moves (the comment above the bound names them).
 Then `.venv/bin/python -m pytest runtime-py/tests -q` and keep
 `.venv/bin/ruff check runtime-py tools` clean. Every conformance gate below
 runs the Node build, which a fresh tree also lacks:
