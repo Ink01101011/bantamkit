@@ -1,7 +1,7 @@
 {
   "name": "work_plan",
   "title": "Work plan: batch a dependency graph",
-  "description": "Work plan: turn a dependency graph you hand it into the batches that may run in parallel — pure computation over `nodes`: no file opened, no path taken, nothing mutated. Use it when the graph is in your hands (tasks with depends_on); use shiftwork_plan when the graph is a shift-work checkpoint on disk, which it reads for you under the same batching rules. Batch k holds every node whose dependencies all sit in batches below k; `sequence` is the batches flattened; `width` is the largest batch — the fan-out an orchestrator must afford. Inside a batch: priority descending, then the order the nodes were given; both halves are contract, so two implementations answer byte-identically. Empty `nodes` is an ANSWER (no batches, width 0), not a refusal. Four refusals, in this order, one sentence each: `nodes[<i>].<field> must be ...` (an id that is not a string, depends_on not a list of strings, priority not an integer — named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. It reports what the graph PERMITS and decides nothing about what is safe to dispatch together: `depends_on` encodes logical order, not file contention.",
+  "description": "Work plan: turn a dependency graph you hand it into the batches that may run in parallel — pure computation over `nodes`: no file opened, no path taken, nothing mutated. Use it when the graph is in your hands (tasks with depends_on); use shiftwork_plan when the graph is a shift-work checkpoint on disk, which it reads for you under the same batching rules. Batch k holds every node whose dependencies all sit in batches below k; `sequence` is the batches flattened; `width` is the largest batch — the fan-out an orchestrator must afford. Inside a batch: priority descending, then the order the nodes were given; both halves are contract, so two implementations answer byte-identically. Empty `nodes` is an ANSWER (no batches, width 0), not a refusal. Four refusals, in this order, one sentence each: `nodes[<i>].<field> must be ...` (an id that is not a string, depends_on not a list of strings, priority not an integer — named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. `depends_on` encodes logical order, not file contention; give a node `touches` (repo-relative paths it will WRITE) and no batch ever holds two nodes sharing a path: inside a level, in the same order, a node whose path an admitted node already claims is held for the next batch, and the answer then carries `held: [{id, batch, by, path}]` (absent when no node declares `touches`). A path that is empty, absolute, holds a backslash or a `.`/`..`/empty segment is the fifth refusal, checked with the shape: `node <id> touches <json>, which is not a plain relative path`.",
   "surfaces": [
     "mcp"
   ],
@@ -34,13 +34,27 @@
             "priority": {
               "type": "integer",
               "description": "Tie-break inside a batch, descending. Optional; 0 when absent"
+            },
+            "touches": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Repo-relative POSIX paths this node will WRITE, compared as exact strings. Optional: absent or null claims nothing. Two nodes sharing a path never land in one batch"
             }
           },
           "required": [
             "id"
           ]
         },
-        "description": "The graph: one object per task, {id, depends_on?, priority?}. The order given is the tie-break inside a batch after priority."
+        "description": "The graph: one object per task, {id, depends_on?, priority?, touches?}. The order given is the tie-break inside a batch after priority."
       }
     },
     "required": [
@@ -77,6 +91,13 @@
       "width": {
         "type": "integer",
         "description": "The largest batch length: the widest fan-out."
+      },
+      "held": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        },
+        "description": "Present only when a node declares `touches`: one {id, batch, by, path} per hold, the node held out of batch `batch` because `by`, admitted there, already writes `path`."
       },
       "reason": {
         "type": "string",

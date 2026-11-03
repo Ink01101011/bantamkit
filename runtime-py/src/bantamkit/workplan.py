@@ -29,9 +29,14 @@ conformance suite red for a reason that is not a defect. Hence the two ordering 
 below are stated as contract, not as an artifact of whatever the dict happened to do.
 """
 
+import json
+import re
 from typing import Any
 
-__all__ = ["plan"]
+__all__ = ["plan", "touches_refusal"]
+
+#: A drive-letter prefix (`C:`), which is absolute on Windows whatever follows it.
+_DRIVE = re.compile(r"^[A-Za-z]:")
 
 
 def _cycle_path(order: list[str], deps: dict[str, list[str]], pending: set[str]) -> list[str]:
@@ -83,6 +88,48 @@ def _is_integer(value: Any) -> bool:
     return isinstance(value, int) or (isinstance(value, float) and value.is_integer())
 
 
+def _json(value: Any) -> str:
+    """`value` as both runtimes print it: compact JSON, non-ASCII kept, `3.0` written `3`.
+
+    The port's `JSON.stringify` cannot tell `3.0` from `3`, so the reference folds the
+    integral float the same way before encoding; nothing else differs between the two.
+    """
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _plain_path(path: Any) -> bool:
+    """#257/D5: a repo-relative POSIX path compared as an exact string, nothing looser.
+
+    Not empty, not absolute (`/` or a drive letter), no `\\`, and no `.`, `..` or empty
+    segment — so `a//b` and `a/./b` are refused rather than quietly meaning `a/b`, which
+    an exact-string comparison would otherwise miss as the same file.
+    """
+    if not isinstance(path, str) or path == "" or "\\" in path:
+        return False
+    if path.startswith("/") or _DRIVE.match(path):
+        return False
+    return all(segment not in ("", ".", "..") for segment in path.split("/"))
+
+
+def touches_refusal(node_id: str, touches: Any) -> str | None:
+    """#257/D5: the sentence for a `touches` that is not a list of plain relative paths.
+
+    `<repr>` is the whole value when it is not a list, else the first item that is not a
+    plain path, printed by `_json` so both runtimes spell it the same. `None` is allowed:
+    absent and `null` both mean the node claims nothing.
+    """
+    if touches is None:
+        return None
+    if not isinstance(touches, list):
+        return f"node {node_id} touches {_json(touches)}, which is not a plain relative path"
+    for path in touches:
+        if not _plain_path(path):
+            return f"node {node_id} touches {_json(path)}, which is not a plain relative path"
+    return None
+
+
 def _shape_refusal(nodes: list[Any]) -> str | None:
     """The first node that contradicts `assets/tools/work_plan.json`'s item schema, by position.
 
@@ -100,6 +147,10 @@ def _shape_refusal(nodes: list[Any]) -> str | None:
         nodes[<i>].id must be a string
         nodes[<i>].depends_on must be a list of strings
         nodes[<i>].priority must be an integer
+        node <id> touches <repr>, which is not a plain relative path
+
+The last one (#257/D5) names the node by id, not position: it is checked after `id`, so
+the id is a string by then, and the spec fixed that sentence.
 
     What is NOT a contradiction, because the surface already pinned it before this check
     existed: an absent or `null` `depends_on` is no dependencies, an absent or `null`
@@ -120,16 +171,20 @@ def _shape_refusal(nodes: list[Any]) -> str | None:
         priority = node.get("priority")
         if priority is not None and not _is_integer(priority):
             return f"nodes[{index}].priority must be an integer"
+        touches = touches_refusal(node["id"], node.get("touches"))
+        if touches is not None:
+            return touches
     return None
 
 
 def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     """Batch a dependency graph into the levels that may run in parallel.
 
-    nodes: [{"id": str, "depends_on": list[str], "priority": int}] — `depends_on`
-    defaults to empty and `priority` defaults to 0, because the shift-work checkpoint
-    schema has no priority field and this design does not add one. A node whose fields
-    contradict those types is refused by `_shape_refusal` before the graph is read.
+    nodes: [{"id": str, "depends_on": list[str], "priority": int, "touches": list[str]}]
+    — `depends_on` and `touches` default to empty and `priority` defaults to 0, because
+    the shift-work checkpoint schema has no priority field and this design does not add one.
+    A node whose fields contradict those types is refused by `_shape_refusal` before the
+    graph is read.
 
     Returns either
 
@@ -147,6 +202,22 @@ def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     **Ordering inside a batch is priority descending, then insertion order** — the order
     the nodes were given, which for the shift-work adapter is `plan.units` order. Both
     halves are contract: the second is what makes two independent implementations agree.
+
+    **One writer per file per batch (#257/D2).** Inside one level, nodes are admitted in
+    that same order, and a node whose `touches` shares a path with a node already
+    admitted to THIS batch is held for the next one instead. It stays ready, so it is
+    reconsidered there in the same order against whatever else became ready; its
+    dependents wait on it as before. Greedy and order-driven, so both runtimes produce
+    the same batches by construction. When any node declares `touches` (present and not
+    null, `[]` included), the answer also carries
+
+        "held": [{"id", "batch", "by", "path"}, ...]
+
+    one entry per hold, in the order they happened: the node held, the index of the batch
+    it was held out of, the admitted node that holds the file there, and the first path in
+    the HELD node's `touches` order that an admitted node had claimed. With no node
+    declaring `touches` the key is absent, so every answer from before the field existed
+    is byte-identical.
 
     `plan([])` is `{"batches": [], "sequence": [], "width": 0}`. An empty plan is an
     ANSWER, not a refusal — the same reasoning `shiftwork.clock_in` already applies when
@@ -166,6 +237,8 @@ def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     order: list[str] = []
     deps: dict[str, list[str]] = {}
     priority: dict[str, int] = {}
+    touches: dict[str, list[str]] = {}
+    declared = False
 
     for node in nodes:
         node_id = node["id"]
@@ -175,6 +248,9 @@ def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
         deps[node_id] = list(node.get("depends_on") or [])
         given = node.get("priority")
         priority[node_id] = 0 if given is None else int(given)
+        claimed = node.get("touches")
+        declared = declared or claimed is not None
+        touches[node_id] = list(claimed or [])
 
     for node_id in order:
         for dep in deps[node_id]:
@@ -191,6 +267,7 @@ def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
     pending = set(order)
     emitted: set[str] = set()
     batches: list[list[str]] = []
+    held: list[dict[str, Any]] = []
 
     while pending:
         ready = [
@@ -205,13 +282,30 @@ def plan(nodes: list[dict[str, Any]]) -> dict[str, Any]:
                 "reason": "the graph has a cycle: " + " -> ".join(path),
             }
         ready.sort(key=lambda node_id: (-priority[node_id], index[node_id]))
-        batches.append(ready)
-        pending.difference_update(ready)
-        emitted.update(ready)
+        batch: list[str] = []
+        owner: dict[str, str] = {}
+        for node_id in ready:
+            clash = next((path for path in touches[node_id] if path in owner), None)
+            if clash is not None:
+                held.append(
+                    {"id": node_id, "batch": len(batches), "by": owner[clash], "path": clash}
+                )
+                continue
+            batch.append(node_id)
+            for path in touches[node_id]:
+                owner.setdefault(path, node_id)
+        # `ready` is non-empty, and its first node always clashes with nothing, so every
+        # pass admits at least one node and the sweep still terminates.
+        batches.append(batch)
+        pending.difference_update(batch)
+        emitted.update(batch)
 
     sequence = [node_id for batch in batches for node_id in batch]
-    return {
+    answer: dict[str, Any] = {
         "batches": batches,
         "sequence": sequence,
         "width": max((len(batch) for batch in batches), default=0),
     }
+    if declared:
+        answer["held"] = held
+    return answer

@@ -339,6 +339,9 @@ def _batch_view(document: dict) -> dict[str, Any]:
         # because the Node adapter reaches the same mapping and MUST default it too: a
         # default on one side only is how two runtimes come to disagree about real data.
         {"id": unit["id"], "depends_on": list(unit.get("depends_on") or []), "priority": 0}
+        # #257: `touches` is passed through only when the unit declares it, so a checkpoint
+        # with no `touches` anywhere gets the core's answer with no `held` key — today's.
+        | ({"touches": unit["touches"]} if "touches" in unit else {})
         for unit in document["plan"]["units"]
         if unit["status"] not in TERMINAL_UNIT_STATUS
     ]
@@ -363,6 +366,39 @@ def _ready(document: dict) -> tuple[list[str] | None, dict[str, Any] | None]:
         return None, answer
     batches = answer["batches"]
     return (batches[0] if batches else []), None
+
+
+def _contention(path: Path, document: dict, unit: dict) -> str | None:
+    """#257/D4: the sentence when `unit` writes a file a unit still in flight writes.
+
+    The batch view sees the checkpoint, not the briefs, so a unit briefed and not yet
+    clocked out only claims its files in batch 0 if it sorts first — order cannot promise
+    that. In flight is the set job60 already measures: a unit briefed since its own last
+    clock-out, read by `_briefed`, CALLED and never reimplemented. The first path in
+    `unit`'s `touches` order that an in-flight unit also touches is named, with the first
+    such unit in `plan.units` order:
+
+        unit <id> touches <path>, which <other> holds until its clock-out
+
+    Checked after readiness, so a held unit (not in `ready`) keeps the readiness sentence.
+    """
+    mine = unit.get("touches") or []
+    if not mine:
+        return None
+    log_path = _log_path(path)
+    holders = [
+        other
+        for other in document["plan"]["units"]
+        if other["id"] != unit["id"] and other.get("touches") and _briefed(log_path, other["id"])
+    ]
+    for file in mine:
+        for other in holders:
+            if file in other["touches"]:
+                return (
+                    f"unit {unit['id']} touches {file}, "
+                    f"which {other['id']} holds until its clock-out"
+                )
+    return None
 
 
 def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
@@ -431,6 +467,9 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         return batch_refusal  # the core's sentence, verbatim — `_read_valid`'s idiom
     if unit is None or selected not in ready:
         return _error(f"unit {selected} is not ready; ready is {', '.join(ready)}")
+    contention = _contention(Path(checkpoint), document, unit)
+    if contention is not None:
+        return _error(contention)
     # F6: the brief is issued, so say so in the ledger — best effort, and only on this
     # branch: a refusal above issued nothing and therefore records nothing.
     _record_brief(_log_path(Path(checkpoint)), selected, unit["role"])
@@ -941,4 +980,4 @@ def plan_batches(checkpoint: str) -> dict[str, Any]:
         "sequence": answer["sequence"],
         "width": answer["width"],
         "cursor": document["plan"]["cursor"],
-    }
+    } | ({"held": answer["held"]} if "held" in answer else {})
