@@ -957,8 +957,32 @@ function j655Sessions() {
     ['unit-id/cursor-on-a-done-unit', b64(raw(shape2('A', 'done'))), [IN(), IN('A'), IN('B'), ST()]],
     // and on a unit whose dependency has not run (a re-plan): the issue's second shape.
     ['unit-id/cursor-on-a-unit-whose-dependency-has-not-run', b64(raw(dependentCursorDocument())), [IN(), IN('B'), IN('A'), ST()]],
+
+    // ---- #257/D4. `A` is in flight (a brief line on the ledger, no clock-out) and writes `f`;
+    // a re-plan put `C` first, also writing `f`, so the batch view admits `C` and holds `A` —
+    // it sees the checkpoint, not the briefs. Both calls on `C` meet the in-flight sentence and
+    // write nothing; once `A` clocks out, the same call briefs.
+    ['touches/in-flight-holds-the-file', b64(raw(inFlightDocument())), [
+      LEDGER(L_BRIEF_A),
+      IN('C'),
+      IN(),
+      ST(),
+      OUT('A', 'done', { history_entry: b64('{"unit": "A", "outcome": "done"}') }),
+      IN('C'),
+    ]],
+    // and the control: the same document with nothing in flight briefs `C` at once.
+    ['touches/nothing-in-flight-briefs', b64(raw(inFlightDocument())), [IN('C')]],
   ];
 }
+
+/** #257/D4: `C` and `A` both write `f`; `C` sorts first, so only the in-flight check sees `A`. */
+const inFlightDocument = () => baseDocument({
+  plan: {
+    cursor: 'C',
+    units: [unit('C', [], { touches: ['g', 'f'] }), unit('A', [], { touches: ['f'] })],
+  },
+});
+const L_BRIEF_A = '{"event": "brief", "role": "implementer", "ts": "x", "unit": "A"}';
 
 /**
  * `[name, checkpoint, calls]` triples for the shape check, the pack being the SHIPPED one.
@@ -2665,6 +2689,18 @@ export async function run(ctx) {
     says('dependent-cursor/named-path-is-the-same-sentence', DEP, 1, 'unit B is not ready; ready is A');
     briefed('dependent-cursor/the-ready-unit-proceeds', DEP, 2, 'A');
     cursor('dependent-cursor/never-moved', DEP, 3, 'B');
+
+    // #257/D4, per side: the sentence, nothing written, and the brief once the holder is out.
+    const FLIGHT = 'touches/in-flight-holds-the-file';
+    const HOLDS = 'unit C touches f, which A holds until its clock-out';
+    bit('touches/in-flight-named-call-refused', FLIGHT, 1, 'error');
+    says('touches/in-flight-named-call-refused', FLIGHT, 1, HOLDS);
+    // the planted brief line is the whole ledger after both refusals: neither wrote one
+    trail('touches/in-flight-refusals-write-nothing', FLIGHT, 2, ['brief A']);
+    says('touches/in-flight-default-call-refused', FLIGHT, 2, HOLDS);
+    bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
+    briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
+    briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
 
     notes.push(
       'job65 / J65-5 (#117 #162 #164): ' +

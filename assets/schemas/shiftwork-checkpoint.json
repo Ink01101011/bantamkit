@@ -76,6 +76,11 @@
                 "description": "Driver dispatch key: role -> model/allowed tools, set in driver config."
               },
               "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "touches": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Repo-relative POSIX paths this unit will WRITE (#257). Optional; absent or [] claims nothing. The batch view never puts two units sharing a path in one batch, and clock_in refuses a unit whose path a unit still in flight touches."
+              },
               "verify": {
                 "type": "string",
                 "minLength": 1,
