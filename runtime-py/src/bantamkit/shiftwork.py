@@ -109,6 +109,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import time
@@ -146,8 +147,14 @@ UNCOMMITTED_EVENT = "uncommitted"
 #: `{"unit": "C", "event": "brief"}` turn A's clock-out into a forged brief of C that
 #: `_briefed` then trusted, and a `unit` overwritten is a cost booked to the wrong unit.
 #: `briefed` is NOT here on purpose: F6 ruled a self-reported `briefed` is OVERWRITTEN by the
-#: measured value, pinned on both sides, and #117 lists exactly these five.
-RESERVED_LEDGER_KEYS = ("unit", "role", "status", "ts", "event")
+#: measured value, pinned on both sides, and #117 lists exactly these five. #266 adds a sixth,
+#: `agent_id`: the runtime writes it from clock_out's own argument, so a self-reported one in
+#: the accounting line would be a second, unchecked source of the id the miner joins on.
+RESERVED_LEDGER_KEYS = ("unit", "role", "status", "ts", "event", "agent_id")
+#: #266: the host's subagent id (`agentId` on the Agent tool's result, `agent_id` on a hook
+#: payload fired inside the subagent); what clock_out records and the touch log stamps.
+AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+AGENT_ID_REFUSAL = "agent_id must be 1 to 64 characters, each a letter, a digit, - or _"
 HISTORY_RING_SIZE = 5  # the schema's maxItems — older entries fall off the ring
 
 #: #261: the most agreements a job carries; past it, one must be retired first.
@@ -1384,6 +1391,7 @@ def clock_out(
     follow_ups: list[dict[str, Any]] | None = None,
     agreements: dict[str, Any] | None = None,
     conclusion: dict[str, Any] | None = None,
+    agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Apply a dispatched unit's result to the checkpoint, validate whole, write atomically.
 
@@ -1442,6 +1450,7 @@ def clock_out(
             follow_ups,
             agreements,
             conclusion,
+            agent_id,
         )
     finally:
         if held:
@@ -1511,6 +1520,7 @@ def _clock_out_locked(
     follow_ups: list[dict[str, Any]] | None = None,
     agreements: dict[str, Any] | None = None,
     conclusion: dict[str, Any] | None = None,
+    agent_id: str | None = None,
 ) -> dict[str, Any]:
     """`clock_out`'s body, run under the lock its caller holds: mutate, validate, write."""
     log_path = _log_path(path)
@@ -1536,6 +1546,11 @@ def _clock_out_locked(
     forged = _reserved_refusal(unit_id, unit, accounting)
     if forged is not None:
         return _error(forged)
+    # #266: the subagent the unit ran in, as the host named it; checked before any mutation.
+    if agent_id is not None and (
+        not isinstance(agent_id, str) or AGENT_ID.fullmatch(agent_id) is None
+    ):
+        return _error(AGENT_ID_REFUSAL)
     zero = _zero_tokens_refusal(document, unit_id, accounting)
     if zero is not None:
         return _error(zero)
@@ -1630,7 +1645,7 @@ def _clock_out_locked(
         "role": unit["role"],
         "status": status,
     }
-    record.update(accounting or {})  # #117: none of the five base keys can be in it
+    record.update(accounting or {})  # #117: none of the reserved keys can be in it
     # F6: `briefed` is MEASURED off the ledger, after the orchestrator's keys are merged, so
     # the runtime's answer wins over a self-reported one. `executed_by: orchestrator-inline`
     # in the job41 ledger IS a self-report, and it is the only kind the ledger ever had; a
@@ -1638,6 +1653,8 @@ def _clock_out_locked(
     # on every line, `accounting: null` included — the base shape (ts/unit/role/status) is
     # the runtime's, and so is this field. Never a refusal.
     record["briefed"] = _briefed(log_path, unit_id)
+    if agent_id is not None:
+        record["agent_id"] = agent_id  # #266: the miner joins the touch log's use rows on it
     _freeze(path, document)  # #265: the first read of an experiment, before its first line
     try:
         with log_path.open("a", encoding="utf-8") as fh:

@@ -126,7 +126,7 @@
         "anyOf": [
           {
             "type": "object",
-            "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged, except the five the runtime writes itself — unit, role, status, ts, event — which are refused (result=error) before anything is written; a self-reported briefed is overwritten, not refused. Lines written before this schema existed may spell these differently; the schema governs new writes only.",
+            "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged, except the six the runtime writes itself — unit, role, status, ts, event, agent_id — which are refused (result=error) before anything is written; a self-reported briefed is overwritten, not refused. Lines written before this schema existed may spell these differently; the schema governs new writes only.",
             "properties": {
               "tokens": {
                 "type": "integer",
@@ -309,6 +309,19 @@
         "default": null,
         "title": "Conclusion",
         "description": "An investigation's answer (#264), written to job.conclusion. Only a unit with `concludes: true` may send it; `resolved` is refused unless `supported` has a done run, a done replay of that run in another role, and a done review of either. A run unit (`tests` or `replay_of`) clocked out done must report a `run-output` in history_entry.produced."
+      },
+      "agent_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Agent Id",
+        "description": "The `agentId` the Agent tool's result returned for this unit's subagent (#266), copied verbatim: 1 to 64 letters, digits, - or _, or nothing is written. It goes on the accounting line, never into the checkpoint, and is how the skill miner attributes the skill uses the hook logged inside that subagent to this unit. Omit it for a unit run inline."
       }
     },
     "required": [

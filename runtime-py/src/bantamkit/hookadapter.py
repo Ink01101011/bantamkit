@@ -87,7 +87,7 @@ from .storage.logsegment import LogSegment
 from .touch.bashturn import changed, load_turn, save_turn, snapshot
 from .touch.context import TOUCH_WINDOW, TouchContext, context_weights, via_enabled, window
 from .touch.graph import TouchGraph
-from .touch.log import TOUCH_OPS, TouchLog, current_seq, next_seq, use_names
+from .touch.log import TOUCH_OPS, TouchLog, agent_of, current_seq, next_seq, use_names
 from .touch.refs import FileSet, shortest_suffix
 from .touch.repo import find_repo, git, git_on_path, ls_files, relpath
 from .touch.summary import (
@@ -1858,8 +1858,9 @@ def _record_touch(run: HookRun, payload: dict[str, Any]) -> None:
             rel = relpath(repo, raw) if isinstance(raw, str) and raw else None
             if rel is not None:
                 ok = log.append_touch(session, seq, op, rel)
+        agent = agent_of(payload)  # #266: set only inside a subagent
         for fact, kind in use_names(tool, ti, payload.get("tool_response")):
-            ok = log.append_use(session, seq, fact, kind) and ok
+            ok = log.append_use(session, seq, fact, kind, agent_id=agent) and ok
         if not ok:
             _log(run, {"event": "PostToolUse", "touch": "miss", "tool": tool})
     except Exception:  # noqa: BLE001 - the graph is an enhancement (#200, Error handling)

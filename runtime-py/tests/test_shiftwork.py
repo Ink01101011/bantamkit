@@ -2824,7 +2824,8 @@ def test_j65_5_the_reserved_keys_are_named_in_the_runtimes_order_not_the_callers
     line.update({"duration_ms": 1, "tokens": 1})
     r = ops.clock_out(str(path), "A", "done", {}, {"unit": "A", "outcome": "x"}, line)
     assert r["reason"].endswith("keys: unit, role, status, ts, event"), r
-    assert ops.RESERVED_LEDGER_KEYS == ("unit", "role", "status", "ts", "event")
+    # #266 added the sixth, after `event`, so a line without it is refused as before
+    assert ops.RESERVED_LEDGER_KEYS == ("unit", "role", "status", "ts", "event", "agent_id")
 
 
 def test_j65_5_the_reserved_check_runs_after_the_shape_check_and_before_any_mutation(tmp_path):
