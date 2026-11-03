@@ -2159,9 +2159,19 @@ test('the module walks depends_on in exactly ONE place, and enters Layer 1 exact
   // Twice, both inside `batchView`: once READ off the unit, once as the key of the
   // `PlanNode` handed to Layer 1. A convenience walk in `clockIn`, or a `ready` recomputed
   // in `clockOut`, moves one of these counts — which is the whole reason to count them.
-  assert.equal(walks.length, 2, `depends_on is named ${walks.length} times in the code, not 2`);
+  // #260 (job76): `followUpUnit` is the one other place, and it is a WRITER — it puts the key
+  // on a new unit (the parent's id by default) from the follow-up item, never reading another
+  // unit's edges. Its two mentions are pinned, so a walk hidden there still moves a count.
+  const [fuStart, fuEnd] = bodySpan(code, 'function followUpUnit(');
+  const inFollowUp = (m) => m.index > fuStart && m.index < fuEnd;
+  assert.equal(walks.length, 4, `depends_on is named ${walks.length} times in the code, not 4`);
   assert.equal(walks.filter(inside).length, 2, 'a mention of depends_on lives outside batchView');
-  assert.equal([...code.matchAll(/'depends_on'/g)].length, 1, 'the field is READ in more than one place');
+  assert.equal(walks.filter(inFollowUp).length, 2, 'followUpUnit names depends_on other than its one write');
+  assert.equal(
+    [...code.matchAll(/'depends_on'/g)].filter((m) => !inFollowUp(m)).length,
+    1,
+    'the field is READ in more than one place',
+  );
   assert.ok(code.includes("const declared = u.v.get('depends_on');"), 'the one read is not where it was');
 
   // And one entry into the planner. `planBatches` has a file to read, `clockIn` judges a

@@ -85,6 +85,7 @@ import { schemaError } from './contract.js';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { closeSync, openSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   asPyOSError,
   pyAppendText,
@@ -96,6 +97,8 @@ import {
   pyUnlink,
   pyReadText,
   PyUnicodeDecodeError,
+  pyExists,
+  pyIsFile,
 } from './memory/pyfs.js';
 import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, toJs, type PyValue } from './pyjson.js';
 import { budget as budgetOf, refusal as budgetRefusal, type BudgetView, type Dimension } from './jobbudget.js';
@@ -293,6 +296,8 @@ export interface ClockOptions {
    * tests monkeypatch the module constant instead. Nothing on the wire reads it.
    */
   lockWaitMs?: number;
+  /** #260: the units this one discovered, as `shiftwork_clock_out`'s `follow_ups` hands them. */
+  followUps?: unknown;
 }
 
 /**
@@ -966,6 +971,95 @@ function zeroTokensRefusal(doc: PyDict, unitId: string, accounting: unknown): st
   return null;
 }
 
+/** #260: `follow_ups` as a list of dicts; anything else (absent, null) is no follow-ups. */
+function followUpItems(value: unknown): Map<string, PyValue>[] {
+  if (value === null || value === undefined) return [];
+  const lifted = asPyValue(value);
+  if (lifted.t !== 'list') return [];
+  return lifted.v.map((item) => (item.t === 'dict' ? item.v : new Map<string, PyValue>()));
+}
+
+/**
+ * #260: where a follow-up's `brief_path` is resolved — the nearest ancestor of the checkpoint's
+ * directory (itself included) holding a `.git` entry, else that directory. No `git` is run.
+ * Same rule as `shiftwork.py`'s `_repo_root`.
+ */
+function repoRoot(path: string): string {
+  const start = dirname(resolve(path));
+  for (let candidate = start; ; candidate = dirname(candidate)) {
+    if (pyExists(join(candidate, '.git'))) return candidate;
+    if (dirname(candidate) === candidate) return start;
+  }
+}
+
+/**
+ * #260: a follow-up as a `todo` unit. The ONE place outside `batchView` that names the
+ * dependency key: it WRITES it (the parent's id when the item gives none) and never reads the
+ * graph. `verify` defaults to the parent's. Same keys, same order as `_follow_up_unit`.
+ */
+function followUpUnit(parent: PyDict, item: Map<string, PyValue>): PyValue {
+  const none: PyValue = { t: 'null' };
+  const entries: [string, PyValue][] = [
+    ['id', item.get('id') ?? none],
+    ['title', item.get('title') ?? none],
+    ['brief_path', item.get('brief_path') ?? none],
+    ['status', str('todo')],
+    ['role', item.get('role') ?? none],
+    ['depends_on', item.get('depends_on') ?? { t: 'list', v: [field(parent, 'id')] }],
+    ['verify', item.get('verify') ?? field(parent, 'verify')],
+  ];
+  const touches = item.get('touches');
+  if (touches !== undefined) entries.push(['touches', touches]);
+  return dict(entries);
+}
+
+/** `str()` of an item field for a sentence, `None` for a missing one, as the reference prints. */
+const shown = (value: PyValue | undefined): string => (value === undefined ? 'None' : value.t === 'str' ? value.v : reprValue(value));
+
+/**
+ * #260/D2: the first fault in a clock-out's follow-ups, checked whole before any write, in
+ * `_follow_ups_refusal`'s order: duplicate id, brief not a file, the planner's own sentence for
+ * an unknown dependency or a cycle (only when the document without them batched), and a role
+ * `job.roles` does not declare.
+ */
+function followUpsRefusal(path: string, doc: PyDict, unit: PyDict, items: Map<string, PyValue>[]): string | null {
+  const units = subList(subDict(doc, 'plan'), 'units').v;
+  const known = new Set(units.map((u) => text(field(u as PyDict, 'id'))));
+  for (const item of items) {
+    const id = item.get('id');
+    if (id !== undefined && id.t === 'str' && known.has(id.v)) return `follow-up ${id.v} is already a unit`;
+    if (id !== undefined && id.t === 'str') known.add(id.v);
+  }
+  const root = repoRoot(path);
+  for (const item of items) {
+    const brief = item.get('brief_path');
+    const target = brief !== undefined && brief.t === 'str' ? (isAbsolute(brief.v) ? brief.v : join(root, brief.v)) : null;
+    if (target === null || !pyIsFile(target)) {
+      return `follow-up ${shown(item.get('id'))} names brief ${shown(brief)}, which is not a file`;
+    }
+  }
+  const before = batchView(doc);
+  const plan = subDict(doc, 'plan');
+  const widened = dict([...doc.v.entries()].map(([key, value]) => [
+    key,
+    key === 'plan'
+      ? dict([...plan.v.entries()].map(([k, v]) => [k, k === 'units' ? { t: 'list', v: [...units, ...items.map((item) => followUpUnit(unit, item))] } : v]))
+      : value,
+  ]) as [string, PyValue][]) as PyDict;
+  const after = batchView(widened);
+  if (!('result' in before) && 'result' in after) return after.reason;
+  const roles = subDict(doc, 'job').v.get('roles');
+  if (roles !== undefined && roles.t === 'dict') {
+    for (const item of items) {
+      const role = item.get('role');
+      if (role === undefined || role.t !== 'str' || !roles.v.has(role.v)) {
+        return `follow-up ${shown(item.get('id'))} has role ${shown(role)}, which job.roles does not declare`;
+      }
+    }
+  }
+  return null;
+}
+
 function reservedRefusal(unitId: string, unit: PyDict, accounting: unknown): string | null {
   if (accounting === null || accounting === undefined) return null;
   const line = asPatch(accounting);
@@ -1136,6 +1230,7 @@ function clockOutLocked(
   if (forged !== null) return errorResult(forged);
   const zero = zeroTokensRefusal(doc, unitId, accounting);
   if (zero !== null) return errorResult(zero);
+  const followUps = followUpItems(options.followUps);
   const entry = asPatch(historyEntry);
   const notes = entry.get('notes');
   if (notes !== undefined && notes.t === 'str') {
@@ -1145,6 +1240,11 @@ function clockOutLocked(
     }
   }
 
+  if (followUps.length > 0) {
+    const refused = followUpsRefusal(path, doc, unit, followUps);
+    if (refused !== null) return errorResult(refused);
+    subList(plan, 'units').v.push(...followUps.map((item) => followUpUnit(unit, item)));
+  }
   unit.v.set('status', str(status));
   // #259: the durable per-unit record the 5-entry ring cannot be, built only from what clockOut
   // already receives; a malformed `produced` meets the schema check below.
