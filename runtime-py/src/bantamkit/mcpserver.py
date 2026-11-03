@@ -1749,13 +1749,21 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         handoff_patch: dict[str, Any],
         history_entry: dict[str, Any],
         accounting: dict[str, Any] | None = None,
+        follow_ups: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        # `follow_ups` (#260): units this one discovered; absent, the call is today's.
         return _noted_dict(
             _record_result(
                 log,
                 "shiftwork_clock_out",
                 lambda: shiftwork.clock_out(
-                    checkpoint, unit_id, status, handoff_patch, history_entry, accounting
+                    checkpoint,
+                    unit_id,
+                    status,
+                    handoff_patch,
+                    history_entry,
+                    accounting,
+                    follow_ups,
                 ),
             )
         )

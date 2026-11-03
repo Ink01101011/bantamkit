@@ -1,7 +1,7 @@
 {
   "name": "shiftwork_clock_out",
   "title": "Shift work: clock out",
-  "description": "Shift-work clock-out: record that a unit finished — set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor — which needs no brief and clocks out with briefed=false — or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document — plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. Each clock-out also appends {status, outcome, notes?, produced?} to the unit's attempts (newest 3 kept). With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written — see the `model` property.",
+  "description": "Shift-work clock-out: record that a unit finished — set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor — which needs no brief and clocks out with briefed=false — or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document — plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. `follow_ups` appends the work it discovered as todo units. Each clock-out also appends {status, outcome, notes?, produced?} to the unit's attempts (newest 3 kept). With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written — see the `model` property.",
   "surfaces": [
     "mcp"
   ],
@@ -90,8 +90,22 @@
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["kind", "ref"],
-              "properties": {"kind": {"type": "string", "minLength": 1, "description": "What sort of thing: commit, file, pr, run-output."}, "ref": {"type": "string", "minLength": 1, "description": "Where it is: a SHA, a path, a URL."}}
+              "required": [
+                "kind",
+                "ref"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "What sort of thing: commit, file, pr, run-output."
+                },
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Where it is: a SHA, a path, a URL."
+                }
+              }
             },
             "description": "What the unit produced, [{kind, ref}] (a commit, a file, a run output). Recorded with the unit's attempt, and handed to every unit that depends on it as upstream[].last."
           }
@@ -149,6 +163,74 @@
         "default": null,
         "title": "Accounting",
         "description": "Per-unit cost line, or null (the default) to log a line with no cost figures at all. A non-null line must carry `tokens` and `duration_ms`; `model` is required when job.roles names this unit's role. The object shape is described below."
+      },
+      "follow_ups": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "role",
+                "brief_path"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The new unit's id; must not be a unit already, nor repeat in this list."
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "One line naming the work."
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "planner",
+                    "implementer",
+                    "reviewer"
+                  ],
+                  "description": "Who runs it; when job.roles is declared it must be one of its keys."
+                },
+                "brief_path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Its brief, a file that must already exist, relative to the repo (the nearest ancestor of the checkpoint holding .git)."
+                },
+                "depends_on": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": "Unit ids it waits for; absent means the unit being clocked out."
+                },
+                "verify": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Command proving it done; absent means the clocked-out unit's verify."
+                },
+                "touches": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Repo-relative paths it will write (#257)."
+                }
+              }
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Follow Ups",
+        "description": "Work this unit discovered (#260): each item becomes a todo unit appended to plan.units in the given order, on the same write. Refused whole, nothing written, on a duplicate id, a brief that is not a file, an unknown dependency or a cycle (the planner's sentence), or a role job.roles does not declare."
       }
     },
     "required": [
