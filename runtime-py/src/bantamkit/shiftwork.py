@@ -148,6 +148,11 @@ UNCOMMITTED_EVENT = "uncommitted"
 #: measured value, pinned on both sides, and #117 lists exactly these five.
 RESERVED_LEDGER_KEYS = ("unit", "role", "status", "ts", "event")
 HISTORY_RING_SIZE = 5  # the schema's maxItems — older entries fall off the ring
+
+#: #259: the attempts a unit keeps, newest last; the oldest is dropped past this.
+ATTEMPTS_KEPT = 3
+#: #259: an attempt's `notes`, in code points, so both runtimes count non-ASCII text alike.
+ATTEMPT_NOTES_MAX = 2000
 #: job65/#116: the checkpoint's read-modify-write runs under `<checkpoint>.lock`, taken with
 #: O_EXCL — the one primitive both platforms and both runtimes share without a dependency,
 #: and the shape `driver.lock` and the hook ledger's lock (J65-4, #167) already use, so a
@@ -391,11 +396,18 @@ def _batch_view(document: dict) -> dict[str, Any]:
     for node in nodes:
         node["depends_on"] = [dep for dep in node["depends_on"] if dep not in satisfied]
 
-    return workplan.plan(nodes)
+    answer = workplan.plan(nodes)
+    if answer.get("result") != "error":
+        # #259: the one read of `depends_on`, handed back for `clock_in`'s `upstream` order so
+        # no second walk is written there. Callers build their own replies, so it never leaks.
+        answer["declared"] = declared
+    return answer
 
 
-def _ready(document: dict) -> tuple[list[str] | None, dict[str, Any] | None]:
-    """`(ready, None)` or `(None, refusal)` — the ready batch of an in-memory document.
+def _ready(
+    document: dict,
+) -> tuple[list[str] | None, dict[str, Any] | None, dict[str, list[str]]]:
+    """`(ready, None, declared)` or `(None, refusal, {})` — the ready batch of a document.
 
     `ready` is `batches[0]`, or `[]` when no non-terminal unit remains, which is an
     ANSWER and not a refusal — the same judgement `plan_batches` already publishes.
@@ -403,9 +415,9 @@ def _ready(document: dict) -> tuple[list[str] | None, dict[str, Any] | None]:
     """
     answer = _batch_view(document)
     if answer.get("result") == "error":
-        return None, answer
+        return None, answer, {}
     batches = answer["batches"]
-    return (batches[0] if batches else []), None
+    return (batches[0] if batches else []), None, answer["declared"]
 
 
 def _contention(path: Path, document: dict, unit: dict) -> str | None:
@@ -479,6 +491,23 @@ def _budget_view(path: Path, document: dict, exclude: str | None = None) -> dict
     return jobbudget.budget(_ledger(log_path), limit, in_flight)
 
 
+def _upstream(document: dict, dep: str) -> dict[str, Any]:
+    """#259: what a dependency produced — `{unit, title, status, last}`, `last` its newest attempt.
+
+    The graph check has already refused an edge into an id no unit declares, so `dep` is a
+    unit here; a dependency with no attempts yet (finished before #259, or hand-marked done)
+    answers `last: null` rather than inventing one.
+    """
+    unit = _find_unit(document, dep)
+    attempts = unit.get("attempts") or []
+    return {
+        "unit": dep,
+        "title": unit["title"],
+        "status": unit["status"],
+        "last": attempts[-1] if attempts else None,
+    }
+
+
 def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     """Validate the checkpoint and return a unit's brief, or a refusal.
 
@@ -540,7 +569,7 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     # #164: one readiness test for both paths. A terminal cursor unit is not in `ready`
     # (the batch view drops done/dropped units), so it meets the same sentence as a unit
     # whose dependencies have not run — one property, one sentence, as D1 ruled.
-    ready, batch_refusal = _ready(document)
+    ready, batch_refusal, declared = _ready(document)
     if batch_refusal is not None:
         return _error(batch_refusal["reason"])  # the sentence verbatim, `_read_valid`'s idiom
     if unit is None or selected not in ready:
@@ -564,6 +593,9 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         "handoff": document["handoff"],
         "do_not": document["handoff"]["do_not"],
         "files": document["state"]["artifacts"],
+        # #259: always present, so a brief's shape does not depend on the plan.
+        "upstream": [_upstream(document, dep) for dep in declared[selected]],
+        "prior_attempts": list(unit.get("attempts") or []),
     }
 
 
@@ -942,8 +974,25 @@ def _clock_out_locked(
     zero = _zero_tokens_refusal(document, unit_id, accounting)
     if zero is not None:
         return _error(zero)
+    # A `history_entry` that is not an object is the schema's to refuse below, with the
+    # sentence it has always had, so #259 reads it only when it is one.
+    entry = history_entry if isinstance(history_entry, dict) else None
+    notes = entry.get("notes") if entry is not None else None
+    if isinstance(notes, str) and len(notes) > ATTEMPT_NOTES_MAX:
+        return _error(
+            f"history_entry notes are {len(notes)} code points; "
+            f"an attempt keeps at most {ATTEMPT_NOTES_MAX}"
+        )
 
     unit["status"] = status
+    # #259: the durable per-unit record the 5-entry history ring cannot be. Built only from
+    # what clock_out already receives; a malformed `produced` meets the schema check below.
+    if entry is not None:
+        attempt: dict[str, Any] = {"status": status, "outcome": entry.get("outcome")}
+        for key in ("notes", "produced"):
+            if key in entry:
+                attempt[key] = entry[key]
+        unit["attempts"] = ((unit.get("attempts") or []) + [attempt])[-ATTEMPTS_KEPT:]
     # D3: the cursor follows the GRAPH, on the document as just mutated. Three arms, in
     # this order. `ready[0]` is the answer `shiftwork_plan` would publish for the same
     # bytes, so the pointer and the batch view can no longer name different units. Plan
@@ -955,7 +1004,7 @@ def _clock_out_locked(
     # unchanged from before this job. On a linear chain `ready[0] == remaining[0]["id"]`,
     # which is why every case written before D3 keeps its value.
     remaining = [u for u in document["plan"]["units"] if u["status"] not in TERMINAL_UNIT_STATUS]
-    ready, batch_refusal = _ready(document)
+    ready, batch_refusal, declared = _ready(document)
     if ready:
         document["plan"]["cursor"] = ready[0]
     else:

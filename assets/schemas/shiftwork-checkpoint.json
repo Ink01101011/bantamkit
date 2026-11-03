@@ -87,6 +87,30 @@
                 "description": "Driver dispatch key: role -> model/allowed tools, set in driver config."
               },
               "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "attempts": {
+                "type": "array",
+                "maxItems": 3,
+                "description": "This unit's clock-outs, newest last, at most 3 (#259). Written by clock_out from its status and history_entry; clock_in hands them back as prior_attempts and as a dependant's upstream[].last.",
+                "items": {
+                  "type": "object",
+                  "required": ["status", "outcome"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {"type": "string", "enum": ["todo", "in_progress", "done", "blocked", "dropped"]},
+                    "outcome": {"type": "string", "minLength": 1},
+                    "notes": {"type": "string", "maxLength": 2000},
+                    "produced": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["kind", "ref"],
+                        "additionalProperties": false,
+                        "properties": {"kind": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1}}
+                      }
+                    }
+                  }
+                }
+              },
               "reviews": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
