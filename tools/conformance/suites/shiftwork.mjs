@@ -973,6 +973,24 @@ function j655Sessions() {
     // and the control: the same document with nothing in flight briefs `C` at once.
     ['touches/nothing-in-flight-briefs', b64(raw(inFlightDocument())), [IN('C')]],
 
+    // ---- #259. Unit results. Four clock-outs of A at `todo` (a rework each time) keep the
+    // newest three attempts and the next brief hands them back; a dependant's brief names each
+    // dependency's newest attempt in depends_on order, `last: null` for one with none; notes
+    // over 2000 code points are refused, writing nothing, and 2000 Thai characters pass.
+    ['results/attempts-cap-and-rework', b64(raw(resultsDocument())), [
+      ...[1, 2, 3, 4].map((n) => OUT('A', 'todo', { history_entry: b64(JSON.stringify({ unit: 'A', outcome: `try ${n}`, notes: `ลอง ${n}`, produced: [{ kind: 'commit', ref: `c${n}` }] })) })),
+      IN(),
+      ST(),
+    ]],
+    ['results/upstream', b64(raw(resultsDocument())), [
+      OUT('A', 'done', { history_entry: b64('{"unit": "A", "outcome": "a done"}') }),
+      IN('C'),
+    ]],
+    ['results/notes-cap', b64(raw(resultsDocument())), [
+      OUT('A', 'done', { history_entry: b64(JSON.stringify({ unit: 'A', outcome: 'done', notes: 'ก'.repeat(2001) })) }),
+      OUT('A', 'done', { history_entry: b64(JSON.stringify({ unit: 'A', outcome: 'done', notes: 'ก'.repeat(2000) })) }),
+    ]],
+
     // ---- #262. The budget: a brief the reservation leaves no room for is refused, writing
     // nothing, and the reserving unit's own relaunch is not; a 0-token line is refused unless
     // marked `estimate`, and passes on a checkpoint with no job.budget.
@@ -999,6 +1017,17 @@ function j655Sessions() {
     ]),
   ];
 }
+
+/**
+ * #259: `C` depends on `Z` then `A`, so `upstream` order is depends_on order, not plan order. `Z`
+ * is done by hand with no attempts — a unit finished before #259 — so its `last` is null.
+ */
+const resultsDocument = () => baseDocument({
+  plan: {
+    cursor: 'A',
+    units: [unit('A', []), unit('Z', [], { title: 'zed', status: 'done' }), unit('C', ['Z', 'A'])],
+  },
+});
 
 /** #262: `A` the cursor, `B` beside it, and `job.budget` when given. */
 const budgetDocument = (limit) => {
@@ -2746,6 +2775,24 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #259, per side: the cap, the rework's prior_attempts, the upstream order, the refusal.
+    const CAP = 'results/attempts-cap-and-rework';
+    row('results/rework-sees-the-newest-three', CAP, 4, ['try 2', 'try 3', 'try 4'],
+      (r) => (r.prior_attempts ?? []).map((a) => a.outcome));
+    row('results/an-attempt-keeps-notes-and-produced', CAP, 4,
+      { status: 'todo', outcome: 'try 4', notes: 'ลอง 4', produced: [{ kind: 'commit', ref: 'c4' }] },
+      (r) => (r.prior_attempts ?? [])[2] ?? null);
+    row('results/a-root-has-no-upstream', CAP, 4, [], (r) => r.upstream);
+    row('results/upstream-in-depends-on-order', 'results/upstream', 1, [
+      { unit: 'Z', title: 'zed', status: 'done', last: null },
+      { unit: 'A', title: 'unit A — with a dash', status: 'done', last: { status: 'done', outcome: 'a done' } },
+    ], (r) => r.upstream ?? null);
+    bit('results/notes-over-the-cap-refused', 'results/notes-cap', 0, 'error');
+    says('results/notes-over-the-cap-refused', 'results/notes-cap', 0,
+      'history_entry notes are 2001 code points; an attempt keeps at most 2000');
+    untouched('results/notes-over-the-cap-refused', 'results/notes-cap', 0);
+    bit('results/notes-at-the-cap-pass', 'results/notes-cap', 1, 'ok');
 
     // #262, per side: the D5 and D6 sentences, nothing written, and the passes beside them.
     const RESERVED = 'budget/clock-in-reserved-out';
