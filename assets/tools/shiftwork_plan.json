@@ -63,6 +63,20 @@
         "type": "object",
         "description": "Present only when job.budget is declared: the limit, what the log records as spent, units in flight (each reserving one unit and one per-unit estimate), what remains, the per-unit token estimate (the job's lower-median line, 60000 before any) and how many more units fit."
       },
+      "ranking": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        },
+        "description": "Present only for job.kind experimentation (#265): validated candidates as {id, score, sha}, score in experiment.direction then id; score is the reported string. A candidate is validated when a done unit that reviews it reported a validated-sha equal to the commit it submitted."
+      },
+      "winner": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "With ranking: the first candidate's id, null when none is validated."
+      },
       "held": {
         "type": "array",
         "items": {
