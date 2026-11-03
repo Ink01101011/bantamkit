@@ -574,6 +574,9 @@ async function approveSplit(name: string, p: Rec, home: string, cwd: string | nu
   }
   const level = entry['level'] === 'project' || entry['level'] === 'user' ? entry['level'] : null;
   const done: string[] = [];
+  // `install` marks its record `installed` in the in-memory doc; a back-out puts it back,
+  // or a later write would persist a cluster as installed that has no skill on disk
+  const before = recs.map((rec) => [rec as Rec, Object.hasOwn(rec as Rec, 'status'), (rec as Rec)['status']] as const);
   const backOut = (): void => {
     for (const n of [...done].reverse()) {
       try {
@@ -581,6 +584,10 @@ async function approveSplit(name: string, p: Rec, home: string, cwd: string | nu
       } catch (e) {
         if (!(e instanceof SkillFileError)) throw e;
       }
+    }
+    for (const [rec, had, status] of before) {
+      if (had) rec['status'] = status;
+      else delete rec['status'];
     }
   };
   for (let i = 0; i < recs.length; i++) {

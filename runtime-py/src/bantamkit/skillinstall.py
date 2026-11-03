@@ -1590,12 +1590,12 @@ def improve_step(
             if isinstance(pa, dict) and pa.get("kind") == "merge" and pa.get("with") == b2:
                 continue
             merges[a] = b2
-            events.append(f"proposed merging {a} with {b2}")
     splits = split_offers(skills, doc, marks, merges)
-    for name in sorted(splits):
-        events.append(f"proposed splitting {name}")
     if not marks and not merges and not splits:
         return events
+    # a merge or split is reported only once it is stored: the slot may have been taken in
+    # this run (an `improve` proposal from `apply_text`) after the snapshot it was offered on
+    stored: set[tuple[str, str]] = set()
 
     def change(fresh: dict[str, Any]) -> None:
         for name, (n, misses, tried, tune, prop) in marks.items():
@@ -1620,6 +1620,7 @@ def improve_step(
             e = fresh["skills"].get(a)
             if isinstance(e, dict) and _slot_free(e):
                 e["proposal"] = {"at": now, "kind": "merge", "status": "pending", "with": b2}
+                stored.add(("merge", a))
         for name, (into, total) in splits.items():
             e = fresh["skills"].get(name)
             if isinstance(e, dict) and _slot_free(e):
@@ -1630,8 +1631,13 @@ def improve_step(
                     "status": "pending",
                     "successes": total,
                 }
+                stored.add(("split", name))
 
     written = update_state(home, change)
+    events.extend(
+        f"proposed merging {a} with {b2}" for a, b2 in merges.items() if ("merge", a) in stored
+    )
+    events.extend(f"proposed splitting {n}" for n in sorted(splits) if ("split", n) in stored)
     state.clear()
     state.update(written)
     return events
