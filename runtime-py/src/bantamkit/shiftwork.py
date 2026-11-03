@@ -404,7 +404,8 @@ def _run_output_refusal(unit: dict, status: str, history_entry: Any) -> str | No
     if status != "done" or not (unit.get("tests") or unit.get("replay_of")):
         return None
     produced = history_entry.get("produced") if isinstance(history_entry, dict) else None
-    kinds = [p.get("kind") for p in produced or [] if isinstance(p, dict)]
+    items = produced if isinstance(produced, list) else []  # any other shape: the schema's
+    kinds = [p.get("kind") for p in items if isinstance(p, dict)]
     if "run-output" in kinds:
         return None
     return f"run {unit['id']} produced no run-output; record what it observed"
