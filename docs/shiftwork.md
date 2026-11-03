@@ -77,7 +77,8 @@ refused exactly as before.
    session overwrites it (the empty string is a legal overwrite).
 7. **`handoff.open_questions` is the autonomy switch.** Empty = the driver
    keeps cycling. Non-empty = the driver stops and surfaces to the user. One
-   field decides clock-out vs escalate.
+   field decides clock-out vs escalate. Since #225 a question may be a `relay`
+   that `shiftwork_clock_in` answers itself by running its probe (below).
 8. **Atomic single-writer discipline.** Only the clocking-out session writes,
    via temp-file + rename. The reader validates `version` first and refuses
    unknown majors. Under the driver no separate checkpoint lock is needed:
@@ -855,6 +856,39 @@ Every change that moved something appends one `retro[]` entry:
 Unlike `handoff.do_not`, which `handoff_patch` overwrites whole, the list keeps a
 record of who added what. Per job only: no lesson mining, no DoD policies. Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-agreements-design.md`.
+
+#### Never block on the human: relay questions, irreversible units, `prove` (#225)
+
+A `handoff.open_questions` entry is a bare string — a **decision**, the user's,
+exactly as before — or `{q, kind: "relay" | "decision", probe?}`. A **relay** is a
+question a command can answer ("did CI pass?", "is the tag pushed?"): before
+deciding to escalate, `shiftwork_clock_in` runs each relay's `probe` through the
+shell from the repo root (the nearest ancestor of the checkpoint holding `.git`),
+30 s timeout. Exit 0 answers it, and one `{event: "resolved", ts, q, probe}` line
+is appended to `<checkpoint>.log.jsonl`, so the escalation it replaced is counted.
+The call escalates only when a decision, or a relay whose probe failed, timed out
+or could not start, remains — with `reason` naming the first such question and
+`open_questions` the list unchanged. A passing relay never hides a decision behind
+it. `clock_out` refuses a relay added with no probe, nothing written:
+
+    relay question has no probe: <q>
+
+A unit that does something that cannot be undone names the verb in
+`plan.units[].irreversible` (merge, tag, publish, delete-branch) and a
+`plan.units[].prove` command, run against the BUILT artifact (packed tarball,
+installed wheel), beside `verify`, which checks the source. `job.authorized` lists
+the verbs the user granted, once, at plan time. `shiftwork_clock_in`, after the
+readiness test and before the `touches` hold, answers:
+
+    unit <id> is irreversible (<verb>) and names no prove command           (error)
+    unit <id> is irreversible (<verb>); job.authorized does not grant <verb>   (escalate)
+
+The second only when `job.authorized` is declared — an empty list grants nothing;
+absent keeps today's clock-in. Every key is optional, so a checkpoint written
+before #225 validates and behaves unchanged. Both runtimes, gated by the
+`never-block/*` sessions and per-side literals in
+`node tools/conformance/run.mjs --suite shiftwork`; disabling the three checks on
+either side reddens 27 cases.
 
 ### Spending the width: `clock_in(unit_id)` (job60)
 

@@ -39,6 +39,11 @@
             "description": "The model identifiers this role may report, spelled exactly as a session logs them. Non-empty: a role allowed no model is a typo, not a policy."
           }
         },
+        "authorized": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "OPTIONAL (#225). The irreversible verbs the user granted for this job (merge, tag, publish, ...), written once at plan time. Declared, clock_in escalates on a unit whose `irreversible` verb is not listed; absent keeps today's behaviour."
+        },
         "agreements": {
           "type": "array",
           "maxItems": 20,
@@ -121,6 +126,16 @@
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
                 "description": "Unit ids this unit reviews (#263). Optional. Each must be declared, be in this unit's depends_on, and have a different role from this unit; the batch view, clock_in and clock_out refuse a checkpoint that breaks any of the three."
+              },
+              "irreversible": {
+                "type": "string",
+                "minLength": 1,
+                "description": "OPTIONAL (#225). The verb of an action that cannot be undone (merge, tag, publish, delete-branch). clock_in refuses such a unit without `prove`, and escalates when job.authorized is declared and does not list the verb."
+              },
+              "prove": {
+                "type": "string",
+                "minLength": 1,
+                "description": "OPTIONAL (#225). A command run against the BUILT artifact (packed tarball, installed wheel), beside `verify`, which checks the source. Required on an `irreversible` unit."
               },
               "touches": {
                 "type": "array",
@@ -236,8 +251,23 @@
         },
         "open_questions": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1},
-          "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask."
+          "items": {
+            "anyOf": [
+              {"type": "string", "minLength": 1, "description": "A decision question: the user's to answer."},
+              {
+                "type": "object",
+                "required": ["q", "kind"],
+                "additionalProperties": false,
+                "description": "#225: a question with a kind. `decision` is the user's; `relay` is answered by its `probe` (shell, exit 0 = answered), which clock_in runs before deciding to escalate.",
+                "properties": {
+                  "q": {"type": "string", "minLength": 1, "description": "The question."},
+                  "kind": {"type": "string", "enum": ["relay", "decision"], "description": "`decision` needs the user; `relay` needs only its probe run."},
+                  "probe": {"type": "string", "minLength": 1, "description": "Shell command run from the repo root; exit 0 answers a relay question. Required on a relay: clock_out refuses one without it."}
+                }
+              }
+            ]
+          },
+          "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask — unless every entry is a relay question its probe answers (#225)."
         },
         "do_not": {
           "type": "array",

@@ -88,9 +88,12 @@
       "open_questions": {
         "type": "array",
         "items": {
-          "type": "string"
+          "anyOf": [
+            {"type": "string", "description": "A decision question."},
+            {"type": "object", "description": "A question with a kind (#225): {q, kind: relay|decision, probe}. Escalation happens only for a decision or a relay whose probe did not exit 0; an answered relay is logged as a `resolved` ledger event."}
+          ]
         },
-        "description": "With result `escalate`: the questions the orchestrator must put to the user before any unit runs."
+        "description": "With result `escalate`: the questions the orchestrator must put to the user before any unit runs. An irreversible unit whose verb job.authorized does not grant also escalates (#225), with no open_questions."
       },
       "reason": {
         "type": "string",

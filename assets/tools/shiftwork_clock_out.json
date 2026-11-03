@@ -43,10 +43,21 @@
           "open_questions": {
             "type": "array",
             "items": {
-              "type": "string",
-              "minLength": 1
+              "anyOf": [
+                {"type": "string", "minLength": 1, "description": "A decision question: the user's to answer."},
+                {
+                  "type": "object",
+                  "required": ["q", "kind"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "q": {"type": "string", "minLength": 1, "description": "The question."},
+                    "kind": {"type": "string", "enum": ["relay", "decision"], "description": "`decision` needs the user; `relay` is answered by its probe."},
+                    "probe": {"type": "string", "minLength": 1, "description": "Shell command run from the repo root by clock_in; exit 0 answers the relay. Required on a relay, or nothing is written."}
+                  }
+                }
+              ]
             },
-            "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask."
+            "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask. A bare string is a decision; a `relay` question carries a `probe` that clock_in runs instead of escalating (#225)."
           },
           "do_not": {
             "type": "array",

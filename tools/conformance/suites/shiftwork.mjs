@@ -1024,6 +1024,25 @@ function j655Sessions() {
       AG_OUT({ adopt: ['a0'] }),
     ]],
 
+    // ---- #225. Never block on the human. A bare string still escalates; a relay its probe
+    // answers (run from the session dir, the repo root here) briefs and logs `resolved`; a
+    // failing probe escalates with the relay's text; a passing relay does not hide a decision;
+    // a relay with no probe is refused at clock-out, writing nothing; an irreversible unit
+    // needs `prove`, and under job.authorized its verb must be granted.
+    ['never-block/bare-string-decision', b64(raw(neverBlockDocument({ questions: ['ship it? — ส่งเลยไหม'] }))), [IN()]],
+    ['never-block/relay-answered', b64(raw(neverBlockDocument({ questions: [RELAY] }))), [PLANT_MARKER, IN()]],
+    ['never-block/relay-unanswered', b64(raw(neverBlockDocument({ questions: [RELAY] }))), [IN()]],
+    ['never-block/relay-then-decision', b64(raw(neverBlockDocument({ questions: [{ q: 'r?', kind: 'relay', probe: 'true' }, { q: 'ตัดสินใจ?', kind: 'decision' }] }))), [IN()]],
+    ['never-block/relay-without-probe', b64(raw(neverBlockDocument())), [
+      OUT('A', 'done', { handoff_patch: b64(JSON.stringify({ open_questions: [{ q: 'does CI pass?', kind: 'relay' }] })), history_entry: b64('{"unit": "A", "outcome": "done"}') }),
+      OUT('A', 'done', { handoff_patch: b64(JSON.stringify({ open_questions: [{ q: 'does CI pass?', kind: 'relay', probe: 'true' }] })), history_entry: b64('{"unit": "A", "outcome": "done"}') }),
+    ]],
+    ['never-block/irreversible-without-prove', b64(raw(neverBlockDocument({ unit: { irreversible: 'publish' } }))), [IN()]],
+    ['never-block/verb-not-granted', b64(raw(neverBlockDocument({ job: { authorized: ['merge', 'tag'] }, unit: { irreversible: 'publish', prove: 'true' } }))), [IN()]],
+    ['never-block/empty-grant', b64(raw(neverBlockDocument({ job: { authorized: [] }, unit: { irreversible: 'merge', prove: 'true' } }))), [IN()]],
+    ['never-block/verb-granted', b64(raw(neverBlockDocument({ job: { authorized: ['merge'] }, unit: { irreversible: 'merge', prove: 'true' } }))), [IN()]],
+    ['never-block/no-grant-declared', b64(raw(neverBlockDocument({ unit: { irreversible: 'merge', prove: 'true' } }))), [IN()]],
+
     // ---- #262. The budget: a brief the reservation leaves no room for is refused, writing
     // nothing, and the reserving unit's own relaunch is not; a 0-token line is refused unless
     // marked `estimate`, and passes on a checkpoint with no job.budget.
@@ -1061,6 +1080,16 @@ const resultsDocument = () => baseDocument({
     units: [unit('A', []), unit('Z', [], { title: 'zed', status: 'done' }), unit('C', ['Z', 'A'])],
   },
 });
+
+/** #225: `A` the cursor, `B` beside it; open questions, job keys and A's keys as given. */
+const neverBlockDocument = ({ questions = [], job = {}, unit: extra = {} } = {}) => {
+  const document = baseDocument({ plan: { cursor: 'A', units: [unit('A', [], extra), unit('B', [])] } });
+  Object.assign(document.job, job);
+  document.handoff.open_questions = questions;
+  return document;
+};
+const RELAY = { q: 'is the marker there? — มีไหม', kind: 'relay', probe: 'test -f marker' };
+const PLANT_MARKER = { fn: 'plant', path: 'marker', content: b64('x\n') };
 
 /** #261: `A` the cursor, `B` beside it, and `job.agreements` when given. */
 const agreementsDocument = (agreements) => {
@@ -2845,6 +2874,30 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #225, per side: every bit and sentence, the `resolved` line, and nothing written on a refusal.
+    const resolvedLines = (r, raw) => (raw.log === null ? [] : unb64(raw.log).trim().split('\n').map((l) => JSON.parse(l))
+      .filter((l) => l.event === 'resolved').map((l) => [l.q, l.probe, l.ts]));
+    says('never-block/bare-string-escalates', 'never-block/bare-string-decision', 0, 'open question: ship it? — ส่งเลยไหม');
+    bit('never-block/relay-answered-briefs', 'never-block/relay-answered', 1, 'brief');
+    row('never-block/relay-answered-is-logged', 'never-block/relay-answered', 1,
+      [['is the marker there? — มีไหม', 'test -f marker', '2025-08-23T06:20:00Z']], resolvedLines);
+    says('never-block/relay-unanswered-escalates', 'never-block/relay-unanswered', 0, 'open question: is the marker there? — มีไหม');
+    untouched('never-block/relay-unanswered', 'never-block/relay-unanswered', 0);
+    says('never-block/relay-does-not-hide-a-decision', 'never-block/relay-then-decision', 0, 'open question: ตัดสินใจ?');
+    says('never-block/relay-without-probe', 'never-block/relay-without-probe', 0, 'relay question has no probe: does CI pass?');
+    untouched('never-block/relay-without-probe', 'never-block/relay-without-probe', 0);
+    bit('never-block/relay-with-probe-clocks-out', 'never-block/relay-without-probe', 1, 'ok');
+    says('never-block/irreversible-without-prove', 'never-block/irreversible-without-prove', 0,
+      'unit A is irreversible (publish) and names no prove command');
+    untouched('never-block/irreversible-without-prove', 'never-block/irreversible-without-prove', 0);
+    says('never-block/verb-not-granted', 'never-block/verb-not-granted', 0,
+      'unit A is irreversible (publish); job.authorized does not grant publish');
+    bit('never-block/verb-not-granted-escalates', 'never-block/verb-not-granted', 0, 'escalate');
+    untouched('never-block/verb-not-granted', 'never-block/verb-not-granted', 0);
+    bit('never-block/empty-grant-escalates', 'never-block/empty-grant', 0, 'escalate');
+    bit('never-block/verb-granted-briefs', 'never-block/verb-granted', 0, 'brief');
+    bit('never-block/no-grant-declared-briefs', 'never-block/no-grant-declared', 0, 'brief');
 
     // #261, per side: the brief key, the retro entry, both refusals with nothing written.
     row('agreements/the-next-brief-carries-them', 'agreements/adopt-then-brief', 1,
