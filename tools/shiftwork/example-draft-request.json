@@ -1,0 +1,78 @@
+{
+  "job": {
+    "id": "job-example",
+    "goal": "fix the bug the ticket names and ship it",
+    "done_definition": "the regression test passes on both runtimes and the PR is merged",
+    "constraints": [
+      "both runtimes in the same job",
+      "one branch per issue off main"
+    ],
+    "roles": {
+      "implementer": [
+        "claude-opus-5-5"
+      ],
+      "reviewer": [
+        "claude-opus-5-5"
+      ]
+    }
+  },
+  "repo": {
+    "branch": "fix/example",
+    "head_sha": "0000000",
+    "dirty": false
+  },
+  "tickets": [
+    {
+      "id": "U1-py",
+      "title": "Python fix and a test that fails before it",
+      "role": "implementer",
+      "verify": ".venv/bin/python -m pytest runtime-py/tests -q",
+      "data_shape": "runtime-py/src/bantamkit/<module>.py: the function the bug lives in; its return dict {result, reason}",
+      "brief": "Reproduce the bug in a test first, then fix it in the Python runtime only.",
+      "touches": [
+        "runtime-py/src/bantamkit/<module>.py"
+      ]
+    },
+    {
+      "id": "U2-ts",
+      "title": "Node fix, same behaviour",
+      "role": "implementer",
+      "verify": "cd runtime-ts && npm test",
+      "data_shape": "runtime-ts/src/<module>.ts: the same function, the same {result, reason}",
+      "brief": "Port the fix; the sentence and the shape match the Python half byte for byte.",
+      "touches": [
+        "runtime-ts/src/<module>.ts"
+      ]
+    },
+    {
+      "id": "U3-gate",
+      "title": "Conformance case proven red, docs, PR",
+      "role": "reviewer",
+      "depends_on": [
+        "U1-py",
+        "U2-ts"
+      ],
+      "reviews": [
+        "U1-py",
+        "U2-ts"
+      ],
+      "verify": "node tools/conformance/run.mjs --all",
+      "data_shape": "tools/conformance/suites/<suite>.mjs: one case per side pinning the sentence",
+      "brief": "Add the case, mutate each side to prove it red, write the docs, open the PR."
+    }
+  ],
+  "checkpoint": ".shiftwork/checkpoint.json",
+  "briefs_dir": ".shiftwork/briefs",
+  "handoff": {
+    "do_not": [
+      "Do not publish to npm or PyPI without the user"
+    ]
+  },
+  "artifacts": [
+    {
+      "path": "docs/superpowers/specs/example-spec.md",
+      "role": "spec"
+    }
+  ],
+  "write": false
+}

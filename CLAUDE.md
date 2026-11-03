@@ -60,7 +60,8 @@ run its agent spawns through the shiftwork MCP tools:
 
 1. Plan once into a schema-valid checkpoint (convention:
    `.shiftwork/checkpoint.json`; template:
-   `tools/shiftwork/example-codefix-checkpoint.json`).
+   `tools/shiftwork/example-codefix-checkpoint.json`). `shiftwork_draft` may do this
+   step: tickets in, checkpoint and briefs out (#226, `docs/shiftwork.md`).
 2. Per unit: `shiftwork_clock_in` → spawn the subagent with the returned
    brief verbatim → `shiftwork_clock_out` with status, handoff patch,
    history entry, and accounting (tokens, duration_ms, and the model actually

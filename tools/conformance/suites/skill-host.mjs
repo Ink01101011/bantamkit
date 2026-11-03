@@ -1005,7 +1005,7 @@ export async function run(ctx) {
     return [e?.code ?? null, e?.message ?? null];
   });
   // AMENDED job73 C12 (#206 Task 11): 2 -> 3 prompts.
-  wireLiteral('status line 3 counts 3 prompts', 'serving 15 tools, 3 prompts, 2 resource templates', (s) => (W('claude-full', 6)(s)?.result?.content?.[0]?.text ?? '').split('\n')[2] ?? null);
+  wireLiteral('status line 3 counts 3 prompts', 'serving 16 tools, 3 prompts, 2 resource templates', (s) => (W('claude-full', 6)(s)?.result?.content?.[0]?.text ?? '').split('\n')[2] ?? null);
   wireLiteral('claude-full: settings.json byte-identical after the prompt ran (K2)', 'byte-identical', (s) => wire['claude-full'].kept[s]);
 
   notes.push(`${BEDS.length} beds, both runtimes, over identical paths under ${join(ctx.scratch, 'skill-host')}`);

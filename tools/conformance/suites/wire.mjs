@@ -45,7 +45,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pep440ToSemver } from './version.mjs';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: fifteen tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: sixteen tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));

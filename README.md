@@ -295,7 +295,7 @@ means an old process. Per-install table: [npm README → Updating](runtime-ts/RE
 
 ## 🧰 What it serves
 
-Both servers serve the same 15 tools, three prompts and two resource templates
+Both servers serve the same 16 tools, three prompts and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`). The prompts are what a person invokes from
 the host's slash menu: `bantamkit_status` (the status report), `skill_audit` (#205: gathers the
 skills this host loads, audits them, and inserts the report plus a proposed `settings.json` change
