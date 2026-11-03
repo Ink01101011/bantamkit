@@ -215,6 +215,8 @@ def main() -> None:
                     answer = shiftwork.clock_in(target, call.get("unit_id"))
                 elif fn == "status":
                     answer = shiftwork.status(target)
+                elif fn == "plan":  # #265: the ranking is read off the batch view
+                    answer = shiftwork.plan_batches(target)
                 elif fn == "clock_out":
                     CLOCK.now = call["now"]
                     answer = shiftwork.clock_out(

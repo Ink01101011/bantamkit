@@ -221,3 +221,14 @@ def test_a_plan_outside_an_experiment_has_no_ranking(tmp_path):
     del doc["job"]["kind"], doc["job"]["experiment"]
     path.write_text(json.dumps(doc), encoding="utf-8")
     assert "ranking" not in ops.plan_batches(str(path))
+
+
+def test_the_experimentation_template_validates_and_plans(tmp_path):
+    from pathlib import Path
+
+    template = Path(__file__).parents[2] / "tools/shiftwork/example-experimentation-checkpoint.json"
+    path = tmp_path / "checkpoint.json"
+    path.write_bytes(template.read_bytes())
+    answer = ops.plan_batches(str(path))
+    assert answer["batches"] == [["EX1", "EX2"], ["EV1", "EV2"]]
+    assert (answer["ranking"], answer["winner"]) == ([], None)

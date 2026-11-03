@@ -163,3 +163,12 @@ test('the ranking names validated candidates only', () => {
 test('a plan outside an experiment has no ranking', () => {
   assert.ok(!('ranking' in plans(write({ units: [unit('A'), unit('B')], drop: ['kind', 'experiment'] }))));
 });
+
+test('the experimentation template validates and plans', () => {
+  const template = new URL('../../tools/shiftwork/example-experimentation-checkpoint.json', import.meta.url);
+  const path = join(mkdtempSync(join(tmpdir(), 't265-')), 'checkpoint.json');
+  writeFileSync(path, readFileSync(template));
+  const answer = plans(path);
+  assert.deepEqual(answer.batches, [['EX1', 'EX2'], ['EV1', 'EV2']]);
+  assert.deepEqual([answer.ranking, answer.winner], [[], null]);
+});
