@@ -973,6 +973,22 @@ function j655Sessions() {
     // and the control: the same document with nothing in flight briefs `C` at once.
     ['touches/nothing-in-flight-briefs', b64(raw(inFlightDocument())), [IN('C')]],
 
+    // ---- #262. The budget: a brief the reservation leaves no room for is refused, writing
+    // nothing, and the reserving unit's own relaunch is not; a 0-token line is refused unless
+    // marked `estimate`, and passes on a checkpoint with no job.budget.
+    ['budget/clock-in-reserved-out', b64(raw(budgetDocument({ units: 1 }))), [
+      LEDGER(L_BRIEF_B),
+      IN('A'),
+      IN('B'),
+    ]],
+    ['budget/zero-tokens', b64(raw(budgetDocument({ tokens: 1000000 }))), [
+      OUT('A', 'done', { history_entry: b64('{"unit": "A", "outcome": "done"}'), accounting: b64('{"tokens": 0, "duration_ms": 1}') }),
+      OUT('A', 'done', { history_entry: b64('{"unit": "A", "outcome": "done"}'), accounting: b64('{"tokens": 0, "duration_ms": 1, "estimate": true}') }),
+    ]],
+    ['budget/zero-tokens-without-budget', b64(raw(budgetDocument(null))), [
+      OUT('A', 'done', { history_entry: b64('{"unit": "A", "outcome": "done"}'), accounting: b64('{"tokens": 0, "duration_ms": 1}') }),
+    ]],
+
     // ---- #263. Review independence on clock_in and clock_out (the batch view's own is in the
     // workplan suite): the default call, the named call, and the cursor's clock-out — which
     // must refuse BY NAME, since its graph read falls back to plan order — then status.
@@ -983,6 +999,14 @@ function j655Sessions() {
     ]),
   ];
 }
+
+/** #262: `A` the cursor, `B` beside it, and `job.budget` when given. */
+const budgetDocument = (limit) => {
+  const document = baseDocument({ plan: { cursor: 'A', units: [unit('A', []), unit('B', [])] } });
+  if (limit !== null) document.job.budget = limit;
+  return document;
+};
+const L_BRIEF_B = '{"event": "brief", "role": "implementer", "ts": "x", "unit": "B"}';
 
 /** #263: one document per review-independence sentence, `A` the cursor in each. */
 const REVIEW_DOCS = [
@@ -2722,6 +2746,19 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #262, per side: the D5 and D6 sentences, nothing written, and the passes beside them.
+    const RESERVED = 'budget/clock-in-reserved-out';
+    bit('budget/clock-in-refused', RESERVED, 1, 'error');
+    says('budget/clock-in-refused', RESERVED, 1, 'budget units spent: 1 of 1; raise job.budget or stop the job');
+    trail('budget/clock-in-refusal-writes-nothing', RESERVED, 1, ['brief B']);
+    briefed('budget/relaunch-does-not-reserve-against-itself', RESERVED, 2, 'B');
+    bit('budget/zero-tokens-refused', 'budget/zero-tokens', 0, 'error');
+    says('budget/zero-tokens-refused', 'budget/zero-tokens', 0,
+      "accounting for A reports 0 tokens; record the host's figure, or mark it estimate");
+    untouched('budget/zero-tokens-refused', 'budget/zero-tokens', 0);
+    bit('budget/zero-tokens-marked-estimate', 'budget/zero-tokens', 1, 'ok');
+    bit('budget/zero-tokens-without-budget', 'budget/zero-tokens-without-budget', 0, 'ok');
 
     // #263, per side: each sentence from clock_in (both paths) and from clock_out, nothing
     // written, the cursor unmoved.

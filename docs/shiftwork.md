@@ -742,6 +742,46 @@ two roles may share one. The code-fix template's reviewer declares
 `reviews: ["CF3"]`. Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-review-independence-design.md`.
 
+#### `job.budget`: price the next unit, refuse what does not fit (#262)
+
+```json
+"job": {"id": "job76", "budget": {"tokens": 3000000, "units": 40, "wallclock_ms": 36000000}}
+```
+
+Declare one to three dimensions (positive integers). Absent, nothing below
+happens and every answer keeps its bytes. Declared, the runtime reads the
+accounting back from `<checkpoint>.log.jsonl`:
+
+- **spent** — `tokens` summed over accounting lines, `units` = number of lines,
+  `wallclock_ms` = summed `duration_ms`. A `brief` event is not a cost, and an
+  `uncommitted` event (job65) annuls its unit's line just above it.
+- **per_unit** — the job's own lower-median `tokens` line (one of the recorded
+  integers, so neither runtime rounds it), `60000` before any is recorded. Priced
+  per call, because Claude Code's Agent tool reports one all-inclusive total per
+  call whatever the unit's size.
+- **in flight** — every unit briefed since its own last clock-out reserves one
+  unit and one `per_unit` of tokens, so a wave briefed at once cannot overspend
+  between its briefs.
+
+`shiftwork_plan` then adds
+`budget: {limit, spent, in_flight, remaining, per_unit, affordable}` —
+`affordable` is how many more units fit the tightest dimension (wallclock priced
+at the lower-median positive `duration_ms`, left out while there is none; `null`
+when nothing can price a unit). `clock_in` refuses, last of all its checks and
+writing nothing, when tokens remaining fall below `per_unit` or units/wallclock
+remaining reach zero (a relaunch does not reserve against itself):
+
+    budget <dim> spent: <spent incl. reserved> of <limit>; raise job.budget or stop the job
+
+And `clock_out` refuses a line reporting `tokens: 0` unless it carries
+`estimate: true`, because a self-reported zero bends every later figure:
+
+    accounting for <unit> reports 0 tokens; record the host's figure, or mark it estimate
+
+The arithmetic is Layer 1, `jobbudget.py` / `jobbudget.ts` (not `budget.py`,
+which is the agent's TokenBudget governor). Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-budget-design.md`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to
