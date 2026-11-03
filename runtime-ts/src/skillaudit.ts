@@ -69,7 +69,7 @@
  *      overage arithmetic is done in `bigint`. `catalogueBytes` is a byte count and a
  *      `number`.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import { BantamError } from './errors.js';
@@ -348,6 +348,10 @@ interface Skill {
   /** A `BAD_*` token when the frontmatter is malformed, `null` when it is not. */
   malformed: string | null;
   phrases: readonly string[];
+  /** Reached through a symlinked directory (#245); `dropAliases` reads it. */
+  linked: boolean;
+  /** The real path of the directory holding the file, compared and never reported. */
+  real: string;
 }
 
 const inPlugin = (s: Skill): boolean => s.plugin !== '';
@@ -368,61 +372,93 @@ const descriptionBytes = (s: Skill): number => Buffer.byteLength(s.description, 
 
 // ------------------------------------------------------------------------------ the scan
 
+/** `os.path.realpath`: the real path, or the path as given when it cannot be resolved. */
+function realOf(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 /**
- * One walk, two answers: every `SKILL.md` under `root` as relative path parts, and every
- * VERSION DIRECTORY, both in a fixed order.
+ * One walk, three answers: every `SKILL.md` under `root` as relative path parts, every
+ * VERSION DIRECTORY, and which of those files were reached THROUGH a symlinked directory.
  *
- * `readdirSync` hands back directory entries in whatever order the filesystem chose, and two
- * machines choose differently. Sorting is what makes the scan order — and therefore the
- * omission `what` lists and the duplicate tie-break's "last wins" — the same everywhere.
- * Symlinked directories are listed and NOT descended into, which is `os.walk`'s
- * `followlinks=False`; a symlink loop is not a skill catalogue. A directory that will not
- * open is skipped in silence, which is `onerror=None`.
+ * The walk is depth-first with each directory's entries in code-point order, and `files` is
+ * sorted by path parts after it, which is the same order. Sorting is what makes the scan
+ * order — and therefore the omission `what` lists, the duplicate tie-break's "last wins" and
+ * which of two links to one directory is walked — the same everywhere. A directory that will
+ * not open is skipped in silence, which is `os.walk`'s `onerror=None`.
+ *
+ * SYMLINKED DIRECTORIES ARE FOLLOWED (#245, #234 N4). A skill directory a person linked into
+ * `~/.claude/skills` is loaded by the host every session, so a walk that stops at the link
+ * under-reports the catalogue by every such skill. A directory is NOT walked when its real
+ * path is on the chain of real directories above it (a link back to an ancestor: the loop),
+ * and a link is not walked when an earlier link in this walk already entered its real
+ * directory (two links to one directory: the second is not walked). A dangling link is not a
+ * directory and is passed over; only a dangling link NAMED `SKILL.md` is listed, and it is
+ * then `unreadable`, as before. `dropAliases` later drops a linked file whose real directory
+ * is already counted, so a skill is counted once per real directory.
  *
  * THE SECOND ANSWER IS WHY THIS IS NOT JUST A FILE LIST. A version directory declares itself
  * by holding a `skills/` directory, and it declares itself whether or not anything under it
  * can be read. Resolving over the files instead makes an EMPTY newer version invisible, so an
- * older directory wins in silence; see `resolveVersions`. Only a directory this walk DESCENDS
- * INTO is recorded, which is exactly the set `os.walk` yields as a `dirpath`, so a symlinked
- * `skills/` declares nothing on either runtime.
+ * older directory wins in silence; see `resolveVersions`. A directory reached through a
+ * symlink declares itself like any other, because every skill under it carries that version.
  */
-function scanTree(root: string): { files: string[][]; versions: string[][] } {
+function scanTree(root: string): { files: string[][]; versions: string[][]; linked: Set<string> } {
   const found: string[][] = [];
   const versions: string[][] = [];
-  const pending: string[][] = [[]];
-  while (pending.length > 0) {
-    const rel = pending.pop()!;
+  const linked = new Set<string>();
+  const entered = new Set<string>();
+  const visit = (rel: string[], chain: ReadonlySet<string>, viaLink: boolean): void => {
+    const here = join(root, ...rel);
+    let entries;
+    try {
+      entries = readdirSync(here, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => cmpCodepoint(a.name, b.name));
     if (rel.length === VERSION_PATH_SEGMENTS && rel[3] === SKILLS_SEGMENT) {
       versions.push([rel[0]!, rel[1]!, rel[2]!]);
     }
-    let entries;
-    try {
-      entries = readdirSync(join(root, ...rel), { withFileTypes: true });
-    } catch {
-      continue;
-    }
     for (const entry of entries) {
       const link = entry.isSymbolicLink();
-      // `os.scandir`'s `is_dir()` FOLLOWS a symlink (and answers False when the stat fails),
-      // which is what decides whether the name lands in `dirnames` or in `filenames`.
+      // `os.scandir`'s `is_dir()` FOLLOWS a symlink (and answers False when the stat fails).
       let directory = entry.isDirectory();
       if (link) {
         try {
-          directory = statSync(join(root, ...rel, entry.name)).isDirectory();
+          directory = statSync(join(here, entry.name)).isDirectory();
         } catch {
           directory = false;
         }
       }
-      if (directory) {
-        if (!link) pending.push([...rel, entry.name]);
-      } else if (entry.name === SKILL_FILE) {
-        found.push([...rel, entry.name]);
+      if (!directory) {
+        if (entry.name === SKILL_FILE) {
+          const parts = [...rel, entry.name];
+          found.push(parts);
+          if (viaLink) linked.add(parts.join('/'));
+        }
+        continue;
+      }
+      const real = realOf(join(here, entry.name));
+      if (chain.has(real)) continue;
+      const next = new Set(chain).add(real);
+      if (link) {
+        if (entered.has(real)) continue;
+        entered.add(real);
+        visit([...rel, entry.name], next, true);
+      } else {
+        visit([...rel, entry.name], next, viaLink);
       }
     }
-  }
+  };
+  visit([], new Set([realOf(root)]), false);
   found.sort(cmpParts);
   versions.sort(cmpParts);
-  return { files: found, versions };
+  return { files: found, versions, linked };
 }
 
 // -------------------------------------------------------------- the whole-value scalar
@@ -658,6 +694,8 @@ function load(root: string, parts: readonly string[]): Skill {
     omitted: null,
     malformed: null,
     phrases: [],
+    linked: false,
+    real: '',
   };
   if (parts.length === PLUGIN_PATH_SEGMENTS && parts[3] === SKILLS_SEGMENT) {
     skill.marketplace = parts[0]!;
@@ -829,6 +867,36 @@ function applyDedupe(found: Skill[]): void {
 // ------------------------------------------------------------------------- the findings
 
 /** Phrases held by two or more skills. Routers are not in this index at all. */
+/** Stamp how the walk reached `parts`: through a link or not, and the real directory. */
+function reach(skill: Skill, root: string, parts: readonly string[], linked: ReadonlySet<string>): Skill {
+  skill.linked = linked.has(parts.join('/'));
+  skill.real = realOf(join(root, ...parts.slice(0, -1)));
+  return skill;
+}
+
+/**
+ * One counted skill per REAL directory (#245): a skill reached through a symlink is dropped
+ * when its real directory is already counted — by a skill reached without a link anywhere in
+ * the scan, or by an earlier linked one in scan order. Runs after the version resolution and
+ * before the name dedupe, and removes the alias rather than recording an omission: one
+ * directory on disk is one skill, not a duplicate of itself. A skill reached WITHOUT a link is
+ * never dropped, so overlapping roots behave as before, and a skill #206 promoted by symlink is
+ * still counted once, at its source. The reference's `_drop_aliases`.
+ */
+function dropAliases(found: readonly Skill[]): Skill[] {
+  const direct = new Set(found.filter((s) => s.omitted === null && !s.linked).map((s) => s.real));
+  const seen = new Set<string>();
+  const out: Skill[] = [];
+  for (const skill of found) {
+    if (skill.omitted === null && skill.linked) {
+      if (direct.has(skill.real) || seen.has(skill.real)) continue;
+      seen.add(skill.real);
+    }
+    out.push(skill);
+  }
+  return out;
+}
+
 function sharedPhraseFindings(counted: readonly Skill[]): Finding[] {
   const index = new Map<string, string[]>();
   for (const skill of counted) {
@@ -941,9 +1009,10 @@ function decide(
   versions: ReadonlyMap<string, string> | null,
 ): Skill[] {
   const tree = scanTree(root);
-  const found = tree.files.map((parts) => load(root, parts));
+  let found = tree.files.map((parts) => reach(load(root, parts), root, parts, tree.linked));
   applyEnabled(found, enabled);
   resolveVersions(found, tree.versions, versions);
+  found = dropAliases(found);
   applyDedupe(found);
   return found;
 }
@@ -1087,12 +1156,12 @@ function decideMany(
   enabled: readonly string[] | null,
   versions: ReadonlyMap<string, string> | null,
 ): Skill[] {
-  const found: Skill[] = [];
+  let found: Skill[] = [];
   const versionDirs: string[][] = [];
   for (const { label, path: root } of roots) {
     const tree = scanTree(root);
     for (const parts of tree.files) {
-      const skill = load(root, parts);
+      const skill = reach(load(root, parts), root, parts, tree.linked);
       skill.relpath = `${label}/${skill.relpath}`;
       found.push(skill);
     }
@@ -1101,6 +1170,7 @@ function decideMany(
   versionDirs.sort(cmpParts);
   applyEnabled(found, enabled);
   resolveVersions(found, versionDirs, versions);
+  found = dropAliases(found);
   applyDedupe(found);
   return found;
 }

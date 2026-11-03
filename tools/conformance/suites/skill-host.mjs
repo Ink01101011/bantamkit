@@ -831,6 +831,14 @@ export async function run(ctx) {
       ],
       (a, s) => G(4)(a, s).split('\n').filter((l) => l.includes('generated') || l.includes('[skill] layer')).filter((l) => !l.startsWith('- low')),
     );
+    // #245 (#234 C15): `skills` counts the layer and `catalogue_bytes` does not, so the status
+    // line says how many of its skills are outside the bytes. A bed with no layer prints as before
+    // (`report-full`'s status literal above).
+    literal(
+      'generated: the status line states the layer split between its skills and its bytes (#245)',
+      "skill audit: last ran 2026-10-16T00:00:00.000Z on claude-code; 6 skills (3 in bantamkit's [skill] layer only, not in the bytes), 96 catalogue bytes; findings 1 high, 0 medium, 1 low; usage over 30 days; 0 changes proposed",
+      (a, s) => T('generated', 'status ran')(a, s),
+    );
   } else {
     notes.push('generated bed skipped on win32: a directory symlink needs a privilege the runner may lack');
   }

@@ -240,6 +240,25 @@ test('status lines', (t) => {
   assert.equal(R.statusLine(home), 'skill audit: last ran 2026-10-16T00:00:00.000Z; no report — boom');
 });
 
+test('the status line states the layer split (#245)', (t) => {
+  env(t, { BANTAMKIT_SKILL_AUDIT: undefined });
+  const home = path.join(tmp(), 'home');
+  fs.mkdirSync(path.dirname(R.statePath(home)), { recursive: true });
+  const record = {
+    version: 1, ts: NOW, host: 'claude-code', roots: [], skills: 6, catalogue_bytes: 96, findings: [],
+    omissions: [], usage: null, proposals: [], surfaced: [], generated: [], layer: ['a', 'b', 'c'],
+  };
+  const tail = 'findings 0 high, 0 medium, 0 low; usage: none — claude-code has no usage adapter, so nothing is called never-invoked';
+  for (const [layer, split] of [
+    [['a', 'b', 'c'], " (3 in bantamkit's [skill] layer only, not in the bytes)"],
+    [[], ''],
+    ['abc', ''], // a hand edit: not an array, so no split (and never a string's length)
+  ]) {
+    fs.writeFileSync(R.statePath(home), JSON.stringify({ ...record, layer }));
+    assert.equal(R.statusLine(home), `skill audit: last ran ${NOW} on claude-code; 6 skills${split}, 96 catalogue bytes; ${tail}`);
+  }
+});
+
 test('the retention child runs the audit under the claimed day', async (t) => {
   env(t, { BANTAMKIT_SKILL_AUDIT: undefined, BANTAMKIT_RETENTION: 'off' });
   const { dir, home } = homeWithClaude();

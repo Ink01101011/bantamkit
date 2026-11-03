@@ -17,7 +17,9 @@ THE DAILY RUN (Task 4). `daily` is what the Retention child calls once a day (K1
 `run_live` and writes `~/.bantamkit/skill-audit.json` as `dumps(record) + "\n"`, temp-then-rename
 under `exclusive`, keeping the previous `surfaced` keys that are still findings. `status_line` is
 the `skill audit:` line `bantamkit_status` prints. Its `off; ` prefix reads the AUDIT switch
-(`BANTAMKIT_SKILL_AUDIT`, Amendment A3), not retention's.
+(`BANTAMKIT_SKILL_AUDIT`, Amendment A3), not retention's. Its skill count includes the `layer`
+skills and its catalogue bytes do not, so with a layer it says so: `6 skills (3 in bantamkit's
+[skill] layer only, not in the bytes), 96 catalogue bytes` (#245, #234 C15).
 
 `runtime-ts/src/skillreport.ts` is the port; `tools/conformance/suites/skill-host.mjs`
 compares the two (ops `record`, `render`, `propose`, `daily`, `status`, `child`, `line`).
@@ -38,7 +40,9 @@ those that exist, one root once by real path — placed after `plugins` and befo
 `project` and `user`, so the dedupe (the later root wins a bare name) keeps the copy the host
 loads: a skill promoted by COPY is counted once, at `~/.claude/skills`, and its source is a
 `duplicate-skill` omission; a skill promoted by SYMLINK is counted once at its source, because
-the audit never descends a symlinked directory. Two lists join the record:
+the audit counts one skill per real directory and bantamkit's roots come first (#245: it follows
+any other symlinked skill directory, and counts that one under the link's name). Two lists join
+the record:
 
 - `generated`: every counted skill outside a plugin whose `SKILL.md` metadata carries a
   `bantamkit-generated-by` string — bantamkit wrote it — wherever it lives;
@@ -467,6 +471,16 @@ def daily(home: Path | str, cwd: str | None, now: str) -> None:
         pass
 
 
+def _layer_split(record: dict[str, Any]) -> str:
+    """The status line's split (#245, #234 C15): `skills` counts the `layer` skills and
+    `catalogue_bytes` does not, so a line naming both says how many of the first are not in
+    the second. Empty when there is no layer, or when `layer` is not a list (a hand edit)."""
+    layer = record.get("layer")
+    if not isinstance(layer, list) or not layer:
+        return ""
+    return f" ({len(layer)} in bantamkit's [skill] layer only, not in the bytes)"
+
+
 def status_line(home: Path | str) -> str:
     """The `skill audit:` line of `bantamkit_status`. Never raises."""
     prefix = "" if audit_enabled() else "off; "
@@ -495,7 +509,8 @@ def status_line(home: Path | str) -> str:
             )
         return (
             f"skill audit: {prefix}last ran {record['ts']} on {record['host']}; "
-            f"{_plural(record['skills'], 'skill')}, {record['catalogue_bytes']} catalogue bytes; "
+            f"{_plural(record['skills'], 'skill')}{_layer_split(record)}, "
+            f"{record['catalogue_bytes']} catalogue bytes; "
             f"findings {sev['high']} high, {sev['medium']} medium, {sev['low']} low; {clause}"
         )
     except Exception:  # noqa: BLE001 - a status line never fails the report

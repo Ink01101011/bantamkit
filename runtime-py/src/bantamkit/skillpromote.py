@@ -27,8 +27,9 @@ host would load, with this one added, would exceed `BUDGET_DEFAULT` (8192) bytes
 `BANTAMKIT_SKILL_BUDGET` env value (a run of ASCII digits; anything else is the default). At
 exactly the budget it passes. The sum is #205's own measure (`skillaudit.audit_roots`) over
 the gatherer's roots, PLUS every symlinked skill directory directly inside the project and user
-skills roots (the audit never walks into a symlinked directory, so without this a second
-promotion would not see the first), PLUS the candidate. Roots are re-read at every call, so a
+skills roots (written when the audit never walked into a symlinked directory; since #245 it
+does, and counts one skill per real directory, so these extra roots add nothing twice), PLUS the
+candidate. Roots are re-read at every call, so a
 promotion made earlier in the same run is counted.
 
 STATE. `skills-state.json` `skills[<name>].promoted` = `{at, link, mode}` (+ `tree_sha256`
