@@ -76,6 +76,11 @@
                 "description": "Driver dispatch key: role -> model/allowed tools, set in driver config."
               },
               "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
+              "reviews": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "description": "Unit ids this unit reviews (#263). Optional. Each must be declared, be in this unit's depends_on, and have a different role from this unit; the batch view, clock_in and clock_out refuse a checkpoint that breaks any of the three."
+              },
               "touches": {
                 "type": "array",
                 "items": {"type": "string"},

@@ -304,6 +304,37 @@ def _briefed(log_path: Path, unit_id: str) -> bool:
     return briefed
 
 
+def _reviews_refusal(units: list[dict], declared: dict[str, list[str]]) -> str | None:
+    """#263: the sentence for a reviewing unit that is not independent of its work, or None.
+
+    A unit's `reviews` names the units it reviews. Each reviewed id must be declared by some
+    unit, must be in the reviewer's own `depends_on` (a review runs after the work), and
+    must belong to a unit in a different role. Units are read in `plan.units` order, each
+    `reviews` in its own order, and the three tests in that order per id — first fault wins:
+
+        unit <id> reviews <r>, which no unit declares
+        unit <id> reviews <r> but does not depend on it
+        unit <id> reviews <r> in the same role <role>; a review needs another role
+
+    Terminal units are checked too: a finished review that was never independent is still
+    a fault in the record. The model is not compared — AS-2 checks it per role already.
+    """
+    by_id = {unit["id"]: unit for unit in units}
+    for unit in units:
+        for reviewed in unit.get("reviews") or []:
+            target = by_id.get(reviewed)
+            if target is None:
+                return f"unit {unit['id']} reviews {reviewed}, which no unit declares"
+            if reviewed not in declared[unit["id"]]:
+                return f"unit {unit['id']} reviews {reviewed} but does not depend on it"
+            if target["role"] == unit["role"]:
+                return (
+                    f"unit {unit['id']} reviews {reviewed} in the same role {unit['role']}; "
+                    "a review needs another role"
+                )
+    return None
+
+
 def _batch_view(document: dict) -> dict[str, Any]:
     """The `depends_on` graph of an IN-MEMORY checkpoint document. THE module's only one.
 
@@ -333,12 +364,21 @@ def _batch_view(document: dict) -> dict[str, Any]:
     what the graph PERMITS, and what the single pointer says is the caller's
     business.
     """
+    units = document["plan"]["units"]
+    # `depends_on` is required by the schema, so `_read_valid` has already refused a unit
+    # without it and the default below cannot fire here. It is written anyway because the
+    # Node adapter reaches the same mapping and MUST default it too: a default on one side
+    # only is how two runtimes come to disagree about real data. Read ONCE per unit,
+    # terminal units included, because the #263 review check reads them too.
+    declared = {unit["id"]: list(unit.get("depends_on") or []) for unit in units}
+    # #263: review independence is a property of the graph, so it is read where the graph
+    # is, before the core. `review` marks it for `clock_out`, which must refuse it by name;
+    # every caller that returns a batch-view refusal rebuilds it as `{result, reason}`.
+    reviews = _reviews_refusal(units, declared)
+    if reviews is not None:
+        return {**_error(reviews), "review": True}
     nodes = [
-        # `depends_on` is required by the schema, so `_read_valid` has already refused a
-        # unit without it and the default below cannot fire here. It is written anyway
-        # because the Node adapter reaches the same mapping and MUST default it too: a
-        # default on one side only is how two runtimes come to disagree about real data.
-        {"id": unit["id"], "depends_on": list(unit.get("depends_on") or []), "priority": 0}
+        {"id": unit["id"], "depends_on": list(declared[unit["id"]]), "priority": 0}
         # #257: `touches` is passed through only when the unit declares it, so a checkpoint
         # with no `touches` anywhere gets the core's answer with no `held` key — today's.
         | ({"touches": unit["touches"]} if "touches" in unit else {})
@@ -464,7 +504,7 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     # whose dependencies have not run — one property, one sentence, as D1 ruled.
     ready, batch_refusal = _ready(document)
     if batch_refusal is not None:
-        return batch_refusal  # the core's sentence, verbatim — `_read_valid`'s idiom
+        return _error(batch_refusal["reason"])  # the sentence verbatim, `_read_valid`'s idiom
     if unit is None or selected not in ready:
         return _error(f"unit {selected} is not ready; ready is {', '.join(ready)}")
     contention = _contention(Path(checkpoint), document, unit)
@@ -850,7 +890,7 @@ def _clock_out_locked(
     # unchanged from before this job. On a linear chain `ready[0] == remaining[0]["id"]`,
     # which is why every case written before D3 keeps its value.
     remaining = [u for u in document["plan"]["units"] if u["status"] not in TERMINAL_UNIT_STATUS]
-    ready, _batch_refusal = _ready(document)
+    ready, batch_refusal = _ready(document)
     if ready:
         document["plan"]["cursor"] = ready[0]
     else:
@@ -861,6 +901,11 @@ def _clock_out_locked(
     problem = schema_error(json.dumps(document), load_schema(SCHEMA_NAME))
     if problem is not None:
         return _error(f"refused to write: {problem}")
+    # #263: on the mutated document, before anything is written. `_ready` above swallows a
+    # batch-view refusal into the plan-order fallback (a recording surface does not refuse
+    # an unbatchable graph), so the review check is asked here by name.
+    if batch_refusal is not None and batch_refusal.get("review"):
+        return _error(batch_refusal["reason"])
 
     record: dict[str, Any] = {
         "ts": _timestamp(time.time()),
@@ -971,7 +1016,7 @@ def plan_batches(checkpoint: str) -> dict[str, Any]:
         return refusal
     answer = _batch_view(document)
     if answer.get("result") == "error":
-        return answer
+        return _error(answer["reason"])
     batches = answer["batches"]
     return {
         "result": "plan",

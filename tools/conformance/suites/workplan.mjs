@@ -332,6 +332,20 @@ const TOUCHES_LITERALS = new Map([
 
 // ================================================================= the checkpoint corpus
 
+/** #263: one checkpoint per review-independence sentence, and the sentence it must produce. */
+const reviewFaults = () => [
+  ['reviews/undeclared', [unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['GHOST'] }]],
+  ['reviews/not-a-dependency', [unit('A', []), { ...unit('R', []), role: 'reviewer', reviews: ['A'] }]],
+  ['reviews/same-role', [unit('A', []), { ...unit('R', ['A']), reviews: ['A'] }]],
+  ['reviews/first-fault-wins', [unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['NOPE', 'A'] }]],
+];
+const REVIEW_LITERALS = new Map([
+  ['reviews/undeclared', 'unit R reviews GHOST, which no unit declares'],
+  ['reviews/not-a-dependency', 'unit R reviews A but does not depend on it'],
+  ['reviews/same-role', 'unit R reviews A in the same role implementer; a review needs another role'],
+  ['reviews/first-fault-wins', 'unit R reviews NOPE, which no unit declares'],
+]);
+
 /** A unit the shipped schema accepts. `title`, `brief_path`, `role` and `verify` are required. */
 const unit = (id, depends_on, status = 'todo') => ({
   id,
@@ -685,6 +699,13 @@ export async function run(ctx) {
       ),
     ],
     ['touches-bad-path', write('touches-bad-path.json', withUnits([{ ...unit('A', []), touches: ['../x'] }], 'A'))],
+    // #263: review independence, read where the graph is. Each sentence is also a literal
+    // per side below (`REVIEW_LITERALS`).
+    ...reviewFaults().map(([caseName, units]) => [caseName, write(`${caseName.replace('/', '-')}.json`, withUnits(units, 'A'))]),
+    [
+      'reviews/valid',
+      write('reviews-valid.json', withUnits([unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['A'] }], 'A')),
+    ],
     // The four refusals a checkpoint can produce BEFORE the graph is reached. Each one is
     // `_read_valid`'s, and each embeds the absolute path — which is why both runtimes are
     // pointed at the same one.
@@ -708,6 +729,16 @@ export async function run(ctx) {
       expected: unb64(planned[i]),
       actual: dumpJson(planBatches(path)),
     });
+    // #263: the sentence as a literal, once per side.
+    const reviewLiteral = REVIEW_LITERALS.get(caseName);
+    if (reviewLiteral !== undefined) {
+      for (const [side, answer] of [
+        ['python', JSON.parse(unb64(planned[i]))],
+        ['node', JSON.parse(dumpJson(planBatches(path)))],
+      ]) {
+        cases.push({ name: `review-literal/${caseName} — ${side}`, kind: 'string', expected: reviewLiteral, actual: answer.reason ?? '(no refusal)' });
+      }
+    }
   });
 
   // ------------------------------------------------------------------ work_plan, over stdio

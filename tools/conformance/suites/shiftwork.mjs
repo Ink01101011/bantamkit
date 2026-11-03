@@ -972,8 +972,29 @@ function j655Sessions() {
     ]],
     // and the control: the same document with nothing in flight briefs `C` at once.
     ['touches/nothing-in-flight-briefs', b64(raw(inFlightDocument())), [IN('C')]],
+
+    // ---- #263. Review independence on clock_in and clock_out (the batch view's own is in the
+    // workplan suite): the default call, the named call, and the cursor's clock-out — which
+    // must refuse BY NAME, since its graph read falls back to plan order — then status.
+    ...REVIEW_DOCS.map(([name, units]) => [
+      `reviews/${name}`,
+      b64(raw(baseDocument({ plan: { cursor: 'A', units } }))),
+      [IN(), IN('A'), OUT('A', 'done', { history_entry: b64('{"unit": "A", "outcome": "done"}') }), ST()],
+    ]),
   ];
 }
+
+/** #263: one document per review-independence sentence, `A` the cursor in each. */
+const REVIEW_DOCS = [
+  ['undeclared', [unit('A', []), unit('R', ['A'], { role: 'reviewer', reviews: ['GHOST'] })]],
+  ['not-a-dependency', [unit('A', []), unit('R', [], { role: 'reviewer', reviews: ['A'] })]],
+  ['same-role', [unit('A', []), unit('R', ['A'], { reviews: ['A'] })]],
+];
+const REVIEW_SENTENCES = {
+  undeclared: 'unit R reviews GHOST, which no unit declares',
+  'not-a-dependency': 'unit R reviews A but does not depend on it',
+  'same-role': 'unit R reviews A in the same role implementer; a review needs another role',
+};
 
 /** #257/D4: `C` and `A` both write `f`; `C` sorts first, so only the in-flight check sees `A`. */
 const inFlightDocument = () => baseDocument({
@@ -2701,6 +2722,18 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #263, per side: each sentence from clock_in (both paths) and from clock_out, nothing
+    // written, the cursor unmoved.
+    for (const [name, sentence] of Object.entries(REVIEW_SENTENCES)) {
+      const doc = `reviews/${name}`;
+      says(`reviews/${name}/clock-in-default`, doc, 0, sentence);
+      says(`reviews/${name}/clock-in-named`, doc, 1, sentence);
+      bit(`reviews/${name}/clock-out-refused`, doc, 2, 'error');
+      says(`reviews/${name}/clock-out-refused`, doc, 2, sentence);
+      untouched(`reviews/${name}/clock-out-refused`, doc, 2);
+      cursor(`reviews/${name}/cursor-unmoved`, doc, 3, 'A');
+    }
 
     notes.push(
       'job65 / J65-5 (#117 #162 #164): ' +

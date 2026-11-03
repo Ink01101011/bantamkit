@@ -717,6 +717,31 @@ The checkpoint reader is `shiftwork.plan_batches` / `planBatches`, and the two
 are compared by the `workplan` suite (`node tools/conformance/run.mjs --suite
 workplan`).
 
+#### `reviews`: a review needs another role (#263)
+
+A unit may name the units it reviews:
+
+```json
+{"id": "CF4", "role": "reviewer", "depends_on": ["CF3"], "reviews": ["CF3"]}
+```
+
+Each reviewed id must be declared by some unit, must be in the reviewer's own
+`depends_on` (a review runs after the work), and must belong to a unit in a
+different role. The check is read wherever the graph is — `shiftwork_plan`,
+`clock_in`, and `clock_out` on the document it is about to write — and the first
+fault, in `plan.units` order, is named:
+
+    unit <id> reviews <r>, which no unit declares
+    unit <id> reviews <r> but does not depend on it
+    unit <id> reviews <r> in the same role <role>; a review needs another role
+
+`clock_out` asks for it by name before writing anything, because its own graph
+read falls back to plan order rather than refusing. Terminal units are checked
+too. The model is not compared: `job.roles` already pins a model per role, and
+two roles may share one. The code-fix template's reviewer declares
+`reviews: ["CF3"]`. Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-review-independence-design.md`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to

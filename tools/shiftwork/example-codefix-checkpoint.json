@@ -47,6 +47,7 @@
         "status": "todo",
         "role": "reviewer",
         "depends_on": ["CF3"],
+        "reviews": ["CF3"],
         "verify": "pytest -q"
       }
     ]
