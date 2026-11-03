@@ -1751,6 +1751,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         accounting: dict[str, Any] | None = None,
         follow_ups: list[dict[str, Any]] | None = None,
         agreements: dict[str, Any] | None = None,
+        conclusion: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # `follow_ups` (#260): units this one discovered; absent, the call is today's.
         return _noted_dict(
@@ -1766,6 +1767,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                     accounting,
                     follow_ups,
                     agreements,
+                    conclusion,
                 ),
             )
         )

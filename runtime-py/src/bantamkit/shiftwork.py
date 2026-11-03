@@ -348,6 +348,113 @@ def _reviews_refusal(units: list[dict], declared: dict[str, list[str]]) -> str |
     return None
 
 
+def _investigation_refusal(document: dict) -> str | None:
+    """#264: the sentence for an investigation whose plan cannot be trusted, or None.
+
+    Read in this order, first fault wins: the hypothesis count (only under `job.kind:
+    investigation`), then per unit in `plan.units` order its `tests`, then its `replay_of`:
+
+        investigation declares <n> hypotheses; it needs two,
+            or one with job.single_hypothesis_rationale   (one line)
+        unit <id> tests <h>, which no hypothesis declares
+        unit <id> replays <r>, which no unit declares
+        unit <id> replays <r> in the same role <role>; a replay needs another role
+        unit <id> replays <r>, which names no procedure
+        unit <id> replays <r> with a different procedure
+
+    A replay repeats the run's `procedure` as exact text (user ruling, job76): no
+    normalisation, no hash. The unit keys are checked wherever they appear, so a run
+    that names a hypothesis outside an investigation is a fault too, not a silent no-op.
+    """
+    job = document["job"]
+    hypotheses = [h["id"] for h in job.get("hypotheses") or []]
+    if job.get("kind") == "investigation":
+        rationale = bool(job.get("single_hypothesis_rationale"))
+        if len(hypotheses) < 2 and not (len(hypotheses) == 1 and rationale):
+            return (
+                f"investigation declares {len(hypotheses)} hypotheses; it needs two, "
+                "or one with job.single_hypothesis_rationale"
+            )
+    units = document["plan"]["units"]
+    by_id = {unit["id"]: unit for unit in units}
+    for unit in units:
+        for tested in unit.get("tests") or []:
+            if tested not in hypotheses:
+                return f"unit {unit['id']} tests {tested}, which no hypothesis declares"
+        replayed = unit.get("replay_of")
+        if replayed is None:
+            continue
+        target = by_id.get(replayed)
+        if target is None:
+            return f"unit {unit['id']} replays {replayed}, which no unit declares"
+        if target["role"] == unit["role"]:
+            return (
+                f"unit {unit['id']} replays {replayed} in the same role {unit['role']}; "
+                "a replay needs another role"
+            )
+        if target.get("procedure") is None:
+            return f"unit {unit['id']} replays {replayed}, which names no procedure"
+        if target["procedure"] != unit.get("procedure"):
+            return f"unit {unit['id']} replays {replayed} with a different procedure"
+    return None
+
+
+def _run_output_refusal(unit: dict, status: str, history_entry: Any) -> str | None:
+    """#264/D2: a run (`tests` or `replay_of`) clocked out done must say what it observed."""
+    if status != "done" or not (unit.get("tests") or unit.get("replay_of")):
+        return None
+    produced = history_entry.get("produced") if isinstance(history_entry, dict) else None
+    kinds = [p.get("kind") for p in produced or [] if isinstance(p, dict)]
+    if "run-output" in kinds:
+        return None
+    return f"run {unit['id']} produced no run-output; record what it observed"
+
+
+def _conclusion_refusal(document: dict, unit: dict, status: str, conclusion: Any) -> str | None:
+    """#264/D4: who may conclude, and what `resolved` needs. Nothing is written on a refusal.
+
+    Only a unit with `concludes: true` sends a conclusion. `inconclusive` and `stopped` are
+    never refused past that; a conclusion that is not an object, or an outcome off the
+    enum, is the schema's to refuse. `resolved` is judged on the plan as it will be once
+    this clock-out lands (this unit at `status`), first fault wins:
+
+        a resolved conclusion names no supported hypothesis
+        conclusion supports <h>, which no hypothesis declares
+        conclusion supports <h>, but no run testing it is done
+        conclusion supports <h>, but no run testing it has a done replay
+        conclusion supports <h>, but no review of its runs is done
+
+    A refuted hypothesis needs no replay (user ruling, job76): only `supported` is checked.
+    The replay's other role is the batch view's rule; the review's, #263's.
+    """
+    if not unit.get("concludes"):
+        return (
+            f"unit {unit['id']} does not conclude; "
+            "job.conclusion is set only by a unit with concludes: true"
+        )
+    if not isinstance(conclusion, dict) or conclusion.get("outcome") != "resolved":
+        return None
+    supported = conclusion.get("supported")
+    if supported is None:
+        return "a resolved conclusion names no supported hypothesis"
+    if supported not in [h["id"] for h in document["job"].get("hypotheses") or []]:
+        return f"conclusion supports {supported}, which no hypothesis declares"
+
+    def done(other: dict) -> bool:
+        return (status if other is unit else other["status"]) == "done"
+
+    units = document["plan"]["units"]
+    runs = {u["id"] for u in units if supported in (u.get("tests") or []) and done(u)}
+    if not runs:
+        return f"conclusion supports {supported}, but no run testing it is done"
+    replays = {u["id"] for u in units if u.get("replay_of") in runs and done(u)}
+    if not replays:
+        return f"conclusion supports {supported}, but no run testing it has a done replay"
+    if not any(done(u) and set(u.get("reviews") or []) & (runs | replays) for u in units):
+        return f"conclusion supports {supported}, but no review of its runs is done"
+    return None
+
+
 def _batch_view(document: dict) -> dict[str, Any]:
     """The `depends_on` graph of an IN-MEMORY checkpoint document. THE module's only one.
 
@@ -390,6 +497,10 @@ def _batch_view(document: dict) -> dict[str, Any]:
     reviews = _reviews_refusal(units, declared)
     if reviews is not None:
         return {**_error(reviews), "review": True}
+    # #264: an investigation's plan is a property of the graph too, refused by name the same way.
+    investigation = _investigation_refusal(document)
+    if investigation is not None:
+        return {**_error(investigation), "review": True}
     nodes = [
         {"id": unit["id"], "depends_on": list(declared[unit["id"]]), "priority": 0}
         # #257: `touches` is passed through only when the unit declares it, so a checkpoint
@@ -1060,6 +1171,7 @@ def clock_out(
     accounting: dict[str, Any] | None = None,
     follow_ups: list[dict[str, Any]] | None = None,
     agreements: dict[str, Any] | None = None,
+    conclusion: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply a dispatched unit's result to the checkpoint, validate whole, write atomically.
 
@@ -1117,6 +1229,7 @@ def clock_out(
             accounting,
             follow_ups,
             agreements,
+            conclusion,
         )
     finally:
         if held:
@@ -1185,6 +1298,7 @@ def _clock_out_locked(
     accounting: dict[str, Any] | None,
     follow_ups: list[dict[str, Any]] | None = None,
     agreements: dict[str, Any] | None = None,
+    conclusion: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`clock_out`'s body, run under the lock its caller holds: mutate, validate, write."""
     log_path = _log_path(path)
@@ -1226,6 +1340,14 @@ def _clock_out_locked(
     relay = _relay_refusal(handoff_patch)
     if relay is not None:
         return _error(relay)
+    unobserved = _run_output_refusal(unit, status, history_entry)
+    if unobserved is not None:
+        return _error(unobserved)
+    if conclusion is not None:
+        refused = _conclusion_refusal(document, unit, status, conclusion)
+        if refused is not None:
+            return _error(refused)
+        document["job"]["conclusion"] = conclusion
 
     if follow_ups:
         refused = _follow_ups_refusal(path, document, unit, follow_ups)
