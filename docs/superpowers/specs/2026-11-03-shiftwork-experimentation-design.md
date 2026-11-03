@@ -1,6 +1,6 @@
 # Shift-work experimentation flavor: compare candidates in isolated worktrees, validate the exact SHA
 
-Date: 2026-11-03. Status: proposed, design-level (open decisions marked). Chain: 8 of 8
+Date: 2026-11-03. Status: implemented (#265, job76); open decisions settled below. Chain: 8 of 8
 (needs touches #257, budget #262, review independence #263). Borrowed from
 `ex-workflow/experimentation`, as specification only (route B).
 
@@ -35,6 +35,13 @@ reports `{kind: "validated-sha", ref}` equal to the submitted sha, else refused.
 **Open decisions:** who creates and removes worktrees (the orchestrator, recorded, as
 `ex-workflow` does — proposed); whether integration and its re-validation are units of this
 job or a follow-up job.
+
+**Settled (user ruling 2026-11-03, job76):** the orchestrator creates and removes
+worktrees and records each in `candidate.workspace`; integration and its re-validation
+are a follow-up job, not units of this one. Implementation choices: `base_sha` and
+`harness` are frozen by a `frozen` ledger line written at first read; a candidate's
+`author_role` must equal its unit's role; `ranking` carries the score as the reported
+string. Sentences in `docs/shiftwork.md`, *Experimentation flavor*.
 
 ## Surfaces
 

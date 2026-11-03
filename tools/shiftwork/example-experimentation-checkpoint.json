@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "job": {
+    "id": "experimentation-template",
+    "goal": "Pick the better of two approaches by a frozen harness, each validated at its exact SHA.",
+    "done_definition": "shiftwork_plan names a winner; integration and its re-validation are a follow-up job.",
+    "constraints": [
+      "The orchestrator creates each candidate's worktree before its brief, records it in candidate.workspace, and removes it after validation",
+      "Never change base_sha or harness mid-job: clock_in and clock_out refuse it",
+      "A validator runs the harness itself at the submitted SHA; it never trusts the candidate's score"
+    ],
+    "kind": "experimentation",
+    "experiment": {
+      "objective": "REPLACE: what the score measures (p95 latency, ms)",
+      "direction": "minimize",
+      "base_sha": "REPLACE-AT-PLAN-TIME",
+      "harness": "make bench",
+      "concurrency_cap": 2,
+      "candidate_budget": {"tokens": 200000}
+    }
+  },
+  "plan": {
+    "cursor": "EX1",
+    "units": [
+      {
+        "id": "EX1",
+        "title": "Candidate 1: REPLACE approach",
+        "brief_path": ".shiftwork/briefs/EX1.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": [],
+        "candidate": {"workspace": ".worktrees/EX1", "author_role": "implementer"},
+        "verify": "make bench"
+      },
+      {
+        "id": "EX2",
+        "title": "Candidate 2: REPLACE approach",
+        "brief_path": ".shiftwork/briefs/EX2.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": [],
+        "candidate": {"workspace": ".worktrees/EX2", "author_role": "implementer"},
+        "verify": "make bench"
+      },
+      {
+        "id": "EV1",
+        "title": "Validate EX1 at its submitted SHA",
+        "brief_path": ".shiftwork/briefs/EV1.md",
+        "status": "todo",
+        "role": "reviewer",
+        "depends_on": ["EX1"],
+        "reviews": ["EX1"],
+        "verify": "make bench"
+      },
+      {
+        "id": "EV2",
+        "title": "Validate EX2 at its submitted SHA",
+        "brief_path": ".shiftwork/briefs/EV2.md",
+        "status": "todo",
+        "role": "reviewer",
+        "depends_on": ["EX2"],
+        "reviews": ["EX2"],
+        "verify": "make bench"
+      }
+    ]
+  },
+  "state": {
+    "repo": {"branch": "experiment/QUESTION-ID", "head_sha": "REPLACE-AT-PLAN-TIME", "dirty": false},
+    "artifacts": [
+      {"path": ".shiftwork/briefs/EX1.md", "role": "brief"}
+    ],
+    "external": []
+  },
+  "history": [],
+  "retro": [],
+  "handoff": {
+    "next_action": "Create .worktrees/EX1 and .worktrees/EX2 at base_sha, then clock in EX1 and EX2 as one wave.",
+    "open_questions": [],
+    "do_not": [
+      "Do not merge a candidate here: integration is a follow-up job"
+    ],
+    "notes": ""
+  }
+}

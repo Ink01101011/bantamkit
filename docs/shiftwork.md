@@ -929,6 +929,55 @@ job76). The review is a done unit whose `reviews` names a run or replay of
 the three checks on either side reddens 66 cases. Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-investigation-design.md`.
 
+#### Experimentation flavor: candidates in worktrees, the exact SHA validated (#265)
+
+`job.kind: "experimentation"` compares approaches instead of arguing for one.
+`job.experiment: {objective, direction: minimize|maximize, base_sha, harness,
+concurrency_cap, candidate_budget?: {tokens?, wallclock_ms?}}` is required by that kind;
+a unit with `candidate: {workspace, author_role}` is one approach, written in its own
+worktree. **The orchestrator creates each worktree before the brief, records it in
+`candidate.workspace`, and removes it after validation; integrating the winner and
+re-validating it is a follow-up job, not units here** (user ruling, job76). Template:
+`tools/shiftwork/example-experimentation-checkpoint.json`.
+
+- **Frozen.** The first brief or clock-out that reads an experiment appends
+  `{event: "frozen", ts, base_sha, harness}` to `<checkpoint>.log.jsonl`; from then on a
+  checkpoint that says otherwise is refused at `clock_in` and `clock_out`:
+  `job.experiment.<key> is frozen at <old>; the checkpoint says <new>`.
+- **In flight.** A candidate's `touches` hold nothing (its worktree is its own), in the
+  batch view and in `clock_in`'s in-flight check. `clock_in` refuses the next candidate
+  past the cap, and a candidate whose own accounting lines reached its budget:
+
+      experiment allows <cap> candidates in flight; <ids> hold them
+      candidate <id> budget <dim> spent: <n> of <limit>; drop it or raise job.experiment.candidate_budget
+
+- **Submit.** A candidate clocked out `done` reports `{kind: "commit", ref: <full sha>}`
+  (40 or 64 lowercase hex) and `{kind: "score", ref: <number>}` (JSON number grammar):
+
+      candidate <id> submitted no commit; report {kind: commit, ref: <full sha>}
+      candidate <id> commit <ref> is not a full sha
+      candidate <id> submitted no score; report {kind: score, ref: <number>}
+      candidate <id> score <ref> is not a number
+
+- **Validate.** A unit that `reviews` a candidate (#263 holds it to another role) and
+  clocks out `done` reports `{kind: "validated-sha", ref}` equal to the candidate's
+  submitted commit (its newest done attempt):
+
+      unit <id> validates <c>, which has submitted no commit
+      unit <id> validates <c> but reports no validated-sha
+      unit <id> validated <ref>, but <c> submitted <sha>
+
+- **Compare.** `shiftwork_plan` answers `ranking: [{id, score, sha}]` over validated
+  candidates — score in `direction`, then id by code point; `score` is the reported
+  string — and `winner`, the first id or `null`. The graph refuses
+  `experimentation declares no job.experiment` and
+  `unit <id> is a candidate authored by <author_role> but runs as <role>`.
+
+Layer 1 is `experiment.py` / `experiment.ts` (grammar, rank, per-candidate spend). Both
+runtimes, gated by the `experiment/*` sessions and per-side literals in the shiftwork
+suite; disabling the five checks on either side reddens 86 cases. Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-experimentation-design.md`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to

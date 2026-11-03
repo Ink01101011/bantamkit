@@ -106,6 +106,7 @@ import { budget as budgetOf, refusal as budgetRefusal, type BudgetView, type Dim
 import { checkSchema, PyJsonSchemaUnsupported } from './pyjsonschema.js';
 import { pyTruthy } from './pysem.js';
 import { plan, type PlanNode, type PlanResult } from './workplan.js';
+import { CANDIDATE_DIMENSIONS, fullSha, rank, scoreValue, spent as spentOf } from './experiment.js';
 import { searchArchived } from './storage/retention.js';
 
 export const SCHEMA_NAME = 'shiftwork-checkpoint';
@@ -593,6 +594,195 @@ function conclusionRefusal(doc: PyDict, unit: PyDict, status: string, conclusion
   return null;
 }
 
+const isExperiment = (doc: PyDict): boolean => {
+  const kind = subDict(doc, 'job').v.get('kind');
+  return kind !== undefined && kind.t === 'str' && kind.v === 'experimentation';
+};
+
+/** #265: an experimentation job must declare its experiment; a candidate runs as its author. */
+function experimentationRefusal(doc: PyDict, units: readonly PyDict[]): string | null {
+  if (isExperiment(doc) && !subDict(doc, 'job').v.has('experiment')) return 'experimentation declares no job.experiment';
+  for (const unit of units) {
+    const candidate = unit.v.get('candidate');
+    if (candidate === undefined || candidate.t !== 'dict') continue;
+    const author = text(field(candidate, 'author_role'));
+    const role = text(field(unit, 'role'));
+    if (author !== role) return `unit ${text(field(unit, 'id'))} is a candidate authored by ${author} but runs as ${role}`;
+  }
+  return null;
+}
+
+/** #265: the refs of `produced` items of one kind, in order; any other shape has none. */
+function producedRefs(produced: PyValue | undefined, kind: string): PyValue[] {
+  if (produced === undefined || produced.t !== 'list') return [];
+  const refs: PyValue[] = [];
+  for (const item of produced.v) {
+    if (item.t !== 'dict') continue;
+    const k = item.v.get('kind');
+    if (k !== undefined && k.t === 'str' && k.v === kind) refs.push(item.v.get('ref') ?? { t: 'null' });
+  }
+  return refs;
+}
+
+/** Python's `==` on two decoded JSON values, close enough for refs: the same canonical text. */
+const sameValue = (a: PyValue, b: PyValue): boolean => dumpJson(a, { sortKeys: true }) === dumpJson(b, { sortKeys: true });
+
+/** #265: `[sha, score]` a candidate submitted — its newest done attempt's first commit and score refs. */
+function submission(unit: PyDict): [PyValue | null, PyValue | null] {
+  const attempts = attemptsOf(unit);
+  for (let i = attempts.length - 1; i >= 0; i -= 1) {
+    const attempt = attempts[i]!;
+    if (attempt.t !== 'dict') continue;
+    const status = attempt.v.get('status');
+    if (status === undefined || status.t !== 'str' || status.v !== 'done') continue;
+    const commits = producedRefs(attempt.v.get('produced'), 'commit');
+    const scores = producedRefs(attempt.v.get('produced'), 'score');
+    return [commits[0] ?? null, scores[0] ?? null];
+  }
+  return [null, null];
+}
+
+/** #265/D4: a done unit reviewing the candidate reported `validated-sha` equal to `sha`. */
+function validated(doc: PyDict, candidateId: string, sha: PyValue): boolean {
+  for (const raw of subList(subDict(doc, 'plan'), 'units').v) {
+    const unit = raw as PyDict;
+    if (text(field(unit, 'status')) !== 'done' || !strings(unit.v.get('reviews')).includes(candidateId)) continue;
+    const attempts = attemptsOf(unit);
+    for (let i = attempts.length - 1; i >= 0; i -= 1) {
+      const attempt = attempts[i]!;
+      if (attempt.t !== 'dict') continue;
+      const status = attempt.v.get('status');
+      if (status === undefined || status.t !== 'str' || status.v !== 'done') continue;
+      if (producedRefs(attempt.v.get('produced'), 'validated-sha').some((ref) => sameValue(ref, sha))) return true;
+      break;
+    }
+  }
+  return false;
+}
+
+/** #265/D5: `ranking` and `winner` for an experimentation job, nothing for any other. */
+function rankingEntries(doc: PyDict): [string, PyValue][] {
+  const job = subDict(doc, 'job');
+  const declared = job.v.get('experiment');
+  if (!isExperiment(doc) || declared === undefined) return [];
+  const entries: { id: string; score: string; sha: string }[] = [];
+  for (const raw of subList(subDict(doc, 'plan'), 'units').v) {
+    const unit = raw as PyDict;
+    if (!unit.v.has('candidate')) continue;
+    const [sha, score] = submission(unit);
+    const shaText = sha !== null && sha.t === 'str' ? sha.v : null;
+    const scoreText = score !== null && score.t === 'str' ? score.v : null;
+    if (fullSha(shaText) && scoreValue(scoreText) !== null && validated(doc, text(field(unit, 'id')), sha!)) {
+      entries.push({ id: text(field(unit, 'id')), score: scoreText!, sha: shaText });
+    }
+  }
+  const ranking = rank(entries, text(field(declared as PyDict, 'direction')));
+  return [
+    ['ranking', fromJs(ranking)],
+    ['winner', ranking.length > 0 ? str(ranking[0]!.id) : { t: 'null' }],
+  ];
+}
+
+/** #265: the `event` value of the ledger line that records an experiment's frozen keys. */
+export const FROZEN_EVENT = 'frozen';
+/** #265: the experiment keys a checkpoint may not change once a brief or clock-out read them. */
+export const FROZEN_KEYS = ['base_sha', 'harness'] as const;
+
+/** `f"{value}"` of a value read back off the ledger. */
+const ledgerText = (value: unknown): string =>
+  value === undefined || value === null ? 'None' : typeof value === 'string' ? value : pyFormat(fromJs(value));
+
+/**
+ * #265/D1: `[line, refusal]` — the first `frozen` ledger line, and the sentence when the
+ * checkpoint no longer says what it froze. `_frozen` in `shiftwork.py`.
+ */
+function frozen(log: string, doc: PyDict): [Record<string, unknown> | null, string | null] {
+  const declared = subDict(doc, 'job').v.get('experiment');
+  if (!isExperiment(doc) || declared === undefined) return [null, null];
+  for (const line of ledger(log)) {
+    if (typeof line !== 'object' || line === null || Array.isArray(line)) continue;
+    const record = line as Record<string, unknown>;
+    if (record.event !== FROZEN_EVENT) continue;
+    for (const key of FROZEN_KEYS) {
+      const now = text(field(declared as PyDict, key));
+      if (record[key] !== now) {
+        return [record, `job.experiment.${key} is frozen at ${ledgerText(record[key])}; the checkpoint says ${now}`];
+      }
+    }
+    return [record, null];
+  }
+  return [null, null];
+}
+
+/** #265/D1: append the `frozen` line the first time an experiment is read, best effort. */
+function freeze(log: string, doc: PyDict, now: number): void {
+  const declared = subDict(doc, 'job').v.get('experiment');
+  if (!isExperiment(doc) || declared === undefined) return;
+  if (frozen(log, doc)[0] !== null) return;
+  const record = new Map<string, PyValue>([
+    ['event', str(FROZEN_EVENT)],
+    ['ts', str(timestamp(now))],
+    ...FROZEN_KEYS.map((key): [string, PyValue] => [key, field(declared as PyDict, key)]),
+  ]);
+  try {
+    pyAppendText(log, `${dumpJson({ t: 'dict', v: record }, { sortKeys: true })}\n`);
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+  }
+}
+
+/** #265/D2, D6: a candidate brief past `concurrency_cap`, or past its own budget. */
+function candidateGate(log: string, doc: PyDict, unit: PyDict): string | null {
+  const declared = subDict(doc, 'job').v.get('experiment');
+  if (!unit.v.has('candidate') || declared === undefined || declared.t !== 'dict') return null;
+  const id = text(field(unit, 'id'));
+  const holders = subList(subDict(doc, 'plan'), 'units')
+    .v.map((u) => u as PyDict)
+    .filter((u) => text(field(u, 'id')) !== id && u.v.has('candidate') && briefed(log, text(field(u, 'id'))))
+    .map((u) => text(field(u, 'id')));
+  const cap = field(declared, 'concurrency_cap');
+  if (holders.length >= Number((cap as { v: bigint | number }).v)) {
+    return `experiment allows ${pyFormat(cap)} candidates in flight; ${holders.join(', ')} hold them`;
+  }
+  const limit = declared.v.get('candidate_budget');
+  const used = spentOf(ledger(log), id);
+  for (const dim of CANDIDATE_DIMENSIONS) {
+    const cap_ = limit !== undefined && limit.t === 'dict' ? limit.v.get(dim) : undefined;
+    if (cap_ !== undefined && used[dim] >= Number((cap_ as { v: bigint | number }).v)) {
+      return `candidate ${id} budget ${dim} spent: ${used[dim]} of ${pyFormat(cap_)}; drop it or raise job.experiment.candidate_budget`;
+    }
+  }
+  return null;
+}
+
+/** #265/D3, D4: what a candidate's or a validator's clock-out done must report. `_submit_refusal`. */
+function submitRefusal(doc: PyDict, unit: PyDict, status: string, historyEntry: unknown): string | null {
+  if (status !== 'done') return null;
+  const produced = asPatch(historyEntry).get('produced');
+  const id = text(field(unit, 'id'));
+  if (unit.v.has('candidate')) {
+    const commits = producedRefs(produced, 'commit');
+    if (commits.length === 0) return `candidate ${id} submitted no commit; report {kind: commit, ref: <full sha>}`;
+    const commit = commits[0]!;
+    if (!fullSha(commit.t === 'str' ? commit.v : null)) return `candidate ${id} commit ${pyFormat(commit)} is not a full sha`;
+    const scores = producedRefs(produced, 'score');
+    if (scores.length === 0) return `candidate ${id} submitted no score; report {kind: score, ref: <number>}`;
+    const score = scores[0]!;
+    if (scoreValue(score.t === 'str' ? score.v : null) === null) return `candidate ${id} score ${pyFormat(score)} is not a number`;
+  }
+  const byId = new Map(subList(subDict(doc, 'plan'), 'units').v.map((u) => [text(field(u as PyDict, 'id')), u as PyDict] as const));
+  for (const reviewed of strings(unit.v.get('reviews'))) {
+    const target = byId.get(reviewed);
+    if (target === undefined || !target.v.has('candidate')) continue;
+    const [sha] = submission(target);
+    if (sha === null || sha.t === 'null') return `unit ${id} validates ${reviewed}, which has submitted no commit`;
+    const refs = producedRefs(produced, 'validated-sha');
+    if (refs.length === 0) return `unit ${id} validates ${reviewed} but reports no validated-sha`;
+    if (!refs.some((ref) => sameValue(ref, sha))) return `unit ${id} validated ${pyFormat(refs[0]!)}, but ${reviewed} submitted ${pyFormat(sha)}`;
+  }
+  return null;
+}
+
 /** A batch-view refusal; `review` marks #263's, which `clockOut` must refuse by name. */
 type ViewRefusal = { result: 'error'; reason: string; review?: true };
 
@@ -622,6 +812,8 @@ function batchView(doc: PyDict): View {
   // #264: an investigation's plan is a property of the graph too, refused by name the same way.
   const investigation = investigationRefusal(doc, units);
   if (investigation !== null) return { result: 'error', reason: investigation, review: true };
+  const candidates = experimentationRefusal(doc, units); // #265, the same way
+  if (candidates !== null) return { result: 'error', reason: candidates, review: true };
   const nodes: PlanNode[] = [];
   for (const u of units) {
     if (terminal(u)) continue;
@@ -630,8 +822,9 @@ function batchView(doc: PyDict): View {
     // #257: `touches` passes through only when the unit declares it, so a checkpoint with no
     // `touches` anywhere gets the core's answer with no `held` key — today's, byte for byte.
     // The schema has already refused a non-string item, so `text` cannot meet one.
+    // #265: a candidate writes in its own worktree, so its `touches` hold nothing.
     const touches = u.v.get('touches');
-    if (touches !== undefined && touches.t === 'list') node.touches = touches.v.map(text);
+    if (touches !== undefined && touches.t === 'list' && !u.v.has('candidate')) node.touches = touches.v.map(text);
     nodes.push(node);
   }
   const answer = plan(nodes);
@@ -728,11 +921,11 @@ function budgetView(log: string, doc: PyDict, exclude: string | null = null): Bu
 
 function contention(log: string, doc: PyDict, unit: PyDict): string | null {
   const mine = touchesOf(unit);
-  if (mine.length === 0) return null;
+  if (mine.length === 0 || unit.v.has('candidate')) return null; // #265: its worktree is its own
   const id = text(field(unit, 'id'));
   const holders = subList(subDict(doc, 'plan'), 'units')
     .v.map((other) => other as PyDict)
-    .filter((other) => text(field(other, 'id')) !== id && touchesOf(other).length > 0)
+    .filter((other) => text(field(other, 'id')) !== id && touchesOf(other).length > 0 && !other.v.has('candidate'))
     .filter((other) => briefed(log, text(field(other, 'id'))));
   for (const file of mine) {
     for (const other of holders) {
@@ -826,6 +1019,10 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   }
   const gate = irreversibleGate(doc, unit);
   if (gate !== null) return gate;
+  const [, drifted] = frozen(logPath(pyJoin(checkpoint)), doc);
+  if (drifted !== null) return errorResult(drifted);
+  const crowded = candidateGate(logPath(pyJoin(checkpoint)), doc, unit);
+  if (crowded !== null) return errorResult(crowded);
   const contended = contention(logPath(pyJoin(checkpoint)), doc, unit);
   if (contended !== null) return errorResult(contended);
   // #262/D5: last, so every refusal above keeps its sentence; nothing is written on it.
@@ -836,6 +1033,8 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   // a refusal above issued nothing and therefore records nothing. `pyJoin` is the same
   // normalisation `clockOut` applies before it builds ITS log path, so the two land in one file.
   // The line names the unit ACTUALLY briefed, which is what D2 reads back.
+  // #265: before the brief line, so it is read first.
+  freeze(logPath(pyJoin(checkpoint)), doc, options.now ?? Date.now() / 1000);
   recordBrief(logPath(pyJoin(checkpoint)), selected, field(unit, 'role'), options.now ?? Date.now() / 1000);
   return dict([
     ['result', str('brief')],
@@ -1508,6 +1707,10 @@ function clockOutLocked(
     if (refused !== null) return errorResult(refused);
     subDict(doc, 'job').v.set('conclusion', conclusion);
   }
+  const [, drifted] = frozen(log, doc);
+  if (drifted !== null) return errorResult(drifted);
+  const unsubmitted = submitRefusal(doc, unit, status, historyEntry);
+  if (unsubmitted !== null) return errorResult(unsubmitted);
 
   if (followUps.length > 0) {
     const refused = followUpsRefusal(path, doc, unit, followUps);
@@ -1593,6 +1796,7 @@ function clockOutLocked(
   // on every line, `accounting: null` included: the base shape (ts/unit/role/status) is the
   // runtime's, and so is this field. Never a refusal.
   record.set('briefed', { t: 'bool', v: briefed(log, unitId) });
+  freeze(log, doc, options.now ?? Date.now() / 1000); // #265: the first read of an experiment
   try {
     pyAppendText(log, `${dumpJson({ t: 'dict', v: record }, { sortKeys: true })}\n`);
   } catch (e) {
@@ -1733,5 +1937,7 @@ export function planBatches(checkpoint: string): PyValue {
       const view = budgetView(logPath(pyJoin(checkpoint)), doc);
       return view === null ? [] : [['budget', fromJs(view)]];
     })(),
+    // #265/D5: only for an experimentation job.
+    ...rankingEntries(doc),
   ]);
 }

@@ -117,7 +117,7 @@ from typing import Any
 
 import jsonschema
 
-from bantamkit import jobbudget, workplan
+from bantamkit import experiment, jobbudget, workplan
 from bantamkit.assets import AssetNotFound, load_schema, load_tool_asset
 from bantamkit.contract import schema_error
 
@@ -456,6 +456,203 @@ def _conclusion_refusal(document: dict, unit: dict, status: str, conclusion: Any
     return None
 
 
+def _experimentation_refusal(document: dict) -> str | None:
+    """#265: an experimentation job must declare its experiment; a candidate runs as its author.
+
+        experimentation declares no job.experiment
+        unit <id> is a candidate authored by <author_role> but runs as <role>
+    """
+    job = document["job"]
+    if job.get("kind") == "experimentation" and "experiment" not in job:
+        return "experimentation declares no job.experiment"
+    for unit in document["plan"]["units"]:
+        candidate = unit.get("candidate")
+        if candidate is not None and candidate["author_role"] != unit["role"]:
+            return (
+                f"unit {unit['id']} is a candidate authored by {candidate['author_role']} "
+                f"but runs as {unit['role']}"
+            )
+    return None
+
+
+def _produced_refs(produced: Any, kind: str) -> list[Any]:
+    """#265: the refs of `produced` items of one kind, in order; any other shape has none."""
+    items = produced if isinstance(produced, list) else []
+    return [p.get("ref") for p in items if isinstance(p, dict) and p.get("kind") == kind]
+
+
+def _submission(unit: dict) -> tuple[Any, Any]:
+    """#265: `(sha, score)` a candidate submitted — its newest done attempt's first commit and
+    score refs, `(None, None)` when it has none."""
+    for attempt in reversed(unit.get("attempts") or []):
+        if attempt.get("status") == "done":
+            commits = _produced_refs(attempt.get("produced"), "commit")
+            scores = _produced_refs(attempt.get("produced"), "score")
+            return (commits[0] if commits else None, scores[0] if scores else None)
+    return None, None
+
+
+def _validated(document: dict, candidate_id: str, sha: Any) -> bool:
+    """#265/D4: a done unit reviewing the candidate reported `validated-sha` equal to `sha`."""
+    for unit in document["plan"]["units"]:
+        if unit["status"] != "done" or candidate_id not in (unit.get("reviews") or []):
+            continue
+        for attempt in reversed(unit.get("attempts") or []):
+            if attempt.get("status") == "done":
+                if sha in _produced_refs(attempt.get("produced"), "validated-sha"):
+                    return True
+                break
+    return False
+
+
+def _ranking(document: dict) -> dict[str, Any]:
+    """#265/D5: `{ranking, winner}` for an experimentation job, `{}` for any other.
+
+    Validated candidates only, in `experiment.rank` order; the winner is the first, None
+    when no candidate is validated.
+    """
+    job = document["job"]
+    if job.get("kind") != "experimentation" or "experiment" not in job:
+        return {}
+    entries = []
+    for unit in document["plan"]["units"]:
+        if "candidate" not in unit:
+            continue
+        sha, score = _submission(unit)
+        if experiment.full_sha(sha) and experiment.score_value(score) is not None:
+            if _validated(document, unit["id"], sha):
+                entries.append({"id": unit["id"], "score": score, "sha": sha})
+    ranking = experiment.rank(entries, job["experiment"]["direction"])
+    return {"ranking": ranking, "winner": ranking[0]["id"] if ranking else None}
+
+
+#: #265: the `event` value of the ledger line that records an experiment's frozen keys.
+FROZEN_EVENT = "frozen"
+#: #265: the experiment keys a checkpoint may not change once a brief or clock-out read them.
+FROZEN_KEYS = ("base_sha", "harness")
+
+
+def _frozen(path: Path, document: dict) -> tuple[dict | None, str | None]:
+    """#265/D1: `(line, refusal)` — the first `frozen` ledger line, and the sentence when the
+    checkpoint no longer says what it froze. `(None, None)` outside an experiment.
+
+        job.experiment.<key> is frozen at <old>; the checkpoint says <new>
+    """
+    declared = document["job"].get("experiment")
+    if document["job"].get("kind") != "experimentation" or declared is None:
+        return None, None
+    for line in _ledger(_log_path(path)):
+        if isinstance(line, dict) and line.get("event") == FROZEN_EVENT:
+            for key in FROZEN_KEYS:
+                if line.get(key) != declared[key]:
+                    return line, (
+                        f"job.experiment.{key} is frozen at {line.get(key)}; "
+                        f"the checkpoint says {declared[key]}"
+                    )
+            return line, None
+    return None, None
+
+
+def _freeze(path: Path, document: dict) -> None:
+    """#265/D1: append the `frozen` line the first time an experiment is read, best effort."""
+    declared = document["job"].get("experiment")
+    if document["job"].get("kind") != "experimentation" or declared is None:
+        return
+    line, _ = _frozen(path, document)
+    if line is not None:
+        return
+    record = {"event": FROZEN_EVENT, "ts": _timestamp(time.time())}
+    record.update({key: declared[key] for key in FROZEN_KEYS})
+    try:
+        with _log_path(path).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def _candidate_gate(path: Path, document: dict, unit: dict) -> str | None:
+    """#265/D2, D6: a candidate brief past `concurrency_cap`, or past its own budget.
+
+        experiment allows <cap> candidates in flight; <ids> hold them
+        candidate <id> budget <dim> spent: <n> of <limit>;
+            drop it or raise job.experiment.candidate_budget   (one line)
+    """
+    declared = document["job"].get("experiment")
+    if "candidate" not in unit or declared is None:
+        return None
+    log_path = _log_path(path)
+    holders = [
+        other["id"]
+        for other in document["plan"]["units"]
+        if other["id"] != unit["id"] and "candidate" in other and _briefed(log_path, other["id"])
+    ]
+    cap = declared["concurrency_cap"]
+    if len(holders) >= cap:
+        return f"experiment allows {cap} candidates in flight; {', '.join(holders)} hold them"
+    limit = declared.get("candidate_budget") or {}
+    used = experiment.spent(_ledger(log_path), unit["id"])
+    for dim in experiment.CANDIDATE_DIMENSIONS:
+        if dim in limit and used[dim] >= limit[dim]:
+            return (
+                f"candidate {unit['id']} budget {dim} spent: {used[dim]} of {limit[dim]}; "
+                "drop it or raise job.experiment.candidate_budget"
+            )
+    return None
+
+
+def _submit_refusal(document: dict, unit: dict, status: str, history_entry: Any) -> str | None:
+    """#265/D3, D4: what a candidate's or a validator's clock-out done must report.
+
+    A candidate reports a full-SHA commit and a numeric score:
+
+        candidate <id> submitted no commit; report {kind: commit, ref: <full sha>}
+        candidate <id> commit <ref> is not a full sha
+        candidate <id> submitted no score; report {kind: score, ref: <number>}
+        candidate <id> score <ref> is not a number
+
+    A unit that `reviews` a candidate reports the SHA that candidate submitted, per reviewed
+    candidate in `reviews` order:
+
+        unit <id> validates <c>, which has submitted no commit
+        unit <id> validates <c> but reports no validated-sha
+        unit <id> validated <ref>, but <c> submitted <sha>
+    """
+    if status != "done":
+        return None
+    produced = history_entry.get("produced") if isinstance(history_entry, dict) else None
+    if "candidate" in unit:
+        commits = _produced_refs(produced, "commit")
+        if not commits:
+            return (
+                f"candidate {unit['id']} submitted no commit; "
+                "report {kind: commit, ref: <full sha>}"
+            )
+        if not experiment.full_sha(commits[0]):
+            return f"candidate {unit['id']} commit {commits[0]} is not a full sha"
+        scores = _produced_refs(produced, "score")
+        if not scores:
+            return (
+                f"candidate {unit['id']} submitted no score; "
+                "report {kind: score, ref: <number>}"
+            )
+        if experiment.score_value(scores[0]) is None:
+            return f"candidate {unit['id']} score {scores[0]} is not a number"
+    by_id = {u["id"]: u for u in document["plan"]["units"]}
+    for reviewed in unit.get("reviews") or []:
+        target = by_id.get(reviewed)
+        if target is None or "candidate" not in target:
+            continue
+        sha, _ = _submission(target)
+        if sha is None:
+            return f"unit {unit['id']} validates {reviewed}, which has submitted no commit"
+        validated = _produced_refs(produced, "validated-sha")
+        if not validated:
+            return f"unit {unit['id']} validates {reviewed} but reports no validated-sha"
+        if sha not in validated:
+            return f"unit {unit['id']} validated {validated[0]}, but {reviewed} submitted {sha}"
+    return None
+
+
 def _batch_view(document: dict) -> dict[str, Any]:
     """The `depends_on` graph of an IN-MEMORY checkpoint document. THE module's only one.
 
@@ -502,11 +699,15 @@ def _batch_view(document: dict) -> dict[str, Any]:
     investigation = _investigation_refusal(document)
     if investigation is not None:
         return {**_error(investigation), "review": True}
+    candidates = _experimentation_refusal(document)  # #265, the same way
+    if candidates is not None:
+        return {**_error(candidates), "review": True}
     nodes = [
         {"id": unit["id"], "depends_on": list(declared[unit["id"]]), "priority": 0}
         # #257: `touches` is passed through only when the unit declares it, so a checkpoint
         # with no `touches` anywhere gets the core's answer with no `held` key — today's.
-        | ({"touches": unit["touches"]} if "touches" in unit else {})
+        # #265: a candidate writes in its own worktree, so its `touches` hold nothing.
+        | ({"touches": unit["touches"]} if "touches" in unit and "candidate" not in unit else {})
         for unit in document["plan"]["units"]
         if unit["status"] not in TERMINAL_UNIT_STATUS
     ]
@@ -555,13 +756,16 @@ def _contention(path: Path, document: dict, unit: dict) -> str | None:
     Checked after readiness, so a held unit (not in `ready`) keeps the readiness sentence.
     """
     mine = unit.get("touches") or []
-    if not mine:
+    if not mine or "candidate" in unit:  # #265: a candidate's worktree is its own
         return None
     log_path = _log_path(path)
     holders = [
         other
         for other in document["plan"]["units"]
-        if other["id"] != unit["id"] and other.get("touches") and _briefed(log_path, other["id"])
+        if other["id"] != unit["id"]
+        and other.get("touches")
+        and "candidate" not in other
+        and _briefed(log_path, other["id"])
     ]
     for file in mine:
         for other in holders:
@@ -700,6 +904,12 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     gate = _irreversible_gate(document, unit)
     if gate is not None:
         return gate
+    _, drifted = _frozen(Path(checkpoint), document)
+    if drifted is not None:
+        return _error(drifted)
+    crowded = _candidate_gate(Path(checkpoint), document, unit)
+    if crowded is not None:
+        return _error(crowded)
     contention = _contention(Path(checkpoint), document, unit)
     if contention is not None:
         return _error(contention)
@@ -710,6 +920,7 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         return _error(over)
     # F6: the brief is issued, so say so in the ledger — best effort, and only on this
     # branch: a refusal above issued nothing and therefore records nothing.
+    _freeze(Path(checkpoint), document)  # #265: before the brief line, so it is read first
     _record_brief(_log_path(Path(checkpoint)), selected, unit["role"])
     return {
         "result": "brief",
@@ -1349,6 +1560,12 @@ def _clock_out_locked(
         if refused is not None:
             return _error(refused)
         document["job"]["conclusion"] = conclusion
+    _, drifted = _frozen(path, document)
+    if drifted is not None:
+        return _error(drifted)
+    unsubmitted = _submit_refusal(document, unit, status, history_entry)
+    if unsubmitted is not None:
+        return _error(unsubmitted)
 
     if follow_ups:
         refused = _follow_ups_refusal(path, document, unit, follow_ups)
@@ -1421,6 +1638,7 @@ def _clock_out_locked(
     # on every line, `accounting: null` included — the base shape (ts/unit/role/status) is
     # the runtime's, and so is this field. Never a refusal.
     record["briefed"] = _briefed(log_path, unit_id)
+    _freeze(path, document)  # #265: the first read of an experiment, before its first line
     try:
         with log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
@@ -1533,4 +1751,4 @@ def plan_batches(checkpoint: str) -> dict[str, Any]:
         "cursor": document["plan"]["cursor"],
     } | ({"held": answer["held"]} if "held" in answer else {}) | _budget_key(
         Path(checkpoint), document
-    )
+    ) | _ranking(document)

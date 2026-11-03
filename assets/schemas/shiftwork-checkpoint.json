@@ -46,8 +46,31 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["investigation"],
-          "description": "OPTIONAL (#264). `investigation`: the job answers `question` by testing `hypotheses` in run units, each supported claim replayed by another role before `conclusion` may say resolved. Absent = today's job."
+          "enum": ["investigation", "experimentation"],
+          "description": "OPTIONAL (#264, #265). `investigation`: the job answers `question` by testing `hypotheses` in run units, each supported claim replayed by another role before `conclusion` may say resolved. `experimentation`: candidate units compete in their own worktrees on `experiment.objective`, each validated by another role at the exact SHA it submitted. Absent = today's job."
+        },
+        "experiment": {
+          "type": "object",
+          "required": ["objective", "direction", "base_sha", "harness", "concurrency_cap"],
+          "additionalProperties": false,
+          "properties": {
+            "objective": {"type": "string", "minLength": 1, "description": "What a candidate's score measures."},
+            "direction": {"type": "string", "enum": ["minimize", "maximize"], "description": "Which way a better score points."},
+            "base_sha": {"type": "string", "minLength": 1, "description": "The commit every candidate starts from. Frozen: once a brief or clock-out has read it, a checkpoint that says otherwise is refused."},
+            "harness": {"type": "string", "minLength": 1, "description": "The command that scores a candidate. Frozen like base_sha."},
+            "concurrency_cap": {"type": "integer", "minimum": 1, "description": "At most this many candidates in flight; clock_in refuses the next."},
+            "candidate_budget": {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "tokens": {"type": "integer", "minimum": 0, "description": "Tokens one candidate's accounting lines may record."},
+                "wallclock_ms": {"type": "integer", "minimum": 0, "description": "duration_ms one candidate's accounting lines may record."}
+              },
+              "description": "Per candidate, read off its own accounting lines; a candidate that has spent it is refused at clock_in."
+            }
+          },
+          "description": "OPTIONAL (#265). Required by `kind: experimentation`."
         },
         "question": {
           "type": "string",
@@ -166,6 +189,16 @@
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
                 "description": "Unit ids this unit reviews (#263). Optional. Each must be declared, be in this unit's depends_on, and have a different role from this unit; the batch view, clock_in and clock_out refuse a checkpoint that breaks any of the three."
+              },
+              "candidate": {
+                "type": "object",
+                "required": ["workspace", "author_role"],
+                "additionalProperties": false,
+                "properties": {
+                  "workspace": {"type": "string", "minLength": 1, "description": "The worktree the orchestrator created for this candidate, recorded here and removed by the orchestrator after validation."},
+                  "author_role": {"type": "string", "minLength": 1, "description": "The role that writes the candidate; must be this unit's role."}
+                },
+                "description": "OPTIONAL (#265). This unit is a candidate: `touches` does not hold it (its own worktree), its clock-out done reports {kind: commit, ref: <full sha>} and {kind: score, ref: <number>}, and a unit that `reviews` it validates that exact SHA."
               },
               "tests": {
                 "type": "array",

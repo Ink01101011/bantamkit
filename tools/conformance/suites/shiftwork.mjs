@@ -203,6 +203,8 @@ const IN = (unitId = null) => ({ fn: 'clock_in', unit_id: unitId });
 /** The note the F8 sessions write, read back per side below — so it is one literal, not two. */
 const HANDOFF_NOTE = 'gate baseline at plan time — 3989 cases, 0 failures; เป้าหมาย: parity';
 const ST = () => ({ fn: 'status' });
+/** #265: the batch view, where an experiment's ranking is read. */
+const PL = () => ({ fn: 'plan' });
 const OUT = (unit, status, over = {}) => ({
   fn: 'clock_out',
   unit,
@@ -1078,6 +1080,59 @@ function j655Sessions() {
       IV_OUT('C', { conclusion: { outcome, supported: 'H1', evidence: [] } }),
     ]]),
 
+    // ---- #265. The experimentation flavor. A full run read off the batch view after each
+    // step (no winner until a validation lands, then the ranking in `direction`); a tie falls
+    // to the id; maximize reverses; candidates sharing touches are not held; every refusal.
+    ['experiment/full-run', b64(raw(experimentDocument())), [
+      PL(),
+      EX_OUT('A', submitted(SHA_A, '12.5')),
+      EX_OUT('B', submitted(SHA_B, '9')),
+      PL(),
+      EX_OUT('VA', [{ kind: 'validated-sha', ref: SHA_A }]),
+      PL(),
+      EX_OUT('VB', [{ kind: 'validated-sha', ref: SHA_B }]),
+      PL(),
+    ]],
+    ...[['tie', 'minimize', '9.0', '9'], ['maximize', 'maximize', '9', '12.5']].map(([name, direction, a, b]) => [
+      `experiment/${name}`, b64(raw(experimentDocument({ experiment: { direction } }))), [
+        EX_OUT('A', submitted(SHA_A, a)),
+        EX_OUT('B', submitted(SHA_B, b)),
+        EX_OUT('VA', [{ kind: 'validated-sha', ref: SHA_A }]),
+        EX_OUT('VB', [{ kind: 'validated-sha', ref: SHA_B }]),
+        PL(),
+      ]]),
+    ['experiment/touches-not-held', b64(raw(experimentDocument())), [PL(), IN(), IN('B')]],
+    ['experiment/no-experiment', b64(raw(experimentDocument({ drop: true }))), [IN()]],
+    ['experiment/author-role', b64(raw(experimentDocument({ units: [experimentCandidate('A', { role: 'reviewer' })] }))), [IN()]],
+    ['experiment/cap', b64(raw(experimentDocument({ units: ['A', 'B', 'C'].map((id) => experimentCandidate(id)) }))), [IN(), IN('B'), IN('C')]],
+    ['experiment/candidate-budget', b64(raw(experimentDocument({ experiment: { candidate_budget: { tokens: 100 } } }))), [
+      EX_OUT('A', undefined, { status: 'todo', accounting: b64('{"tokens": 100, "duration_ms": 1}') }),
+      IN('A'),
+      IN('B'),
+    ]],
+    ['experiment/frozen', b64(raw(experimentDocument())), [
+      IN(),
+      { fn: 'plant', path: 'checkpoint.json', content: b64(raw(experimentDocument({ experiment: { harness: 'make bench-fast' } }))) },
+      IN('B'),
+      EX_OUT('A', submitted(SHA_A, '1')),
+    ]],
+    ['experiment/submit-refusals', b64(raw(experimentDocument())), [
+      EX_OUT('A'),
+      EX_OUT('A', submitted('abc123', '1')),
+      EX_OUT('A', [{ kind: 'commit', ref: SHA_A }]),
+      EX_OUT('A', submitted(SHA_A, 'fast')),
+      EX_OUT('A', undefined, { status: 'blocked' }),
+    ]],
+    ['experiment/validation-refusals', b64(raw(experimentDocument())), [
+      EX_OUT('A', submitted(SHA_A, '12.5')),
+      IN('VA'),
+      EX_OUT('VA', []),
+      EX_OUT('VA', [{ kind: 'validated-sha', ref: SHA_B }]),
+    ]],
+    ['experiment/validates-nothing-submitted', b64(raw(experimentDocument({ cursor: 'VB' }))), [
+      EX_OUT('VB', [{ kind: 'validated-sha', ref: SHA_B }]),
+    ]],
+
     // ---- #262. The budget: a brief the reservation leaves no room for is refused, writing
     // nothing, and the reserving unit's own relaunch is not; a 0-token line is refused unless
     // marked `estimate`, and passes on a checkpoint with no job.budget.
@@ -1114,6 +1169,33 @@ const resultsDocument = () => baseDocument({
     cursor: 'A',
     units: [unit('A', []), unit('Z', [], { title: 'zed', status: 'done' }), unit('C', ['Z', 'A'])],
   },
+});
+
+/** #265: candidates A and B in their own worktrees (sharing a touched file), validators VA, VB. */
+const SHA_A = 'a'.repeat(40);
+const SHA_B = 'b'.repeat(40);
+const experimentCandidate = (id, over = {}) =>
+  unit(id, [], { candidate: { workspace: `.worktrees/${id} — งาน`, author_role: 'implementer' }, touches: ['src/hot.py'], ...over });
+const experimentDocument = ({ units, experiment = {}, drop = false, cursor } = {}) => {
+  const list = units ?? [
+    experimentCandidate('A'),
+    experimentCandidate('B'),
+    unit('VA', ['A'], { role: 'reviewer', reviews: ['A'] }),
+    unit('VB', ['B'], { role: 'reviewer', reviews: ['B'] }),
+  ];
+  const document = baseDocument({ plan: { cursor: cursor ?? list[0].id, units: list } });
+  document.job.kind = 'experimentation';
+  if (!drop) {
+    document.job.experiment = {
+      objective: 'p95 latency, ms — เวลาตอบ', direction: 'minimize', base_sha: 'c'.repeat(40), harness: 'make bench', concurrency_cap: 2, ...experiment,
+    };
+  }
+  return document;
+};
+const submitted = (sha, score) => [{ kind: 'commit', ref: sha }, { kind: 'score', ref: score }];
+const EX_OUT = (id, produced, { status = 'done', accounting = null } = {}) => OUT(id, status, {
+  history_entry: b64(JSON.stringify({ unit: id, outcome: status, ...(produced !== undefined ? { produced } : {}) })),
+  accounting,
 });
 
 /** #264: H1 and H2; run R tests H1, replay P in another role, review V of both, concluding C. */
@@ -1565,6 +1647,7 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
     // and every clock-in in the suite asked for a unit named `[object Object]`.
     if (call.fn === 'clock_in') answer = shiftwork.clockIn(target, call.unit_id ?? null, { now: clock.now });
     else if (call.fn === 'status') answer = shiftwork.status(target);
+    else if (call.fn === 'plan') answer = shiftwork.planBatches(target); // #265: the ranking
     else {
       clock.now = call.now;
       answer = shiftwork.clockOut(
@@ -2946,6 +3029,50 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #265, per side: the ranking after each step, the tie and direction, every sentence.
+    const rankingOf = (r) => (r.result === 'plan' ? { ranking: r.ranking ?? '(absent)', winner: r.winner === undefined ? '(absent)' : r.winner } : r.result);
+    const FULL = 'experiment/full-run';
+    row('experiment/no-winner-before-submission', FULL, 0, { ranking: [], winner: null }, rankingOf);
+    row('experiment/no-winner-before-validation', FULL, 3, { ranking: [], winner: null }, rankingOf);
+    row('experiment/one-validated', FULL, 5, { ranking: [{ id: 'A', score: '12.5', sha: SHA_A }], winner: 'A' }, rankingOf);
+    row('experiment/both-validated-minimize', FULL, 7, {
+      ranking: [{ id: 'B', score: '9', sha: SHA_B }, { id: 'A', score: '12.5', sha: SHA_A }], winner: 'B',
+    }, rankingOf);
+    row('experiment/a-tie-falls-to-the-id', 'experiment/tie', 4, {
+      ranking: [{ id: 'A', score: '9.0', sha: SHA_A }, { id: 'B', score: '9', sha: SHA_B }], winner: 'A',
+    }, rankingOf);
+    row('experiment/maximize', 'experiment/maximize', 4, {
+      ranking: [{ id: 'B', score: '12.5', sha: SHA_B }, { id: 'A', score: '9', sha: SHA_A }], winner: 'B',
+    }, rankingOf);
+    row('experiment/touches-not-held', 'experiment/touches-not-held', 0, { ready: ['A', 'B'], held: '(absent)' },
+      (r) => ({ ready: r.ready ?? null, held: r.held ?? '(absent)' }));
+    bit('experiment/touches-not-held-second-brief', 'experiment/touches-not-held', 2, 'brief');
+    says('experiment/no-experiment', 'experiment/no-experiment', 0, 'experimentation declares no job.experiment');
+    untouched('experiment/no-experiment', 'experiment/no-experiment', 0);
+    says('experiment/author-role', 'experiment/author-role', 0, 'unit A is a candidate authored by implementer but runs as reviewer');
+    says('experiment/cap', 'experiment/cap', 2, 'experiment allows 2 candidates in flight; A, B hold them');
+    says('experiment/candidate-budget', 'experiment/candidate-budget', 1,
+      'candidate A budget tokens spent: 100 of 100; drop it or raise job.experiment.candidate_budget');
+    bit('experiment/candidate-budget-other-briefs', 'experiment/candidate-budget', 2, 'brief');
+    const DRIFT = 'job.experiment.harness is frozen at make bench; the checkpoint says make bench-fast';
+    says('experiment/frozen-at-clock-in', 'experiment/frozen', 2, DRIFT);
+    says('experiment/frozen-at-clock-out', 'experiment/frozen', 3, DRIFT);
+    row('experiment/frozen-line', 'experiment/frozen', 0, [['c'.repeat(40), 'make bench']],
+      (r, raw) => (raw.log === null ? [] : unb64(raw.log).trim().split('\n').map((l) => JSON.parse(l))
+        .filter((l) => l.event === 'frozen').map((l) => [l.base_sha, l.harness])));
+    const SUBMIT = 'experiment/submit-refusals';
+    says('experiment/no-commit', SUBMIT, 0, 'candidate A submitted no commit; report {kind: commit, ref: <full sha>}');
+    untouched('experiment/no-commit', SUBMIT, 0);
+    says('experiment/not-a-full-sha', SUBMIT, 1, 'candidate A commit abc123 is not a full sha');
+    says('experiment/no-score', SUBMIT, 2, 'candidate A submitted no score; report {kind: score, ref: <number>}');
+    says('experiment/not-a-number', SUBMIT, 3, 'candidate A score fast is not a number');
+    untouched('experiment/not-a-number', SUBMIT, 3);
+    bit('experiment/blocked-submits-nothing', SUBMIT, 4, 'ok');
+    says('experiment/no-validated-sha', 'experiment/validation-refusals', 2, 'unit VA validates A but reports no validated-sha');
+    says('experiment/wrong-validated-sha', 'experiment/validation-refusals', 3, `unit VA validated ${SHA_B}, but A submitted ${SHA_A}`);
+    says('experiment/validates-nothing-submitted', 'experiment/validates-nothing-submitted', 0, 'unit VB validates B, which has submitted no commit');
+    untouched('experiment/validates-nothing-submitted', 'experiment/validates-nothing-submitted', 0);
 
     // #264, per side: the full run's conclusion on disk, every sentence, nothing written on a refusal.
     const RUN = 'investigation/resolved-run';
