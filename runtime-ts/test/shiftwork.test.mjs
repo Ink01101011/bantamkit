@@ -177,8 +177,8 @@ test('clock_in returns the brief, and `invariants` is SYNTHESIZED from job.const
   assert.deepEqual(answer.invariants, ['PURE NODE at runtime.', 'เป้าหมาย — no pipe/uv']);
   assert.deepEqual(answer.do_not, ['do not guess']);
   assert.deepEqual(answer.files, [{ path: 'probe.md', role: 'evidence' }]);
-  // #259 added `upstream` and `prior_attempts`, always present, after `files`.
-  assert.deepEqual(Object.keys(answer), ['result', 'unit', 'role', 'invariants', 'handoff', 'do_not', 'files', 'upstream', 'prior_attempts']);
+  // #259 added `upstream` and `prior_attempts`, #261 `agreements`, all always present.
+  assert.deepEqual(Object.keys(answer), ['result', 'unit', 'role', 'invariants', 'handoff', 'do_not', 'files', 'upstream', 'prior_attempts', 'agreements']);
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -1858,8 +1858,8 @@ test('D1: no unit_id is the cursor unit, and the codefix template answers what i
   assert.equal(answer.unit.id, doc.plan.cursor);
   assert.deepEqual(answer.unit, doc.plan.units[0]);
   assert.deepEqual(answer.invariants, doc.job.constraints);
-  // #259 added `upstream` and `prior_attempts`, always present, after `files`.
-  assert.deepEqual(Object.keys(answer), ['result', 'unit', 'role', 'invariants', 'handoff', 'do_not', 'files', 'upstream', 'prior_attempts']);
+  // #259 added `upstream` and `prior_attempts`, #261 `agreements`, all always present.
+  assert.deepEqual(Object.keys(answer), ['result', 'unit', 'role', 'invariants', 'handoff', 'do_not', 'files', 'upstream', 'prior_attempts', 'agreements']);
   assert.deepEqual(logLines(path).map((l) => [l.event, l.unit]), [['brief', doc.plan.cursor]]);
   // An omitted argument and an explicit null are ONE case — the MCP server hands over the
   // latter for a host that sends `"unit_id": null`.

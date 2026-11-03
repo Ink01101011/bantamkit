@@ -681,7 +681,8 @@ function runTool(
               args.get('history_entry')!,
               args.get('accounting') ?? { t: 'null' },
               // `follow_ups` (#260): units this one discovered; absent, the call is today's.
-              { followUps: args.get('follow_ups') ?? null },
+              // `agreements` (#261): {adopt?, retire?}; absent, the call is today's.
+              { followUps: args.get('follow_ups') ?? null, agreements: args.get('agreements') ?? null },
             ),
           ),
         ),

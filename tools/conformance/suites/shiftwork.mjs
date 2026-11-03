@@ -1007,6 +1007,23 @@ function j655Sessions() {
       [PLANT_BRIEF('F1'), PLANT_BRIEF('F2'), FU_OUT(items), ST()],
     ]),
 
+    // ---- #261. Agreements: adopt (Thai included) then the next brief carries them and retro
+    // records it; retire by exact text then adopt with a duplicate; both refusals, nothing
+    // written; a change that moves nothing records nothing.
+    ['agreements/adopt-then-brief', b64(raw(agreementsDocument(null))), [
+      AG_OUT({ adopt: ['run --all under Node 20', 'อ่านก่อนเขียน'] }),
+      IN(),
+    ]],
+    ['agreements/retire-then-adopt', b64(raw(agreementsDocument(['one', 'two']))), [
+      AG_OUT({ retire: ['one'], adopt: ['two', 'three'] }),
+      IN(),
+    ]],
+    ['agreements/refusals', b64(raw(agreementsDocument([...Array(19).keys()].map((n) => `a${n}`)))), [
+      AG_OUT({ retire: ['A0'] }),
+      AG_OUT({ adopt: ['x', 'y'] }),
+      AG_OUT({ adopt: ['a0'] }),
+    ]],
+
     // ---- #262. The budget: a brief the reservation leaves no room for is refused, writing
     // nothing, and the reserving unit's own relaunch is not; a 0-token line is refused unless
     // marked `estimate`, and passes on a checkpoint with no job.budget.
@@ -1044,6 +1061,14 @@ const resultsDocument = () => baseDocument({
     units: [unit('A', []), unit('Z', [], { title: 'zed', status: 'done' }), unit('C', ['Z', 'A'])],
   },
 });
+
+/** #261: `A` the cursor, `B` beside it, and `job.agreements` when given. */
+const agreementsDocument = (agreements) => {
+  const document = baseDocument({ plan: { cursor: 'A', units: [unit('A', []), unit('B', [])] } });
+  if (agreements !== null) document.job.agreements = agreements;
+  return document;
+};
+const AG_OUT = (change) => ({ ...OUT('A', 'done'), agreements: b64(JSON.stringify(change)) });
 
 /** #260: `A` the cursor, `B` beside it. */
 const followUpDocument = () => baseDocument({ plan: { cursor: 'A', units: [unit('A', []), unit('B', [])] } });
@@ -1454,6 +1479,7 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
           // #260: the Node module takes follow-ups in the options slot; the reference takes them
           // as clock_out's next positional argument. Same JSON either way.
           ...(call.follow_ups ? { followUps: parseJson(unb64(call.follow_ups)) } : {}),
+          ...(call.agreements ? { agreements: parseJson(unb64(call.agreements)) } : {}),
         },
       );
     }
@@ -2819,6 +2845,21 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #261, per side: the brief key, the retro entry, both refusals with nothing written.
+    row('agreements/the-next-brief-carries-them', 'agreements/adopt-then-brief', 1,
+      ['run --all under Node 20', 'อ่านก่อนเขียน'], (r) => r.agreements ?? null);
+    row('agreements/retro-records-the-change', 'agreements/adopt-then-brief', 0, [
+      { trigger: 'A', patch_applied_to: 'job.agreements', adopted: ['run --all under Node 20', 'อ่านก่อนเขียน'], retired: [] },
+    ], (r, raw) => (raw.checkpoint === null ? null : JSON.parse(unb64(raw.checkpoint)).retro));
+    row('agreements/retire-then-adopt-duplicate-is-a-no-op', 'agreements/retire-then-adopt', 1, ['two', 'three'],
+      (r) => r.agreements ?? null);
+    says('agreements/retire-not-listed', 'agreements/refusals', 0, "no agreement reads 'A0'");
+    untouched('agreements/retire-not-listed', 'agreements/refusals', 0);
+    says('agreements/over-twenty', 'agreements/refusals', 1, 'agreements would number 21; retire one first (at most 20)');
+    untouched('agreements/over-twenty', 'agreements/refusals', 1);
+    row('agreements/a-no-op-records-nothing', 'agreements/refusals', 2, [],
+      (r, raw) => (raw.checkpoint === null ? null : JSON.parse(unb64(raw.checkpoint)).retro));
 
     // #260, per side: the appended units, the cursor/ready after, each refusal with nothing written.
     const TWO = 'follow-ups/two-appended';

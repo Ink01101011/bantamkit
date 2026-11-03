@@ -123,6 +123,8 @@ export const ACCOUNTING_SHAPE_UNREADABLE =
 export const TERMINAL_UNIT_STATUS: ReadonlySet<string> = new Set(['done', 'dropped']);
 /** The schema's `maxItems` — older entries fall off the ring. */
 export const HISTORY_RING_SIZE = 5;
+/** #261: the most agreements a job carries; past it, one must be retired first. */
+export const AGREEMENTS_MAX = 20;
 /** #259: the attempts a unit keeps, newest last; the oldest is dropped past this. */
 export const ATTEMPTS_KEPT = 3;
 /** #259: an attempt's `notes`, in code points, so both runtimes count non-ASCII text alike. */
@@ -298,6 +300,8 @@ export interface ClockOptions {
   lockWaitMs?: number;
   /** #260: the units this one discovered, as `shiftwork_clock_out`'s `follow_ups` hands them. */
   followUps?: unknown;
+  /** #261: `{adopt?, retire?}`, as `shiftwork_clock_out`'s `agreements` hands it. */
+  agreements?: unknown;
 }
 
 /**
@@ -720,6 +724,8 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
     // #259: always present, so a brief's shape does not depend on the plan.
     ['upstream', { t: 'list', v: ('declared' in view ? view.declared!.get(unit) ?? [] : []).map((dep) => upstreamOf(doc, dep)) }],
     ['prior_attempts', { t: 'list', v: [...attemptsOf(unit)] }],
+    // #261: always present, `[]` when the job has adopted none.
+    ['agreements', { t: 'list', v: [...strings(subDict(doc, 'job').v.get('agreements'))].map(str) }],
   ]);
 }
 
@@ -969,6 +975,39 @@ function zeroTokensRefusal(doc: PyDict, unitId: string, accounting: unknown): st
   const marked = estimate !== undefined && estimate.t === 'bool' && estimate.v === true;
   if (zero && !marked) return `accounting for ${unitId} reports 0 tokens; record the host's figure, or mark it estimate`;
   return null;
+}
+
+/** A list of strings off a PyValue, `[]` for anything else. */
+function strings(value: PyValue | undefined): string[] {
+  return value !== undefined && value.t === 'list' ? value.v.filter((v) => v.t === 'str').map(text) : [];
+}
+
+/**
+ * #261/D2: `job.agreements` after a clock-out's `{adopt?, retire?}` — `[listed, adopted, retired]`,
+ * `null` when nothing moved, or the refusal sentence — exactly as `_agreements_change`: retire by
+ * exact text first, then adopt what is not listed yet, then the cap.
+ */
+function agreementsChange(doc: PyDict, change: Map<string, PyValue>): string | [string[], string[], string[]] | null {
+  const listed = strings(subDict(doc, 'job').v.get('agreements'));
+  const retired: string[] = [];
+  for (const value of (change.get('retire') as PyValue | undefined)?.t === 'list' ? (change.get('retire') as { v: PyValue[] }).v : []) {
+    const at = value.t === 'str' ? listed.indexOf(value.v) : -1;
+    if (at === -1) return `no agreement reads ${reprValue(value)}`;
+    listed.splice(at, 1);
+    retired.push(text(value));
+  }
+  const adopted: string[] = [];
+  for (const value of strings(change.get('adopt'))) {
+    if (!listed.includes(value)) {
+      listed.push(value);
+      adopted.push(value);
+    }
+  }
+  if (listed.length > AGREEMENTS_MAX) {
+    return `agreements would number ${listed.length}; retire one first (at most ${AGREEMENTS_MAX})`;
+  }
+  if (adopted.length === 0 && retired.length === 0) return null;
+  return [listed, adopted, retired];
 }
 
 /** #260: `follow_ups` as a list of dicts; anything else (absent, null) is no follow-ups. */
@@ -1244,6 +1283,23 @@ function clockOutLocked(
     const refused = followUpsRefusal(path, doc, unit, followUps);
     if (refused !== null) return errorResult(refused);
     subList(plan, 'units').v.push(...followUps.map((item) => followUpUnit(unit, item)));
+  }
+  const change = asPatch(options.agreements);
+  if (change.size > 0) {
+    const changed = agreementsChange(doc, change);
+    if (typeof changed === 'string') return errorResult(changed);
+    if (changed !== null) {
+      const [listed, adopted, retired] = changed;
+      subDict(doc, 'job').v.set('agreements', { t: 'list', v: listed.map(str) });
+      subList(doc, 'retro').v.push(
+        dict([
+          ['trigger', str(unitId)],
+          ['patch_applied_to', str('job.agreements')],
+          ['adopted', { t: 'list', v: adopted.map(str) }],
+          ['retired', { t: 'list', v: retired.map(str) }],
+        ]),
+      );
+    }
   }
   unit.v.set('status', str(status));
   // #259: the durable per-unit record the 5-entry ring cannot be, built only from what clockOut

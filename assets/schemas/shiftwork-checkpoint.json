@@ -39,6 +39,12 @@
             "description": "The model identifiers this role may report, spelled exactly as a session logs them. Non-empty: a role allowed no model is a typo, not a policy."
           }
         },
+        "agreements": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {"type": "string", "minLength": 1},
+          "description": "OPTIONAL (#261). Working agreements adopted during the job, carried on every brief. Changed only through clock_out's `agreements` {adopt, retire}; each change is recorded in retro[]."
+        },
         "budget": {
           "type": "object",
           "description": "OPTIONAL (#262). What the job may spend, read back from <checkpoint>.log.jsonl: shiftwork_plan reports spent/remaining/affordable, clock_in refuses a brief that does not fit, and clock_out refuses a 0-token accounting line not marked `estimate`. Absent keeps today's behaviour exactly.",
