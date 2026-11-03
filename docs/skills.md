@@ -218,6 +218,9 @@ records nothing as refused, and `skill_propose promote <name>` still promotes on
 - **Needs you, always:** any `## Steps` change, a merge, and removal outside probation. A
   proposal carries its full text, a unified diff, and the hash of the file it was built on;
   approving it applies exactly that text, and is refused if the file changed since.
+- **A `## Steps` change is gated too** (the same gate as a draft, against the evidence the skill
+  cites plus the step's own turn). A step the gate refuses is logged in `skill-drafts.jsonl` and
+  not proposed; folded into a switch-off proposal, it is dropped and the rest is proposed alone.
 - **Every version is kept** in `references/history/v<N>.md`; `bantamkit-version` counts them.
 - **Judged before kept:** once a version has **5** uses it is compared with the version it
   replaced. If its success rate fell or its false-fire rate rose (strictly, on integers), it is
@@ -304,9 +307,6 @@ so.
 - A skill promoted by **copy** is not refreshed when bantamkit makes a new version, rolls one
   back or applies an approved change; the copy keeps the old text until it is demoted and
   promoted again.
-- A `## Steps` proposal is built deterministically (one added step citing the turn's id, which
-  joins `bantamkit-evidence`) and is not run through the drafter's gate; approving it runs the
-  format rules only. The spec says every edit passes the gate; today only the low-risk edits do.
 - The Windows paths — the copy promotion and its rollback, the CRLF `SKILL.md`, the rename over an
   open file, the host-agent hand-off — are covered by injected failures on macOS but have not
   been run on Windows. Manual step: on Windows, with and without Developer Mode, run `npm test`

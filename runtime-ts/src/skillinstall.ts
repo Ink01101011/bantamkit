@@ -987,6 +987,24 @@ function proposalOf(kind: string, raw: Uint8Array, old: string, text: string, no
   };
 }
 
+/** The reference's `_steps_gate`: a `## Steps` proposal passes the drafter's `gate` (`own` =
+ * the skill) like every other edit, against the bundle of the ids the proposed text cites; a
+ * failure is logged. */
+function stepsGate(text: string, target: string, rec: Rec | null, b: Bundle, home: string, cwd: string | null, now: string): boolean {
+  let ids: string[] = [];
+  try {
+    ids = csv(parseSkill(text).metadata['bantamkit-evidence']);
+  } catch (err) {
+    if (!(err instanceof SkillFileError)) throw err;
+  }
+  const g = gate(text, improveBundle(rec, b.cluster, ids), home, cwd, target);
+  if (!g.ok) {
+    const o = { drafter: null, ok: false, text: null, reasons: g.reasons, unreachable: [], handoff: null };
+    new LogSegment(draftsLog(home)).append(logLine(o, now, b.cluster));
+  }
+  return g.ok;
+}
+
 function slotFree(e: Rec): boolean {
   const p = e['proposal'];
   return !(isObj(p) && p['status'] === 'pending');
@@ -1188,6 +1206,8 @@ export async function improveStep(
     if (final !== null) {
       const drafted = final !== det;
       let folded = false;
+      let gb = b;
+      const unfolded: [string, string] = [final, det];
       if (!auto && stepsFrom !== null) {
         // automatic edits off: this change becomes the skill's ONE proposal, so the steps
         // line rides in it rather than being dropped for want of a free slot
@@ -1195,12 +1215,21 @@ export async function improveStep(
           const finalS = withStep(final, stepsFrom[1], stepsFrom[2]);
           const detS = drafted ? withStep(det, stepsFrom[1], stepsFrom[2]) : finalS;
           [final, det, folded] = [finalS, detS, true];
+          // the step cites its turn, which joins the evidence it is gated against
+          gb = improveBundle(rec, b.cluster, [...newIds, stepsFrom[1]]);
         } catch (err) {
           if (!(err instanceof SkillFileError)) throw err;
         }
       }
-      let [event] = applyText(name, final, home, cwd, now, b, auto);
-      if (event === null && drafted && changed) [event] = applyText(name, det, home, cwd, now, b, auto);
+      let [event] = applyText(name, final, home, cwd, now, gb, auto);
+      if (event === null && drafted && changed) [event] = applyText(name, det, home, cwd, now, gb, auto);
+      if (event === null && folded) {
+        // the step failed the gate with the change: the change goes on alone, the step is
+        // gated again as its own proposal below
+        folded = false;
+        [event] = applyText(name, unfolded[0], home, cwd, now, b, auto);
+        if (event === null && drafted && changed) [event] = applyText(name, unfolded[1], home, cwd, now, b, auto);
+      }
       if (event !== null) {
         events.push(event);
         if (folded) stepsFrom = null;
@@ -1220,14 +1249,17 @@ export async function improveStep(
       const fresh = Object.hasOwn(fs2, name) ? fs2[name] : undefined;
       const nowLive = isObj(fresh) ? liveText(fresh) : null;
       if (nowLive !== null && isObj(fresh) && slotFree(fresh)) {
+        let cur = '';
+        let ptext: string | null = null;
         try {
-          const cur = UTF8.decode(nowLive[1]);
-          const ptext = withStep(cur, stepsFrom[1], stepsFrom[2]);
-          prop = proposalOf('steps', nowLive[1], cur, ptext, now);
-          events.push(`proposed a change to ${name}`);
+          cur = UTF8.decode(nowLive[1]);
+          ptext = withStep(cur, stepsFrom[1], stepsFrom[2]);
         } catch (err) {
           if (!(err instanceof TypeError || err instanceof SkillFileError)) throw err;
-          prop = null;
+        }
+        if (ptext !== null && stepsGate(ptext, nowLive[0], rec, b, home, cwd, now)) {
+          prop = proposalOf('steps', nowLive[1], cur, ptext, now);
+          events.push(`proposed a change to ${name}`);
         }
       }
     }
