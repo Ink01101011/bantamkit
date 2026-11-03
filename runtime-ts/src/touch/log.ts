@@ -44,6 +44,8 @@ export const TOUCH_LOG_FOLD_TARGET_BYTES = 750_000; // a fold leaves the log at 
 export const TOUCH_N_CAP = Number.MAX_SAFE_INTEGER;
 const clampN = (n: number): number => Math.max(-TOUCH_N_CAP, Math.min(TOUCH_N_CAP, n));
 export const USE_HEADER = /^(?:\[[^\]\n]+\] )*\[([^\]\n]+)\] \([a-z]+\) /;
+/** #266: a subagent id the use row may carry; the rule `shiftwork.AGENT_ID` checks at clock-out. */
+export const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const UNSAFE = /[^A-Za-z0-9_-]/g; // the ledger file-name rule, `ledgerPath` in hookadapter
 const RECALL = 'mcp__bantamkit__memory_recall';
 const SAVE = 'mcp__bantamkit__memory_save';
@@ -119,8 +121,18 @@ export class TouchLog {
     return this.append(row);
   }
 
-  appendUse(session: string, seq: number, fact: string, kind: string, ts: string | null = null): boolean {
-    return this.append({ ts: ts || now(), session, seq, op: 'use', fact, kind });
+  /** `agentId` (#266): the call ran inside a subagent; it ends the row, after `kind`. */
+  appendUse(
+    session: string,
+    seq: number,
+    fact: string,
+    kind: string,
+    ts: string | null = null,
+    agentId: string | null = null,
+  ): boolean {
+    const row: Row = { ts: ts || now(), session, seq, op: 'use', fact, kind };
+    if (agentId !== null) row['agent_id'] = agentId;
+    return this.append(row);
   }
 
   private append(row: Row): boolean {
@@ -289,6 +301,12 @@ function textOf(response: unknown): string {
 }
 
 /** `[fact, kind]` pairs a bantamkit tool call used: the saved name, or each recalled header. */
+/** #266: the payload's `agent_id` when it is one `AGENT_ID` accepts, else null. */
+export function agentOf(payload: Record<string, unknown>): string | null {
+  const a = payload['agent_id'];
+  return typeof a === 'string' && AGENT_ID.test(a) ? a : null;
+}
+
 export function useNames(tool: string, toolInput: Record<string, unknown>, response: unknown): Array<[string, string]> {
   if (tool === SAVE) {
     const name = toolInput['name'];

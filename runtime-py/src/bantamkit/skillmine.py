@@ -69,6 +69,7 @@ from pathlib import Path
 from typing import Any
 
 from bantamkit.memory.retrieval import tokenize_v2
+from bantamkit.touch.log import AGENT_ID
 
 SOURCE_SHIFTWORK = "shiftwork"
 SOURCE_SESSION = "session"
@@ -108,6 +109,9 @@ class Piece:
     #: The subjects of the turn's successful `git commit`s, each the first line of its `-m`
     #: argument (R4: the agent's input, never the command's output). Sessions only.
     commits: tuple[str, ...] = ()
+    #: #266: the subagent the unit ran in, off its counting clock-out line (shiftwork only).
+    #: Never in `as_dict`: proposals and the cache stay byte for byte what they were.
+    agent_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -304,6 +308,7 @@ def _job_pieces(
         brief = _brief_text(unit.get("brief_path"), bundle, root_real)
         prompt = title if brief is None else title + "\n" + brief
         ok = _OK[rec["status"]]
+        agent = rec.get("agent_id")
         pieces.append(
             Piece(
                 id=f"{job}/{uid}",
@@ -314,6 +319,9 @@ def _job_pieces(
                 paths=_named_paths(brief, root_real) if brief is not None else frozenset(),
                 ok=ok,
                 failure=None if rec["status"] == "done" else _failure(doc.get("history"), uid),
+                agent_id=agent
+                if isinstance(agent, str) and AGENT_ID.fullmatch(agent) is not None
+                else None,
             )
         )
     return job, pieces
@@ -1622,17 +1630,19 @@ def improve_sources(
     """What `skillinstall.stats_step` counts, read off disk (R10's per-session attribution):
 
     - `uses`: the touch logs' (`~/.bantamkit/touch/*.jsonl`) `use` rows of a use kind, as
-      `{ts, session, fact}`;
+      `{ts, session, fact}`, plus `agent_id` when the row carries one (#266);
     - `injects`: the hook log's UserPromptSubmit `inject` rows with a session, as
       `{ts, session, names}` (the injected names);
     - `turns`: the session pieces of this run, as `{id, ts, ok, failure, tools}` (Task 10b's
-      Pitfalls and different-steps signals read the last two).
+      Pitfalls and different-steps signals read the last two);
+    - `units` (#266): the shiftwork pieces whose clock-out named the subagent they ran in, as
+      `{agent_id, id, ts, ok, failure}`; a use row under that `agent_id` is the unit's.
 
     Nothing is read when no skill is installed. Paths and names only (X4)."""
     from bantamkit.storage.logsegment import LogSegment
 
     skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
-    out: dict[str, list[dict[str, Any]]] = {"injects": [], "turns": [], "uses": []}
+    out: dict[str, list[dict[str, Any]]] = {"injects": [], "turns": [], "units": [], "uses": []}
     if not skills:
         return out
     d = os.path.join(str(home), ".bantamkit", "touch")
@@ -1642,9 +1652,11 @@ def improve_sources(
             continue
         for row in LogSegment(Path(p)).read():
             if row.get("op") == "use" and row.get("kind") in USE_KINDS:
-                out["uses"].append(
-                    {"fact": row.get("fact"), "session": row.get("session"), "ts": row.get("ts")}
-                )
+                use = {"fact": row.get("fact"), "session": row.get("session"), "ts": row.get("ts")}
+                agent = row.get("agent_id")
+                if isinstance(agent, str) and AGENT_ID.fullmatch(agent) is not None:
+                    use["agent_id"] = agent
+                out["uses"].append(use)
     log = os.path.join(str(home), ".bantamkit", *HOOK_LOG)
     if _isfile(log):
         for row in LogSegment(Path(log)).read():
@@ -1660,6 +1672,16 @@ def improve_sources(
                 {"names": names, "session": row.get("session"), "ts": row.get("ts")}
             )
     for piece in pieces:
+        if piece.source == SOURCE_SHIFTWORK and piece.agent_id is not None:
+            out["units"].append(
+                {
+                    "agent_id": piece.agent_id,
+                    "failure": piece.failure,
+                    "id": piece.id,
+                    "ok": piece.ok,
+                    "ts": piece.ts,
+                }
+            )
         if piece.source == SOURCE_SESSION:
             out["turns"].append(
                 {

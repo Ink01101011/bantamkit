@@ -719,6 +719,25 @@ def _turns(sources: Mapping[str, Any]) -> dict[str, list[tuple[int, int, bool]]]
     return out
 
 
+def _units(sources: Mapping[str, Any]) -> dict[str, tuple[int, int, Any, str, Any, list[str]]]:
+    """#266: per `agent_id` claimed by exactly ONE unit, that unit as a turn:
+    `(ts ms, 0, ok, id, failure, [])`. An id two units claim is nobody's, never guessed."""
+    seen: dict[str, int] = {}
+    out: dict[str, tuple[int, int, Any, str, Any, list[str]]] = {}
+    for u in _rows(sources, "units"):
+        agent, uid, at = u.get("agent_id"), u.get("id"), _ts(u.get("ts"))
+        if not isinstance(agent, str) or not agent or not isinstance(uid, str) or at is None:
+            continue
+        seen[agent] = seen.get(agent, 0) + 1
+        out[agent] = (at, 0, u.get("ok"), uid, u.get("failure"), [])
+    return {a: t for a, t in out.items() if seen[a] == 1}
+
+
+def _agent(u: Mapping[str, Any]) -> str | None:
+    a = u.get("agent_id")
+    return a if isinstance(a, str) and a else None
+
+
 def _turn_ok(turns: Mapping[str, list[tuple[int, int, bool]]], session: str, at: int) -> bool:
     """Did the session's latest turn at or before `at` succeed?"""
     best = None
@@ -739,13 +758,14 @@ def stats_step(
     """
     now_ms = _ms(now)
     uses = [
-        (u["fact"], u["session"], at)
+        (u["fact"], u["session"], at, _agent(u))
         for u in _rows(sources, "uses")
         if isinstance(u.get("fact"), str)
         and isinstance(u.get("session"), str)
         and u["session"]
         and (at := _ts(u.get("ts"))) is not None
     ]
+    units = _units(sources)
     injects = [
         (frozenset(n for n in i["names"] if isinstance(n, str)), i["session"], at)
         for i in _rows(sources, "injects")
@@ -774,15 +794,20 @@ def stats_step(
                 return False
             return at > mark if mark is not None else at >= start  # type: ignore[operator]
 
-        mine = [(s, at) for f, s, at in uses if f == name and inside(at)]
-        used_in = {s for f, s, _ in uses if f == name}
+        mine = [(s, at, a) for f, s, at, a in uses if f == name and inside(at)]
+        used_in = {s for f, s, _, _ in uses if f == name}
         fired = [s for names, s, at in injects if name in names and inside(at)]
         counts[name] = (
             n,
             {
                 "false_fires": sum(1 for s in fired if s not in used_in),
                 "injects": len(fired),
-                "successes": sum(1 for s, at in mine if _turn_ok(turns, s, at)),
+                # #266: a use made inside a unit's subagent succeeds with the unit
+                "successes": sum(
+                    1
+                    for s, at, a in mine
+                    if (units[a][2] is True if a in units else _turn_ok(turns, s, at))
+                ),
                 "uses": len(mine),
             },
         )
@@ -1373,7 +1398,7 @@ def improve_step(
         if isinstance(r, dict) and isinstance(r.get("id"), str):
             records.setdefault(r["id"], r)
     uses = [
-        (u["fact"], u["session"], at)
+        (u["fact"], u["session"], at, _agent(u))
         for u in _rows(sources, "uses")
         if isinstance(u.get("fact"), str)
         and isinstance(u.get("session"), str)
@@ -1381,6 +1406,8 @@ def improve_step(
         and (at := _ts(u.get("ts"))) is not None
         and at <= now_ms
     ]
+    units = _units(sources)
+    unit_agents = {t[3]: a for a, t in units.items()}
     injects = [
         ({n for n in i["names"] if isinstance(n, str)}, i["session"], at)
         for i in _rows(sources, "injects")
@@ -1416,15 +1443,23 @@ def improve_step(
             return at > mark if mark is not None else at >= start  # type: ignore[operator]
 
         rec = records.get(e["cluster"]) if isinstance(e.get("cluster"), str) else None
-        seen = {s[:8] for f, s, _ in uses if f == name}
+        seen = {s[:8] for f, s, _, _ in uses if f == name}
         seen |= {s[:8] for names, s, _ in injects if name in names}
+        seen_agents = {a for f, _, _, a in uses if f == name and a is not None}
         missed: list[dict[str, Any]] = []
         for ev in (rec.get("evidence") or []) if rec is not None else []:
             if not isinstance(ev, dict) or not isinstance(ev.get("id"), str):
                 continue
-            m = _TURN_ID.fullmatch(ev["id"])
             at = _ts(ev.get("ts"))
-            if m is None or at is None or at > now_ms or not inside(at) or m.group(1) in seen:
+            if at is None or at > now_ms or not inside(at):
+                continue
+            # #266: a unit that named its subagent was missed when no use came from it
+            if ev["id"] in unit_agents:
+                if unit_agents[ev["id"]] not in seen_agents:
+                    missed.append(ev)
+                continue
+            m = _TURN_ID.fullmatch(ev["id"])
+            if m is None or m.group(1) in seen:
                 continue
             missed.append(ev)
         misses = _tally(v, "misses") + len(missed)
@@ -1440,13 +1475,14 @@ def improve_step(
         steps_from: tuple[int, str, str] | None = None
         recurring = set(_strs(rec.get("steps"))) if rec is not None else set()
         done: set[str] = set()
-        for _f, s, at in sorted(
+        for _f, s, at, a in sorted(
             (u for u in uses if u[0] == name and inside(u[2])), key=lambda u: (u[2], u[1])
         ):
-            turn = None
-            for t in turns.get(s[:8], []):
-                if t[0] <= at:
-                    turn = t
+            turn = units.get(a) if a is not None else None  # #266: the unit, when it is one
+            if turn is None:
+                for t in turns.get(s[:8], []):
+                    if t[0] <= at:
+                        turn = t
             if turn is None or turn[3] in done:
                 continue
             done.add(turn[3])

@@ -67,7 +67,7 @@ import { changed, loadTurn, saveTurn, snapshot } from './touch/bashturn.js';
 import { TOUCH_WINDOW, type TouchContext, contextWeights, viaEnabled, window as touchWindow } from './touch/context.js';
 import { W_CONTEXT } from './memory/retrieval.js';
 import { TouchGraph } from './touch/graph.js';
-import { TOUCH_OPS, TouchLog, currentSeq, nextSeq, useNames } from './touch/log.js';
+import { TOUCH_OPS, TouchLog, agentOf, currentSeq, nextSeq, useNames } from './touch/log.js';
 import { FileSet, shortestSuffix } from './touch/refs.js';
 import { findRepo, git, gitOnPath, lsFiles, relPath } from './touch/repo.js';
 import { SUMMARY_COMMIT_GRACE_S, compactLine, lastSessionLine, previousSession, shiftTs, uncommittedCount } from './touch/summary.js';
@@ -218,6 +218,8 @@ export interface HookInput {
   tool_response?: unknown;
   trigger?: string;
   stop_hook_active?: boolean;
+  /** #266: present only when the hook fires inside a subagent (measured 2026-11-03). */
+  agent_id?: unknown;
 }
 
 /** One `hook-log.jsonl` record, before the `ts`/`ms` stamp is prepended. */
@@ -1847,8 +1849,9 @@ function recordTouch(run: HookRun, input: HookInput): void {
       const rel = typeof file === 'string' && file ? relPath(repo, file) : null;
       if (rel !== null) ok = touchLog.appendTouch(session, seq, op, rel);
     }
+    const agent = agentOf(input as Record<string, unknown>); // #266: set only inside a subagent
     for (const [fact, kind] of useNames(tool, ti, input.tool_response)) {
-      ok = touchLog.appendUse(session, seq, fact, kind) && ok;
+      ok = touchLog.appendUse(session, seq, fact, kind, null, agent) && ok;
     }
     if (!ok) log(run, { event: 'PostToolUse', touch: 'miss', tool });
   } catch {

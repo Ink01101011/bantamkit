@@ -163,7 +163,13 @@ export const UNCOMMITTED_EVENT = 'uncommitted';
  * OVERWRITTEN by the measured value, pinned on both sides. `RESERVED_LEDGER_KEYS` in
  * `shiftwork.py`, same order, because the sentence names them in this order.
  */
-export const RESERVED_LEDGER_KEYS: readonly string[] = ['unit', 'role', 'status', 'ts', 'event'];
+export const RESERVED_LEDGER_KEYS: readonly string[] = ['unit', 'role', 'status', 'ts', 'event', 'agent_id'];
+/**
+ * #266: the host's subagent id (`agentId` on the Agent tool's result, `agent_id` on a hook
+ * payload fired inside the subagent); what clockOut records and the touch log stamps.
+ */
+export const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+export const AGENT_ID_REFUSAL = 'agent_id must be 1 to 64 characters, each a letter, a digit, - or _';
 
 type PyDict = Extract<PyValue, { t: 'dict' }>;
 type PyList = Extract<PyValue, { t: 'list' }>;
@@ -317,6 +323,8 @@ export interface ClockOptions {
   agreements?: unknown;
   /** #264: `{outcome, supported?, evidence}`, as `shiftwork_clock_out`'s `conclusion` hands it. */
   conclusion?: unknown;
+  /** #266: the unit's subagent, as `shiftwork_clock_out`'s `agent_id` hands it. */
+  agentId?: unknown;
 }
 
 /**
@@ -1687,6 +1695,11 @@ function clockOutLocked(
   if (badLine !== null) return errorResult(badLine);
   const forged = reservedRefusal(unitId, unit, accounting);
   if (forged !== null) return errorResult(forged);
+  // #266: the subagent the unit ran in, as the host named it; checked before any mutation.
+  const agent = options.agentId === null || options.agentId === undefined ? null : asPyValue(options.agentId);
+  if (agent !== null && agent.t !== 'null' && (agent.t !== 'str' || !AGENT_ID.test(agent.v))) {
+    return errorResult(AGENT_ID_REFUSAL);
+  }
   const zero = zeroTokensRefusal(doc, unitId, accounting);
   if (zero !== null) return errorResult(zero);
   const followUps = followUpItems(options.followUps);
@@ -1783,8 +1796,8 @@ function clockOutLocked(
   // refusal into the plan-order fallback. Before anything is written.
   if ('review' in view) return errorResult(view.reason);
 
-  // `record.update(accounting or {})`: since #117 none of the four base keys (nor `event`)
-  // can be in the accounting — `reservedRefusal` above — and `sort_keys=True` means the
+  // `record.update(accounting or {})`: since #117 none of the four base keys (nor `event`, nor
+  // since #266 `agent_id`) can be in the accounting — `reservedRefusal` above — and `sort_keys=True` means the
   // merge order never reaches the file anyway.
   const record = new Map<string, PyValue>([
     ['ts', str(timestamp(options.now ?? Date.now() / 1000))],
@@ -1799,6 +1812,7 @@ function clockOutLocked(
   // on every line, `accounting: null` included: the base shape (ts/unit/role/status) is the
   // runtime's, and so is this field. Never a refusal.
   record.set('briefed', { t: 'bool', v: briefed(log, unitId) });
+  if (agent !== null && agent.t === 'str') record.set('agent_id', agent); // #266: the miner joins use rows on it
   freeze(log, doc, options.now ?? Date.now() / 1000); // #265: the first read of an experiment
   try {
     pyAppendText(log, `${dumpJson({ t: 'dict', v: record }, { sortKeys: true })}\n`);

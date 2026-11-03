@@ -47,7 +47,7 @@ import {
 import { PROMOTE_DAYS, promoteStep } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
 import { auditEnabled, parseNow } from './storage/retention.js';
-import { TouchLog } from './touch/log.js';
+import { AGENT_ID, TouchLog } from './touch/log.js';
 import { findRepo, relPath, type Repo } from './touch/repo.js';
 
 export const SOURCE_SHIFTWORK = 'shiftwork';
@@ -93,6 +93,11 @@ export interface Piece {
   readonly failure: string | null;
   /** The subjects of the turn's successful `git commit`s (R4, the agent's input). Sessions only; absent is none. */
   readonly commits?: readonly string[];
+  /**
+   * #266: the subagent the unit ran in, off its counting clock-out line (shiftwork only).
+   * Never in `pieceDict`: proposals and the cache stay byte for byte what they were.
+   */
+  readonly agentId?: string | null;
 }
 
 export interface Signature {
@@ -302,6 +307,7 @@ function jobPieces(
     const rec = outs.get(uid)!;
     const status = rec.status as string;
     const brief = briefText(unit.brief_path, bundle, rootReal);
+    const agent = rec.agent_id;
     pieces.push({
       id: `${job}/${uid}`,
       source: SOURCE_SHIFTWORK,
@@ -313,6 +319,7 @@ function jobPieces(
       ok: OK.get(status)!,
       signals: {},
       failure: status === 'done' ? null : failureOf((doc as Rec).history, uid),
+      agentId: typeof agent === 'string' && AGENT_ID.test(agent) ? agent : null,
     });
   }
   return [job, pieces];
@@ -1556,10 +1563,18 @@ export function promoteUses(home: string, state: Rec, nowMs: number): Record<str
 /** The hook log the injections are read from. */
 export const HOOK_LOG: readonly string[] = ['hooks', 'hook-log.jsonl'];
 
-/** The reference's `improve_sources`: what `statsStep` counts, read off disk. */
-export function improveSources(home: string, pieces: readonly Piece[], state: Rec): { injects: Rec[]; turns: Rec[]; uses: Rec[] } {
+/**
+ * The reference's `improve_sources`: what `statsStep` counts, read off disk. `units` (#266):
+ * the shiftwork pieces whose clock-out named the subagent they ran in, and `uses` carry the
+ * row's `agent_id` when it has one, so a use inside a unit's subagent is the unit's.
+ */
+export function improveSources(
+  home: string,
+  pieces: readonly Piece[],
+  state: Rec,
+): { injects: Rec[]; turns: Rec[]; units: Rec[]; uses: Rec[] } {
   const skills = isObj(state['skills']) ? state['skills'] : {};
-  const out: { injects: Rec[]; turns: Rec[]; uses: Rec[] } = { injects: [], turns: [], uses: [] };
+  const out: { injects: Rec[]; turns: Rec[]; units: Rec[]; uses: Rec[] } = { injects: [], turns: [], units: [], uses: [] };
   if (Object.keys(skills).length === 0) return out;
   const d = path.join(home, '.bantamkit', 'touch');
   for (const n of sortCp(listdir(d))) {
@@ -1568,7 +1583,10 @@ export function improveSources(home: string, pieces: readonly Piece[], state: Re
     for (const row of new LogSegment(p).read()) {
       const kind = row['kind'];
       if (row['op'] === 'use' && typeof kind === 'string' && USE_KINDS.includes(kind)) {
-        out.uses.push({ fact: row['fact'] ?? null, session: row['session'] ?? null, ts: row['ts'] ?? null });
+        const use: Rec = { fact: row['fact'] ?? null, session: row['session'] ?? null, ts: row['ts'] ?? null };
+        const agent = row['agent_id'];
+        if (typeof agent === 'string' && AGENT_ID.test(agent)) use['agent_id'] = agent;
+        out.uses.push(use);
       }
     }
   }
@@ -1582,6 +1600,9 @@ export function improveSources(home: string, pieces: readonly Piece[], state: Re
     }
   }
   for (const piece of pieces) {
+    if (piece.source === SOURCE_SHIFTWORK && typeof piece.agentId === 'string') {
+      out.units.push({ agent_id: piece.agentId, failure: piece.failure ?? null, id: piece.id, ok: piece.ok ?? null, ts: piece.ts });
+    }
     if (piece.source === SOURCE_SESSION) {
       out.turns.push({ failure: piece.failure ?? null, id: piece.id, ok: piece.ok ?? null, tools: [...piece.tools], ts: piece.ts });
     }

@@ -1752,8 +1752,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         follow_ups: list[dict[str, Any]] | None = None,
         agreements: dict[str, Any] | None = None,
         conclusion: dict[str, Any] | None = None,
+        agent_id: str | None = None,
     ) -> dict[str, Any]:
         # `follow_ups` (#260): units this one discovered; absent, the call is today's.
+        # `agent_id` (#266): the unit's subagent, recorded on its accounting line.
         return _noted_dict(
             _record_result(
                 log,
@@ -1768,6 +1770,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                     follow_ups,
                     agreements,
                     conclusion,
+                    agent_id,
                 ),
             )
         )

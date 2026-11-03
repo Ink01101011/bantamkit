@@ -688,6 +688,8 @@ function runTool(
                 followUps: args.get('follow_ups') ?? null,
                 agreements: args.get('agreements') ?? null,
                 conclusion: args.get('conclusion') ?? null,
+                // `agent_id` (#266): the unit's subagent, recorded on its accounting line.
+                agentId: args.get('agent_id') ?? null,
               },
             ),
           ),

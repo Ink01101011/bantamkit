@@ -107,11 +107,18 @@ def _piece(d: dict) -> Piece:
 
 def main() -> None:
     payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-    out: dict = {"pieces": [], "root_signatures": [], "set_signatures": [], "similarity": []}
+    out: dict = {
+        "agents": [],
+        "pieces": [],
+        "root_signatures": [],
+        "set_signatures": [],
+        "similarity": [],
+    }
     for root in payload.get("roots", []):
         pieces = shiftwork_pieces(root)
         out["pieces"].append([p.as_dict() for p in pieces])
         out["root_signatures"].append(_signatures(pieces))
+        out["agents"].append([[p.id, p.agent_id] for p in pieces])  # #266: not in as_dict
     out["repo_keys"] = [repo_key(p) for p in payload.get("repo_keys", [])]
     for pset in payload.get("piece_sets", []):
         pieces = [

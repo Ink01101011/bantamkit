@@ -634,6 +634,30 @@ function turnsOf(sources: Rec): Map<string, Turn[]> {
   return out;
 }
 
+/**
+ * #266: per `agent_id` claimed by exactly ONE unit, that unit as a turn:
+ * `[ts ms, 0, ok, id, failure, []]`. An id two units claim is nobody's, never guessed.
+ */
+function unitsOf(sources: Rec): Map<string, STurn> {
+  const seen = new Map<string, number>();
+  const out = new Map<string, STurn>();
+  for (const u of rows(sources, 'units')) {
+    const agent = u['agent_id'];
+    const uid = u['id'];
+    const at = tsOf(u['ts']);
+    if (typeof agent !== 'string' || !agent || typeof uid !== 'string' || at === null) continue;
+    seen.set(agent, (seen.get(agent) ?? 0) + 1);
+    out.set(agent, [at, 0, u['ok'] ?? null, uid, u['failure'] ?? null, []]);
+  }
+  for (const a of [...out.keys()]) if (seen.get(a) !== 1) out.delete(a);
+  return out;
+}
+
+function agentOfUse(u: Rec): string | null {
+  const a = u['agent_id'];
+  return typeof a === 'string' && a ? a : null;
+}
+
 function turnOk(turns: Map<string, Turn[]>, session: string, at: number): boolean {
   let best: Turn | null = null;
   for (const t of turns.get(first8(session)) ?? []) if (t[0] <= at) best = t;
@@ -643,13 +667,14 @@ function turnOk(turns: Map<string, Turn[]>, session: string, at: number): boolea
 /** The reference's `stats_step`: count the new rows of `sources` into each live version. */
 export function statsStep(state: Rec, sources: Rec, home: string, now: string): void {
   const nowMs = msOf(now);
-  const uses: Array<[string, string, number]> = [];
+  const uses: Array<[string, string, number, string | null]> = [];
   for (const u of rows(sources, 'uses')) {
     const at = tsOf(u['ts']);
     if (typeof u['fact'] === 'string' && typeof u['session'] === 'string' && u['session'] && at !== null) {
-      uses.push([u['fact'], u['session'], at]);
+      uses.push([u['fact'], u['session'], at, agentOfUse(u)]);
     }
   }
+  const units = unitsOf(sources);
   const injects: Array<[Set<string>, string, number]> = [];
   for (const i of rows(sources, 'injects')) {
     const at = tsOf(i['ts']);
@@ -678,7 +703,10 @@ export function statsStep(state: Rec, sources: Rec, home: string, now: string): 
       {
         false_fires: fired.filter((s) => !usedIn.has(s)).length,
         injects: fired.length,
-        successes: mine.filter(([, s, at]) => turnOk(turns, s, at)).length,
+        // #266: a use made inside a unit's subagent succeeds with the unit
+        successes: mine.filter(([, s, at, a]) =>
+          a !== null && units.has(a) ? units.get(a)![2] === true : turnOk(turns, s, at),
+        ).length,
         uses: mine.length,
       },
     ]);
@@ -1142,13 +1170,15 @@ export async function improveStep(
   for (const r of Array.isArray(clusters) ? clusters : []) {
     if (isObj(r) && typeof r['id'] === 'string' && !records.has(r['id'])) records.set(r['id'], r);
   }
-  const uses: Array<[string, string, number]> = [];
+  const uses: Array<[string, string, number, string | null]> = [];
   for (const u of rows(sources, 'uses')) {
     const at = tsOf(u['ts']);
     if (typeof u['fact'] === 'string' && typeof u['session'] === 'string' && u['session'] && at !== null && at <= nowMs) {
-      uses.push([u['fact'], u['session'], at]);
+      uses.push([u['fact'], u['session'], at, agentOfUse(u)]);
     }
   }
+  const units = unitsOf(sources);
+  const unitAgents = new Map<string, string>([...units].map(([a, t]) => [t[3], a]));
   const injects: Array<[Set<string>, string, number]> = [];
   for (const i of rows(sources, 'injects')) {
     const at = tsOf(i['ts']);
@@ -1186,13 +1216,22 @@ export async function improveStep(
     const seen = new Set<string>();
     for (const [f, s] of uses) if (f === name) seen.add(first8(s));
     for (const [names, s] of injects) if (names.has(name)) seen.add(first8(s));
+    const seenAgents = new Set<string>();
+    for (const [f, , , a] of uses) if (f === name && a !== null) seenAgents.add(a);
     const missed: Rec[] = [];
     const evs = rec !== null && Array.isArray(rec['evidence']) ? rec['evidence'] : [];
     for (const ev of evs) {
       if (!isObj(ev) || typeof ev['id'] !== 'string') continue;
-      const m = TURN_ID.exec(ev['id']);
       const at = tsOf(ev['ts']);
-      if (m === null || at === null || at > nowMs || !inside(at) || seen.has(m[1]!)) continue;
+      if (at === null || at > nowMs || !inside(at)) continue;
+      // #266: a unit that named its subagent was missed when no use came from it
+      const agent = unitAgents.get(ev['id']);
+      if (agent !== undefined) {
+        if (!seenAgents.has(agent)) missed.push(ev);
+        continue;
+      }
+      const m = TURN_ID.exec(ev['id']);
+      if (m === null || seen.has(m[1]!)) continue;
       missed.push(ev);
     }
     const misses = tally(v, 'misses') + missed.length;
@@ -1210,9 +1249,9 @@ export async function improveStep(
     const mine = uses
       .filter((u) => u[0] === name && inside(u[2]))
       .sort((x, y) => x[2] - y[2] || cmpCodepoint(x[1], y[1]));
-    for (const [, s, at] of mine) {
-      let turn: STurn | null = null;
-      for (const t of turns.get(first8(s)) ?? []) if (t[0] <= at) turn = t;
+    for (const [, s, at, a] of mine) {
+      let turn: STurn | null = a !== null ? units.get(a) ?? null : null; // #266: the unit, when it is one
+      if (turn === null) for (const t of turns.get(first8(s)) ?? []) if (t[0] <= at) turn = t;
       if (turn === null || done.has(turn[3])) continue;
       done.add(turn[3]);
       const tid = turn[3];

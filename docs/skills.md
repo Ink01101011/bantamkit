@@ -256,12 +256,19 @@ records nothing as refused, and `skill_propose promote <name>` still promotes on
   number, the rule a rejected proposal follows. A split that fails part-way leaves every
   cluster record as it was before the approve. A split or merge is reported only when it was
   stored: a change proposed for the same skill earlier in the run keeps the one slot.
-- **Not implemented:** shiftwork units are not attributed to skills, so an escalated unit is not
-  a signal yet (#247 part B; the user's 2026-11-03 ruling deferred it to #266): a unit's ledger line and checkpoint record its
-  brief, status and accounting, but nothing that says which skill was injected into it or called
-  in it; the records that do (the touch log's `use` rows, the hook log's injections) are keyed by
-  the session, which the ledger does not name, and the subagent transcripts are left out of the
-  miner by R3.
+- **Shiftwork units (#266):** a unit clocked out with `agent_id` (the Agent result's `agentId`,
+  `docs/shiftwork.md`) is attributed to the skills used inside it. The hook stamps every touch-log
+  `use` row fired in that subagent with the same `agent_id`, and a use whose `agent_id` exactly
+  ONE unit's counting clock-out names is the unit's: it counts as a success when the unit is
+  `done` (not by the session's turn, which is the orchestrator's); a `blocked` unit with a history
+  outcome gives a `## Pitfalls` line citing `[<job>/<unit>]` and the `## Steps` proposal a
+  correction gives; and a unit in the skill's evidence that named its subagent and never used the
+  skill is a miss (no injection can reach a unit: UserPromptSubmit does not fire in a subagent).
+  An id two units name is nobody's, and such a use keeps the session rule. X4 holds: `agent_id` is
+  an identifier the host assigns, and no tool result is read for it.
+- **Not implemented:** a unit clocked out without `agent_id` (every unit before #266, and one run
+  inline) stays unattributed, and `Used, succeeded, different steps` never fires for a unit,
+  whose piece carries no tool names; the subagent transcripts stay out of the miner (R3).
 - **Known limit:** most skills are used rarely, so one improve-and-judge cycle can take weeks.
 
 ## The command: `skill_propose`

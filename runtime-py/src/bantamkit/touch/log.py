@@ -5,7 +5,9 @@ only, never content.
 Line shapes, key order fixed (the bytes are `storage.logsegment.dumps_line`'s):
 
 - touch `{"ts","session","seq","op","path"}`, then `"via"` and `"from"` when given;
-- use `{"ts","session","seq","op":"use","fact","kind"}`, `kind` one of `recall_hit`, `save`;
+- use `{"ts","session","seq","op":"use","fact","kind"}`, `kind` one of `recall_hit`, `save`,
+  then `"agent_id"` when the call ran inside a subagent (#266: the payload's own `agent_id`,
+  when it matches `AGENT_ID`; the session there is the parent's);
 - folded `{"ts","session":"","seq":0,"op":"folded","path","n"}`, written by a fold only.
 
 A log is bounded on append (T200-10, T200-11): an append that leaves the live file over
@@ -72,6 +74,8 @@ TOUCH_LOG_FOLD_TARGET_BYTES = 750_000  # a fold leaves the log at or under this 
 # port cannot (Node's `Infinity` from two `1.7e308` rows, Python's 309-digit integer).
 TOUCH_N_CAP = 9_007_199_254_740_991
 USE_HEADER = re.compile(r"^(?:\[[^\]\n]+\] )*\[([^\]\n]+)\] \([a-z]+\) ")
+#: #266: a subagent id the use row may carry; the rule `shiftwork.AGENT_ID` checks at clock-out.
+AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")  # the ledger file-name rule, `hookadapter._LEDGER_UNSAFE`
 _RECALL = "mcp__bantamkit__memory_recall"
 _SAVE = "mcp__bantamkit__memory_save"
@@ -144,10 +148,19 @@ class TouchLog:
         return self._append(row)
 
     def append_use(
-        self, session: str, seq: int, fact: str, kind: str, ts: str | None = None
+        self,
+        session: str,
+        seq: int,
+        fact: str,
+        kind: str,
+        ts: str | None = None,
+        agent_id: str | None = None,
     ) -> bool:
         row = {"ts": ts or _now(), "session": session, "seq": seq, "op": "use"}
-        return self._append({**row, "fact": fact, "kind": kind})
+        row = {**row, "fact": fact, "kind": kind}
+        if agent_id is not None:
+            row["agent_id"] = agent_id
+        return self._append(row)
 
     def read(self) -> list[dict[str, Any]]:
         seg = self._seg()
@@ -296,6 +309,12 @@ def _text(response: Any) -> str:
             if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
         )
     return ""
+
+
+def agent_of(payload: dict[str, Any]) -> str | None:
+    """#266: the payload's `agent_id` when it is one `AGENT_ID` accepts, else None."""
+    a = payload.get("agent_id")
+    return a if isinstance(a, str) and AGENT_ID.fullmatch(a) is not None else None
 
 
 def use_names(tool: str, tool_input: dict[str, Any], response: Any) -> list[tuple[str, str]]:

@@ -40,7 +40,7 @@ Line shapes, keys in this order (the bytes are `LogSegment`'s):
 |---|---|---|
 | touch | `{"ts","session","seq","op","path"}`, `op` one of `read`, `edit`, `write` | PostToolUse |
 | bash-turn write | the touch shape plus `"via":"bash-turn","from":<seq>` | Stop |
-| use | `{"ts","session","seq","op":"use","fact","kind"}`, `kind` one of `recall_hit`, `save` | PostToolUse of `mcp__bantamkit__memory_recall` / `memory_save` |
+| use | `{"ts","session","seq","op":"use","fact","kind"}`, `kind` one of `recall_hit`, `save`; then `"agent_id"` when the call ran inside a subagent (#266: the payload's own `agent_id`, 1 to 64 of `A-Z a-z 0-9 _ -`; the `session` there is the parent's) | PostToolUse of `mcp__bantamkit__memory_recall` / `memory_save` |
 | folded | `{"ts","session":"","seq":0,"op":"folded","path","n"}` | a fold: Retention, or an append over the cap (*Errors*). `n` is clamped to +/- `TOUCH_N_CAP` = 2^53 - 1 per row and after each sum (#208): two `n: 1.7e308` rows summed to `Infinity` in Node, its line could not be written and the bound never held, while Python wrote a 309-digit integer Node reads back as a double |
 
 - `path` is repo-relative with `/` separators on every OS. A file outside the toplevel makes no
