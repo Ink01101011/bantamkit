@@ -1493,7 +1493,7 @@ puts both runtimes on one splitting rule and adds an `install-host-text` seed wi
 
 **(ffff) Node's request guard rides a TS-private SDK name (J66-4 Q6).** `guardRequests` wraps
 `Protocol._requestHandlers`. It throws at startup if the map is gone, and the SDK is pinned exactly
-at 1.31.0. Any SDK bump must rerun `--suite wire`. This is the Node twin of (zzz).
+at 1.32.2 (bumped from 1.31.0 in #268; `--suite wire` rerun green). Any SDK bump must rerun `--suite wire`. This is the Node twin of (zzz).
 
 **(gggg) Packaging and install follow-ups.**
 - `runtime-ts/package-lock.json` still resolves five transitive advisories: fast-uri (high),
