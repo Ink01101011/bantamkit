@@ -811,6 +811,34 @@ Every brief then carries two keys, always present:
 recorded is a rework: its next brief carries what the last tries found in
 `prior_attempts`. Spec: `docs/superpowers/specs/2026-11-03-shiftwork-unit-results-design.md`.
 
+#### Follow-ups: a unit adds the work it found (#260)
+
+A unit that finds more work than it was given hands it to `clock_out` instead of
+stopping so the orchestrator can hand-edit `plan.units`:
+
+```json
+"follow_ups": [{"id": "F1", "title": "port the refusal to Node", "role": "implementer",
+                "brief_path": ".shiftwork/briefs/F1.md"}]
+```
+
+Each item becomes a `todo` unit appended to `plan.units`, in the order given, on
+the same write. `depends_on` defaults to the unit clocking out, `verify` to its
+`verify`; `touches` (#257) passes through. The whole list is checked before
+anything is written, first fault wins:
+
+1. `follow-up <id> is already a unit` — an id in the plan or twice in the list;
+2. `follow-up <id> names brief <path>, which is not a file` — resolved against
+   the repo (the nearest ancestor of the checkpoint holding `.git`, else the
+   checkpoint's directory; no `git` is run);
+3. an unknown dependency or a cycle — the planner's own sentence, only when the
+   document without the follow-ups batched;
+4. `follow-up <id> has role <r>, which job.roles does not declare`.
+
+They enter the graph on the same write, so `ready`, the cursor advance and the
+`touches` rule already count them. Escalation stays human: `open_questions` still
+stops the job, and there are no question units. Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-follow-ups-design.md`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to

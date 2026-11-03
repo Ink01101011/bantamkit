@@ -991,6 +991,22 @@ function j655Sessions() {
       OUT('A', 'done', { history_entry: b64(JSON.stringify({ unit: 'A', outcome: 'done', notes: 'ก'.repeat(2000) })) }),
     ]],
 
+    // ---- #260. Follow-ups through clock-out. The briefs are planted beside the checkpoint,
+    // which is the repo root here (no `.git` above a scratch session). Two appended in order,
+    // the default dependency and verify, both ready after; then each refusal on its own file.
+    ['follow-ups/two-appended', b64(raw(followUpDocument())), [
+      PLANT_BRIEF('F1'),
+      PLANT_BRIEF('F2'),
+      FU_OUT([fuItem('F1'), fuItem('F2', { depends_on: [], verify: 'npm test', touches: ['x.py'] })]),
+      ST(),
+      IN('F2'),
+    ]],
+    ...FOLLOW_UP_FAULTS.map(([name, items]) => [
+      `follow-ups/refuse/${name}`,
+      b64(raw(followUpDocument())),
+      [PLANT_BRIEF('F1'), PLANT_BRIEF('F2'), FU_OUT(items), ST()],
+    ]),
+
     // ---- #262. The budget: a brief the reservation leaves no room for is refused, writing
     // nothing, and the reserving unit's own relaunch is not; a 0-token line is refused unless
     // marked `estimate`, and passes on a checkpoint with no job.budget.
@@ -1028,6 +1044,29 @@ const resultsDocument = () => baseDocument({
     units: [unit('A', []), unit('Z', [], { title: 'zed', status: 'done' }), unit('C', ['Z', 'A'])],
   },
 });
+
+/** #260: `A` the cursor, `B` beside it. */
+const followUpDocument = () => baseDocument({ plan: { cursor: 'A', units: [unit('A', []), unit('B', [])] } });
+const fuItem = (id, over = {}) => ({ id, title: `found ${id} — งานเพิ่ม`, role: 'implementer', brief_path: `${id}.md`, ...over });
+const PLANT_BRIEF = (id) => ({ fn: 'plant', path: `${id}.md`, content: b64(`brief ${id}\n`) });
+const FU_OUT = (items) => ({ ...OUT('A', 'done'), follow_ups: b64(JSON.stringify(items)) });
+/** #260/D2: one session per refusal, in the order the check runs them. */
+const FOLLOW_UP_FAULTS = [
+  ['already-a-unit', [fuItem('B')]],
+  ['twice-in-the-list', [fuItem('F1'), fuItem('F1')]],
+  ['brief-not-a-file', [fuItem('F9')]],
+  ['unknown-dependency', [fuItem('F1', { depends_on: ['GHOST'] })]],
+  ['cycle', [fuItem('F1', { depends_on: ['F2'] }), fuItem('F2', { depends_on: ['F1'] })]],
+  ['first-fault-wins', [fuItem('F1'), fuItem('B', { brief_path: 'nope.md' })]],
+];
+const FOLLOW_UP_SENTENCES = {
+  'already-a-unit': 'follow-up B is already a unit',
+  'twice-in-the-list': 'follow-up F1 is already a unit',
+  'brief-not-a-file': 'follow-up F9 names brief F9.md, which is not a file',
+  'unknown-dependency': 'node F1 depends on GHOST, which no node declares',
+  cycle: 'the graph has a cycle: F1 -> F2 -> F1',
+  'first-fault-wins': 'follow-up B is already a unit',
+};
 
 /** #262: `A` the cursor, `B` beside it, and `job.budget` when given. */
 const budgetDocument = (limit) => {
@@ -1410,7 +1449,12 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
         call.handoff_patch === null || call.handoff_patch === undefined ? null : parseJson(unb64(call.handoff_patch)),
         call.history_entry === null || call.history_entry === undefined ? null : parseJson(unb64(call.history_entry)),
         call.accounting === null || call.accounting === undefined ? null : parseJson(unb64(call.accounting)),
-        { now: call.now },
+        {
+          now: call.now,
+          // #260: the Node module takes follow-ups in the options slot; the reference takes them
+          // as clock_out's next positional argument. Same JSON either way.
+          ...(call.follow_ups ? { followUps: parseJson(unb64(call.follow_ups)) } : {}),
+        },
       );
     }
     steps.push(snapshot(dumpJson(answer)));
@@ -2775,6 +2819,21 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #260, per side: the appended units, the cursor/ready after, each refusal with nothing written.
+    const TWO = 'follow-ups/two-appended';
+    bit('follow-ups/clock-out-ok', TWO, 2, 'ok');
+    row('follow-ups/appended-in-order-with-defaults', TWO, 2, [
+      { id: 'F1', title: 'found F1 — งานเพิ่ม', brief_path: 'F1.md', status: 'todo', role: 'implementer', depends_on: ['A'], verify: 'npm test' },
+      { id: 'F2', title: 'found F2 — งานเพิ่ม', brief_path: 'F2.md', status: 'todo', role: 'implementer', depends_on: [], verify: 'npm test', touches: ['x.py'] },
+    ], (r, raw) => (raw.checkpoint === null ? null : JSON.parse(unb64(raw.checkpoint)).plan.units.slice(2)));
+    briefed('follow-ups/a-follow-up-is-briefable-at-once', TWO, 4, 'F2');
+    for (const [name, sentence] of Object.entries(FOLLOW_UP_SENTENCES)) {
+      const doc = `follow-ups/refuse/${name}`;
+      bit(`follow-ups/refuse/${name}`, doc, 2, 'error');
+      says(`follow-ups/refuse/${name}`, doc, 2, sentence);
+      untouched(`follow-ups/refuse/${name}`, doc, 2);
+    }
 
     // #259, per side: the cap, the rework's prior_attempts, the upstream order, the refusal.
     const CAP = 'results/attempts-cap-and-rework';

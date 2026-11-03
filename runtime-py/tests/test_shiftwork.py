@@ -1830,7 +1830,14 @@ def test_the_module_walks_depends_on_in_exactly_one_place():
     door in the wall that `workplan.plan` is counted through.
     """
     source = Path(ops.__file__).read_text(encoding="utf-8")
-    assert set(depends_on_owners(source)) == {"_batch_view"}
+    # #260 (job76): `_follow_up_unit` is the one other owner, and it is a WRITER — it puts
+    # the key on a new unit (the parent's id by default) and never reads the graph. Its
+    # count is pinned too, so a second walk hidden there would still move this test.
+    owners = depends_on_owners(source)
+    assert set(owners) == {"_batch_view", "_follow_up_unit"}
+    # three: whether the ITEM gives one, the item's value, and the new unit's key — the
+    # follow-up's own input, never another unit's edges
+    assert owners["_follow_up_unit"] == 3
 
     tree = ast.parse(source)
 

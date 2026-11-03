@@ -799,6 +799,93 @@ def _zero_tokens_refusal(document: dict, unit_id: str, accounting: dict | None) 
     return None
 
 
+def _repo_root(path: Path) -> Path:
+    """#260: where a follow-up's `brief_path` is resolved — the repo the checkpoint lives in.
+
+    The nearest ancestor of the checkpoint's directory (itself included) that holds a `.git`
+    entry, or the checkpoint's directory when none does. No `git` is run; the entry's mere
+    presence is the test, so a worktree's `.git` file counts as a checkout's directory does.
+    """
+    start = path.absolute().parent
+    for candidate in (start, *start.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return start
+
+
+def _follow_up_unit(parent: dict, item: dict) -> dict[str, Any]:
+    """#260: a follow-up as a `todo` unit. The ONE place outside `_batch_view` that names
+    `depends_on` — it WRITES the key (the parent's id when the item gives none) and never
+    reads the graph, which stays `_batch_view`'s alone. `verify` defaults to the parent's:
+    work a unit discovered is proven the way the unit was until its brief says otherwise.
+    """
+    built: dict[str, Any] = {
+        "id": item.get("id"),
+        "title": item.get("title"),
+        "brief_path": item.get("brief_path"),
+        "status": "todo",
+        "role": item.get("role"),
+        "depends_on": item["depends_on"] if "depends_on" in item else [parent["id"]],
+        "verify": item.get("verify", parent["verify"]),
+    }
+    if "touches" in item:
+        built["touches"] = item["touches"]
+    return built
+
+
+def _follow_ups_refusal(
+    path: Path, document: dict, unit: dict, follow_ups: list[dict[str, Any]]
+) -> str | None:
+    """#260/D2: the first fault in a clock-out's follow-ups, checked whole before any write.
+
+    In this order, so a list carrying two faults names the same one on both sides:
+
+    1. an id already in `plan.units`, or twice in the list:
+       `follow-up <id> is already a unit`;
+    2. a `brief_path` that is not a file under the repo (`_repo_root`):
+       `follow-up <id> names brief <path>, which is not a file`;
+    3. and 4. the graph with the follow-ups appended, read by `_batch_view`: an unknown
+       dependency or a cycle is the planner's own sentence, verbatim;
+    5. a role `job.roles` does not declare, when it declares any:
+       `follow-up <id> has role <r>, which job.roles does not declare`.
+
+    A graph that could not batch BEFORE the follow-ups is not theirs to answer for, so the
+    graph refusal counts only when the document without them batches.
+    """
+    known = {u["id"] for u in document["plan"]["units"]}
+    for item in follow_ups:
+        if item.get("id") in known:
+            return f"follow-up {item.get('id')} is already a unit"
+        known.add(item.get("id"))
+    root = _repo_root(path)
+    for item in follow_ups:
+        brief = item.get("brief_path")
+        if not isinstance(brief, str) or not (root / brief).is_file():
+            return f"follow-up {item.get('id')} names brief {brief}, which is not a file"
+    before = _batch_view(document)
+    after = _batch_view(
+        {
+            **document,
+            "plan": {
+                **document["plan"],
+                "units": document["plan"]["units"]
+                + [_follow_up_unit(unit, item) for item in follow_ups],
+            },
+        }
+    )
+    if before.get("result") != "error" and after.get("result") == "error":
+        return after["reason"]
+    roles = document["job"].get("roles")
+    if roles is not None:
+        for item in follow_ups:
+            if item.get("role") not in roles:
+                return (
+                    f"follow-up {item.get('id')} has role {item.get('role')}, "
+                    "which job.roles does not declare"
+                )
+    return None
+
+
 def _reserved_refusal(unit_id: str, unit: dict, accounting: dict | None) -> str | None:
     """#117: an accounting line that sets a key the runtime writes is refused, nothing written.
 
@@ -831,6 +918,7 @@ def clock_out(
     handoff_patch: dict[str, Any],
     history_entry: dict[str, Any],
     accounting: dict[str, Any] | None = None,
+    follow_ups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Apply a dispatched unit's result to the checkpoint, validate whole, write atomically.
 
@@ -879,7 +967,7 @@ def clock_out(
         return refusal
     try:
         return _clock_out_locked(
-            path, real, unit_id, status, handoff_patch, history_entry, accounting
+            path, real, unit_id, status, handoff_patch, history_entry, accounting, follow_ups
         )
     finally:
         if held:
@@ -946,6 +1034,7 @@ def _clock_out_locked(
     handoff_patch: dict[str, Any],
     history_entry: dict[str, Any],
     accounting: dict[str, Any] | None,
+    follow_ups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """`clock_out`'s body, run under the lock its caller holds: mutate, validate, write."""
     log_path = _log_path(path)
@@ -984,6 +1073,11 @@ def _clock_out_locked(
             f"an attempt keeps at most {ATTEMPT_NOTES_MAX}"
         )
 
+    if follow_ups:
+        refused = _follow_ups_refusal(path, document, unit, follow_ups)
+        if refused is not None:
+            return _error(refused)
+        document["plan"]["units"].extend(_follow_up_unit(unit, item) for item in follow_ups)
     unit["status"] = status
     # #259: the durable per-unit record the 5-entry history ring cannot be. Built only from
     # what clock_out already receives; a malformed `produced` meets the schema check below.
