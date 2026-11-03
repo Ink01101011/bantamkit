@@ -1814,6 +1814,27 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             _record_result(log, "shiftwork_plan", lambda: shiftwork.plan_batches(checkpoint))
         )
 
+    def shiftwork_draft(
+        job: dict[str, Any],
+        tickets: list[dict[str, Any]],
+        repo: dict[str, Any],
+        checkpoint: str | None = None,
+        briefs_dir: str | None = None,
+        handoff: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        write: bool | None = None,
+    ) -> dict[str, Any]:
+        # #226: tickets in, a schema-valid checkpoint and its briefs out; dry run by default.
+        return _noted_dict(
+            _record_result(
+                log,
+                "shiftwork_draft",
+                lambda: shiftwork.draft(
+                    job, tickets, repo, checkpoint, briefs_dir, handoff, artifacts, write
+                ),
+            )
+        )
+
     # A TOOL and not a resource or an `initialize` field, because the gap RB-P84 names is
     # an AGENT MID-CALL: the host reads `serverInfo` once at handshake and the
     # tool-calling model never sees it, and `resources/read` is a host-facing surface
@@ -2187,6 +2208,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         _from_manifest(work_plan, "work_plan"),
         _from_manifest(shiftwork_plan, "shiftwork_plan"),
         _from_manifest(memory_queries, "memory_queries"),
+        _from_manifest(shiftwork_draft, "shiftwork_draft"),
     ]
 
     server = MCPServer(

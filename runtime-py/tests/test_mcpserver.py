@@ -44,16 +44,16 @@ VALID_SCHEMA = {
 }
 
 
-def test_lists_exactly_the_fifteen_tools(tmp_path):
+def test_lists_exactly_the_sixteen_tools(tmp_path):
     """One server, one entry point: memory and shiftwork ride the same instance.
 
     Seven since `build_identity` (RB-P84's second half), EIGHT since
     `bantamkit_status` (`docs/status.md`), ELEVEN since `skill_audit`, TWELVE since
     `memory_dream` (job45, roadmap row 5) and FOURTEEN since `work_plan` and
-    `shiftwork_plan` (job `workplan-dag`) and FIFTEEN since `memory_queries` (#207
-    amendment 3): the list is EXACT, so a tool added to the
-    server is a deliberate edit here. The assertion is not relaxed to a membership check
-    — an exact list is the only form that notices a tool arriving.
+    `shiftwork_plan` (job `workplan-dag`), FIFTEEN since `memory_queries` (#207
+    amendment 3) and SIXTEEN since `shiftwork_draft` (#226): the list is EXACT, so a tool
+    added to the server is a deliberate edit here. The assertion is not relaxed to a
+    membership check — an exact list is the only form that notices a tool arriving.
     """
 
     async def scenario():
@@ -69,6 +69,7 @@ def test_lists_exactly_the_fifteen_tools(tmp_path):
                 "memory_save",
                 "shiftwork_clock_in",
                 "shiftwork_clock_out",
+                "shiftwork_draft",
                 "shiftwork_plan",
                 "shiftwork_status",
                 "skill_audit",
@@ -549,6 +550,7 @@ def test_stdio_subprocess_initializes(tmp_path):
                     "memory_save",
                     "shiftwork_clock_in",
                     "shiftwork_clock_out",
+                    "shiftwork_draft",
                     "shiftwork_plan",
                     "shiftwork_status",
                     "skill_audit",
@@ -610,6 +612,7 @@ def test_module_entrypoint_serves_over_stdio(tmp_path):
                     "memory_save",
                     "shiftwork_clock_in",
                     "shiftwork_clock_out",
+                    "shiftwork_draft",
                     "shiftwork_plan",
                     "shiftwork_status",
                     "skill_audit",
