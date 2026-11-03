@@ -38,6 +38,17 @@
             "items": {"type": "string", "minLength": 1},
             "description": "The model identifiers this role may report, spelled exactly as a session logs them. Non-empty: a role allowed no model is a typo, not a policy."
           }
+        },
+        "budget": {
+          "type": "object",
+          "description": "OPTIONAL (#262). What the job may spend, read back from <checkpoint>.log.jsonl: shiftwork_plan reports spent/remaining/affordable, clock_in refuses a brief that does not fit, and clock_out refuses a 0-token accounting line not marked `estimate`. Absent keeps today's behaviour exactly.",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "tokens": {"type": "integer", "minimum": 1, "description": "Token ceiling, counted as accounting `tokens`."},
+            "units": {"type": "integer", "minimum": 1, "description": "Accounting lines (clock-outs) the job may record."},
+            "wallclock_ms": {"type": "integer", "minimum": 1, "description": "Sum of accounting `duration_ms` the job may record."}
+          }
         }
       }
     },
