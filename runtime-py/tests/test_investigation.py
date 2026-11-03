@@ -204,3 +204,14 @@ def test_inconclusive_and_stopped_are_never_refused(tmp_path):
         path = _write(d, cursor="C")
         conclusion = {"outcome": outcome, "supported": "H1", "evidence": []}
         assert _out(path, "C", conclusion=conclusion)["result"] == "ok"
+
+
+def test_the_investigation_template_validates_and_plans(tmp_path):
+    from pathlib import Path
+
+    template = Path(__file__).parents[2] / "tools/shiftwork/example-investigation-checkpoint.json"
+    path = tmp_path / "checkpoint.json"
+    path.write_bytes(template.read_bytes())
+    answer = ops.plan_batches(str(path))
+    assert answer["result"] == "plan"
+    assert answer["batches"] == [["IV1"], ["IV2"], ["IV3"], ["IV4"]]

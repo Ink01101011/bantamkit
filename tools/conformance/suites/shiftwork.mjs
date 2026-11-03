@@ -1043,6 +1043,41 @@ function j655Sessions() {
     ['never-block/verb-granted', b64(raw(neverBlockDocument({ job: { authorized: ['merge'] }, unit: { irreversible: 'merge', prove: 'true' } }))), [IN()]],
     ['never-block/no-grant-declared', b64(raw(neverBlockDocument({ unit: { irreversible: 'merge', prove: 'true' } }))), [IN()]],
 
+    // ---- #264. The investigation flavor. A full resolved run (R, its replay P in another
+    // role, the review V, the concluding C); each graph refusal through clock_in; the
+    // run-output refusal and a non-concluding unit, nothing written; the five `resolved`
+    // refusals; inconclusive and stopped with no replay accepted.
+    ['investigation/resolved-run', b64(raw(investigationDocument())), [
+      IV_OUT('R', { produced: OBSERVED_RUN }),
+      IV_OUT('P', { produced: OBSERVED_RUN }),
+      IV_OUT('V'),
+      IV_OUT('C', { conclusion: { outcome: 'resolved', supported: 'H1', evidence: ['logs/run.txt — ผลรัน'] } }),
+      ST(),
+    ]],
+    ...INVESTIGATION_PLAN_FAULTS.map(([name, document]) => [`investigation/plan/${name}`, b64(raw(document)), [IN()]]),
+    ['investigation/run-output', b64(raw(investigationDocument())), [
+      IV_OUT('R'),
+      IV_OUT('R', { produced: [{ kind: 'commit', ref: 'abc' }] }),
+      IV_OUT('R', { status: 'blocked' }),
+    ]],
+    ['investigation/not-a-concluding-unit', b64(raw(investigationDocument())), [
+      IV_OUT('R', { produced: OBSERVED_RUN, conclusion: { outcome: 'stopped', evidence: [] } }),
+    ]],
+    ['investigation/resolved-refusals', b64(raw(investigationDocument({ allDoneBut: null }))), [
+      IV_OUT('C', { conclusion: { outcome: 'resolved', evidence: ['e'] } }),
+      IV_OUT('C', { conclusion: { outcome: 'resolved', supported: 'H9', evidence: ['e'] } }),
+      IV_OUT('C', { conclusion: { outcome: 'resolved', supported: 'H2', evidence: ['e'] } }),
+    ]],
+    ['investigation/resolved-without-replay', b64(raw(investigationDocument({ allDoneBut: 'P' }))), [
+      IV_OUT('C', { conclusion: { outcome: 'resolved', supported: 'H1', evidence: ['e'] } }),
+    ]],
+    ['investigation/resolved-without-review', b64(raw(investigationDocument({ allDoneBut: 'V' }))), [
+      IV_OUT('C', { conclusion: { outcome: 'resolved', supported: 'H1', evidence: ['e'] } }),
+    ]],
+    ...['inconclusive', 'stopped'].map((outcome) => [`investigation/${outcome}-accepted`, b64(raw(investigationDocument({ cursor: 'C' }))), [
+      IV_OUT('C', { conclusion: { outcome, supported: 'H1', evidence: [] } }),
+    ]]),
+
     // ---- #262. The budget: a brief the reservation leaves no room for is refused, writing
     // nothing, and the reserving unit's own relaunch is not; a 0-token line is refused unless
     // marked `estimate`, and passes on a checkpoint with no job.budget.
@@ -1080,6 +1115,42 @@ const resultsDocument = () => baseDocument({
     units: [unit('A', []), unit('Z', [], { title: 'zed', status: 'done' }), unit('C', ['Z', 'A'])],
   },
 });
+
+/** #264: H1 and H2; run R tests H1, replay P in another role, review V of both, concluding C. */
+const HYPOTHESES = [
+  { id: 'H1', claim: 'the cache is stale', falsified_by: 'a cold run reproduces it' },
+  { id: 'H2', claim: 'แคชไม่เกี่ยว', falsified_by: 'a warm run is clean' },
+];
+const investigationUnits = () => [
+  unit('R', [], { tests: ['H1'], procedure: 'make repro' }),
+  unit('P', ['R'], { role: 'reviewer', replay_of: 'R', procedure: 'make repro' }),
+  unit('V', ['R', 'P'], { role: 'reviewer', reviews: ['R'] }),
+  unit('C', ['V'], { concludes: true }),
+];
+/** `allDoneBut`: every unit but C done except that one (null = all), cursor C. */
+const investigationDocument = ({ units = investigationUnits(), job = {}, allDoneBut, cursor } = {}) => {
+  if (allDoneBut !== undefined) {
+    for (const u of units) if (u.id !== 'C' && u.id !== allDoneBut) u.status = 'done';
+  }
+  const document = baseDocument({ plan: { cursor: cursor ?? (allDoneBut !== undefined ? 'C' : units[0].id), units } });
+  Object.assign(document.job, { kind: 'investigation', question: 'why is it slow? — ทำไมช้า', hypotheses: HYPOTHESES }, job);
+  return document;
+};
+const OBSERVED_RUN = [{ kind: 'run-output', ref: 'logs/run.txt' }];
+const IV_OUT = (id, { status = 'done', produced, conclusion } = {}) => OUT(id, status, {
+  history_entry: b64(JSON.stringify({ unit: id, outcome: status, ...(produced ? { produced } : {}) })),
+  ...(conclusion ? { conclusion: b64(JSON.stringify(conclusion)) } : {}),
+});
+const replayPair = (over) => [unit('R', [], { tests: ['H1'], procedure: 'make repro' }), unit('P', ['R'], { role: 'reviewer', ...over })];
+const INVESTIGATION_PLAN_FAULTS = [
+  ['one-hypothesis', investigationDocument({ job: { hypotheses: HYPOTHESES.slice(0, 1) } })],
+  ['one-hypothesis-with-rationale', investigationDocument({ job: { hypotheses: HYPOTHESES.slice(0, 1), single_hypothesis_rationale: 'only one path touches it' } })],
+  ['undeclared-test', investigationDocument({ units: [unit('R', [], { tests: ['H9'], procedure: 'x' })] })],
+  ['replay-undeclared', investigationDocument({ units: replayPair({ replay_of: 'Z', procedure: 'make repro' }) })],
+  ['replay-same-role', investigationDocument({ units: replayPair({ role: 'implementer', replay_of: 'R', procedure: 'make repro' }) })],
+  ['replay-no-procedure', investigationDocument({ units: [unit('R', [], { tests: ['H1'] }), unit('P', ['R'], { role: 'reviewer', replay_of: 'R', procedure: 'x' })] })],
+  ['replay-different-procedure', investigationDocument({ units: replayPair({ replay_of: 'R', procedure: 'make  repro' }) })],
+];
 
 /** #225: `A` the cursor, `B` beside it; open questions, job keys and A's keys as given. */
 const neverBlockDocument = ({ questions = [], job = {}, unit: extra = {} } = {}) => {
@@ -1509,6 +1580,7 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
           // as clock_out's next positional argument. Same JSON either way.
           ...(call.follow_ups ? { followUps: parseJson(unb64(call.follow_ups)) } : {}),
           ...(call.agreements ? { agreements: parseJson(unb64(call.agreements)) } : {}),
+          ...(call.conclusion ? { conclusion: parseJson(unb64(call.conclusion)) } : {}),
         },
       );
     }
@@ -2874,6 +2946,47 @@ export async function run(ctx) {
     bit('touches/after-the-holder-clocks-out', FLIGHT, 4, 'ok');
     briefed('touches/after-the-holder-clocks-out', FLIGHT, 5, 'C');
     briefed('touches/nothing-in-flight-briefs', 'touches/nothing-in-flight-briefs', 0, 'C');
+
+    // #264, per side: the full run's conclusion on disk, every sentence, nothing written on a refusal.
+    const RUN = 'investigation/resolved-run';
+    for (let step = 0; step < 4; step += 1) bit(`investigation/resolved-run-step-${step}`, RUN, step, 'ok');
+    row('investigation/conclusion-is-written', RUN, 3,
+      { outcome: 'resolved', supported: 'H1', evidence: ['logs/run.txt — ผลรัน'] },
+      (r, raw) => (raw.checkpoint === null ? null : JSON.parse(unb64(raw.checkpoint)).job.conclusion ?? null));
+    const PLAN_SAYS = {
+      'one-hypothesis': 'investigation declares 1 hypotheses; it needs two, or one with job.single_hypothesis_rationale',
+      'undeclared-test': 'unit R tests H9, which no hypothesis declares',
+      'replay-undeclared': 'unit P replays Z, which no unit declares',
+      'replay-same-role': 'unit P replays R in the same role implementer; a replay needs another role',
+      'replay-no-procedure': 'unit P replays R, which names no procedure',
+      'replay-different-procedure': 'unit P replays R with a different procedure',
+    };
+    for (const [name, sentence] of Object.entries(PLAN_SAYS)) {
+      says(`investigation/plan/${name}`, `investigation/plan/${name}`, 0, sentence);
+      untouched(`investigation/plan/${name}`, `investigation/plan/${name}`, 0);
+    }
+    bit('investigation/plan/one-hypothesis-with-rationale', 'investigation/plan/one-hypothesis-with-rationale', 0, 'brief');
+    const NO_OUTPUT = 'run R produced no run-output; record what it observed';
+    says('investigation/run-output-missing', 'investigation/run-output', 0, NO_OUTPUT);
+    untouched('investigation/run-output-missing', 'investigation/run-output', 0);
+    says('investigation/run-output-not-a-run-output', 'investigation/run-output', 1, NO_OUTPUT);
+    bit('investigation/run-output-blocked-needs-none', 'investigation/run-output', 2, 'ok');
+    says('investigation/not-a-concluding-unit', 'investigation/not-a-concluding-unit', 0,
+      'unit R does not conclude; job.conclusion is set only by a unit with concludes: true');
+    untouched('investigation/not-a-concluding-unit', 'investigation/not-a-concluding-unit', 0);
+    says('investigation/resolved-no-supported', 'investigation/resolved-refusals', 0, 'a resolved conclusion names no supported hypothesis');
+    untouched('investigation/resolved-no-supported', 'investigation/resolved-refusals', 0);
+    says('investigation/resolved-undeclared', 'investigation/resolved-refusals', 1, 'conclusion supports H9, which no hypothesis declares');
+    says('investigation/resolved-no-run', 'investigation/resolved-refusals', 2, 'conclusion supports H2, but no run testing it is done');
+    untouched('investigation/resolved-no-run', 'investigation/resolved-refusals', 2);
+    says('investigation/resolved-no-replay', 'investigation/resolved-without-replay', 0,
+      'conclusion supports H1, but no run testing it has a done replay');
+    untouched('investigation/resolved-no-replay', 'investigation/resolved-without-replay', 0);
+    says('investigation/resolved-no-review', 'investigation/resolved-without-review', 0,
+      'conclusion supports H1, but no review of its runs is done');
+    untouched('investigation/resolved-no-review', 'investigation/resolved-without-review', 0);
+    bit('investigation/inconclusive-accepted', 'investigation/inconclusive-accepted', 0, 'ok');
+    bit('investigation/stopped-accepted', 'investigation/stopped-accepted', 0, 'ok');
 
     // #225, per side: every bit and sentence, the `resolved` line, and nothing written on a refusal.
     const resolvedLines = (r, raw) => (raw.log === null ? [] : unb64(raw.log).trim().split('\n').map((l) => JSON.parse(l))

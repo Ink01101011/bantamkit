@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "job": {
+    "id": "investigation-template",
+    "goal": "Answer the question with a cause a second role has reproduced.",
+    "done_definition": "job.conclusion set: resolved with a replayed, reviewed run, or inconclusive / stopped with the evidence so far.",
+    "constraints": [
+      "Real probes only: every run reports what it observed as a run-output",
+      "Write each hypothesis's falsifier before any run",
+      "A replay repeats the run's procedure exactly, in another role"
+    ],
+    "kind": "investigation",
+    "question": "Why does REPLACE-AT-PLAN-TIME happen?",
+    "hypotheses": [
+      {"id": "H1", "claim": "REPLACE: the first candidate cause", "falsified_by": "REPLACE: the observation that rules it out"},
+      {"id": "H2", "claim": "REPLACE: the second candidate cause", "falsified_by": "REPLACE: the observation that rules it out"}
+    ]
+  },
+  "plan": {
+    "cursor": "IV1",
+    "units": [
+      {
+        "id": "IV1",
+        "title": "Run: test H1 and H2 with the repro procedure",
+        "brief_path": ".shiftwork/briefs/IV1.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": [],
+        "tests": ["H1", "H2"],
+        "procedure": "make repro",
+        "verify": "test -f .shiftwork/notes/IV1-run.txt"
+      },
+      {
+        "id": "IV2",
+        "title": "Replay IV1 in another role, same procedure",
+        "brief_path": ".shiftwork/briefs/IV2.md",
+        "status": "todo",
+        "role": "reviewer",
+        "depends_on": ["IV1"],
+        "replay_of": "IV1",
+        "procedure": "make repro",
+        "verify": "test -f .shiftwork/notes/IV2-replay.txt"
+      },
+      {
+        "id": "IV3",
+        "title": "Review the run and its replay against the falsifiers",
+        "brief_path": ".shiftwork/briefs/IV3.md",
+        "status": "todo",
+        "role": "reviewer",
+        "depends_on": ["IV1", "IV2"],
+        "reviews": ["IV1"],
+        "verify": "test -f .shiftwork/notes/IV3-review.md"
+      },
+      {
+        "id": "IV4",
+        "title": "Conclude: resolved, inconclusive or stopped",
+        "brief_path": ".shiftwork/briefs/IV4.md",
+        "status": "todo",
+        "role": "implementer",
+        "depends_on": ["IV3"],
+        "concludes": true,
+        "verify": "true"
+      }
+    ]
+  },
+  "state": {
+    "repo": {"branch": "investigate/QUESTION-ID", "head_sha": "REPLACE-AT-PLAN-TIME", "dirty": false},
+    "artifacts": [
+      {"path": ".shiftwork/briefs/IV1.md", "role": "brief"}
+    ],
+    "external": []
+  },
+  "history": [],
+  "retro": [],
+  "handoff": {
+    "next_action": "Read briefs/IV1.md, run the procedure, and record the output as a run-output in history_entry.produced.",
+    "open_questions": [],
+    "do_not": [
+      "Do not conclude resolved before IV2 and IV3 are done: clock_out refuses it"
+    ],
+    "notes": ""
+  }
+}

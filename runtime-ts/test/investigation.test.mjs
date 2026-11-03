@@ -146,3 +146,12 @@ test('inconclusive and stopped are never refused', () => {
     assert.equal(out(write({ cursor: 'C' }), 'C', { conclusion: { outcome, supported: 'H1', evidence: [] } }).result, 'ok');
   }
 });
+
+test('the investigation template validates and plans', () => {
+  const template = new URL('../../tools/shiftwork/example-investigation-checkpoint.json', import.meta.url);
+  const path = join(mkdtempSync(join(tmpdir(), 't264-')), 'checkpoint.json');
+  writeFileSync(path, readFileSync(template));
+  const answer = toJs(planBatches(path));
+  assert.equal(answer.result, 'plan');
+  assert.deepEqual(answer.batches, [['IV1'], ['IV2'], ['IV3'], ['IV4']]);
+});
