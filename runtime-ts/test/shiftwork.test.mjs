@@ -2445,7 +2445,8 @@ test('#117: each reserved key alone is refused, named in the runtime\'s order, a
   j65Write(path, [j65Unit('A')]);
   const reversed = { event: 'e', ts: 't', status: 's', role: 'r', unit: 'u', duration_ms: 1, tokens: 1 };
   assert.ok(j65Line(path, 'A', reversed).reason.endsWith('keys: unit, role, status, ts, event'));
-  assert.deepEqual([...RESERVED_LEDGER_KEYS], ['unit', 'role', 'status', 'ts', 'event']);
+  // #266 added the sixth, after `event`, so a line without it is refused as before
+  assert.deepEqual([...RESERVED_LEDGER_KEYS], ['unit', 'role', 'status', 'ts', 'event', 'agent_id']);
   // the shape check (F5) is still first: a line short of `tokens` meets ITS sentence
   assert.match(j65Line(path, 'A', { unit: 'C', duration_ms: 1 }).reason, /the schema refuses/);
   // and `briefed` is NOT reserved: F6's overwrite stays (pinned above by

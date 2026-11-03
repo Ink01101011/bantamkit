@@ -3,7 +3,7 @@
  * `runtime-py/src/bantamkit/touch/__init__.py`; `tools/conformance/suites/touch-*.mjs`
  * compare the two. Add one re-export line per module.
  */
-export { TOUCH_LOG_CAP_BYTES, TOUCH_LOG_FOLD_TARGET_BYTES, TOUCH_N_CAP, TOUCH_OPS, TOUCH_TAIL_BYTES, TouchLog, USE_HEADER, boundBody, currentSeq, foldCutoff, nextSeq, touchReducer, useNames } from './log.js';
+export { TOUCH_LOG_CAP_BYTES, TOUCH_LOG_FOLD_TARGET_BYTES, TOUCH_N_CAP, TOUCH_OPS, TOUCH_TAIL_BYTES, TouchLog, USE_HEADER, agentOf, boundBody, currentSeq, foldCutoff, nextSeq, touchReducer, useNames } from './log.js';
 export { GIT_PATHEXT_DEFAULT, GIT_PROBE_FILE, GIT_PROBE_TTL_S, GIT_TIMEOUT_MS, findRepo, git, gitOnPath, relPath, repoId, type Repo } from './repo.js';
 export { FileSet, REF_RE, extractRefs, factRefs, resolveRef, shortestSuffix } from './refs.js';
 export { headPrint, lsFiles, renames } from './repo.js';
