@@ -78,6 +78,13 @@
         "type": "array",
         "description": "This unit's own attempts, oldest first, at most 3; [] when none. A unit clocked out todo and briefed again is a rework, and this is what it found."
       },
+      "agreements": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "job.agreements: the working agreements adopted so far through clock_out, carried on every brief; [] when none."
+      },
       "open_questions": {
         "type": "array",
         "items": {

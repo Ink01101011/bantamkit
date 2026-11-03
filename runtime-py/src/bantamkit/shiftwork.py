@@ -149,6 +149,8 @@ UNCOMMITTED_EVENT = "uncommitted"
 RESERVED_LEDGER_KEYS = ("unit", "role", "status", "ts", "event")
 HISTORY_RING_SIZE = 5  # the schema's maxItems — older entries fall off the ring
 
+#: #261: the most agreements a job carries; past it, one must be retired first.
+AGREEMENTS_MAX = 20
 #: #259: the attempts a unit keeps, newest last; the oldest is dropped past this.
 ATTEMPTS_KEPT = 3
 #: #259: an attempt's `notes`, in code points, so both runtimes count non-ASCII text alike.
@@ -596,6 +598,8 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         # #259: always present, so a brief's shape does not depend on the plan.
         "upstream": [_upstream(document, dep) for dep in declared[selected]],
         "prior_attempts": list(unit.get("attempts") or []),
+        # #261: always present, `[]` when the job has adopted none.
+        "agreements": list(document["job"].get("agreements") or []),
     }
 
 
@@ -799,6 +803,39 @@ def _zero_tokens_refusal(document: dict, unit_id: str, accounting: dict | None) 
     return None
 
 
+def _agreements_change(
+    document: dict, change: dict[str, Any]
+) -> str | tuple[list[str], list[str], list[str]] | None:
+    """#261/D2: `job.agreements` after a clock-out's `{adopt?, retire?}`, or a refusal sentence.
+
+    `retire` removes by exact text first, then `adopt` appends what is not already listed (an
+    exact duplicate is a no-op, not an error). Returns `(listed, adopted, retired)` for a
+    change that moved something, `None` for one that moved nothing, or the sentence:
+
+        no agreement reads <repr>
+        agreements would number <n>; retire one first (at most 20)
+
+    `<repr>` is the text's Python repr, the spelling the port's `reprValue` reproduces.
+    """
+    listed = list(document["job"].get("agreements") or [])
+    retired: list[str] = []
+    for text in change.get("retire") or []:
+        if text not in listed:
+            return f"no agreement reads {text!r}"
+        listed.remove(text)
+        retired.append(text)
+    adopted: list[str] = []
+    for text in change.get("adopt") or []:
+        if text not in listed:
+            listed.append(text)
+            adopted.append(text)
+    if len(listed) > AGREEMENTS_MAX:
+        return f"agreements would number {len(listed)}; retire one first (at most {AGREEMENTS_MAX})"
+    if not adopted and not retired:
+        return None
+    return listed, adopted, retired
+
+
 def _repo_root(path: Path) -> Path:
     """#260: where a follow-up's `brief_path` is resolved — the repo the checkpoint lives in.
 
@@ -919,6 +956,7 @@ def clock_out(
     history_entry: dict[str, Any],
     accounting: dict[str, Any] | None = None,
     follow_ups: list[dict[str, Any]] | None = None,
+    agreements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Apply a dispatched unit's result to the checkpoint, validate whole, write atomically.
 
@@ -967,7 +1005,15 @@ def clock_out(
         return refusal
     try:
         return _clock_out_locked(
-            path, real, unit_id, status, handoff_patch, history_entry, accounting, follow_ups
+            path,
+            real,
+            unit_id,
+            status,
+            handoff_patch,
+            history_entry,
+            accounting,
+            follow_ups,
+            agreements,
         )
     finally:
         if held:
@@ -1035,6 +1081,7 @@ def _clock_out_locked(
     history_entry: dict[str, Any],
     accounting: dict[str, Any] | None,
     follow_ups: list[dict[str, Any]] | None = None,
+    agreements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`clock_out`'s body, run under the lock its caller holds: mutate, validate, write."""
     log_path = _log_path(path)
@@ -1078,6 +1125,21 @@ def _clock_out_locked(
         if refused is not None:
             return _error(refused)
         document["plan"]["units"].extend(_follow_up_unit(unit, item) for item in follow_ups)
+    if agreements:
+        changed = _agreements_change(document, agreements)
+        if isinstance(changed, str):
+            return _error(changed)
+        if changed is not None:
+            listed, adopted, retired = changed
+            document["job"]["agreements"] = listed
+            document["retro"].append(
+                {
+                    "trigger": unit_id,
+                    "patch_applied_to": "job.agreements",
+                    "adopted": adopted,
+                    "retired": retired,
+                }
+            )
     unit["status"] = status
     # #259: the durable per-unit record the 5-entry history ring cannot be. Built only from
     # what clock_out already receives; a malformed `produced` meets the schema check below.

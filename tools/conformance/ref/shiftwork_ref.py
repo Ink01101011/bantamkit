@@ -225,6 +225,7 @@ def main() -> None:
                         None if call.get("history_entry") is None else json.loads(unb64(call["history_entry"])),
                         None if call.get("accounting") is None else json.loads(unb64(call["accounting"])),
                         None if call.get("follow_ups") is None else json.loads(unb64(call["follow_ups"])),
+                        None if call.get("agreements") is None else json.loads(unb64(call["agreements"])),
                     )
                 else:  # pragma: no cover - a typo in the suite, not a difference
                     raise SystemExit(f"unknown fn {fn!r}")

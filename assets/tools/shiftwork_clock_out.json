@@ -1,7 +1,7 @@
 {
   "name": "shiftwork_clock_out",
   "title": "Shift work: clock out",
-  "description": "Shift-work clock-out: record that a unit finished — set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor — which needs no brief and clocks out with briefed=false — or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document — plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. `follow_ups` appends the work it discovered as todo units. Each clock-out also appends {status, outcome, notes?, produced?} to the unit's attempts (newest 3 kept). With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written — see the `model` property.",
+  "description": "Shift-work clock-out: record that a unit finished — set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor — which needs no brief and clocks out with briefed=false — or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document — plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. `follow_ups` appends the work it discovered as todo units. `agreements` adopts or retires a working agreement every later brief carries. Each clock-out also appends {status, outcome, notes?, produced?} to the unit's attempts (newest 3 kept). With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written — see the `model` property.",
   "surfaces": [
     "mcp"
   ],
@@ -231,6 +231,38 @@
         "default": null,
         "title": "Follow Ups",
         "description": "Work this unit discovered (#260): each item becomes a todo unit appended to plan.units in the given order, on the same write. Refused whole, nothing written, on a duplicate id, a brief that is not a file, an unknown dependency or a cycle (the planner's sentence), or a role job.roles does not declare."
+      },
+      "agreements": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "adopt": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Agreements to add to job.agreements; text already listed is left as it is."
+              },
+              "retire": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Agreements to remove, by exact text; one not on the list is refused."
+              }
+            }
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Agreements",
+        "description": "A lesson this unit wants every later brief to carry (#261): retire by exact text, then adopt. Refused, nothing written, for text not on the list or a result over 20; each applied change is recorded in retro[]."
       }
     },
     "required": [
