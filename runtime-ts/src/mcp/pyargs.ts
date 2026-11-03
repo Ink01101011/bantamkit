@@ -242,6 +242,22 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // `memory_queries(facts: list[dict[str, Any]] | None = None)` (#207 amendment 3, Q6): the
   // `listDict` `work_plan` uses, optional; omitted or null lists the facts missing queries.
   memory_queries: { model: 'memory_queriesArguments', fields: [opt('facts', 'listDict')] },
+  // #226: `shiftwork_draft(job: dict[str, Any], tickets: list[dict[str, Any]], repo: dict[str,
+  // Any], checkpoint: str | None = None, briefs_dir: str | None = None, handoff: dict[str, Any]
+  // | None = None, artifacts: list[dict[str, Any]] | None = None, write: bool | None = None)`.
+  shiftwork_draft: {
+    model: 'shiftwork_draftArguments',
+    fields: [
+      req('job', 'dict'),
+      req('tickets', 'listDict'),
+      req('repo', 'dict'),
+      opt('checkpoint', 'str'),
+      opt('briefs_dir', 'str'),
+      opt('handoff', 'dict'),
+      opt('artifacts', 'listDict'),
+      opt('write', 'bool'),
+    ],
+  },
 };
 
 /** `type(value).__name__`, for the `input_type=` half of the sentence. */

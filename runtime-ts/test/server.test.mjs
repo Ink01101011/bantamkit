@@ -1,5 +1,5 @@
 /**
- * The MCP surface: the fifteen tools, the two resource templates, and the wire.
+ * The MCP surface: the sixteen tools, the two resource templates, and the wire.
  *
  * WHY MOST OF THIS DRIVES A REAL PROCESS RATHER THAN CALLING A HANDLER. Everything this
  * unit adds lives in the gap between a handler's return value and the bytes on stdout —
@@ -222,6 +222,7 @@ test('the agent-only tools are absent from tools/list and unknown to tools/call'
     'work_plan',
     'shiftwork_plan',
     'memory_queries',
+    'shiftwork_draft',
   ]);
   const refused = byId(lines, 3).result;
   assert.equal(refused.isError, true);
@@ -264,7 +265,7 @@ test('the retired tools are exactly the ruled ones, none is served, and a call t
     { args: ['--store', freshStore()] },
   );
   const names = byId(lines, 2).result.tools.map((t) => t.name);
-  assert.equal(names.length, 15); // + memory_queries (#207 amendment 3)
+  assert.equal(names.length, 16); // + memory_queries (#207 amendment 3), shiftwork_draft (#226)
   for (const name of RETIRED_TOOLS) assert.ok(!names.includes(name), `${name} is still served`);
   for (const [id, name] of [[3, 'bantamkit_read'], [4, 'repo_map']]) {
     const refused = byId(lines, id).result;
@@ -869,7 +870,7 @@ test('build_identity names its runtime and refuses to be compared across lineage
   const id = byId(lines, 2).result.structuredContent;
   assert.equal(id.runtime, 'node');
   assert.equal(id.server_name, 'bantamkit');
-  assert.equal(id.assets_files, 95); // +2: assets/tools/memory_queries.json and assets/skills/memory-queries.md (#207 amendment 3); +2: assets/tools/work_plan.json and assets/tools/shiftwork_plan.json, the two work-plan manifests (workplan-dag W3); +1: assets/tools/token_ledger.json (job46 J46-18, AS-1(c)); +1: assets/pricing/default.json (job46 J46-17, AS-1(b))
+  assert.equal(id.assets_files, 96); // +1: assets/tools/shiftwork_draft.json (#226); +2: assets/tools/memory_queries.json and assets/skills/memory-queries.md (#207 amendment 3); +2: assets/tools/work_plan.json and assets/tools/shiftwork_plan.json, the two work-plan manifests (workplan-dag W3); +1: assets/tools/token_ledger.json (job46 J46-18, AS-1(c)); +1: assets/pricing/default.json (job46 J46-17, AS-1(b))
   assert.match(id.assets_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.code_digest, /^sha256:[0-9a-f]{64}$/);
   assert.match(id.build_id, /^sha256:[0-9a-f]{64}$/);
@@ -968,7 +969,7 @@ test('a __pycache__ in the pack is not a different pack — the half a different
     assert.equal(compiled.assets_digest, clean.assets_digest);
     assert.equal(compiled.build_id, clean.build_id);
     // And the count is the pack as shipped, not the pack as the interpreter left it.
-    assert.equal(compiled.assets_files, 95);
+    assert.equal(compiled.assets_files, 96);
   } finally {
     if (previous === undefined) delete process.env.BANTAMKIT_ASSETS;
     else process.env.BANTAMKIT_ASSETS = previous;
@@ -1061,7 +1062,7 @@ test('--assets-root still answers, and it is the only thing that prints outside 
   const { lines, code } = await session([], { args: ['--assets-root'] });
   assert.equal(code, 0);
   assert.equal(lines[0], ASSETS);
-  assert.equal(lines[1], '95 files');
+  assert.equal(lines[1], '96 files');
 });
 
 // ================================================= the pydantic-shaped argument refusals
@@ -1300,7 +1301,7 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.equal(rows[1].split(',')[0], `version ${declared}`);
   // AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
   // AMENDED job73 C12 (#206 Task 11): 2 prompts -> 3, `skill_propose`.
-  assert.equal(rows[2], 'serving 15 tools, 3 prompts, 2 resource templates');
+  assert.equal(rows[2], 'serving 16 tools, 3 prompts, 2 resource templates');
   // AMENDED job65/#142: line 4 names the store it counts, by path. WAS: no path, so a store the
   // walk bound ABOVE the project was invisible on the one surface that reports binding.
   assert.equal(rows[3], `memory: 1 fact in the project store, index ${INDEX_BYTES} of ${HEALTHY_BUDGET} bytes; bound to ${store}`);

@@ -2164,11 +2164,17 @@ test('the module walks depends_on in exactly ONE place, and enters Layer 1 exact
   // unit's edges. Its two mentions are pinned, so a walk hidden there still moves a count.
   const [fuStart, fuEnd] = bodySpan(code, 'function followUpUnit(');
   const inFollowUp = (m) => m.index > fuStart && m.index < fuEnd;
-  assert.equal(walks.length, 4, `depends_on is named ${walks.length} times in the code, not 4`);
+  // #226: `draft` reads TICKETS, before any checkpoint exists, and hands them to the planner
+  // with priorities a checkpoint cannot carry. Four: the node's key and the ticket read, the
+  // ticket read for the unit and the unit's key. It never walks the edges itself.
+  const [drStart, drEnd] = bodySpan(code, 'export function draft(');
+  const inDraft = (m) => m.index > drStart && m.index < drEnd;
+  assert.equal(walks.length, 8, `depends_on is named ${walks.length} times in the code, not 8`);
   assert.equal(walks.filter(inside).length, 2, 'a mention of depends_on lives outside batchView');
   assert.equal(walks.filter(inFollowUp).length, 2, 'followUpUnit names depends_on other than its one write');
+  assert.equal(walks.filter(inDraft).length, 4, 'draft names depends_on other than its ticket reads and writes');
   assert.equal(
-    [...code.matchAll(/'depends_on'/g)].filter((m) => !inFollowUp(m)).length,
+    [...code.matchAll(/'depends_on'/g)].filter((m) => !inFollowUp(m) && !inDraft(m)).length,
     1,
     'the field is READ in more than one place',
   );
@@ -2177,8 +2183,10 @@ test('the module walks depends_on in exactly ONE place, and enters Layer 1 exact
   // And one entry into the planner. `planBatches` has a file to read, `clockIn` judges a
   // requested unit and `clockOut` judges a document it has mutated and not yet written —
   // three callers, one answer, because two answers is the bug.
-  assert.equal(planner.length, 1, `the Layer 1 planner is called ${planner.length} times, not once`);
-  assert.equal(planner.filter(inside).length, 1, 'the planner is entered from outside batchView');
+  // Two doors, each counted: `batchView` over a checkpoint, `draft` over tickets (#226).
+  assert.equal(planner.length, 2, `the Layer 1 planner is called ${planner.length} times, not twice`);
+  assert.equal(planner.filter(inside).length, 1, 'batchView does not enter the planner once');
+  assert.equal(planner.filter(inDraft).length, 1, 'draft does not enter the planner once');
 });
 
 // J60-F2: the sub-schemas `shiftwork_clock_out` SERVES are a second copy of what the checkpoint

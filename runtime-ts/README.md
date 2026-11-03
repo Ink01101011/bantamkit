@@ -48,7 +48,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
   [the fifteen tools](#-what-it-serves).
-- **Same answers as the Python server.** The Python server serves the same fifteen tools,
+- **Same answers as the Python server.** The Python server serves the same sixteen tools,
   three prompts (`bantamkit_status`, `skill_audit`, `skill_propose`) and two resource templates, and reads and writes the same memory
   store. Every surface is compared between both runtimes by a conformance suite
   (`node tools/conformance/run.mjs --all` in the repository), and every intentional difference
@@ -292,7 +292,7 @@ startup. In Claude Code: `/mcp` → reconnect. In Claude Desktop: a full restart
 ```
 bantamkit Active 🟢
 version 0.37.0-beta.2, build sha256:7d76bc78…
-serving 15 tools, 3 prompts, 2 resource templates
+serving 16 tools, 3 prompts, 2 resource templates
 ```
 
 A version that moved and a `build_id` that did not means you are reading a config, not a process.
@@ -348,7 +348,7 @@ serves. `--which` belongs to the checkout launchers `tools/bantamkit-mcp` and
 
 ## 🧰 What it serves
 
-It serves 15 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_propose`) and two resource templates
+It serves 16 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_propose`) and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`), the same as the Python server:
 
 | Tool | What it does |
