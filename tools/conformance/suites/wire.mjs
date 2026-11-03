@@ -45,7 +45,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pep440ToSemver } from './version.mjs';
 
 export const name = 'wire';
-export const summary = 'the MCP surface: fifteen tools, one prompt, two templates, and the frames themselves';
+export const summary = 'the MCP surface: sixteen tools, one prompt, two templates, and the frames themselves';
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(here));
@@ -971,6 +971,7 @@ export async function run(ctx) {
     work_plan: { nodes: [], bogus: 1 },
     shiftwork_plan: { checkpoint, bogus: 1 },
     memory_queries: { bogus: 1 }, // #207 amendment 3: the fifteenth tool
+    shiftwork_draft: { job: {}, tickets: [], repo: {}, bogus: 1 }, // #226: the sixteenth
   };
   add('j67-1-unknown-args', [
     INIT(),
@@ -2126,6 +2127,8 @@ export async function run(ctx) {
       shiftwork_plan: ['Shift work: plan', RO],
       // #207 amendment 3: the fifteenth tool writes the queries sidecar, never a fact.
       memory_queries: ['Likely-prompt queries for saved facts', { destructiveHint: false, openWorldHint: false, readOnlyHint: false }],
+      // #226: writes only with write: true, and never overwrites a job.
+      shiftwork_draft: ['Shift work: draft', { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false }],
     };
     const advertised = (side) =>
       Object.fromEntries((frameOf(side, 2)?.result?.tools ?? []).map((t) => [t.name, [t.title ?? 'absent', t.annotations ?? 'absent']]));
@@ -2545,7 +2548,7 @@ export async function run(ctx) {
     notes.push(`event log: ${outcomesOf(node.eventlog).length} records, identical but for \`ts\``);
   }
 
-  // ----------------------------------------------- the roster: fifteen tools, pinned per side
+  // ----------------------------------------------- the roster: sixteen tools, pinned per side
 
   /**
    * The advertisement session's `tools/list` is compared canonically above (`advertisement:
@@ -2586,6 +2589,7 @@ export async function run(ctx) {
       'work_plan',
       'shiftwork_plan',
       'memory_queries',
+      'shiftwork_draft',
     ];
     const RETIRED = ['bantamkit_read', 'repo_map'];
     const { python, node } = results.get('advertisement');
@@ -2596,15 +2600,15 @@ export async function run(ctx) {
     });
     cases.push({ name: 'roster: the tool names, in order, side to side', kind: 'json', expected: toolNames(python), actual: toolNames(node) });
     cases.push({
-      name: 'roster: the fifteen served tool names, in order, as a literal on each side',
+      name: 'roster: the sixteen served tool names, in order, as a literal on each side',
       kind: 'json',
       expected: { python: ROSTER, node: ROSTER },
       actual: { python: toolNames(python), node: toolNames(node) },
     });
     cases.push({
-      name: 'roster: fifteen tools, and neither repo_map nor bantamkit_read among them, on each side',
+      name: 'roster: sixteen tools, and neither repo_map nor bantamkit_read among them, on each side',
       kind: 'json',
-      expected: { python: { count: 15, retired: [] }, node: { count: 15, retired: [] } },
+      expected: { python: { count: 16, retired: [] }, node: { count: 16, retired: [] } },
       actual: { python: rosterOf(python), node: rosterOf(node) },
     });
   }

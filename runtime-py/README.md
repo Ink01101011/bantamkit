@@ -297,7 +297,7 @@ you**; a new version with an old `build_id` means an old process.
 
 ## 🧰 What it serves
 
-It serves 15 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_propose`) and two resource templates
+It serves 16 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_propose`) and two resource templates
 (`bantamkit://skills/{name}`, `bantamkit://rubrics/{name}`):
 
 | Tool | What it does |

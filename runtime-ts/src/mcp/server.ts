@@ -104,12 +104,12 @@ import {
 import type { RawStdioTransport } from './transport.js';
 
 /**
- * The fifteen, in the order `build_server` lists them — which is the order `tools/list` emits.
+ * The sixteen, in the order `build_server` lists them — which is the order `tools/list` emits.
  *
  * `bantamkit_status` went LAST rather than first, `memory_compact` after it rather than
  * beside `memory_save` where a reader would look for it, `skill_audit` after that,
  * `memory_dream` after that, `token_ledger` after that, `work_plan` then `shiftwork_plan`
- * after that and `memory_queries` (#207 amendment 3) last, for the same reason the reference appends: registration order IS the served
+ * after that, `memory_queries` (#207 amendment 3) and `shiftwork_draft` (#226) last, for the same reason the reference appends: registration order IS the served
  * order, and appending is the only edit that leaves the others where every existing
  * declaration says they are.
  *
@@ -145,6 +145,7 @@ export const MCP_TOOLS = [
   'work_plan',
   'shiftwork_plan',
   'memory_queries',
+  'shiftwork_draft',
 ] as const;
 
 /** The served set, for the call path: a name outside it is unknown, whatever `ARG_MODELS` says. */
@@ -1161,6 +1162,25 @@ function runTool(
       // before and after to hold that, rather than commenting it.
       return {
         value: notedDict(recordResult(log, name, () => shiftwork.planBatches(asText(args.get('checkpoint'))))),
+        wrapped: false,
+      };
+    case 'shiftwork_draft':
+      // #226: tickets in, a schema-valid checkpoint and its briefs out; dry run by default.
+      return {
+        value: notedDict(
+          recordResult(log, name, () =>
+            shiftwork.draft({
+              job: args.get('job'),
+              tickets: args.get('tickets'),
+              repo: args.get('repo'),
+              checkpoint: args.get('checkpoint'),
+              briefsDir: args.get('briefs_dir'),
+              handoff: args.get('handoff'),
+              artifacts: args.get('artifacts'),
+              write: args.get('write'),
+            }),
+          ),
+        ),
         wrapped: false,
       };
     default:

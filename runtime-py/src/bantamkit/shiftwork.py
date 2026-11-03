@@ -1752,3 +1752,293 @@ def plan_batches(checkpoint: str) -> dict[str, Any]:
     } | ({"held": answer["held"]} if "held" in answer else {}) | _budget_key(
         Path(checkpoint), document
     ) | _ranking(document)
+
+
+#: #226/D2: where a draft lands when the caller names no path.
+DRAFT_CHECKPOINT = ".shiftwork/checkpoint.json"
+DRAFT_BRIEFS_DIR = ".shiftwork/briefs"
+#: #226/D3: the ticket fields checked in this order, each a non-empty string.
+_TICKET_FIELDS = ("id", "title", "role", "verify", "data_shape", "brief")
+#: #226/D6: ticket fields that shape a unit but are not unit fields themselves.
+_TICKET_ONLY = ("data_shape", "brief", "priority")
+
+
+def _draft_request_refusal(
+    job: Any,
+    tickets: Any,
+    repo: Any,
+    checkpoint: Any,
+    briefs_dir: Any,
+    handoff: Any,
+    artifacts: Any,
+    write: Any,
+) -> str | None:
+    """#226 refusal step 1: the request's own shape, in argument order."""
+    if not isinstance(job, dict):
+        return "job must be an object"
+    if not isinstance(tickets, list) or not tickets:
+        return "tickets must be a non-empty list"
+    if not isinstance(repo, dict):
+        return "repo must be an object"
+    if checkpoint is not None and (not isinstance(checkpoint, str) or checkpoint == ""):
+        return "checkpoint must be a non-empty string"
+    if briefs_dir is not None and (not isinstance(briefs_dir, str) or briefs_dir == ""):
+        return "briefs_dir must be a non-empty string"
+    if handoff is not None and not isinstance(handoff, dict):
+        return "handoff must be an object"
+    if artifacts is not None and not isinstance(artifacts, list):
+        return "artifacts must be a list"
+    if write is not None and not isinstance(write, bool):
+        return "write must be a boolean"
+    return None
+
+
+def _ticket_refusal(tickets: list[Any]) -> str | None:
+    """#226 refusal step 2: each ticket's shape, by ticket order, fields in `_TICKET_FIELDS` order.
+
+    The id is checked first and named by position (it is the one name every ticket has);
+    every later sentence names the ticket by id. An id becomes a file name under
+    `briefs_dir`, so one that could leave it (`/`, `\\`, `:`, a leading `.`) is refused here.
+    """
+    for index, ticket in enumerate(tickets):
+        if not isinstance(ticket, dict):
+            return f"tickets[{index}] must be an object"
+        ticket_id = ticket.get("id")
+        if not isinstance(ticket_id, str) or ticket_id == "":
+            return f"tickets[{index}].id must be a non-empty string"
+        if any(c in ticket_id for c in "/\\:") or ticket_id.startswith("."):
+            return (
+                f"ticket {ticket_id} cannot name a brief file; "
+                "an id holds no /, \\ or : and does not start with ."
+            )
+        for field in _TICKET_FIELDS[1:]:
+            value = ticket.get(field)
+            if isinstance(value, str) and value != "":
+                continue
+            if field == "verify":
+                return f"ticket {ticket_id} has no verify; done-ness is a command, not a claim"
+            if field == "data_shape":
+                return (
+                    f"ticket {ticket_id} has no data_shape; "
+                    "a ticket without one is not ready to execute"
+                )
+            return f"ticket {ticket_id} has no {field}"
+    return None
+
+
+def _brief_text(ticket: dict) -> str:
+    """#226/D8: a brief file's text — LF only, the brief's trailing newlines folded to one."""
+
+    def lf(text: str) -> str:
+        return text.replace("\r\n", "\n")
+
+    brief = lf(ticket["brief"]).rstrip("\n")
+    return (
+        f"# {ticket['id']} — {lf(ticket['title'])}\n\n{brief}\n\n"
+        f"## Data shape\n\n{lf(ticket['data_shape']).rstrip(chr(10))}\n\n"
+        f"## Verify\n\n`{lf(ticket['verify'])}`\n"
+    )
+
+
+def draft(
+    job: Any,
+    tickets: Any,
+    repo: Any,
+    checkpoint: str | None = None,
+    briefs_dir: str | None = None,
+    handoff: dict[str, Any] | None = None,
+    artifacts: list[Any] | None = None,
+    write: bool | None = None,
+) -> dict[str, Any]:
+    """#226: compose a schema-valid checkpoint and its brief files from tickets.
+
+    Refusals in a fixed order, first fault wins: the request's shape, each ticket's shape,
+    `workplan.plan`'s four verbatim, a role `job.roles` does not declare, the schema
+    self-check, the graph checks `shiftwork_plan` would refuse the written file with, and —
+    only with `write` — the write side. It never runs git or `verify` and never reads the
+    working tree (D7): `repo` is the caller's word, as `state.repo` always is.
+
+    `write` false (the default) returns the document and the brief texts and touches
+    nothing. `write` true writes each brief by temp file + rename, then the checkpoint the
+    same way under `<checkpoint>.lock`; an existing checkpoint, or an existing brief with
+    other bytes, is refused before anything is written.
+    """
+    refusal = _draft_request_refusal(
+        job, tickets, repo, checkpoint, briefs_dir, handoff, artifacts, write
+    )
+    if refusal is None:
+        refusal = _ticket_refusal(tickets)
+    if refusal is not None:
+        return _error(refusal)
+
+    nodes = [
+        {"id": t["id"], "depends_on": t.get("depends_on"), "priority": t.get("priority")}
+        | ({"touches": t["touches"]} if "touches" in t else {})
+        for t in tickets
+    ]
+    graph = workplan.plan(nodes)
+    if graph.get("result") == "error":
+        return graph
+
+    roles = job.get("roles")
+    if isinstance(roles, dict):
+        for ticket in tickets:
+            if ticket["role"] not in roles:
+                declared = ", ".join(sorted(roles))
+                return _error(
+                    f"ticket {ticket['id']} names role {ticket['role']}, "
+                    f"which job.roles does not declare; declared is {declared}"
+                )
+
+    briefs_dir = DRAFT_BRIEFS_DIR if briefs_dir is None else briefs_dir
+    checkpoint = DRAFT_CHECKPOINT if checkpoint is None else checkpoint
+    prefix = briefs_dir.rstrip("/")
+    units: list[dict[str, Any]] = []
+    briefs: list[dict[str, Any]] = []
+    for ticket in tickets:
+        brief_path = f"{prefix}/{ticket['id']}.md"
+        unit: dict[str, Any] = {
+            "id": ticket["id"],
+            "title": ticket["title"],
+            "brief_path": brief_path,
+            "status": "todo",
+            "role": ticket["role"],
+            "depends_on": list(ticket.get("depends_on") or []),
+            "verify": ticket["verify"],
+        }
+        # D9: every other ticket key is the unit's (`touches`, `reviews`, `irreversible`, ...),
+        # and the schema below is what accepts or refuses it — no code change per field.
+        for key, value in ticket.items():
+            if key not in unit and key not in _TICKET_ONLY:
+                unit[key] = value
+        units.append(unit)
+        briefs.append({"unit": ticket["id"], "path": brief_path, "bytes": _brief_text(ticket)})
+
+    batches = graph["batches"]
+    cursor = batches[0][0]
+    cursor_brief = next(b["path"] for b in briefs if b["unit"] == cursor)
+    composed_handoff: dict[str, Any] = {"open_questions": [], "do_not": []}
+    composed_handoff.update(handoff or {})
+    composed_handoff["next_action"] = f"Read {cursor_brief} and clock in {cursor}."
+    composed_handoff = {"next_action": composed_handoff.pop("next_action")} | composed_handoff
+    document: dict[str, Any] = {
+        "version": 1,
+        "job": job,
+        "plan": {"cursor": cursor, "units": units},
+        "state": {
+            "repo": repo,
+            "artifacts": [{"path": b["path"], "role": "brief"} for b in briefs]
+            + list(artifacts or []),
+            "external": [],
+        },
+        "history": [],
+        "retro": [],
+        "handoff": composed_handoff,
+    }
+
+    problem = schema_error(json.dumps(document), load_schema(SCHEMA_NAME))
+    if problem is not None:
+        return _error(problem)
+    view = _batch_view(document)
+    if view.get("result") == "error":
+        return _error(view["reason"])
+
+    answer: dict[str, Any] = {
+        "result": "draft",
+        "checkpoint": document,
+        "cursor": cursor,
+        "batches": batches,
+        "width": graph["width"],
+        "briefs": briefs,
+        "written": [],
+    }
+    if not write:
+        return answer
+    return _draft_write(checkpoint, document, briefs, answer)
+
+
+def _draft_write(
+    checkpoint: str, document: dict, briefs: list[dict[str, Any]], answer: dict[str, Any]
+) -> dict[str, Any]:
+    """#226/D10: refuse an existing job, then write briefs and checkpoint, each by rename.
+
+    Every sentence and every `written` entry spells a path as the caller did (the
+    checkpoint argument, each brief_path), never as `pathlib` would normalise it.
+    """
+    path = Path(checkpoint)
+    real = _real_target(path)
+    try:
+        real.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return _error(f"checkpoint {checkpoint} unwritable: {_at(e, path)}") | {"written": []}
+    lock = Path(f"{real}.lock")
+    held, refusal = _acquire_lock(lock)
+    if refusal is not None:
+        return refusal | {"written": []}
+    try:
+        return _draft_write_locked(checkpoint, real, document, briefs, answer)
+    finally:
+        if held:
+            with contextlib.suppress(OSError):
+                lock.unlink()
+
+
+def _draft_write_locked(
+    checkpoint: str,
+    real: Path,
+    document: dict,
+    briefs: list[dict[str, Any]],
+    answer: dict[str, Any],
+) -> dict[str, Any]:
+    if os.path.lexists(checkpoint):
+        return _error(
+            f"checkpoint {checkpoint} already exists; shiftwork_draft never overwrites a job"
+        ) | {"written": []}
+    pending: list[dict[str, Any]] = []
+    for brief in briefs:
+        target = Path(brief["path"])
+        data = brief["bytes"].encode("utf-8")
+        if os.path.lexists(target):
+            try:
+                same = target.read_bytes() == data
+            except OSError:
+                same = False
+            if not same:
+                return _error(f"brief {brief['path']} already exists with different content") | {
+                    "written": []
+                }
+            continue
+        pending.append(brief)
+
+    written: list[str] = []
+
+    def landed(dest: Path, data: bytes) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(f"{dest}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            with tmp.open("xb") as fh:
+                fh.write(data)
+            tmp.replace(dest)
+        except OSError:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+
+    for brief in pending:
+        try:
+            landed(Path(brief["path"]), brief["bytes"].encode("utf-8"))
+        except OSError as e:
+            return _error(f"brief {brief['path']} unwritable: {_at(e, Path(brief['path']))}") | {
+                "written": written
+            }
+        written.append(brief["path"])
+    try:
+        # The checkpoint's bytes are clock_out's: the same dump, so a drafted file and one
+        # clock_out rewrote differ only where the document does.
+        landed(real, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
+    except OSError as e:
+        return _error(f"checkpoint {checkpoint} unwritable: {_at(e, Path(checkpoint))}") | {
+            "written": written
+        }
+    written.append(checkpoint)
+    return answer | {"written": written}

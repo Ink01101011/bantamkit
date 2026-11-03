@@ -489,6 +489,7 @@ SERVED_ORDER = [
     "work_plan",
     "shiftwork_plan",
     "memory_queries",  # #207 amendment 3: appended, so token_ledger stays twelfth
+    "shiftwork_draft",  # #226: appended too
 ]
 
 

@@ -138,6 +138,7 @@ def test_every_served_tool_has_an_asset(tmp_path):
         "memory_save",
         "shiftwork_clock_in",
         "shiftwork_clock_out",
+        "shiftwork_draft",
         "shiftwork_plan",
         "shiftwork_status",
         "skill_audit",

@@ -73,7 +73,7 @@ record last held — a scratch `HOME` has no record, so it says `update: never c
 ```
 bantamkit Active 🟢
 version 0.37.0-beta.2, build sha256:7d76bc782599961f1e8037ec9a8c59850098e93d1b9c8d7e6855090d9510c896
-serving 15 tools, 3 prompts, 2 resource templates
+serving 16 tools, 3 prompts, 2 resource templates
 memory: 2 facts in the project store, index 87 of 24000 bytes; bound to <project>/.bantamkit/memory
 event log: off
 update: never checked.
@@ -102,7 +102,7 @@ When something is wrong, line 1 changes and a block is appended:
 ```
 bantamkit Degraded 🟠
 version 0.37.0-beta.2, build sha256:7d76bc782599961f1e8037ec9a8c59850098e93d1b9c8d7e6855090d9510c896
-serving 15 tools, 3 prompts, 2 resource templates
+serving 16 tools, 3 prompts, 2 resource templates
 memory: 2 facts in the project store, index 87 of 70 bytes; bound to <project>/.bantamkit/memory
 event log: off
 update: never checked.

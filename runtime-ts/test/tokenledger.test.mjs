@@ -57,6 +57,7 @@ const SERVED_ORDER = [
   'work_plan',
   'shiftwork_plan',
   'memory_queries',
+  'shiftwork_draft',
 ];
 
 const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-tokenledger-')));

@@ -1113,7 +1113,7 @@ export async function run(ctx) {
         // 22. the roster: both servers serve memory_queries with the same schema.
         const tools = (side) => side.byId.get(2)?.result?.tools ?? [];
         const named = (side) => tools(side).find((t) => t.name === 'memory_queries') ?? null;
-        cases.push(...literalCases(tools(r.py).length, tools(r.node).length, 'tools/list: LITERAL fifteen tools', 15));
+        cases.push(...literalCases(tools(r.py).length, tools(r.node).length, 'tools/list: LITERAL sixteen tools', 16));
         cases.push(...literalCases(named(r.py) !== null, named(r.node) !== null, 'tools/list: LITERAL memory_queries is served', true));
         cases.push({ name: 'tools/list: memory_queries is served with the same schema', kind: 'json', expected: named(r.py), actual: named(r.node) });
         const saveQ = (side) => tools(side).find((t) => t.name === 'memory_save')?.inputSchema?.properties?.queries ?? null;

@@ -1834,10 +1834,14 @@ def test_the_module_walks_depends_on_in_exactly_one_place():
     # the key on a new unit (the parent's id by default) and never reads the graph. Its
     # count is pinned too, so a second walk hidden there would still move this test.
     owners = depends_on_owners(source)
-    assert set(owners) == {"_batch_view", "_follow_up_unit"}
+    assert set(owners) == {"_batch_view", "_follow_up_unit", "draft"}
     # three: whether the ITEM gives one, the item's value, and the new unit's key — the
     # follow-up's own input, never another unit's edges
     assert owners["_follow_up_unit"] == 3
+    # #226: `draft` reads TICKETS, before any checkpoint exists, and hands them to the
+    # planner with priorities a checkpoint cannot carry. Four: the node's key and value, the
+    # new unit's key and value. It never walks the edges itself.
+    assert owners["draft"] == 4
 
     tree = ast.parse(source)
 
@@ -1852,9 +1856,11 @@ def test_the_module_walks_depends_on_in_exactly_one_place():
             and n.func.value.id == "workplan"
         ]
 
-    assert len(planner_calls(tree)) == 1
+    # Two doors, each counted: `_batch_view` over a checkpoint, `draft` over tickets (#226).
+    assert len(planner_calls(tree)) == 2
     assert {getattr(top, "name", "<module>") for top in tree.body if planner_calls(top)} == {
-        "_batch_view"
+        "_batch_view",
+        "draft",
     }
     assert [
         node

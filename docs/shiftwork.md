@@ -978,6 +978,59 @@ runtimes, gated by the `experiment/*` sessions and per-side literals in the shif
 suite; disabling the five checks on either side reddens 86 cases. Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-experimentation-design.md`.
 
+#### From tickets to a checkpoint: `shiftwork_draft` (#226)
+
+Step 1 of the loop, planning into a schema-valid checkpoint, used to be typed by hand from
+a plan doc. `shiftwork_draft` does it: hand it `job`, `tickets` and `repo` and it answers
+the composed checkpoint, one brief per ticket, `cursor`, and `work_plan`'s `batches` and
+`width`. It is the tickets-to-checkpoint step only. Writing the spec and cutting it into
+tickets stays outside bantamkit (user ruling, 2026-10-21). Worked request:
+`tools/shiftwork/example-draft-request.json`.
+
+- **A ticket is ready or refused.** `id`, `title`, `role`, `verify`, `data_shape` and
+  `brief` are non-empty strings. `data_shape` names the types, fields, files or
+  messages the unit produces or consumes. A ticket without one makes the executor
+  re-derive it, which decision 2 above bans. The `id` becomes a file name, so `/`, `\`,
+  `:` and a leading `.` are refused.
+- **Composition (D6).** Each ticket becomes a `todo` unit with
+  `brief_path: <briefs_dir>/<id>.md` (default `.shiftwork/briefs`, always joined with `/`).
+  `depends_on`, `verify` and `role` are copied as given. Any other ticket key
+  (`touches`, `reviews`, `irreversible`, ...) goes onto the unit as it is, and the schema
+  judges it. `priority` orders the batches and the cursor but is not stored, because the
+  schema has no such field. `state.artifacts` lists the briefs, then the caller's
+  `artifacts`. `handoff.next_action` is always `Read <cursor brief> and clock in <cursor>.`
+- **Refusal order**, first fault wins, the same sentence on both runtimes:
+  1. the request's shape (`job must be an object`, `tickets must be a non-empty list`,
+     `repo must be an object`, ...);
+  2. each ticket's shape, by ticket order: `tickets[<i>] must be an object`,
+     `tickets[<i>].id must be a non-empty string`,
+     `ticket <id> cannot name a brief file; an id holds no /, \ or : and does not start with .`,
+     `ticket <id> has no title|role|brief`,
+     `ticket <id> has no verify; done-ness is a command, not a claim`, and
+     `ticket <id> has no data_shape; a ticket without one is not ready to execute`;
+  3. `work_plan`'s four, verbatim;
+  4. `ticket <id> names role <role>, which job.roles does not declare; declared is <sorted list>`;
+  5. the checkpoint schema's own sentence;
+  6. the graph checks `shiftwork_plan` would refuse the file with (`reviews`,
+     investigation, experimentation), so a draft that passes is a checkpoint
+     `shiftwork_plan` and `shiftwork_clock_in` accept;
+  7. with `write: true` only:
+     `checkpoint <path> already exists; shiftwork_draft never overwrites a job` and
+     `brief <path> already exists with different content`, both before anything is
+     written. A brief with identical bytes is left alone.
+- **Dry run by default.** Without `write: true` nothing is touched. With it, the briefs
+  and then the checkpoint are written by temp file + rename under `<checkpoint>.lock`.
+  `written` lists what landed, including on a failure part way through.
+- **Bytes (D8).** A brief is UTF-8 and LF only:
+  ``# <id> — <title>\n\n<brief>\n\n## Data shape\n\n<data_shape>\n\n## Verify\n\n`<verify>`\n``.
+  CRLF in the input becomes LF, and the brief's and data shape's trailing newlines are
+  dropped. The checkpoint is `clock_out`'s dump (`indent=2`), LF on every platform.
+- **No git, no shell (D7).** `repo` is taken as given. `verify` is never run and the
+  working tree is never read.
+
+Both runtimes (`shiftwork.draft`, `shiftwork.ts`'s `draft`), gated by
+`node tools/conformance/run.mjs --suite shiftwork-draft`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to

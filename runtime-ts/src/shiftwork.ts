@@ -85,7 +85,7 @@ import { schemaError } from './contract.js';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
-import { closeSync, openSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   asPyOSError,
@@ -100,6 +100,9 @@ import {
   PyUnicodeDecodeError,
   pyExists,
   pyIsFile,
+  pyLexists,
+  pyMkdirParents,
+  pyParent,
 } from './memory/pyfs.js';
 import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, toJs, type PyValue } from './pyjson.js';
 import { budget as budgetOf, refusal as budgetRefusal, type BudgetView, type Dimension } from './jobbudget.js';
@@ -1940,4 +1943,285 @@ export function planBatches(checkpoint: string): PyValue {
     // #265/D5: only for an experimentation job.
     ...rankingEntries(doc),
   ]);
+}
+
+
+// ------------------------------------------------------------------------------- draft (#226)
+
+/** #226/D2: where a draft lands when the caller names no path. */
+export const DRAFT_CHECKPOINT = '.shiftwork/checkpoint.json';
+export const DRAFT_BRIEFS_DIR = '.shiftwork/briefs';
+/** #226/D3: the ticket fields checked in this order, each a non-empty string. */
+const TICKET_FIELDS = ['id', 'title', 'role', 'verify', 'data_shape', 'brief'] as const;
+/** #226/D6: ticket fields that shape a unit but are not unit fields themselves. */
+const TICKET_ONLY: ReadonlySet<string> = new Set(['data_shape', 'brief', 'priority']);
+
+/** `shiftwork.draft`'s arguments as the MCP layer hands them over; absent and `null` are the default. */
+export interface DraftArgs {
+  job?: PyValue;
+  tickets?: PyValue;
+  repo?: PyValue;
+  checkpoint?: PyValue;
+  briefsDir?: PyValue;
+  handoff?: PyValue;
+  artifacts?: PyValue;
+  write?: PyValue;
+}
+
+const isNone = (v: PyValue | undefined): boolean => v === undefined || v.t === 'null';
+const isFilledStr = (v: PyValue | undefined): boolean => v !== undefined && v.t === 'str' && v.v !== '';
+
+/** #226 refusal step 1: the request's own shape, in argument order. */
+function draftRequestRefusal(a: DraftArgs): string | null {
+  if (a.job === undefined || a.job.t !== 'dict') return 'job must be an object';
+  if (a.tickets === undefined || a.tickets.t !== 'list' || a.tickets.v.length === 0) return 'tickets must be a non-empty list';
+  if (a.repo === undefined || a.repo.t !== 'dict') return 'repo must be an object';
+  if (!isNone(a.checkpoint) && !isFilledStr(a.checkpoint)) return 'checkpoint must be a non-empty string';
+  if (!isNone(a.briefsDir) && !isFilledStr(a.briefsDir)) return 'briefs_dir must be a non-empty string';
+  if (!isNone(a.handoff) && a.handoff!.t !== 'dict') return 'handoff must be an object';
+  if (!isNone(a.artifacts) && a.artifacts!.t !== 'list') return 'artifacts must be a list';
+  if (!isNone(a.write) && a.write!.t !== 'bool') return 'write must be a boolean';
+  return null;
+}
+
+/** #226 refusal step 2: each ticket's shape, by ticket order — `_ticket_refusal`. */
+function ticketRefusal(tickets: readonly PyValue[]): string | null {
+  for (const [index, ticket] of tickets.entries()) {
+    if (ticket.t !== 'dict') return `tickets[${index}] must be an object`;
+    const idValue = ticket.v.get('id');
+    if (!isFilledStr(idValue)) return `tickets[${index}].id must be a non-empty string`;
+    const id = text(idValue!);
+    if (/[/\\:]/.test(id) || id.startsWith('.')) {
+      return `ticket ${id} cannot name a brief file; an id holds no /, \\ or : and does not start with .`;
+    }
+    for (const name of TICKET_FIELDS.slice(1)) {
+      if (isFilledStr(ticket.v.get(name))) continue;
+      if (name === 'verify') return `ticket ${id} has no verify; done-ness is a command, not a claim`;
+      if (name === 'data_shape') return `ticket ${id} has no data_shape; a ticket without one is not ready to execute`;
+      return `ticket ${id} has no ${name}`;
+    }
+  }
+  return null;
+}
+
+/** #226/D8: a brief file's text — LF only, the brief's trailing newlines folded to one. */
+function briefText(ticket: PyDict): string {
+  const lf = (key: string): string => text(field(ticket, key)).split('\r\n').join('\n');
+  const strip = (value: string): string => value.replace(/\n+$/, '');
+  return (
+    `# ${text(field(ticket, 'id'))} — ${lf('title')}\n\n${strip(lf('brief'))}\n\n` +
+    `## Data shape\n\n${strip(lf('data_shape'))}\n\n` +
+    `## Verify\n\n\`${lf('verify')}\`\n`
+  );
+}
+
+const draftError = (reason: string, written: readonly string[]): PyValue =>
+  dict([
+    ['result', str('error')],
+    ['reason', str(reason)],
+    ['written', { t: 'list', v: written.map(str) }],
+  ]);
+
+/**
+ * #226: compose a schema-valid checkpoint and its brief files from tickets — `shiftwork.draft`.
+ *
+ * Refusals in the reference's fixed order, first fault wins: the request's shape, each
+ * ticket's shape, `workplan.plan`'s four verbatim, a role `job.roles` does not declare, the
+ * schema self-check, the graph checks `planBatches` would refuse the written file with, and —
+ * only with `write` — the write side. No git, no shell, no read of the working tree (D7).
+ */
+export function draft(args: DraftArgs): PyValue {
+  const refusal = draftRequestRefusal(args) ?? ticketRefusal((args.tickets as PyList).v);
+  if (refusal !== null) return errorResult(refusal);
+  const job = args.job as PyDict;
+  const tickets = (args.tickets as PyList).v.map((t) => t as PyDict);
+
+  const nodes = tickets.map((t) => {
+    const node: Record<string, unknown> = {
+      id: text(field(t, 'id')),
+      depends_on: toJs(t.v.get('depends_on') ?? { t: 'null' }),
+      priority: toJs(t.v.get('priority') ?? { t: 'null' }),
+    };
+    if (t.v.has('touches')) node['touches'] = toJs(field(t, 'touches'));
+    return node;
+  });
+  const graph = plan(nodes);
+  if ('result' in graph) return errorResult(graph.reason);
+
+  const roles = job.v.get('roles');
+  if (roles !== undefined && roles.t === 'dict') {
+    for (const t of tickets) {
+      const role = text(field(t, 'role'));
+      if (!roles.v.has(role)) {
+        const declared = [...roles.v.keys()].sort().join(', ');
+        return errorResult(
+          `ticket ${text(field(t, 'id'))} names role ${role}, which job.roles does not declare; declared is ${declared}`,
+        );
+      }
+    }
+  }
+
+  const briefsDir = isNone(args.briefsDir) ? DRAFT_BRIEFS_DIR : text(args.briefsDir!);
+  const checkpoint = isNone(args.checkpoint) ? DRAFT_CHECKPOINT : text(args.checkpoint!);
+  const prefix = briefsDir.replace(/\/+$/, '');
+  const units: PyValue[] = [];
+  const briefs: { unit: string; path: string; bytes: string }[] = [];
+  for (const t of tickets) {
+    const id = text(field(t, 'id'));
+    const briefPath = `${prefix}/${id}.md`;
+    const dependsOn = t.v.get('depends_on');
+    const unit = new Map<string, PyValue>([
+      ['id', field(t, 'id')],
+      ['title', field(t, 'title')],
+      ['brief_path', str(briefPath)],
+      ['status', str('todo')],
+      ['role', field(t, 'role')],
+      ['depends_on', dependsOn !== undefined && dependsOn.t === 'list' ? { t: 'list', v: [...dependsOn.v] } : { t: 'list', v: [] }],
+      ['verify', field(t, 'verify')],
+    ]);
+    // D9: every other ticket key is the unit's; the schema below accepts or refuses it.
+    for (const [key, value] of t.v) {
+      if (!unit.has(key) && !TICKET_ONLY.has(key)) unit.set(key, value);
+    }
+    units.push({ t: 'dict', v: unit });
+    briefs.push({ unit: id, path: briefPath, bytes: briefText(t) });
+  }
+
+  const cursor = graph.batches[0]![0]!;
+  const cursorBrief = briefs.find((b) => b.unit === cursor)!.path;
+  const handoff = new Map<string, PyValue>([
+    ['open_questions', { t: 'list', v: [] }],
+    ['do_not', { t: 'list', v: [] }],
+  ]);
+  if (!isNone(args.handoff)) for (const [key, value] of (args.handoff as PyDict).v) handoff.set(key, value);
+  handoff.delete('next_action');
+  const composedHandoff: PyDict = {
+    t: 'dict',
+    v: new Map([['next_action', str(`Read ${cursorBrief} and clock in ${cursor}.`)], ...handoff]),
+  };
+  const artifacts: PyValue[] = briefs.map((b) => dict([['path', str(b.path)], ['role', str('brief')]]));
+  if (!isNone(args.artifacts)) artifacts.push(...(args.artifacts as PyList).v);
+  const doc = dict([
+    ['version', int(1)],
+    ['job', job],
+    ['plan', dict([['cursor', str(cursor)], ['units', { t: 'list', v: units }]])],
+    ['state', dict([['repo', args.repo!], ['artifacts', { t: 'list', v: artifacts }], ['external', { t: 'list', v: [] }]])],
+    ['history', { t: 'list', v: [] }],
+    ['retro', { t: 'list', v: [] }],
+    ['handoff', composedHandoff],
+  ]);
+
+  const problem = schemaError(dumpJson(doc), loadSchema(SCHEMA_NAME));
+  if (problem !== null) return errorResult(problem);
+  const view = batchView(doc);
+  if ('result' in view) return errorResult(view.reason);
+
+  const answer = new Map<string, PyValue>([
+    ['result', str('draft')],
+    ['checkpoint', doc],
+    ['cursor', str(cursor)],
+    ['batches', { t: 'list', v: graph.batches.map((batch) => ({ t: 'list', v: batch.map(str) })) }],
+    ['width', int(graph.width)],
+    ['briefs', { t: 'list', v: briefs.map((b) => dict([['unit', str(b.unit)], ['path', str(b.path)], ['bytes', str(b.bytes)]])) }],
+    ['written', { t: 'list', v: [] }],
+  ]);
+  if (isNone(args.write) || !(args.write as { v: boolean }).v) return { t: 'dict', v: answer };
+  return draftWrite(checkpoint, doc, briefs, answer);
+}
+
+/** `tmp.open("xb").write(data); tmp.replace(dest)` with the parent made first — `landed`. */
+function landed(dest: string, data: string): void {
+  pyMkdirParents(pyParent(dest));
+  const tmp = `${dest}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    try {
+      writeFileSync(tmp, Buffer.from(data, 'utf8'), { flag: 'wx' });
+    } catch (e) {
+      throw asPyOSError(e, tmp, undefined, 'crt');
+    }
+    pyReplace(tmp, dest);
+  } catch (e) {
+    try {
+      pyUnlink(tmp);
+    } catch {
+      /* `contextlib.suppress(OSError)` */
+    }
+    throw e;
+  }
+}
+
+/** #226/D10: refuse an existing job, then write briefs and checkpoint, each by rename. */
+function draftWrite(
+  checkpoint: string,
+  doc: PyDict,
+  briefs: readonly { unit: string; path: string; bytes: string }[],
+  answer: Map<string, PyValue>,
+): PyValue {
+  const real = realTarget(checkpoint);
+  try {
+    pyMkdirParents(pyParent(real));
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+    return draftError(`checkpoint ${checkpoint} unwritable: ${atCheckpoint(e, checkpoint)}`, []);
+  }
+  const lock = `${real}.lock`;
+  const { held, refusal } = acquireLock(lock, LOCK_WAIT_MS);
+  if (refusal !== null) return draftError(text((refusal as PyDict).v.get('reason')!), []);
+  try {
+    return draftWriteLocked(checkpoint, real, doc, briefs, answer);
+  } finally {
+    if (held) {
+      try {
+        unlinkSync(lock);
+      } catch {
+        /* `contextlib.suppress(OSError)` */
+      }
+    }
+  }
+}
+
+function draftWriteLocked(
+  checkpoint: string,
+  real: string,
+  doc: PyDict,
+  briefs: readonly { unit: string; path: string; bytes: string }[],
+  answer: Map<string, PyValue>,
+): PyValue {
+  if (pyLexists(checkpoint)) {
+    return draftError(`checkpoint ${checkpoint} already exists; shiftwork_draft never overwrites a job`, []);
+  }
+  const pending: { path: string; bytes: string }[] = [];
+  for (const brief of briefs) {
+    if (pyLexists(brief.path)) {
+      let same = false;
+      try {
+        same = readFileSync(brief.path).equals(Buffer.from(brief.bytes, 'utf8'));
+      } catch {
+        same = false;
+      }
+      if (!same) return draftError(`brief ${brief.path} already exists with different content`, []);
+      continue;
+    }
+    pending.push(brief);
+  }
+  const written: string[] = [];
+  for (const brief of pending) {
+    try {
+      landed(brief.path, brief.bytes);
+    } catch (e) {
+      if (!(e instanceof PyOSError)) throw e;
+      return draftError(`brief ${brief.path} unwritable: ${atCheckpoint(e, brief.path)}`, written);
+    }
+    written.push(brief.path);
+  }
+  try {
+    // The checkpoint's bytes are clock_out's dump, written LF on every platform.
+    landed(real, `${dumpJson(doc, { indent: 2 })}\n`);
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+    return draftError(`checkpoint ${checkpoint} unwritable: ${atCheckpoint(e, checkpoint)}`, written);
+  }
+  written.push(checkpoint);
+  answer.set('written', { t: 'list', v: written.map(str) });
+  return { t: 'dict', v: answer };
 }

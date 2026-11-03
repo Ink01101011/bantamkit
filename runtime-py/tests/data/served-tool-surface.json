@@ -14,7 +14,8 @@
     "token_ledger",
     "work_plan",
     "shiftwork_plan",
-    "memory_queries"
+    "memory_queries",
+    "shiftwork_draft"
   ],
   "tools": {
     "bantamkit_status": {
@@ -1341,6 +1342,228 @@
         "title": "memory_queriesDictOutput"
       },
       "title": "Likely-prompt queries for saved facts"
+    },
+    "shiftwork_draft": {
+      "description": "Shift-work draft: turn tickets into a new job — a checkpoint that validates against the checkpoint schema, plus one brief file per ticket — so step 1 of the shift-work loop is not typed by hand. Call it once, when a job's tickets are settled and before the first shiftwork_clock_in; it never edits a job in progress (that is the planner's edit, or shiftwork_clock_out's `follow_ups`), and work_plan is the read-only answer when all you want is the batches. Every ticket needs a non-empty `id`, `title`, `role`, `verify`, `data_shape` (the types, fields, files or messages the unit produces or consumes — a ticket without one is not ready to execute) and `brief`; the first missing one is refused by name. The graph is work_plan's: its refusals come back verbatim, `batches` and `width` are its answer, and `cursor` is the first ready unit, the one shiftwork_clock_out would pick. With job.roles declared, a ticket role it does not name is refused. Each ticket becomes a `todo` unit with brief_path <briefs_dir>/<id>.md; any other ticket key (touches, reviews, irreversible, ...) is copied onto the unit, and the composed document must pass the checkpoint schema and shiftwork_plan's graph checks, or the schema's sentence is the refusal. `write` is false by default: the document and every brief's text come back and nothing is touched. With `write: true` the briefs and then the checkpoint are written by temp file + rename under <checkpoint>.lock; an existing checkpoint, or an existing brief with other bytes, is refused before anything is written, and a failure part-way names what landed in `written`. It never runs git, never runs `verify` and never reads the working tree: `repo` is taken as given. Refusals are {\"result\": \"error\", \"reason\"}, never exceptions.",
+      "inputSchema": {
+        "properties": {
+          "job": {
+            "title": "Job",
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The checkpoint's `job` object, copied as given: id, goal, done_definition, constraints, and optional roles, budget or agreements."
+          },
+          "tickets": {
+            "title": "Tickets",
+            "type": "array",
+            "minItems": 1,
+            "description": "One per unit, in plan order. Keys other than the six required ones, depends_on and priority are copied onto the unit and judged by the checkpoint schema.",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "id",
+                "title",
+                "role",
+                "verify",
+                "data_shape",
+                "brief"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The unit id, and the brief's file name: no /, \\ or :, no leading dot."
+                },
+                "title": {
+                  "type": "string",
+                  "description": "One line naming the work."
+                },
+                "role": {
+                  "type": "string",
+                  "description": "planner, implementer or reviewer; with job.roles declared, one of its keys."
+                },
+                "depends_on": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Ticket ids it waits for; absent means none."
+                },
+                "verify": {
+                  "type": "string",
+                  "description": "The command that proves the unit done."
+                },
+                "data_shape": {
+                  "type": "string",
+                  "description": "The types, fields, files or messages the unit produces or consumes."
+                },
+                "brief": {
+                  "type": "string",
+                  "description": "The brief's body, written under the heading; CRLF becomes LF."
+                },
+                "priority": {
+                  "type": "integer",
+                  "description": "work_plan's tie-break inside a batch (higher first); used for the cursor, not stored on the unit."
+                }
+              }
+            }
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "object",
+            "additionalProperties": true,
+            "description": "state.repo as given: {branch, head_sha, dirty}. Never read from git."
+          },
+          "checkpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Checkpoint",
+            "description": "Where the checkpoint is written with write: true, absolute or relative to the server's working directory; default .shiftwork/checkpoint.json."
+          },
+          "briefs_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Briefs Dir",
+            "description": "Directory of the brief files, also the prefix of every brief_path; default .shiftwork/briefs."
+          },
+          "handoff": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Handoff",
+            "description": "Optional do_not, open_questions and notes for the checkpoint's handoff; next_action is always written as `Read <cursor brief> and clock in <cursor>.`"
+          },
+          "artifacts": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Artifacts",
+            "description": "{path, role} entries (spec, plan) appended to state.artifacts after one brief entry per unit."
+          },
+          "write": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Write",
+            "description": "true writes the briefs and the checkpoint; false or absent is a dry run that touches nothing."
+          }
+        },
+        "required": [
+          "job",
+          "tickets",
+          "repo"
+        ],
+        "type": "object",
+        "title": "shiftwork_draftArguments",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "type": "string",
+            "description": "`draft` on success; `error` with `reason` for the first refusal."
+          },
+          "reason": {
+            "type": "string",
+            "description": "The refusal sentence, when result is `error`."
+          },
+          "checkpoint": {
+            "type": "object",
+            "description": "The composed checkpoint document, valid against assets/schemas/shiftwork-checkpoint.json."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "plan.cursor: the first unit of the first batch."
+          },
+          "batches": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "work_plan's batches over the tickets, priorities included."
+          },
+          "width": {
+            "type": "integer",
+            "description": "work_plan's width: the widest batch."
+          },
+          "briefs": {
+            "type": "array",
+            "description": "One per unit: its id, its brief_path, and `bytes`, the file's full UTF-8 text.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "unit": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "written": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths written by this call, briefs first and the checkpoint last; [] on a dry run, and on a write-side refusal the paths that landed before it."
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "title": "Shift work: draft",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
     }
   }
 }
