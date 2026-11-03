@@ -82,6 +82,7 @@
  */
 import { AssetNotFound, loadSchema, loadToolAsset } from './assets.js';
 import { schemaError } from './contract.js';
+import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { closeSync, openSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
@@ -103,6 +104,7 @@ import {
 import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, toJs, type PyValue } from './pyjson.js';
 import { budget as budgetOf, refusal as budgetRefusal, type BudgetView, type Dimension } from './jobbudget.js';
 import { checkSchema, PyJsonSchemaUnsupported } from './pyjsonschema.js';
+import { pyTruthy } from './pysem.js';
 import { plan, type PlanNode, type PlanResult } from './workplan.js';
 import { searchArchived } from './storage/retention.js';
 
@@ -125,6 +127,13 @@ export const TERMINAL_UNIT_STATUS: ReadonlySet<string> = new Set(['done', 'dropp
 export const HISTORY_RING_SIZE = 5;
 /** #261: the most agreements a job carries; past it, one must be retired first. */
 export const AGREEMENTS_MAX = 20;
+/**
+ * #225: the `event` value of the ledger line clock_in appends when a relay question's probe
+ * answered it, so the escalation it replaced is counted instead of answered in chat.
+ */
+export const RESOLVED_EVENT = 'resolved';
+/** #225: how long one relay probe may run, in seconds, before it counts as unanswered. */
+export const PROBE_TIMEOUT_S = 30;
 /** #259: the attempts a unit keeps, newest last; the oldest is dropped past this. */
 export const ATTEMPTS_KEPT = 3;
 /** #259: an attempt's `notes`, in code points, so both runtimes count non-ASCII text alike. */
@@ -668,11 +677,15 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   const handoff = subDict(doc, 'handoff');
   const openQuestions = subList(handoff, 'open_questions');
   if (openQuestions.v.length > 0) {
-    return dict([
-      ['result', str('escalate')],
-      ['reason', str(`open question: ${text(openQuestions.v[0]!)}`)],
-      ['open_questions', openQuestions],
-    ]);
+    // #225: only a decision, or a relay its probe did not answer, is the user's.
+    const pending = pendingQuestions(pyJoin(checkpoint), openQuestions.v, options.now);
+    if (pending.length > 0) {
+      return dict([
+        ['result', str('escalate')],
+        ['reason', str(`open question: ${questionText(pending[0]!)}`)],
+        ['open_questions', openQuestions],
+      ]);
+    }
   }
   const units = subList(subDict(doc, 'plan'), 'units');
   if (units.v.every((u) => TERMINAL_UNIT_STATUS.has(text((u as PyDict).v.get('status')!)))) {
@@ -702,6 +715,8 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   if (unit === null || !ready.includes(selected)) {
     return errorResult(`unit ${selected} is not ready; ready is ${ready.join(', ')}`);
   }
+  const gate = irreversibleGate(doc, unit);
+  if (gate !== null) return gate;
   const contended = contention(logPath(pyJoin(checkpoint)), doc, unit);
   if (contended !== null) return errorResult(contended);
   // #262/D5: last, so every refusal above keeps its sentence; nothing is written on it.
@@ -727,6 +742,100 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
     // #261: always present, `[]` when the job has adopted none.
     ['agreements', { t: 'list', v: [...strings(subDict(doc, 'job').v.get('agreements'))].map(str) }],
   ]);
+}
+
+/** #225: a bare string is its own text; the object form carries it in `q`. */
+function questionText(question: PyValue): string {
+  return question.t === 'dict' ? text(question.v.get('q')!) : text(question);
+}
+
+/** #225: is this open question the object form with `kind: relay`? */
+function isRelay(question: PyValue): question is PyDict {
+  if (question.t !== 'dict') return false;
+  const kind = question.v.get('kind');
+  return kind !== undefined && kind.t === 'str' && kind.v === 'relay';
+}
+
+/**
+ * #225: the open questions still the user's, in list order; each answered relay logged.
+ *
+ * A bare string is a decision, as it always was, so a list of strings is pending whole
+ * and clockIn answers exactly what it answered before. A relay is answered when its
+ * probe exits 0 within PROBE_TIMEOUT_S, run by the shell from the repo root; a relay
+ * with no probe, a probe that fails, times out or cannot start stays pending. Each
+ * answered relay appends one `{event: resolved, ts, q, probe}` line, best effort, so the
+ * escalation it replaced is counted. `_pending_questions` in `shiftwork.py`.
+ */
+function pendingQuestions(path: string, questions: PyValue[], now: number | undefined): PyValue[] {
+  const pending: PyValue[] = [];
+  const root = repoRoot(path);
+  for (const question of questions) {
+    if (!isRelay(question)) {
+      pending.push(question);
+      continue;
+    }
+    const probe = question.v.get('probe');
+    if (!pyTruthy(probe) || !probePasses(text(probe!), root)) {
+      pending.push(question);
+      continue;
+    }
+    const record = new Map<string, PyValue>([
+      ['event', str(RESOLVED_EVENT)],
+      ['ts', str(timestamp(now ?? Date.now() / 1000))],
+      ['q', question.v.get('q')!],
+      ['probe', probe!],
+    ]);
+    try {
+      pyAppendText(logPath(path), `${dumpJson({ t: 'dict', v: record }, { sortKeys: true })}\n`);
+    } catch (e) {
+      if (!(e instanceof PyOSError)) throw e;
+    }
+  }
+  return pending;
+}
+
+/** #225: run one relay probe; true only on exit 0 within the timeout. */
+function probePasses(probe: string, root: string): boolean {
+  const done = spawnSync(probe, { shell: true, cwd: root, stdio: 'ignore', timeout: PROBE_TIMEOUT_S * 1000 });
+  return done.error === undefined && done.status === 0;
+}
+
+/**
+ * #225: an irreversible unit needs a `prove` and, under job.authorized, a granted verb.
+ *
+ * `irreversible` names the verb (merge, tag, publish, ...). A unit naming one without a
+ * `prove` command is refused; with `job.authorized` declared — the key, not its
+ * truthiness, as job.roles rules — a verb off the list escalates instead of briefing.
+ * Declaring neither keeps today's clock-in. `_irreversible_gate` in `shiftwork.py`.
+ */
+function irreversibleGate(doc: PyDict, unit: PyDict): PyValue | null {
+  const verb = unit.v.get('irreversible');
+  if (verb === undefined || verb.t === 'null') return null;
+  const id = text(field(unit, 'id'));
+  const shownVerb = pyFormat(verb);
+  if (!pyTruthy(unit.v.get('prove'))) {
+    return errorResult(`unit ${id} is irreversible (${shownVerb}) and names no prove command`);
+  }
+  const authorized = subDict(doc, 'job').v.get('authorized');
+  if (authorized !== undefined && !(authorized as PyList).v.some((v) => v.t === verb.t && v.v === verb.v)) {
+    return dict([
+      ['result', str('escalate')],
+      ['reason', str(`unit ${id} is irreversible (${shownVerb}); job.authorized does not grant ${shownVerb}`)],
+    ]);
+  }
+  return null;
+}
+
+/** #225: a relay question a clock-out adds must carry the probe that answers it. */
+function relayRefusal(handoffPatch: Map<string, PyValue>): string | null {
+  const questions = handoffPatch.get('open_questions');
+  if (questions === undefined || questions.t !== 'list') return null;
+  for (const question of questions.v) {
+    if (isRelay(question) && !pyTruthy(question.v.get('probe'))) {
+      return `relay question has no probe: ${shown(question.v.get('q'))}`;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------- clock_out
@@ -1278,6 +1387,9 @@ function clockOutLocked(
       return errorResult(`history_entry notes are ${points} code points; an attempt keeps at most ${ATTEMPT_NOTES_MAX}`);
     }
   }
+
+  const relay = relayRefusal(asPatch(handoffPatch));
+  if (relay !== null) return errorResult(relay);
 
   if (followUps.length > 0) {
     const refused = followUpsRefusal(path, doc, unit, followUps);
