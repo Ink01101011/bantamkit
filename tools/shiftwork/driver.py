@@ -348,6 +348,8 @@ class Driver:
 
             if ckpt.open_questions:
                 first = ckpt.open_questions[0]
+                if isinstance(first, dict):  # #225: the object form carries its text in `q`
+                    first = first.get("q")
                 return self._finish(EXIT_ESCALATE, f"open question: {first}", state)
             if ckpt.all_units_terminal():
                 return self._finish(EXIT_SUCCESS, "all units done or dropped", state)

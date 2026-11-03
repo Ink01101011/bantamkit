@@ -110,6 +110,7 @@ import contextlib
 import json
 import os
 import secrets
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,11 @@ HISTORY_RING_SIZE = 5  # the schema's maxItems — older entries fall off the ri
 
 #: #261: the most agreements a job carries; past it, one must be retired first.
 AGREEMENTS_MAX = 20
+#: #225: the `event` value of the ledger line clock_in appends when a relay question's probe
+#: answered it, so the escalation it replaced is counted instead of answered in chat.
+RESOLVED_EVENT = "resolved"
+#: #225: how long one relay probe may run, in seconds, before it counts as unanswered.
+PROBE_TIMEOUT_S = 30
 #: #259: the attempts a unit keeps, newest last; the oldest is dropped past this.
 ATTEMPTS_KEPT = 3
 #: #259: an attempt's `notes`, in code points, so both runtimes count non-ASCII text alike.
@@ -556,11 +562,14 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         return refusal
     open_questions = document["handoff"]["open_questions"]
     if open_questions:
-        return {
-            "result": "escalate",
-            "reason": f"open question: {open_questions[0]}",
-            "open_questions": open_questions,
-        }
+        # #225: only a decision, or a relay its probe did not answer, is the user's.
+        pending = _pending_questions(Path(checkpoint), open_questions)
+        if pending:
+            return {
+                "result": "escalate",
+                "reason": f"open question: {_question_text(pending[0])}",
+                "open_questions": open_questions,
+            }
     units = document["plan"]["units"]
     if all(u["status"] in TERMINAL_UNIT_STATUS for u in units):
         return {"result": "success", "reason": "all units done or dropped"}
@@ -576,6 +585,9 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         return _error(batch_refusal["reason"])  # the sentence verbatim, `_read_valid`'s idiom
     if unit is None or selected not in ready:
         return _error(f"unit {selected} is not ready; ready is {', '.join(ready)}")
+    gate = _irreversible_gate(document, unit)
+    if gate is not None:
+        return gate
     contention = _contention(Path(checkpoint), document, unit)
     if contention is not None:
         return _error(contention)
@@ -601,6 +613,97 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         # #261: always present, `[]` when the job has adopted none.
         "agreements": list(document["job"].get("agreements") or []),
     }
+
+
+def _question_text(question: Any) -> str:
+    """#225: a bare string is its own text; the object form carries it in `q`."""
+    return question["q"] if isinstance(question, dict) else question
+
+
+def _pending_questions(path: Path, questions: list[Any]) -> list[Any]:
+    """#225: the open questions still the user's, in list order; each answered relay logged.
+
+    A bare string is a decision, as it always was, so a list of strings is pending whole
+    and clock_in answers exactly what it answered before. A relay is answered when its
+    probe exits 0 within PROBE_TIMEOUT_S, run by the shell from the repo root; a relay
+    with no probe, a probe that fails, times out or cannot start stays pending. Each
+    answered relay appends one `{event: resolved, ts, q, probe}` line, best effort, so the
+    escalation it replaced is counted.
+    """
+    pending: list[Any] = []
+    root = _repo_root(path)
+    for question in questions:
+        if not (isinstance(question, dict) and question.get("kind") == "relay"):
+            pending.append(question)
+            continue
+        probe = question.get("probe")
+        if not probe or not _probe_passes(probe, root):
+            pending.append(question)
+            continue
+        record = {"event": RESOLVED_EVENT, "ts": _timestamp(time.time())}
+        record.update({"q": question["q"], "probe": probe})
+        try:
+            with _log_path(path).open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True) + "\n")
+        except OSError:
+            pass
+    return pending
+
+
+def _probe_passes(probe: str, root: Path) -> bool:
+    """#225: run one relay probe; True only on exit 0 within the timeout."""
+    try:
+        done = subprocess.run(
+            probe,
+            shell=True,
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=PROBE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+def _irreversible_gate(document: dict, unit: dict) -> dict[str, Any] | None:
+    """#225: an irreversible unit needs a `prove` and, under job.authorized, a granted verb.
+
+    `irreversible` names the verb (merge, tag, publish, ...). A unit naming one without a
+    `prove` command is refused; with `job.authorized` declared — the key, not its
+    truthiness, as job.roles rules — a verb off the list escalates instead of briefing.
+    Declaring neither keeps today's clock-in.
+    """
+    verb = unit.get("irreversible")
+    if verb is None:
+        return None
+    if not unit.get("prove"):
+        return _error(
+            f"unit {unit['id']} is irreversible ({verb}) and names no prove command"
+        )
+    job = document["job"]
+    if "authorized" in job and verb not in job["authorized"]:
+        return {
+            "result": "escalate",
+            "reason": (
+                f"unit {unit['id']} is irreversible ({verb}); "
+                f"job.authorized does not grant {verb}"
+            ),
+        }
+    return None
+
+
+def _relay_refusal(handoff_patch: Any) -> str | None:
+    """#225: a relay question a clock-out adds must carry the probe that answers it."""
+    questions = handoff_patch.get("open_questions") if isinstance(handoff_patch, dict) else None
+    if not isinstance(questions, list):
+        return None
+    for question in questions:
+        relay = isinstance(question, dict) and question.get("kind") == "relay"
+        if relay and not question.get("probe"):
+            return f"relay question has no probe: {question.get('q')}"
+    return None
 
 
 def _model_refusal(document: dict, unit_id: str, unit: dict, accounting: dict | None) -> str | None:
@@ -1119,6 +1222,10 @@ def _clock_out_locked(
             f"history_entry notes are {len(notes)} code points; "
             f"an attempt keeps at most {ATTEMPT_NOTES_MAX}"
         )
+
+    relay = _relay_refusal(handoff_patch)
+    if relay is not None:
+        return _error(relay)
 
     if follow_ups:
         refused = _follow_ups_refusal(path, document, unit, follow_ups)

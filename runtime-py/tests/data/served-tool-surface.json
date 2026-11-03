@@ -22,7 +22,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Is bantamkit working, and which bantamkit? Returns a short report a person can read in the transcript: `bantamkit Active \ud83d\udfe2` or `bantamkit Degraded \ud83d\udfe0` on the first line, then the version and `build_id` of the code answering, the surfaces it serves, the memory store it is bound to with its index size against its budget, whether the event log is on, and \u2014 when degraded \u2014 every condition in full with what to do about it. Call it when the user asks whether the server is alive or working, when a bantamkit tool answered oddly and you need to know whether the server is the reason, or when a reply arrived carrying a `bantamkit degraded` footer and you want the rest of it. Every fact is observed at call time from the server's own state; nothing is a heartbeat or a cached verdict. Takes no arguments, writes nothing, and never echoes another call's arguments. build_identity answers only the `build_id` fingerprint, as JSON, when all you need is to compare two installs; shiftwork_status reports a job, not the server.",
+      "description": "Is bantamkit working, and which bantamkit? Returns a short report a person can read in the transcript: `bantamkit Active 🟢` or `bantamkit Degraded 🟠` on the first line, then the version and `build_id` of the code answering, the surfaces it serves, the memory store it is bound to with its index size against its budget, whether the event log is on, and — when degraded — every condition in full with what to do about it. Call it when the user asks whether the server is alive or working, when a bantamkit tool answered oddly and you need to know whether the server is the reason, or when a reply arrived carrying a `bantamkit degraded` footer and you want the rest of it. Every fact is observed at call time from the server's own state; nothing is a heartbeat or a cached verdict. Takes no arguments, writes nothing, and never echoes another call's arguments. build_identity answers only the `build_id` fingerprint, as JSON, when all you need is to compare two installs; shiftwork_status reports a job, not the server.",
       "inputSchema": {
         "properties": {},
         "type": "object",
@@ -49,7 +49,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Which bantamkit build is answering you, readable mid-call. Returns `build_id` \u2014 a content fingerprint of the running source and the asset pack it loads \u2014 plus the paths it was computed over. Call it when one MCP server name may resolve to more than one install: two endpoints reporting the same `version` are the SAME build only if their `build_id` matches, because a version string moves on release bumps and not on builds. Any fact that cannot be derived comes back as {\"unavailable\": \"<reason>\"} and is named in the `unavailable` list \u2014 never omitted, never a placeholder that reads as a value. Takes no arguments and reads no state. Use bantamkit_status when the question is whether the server is healthy or which store it is bound to \u2014 that report includes this fingerprint; call this tool when you need only the fingerprint, as JSON, to compare two endpoints.",
+      "description": "Which bantamkit build is answering you, readable mid-call. Returns `build_id` — a content fingerprint of the running source and the asset pack it loads — plus the paths it was computed over. Call it when one MCP server name may resolve to more than one install: two endpoints reporting the same `version` are the SAME build only if their `build_id` matches, because a version string moves on release bumps and not on builds. Any fact that cannot be derived comes back as {\"unavailable\": \"<reason>\"} and is named in the `unavailable` list — never omitted, never a placeholder that reads as a value. Takes no arguments and reads no state. Use bantamkit_status when the question is whether the server is healthy or which store it is bound to — that report includes this fingerprint; call this tool when you need only the fingerprint, as JSON, to compare two endpoints.",
       "inputSchema": {
         "properties": {},
         "type": "object",
@@ -69,7 +69,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Free room in persistent memory when `memory_save` was refused for budget. Archives the stalest facts of the writable project store until a fact as large as the biggest one kept will fit, and returns what moved \u2014 every archived name with its type and description. Nothing is deleted: archived facts leave the index but stay on disk under archive/, memory_recall with `include_archived` still finds them, and bringing one back is an operator action rather than a tool \u2014 `bantamkit-memory restore <name>` (Node) or `python -m bantamkit.memory restore <name>` (Python) on the store; no tool deletes a fact. Read-only grants and the profile layer are never touched. Call it after a budget refusal, then retry the save; calling it under budget archives nothing and says so. It is not the pass for two copies of one name across layers \u2014 that is memory_dream.",
+      "description": "Free room in persistent memory when `memory_save` was refused for budget. Archives the stalest facts of the writable project store until a fact as large as the biggest one kept will fit, and returns what moved — every archived name with its type and description. Nothing is deleted: archived facts leave the index but stay on disk under archive/, memory_recall with `include_archived` still finds them, and bringing one back is an operator action rather than a tool — `bantamkit-memory restore <name>` (Node) or `python -m bantamkit.memory restore <name>` (Python) on the store; no tool deletes a fact. Read-only grants and the profile layer are never touched. Call it after a budget refusal, then retry the save; calling it under budget archives nothing and says so. It is not the pass for two copies of one name across layers — that is memory_dream.",
       "inputSchema": {
         "properties": {
           "reserve": {
@@ -100,7 +100,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Search persistent memory for facts a past session saved. Call it BEFORE starting a task that resembles past work, and when the user refers to something decided earlier; use memory_save to add a fact, and memory_compact or memory_dream only to tidy the store \u2014 this tool never changes what a fact says. Reads every layer in order \u2014 the project store, any read-only grants in .bantamkit/config.yaml, then the machine-wide profile \u2014 and returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone. Pass `file` instead of `query` to see the facts linked to a file. Why it is not read-only: every hit is appended to the usage ledger (~/.bantamkit/usage/<store-id>.jsonl) as a recall event \u2014 the staleness order memory_compact archives by \u2014 and a project fact file still in the 0.35.x format is rewritten once into the current one; both are best-effort and never fail a recall. A fact file that cannot be read is named in the reply, never silently skipped. Pass outcome: error to see only recorded failures.",
+      "description": "Search persistent memory for facts a past session saved. Call it BEFORE starting a task that resembles past work, and when the user refers to something decided earlier; use memory_save to add a fact, and memory_compact or memory_dream only to tidy the store — this tool never changes what a fact says. Reads every layer in order — the project store, any read-only grants in .bantamkit/config.yaml, then the machine-wide profile — and returns the top word matches, never fewer than the store default of 3 when that many match; a query that is exactly a fact's name returns that fact alone. Pass `file` instead of `query` to see the facts linked to a file. Why it is not read-only: every hit is appended to the usage ledger (~/.bantamkit/usage/<store-id>.jsonl) as a recall event — the staleness order memory_compact archives by — and a project fact file still in the 0.35.x format is rewritten once into the current one; both are best-effort and never fail a recall. A fact file that cannot be read is named in the reply, never silently skipped. Pass outcome: error to see only recorded failures.",
       "inputSchema": {
         "properties": {
           "query": {
@@ -126,7 +126,7 @@
               "error",
               "success"
             ],
-            "description": "Keep only facts saved with this outcome \u2014 `error` answers \"what failed before\", `success` \"what worked\". Facts with no outcome are dropped from the answer; omit it for the normal search."
+            "description": "Keep only facts saved with this outcome — `error` answers \"what failed before\", `success` \"what worked\". Facts with no outcome are dropped from the answer; omit it for the normal search."
           }
         },
         "required": [],
@@ -154,7 +154,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Save ONE durable fact to persistent memory \u2014 a preference the user stated, a decision, the fix that worked \u2014 so a future session can recall it. Use it only for facts a future session needs; never for anything derivable from the repo, git history or docs, nor for one-off state of this conversation. To find a fact use memory_recall; to change one, save again under its EXACT name, which replaces it in place; to free room call memory_compact. Refused with nothing written, each with its own sentence: a description too close to an existing fact's (the reply names that fact \u2014 save under that SAME name or skip, never rename to force a copy), a spelling that normalises onto an existing name (`Deploy Command` onto `deploy-command`), and a save that would push the always-loaded index over its byte budget (the reply names the remedy). Every save lands in the writable project store (.bantamkit/memory), never in the profile or a read-only grant, and is appended to the usage ledger. Optional outcome (error|success) tags a lesson and status: done closes a project fact; nothing here archives \u2014 that is the operator's bantamkit-memory candidates/merge.",
+      "description": "Save ONE durable fact to persistent memory — a preference the user stated, a decision, the fix that worked — so a future session can recall it. Use it only for facts a future session needs; never for anything derivable from the repo, git history or docs, nor for one-off state of this conversation. To find a fact use memory_recall; to change one, save again under its EXACT name, which replaces it in place; to free room call memory_compact. Refused with nothing written, each with its own sentence: a description too close to an existing fact's (the reply names that fact — save under that SAME name or skip, never rename to force a copy), a spelling that normalises onto an existing name (`Deploy Command` onto `deploy-command`), and a save that would push the always-loaded index over its byte budget (the reply names the remedy). Every save lands in the writable project store (.bantamkit/memory), never in the profile or a read-only grant, and is appended to the usage ledger. Optional outcome (error|success) tags a lesson and status: done closes a project fact; nothing here archives — that is the operator's bantamkit-memory candidates/merge.",
       "inputSchema": {
         "properties": {
           "type": {
@@ -249,7 +249,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Shift-work clock-in: validate the checkpoint against the checkpoint schema and return the brief of ONE unit \u2014 {unit, role, invariants, handoff, do_not, files} \u2014 to hand to the agent you spawn, verbatim. Call it once per unit, right before spawning; use shiftwork_plan first to see the `ready` batch when several units are to run at once, and shiftwork_clock_out, not this tool, when a unit finishes. The unit briefed is plan.cursor, or `unit_id` when given; either way it must be in shiftwork_plan's `ready` \u2014 a done or dropped cursor, a cursor whose dependencies have not run, or a `unit_id` naming no unit answers {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and the batch view's own refusals (cycle, unknown dependency, unreadable checkpoint) pass through verbatim. A ready unit whose `touches` shares a path with a unit briefed and not yet clocked out is refused too, before any brief: `unit <id> touches <path>, which <other> holds until its clock-out`. A checkpoint whose `reviews` break review independence is refused with shiftwork_plan's sentence. With job.budget declared, a brief that does not fit is refused: `budget <dim> spent: <n> of <limit>; raise job.budget or stop the job`. The other outcomes, never exceptions: `escalate` when handoff.open_questions is non-empty (stop and ask the user) or when the cursor names no unit, `success` when every unit is done or dropped, `error` when the checkpoint fails validation. It never moves plan.cursor; clock_out does. What it WRITES: on result=brief, and only then, one line {event: brief, ts, unit, role} appended to <checkpoint>.log.jsonl \u2014 best-effort, so a log it cannot write costs the brief nothing. That line is what later lets clock_out accept the unit while the cursor is elsewhere and sets `briefed` on its accounting line. The checkpoint file itself is never modified. See docs/shiftwork.md.",
+      "description": "Shift-work clock-in: validate the checkpoint against the checkpoint schema and return the brief of ONE unit — {unit, role, invariants, handoff, do_not, files} — to hand to the agent you spawn, verbatim. Call it once per unit, right before spawning; use shiftwork_plan first to see the `ready` batch when several units are to run at once, and shiftwork_clock_out, not this tool, when a unit finishes. The unit briefed is plan.cursor, or `unit_id` when given; either way it must be in shiftwork_plan's `ready` — a done or dropped cursor, a cursor whose dependencies have not run, or a `unit_id` naming no unit answers {\"result\": \"error\", \"reason\": \"unit <id> is not ready; ready is <a, b>\"}, and the batch view's own refusals (cycle, unknown dependency, unreadable checkpoint) pass through verbatim. A ready unit whose `touches` shares a path with a unit briefed and not yet clocked out is refused too, before any brief: `unit <id> touches <path>, which <other> holds until its clock-out`. A checkpoint whose `reviews` break review independence is refused with shiftwork_plan's sentence. With job.budget declared, a brief that does not fit is refused: `budget <dim> spent: <n> of <limit>; raise job.budget or stop the job`. The other outcomes, never exceptions: `escalate` when handoff.open_questions is non-empty (stop and ask the user) or when the cursor names no unit, `success` when every unit is done or dropped, `error` when the checkpoint fails validation. It never moves plan.cursor; clock_out does. What it WRITES: on result=brief, and only then, one line {event: brief, ts, unit, role} appended to <checkpoint>.log.jsonl — best-effort, so a log it cannot write costs the brief nothing. That line is what later lets clock_out accept the unit while the cursor is elsewhere and sets `briefed` on its accounting line. The checkpoint file itself is never modified. See docs/shiftwork.md.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -317,9 +317,18 @@
           "open_questions": {
             "type": "array",
             "items": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "description": "A decision question."
+                },
+                {
+                  "type": "object",
+                  "description": "A question with a kind (#225): {q, kind: relay|decision, probe}. Escalation happens only for a decision or a relay whose probe did not exit 0; an answered relay is logged as a `resolved` ledger event."
+                }
+              ]
             },
-            "description": "With result `escalate`: the questions the orchestrator must put to the user before any unit runs."
+            "description": "With result `escalate`: the questions the orchestrator must put to the user before any unit runs. An irreversible unit whose verb job.authorized does not grant also escalates (#225), with no open_questions."
           },
           "reason": {
             "type": "string",
@@ -357,7 +366,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Shift-work clock-out: record that a unit finished \u2014 set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor \u2014 which needs no brief and clocks out with briefed=false \u2014 or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document \u2014 plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. `follow_ups` appends the work it discovered as todo units. `agreements` adopts or retires a working agreement every later brief carries. Each clock-out also appends {status, outcome, notes?, produced?} to the unit's attempts (newest 3 kept). With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written \u2014 see the `model` property.",
+      "description": "Shift-work clock-out: record that a unit finished — set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor — which needs no brief and clocks out with briefed=false — or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document — plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. `follow_ups` appends the work it discovered as todo units. `agreements` adopts or retires a working agreement every later brief carries. Each clock-out also appends {status, outcome, notes?, produced?} to the unit's attempts (newest 3 kept). With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written — see the `model` property.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -368,7 +377,7 @@
           "unit_id": {
             "title": "Unit Id",
             "type": "string",
-            "description": "The unit being clocked out. Must be plan.cursor, or a unit briefed since its own last clock-out: clock_in briefs the cursor unit by default and, when its unit_id names one, any unit shiftwork_plan reports in `ready` \u2014 and that brief is what lets clock_out accept a unit the cursor is not on."
+            "description": "The unit being clocked out. Must be plan.cursor, or a unit briefed since its own last clock-out: clock_in briefs the cursor unit by default and, when its unit_id names one, any unit shiftwork_plan reports in `ready` — and that brief is what lets clock_out accept a unit the cursor is not on."
           },
           "status": {
             "title": "Status",
@@ -391,15 +400,48 @@
               "next_action": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Imperative first move \u2014 zero re-derivation."
+                "description": "Imperative first move — zero re-derivation."
               },
               "open_questions": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "minLength": 1
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "A decision question: the user's to answer."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "q",
+                        "kind"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "q": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "The question."
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "relay",
+                            "decision"
+                          ],
+                          "description": "`decision` needs the user; `relay` is answered by its probe."
+                        },
+                        "probe": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Shell command run from the repo root by clock_in; exit 0 answers the relay. Required on a relay, or nothing is written."
+                        }
+                      }
+                    }
+                  ]
                 },
-                "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask."
+                "description": "The autonomy switch: empty = driver keeps cycling, non-empty = STOP and ask. A bare string is a decision; a `relay` question carries a `probe` that clock_in runs instead of escalating (#225)."
               },
               "do_not": {
                 "type": "array",
@@ -407,7 +449,7 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "description": "Negative space \u2014 near-mistakes past sessions made."
+                "description": "Negative space — near-mistakes past sessions made."
               },
               "notes": {
                 "type": "string",
@@ -428,7 +470,7 @@
               "unit": {
                 "type": "string",
                 "minLength": 1,
-                "description": "The unit this entry is about \u2014 normally the `unit_id` being clocked out."
+                "description": "The unit this entry is about — normally the `unit_id` being clocked out."
               },
               "outcome": {
                 "type": "string",
@@ -468,12 +510,12 @@
             "anyOf": [
               {
                 "type": "object",
-                "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged, except the five the runtime writes itself \u2014 unit, role, status, ts, event \u2014 which are refused (result=error) before anything is written; a self-reported briefed is overwritten, not refused. Lines written before this schema existed may spell these differently; the schema governs new writes only.",
+                "description": "Per-unit cost. Written verbatim, beside ts/unit/role/status, as one line of <checkpoint>.log.jsonl - the ledger the N-sessions experiment reads. The keys named here have fixed meanings so a reader holding only the ledger knows what each number counts, in which unit, and which model produced it; any other key passes through unchanged, except the five the runtime writes itself — unit, role, status, ts, event — which are refused (result=error) before anything is written; a self-reported briefed is overwritten, not refused. Lines written before this schema existed may spell these differently; the schema governs new writes only.",
                 "properties": {
                   "tokens": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Tokens the unit consumed as the harness's subagent counter reports them: every class it reports (input, output, cache creation) summed, EXCLUDING cache reads. In a non-null accounting line it is required \u2014 a line without it is refused before anything is written; only `accounting: null`, the default, is exempt, and that logs no cost at all. A rounded self-estimate is allowed only if `note` says it is one; a unit whose cost is unknown cannot be compared with any other."
+                    "description": "Tokens the unit consumed as the harness's subagent counter reports them: every class it reports (input, output, cache creation) summed, EXCLUDING cache reads. In a non-null accounting line it is required — a line without it is refused before anything is written; only `accounting: null`, the default, is exempt, and that logs no cost at all. A rounded self-estimate is allowed only if `note` says it is one; a unit whose cost is unknown cannot be compared with any other."
                   },
                   "cache_read_tokens": {
                     "type": "integer",
@@ -670,7 +712,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Shift-work status: where ONE checkpoint file stands \u2014 units counted by status, the unit plan.cursor points at, how many handoff.open_questions are waiting, and the last history entry. Call it first when resuming a job or answering 'where is job X'; it is the cheap read before any clock-in. It does not say WHICH units may run now \u2014 that is shiftwork_plan, the dependency batches \u2014 and it says nothing about the server itself, which is bantamkit_status. Every fact is read from the checkpoint on this call, nothing is cached, and a checkpoint that is missing, not valid JSON or failing the checkpoint schema answers {\"result\": \"error\", \"reason\": \"<sentence>\"} instead of a partial summary \u2014 the same refusals shiftwork_plan and shiftwork_clock_in give for that file. With `search`, it also returns the lines of jobs Retention archived under the checkpoint's .shiftwork/archive/ that hold every word of the query. Opens only the checkpoint (and that archive directory when `search` is given); writes nothing, not even the log shiftwork_clock_in appends to.",
+      "description": "Shift-work status: where ONE checkpoint file stands — units counted by status, the unit plan.cursor points at, how many handoff.open_questions are waiting, and the last history entry. Call it first when resuming a job or answering 'where is job X'; it is the cheap read before any clock-in. It does not say WHICH units may run now — that is shiftwork_plan, the dependency batches — and it says nothing about the server itself, which is bantamkit_status. Every fact is read from the checkpoint on this call, nothing is cached, and a checkpoint that is missing, not valid JSON or failing the checkpoint schema answers {\"result\": \"error\", \"reason\": \"<sentence>\"} instead of a partial summary — the same refusals shiftwork_plan and shiftwork_clock_in give for that file. With `search`, it also returns the lines of jobs Retention archived under the checkpoint's .shiftwork/archive/ that hold every word of the query. Opens only the checkpoint (and that archive directory when `search` is given); writes nothing, not even the log shiftwork_clock_in appends to.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -762,7 +804,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Validate candidate output text against a JSON Schema and say what is wrong. Answers {valid, feedback}: when invalid, hand `feedback` back to the model and retry \u2014 it says where the document fails and quotes the offending value, clipped to 200 characters; when valid, `feedback` is null. Use it on any JSON a model produced before acting on it; for a shift-work checkpoint call shiftwork_status or shiftwork_clock_in instead, which validate against the shipped checkpoint schema themselves. `output` may be a bare JSON value; otherwise the first fenced code block, else the first object or array in the text, is what gets validated. `$schema` selects draft-04, draft-06, draft-07, 2019-09 or 2020-12 (the default). `$ref` resolves only inside the one schema given (`#`, `#/...`, `#name`): a remote reference or an embedded `$id` is refused with its own sentence, never fetched. `pattern` is Python re syntax without inline flags, look-behind, backreferences, atomic, possessive or conditional groups or \\N{...}, and all of a document's patterns share 500 ms: past that the answer is one refusal sentence naming the pattern that ran out, not a partial validation. Reads nothing but its two arguments and writes nothing.",
+      "description": "Validate candidate output text against a JSON Schema and say what is wrong. Answers {valid, feedback}: when invalid, hand `feedback` back to the model and retry — it says where the document fails and quotes the offending value, clipped to 200 characters; when valid, `feedback` is null. Use it on any JSON a model produced before acting on it; for a shift-work checkpoint call shiftwork_status or shiftwork_clock_in instead, which validate against the shipped checkpoint schema themselves. `output` may be a bare JSON value; otherwise the first fenced code block, else the first object or array in the text, is what gets validated. `$schema` selects draft-04, draft-06, draft-07, 2019-09 or 2020-12 (the default). `$ref` resolves only inside the one schema given (`#`, `#/...`, `#name`): a remote reference or an embedded `$id` is refused with its own sentence, never fetched. `pattern` is Python re syntax without inline flags, look-behind, backreferences, atomic, possessive or conditional groups or \\N{...}, and all of a document's patterns share 500 ms: past that the answer is one refusal sentence naming the pattern that ran out, not a partial validation. Reads nothing but its two arguments and writes nothing.",
       "inputSchema": {
         "properties": {
           "output": {
@@ -818,7 +860,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Price the skill catalogue every session pays for, and name the collisions in it. A skill's `description:` frontmatter is loaded into the agent's context in EVERY session; its body is read only when the skill is invoked, so the descriptions are the standing bill. Call it before adding or retiring a skill, or when two skills keep firing on the same phrase. Walks `root` for `<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md` and answers one JSON document: `roots`, `skills` (counted), `catalogue_bytes` (UTF-8 bytes of their `description:` values), `findings` and `omissions`. A degraded server adds the footer as its last key, `bantamkit_degraded`. Read `findings` first \u2014 each is `{kind, severity, skills, detail}`: `shared-trigger-phrase` (high; two skills quote the same literal phrase, so which fires is a coin flip), `catalogue-over-budget` (high; only when `budget` is given), `never-invoked` (low; only when `usage` is given), `frontmatter-malformed` and `name-mismatch` (medium). Then `omissions`: counted skills plus omissions account for every SKILL.md found, each `{subject, count, size, what}` with subject one of `plugin-not-enabled`, `duplicate-skill`, `stale-version`, `unreadable-file`, `unparsed-frontmatter`. The tool reads nothing but `root`; the three facts a directory cannot answer come from the caller \u2014 `enabled` (plugin ids the host has switched on, `<plugin>@<marketplace>`; the cache also holds disabled plugins, so without it the bill is inflated), `usage` (call counts per skill) and `versions` (the version directory the host serves per plugin; a plugin absent from it gets the directory name that sorts LAST in byte order, which is wrong for `10.0.0` against `9.0.0`). Refused with their own sentence, never as a partial answer: an unknown `check`, a negative `budget`, an EMPTY `root`, a `root` that is missing or is a file. Full rules in docs/skill-audit.md.",
+      "description": "Price the skill catalogue every session pays for, and name the collisions in it. A skill's `description:` frontmatter is loaded into the agent's context in EVERY session; its body is read only when the skill is invoked, so the descriptions are the standing bill. Call it before adding or retiring a skill, or when two skills keep firing on the same phrase. Walks `root` for `<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md` and answers one JSON document: `roots`, `skills` (counted), `catalogue_bytes` (UTF-8 bytes of their `description:` values), `findings` and `omissions`. A degraded server adds the footer as its last key, `bantamkit_degraded`. Read `findings` first — each is `{kind, severity, skills, detail}`: `shared-trigger-phrase` (high; two skills quote the same literal phrase, so which fires is a coin flip), `catalogue-over-budget` (high; only when `budget` is given), `never-invoked` (low; only when `usage` is given), `frontmatter-malformed` and `name-mismatch` (medium). Then `omissions`: counted skills plus omissions account for every SKILL.md found, each `{subject, count, size, what}` with subject one of `plugin-not-enabled`, `duplicate-skill`, `stale-version`, `unreadable-file`, `unparsed-frontmatter`. The tool reads nothing but `root`; the three facts a directory cannot answer come from the caller — `enabled` (plugin ids the host has switched on, `<plugin>@<marketplace>`; the cache also holds disabled plugins, so without it the bill is inflated), `usage` (call counts per skill) and `versions` (the version directory the host serves per plugin; a plugin absent from it gets the directory name that sorts LAST in byte order, which is wrong for `10.0.0` against `9.0.0`). Refused with their own sentence, never as a partial answer: an unknown `check`, a negative `budget`, an EMPTY `root`, a `root` that is missing or is a file. Full rules in docs/skill-audit.md.",
       "inputSchema": {
         "properties": {
           "root": {
@@ -891,7 +933,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Consolidate the memories the project layer and the machine-wide profile layer hold under the SAME NAME, and say exactly what changed. Byte-identical copies collapse to one; a pair that has diverged is UNIONED \u2014 every claim from both copies survives, never a winner-takes-all \u2014 and a relative date in a body is annotated with the day it resolves to against that fact's own mtime, never against today. The survivor stays in the writable project layer and the profile copy MOVES to that store's archive/: nothing is deleted, and bringing a consumed copy back is an operator action, not a tool \u2014 `bantamkit-memory restore <name>` or `python -m bantamkit.memory restore <name>` on the profile store. This is a correctness pass, not a token saving: the profile index is derived at read time and is not loaded from a prompt, so consolidating it frees approximately no bytes \u2014 what it buys is one copy of a ruling instead of two that can disagree. It defaults to a DRY RUN because the profile store is machine-wide: a memory archived out of it stops answering for every other project on this machine that has no store of its own. Read the plan first, then call it again with dry_run false to apply it. For room in the index call memory_compact instead; for the facts themselves, memory_recall.",
+      "description": "Consolidate the memories the project layer and the machine-wide profile layer hold under the SAME NAME, and say exactly what changed. Byte-identical copies collapse to one; a pair that has diverged is UNIONED — every claim from both copies survives, never a winner-takes-all — and a relative date in a body is annotated with the day it resolves to against that fact's own mtime, never against today. The survivor stays in the writable project layer and the profile copy MOVES to that store's archive/: nothing is deleted, and bringing a consumed copy back is an operator action, not a tool — `bantamkit-memory restore <name>` or `python -m bantamkit.memory restore <name>` on the profile store. This is a correctness pass, not a token saving: the profile index is derived at read time and is not loaded from a prompt, so consolidating it frees approximately no bytes — what it buys is one copy of a ruling instead of two that can disagree. It defaults to a DRY RUN because the profile store is machine-wide: a memory archived out of it stops answering for every other project on this machine that has no store of its own. Read the plan first, then call it again with dry_run false to apply it. For room in the index call memory_compact instead; for the facts themselves, memory_recall.",
       "inputSchema": {
         "properties": {
           "dry_run": {
@@ -922,7 +964,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "What a session actually cost, read off the host's own transcripts. Walks `root` for `*.jsonl` transcripts \u2014 the host writes `<cwd-slug>/<session>.jsonl` and `<cwd-slug>/<session>/subagents/*.jsonl` beneath `~/.claude/projects` \u2014 and answers ONE JSON document: `root`, `transcripts`, `lines`, `requests` (distinct API requests), `totals` (the four classes: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`), `sessions` (one row each), `omissions`, and `cost` only when `model` is given. A degraded server adds the footer as its last key, `bantamkit_degraded`. Call it to answer 'what did this work cost' from the API's own `usage` blocks; nothing is estimated. Point `root` at ONE project's slug directory: there is no time window or summary mode, so a whole-corpus call answers a row per session ever recorded and blows the host's tool-result cap. The four classes are priced separately: on a real prompt 98.1 % of the tokens were `cache_read`. Counting is per `requestId`, never per line: one response is written as several records with the same `usage`, so the dedupe spans the whole walk and every later copy is a `duplicate-request` omission. A subagent's transcript carries its PARENT's `sessionId`, so its cost lands in the parent row as `sidechain_requests`. `lines` equals `requests` plus the sum of every omission's `count`, always. An omission is `{subject, count, what}`; `what` names the first site as `<relpath>:<line>` plus `and N more`. `cost` needs a rate: the shipped price table has none, so `{\"unavailable\": \"no rate recorded for model ...\"}` is the NORMAL answer, not an error; a rate enters through `$BANTAMKIT_PRICES` or `prices`. Refused with their own sentence: an EMPTY `root`, a `root` that is missing or is a file, an EMPTY `model`, and a token total above 2**53-1. The record rule and the nine omission subjects: docs/ledger.md.",
+      "description": "What a session actually cost, read off the host's own transcripts. Walks `root` for `*.jsonl` transcripts — the host writes `<cwd-slug>/<session>.jsonl` and `<cwd-slug>/<session>/subagents/*.jsonl` beneath `~/.claude/projects` — and answers ONE JSON document: `root`, `transcripts`, `lines`, `requests` (distinct API requests), `totals` (the four classes: `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`), `sessions` (one row each), `omissions`, and `cost` only when `model` is given. A degraded server adds the footer as its last key, `bantamkit_degraded`. Call it to answer 'what did this work cost' from the API's own `usage` blocks; nothing is estimated. Point `root` at ONE project's slug directory: there is no time window or summary mode, so a whole-corpus call answers a row per session ever recorded and blows the host's tool-result cap. The four classes are priced separately: on a real prompt 98.1 % of the tokens were `cache_read`. Counting is per `requestId`, never per line: one response is written as several records with the same `usage`, so the dedupe spans the whole walk and every later copy is a `duplicate-request` omission. A subagent's transcript carries its PARENT's `sessionId`, so its cost lands in the parent row as `sidechain_requests`. `lines` equals `requests` plus the sum of every omission's `count`, always. An omission is `{subject, count, what}`; `what` names the first site as `<relpath>:<line>` plus `and N more`. `cost` needs a rate: the shipped price table has none, so `{\"unavailable\": \"no rate recorded for model ...\"}` is the NORMAL answer, not an error; a rate enters through `$BANTAMKIT_PRICES` or `prices`. Refused with their own sentence: an EMPTY `root`, a `root` that is missing or is a file, an EMPTY `model`, and a token total above 2**53-1. The record rule and the nine omission subjects: docs/ledger.md.",
       "inputSchema": {
         "properties": {
           "root": {
@@ -964,7 +1006,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Work plan: turn a dependency graph you hand it into the batches that may run in parallel \u2014 pure computation over `nodes`: no file opened, no path taken, nothing mutated. Use it when the graph is in your hands (tasks with depends_on); use shiftwork_plan when the graph is a shift-work checkpoint on disk, which it reads for you under the same batching rules. Batch k holds every node whose dependencies all sit in batches below k; `sequence` is the batches flattened; `width` is the largest batch \u2014 the fan-out an orchestrator must afford. Inside a batch: priority descending, then the order the nodes were given; both halves are contract, so two implementations answer byte-identically. Empty `nodes` is an ANSWER (no batches, width 0), not a refusal. Four refusals, in this order, one sentence each: `nodes[<i>].<field> must be ...` (an id that is not a string, depends_on not a list of strings, priority not an integer \u2014 named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. `depends_on` encodes logical order, not file contention; give a node `touches` (repo-relative paths it will WRITE) and no batch ever holds two nodes sharing a path: inside a level, in the same order, a node whose path an admitted node already claims is held for the next batch, and the answer then carries `held: [{id, batch, by, path}]` (absent when no node declares `touches`). A path that is empty, absolute, holds a backslash or a `.`/`..`/empty segment is the fifth refusal, checked with the shape: `node <id> touches <json>, which is not a plain relative path`.",
+      "description": "Work plan: turn a dependency graph you hand it into the batches that may run in parallel — pure computation over `nodes`: no file opened, no path taken, nothing mutated. Use it when the graph is in your hands (tasks with depends_on); use shiftwork_plan when the graph is a shift-work checkpoint on disk, which it reads for you under the same batching rules. Batch k holds every node whose dependencies all sit in batches below k; `sequence` is the batches flattened; `width` is the largest batch — the fan-out an orchestrator must afford. Inside a batch: priority descending, then the order the nodes were given; both halves are contract, so two implementations answer byte-identically. Empty `nodes` is an ANSWER (no batches, width 0), not a refusal. Four refusals, in this order, one sentence each: `nodes[<i>].<field> must be ...` (an id that is not a string, depends_on not a list of strings, priority not an integer — named by position, never coerced), `duplicate node id <id>`, `node <id> depends on <dep>, which no node declares`, and `the graph has a cycle: <a> -> <b> -> <a>`. `depends_on` encodes logical order, not file contention; give a node `touches` (repo-relative paths it will WRITE) and no batch ever holds two nodes sharing a path: inside a level, in the same order, a node whose path an admitted node already claims is held for the next batch, and the answer then carries `held: [{id, batch, by, path}]` (absent when no node declares `touches`). A path that is empty, absolute, holds a backslash or a `.`/`..`/empty segment is the fifth refusal, checked with the shape: `node <id> touches <json>, which is not a plain relative path`.",
       "inputSchema": {
         "properties": {
           "nodes": {
@@ -1077,7 +1119,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Shift-work plan: which units of a checkpoint may run NOW, and in what waves \u2014 the batches its `depends_on` graph permits, computed read-only from the file. Call it before dispatching a wave: `ready` (the first batch) is what shiftwork_clock_in will brief, and `width` is how many agents the widest wave needs. A `ready` member beyond the cursor is clockable only once clock-in has briefed it; without that brief, clock-out refuses it. Use shiftwork_status instead when you only want progress counts, and work_plan when the graph is yours to hand over as `nodes` rather than a checkpoint on disk \u2014 this tool reads the checkpoint's own plan.units. Units already `done` or `dropped` count as satisfied and are left out of every batch; `todo`, `in_progress` and `blocked` stay in. Order inside a batch is plan.units order, because the checkpoint schema has no priority field. It never moves plan.cursor \u2014 the cursor is echoed unchanged so the pointer and the batch view can be read side by side \u2014 and never writes anything. Refusals are structured, never exceptions: work_plan's sentences for a duplicate id, an unknown dependency or a cycle, and shiftwork_status's for a checkpoint it cannot read; a plan whose units are all terminal answers an empty `ready`, which is an answer, not a refusal. `depends_on` says nothing about two units writing the same file; a unit's optional `touches` (repo-relative paths it will WRITE) does: no batch holds two units sharing a path, a unit held out of one is reported in `held: [{id, batch, by, path}]` (absent when no unit declares `touches`), and a bad path is refused with work_plan's sentence. A unit whose `reviews` names a unit that is undeclared, not in its depends_on, or in its own role is refused: `unit <id> reviews <r> ...`. With job.budget declared it adds `budget` (spent, remaining, per_unit, affordable).",
+      "description": "Shift-work plan: which units of a checkpoint may run NOW, and in what waves — the batches its `depends_on` graph permits, computed read-only from the file. Call it before dispatching a wave: `ready` (the first batch) is what shiftwork_clock_in will brief, and `width` is how many agents the widest wave needs. A `ready` member beyond the cursor is clockable only once clock-in has briefed it; without that brief, clock-out refuses it. Use shiftwork_status instead when you only want progress counts, and work_plan when the graph is yours to hand over as `nodes` rather than a checkpoint on disk — this tool reads the checkpoint's own plan.units. Units already `done` or `dropped` count as satisfied and are left out of every batch; `todo`, `in_progress` and `blocked` stay in. Order inside a batch is plan.units order, because the checkpoint schema has no priority field. It never moves plan.cursor — the cursor is echoed unchanged so the pointer and the batch view can be read side by side — and never writes anything. Refusals are structured, never exceptions: work_plan's sentences for a duplicate id, an unknown dependency or a cycle, and shiftwork_status's for a checkpoint it cannot read; a plan whose units are all terminal answers an empty `ready`, which is an answer, not a refusal. `depends_on` says nothing about two units writing the same file; a unit's optional `touches` (repo-relative paths it will WRITE) does: no batch holds two units sharing a path, a unit held out of one is reported in `held: [{id, batch, by, path}]` (absent when no unit declares `touches`), and a bad path is refused with work_plan's sentence. A unit whose `reviews` names a unit that is undeclared, not in its depends_on, or in its own role is refused: `unit <id> reviews <r> ...`. With job.budget declared it adds `budget` (spent, remaining, per_unit, affordable).",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -1114,7 +1156,7 @@
             "items": {
               "type": "string"
             },
-            "description": "batches[0] \u2014 the units clock_in may brief now; [] when every unit is done or dropped."
+            "description": "batches[0] — the units clock_in may brief now; [] when every unit is done or dropped."
           },
           "sequence": {
             "type": "array",
@@ -1162,7 +1204,7 @@
         "destructiveHint": false,
         "openWorldHint": false
       },
-      "description": "Write, or list the facts that still lack, the likely-prompt queries recall matches a user's prompt against \u2014 for each fact, the prompts a user would type when that fact is what they need. Call it with {} at the end of a session that saved facts, or when bantamkit_status reports `queries: n of m facts` with n below m: it answers up to 10 facts with no queries yet (layer, name, description, a body excerpt), the writing instructions, and `remaining`. Then call it with {\"facts\": [{name, layer?, queries}]} to store what you wrote. Every item is checked before anything is written and the first bad one refuses the whole call \u2014 an unknown name or layer, more than 8 queries, one over 200 characters; `queries: []` removes a fact's entry. No fact file changes: queries live in a per-layer sidecar under ~/.bantamkit/queries/, keyed to the fact's content, so a fact edited later is listed as missing again. memory_save takes `queries` directly for a fact you are saving now; this tool is for facts already on disk.",
+      "description": "Write, or list the facts that still lack, the likely-prompt queries recall matches a user's prompt against — for each fact, the prompts a user would type when that fact is what they need. Call it with {} at the end of a session that saved facts, or when bantamkit_status reports `queries: n of m facts` with n below m: it answers up to 10 facts with no queries yet (layer, name, description, a body excerpt), the writing instructions, and `remaining`. Then call it with {\"facts\": [{name, layer?, queries}]} to store what you wrote. Every item is checked before anything is written and the first bad one refuses the whole call — an unknown name or layer, more than 8 queries, one over 200 characters; `queries: []` removes a fact's entry. No fact file changes: queries live in a per-layer sidecar under ~/.bantamkit/queries/, keyed to the fact's content, so a fact edited later is listed as missing again. memory_save takes `queries` directly for a fact you are saving now; this tool is for facts already on disk.",
       "inputSchema": {
         "properties": {
           "facts": {
