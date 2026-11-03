@@ -839,6 +839,23 @@ They enter the graph on the same write, so `ready`, the cursor advance and the
 stops the job, and there are no question units. Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-follow-ups-design.md`.
 
+#### Agreements: a lesson adopted once rides on every later brief (#261)
+
+`job.agreements` (at most 20 non-empty strings) is carried on every brief as
+`agreements` (`[]` when none). It changes only through `clock_out`'s
+`agreements: {adopt?, retire?}` — `retire` removes by exact text first, then
+`adopt` appends what is not already listed (an exact duplicate is a no-op).
+Refused, nothing written:
+
+    no agreement reads <repr>
+    agreements would number <n>; retire one first (at most 20)
+
+Every change that moved something appends one `retro[]` entry:
+`{trigger: <unit id>, patch_applied_to: "job.agreements", adopted, retired}`.
+Unlike `handoff.do_not`, which `handoff_patch` overwrites whole, the list keeps a
+record of who added what. Per job only: no lesson mining, no DoD policies. Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-agreements-design.md`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to
@@ -1008,7 +1025,8 @@ Both runtimes agreed on every new case, so job60 adds no row to
 
 Per-role prompt files (`.shiftwork/prompts/<role>.md`) and tunables
 (`.shiftwork/profiles/*.yaml`) are conventions only in v1 — a retro patch is a
-commit whose message cites its trigger. Not shipped: retro automation,
-Windows support, notification transports beyond `notify_cmd`, and the
+commit whose message cites its trigger. Per-job working agreements are
+automated since #261 (`job.agreements`, above); cross-job lesson mining stays with
+bantamkit's skill miner. Not shipped: Windows support, notification transports beyond `notify_cmd`, and the
 N-sessions experiment itself (the MCP flavor above ships its instrument:
 the per-unit accounting log).
