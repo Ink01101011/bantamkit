@@ -179,6 +179,9 @@ const nodesOf = (pairs) => pairs.map(([id, deps]) => ({ id, depends_on: deps, pr
 const n = (id, depends_on = [], priority) =>
   priority === undefined ? { id, depends_on } : { id, depends_on, priority };
 
+/** #257: a root node that declares `touches`. */
+const t = (id, touches) => ({ id, depends_on: [], touches });
+
 /**
  * The edges and the refusals, each named for the thing it is about.
  *
@@ -250,6 +253,28 @@ const CORPUS = [
   ['refuse/shape/shape-at-2-beats-duplicate-at-1', [n('a'), n('a'), n('c', 'a')]],
   // NOT a contradiction: `null` for either optional field is the default, as absent is.
   ['null-priority-is-zero', [n('a', [], 5), { id: 'b', depends_on: null, priority: null }]],
+
+  // ---- #257 `touches`: one writer per file per batch. Each answer is also pinned per side in
+  // `TOUCHES_LITERALS` below, because a hold rule that regressed on both sides at once would
+  // still compare equal here.
+  ['touches/held-and-disjoint', [t('a', ['src/x.py']), t('b', ['src/x.py']), t('c', ['src/y.py'])]],
+  ['touches/priority-keeps-the-batch', [t('a', ['f']), { ...t('b', ['f']), priority: 5 }]],
+  ['touches/dependents-wait-for-the-held', [t('a', ['f']), t('b', ['f']), n('c', ['b'])]],
+  ['touches/first-path-in-held-order', [t('a', ['p', 'q']), t('b', ['r']), t('c', ['r', 'q'])]],
+  ['touches/held-twice', [t('a', ['f']), t('b', ['f']), t('c', ['f'])]],
+  ['touches/empty-declares-held', [t('a', [])]],
+  ['touches/null-is-no-declaration', [{ id: 'a', depends_on: [], touches: null }]],
+  ['refuse/touches/not-a-list', [t('a', 'src/x.py')]],
+  ['refuse/touches/empty', [t('a', [''])]],
+  ['refuse/touches/absolute', [t('a', ['/etc/passwd'])]],
+  ['refuse/touches/drive', [t('a', ['C:/x'])]],
+  ['refuse/touches/backslash', [t('a', ['a\\b'])]],
+  ['refuse/touches/dotdot', [t('a', ['a/../b'])]],
+  ['refuse/touches/dot', [t('a', ['./a'])]],
+  ['refuse/touches/empty-segment', [t('a', ['a//b'])]],
+  ['refuse/touches/non-string', [t('a', ['ok', 3])]],
+  ['refuse/touches/unicode', [t('a', ['ไฟล์/../x'])]],
+  ['refuse/touches/shape-beats-duplicate', [n('a'), t('a', ['/x'])]],
 ];
 
 /**
@@ -270,7 +295,56 @@ const SHAPE_REFUSALS = new Map([
   ['refuse/shape/shape-at-2-beats-duplicate-at-1', 'nodes[2].depends_on must be a list of strings'],
 ]);
 
+/**
+ * #257: the `touches` answers, typed out and asserted against EACH side — the batches and `held`
+ * for the hold rule, the sentence for each refusal.
+ */
+const TOUCHES_LITERALS = new Map([
+  ['touches/held-and-disjoint', { batches: [['a', 'c'], ['b']], held: [{ id: 'b', batch: 0, by: 'a', path: 'src/x.py' }] }],
+  ['touches/priority-keeps-the-batch', { batches: [['b'], ['a']], held: [{ id: 'a', batch: 0, by: 'b', path: 'f' }] }],
+  ['touches/dependents-wait-for-the-held', { batches: [['a'], ['b'], ['c']], held: [{ id: 'b', batch: 0, by: 'a', path: 'f' }] }],
+  ['touches/first-path-in-held-order', { batches: [['a', 'b'], ['c']], held: [{ id: 'c', batch: 0, by: 'b', path: 'r' }] }],
+  [
+    'touches/held-twice',
+    {
+      batches: [['a'], ['b'], ['c']],
+      held: [
+        { id: 'b', batch: 0, by: 'a', path: 'f' },
+        { id: 'c', batch: 0, by: 'a', path: 'f' },
+        { id: 'c', batch: 1, by: 'b', path: 'f' },
+      ],
+    },
+  ],
+  ['touches/empty-declares-held', { batches: [['a']], held: [] }],
+  ['touches/null-is-no-declaration', { batches: [['a']], held: undefined }],
+  ['refuse/touches/not-a-list', 'node a touches "src/x.py", which is not a plain relative path'],
+  ['refuse/touches/empty', 'node a touches "", which is not a plain relative path'],
+  ['refuse/touches/absolute', 'node a touches "/etc/passwd", which is not a plain relative path'],
+  ['refuse/touches/drive', 'node a touches "C:/x", which is not a plain relative path'],
+  ['refuse/touches/backslash', 'node a touches "a\\\\b", which is not a plain relative path'],
+  ['refuse/touches/dotdot', 'node a touches "a/../b", which is not a plain relative path'],
+  ['refuse/touches/dot', 'node a touches "./a", which is not a plain relative path'],
+  ['refuse/touches/empty-segment', 'node a touches "a//b", which is not a plain relative path'],
+  ['refuse/touches/non-string', 'node a touches 3, which is not a plain relative path'],
+  ['refuse/touches/unicode', 'node a touches "ไฟล์/../x", which is not a plain relative path'],
+  ['refuse/touches/shape-beats-duplicate', 'node a touches "/x", which is not a plain relative path'],
+]);
+
 // ================================================================= the checkpoint corpus
+
+/** #263: one checkpoint per review-independence sentence, and the sentence it must produce. */
+const reviewFaults = () => [
+  ['reviews/undeclared', [unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['GHOST'] }]],
+  ['reviews/not-a-dependency', [unit('A', []), { ...unit('R', []), role: 'reviewer', reviews: ['A'] }]],
+  ['reviews/same-role', [unit('A', []), { ...unit('R', ['A']), reviews: ['A'] }]],
+  ['reviews/first-fault-wins', [unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['NOPE', 'A'] }]],
+];
+const REVIEW_LITERALS = new Map([
+  ['reviews/undeclared', 'unit R reviews GHOST, which no unit declares'],
+  ['reviews/not-a-dependency', 'unit R reviews A but does not depend on it'],
+  ['reviews/same-role', 'unit R reviews A in the same role implementer; a review needs another role'],
+  ['reviews/first-fault-wins', 'unit R reviews NOPE, which no unit declares'],
+]);
 
 /** A unit the shipped schema accepts. `title`, `brief_path`, `role` and `verify` are required. */
 const unit = (id, depends_on, status = 'todo') => ({
@@ -504,6 +578,24 @@ export async function run(ctx) {
         actual: actual.reason ?? `(no refusal: ${JSON.stringify(actual)})`,
       });
     }
+    // #257: the `touches` answer as a LITERAL, once per side (see `TOUCHES_LITERALS`).
+    const touchesLiteral = TOUCHES_LITERALS.get(caseName);
+    if (touchesLiteral !== undefined) {
+      for (const [side, answer] of [
+        ['python', expected],
+        ['node', actual],
+      ]) {
+        cases.push({
+          name: `touches-literal/${caseName} — ${side}`,
+          kind: 'json',
+          expected: touchesLiteral,
+          actual:
+            typeof touchesLiteral === 'string'
+              ? (answer?.reason ?? `(no refusal: ${JSON.stringify(answer)})`)
+              : { batches: answer?.batches, held: answer?.held },
+        });
+      }
+    }
     // #127: the shape sentence as a LITERAL, once per side (see `SHAPE_REFUSALS`).
     const literal = SHAPE_REFUSALS.get(caseName);
     if (literal !== undefined) {
@@ -598,6 +690,22 @@ export async function run(ctx) {
       'cycle',
       write('cycle.json', withUnits([unit('Z', ['X']), unit('X', ['Y']), unit('Y', ['X'])], 'Z')),
     ],
+    // #257: `held` passes through the adapter, and a bad path is the core's sentence.
+    [
+      'touches-held',
+      write(
+        'touches-held.json',
+        withUnits([{ ...unit('A', []), touches: ['f'] }, { ...unit('B', []), touches: ['f'] }, unit('C', [])], 'A'),
+      ),
+    ],
+    ['touches-bad-path', write('touches-bad-path.json', withUnits([{ ...unit('A', []), touches: ['../x'] }], 'A'))],
+    // #263: review independence, read where the graph is. Each sentence is also a literal
+    // per side below (`REVIEW_LITERALS`).
+    ...reviewFaults().map(([caseName, units]) => [caseName, write(`${caseName.replace('/', '-')}.json`, withUnits(units, 'A'))]),
+    [
+      'reviews/valid',
+      write('reviews-valid.json', withUnits([unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['A'] }], 'A')),
+    ],
     // The four refusals a checkpoint can produce BEFORE the graph is reached. Each one is
     // `_read_valid`'s, and each embeds the absolute path — which is why both runtimes are
     // pointed at the same one.
@@ -621,6 +729,16 @@ export async function run(ctx) {
       expected: unb64(planned[i]),
       actual: dumpJson(planBatches(path)),
     });
+    // #263: the sentence as a literal, once per side.
+    const reviewLiteral = REVIEW_LITERALS.get(caseName);
+    if (reviewLiteral !== undefined) {
+      for (const [side, answer] of [
+        ['python', JSON.parse(unb64(planned[i]))],
+        ['node', JSON.parse(dumpJson(planBatches(path)))],
+      ]) {
+        cases.push({ name: `review-literal/${caseName} — ${side}`, kind: 'string', expected: reviewLiteral, actual: answer.reason ?? '(no refusal)' });
+      }
+    }
   });
 
   // ------------------------------------------------------------------ work_plan, over stdio

@@ -654,8 +654,59 @@ the next section is the closing of it.
 
 **What the tools do NOT decide.** `depends_on` encodes *logical* order, not file
 contention. A batch these tools call parallel may still hold two units that
-write the same file. They report what the graph permits; an orchestrator stays
-responsible for what it actually dispatches.
+write the same file — unless the planner says so with `touches` (next
+subsection). Without it they report what the graph permits; an orchestrator
+stays responsible for what it actually dispatches.
+
+#### `touches`: one writer per file per batch (#257)
+
+A unit (or a `work_plan` node) may list the repo-relative POSIX paths it will
+WRITE:
+
+```json
+{"id": "J76-257-py", "depends_on": [], "touches": ["runtime-py/src/bantamkit/workplan.py"]}
+```
+
+Inside one level the batcher admits units in its usual order (priority
+descending, then `plan.units` order), and a unit whose `touches` shares a path
+with a unit already admitted to *this* batch is **held** for the next one. It
+stays ready and is reconsidered there; its dependents wait on it as before. The
+rule is greedy and order-driven, so the two runtimes agree by construction, and
+`ready`, `clock_in`'s readiness test and `clock_out`'s cursor advance all pick it
+up with no code of their own.
+
+When any unit declares `touches` (`[]` included), the answer gains
+`held: [{"id", "batch", "by", "path"}]` — one entry per hold: the unit held, the
+batch it was held out of, the admitted unit that writes the file there, and the
+first path in the *held* unit's own `touches` order that was already claimed.
+When nothing declares `touches` the key is absent, so every older answer is
+byte-identical.
+
+```
+work_plan  a:[src/x.py]  b:[src/x.py]  c:[src/y.py]
+  {"batches":[["a","c"],["b"]],"sequence":["a","c","b"],"width":2,
+   "held":[{"id":"b","batch":0,"by":"a","path":"src/x.py"}]}
+```
+
+Paths are compared as exact strings. A path that is empty, absolute (`/` or a
+drive letter), contains `\`, or has a `.`, `..` or empty segment is refused with
+the shape check, before any graph refusal:
+
+    node <id> touches <json>, which is not a plain relative path
+
+The batch view sees the checkpoint, not the briefs, so a unit briefed and not
+yet clocked out only claims its files first if it sorts first. `clock_in`
+therefore refuses — after readiness, before any brief, writing nothing — a unit
+whose `touches` share a path with a unit briefed since its own last clock-out
+(the set job60 measures off `<checkpoint>.log.jsonl`):
+
+    unit <id> touches <path>, which <other> holds until its clock-out
+
+The field is declared by the planner and never inferred from brief text: the
+prep probe that motivated it found 22 of 77 wide batches in this repo's own
+checkpoints naming one file twice, and briefs that only *read* a file would make
+any inference overcount. Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-touches-design.md`.
 
 **Where the code lives.** The batcher itself is
 `runtime-py/src/bantamkit/workplan.py` and `runtime-ts/src/workplan.ts` — Layer
@@ -665,6 +716,31 @@ responsible for what it actually dispatches.
 The checkpoint reader is `shiftwork.plan_batches` / `planBatches`, and the two
 are compared by the `workplan` suite (`node tools/conformance/run.mjs --suite
 workplan`).
+
+#### `reviews`: a review needs another role (#263)
+
+A unit may name the units it reviews:
+
+```json
+{"id": "CF4", "role": "reviewer", "depends_on": ["CF3"], "reviews": ["CF3"]}
+```
+
+Each reviewed id must be declared by some unit, must be in the reviewer's own
+`depends_on` (a review runs after the work), and must belong to a unit in a
+different role. The check is read wherever the graph is — `shiftwork_plan`,
+`clock_in`, and `clock_out` on the document it is about to write — and the first
+fault, in `plan.units` order, is named:
+
+    unit <id> reviews <r>, which no unit declares
+    unit <id> reviews <r> but does not depend on it
+    unit <id> reviews <r> in the same role <role>; a review needs another role
+
+`clock_out` asks for it by name before writing anything, because its own graph
+read falls back to plan order rather than refusing. Terminal units are checked
+too. The model is not compared: `job.roles` already pins a model per role, and
+two roles may share one. The code-fix template's reviewer declares
+`reviews: ["CF3"]`. Spec:
+`docs/superpowers/specs/2026-11-03-shiftwork-review-independence-design.md`.
 
 ### Spending the width: `clock_in(unit_id)` (job60)
 

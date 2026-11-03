@@ -1,7 +1,7 @@
 {
   "name": "shiftwork_plan",
   "title": "Shift work: plan",
-  "description": "Shift-work plan: which units of a checkpoint may run NOW, and in what waves — the batches its `depends_on` graph permits, computed read-only from the file. Call it before dispatching a wave: `ready` (the first batch) is what shiftwork_clock_in will brief, and `width` is how many agents the widest wave needs. A `ready` member beyond the cursor is clockable only once clock-in has briefed it; without that brief, clock-out refuses it. Use shiftwork_status instead when you only want progress counts, and work_plan when the graph is yours to hand over as `nodes` rather than a checkpoint on disk — this tool reads the checkpoint's own plan.units. Units already `done` or `dropped` count as satisfied and are left out of every batch; `todo`, `in_progress` and `blocked` stay in. Order inside a batch is plan.units order, because the checkpoint schema has no priority field. It never moves plan.cursor — the cursor is echoed unchanged so the pointer and the batch view can be read side by side — and never writes anything. Refusals are structured, never exceptions: work_plan's sentences for a duplicate id, an unknown dependency or a cycle, and shiftwork_status's for a checkpoint it cannot read; a plan whose units are all terminal answers an empty `ready`, which is an answer, not a refusal. It reports logical order only: `depends_on` says nothing about two units writing the same file, so the orchestrator still decides what actually runs together.",
+  "description": "Shift-work plan: which units of a checkpoint may run NOW, and in what waves — the batches its `depends_on` graph permits, computed read-only from the file. Call it before dispatching a wave: `ready` (the first batch) is what shiftwork_clock_in will brief, and `width` is how many agents the widest wave needs. A `ready` member beyond the cursor is clockable only once clock-in has briefed it; without that brief, clock-out refuses it. Use shiftwork_status instead when you only want progress counts, and work_plan when the graph is yours to hand over as `nodes` rather than a checkpoint on disk — this tool reads the checkpoint's own plan.units. Units already `done` or `dropped` count as satisfied and are left out of every batch; `todo`, `in_progress` and `blocked` stay in. Order inside a batch is plan.units order, because the checkpoint schema has no priority field. It never moves plan.cursor — the cursor is echoed unchanged so the pointer and the batch view can be read side by side — and never writes anything. Refusals are structured, never exceptions: work_plan's sentences for a duplicate id, an unknown dependency or a cycle, and shiftwork_status's for a checkpoint it cannot read; a plan whose units are all terminal answers an empty `ready`, which is an answer, not a refusal. `depends_on` says nothing about two units writing the same file; a unit's optional `touches` (repo-relative paths it will WRITE) does: no batch holds two units sharing a path, a unit held out of one is reported in `held: [{id, batch, by, path}]` (absent when no unit declares `touches`), and a bad path is refused with work_plan's sentence. A unit whose `reviews` names a unit that is undeclared, not in its depends_on, or in its own role is refused: `unit <id> reviews <r> ...`.",
   "surfaces": [
     "mcp"
   ],
@@ -58,6 +58,13 @@
       "cursor": {
         "type": "string",
         "description": "plan.cursor, echoed unchanged."
+      },
+      "held": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        },
+        "description": "Present only when a unit declares `touches`: one {id, batch, by, path} per unit held out of batch `batch` because `by`, admitted there, already writes `path`."
       },
       "reason": {
         "type": "string",

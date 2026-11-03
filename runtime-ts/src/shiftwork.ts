@@ -435,24 +435,69 @@ function briefed(log: string, unitId: string): boolean {
  * dependency or cycle sentence, and every caller passes it on verbatim rather than
  * rewording it.
  */
-function batchView(doc: PyDict): PlanResult {
-  const units = subList(subDict(doc, 'plan'), 'units').v;
+/**
+ * #263: the sentence for a reviewing unit that is not independent of its work, or null.
+ *
+ * Each id in a unit's `reviews` must be declared, be in the reviewer's own `depends_on`, and
+ * belong to a unit in a different role. Units in `plan.units` order, ids in their own order, the
+ * three tests in that order — first fault wins, terminal units included — exactly as
+ * `shiftwork.py`'s `_reviews_refusal`.
+ */
+function reviewsRefusal(units: readonly PyDict[], declaredDeps: ReadonlyMap<PyDict, string[]>): string | null {
+  const byId = new Map(units.map((unit) => [text(field(unit, 'id')), unit] as const));
+  const strings = (unit: PyDict, key: string): string[] => {
+    const value = unit.v.get(key);
+    return value !== undefined && value.t === 'list' ? value.v.map(text) : [];
+  };
+  for (const unit of units) {
+    const id = text(field(unit, 'id'));
+    const role = text(field(unit, 'role'));
+    for (const reviewed of strings(unit, 'reviews')) {
+      const target = byId.get(reviewed);
+      if (target === undefined) return `unit ${id} reviews ${reviewed}, which no unit declares`;
+      if (!(declaredDeps.get(unit) ?? []).includes(reviewed)) return `unit ${id} reviews ${reviewed} but does not depend on it`;
+      if (text(field(target, 'role')) === role) {
+        return `unit ${id} reviews ${reviewed} in the same role ${role}; a review needs another role`;
+      }
+    }
+  }
+  return null;
+}
+
+/** A batch-view refusal; `review` marks #263's, which `clockOut` must refuse by name. */
+type ViewRefusal = { result: 'error'; reason: string; review?: true };
+
+function batchView(doc: PyDict): PlanResult | ViewRefusal {
+  const units = subList(subDict(doc, 'plan'), 'units').v.map((unit) => unit as PyDict);
   const terminal = (unit: PyDict): boolean => TERMINAL_UNIT_STATUS.has(text(unit.v.get('status')!));
   const satisfied = new Set<string>();
   for (const unit of units) {
-    if (terminal(unit as PyDict)) satisfied.add(text((unit as PyDict).v.get('id')!));
+    if (terminal(unit)) satisfied.add(text(unit.v.get('id')!));
   }
-  const nodes: PlanNode[] = [];
-  for (const unit of units) {
-    const u = unit as PyDict;
-    if (terminal(u)) continue;
-    // `list(unit.get("depends_on") or [])`. `depends_on` is REQUIRED by the schema, so
-    // `readValid` has already refused a unit without it and this default cannot fire —
-    // it is written anyway because the reference writes it, and a default on one side
-    // only is how two runtimes come to disagree about real data.
+  // `list(unit.get("depends_on") or [])`, read ONCE per unit, terminal units included because
+  // the #263 review check reads them too. `depends_on` is REQUIRED by the schema, so
+  // `readValid` has already refused a unit without it and this default cannot fire — it is
+  // written anyway because the reference writes it, and a default on one side only is how two
+  // runtimes come to disagree about real data.
+  const declaredDeps = new Map<PyDict, string[]>();
+  for (const u of units) {
     const declared = u.v.get('depends_on');
-    const deps = declared !== undefined && declared.t === 'list' ? declared.v.map(text) : [];
-    nodes.push({ id: text(u.v.get('id')!), depends_on: deps.filter((dep) => !satisfied.has(dep)), priority: 0 });
+    declaredDeps.set(u, declared !== undefined && declared.t === 'list' ? declared.v.map(text) : []);
+  }
+  // #263: read where the graph is, before the core; `planBatches` and `clockIn` pass it through.
+  const reviews = reviewsRefusal(units, declaredDeps);
+  if (reviews !== null) return { result: 'error', reason: reviews, review: true };
+  const nodes: PlanNode[] = [];
+  for (const u of units) {
+    if (terminal(u)) continue;
+    const deps = declaredDeps.get(u)!;
+    const node: PlanNode = { id: text(u.v.get('id')!), depends_on: deps.filter((dep) => !satisfied.has(dep)), priority: 0 };
+    // #257: `touches` passes through only when the unit declares it, so a checkpoint with no
+    // `touches` anywhere gets the core's answer with no `held` key — today's, byte for byte.
+    // The schema has already refused a non-string item, so `text` cannot meet one.
+    const touches = u.v.get('touches');
+    if (touches !== undefined && touches.t === 'list') node.touches = touches.v.map(text);
+    nodes.push(node);
   }
   return plan(nodes);
 }
@@ -471,6 +516,39 @@ function readyIds(view: PlanResult): string[] {
 }
 
 // ----------------------------------------------------------------------------- clock_in
+
+/** The unit's `touches` as plain strings, `[]` when it declares none. */
+function touchesOf(unit: PyDict): string[] {
+  const touches = unit.v.get('touches');
+  return touches !== undefined && touches.t === 'list' ? touches.v.map(text) : [];
+}
+
+/**
+ * #257/D4: the sentence when `unit` writes a file a unit still in flight writes, or null.
+ *
+ * The batch view sees the checkpoint, not the briefs, so a unit briefed and not yet clocked out
+ * claims its files in batch 0 only if it sorts first, which order cannot promise. In flight is the
+ * set job60 measures — briefed since its own last clock-out — read by `briefed`, called and never
+ * reimplemented. The first path in `unit`'s own `touches` order wins, then the first holder in
+ * `plan.units` order, exactly as `shiftwork.py`'s `_contention`.
+ */
+function contention(log: string, doc: PyDict, unit: PyDict): string | null {
+  const mine = touchesOf(unit);
+  if (mine.length === 0) return null;
+  const id = text(field(unit, 'id'));
+  const holders = subList(subDict(doc, 'plan'), 'units')
+    .v.map((other) => other as PyDict)
+    .filter((other) => text(field(other, 'id')) !== id && touchesOf(other).length > 0)
+    .filter((other) => briefed(log, text(field(other, 'id'))));
+  for (const file of mine) {
+    for (const other of holders) {
+      if (touchesOf(other).includes(file)) {
+        return `unit ${id} touches ${file}, which ${text(field(other, 'id'))} holds until its clock-out`;
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Validate the checkpoint and return a unit's brief, or a refusal.
@@ -548,6 +626,8 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   if (unit === null || !ready.includes(selected)) {
     return errorResult(`unit ${selected} is not ready; ready is ${ready.join(', ')}`);
   }
+  const contended = contention(logPath(pyJoin(checkpoint)), doc, unit);
+  if (contended !== null) return errorResult(contended);
   // F6: the brief is issued, so say so in the ledger — best effort, and only on this branch:
   // a refusal above issued nothing and therefore records nothing. `pyJoin` is the same
   // normalisation `clockOut` applies before it builds ITS log path, so the two land in one file.
@@ -973,7 +1053,10 @@ function clockOutLocked(
   const remaining = subList(plan, 'units').v.filter(
     (u) => !TERMINAL_UNIT_STATUS.has(text((u as PyDict).v.get('status')!)),
   );
-  const ready = readyIds(batchView(doc));
+  // The review fault (#263) does not depend on anything mutated above, so the view is read
+  // once here and its review refusal answered after the schema check, as the reference orders it.
+  const view = batchView(doc);
+  const ready = readyIds(view);
   if (ready.length > 0) plan.v.set('cursor', str(ready[0]!));
   else plan.v.set('cursor', remaining.length > 0 ? field(remaining[0] as PyDict, 'id') : str(unitId));
   const handoff = subDict(doc, 'handoff');
@@ -986,6 +1069,9 @@ function clockOutLocked(
 
   const problem = schemaError(dumpJson(doc), loadSchema(SCHEMA_NAME));
   if (problem !== null) return errorResult(`refused to write: ${problem}`);
+  // #263: asked by name on the mutated document, because `readyIds` swallows a batch-view
+  // refusal into the plan-order fallback. Before anything is written.
+  if ('review' in view) return errorResult(view.reason);
 
   // `record.update(accounting or {})`: since #117 none of the four base keys (nor `event`)
   // can be in the accounting — `reservedRefusal` above — and `sort_keys=True` means the
@@ -1136,5 +1222,7 @@ export function planBatches(checkpoint: string): PyValue {
     ['sequence', { t: 'list', v: answer.sequence.map(str) }],
     ['width', int(answer.width)],
     ['cursor', field(subDict(doc, 'plan'), 'cursor')],
+    // #257/D3: only when some unit declares `touches`, so today's answers keep their bytes.
+    ...(answer.held !== undefined ? [['held', fromJs(answer.held)] as [string, PyValue]] : []),
   ]);
 }

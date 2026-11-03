@@ -23,8 +23,9 @@
  * WHAT THIS DOES NOT CLAIM. `depends_on` encodes logical order, not file contention. Measured on
  * `.shiftwork/checkpoint-job44.json`, whose first batch is twelve units wide, seven of those
  * twelve name `runtime-ts/src/docread.ts`. The graph says they may run in parallel; the filesystem
- * does not. This function reports what the graph permits and the orchestrator stays responsible
- * for what it actually dispatches.
+ * does not. Since #257 a node may say so itself: `touches` lists the paths it will WRITE, and no
+ * batch holds two nodes sharing one. Without `touches` this function still reports only what the
+ * graph permits, and the orchestrator stays responsible for what it actually dispatches.
  */
 
 /** One task. `priority` is optional and absent means `0` — the checkpoint schema has no such field. */
@@ -32,6 +33,16 @@ export interface PlanNode {
   id: string;
   depends_on: string[];
   priority?: number;
+  /** #257: paths this node will write; `null` (absent) is no declaration, `[]` declares nothing. */
+  touches?: string[] | null;
+}
+
+/** #257/D3: one hold — `id` kept out of batch `batch` because `by`, admitted there, writes `path`. */
+export interface Hold {
+  id: string;
+  batch: number;
+  by: string;
+  path: string;
 }
 
 /** A plan: the batches, the same ids read end to end, and the widest fan-out in the plan. */
@@ -39,6 +50,8 @@ export interface PlanOk {
   batches: string[][];
   sequence: string[];
   width: number;
+  /** Present only when some node declares `touches` (#257/D3). */
+  held?: Hold[];
 }
 
 /**
@@ -64,6 +77,30 @@ const refuse = (reason: string): PlanError => ({ result: 'error', reason });
 const isInteger = (value: unknown): boolean => typeof value === 'number' && Number.isInteger(value);
 
 /**
+ * #257/D5: a repo-relative POSIX path compared as an exact string, nothing looser — not empty,
+ * not absolute (`/` or a drive letter), no backslash, no `.`, `..` or empty segment, so `a//b`
+ * and `a/./b` are refused rather than quietly naming `a/b`. Same rule as `workplan.py`'s
+ * `_plain_path`.
+ */
+function plainPath(path: unknown): boolean {
+  if (typeof path !== 'string' || path === '' || path.includes('\\')) return false;
+  if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return false;
+  return path.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/**
+ * #257/D5: the sentence for a `touches` that is not a list of plain relative paths, or `null`.
+ * `<repr>` is the whole value when it is not a list, else the first bad item, as `JSON.stringify`
+ * prints it — which is what `workplan.py`'s `_json` was written to match.
+ */
+export function touchesRefusal(nodeId: string, touches: unknown): string | null {
+  if (touches == null) return null;
+  const bad = !Array.isArray(touches) ? touches : touches.find((path) => !plainPath(path));
+  if (Array.isArray(touches) && bad === undefined) return null;
+  return `node ${nodeId} touches ${JSON.stringify(bad)}, which is not a plain relative path`;
+}
+
+/**
  * The first node that contradicts `assets/tools/work_plan.json`'s item schema, by position.
  *
  * #127 (job65). Until this check the port's `planNodes` COERCED: a string `depends_on`
@@ -71,7 +108,7 @@ const isInteger = (value: unknown): boolean => typeof value === 'number' && Numb
  * became 0, and a numeric id was stringified until `5` and `"5"` collided. The reference
  * did none of those things and none of the right ones either; see `workplan.py`. Now both
  * sides check the shape BEFORE the graph is read, in input order and field order (`id`,
- * `depends_on`, `priority`), and refuse the first contradiction in the `{result, reason}`
+ * `depends_on`, `priority`, then #257's `touches`), and refuse the first contradiction in the `{result, reason}`
  * shape the graph refusals use. The node is named by its index in `nodes`, the one name
  * every node has whatever its `id` is. The four sentences are pinned per side in
  * `test/workplan.test.mjs`, because a sentence both runtimes copied is invisible to the
@@ -95,10 +132,14 @@ function readNodes(nodes: readonly unknown[]): PlanNode[] | PlanError {
     }
     const priority = node['priority'];
     if (priority != null && !isInteger(priority)) return refuse(`nodes[${index}].priority must be an integer`);
+    const touches = node['touches'];
+    const touchesFault = touchesRefusal(id, touches);
+    if (touchesFault !== null) return refuse(touchesFault);
     read.push({
       id,
       depends_on: dependsOn == null ? [] : (dependsOn as string[]),
       priority: priority == null ? 0 : (priority as number),
+      touches: touches == null ? null : (touches as string[]),
     });
   }
   return read;
@@ -146,6 +187,12 @@ function cyclePath(nodes: readonly PlanNode[], emitted: ReadonlySet<string>): st
  * with nothing left to do is the answer, the same reasoning `clock_in` applies when an all-terminal
  * checkpoint reports success rather than escalating on a dangling cursor.
  *
+ * **One writer per file per batch (#257/D2).** Inside a level, nodes are admitted in the same
+ * order, and one whose `touches` shares a path with a node already admitted to THIS batch is held
+ * for the next; it stays ready and is reconsidered there in the same order. When any node declares
+ * `touches` (`[]` included) the answer carries `held`, one entry per hold in the order they
+ * happened, naming the first path in the HELD node's own order that was already claimed.
+ *
  * **The four refusals are checked in a fixed order** — a node's shape, then duplicate id, then
  * unknown dependency, then cycle — because a graph can carry two faults at once and both runtimes
  * have to name the same one.
@@ -179,6 +226,7 @@ export function plan(input: readonly unknown[]): PlanResult {
   const emitted = new Set<string>();
   const batches: string[][] = [];
   const sequence: string[] = [];
+  const held: Hold[] = [];
   let width = 0;
 
   while (emitted.size < nodes.length) {
@@ -204,7 +252,20 @@ export function plan(input: readonly unknown[]): PlanResult {
     // Priority descending, then insertion order.
     ready.sort((a, b) => b.priority - a.priority || a.index - b.index);
 
-    const batch = ready.map((entry) => entry.id);
+    const batch: string[] = [];
+    /** path -> the first admitted node of this batch that writes it. */
+    const owner = new Map<string, string>();
+    for (const entry of ready) {
+      const touches = nodes[entry.index]!.touches ?? [];
+      const clash = touches.find((path) => owner.has(path));
+      if (clash !== undefined) {
+        held.push({ id: entry.id, batch: batches.length, by: owner.get(clash)!, path: clash });
+        continue;
+      }
+      batch.push(entry.id);
+      for (const path of touches) if (!owner.has(path)) owner.set(path, entry.id);
+    }
+    // `ready` is non-empty and its first entry clashes with nothing, so the sweep still advances.
     batches.push(batch);
     for (const id of batch) {
       emitted.add(id);
@@ -213,5 +274,7 @@ export function plan(input: readonly unknown[]): PlanResult {
     if (batch.length > width) width = batch.length;
   }
 
-  return { batches, sequence, width };
+  const answer: PlanOk = { batches, sequence, width };
+  if (nodes.some((node) => node.touches != null)) answer.held = held;
+  return answer;
 }
