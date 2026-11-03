@@ -39,6 +39,12 @@ deletes it and the skill is back in the layer. `promote_step` records a refusal 
 DEMOTION removes the link (or the copy, only while its tree hash still matches) and never
 touches the source in `.bantamkit/skills`.
 
+REFRESH (#244). A symlink follows its source by itself; a COPY does not, so every path that
+rewrites a live source (`new_version`, so an approved change too; a rollback; `undo`) calls
+`refresh_copy` after its write. The copy is rebuilt from the source while its tree hash still
+matches the recorded one, and the record takes the new hash; a copy changed after promotion is
+left as it is, and the caller's sentence says so (`; left the promoted copy at ...`).
+
 Promotion is automatic in the daily run (`promote_step`, Q5 default): a live skill with at
 least `PROMOTE_USES` uses in the last `PROMOTE_DAYS` days; the caller counts the uses (R10).
 Like the automatic installs and edits, it follows `BANTAMKIT_SKILL_AUTO`
@@ -66,6 +72,7 @@ from bantamkit.skillfile import (
     SKILL_FILE,
     SkillFileError,
     read_state,
+    rewrite_dir_atomic,
     update_state,
     write_dir_atomic,
 )
@@ -140,7 +147,10 @@ def _files(root: Path) -> dict[str, bytes]:
 
 def tree_hash(root: Path | str) -> str:
     """SHA-256 over `<rel>\\0<sha256 of the bytes>\\n` per file, code-point order of `rel`."""
-    files = _files(Path(root))
+    return _files_hash(_files(Path(root)))
+
+
+def _files_hash(files: Mapping[str, bytes]) -> str:
     lines = "".join(f"{rel}\0{hashlib.sha256(files[rel]).hexdigest()}\n" for rel in sorted(files))
     return hashlib.sha256(lines.encode("utf-8")).hexdigest()
 
@@ -281,6 +291,54 @@ def promote(
 
     update_state(home, change)
     return PromoteResult(True, record["mode"], f"promoted skill {name}")
+
+
+def refresh_copy(name: str, home: Path | str) -> str | None:
+    """Bring the COPY a promotion made of `name` up to its source's current files (#244).
+
+    Every path that rewrites a live source (`new_version`, a rollback, an approved change,
+    `undo`) calls this after its write. A skill with no copy (not promoted, or promoted by
+    symlink, which follows the source by itself) answers None. A copy whose tree hash still
+    matches the one recorded at promotion (or already matches the source) is rebuilt in an
+    exclusively claimed temp dir beside it and swapped in (`rewrite_dir_atomic`), the record
+    takes the new hash, and the answer is None: the expected outcome says nothing. A copy that
+    was changed, replaced or removed after promotion is not bantamkit's to overwrite and is
+    left as it is; so is one the swap could not replace. Those two answer the sentence.
+    """
+    entry = read_state(home)["skills"].get(name)
+    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+        return None
+    rec = _record(entry)
+    if rec is None or rec.get("mode") != MODE_COPY or not isinstance(rec.get("link"), str):
+        return None
+    source = Path(entry["path"])
+    if not (source / SKILL_FILE).is_file():
+        return None
+    link_s = rec["link"]
+    link = Path(link_s)
+    files = _files(source)
+    want = _files_hash(files)
+    have = tree_hash(link) if link.is_dir() and not os.path.islink(link) else None
+    if have is None or have not in (rec.get("tree_sha256"), want):
+        return f"left the promoted copy at {link} as it is: it was changed after promotion"
+    if have != want:
+        try:
+            rewrite_dir_atomic(link, files)
+        except OSError as e:
+            return f"could not refresh the promoted copy at {link}: {_code(e)}"
+        except SkillFileError as e:
+            return f"could not refresh the promoted copy at {link}: {e}"
+    if rec.get("tree_sha256") == want:
+        return None
+
+    def change(state: dict[str, Any]) -> None:
+        live = state["skills"].get(name)
+        r = _record(live) if isinstance(live, dict) else None
+        if r is not None and r.get("mode") == MODE_COPY and r.get("link") == link_s:
+            r["tree_sha256"] = want
+
+    update_state(home, change)
+    return None
 
 
 def demote(name: str, home: Path | str) -> str:

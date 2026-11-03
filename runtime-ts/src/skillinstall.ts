@@ -39,6 +39,7 @@ import { tokenizeV2 } from './memory/retrieval.js';
 import { TUNE_KINDS, TUNE_NARROW, TUNE_WIDEN, draftsLog, gate, improve, improveBundle, logLine } from './skilldraft.js';
 import type { Bundle, ChainLink } from './skilldraft.js';
 import { STEP_SHARE, ngrams } from './skillmine.js';
+import { refreshCopy } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
 import { parseNow } from './storage/retention.js';
 
@@ -533,7 +534,13 @@ export function undo(name: string, home: string): string {
     }
     if (Object.hasOwn(fresh, 'removed')) fresh['removed'] = removed;
   });
-  return said;
+  return refreshed(said, name, home);
+}
+
+/** `said`, plus what refreshing the skill's promoted copy had to report (#244). */
+function refreshed(said: string, name: string, home: string): string {
+  const note = refreshCopy(name, home);
+  return note === null ? said : `${said}; ${note}`;
 }
 
 // ------------------------------------------------------------- self-improvement (Task 10a)
@@ -777,7 +784,7 @@ export function newVersion(name: string, text: string, home: string, now: string
     undoDir(backupRoot(home), name, target);
     throw e;
   }
-  return `updated skill ${name} to v${m}`;
+  return refreshed(`updated skill ${name} to v${m}`, name, home);
 }
 
 /** Python's `str()` of a JSON value, for the one sentence that prints a path that may be absent. */
@@ -807,6 +814,7 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
   msOf(now);
   const skills = isObj(state['skills']) ? state['skills'] : {};
   const verdicts = new Map<string, [number, string, number, string | null]>();
+  const rolled = new Map<string, number>();
   const events: string[] = [];
   for (const name of Object.keys(skills).sort(cmpCodepoint)) {
     const e = skills[name];
@@ -841,6 +849,7 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
       throw err;
     }
     verdicts.set(name, [n, VERDICT_ROLLED_BACK, f, canonicalHash(restored)]);
+    rolled.set(name, events.length);
     events.push(`rolled back ${name} to v${f}`);
   }
   if (verdicts.size === 0) return events;
@@ -861,7 +870,8 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
       }
     }
   });
-  replaceState(state, written);
+  for (const [name, i] of rolled) events[i] = refreshed(events[i]!, name, home);
+  replaceState(state, rolled.size > 0 ? readState(home) : written);
   return events;
 }
 
