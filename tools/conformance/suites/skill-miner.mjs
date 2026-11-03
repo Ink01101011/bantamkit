@@ -86,6 +86,7 @@ const ckpt = (jobId, units, history = []) =>
     history,
   });
 const line = (unit, status, ts) => JSON.stringify({ unit, role: 'implementer', status, ts });
+const lineAgent = (unit, ts, agentId) => JSON.stringify({ unit, role: 'implementer', status: 'done', ts, agent_id: agentId });
 const ev = (event, unit) => JSON.stringify({ event, unit, role: 'implementer', ts: '2026-01-01T00:00:00Z' });
 
 function write(p, data) {
@@ -184,9 +185,10 @@ function mainRoot(base) {
       '﻿' + line('U3', 'done', '2026-02-09T00:00:00Z'),
       line('😀', 'done', '2026-02-06T00:00:00Z'),
       line('！', 'done', '2026-02-06T00:00:00Z'),
-      line('U6', 'done', '2026-02-07T00:00:00Z'),
-      line('U7', 'done', '2026-02-07T00:00:00Z'),
-      line('U8', 'done', '2026-02-07T00:00:00Z'),
+      // #266: the subagent a unit ran in, off its counting clock-out; only a well-formed id
+      lineAgent('U6', '2026-02-07T00:00:00Z', 'a9443875b21b8ca8f'),
+      lineAgent('U7', '2026-02-07T00:00:00Z', 'a b'),
+      lineAgent('U8', '2026-02-07T00:00:00Z', 7),
       '{not json',
       '[1, 2]',
       '',
@@ -412,11 +414,12 @@ function runNode(sm, payload) {
     const [df, n] = sm.docFreq(pieces);
     return pieces.map((p) => sm.signatureDict(sm.signature(p, df, n)));
   };
-  const out = { pieces: [], root_signatures: [], set_signatures: [], similarity: [] };
+  const out = { agents: [], pieces: [], root_signatures: [], set_signatures: [], similarity: [] };
   for (const root of payload.roots) {
     const pieces = sm.shiftworkPieces(root);
     out.pieces.push(pieces.map(sm.pieceDict));
     out.root_signatures.push(sigs(pieces));
+    out.agents.push(pieces.map((p) => [p.id, p.agentId ?? null])); // #266: kept out of pieceDict
   }
   out.repo_keys = payload.repo_keys.map((p) => sm.repoKey(p));
   for (const set of payload.piece_sets) {
@@ -524,6 +527,7 @@ export async function run(ctx) {
       expected: py.root_signatures[i],
       actual: nd.root_signatures[i],
     });
+    cases.push({ name: `shiftwork_pieces — ${label} — agent ids (#266)`, kind: 'json', expected: py.agents[i], actual: nd.agents[i] });
   });
   ['main', 'linked worktree', 'no repository', 'a subdirectory of main'].forEach((label, i) => {
     cases.push({ name: `repo_key — ${label}`, kind: 'string', expected: py.repo_keys[i], actual: nd.repo_keys[i] });
@@ -551,6 +555,13 @@ export async function run(ctx) {
     ['python', py],
     ['node', nd],
   ]) {
+    // #266: only the well-formed id survives, and only on the unit whose clock-out carried it
+    cases.push({
+      name: `LITERAL: a unit keeps its clock-out's agent_id, a malformed one is none — ${side}`,
+      kind: 'json',
+      expected: [['job72/U6', 'a9443875b21b8ca8f'], ['job72/U7', null], ['job72/U8', null]],
+      actual: ans.agents[0].filter(([id]) => ['job72/U6', 'job72/U7', 'job72/U8'].includes(id)),
+    });
     cases.push({
       name: `LITERAL: KEYWORDS_TOP keeps 12 keywords of a 20-term prompt — ${side}`,
       kind: 'json',

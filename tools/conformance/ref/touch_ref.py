@@ -9,7 +9,8 @@ touch-log (T200-1) — `{"suite": "touch-log", "beds": [{"root", "home", "state"
 "ops": [...]}]}` -> `{"beds": [[result, ...], ...]}`, one result per op:
 
     {"op": "append_touch", "session", "seq", "kind", "path", "via"?, "from"?, "ts"} -> bool
-    {"op": "append_use", "session", "seq", "fact", "kind", "ts"}  -> bool
+    {"op": "append_use", "session", "seq", "fact", "kind", "ts", "agent_id"?}  -> bool
+    {"op": "agent_of", "payload"}            -> str | null  (#266)
     {"op": "raw", "b64"}                     -> null  (bytes appended to the log verbatim)
     {"op": "read"} / {"op": "tail", "session", "after"} -> rows
     {"op": "skipped"}                        -> int   (after the previous read or tail)
@@ -60,6 +61,7 @@ from bantamkit.storage import retention as _retention
 from bantamkit.storage.tiers import log_lines, touch_line
 from bantamkit.touch.log import (
     TouchLog,
+    agent_of,
     current_seq,
     next_seq,
     touch_reducer,
@@ -99,7 +101,11 @@ def _log_bed(bed: dict[str, Any]) -> list[Any]:
                 )
             )
         elif kind == "append_use":
-            out.append(log.append_use(op["session"], op["seq"], op["fact"], op["kind"], ts=op["ts"]))
+            out.append(
+                log.append_use(
+                    op["session"], op["seq"], op["fact"], op["kind"], op["ts"], op.get("agent_id")
+                )
+            )
         elif kind == "raw":
             log.path.parent.mkdir(parents=True, exist_ok=True)
             with open(log.path, "ab") as f:
@@ -130,6 +136,8 @@ def _log_bed(bed: dict[str, Any]) -> list[Any]:
                 out.append(sorted(os.listdir(state)))
             except OSError:
                 out.append(None)
+        elif kind == "agent_of":
+            out.append(agent_of(op["payload"]))
         elif kind == "use_names":
             out.append([list(p) for p in use_names(op["tool"], op["input"], op["response"])])
         elif kind == "reduce":

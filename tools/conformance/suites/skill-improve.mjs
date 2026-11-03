@@ -245,6 +245,22 @@ const corrected = (n, text = 'no, use the other parser\nand more') => ({
   turns: [{ failure: `corrected in the next turn: ${text}`, id: 's1111aaaa#1', ok: false, tools: ['Read', 'Edit'], ts: AFTER }],
   uses: [{ fact: n, session: '1111aaaa-x', ts: '2026-10-27T13:00:01.000Z' }],
 });
+/** #266: `[home, sources, doc]` for the unit-attribution fixtures; the session turn always failed. */
+const UNIT_AGENT = 'a9443875b21b8ca8f';
+const unitRow = (id, ok, agent = UNIT_AGENT, failure = null) => ({ agent_id: agent, failure, id, ok, ts: AFTER });
+const unitUse = (agent = UNIT_AGENT) => ({ fact: 'sk-u', session: '1111aaaa-x', ts: '2026-10-27T13:00:01.000Z', ...(agent === null ? {} : { agent_id: agent }) });
+const FAILED_TURN = { failure: null, id: 's1111aaaa#1', ok: false, tools: ['Read'], ts: AFTER };
+const UNIT_FIXTURES = [
+  ['u-done', { turns: [FAILED_TURN], units: [unitRow('job9/U1', true)], uses: [unitUse()] }, null],
+  ['u-blocked', { units: [unitRow('job9/U1', false, UNIT_AGENT, 'blocked on the lexer\nmore')], uses: [unitUse()] }, null],
+  ['u-claimed-twice', { turns: [FAILED_TURN], units: [unitRow('job9/U1', true), unitRow('job9/U2', true)], uses: [unitUse()] }, null],
+  ['u-no-agent', { turns: [FAILED_TURN], units: [unitRow('job9/U1', true)], uses: [unitUse(null)] }, null],
+  [
+    'u-missed',
+    { units: [unitRow('job9/U1', true, 'a1'), unitRow('job9/U2', true, 'a2')], uses: [unitUse('a1')] },
+    { clusters: [rec('sk-u', ['job9/U1', 'job9/U2', 'job9/U3'].map((id) => ({ id, ok: true, prompt: 'fix the lexer', ts: AFTER })))] },
+  ],
+];
 const together = (k, extra = 0) => ({
   injects: [
     ...Array.from({ length: k }, (_, i) => ({ names: ['sk-ma', 'sk-mb'], session: `s-${i}`, ts: AFTER })),
@@ -332,6 +348,16 @@ function part2(add) {
   add('improve_step: c3 proposes', { op: 'improve_step', env: 'on', home: 'c3', sources: corrected('sk-c'), now: LATER });
   add('c3: the file changes after the proposal', { op: 'append', home: 'c3', rel: '.bantamkit/skills/sk-c/SKILL.md', text: 'later\n' });
   add('render: approve a proposal whose file changed', { op: 'render', home: 'c3', action: 'approve', target: 'sk-c', now: LATER });
+
+  // u: #266, a use made inside a unit's subagent belongs to the unit when exactly one unit
+  // names that agent_id: a done unit is a success whatever the session's turn, a blocked one a
+  // Pitfalls line citing `<job>/<unit>`, two units claiming the id keep the session rule, and a
+  // unit that named its subagent without using the skill is a miss (one that named none is not).
+  for (const [h, sources, doc] of UNIT_FIXTURES) {
+    add(`${h}: install sk-u`, { op: 'install', home: h, name: 'sk-u', text: draft('sk-u'), now: NOW });
+    add(`stats_step: ${h}`, { op: 'stats_step', home: h, sources, now: LATER });
+    add(`improve_step: ${h}`, { op: 'improve_step', env: 'on', home: h, sources, doc, now: LATER });
+  }
 
   // s: different steps
   const steps = { clusters: [rec('sk-s', null, null, ['Read>Edit', 'Edit>Bash'])] };
@@ -851,6 +877,25 @@ export async function run(ctx) {
         ['symlink', false, `-> ${join('..', '..', '.bantamkit', 'skills', 'sk-d')}`, ['rolled back sk-d to v1', 'promoted skill sk-d']],
       ],
       actual: [iDailyOn, iDailyOff, iDailyNext].map((i) => promotedOf(got[i])),
+    });
+    // #266: [uses, successes] off stats_step, then misses and the Pitfalls line off improve_step
+    const unitView = (h) => {
+      const st = got[find(`stats_step: ${h}`)].returned_state?.skills?.['sk-u']?.versions?.['1'] ?? {};
+      const im = got[find(`improve_step: ${h}`)];
+      const text = im.tree?.['.bantamkit/skills/sk-u/SKILL.md'] ?? '';
+      return [st.uses ?? null, st.successes ?? null, im.state?.skills?.['sk-u']?.versions?.['1']?.misses ?? null, text.includes('- [job9/U1] blocked on the lexer')];
+    };
+    cases.push({
+      name: `LITERAL: a unit's agent_id attributes its uses [uses, successes, misses, pitfall] — ${side}`,
+      kind: 'json',
+      expected: [
+        [1, 1, null, false],
+        [1, 0, null, true],
+        [1, 0, null, false],
+        [1, 0, null, false],
+        [1, 1, 1, false],
+      ],
+      actual: UNIT_FIXTURES.map(([h]) => unitView(h)),
     });
     cases.push({
       name: `LITERAL: an edited skill is never judged — ${side}`,

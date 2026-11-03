@@ -407,14 +407,14 @@ it:
 | `tool_uses` | integer ≥ 0, optional | tool calls the subagent made, as the harness counts them — the denominator that makes `tokens` comparable across units of different size |
 | `note` | string, optional | free text for what the fields cannot say: an estimate, a retry, a second scope under the same unit id. Anything that is not a model identifier goes here, not in `model` |
 
-Any other key still passes through unchanged — except the five the
-runtime writes itself, `unit`, `role`, `status`, `ts` and `event`, which
-since job65 (#117) are refused before anything is written (`… reported an
+Any other key still passes through unchanged — except the six the
+runtime writes itself, `unit`, `role`, `status`, `ts`, `event` and (since
+#266) `agent_id`, which since job65 (#117) are refused before anything is written (`… reported an
 accounting line that sets the runtime's own keys: unit, event`, the keys
 named in that fixed order whatever order the caller used): until then
 `record.update(accounting)` ran after the base keys, so a line could book
 its cost to another unit or forge a brief line the gate then trusted.
-`briefed` is deliberately not among the five — a self-reported `briefed`
+`briefed` is deliberately not among them — a self-reported `briefed`
 is overwritten, as above, not refused. Refusing *unknown* keys is still
 exactly the friction the `handoff.notes` change removed (F8), and the two
 rules must not pull against each other. `accounting: null` stays legal on
@@ -856,6 +856,25 @@ Every change that moved something appends one `retro[]` entry:
 Unlike `handoff.do_not`, which `handoff_patch` overwrites whole, the list keeps a
 record of who added what. Per job only: no lesson mining, no DoD policies. Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-agreements-design.md`.
+
+#### The unit's subagent: `agent_id` (#266)
+
+`shiftwork_clock_out` takes an optional `agent_id`: the `agentId` the Agent
+tool's result returned for the unit's subagent, copied verbatim. It must be 1 to
+64 of `A-Z a-z 0-9 _ -`, or the call is refused before anything is written:
+
+    agent_id must be 1 to 64 characters, each a letter, a digit, - or _
+
+It is written on that clock-out's accounting line (with `accounting: null` too)
+and nowhere else: not on a brief line, not into the checkpoint. A self-reported
+`accounting.agent_id` is the sixth reserved key, refused with the #117 sentence.
+The same id arrives as `agent_id` on every hook payload fired inside that
+subagent (measured 2026-11-03 on Claude Code 2.1.317, where `session_id` is the
+parent's), so the touch log's `use` rows carry it and the skill miner can
+attribute a unit's skill uses to the unit (`docs/skills.md`, *Self-improvement*).
+Omit it for a unit run inline. Both runtimes, gated by the `agent-id/*` sessions
+and per-side literals in the shiftwork suite; spec in the #266 issue comment
+"Spec — #266, option (a)".
 
 #### Never block on the human: relay questions, irreversible units, `prove` (#225)
 

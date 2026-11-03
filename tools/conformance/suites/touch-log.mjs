@@ -135,6 +135,29 @@ function scenarios() {
       ],
     },
     {
+      // #266: a use row fired inside a subagent ends with the payload's `agent_id`; the hook
+      // passes only one `agentOf` accepts, so the rule is pinned here and the row's bytes too.
+      label: 'use rows: agent_id inside a subagent, and the rule that admits one',
+      ops: [
+        { op: 'append_use', session: 's1', seq: 1, fact: 'sk-one', kind: 'recall_hit', ts: TS, agent_id: 'a9443875b21b8ca8f' },
+        { op: 'append_use', session: 's1', seq: 2, fact: 'sk-one', kind: 'recall_hit', ts: TS },
+        { op: 'bytes' },
+        { op: 'read' },
+        ...[
+          { agent_id: 'a9443875b21b8ca8f' },
+          { agent_id: 'A-_9'.repeat(16) },
+          { agent_id: 'a'.repeat(65) },
+          { agent_id: '' },
+          { agent_id: 'a b' },
+          { agent_id: 'a\n' },
+          { agent_id: 'ä' },
+          { agent_id: 3 },
+          { agent_id: null },
+          {},
+        ].map((payload) => ({ op: 'agent_of', payload })),
+      ],
+    },
+    {
       label: 'use names: replies, blocks, a content dict, separators, other tools',
       ops: [
         { op: 'use_names', tool: RECALL, input: { query: 'q' }, response: [{ type: 'text', text: REPLY }] },
@@ -272,7 +295,7 @@ function runNodeBed(touch, tiers, retention, bed) {
         out.push(log.appendTouch(op.session, op.seq, op.kind, op.path, op.via ?? null, op.from ?? null, op.ts));
         break;
       case 'append_use':
-        out.push(log.appendUse(op.session, op.seq, op.fact, op.kind, op.ts));
+        out.push(log.appendUse(op.session, op.seq, op.fact, op.kind, op.ts, op.agent_id ?? null));
         break;
       case 'raw':
         mkdirSync(dirname(log.path), { recursive: true });
@@ -314,6 +337,9 @@ function runNodeBed(touch, tiers, retention, bed) {
         } catch {
           out.push(null);
         }
+        break;
+      case 'agent_of':
+        out.push(touch.agentOf(op.payload));
         break;
       case 'use_names':
         out.push(touch.useNames(op.tool, op.input, op.response));
@@ -388,6 +414,10 @@ function hookScript(R, outside) {
     p('NotebookEdit', { notebook_path: join(R, 'nb.ipynb'), new_source: '' }),
     p(RECALL, { query: 'store' }, { tool_response: [{ type: 'text', text: REPLY }] }),
     p(SAVE, { name: 'saved-fact', type: 'project', description: 'd', body: 'b' }, { tool_response: 'saved saved-fact' }),
+    // #266: inside a subagent the payload carries `agent_id` (the parent's session_id beside it);
+    // the use row ends with it, and one `agentOf` refuses leaves the row as it was.
+    p(RECALL, { query: 'store' }, { tool_response: [{ type: 'text', text: REPLY }], agent_id: 'a9443875b21b8ca8f', agent_type: 'general-purpose' }),
+    p(RECALL, { query: 'store' }, { tool_response: [{ type: 'text', text: REPLY }], agent_id: 'a b' }),
   ];
 }
 
@@ -539,10 +569,30 @@ export async function run(ctx) {
       ['use', 6],
       ['use', 6],
       ['use', 7],
+      ['use', 8],
+      ['use', 8],
+      ['use', 9],
+      ['use', 9],
+    ]),
+  );
+  // #266: the two recalls made inside a subagent — only the well-formed id reaches the rows
+  const agents = (v) =>
+    v.log === null
+      ? null
+      : v.log.split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.op === 'use').map((r) => r.agent_id ?? '(none)');
+  cases.push(
+    ...literalCases(agents(views.py[0]), agents(views.node[0]), 'LITERAL: a use row inside a subagent carries its agent_id', [
+      '(none)',
+      '(none)',
+      '(none)',
+      'a9443875b21b8ca8f',
+      'a9443875b21b8ca8f',
+      '(none)',
+      '(none)',
     ]),
   );
   cases.push(
-    ...literalCases(views.py[0].seq, views.node[0].seq, 'LITERAL: the counter after seven calls', b64('{"seq":7}')),
+    ...literalCases(views.py[0].seq, views.node[0].seq, 'LITERAL: the counter after nine calls', b64('{"seq":9}')),
     ...literalCases(views.py[1].names, views.node[1].names, 'LITERAL: no repo, no touch directory', null),
     ...literalCases(views.py[1].seq, views.node[1].seq, 'LITERAL: no repo, no counter', null),
   );
@@ -552,7 +602,7 @@ export async function run(ctx) {
   );
   cases.push(
     ...literalCases(views.py[0].status, views.node[0].status, 'LITERAL: status after the hook script', [
-      `logs: touch/<id> ${Buffer.byteLength(views.py[0].log ?? '') - 6 * ('<ts>'.length - TS.length)} (0 rotated, 0 skipped)`,
+      `logs: touch/<id> ${Buffer.byteLength(views.py[0].log ?? '') - 10 * ('<ts>'.length - TS.length)} (0 rotated, 0 skipped)`,
       'touch: 0 missed writes (hook log)',
     ]),
     ...literalCases(views.py[1].status, views.node[1].status, 'LITERAL: status with no touch directory', ['touch: none']),

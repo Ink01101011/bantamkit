@@ -1026,6 +1026,19 @@ function j655Sessions() {
       AG_OUT({ adopt: ['a0'] }),
     ]],
 
+    // ---- #266. A unit's subagent: `agent_id` goes on the accounting line (with `accounting`
+    // null too) and nowhere else; absent or null leaves the line as it was; a bad one and a
+    // self-reported `accounting.agent_id` are refused, nothing written. One session per refusal.
+    ['agent-id/written', b64(raw(agreementsDocument(null))), [
+      AI_OUT('A', AGENT_ID_PROBED, { accounting: b64(JSON.stringify({ tokens: 5, duration_ms: 9 })) }),
+      AI_OUT('B', null),
+    ]],
+    ['agent-id/accounting-null', b64(raw(agreementsDocument(null))), [AI_OUT('A', AGENT_ID_PROBED)]],
+    ...AGENT_ID_BAD.map(([label, value]) => [`agent-id/bad-${label}`, b64(raw(agreementsDocument(null))), [AI_OUT('A', value)]]),
+    ['agent-id/self-reported', b64(raw(agreementsDocument(null))), [
+      { ...OUT('A', 'done'), accounting: b64(JSON.stringify({ tokens: 1, duration_ms: 1, agent_id: AGENT_ID_PROBED })) },
+    ]],
+
     // ---- #225. Never block on the human. A bare string still escalates; a relay its probe
     // answers (run from the session dir, the repo root here) briefs and logs `resolved`; a
     // failing probe escalates with the relay's text; a passing relay does not hide a decision;
@@ -1251,6 +1264,10 @@ const agreementsDocument = (agreements) => {
   return document;
 };
 const AG_OUT = (change) => ({ ...OUT('A', 'done'), agreements: b64(JSON.stringify(change)) });
+/** #266: the id the 2026-11-03 probe saw on a real run; `null` is sent as JSON null. */
+const AGENT_ID_PROBED = 'a9443875b21b8ca8f';
+const AGENT_ID_BAD = [['empty', ''], ['sixty-five', 'a'.repeat(65)], ['space', 'a b'], ['slash', 'a/b'], ['newline', 'a\n'], ['number', 7]];
+const AI_OUT = (unitId, agentId, over = {}) => ({ ...OUT(unitId, 'done'), agent_id: b64(JSON.stringify(agentId)), ...over });
 
 /** #260: `A` the cursor, `B` beside it. */
 const followUpDocument = () => baseDocument({ plan: { cursor: 'A', units: [unit('A', []), unit('B', [])] } });
@@ -1664,6 +1681,7 @@ async function runNodeSession(shiftwork, pyjson, caseSpec, dir, clock) {
           ...(call.follow_ups ? { followUps: parseJson(unb64(call.follow_ups)) } : {}),
           ...(call.agreements ? { agreements: parseJson(unb64(call.agreements)) } : {}),
           ...(call.conclusion ? { conclusion: parseJson(unb64(call.conclusion)) } : {}),
+          ...(call.agent_id ? { agentId: parseJson(unb64(call.agent_id)) } : {}),
         },
       );
     }
@@ -3153,6 +3171,25 @@ export async function run(ctx) {
     untouched('agreements/over-twenty', 'agreements/refusals', 1);
     row('agreements/a-no-op-records-nothing', 'agreements/refusals', 2, [],
       (r, raw) => (raw.checkpoint === null ? null : JSON.parse(unb64(raw.checkpoint)).retro));
+
+    // #266, per side: the ledger lines' `agent_id` (absent and null alike write none), the
+    // pattern's refusal and the sixth reserved key, each with nothing written.
+    const agentIds = (r, raw) =>
+      raw.log === null
+        ? '(no log file)'
+        : unb64(raw.log).trim().split('\n').map((t) => JSON.parse(t)).filter((l) => !('event' in l))
+          .map((l) => `${l.unit} ${'agent_id' in l ? l.agent_id : '(none)'}`);
+    row('agent-id/on-the-accounting-line-only', 'agent-id/written', 1, [`A ${AGENT_ID_PROBED}`, 'B (none)'], agentIds);
+    row('agent-id/never-in-the-checkpoint', 'agent-id/written', 1, false,
+      (r, raw) => raw.checkpoint !== null && unb64(raw.checkpoint).includes(AGENT_ID_PROBED));
+    row('agent-id/with-accounting-null', 'agent-id/accounting-null', 0, [`A ${AGENT_ID_PROBED}`], agentIds);
+    for (const [label] of AGENT_ID_BAD) {
+      says(`agent-id/bad-${label}`, `agent-id/bad-${label}`, 0, 'agent_id must be 1 to 64 characters, each a letter, a digit, - or _');
+      untouched(`agent-id/bad-${label}`, `agent-id/bad-${label}`, 0);
+    }
+    says('agent-id/self-reported-is-reserved', 'agent-id/self-reported', 0,
+      "unit A in role implementer reported an accounting line that sets the runtime's own keys: agent_id");
+    untouched('agent-id/self-reported-is-reserved', 'agent-id/self-reported', 0);
 
     // #260, per side: the appended units, the cursor/ready after, each refusal with nothing written.
     const TWO = 'follow-ups/two-appended';
