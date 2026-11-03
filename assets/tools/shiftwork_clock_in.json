@@ -70,6 +70,14 @@
         "type": "array",
         "description": "state.artifacts: the files the job has produced so far."
       },
+      "upstream": {
+        "type": "array",
+        "description": "One {unit, title, status, last} per depends_on id, in depends_on order: last is that unit's newest attempt (status, outcome, notes?, produced?) or null. Always present with a brief."
+      },
+      "prior_attempts": {
+        "type": "array",
+        "description": "This unit's own attempts, oldest first, at most 3; [] when none. A unit clocked out todo and briefed again is a rework, and this is what it found."
+      },
       "open_questions": {
         "type": "array",
         "items": {

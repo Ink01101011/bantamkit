@@ -324,6 +324,14 @@
           "reason": {
             "type": "string",
             "description": "With result `escalate`, `success` or `error`: one sentence saying why."
+          },
+          "upstream": {
+            "type": "array",
+            "description": "One {unit, title, status, last} per depends_on id, in depends_on order: last is that unit's newest attempt (status, outcome, notes?, produced?) or null. Always present with a brief."
+          },
+          "prior_attempts": {
+            "type": "array",
+            "description": "This unit's own attempts, oldest first, at most 3; [] when none. A unit clocked out todo and briefed again is a rework, and this is what it found."
           }
         },
         "required": [
@@ -342,7 +350,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Shift-work clock-out: record that a unit finished \u2014 set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor \u2014 which needs no brief and clocks out with briefed=false \u2014 or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document \u2014 plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written \u2014 see the `model` property.",
+      "description": "Shift-work clock-out: record that a unit finished \u2014 set its status, advance plan.cursor, merge `handoff_patch` into handoff, push `history_entry` onto the 5-entry history ring, and append one accounting line to <checkpoint>.log.jsonl. Call it once per unit after its agent returns: shiftwork_clock_in briefs, this tool closes, and shiftwork_status reads what both wrote. The whole mutated document is validated against the checkpoint schema BEFORE one atomic write, so a failure writes nothing and answers {\"result\": \"error\", \"reason\": ...}; nothing is ever deleted from the checkpoint. `unit_id` must be plan.cursor \u2014 which needs no brief and clocks out with briefed=false \u2014 or a unit clock_in briefed since its own last clock-out; any other id is refused with `unit X is not the cursor unit Y`. `handoff_patch` and `history_entry` are both required arguments: pass `{}` to leave handoff unchanged, and give history_entry at least `unit` and `outcome`. plan.cursor then moves to the head of the ready batch recomputed on the new document \u2014 plan.units order over the remaining non-terminal units when the graph cannot batch, `unit_id` when none remain. The accounting line carries unit, role, status, ts and `briefed` (written by the runtime, never taken from you: true only when a brief was issued since this unit's LAST clock-out) plus your `accounting` fields when given. Each clock-out also appends {status, outcome, notes?, produced?} to the unit's attempts (newest 3 kept). With job.budget declared, a line reporting 0 tokens is refused unless it carries `estimate: true`. When job.roles names this unit's role, `accounting.model` must be on that role's list, spelled exactly, or nothing is written \u2014 see the `model` property.",
       "inputSchema": {
         "properties": {
           "checkpoint": {
@@ -422,7 +430,30 @@
               },
               "notes": {
                 "type": "string",
-                "description": "Optional free text for the next session reading the ring."
+                "description": "Optional free text for the next session reading the ring, and recorded in the unit's attempt (#259): at most 2000 code points."
+              },
+              "produced": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "ref"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "What sort of thing: commit, file, pr, run-output."
+                    },
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Where it is: a SHA, a path, a URL."
+                    }
+                  }
+                },
+                "description": "What the unit produced, [{kind, ref}] (a commit, a file, a run output). Recorded with the unit's attempt, and handed to every unit that depends on it as upstream[].last."
               }
             }
           },

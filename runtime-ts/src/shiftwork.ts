@@ -120,6 +120,10 @@ export const ACCOUNTING_SHAPE_UNREADABLE =
 export const TERMINAL_UNIT_STATUS: ReadonlySet<string> = new Set(['done', 'dropped']);
 /** The schema's `maxItems` — older entries fall off the ring. */
 export const HISTORY_RING_SIZE = 5;
+/** #259: the attempts a unit keeps, newest last; the oldest is dropped past this. */
+export const ATTEMPTS_KEPT = 3;
+/** #259: an attempt's `notes`, in code points, so both runtimes count non-ASCII text alike. */
+export const ATTEMPT_NOTES_MAX = 2000;
 /**
  * F6: the `event` value of the ledger line `clockIn` appends when it issues a brief. The word
  * is the register's own — `clock_in` answers `result: "brief"` — so the ledger names the
@@ -468,7 +472,10 @@ function reviewsRefusal(units: readonly PyDict[], declaredDeps: ReadonlyMap<PyDi
 /** A batch-view refusal; `review` marks #263's, which `clockOut` must refuse by name. */
 type ViewRefusal = { result: 'error'; reason: string; review?: true };
 
-function batchView(doc: PyDict): PlanResult | ViewRefusal {
+/** A batch the graph permits, plus the one read of `depends_on` it was built from (#259). */
+type View = (PlanResult & { declared?: ReadonlyMap<PyDict, string[]> }) | ViewRefusal;
+
+function batchView(doc: PyDict): View {
   const units = subList(subDict(doc, 'plan'), 'units').v.map((unit) => unit as PyDict);
   const terminal = (unit: PyDict): boolean => TERMINAL_UNIT_STATUS.has(text(unit.v.get('status')!));
   const satisfied = new Set<string>();
@@ -500,7 +507,10 @@ function batchView(doc: PyDict): PlanResult | ViewRefusal {
     if (touches !== undefined && touches.t === 'list') node.touches = touches.v.map(text);
     nodes.push(node);
   }
-  return plan(nodes);
+  const answer = plan(nodes);
+  // #259: the one read of `depends_on`, handed back for `clockIn`'s `upstream` order so no
+  // second walk is written there. Callers build their own replies, so it never leaks.
+  return 'result' in answer ? answer : { ...answer, declared: declaredDeps };
 }
 
 /**
@@ -517,6 +527,27 @@ function readyIds(view: PlanResult): string[] {
 }
 
 // ----------------------------------------------------------------------------- clock_in
+
+/** A unit's `attempts`, oldest first; `[]` when it has none. */
+function attemptsOf(unit: PyDict): PyValue[] {
+  const attempts = unit.v.get('attempts');
+  return attempts !== undefined && attempts.t === 'list' ? attempts.v : [];
+}
+
+/**
+ * #259: what a dependency produced — `{unit, title, status, last}`, `last` its newest attempt or
+ * null, as `shiftwork.py`'s `_upstream`. The graph check already refused an unknown id.
+ */
+function upstreamOf(doc: PyDict, dep: string): PyValue {
+  const unit = findUnit(doc, dep)!;
+  const attempts = attemptsOf(unit);
+  return dict([
+    ['unit', str(dep)],
+    ['title', field(unit, 'title')],
+    ['status', field(unit, 'status')],
+    ['last', attempts.length > 0 ? attempts[attempts.length - 1]! : { t: 'null' }],
+  ]);
+}
 
 /** The unit's `touches` as plain strings, `[]` when it declares none. */
 function touchesOf(unit: PyDict): string[] {
@@ -681,6 +712,9 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
     ['handoff', handoff],
     ['do_not', field(handoff, 'do_not')],
     ['files', field(subDict(doc, 'state'), 'artifacts')],
+    // #259: always present, so a brief's shape does not depend on the plan.
+    ['upstream', { t: 'list', v: ('declared' in view ? view.declared!.get(unit) ?? [] : []).map((dep) => upstreamOf(doc, dep)) }],
+    ['prior_attempts', { t: 'list', v: [...attemptsOf(unit)] }],
   ]);
 }
 
@@ -1102,8 +1136,31 @@ function clockOutLocked(
   if (forged !== null) return errorResult(forged);
   const zero = zeroTokensRefusal(doc, unitId, accounting);
   if (zero !== null) return errorResult(zero);
+  const entry = asPatch(historyEntry);
+  const notes = entry.get('notes');
+  if (notes !== undefined && notes.t === 'str') {
+    const points = [...notes.v].length;
+    if (points > ATTEMPT_NOTES_MAX) {
+      return errorResult(`history_entry notes are ${points} code points; an attempt keeps at most ${ATTEMPT_NOTES_MAX}`);
+    }
+  }
 
   unit.v.set('status', str(status));
+  // #259: the durable per-unit record the 5-entry ring cannot be, built only from what clockOut
+  // already receives; a malformed `produced` meets the schema check below.
+  const attempt: [string, PyValue][] = [
+    ['status', str(status)],
+    ['outcome', entry.get('outcome') ?? { t: 'null' }],
+  ];
+  for (const key of ['notes', 'produced']) {
+    const value = entry.get(key);
+    if (value !== undefined) attempt.push([key, value]);
+  }
+  // A `historyEntry` that is not an object is the schema's to refuse below, with the sentence it
+  // has always had, so #259 records an attempt only when it is one.
+  if (asPyValue(historyEntry).t === 'dict') {
+    unit.v.set('attempts', { t: 'list', v: [...attemptsOf(unit), dict(attempt)].slice(-ATTEMPTS_KEPT) });
+  }
   // D3: the cursor follows the GRAPH, on the MUTATED document — the unit just finished is
   // already out of it. Three steps, and the middle one is only reachable for a graph that
   // cannot batch at all (a cycle, an unknown dependency), because `ready` is computed over

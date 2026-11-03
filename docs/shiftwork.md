@@ -782,6 +782,35 @@ The arithmetic is Layer 1, `jobbudget.py` / `jobbudget.ts` (not `budget.py`,
 which is the agent's TokenBudget governor). Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-budget-design.md`.
 
+#### Unit results: `attempts`, `upstream`, `prior_attempts` (#259)
+
+The 5-entry `history` ring cannot carry results: in a 32-unit job the result of
+unit 3 is gone long before unit 20, which depends on it, is briefed. So every
+`clock_out` also appends one entry to the unit's own `attempts` (newest last,
+at most `ATTEMPTS_KEPT = 3`, oldest dropped), built only from what it already
+receives:
+
+```json
+{"status": "done", "outcome": "<history_entry.outcome>", "notes": "<history_entry.notes>",
+ "produced": [{"kind": "commit", "ref": "abc123"}]}
+```
+
+`notes` and `produced` are copied when `history_entry` carries them (`produced`
+is `[{kind, ref}]`, both non-empty strings). `notes` over 2000 code points is
+refused before anything is written —
+`history_entry notes are <n> code points; an attempt keeps at most 2000` —
+counted in code points so both runtimes agree on Thai and astral text.
+
+Every brief then carries two keys, always present:
+
+- `upstream` — one `{unit, title, status, last}` per `depends_on` id, in
+  `depends_on` order; `last` is that unit's newest attempt or `null`.
+- `prior_attempts` — this unit's own attempts, oldest first.
+
+**Rework is a status, not a verdict.** A unit clocked out `todo` with an attempt
+recorded is a rework: its next brief carries what the last tries found in
+`prior_attempts`. Spec: `docs/superpowers/specs/2026-11-03-shiftwork-unit-results-design.md`.
+
 ### Spending the width: `clock_in(unit_id)` (job60)
 
 The batch view shipped announcing a `width` the dispatch surface gave no way to
