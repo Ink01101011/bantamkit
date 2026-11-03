@@ -515,6 +515,9 @@ def _approve_split(
         return _split_handoff_text(name, todo, home)
     level = entry.get("level") if entry.get("level") in ("project", "user") else None
     done: list[str] = []
+    # `install` marks its record `installed` in the in-memory doc; a back-out puts it back,
+    # or a later write would persist a cluster as installed that has no skill on disk
+    before = [(rec, "status" in rec, rec.get("status")) for rec in recs if rec is not None]
 
     def back_out() -> None:
         for n in reversed(done):
@@ -522,6 +525,11 @@ def _approve_split(
                 undo(n, home)
             except SkillFileError:
                 pass
+        for rec, had, status in before:
+            if had:
+                rec["status"] = status
+            else:
+                rec.pop("status", None)
 
     for rec, text, was_stored in zip(recs, texts, kept, strict=True):
         assert rec is not None and text is not None

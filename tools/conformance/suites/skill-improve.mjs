@@ -477,6 +477,34 @@ function part3(add) {
     now: LATER,
     answers: [SP_LEX, SP_GRAM.replace('name: sk-grammar', 'name: sk-lexer')],
   });
+  // sp7: as sp6, but the OTHER cluster sorts first (c-aa < c-sp), so its half installs, marks
+  // its record `installed`, and is backed out: every record must read as it did before
+  const first = {
+    ...SP_SPLIT,
+    clusters: [SP_SPLIT.clusters[0], { ...SP_SPLIT.clusters[1], id: 'c-aa' }],
+  };
+  setup('sp7', first);
+  add('sp7: proposed', { op: 'improve_step', env: 'on', home: 'sp7', sources: {}, doc: first, now: LATER });
+  add('split: the other cluster first, its half backed out: every record as it was', {
+    op: 'render',
+    home: 'sp7',
+    action: 'approve',
+    target: 'sk-sp',
+    now: LATER,
+    answers: [SP_GRAM, SP_LEX.replace('name: sk-lexer', 'name: sk-grammar')],
+  });
+  // sp8 / g4: automatic edits off, a correction stores an `improve` proposal in the same run,
+  // so the split (or merge) offered on the run's first snapshot is not stored nor reported
+  setup('sp8');
+  add('split: auto unset, a correction takes the slot first: no split reported', { op: 'improve_step', home: 'sp8', sources: corrected('sk-sp'), doc: SP_SPLIT, now: LATER });
+  add('g4: install sk-ma', { op: 'install', home: 'g4', name: 'sk-ma', text: draft('sk-ma'), now: NOW });
+  add('g4: install sk-mb', { op: 'install', home: 'g4', name: 'sk-mb', text: draft('sk-mb'), now: NOW });
+  add('merge: auto unset, a correction takes the slot first: no merge reported', {
+    op: 'improve_step',
+    home: 'g4',
+    sources: { ...together(5), ...corrected('sk-ma') },
+    now: LATER,
+  });
 }
 
 // ------------------------------------------------------------------------- Node side
@@ -959,7 +987,13 @@ export async function run(ctx) {
     ten: find('split: rejected at six, the clusters at ten: nothing'),
     twelve: find('split: rejected at six, the clusters at twelve: offered again'),
     collide: find('split: the second draft collides with the first: nothing split'),
+    proposed7: find('sp7: proposed'),
+    first: find('split: the other cluster first, its half backed out: every record as it was'),
+    taken: find('split: auto unset, a correction takes the slot first: no split reported'),
+    merged: find('merge: auto unset, a correction takes the slot first: no merge reported'),
   };
+  const recs = (r) =>
+    JSON.parse(r?.tree?.[PROPOSALS_REL] ?? '{"clusters":[]}').clusters.map((c) => [c.id, c.status, Object.hasOwn(c, 'draft')]);
   const names = (r) => Object.keys(r?.state?.skills ?? {}).sort();
   for (const [side, got] of [
     ['python', py],
@@ -1040,6 +1074,41 @@ export async function run(ctx) {
         got[sp.twelve].events,
         names(got[sp.collide]),
         (got[sp.collide].said ?? '').startsWith('The SKILL.md for cluster c-sq did not pass the gate'),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: a split backed out after the other cluster's half installed leaves every record as it was — ${side}`,
+      kind: 'json',
+      expected: [
+        ['proposed splitting sk-sp'],
+        ['c-aa', 'c-sp'],
+        true,
+        ['sk-sp'],
+        [
+          ['c-sp', 'installed', false],
+          ['c-aa', 'pending', true],
+        ],
+        'split',
+      ],
+      actual: [
+        got[sp.proposed7].events,
+        got[sp.proposed7].state?.skills?.['sk-sp']?.proposal?.into ?? null,
+        (got[sp.first].said ?? '').startsWith('The SKILL.md for cluster c-sp did not pass the gate'),
+        names(got[sp.first]),
+        recs(got[sp.first]),
+        got[sp.first].state?.skills?.['sk-sp']?.proposal?.kind ?? null,
+      ],
+    });
+    cases.push({
+      name: `LITERAL: a split or merge whose slot a same-run proposal took is neither stored nor reported — ${side}`,
+      kind: 'json',
+      expected: [['proposed a change to sk-sp'], 'improve', ['proposed a change to sk-ma'], 'improve', null],
+      actual: [
+        got[sp.taken].events,
+        got[sp.taken].state?.skills?.['sk-sp']?.proposal?.kind ?? null,
+        got[sp.merged].events,
+        got[sp.merged].state?.skills?.['sk-ma']?.proposal?.kind ?? null,
+        got[sp.merged].state?.skills?.['sk-mb']?.proposal?.kind ?? null,
       ],
     });
   }

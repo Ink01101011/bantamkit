@@ -241,9 +241,11 @@ records nothing as refused, and `skill_propose promote <name>` still promotes on
   the split's backup, sets its own cluster back to `installed` and the other to `rejected`, and
   counts as a rejection. `reject <name>` drops it; a rejected or undone split
   (`split_rejected_at`) is offered again only when the two clusters' successes reach twice that
-  number, the rule a rejected proposal follows.
+  number, the rule a rejected proposal follows. A split that fails part-way leaves every
+  cluster record as it was before the approve. A split or merge is reported only when it was
+  stored: a change proposed for the same skill earlier in the run keeps the one slot.
 - **Not implemented:** shiftwork units are not attributed to skills, so an escalated unit is not
-  a signal yet (#247 part B, waiting on a ruling): a unit's ledger line and checkpoint record its
+  a signal yet (#247 part B; the user's 2026-11-03 ruling deferred it to #266): a unit's ledger line and checkpoint record its
   brief, status and accounting, but nothing that says which skill was injected into it or called
   in it; the records that do (the touch log's `use` rows, the hook log's injections) are keyed by
   the session, which the ledger does not name, and the subagent transcripts are left out of the

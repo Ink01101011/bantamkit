@@ -1309,12 +1309,13 @@ export async function improveStep(
       const pa = ea['proposal'];
       if (isObj(pa) && pa['kind'] === 'merge' && pa['with'] === b2) continue;
       merges.set(a, b2);
-      events.push(`proposed merging ${a} with ${b2}`);
     }
   }
   const splits = splitOffers(skills, doc, marks, merges);
-  for (const name of [...splits.keys()].sort(cmpCodepoint)) events.push(`proposed splitting ${name}`);
   if (marks.size === 0 && merges.size === 0 && splits.size === 0) return events;
+  // a merge or split is reported only once it is stored: the slot may have been taken in
+  // this run (an `improve` proposal from `applyText`) after the snapshot it was offered on
+  const stored = new Set<string>();
   const written = updateState(home, (fresh) => {
     const live = fresh.skills as Record<string, unknown>;
     for (const [name, [n, misses, tried, tune, prop]] of marks) {
@@ -1335,13 +1336,21 @@ export async function improveStep(
     }
     for (const [a, b2] of merges) {
       const e = Object.hasOwn(live, a) ? live[a] : undefined;
-      if (isObj(e) && slotFree(e)) e['proposal'] = { at: now, kind: 'merge', status: 'pending', with: b2 };
+      if (isObj(e) && slotFree(e)) {
+        e['proposal'] = { at: now, kind: 'merge', status: 'pending', with: b2 };
+        stored.add(`merge\0${a}`);
+      }
     }
     for (const [name, [into, total]] of splits) {
       const e = Object.hasOwn(live, name) ? live[name] : undefined;
-      if (isObj(e) && slotFree(e)) e['proposal'] = { at: now, into, kind: 'split', status: 'pending', successes: total };
+      if (isObj(e) && slotFree(e)) {
+        e['proposal'] = { at: now, into, kind: 'split', status: 'pending', successes: total };
+        stored.add(`split\0${name}`);
+      }
     }
   });
+  for (const [a, b2] of merges) if (stored.has(`merge\0${a}`)) events.push(`proposed merging ${a} with ${b2}`);
+  for (const name of [...splits.keys()].sort(cmpCodepoint)) if (stored.has(`split\0${name}`)) events.push(`proposed splitting ${name}`);
   replaceState(state, written);
   return events;
 }
