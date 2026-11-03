@@ -332,6 +332,32 @@ const TOUCHES_LITERALS = new Map([
 
 // ================================================================= the checkpoint corpus
 
+/** #262: the budget views, typed out. The fallback 60000 and the lower median are the point. */
+const BUDGET_LITERALS = new Map([
+  [
+    'budget/fallback',
+    {
+      limit: { tokens: 200000 },
+      spent: { tokens: 0, units: 0, wallclock_ms: 0 },
+      in_flight: 0,
+      remaining: { tokens: 200000 },
+      per_unit: 60000,
+      affordable: 3,
+    },
+  ],
+  [
+    'budget/median-reserve-uncommitted',
+    {
+      limit: { tokens: 500000, units: 9, wallclock_ms: 100000 },
+      spent: { tokens: 60, units: 3, wallclock_ms: 400 },
+      in_flight: 1,
+      remaining: { tokens: 499920, units: 5, wallclock_ms: 99600 },
+      per_unit: 20,
+      affordable: 5,
+    },
+  ],
+]);
+
 /** #263: one checkpoint per review-independence sentence, and the sentence it must produce. */
 const reviewFaults = () => [
   ['reviews/undeclared', [unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['GHOST'] }]],
@@ -628,6 +654,13 @@ export async function run(ctx) {
     return path;
   };
 
+  /** #262: the template with `job.budget` and a ledger written beside it. */
+  const withBudget = (base, limit, lines) => {
+    const path = write(base, { ...template, job: { ...template.job, budget: limit } });
+    writeFileSync(`${path}.log.jsonl`, lines.map((line) => `${JSON.stringify(line)}\n`).join(''));
+    return path;
+  };
+
   // The tracked template, COPIED and exercised in scratch — byte for byte what git holds.
   const templatePath = join(bed, 'template.json');
   cpSync(TEMPLATE, templatePath);
@@ -706,6 +739,21 @@ export async function run(ctx) {
       'reviews/valid',
       write('reviews-valid.json', withUnits([unit('A', []), { ...unit('R', ['A']), role: 'reviewer', reviews: ['A'] }], 'A')),
     ],
+    // #262: the budget view, read off a ledger planted beside the checkpoint. The literals
+    // per side are below (`BUDGET_LITERALS`); every case above has no job.budget, so they
+    // already pin that the key is absent when nothing is declared.
+    ['budget/fallback', withBudget('budget-fallback.json', { tokens: 200000 }, [])],
+    [
+      'budget/median-reserve-uncommitted',
+      withBudget('budget-median.json', { tokens: 500000, units: 9, wallclock_ms: 100000 }, [
+        { unit: 'X1', tokens: 10, duration_ms: 100 },
+        { unit: 'X2', tokens: 40, duration_ms: 300 },
+        { event: 'uncommitted', unit: 'X2' },
+        { unit: 'X2', tokens: 20, duration_ms: 300 },
+        { unit: 'X3', tokens: 30 },
+        { event: 'brief', unit: 'CF2' },
+      ]),
+    ],
     // The four refusals a checkpoint can produce BEFORE the graph is reached. Each one is
     // `_read_valid`'s, and each embeds the absolute path — which is why both runtimes are
     // pointed at the same one.
@@ -729,6 +777,16 @@ export async function run(ctx) {
       expected: unb64(planned[i]),
       actual: dumpJson(planBatches(path)),
     });
+    // #262: the budget view as a literal, once per side.
+    const budgetLiteral = BUDGET_LITERALS.get(caseName);
+    if (budgetLiteral !== undefined) {
+      for (const [side, answer] of [
+        ['python', JSON.parse(unb64(planned[i]))],
+        ['node', JSON.parse(dumpJson(planBatches(path)))],
+      ]) {
+        cases.push({ name: `budget-literal/${caseName} — ${side}`, kind: 'json', expected: budgetLiteral, actual: answer.budget ?? null });
+      }
+    }
     // #263: the sentence as a literal, once per side.
     const reviewLiteral = REVIEW_LITERALS.get(caseName);
     if (reviewLiteral !== undefined) {

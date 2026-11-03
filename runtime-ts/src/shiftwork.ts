@@ -97,7 +97,8 @@ import {
   pyReadText,
   PyUnicodeDecodeError,
 } from './memory/pyfs.js';
-import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, type PyValue } from './pyjson.js';
+import { dumpJson, fromJs, parseJson, PyJSONDecodeError, reprValue, toJs, type PyValue } from './pyjson.js';
+import { budget as budgetOf, refusal as budgetRefusal, type BudgetView, type Dimension } from './jobbudget.js';
 import { checkSchema, PyJsonSchemaUnsupported } from './pyjsonschema.js';
 import { plan, type PlanNode, type PlanResult } from './workplan.js';
 import { searchArchived } from './storage/retention.js';
@@ -532,6 +533,41 @@ function touchesOf(unit: PyDict): string[] {
  * reimplemented. The first path in `unit`'s own `touches` order wins, then the first holder in
  * `plan.units` order, exactly as `shiftwork.py`'s `_contention`.
  */
+/** The ledger's lines, parsed, in order; a missing file is `[]` and a bad line is skipped. */
+function ledger(log: string): unknown[] {
+  let content: string;
+  try {
+    content = pyReadText(log);
+  } catch (e) {
+    if (!(e instanceof PyOSError)) throw e;
+    return [];
+  }
+  const lines: unknown[] = [];
+  for (const line of content.split(SPLITLINES)) {
+    try {
+      lines.push(toJs(parseJson(line)));
+    } catch (e) {
+      if (!(e instanceof PyJSONDecodeError)) throw e;
+    }
+  }
+  return lines;
+}
+
+/**
+ * #262: Layer 1's budget view of this checkpoint, or null when `job.budget` is absent. In flight
+ * is the set `briefed` measures, each reserving one unit and one per-unit token estimate;
+ * `exclude` leaves out the unit being briefed now, so a relaunch does not reserve against itself.
+ */
+function budgetView(log: string, doc: PyDict, exclude: string | null = null): BudgetView | null {
+  const declared = subDict(doc, 'job').v.get('budget');
+  if (declared === undefined) return null;
+  const limit = toJs(declared) as Partial<Record<Dimension, number>>;
+  const inFlight = subList(subDict(doc, 'plan'), 'units')
+    .v.map((u) => text(field(u as PyDict, 'id')))
+    .filter((id) => id !== exclude && briefed(log, id)).length;
+  return budgetOf(ledger(log), limit, inFlight);
+}
+
 function contention(log: string, doc: PyDict, unit: PyDict): string | null {
   const mine = touchesOf(unit);
   if (mine.length === 0) return null;
@@ -628,6 +664,10 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   }
   const contended = contention(logPath(pyJoin(checkpoint)), doc, unit);
   if (contended !== null) return errorResult(contended);
+  // #262/D5: last, so every refusal above keeps its sentence; nothing is written on it.
+  const spend = budgetView(logPath(pyJoin(checkpoint)), doc, selected);
+  const over = spend !== null ? budgetRefusal(spend) : null;
+  if (over !== null) return errorResult(over);
   // F6: the brief is issued, so say so in the ledger — best effort, and only on this branch:
   // a refusal above issued nothing and therefore records nothing. `pyJoin` is the same
   // normalisation `clockOut` applies before it builds ITS log path, so the two land in one file.
@@ -873,6 +913,25 @@ function accountingRefusal(unitId: string, unit: PyDict, accounting: unknown): s
  * (`additionalProperties: true` lets these keys through it) and before any mutation. The keys
  * are named in `RESERVED_LEDGER_KEYS` order so both runtimes spell one sentence for one line.
  */
+/**
+ * #262/D6: with `job.budget` declared, an accounting line reporting 0 tokens is refused unless it
+ * carries `estimate: true` — `shiftwork.py`'s `_zero_tokens_refusal`. `0.0` is zero there too
+ * (`0.0 == 0`), a boolean is not a number, and only a literal `true` marks the guess.
+ */
+function zeroTokensRefusal(doc: PyDict, unitId: string, accounting: unknown): string | null {
+  if (subDict(doc, 'job').v.get('budget') === undefined) return null;
+  if (accounting === null || accounting === undefined) return null;
+  const line = asPatch(accounting);
+  const tokens = line.get('tokens');
+  const zero =
+    tokens !== undefined &&
+    ((tokens.t === 'int' && tokens.v === 0n) || (tokens.t === 'float' && tokens.v === 0));
+  const estimate = line.get('estimate');
+  const marked = estimate !== undefined && estimate.t === 'bool' && estimate.v === true;
+  if (zero && !marked) return `accounting for ${unitId} reports 0 tokens; record the host's figure, or mark it estimate`;
+  return null;
+}
+
 function reservedRefusal(unitId: string, unit: PyDict, accounting: unknown): string | null {
   if (accounting === null || accounting === undefined) return null;
   const line = asPatch(accounting);
@@ -1041,6 +1100,8 @@ function clockOutLocked(
   if (badLine !== null) return errorResult(badLine);
   const forged = reservedRefusal(unitId, unit, accounting);
   if (forged !== null) return errorResult(forged);
+  const zero = zeroTokensRefusal(doc, unitId, accounting);
+  if (zero !== null) return errorResult(zero);
 
   unit.v.set('status', str(status));
   // D3: the cursor follows the GRAPH, on the MUTATED document — the unit just finished is
@@ -1224,5 +1285,10 @@ export function planBatches(checkpoint: string): PyValue {
     ['cursor', field(subDict(doc, 'plan'), 'cursor')],
     // #257/D3: only when some unit declares `touches`, so today's answers keep their bytes.
     ...(answer.held !== undefined ? [['held', fromJs(answer.held)] as [string, PyValue]] : []),
+    // #262/D4: only when `job.budget` is declared, so today's answers keep their bytes.
+    ...((): [string, PyValue][] => {
+      const view = budgetView(logPath(pyJoin(checkpoint)), doc);
+      return view === null ? [] : [['budget', fromJs(view)]];
+    })(),
   ]);
 }

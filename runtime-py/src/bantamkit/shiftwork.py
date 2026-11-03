@@ -116,7 +116,7 @@ from typing import Any
 
 import jsonschema
 
-from bantamkit import workplan
+from bantamkit import jobbudget, workplan
 from bantamkit.assets import AssetNotFound, load_schema, load_tool_asset
 from bantamkit.contract import schema_error
 
@@ -441,6 +441,44 @@ def _contention(path: Path, document: dict, unit: dict) -> str | None:
     return None
 
 
+def _ledger(log_path: Path) -> list[Any]:
+    """The ledger's lines, parsed, in order — a missing file is `[]`, a bad line is skipped.
+
+    The same reader's posture as `_briefed`: a ledger is a file people edit by hand during
+    recovery, so nothing in it is fatal to the reader.
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    lines: list[Any] = []
+    for line in text.splitlines():
+        try:
+            lines.append(json.loads(line))
+        except ValueError:
+            continue
+    return lines
+
+
+def _budget_view(path: Path, document: dict, exclude: str | None = None) -> dict | None:
+    """#262: Layer 1's budget view of this checkpoint, or None when `job.budget` is absent.
+
+    In flight is the set job60 measures — units briefed since their own last clock-out, read
+    by `_briefed` — each reserving one unit and one per-unit token estimate. `exclude` leaves
+    out the unit being briefed now, so a relaunch does not reserve against itself.
+    """
+    limit = document["job"].get("budget")
+    if limit is None:
+        return None
+    log_path = _log_path(path)
+    in_flight = sum(
+        1
+        for unit in document["plan"]["units"]
+        if unit["id"] != exclude and _briefed(log_path, unit["id"])
+    )
+    return jobbudget.budget(_ledger(log_path), limit, in_flight)
+
+
 def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     """Validate the checkpoint and return a unit's brief, or a refusal.
 
@@ -510,6 +548,11 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
     contention = _contention(Path(checkpoint), document, unit)
     if contention is not None:
         return _error(contention)
+    # #262/D5: last, so every refusal above keeps its sentence; nothing is written on it.
+    view = _budget_view(Path(checkpoint), document, exclude=selected)
+    over = jobbudget.refusal(view) if view is not None else None
+    if over is not None:
+        return _error(over)
     # F6: the brief is issued, so say so in the ledger — best effort, and only on this
     # branch: a refusal above issued nothing and therefore records nothing.
     _record_brief(_log_path(Path(checkpoint)), selected, unit["role"])
@@ -705,6 +748,25 @@ def _accounting_refusal(unit_id: str, unit: dict, accounting: dict | None) -> st
     )
 
 
+def _zero_tokens_refusal(document: dict, unit_id: str, accounting: dict | None) -> str | None:
+    """#262/D6: with `job.budget` declared, a line reporting 0 tokens is refused unless marked.
+
+    A self-reported zero bends every later figure — the median, the remaining, the refusal —
+    so a job that has a budget must either record the host's figure or say it is a guess
+    with `estimate: true`. Without `job.budget` nothing reads the figure back and the line
+    passes as before. Runs after the shape and reserved-key checks, before any write.
+    """
+    if document["job"].get("budget") is None or accounting is None:
+        return None
+    tokens = accounting.get("tokens")
+    if tokens == 0 and not isinstance(tokens, bool) and accounting.get("estimate") is not True:
+        return (
+            f"accounting for {unit_id} reports 0 tokens; "
+            "record the host's figure, or mark it estimate"
+        )
+    return None
+
+
 def _reserved_refusal(unit_id: str, unit: dict, accounting: dict | None) -> str | None:
     """#117: an accounting line that sets a key the runtime writes is refused, nothing written.
 
@@ -877,6 +939,9 @@ def _clock_out_locked(
     forged = _reserved_refusal(unit_id, unit, accounting)
     if forged is not None:
         return _error(forged)
+    zero = _zero_tokens_refusal(document, unit_id, accounting)
+    if zero is not None:
+        return _error(zero)
 
     unit["status"] = status
     # D3: the cursor follows the GRAPH, on the document as just mutated. Three arms, in
@@ -987,6 +1052,12 @@ def status(checkpoint: str, search: str | None = None) -> dict[str, Any]:
     return out
 
 
+def _budget_key(path: Path, document: dict) -> dict[str, Any]:
+    """#262/D4: `{"budget": view}` when `job.budget` is declared, `{}` otherwise."""
+    view = _budget_view(path, document)
+    return {} if view is None else {"budget": view}
+
+
 def plan_batches(checkpoint: str) -> dict[str, Any]:
     """Read-only batch view of a checkpoint. Never mutates.
 
@@ -1025,4 +1096,6 @@ def plan_batches(checkpoint: str) -> dict[str, Any]:
         "sequence": answer["sequence"],
         "width": answer["width"],
         "cursor": document["plan"]["cursor"],
-    } | ({"held": answer["held"]} if "held" in answer else {})
+    } | ({"held": answer["held"]} if "held" in answer else {}) | _budget_key(
+        Path(checkpoint), document
+    )
