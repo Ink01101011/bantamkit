@@ -452,7 +452,13 @@ function batchView(doc: PyDict): PlanResult {
     // only is how two runtimes come to disagree about real data.
     const declared = u.v.get('depends_on');
     const deps = declared !== undefined && declared.t === 'list' ? declared.v.map(text) : [];
-    nodes.push({ id: text(u.v.get('id')!), depends_on: deps.filter((dep) => !satisfied.has(dep)), priority: 0 });
+    const node: PlanNode = { id: text(u.v.get('id')!), depends_on: deps.filter((dep) => !satisfied.has(dep)), priority: 0 };
+    // #257: `touches` passes through only when the unit declares it, so a checkpoint with no
+    // `touches` anywhere gets the core's answer with no `held` key — today's, byte for byte.
+    // The schema has already refused a non-string item, so `text` cannot meet one.
+    const touches = u.v.get('touches');
+    if (touches !== undefined && touches.t === 'list') node.touches = touches.v.map(text);
+    nodes.push(node);
   }
   return plan(nodes);
 }
@@ -471,6 +477,39 @@ function readyIds(view: PlanResult): string[] {
 }
 
 // ----------------------------------------------------------------------------- clock_in
+
+/** The unit's `touches` as plain strings, `[]` when it declares none. */
+function touchesOf(unit: PyDict): string[] {
+  const touches = unit.v.get('touches');
+  return touches !== undefined && touches.t === 'list' ? touches.v.map(text) : [];
+}
+
+/**
+ * #257/D4: the sentence when `unit` writes a file a unit still in flight writes, or null.
+ *
+ * The batch view sees the checkpoint, not the briefs, so a unit briefed and not yet clocked out
+ * claims its files in batch 0 only if it sorts first, which order cannot promise. In flight is the
+ * set job60 measures — briefed since its own last clock-out — read by `briefed`, called and never
+ * reimplemented. The first path in `unit`'s own `touches` order wins, then the first holder in
+ * `plan.units` order, exactly as `shiftwork.py`'s `_contention`.
+ */
+function contention(log: string, doc: PyDict, unit: PyDict): string | null {
+  const mine = touchesOf(unit);
+  if (mine.length === 0) return null;
+  const id = text(field(unit, 'id'));
+  const holders = subList(subDict(doc, 'plan'), 'units')
+    .v.map((other) => other as PyDict)
+    .filter((other) => text(field(other, 'id')) !== id && touchesOf(other).length > 0)
+    .filter((other) => briefed(log, text(field(other, 'id'))));
+  for (const file of mine) {
+    for (const other of holders) {
+      if (touchesOf(other).includes(file)) {
+        return `unit ${id} touches ${file}, which ${text(field(other, 'id'))} holds until its clock-out`;
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Validate the checkpoint and return a unit's brief, or a refusal.
@@ -548,6 +587,8 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   if (unit === null || !ready.includes(selected)) {
     return errorResult(`unit ${selected} is not ready; ready is ${ready.join(', ')}`);
   }
+  const contended = contention(logPath(pyJoin(checkpoint)), doc, unit);
+  if (contended !== null) return errorResult(contended);
   // F6: the brief is issued, so say so in the ledger — best effort, and only on this branch:
   // a refusal above issued nothing and therefore records nothing. `pyJoin` is the same
   // normalisation `clockOut` applies before it builds ITS log path, so the two land in one file.
@@ -1136,5 +1177,7 @@ export function planBatches(checkpoint: string): PyValue {
     ['sequence', { t: 'list', v: answer.sequence.map(str) }],
     ['width', int(answer.width)],
     ['cursor', field(subDict(doc, 'plan'), 'cursor')],
+    // #257/D3: only when some unit declares `touches`, so today's answers keep their bytes.
+    ...(answer.held !== undefined ? [['held', fromJs(answer.held)] as [string, PyValue]] : []),
   ]);
 }
