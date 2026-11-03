@@ -1496,10 +1496,10 @@ puts both runtimes on one splitting rule and adds an `install-host-text` seed wi
 at 1.32.2 (bumped from 1.31.0 in #268; `--suite wire` rerun green). Any SDK bump must rerun `--suite wire`. This is the Node twin of (zzz).
 
 **(gggg) Packaging and install follow-ups.**
-- `runtime-ts/package-lock.json` still resolves five transitive advisories: fast-uri (high),
-  proxy-addr (critical), hono, ip-address and qs, all `fixAvailable`. The lock is not packed, and
-  a fresh consumer install audits clean (J66-1), so only the dev/CI tree is affected. The fix is
-  `npm audit fix` in its own unit.
+- Done in #268: `runtime-ts/package-lock.json` used to resolve five transitive advisories
+  (fast-uri, proxy-addr, hono, ip-address, qs). `npm audit fix` (no `--force`) moved it to
+  body-parser 2.4.0, fast-uri 3.1.9, zod 4.6.7 and qs 6.17.1, and `npm audit` now reports 0
+  vulnerabilities in the repo and in a packed install.
 - `load_tool` on a malformed file inside `tools/`: Python raises `KeyError`; Node returns
   `undefined` fields.
 - Python `--update`, `--install*` and a bare server still need the `[mcp]` extra (J66-2 Q2).

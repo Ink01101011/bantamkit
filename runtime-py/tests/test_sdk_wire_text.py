@@ -8,8 +8,11 @@ Two SDK changes, both measured under `mcp` 2.3.0 before the fix:
 - `initialize` stopped advertising `capabilities.experimental: {}`: 2.0.x defaulted a missing
   `experimental_capabilities` to `{}`, 2.3.0 passes `None` through. `mcpstdio.serve_stdio`
   passes `{}`; the port declares it.
+- `sampling/createMessage` stopped carrying `"_meta": {}`: 2.0.x set `_meta` on every outbound
+  request, 2.3.0 drops an empty one. `mcpstdio._Writes` puts it back first; the port sends it.
 
-The differential against the port is `--suite workplan` (`tool/no-id`) and `--suite wire`.
+The differential against the port is `--suite workplan` (`tool/no-id`), `--suite wire` and
+`--suite skill-propose` (`wire sampled`).
 """
 
 from __future__ import annotations
@@ -17,8 +20,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -26,7 +31,9 @@ import pytest
 pytest.importorskip("mcp")
 
 from mcp import Client  # noqa: E402
+from test_skillinstall import NOW, record  # noqa: E402
 
+from bantamkit import skillmine  # noqa: E402
 from bantamkit.mcpserver import build_server  # noqa: E402
 from bantamkit.memory import Memory  # noqa: E402
 
@@ -90,3 +97,79 @@ def test_initialize_over_stdio_advertises_experimental(tmp_path):
     answer = json.loads(done.stdout.splitlines()[0])
     assert answer["id"] == 1
     assert answer["result"]["capabilities"]["experimental"] == {}
+
+
+def test_sampling_create_message_over_stdio_carries_an_empty_meta_first(tmp_path):
+    # The `skill-propose` suite's `wire sampled` session: a client that declares `sampling`
+    # approves a proposal with no draft, and the server asks it for one.
+    home = tmp_path / "home"
+    (home / ".bantamkit").mkdir(parents=True)
+    (home / ".claude").mkdir()
+    skillmine.write_proposals(
+        home,
+        {
+            "clusters": [record("wire-a", ok_draft=False)],
+            "miner": {"error": None, "ms": 0, "pieces": {"session": 0, "shiftwork": 6}},
+            "ts": NOW,
+            "version": 1,
+        },
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "BANTAMKIT_INDEX_DIR": str(tmp_path / "idx"),
+        "BANTAMKIT_RETENTION": "off",
+        "BANTAMKIT_SKILL_AUDIT": "off",
+        "BANTAMKIT_SKILL_AUTO": "off",
+    }
+    for key in ("BANTAMKIT_LLM_URL", "BANTAMKIT_LLM_MODEL", "BANTAMKIT_MEMORY_DIR"):
+        env.pop(key, None)
+    frames = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"sampling": {}},
+                "clientInfo": {"name": "test", "version": "0"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "prompts/get",
+            "params": {
+                "name": "skill_propose",
+                "arguments": {"action": "approve", "target": "c-wire-a"},
+            },
+        },
+    ]
+    child = subprocess.Popen(
+        [sys.executable, "-m", "bantamkit.mcpserver", "--store", str(tmp_path / "store")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=tmp_path,
+        env=env,
+    )
+    lines: queue.Queue[bytes] = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(b) for b in child.stdout], daemon=True).start()
+    asked = None
+    try:
+        child.stdin.write(b"".join(json.dumps(f).encode() + b"\n" for f in frames))
+        child.stdin.flush()
+        while asked is None:
+            frame = json.loads(lines.get(timeout=60))
+            if frame.get("method") == "sampling/createMessage":
+                asked = frame
+            assert "error" not in frame, frame
+            assert frame.get("id") != 2, frame  # the prompt answered without asking
+    finally:
+        child.kill()
+        child.wait()
+    assert list(asked["params"])[0] == "_meta"
+    assert asked["params"]["_meta"] == {}
+    assert asked["params"]["maxTokens"] == 4096
