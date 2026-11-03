@@ -210,6 +210,7 @@ function opList() {
   add('daily: BANTAMKIT_SKILL_AUTO=off counts and judges, promotes nothing', { op: 'daily', home: 'h7', now: LATER, env: 'off' });
   add('daily: the next day with the switch on promotes', { op: 'daily', home: 'h7', now: '2026-10-29T12:00:00.000Z', env: 'on' });
   part2(add);
+  part3(add);
   return { ops, label };
 }
 
@@ -388,10 +389,145 @@ function part2(add) {
   add('improve_step: auto " OFF ", no drafter: the narrow waits', { op: 'improve_step', env: ' OFF ', home: 'x4', sources: {}, now: LATER });
   add('x5: install sk-s', { op: 'install', home: 'x5', name: 'sk-s', text: draft('sk-s'), now: NOW });
   add('improve_step: auto "": different steps: a steps proposal as before', { op: 'improve_step', env: '', home: 'x5', sources: used(['Grep', 'Write', 'Grep']), doc: steps, now: LATER });
+  // #243 (#234 N1): a `## Steps` proposal passes the drafter's gate like every other edit. A
+  // correction that names `[notes]` puts a step citing `notes`, which is no evidence id, so the
+  // gate refuses it: the step is logged and dropped, the pitfall still goes on alone
+  const bracket = 'see [notes] first';
+  add('c4: install sk-c', { op: 'install', home: 'c4', name: 'sk-c', text: draft('sk-c'), now: NOW });
+  add('improve_step: #243 a step that fails the gate is not proposed', { op: 'improve_step', env: 'on', home: 'c4', sources: corrected('sk-c', bracket), now: LATER });
+  add('x9: install sk-c', { op: 'install', home: 'x9', name: 'sk-c', text: draft('sk-c'), now: NOW });
+  add('improve_step: #243 auto unset: a failing step is not folded, the pitfall is proposed alone', { op: 'improve_step', home: 'x9', sources: corrected('sk-c', bracket), now: LATER });
+  // the folded step is gated against the evidence it cites: its own turn, which joins
+  // `bantamkit-evidence` (a different-steps turn is in no cluster record)
+  const widenSteps = {
+    clusters: [
+      rec(
+        'sk-w',
+        [1, 2].map((j) => ({ id: `s${j}${j}${j}${j}aaaa#1`, ok: true, prompt: 'fix the lexer tokens', ts: AFTER })),
+        ['k1', 'lexer', 'tokens'],
+        ['Read>Edit', 'Edit>Bash'],
+      ),
+    ],
+  };
+  const usedW = { turns: [{ id: 's3333aaaa#1', ok: true, tools: ['Grep', 'Write', 'Grep'], ts: AFTER }], uses: [{ fact: 'sk-w', session: '3333aaaa-z', ts: AFTER }] };
+  add('x10: install sk-w', { op: 'install', home: 'x10', name: 'sk-w', text: draft('sk-w'), now: NOW });
+  add('improve_step: #243 auto unset: a different-steps line folds into the widening', { op: 'improve_step', home: 'x10', sources: usedW, doc: widenSteps, now: LATER });
   for (const [h, env] of [['x6', ' Yes '], ['x7', '1'], ['x8', 'TRUE']]) {
     add(`${h}: install sk-c`, { op: 'install', home: h, name: 'sk-c', text: draft('sk-c'), now: NOW });
     add(`improve_step: auto ${JSON.stringify(env)}: the pitfall applied as v2`, { op: 'improve_step', env, home: h, sources: corrected('sk-c'), now: LATER });
   }
+}
+
+// ------------------------------------------------- part 3 (#247): one skill covers two clusters
+
+const SP_IDS = ['job7/U1', 'job7/U2', 'job7/U3', 'job7/U4', 'job7/U5', 'job7/U6'];
+const spEv = (id, ok = true) => ({ id, ok, prompt: `work ${id}`, ts: '2026-01-01T00:00:00Z' });
+const spRec = (id, evidence, extra = {}) => ({
+  auto_bar: 6,
+  auto_eligible: false,
+  bar: 3,
+  eligible: true,
+  evidence,
+  id,
+  keywords: ['k1'],
+  level: 'user',
+  members: evidence.length,
+  pitfalls: [],
+  repos: [],
+  source: 'shiftwork',
+  status: 'pending',
+  steps: [],
+  successes: evidence.filter((e) => e.ok).length,
+  top: null,
+  ...extra,
+});
+const SP_ORIG = spRec('c-sp', SP_IDS.map((i) => spEv(i)), { status: 'installed' });
+const spDraft = (n, cite, words) =>
+  `---\nname: ${n}\ndescription: ${words}\n---\n\n## When to use\n\nWhen asked.\n\n## Steps\n\n1. Do it [${cite}].\n\n## Pitfalls\n\nNone.\n\n## Example\n\nx\n`;
+const SP_TEXT = spDraft('sk-sp', 'job7/U1', 'Does sk-sp. Use when sk-sp is asked.');
+const SP_LEX = spDraft('sk-lexer', 'job7/U1', 'Reads lexer token tables. Use when lexer tokens are inspected.');
+const SP_GRAM = spDraft('sk-grammar', 'job7/U4', 'Writes parser grammar rules. Use when grammar productions change.');
+const spDoc = (a, b, ea = {}, eb = {}) => ({
+  clusters: [spRec('c-sp', a, { status: 'installed', ...ea }), spRec('c-sq', b, eb)],
+  miner: { error: null, ms: 0, pieces: { session: 0, shiftwork: a.length + b.length } },
+  ts: NOW,
+  version: 1,
+});
+const SP_SPLIT = spDoc(SP_IDS.slice(0, 3).map((i) => spEv(i)), SP_IDS.slice(3).map((i) => spEv(i)));
+const PROPOSALS_REL = '.bantamkit/skill-proposals.json';
+
+function part3(add) {
+  const setup = (h, doc = SP_SPLIT) => {
+    add(`${h}: install sk-sp from six pieces`, { op: 'install', home: h, name: 'sk-sp', text: SP_TEXT, now: NOW, cluster: SP_ORIG });
+    add(`${h}: the miner splits them three and three`, { op: 'write', home: h, rel: PROPOSALS_REL, text: `${JSON.stringify(doc, null, 2)}\n` });
+  };
+  // sp1: proposed, approved through the host agent's two files, undone, not offered again
+  setup('sp1');
+  add('split: three and three successes, each at its bar: a split proposed', { op: 'improve_step', env: 'on', home: 'sp1', sources: {}, doc: SP_SPLIT, now: LATER });
+  add('split: list shows the split', { op: 'render', home: 'sp1', action: 'list', target: null, now: LATER });
+  add('split: approve with no drafter: the two-file hand-off', { op: 'render', home: 'sp1', action: 'approve', target: 'sk-sp', now: LATER });
+  add('sp1: the agent writes the lexer half', { op: 'write', home: 'sp1', rel: '.bantamkit/skill-handoff/c-sp/SKILL.md', text: SP_LEX });
+  add('sp1: the agent writes the grammar half', { op: 'write', home: 'sp1', rel: '.bantamkit/skill-handoff/c-sq/SKILL.md', text: SP_GRAM });
+  add('split: approve again: two skills, sk-sp removed', { op: 'render', home: 'sp1', action: 'approve', target: 'sk-sp', now: LATER });
+  add('split: undo puts sk-sp back and removes the two', { op: 'render', home: 'sp1', action: 'undo', target: 'sk-sp', now: DAY3 });
+  add('split: undone is not offered again below the doubling', { op: 'improve_step', env: 'on', home: 'sp1', sources: {}, doc: SP_SPLIT, now: DAY3 });
+  // sp2 / sp3: below the bar
+  const failed = spDoc(SP_IDS.slice(0, 3).map((i) => spEv(i)), [spEv(SP_IDS[3]), spEv(SP_IDS[4]), spEv(SP_IDS[5], false)]);
+  setup('sp2', failed);
+  add('split: two successes and a failure in the second: nothing', { op: 'improve_step', env: 'on', home: 'sp2', sources: {}, doc: failed, now: LATER });
+  const sessionBar = spDoc(SP_IDS.slice(0, 3).map((i) => spEv(i)), SP_IDS.slice(3).map((i) => spEv(i)), {}, { bar: 5, source: 'session' });
+  setup('sp3', sessionBar);
+  add('split: three successes under a bar of five: nothing', { op: 'improve_step', env: 'on', home: 'sp3', sources: {}, doc: sessionBar, now: LATER });
+  // sp4: approved through sampling, both drafts in one call
+  setup('sp4');
+  add('sp4: proposed', { op: 'improve_step', env: 'on', home: 'sp4', sources: {}, doc: SP_SPLIT, now: LATER });
+  add('split: approve through sampling: two skills in one call', { op: 'render', home: 'sp4', action: 'approve', target: 'sk-sp', now: LATER, answers: [SP_LEX, SP_GRAM] });
+  // sp5: rejected, then offered again once the two clusters' successes double
+  setup('sp5');
+  add('sp5: proposed', { op: 'improve_step', env: 'on', home: 'sp5', sources: {}, doc: SP_SPLIT, now: LATER });
+  add('split: reject remembers the six', { op: 'render', home: 'sp5', action: 'reject', target: 'sk-sp', now: LATER });
+  const grown = (n) => spDoc(SP_IDS.slice(0, 3).map((i) => spEv(i)), SP_IDS.slice(3).map((i) => spEv(i)), { successes: n }, { successes: n });
+  add('split: rejected at six, the clusters at ten: nothing', { op: 'improve_step', env: 'on', home: 'sp5', sources: {}, doc: grown(5), now: DAY3 });
+  add('split: rejected at six, the clusters at twelve: offered again', { op: 'improve_step', env: 'on', home: 'sp5', sources: {}, doc: grown(6), now: DAY3 });
+  // sp6: the second half fails the gate (it takes the first one's name): nothing is split
+  setup('sp6');
+  add('sp6: proposed', { op: 'improve_step', env: 'on', home: 'sp6', sources: {}, doc: SP_SPLIT, now: LATER });
+  add('split: the second draft collides with the first: nothing split', {
+    op: 'render',
+    home: 'sp6',
+    action: 'approve',
+    target: 'sk-sp',
+    now: LATER,
+    answers: [SP_LEX, SP_GRAM.replace('name: sk-grammar', 'name: sk-lexer')],
+  });
+  // sp7: as sp6, but the OTHER cluster sorts first (c-aa < c-sp), so its half installs, marks
+  // its record `installed`, and is backed out: every record must read as it did before
+  const first = {
+    ...SP_SPLIT,
+    clusters: [SP_SPLIT.clusters[0], { ...SP_SPLIT.clusters[1], id: 'c-aa' }],
+  };
+  setup('sp7', first);
+  add('sp7: proposed', { op: 'improve_step', env: 'on', home: 'sp7', sources: {}, doc: first, now: LATER });
+  add('split: the other cluster first, its half backed out: every record as it was', {
+    op: 'render',
+    home: 'sp7',
+    action: 'approve',
+    target: 'sk-sp',
+    now: LATER,
+    answers: [SP_GRAM, SP_LEX.replace('name: sk-lexer', 'name: sk-grammar')],
+  });
+  // sp8 / g4: automatic edits off, a correction stores an `improve` proposal in the same run,
+  // so the split (or merge) offered on the run's first snapshot is not stored nor reported
+  setup('sp8');
+  add('split: auto unset, a correction takes the slot first: no split reported', { op: 'improve_step', home: 'sp8', sources: corrected('sk-sp'), doc: SP_SPLIT, now: LATER });
+  add('g4: install sk-ma', { op: 'install', home: 'g4', name: 'sk-ma', text: draft('sk-ma'), now: NOW });
+  add('g4: install sk-mb', { op: 'install', home: 'g4', name: 'sk-mb', text: draft('sk-mb'), now: NOW });
+  add('merge: auto unset, a correction takes the slot first: no merge reported', {
+    op: 'improve_step',
+    home: 'g4',
+    sources: { ...together(5), ...corrected('sk-ma') },
+    now: LATER,
+  });
 }
 
 // ------------------------------------------------------------------------- Node side
@@ -467,7 +603,7 @@ async function runNode(ctx, bed, ops) {
       continue;
     }
     if (op.op === 'install') {
-      si.install(cluster(op.name), op.text, null, home, op.now, false);
+      si.install(op.cluster ?? cluster(op.name), op.text, null, home, op.now, false);
       results.push({ tree: mask(tree(home, bed), bed) });
       continue;
     }
@@ -490,7 +626,11 @@ async function runNode(ctx, bed, ops) {
     if (op.op === 'render') {
       const sp = await import(dist('skillpropose.js'));
       const answer = op.answer;
-      const sampler = answer !== undefined ? async () => answer : null;
+      let sampler = answer !== undefined ? async () => answer : null;
+      if (op.answers !== undefined) {
+        const queue = [...op.answers];
+        sampler = async () => queue.shift();
+      }
       const said = await sp.render(op.action, op.target, null, home, null, op.now, sampler);
       results.push(mask({ said, state: sf.readState(home), tree: tree(home, bed) }, bed));
       continue;
@@ -737,6 +877,9 @@ export async function run(ctx) {
     x3: find('improve_step: auto "banana": the widened keywords are proposed, the tune waits'),
     x4: find('improve_step: auto " OFF ", no drafter: the narrow waits'),
     x5: find('improve_step: auto "": different steps: a steps proposal as before'),
+    c4: find('improve_step: #243 a step that fails the gate is not proposed'),
+    x9: find('improve_step: #243 auto unset: a failing step is not folded, the pitfall is proposed alone'),
+    x10: find('improve_step: #243 auto unset: a different-steps line folds into the widening'),
     on: ['x6', 'x7', 'x8'].map((h, i) => find(`improve_step: auto ${JSON.stringify([' Yes ', '1', 'TRUE'][i])}: the pitfall applied as v2`)),
   };
   const skillOf = (r, n) => r?.tree?.[`.bantamkit/skills/${n}/SKILL.md`] ?? null;
@@ -747,7 +890,7 @@ export async function run(ctx) {
     cases.push({
       name: `LITERAL: part-2 constants — ${side}`,
       kind: 'json',
-      expected: [5, [1, 2], 2, 200, 5, [1, 2], ['improve', 'merge', 'remove', 'steps'], ['narrow', 'widen']],
+      expected: [5, [1, 2], 2, 200, 5, [1, 2], ['improve', 'merge', 'remove', 'split', 'steps'], ['narrow', 'widen']],
       actual: got[find('constants2')],
     });
     cases.push({
@@ -843,6 +986,51 @@ export async function run(ctx) {
         [i2.x5, 'x5', 'sk-s', (p) => (p?.text ?? '').includes('It also worked as Grep > Write > Grep [s1111aaaa#1].')],
       ].map(([i, h, n, f]) => [got[i].events, x(i, n).version ?? null, unchanged(i, h, n), x(i, n).proposal?.kind ?? null, f(x(i, n).proposal)]),
     });
+    const failed = (i) =>
+      (got[i]?.tree?.['.bantamkit/skill-drafts.jsonl'] ?? '')
+        .split('\n')
+        .filter((l) => l)
+        .map((l) => JSON.parse(l))
+        .map((r) => [r.ok, r.reasons]);
+    const refused = [false, ['step 2 cites notes, which is not in the evidence']];
+    cases.push({
+      name: `LITERAL: #243 a ## Steps proposal the gate refuses is logged, never proposed; the pitfall still applies — ${side}`,
+      kind: 'json',
+      expected: [['improved skill sk-c to v2'], 2, null, true, false, [refused]],
+      actual: [
+        got[i2.c4].events,
+        x(i2.c4, 'sk-c').version ?? null,
+        x(i2.c4, 'sk-c').proposal ?? null,
+        (skillOf(got[i2.c4], 'sk-c') ?? '').includes('- [s1111aaaa#1] see [notes] first'),
+        (skillOf(got[i2.c4], 'sk-c') ?? '').includes('2. Before you finish'),
+        failed(i2.c4),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: #243 auto unset: a refused step is not folded; the pitfall is proposed alone — ${side}`,
+      kind: 'json',
+      expected: [['proposed a change to sk-c'], 1, 'improve', true, false, [refused]],
+      actual: [
+        got[i2.x9].events,
+        x(i2.x9, 'sk-c').version ?? null,
+        x(i2.x9, 'sk-c').proposal?.kind ?? null,
+        (x(i2.x9, 'sk-c').proposal?.text ?? '').includes('- [s1111aaaa#1] see [notes] first'),
+        (x(i2.x9, 'sk-c').proposal?.text ?? '').includes('2. Before you finish'),
+        failed(i2.x9),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: #243 auto unset: a folded different-steps line is gated against its own turn — ${side}`,
+      kind: 'json',
+      expected: [['proposed a change to sk-w', 'waiting on a drafter to tune sk-w'], 'improve', true, true, []],
+      actual: [
+        got[i2.x10].events,
+        x(i2.x10, 'sk-w').proposal?.kind ?? null,
+        (x(i2.x10, 'sk-w').proposal?.text ?? '').includes('bantamkit-keywords: "k1,lexer,tokens"'),
+        (x(i2.x10, 'sk-w').proposal?.text ?? '').includes('2. It also worked as Grep > Write > Grep [s3333aaaa#1].'),
+        failed(i2.x10),
+      ],
+    });
     cases.push({
       name: `LITERAL: auto " Yes " / "1" / "TRUE": the pitfall applied as v2, the step proposed — ${side}`,
       kind: 'json',
@@ -852,6 +1040,147 @@ export async function run(ctx) {
         [['improved skill sk-c to v2', 'proposed a change to sk-c'], 2, 'steps'],
       ],
       actual: i2.on.map((i) => [got[i].events, x(i, 'sk-c').version ?? null, x(i, 'sk-c').proposal?.kind ?? null]),
+    });
+  }
+  // #247: a proposed split, per side (a rule both runtimes lose together stays green above)
+  const sp = {
+    install: find('sp1: install sk-sp from six pieces'),
+    proposed: find('split: three and three successes, each at its bar: a split proposed'),
+    list: find('split: list shows the split'),
+    handoff: find('split: approve with no drafter: the two-file hand-off'),
+    approved: find('split: approve again: two skills, sk-sp removed'),
+    undone: find('split: undo puts sk-sp back and removes the two'),
+    again: find('split: undone is not offered again below the doubling'),
+    failed: find('split: two successes and a failure in the second: nothing'),
+    bar5: find('split: three successes under a bar of five: nothing'),
+    sampled: find('split: approve through sampling: two skills in one call'),
+    rejected: find('split: reject remembers the six'),
+    ten: find('split: rejected at six, the clusters at ten: nothing'),
+    twelve: find('split: rejected at six, the clusters at twelve: offered again'),
+    collide: find('split: the second draft collides with the first: nothing split'),
+    proposed7: find('sp7: proposed'),
+    first: find('split: the other cluster first, its half backed out: every record as it was'),
+    taken: find('split: auto unset, a correction takes the slot first: no split reported'),
+    merged: find('merge: auto unset, a correction takes the slot first: no merge reported'),
+  };
+  const recs = (r) =>
+    JSON.parse(r?.tree?.[PROPOSALS_REL] ?? '{"clusters":[]}').clusters.map((c) => [c.id, c.status, Object.hasOwn(c, 'draft')]);
+  const names = (r) => Object.keys(r?.state?.skills ?? {}).sort();
+  for (const [side, got] of [
+    ['python', py],
+    ['node', nd],
+  ]) {
+    const prop = got[sp.proposed].state?.skills?.['sk-sp']?.proposal ?? {};
+    cases.push({
+      name: `LITERAL: one skill over two clusters, each at its bar, is a split proposal only — ${side}`,
+      kind: 'json',
+      expected: [['proposed splitting sk-sp'], 'split', 'pending', ['c-sp', 'c-sq'], 6, 1, true],
+      actual: [
+        got[sp.proposed].events,
+        prop.kind ?? null,
+        prop.status ?? null,
+        prop.into ?? null,
+        prop.successes ?? null,
+        got[sp.proposed].state?.skills?.['sk-sp']?.version ?? null,
+        skillOf(got[sp.proposed], 'sk-sp') === skillOf(got[sp.install], 'sk-sp'),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: below the bar no split is proposed [a failed piece, a bar of five] — ${side}`,
+      kind: 'json',
+      expected: [[], null, [], null],
+      actual: [
+        got[sp.failed].events,
+        got[sp.failed].state?.skills?.['sk-sp']?.proposal ?? null,
+        got[sp.bar5].events,
+        got[sp.bar5].state?.skills?.['sk-sp']?.proposal ?? null,
+      ],
+    });
+    cases.push({
+      name: `LITERAL: approving a split installs two gated skills and removes the one split — ${side}`,
+      kind: 'json',
+      expected: [
+        true,
+        true,
+        ['sk-sp'],
+        'split skill sk-sp into sk-lexer and sk-grammar.\nundo: /mcp__bantamkit__skill_propose undo sk-sp',
+        ['sk-grammar', 'sk-lexer'],
+        null,
+        ['sk-lexer', 'sk-grammar'],
+        ['installed', 'installed'],
+        ['sk-grammar', 'sk-lexer'],
+      ],
+      actual: [
+        (got[sp.list].said ?? '').includes('- sk-sp: split it in two, drafted from clusters c-sp and c-sq (6 successes in the two clusters)'),
+        (got[sp.handoff].said ?? '').includes('.bantamkit/skill-handoff/c-sq/SKILL.md'),
+        names(got[sp.handoff]),
+        got[sp.approved].said ?? null,
+        names(got[sp.approved]),
+        skillOf(got[sp.approved], 'sk-sp'),
+        got[sp.approved].state?.removed?.['sk-sp']?.split?.names ?? null,
+        JSON.parse(got[sp.approved].tree?.[PROPOSALS_REL] ?? '{"clusters":[]}').clusters.map((r) => r.status),
+        names(got[sp.sampled]),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: undoing a split restores the skill's bytes, removes the two, and is not re-offered — ${side}`,
+      kind: 'json',
+      expected: [['sk-sp'], true, 6, ['sk-grammar', 'sk-lexer'], ['installed', 'rejected'], []],
+      actual: [
+        names(got[sp.undone]),
+        skillOf(got[sp.undone], 'sk-sp') === skillOf(got[sp.install], 'sk-sp'),
+        got[sp.undone].state?.skills?.['sk-sp']?.split_rejected_at ?? null,
+        Object.keys(got[sp.undone].state?.removed ?? {}).sort(),
+        JSON.parse(got[sp.undone].tree?.[PROPOSALS_REL] ?? '{"clusters":[]}').clusters.map((r) => r.status),
+        got[sp.again].events,
+      ],
+    });
+    cases.push({
+      name: `LITERAL: a rejected split comes back only when the clusters double [10, 12]; a failed half splits nothing — ${side}`,
+      kind: 'json',
+      expected: [6, [], ['proposed splitting sk-sp'], ['sk-sp'], true],
+      actual: [
+        got[sp.rejected].state?.skills?.['sk-sp']?.split_rejected_at ?? null,
+        got[sp.ten].events,
+        got[sp.twelve].events,
+        names(got[sp.collide]),
+        (got[sp.collide].said ?? '').startsWith('The SKILL.md for cluster c-sq did not pass the gate'),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: a split backed out after the other cluster's half installed leaves every record as it was — ${side}`,
+      kind: 'json',
+      expected: [
+        ['proposed splitting sk-sp'],
+        ['c-aa', 'c-sp'],
+        true,
+        ['sk-sp'],
+        [
+          ['c-sp', 'installed', false],
+          ['c-aa', 'pending', true],
+        ],
+        'split',
+      ],
+      actual: [
+        got[sp.proposed7].events,
+        got[sp.proposed7].state?.skills?.['sk-sp']?.proposal?.into ?? null,
+        (got[sp.first].said ?? '').startsWith('The SKILL.md for cluster c-sp did not pass the gate'),
+        names(got[sp.first]),
+        recs(got[sp.first]),
+        got[sp.first].state?.skills?.['sk-sp']?.proposal?.kind ?? null,
+      ],
+    });
+    cases.push({
+      name: `LITERAL: a split or merge whose slot a same-run proposal took is neither stored nor reported — ${side}`,
+      kind: 'json',
+      expected: [['proposed a change to sk-sp'], 'improve', ['proposed a change to sk-ma'], 'improve', null],
+      actual: [
+        got[sp.taken].events,
+        got[sp.taken].state?.skills?.['sk-sp']?.proposal?.kind ?? null,
+        got[sp.merged].events,
+        got[sp.merged].state?.skills?.['sk-ma']?.proposal?.kind ?? null,
+        got[sp.merged].state?.skills?.['sk-mb']?.proposal?.kind ?? null,
+      ],
     });
   }
   return { cases, notes: [] };

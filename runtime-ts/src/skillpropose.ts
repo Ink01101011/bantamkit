@@ -185,7 +185,10 @@ function waitingLines(name: string, p: Rec): string[] {
       ? 'remove it (unused through probation, but edited by hand, so never removed for you)'
       : p['kind'] === 'merge'
         ? `merge it with ${other} (the two are put in front of the same sessions)`
-        : `a proposed ${p['kind'] as string} change`;
+        : p['kind'] === 'split'
+          ? `split it in two, drafted from clusters ${strs(p['into']).join(' and ') || '?'} ` +
+            `(${num(p['successes'])} successes in the two clusters)`
+          : `a proposed ${p['kind'] as string} change`;
   const out = [`- ${name}: ${what}`];
   const diff = p['diff'];
   if (str(diff) && diff) out.push('  ```diff', ...diff.split('\n').map((line) => `  ${line}`), '  ```');
@@ -468,6 +471,246 @@ function dropProposal(home: string, name: string, status: string | null = null):
   });
 }
 
+function splitHandoffText(name: string, todo: Array<[string, Handoff]>, home: string): string {
+  const out = [
+    `No sampling client or endpoint drafted the split of ${name}, so you draft it: one ` +
+      'skill per cluster, each with its own name and its own trigger phrases.',
+    '',
+  ];
+  todo.forEach(([cid, handoff], i) => {
+    out.push(
+      `${i + 1}. Write ONE file, ${handoffPath(home, cid)}, with your own file tools, following ` + 'these instructions:',
+      '',
+      handoff.instructions,
+      '',
+      `The evidence bundle of cluster ${cid}:`,
+      '',
+      `\`\`\`json\n${bundleJson(handoff.bundle)}\n\`\`\``,
+      '',
+    );
+  });
+  out.push(
+    `${todo.length + 1}. Then run ${COMMAND} approve ${name} again. bantamkit gates each file, ` +
+      `installs both skills and removes ${name} (undo: ${COMMAND} undo ${name}). Write nothing ` +
+      'else.',
+  );
+  return out.join('\n');
+}
+
+const isFileAt = (p: string): boolean => {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+
+const isDirAt = (p: string): boolean => {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** #247: a split approved (see `skillpropose.py`'s `_approve_split`). */
+async function approveSplit(name: string, p: Rec, home: string, cwd: string | null, now: string, sampler: Sampler | null): Promise<string> {
+  const entry = skills(stateOrNull(home)).get(name) ?? {};
+  const own = str(entry['path']) ? entry['path'] : null;
+  const into = strs(p['into']);
+  let doc: Rec | null;
+  try {
+    doc = readProposals(home);
+  } catch (e) {
+    if (!(e instanceof ProposalsError)) throw e;
+    return `could not split ${name}: ${e.message}`;
+  }
+  const recs = into.map((cid) => records(doc).find((r) => r['id'] === cid));
+  if (own === null || !isDirAt(own) || into.length !== 2 || doc === null || recs.some((r) => r === undefined)) {
+    return `the split of ${name} no longer matches the mined clusters; ${COMMAND} reject ${name} drops it`;
+  }
+  const texts: Array<string | null> = [];
+  const kept: boolean[] = [];
+  const todo: Array<[string, Handoff]> = [];
+  for (const rec of recs as Rec[]) {
+    const cid = rec['id'] as string;
+    let text = draftText(rec);
+    const staged = handoffPath(home, cid);
+    let drafter: string | null = null;
+    if (text === null && isFileAt(staged)) {
+      try {
+        text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(staged));
+      } catch {
+        return `${staged} is not UTF-8 text; nothing was split`;
+      }
+      drafter = DRAFTER_HOST;
+    }
+    let stored = text !== null;
+    if (text === null) {
+      const out = await draft(rec, defaultChain(sampler, true), home, cwd, now, own);
+      if (out.handoff !== null) {
+        todo.push([cid, out.handoff]);
+        texts.push(null);
+        kept.push(false);
+        continue;
+      }
+      if (!out.ok || out.text === null) {
+        return gateFailed(`The draft of cluster ${cid} from ${String(out.drafter)}`, out.reasons, `It was discarded and logged; ${name} stays as it is.`);
+      }
+      rec['draft'] = draftEntry(out.drafter, out.text, now);
+      text = out.text;
+      stored = true;
+    } else if (drafter !== null) {
+      const g = gate(text, bundle(rec), home, cwd, own);
+      const outcome = { drafter, ok: g.ok, text: g.ok ? text : null, reasons: g.reasons, unreachable: [], handoff: null };
+      new LogSegment(draftsLog(home)).append(logLine(outcome, now, cid));
+    }
+    texts.push(text);
+    kept.push(stored);
+  }
+  if (todo.length > 0) {
+    writeProposals(home, doc);
+    return splitHandoffText(name, todo, home);
+  }
+  const level = entry['level'] === 'project' || entry['level'] === 'user' ? entry['level'] : null;
+  const done: string[] = [];
+  // `install` marks its record `installed` in the in-memory doc; a back-out puts it back,
+  // or a later write would persist a cluster as installed that has no skill on disk
+  const before = recs.map((rec) => [rec as Rec, Object.hasOwn(rec as Rec, 'status'), (rec as Rec)['status']] as const);
+  const backOut = (): void => {
+    for (const n of [...done].reverse()) {
+      try {
+        undo(n, home);
+      } catch (e) {
+        if (!(e instanceof SkillFileError)) throw e;
+      }
+    }
+    for (const [rec, had, status] of before) {
+      if (had) rec['status'] = status;
+      else delete rec['status'];
+    }
+  };
+  for (let i = 0; i < recs.length; i++) {
+    const rec = recs[i] as Rec;
+    const text = texts[i] as string;
+    const g = gate(text, bundle(rec), home, cwd, own);
+    if (!g.ok) {
+      backOut();
+      if (kept[i]) {
+        // kept, it would be refused on every approve; dropped, the next one drafts anew
+        delete rec['draft'];
+        writeProposals(home, doc);
+      }
+      return gateFailed(`The SKILL.md for cluster ${rec['id'] as string}`, g.reasons, `Nothing was split; ${name} stays as it is.`);
+    }
+    try {
+      done.push(install(rec, text, level, home, now, false).name);
+    } catch (e) {
+      if (!(e instanceof SkillFileError)) throw e;
+      backOut();
+      return `could not split ${name}: ${e.message}`;
+    }
+  }
+  if (isObj(entry['promoted'])) {
+    try {
+      demote(name, home);
+    } catch (e) {
+      if (!(e instanceof SkillFileError)) throw e;
+      backOut();
+      return `could not split ${name}: ${e.message}`;
+    }
+  }
+  backupDir(backupRoot(home), own, now);
+  removeDir(own);
+  const split = { at: now, into, names: [...done], successes: Object.hasOwn(p, 'successes') ? p['successes'] : null };
+  updateState(home, (fresh) => {
+    const gone = fresh.skills[name];
+    delete fresh.skills[name];
+    if (isObj(gone)) {
+      delete gone['proposal'];
+      gone['split'] = split;
+      if (!isObj(fresh['removed'])) fresh['removed'] = {};
+      (fresh['removed'] as Rec)[name] = gone;
+    }
+  });
+  writeProposals(home, doc);
+  for (const cid of into) fs.rmSync(path.dirname(handoffPath(home, cid)), { recursive: true, force: true });
+  return `split skill ${name} into ${done.join(' and ')}.\nundo: ${COMMAND} undo ${name}`;
+}
+
+/** A split undone (see `skillpropose.py`'s `_undo_split`). */
+function undoSplit(name: string, split: Rec, home: string, now: string): string {
+  const names = strs(split['names']);
+  const into = strs(split['into']);
+  const n = int(split['successes']) ?? 0;
+  let said: string;
+  try {
+    for (const half of names) {
+      const e = skills(stateOrNull(home)).get(half);
+      if (e === undefined || !str(e['path'])) continue;
+      if (isObj(e['promoted'])) demote(half, home);
+      const target = e['path'];
+      if (isDirAt(target)) {
+        backupDir(backupRoot(home), target, now);
+        removeDir(target);
+      }
+      updateState(home, (fresh) => {
+        const got = fresh.skills[half];
+        delete fresh.skills[half];
+        if (isObj(got)) {
+          delete got['proposal'];
+          if (!isObj(fresh['removed'])) fresh['removed'] = {};
+          (fresh['removed'] as Rec)[half] = got;
+        }
+      });
+    }
+    said = undo(name, home);
+  } catch (e) {
+    if (!(e instanceof SkillFileError)) throw e;
+    return e.message;
+  }
+  let cluster: unknown = null;
+  updateState(home, (fresh) => {
+    const e = fresh.skills[name];
+    if (isObj(e)) {
+      delete e['split'];
+      e['split_rejected_at'] = n;
+      cluster = e['cluster'];
+    }
+  });
+  let doc: Rec | null;
+  try {
+    doc = readProposals(home);
+  } catch (e) {
+    if (!(e instanceof ProposalsError)) throw e;
+    doc = null;
+  }
+  if (doc !== null) {
+    for (const rec of records(doc)) {
+      if (!into.includes(rec['id'] as string)) continue;
+      if (rec['id'] === cluster) {
+        rec['status'] = 'installed';
+      } else {
+        rec['status'] = 'rejected';
+        rec['rejected_at'] = int(rec['successes']) ?? 0;
+      }
+    }
+    writeProposals(home, doc);
+  }
+  const removed = names.length > 0 ? `; ${names.join(' and ')} removed` : '';
+  return `${said}${removed}; the split is marked rejected`;
+}
+
+/** A split rejected (or undone) is remembered by its summed count, so the daily run offers it
+ * again only once that count has doubled (`skillinstall.splitOffers`). */
+function rejectSplit(home: string, name: string, p: Rec): void {
+  const n = int(p['successes']) ?? 0;
+  updateState(home, (fresh) => {
+    const entry = fresh.skills[name];
+    if (isObj(entry)) entry['split_rejected_at'] = n;
+  });
+}
+
 function approveItem(name: string, p: Rec, home: string, now: string): string {
   if (p['kind'] === 'remove') {
     const entry = skills(stateOrNull(home)).get(name) ?? {};
@@ -565,8 +808,18 @@ export async function render(
       dropTune(home, target);
       return `kept skill ${target} as it is; the tune of its description is dropped`;
     }
-    if (action === 'approve') return approveItem(target, item, home, now);
+    if (action === 'approve') {
+      if (item['kind'] === 'split') return approveSplit(target, item, home, cwd, now, sampler);
+      return approveItem(target, item, home, now);
+    }
     dropProposal(home, target, 'rejected');
+    if (item['kind'] === 'split') {
+      rejectSplit(home, target, item);
+      return (
+        `kept skill ${target}; the proposed split is dropped and offered again once ` +
+        `${2 * (int(item['successes']) ?? 0)} successes are in the two clusters`
+      );
+    }
     return `kept skill ${target}; the proposed ${item['kind'] as string} change is dropped`;
   }
   if (action === 'promote') {
@@ -588,6 +841,10 @@ export async function render(
   // undo: a promoted skill is demoted first; else the newest backup is put back. An install
   // undone marks its proposal rejected, so the daily run does not install it again.
   const entry = skills(stateOrNull(home)).get(target);
+  const st = stateOrNull(home);
+  const goneMap = st !== null && isObj(st['removed']) ? (st['removed'] as Rec) : {};
+  const gone = Object.hasOwn(goneMap, target) ? goneMap[target] : undefined;
+  if (entry === undefined && isObj(gone) && isObj(gone['split'])) return undoSplit(target, gone['split'], home, now);
   let said: string;
   try {
     if (entry !== undefined && isObj(entry['promoted'])) return demote(target, home);
@@ -642,6 +899,7 @@ export function eventItem(event: string): string {
     ['improved skill ', (n) => `improved ${n}`],
     ['proposed a change to ', (n) => `a change to ${n} waits on you`],
     ['proposed merging ', (n) => `merging ${n} waits on you`],
+    ['proposed splitting ', (n) => `splitting ${n} waits on you`],
     ['waiting on a drafter to tune ', (n) => `${n} waits on a drafter (${COMMAND} approve ${n})`],
   ];
   for (const [prefix, fmt] of forms) if (event.startsWith(prefix)) return fmt(event.slice(prefix.length));

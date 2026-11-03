@@ -22,6 +22,8 @@
  * `user`; the record gains `generated` (counted skills whose metadata carries a
  * `bantamkit-generated-by` string) and `layer` (counted skills in a bantamkit root no host root
  * links to: not in `catalogue_bytes`, never `never-invoked`). The reference's docstring says why.
+ * The status line's skill count includes the layer and its bytes do not, so with a layer it says
+ * so: `6 skills (3 in bantamkit's [skill] layer only, not in the bytes)` (#245, #234 C15).
  *
  * K2: it REPORTS and PROPOSES a `settings.json` diff; it never edits the file — nothing here
  * opens a file for writing. A plugin is proposed only when usage is present, the transcripts span
@@ -459,6 +461,17 @@ export function daily(home: string, cwd: string | null, now: string): void {
   }
 }
 
+/**
+ * The status line's split (#245, #234 C15): `skills` counts the `layer` skills and
+ * `catalogue_bytes` does not, so a line naming both says how many of the first are not in the
+ * second. Empty when there is no layer, or when `layer` is not an array (a hand edit).
+ */
+function layerSplit(record: { layer?: unknown }): string {
+  const layer = record.layer;
+  if (!Array.isArray(layer) || layer.length === 0) return '';
+  return ` (${layer.length} in bantamkit's [skill] layer only, not in the bytes)`;
+}
+
 /** The `skill audit:` line of `bantamkit_status`. Never throws. */
 export function statusLine(home: string): string {
   const prefix = auditEnabled() ? '' : 'off; ';
@@ -485,7 +498,7 @@ export function statusLine(home: string): string {
           : `usage over ${USAGE_DAYS} days; ${plural(record.proposals.length, 'change')} proposed`;
     return (
       `skill audit: ${prefix}last ran ${record.ts} on ${record.host}; ` +
-      `${plural(record.skills, 'skill')}, ${record.catalogue_bytes} catalogue bytes; ` +
+      `${plural(record.skills, 'skill')}${layerSplit(record)}, ${record.catalogue_bytes} catalogue bytes; ` +
       `findings ${sev.get('high') ?? 0} high, ${sev.get('medium') ?? 0} medium, ${sev.get('low') ?? 0} low; ${clause}`
     );
   } catch {

@@ -328,6 +328,10 @@ class _Skill:
     #: `BAD_*` when the frontmatter is malformed, `None` when it is not.
     malformed: str | None = None
     phrases: tuple[str, ...] = field(default_factory=tuple)
+    #: Reached through a symlinked directory (#245); `_drop_aliases` reads it.
+    linked: bool = False
+    #: The real path of the directory holding the file, compared and never reported.
+    real: str = ""
 
     @property
     def in_plugin(self) -> bool:
@@ -368,39 +372,114 @@ def _relative_parts(path: Path, root: Path) -> list[str]:
     return list(path.relative_to(root).parts)
 
 
-def _scan_tree(root: Path) -> tuple[list[Path], list[tuple[str, str, str]]]:
-    """One walk, two answers: every `SKILL.md` under `root`, and every VERSION DIRECTORY.
+def _scan_tree(root: Path) -> tuple[list[Path], list[tuple[str, str, str]], frozenset[Path]]:
+    """One walk, three answers: every `SKILL.md` under `root`, every VERSION DIRECTORY, and
+    which of those files were reached THROUGH a symlinked directory.
 
-    `os.walk` yields directory entries in whatever order the filesystem hands them over, and
-    two machines hand them over differently. Sorting is what makes the scan order — and
-    therefore the omission `what` lists and the duplicate tie-break's "last wins" — the same
-    everywhere. `followlinks` stays off: a symlink loop is not a skill catalogue.
+    The walk is depth-first with each directory's entries in code-point order, and `found` is
+    sorted by path parts after it, which is the same order. Sorting is what makes the scan
+    order — and therefore the omission `what` lists, the duplicate tie-break's "last wins" and
+    which of two links to one directory is walked — the same everywhere. A directory that will
+    not open is skipped in silence, as `os.walk(onerror=None)` did.
+
+    SYMLINKED DIRECTORIES ARE FOLLOWED (#245, #234 N4). A skill directory a person linked into
+    `~/.claude/skills` is loaded by the host every session, so a walk that stops at the link
+    under-reports the catalogue by every such skill. A link is NOT followed when its real path
+    is on the chain of real directories above it (a link back to an ancestor: the loop) or is
+    a directory an earlier link in this walk already entered (two links to one directory: the
+    second is not walked). A dangling link is not a directory and is passed over; only a
+    dangling link NAMED `SKILL.md` is listed, and it is then `unreadable`, as before. Each
+    file reached through a link is in the third answer, and `_drop_aliases` later drops it
+    when its real directory is already counted — so a skill is counted once per real
+    directory, however many names reach it.
 
     THE SECOND ANSWER IS WHY THIS FUNCTION IS NOT JUST A FILE LIST. A version directory
     declares itself by holding a `skills/` directory — `<marketplace>/<plugin>/<version>/
     skills`, the first four segments of the path shape a skill has — and it declares itself
     whether or not anything under it can be read. Resolving over the files instead makes an
     EMPTY newer version invisible, so an older directory wins in silence; see
-    `_resolve_versions`. A directory reached by following a symlink is not walked into on
-    either runtime, so it declares nothing on either.
+    `_resolve_versions`. A directory reached through a symlink declares itself like any other,
+    because every skill under it carries that version and the resolution must know it.
     """
     found: list[Path] = []
     versions: list[tuple[str, str, str]] = []
-    for dirpath, dirnames, filenames in os.walk(root, onerror=None):
-        dirnames.sort()
-        parts = _relative_parts(Path(dirpath), root)
-        if len(parts) == VERSION_PATH_SEGMENTS and parts[3] == SKILLS_SEGMENT:
-            versions.append((parts[0], parts[1], parts[2]))
-        if SKILL_FILE in filenames:
-            found.append(Path(dirpath) / SKILL_FILE)
+    linked: set[Path] = set()
+    entered: set[str] = set()
+
+    def visit(rel: list[str], chain: frozenset[str], via_link: bool) -> None:
+        here = root.joinpath(*rel)
+        try:
+            with os.scandir(here) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
+            return
+        if len(rel) == VERSION_PATH_SEGMENTS and rel[3] == SKILLS_SEGMENT:
+            versions.append((rel[0], rel[1], rel[2]))
+        for entry in entries:
+            try:
+                directory = entry.is_dir()
+            except OSError:
+                directory = False
+            if not directory:
+                if entry.name == SKILL_FILE:
+                    path = here / SKILL_FILE
+                    found.append(path)
+                    if via_link:
+                        linked.add(path)
+                continue
+            real = os.path.realpath(here / entry.name)
+            if real in chain:
+                continue
+            # A Windows junction is a link to Node's `isSymbolicLink()`; it is one here too.
+            if entry.is_symlink() or getattr(entry, "is_junction", lambda: False)():
+                if real in entered:
+                    continue
+                entered.add(real)
+                visit([*rel, entry.name], chain | {real}, True)
+            else:
+                visit([*rel, entry.name], chain | {real}, via_link)
+
+    visit([], frozenset({os.path.realpath(root)}), False)
     found.sort(key=lambda p: p.parts)
     versions.sort()
-    return found, versions
+    return found, versions, frozenset(linked)
 
 
 def _walk(root: Path) -> list[Path]:
     """Every `SKILL.md` under `root`, in a fixed order. `_scan_tree`'s first answer."""
     return _scan_tree(root)[0]
+
+
+def _reach(skill: _Skill, path: Path, linked: frozenset[Path]) -> _Skill:
+    """Stamp how the walk reached `path`: through a link or not, and the real directory."""
+    skill.linked = path in linked
+    skill.real = os.path.realpath(path.parent)
+    return skill
+
+
+def _drop_aliases(found: list[_Skill]) -> list[_Skill]:
+    """One counted skill per REAL directory (#245): a skill reached through a symlink is
+    dropped when its real directory is already counted — by a skill reached without a link
+    anywhere in the scan, or by an earlier linked one in scan order.
+
+    It runs after the version resolution and before the name dedupe, over the skills still
+    counted, and it removes the alias from the list rather than recording an omission: one
+    directory on disk is one skill, not a duplicate of itself. A skill reached WITHOUT a link
+    is never dropped here, so two roots that overlap on disk behave exactly as before, and a
+    skill #206 promoted by symlink is still counted once, at its source, because bantamkit's
+    roots come before the host's. Running after the resolution keeps a version alias (a
+    linked version directory that wins) counted rather than dropped in favour of a loser.
+    """
+    direct = {s.real for s in found if s.omitted is None and not s.linked}
+    seen: set[str] = set()
+    out: list[_Skill] = []
+    for skill in found:
+        if skill.omitted is None and skill.linked:
+            if skill.real in direct or skill.real in seen:
+                continue
+            seen.add(skill.real)
+        out.append(skill)
+    return out
 
 
 def _scalar_close(value: str, quote: str) -> int:
@@ -719,10 +798,11 @@ def _scan(
     right from one that is right for two cancelling reasons.
     """
     base = Path(root)
-    files, version_dirs = _scan_tree(base)
-    found = [_load(path, base) for path in files]
+    files, version_dirs, linked = _scan_tree(base)
+    found = [_reach(_load(path, base), path, linked) for path in files]
     _apply_enabled(found, enabled)
     _resolve_versions(found, version_dirs, versions)
+    found = _drop_aliases(found)
     _apply_dedupe(found)
     return found
 
@@ -814,15 +894,16 @@ def scan_roots(
     version_dirs: list[tuple[str, str, str]] = []
     for label, root in roots:
         base = Path(root)
-        files, dirs = _scan_tree(base)
+        files, dirs, linked = _scan_tree(base)
         for path in files:
-            skill = _load(path, base)
+            skill = _reach(_load(path, base), path, linked)
             skill.relpath = f"{label}/{skill.relpath}"
             found.append(skill)
         version_dirs.extend(dirs)
     version_dirs.sort()
     _apply_enabled(found, enabled)
     _resolve_versions(found, version_dirs, versions)
+    found = _drop_aliases(found)
     _apply_dedupe(found)
     return found
 

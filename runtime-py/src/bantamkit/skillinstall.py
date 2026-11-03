@@ -285,6 +285,14 @@ def _remove_dir(target: Path) -> None:
     shutil.rmtree(aside, ignore_errors=True)
 
 
+def _refreshed(said: str, name: str, home: str | Path) -> str:
+    """`said`, plus what refreshing the skill's promoted copy had to report (#244)."""
+    from bantamkit.skillpromote import refresh_copy
+
+    note = refresh_copy(name, home)
+    return said if note is None else f"{said}; {note}"
+
+
 def _drop_backup(backup: Path) -> None:
     """The backup an install took, and its name's directory when that leaves it empty."""
     shutil.rmtree(backup, ignore_errors=True)
@@ -595,7 +603,7 @@ def undo(name: str, home: str | Path) -> str:
             fresh["removed"] = removed
 
     update_state(home, change)
-    return said
+    return _refreshed(said, name, home)
 
 
 # ------------------------------------------------------------- self-improvement (Task 10a)
@@ -899,7 +907,7 @@ def new_version(
     except BaseException:
         undo_dir(backup_root(home), name, target)
         raise
-    return f"updated skill {name} to v{m}"
+    return _refreshed(f"updated skill {name} to v{m}", name, home)
 
 
 def _fell(s_n: int, u_n: int, s_f: int, u_f: int) -> bool:
@@ -933,6 +941,7 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
     _ms(now)
     skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
     verdicts: dict[str, tuple[int, str, int, str | None]] = {}
+    rolled: dict[str, int] = {}
     events: list[str] = []
     for name in sorted(skills):
         e = skills[name]
@@ -972,6 +981,7 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
         except (OSError, UnicodeDecodeError, SkillFileError):
             continue
         verdicts[name] = (n, VERDICT_ROLLED_BACK, f, canonical_hash(restored))
+        rolled[name] = len(events)
         events.append(f"rolled back {name} to v{f}")
     if not verdicts:
         return events
@@ -992,8 +1002,10 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
                 e["counted_to"] = now
 
     written = update_state(home, change)
+    for name, i in rolled.items():
+        events[i] = _refreshed(events[i], name, home)
     state.clear()
-    state.update(written)
+    state.update(read_state(home) if rolled else written)
     return events
 
 
@@ -1014,6 +1026,15 @@ def judge_step(state: dict[str, Any], home: str | Path, now: str) -> list[str]:
 #     `STEP_SHARE` with the record's recurring steps -> a proposed `## Steps` change.
 #   - FIRE TOGETHER: two live skills injected together in at least `TOGETHER_SESSIONS` sessions,
 #     that being at least half of each one's injecting sessions -> a proposed merge.
+#   - ONE COVERS TWO CLUSTERS (#247): the skill's evidence ids (`bantamkit-evidence`) fall, as
+#     the miner clustered them today (the proposals document), into two or more records in each
+#     of which that evidence alone holds at least the record's own X1 `bar` of SUCCESSFUL pieces
+#     -> a proposed split, `entry.proposal = {at, kind: "split", status: "pending", into:
+#     [id, id], successes}`: the two records with the most such pieces (ties: id order), and
+#     the sum of the two records' own `successes`. No new similarity: the miner's clusters and
+#     bars decide. A rejected split (`entry.split_rejected_at`, that sum when it was rejected or
+#     undone) is not offered again until the sum reaches `REJECT_FACTOR` times it, the
+#     proposals' own rule for a rejected cluster.
 # THE SPLIT BY RISK. The keyword widening and the Pitfalls line are deterministic and apply in
 # the run; the description tunes need a drafter (`skilldraft.improve`, description only). With
 # none that answers, the tune waits as `entry.tune = {at, kinds}` for the command to draft with
@@ -1038,7 +1059,7 @@ PITFALL_CHARS = 200
 TOGETHER_SESSIONS = 5
 TOGETHER_SHARE = (1, 2)
 #: The needs-user item kinds `entry.proposal` may hold.
-ITEM_KINDS = ("improve", "merge", "remove", "steps")
+ITEM_KINDS = ("improve", "merge", "remove", "split", "steps")
 PITFALLS = "## Pitfalls"
 STEPS = "## Steps"
 _HEADING = re.compile(r"#{1,2}(?:[ \t]|$)")
@@ -1166,6 +1187,32 @@ def _proposal(kind: str, raw: bytes, old: str, text: str, now: str) -> dict[str,
     }
 
 
+def _steps_gate(
+    text: str,
+    target: str | Path,
+    rec: Mapping[str, Any] | None,
+    b: Mapping[str, Any],
+    home: str | Path,
+    cwd: str | None,
+    now: str,
+) -> bool:
+    """A `## Steps` proposal passes the drafter's `gate` (`own` = the skill) like every other
+    edit, against the bundle of the ids the proposed text cites; a failure is logged."""
+    from bantamkit.skilldraft import DraftOutcome, drafts_log, gate, improve_bundle
+    from bantamkit.storage.logsegment import LogSegment
+
+    try:
+        ids = _csv(parse_skill(text).metadata.get("bantamkit-evidence"))
+    except SkillFileError:
+        ids = []
+    g = gate(text, improve_bundle(rec, b["cluster"], ids), home, cwd, own=target)
+    if not g.ok:
+        LogSegment(drafts_log(home)).append(
+            DraftOutcome(None, False, None, g.reasons, []).log_line(now, b["cluster"])
+        )
+    return g.ok
+
+
 def _slot_free(e: Mapping[str, Any]) -> bool:
     p = e.get("proposal")
     return not (isinstance(p, dict) and p.get("status") == "pending")
@@ -1232,6 +1279,73 @@ def apply_text(
     except InstallError as err:
         return None, [str(err)]
     return "improved skill " + said[len("updated skill ") :], []
+
+
+def split_halves(
+    entry: Mapping[str, Any], doc: Mapping[str, Any] | None
+) -> list[tuple[str, int, int]]:
+    """`[(record id, k, the record's successes)]`: each proposals record in which the live
+    skill's evidence ids hold `k` successful pieces, `k` at least the record's own bar; most
+    `k` first, ties by id. A record naming no `successes` counts `k`."""
+    live = _live_text(entry)
+    if live is None:
+        return []
+    try:
+        ids = set(_csv(parse_skill(live[1].decode("utf-8")).metadata.get("bantamkit-evidence")))
+    except (UnicodeDecodeError, SkillFileError):
+        return []
+    clusters = doc.get("clusters") if isinstance(doc, Mapping) else None
+    out: list[tuple[str, int, int]] = []
+    seen: set[str] = set()
+    for r in clusters if isinstance(clusters, list) else []:
+        if not isinstance(r, dict) or not isinstance(r.get("id"), str) or r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        bar = _int(r.get("bar"))
+        if bar is None or bar < 1:
+            continue
+        hit = {
+            ev["id"]
+            for ev in (r.get("evidence") if isinstance(r.get("evidence"), list) else [])
+            if isinstance(ev, dict)
+            and ev.get("ok") is True
+            and isinstance(ev.get("id"), str)
+            and ev["id"] in ids
+        }
+        if len(hit) >= bar:
+            n = _int(r.get("successes"))
+            out.append((r["id"], len(hit), len(hit) if n is None else n))
+    out.sort(key=lambda h: (-h[1], h[0]))
+    return out
+
+
+def split_offers(
+    skills: Mapping[str, Any],
+    doc: Mapping[str, Any] | None,
+    marks: Mapping[str, Any],
+    merges: Mapping[str, str],
+) -> dict[str, tuple[list[str], int]]:
+    """name -> (the two records, their summed successes) for every live skill a split is
+    offered for: its slot free, no other proposal made for it in this run, not rejected below
+    the doubling."""
+    from bantamkit.skillmine import REJECT_FACTOR
+
+    out: dict[str, tuple[list[str], int]] = {}
+    for name in sorted(skills):
+        e = skills[name]
+        if not isinstance(e, dict) or not _slot_free(e) or name in merges:
+            continue
+        if marks.get(name) and marks[name][4] is not None:
+            continue
+        halves = split_halves(e, doc)
+        if len(halves) < 2:
+            continue
+        total = halves[0][2] + halves[1][2]
+        was = _int(e.get("split_rejected_at"))
+        if was is not None and total < REJECT_FACTOR * was:
+            continue
+        out[name] = ([halves[0][0], halves[1][0]], total)
+    return out
 
 
 def improve_step(
@@ -1396,6 +1510,7 @@ def improve_step(
         if final is not None:
             drafted = final is not det
             folded = False
+            gb, unfolded = b, (final, det)
             if not auto and steps_from is not None:
                 # automatic edits off: this change becomes the skill's ONE proposal, so the
                 # steps line rides in it rather than being dropped for want of a free slot
@@ -1406,9 +1521,18 @@ def improve_step(
                     pass
                 else:
                     final, det, folded = final_s, det_s, True
-            event, _ = apply_text(name, final, home, cwd, now, b, auto)
+                    # the step cites its turn, which joins the evidence it is gated against
+                    gb = improve_bundle(rec, b["cluster"], [*new_ids, steps_from[1]])
+            event, _ = apply_text(name, final, home, cwd, now, gb, auto)
             if event is None and drafted and changed:
-                event, _ = apply_text(name, det, home, cwd, now, b, auto)
+                event, _ = apply_text(name, det, home, cwd, now, gb, auto)
+            if event is None and folded:
+                # the step failed the gate with the change: the change goes on alone, the
+                # step is gated again as its own proposal below
+                folded = False
+                event, _ = apply_text(name, unfolded[0], home, cwd, now, b, auto)
+                if event is None and drafted and changed:
+                    event, _ = apply_text(name, unfolded[1], home, cwd, now, b, auto)
             if event is not None:
                 events.append(event)
                 if folded:
@@ -1429,10 +1553,11 @@ def improve_step(
                 try:
                     cur = now_live[1].decode("utf-8")
                     ptext = _with_step(cur, steps_from[1], steps_from[2])
+                except (UnicodeDecodeError, SkillFileError):
+                    ptext = None
+                if ptext is not None and _steps_gate(ptext, now_live[0], rec, b, home, cwd, now):
                     prop = _proposal("steps", now_live[1], cur, ptext, now)
                     events.append(f"proposed a change to {name}")
-                except (UnicodeDecodeError, SkillFileError):
-                    prop = None
         marks[name] = (n, misses, sorted(tried | set(tunes)), tune, prop)
 
     # two skills that fire together: a proposed merge, on the first name
@@ -1465,9 +1590,12 @@ def improve_step(
             if isinstance(pa, dict) and pa.get("kind") == "merge" and pa.get("with") == b2:
                 continue
             merges[a] = b2
-            events.append(f"proposed merging {a} with {b2}")
-    if not marks and not merges:
+    splits = split_offers(skills, doc, marks, merges)
+    if not marks and not merges and not splits:
         return events
+    # a merge or split is reported only once it is stored: the slot may have been taken in
+    # this run (an `improve` proposal from `apply_text`) after the snapshot it was offered on
+    stored: set[tuple[str, str]] = set()
 
     def change(fresh: dict[str, Any]) -> None:
         for name, (n, misses, tried, tune, prop) in marks.items():
@@ -1492,8 +1620,24 @@ def improve_step(
             e = fresh["skills"].get(a)
             if isinstance(e, dict) and _slot_free(e):
                 e["proposal"] = {"at": now, "kind": "merge", "status": "pending", "with": b2}
+                stored.add(("merge", a))
+        for name, (into, total) in splits.items():
+            e = fresh["skills"].get(name)
+            if isinstance(e, dict) and _slot_free(e):
+                e["proposal"] = {
+                    "at": now,
+                    "into": into,
+                    "kind": "split",
+                    "status": "pending",
+                    "successes": total,
+                }
+                stored.add(("split", name))
 
     written = update_state(home, change)
+    events.extend(
+        f"proposed merging {a} with {b2}" for a, b2 in merges.items() if ("merge", a) in stored
+    )
+    events.extend(f"proposed splitting {n}" for n in sorted(splits) if ("split", n) in stored)
     state.clear()
     state.update(written)
     return events

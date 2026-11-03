@@ -495,6 +495,28 @@ export function replaceDirAtomic(
   return backup;
 }
 
+/**
+ * The existing directory `target` replaced by `files` in one rename, no backup (#244). The new
+ * tree is built in an exclusively claimed temp dir beside `target`, the old one is set aside
+ * into another (#250), and on any failure the old directory is back in place.
+ */
+export function rewriteDirAtomic(target: string, files: Record<string, Uint8Array>): void {
+  let st: fs.Stats | null = null;
+  try {
+    st = fs.lstatSync(target);
+  } catch {
+    st = null;
+  }
+  if (st === null || !st.isDirectory()) throw new SkillFileError(`no skill at ${target}`);
+  const tmp = build(target, files);
+  try {
+    swapIn(tmp, target);
+  } catch (e) {
+    rmTree(tmp);
+    throw e;
+  }
+}
+
 function backups(root: string, name: string): string[] {
   const home = path.join(root, name);
   let entries: string[];

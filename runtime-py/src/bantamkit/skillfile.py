@@ -416,6 +416,23 @@ def write_dir_atomic(target: Path | str, files: dict[str, bytes]) -> None:
         raise
 
 
+def rewrite_dir_atomic(target: Path | str, files: dict[str, bytes]) -> None:
+    """The existing directory `target` replaced by `files` in one rename, no backup (#244).
+
+    The new tree is built in an exclusively claimed temp dir beside `target`, the old one is
+    set aside into another (#250), and on any failure the old directory is back in place.
+    """
+    target = Path(target)
+    if not target.is_dir() or target.is_symlink():
+        raise SkillFileError(f"no skill at {target}")
+    tmp = _build(target, files)
+    try:
+        _swap_in(tmp, target)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
 def _copy_tree(src: Path, dst: str) -> None:
     """Directories and regular files into the existing `dst`, bytes as they are; a symlink is
     not followed or copied."""

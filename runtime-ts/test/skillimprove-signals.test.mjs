@@ -322,6 +322,53 @@ test('different steps propose; shared steps do not', async () => {
   assert.deepEqual(ev2, []);
 });
 
+// #243 (#234 N1): a `## Steps` proposal passes the drafter's gate like every other edit
+const REFUSED = ['step 2 cites notes, which is not in the evidence'];
+
+test('#243 a steps proposal the gate refuses is logged, not proposed; the pitfall still applies', async () => {
+  const h = home();
+  installed(h);
+  const [events, state] = await step(h, { sources: corrected('see [notes] first') });
+  assert.deepEqual(events, ['improved skill sk-one to v2']);
+  assert.equal(Object.hasOwn(state.skills['sk-one'], 'proposal'), false);
+  assert.ok(skill(h).includes('- [s1111aaaa#1] see [notes] first'));
+  assert.ok(!skill(h).includes('2. Before you finish'));
+  assert.deepEqual(drafts(h).map((r) => [r.ok, r.reasons, r.cluster]), [[false, REFUSED, 'c-sk-one']]);
+});
+
+test('#243 auto off: a refused step is not folded', async () => {
+  await withAuto(undefined, async () => {
+    const h = home();
+    installed(h);
+    const [events, state] = await step(h, { sources: corrected('see [notes] first') });
+    assert.deepEqual(events, ['proposed a change to sk-one']);
+    const p = state.skills['sk-one'].proposal;
+    assert.equal(p.kind, 'improve');
+    assert.ok(p.text.includes('- [s1111aaaa#1] see [notes] first'));
+    assert.ok(!p.text.includes('2. Before you finish'));
+    assert.deepEqual(drafts(h).map((r) => [r.ok, r.reasons]), [[false, REFUSED]]);
+  });
+});
+
+test('#243 auto off: a folded different-steps line is gated against its own turn', async () => {
+  await withAuto(undefined, async () => {
+    const h = home();
+    installed(h);
+    const ev = [1, 2].map((j) => ({ id: `s${j}${j}${j}${j}aaaa#1`, ok: true, prompt: 'fix the lexer tokens', ts: AFTER }));
+    const doc = { clusters: [record('sk-one', ev, ['k1', 'lexer', 'tokens'], ['Read>Edit', 'Edit>Bash'])] };
+    const sources = {
+      turns: [{ id: 's3333aaaa#1', ok: true, tools: ['Grep', 'Write', 'Grep'], ts: AFTER }],
+      uses: [{ fact: 'sk-one', session: '3333aaaa-z', ts: AFTER }],
+    };
+    const [events, state] = await step(h, { sources, doc });
+    assert.deepEqual(events, ['proposed a change to sk-one', 'waiting on a drafter to tune sk-one']);
+    const p = state.skills['sk-one'].proposal;
+    assert.equal(p.kind, 'improve');
+    assert.ok(p.text.includes('2. It also worked as Grep > Write > Grep [s3333aaaa#1].'));
+    assert.deepEqual(drafts(h), []);
+  });
+});
+
 const together = (n, extraA = 0) => ({
   injects: [
     ...Array.from({ length: n }, (_, i) => ({ names: ['sk-a', 'sk-b'], session: `s-${i}`, ts: AFTER })),

@@ -38,7 +38,8 @@ import { render as renderSkill } from './skillfile.js';
 import { tokenizeV2 } from './memory/retrieval.js';
 import { TUNE_KINDS, TUNE_NARROW, TUNE_WIDEN, draftsLog, gate, improve, improveBundle, logLine } from './skilldraft.js';
 import type { Bundle, ChainLink } from './skilldraft.js';
-import { STEP_SHARE, ngrams } from './skillmine.js';
+import { REJECT_FACTOR, STEP_SHARE, ngrams } from './skillmine.js';
+import { refreshCopy } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
 import { parseNow } from './storage/retention.js';
 
@@ -533,7 +534,13 @@ export function undo(name: string, home: string): string {
     }
     if (Object.hasOwn(fresh, 'removed')) fresh['removed'] = removed;
   });
-  return said;
+  return refreshed(said, name, home);
+}
+
+/** `said`, plus what refreshing the skill's promoted copy had to report (#244). */
+function refreshed(said: string, name: string, home: string): string {
+  const note = refreshCopy(name, home);
+  return note === null ? said : `${said}; ${note}`;
 }
 
 // ------------------------------------------------------------- self-improvement (Task 10a)
@@ -777,7 +784,7 @@ export function newVersion(name: string, text: string, home: string, now: string
     undoDir(backupRoot(home), name, target);
     throw e;
   }
-  return `updated skill ${name} to v${m}`;
+  return refreshed(`updated skill ${name} to v${m}`, name, home);
 }
 
 /** Python's `str()` of a JSON value, for the one sentence that prints a path that may be absent. */
@@ -807,6 +814,7 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
   msOf(now);
   const skills = isObj(state['skills']) ? state['skills'] : {};
   const verdicts = new Map<string, [number, string, number, string | null]>();
+  const rolled = new Map<string, number>();
   const events: string[] = [];
   for (const name of Object.keys(skills).sort(cmpCodepoint)) {
     const e = skills[name];
@@ -841,6 +849,7 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
       throw err;
     }
     verdicts.set(name, [n, VERDICT_ROLLED_BACK, f, canonicalHash(restored)]);
+    rolled.set(name, events.length);
     events.push(`rolled back ${name} to v${f}`);
   }
   if (verdicts.size === 0) return events;
@@ -861,7 +870,8 @@ export function judgeStep(state: Rec, home: string, now: string): string[] {
       }
     }
   });
-  replaceState(state, written);
+  for (const [name, i] of rolled) events[i] = refreshed(events[i]!, name, home);
+  replaceState(state, rolled.size > 0 ? readState(home) : written);
   return events;
 }
 
@@ -877,7 +887,7 @@ export const MISS_TUNE = 2;
 export const PITFALL_CHARS = 200;
 export const TOGETHER_SESSIONS = 5;
 export const TOGETHER_SHARE: readonly [number, number] = [1, 2];
-export const ITEM_KINDS: readonly string[] = ['improve', 'merge', 'remove', 'steps'];
+export const ITEM_KINDS: readonly string[] = ['improve', 'merge', 'remove', 'split', 'steps'];
 export const PITFALLS = '## Pitfalls';
 export const STEPS = '## Steps';
 const HEADING = /^#{1,2}(?:[ \t]|$)/;
@@ -987,6 +997,24 @@ function proposalOf(kind: string, raw: Uint8Array, old: string, text: string, no
   };
 }
 
+/** The reference's `_steps_gate`: a `## Steps` proposal passes the drafter's `gate` (`own` =
+ * the skill) like every other edit, against the bundle of the ids the proposed text cites; a
+ * failure is logged. */
+function stepsGate(text: string, target: string, rec: Rec | null, b: Bundle, home: string, cwd: string | null, now: string): boolean {
+  let ids: string[] = [];
+  try {
+    ids = csv(parseSkill(text).metadata['bantamkit-evidence']);
+  } catch (err) {
+    if (!(err instanceof SkillFileError)) throw err;
+  }
+  const g = gate(text, improveBundle(rec, b.cluster, ids), home, cwd, target);
+  if (!g.ok) {
+    const o = { drafter: null, ok: false, text: null, reasons: g.reasons, unreachable: [], handoff: null };
+    new LogSegment(draftsLog(home)).append(logLine(o, now, b.cluster));
+  }
+  return g.ok;
+}
+
 function slotFree(e: Rec): boolean {
   const p = e['proposal'];
   return !(isObj(p) && p['status'] === 'pending');
@@ -1046,6 +1074,55 @@ export function applyText(name: string, text: string, home: string, cwd: string 
 }
 
 type Mark = [number, number, string[], Rec | null, Rec | null];
+
+/** `[(record id, k, the record's successes)]`: each proposals record in which the live skill's
+ * evidence ids hold `k` successful pieces, `k` at least the record's own bar; most `k` first, ties
+ * by id. A record naming no `successes` counts `k` (#247). */
+export function splitHalves(entry: Rec, doc: unknown): Array<[string, number, number]> {
+  const live = liveText(entry);
+  if (live === null) return [];
+  let ids: Set<string>;
+  try {
+    ids = new Set(csv(parseSkill(UTF8.decode(live[1])).metadata['bantamkit-evidence']));
+  } catch (err) {
+    if (err instanceof TypeError || err instanceof SkillFileError) return [];
+    throw err;
+  }
+  const clusters = isObj(doc) ? doc['clusters'] : undefined;
+  const out: Array<[string, number, number]> = [];
+  const seen = new Set<string>();
+  for (const r of Array.isArray(clusters) ? clusters : []) {
+    if (!isObj(r) || typeof r['id'] !== 'string' || seen.has(r['id'])) continue;
+    seen.add(r['id']);
+    const bar = int(r['bar']);
+    if (bar === null || bar < 1) continue;
+    const hit = new Set<string>();
+    for (const ev of Array.isArray(r['evidence']) ? r['evidence'] : []) {
+      if (isObj(ev) && ev['ok'] === true && typeof ev['id'] === 'string' && ids.has(ev['id'])) hit.add(ev['id']);
+    }
+    if (hit.size >= bar) out.push([r['id'], hit.size, int(r['successes']) ?? hit.size]);
+  }
+  out.sort((a, b) => b[1] - a[1] || cmpCodepoint(a[0], b[0]));
+  return out;
+}
+
+/** name -> [the two records, their summed successes] for every live skill a split is offered for: its
+ * slot free, no other proposal made for it in this run, not rejected below the doubling. */
+export function splitOffers(skills: Rec, doc: unknown, marks: Map<string, Mark>, merges: Map<string, string>): Map<string, [string[], number]> {
+  const out = new Map<string, [string[], number]>();
+  for (const name of Object.keys(skills).sort(cmpCodepoint)) {
+    const e = skills[name];
+    if (!isObj(e) || !slotFree(e) || merges.has(name)) continue;
+    if (marks.has(name) && marks.get(name)![4] !== null) continue;
+    const halves = splitHalves(e, doc);
+    if (halves.length < 2) continue;
+    const total = halves[0]![2] + halves[1]![2];
+    const was = int(e['split_rejected_at']);
+    if (was !== null && total < REJECT_FACTOR * was) continue;
+    out.set(name, [[halves[0]![0], halves[1]![0]], total]);
+  }
+  return out;
+}
 
 /** The reference's `improve_step`: the X10 signals for every live skill; the events. */
 export async function improveStep(
@@ -1188,6 +1265,8 @@ export async function improveStep(
     if (final !== null) {
       const drafted = final !== det;
       let folded = false;
+      let gb = b;
+      const unfolded: [string, string] = [final, det];
       if (!auto && stepsFrom !== null) {
         // automatic edits off: this change becomes the skill's ONE proposal, so the steps
         // line rides in it rather than being dropped for want of a free slot
@@ -1195,12 +1274,21 @@ export async function improveStep(
           const finalS = withStep(final, stepsFrom[1], stepsFrom[2]);
           const detS = drafted ? withStep(det, stepsFrom[1], stepsFrom[2]) : finalS;
           [final, det, folded] = [finalS, detS, true];
+          // the step cites its turn, which joins the evidence it is gated against
+          gb = improveBundle(rec, b.cluster, [...newIds, stepsFrom[1]]);
         } catch (err) {
           if (!(err instanceof SkillFileError)) throw err;
         }
       }
-      let [event] = applyText(name, final, home, cwd, now, b, auto);
-      if (event === null && drafted && changed) [event] = applyText(name, det, home, cwd, now, b, auto);
+      let [event] = applyText(name, final, home, cwd, now, gb, auto);
+      if (event === null && drafted && changed) [event] = applyText(name, det, home, cwd, now, gb, auto);
+      if (event === null && folded) {
+        // the step failed the gate with the change: the change goes on alone, the step is
+        // gated again as its own proposal below
+        folded = false;
+        [event] = applyText(name, unfolded[0], home, cwd, now, b, auto);
+        if (event === null && drafted && changed) [event] = applyText(name, unfolded[1], home, cwd, now, b, auto);
+      }
       if (event !== null) {
         events.push(event);
         if (folded) stepsFrom = null;
@@ -1220,14 +1308,17 @@ export async function improveStep(
       const fresh = Object.hasOwn(fs2, name) ? fs2[name] : undefined;
       const nowLive = isObj(fresh) ? liveText(fresh) : null;
       if (nowLive !== null && isObj(fresh) && slotFree(fresh)) {
+        let cur = '';
+        let ptext: string | null = null;
         try {
-          const cur = UTF8.decode(nowLive[1]);
-          const ptext = withStep(cur, stepsFrom[1], stepsFrom[2]);
-          prop = proposalOf('steps', nowLive[1], cur, ptext, now);
-          events.push(`proposed a change to ${name}`);
+          cur = UTF8.decode(nowLive[1]);
+          ptext = withStep(cur, stepsFrom[1], stepsFrom[2]);
         } catch (err) {
           if (!(err instanceof TypeError || err instanceof SkillFileError)) throw err;
-          prop = null;
+        }
+        if (ptext !== null && stepsGate(ptext, nowLive[0], rec, b, home, cwd, now)) {
+          prop = proposalOf('steps', nowLive[1], cur, ptext, now);
+          events.push(`proposed a change to ${name}`);
         }
       }
     }
@@ -1260,10 +1351,13 @@ export async function improveStep(
       const pa = ea['proposal'];
       if (isObj(pa) && pa['kind'] === 'merge' && pa['with'] === b2) continue;
       merges.set(a, b2);
-      events.push(`proposed merging ${a} with ${b2}`);
     }
   }
-  if (marks.size === 0 && merges.size === 0) return events;
+  const splits = splitOffers(skills, doc, marks, merges);
+  if (marks.size === 0 && merges.size === 0 && splits.size === 0) return events;
+  // a merge or split is reported only once it is stored: the slot may have been taken in
+  // this run (an `improve` proposal from `applyText`) after the snapshot it was offered on
+  const stored = new Set<string>();
   const written = updateState(home, (fresh) => {
     const live = fresh.skills as Record<string, unknown>;
     for (const [name, [n, misses, tried, tune, prop]] of marks) {
@@ -1284,9 +1378,21 @@ export async function improveStep(
     }
     for (const [a, b2] of merges) {
       const e = Object.hasOwn(live, a) ? live[a] : undefined;
-      if (isObj(e) && slotFree(e)) e['proposal'] = { at: now, kind: 'merge', status: 'pending', with: b2 };
+      if (isObj(e) && slotFree(e)) {
+        e['proposal'] = { at: now, kind: 'merge', status: 'pending', with: b2 };
+        stored.add(`merge\0${a}`);
+      }
+    }
+    for (const [name, [into, total]] of splits) {
+      const e = Object.hasOwn(live, name) ? live[name] : undefined;
+      if (isObj(e) && slotFree(e)) {
+        e['proposal'] = { at: now, into, kind: 'split', status: 'pending', successes: total };
+        stored.add(`split\0${name}`);
+      }
     }
   });
+  for (const [a, b2] of merges) if (stored.has(`merge\0${a}`)) events.push(`proposed merging ${a} with ${b2}`);
+  for (const name of [...splits.keys()].sort(cmpCodepoint)) if (stored.has(`split\0${name}`)) events.push(`proposed splitting ${name}`);
   replaceState(state, written);
   return events;
 }

@@ -5,7 +5,7 @@
  */
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { test } from 'node:test';
@@ -263,4 +263,154 @@ test('unknown and unpromoted names', () => {
   assert.throws(() => sp.demote('nope', home), /no skill named 'nope' is installed/);
   install(home, 'skill-a');
   assert.throws(() => sp.demote('skill-a', home), /skill skill-a is not promoted/);
+});
+
+// ------------------------------------------------------------- #244: a copy follows its source
+
+const draft2 = (name) => draft(name).replace('1. Do it [job1/U1].\n', '1. Do it [job1/U1].\n2. Check it [job1/U1].\n');
+
+function promotedByCopy(home, name) {
+  const src = install(home, name);
+  const got = sp.promote(name, home, null, NOW, 8192, { symlink: raising('EPERM') });
+  assert.deepEqual([got.ok, got.mode], [true, 'copy']);
+  return src;
+}
+const recorded = (home, name) => sf.readState(home).skills[name].promoted.tree_sha256;
+const skillText = (d) => readFileSync(join(d, 'SKILL.md'), 'utf8');
+
+test('#244: newVersion refreshes the copy and its recorded hash', () => {
+  const home = claudeHome();
+  const src = promotedByCopy(home, 'skill-a');
+  assert.equal(si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto'), 'updated skill skill-a to v2');
+  const copy = linkOf(home, 'skill-a');
+  assert.deepEqual(snapshot(copy), snapshot(src));
+  assert.ok(skillText(copy).includes('2. Check it'));
+  assert.equal(recorded(home, 'skill-a'), sp.treeHash(copy));
+  assert.equal(sp.demote('skill-a', home), 'demoted skill skill-a');
+});
+
+test('#244: an approved change refreshes the copy', () => {
+  const home = claudeHome();
+  const src = promotedByCopy(home, 'skill-a');
+  si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'approved');
+  assert.deepEqual(snapshot(linkOf(home, 'skill-a')), snapshot(src));
+});
+
+test('#244: a rollback and an undo refresh the copy', () => {
+  const home = claudeHome();
+  const src = promotedByCopy(home, 'skill-a');
+  si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto');
+  sf.updateState(home, (fresh) => {
+    const vs = (fresh.skills['skill-a'].versions ??= {});
+    vs['1'] = { ...(vs['1'] ?? {}), uses: 5, successes: 5, injects: 0, false_fires: 0 };
+    vs['2'] = { ...vs['2'], uses: 5, successes: 0, injects: 0, false_fires: 0 };
+  });
+  const state = sf.readState(home);
+  assert.deepEqual(si.judgeStep(state, home, NEXT), ['rolled back skill-a to v1']);
+  const copy = linkOf(home, 'skill-a');
+  assert.deepEqual(snapshot(copy), snapshot(src));
+  assert.ok(!skillText(copy).includes('2. Check it'));
+  assert.equal(state.skills['skill-a'].promoted.tree_sha256, sp.treeHash(copy));
+  assert.equal(recorded(home, 'skill-a'), sp.treeHash(copy));
+
+  si.undo('skill-a', home); // the newest backup is v2, taken by the rollback
+  assert.ok(skillText(copy).includes('2. Check it'));
+  assert.deepEqual(snapshot(copy), snapshot(src));
+  assert.equal(recorded(home, 'skill-a'), sp.treeHash(copy));
+});
+
+test('#244: a copy edited by hand is left as it is and said so', () => {
+  const home = claudeHome();
+  const src = promotedByCopy(home, 'skill-a');
+  const copy = linkOf(home, 'skill-a');
+  appendFileSync(join(copy, 'SKILL.md'), 'mine now\n');
+  const mine = snapshot(copy);
+  const before = recorded(home, 'skill-a');
+  assert.equal(
+    si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto'),
+    `updated skill skill-a to v2; left the promoted copy at ${copy} as it is: it was changed after promotion`,
+  );
+  assert.deepEqual(snapshot(copy), mine);
+  assert.notDeepEqual(snapshot(src), mine);
+  assert.equal(recorded(home, 'skill-a'), before);
+});
+
+test('#244: a removed copy is not brought back', () => {
+  const home = claudeHome();
+  promotedByCopy(home, 'skill-a');
+  const copy = linkOf(home, 'skill-a');
+  rmSync(copy, { recursive: true });
+  assert.ok(si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto').endsWith('as it is: it was changed after promotion'));
+  assert.equal(lexists(copy), false);
+});
+
+test('#244: a failed swap keeps the old copy, and the next write refreshes', () => {
+  const home = claudeHome();
+  const src = promotedByCopy(home, 'skill-a');
+  const copy = linkOf(home, 'skill-a');
+  const old = snapshot(copy);
+  const before = recorded(home, 'skill-a');
+  const saved = { ...sf.seams };
+  const under = `${sep}.claude${sep}skills${sep}`;
+  sf.seams.write = (file, data) => {
+    if (file.includes(under)) {
+      const e = new Error('EACCES: injected');
+      e.code = 'EACCES';
+      throw e;
+    }
+    saved.write(file, data);
+  };
+  try {
+    assert.equal(
+      si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto'),
+      `updated skill skill-a to v2; could not refresh the promoted copy at ${copy}: EACCES`,
+    );
+  } finally {
+    Object.assign(sf.seams, saved);
+  }
+  assert.deepEqual(snapshot(copy), old);
+  assert.deepEqual(readdirSync(join(home, '.claude', 'skills')), ['skill-a']);
+  assert.equal(recorded(home, 'skill-a'), before);
+  si.undo('skill-a', home);
+  si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto');
+  assert.deepEqual(snapshot(copy), snapshot(src));
+});
+
+test('#244: a symlink needs no refresh', () => {
+  const home = claudeHome();
+  install(home, 'skill-a');
+  assert.equal(sp.promote('skill-a', home, null, NOW, 8192).mode, 'symlink');
+  assert.equal(si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto'), 'updated skill skill-a to v2');
+  assert.ok(lstatSync(linkOf(home, 'skill-a')).isSymbolicLink());
+});
+
+test('#244: a copy already matching the source only has its record brought up', () => {
+  const home = claudeHome();
+  const src = promotedByCopy(home, 'skill-a');
+  si.newVersion('skill-a', draft2('skill-a'), home, NOW, 'auto');
+  sf.updateState(home, (fresh) => {
+    fresh.skills['skill-a'].promoted.tree_sha256 = '0'.repeat(64);
+  });
+  assert.equal(sp.refreshCopy('skill-a', home), null);
+  assert.equal(recorded(home, 'skill-a'), sp.treeHash(src));
+});
+
+test('#244: refresh of no copy says nothing', () => {
+  const home = claudeHome();
+  assert.equal(sp.refreshCopy('nope', home), null);
+  install(home, 'skill-a');
+  assert.equal(sp.refreshCopy('skill-a', home), null);
+});
+
+test('#244: rewriteDirAtomic replaces in place and refuses what is not a directory', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rewrite-'));
+  const d = join(root, 'd');
+  sf.writeDirAtomic(d, { 'a.md': Buffer.from('old'), 'sub/b.md': Buffer.from('b') });
+  sf.rewriteDirAtomic(d, { 'a.md': Buffer.from('new') });
+  assert.deepEqual(snapshot(d), { 'a.md': Buffer.from('new').toString('base64') });
+  assert.deepEqual(readdirSync(root), ['d']);
+  assert.throws(() => sf.rewriteDirAtomic(join(root, 'missing'), { 'a.md': Buffer.from('x') }), /no skill at/);
+  symlinkSync(d, join(root, 'link'), 'dir');
+  assert.throws(() => sf.rewriteDirAtomic(join(root, 'link'), { 'a.md': Buffer.from('x') }), /no skill at/);
+  assert.deepEqual(snapshot(d), { 'a.md': Buffer.from('new').toString('base64') });
 });

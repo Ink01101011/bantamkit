@@ -257,6 +257,32 @@ def test_status_lines(tmp_path, monkeypatch):
     )
 
 
+def test_status_line_states_the_layer_split(tmp_path, monkeypatch):
+    """#245 (#234 C15): `skills` counts the `[skill]` layer and `catalogue_bytes` does not."""
+    monkeypatch.delenv("BANTAMKIT_SKILL_AUDIT", raising=False)
+    home = tmp_path / "home"
+    record = {
+        "version": 1, "ts": NOW, "host": "claude-code", "roots": [], "skills": 6,
+        "catalogue_bytes": 96, "findings": [], "omissions": [], "usage": None,
+        "proposals": [], "surfaced": [], "generated": [], "layer": ["a", "b", "c"],
+    }
+    skillreport.state_path(home).parent.mkdir(parents=True)
+    tail = "findings 0 high, 0 medium, 0 low; usage: none — claude-code has no usage adapter, "
+    tail += "so nothing is called never-invoked"
+    for layer, split in (
+        (["a", "b", "c"], " (3 in bantamkit's [skill] layer only, not in the bytes)"),
+        ([], ""),
+        ("abc", ""),  # a hand edit: not a list, so no split (and never `len` of a string)
+    ):
+        skillreport.state_path(home).write_text(
+            json.dumps({**record, "layer": layer}), encoding="utf-8"
+        )
+        assert skillreport.status_line(home) == (
+            f"skill audit: last ran {NOW} on claude-code; 6 skills{split}, 96 catalogue bytes; "
+            + tail
+        )
+
+
 def test_the_retention_child_runs_the_audit_under_the_claimed_day(tmp_path, monkeypatch):
     monkeypatch.delenv("BANTAMKIT_SKILL_AUDIT", raising=False)
     monkeypatch.setenv("BANTAMKIT_RETENTION", "off")

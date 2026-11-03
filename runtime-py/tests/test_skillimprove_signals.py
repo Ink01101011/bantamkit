@@ -380,6 +380,68 @@ def test_steps_shared_enough_propose_nothing(tmp_path):
     assert step(tmp_path, sources=sources, doc=doc)[0] == []
 
 
+REFUSED = ["step 2 cites notes, which is not in the evidence"]
+
+
+def test_243_a_steps_proposal_the_gate_refuses_is_logged_not_proposed(tmp_path):
+    """#243 (#234 N1): a `## Steps` proposal passes the drafter's gate like every other edit. A
+    correction naming `[notes]` makes the step cite `notes`, no evidence id: the gate refuses
+    it, the refusal is logged, and the pitfall still applies on its own."""
+    installed(tmp_path)
+    events, state = step(tmp_path, sources=corrected("see [notes] first"))
+    assert events == ["improved skill sk-one to v2"]
+    assert "proposal" not in state["skills"]["sk-one"]
+    assert "- [s1111aaaa#1] see [notes] first" in skill(tmp_path)
+    assert "2. Before you finish" not in skill(tmp_path)
+    assert [(r["ok"], r["reasons"], r["cluster"]) for r in drafts(tmp_path)] == [
+        (False, REFUSED, "c-sk-one")
+    ]
+
+
+def test_243_auto_off_a_refused_step_is_not_folded(tmp_path, monkeypatch):
+    monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    installed(tmp_path)
+    events, state = step(tmp_path, sources=corrected("see [notes] first"))
+    assert events == ["proposed a change to sk-one"]
+    p = state["skills"]["sk-one"]["proposal"]
+    assert p["kind"] == "improve"
+    assert "- [s1111aaaa#1] see [notes] first" in p["text"]
+    assert "2. Before you finish" not in p["text"]
+    assert [(r["ok"], r["reasons"]) for r in drafts(tmp_path)] == [(False, REFUSED)]
+
+
+def test_243_auto_off_a_folded_different_steps_line_is_gated_against_its_turn(
+    tmp_path, monkeypatch
+):
+    """The folded step cites its own turn, which joins `bantamkit-evidence`; it is gated
+    against that, so a turn in no cluster record does not sink the widening it rides in."""
+    monkeypatch.delenv(si.AUTO_ENV, raising=False)
+    installed(tmp_path)
+    ev = [
+        {"id": f"s{j}{j}{j}{j}aaaa#1", "ok": True, "prompt": "fix the lexer tokens", "ts": AFTER}
+        for j in (1, 2)
+    ]
+    doc = {
+        "clusters": [
+            record(
+                evidence=ev, keywords=["k1", "lexer", "tokens"], steps=["Read>Edit", "Edit>Bash"]
+            )
+        ]
+    }
+    sources = {
+        "turns": [
+            {"id": "s3333aaaa#1", "ok": True, "tools": ["Grep", "Write", "Grep"], "ts": AFTER}
+        ],
+        "uses": [{"fact": "sk-one", "session": "3333aaaa-z", "ts": AFTER}],
+    }
+    events, state = step(tmp_path, sources=sources, doc=doc)
+    assert events == ["proposed a change to sk-one", "waiting on a drafter to tune sk-one"]
+    p = state["skills"]["sk-one"]["proposal"]
+    assert p["kind"] == "improve"
+    assert "2. It also worked as Grep > Write > Grep [s3333aaaa#1]." in p["text"]
+    assert drafts(tmp_path) == []
+
+
 def test_x4_no_tool_result_reaches_a_pitfall(tmp_path):
     from bantamkit.skillhost import ClaudeCodeAdapter
     from bantamkit.skillmine import MinerCache, improve_sources, session_pieces

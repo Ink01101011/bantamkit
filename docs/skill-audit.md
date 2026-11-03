@@ -225,8 +225,9 @@ skills roots, `<project>/.bantamkit/skills` and `~/.bantamkit/skills`, labelled
   are left out of `catalogue_bytes`, and no `never-invoked` finding is made for it (its uses
   are recalls in the usage ledger, not `Skill` calls in the transcripts). Its phrases still
   count: a trigger shared with a host skill is the same ambiguity.
-* A promotion is counted once. A symlink at `~/.claude/skills/<name>` is not descended, so the
-  skill is counted at its source and is not in `layer`; the adapter also takes the bantamkit
+* A promotion is counted once. The audit counts one skill per real directory and the bantamkit
+  roots come first, so a symlink at `~/.claude/skills/<name>` adds nothing: the skill is counted
+  at its source and is not in `layer`; the adapter also takes the bantamkit
   roots' names as known skills, so a typed `/<name>` of a promoted skill is a call. A copy (Windows without the symlink
   right) is a real directory in the later root, so the dedupe keeps the copy the host loads
   and names the source a `duplicate-skill` omission.
@@ -234,12 +235,18 @@ skills roots, `<project>/.bantamkit/skills` and `~/.bantamkit/skills`, labelled
 `generated` and `layer` are written only when one of them is not empty, so a record and a report
 over a home with no bantamkit skills are byte for byte what they were before.
 
-**Known limit (job73 C10/C14): any other symlinked skill directory is not counted.** Neither
-runtime's audit descends a symlinked directory inside a root, so the report, its findings and
-its `catalogue_bytes` leave out a personal or project skill that is a symlink and does not point
-into a bantamkit root. #206's promotion budget counts every symlinked skill directory directly
-inside the project and user roots itself ([skills.md](skills.md#promotion-and-demotion)); the
-audit's own count of those is a follow-up. #206's promotion is also the one thing in bantamkit
+**Symlinked skill directories are followed (#245, #234 N4; this was a known limit until
+0.37.2).** Both runtimes' audit, the `skill_audit` tool and the record alike, walk into a
+symlinked directory in any root, so a personal or project skill that is a link to a directory
+elsewhere is counted, under the link's name, with its bytes and its findings. The walk is
+guarded: a link whose real directory is one it is already inside (a link back to an ancestor)
+is not walked, a second link to a directory an earlier link entered is not walked, and a
+dangling link is passed over. A skill reached through a link is then dropped when its real
+directory is already counted, by a skill reached without a link or by an earlier link in root
+and path order, so one directory on disk is one skill however many names reach it; this is not
+a `duplicate-skill` omission, which stays the rule for two different directories with one name.
+A skill reached without a link is never dropped this way. A directory reached through a link
+declares a plugin version directory like any other. #206's promotion is also the one thing in bantamkit
 that writes under `~/.claude` (the link, or a copy, at `~/.claude/skills/<name>`); nothing ever
 edits `settings.json`.
 
@@ -321,7 +328,9 @@ prompt is not gated by `BANTAMKIT_SKILL_AUDIT`.
   under the same claimed day, at most once a day. It never raises.
 * **Status.** `bantamkit_status` always ends with a `skill audit:` line: `never ran; usage
   adapter <claude-code|none>`, the last run's skills, catalogue bytes, findings by severity and
-  a usage clause, or why there was no report. Every sentence is in `docs/status.md`. It is never
+  a usage clause, or why there was no report. The skills count includes the `[skill]` layer and
+  the catalogue bytes do not, so when the record has a layer the count says so: `6 skills (3 in
+  bantamkit's [skill] layer only, not in the bytes), 96 catalogue bytes` (#245). Every sentence is in `docs/status.md`. It is never
   a condition.
 * **SessionStart.** At most one line of at most 200 bytes, only for a `high` finding or a
   30-days-without-a-call skill that has not been shown before; nothing at all otherwise.
