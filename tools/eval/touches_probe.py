@@ -26,7 +26,7 @@ ROOTS = ("runtime-py/src/", "runtime-ts/src/", "tools/", "assets/")
 
 def tracked(repo: Path) -> list[str]:
     out = subprocess.run(
-        ["git", "ls-files", *ROOTS], cwd=repo, capture_output=True, text=True, check=True
+        ["git", "ls-files", *ROOTS], cwd=repo, capture_output=True, text=True, encoding="utf-8", check=True
     )
     # Longest first, so `shiftwork.py` inside `bantamkit/shiftwork.py` is not also counted.
     return sorted(out.stdout.split(), key=len, reverse=True)
