@@ -65,3 +65,24 @@ test('known keys alone still validate', () => {
   assert.equal(bound.get('query').v, 'a');
   assert.equal(unknownArgument(ARG_MODELS.build_identity, fromJs({})), null);
 });
+
+test('job78: bantamkit_status takes `detail: bool = False` — absent binds the default, null is bool_type', () => {
+  // Frames measured on pydantic 2.13 with `create_model(..., detail=(bool, False))`: NOT
+  // `bool | None`, so an explicit `null` is refused rather than read as the default.
+  const model = ARG_MODELS.bantamkit_status;
+  const refusal = (args) => {
+    try {
+      return validateArguments(model, fromJs(args));
+    } catch (error) {
+      return error.detail;
+    }
+  };
+  assert.deepEqual(refusal({ detail: 'yes' }).get('detail'), { t: 'bool', v: true });
+  assert.deepEqual(refusal({}).get('detail'), { t: 'null' });
+  assert.equal(
+    refusal({ detail: null }),
+    '1 validation error for bantamkit_statusArguments\ndetail\n' +
+      '  Input should be a valid boolean [type=bool_type, input_value=None, input_type=NoneType]',
+  );
+  assert.equal(unknownArgument(model, fromJs({ verbose: true })), "unknown argument 'verbose'; known: detail");
+});

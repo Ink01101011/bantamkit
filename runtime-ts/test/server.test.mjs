@@ -1282,7 +1282,7 @@ async function statusSession(requests, budget) {
 test('a healthy server reports Active, and the report is the six lines docs/status.md fixes', async () => {
   const { size: INDEX_BYTES, healthy: HEALTHY_BUDGET } = await indexFacts();
   const { lines, stderr, store } = await statusSession(
-    [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {})],
+    [INIT, INITIALIZED, SAVE_PROBE(2), call(3, 'bantamkit_status', {}), call(4, 'bantamkit_status', { detail: true })],
     HEALTHY_BUDGET,
   );
   assert.equal(statSync(join(store, 'index.md')).size, INDEX_BYTES, 'two sessions wrote different indexes');
@@ -1322,7 +1322,9 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   assert.equal(rows[7], `index facts project: 1 doc, ${held} bytes, persisted`);
   // AMENDED job68 J68-6 (#199, plan Task 6 names both changes): WAS 'logs: none'. `memory_save` now appends
   // the `save` event read-repair restores keywords from, so the probe's save made the ledger.
-  assert.match(rows[8], /^logs: usage\/[0-9a-f]{16} \d+ \(0 rotated, 0 skipped\)$/);
+  // AMENDED job78 (family summary) WAS /^logs: usage\/[0-9a-f]{16} \d+ \(0 rotated, 0 skipped\)$/ —
+  // that per-ledger line is now what `detail: true` answers (call 4, below).
+  assert.match(rows[8], /^logs: usage\/\* 1 file \d+ \(0 rotated, 0 skipped\)$/);
   assert.equal(rows[9], 'touch: none'); // #200 (job70 T200-1)
   assert.equal(rows[10], 'retention: off; last ran never; refused 0');
   assert.equal(rows[11], 'read-repaired: 0 this process');
@@ -1333,6 +1335,12 @@ test('a healthy server reports Active, and the report is the six lines docs/stat
   // The unstructured half is the RAW string, not the JSON — `bantamkit_status` is a `-> str`
   // tool, so it wraps to `structuredContent.result` exactly as `memory_save` does.
   assert.equal(byId(lines, 3).result.content[0].text, report);
+  // job78: `detail: true` changes the `logs:` line and nothing else — the same bytes, per ledger.
+  const detailed = byId(lines, 4).result.structuredContent.result.split('\n');
+  assert.equal(detailed.length, rows.length);
+  assert.match(detailed[8], /^logs: usage\/[0-9a-f]{16} \d+ \(0 rotated, 0 skipped\)$/);
+  assert.equal(detailed[8].split(' ')[2], rows[8].split(' ')[4], 'the one ledger holds the bytes the summary sums');
+  for (const i of [0, 3, 4, 5, 6, 9, 10, 11, 13, 14, 15]) assert.equal(detailed[i], rows[i], `line ${i}`);
   assert.equal(stderr, '');
 });
 

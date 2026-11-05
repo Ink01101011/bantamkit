@@ -9,6 +9,10 @@
  * `.claude/settings.local.json` under `cwd`. (3) **host data** is on when the native resolver
  * (RULING Q1.2, without the transcript branch only a hook receives) answers a directory. Tiers
  * 2 and 3 are absent SILENTLY: nothing here throws, and nothing here runs on a tool's hot path.
+ *
+ * LOGS (job78). One `logs:` line for the hook log, then ONE line per ledger family (`usage/*`,
+ * `touch/*`) summing its files, because a long-lived home holds thousands of usage ledgers and
+ * one line each buried the report. `bantamkit_status` with `detail: true` lists every ledger.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -141,15 +145,38 @@ function logs(base: string): Array<[string, string]> {
   return found;
 }
 
-export function logLines(home: string): string[] {
+/**
+ * The `logs:` lines (job78). `detail` lists every log on its own line,
+ * `logs: <name> <held> (<r> rotated, <s> skipped)`, as before job78. The default keeps the
+ * `hook-log` line and folds each family into ONE line, `usage/*` then `touch/*`, each only
+ * when that family counted a log: `logs: usage/* <n> file(s) <held> (<r> rotated, <s> skipped)`,
+ * the sums of the same per-log numbers. Nothing counted, either way: `logs: none`.
+ */
+export function logLines(home: string, detail = false): string[] {
   const out: string[] = [];
+  const families = new Map<string, [number, number, number, number]>([
+    ['usage', [0, 0, 0, 0]],
+    ['touch', [0, 0, 0, 0]],
+  ]);
   for (const [name, p] of logs(path.join(home, '.bantamkit'))) {
     const seg = new LogSegment(p);
     const segments = seg.segments();
     if (kindOf(p) !== 'file' && segments.length === 0) continue;
     const held = sizeOf(p) + segments.reduce((sum, s) => sum + sizeOf(s), 0);
     seg.read();
-    out.push(`logs: ${name} ${held} (${segments.length} rotated, ${seg.skipped} skipped)`);
+    const family = families.get(name.split('/')[0]!);
+    if (detail || family === undefined) {
+      out.push(`logs: ${name} ${held} (${segments.length} rotated, ${seg.skipped} skipped)`);
+      continue;
+    }
+    family[0] += 1;
+    family[1] += held;
+    family[2] += segments.length;
+    family[3] += seg.skipped;
+  }
+  for (const [family, [n, held, rotated, skipped]] of families) {
+    if (n === 0) continue;
+    out.push(`logs: ${family}/* ${plural(n, 'file')} ${held} (${rotated} rotated, ${skipped} skipped)`);
   }
   return out.length > 0 ? out : ['logs: none'];
 }
@@ -189,7 +216,16 @@ export function retentionLine(home: string): string {
   return `retention: ${enabled() ? '' : 'off; '}last ran ${ran}; refused ${refused}`;
 }
 
-/** Every storage line of `bantamkit_status`, in order. Never throws. */
-export function statusLines(memory: Memory, home: string, cwd: string | null): string[] {
-  return [tierLine(tiers(home, cwd)), ...indexLines(memory), ...logLines(home), touchLine(home), retentionLine(home)];
+/**
+ * Every storage line of `bantamkit_status`, in order. Never throws. `detail` (job78) is
+ * `logLines`'s: every usage and touch ledger on its own line rather than one per family.
+ */
+export function statusLines(memory: Memory, home: string, cwd: string | null, detail = false): string[] {
+  return [
+    tierLine(tiers(home, cwd)),
+    ...indexLines(memory),
+    ...logLines(home, detail),
+    touchLine(home),
+    retentionLine(home),
+  ];
 }

@@ -445,7 +445,8 @@ export function degradedNotice(conditions: readonly Condition[]): string {
  * alternative was a cycle between this file and `server.ts`. Nothing about the report changes:
  * it reads the same two fields off the same object the `build_identity` tool answers with.
  *
- * NO ARGUMENT VALUE CAN REACH THIS. The tool takes none, and every input above is server state.
+ * ONE ARGUMENT VALUE REACHES THIS: `detail` (job78), a boolean that only chooses between the
+ * per-family and the per-ledger `logs:` lines. Every other input above is server state.
  */
 export function statusReport(
   memory: Memory,
@@ -456,6 +457,7 @@ export function statusReport(
   prompts: number,
   templates: number,
   sampling = false,
+  detail = false,
 ): string {
   const build = identity.get('build_id');
   const facts = Memory['factCount'](memory.store.root);
@@ -495,7 +497,7 @@ export function statusReport(
     // #204 (job69 J69-7): the capability tiers, every hot index, every log and the last
     // retention run — AFTER the update line, so every line above keeps its number. Read here,
     // on demand, and never on the per-call footer path. The reference reads `Path.home()`.
-    ...statusLines(memory, homedir(), currentCwd()),
+    ...statusLines(memory, homedir(), currentCwd(), detail),
     // #199 Task 6: read-repair and the usage ledger, AFTER the storage block for the same reason
     // the block sits after the update line — every line above keeps its number.
     `read-repaired: ${memory.repaired} this process`,

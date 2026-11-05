@@ -34,6 +34,12 @@ export interface FieldSpec {
   readonly name: string;
   readonly kind: 'str' | 'int' | 'bool' | 'dict' | 'dictInt' | 'dictStr' | 'listDict' | 'listStr';
   readonly optional: boolean;
+  /**
+   * `false` for a field declared `x: T = <default>` rather than `T | None = None` (job78's
+   * `detail: bool = False`): absent is the default, but an explicit `null` is refused as
+   * pydantic refuses it, with `T`'s own type frame. Unset means `| None`.
+   */
+  readonly nullable?: false;
   /** `Field(le=...)`: an inclusive ceiling, checked AFTER the lax int parse succeeds. */
   readonly le?: bigint;
   /**
@@ -57,6 +63,9 @@ const opt = (name: string, kind: FieldSpec['kind'], bound: { le?: bigint; ge?: b
   optional: true,
   ...bound,
 });
+
+/** `name: T = <default>`: optional, but `null` is not the default and is refused (job78). */
+const dflt = (name: string, kind: FieldSpec['kind']): FieldSpec => ({ name, kind, optional: true, nullable: false });
 
 /**
  * `assets/tools/bantamkit_read.json` `offset.maximum` — `Number.MAX_SAFE_INTEGER`, the
@@ -149,7 +158,9 @@ export const ARG_MODELS: Readonly<Record<string, ArgModel>> = {
   // pydantic's, derived from the reference's CLOSURE name, and the status handler is called
   // `bantamkit_status` there where the identity one is called `build_identity_tool`. It is
   // the title `assets/tools/bantamkit_status.json` already advertises.
-  bantamkit_status: { model: 'bantamkit_statusArguments', fields: [] },
+  // job78: `detail: bool = False` on the reference — NOT `| None`, so an explicit `null` is
+  // `bool_type`, not the default; absent binds `null` and the handler reads it as false.
+  bantamkit_status: { model: 'bantamkit_statusArguments', fields: [dflt('detail', 'bool')] },
   // `reserve: int | None = None` on the reference, so it is the same lax `int` as `k`:
   // `'2'`, `True` and `3.0` validate, `'2.5'` is `int_parsing`, `2.5` is `int_from_float`,
   // and an explicit `null` is the default. Nothing here floors it — a negative value
@@ -334,7 +345,7 @@ const PY_INT_DECIMAL_TEXT = /^([+-]?\d+(?:_\d+)*)\.0+$/;
  * refuses every non-`str` for a `str` field even in lax mode (measured: `123` -> string_type).
  */
 function checkField(spec: FieldSpec, value: PyValue): { value: PyValue } | RawError[] {
-  if (spec.optional && value.t === 'null') return { value };
+  if (spec.optional && spec.nullable !== false && value.t === 'null') return { value };
   switch (spec.kind) {
     case 'str':
       if (value.t === 'str') return { value };
