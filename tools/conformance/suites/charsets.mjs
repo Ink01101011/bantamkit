@@ -64,8 +64,8 @@ const CJK = ['euc_jp', 'euc_kr', 'cp932', 'gb18030', 'gbk', 'shift_jis', 'big5',
 const CJK_RULING =
   'the reference decodes through CPython\'s own multi-byte codec tables and the port through ICU\'s ' +
   '(`docread.ts` MULTI_BYTE_LABELS -> TextDecoder), and the two tables are not the same table. ' +
-  'Four of the ten labels are not even the same codec on the WHATWG side — `gb2312` is decoded by ' +
-  'ICU\'s gbk, `big5` carries HKSCS, `euc-kr` is cp949, `shift_jis` is cp932 — so a byte pair only ' +
+  'Five of the ten labels are not even the same codec on the WHATWG side — `gb2312` and `gbk` are ' +
+  'decoded as gb18030 (#270: the label map names it, so every Node major answers alike), `big5` carries HKSCS, `euc-kr` is cp949, `shift_jis` is cp932 — so a byte pair only ' +
   'one of the two knows parts them. Lifting this means writing CPython\'s CJK tables out into ' +
   'TypeScript the way `charsets.ts` does for single-byte codecs, which is 79 tables of 256 entries ' +
   'there against tens of thousands of multi-byte mappings here, for a difference that lands on ' +
@@ -139,7 +139,12 @@ const PINNED = {
   gbk: {
     matched: 277,
     reference: '003ef6a4ae74990d',
-    port: '7d0fc728ce734f23',
+    // AMENDED 2026-11-06 (#270): was '7d0fc728ce734f23', measured on Node 25.2.1. The port now sends
+    // `gbk` and `gb2312` to the `gb18030` label (WHATWG: all three are one decoder), so the
+    // answer no longer depends on the Node major (Node 20's own gbk decoder differs from
+    // gb18030 on 1702 inputs). Equal to the gb18030 digest above BY CONSTRUCTION. `matched` and
+    // `first` did not move.
+    port: '3782257c09f83754',
     first: { index: 7, input: '1e69fedaa0ee', reference: '\u001Ei\uFFFD\u8DD4\uFFFD', port: '\u001Ei\uE4A1\u72C0' },
   },
   shift_jis: {
@@ -172,7 +177,9 @@ const PINNED = {
   gb2312: {
     matched: 141,
     reference: '9ef56d61450232a1',
-    port: '7d0fc728ce734f23', // likewise: `gb2312` and `gbk` are both ICU's `gbk`.
+    // AMENDED 2026-11-06 (#270): was '7d0fc728ce734f23'; `gb2312`, `gbk` and `gb18030` are now ONE
+    // decoder on the port (the `gb18030` label), see `gbk` above. `matched` and `first` did not move.
+    port: '3782257c09f83754',
     first: { index: 5, input: '4494d6493c9d', reference: 'D\uFFFD\uFFFDI<\uFFFD', port: 'D\u65A8I<\uFFFD' },
   },
 };

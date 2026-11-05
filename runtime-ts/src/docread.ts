@@ -377,7 +377,7 @@ export function pyCodecModule(name: string): string | null {
 /**
  * The multi-byte codecs this port decodes through `TextDecoder`, module -> WHATWG label.
  * The label's table is not the codec's in every cell (WHATWG `shift_jis` is cp932,
- * `gb2312` is gbk, `big5` carries HKSCS, `euc-kr` is cp949), so a byte pair only one of the
+ * `gb2312` and `gbk` are gb18030 (#270), `big5` carries HKSCS, `euc-kr` is cp949), so a byte pair only one of the
  * two knows differs; the ERROR policy is CPython's, see `decodeMultiByte`.
  */
 /**
@@ -420,8 +420,12 @@ const MULTI_BYTE_LABELS: Readonly<Record<string, string>> = {
   shift_jis: 'shift_jis',
   cp932: 'shift_jis',
   euc_jp: 'euc-jp',
-  gb2312: 'gb2312',
-  gbk: 'gbk',
+  // `gbk` and `gb2312` are labels OF the gb18030 decoder in WHATWG Encoding. Node >= 22 follows
+  // that; Node 20's own `gbk`/`gb2312` decoders do not (`80 ff` -> U+20AC with the FF dropped,
+  // `81 30` -> U+FFFD '0'), so the label is pinned here and the answer no longer depends on the
+  // Node major (#270).
+  gb2312: 'gb18030',
+  gbk: 'gb18030',
   gb18030: 'gb18030',
   big5: 'big5',
   big5hkscs: 'big5',
@@ -553,7 +557,8 @@ function decodeUtf32(buf: Uint8Array, module: string): string {
  * codec against `bytes.decode(codec, "replace")` (H2, seed 7) agree 297/300 for euc_jp,
  * 296 euc_kr, 295 cp932, 292 gb18030, 278 gbk, 268 shift_jis, 208 big5, 205 big5hkscs,
  * 192 cp949, 141 gb2312 — every remaining case a pair one table knows and the other does
- * not (gb2312 is decoded by ICU's gbk, big5 by its HKSCS table). The utf_16/utf_32 family
+ * not (gbk and gb2312 are decoded through the gb18030 label, #270, which is what WHATWG says
+ * they are; big5 by ICU's HKSCS table). The utf_16/utf_32 family
  * and utf_8_sig are 300/300.
  */
 function decodeMultiByte(buf: Uint8Array, module: string): string {
@@ -562,7 +567,7 @@ function decodeMultiByte(buf: Uint8Array, module: string): string {
   const singles = lookup(MULTI_BYTE_SINGLES, module) as string;
   const icuAlone = acceptedAlone(label, fatal);
   // A byte ICU decodes on its own that CPython does not (0x80 is U+0080 to ICU's euc-jp and
-  // U+20AC to its gbk, U+FFFD to both of CPython's) is the one case the fast path cannot
+  // U+20AC to its gb18030, U+FFFD to both of CPython's) is the one case the fast path cannot
   // take: ICU would print the byte, and in a longer slice would consume it as a prefix.
   const suspect = (b: number): boolean => b >= 0x80 && singles[b - 0x80] === '\ufffd' && icuAlone[b - 0x80] === 1;
   if (!buf.some(suspect)) {
