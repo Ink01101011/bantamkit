@@ -100,6 +100,9 @@ export async function run(ctx) {
   const USAGE_B = '{"ts":"2026-10-14T00:00:00Z","fact":"b","kind":"save"}\n';
   const USAGE_B_SEG = gzipSync(Buffer.from('{"ts":"2026-10-01T00:00:00Z","fact":"b","kind":"recall"}\n'));
   const TOUCH_ID = '0123456789abcdef';
+  const TOUCH_ID_B = 'fedcba9876543210';
+  const TOUCH_B = '{"ts":"2026-10-16T00:00:00Z","path":"b.py"}\n';
+  const TOUCH_B_SEG = gzipSync(Buffer.from('{"ts":"2026-10-02T00:00:00Z","path":"c.py"}\n'));
   const TOUCH_LINES = '{"ts":"2026-10-15T00:00:00Z","path":"a.py"}\nnot json\n';
 
   /** The world one profile names, rebuilt from nothing before EACH side. */
@@ -123,11 +126,15 @@ export async function run(ctx) {
     // lost. A file in the way refuses the mkdir on POSIX and on Windows alike; chmod does not.
     'unwritable-ledger': () => write(join(home, '.bantamkit', 'usage'), 'a file where the usage directory goes'),
     // job78: two usage ledgers and a touch log, no hook log.
+    // AMENDED #287: a second touch log (a rotated segment and no bad line), so the plural
+    // `touch/* 2 files` line sums bytes, rotated and skipped over more than one file.
     'many-ledgers': () => {
       write(join(home, '.bantamkit', 'usage', 'abc123.jsonl'), USAGE_LINES);
       write(join(home, '.bantamkit', 'usage', 'def456.jsonl'), USAGE_B);
       write(join(home, '.bantamkit', 'usage', 'def456.jsonl.1.gz'), USAGE_B_SEG);
       write(join(home, '.bantamkit', 'touch', `${TOUCH_ID}.jsonl`), TOUCH_LINES);
+      write(join(home, '.bantamkit', 'touch', `${TOUCH_ID_B}.jsonl`), TOUCH_B);
+      write(join(home, '.bantamkit', 'touch', `${TOUCH_ID_B}.jsonl.1.gz`), TOUCH_B_SEG);
     },
   };
   const setup = (profile) => {
@@ -308,6 +315,7 @@ export async function run(ctx) {
     ) ?? null;
 
   const hookLogBytes = Buffer.byteLength(HOOK_LOG) + HOOK_SEG.length;
+  const touchBBytes = Buffer.byteLength(TOUCH_B) + TOUCH_B_SEG.length;
   const usageBBytes = Buffer.byteLength(USAGE_B) + USAGE_B_SEG.length;
   // AMENDED job70 T200-1 (#200, plan Task 1: "`bantamkit_status` gains ... one line `touch:`"):
   // every block WAS without the `touch: none` line, which sits between the logs and retention.
@@ -346,7 +354,8 @@ export async function run(ctx) {
     'many-ledgers': [
       'storage: core on; hooks off; host data off',
       `logs: usage/* 2 files ${Buffer.byteLength(USAGE_LINES) + usageBBytes} (1 rotated, 1 skipped)`,
-      `logs: touch/* 1 file ${Buffer.byteLength(TOUCH_LINES)} (0 rotated, 1 skipped)`,
+      // AMENDED #287: WAS `logs: touch/* 1 file ${Buffer.byteLength(TOUCH_LINES)} (0 rotated, 1 skipped)`; the profile now has two touch logs, one rotated segment, one bad line.
+      `logs: touch/* 2 files ${Buffer.byteLength(TOUCH_LINES) + touchBBytes} (1 rotated, 1 skipped)`,
       'touch: 0 missed writes (hook log)',
       'retention: off; last ran never; refused 0',
     ],
@@ -381,6 +390,7 @@ export async function run(ctx) {
       `logs: usage/abc123 ${Buffer.byteLength(USAGE_LINES)} (0 rotated, 1 skipped)`,
       `logs: usage/def456 ${usageBBytes} (1 rotated, 0 skipped)`,
       `logs: touch/${TOUCH_ID} ${Buffer.byteLength(TOUCH_LINES)} (0 rotated, 1 skipped)`,
+      `logs: touch/${TOUCH_ID_B} ${touchBBytes} (1 rotated, 0 skipped)`, // AMENDED #287: the second touch log; sorted after the first by name
       'touch: 0 missed writes (hook log)',
       'retention: off; last ran never; refused 0',
     ],
@@ -413,6 +423,30 @@ export async function run(ctx) {
         expected: expected['mcp-only'],
         actual: shaped(storageBlock(at({ detail: false })?.result?.content?.[0]?.text ?? null)),
       });
+      // #287: the lax spellings, pinned per side. `'true'` is a bool by pydantic's lax rules and
+      // lists per ledger; `0` is a bool too and is the default block; `'maybe'` and `2` are no
+      // bool at all and are refused with the same `bool_type`-family sentence.
+      cases.push({
+        name: `LITERAL: mcp-only detail: 'true' lists per ledger (#287) — ${side}`,
+        kind: 'json',
+        expected: expectedDetail['mcp-only'],
+        actual: shaped(storageBlock(at({ detail: 'true' })?.result?.content?.[0]?.text ?? null)),
+      });
+      cases.push({
+        name: `LITERAL: mcp-only detail: 0 is the default block (#287) — ${side}`,
+        kind: 'json',
+        expected: expected['mcp-only'],
+        actual: shaped(storageBlock(at({ detail: 0 })?.result?.content?.[0]?.text ?? null)),
+      });
+      for (const bad of ['maybe', 2]) {
+        const r = at({ detail: bad })?.result;
+        cases.push({
+          name: `LITERAL: mcp-only detail: ${JSON.stringify(bad)} is refused as a non-boolean (#287) — ${side}`,
+          kind: 'json',
+          expected: [true, true],
+          actual: [r?.isError ?? 'no result', /valid boolean, unable to interpret input/.test(r?.content?.[0]?.text ?? '')],
+        });
+      }
       const refused = at({ detail: null })?.result;
       cases.push({
         name: `LITERAL: mcp-only detail: null is refused as bool_type (job78) — ${side}`,
