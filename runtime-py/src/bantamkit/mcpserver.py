@@ -1337,9 +1337,10 @@ class _Tool(SDKTool if SDKTool is not None else object):  # type: ignore[misc]
     side effect, also the 0.37.2 behaviour: the SDK logs a `ToolError` at INFO, not with
     `logger.exception`, so a crash prints no traceback to stderr under the default logging.
 
-    Adopting the SDK's crash-hiding policy -- dropping the suffix -- is a design change that
-    has to land in BOTH runtimes together with the conformance cases; it is a deliberate
-    follow-up to #268, not a bug in this class.
+    Adopting the SDK's crash-hiding policy -- dropping the suffix -- was considered in #274
+    and declined on 2026-11-05: keeping this override is the project's policy, written down
+    in docs/porting.md ("A tool crash answers `Error executing tool <name>: <exc>` in both
+    runtimes"). Reversing it is a change to BOTH runtimes and their conformance cases.
     """
 
     async def run(
