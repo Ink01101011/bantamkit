@@ -480,6 +480,38 @@ def test_the_status_report_itself_never_carries_the_footer(tmp_path):
     assert report.endswith(".")
 
 
+def test_the_detail_argument_chooses_the_form_of_the_logs_lines(tmp_path, record_home):
+    """job78: `detail` reaches the storage block through the tool, and only there.
+
+    Two usage ledgers: the default report folds them into one `usage/*` line, `detail: true`
+    prints one line each, and every other line of the report is the same in both.
+    """
+    usage = record_home / ".bantamkit" / "usage"
+    usage.mkdir()
+    (usage / "aa.jsonl").write_bytes(b'{"ts":"1"}\n')
+    (usage / "bb.jsonl").write_bytes(b'{"ts":"2"}\nbroken\n')
+    server = build_server(make_memory(tmp_path))
+
+    async def scenario():
+        async with Client(server) as c:
+            plain = (await c.call_tool(STATUS_NAME, {})).content[0].text
+            off = (await c.call_tool(STATUS_NAME, {"detail": False})).content[0].text
+            on = (await c.call_tool(STATUS_NAME, {"detail": True})).content[0].text
+            return plain, off, on
+
+    plain, off, on = run(scenario())
+    assert plain == off
+    summary = [ln for ln in plain.split("\n") if ln.startswith("logs: ")]
+    detailed = [ln for ln in on.split("\n") if ln.startswith("logs: ")]
+    assert summary == ["logs: usage/* 2 files 29 (0 rotated, 1 skipped)"]
+    assert detailed == [
+        "logs: usage/aa 11 (0 rotated, 0 skipped)",
+        "logs: usage/bb 18 (0 rotated, 1 skipped)",
+    ]
+    rest = [ln for ln in plain.split("\n") if not ln.startswith("logs: ")]
+    assert rest == [ln for ln in on.split("\n") if not ln.startswith("logs: ")]
+
+
 def test_no_argument_value_reaches_the_status_report_or_the_footer(tmp_path):
     """NON-VACUITY 3: the absence, asserted POSITIVELY, against a sentinel.
 

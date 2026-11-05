@@ -667,6 +667,13 @@ def build_identity() -> dict[str, Any]:
 #: operator who read `bantamkit_status` in a footer must find it in their prompt menu
 #: without translating, and a model that read it in a prompt must find the tool.
 STATUS_NAME = "bantamkit_status"
+#: job78: the one argument `bantamkit_status` takes. The advertised schema is the asset's
+#: (`assets/tools/bantamkit_status.json`, which carries this same sentence); this is what
+#: the signature enforces.
+STATUS_DETAIL_DESCRIPTION = (
+    "true lists every usage and touch ledger on its own line; "
+    "the default folds each family into one summary line."
+)
 
 #: What the prompt says after the report. The report is the payload; this is the one line
 #: that tells the model what the person wanted with it, and it asks for a RELAY rather
@@ -1004,6 +1011,8 @@ def status_report(
     prompts: int,
     templates: int,
     sampling: bool = False,
+    *,
+    detail: bool = False,
 ) -> str:
     """The whole answer `bantamkit_status` returns — prose, for a person, in a transcript.
 
@@ -1018,8 +1027,9 @@ def status_report(
     the question this tool exists to answer: two endpoints registered under one name is
     the situation RB-P84 filed, and a version string cannot tell them apart.
 
-    NO ARGUMENT VALUE CAN REACH THIS. It takes none, and every input above is server
-    state; `test_status_surface.py` asserts the absence positively with a sentinel.
+    NO ARGUMENT VALUE CAN REACH THIS. Every input above is server state, except `detail`
+    (job78), a bool that only chooses between the two forms of the `logs:` lines and is
+    never printed; `test_status_surface.py` asserts the absence positively with a sentinel.
     """
     identity = build_identity()
     build = identity["build_id"]
@@ -1061,7 +1071,9 @@ def status_report(
         # #204 (job69 J69-7): the capability tiers, every hot index, every log and the last
         # retention run -- AFTER the update line, so every line above keeps its number. Read
         # here, on demand, and never on the per-call footer path.
-        *storage_tiers.status_lines(memory, Path.home(), storage_tiers.current_cwd()),
+        *storage_tiers.status_lines(
+            memory, Path.home(), storage_tiers.current_cwd(), detail=detail
+        ),
         # #199 Task 6: read-repair and the usage ledger, AFTER the storage block for the same
         # reason the block sits after the update line -- every line above keeps its number.
         f"read-repaired: {memory.repaired} this process",
@@ -1858,7 +1870,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         )
         return _noted_dict(identity)
 
-    def bantamkit_status(ctx: Context) -> str:
+    def bantamkit_status(
+        ctx: Context,
+        detail: Annotated[bool, Field(description=STATUS_DETAIL_DESCRIPTION)] = False,
+    ) -> str:
         """The one surface every host renders, answering "is this thing working".
 
         NO FOOTER ON THIS ONE, and the omission is the design rather than an oversight:
@@ -1881,6 +1896,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
                 SERVED_PROMPTS,
                 SERVED_RESOURCE_TEMPLATES,
                 _sampling_declared(ctx),
+                detail=detail,
             )
 
     def bantamkit_read(

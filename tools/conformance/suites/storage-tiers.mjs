@@ -95,6 +95,12 @@ export async function run(ctx) {
   const HOOK_LOG = '{"event":"SessionStart","ts":"2026-10-16T00:00:00.000Z"}\nnot a json line\n';
   const HOOK_SEG = gzipSync(Buffer.from('{"event":"Stop","ts":"2026-10-01T00:00:00.000Z"}\n'));
   const USAGE_LINES = '{"ts":"2026-10-15T00:00:00Z","fact":"a","kind":"recall"}\n{"ts":NaN}\n';
+  // job78: a second usage ledger with a rotated segment, and one touch log with a bad line, so
+  // the summary's plural and its sums (bytes, rotated, skipped) are compared across sides.
+  const USAGE_B = '{"ts":"2026-10-14T00:00:00Z","fact":"b","kind":"save"}\n';
+  const USAGE_B_SEG = gzipSync(Buffer.from('{"ts":"2026-10-01T00:00:00Z","fact":"b","kind":"recall"}\n'));
+  const TOUCH_ID = '0123456789abcdef';
+  const TOUCH_LINES = '{"ts":"2026-10-15T00:00:00Z","path":"a.py"}\nnot json\n';
 
   /** The world one profile names, rebuilt from nothing before EACH side. */
   const profiles = {
@@ -116,6 +122,13 @@ export async function run(ctx) {
     // J68-10 (#199 D5 error row): a FILE where the usage directory belongs, so every append is
     // lost. A file in the way refuses the mkdir on POSIX and on Windows alike; chmod does not.
     'unwritable-ledger': () => write(join(home, '.bantamkit', 'usage'), 'a file where the usage directory goes'),
+    // job78: two usage ledgers and a touch log, no hook log.
+    'many-ledgers': () => {
+      write(join(home, '.bantamkit', 'usage', 'abc123.jsonl'), USAGE_LINES);
+      write(join(home, '.bantamkit', 'usage', 'def456.jsonl'), USAGE_B);
+      write(join(home, '.bantamkit', 'usage', 'def456.jsonl.1.gz'), USAGE_B_SEG);
+      write(join(home, '.bantamkit', 'touch', `${TOUCH_ID}.jsonl`), TOUCH_LINES);
+    },
   };
   const setup = (profile) => {
     rmSync(root, { recursive: true, force: true });
@@ -165,6 +178,12 @@ export async function run(ctx) {
   const FIRST_TOOL_ID = 3;
   const STATUS_ID = FIRST_TOOL_ID + TOOLS.length - 1;
   const PROMPT_ID = STATUS_ID + 1;
+  // job78: `bantamkit_status`'s one argument, `detail`. Every frame is compared across sides
+  // by the differential; `DETAIL_ID` is also pinned per side below. `null` is refused on both
+  // (`detail: bool = False`, not `| None`: pydantic's `bool_type`), and the lax spellings
+  // pydantic accepts or refuses must be accepted or refused by the port the same way.
+  const DETAIL_ID = PROMPT_ID + 1;
+  const DETAIL_PROBES = [{ detail: false }, { detail: null }, { detail: 'true' }, { detail: 0 }, { detail: 'maybe' }, { detail: 2 }];
   const sessions = [
     {
       name: 'mcp-only',
@@ -178,10 +197,14 @@ export async function run(ctx) {
         rpc(2, 'tools/list', {}),
         ...TOOLS.map(([tool, args], i) => callTool(FIRST_TOOL_ID + i, tool, args)),
         rpc(PROMPT_ID, 'prompts/get', { name: 'bantamkit_status' }),
+        callTool(DETAIL_ID, 'bantamkit_status', { detail: true }),
+        ...DETAIL_PROBES.map((args, i) => callTool(DETAIL_ID + 1 + i, 'bantamkit_status', args)),
       ],
     },
-    { name: 'hooked', profile: 'hooked', argv: ['--store', store], env: env(), cwd: project, lines: [INIT, INITIALIZED, callTool(2, 'bantamkit_status', {})] },
-    { name: 'project-hook', profile: 'project-hook', argv: ['--store', store], env: env(), cwd: project, lines: [INIT, INITIALIZED, callTool(2, 'bantamkit_status', {})] },
+    // job78: id 3 on these three is the same status with `detail: true`.
+    { name: 'hooked', profile: 'hooked', argv: ['--store', store], env: env(), cwd: project, lines: [INIT, INITIALIZED, callTool(2, 'bantamkit_status', {}), callTool(3, 'bantamkit_status', { detail: true })] },
+    { name: 'project-hook', profile: 'project-hook', argv: ['--store', store], env: env(), cwd: project, lines: [INIT, INITIALIZED, callTool(2, 'bantamkit_status', {}), callTool(3, 'bantamkit_status', { detail: true })] },
+    { name: 'many-ledgers', profile: 'many-ledgers', argv: ['--store', store], env: env(), cwd: project, lines: [INIT, INITIALIZED, callTool(2, 'bantamkit_status', {}), callTool(3, 'bantamkit_status', { detail: true })] },
     {
       name: 'unwritable-index',
       profile: 'unwritable-index',
@@ -194,6 +217,7 @@ export async function run(ctx) {
         callTool(2, 'memory_save', { type: 'project', name: 'tier-probe', description: 'a probe for the capability tiers', body: 'body' }),
         callTool(3, 'memory_recall', { query: 'capability tiers probe' }),
         callTool(4, 'bantamkit_status', {}),
+        callTool(5, 'bantamkit_status', { detail: true }), // job78
       ],
     },
     {
@@ -274,7 +298,8 @@ export async function run(ctx) {
   };
   /** The index line's own byte count is compared ACROSS sides above; per side, its shape. */
   // A usage ledger is named by its store's id, a hash of the store's real path in this run's
-  // scratch, so the id is masked per side; its size is not (#199, J68-5).
+  // scratch, so the id is masked per side; its size is not (#199, J68-5). Since job78 that
+  // name appears only in a `detail: true` block: the default block prints `usage/*`.
   const shaped = (block) =>
     block?.map((l) =>
       l
@@ -283,13 +308,52 @@ export async function run(ctx) {
     ) ?? null;
 
   const hookLogBytes = Buffer.byteLength(HOOK_LOG) + HOOK_SEG.length;
+  const usageBBytes = Buffer.byteLength(USAGE_B) + USAGE_B_SEG.length;
   // AMENDED job70 T200-1 (#200, plan Task 1: "`bantamkit_status` gains ... one line `touch:`"):
   // every block WAS without the `touch: none` line, which sits between the logs and retention.
+  // AMENDED job78 (status log summary): these are the DEFAULT blocks, where each ledger family
+  // folds into one `logs: <family>/* <n> file(s) <bytes> (...)` line; the per-ledger lines each
+  // block WAS are pinned unchanged as the `detail: true` blocks in `expectedDetail` below.
   const expected = {
     // #199 D5: the session's `memory_recall` appends one `recall_hit` (70 bytes) to the usage
     // ledger, and the status lists it. WAS 'logs: none': recall wrote `last_recalled` instead.
     // AMENDED job68 J68-6 (#199, plan Task 6: "`Memory.save` must append the `save` event, with
     // keywords"): WAS 70; the session's `memory_save` now appends its `save` event (78 bytes).
+    'mcp-only': [
+      'storage: core on; hooks off; host data off',
+      'index facts project: 1 doc, <n> bytes, persisted',
+      'logs: usage/* 1 file 148 (0 rotated, 0 skipped)', // AMENDED job78 (status log summary): WAS 'logs: usage/<id> 148 (0 rotated, 0 skipped)'
+      'touch: none',
+      'retention: off; last ran never; refused 0',
+    ],
+    hooked: [
+      'storage: core on; hooks on; host data on',
+      `logs: hook-log ${hookLogBytes} (1 rotated, 1 skipped)`,
+      `logs: usage/* 1 file ${Buffer.byteLength(USAGE_LINES)} (0 rotated, 1 skipped)`, // AMENDED job78 (status log summary): WAS 'logs: usage/abc123 ${Buffer.byteLength(USAGE_LINES)} (0 rotated, 1 skipped)'
+      'touch: none',
+      `retention: off; last ran ${RAN_AT}; refused 1`,
+    ],
+    'project-hook': ['storage: core on; hooks on; host data off', 'logs: none', 'touch: none', 'retention: off; last ran never; refused 0'],
+    'unwritable-index': [
+      'storage: core on; hooks off; host data off',
+      'index facts project: 1 doc, 0 bytes, in-memory',
+      'logs: usage/* 1 file 148 (0 rotated, 0 skipped)', // AMENDED job78 (status log summary): WAS 'logs: usage/<id> 148 (0 rotated, 0 skipped)'
+      'touch: none',
+      'retention: off; last ran never; refused 0',
+    ],
+    // job78: two usage ledgers (the plural, and the sums: one rotated segment, one bad line)
+    // and one touch log with a bad line; no hook log, so no `hook-log` line.
+    'many-ledgers': [
+      'storage: core on; hooks off; host data off',
+      `logs: usage/* 2 files ${Buffer.byteLength(USAGE_LINES) + usageBBytes} (1 rotated, 1 skipped)`,
+      `logs: touch/* 1 file ${Buffer.byteLength(TOUCH_LINES)} (0 rotated, 1 skipped)`,
+      'touch: 0 missed writes (hook log)',
+      'retention: off; last ran never; refused 0',
+    ],
+  };
+  // job78: the same sessions' `bantamkit_status` with `detail: true` — one line per ledger,
+  // exactly the blocks the default call printed before job78.
+  const expectedDetail = {
     'mcp-only': [
       'storage: core on; hooks off; host data off',
       'index facts project: 1 doc, <n> bytes, persisted',
@@ -308,12 +372,21 @@ export async function run(ctx) {
     'unwritable-index': [
       'storage: core on; hooks off; host data off',
       'index facts project: 1 doc, 0 bytes, in-memory',
-      'logs: usage/<id> 148 (0 rotated, 0 skipped)', // #199 D5 and J68-6, as for mcp-only
+      'logs: usage/<id> 148 (0 rotated, 0 skipped)',
       'touch: none',
       'retention: off; last ran never; refused 0',
     ],
+    'many-ledgers': [
+      'storage: core on; hooks off; host data off',
+      `logs: usage/abc123 ${Buffer.byteLength(USAGE_LINES)} (0 rotated, 1 skipped)`,
+      `logs: usage/def456 ${usageBBytes} (1 rotated, 0 skipped)`,
+      `logs: touch/${TOUCH_ID} ${Buffer.byteLength(TOUCH_LINES)} (0 rotated, 1 skipped)`,
+      'touch: 0 missed writes (hook log)',
+      'retention: off; last ran never; refused 0',
+    ],
   };
-  const statusId = { 'mcp-only': STATUS_ID, hooked: 2, 'project-hook': 2, 'unwritable-index': 4 };
+  const statusId = { 'mcp-only': STATUS_ID, hooked: 2, 'project-hook': 2, 'unwritable-index': 4, 'many-ledgers': 2 };
+  const detailId = { 'mcp-only': DETAIL_ID, hooked: 3, 'project-hook': 3, 'unwritable-index': 5, 'many-ledgers': 3 };
   for (const side of ['python', 'node']) {
     for (const session of Object.keys(expected)) {
       cases.push({
@@ -321,6 +394,31 @@ export async function run(ctx) {
         kind: 'json',
         expected: expected[session],
         actual: shaped(storageBlock(textOf(side, session, statusId[session]))),
+      });
+      cases.push({
+        name: `LITERAL: ${session} storage block with detail: true (job78) — ${side}`,
+        kind: 'json',
+        expected: expectedDetail[session],
+        actual: shaped(storageBlock(textOf(side, session, detailId[session]))),
+      });
+    }
+    // job78: `detail: false` is the default block; `null` is refused (`detail: bool = False`
+    // binds no `None`). The lax spellings are compared across sides by the differential only.
+    {
+      const frames = byId(results.get('mcp-only')[side].frames);
+      const at = (args) => frames.get(DETAIL_ID + 1 + DETAIL_PROBES.findIndex((p) => Object.is(p.detail, args.detail)));
+      cases.push({
+        name: `LITERAL: mcp-only detail: false is the default block (job78) — ${side}`,
+        kind: 'json',
+        expected: expected['mcp-only'],
+        actual: shaped(storageBlock(at({ detail: false })?.result?.content?.[0]?.text ?? null)),
+      });
+      const refused = at({ detail: null })?.result;
+      cases.push({
+        name: `LITERAL: mcp-only detail: null is refused as bool_type (job78) — ${side}`,
+        kind: 'json',
+        expected: [true, true],
+        actual: [refused?.isError ?? 'no result', /bool_type|valid boolean/.test(refused?.content?.[0]?.text ?? '')],
       });
     }
     // Tier 1 runs complete: every served tool answered, and none of the answers is an error.

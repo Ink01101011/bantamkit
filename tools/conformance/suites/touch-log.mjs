@@ -358,7 +358,8 @@ function runNodeBed(touch, tiers, retention, bed) {
         break;
       }
       case 'status':
-        out.push([...tiers.logLines(bed.home).filter((l) => l.startsWith('logs: touch/')), tiers.touchLine(bed.home)]);
+        // job78: `detail` true, as the reference passes it; the default form is storage-tiers'.
+        out.push([...tiers.logLines(bed.home, true).filter((l) => l.startsWith('logs: touch/')), tiers.touchLine(bed.home)]);
         break;
       case 'retention': {
         const saved = process.env.BANTAMKIT_RETENTION;

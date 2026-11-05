@@ -140,7 +140,7 @@ Field by field:
 | 6 | `updatecheck.update_line(version)` | one of **five** sentences, read off `<homedir>/.bantamkit/update-check.json`. Never absent — there is no silent state. See below. |
 | 7 `storage` | `storage.tiers.tiers(home, cwd)` | `storage: core on; hooks on\|off; host data on\|off` (#204, S2; job69 J69-7) — see the amendment below |
 | `index` | one per memory layer whose `facts/` is a directory | `index facts <layer kind>: <n> doc(s), <bytes> bytes, persisted\|in-memory` |
-| `logs` | `~/.bantamkit/hooks/hook-log.jsonl`, `~/.bantamkit/usage/*.jsonl` | `logs: <name> <bytes> (<n> rotated, <n> skipped)` per log, or `logs: none` |
+| `logs` | `~/.bantamkit/hooks/hook-log.jsonl`, `~/.bantamkit/usage/*.jsonl`, `~/.bantamkit/touch/*.jsonl` | `logs: hook-log <bytes> (<n> rotated, <n> skipped)`, then one `logs: usage/* <n> file(s) <bytes> (<r> rotated, <s> skipped)` and one `logs: touch/* …` line per family that has a log (job78); with `detail: true`, `logs: <name> <bytes> (<n> rotated, <n> skipped)` per log instead; `logs: none` when there is no log |
 | `retention` | `~/.bantamkit/retention.json`, `BANTAMKIT_RETENTION` | `retention: [off; ]last ran <iso>\|never; refused <n>` |
 | `skill audit` | `~/.bantamkit/skill-audit.json`, `BANTAMKIT_SKILL_AUDIT` (#205, job73 A4; the LAST line, after `queries`) | `skill audit: [off; ]never ran; usage adapter <claude-code\|none>`, `…the last record is unreadable; the next run recomputes it`, `…last ran <ts>; no report — <error>`, or `…last ran <ts> on <host>; <n> skill(s)[ (<k> in bantamkit's [skill] layer only, not in the bytes)], <b> catalogue bytes; findings <h> high, <m> medium, <l> low; <usage clause>`. The `<usage clause>` is one of `usage: none — <host> has no usage adapter, so nothing is called never-invoked`, `usage over <d> days (a proposed change needs 30)` or `usage over 30 days; <n> change(s) proposed`. The `off; ` prefix reads the AUDIT switch, not retention's. Never a condition |
 | `skills` | `~/.bantamkit/skill-proposals.json`, `~/.bantamkit/skills-state.json`, `BANTAMKIT_SKILL_AUDIT`, `BANTAMKIT_SKILL_AUTO`, `BANTAMKIT_LLM_URL`/`BANTAMKIT_LLM_MODEL`, the client's `sampling` capability (#206, job73 C9/C13b; the LAST line, after `skill audit`) | `skills: [off; ]<miner>; drafter <d>; <auto>`. `<miner>` is `miner never ran`, `miner refused: <sentence>` (the proposals file exists but is not a version-1 proposals file; it is never overwritten), `miner failed at <ts>: <error>` (`OSError` for any filesystem error, else the error's class name), or `mined <ts> in <ms> ms; <n> pending, <a> of 5 auto-installed live, <q> promoted` (`?` for `a` and `q` when the state file is unreadable). `<d>` is `sampling` (the client declared it), `endpoint <model>` (`BANTAMKIT_LLM_URL` and `BANTAMKIT_LLM_MODEL` both set) or `host agent`. `<auto>` is `auto on` or `auto off (BANTAMKIT_SKILL_AUTO=on to opt in)`, off by default in 0.37.0 ([skills.md](skills.md#the-switches)). The `off; ` prefix reads the MINER's switch, which is `BANTAMKIT_SKILL_AUDIT`. Never a condition |
@@ -171,6 +171,25 @@ file plus its rotated `.N.gz` segments; `skipped` is what `LogSegment.read` coul
 None of this is a condition: it never flips line 1, never enters `degraded_conditions()`, and
 never rides the footer. Both runtimes print the same bytes; `tools/conformance/suites/storage-tiers.mjs`
 compares them on four host profiles, and the `wire` status sessions compare the block too.
+
+**Amendment, 2026-11-05 (job78): one `logs:` line per family, and `detail`.** A long-lived home
+holds one usage ledger per store and one touch log per repo, and the block printed a line for
+each — thousands on a busy machine. By default every `usage/<id>` ledger now folds into one line
+and every `touch/<id>` log into another, after `hook-log`, which keeps its own line:
+
+```
+logs: hook-log 2048 (1 rotated, 1 skipped)
+logs: usage/* 2 files 236 (1 rotated, 1 skipped)
+logs: touch/* 1 file 54 (0 rotated, 1 skipped)
+```
+
+`<n>` counts the family's logs (`1 file`, `2 files`); bytes, rotated and skipped are the sums of
+the per-log figures; a family with no log prints no line. `bantamkit_status` takes one optional
+boolean argument, `detail` (default `false`): `{"detail": true}` restores the per-log lines
+(`logs: usage/<id> <bytes> (…)`), the only form before job78. An explicit `null` is refused on
+both runtimes (`bool_type`): `detail` is `bool = False`, not `bool | None`. `storage-tiers` pins both
+forms per side on five profiles, a fifth (`many-ledgers`: two usage ledgers, one with a rotated
+segment, and a touch log) for the plural and the sums.
 
 ### Line 6 — the update line (J57-3, 2026-09-19)
 

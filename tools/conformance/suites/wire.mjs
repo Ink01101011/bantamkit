@@ -3536,8 +3536,8 @@ export async function run(ctx) {
         '`inputSchema` as `properties, required, type` where their manifests say `type, ' +
         'required, properties`; `memory_compact` arrives as `properties, type` where its ' +
         'manifest says `type, properties`; and the other six, whose manifests already read ' +
-        '`properties, [required,] type[, title]` (`bantamkit_status` and `build_identity` take ' +
-        'no argument and have no `required`), arrive unchanged. `Tool.input_schema` is a plain ' +
+        '`properties, [required,] type[, title]` (`bantamkit_status` and `build_identity` have ' +
+        'no `required`; since job78 `bantamkit_status` takes one optional argument, `detail`), arrive unchanged. `Tool.input_schema` is a plain ' +
         '`dict[str, Any]` and `ListToolsResult(...).model_dump_json(by_alias=True, ' +
         'exclude_unset=True)` was measured to PRESERVE manifest order, so the reordering is ' +
         'downstream of the model and has no seam this package can reach. The port serves the ' +

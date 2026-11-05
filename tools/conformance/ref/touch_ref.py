@@ -153,7 +153,10 @@ def _log_bed(bed: dict[str, Any]) -> list[Any]:
             r = find_repo(_abs(root, op["top"]))
             out.append(None if r is None else relpath(r, _abs(root, op["path"])))
         elif kind == "status":
-            out.append([ln for ln in log_lines(home) if ln.startswith("logs: touch/")] + [touch_line(home)])
+            # job78: `detail=True`, the per-log form this op pins; the default folds the
+            # family into one `logs: touch/*` line, which `storage-tiers` pins.
+            lines = log_lines(home, detail=True)
+            out.append([ln for ln in lines if ln.startswith("logs: touch/")] + [touch_line(home)])
         elif kind == "retention":
             saved = os.environ.pop(_retention.RETENTION_ENV, None)
             try:

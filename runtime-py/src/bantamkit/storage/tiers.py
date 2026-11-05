@@ -14,8 +14,10 @@ THE STATUS LINES, appended after the update line so every earlier line keeps its
     storage: core on; hooks on|off; host data on|off
     index facts <layer>: <n> doc(s), <bytes> bytes, persisted|in-memory   (one per memory layer
                                                                              whose facts/ exists)
-    logs: <name> <bytes> (<n> rotated, <n> skipped)                       (one per log; or
-                                                                             `logs: none`)
+    logs: hook-log <bytes> (<n> rotated, <n> skipped)                    (when it exists)
+    logs: usage/* <n> file(s) <bytes> (<n> rotated, <n> skipped)          (one per family that
+    logs: touch/* <n> file(s) <bytes> (<n> rotated, <n> skipped)           has a counted log;
+                                                                             or `logs: none`)
     retention: [off; ]last ran <iso>|never; refused <n>
 
 `<layer>` is the layer's KIND (`project`, `extra`, `profile`), never a grant's name -- the rule
@@ -23,6 +25,15 @@ THE STATUS LINES, appended after the update line so every earlier line keeps its
 recall scores from an index built per call, and this is where that is reported. `bytes` is what
 the index holds on disk (head plus every shard file present). A log's `bytes` is its live file
 plus its rotated segments; `skipped` is what `LogSegment.read` could not parse.
+
+THE TWO FORMS OF THE `logs:` LINES (job78). By default every `usage/<id>` ledger is folded
+into ONE `usage/*` line and every `touch/<id>` log into ONE `touch/*` line, in that order
+after `hook-log`: `<n>` counts the family's logs, `file` when it is 1 and `files` otherwise,
+and the bytes, rotated and skipped figures are the sums of the per-log numbers. A family
+with no counted log prints no line. With `detail` (the `bantamkit_status` argument of that
+name) every log gets its own line instead, `logs: <name> <bytes> (<n> rotated, <n>
+skipped)` with `<name>` one of `hook-log`, `usage/<id>`, `touch/<id>` -- the only form
+before job78, which on a long-lived home printed thousands of usage lines.
 
 `runtime-ts/src/storage/tiers.ts` is the port; `tools/conformance/suites/storage-tiers.mjs`
 compares the two over an MCP-only host profile (no hook, no native directory).
@@ -150,8 +161,9 @@ def _logs(base: Path) -> list[tuple[str, Path]]:
     return found
 
 
-def log_lines(home: Path | str) -> list[str]:
-    out: list[str] = []
+def _log_counts(home: Path | str) -> list[tuple[str, int, int, int]]:
+    """`(name, held, rotated, skipped)` per counted log, in `_logs` order."""
+    out: list[tuple[str, int, int, int]] = []
     for name, path in _logs(Path(home) / ".bantamkit"):
         seg = LogSegment(path)
         segments = seg.segments()
@@ -159,7 +171,32 @@ def log_lines(home: Path | str) -> list[str]:
             continue
         held = _size(path) + sum(_size(s) for s in segments)
         seg.read()
-        out.append(f"logs: {name} {held} ({len(segments)} rotated, {seg.skipped} skipped)")
+        out.append((name, held, len(segments), seg.skipped))
+    return out
+
+
+def log_lines(home: Path | str, detail: bool = False) -> list[str]:
+    """The `logs:` lines: per family by default, per log with `detail` (module docstring)."""
+    counts = _log_counts(home)
+    if detail:
+        out = [f"logs: {n} {held} ({r} rotated, {s} skipped)" for n, held, r, s in counts]
+        return out or ["logs: none"]
+    out = [
+        f"logs: {n} {held} ({r} rotated, {s} skipped)"
+        for n, held, r, s in counts
+        if n == "hook-log"
+    ]
+    for family in ("usage", "touch"):
+        members = [c for c in counts if c[0].startswith(f"{family}/")]
+        if not members:
+            continue
+        held = sum(c[1] for c in members)
+        rotated = sum(c[2] for c in members)
+        skipped = sum(c[3] for c in members)
+        out.append(
+            f"logs: {family}/* {_plural(len(members), 'file')} {held} "
+            f"({rotated} rotated, {skipped} skipped)"
+        )
     return out or ["logs: none"]
 
 
@@ -196,12 +233,17 @@ def retention_line(home: Path | str) -> str:
     return f"retention: {prefix}last ran {ran}; refused {refused}"
 
 
-def status_lines(memory: Any, home: Path | str, cwd: Path | str | None) -> list[str]:
-    """Every storage line of `bantamkit_status`, in order. Never raises."""
+def status_lines(
+    memory: Any, home: Path | str, cwd: Path | str | None, *, detail: bool = False
+) -> list[str]:
+    """Every storage line of `bantamkit_status`, in order. Never raises.
+
+    `detail` is the tool's argument: one `logs:` line per log instead of per family.
+    """
     return [
         tier_line(tiers(home, cwd)),
         *index_lines(memory),
-        *log_lines(home),
+        *log_lines(home, detail),
         touch_line(home),
         retention_line(home),
     ]

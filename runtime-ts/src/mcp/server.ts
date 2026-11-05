@@ -726,6 +726,8 @@ function runTool(
       // have to be the health verdict, which moves with the filesystem rather than with
       // anything the call did. `recordRaise` still wraps the body, so a handler that FALLS
       // OVER is still written down.
+      // `detail` (job78): every usage and touch ledger on its own line; absent, one per family.
+      const detail = asBool(args.get('detail')) === true;
       const report = recordRaise(log, 'bantamkit_status', () =>
         statusReport(
           memory,
@@ -736,6 +738,7 @@ function runTool(
           SERVED_PROMPTS,
           SERVED_RESOURCE_TEMPLATES,
           sampling,
+          detail,
         ),
       );
       return { value: { t: 'str', v: report }, wrapped: true };

@@ -157,15 +157,80 @@ test('log lines count bytes, segments and skipped', () =>
     fs.writeFileSync(path.join(usage, 'abc.jsonl'), '{"ts":"2026-10-01T00:00:00Z"}\n');
     fs.writeFileSync(path.join(usage, 'ignored.txt'), 'x');
     const total = fs.statSync(live).size + fs.statSync(seg).size;
-    assert.deepEqual(T.logLines(home), [
+    assert.deepEqual(T.logLines(home, true), [
       `logs: hook-log ${total} (1 rotated, 1 skipped)`,
       'logs: usage/abc 30 (0 rotated, 0 skipped)',
+    ]);
+    assert.deepEqual(T.logLines(home), [
+      `logs: hook-log ${total} (1 rotated, 1 skipped)`,
+      // AMENDED job78 (family summary) WAS 'logs: usage/abc 30 (0 rotated, 0 skipped)'
+      'logs: usage/* 1 file 30 (0 rotated, 0 skipped)',
     ]);
   }));
 
 test('no log is logs: none', () =>
   bed(({ home }) => {
     assert.deepEqual(T.logLines(home), ['logs: none']);
+    assert.deepEqual(T.logLines(home, true), ['logs: none']);
+  }));
+
+/** job78: a home with three usage ledgers (one with a bad line and a segment) and two touch logs. */
+function ledgers(home) {
+  const usage = path.join(home, '.bantamkit', 'usage');
+  const touch = path.join(home, '.bantamkit', 'touch');
+  fs.mkdirSync(usage);
+  fs.mkdirSync(touch);
+  fs.writeFileSync(path.join(usage, 'a.jsonl'), '{"ts":"2026-10-01T00:00:00Z"}\n');
+  fs.writeFileSync(path.join(usage, 'b.jsonl'), '{"ts":"2026-10-01T00:00:00Z"}\nnot json\n');
+  fs.writeFileSync(path.join(usage, 'b.jsonl.1.gz'), zlib.gzipSync(Buffer.from('{"ts":"x"}\n')));
+  fs.writeFileSync(path.join(usage, 'c.jsonl'), '{}\n');
+  fs.writeFileSync(path.join(touch, 'p.jsonl'), '{"f":"a"}\n');
+  fs.writeFileSync(path.join(touch, 'q.jsonl'), 'bad\n');
+  const size = (...p) => fs.statSync(path.join(home, '.bantamkit', ...p)).size;
+  return {
+    usageHeld: size('usage', 'a.jsonl') + size('usage', 'b.jsonl') + size('usage', 'b.jsonl.1.gz') + size('usage', 'c.jsonl'),
+    touchHeld: size('touch', 'p.jsonl') + size('touch', 'q.jsonl'),
+  };
+}
+
+test('job78: the default folds each family into one line, usage then touch', () =>
+  bed(({ home }) => {
+    const { usageHeld, touchHeld } = ledgers(home);
+    assert.deepEqual(T.logLines(home), [
+      `logs: usage/* 3 files ${usageHeld} (1 rotated, 1 skipped)`,
+      `logs: touch/* 2 files ${touchHeld} (0 rotated, 1 skipped)`,
+    ]);
+  }));
+
+test('job78: detail lists every ledger on its own line, the pre-job78 output', () =>
+  bed(({ home }) => {
+    ledgers(home);
+    const size = (...p) => fs.statSync(path.join(home, '.bantamkit', ...p)).size;
+    assert.deepEqual(T.logLines(home, true), [
+      `logs: usage/a ${size('usage', 'a.jsonl')} (0 rotated, 0 skipped)`,
+      `logs: usage/b ${size('usage', 'b.jsonl') + size('usage', 'b.jsonl.1.gz')} (1 rotated, 1 skipped)`,
+      `logs: usage/c ${size('usage', 'c.jsonl')} (0 rotated, 0 skipped)`,
+      `logs: touch/p ${size('touch', 'p.jsonl')} (0 rotated, 0 skipped)`,
+      `logs: touch/q ${size('touch', 'q.jsonl')} (0 rotated, 1 skipped)`,
+    ]);
+  }));
+
+test('job78: a family with one counted log is singular, and an empty family has no line', () =>
+  bed(({ home }) => {
+    const touch = path.join(home, '.bantamkit', 'touch');
+    fs.mkdirSync(touch);
+    fs.mkdirSync(path.join(home, '.bantamkit', 'usage'));
+    fs.writeFileSync(path.join(touch, 'only.jsonl'), '{"f":"a"}\n');
+    assert.deepEqual(T.logLines(home), ['logs: touch/* 1 file 10 (0 rotated, 0 skipped)']);
+  }));
+
+test('job78: statusLines threads detail and defaults to the summary', () =>
+  bed(({ base, home }) => {
+    const { usageHeld } = ledgers(home);
+    const m = new Memory(path.join(base, 's'));
+    const logsOf = (lines) => lines.filter((l) => l.startsWith('logs: '));
+    assert.equal(logsOf(T.statusLines(m, home, base))[0], `logs: usage/* 3 files ${usageHeld} (1 rotated, 1 skipped)`);
+    assert.equal(logsOf(T.statusLines(m, home, base, true)).length, 5);
   }));
 
 test('the retention line reads the record', () =>

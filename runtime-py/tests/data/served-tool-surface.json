@@ -23,9 +23,15 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Is bantamkit working, and which bantamkit? Returns a short report a person can read in the transcript: `bantamkit Active 🟢` or `bantamkit Degraded 🟠` on the first line, then the version and `build_id` of the code answering, the surfaces it serves, the memory store it is bound to with its index size against its budget, whether the event log is on, and — when degraded — every condition in full with what to do about it. Call it when the user asks whether the server is alive or working, when a bantamkit tool answered oddly and you need to know whether the server is the reason, or when a reply arrived carrying a `bantamkit degraded` footer and you want the rest of it. Every fact is observed at call time from the server's own state; nothing is a heartbeat or a cached verdict. Takes no arguments, writes nothing, and never echoes another call's arguments. build_identity answers only the `build_id` fingerprint, as JSON, when all you need is to compare two installs; shiftwork_status reports a job, not the server.",
+      "description": "Is bantamkit working, and which bantamkit? Returns a short report a person can read in the transcript: `bantamkit Active 🟢` or `bantamkit Degraded 🟠` on the first line, then the version and `build_id` of the code answering, the surfaces it serves, the memory store it is bound to with its index size against its budget, whether the event log is on, and — when degraded — every condition in full with what to do about it. Call it when the user asks whether the server is alive or working, when a bantamkit tool answered oddly and you need to know whether the server is the reason, or when a reply arrived carrying a `bantamkit degraded` footer and you want the rest of it. Every fact is observed at call time from the server's own state; nothing is a heartbeat or a cached verdict. Pass `detail: true` to list every usage and touch ledger on its own line instead of one summary line per family. Writes nothing, and never echoes another call's arguments. build_identity answers only the `build_id` fingerprint, as JSON, when all you need is to compare two installs; shiftwork_status reports a job, not the server.",
       "inputSchema": {
-        "properties": {},
+        "properties": {
+          "detail": {
+            "type": "boolean",
+            "default": false,
+            "description": "true lists every usage and touch ledger on its own line; the default folds each family into one summary line."
+          }
+        },
         "type": "object",
         "title": "bantamkit_statusArguments",
         "additionalProperties": false

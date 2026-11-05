@@ -149,14 +149,83 @@ def test_log_lines_count_bytes_segments_and_skipped(home):
     (usage / "abc.jsonl").write_bytes(b'{"ts":"2026-10-01T00:00:00Z"}\n')
     (usage / "ignored.txt").write_bytes(b"x")
     total = live.stat().st_size + seg.stat().st_size
-    assert T.log_lines(home) == [
+    assert T.log_lines(home, detail=True) == [
         f"logs: hook-log {total} (1 rotated, 1 skipped)",
         "logs: usage/abc 30 (0 rotated, 0 skipped)",
+    ]
+    # AMENDED job78 (default summary form) WAS: the per-file lines above, with no `detail`
+    assert T.log_lines(home) == [
+        f"logs: hook-log {total} (1 rotated, 1 skipped)",
+        "logs: usage/* 1 file 30 (0 rotated, 0 skipped)",
     ]
 
 
 def test_no_log_is_logs_none(home):
     assert T.log_lines(home) == ["logs: none"]
+    assert T.log_lines(home, detail=True) == ["logs: none"]
+
+
+def _ledgers(home, family: str, bodies: dict[str, bytes]) -> None:
+    where = home / ".bantamkit" / family
+    where.mkdir(exist_ok=True)
+    for name, body in bodies.items():
+        (where / f"{name}.jsonl").write_bytes(body)
+
+
+def test_usage_family_folds_into_one_summary_line(home):
+    _ledgers(
+        home,
+        "usage",
+        {
+            "a": b'{"ts":"1"}\n',  # 11 bytes
+            "b": b'{"ts":"2"}\nbroken\n',  # 18 bytes, 1 skipped
+            "c": b"nope\nnope\n",  # 10 bytes, 2 skipped
+        },
+    )
+    usage = home / ".bantamkit" / "usage"
+    rotated = usage / "a.jsonl.1.gz"
+    rotated.write_bytes(gzip.compress(b'{"ts":"0"}\n'))
+    held = 11 + 18 + 10 + rotated.stat().st_size
+    assert T.log_lines(home) == [f"logs: usage/* 3 files {held} (1 rotated, 3 skipped)"]
+    assert T.log_lines(home, detail=True) == [
+        f"logs: usage/a {11 + rotated.stat().st_size} (1 rotated, 0 skipped)",
+        "logs: usage/b 18 (0 rotated, 1 skipped)",
+        "logs: usage/c 10 (0 rotated, 2 skipped)",
+    ]
+
+
+def test_one_ledger_is_singular_and_families_keep_their_order(home):
+    hooks = home / ".bantamkit" / "hooks"
+    hooks.mkdir()
+    (hooks / "hook-log.jsonl").write_bytes(b'{"event":"A"}\n')  # 14 bytes
+    _ledgers(home, "touch", {"t1": b'{"p":"x"}\n', "t2": b'{"p":"y"}\n'})  # 10 bytes each
+    _ledgers(home, "usage", {"only": b'{"ts":"1"}\n'})  # 11 bytes
+    assert T.log_lines(home) == [
+        "logs: hook-log 14 (0 rotated, 0 skipped)",
+        "logs: usage/* 1 file 11 (0 rotated, 0 skipped)",
+        "logs: touch/* 2 files 20 (0 rotated, 0 skipped)",
+    ]
+    assert T.log_lines(home, detail=True) == [
+        "logs: hook-log 14 (0 rotated, 0 skipped)",
+        "logs: usage/only 11 (0 rotated, 0 skipped)",
+        "logs: touch/t1 10 (0 rotated, 0 skipped)",
+        "logs: touch/t2 10 (0 rotated, 0 skipped)",
+    ]
+
+
+def test_touch_family_alone_prints_only_its_summary(home):
+    _ledgers(home, "touch", {"t1": b'{"p":"x"}\nbad\n'})  # 14 bytes, 1 skipped
+    assert T.log_lines(home) == ["logs: touch/* 1 file 14 (0 rotated, 1 skipped)"]
+
+
+def test_status_lines_thread_detail_to_the_log_lines(home, tmp_path):
+    _ledgers(home, "usage", {"a": b'{"ts":"1"}\n', "b": b'{"ts":"2"}\n'})
+    memory = Memory(store=tmp_path / "s")
+    cwd = os.fspath(tmp_path)
+    assert "logs: usage/* 2 files 22 (0 rotated, 0 skipped)" in T.status_lines(memory, home, cwd)
+    detailed = T.status_lines(memory, home, cwd, detail=True)
+    assert "logs: usage/a 11 (0 rotated, 0 skipped)" in detailed
+    assert "logs: usage/b 11 (0 rotated, 0 skipped)" in detailed
 
 
 def test_retention_line_reads_the_record(home, monkeypatch):
