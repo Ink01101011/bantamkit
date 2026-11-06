@@ -33,6 +33,9 @@ Task 4b adds, also optional:
 
 job73 C8 adds `{"commit_subjects": [command, ...]} -> {"commit_subjects": [str | null, ...]}`.
 
+#289 adds `{"label_tokens": [text, ...]} -> {"label_tokens": [[term, ...], ...]}` (the miner's
+`tokenize_label`) and `{"clean_prompts": [text, ...]} -> {"clean_prompts": [str, ...]}`.
+
 job73 C9 (Task 8) adds `{"daily": [op, ...]}` -> `{"daily": [answer, ...]}`, the ops run in order,
 each under its own `env` (a null value unsets the variable):
 
@@ -65,6 +68,7 @@ from bantamkit.skillmine import (
     Piece,
     ProposalsError,
     Signature,
+    clean_prompt,
     commit_subject,
     doc_freq,
     meets,
@@ -77,6 +81,7 @@ from bantamkit.skillmine import (
     shiftwork_pieces,
     signature,
     similarity,
+    tokenize_label,
     write_proposals,
 )
 
@@ -163,6 +168,8 @@ def main() -> None:
         except ProposalsError as e:
             out["reads"].append(["error", str(e)])
     out["commit_subjects"] = [commit_subject(c) for c in payload.get("commit_subjects", [])]
+    out["label_tokens"] = [tokenize_label(t) for t in payload.get("label_tokens", [])]
+    out["clean_prompts"] = [clean_prompt(t) for t in payload.get("clean_prompts", [])]
     from bantamkit.storage.retention import parse_now
 
     out["session_runs"] = []

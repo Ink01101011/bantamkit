@@ -39,7 +39,10 @@ repo-relative; the subjects of the turn's successful commits, read off the agent
 facts taken from a tool result are its `is_error` flag. A prompt is a `type: "user"` record that
 is not `isMeta`, not a compact summary, carries no `toolUseResult` and is not in a `subagents/`
 transcript; harness spans (`<system-reminder>`, `<command-*>`, `<local-command-*>`,
-`<bash-input>`/`<bash-stdout>`/`<bash-stderr>`, `<task-notification>`) are cut out. A prompt is
+`<bash-input>`/`<bash-stdout>`/`<bash-stderr>`, `<task-notification>`) and the IDE and browser
+notices (`<ide_opened_file>`, `<ide_selection>`, `<ide_diagnostics>`, `<browser_instruction>`,
+added by #289 after they were measured riding in real session prompts) are cut out; a prompt
+that was only notices is empty and is not a piece. A prompt is
 cut to 500 code points. So outside text — a mail body, a web page, a file, a command's output —
 can never become a standing instruction. The `skill-miner` and `skill-draft` suites plant one
 string in every place a tool result can hide and pin that it reaches no piece, cache, proposals
@@ -51,9 +54,22 @@ file, draft prompt, drafts log or skill.
 
 ## The bars (X1, X3)
 
-Each piece gets a signature: the top 12 `tokenize_v2` keywords of its prompt or brief (a term in
-more than half of a source's pieces is dropped), the tool-name 2- and 3-grams, and the set of
-touched paths. Pieces join a cluster when their weighted Jaccard similarity (keywords 2, n-grams
+Each piece gets a signature: the top 12 `tokenize_label` keywords of its prompt or brief (a term
+in more than half of a source's pieces is dropped), the tool-name 2- and 3-grams, and the set of
+touched paths.
+
+`tokenize_label` (`tokenizeLabel` in Node) is the miner's own tokenizer (#289). Spaced-script
+words come out as recall's `tokenize_v2` would give them, but a no-space run (Thai, Lao, …) is
+cut into units: a base character with its combining marks, a leading vowel (เ แ โ ใ ไ and
+Lao's ເ–ໄ) attached forward to the unit after it, and SARA AM recomposed after NFKC splits it.
+The Thai filler words in `LABEL_STOPWORDS` (`แล้ว`, `ต่อ`, `ทำ`, `ครับ`, …) end a segment and are
+never terms, and each segment gives its bigrams of units (or its one unit). Before #289 the
+miner used `tokenize_v2`, whose code-point bigrams split vowels and tone marks off their
+consonants and clustered sessions on filler (`ทำต่อ`, `merge แล้ว tag ต่อ`); now `merge แล้ว tag
+ต่อ` labels as `merge`, `tag`. Recall's `tokenize_v2` is unchanged — recall's gold numbers are
+measured on it. No dictionary segmenter is used. The `skill-miner` conformance suite compares
+both runtimes' `tokenize_label` over Thai, Lao, mixed and ASCII vectors and pins the stopword,
+unit and SARA AM answers per side. Pieces join a cluster when their weighted Jaccard similarity (keywords 2, n-grams
 1, paths 1; an empty component is left out) is at least 1/2. Every comparison is on integers, so
 the two runtimes cannot split on a boundary.
 
