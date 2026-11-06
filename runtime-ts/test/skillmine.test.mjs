@@ -671,6 +671,14 @@ const LABEL_VECTORS = [
   ['สร้างไฟล์ใหม่', ['สร้า', 'ร้าง', 'งไฟ', 'ไฟล์', 'ล์ให', 'ใหม่']],
   // Known limit (no segmenter, by ruling): a stopword matches inside a longer word by unit sequence.
   ['ต่อย', ['ย']],
+  // Gate J81 F2: LAKKHANGYAO (U+0E45) and Lao SARA A (U+0EB0) join the unit before them.
+  ['ฤๅษี', ['ฤๅษี']],
+  ['ຈະ', ['ຈະ']],
+  ['ຈະໄປ', ['ຈະໄປ']],
+  // A following vowel after a pending leading vowel opens a unit with it; it does not join the
+  // unit before (units ก, เา, ก).
+  ['เาก', ['เาก']],
+  ['กเาก', ['กเา', 'เาก']],
 ];
 const FOLLOWING = new Set([0x0e30, 0x0e32, 0x0e33, 0x0e45, 0x0eb0, 0x0eb2, 0x0eb3]);
 

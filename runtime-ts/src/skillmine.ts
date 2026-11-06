@@ -442,7 +442,7 @@ const STOP_UNITS: readonly string[][] = LABEL_STOPWORDS.map((w) => labelUnits(Ar
 
 /**
  * The miner's label tokens (#289): `tokenizeV2`'s words and runs, but a no-space run is cut into
- * units (a consonant with its marks, its following vowel and its leading vowel), split at `LABEL_STOPWORDS`, and each
+ * units (a base character with its marks, its following vowel and its leading vowel), split at `LABEL_STOPWORDS`, and each
  * segment emits its one unit or its unit bigrams. `tokenizeV2` stays as it is: recall is
  * measured on it. ASCII text gives exactly `tokenizeV2`'s list.
  */
