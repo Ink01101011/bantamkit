@@ -12,6 +12,13 @@
  * U+2028 and friends); the path separators are an explicit ASCII class, never `\s`; and the
  * similarity is an integer fraction, never a float.
  *
+ * The signature's keywords (and their document frequency) come from `tokenizeLabel`, the
+ * miner's own tokenizer (#289): Thai/Lao runs are cut into units at their combining marks and
+ * leading vowels and split at `LABEL_STOPWORDS`, so a label is never a bigram of "ทำต่อ" or a
+ * half-syllable. Recall's `tokenizeV2` is not touched. `CUT_TAGS` also cuts the IDE and browser
+ * notices (`ide_opened_file`, `ide_selection`, `ide_diagnostics`, `browser_instruction`); a
+ * prompt made only of them is empty and so starts no piece.
+ *
  * Only `writeProposals` writes, temp-then-rename under the storage lock.
  */
 import crypto from 'node:crypto';
@@ -19,7 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
-import { tokenizeV2 } from './memory/retrieval.js';
+import { nospace, WORDCHAR } from './memory/retrieval.js';
 import { dumpJson, fromJs } from './pyjson.js';
 import { cmpCodepoint, pyLstrip, pyStrip } from './pysem.js';
 import { exclusive } from './storage/lock.js';
@@ -392,13 +399,100 @@ export function shiftworkPieces(root: string): Piece[] {
 
 // ---------------------------------------------------------------------------- signature
 
-/** Document frequency of every `tokenizeV2` term over one source's pieces, and their count. */
+/** #289: Thai words that only steer a session ("go on", "done", "please"); they never label one. */
+export const LABEL_STOPWORDS: readonly string[] = [
+  'ครับ', 'ค่ะ', 'แล้ว', 'ต่อ', 'ทำ', 'ให้', 'ที่', 'และ', 'ได้', 'หน่อย', 'ด้วย', 'เลย', 'นี้', 'ไหม', 'อีก', 'ก่อน', 'เป็น',
+];
+const MARK = /^[\p{Mn}\p{Mc}]$/u;
+// Thai and Lao leading vowels: written before the consonant they follow in speech.
+const leading = (cp: number): boolean => (cp >= 0x0e40 && cp <= 0x0e44) || (cp >= 0x0ec0 && cp <= 0x0ec4);
+// NFKC decomposes SARA AM (U+0E33, U+0EB3) into NIKHAHIT + SARA AA; recompose it.
+const labelFold = (text: string): string => text.normalize('NFKC').toLowerCase().replaceAll('\u0e4d\u0e32', '\u0e33').replaceAll('\u0ecd\u0eb2', '\u0eb3');
+
+/** A no-space run as units: a combining mark joins the unit before it, a leading vowel the unit after it. */
+function labelUnits(run: readonly string[]): string[] {
+  const out: string[] = [];
+  let pend = '';
+  for (const ch of run) {
+    if (MARK.test(ch) && out.length > 0 && pend === '') out[out.length - 1] += ch;
+    else if (leading(ch.codePointAt(0)!)) pend += ch;
+    else {
+      out.push(pend + ch);
+      pend = '';
+    }
+  }
+  if (pend !== '') out.push(pend);
+  return out;
+}
+
+// Longest first (in units); a tie keeps `LABEL_STOPWORDS` order (the sort is stable).
+const STOP_UNITS: readonly string[][] = LABEL_STOPWORDS.map((w) => labelUnits(Array.from(labelFold(w)))).sort(
+  (a, b) => b.length - a.length,
+);
+
+/**
+ * The miner's label tokens (#289): `tokenizeV2`'s words and runs, but a no-space run is cut into
+ * units (a consonant with its marks and leading vowel), split at `LABEL_STOPWORDS`, and each
+ * segment emits its one unit or its unit bigrams. `tokenizeV2` stays as it is: recall is
+ * measured on it. ASCII text gives exactly `tokenizeV2`'s list.
+ */
+export function tokenizeLabel(text: string): string[] {
+  const s = labelFold(text);
+  const out: string[] = [];
+  let word = '';
+  let run: string[] = [];
+  const flushWord = (): void => {
+    if (word !== '') out.push(word);
+    word = '';
+  };
+  const flushRun = (): void => {
+    if (run.length === 0) return;
+    const us = labelUnits(run);
+    run = [];
+    let seg: string[] = [];
+    const emit = (): void => {
+      if (seg.length === 1) out.push(seg[0]!);
+      else for (let i = 0; i + 1 < seg.length; i++) out.push(seg[i]! + seg[i + 1]!);
+      seg = [];
+    };
+    let i = 0;
+    while (i < us.length) {
+      const stop = STOP_UNITS.find((w) => i + w.length <= us.length && w.every((u, k) => us[i + k] === u));
+      if (stop !== undefined) {
+        emit();
+        i += stop.length;
+      } else {
+        seg.push(us[i]!);
+        i += 1;
+      }
+    }
+    emit();
+  };
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    if (nospace(cp)) {
+      flushWord();
+      run.push(ch);
+    } else if (WORDCHAR.test(ch)) {
+      flushRun();
+      word += ch;
+    } else {
+      flushWord();
+      flushRun();
+    }
+  }
+  flushWord();
+  flushRun();
+  return out;
+}
+
+/** Document frequency of every `tokenizeLabel` term over one source's pieces, and their count. */
 export function docFreq(pieces: Iterable<Piece>): [Map<string, number>, number] {
   const df = new Map<string, number>();
   let n = 0;
   for (const p of pieces) {
     n += 1;
-    for (const t of new Set(tokenizeV2(p.prompt))) df.set(t, (df.get(t) ?? 0) + 1);
+    for (const t of new Set(tokenizeLabel(p.prompt))) df.set(t, (df.get(t) ?? 0) + 1);
   }
   return [df, n];
 }
@@ -414,7 +508,7 @@ export function ngrams(tools: readonly string[]): Set<string> {
 export function signature(piece: Piece, df: ReadonlyMap<string, number>, n: number): Signature {
   const [num, den] = KEYWORD_DF_MAX;
   const counts = new Map<string, number>();
-  for (const t of tokenizeV2(piece.prompt)) {
+  for (const t of tokenizeLabel(piece.prompt)) {
     if ((df.get(t) ?? 0) * den <= n * num) counts.set(t, (counts.get(t) ?? 0) + 1);
   }
   const ranked = [...counts].sort((a, b) => b[1] - a[1] || cmpCodepoint(a[0], b[0]));
@@ -829,7 +923,12 @@ export const CORRECTIONS: readonly string[] = [
   'หยุด',
 ];
 export const INTERRUPT = '[Request interrupted by user';
-/** R3 plus the measured `bash-*` and `task-notification` spans (the module docstring in Python). */
+/**
+ * R3 plus the measured `bash-*` and `task-notification` spans (the module docstring in Python),
+ * and the IDE/browser notices (#289): over 798 session pieces measured 2026-11-06,
+ * `ide_opened_file` rode in 67, `browser_instruction` in 58 and `ide_selection` in 20;
+ * `ide_diagnostics` occurs 151 times in transcripts (0 in pieces) and is cut defensively.
+ */
 export const CUT_TAGS: readonly string[] = [
   'system-reminder',
   'command-name',
@@ -842,6 +941,10 @@ export const CUT_TAGS: readonly string[] = [
   'bash-stdout',
   'bash-stderr',
   'task-notification',
+  'ide_opened_file',
+  'ide_selection',
+  'ide_diagnostics',
+  'browser_instruction',
 ];
 export const PATH_TOOLS: readonly string[] = ['Read', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit'];
 export const PATH_KEYS: readonly string[] = ['file_path', 'path', 'notebook_path'];

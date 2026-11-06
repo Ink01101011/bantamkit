@@ -22,12 +22,18 @@ lacks a string `ts` or a known `status`) is skipped.
 - `repo` (R7): the realpath of the root's COMMON git dir — a linked worktree's `commondir`
   is followed — so the worktrees of one repository share one key; `""` outside a repo.
 
-The **signature** is `tokenize_v2` keywords of the prompt (a term in more than half of the
+The **signature** is `tokenize_label` keywords of the prompt (a term in more than half of the
 source's pieces is dropped, then the `KEYWORDS_TOP` most frequent, ties in code-point
 order), the tool-name n-grams for `NGRAM_SIZES`, and the touched paths. **Similarity** is a
 weighted Jaccard over the three, each component whose union is empty left out of both sums,
 answered as an exact reduced fraction `(num, den)`; `meets` compares on integers only, so the
-two runtimes cannot disagree at the `SIM_MIN` boundary.
+two runtimes cannot disagree at the `SIM_MIN` boundary. `tokenize_label` is the miner's own
+tokenizer (#289), not recall's `tokenize_v2`: recall's code-point bigrams split Thai vowels and
+tone marks (`ทำต่อ` became `ทํ ํา าต ต่ ่อ`) and let filler words such as `แล้ว` and `ทำ` decide
+the clusters. It groups a base character with its combining marks and a leading vowel with the
+character after it, drops `LABEL_STOPWORDS`, and forms bigrams of those units; spaced-script
+words are kept whole exactly as `tokenize_v2` keeps them. `tokenize_v2` is unchanged, because
+recall is measured on it.
 
 **Clusters** (Task 5): leader clustering per source, the X1 bars on successful members only,
 twice the bar for the installer, recurring steps, pitfalls from failed members, and the X3
@@ -47,7 +53,9 @@ list, or the interrupt marker; a last turn has none). The `MinerCache` keeps eac
 offset and open turn, so an unchanged file is not read and a grown one is read from where the
 last run stopped. Measured shapes (job73 C6 Step 0) added `bash-*`, `task-notification` and
 `local-command-caveat` to the cut list: a `!` command's output and a background task's result
-arrive as non-meta user records.
+arrive as non-meta user records. #289 added `ide_opened_file`, `ide_selection`,
+`ide_diagnostics` and `browser_instruction`: the IDE and the Chrome extension write their
+notices into the user's record, and a prompt made only of them is empty and starts no piece.
 
 `runtime-ts/src/skillmine.ts` is the port;
 `tools/conformance/suites/skill-miner.mjs` compares the two.
@@ -61,6 +69,7 @@ import json
 import math
 import os
 import re
+import unicodedata
 import zlib
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -68,7 +77,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bantamkit.memory.retrieval import tokenize_v2
+from bantamkit.memory.retrieval import _nospace, _wordchar
 from bantamkit.touch.log import AGENT_ID
 
 SOURCE_SHIFTWORK = "shiftwork"
@@ -408,13 +417,129 @@ def _read_bundle(p: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------- signature
 
 
+#: #289: Thai filler words dropped from a label; each is matched as a unit sequence.
+LABEL_STOPWORDS = (
+    "ครับ",
+    "ค่ะ",
+    "แล้ว",
+    "ต่อ",
+    "ทำ",
+    "ให้",
+    "ที่",
+    "และ",
+    "ได้",
+    "หน่อย",
+    "ด้วย",
+    "เลย",
+    "นี้",
+    "ไหม",
+    "อีก",
+    "ก่อน",
+    "เป็น",
+)
+
+
+def _is_leading_vowel(cp: int) -> bool:
+    return 0x0E40 <= cp <= 0x0E44 or 0x0EC0 <= cp <= 0x0EC4
+
+
+def _label_fold(text: str) -> str:
+    """NFKC, lower-cased, SARA AM recomposed (NFKC splits it into NIKHAHIT + SARA AA)."""
+    s = unicodedata.normalize("NFKC", text).lower()
+    return s.replace("\u0e4d\u0e32", "\u0e33").replace("\u0ecd\u0eb2", "\u0eb3")
+
+
+def _label_units(run: str) -> list[str]:
+    """A no-space run as units: a mark joins the unit before it, a leading vowel the one after."""
+    out: list[str] = []
+    pend = ""
+    for ch in run:
+        if unicodedata.category(ch) in ("Mn", "Mc") and out and not pend:
+            out[-1] += ch
+        elif _is_leading_vowel(ord(ch)):
+            pend += ch
+        else:
+            out.append(pend + ch)
+            pend = ""
+    if pend:
+        out.append(pend)
+    return out
+
+
+_STOP_UNITS: tuple[tuple[str, ...], ...] = tuple(
+    sorted(
+        (tuple(_label_units(_label_fold(w))) for w in LABEL_STOPWORDS),
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def _label_run(run: str, out: list[str]) -> None:
+    units = _label_units(run)
+    seg: list[str] = []
+
+    def emit() -> None:
+        if len(seg) == 1:
+            out.append(seg[0])
+        else:
+            out.extend(seg[i] + seg[i + 1] for i in range(len(seg) - 1))
+        seg.clear()
+
+    i = 0
+    while i < len(units):
+        for stop in _STOP_UNITS:
+            if tuple(units[i : i + len(stop)]) == stop:
+                emit()
+                i += len(stop)
+                break
+        else:
+            seg.append(units[i])
+            i += 1
+    emit()
+
+
+def tokenize_label(text: str) -> list[str]:
+    """The miner's tokenizer (#289): `tokenize_v2`'s scan, but a no-space run is cut into
+    units (a base with its marks, a leading vowel with what follows), `LABEL_STOPWORDS` end a
+    segment and emit nothing, and a segment emits its one unit or its unit bigrams."""
+    s = _label_fold(text)
+    out: list[str] = []
+    word: list[str] = []
+    run: list[str] = []
+
+    def flush_word() -> None:
+        if word:
+            out.append("".join(word))
+            word.clear()
+
+    def flush_run() -> None:
+        if run:
+            _label_run("".join(run), out)
+            run.clear()
+
+    for ch in s:
+        if _nospace(ord(ch)):
+            flush_word()
+            run.append(ch)
+        elif _wordchar(ch):
+            flush_run()
+            word.append(ch)
+        else:
+            flush_word()
+            flush_run()
+    flush_word()
+    flush_run()
+    return out
+
+
 def doc_freq(pieces: Iterable[Piece]) -> tuple[Counter[str], int]:
-    """Document frequency of every `tokenize_v2` term over one source's pieces, and their count."""
+    """Document frequency of each `tokenize_label` term over one source's pieces, and the count."""
     df: Counter[str] = Counter()
     n = 0
     for p in pieces:
         n += 1
-        df.update(set(tokenize_v2(p.prompt)))
+        df.update(set(tokenize_label(p.prompt)))
     return df, n
 
 
@@ -425,7 +550,7 @@ def ngrams(tools: Iterable[str]) -> frozenset[str]:
 
 def signature(piece: Piece, df: Mapping[str, int], n: int) -> Signature:
     num, den = KEYWORD_DF_MAX
-    counts = Counter(t for t in tokenize_v2(piece.prompt) if df.get(t, 0) * den <= n * num)
+    counts = Counter(t for t in tokenize_label(piece.prompt) if df.get(t, 0) * den <= n * num)
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return Signature(
         keywords=frozenset(t for t, _ in ranked[:KEYWORDS_TOP]),
@@ -842,7 +967,10 @@ CORRECTIONS = (
 INTERRUPT = "[Request interrupted by user"
 #: R3: spans the harness writes into a user record; none of them is the user's own words.
 #: `bash-*` and `task-notification` are measured additions (C6 Step 0): a `!` command's
-#: output and a background task's result arrive as non-meta user records.
+#: output and a background task's result arrive as non-meta user records. The IDE and
+#: browser tags are #289's, measured 2026-11-06 over the maintainer's 798 session pieces:
+#: `ide_opened_file` was carried by 67, `browser_instruction` by 58, `ide_selection` by 20;
+#: `ide_diagnostics` occurs 151 times in transcripts (0 in pieces) and is cut defensively.
 CUT_TAGS = (
     "system-reminder",
     "command-name",
@@ -855,6 +983,10 @@ CUT_TAGS = (
     "bash-stdout",
     "bash-stderr",
     "task-notification",
+    "ide_opened_file",
+    "ide_selection",
+    "ide_diagnostics",
+    "browser_instruction",
 )
 #: R4: the tools whose input names a file the agent touched.
 PATH_TOOLS = ("Read", "Edit", "MultiEdit", "Write", "NotebookEdit")

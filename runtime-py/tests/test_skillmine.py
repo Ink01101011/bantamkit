@@ -1012,3 +1012,76 @@ def test_a_successful_commit_carries_its_subject_and_a_failed_one_none():
     del old["commits"]  # a cache entry written before the field: read as no commits
     assert skillmine._piece_from(old).commits == ()
     assert skillmine._piece_from({**piece.as_dict(), "commits": [1]}) is None
+
+
+# ---------------------------------------------------------------------------- #289
+
+
+_IDE_NOTICE = (
+    "<ide_opened_file>The user opened the file /x/a.py in the IDE. This may or may not be "
+    "related to the current task.</ide_opened_file>"
+    "<browser_instruction>Claude in Chrome browser automation is available.</browser_instruction>"
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("ทำต่อ", []),
+        ("merge แล้ว tag ต่อ", ["merge", "tag"]),
+        ("อนุมัติแล้ว", ["อนุ", "นุมั", "มัติ"]),
+        ("กลับไปใช้ แผนเดิม", ["กลั", "ลับ", "บไป", "ไปใช้", "แผน", "นเดิ", "เดิม"]),
+        ("เข้าใจแล้วครับ ทำต่อเลย", ["เข้า", "าใจ"]),
+    ],
+)
+def test_tokenize_label_vectors(text: str, want: list[str]) -> None:
+    assert skillmine.tokenize_label(text) == want
+
+
+def test_tokenize_label_matches_tokenize_v2_on_ascii() -> None:
+    from bantamkit.memory.retrieval import tokenize_v2
+
+    for text in ["Fix the parser in src/parse.py, then run 2 tests!", "merge PR #12 & tag v0.38"]:
+        assert skillmine.tokenize_label(text) == tokenize_v2(text)
+
+
+def test_tokenize_label_no_token_starts_with_a_mark() -> None:
+    import unicodedata
+
+    texts = ["ทำต่อ", "merge แล้ว tag ต่อ", "อนุมัติแล้ว", "กลับไปใช้ แผนเดิม", "เข้าใจแล้วครับ ทำต่อเลย"]
+    toks = [t for x in texts for t in skillmine.tokenize_label(x)]
+    assert toks
+    assert all(unicodedata.category(t[0]) not in ("Mn", "Mc") for t in toks)
+
+
+def test_tokenize_v2_unchanged_for_recall() -> None:
+    from bantamkit.memory.retrieval import tokenize_v2
+
+    assert tokenize_v2("ทำต่อ") == ["ทํ", "ํา", "าต", "ต่", "่อ"]
+
+
+def test_signature_uses_tokenize_label() -> None:
+    p = Piece(id="t", source="session", ts="", repo="", prompt="อนุมัติแล้ว ทำต่อ", ok=True)
+    df, n = doc_freq([p])
+    assert set(df) == {"อนุ", "นุมั", "มัติ"}
+    assert signature(p, {}, 1).keywords == frozenset({"อนุ", "นุมั", "มัติ"})
+
+
+def test_clean_prompt_cuts_ide_and_browser_notices() -> None:
+    assert clean_prompt(_IDE_NOTICE) == ""
+    assert clean_prompt("<ide_selection>sel</ide_selection> fix it") == "fix it"
+    assert clean_prompt("<ide_diagnostics>d</ide_diagnostics>") == ""
+
+
+def test_ide_notice_only_prompt_yields_no_piece_or_keyword(tmp_path: Path) -> None:
+    home, repo = _home(tmp_path)
+    t = _T(SID, str(repo))
+    t.prompt(_ts(1), [{"type": "text", "text": _IDE_NOTICE}])
+    t.call(_ts(2), "Read", {"file_path": str(repo / "src" / "parse.py")}, "t1")
+    t.prompt(_ts(3), _IDE_NOTICE)
+    t.call(_ts(4), "Read", {"file_path": str(repo / "src" / "parse.py")}, "t2")
+    t.write(home / ".claude" / "projects" / "-work-repo" / f"{SID}.jsonl")
+    pieces = _run(home)
+    assert pieces == []
+    for word in ("ide", "opened", "browser", "chrome"):
+        assert word not in json.dumps(pieces)

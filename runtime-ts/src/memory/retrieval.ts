@@ -36,7 +36,8 @@ export const nospaceTable = (cp: number): boolean => NOSPACE.some(([lo, hi]) => 
 // Every NOSPACE range is in the BMP and outside the surrogates, so a code-UNIT class matches
 // exactly the code points the table holds, and never half of a pair.
 const NOSPACE_UNITS = /[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g;
-const WORDCHAR = /^[\p{L}\p{N}\p{M}]$/u;
+/** A spaced-script word character (one code point); also the miner's `tokenizeLabel` (#289). */
+export const WORDCHAR = /^[\p{L}\p{N}\p{M}]$/u;
 
 /**
  * Every code point of a no-space script replaced by one space, on the RAW text (before NFKC).
