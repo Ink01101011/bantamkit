@@ -1083,6 +1083,32 @@ def test_label_units_attach_following_vowels() -> None:
     assert skillmine._label_units("\u0e32ก") == ["\u0e32", "ก"]
     # One pending behind a leading vowel is not attached across it.
     assert skillmine._label_units("เาก") == ["เา", "ก"]
+    assert skillmine.tokenize_label("เาก") == ["เาก"]
+
+
+def test_label_units_lakkhangyao_and_lao_sara_a() -> None:
+    # U+0E45 LAKKHANGYAO joins the unit before it, like the mark U+0E35 after ษ.
+    assert skillmine._label_units("ฤๅษี") == ["ฤๅ", "ษี"]
+    assert skillmine.tokenize_label("ฤๅษี") == ["ฤๅษี"]
+    # U+0EB0 Lao SARA A joins its base.
+    assert skillmine._label_units("ຈະ") == ["ຈະ"]
+    assert skillmine.tokenize_label("ຈະ") == ["ຈະ"]
+
+
+@pytest.mark.parametrize(
+    "run",
+    ["ก" + "\u0e48" * 10**6, "ก" + "\u0e32" * 10**6, "เ" + "\u0e48" * 10**6],
+    ids=["mark", "following-vowel", "behind-leading-vowel"],
+)
+def test_label_units_linear_on_long_joining_runs(run: str) -> None:
+    # `out[-1] += ch` copied the unit per joining character: ~13.7 s at 1M chars (26 s behind a
+    # leading vowel). Linear it is ~0.3 s, so a 3 s bound fails the old code and not a slow box.
+    import time
+
+    t0 = time.perf_counter()
+    units = skillmine._label_units(run)
+    assert time.perf_counter() - t0 < 3.0
+    assert "".join(units) == run
 
 
 def test_tokenize_v2_unchanged_for_recall() -> None:

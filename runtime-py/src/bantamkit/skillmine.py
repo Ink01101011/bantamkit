@@ -458,21 +458,23 @@ def _label_fold(text: str) -> str:
 
 def _label_units(run: str) -> list[str]:
     """A no-space run as units: a mark or a following vowel joins the unit before it, a
-    leading vowel the one after."""
-    out: list[str] = []
-    pend = ""
+    leading vowel the one after. Each unit is gathered as a list of parts and joined once, so
+    a long run of joining characters stays linear (`out[-1] += ch` copied the unit each time)."""
+    units: list[list[str]] = []
+    pend: list[str] = []
     for ch in run:
         joins = ord(ch) in _FOLLOWING_VOWELS or unicodedata.category(ch) in ("Mn", "Mc")
-        if joins and out and not pend:
-            out[-1] += ch
+        if joins and units and not pend:
+            units[-1].append(ch)
         elif _is_leading_vowel(ord(ch)):
-            pend += ch
+            pend.append(ch)
         else:
-            out.append(pend + ch)
-            pend = ""
+            pend.append(ch)
+            units.append(pend)
+            pend = []
     if pend:
-        out.append(pend)
-    return out
+        units.append(pend)
+    return ["".join(u) for u in units]
 
 
 _STOP_UNITS: tuple[tuple[str, ...], ...] = tuple(
