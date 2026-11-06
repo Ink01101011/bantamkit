@@ -60,16 +60,23 @@ touched paths.
 
 `tokenize_label` (`tokenizeLabel` in Node) is the miner's own tokenizer (#289). Spaced-script
 words come out as recall's `tokenize_v2` would give them, but a no-space run (Thai, Lao, …) is
-cut into units: a base character with its combining marks, a leading vowel (เ แ โ ใ ไ and
-Lao's ເ–ໄ) attached forward to the unit after it, and SARA AM recomposed after NFKC splits it.
+cut into units: a base character with its combining marks and its following vowels, a leading
+vowel (เ แ โ ใ ไ and Lao's ເ–ໄ) attached forward to the unit after it, and SARA AM recomposed
+after NFKC splits it. The following vowels — Thai SARA A, SARA AA, SARA AM and LAKKHANGYAO
+(U+0E30 U+0E32 U+0E33 U+0E45) and Lao U+0EB0 U+0EB2 U+0EB3 — are letters (`Lo`), not marks, but
+join the unit before them as a mark does (#289 amendment A1), so `เข้าใจ` is one bigram, `เข้าใจ`,
+and `จำนวน` gives `จำน`, `นว`, `วน`. A bigram of units can still span a syllable boundary
+(`ประชุม` gives `ประ`, `ระชุ`, `ชุม`); units never lose their marks or vowels.
 The Thai filler words in `LABEL_STOPWORDS` (`แล้ว`, `ต่อ`, `ทำ`, `ครับ`, …) end a segment and are
-never terms, and each segment gives its bigrams of units (or its one unit). Before #289 the
+never terms, and each segment gives its bigrams of units (or its one unit). A stopword is matched
+by its unit sequence, so one inside a longer word is cut too — `ต่อย` labels as `ย` — a known
+limit, kept because there is no segmenter by ruling. Before #289 the
 miner used `tokenize_v2`, whose code-point bigrams split vowels and tone marks off their
 consonants and clustered sessions on filler (`ทำต่อ`, `merge แล้ว tag ต่อ`); now `merge แล้ว tag
 ต่อ` labels as `merge`, `tag`. Recall's `tokenize_v2` is unchanged — recall's gold numbers are
 measured on it. No dictionary segmenter is used. The `skill-miner` conformance suite compares
 both runtimes' `tokenize_label` over Thai, Lao, mixed and ASCII vectors and pins the stopword,
-unit and SARA AM answers per side. Pieces join a cluster when their weighted Jaccard similarity (keywords 2, n-grams
+unit, following-vowel and SARA AM answers per side. Pieces join a cluster when their weighted Jaccard similarity (keywords 2, n-grams
 1, paths 1; an empty component is left out) is at least 1/2. Every comparison is on integers, so
 the two runtimes cannot split on a boundary.
 

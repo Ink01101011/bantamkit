@@ -32,6 +32,8 @@
  * #289. The miner's own label tokenizer (`tokenize_label`) over Thai, Lao, mixed and ASCII
  * vectors, `clean_prompt` over the IDE/browser notices, and a Thai piece set's signatures, all
  * compared; the stopword, unit, SARA AM and notice-only answers are also pinned per side.
+ * Amendment A1: a following vowel (U+0E30 U+0E32 U+0E33 U+0E45, Lao U+0EB0 U+0EB2 U+0EB3) is
+ * Lo, not a mark, but joins the unit before it like one; the review's vectors are pinned.
  *
  * PART 2. Every bar has a cluster one below it and one at it, in the same corpus: shiftwork
  * 2 / 3 (and 5 / 6 for twice the bar, with a 4 that a `bar + 1` auto rule would flip), a
@@ -256,7 +258,7 @@ const PIECE_SETS = [
 
 /**
  * #289: the miner's own label tokenizer. Thai and Lao runs are cut into units (a base with its
- * combining marks, a leading vowel attached forward), SARA AM is recomposed after NFKC, filler
+ * combining marks and following vowels, a leading vowel attached forward), SARA AM is recomposed after NFKC, filler
  * stopwords end a segment, and bigrams are of units. Each vector aims at one of those rules.
  */
 const LABEL_VECTORS = [
@@ -271,6 +273,12 @@ const LABEL_VECTORS = [
   ['a run ending in a leading vowel alone', 'กขเ'],
   ['a run starting with a combining mark', '\u0e31กข \u0e48'],
   ['mixed: digits, latin and Thai', 'แก้ bug #289 ในskillmine ด้วย'],
+  // A1: following vowels (SARA A, SARA AA, SARA AM, LAKKHANGYAO; Lao alike) join the unit before.
+  ['A1: จำนวน', 'จำนวน'],
+  ['A1: ทำงาน (ทำ is one unit, a stopword)', 'ทำงาน'],
+  ['A1: ประชุม', 'ประชุม'],
+  ['A1: สร้างไฟล์ใหม่', 'สร้างไฟล์ใหม่'],
+  ['A1: ต่อย (known limit: a stopword inside a word)', 'ต่อย'],
   ['ASCII line', 'Fix the parser, run pytest; port src/lex.ts to Node 20.'],
 ];
 
@@ -631,14 +639,42 @@ export async function run(ctx) {
       actual: [lv('merge แล้ว tag ต่อ'), lv('ทำต่อ (stopwords only)')],
     });
     cases.push({
-      name: `LITERAL: tokenize_label — units keep their marks, SARA AM recomposed (#289) — ${side}`,
+      name: `LITERAL: tokenize_label — units keep their marks and following vowels, SARA AM recomposed (#289 A1) — ${side}`,
       kind: 'json',
       expected: [
         ['อนุ', 'นุมั', 'มัติ'],
-        ['จำ', 'ำน', 'นว', 'วน', 'จำ', 'ำน', 'นว', 'วน'],
-        ['ເຂົ້າ', 'າໃຈ', 'ໃຈນ', 'ນຳ', 'ຳກັ', 'ກັນ'],
+        ['จำน', 'นว', 'วน', 'จำน', 'นว', 'วน'],
+        ['ເຂົ້າໃຈ', 'ໃຈນຳ', 'ນຳກັ', 'ກັນ'],
       ],
       actual: [lv('อนุมัติแล้ว'), lv('Thai: decomposed SARA AM equals precomposed'), lv('Lao: decomposed SARA AM and leading vowels')],
+    });
+    // #289 amendment A1: the review's vectors, exactly. 'ต่อย' -> [ย] is the documented limit
+    // (a stopword matches inside a longer word by unit sequence; no segmenter by ruling).
+    cases.push({
+      name: `LITERAL: tokenize_label — following vowels join the unit before (#289 A1) — ${side}`,
+      kind: 'json',
+      expected: [
+        ['กลั', 'ลับ', 'บไป', 'ไปใช้', 'แผน', 'นเดิ', 'เดิม'],
+        ['จำน', 'นว', 'วน'],
+        ['งาน'],
+        ['ประ', 'ระชุ', 'ชุม'],
+        ['สร้า', 'ร้าง', 'งไฟ', 'ไฟล์', 'ล์ให', 'ใหม่'],
+        ['ย'],
+      ],
+      actual: [
+        lv('กลับไปใช้ แผนเดิม'),
+        lv('A1: จำนวน'),
+        lv('A1: ทำงาน (ทำ is one unit, a stopword)'),
+        lv('A1: ประชุม'),
+        lv('A1: สร้างไฟล์ใหม่'),
+        lv('A1: ต่อย (known limit: a stopword inside a word)'),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: tokenize_label — 'เข้าใจแล้วครับ ทำต่อเลย' is [เข้าใจ] (#289 A1) — ${side}`,
+      kind: 'json',
+      expected: [['เข้าใจ']],
+      actual: [lv('เข้าใจแล้วครับ ทำต่อเลย')],
     });
     cases.push({
       name: `LITERAL: clean_prompt — notices cut, a notice-only prompt is empty (#289) — ${side}`,
@@ -650,7 +686,7 @@ export async function run(ctx) {
       name: `LITERAL: Thai piece set — filler is never a keyword (#289) — ${side}`,
       kind: 'json',
       expected: [
-        ['าใจ', 'เข้า'],
+        ['เข้าใจ'],
         ['merge', 'นุมั', 'มัติ', 'อนุ'],
       ],
       actual: [ans.set_signatures[2][1].keywords, ans.set_signatures[2][2].keywords],
