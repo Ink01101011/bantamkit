@@ -663,8 +663,16 @@ const LABEL_VECTORS = [
   ['merge แล้ว tag ต่อ', ['merge', 'tag']],
   ['อนุมัติแล้ว', ['อนุ', 'นุมั', 'มัติ']],
   ['กลับไปใช้ แผนเดิม', ['กลั', 'ลับ', 'บไป', 'ไปใช้', 'แผน', 'นเดิ', 'เดิม']],
-  ['เข้าใจแล้วครับ ทำต่อเลย', ['เข้า', 'าใจ']],
+  ['เข้าใจแล้วครับ ทำต่อเลย', ['เข้าใจ']],
+  // Amendment A1: a following vowel (Lo, not Mn/Mc) joins the unit before it.
+  ['จำนวน', ['จำน', 'นว', 'วน']],
+  ['ทำงาน', ['งาน']],
+  ['ประชุม', ['ประ', 'ระชุ', 'ชุม']],
+  ['สร้างไฟล์ใหม่', ['สร้า', 'ร้าง', 'งไฟ', 'ไฟล์', 'ล์ให', 'ใหม่']],
+  // Known limit (no segmenter, by ruling): a stopword matches inside a longer word by unit sequence.
+  ['ต่อย', ['ย']],
 ];
+const FOLLOWING = new Set([0x0e30, 0x0e32, 0x0e33, 0x0e45, 0x0eb0, 0x0eb2, 0x0eb3]);
 
 test('tokenizeLabel gives the #289 vectors', () => {
   for (const [text, want] of LABEL_VECTORS) assert.deepEqual(sm.tokenizeLabel(text), want, text);
@@ -673,6 +681,12 @@ test('tokenizeLabel gives the #289 vectors', () => {
 test('no Thai label token starts with a combining mark', () => {
   for (const [text] of LABEL_VECTORS) {
     for (const t of sm.tokenizeLabel(text)) assert.ok(!/^[\p{Mn}\p{Mc}]/u.test(t), `${text}: ${t}`);
+  }
+});
+
+test('no Thai label token starts with a following vowel', () => {
+  for (const [text] of LABEL_VECTORS) {
+    for (const t of sm.tokenizeLabel(text)) assert.ok(!FOLLOWING.has(t.codePointAt(0)), `${text}: ${t}`);
   }
 });
 

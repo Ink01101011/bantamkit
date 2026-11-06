@@ -30,8 +30,9 @@ answered as an exact reduced fraction `(num, den)`; `meets` compares on integers
 two runtimes cannot disagree at the `SIM_MIN` boundary. `tokenize_label` is the miner's own
 tokenizer (#289), not recall's `tokenize_v2`: recall's code-point bigrams split Thai vowels and
 tone marks (`ทำต่อ` became `ทํ ํา าต ต่ ่อ`) and let filler words such as `แล้ว` and `ทำ` decide
-the clusters. It groups a base character with its combining marks and a leading vowel with the
-character after it, drops `LABEL_STOPWORDS`, and forms bigrams of those units; spaced-script
+the clusters. It groups a base character with its combining marks and following vowels
+(`ะ า ำ ๅ` and Lao `ະ າ ຳ`, which are Lo, not marks) and a leading vowel with the character
+after it, drops `LABEL_STOPWORDS`, and forms bigrams of those units; spaced-script
 words are kept whole exactly as `tokenize_v2` keeps them. `tokenize_v2` is unchanged, because
 recall is measured on it.
 
@@ -443,6 +444,12 @@ def _is_leading_vowel(cp: int) -> bool:
     return 0x0E40 <= cp <= 0x0E44 or 0x0EC0 <= cp <= 0x0EC4
 
 
+#: Thai/Lao following vowels (SARA A, AA, AM, LAKKHANGYAO; Lao A, AA, AM): general category
+#: Lo, yet they close the syllable before them, so a unit takes them the way it takes a mark
+#: (#289 amendment A1).
+_FOLLOWING_VOWELS = frozenset({0x0E30, 0x0E32, 0x0E33, 0x0E45, 0x0EB0, 0x0EB2, 0x0EB3})
+
+
 def _label_fold(text: str) -> str:
     """NFKC, lower-cased, SARA AM recomposed (NFKC splits it into NIKHAHIT + SARA AA)."""
     s = unicodedata.normalize("NFKC", text).lower()
@@ -450,11 +457,13 @@ def _label_fold(text: str) -> str:
 
 
 def _label_units(run: str) -> list[str]:
-    """A no-space run as units: a mark joins the unit before it, a leading vowel the one after."""
+    """A no-space run as units: a mark or a following vowel joins the unit before it, a
+    leading vowel the one after."""
     out: list[str] = []
     pend = ""
     for ch in run:
-        if unicodedata.category(ch) in ("Mn", "Mc") and out and not pend:
+        joins = ord(ch) in _FOLLOWING_VOWELS or unicodedata.category(ch) in ("Mn", "Mc")
+        if joins and out and not pend:
             out[-1] += ch
         elif _is_leading_vowel(ord(ch)):
             pend += ch
@@ -501,8 +510,10 @@ def _label_run(run: str, out: list[str]) -> None:
 
 def tokenize_label(text: str) -> list[str]:
     """The miner's tokenizer (#289): `tokenize_v2`'s scan, but a no-space run is cut into
-    units (a base with its marks, a leading vowel with what follows), `LABEL_STOPWORDS` end a
-    segment and emit nothing, and a segment emits its one unit or its unit bigrams."""
+    units (a base with its marks and following vowels, a leading vowel with what follows),
+    `LABEL_STOPWORDS` end a segment and emit nothing, and a segment emits its one unit or its
+    unit bigrams. A bigram of units can still span a syllable boundary, and a stopword's unit
+    sequence also matches inside a longer word (`ต่อย` -> `ย`): there is no segmenter."""
     s = _label_fold(text)
     out: list[str] = []
     word: list[str] = []

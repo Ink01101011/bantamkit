@@ -13,9 +13,12 @@
  * similarity is an integer fraction, never a float.
  *
  * The signature's keywords (and their document frequency) come from `tokenizeLabel`, the
- * miner's own tokenizer (#289): Thai/Lao runs are cut into units at their combining marks and
- * leading vowels and split at `LABEL_STOPWORDS`, so a label is never a bigram of "ทำต่อ" or a
- * half-syllable. Recall's `tokenizeV2` is not touched. `CUT_TAGS` also cuts the IDE and browser
+ * miner's own tokenizer (#289): Thai/Lao runs are cut into units (a consonant keeps its
+ * combining marks, its following vowel and its leading vowel) and split at `LABEL_STOPWORDS`, so
+ * a label never starts with a mark or a following vowel and is never a bigram of "ทำต่อ". It is
+ * not a word segmenter: a bigram of units can still span a syllable boundary (`ประชุม` gives
+ * `ระชุ`), and a stopword matches inside a longer word by unit sequence (`ต่อย` gives `ย`).
+ * Recall's `tokenizeV2` is not touched. `CUT_TAGS` also cuts the IDE and browser
  * notices (`ide_opened_file`, `ide_selection`, `ide_diagnostics`, `browser_instruction`); a
  * prompt made only of them is empty and so starts no piece.
  *
@@ -404,17 +407,24 @@ export const LABEL_STOPWORDS: readonly string[] = [
   'ครับ', 'ค่ะ', 'แล้ว', 'ต่อ', 'ทำ', 'ให้', 'ที่', 'และ', 'ได้', 'หน่อย', 'ด้วย', 'เลย', 'นี้', 'ไหม', 'อีก', 'ก่อน', 'เป็น',
 ];
 const MARK = /^[\p{Mn}\p{Mc}]$/u;
+// Thai and Lao following vowels (SARA A, AA, AM, LAKKHANGYAO; Lao A, AA, AM): category Lo, yet
+// they close the syllable before them, so they join the unit before them as a mark does.
+const FOLLOWING: ReadonlySet<number> = new Set([0x0e30, 0x0e32, 0x0e33, 0x0e45, 0x0eb0, 0x0eb2, 0x0eb3]);
+const joins = (ch: string): boolean => MARK.test(ch) || FOLLOWING.has(ch.codePointAt(0)!);
 // Thai and Lao leading vowels: written before the consonant they follow in speech.
 const leading = (cp: number): boolean => (cp >= 0x0e40 && cp <= 0x0e44) || (cp >= 0x0ec0 && cp <= 0x0ec4);
 // NFKC decomposes SARA AM (U+0E33, U+0EB3) into NIKHAHIT + SARA AA; recompose it.
 const labelFold = (text: string): string => text.normalize('NFKC').toLowerCase().replaceAll('\u0e4d\u0e32', '\u0e33').replaceAll('\u0ecd\u0eb2', '\u0eb3');
 
-/** A no-space run as units: a combining mark joins the unit before it, a leading vowel the unit after it. */
+/**
+ * A no-space run as units: a combining mark or a following vowel joins the unit before it, a
+ * leading vowel the unit after it.
+ */
 function labelUnits(run: readonly string[]): string[] {
   const out: string[] = [];
   let pend = '';
   for (const ch of run) {
-    if (MARK.test(ch) && out.length > 0 && pend === '') out[out.length - 1] += ch;
+    if (joins(ch) && out.length > 0 && pend === '') out[out.length - 1] += ch;
     else if (leading(ch.codePointAt(0)!)) pend += ch;
     else {
       out.push(pend + ch);
@@ -432,7 +442,7 @@ const STOP_UNITS: readonly string[][] = LABEL_STOPWORDS.map((w) => labelUnits(Ar
 
 /**
  * The miner's label tokens (#289): `tokenizeV2`'s words and runs, but a no-space run is cut into
- * units (a consonant with its marks and leading vowel), split at `LABEL_STOPWORDS`, and each
+ * units (a consonant with its marks, its following vowel and its leading vowel), split at `LABEL_STOPWORDS`, and each
  * segment emits its one unit or its unit bigrams. `tokenizeV2` stays as it is: recall is
  * measured on it. ASCII text gives exactly `tokenizeV2`'s list.
  */
