@@ -279,6 +279,14 @@ const LABEL_VECTORS = [
   ['A1: ประชุม', 'ประชุม'],
   ['A1: สร้างไฟล์ใหม่', 'สร้างไฟล์ใหม่'],
   ['A1: ต่อย (known limit: a stopword inside a word)', 'ต่อย'],
+  // J81: LAKKHANGYAO (U+0E45) and Lao SARA A (U+0EB0) pinned; and the pend guard — a following
+  // vowel after a held leading vowel stays in the held unit, never on the unit before. A lone
+  // unit cannot show either (its bigram is the same string), so each has a two-unit twin.
+  ['A1: ฤๅษี (LAKKHANGYAO)', 'ฤๅษี'],
+  ['A1: ຈະ (Lao SARA A)', 'ຈະ'],
+  ['A1: ຈະໄປ (Lao SARA A before a unit)', 'ຈະໄປ'],
+  ['A1: เาก (pend guard)', 'เาก'],
+  ['A1: กเาก (pend guard after a unit)', 'กเาก'],
   ['ASCII line', 'Fix the parser, run pytest; port src/lex.ts to Node 20.'],
 ];
 
@@ -653,6 +661,8 @@ export async function run(ctx) {
     cases.push({
       name: `LITERAL: tokenize_label — following vowels join the unit before (#289 A1) — ${side}`,
       kind: 'json',
+      // Every one of the seven: U+0E30 ประ, U+0E32 สร้าง, U+0E33 จำ, U+0E45 ฤๅ, U+0EB0 ຈະ,
+      // U+0EB2 ເຂົ້າ, U+0EB3 ນຳ. And the pend guard (J81): เาก is ONE unit, กเาก is [กเา, เาก].
       expected: [
         ['กลั', 'ลับ', 'บไป', 'ไปใช้', 'แผน', 'นเดิ', 'เดิม'],
         ['จำน', 'นว', 'วน'],
@@ -660,6 +670,12 @@ export async function run(ctx) {
         ['ประ', 'ระชุ', 'ชุม'],
         ['สร้า', 'ร้าง', 'งไฟ', 'ไฟล์', 'ล์ให', 'ใหม่'],
         ['ย'],
+        ['ฤๅษี'],
+        ['ຈະ'],
+        ['ຈະໄປ'],
+        ['ເຂົ້າໃຈ', 'ໃຈນຳ', 'ນຳກັ', 'ກັນ'],
+        ['เาก'],
+        ['กเา', 'เาก'],
       ],
       actual: [
         lv('กลับไปใช้ แผนเดิม'),
@@ -668,6 +684,12 @@ export async function run(ctx) {
         lv('A1: ประชุม'),
         lv('A1: สร้างไฟล์ใหม่'),
         lv('A1: ต่อย (known limit: a stopword inside a word)'),
+        lv('A1: ฤๅษี (LAKKHANGYAO)'),
+        lv('A1: ຈະ (Lao SARA A)'),
+        lv('A1: ຈະໄປ (Lao SARA A before a unit)'),
+        lv('Lao: decomposed SARA AM and leading vowels'),
+        lv('A1: เาก (pend guard)'),
+        lv('A1: กเาก (pend guard after a unit)'),
       ],
     });
     cases.push({
