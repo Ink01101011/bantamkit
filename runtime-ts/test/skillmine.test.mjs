@@ -657,6 +657,81 @@ test('cleanPrompt cuts harness spans', () => {
   assert.equal(sm.cleanPrompt('  <local-command-stdout>o</local-command-stdout>  '), '');
 });
 
+// #289: the miner's own label tokenizer, and the IDE/browser notices cut out of a prompt.
+const LABEL_VECTORS = [
+  ['ทำต่อ', []],
+  ['merge แล้ว tag ต่อ', ['merge', 'tag']],
+  ['อนุมัติแล้ว', ['อนุ', 'นุมั', 'มัติ']],
+  ['กลับไปใช้ แผนเดิม', ['กลั', 'ลับ', 'บไป', 'ไปใช้', 'แผน', 'นเดิ', 'เดิม']],
+  ['เข้าใจแล้วครับ ทำต่อเลย', ['เข้าใจ']],
+  // Amendment A1: a following vowel (Lo, not Mn/Mc) joins the unit before it.
+  ['จำนวน', ['จำน', 'นว', 'วน']],
+  ['ทำงาน', ['งาน']],
+  ['ประชุม', ['ประ', 'ระชุ', 'ชุม']],
+  ['สร้างไฟล์ใหม่', ['สร้า', 'ร้าง', 'งไฟ', 'ไฟล์', 'ล์ให', 'ใหม่']],
+  // Known limit (no segmenter, by ruling): a stopword matches inside a longer word by unit sequence.
+  ['ต่อย', ['ย']],
+];
+const FOLLOWING = new Set([0x0e30, 0x0e32, 0x0e33, 0x0e45, 0x0eb0, 0x0eb2, 0x0eb3]);
+
+test('tokenizeLabel gives the #289 vectors', () => {
+  for (const [text, want] of LABEL_VECTORS) assert.deepEqual(sm.tokenizeLabel(text), want, text);
+});
+
+test('no Thai label token starts with a combining mark', () => {
+  for (const [text] of LABEL_VECTORS) {
+    for (const t of sm.tokenizeLabel(text)) assert.ok(!/^[\p{Mn}\p{Mc}]/u.test(t), `${text}: ${t}`);
+  }
+});
+
+test('no Thai label token starts with a following vowel', () => {
+  for (const [text] of LABEL_VECTORS) {
+    for (const t of sm.tokenizeLabel(text)) assert.ok(!FOLLOWING.has(t.codePointAt(0)), `${text}: ${t}`);
+  }
+});
+
+test('tokenizeLabel equals tokenizeV2 on ASCII text', async () => {
+  const { tokenizeV2 } = await import('../dist/memory/retrieval.js');
+  for (const text of ['Fix the Parser in src/parse.py, again!', 'merge then tag v0.38.1', '', '  --  ']) {
+    assert.deepEqual(sm.tokenizeLabel(text), tokenizeV2(text), text);
+  }
+});
+
+test('tokenizeV2 is unchanged for ทำต่อ (recall is measured on it)', async () => {
+  const { tokenizeV2 } = await import('../dist/memory/retrieval.js');
+  assert.deepEqual(tokenizeV2('ทำต่อ'), ['ทํ', 'ํา', 'าต', 'ต่', '่อ']);
+});
+
+test('the signature keywords come from tokenizeLabel', () => {
+  const p = (id, prompt) => ({ id, source: 'session', ts: ts(1), repo: '', prompt, tools: [], paths: new Set(), ok: true, signals: {}, failure: null });
+  const pieces = [p('a', 'อนุมัติแล้ว'), p('b', 'ทำต่อ'), p('c', 'bravo docs'), p('d', 'charlie build')];
+  const [df, n] = sm.docFreq(pieces);
+  assert.deepEqual([...df.keys()].filter((k) => /[฀-๿]/.test(k)).sort(), ['นุมั', 'มัติ', 'อนุ']);
+  assert.deepEqual([...sm.signature(pieces[0], df, n).keywords].sort(), ['นุมั', 'มัติ', 'อนุ']);
+  assert.deepEqual([...sm.signature(pieces[1], df, n).keywords], []);
+});
+
+test('cleanPrompt cuts the IDE and browser notices', () => {
+  assert.deepEqual(sm.CUT_TAGS.slice(-5), ['task-notification', 'ide_opened_file', 'ide_selection', 'ide_diagnostics', 'browser_instruction']);
+  assert.equal(sm.cleanPrompt('<ide_opened_file>The user opened a.ts</ide_opened_file>fix it'), 'fix it');
+  assert.equal(sm.cleanPrompt('<ide_selection>x</ide_selection><ide_diagnostics>y</ide_diagnostics>'), '');
+  assert.equal(sm.cleanPrompt('go <browser_instruction>open the tab'), 'go');
+});
+
+test('a prompt made only of IDE/browser notices is no piece and no keyword', () => {
+  const { home, repo, proj } = sHome();
+  new T(SID, repo)
+    .prompt(ts(1), 'fix the parser in src/parse.py')
+    .call(ts(2), 'Read', { file_path: join(repo, 'src', 'parse.py') }, 't1')
+    .prompt(ts(3), '<ide_opened_file>The user opened the file /work/src/parse.py in the IDE.</ide_opened_file>\n<browser_instruction>Use the browser tools.</browser_instruction>')
+    .call(ts(4), 'Edit', { file_path: join(repo, 'src', 'parse.py') }, 't2')
+    .write(join(proj, `${SID}.jsonl`));
+  const pieces = sm.sessionPieces(home, new ClaudeCodeAdapter(), parseNow(SNOW), sm.MinerCache.forHome(home));
+  assert.deepEqual(pieces.map((p) => p.prompt), ['fix the parser in src/parse.py']);
+  const [df] = sm.docFreq(pieces);
+  for (const k of df.keys()) assert.ok(!/ide|opened|browser|instruction/.test(k), k);
+});
+
 test('the correction rule', () => {
   for (const [p, want] of [
     ['no, use the other file', true],

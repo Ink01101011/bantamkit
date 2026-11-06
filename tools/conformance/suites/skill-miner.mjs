@@ -29,6 +29,12 @@
  * THE LITERALS. `KEYWORDS_TOP` and the boundary verdict are pinned per side, so a change
  * made to BOTH runtimes alike (top 10, a float compare in both) is still red.
  *
+ * #289. The miner's own label tokenizer (`tokenize_label`) over Thai, Lao, mixed and ASCII
+ * vectors, `clean_prompt` over the IDE/browser notices, and a Thai piece set's signatures, all
+ * compared; the stopword, unit, SARA AM and notice-only answers are also pinned per side.
+ * Amendment A1: a following vowel (U+0E30 U+0E32 U+0E33 U+0E45, Lao U+0EB0 U+0EB2 U+0EB3) is
+ * Lo, not a mark, but joins the unit before it like one; the review's vectors are pinned.
+ *
  * PART 2. Every bar has a cluster one below it and one at it, in the same corpus: shiftwork
  * 2 / 3 (and 5 / 6 for twice the bar, with a 4 that a `bar + 1` auto rule would flip), a
  * cluster whose 2 failures and 1 drop must not count, four eligible clusters against a cap of
@@ -240,6 +246,58 @@ const PIECE_SETS = [
     { prompt: 'one tool', tools: ['Read'], paths: [] },
     { prompt: '', tools: [], paths: [] },
   ],
+  // #289: Thai prompts. Filler (แล้ว, ทำต่อ, ครับ) never becomes a keyword; units keep their marks.
+  [
+    { prompt: 'แก้ parser ให้รองรับภาษาไทย แล้วทำต่อ', tools: [], paths: [] },
+    { prompt: 'เข้าใจแล้วครับ ทำต่อเลย', tools: [], paths: [] },
+    { prompt: 'อนุมัติแล้ว merge ได้เลย', tools: [], paths: [] },
+    { prompt: 'กลับไปใช้ แผนเดิม', tools: [], paths: [] },
+    { prompt: 'แก้ parser อีกครั้ง จำนวนคำผิด', tools: [], paths: [] },
+  ],
+];
+
+/**
+ * #289: the miner's own label tokenizer. Thai and Lao runs are cut into units (a base with its
+ * combining marks and following vowels, a leading vowel attached forward), SARA AM is recomposed after NFKC, filler
+ * stopwords end a segment, and bigrams are of units. Each vector aims at one of those rules.
+ */
+const LABEL_VECTORS = [
+  ['ทำต่อ (stopwords only)', 'ทำต่อ'],
+  ['merge แล้ว tag ต่อ', 'merge แล้ว tag ต่อ'],
+  ['อนุมัติแล้ว', 'อนุมัติแล้ว'],
+  ['กลับไปใช้ แผนเดิม', 'กลับไปใช้ แผนเดิม'],
+  ['เข้าใจแล้วครับ ทำต่อเลย', 'เข้าใจแล้วครับ ทำต่อเลย'],
+  ['Lao: decomposed SARA AM and leading vowels', 'ເຂົ້າໃຈນ\u0ecd\u0eb2ກັນ'],
+  ['Lao: precomposed SARA AM', 'ທຳວຽກ'],
+  ['Thai: decomposed SARA AM equals precomposed', 'จ\u0e4d\u0e32นวน จำนวน'],
+  ['a run ending in a leading vowel alone', 'กขเ'],
+  ['a run starting with a combining mark', '\u0e31กข \u0e48'],
+  ['mixed: digits, latin and Thai', 'แก้ bug #289 ในskillmine ด้วย'],
+  // A1: following vowels (SARA A, SARA AA, SARA AM, LAKKHANGYAO; Lao alike) join the unit before.
+  ['A1: จำนวน', 'จำนวน'],
+  ['A1: ทำงาน (ทำ is one unit, a stopword)', 'ทำงาน'],
+  ['A1: ประชุม', 'ประชุม'],
+  ['A1: สร้างไฟล์ใหม่', 'สร้างไฟล์ใหม่'],
+  ['A1: ต่อย (known limit: a stopword inside a word)', 'ต่อย'],
+  ['ASCII line', 'Fix the parser, run pytest; port src/lex.ts to Node 20.'],
+];
+
+/** #289: the IDE and browser notices are cut; a prompt that is only notices is empty. */
+const NOTICE_PROMPTS = [
+  [
+    'ide_opened_file + browser_instruction + ide_selection around user words',
+    '<ide_opened_file>The user opened the file /r/src/parse.py in the IDE.</ide_opened_file>' +
+      '<browser_instruction>Use the browser tools.</browser_instruction>แก้ parser ต่อ\n' +
+      '<ide_selection>The user selected lines 1 to 5:\ndef parse(): pass</ide_selection> please',
+  ],
+  [
+    'only notices',
+    '<ide_opened_file>The user opened the file /r/a.py in the IDE.</ide_opened_file>\n' +
+      '<ide_selection>The user selected line 3.</ide_selection>\n' +
+      '<browser_instruction>Use the browser tools.</browser_instruction>\n' +
+      '<ide_diagnostics>2 errors</ide_diagnostics>\n',
+  ],
+  ['an unclosed ide_diagnostics runs to the end', 'fix it <ide_diagnostics>1 error in a.py'],
 ];
 
 const sig = (k, g, p) => ({ keywords: k, ngrams: g, paths: p });
@@ -422,6 +480,8 @@ function runNode(sm, payload) {
     out.agents.push(pieces.map((p) => [p.id, p.agentId ?? null])); // #266: kept out of pieceDict
   }
   out.repo_keys = payload.repo_keys.map((p) => sm.repoKey(p));
+  out.label_tokens = payload.label_tokens.map((t) => sm.tokenizeLabel(t));
+  out.clean_prompts = payload.clean_prompts.map((t) => sm.cleanPrompt(t));
   for (const set of payload.piece_sets) {
     out.set_signatures.push(
       sigs(
@@ -501,6 +561,8 @@ export async function run(ctx) {
     roots: [main, wt, norepo, join(base, 'does-not-exist')],
     repo_keys: [main, wt, norepo, join(main, 'src')],
     piece_sets: PIECE_SETS,
+    label_tokens: LABEL_VECTORS.map(([, t]) => t),
+    clean_prompts: NOTICE_PROMPTS.map(([, t]) => t),
     pairs: PAIRS,
     mines: MINES.map(({ label, ...m }) => m),
     root_mines: [{ roots: [lvMain, lvWt, lvOther], previous: null, now: NOW }],
@@ -546,6 +608,12 @@ export async function run(ctx) {
       actual: nd.set_signatures[i],
     });
   });
+  LABEL_VECTORS.forEach(([label], i) => {
+    cases.push({ name: `tokenize_label — ${label} (#289)`, kind: 'json', expected: py.label_tokens[i], actual: nd.label_tokens[i] });
+  });
+  NOTICE_PROMPTS.forEach(([label], i) => {
+    cases.push({ name: `clean_prompt — ${label} (#289)`, kind: 'string', expected: py.clean_prompts[i], actual: nd.clean_prompts[i] });
+  });
   PAIRS.forEach((_, i) => {
     cases.push({ name: `similarity — pair ${i + 1}`, kind: 'json', expected: py.similarity[i], actual: nd.similarity[i] });
   });
@@ -561,6 +629,67 @@ export async function run(ctx) {
       kind: 'json',
       expected: [['job72/U6', 'a9443875b21b8ca8f'], ['job72/U7', null], ['job72/U8', null]],
       actual: ans.agents[0].filter(([id]) => ['job72/U6', 'job72/U7', 'job72/U8'].includes(id)),
+    });
+    // #289: pinned per side, so a regression made to BOTH tokenizers alike is still red.
+    const lv = (label) => ans.label_tokens[LABEL_VECTORS.findIndex(([l]) => l === label)];
+    cases.push({
+      name: `LITERAL: tokenize_label — 'merge แล้ว tag ต่อ' is [merge, tag], 'ทำต่อ' is nothing (#289) — ${side}`,
+      kind: 'json',
+      expected: [['merge', 'tag'], []],
+      actual: [lv('merge แล้ว tag ต่อ'), lv('ทำต่อ (stopwords only)')],
+    });
+    cases.push({
+      name: `LITERAL: tokenize_label — units keep their marks and following vowels, SARA AM recomposed (#289 A1) — ${side}`,
+      kind: 'json',
+      expected: [
+        ['อนุ', 'นุมั', 'มัติ'],
+        ['จำน', 'นว', 'วน', 'จำน', 'นว', 'วน'],
+        ['ເຂົ້າໃຈ', 'ໃຈນຳ', 'ນຳກັ', 'ກັນ'],
+      ],
+      actual: [lv('อนุมัติแล้ว'), lv('Thai: decomposed SARA AM equals precomposed'), lv('Lao: decomposed SARA AM and leading vowels')],
+    });
+    // #289 amendment A1: the review's vectors, exactly. 'ต่อย' -> [ย] is the documented limit
+    // (a stopword matches inside a longer word by unit sequence; no segmenter by ruling).
+    cases.push({
+      name: `LITERAL: tokenize_label — following vowels join the unit before (#289 A1) — ${side}`,
+      kind: 'json',
+      expected: [
+        ['กลั', 'ลับ', 'บไป', 'ไปใช้', 'แผน', 'นเดิ', 'เดิม'],
+        ['จำน', 'นว', 'วน'],
+        ['งาน'],
+        ['ประ', 'ระชุ', 'ชุม'],
+        ['สร้า', 'ร้าง', 'งไฟ', 'ไฟล์', 'ล์ให', 'ใหม่'],
+        ['ย'],
+      ],
+      actual: [
+        lv('กลับไปใช้ แผนเดิม'),
+        lv('A1: จำนวน'),
+        lv('A1: ทำงาน (ทำ is one unit, a stopword)'),
+        lv('A1: ประชุม'),
+        lv('A1: สร้างไฟล์ใหม่'),
+        lv('A1: ต่อย (known limit: a stopword inside a word)'),
+      ],
+    });
+    cases.push({
+      name: `LITERAL: tokenize_label — 'เข้าใจแล้วครับ ทำต่อเลย' is [เข้าใจ] (#289 A1) — ${side}`,
+      kind: 'json',
+      expected: [['เข้าใจ']],
+      actual: [lv('เข้าใจแล้วครับ ทำต่อเลย')],
+    });
+    cases.push({
+      name: `LITERAL: clean_prompt — notices cut, a notice-only prompt is empty (#289) — ${side}`,
+      kind: 'json',
+      expected: ['แก้ parser ต่อ\n please', '', 'fix it'],
+      actual: ans.clean_prompts,
+    });
+    cases.push({
+      name: `LITERAL: Thai piece set — filler is never a keyword (#289) — ${side}`,
+      kind: 'json',
+      expected: [
+        ['เข้าใจ'],
+        ['merge', 'นุมั', 'มัติ', 'อนุ'],
+      ],
+      actual: [ans.set_signatures[2][1].keywords, ans.set_signatures[2][2].keywords],
     });
     cases.push({
       name: `LITERAL: KEYWORDS_TOP keeps 12 keywords of a 20-term prompt — ${side}`,
