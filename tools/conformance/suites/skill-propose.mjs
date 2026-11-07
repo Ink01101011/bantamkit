@@ -635,7 +635,8 @@ export async function run(ctx) {
       expected: {
         line3: 'serving 16 tools, 3 prompts, 2 resource templates',
         plain: 'skills: off; mined 2026-10-27T12:00:00.000Z in 0 ms; 1 pending, 0 of 5 auto-installed live, 0 promoted; drafter host agent; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
-        sampled: 'skills: off; mined 2026-10-27T12:00:00.000Z in 0 ms; 0 pending, 0 of 5 auto-installed live, 0 promoted; drafter sampling; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
+        // #301: the sampled approve installs AND promotes, so one skill is promoted.
+        sampled: 'skills: off; mined 2026-10-27T12:00:00.000Z in 0 ms; 0 pending, 0 of 5 auto-installed live, 1 promoted; drafter sampling; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)',
         askedPlain: 0,
       },
       actual: {

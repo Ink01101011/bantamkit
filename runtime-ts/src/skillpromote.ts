@@ -275,6 +275,14 @@ export function promote(
   return { ok: true, mode: rec['mode'] as string, reason: `promoted skill ${name}` };
 }
 
+/** Record a refused promotion on `name` (`promote_refused`); not retried the same UTC day. */
+export function recordRefusal(home: string, name: string, now: string, reason: string): void {
+  updateState(home, (fresh: SkillsState) => {
+    const live = own(fresh.skills as Rec, name);
+    if (isObj(live)) live['promote_refused'] = { at: now, reason };
+  });
+}
+
 let counter = 0;
 
 function removeDir(target: string): void {
@@ -398,10 +406,7 @@ export function promoteStep(
       events.push(got.reason);
       continue;
     }
-    updateState(home, (fresh: SkillsState) => {
-      const live = own(fresh.skills as Rec, name);
-      if (isObj(live)) live['promote_refused'] = { at: now, reason: got.reason };
-    });
+    recordRefusal(home, name, now, got.reason);
   }
   const fresh = readState(home);
   for (const k of Object.keys(state)) delete state[k];

@@ -44,7 +44,7 @@ import {
   undo,
 } from './skillinstall.js';
 import { PENDING_MAX, ProposalsError, readProposals, writeProposals } from './skillmine.js';
-import { demote, promote } from './skillpromote.js';
+import { demote, promote, recordRefusal } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
 import { auditEnabled } from './storage/retention.js';
 
@@ -276,7 +276,15 @@ function handoffText(rec: Rec, handoff: Handoff, home: string): string {
 const gateFailed = (where: string, reasons: readonly string[], tail: string): string =>
   [`${where} did not pass the gate, so nothing was installed:`, ...reasons.map((r) => `- ${r}`), tail].join('\n');
 
-function installNow(rec: Rec, doc: Rec, text: string, level: string | null, home: string, now: string): string {
+function installNow(
+  rec: Rec,
+  doc: Rec,
+  text: string,
+  level: string | null,
+  home: string,
+  cwd: string | null,
+  now: string,
+): string {
   const id = rec['id'] as string;
   if (selectAdapter(home).host !== HOST_CLAUDE_CODE) {
     let root: string;
@@ -303,7 +311,11 @@ function installNow(rec: Rec, doc: Rec, text: string, level: string | null, home
   }
   writeProposals(home, doc);
   fs.rmSync(path.dirname(handoffPath(home, id)), { recursive: true, force: true });
-  return `installed skill ${got.name} at ${got.path} (${got.level} level).\nundo: ${COMMAND} undo ${got.name}`;
+  // Approve is the user's say-so, so it promotes at once, not gated by BANTAMKIT_SKILL_AUTO.
+  const p = promote(got.name, home, cwd, now);
+  if (!p.ok) recordRefusal(home, got.name, now, p.reason);
+  const said = p.ok ? p.reason : `not promoted: ${p.reason}`;
+  return `installed skill ${got.name} at ${got.path} (${got.level} level).\n${said}\nundo: ${COMMAND} undo ${got.name}`;
 }
 
 async function approveProposal(
@@ -338,7 +350,7 @@ async function approveProposal(
         `It was discarded and logged; run ${COMMAND} approve ${cid} again to draft anew.`,
       );
     }
-    return installNow(rec, doc, stored, level, home, now);
+    return installNow(rec, doc, stored, level, home, cwd, now);
   }
   const staged = handoffPath(home, cid);
   let isFile = false;
@@ -358,7 +370,7 @@ async function approveProposal(
     const outcome = { drafter: DRAFTER_HOST, ok: g.ok, text: g.ok ? text : null, reasons: g.reasons, unreachable: [], handoff: null };
     new LogSegment(draftsLog(home)).append(logLine(outcome, now, cid));
     if (!g.ok) return gateFailed(`The SKILL.md at ${staged}`, g.reasons, `Fix it and run ${COMMAND} approve ${cid} again.`);
-    return installNow(rec, doc, text, level, home, now);
+    return installNow(rec, doc, text, level, home, cwd, now);
   }
   const out = await draft(rec, defaultChain(sampler, true), home, cwd, now);
   if (out.handoff !== null) return handoffText(rec, out.handoff, home);
@@ -367,7 +379,7 @@ async function approveProposal(
   }
   rec['draft'] = draftEntry(out.drafter, out.text, now);
   writeProposals(home, doc);
-  return installNow(rec, doc, out.text, level, home, now);
+  return installNow(rec, doc, out.text, level, home, cwd, now);
 }
 
 /** The hand-off name of a tune: never a proposal id (16 hex digits), never a skill name. */

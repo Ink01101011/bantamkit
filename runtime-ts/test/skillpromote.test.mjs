@@ -257,6 +257,16 @@ test('a refusal is recorded and not retried the same day', () => withAuto('on', 
   assert.ok(!('promote_refused' in state.skills['skill-a']));
 }));
 
+test('recordRefusal sets the entry and ignores an unknown name', () => {
+  const home = claudeHome();
+  install(home, 'p-one');
+  sp.recordRefusal(home, 'p-one', NOW, 'why');
+  assert.deepEqual(sf.readState(home).skills['p-one'].promote_refused, { at: NOW, reason: 'why' });
+  const before = sf.readState(home);
+  sp.recordRefusal(home, 'nope', NOW, 'why');
+  assert.deepEqual(sf.readState(home), before);
+});
+
 test('unknown and unpromoted names', () => {
   const home = claudeHome();
   assert.equal(sp.promote('nope', home, null, NOW, 8192).reason, "no skill named 'nope' is installed");

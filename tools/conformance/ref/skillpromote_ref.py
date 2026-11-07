@@ -22,6 +22,9 @@ before the op runs; every path in an answer is masked back to `<bed>`.
     {"op": "set_counts", "home", "name", "versions"}       -> {}, plus "state", "tree" (each
         `versions[k]` merged into the entry's version record k: the judge's counters)
     {"op": "judge", "home", "now"}                         -> {"events", "returned_state"}, plus "state", "tree"
+    {"op": "approve", "home", "cwd", "target", "now", "env"?} -> {"said"}, plus "state", "tree"
+        (`skill_propose approve <target>` over the proposals a `write` op put there: #301,
+        an approve promotes at once, or records the refusal)
 
 `symlink_fails` makes the symlink call raise: `EPERM`, `EACCES`, `ENOENT` (an errno), or
 `WIN1314` (Windows' privilege error: an `OSError` whose `winerror` is 1314; libuv reports the
@@ -47,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src
 from bantamkit import skillfile as sf
 from bantamkit import skillinstall as si
 from bantamkit import skillpromote as sp
+from bantamkit import skillpropose as spp
 from bantamkit.memory.skills import SkillStore
 
 
@@ -214,6 +218,9 @@ def run(bed: Path, op: dict):
                     state, op["uses"], home, cwd, op["now"], op.get("budget"), symlink=symlink
                 )
                 out["returned_state"] = state
+            elif kind == "approve":
+                os.makedirs(cwd, exist_ok=True)
+                out["said"] = spp.render("approve", op["target"], None, home, cwd, op["now"], None)
             else:
                 raise SystemExit(f"skillpromote_ref: unknown op {kind!r}")
         except sf.SkillFileError as e:
