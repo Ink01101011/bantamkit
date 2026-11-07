@@ -146,3 +146,12 @@ export function loadSkill(name: string): string {
   }
   return readTextUniversal(path);
 }
+
+/** A reply-native directive (`assets/langs/<name>.md`, #292), trailing newline stripped. */
+export function loadLang(name: string): string {
+  const path = assetPath('lang', name, '.md');
+  if (!existsSync(path)) {
+    throw new AssetNotFound(`lang asset not found: ${path}`);
+  }
+  return readTextUniversal(path).replace(/[\r\n]+$/, '');
+}
