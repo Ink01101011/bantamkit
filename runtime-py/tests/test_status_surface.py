@@ -163,7 +163,8 @@ def test_the_status_tool_is_served_and_answers_active_on_a_healthy_server(tmp_pa
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line LAST.
     # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line LAST.
     # AMENDED job73 C9 (#206 Task 8): 15 -> 16, the `skills:` line LAST.
-    assert len(lines) == 16, report
+    # AMENDED #292 (reply-native): 16 -> 17, the `reply-native:` line LAST.
+    assert len(lines) == 17, report
     assert lines[1].startswith("version ") and ", build sha256:" in lines[1]
     # AMENDED job73 A6 (#205 Task 6): 1 prompt -> 2, `skill_audit` joined `bantamkit_status`.
     # AMENDED job73 C12 (#206 Task 11): 2 prompts -> 3, `skill_propose` listed third.
@@ -215,15 +216,16 @@ def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypa
     memory = make_memory(tmp_path)
     memory.save("project", "a-fact", "something worth keeping", "b")
     # AMENDED job73 C9 (#206 Task 8): [-2] -> [-3], the `skills:` line after the audit line.
-    assert status_of(build_server(memory)).split("\n")[-3] == "queries: 0 of 1 facts"
+    # AMENDED #292 (reply-native): [-3] -> [-4], the `reply-native:` line LAST.
+    assert status_of(build_server(memory)).split("\n")[-4] == "queries: 0 of 1 facts"
     memory.queries_write([{"name": "a-fact", "queries": ["what is kept"]}])
-    assert status_of(build_server(memory)).split("\n")[-3] == "queries: 1 of 1 facts"
+    assert status_of(build_server(memory)).split("\n")[-4] == "queries: 1 of 1 facts"
 
     def boom():
         raise OSError("unreadable")
 
     monkeypatch.setattr(memory, "queries_coverage", boom)
-    assert status_of(build_server(memory)).split("\n")[-3] == "queries: unavailable"
+    assert status_of(build_server(memory)).split("\n")[-4] == "queries: unavailable"
     _shrink_the_budget_under_the_index(memory)
     lines = status_of(build_server(memory)).split("\n")
     at = lines.index("queries: unavailable")
@@ -231,7 +233,9 @@ def test_the_queries_line_counts_the_facts_that_carry_queries(tmp_path, monkeypa
     assert lines[at + 1].startswith("skill audit: "), lines
     # AMENDED job73 C9 (#206 Task 8): the `skills:` line follows it.
     assert lines[at + 2].startswith("skills: "), lines
-    assert lines[at + 3].endswith("problem:"), lines
+    # AMENDED #292 (reply-native): the `reply-native:` line follows it, before the problems.
+    assert lines[at + 3].startswith("reply-native: "), lines
+    assert lines[at + 4].endswith("problem:"), lines
 
 
 def _record(latest: str, checked_at: str = "2026-09-19T21:04:11Z") -> str:
@@ -303,7 +307,8 @@ def test_the_report_carries_the_update_line_in_every_one_of_the_five_states(
     # AMENDED job72 J72-25 (#207 amendment 3, Q8): 13 -> 14, the `queries:` line.
     # AMENDED job73 A4 (#205 Task 4): 14 -> 15, the `skill audit:` line.
     # AMENDED job73 C9 (#206 Task 8): 15 -> 16, the `skills:` line.
-    assert len(lines) == 16, lines
+    # AMENDED #292 (reply-native): 16 -> 17, the `reply-native:` line LAST.
+    assert len(lines) == 17, lines
     assert FOOTER_MARK not in "\n".join(lines)
     assert degraded_conditions(make_memory(tmp_path), EventLog(None)) == []
 
