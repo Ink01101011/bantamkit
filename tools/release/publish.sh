@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# bantamkit release pipeline: test -> build -> prepublish -> npm -> PyPI, in one command.
+# bantamkit release pipeline: test -> build -> prepublish -> npm -> PyPI -> verify both, in one command.
 #
 # WHY THIS FILE EXISTS. Every release here has been a sequence of hand-typed commands read
 # out of two documents, and job56 is what that costs. (served-tools: dated — the counts in
@@ -123,6 +123,75 @@ note()  { printf '  note    %s\n' "$*"; }
 bad()   { printf '  FAILED  %s\n' "$*" >&2; }
 die()   { printf '\nREFUSED: %s\n' "$*" >&2; exit 1; }
 
+# Concurrent lanes (#293). `run_lanes LABEL FN LOG [LABEL FN LOG ...]` runs each FN in the
+# background with stdin closed and stdout+stderr into LOG, each in its OWN process group
+# (`set -m`), so an interrupt can end a lane together with every child it spawned -- npm, pip,
+# the MCP servers a roster probe starts. A lane's log is printed whole when that lane ends, in
+# the order the lanes finish, never interleaved; while any lane is still running a heartbeat line
+# names them every LANE_HEARTBEAT_S seconds. Afterwards LANES_FAILED holds the labels of the
+# lanes that exited non-zero, comma-separated, or is empty. One failing lane never stops another.
+# The EXIT trap is `stop_lanes; cleanup` while lanes run and plain `cleanup` once they are reaped.
+# tools/release/test_run_lanes.sh reads these two functions out of this file and pins them.
+LANE_HEARTBEAT_S="${LANE_HEARTBEAT_S:-15}"
+LANE_PIDS=""
+stop_lanes() {
+  local p
+  for p in $LANE_PIDS; do kill -- "-$p" 2>/dev/null || true; done
+  for p in $LANE_PIDS; do wait "$p" 2>/dev/null || true; done
+}
+run_lanes() {
+  local -a labels=() pids=() logs=() ended=()
+  local i status remaining alive elapsed=0
+  LANES_FAILED=""
+  set -m
+  while [ $# -ge 3 ]; do
+    labels+=("$1"); logs+=("$3")
+    "$2" </dev/null >"$3" 2>&1 &
+    pids+=("$!")
+    shift 3
+  done
+  set +m
+  LANE_PIDS="${pids[*]}"
+  trap 'stop_lanes; cleanup' EXIT
+  for i in "${!pids[@]}"; do
+    say "  --- ${labels[$i]}: started in the background (pid ${pids[$i]})"
+    ended[$i]=""
+  done
+  remaining=${#pids[@]}
+  while [ "$remaining" -gt 0 ]; do
+    alive=""
+    for i in "${!pids[@]}"; do
+      [ -n "${ended[$i]}" ] && continue
+      if kill -0 "${pids[$i]}" 2>/dev/null; then
+        alive="${alive:+$alive, }${labels[$i]}"
+        continue
+      fi
+      status=0
+      wait "${pids[$i]}" || status=$?
+      ended[$i]=1
+      remaining=$((remaining - 1))
+      say ""
+      say "  --- ${labels[$i]}: lane ended after ${elapsed}s (exit $status); its log:"
+      cat "${logs[$i]}"
+      if [ "$status" -eq 0 ]; then
+        ok "${labels[$i]} verified"
+      else
+        bad "${labels[$i]} (exit $status)"
+        LANES_FAILED="${LANES_FAILED:+$LANES_FAILED, }${labels[$i]}"
+      fi
+    done
+    if [ "$remaining" -gt 0 ]; then
+      sleep 1
+      elapsed=$((elapsed + 1))
+      if [ $((elapsed % LANE_HEARTBEAT_S)) -eq 0 ]; then
+        say "      still verifying after ${elapsed}s: $alive"
+      fi
+    fi
+  done
+  LANE_PIDS=""
+  trap cleanup EXIT
+}
+
 # PEP 440 (__init__.py, PyPI) -> semver (package.json, npm). A stable version passes through
 # unchanged, and so does anything not recognised -- the version-site check then refuses it,
 # rather than a guess going through. Read out of this file by tools/release/test_version_map.sh.
@@ -165,7 +234,7 @@ fi
 # names every problem at once, because finding out about the second one on the next run is how
 # a release takes an afternoon.
 
-phase "phase 0/8  preflight -- refuse rather than proceed"
+phase "phase 0/7  preflight -- refuse rather than proceed"
 
 # `.git` is a DIRECTORY in an ordinary clone and a FILE in a git worktree. Testing for the
 # directory therefore answers "not a checkout" inside every worktree — and it did, measured on
@@ -317,7 +386,7 @@ fi
 # credential. MEASURED 2026-09-19 (J56-6) against the twine in this repo's venv (7.0.0): the
 # only environment variables it reads are TWINE_USERNAME, TWINE_PASSWORD, TWINE_REPOSITORY,
 # TWINE_REPOSITORY_URL, TWINE_CERT and TWINE_NON_INTERACTIVE. So an operator who exported
-# TWINE_API_KEY and had no ~/.pypirc got `ok` here and a PROMPT in phase 6 — after npm had
+# TWINE_API_KEY and had no ~/.pypirc got `ok` here and a PROMPT in phase 5 — after npm had
 # already published, which is precisely the half-state this block exists to prevent. A
 # false green in a preflight is worse than no preflight.
 if [ -n "${TWINE_PASSWORD:-}" ]; then
@@ -400,7 +469,7 @@ ok "preflight clean"
 # happens before the lanes split, and the npm gate is `npm test --ignore-scripts`, which runs
 # the same `test` script without its pre-script. It is the same check `npm test` made.
 
-phase "phase 1/8  test -- the four gates (0 failures is the bar)"
+phase "phase 1/7  test -- the four gates (0 failures is the bar)"
 
 PHASE1_START=$SECONDS
 GATE_FAILED=0
@@ -475,7 +544,7 @@ fi
 # artifacts are all older releases. A pipeline that globbed any of that would upload the wrong
 # version under a green check.
 
-phase "phase 2/8  build -- both artifacts, into a clean directory named for $VERSION"
+phase "phase 2/7  build -- both artifacts, into a clean directory named for $VERSION"
 
 if [ -z "$OUT_DIR" ]; then OUT_DIR="$REPO/.release/$VERSION"; fi
 rm -rf "$OUT_DIR"
@@ -513,7 +582,7 @@ fi
 # The checks that ask the BUILT ARTIFACT what it contains and what it answers. No local test
 # can do this: every local path reads the checkout, and the checkout always agrees with itself.
 
-phase "phase 3/8  prepublish -- what the artifacts actually contain and serve"
+phase "phase 3/7  prepublish -- what the artifacts actually contain and serve"
 
 say "  --- npx cold start (a real npm pack, installed through npx, driven over stdio)"
 node "$REPO/tools/conformance/npx-cold-start.mjs" || die "the npx cold-start gate failed. Nothing has been published."
@@ -590,7 +659,7 @@ if [ "$NPM_ALREADY" = "no" ] || [ "$PYPI_ALREADY" = "no" ]; then
   fi
 fi
 
-phase "phase 4/8  publish npm"
+phase "phase 4/7  publish npm"
 
 if [ "$NPM_ALREADY" = "yes" ]; then
   note "SKIPPED: the registry already carries bantamkit-mcp@$NPM_VERSION."
@@ -613,7 +682,7 @@ else
     # its first. This script stopped there and PyPI was not uploaded, so the release sat
     # half-done until a rerun. So the registry decides, not npm's exit code: when it carries
     # this version AND its dist.shasum is the sha1 of the tarball built above, the publish
-    # happened and this run carries on to phase 5, which verifies it by running it. A version
+    # happened and this run carries on to phase 6, which verifies it by running it. A version
     # the registry carries with ANY other shasum is someone else's artifact and a stop.
     # `npm pack` is deterministic for the same tree -- measured: the 0.35.6 phase-2 tarball
     # and the registry's copy are both sha1 5d376813f2c8fadba24bd3312b7d365c08f67865.
@@ -643,10 +712,48 @@ else
   fi
 fi
 
-# ============================================================== phase 5: verify npm landed
+# ============================================================== phase 5: publish PyPI
 
-phase "phase 5/8  verify npm -- decided by the registry, then by running the artifact"
+# PyPI goes up RIGHT AFTER npm, before either is verified (#293, user ruling 2026-11-07). The
+# order used to be publish npm -> verify npm -> publish PyPI, and verifying npm is the slow,
+# flaky part: a registry poll, then `npm install` retrying ETARGET out of npm's metadata cache,
+# then a roster probe. Any of those timing out died with "PyPI was NOT uploaded" and left the
+# release half-done until a rerun -- the 0.26.0 shape this script exists to prevent. That gate
+# bought little: phase 3 already drove the npm tarball over stdio and checked both artifacts'
+# asset packs byte for byte, and both publishes are irreversible, so stopping PyPI could never
+# undo npm. What still stops PyPI is a REAL npm
+# publish failure -- phase 4 dies when the registry does not carry this run's tarball.
 
+phase "phase 5/7  publish PyPI"
+
+if [ "$PYPI_ALREADY" = "yes" ]; then
+  note "SKIPPED: PyPI already carries bantamkit==$VERSION."
+else
+  say "  twine upload, BY EXACT FILENAME -- never a glob:"
+  say "    $WHEEL"
+  say "    $SDIST"
+  say ""
+  # TWINE_NON_INTERACTIVE turns the one thing this script cannot survive -- a password prompt
+  # reached AFTER npm has published, from a context that may have no one watching -- into an
+  # immediate error with a message. Preflight already refuses when no credential exists; this
+  # is the belt to that braces, for the cases preflight cannot see (a `password =` line with
+  # nothing after it, a token revoked between phase 0 and phase 5). Measured: twine 7.0.0
+  # reads it; older twine simply ignores an environment variable it does not know.
+  TWINE_NON_INTERACTIVE=1 "$TWINE" upload "$WHEEL" "$SDIST" \
+    || die "twine upload failed (its output is above). npm is published and PyPI is not.
+         Rerunning this script skips npm and retries PyPI."
+  ok "twine upload returned 0"
+fi
+
+# ============================================================== phase 6: verify both, at once
+#
+# The two registries are verified CONCURRENTLY, each in its own lane: its own log, its own
+# process group, its own budget -- the same budgets as when they ran one after the other. The
+# phase takes as long as the slower lane, not the sum. A lane that fails does not stop the other,
+# and the phase reports each registry on its own line before refusing, so one run says exactly
+# which side needs attention.
+
+verify_npm() {
 say "  --- asking registry.npmjs.org directly"
 NPM_LANDED="no"
 attempt=0
@@ -658,7 +765,7 @@ while [ "$attempt" -lt 30 ]; do
   sleep 5
 done
 if [ "$NPM_LANDED" != "yes" ]; then
-  die "bantamkit-mcp@$NPM_VERSION is still not on registry.npmjs.org. PyPI was NOT uploaded."
+  die "bantamkit-mcp@$NPM_VERSION is still not on registry.npmjs.org."
 fi
 ok "registry.npmjs.org carries bantamkit-mcp@$NPM_VERSION"
 
@@ -684,39 +791,14 @@ if [ "$INSTALLED" != "yes" ]; then
   cat "$SCRATCH/npm-install.err" >&2 || true
   die "could not install bantamkit-mcp@$NPM_VERSION even with --prefer-online.
          The registry answered 200 for it, so it IS published; this is an install problem and
-         not a publish problem. PyPI was NOT uploaded."
+         not a publish problem."
 fi
 node "$SCRIPT_DIR/roster-probe.mjs" --label "npm bantamkit-mcp@$NPM_VERSION" \
   -- node "$NPM_PROBE/node_modules/bantamkit-mcp/dist/cli.js" \
-  || die "the PUBLISHED npm artifact does not advertise what MCP_TOOLS declares. PyPI was NOT uploaded."
+  || die "the PUBLISHED npm artifact does not advertise what MCP_TOOLS declares."
+}
 
-# ============================================================== phase 6: publish PyPI
-
-phase "phase 6/8  publish PyPI"
-
-if [ "$PYPI_ALREADY" = "yes" ]; then
-  note "SKIPPED: PyPI already carries bantamkit==$VERSION."
-else
-  say "  twine upload, BY EXACT FILENAME -- never a glob:"
-  say "    $WHEEL"
-  say "    $SDIST"
-  say ""
-  # TWINE_NON_INTERACTIVE turns the one thing this script cannot survive -- a password prompt
-  # reached AFTER npm has published, from a context that may have no one watching -- into an
-  # immediate error with a message. Preflight already refuses when no credential exists; this
-  # is the belt to that braces, for the cases preflight cannot see (a `password =` line with
-  # nothing after it, a token revoked between phase 0 and phase 6). Measured: twine 7.0.0
-  # reads it; older twine simply ignores an environment variable it does not know.
-  TWINE_NON_INTERACTIVE=1 "$TWINE" upload "$WHEEL" "$SDIST" \
-    || die "twine upload failed (its output is above). npm is published and PyPI is not.
-         Rerunning this script skips npm and retries PyPI."
-  ok "twine upload returned 0"
-fi
-
-# ============================================================== phase 7: verify PyPI landed
-
-phase "phase 7/8  verify PyPI -- per-version endpoint, digests, then a real install"
-
+verify_pypi() {
 say "  --- asking the PER-VERSION endpoint (the 'latest' view and the simple index both lag)"
 PYPI_LANDED="no"
 attempt=0
@@ -788,10 +870,24 @@ fi
 node "$SCRIPT_DIR/roster-probe.mjs" --label "PyPI bantamkit[mcp]==$VERSION" \
   -- "$SCRATCH/pyvenv/bin/bantamkit-mcp" \
   || die "the PUBLISHED PyPI artifact does not advertise what MCP_TOOLS declares."
+}
 
-# ============================================================== phase 8: summary
+phase "phase 6/7  verify npm and PyPI -- concurrently, each decided by its registry, then by running it"
 
-phase "phase 8/8  summary"
+PHASE6_START=$SECONDS
+run_lanes "npm bantamkit-mcp@$NPM_VERSION" verify_npm "$SCRATCH/lane-npm.log" \
+          "PyPI bantamkit[mcp]==$VERSION" verify_pypi "$SCRATCH/lane-pypi.log"
+note "phase 6 took $(( (SECONDS - PHASE6_START) / 60 ))m $(( (SECONDS - PHASE6_START) % 60 ))s"
+if [ -n "$LANES_FAILED" ]; then
+  die "verification failed for: $LANES_FAILED (its lane log is printed above).
+         BOTH registries were uploaded before verification began, so nothing is half-done: a
+         rerun skips both publishes and verifies again. A failure that persists is a defect in
+         the published artifact, not a propagation delay."
+fi
+
+# ============================================================== phase 7: summary
+
+phase "phase 7/7  summary"
 
 say "  bantamkit $VERSION is published and verified on BOTH registries."
 say ""
