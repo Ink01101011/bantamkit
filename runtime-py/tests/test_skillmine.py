@@ -303,6 +303,14 @@ def _sig(k: set[str], g: set[str], p: set[str]) -> Signature:
     return Signature(frozenset(k), frozenset(g), frozenset(p))
 
 
+def test_a_piece_with_no_keyword_joins_nothing() -> None:
+    # #299 review: replies like `1`, `do it`, `ทำต่อ` keep no keyword; judged on tool n-grams and
+    # paths alone they would cluster, and the cluster would clear the bar with nothing to say.
+    same = _sig(set(), {"Bash>Edit", "Edit>Bash"}, {"p1"})
+    assert similarity(same, same) == (0, 1)
+    assert similarity(_sig({"k1"}, {"Bash>Edit"}, {"p1"}), same) == (0, 1)
+
+
 def test_similarity_at_exactly_one_half_meets_and_one_less_does_not() -> None:
     # keywords 1/2 (w2), ngrams 2/3, paths 1/3: (1 + 2/3 + 1/3) / 4 = 1/2 exactly; a float
     # sum of the same terms is 0.49999999999999994.
@@ -539,7 +547,7 @@ def test_identity_survives_the_leader_leaving() -> None:
 
 def test_match_previous_ties_go_to_the_lower_id() -> None:
     fill = [_wp(f"z/{i}", f"filler{i}") for i in range(3)]
-    c = skillmine.cluster([_wp("a/1", "x y"), _wp("a/2", "x y"), *fill])[0]
+    c = skillmine.cluster([_wp("a/1", "xray yoke"), _wp("a/2", "xray yoke"), *fill])[0]
     assert c.evidence == ("a/1", "a/2")
     recs = [
         {"id": "b", "source": "shiftwork", "evidence": [{"id": "a/1"}]},
@@ -1046,10 +1054,22 @@ def test_tokenize_label_vectors(text: str, want: list[str]) -> None:
 
 
 def test_tokenize_label_matches_tokenize_v2_on_ascii() -> None:
+    # tokenize_v2's words, minus what #299 drops from a label: English function words, a word
+    # of one character, and a word of ASCII digits only.
     from bantamkit.memory.retrieval import tokenize_v2
 
     for text in ["Fix the parser in src/parse.py, then run 2 tests!", "merge PR #12 & tag v0.38"]:
-        assert skillmine.tokenize_label(text) == tokenize_v2(text)
+        kept = [t for t in tokenize_v2(text) if skillmine._label_word_kept(t)]
+        assert skillmine.tokenize_label(text) == kept
+
+
+def test_tokenize_label_drops_function_words_digits_and_single_letters() -> None:
+    # #299: a cluster mined from one template kept `the`, `for`, `in`, `one`, `2026`, `c` as its
+    # keywords, and the [skill] layer matched prompts on them.
+    text = "If the tools are deferred, load ONE ToolSearch call for 2026 job73 C v2 x86"
+    assert skillmine.tokenize_label(text) == [
+        "tools", "deferred", "load", "toolsearch", "call", "job73", "v2", "x86",
+    ]
 
 
 _FOLLOWING_VOWELS = "\u0e30\u0e32\u0e33\u0e45\u0eb0\u0eb2\u0eb3"

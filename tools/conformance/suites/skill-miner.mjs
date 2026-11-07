@@ -273,6 +273,9 @@ const LABEL_VECTORS = [
   ['a run ending in a leading vowel alone', 'กขเ'],
   ['a run starting with a combining mark', '\u0e31กข \u0e48'],
   ['mixed: digits, latin and Thai', 'แก้ bug #289 ในskillmine ด้วย'],
+  // #299: English function words, a word of one character and a word of ASCII digits only are dropped.
+  ['#299: function words, digits, single letters', 'If the tools are deferred, load ONE ToolSearch call for 2026 job73 C v2 x86'],
+  ['#299: Unicode digits fold first (NFKC), then drop', 'step ²² and ٣٣ then ok'],
   // A1: following vowels (SARA A, SARA AA, SARA AM, LAKKHANGYAO; Lao alike) join the unit before.
   ['A1: จำนวน', 'จำนวน'],
   ['A1: ทำงาน (ทำ is one unit, a stopword)', 'ทำงาน'],
@@ -318,6 +321,9 @@ const PAIRS = [
   [sig([], [], []), sig([], [], [])],
   [sig(['ไทย', 'ภาษา'], ['Read>Edit'], []), sig(['ไทย'], ['Read>Edit', 'Edit>Bash'], [])],
   [sig(['a', 'b', 'c'], [], ['x']), sig(['d'], [], ['y'])],
+  // #299: a piece with no keyword joins nothing, however alike its tools and paths are.
+  [sig([], ['Bash>Edit', 'Edit>Bash'], ['p1']), sig([], ['Bash>Edit', 'Edit>Bash'], ['p1'])],
+  [sig(['k1'], ['Bash>Edit'], ['p1']), sig([], ['Bash>Edit'], ['p1'])],
 ];
 
 
@@ -631,6 +637,13 @@ export async function run(ctx) {
     ['python', py],
     ['node', nd],
   ]) {
+    // #299: pinned per side, so a symmetric regression cannot pass as parity.
+    cases.push({
+      name: `LITERAL: tokenize_label drops function words, digits-only words and single letters (#299) — ${side}`,
+      kind: 'json',
+      expected: ['tools', 'deferred', 'load', 'toolsearch', 'call', 'job73', 'v2', 'x86'],
+      actual: ans.label_tokens[LABEL_VECTORS.findIndex(([l]) => l.startsWith('#299: function words'))],
+    });
     // #266: only the well-formed id survives, and only on the unit whose clock-out carried it
     cases.push({
       name: `LITERAL: a unit keeps its clock-out's agent_id, a malformed one is none — ${side}`,

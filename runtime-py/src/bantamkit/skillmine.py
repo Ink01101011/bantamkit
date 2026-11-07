@@ -33,7 +33,9 @@ tone marks (`ทำต่อ` became `ทํ ํา าต ต่ ่อ`) and l
 the clusters. It groups a base character with its combining marks and following vowels
 (`ะ า ำ ๅ` and Lao `ະ າ ຳ`, which are Lo, not marks) and a leading vowel with the character
 after it, drops `LABEL_STOPWORDS`, and forms bigrams of those units; spaced-script
-words are kept whole exactly as `tokenize_v2` keeps them. `tokenize_v2` is unchanged, because
+words are kept whole as `tokenize_v2` keeps them, minus English function words, one-code-point
+words and ASCII-digit-only words (#299, `LABEL_STOPWORDS_EN`). A piece left with no keyword
+joins no cluster (`similarity` is 0). `tokenize_v2` is unchanged, because
 recall is measured on it.
 
 **Clusters** (Task 5): leader clustering per source, the X1 bars on successful members only,
@@ -440,6 +442,109 @@ LABEL_STOPWORDS = (
 )
 
 
+#: #299: English function words dropped from a label. Before this, a cluster mined from one
+#: template carried `the`, `for`, `in`, `one` as keywords (the document-frequency cut cannot
+#: drop a word every member shares), and the `[skill]` layer matched prompts on them. A word
+#: of one character and a word of digits only are dropped too (`c`, `5`, `2026`).
+LABEL_STOPWORDS_EN = frozenset(
+    (
+    "a",
+    "about",
+    "after",
+    "all",
+    "also",
+    "an",
+    "and",
+    "any",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "before",
+    "but",
+    "by",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "each",
+    "every",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "he",
+    "her",
+    "here",
+    "his",
+    "how",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "just",
+    "may",
+    "me",
+    "might",
+    "must",
+    "my",
+    "no",
+    "not",
+    "of",
+    "on",
+    "one",
+    "only",
+    "or",
+    "our",
+    "out",
+    "over",
+    "per",
+    "she",
+    "should",
+    "so",
+    "than",
+    "that",
+    "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "to",
+    "up",
+    "via",
+    "was",
+    "we",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "will",
+    "with",
+    "would",
+    "you",
+    "your",
+    )
+)
+
+
+def _label_word_kept(word: str) -> bool:
+    # ASCII digits only, as the port's /^[0-9]+$/: `str.isdigit` also takes `²` and `٣`.
+    digits = all("0" <= c <= "9" for c in word)
+    return len(word) > 1 and not digits and word not in LABEL_STOPWORDS_EN
+
+
 def _is_leading_vowel(cp: int) -> bool:
     return 0x0E40 <= cp <= 0x0E44 or 0x0EC0 <= cp <= 0x0EC4
 
@@ -511,8 +616,9 @@ def _label_run(run: str, out: list[str]) -> None:
 
 
 def tokenize_label(text: str) -> list[str]:
-    """The miner's tokenizer (#289): `tokenize_v2`'s scan, but a no-space run is cut into
-    units (a base with its marks and following vowels, a leading vowel with what follows),
+    """The miner's tokenizer (#289, #299): `tokenize_v2`'s scan, minus English function words,
+    one-code-point words and ASCII-digit-only words (`LABEL_STOPWORDS_EN`); a no-space run is
+    cut into units (a base with its marks and following vowels, a leading vowel with what follows),
     `LABEL_STOPWORDS` end a segment and emit nothing, and a segment emits its one unit or its
     unit bigrams. A bigram of units can still span a syllable boundary, and a stopword's unit
     sequence also matches inside a longer word (`ต่อย` -> `ย`): there is no segmenter."""
@@ -523,7 +629,9 @@ def tokenize_label(text: str) -> list[str]:
 
     def flush_word() -> None:
         if word:
-            out.append("".join(word))
+            w = "".join(word)
+            if _label_word_kept(w):
+                out.append(w)
             word.clear()
 
     def flush_run() -> None:
@@ -573,7 +681,14 @@ def signature(piece: Piece, df: Mapping[str, int], n: int) -> Signature:
 
 
 def similarity(a: Signature, b: Signature) -> tuple[int, int]:
-    """Weighted Jaccard as a reduced fraction; empty-union components count in neither sum."""
+    """Weighted Jaccard as a reduced fraction; empty-union components count in neither sum.
+
+    #299 review: a piece with no keyword at all (`1`, `do it`, `ทำต่อ`) joins nothing. Two
+    such replies would otherwise be judged on tool n-grams and paths alone, and a cluster of
+    them would clear the bar with no keyword to describe or recall it by.
+    """
+    if not a.keywords or not b.keywords:
+        return 0, 1
     num, den = 0, 1
     weight = 0
     for comp, w in SIM_WEIGHTS:
