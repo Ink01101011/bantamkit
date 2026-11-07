@@ -298,7 +298,7 @@ def _install(
     from bantamkit.skillhost import HOST_CLAUDE_CODE, select_adapter
     from bantamkit.skillinstall import install, install_root, skill_text
     from bantamkit.skillmine import write_proposals
-    from bantamkit.skillpromote import promote, record_refusal
+    from bantamkit.skillpromote import PromoteResult, _code, link_path, promote, record_refusal
 
     if select_adapter(home).host != HOST_CLAUDE_CODE:
         try:
@@ -318,7 +318,13 @@ def _install(
     write_proposals(home, doc)
     shutil.rmtree(handoff_path(home, rec["id"]).parent, ignore_errors=True)
     # Approve is the user's say-so, so it promotes at once, not gated by BANTAMKIT_SKILL_AUTO.
-    got_p = promote(got.name, home, cwd, now)
+    try:
+        got_p = promote(got.name, home, cwd, now)
+    except (OSError, SkillFileError) as e:
+        # The install already happened, so a promote that raises (the link's parent cannot be
+        # made, the copy fallback fails) is a refusal like any other, not a lost reply (#301).
+        code = _code(e) if isinstance(e, OSError) else "EUNKNOWN"
+        got_p = PromoteResult(False, None, f"could not link {link_path(got.path)}: {code}")
     if not got_p.ok:
         record_refusal(home, got.name, now, got_p.reason)
     said = got_p.reason if got_p.ok else f"not promoted: {got_p.reason}"

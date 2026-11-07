@@ -62,6 +62,21 @@ def _inside(path: Path, root: Path) -> bool:
     return True
 
 
+def repo_root() -> Path | None:
+    """The nearest directory above this script holding `.git` (a directory, or a worktree's file)."""
+    for d in Path(__file__).resolve().parents:
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def check_out(out: Path) -> None:
+    """Abort when `out` resolves inside the repository: the rows hold raw prompts (#301 review)."""
+    root = repo_root()
+    if root is not None and _inside(out, root):
+        sys.exit(f"replay refused: --out {out} is inside the repository {root}")
+
+
 def check_sandbox(home: Path) -> None:
     """Abort unless every home the process can see is the sandbox."""
     problems = []
@@ -350,6 +365,7 @@ def main() -> None:
     ap.add_argument("--labels", default=None)
     ap.add_argument("--recount", action="store_true", help="recompute counts from rows only")
     args = ap.parse_args()
+    check_out(Path(args.out))
     if args.recount:
         recount(args)
     else:

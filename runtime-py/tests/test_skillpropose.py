@@ -142,6 +142,25 @@ def test_approve_over_budget_installs_but_does_not_promote(tmp_path, monkeypatch
     assert entry["promote_refused"] == {"at": NOW, "reason": lines[1][len("not promoted: ") :]}
 
 
+def test_approve_survives_a_promote_that_raises(tmp_path):
+    # #301 review M1: `.claude/skills` is a regular file, so promote's mkdir raises after the
+    # install already happened. Approve still answers its three lines and records the refusal.
+    home = _home(tmp_path)
+    (home / ".claude" / "skills").write_text("not a dir", encoding="utf-8")
+    _write(home, record("fixing-a"))
+    lines = _render(home, "approve", "c-fixing-a").splitlines()
+    link = home / ".claude" / "skills" / "fixing-a"
+    assert len(lines) == 3
+    assert lines[0].startswith("installed skill fixing-a at ")
+    assert lines[1] in (f"not promoted: could not link {link}: EEXIST",
+                        f"not promoted: could not link {link}: ENOTDIR")
+    assert lines[2] == f"undo: {C} undo fixing-a"
+    entry = sf.read_state(home)["skills"]["fixing-a"]
+    assert "promoted" not in entry
+    assert entry["promote_refused"] == {"at": NOW, "reason": lines[1][len("not promoted: ") :]}
+    assert _doc(home)["clusters"][0]["status"] == "installed"
+
+
 def test_approve_promote_ignores_skill_auto_off(tmp_path, monkeypatch):
     monkeypatch.delenv("BANTAMKIT_SKILL_AUTO", raising=False)
     home = _home(tmp_path)

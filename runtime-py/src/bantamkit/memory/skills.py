@@ -41,6 +41,7 @@ from typing import Any
 
 from bantamkit.client import BantamError
 from bantamkit.skillinstall import TRIGGERS_ENV, TRIGGERS_KEY
+from bantamkit.skillmine import TRIGGERS_TOP
 
 from .store import _NOT_ONE_LINE, Fact, Pool, pool_of
 
@@ -119,7 +120,9 @@ def triggers_enabled() -> bool:
 def triggers_of(value: Any) -> list[tuple[str, ...]]:
     """`metadata.bantamkit-triggers` split on `|`, each phrase split on spaces; empties dropped.
 
-    A phrase of fewer than two tokens is dropped: the miner never writes one (#301).
+    A phrase of fewer than two tokens is dropped: the miner never writes one (#301). At most
+    `TRIGGERS_TOP` phrases are kept, the first in file order after that filter: the miner never
+    writes more, and a hand-edited file must not buy more matching work or more ways in.
     """
     if not isinstance(value, str):
         return []
@@ -128,6 +131,8 @@ def triggers_of(value: Any) -> list[tuple[str, ...]]:
         toks = tuple(t for t in part.split(" ") if t)
         if len(toks) >= 2:
             out.append(toks)
+            if len(out) == TRIGGERS_TOP:
+                break
     return out
 
 

@@ -433,6 +433,22 @@ def test_fired_skill_is_a_recall_hit_only_when_stamped(bed, mem_with_skills, mon
     assert [r["kind"] for r in _uses(bed, "web-driving")] == ["recall_hit"]
 
 
+def test_triggers_capped_at_top_five_in_file_order(mem_with_skills, monkeypatch):
+    # #301 review M2: a hand-written or edited SKILL.md may list any number of phrases; only the
+    # first TRIGGERS_TOP (5) are read, the same cap the miner writes under.
+    from bantamkit.memory.skills import TRIGGERS_TOP, triggers_of
+
+    assert TRIGGERS_TOP == 5
+    seven = "|".join(f"w{i} v{i}" for i in range(1, 8))
+    assert triggers_of(seven) == [(f"w{i}", f"v{i}") for i in range(1, 6)]
+    # the cap is after the filters: one-token phrases do not use up a slot
+    assert len(triggers_of("solo|" + seven)) == 5
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"many": {"description": "zz qq", "triggers": seven}})
+    assert m.recall_outcome("xx w5 v5 xx", 3, stamp=False).fired == "many"
+    assert m.recall_outcome("xx w6 v6 xx", 3, stamp=False).fired is None
+
+
 def test_triggers_enabled_parse(monkeypatch):
     from bantamkit.memory.skills import TRIGGERS_DEFAULT, triggers_enabled
 
