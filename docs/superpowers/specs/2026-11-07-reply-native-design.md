@@ -269,3 +269,59 @@ need it.
   block, not modify the prompt.
 - The ledger temp-file exclusivity (#250 class): separate issue.
 - Flipping the default to on.
+
+## Results (2026-11-08)
+
+Run at `b5377b04` (feat/reply-native), `claude -p` 2.1.319, model `claude-opus-5-5`, 5 arms ×
+6 sequences × 3 repeats = 90 sessions, 195 turns, arms run concurrently, 413 s wall. The run's
+own tokens: 149,195 output, 5,294,951 cache-read. Data: `docs/eval-data/2026-11-08-reply-native.jsonl`
+and `…-labels.jsonl`; scored with `tools/eval/reply-native/score.py`.
+
+| arm | wrong-lang | drift (wrong) | follow | median output, Thai turns | median session total |
+|---|---|---|---|---|---|
+| OFF | 0.000 | 0.000 | — | 689 | 43,952.5 |
+| E | 0.000 | 0.000 | — | 650 | 44,042.5 |
+| G | 0.000 | 0.000 | — | 720 | 43,409.0 |
+| A2 | 0.000 | 0.000 | — | 739 | 43,828.0 |
+| A3 | 0.026 (1 of 39) | 0.000 | — | 776 | 44,549.0 |
+
+The bar, as `score.py` prints it:
+
+```
+DROPPED A2 follow >= 0.90 (no thinking text in any transcript)
+DROPPED A3 follow >= 0.90 (no thinking text in any transcript)
+PASS A2 wrong-lang <= OFF and E
+PASS A2 drift <= OFF
+FAIL A2 session total < G
+FAIL A2 median Thai output < OFF
+FAIL A3 wrong-lang <= OFF and E
+PASS A3 drift <= OFF
+FAIL A3 session total < G
+FAIL A3 median Thai output < OFF
+PASS A2 beats E (wrong-lang lower, or equal with lower session total)
+```
+
+What the numbers say:
+- **Follow rate is unmeasurable here.** The transcripts carry each thinking block's signature
+  but no text, so measure 3 is dropped, as the plan says, and not inferred from the reply.
+- **Language.** Every arm got the latest-message language right on every turn, OFF included. The
+  model already follows the rule without help on these sequences, so the directive cannot show
+  an improvement on measure 1. A3 missed once: S2 turn 1, rep 1, replied in English where mode 3
+  says Thai.
+- **The S2 false positive is harmless, as designed.** `What is this สวัสดี?` classifies `th`, A2
+  injects, and A2 still replied in English in all three repeats (line 125's invariant).
+- **Tokens: no saving shown.** Session totals differ by under 1.5% across arms, which is inside
+  the spread of three repeats; Thai-turn output is 7% (A2) and 13% (A3) above OFF. The claim that
+  thinking in English costs fewer output tokens is NOT demonstrated by this run.
+- **No content drift.** Numbers, negations and file names match OFF on every turn (checked by the
+  stable-number diff over all 156 non-OFF turns and by reading the three it flagged).
+
+**Ship decision.** The spec's one no-ship rule, "if A2 does not beat E, the code does not ship",
+passes. The feature ships as built: opt-in and off by default. The token and A3 criteria fail
+and are recorded here, not waved through; the docs make no token-saving claim. Flipping the
+default stays out of scope until a run shows a saving.
+
+Labelling method: the reply language is judged by script share of the reply's prose (code, bold
+and quoted spans removed; Thai if Thai letters are over 35% of Thai+Latin), against the expected
+language above: the latest sentence's language, English on S2 turn 1 (line 125) and S6 turn 1
+(explicit request), Thai for every other A3 turn. Every mismatch and every borderline turn was read.
