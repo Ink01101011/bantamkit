@@ -117,6 +117,7 @@ class RecallOutcome:
     skipped: tuple[dict[str, str], ...] = ()
     headers: tuple[str, ...] = ()
     via: str | None = None
+    fired: str | None = None
 
 
 def normalize_name(name: str) -> str:
@@ -724,7 +725,17 @@ class Memory:
             archived = [(label, fact) for label, fact in archived if fact.outcome == outcome]
         if archived or via is not None:
             counts["returned"] = len(picked) + len(archived) + (via is not None)
-        if not picked and not archived and via is None:
+        fired = self._fire(
+            query,
+            seen
+            | {fact.name for _, fact in archived}
+            | (set() if via is None else {via[1].name}),
+        )
+        if fired is not None and stamp:
+            self._use([fired[1]], "recall_hit")
+        if fired is not None:
+            counts["returned"] = len(picked) + len(archived) + (via is not None) + 1
+        if not picked and not archived and via is None and fired is None:
             status, reply = self._nothing_to_report()
             return RecallOutcome(reply=lead + reply + note, status=status, **counts)
         shown = [(label, fact, False, "") for label, fact in picked] + [
@@ -732,6 +743,8 @@ class Memory:
         ]
         if via is not None:
             shown.append((via[0], via[1], False, via[2]))
+        if fired is not None:
+            shown.append((fired[0], fired[1], False, ""))
         return RecallOutcome(
             reply=lead
             + "\n\n".join(
@@ -743,8 +756,25 @@ class Memory:
             source=shown[0][0].split(":", 1)[0],
             headers=tuple(self._header(lab, fact, old) + tail for lab, fact, old, tail in shown),
             via=None if via is None else via[1].name,
+            fired=None if fired is None else fired[1].name,
             **counts,
         )
+
+    def _fire(self, query: str, shown: set[str]) -> tuple[str, Fact] | None:
+        """#301: the one `[skill]` a trigger phrase in the user's own text names, or None.
+
+        Matched against `tokenize_label(frame(query))`, so a phrase inside a pasted block never
+        fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires.
+        """
+        from bantamkit.memory.skills import triggers_enabled
+        from bantamkit.replynative import frame
+        from bantamkit.skillmine import tokenize_label
+
+        layer = next(((lab, st) for lab, st, _ in self._layers if lab == SKILL_LAYER), None)
+        if layer is None or not triggers_enabled():
+            return None
+        fact = layer[1].fire(tokenize_label(frame(query)), shown)
+        return None if fact is None else (layer[0], fact)
 
     def layer_stores(self) -> list[tuple[str, Any, bool]]:
         """`(label, store, writable)` per layer, in precedence order (the touch graph's input)."""

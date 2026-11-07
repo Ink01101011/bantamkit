@@ -34,12 +34,13 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from bantamkit.client import BantamError
+from bantamkit.skillinstall import TRIGGERS_ENV, TRIGGERS_KEY
 
 from .store import _NOT_ONE_LINE, Fact, Pool, pool_of
 
@@ -49,6 +50,12 @@ SKILL_LAYER = "skill"
 SKILL_TYPE = "skill"
 #: The metadata key whose comma-separated value is the fact's `keywords` (R9).
 KEYWORDS_KEY = "bantamkit-keywords"
+# #301: `TRIGGERS_KEY` is the metadata key whose `|`-separated value is the skill's trigger
+# phrases (the one the installer stamps); `TRIGGERS_ENV` is the switch for firing on one, read
+# with the `BANTAMKIT_SKILL_AUTO` parse. Both live in `skillinstall` (see `TRIGGERS_ENV` there).
+#: Set by the #301 ship-bar measurement (plan Task 8): True iff precision@inject passed.
+TRIGGERS_DEFAULT = False
+_ON = ("on", "1", "true", "yes")
 
 # What `skillfile._temp` names a directory it is building or has set aside.
 _NOT_A_SKILL_DIR = re.compile(r".+\.(?:tmp|old)-[0-9]+-[0-9]+")
@@ -103,6 +110,27 @@ def keywords_of(value: Any) -> list[str]:
     return [k for k in (part.strip() for part in value.split(",")) if k]
 
 
+def triggers_enabled() -> bool:
+    """`BANTAMKIT_SKILL_TRIGGERS`: unset or blank is `TRIGGERS_DEFAULT`; else on iff in `_ON`."""
+    raw = os.environ.get(TRIGGERS_ENV, "").strip().lower()
+    return TRIGGERS_DEFAULT if raw == "" else raw in _ON
+
+
+def triggers_of(value: Any) -> list[tuple[str, ...]]:
+    """`metadata.bantamkit-triggers` split on `|`, each phrase split on spaces; empties dropped.
+
+    A phrase of fewer than two tokens is dropped: the miner never writes one (#301).
+    """
+    if not isinstance(value, str):
+        return []
+    out = []
+    for part in value.split("|"):
+        toks = tuple(t for t in part.split(" ") if t)
+        if len(toks) >= 2:
+            out.append(toks)
+    return out
+
+
 class SkillStore:
     """A read-only layer over `roots`: the methods `Memory` calls on a layer, and no write."""
 
@@ -111,6 +139,10 @@ class SkillStore:
         # The store's identity for the queries sidecar and the unreadable-layer report.
         self.root = self.roots[0]
         self._home = None if home is None else Path(home)
+        # Each offered skill's trigger phrases, by name, as the last `candidates` walk kept them;
+        # `_read` leaves the phrases of the file it just read in `_last_triggers`.
+        self._triggers: dict[str, list[tuple[str, ...]]] = {}
+        self._last_triggers: list[tuple[str, ...]] = []
 
     def _state_home(self) -> Path:
         return self._home if self._home is not None else Path.home()
@@ -159,6 +191,7 @@ class SkillStore:
         broken = validate(doc, path.parent.name)
         if broken:
             raise BantamError(f"malformed skill {path}: {'; '.join(broken)}")
+        self._last_triggers = triggers_of(doc.metadata.get(TRIGGERS_KEY))
         return Fact(
             name=doc.name,
             description=_NOT_ONE_LINE.sub(" ", doc.description),
@@ -182,6 +215,8 @@ class SkillStore:
         promoted = promoted_names(self._state_home())
         out: list[Fact] = []
         held: dict[str, Path] = {}
+        # Only the copy that holds a name lends it triggers, never a skipped duplicate (#301).
+        triggers: dict[str, list[tuple[str, ...]]] = {}
         for path in self._listing():
             file = f"{path.parent.name}/{path.name}"
             try:
@@ -197,9 +232,29 @@ class SkillStore:
                     skipped.append({"file": file, "reason": reason})
                 continue
             held[fact.name] = path
+            triggers[fact.name] = self._last_triggers
             if fact.name not in shadow and fact.name not in promoted:
                 out.append(fact)
+        self._triggers = triggers
         return out
+
+    def fire(self, tokens: Sequence[str], shown: Collection[str]) -> Fact | None:
+        """The one skill a trigger phrase names in `tokens`: longest match, then name (#301).
+
+        A trigger fires when it occurs as a contiguous run of `tokens`. A skill in `shown` never
+        fires, nor a promoted one (`candidates` leaves those out).
+        """
+        best: tuple[int, str, Fact] | None = None
+        toks = list(tokens)
+        for fact in self.candidates():
+            if fact.name in shown:
+                continue
+            for ph in self._triggers.get(fact.name, ()):
+                k = len(ph)
+                if any(tuple(toks[i : i + k]) == ph for i in range(len(toks) - k + 1)):
+                    if best is None or (-k, fact.name) < (-best[0], best[1]):
+                        best = (k, fact.name, fact)
+        return None if best is None else best[2]
 
     def count(self) -> int:
         """How many skill directories the roots list; 0 when none is there."""

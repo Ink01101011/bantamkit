@@ -83,6 +83,10 @@ from bantamkit.skillfile import (
 from bantamkit.storage.retention import parse_now
 
 AUTO_ENV = "BANTAMKIT_SKILL_AUTO"
+#: #301: the switch for firing a skill in recall on a trigger phrase (`memory.skills`). Named
+#: here, beside `AUTO_ENV`, and not in `memory/`: `memory.divergence` reads every `BANTAMKIT_*`
+#: literal under `memory/` as a lever on the store's location, and this one is not.
+TRIGGERS_ENV = "BANTAMKIT_SKILL_TRIGGERS"
 #: #301: the SKILL.md metadata key holding the cluster's trigger phrases, `|`-joined.
 TRIGGERS_KEY = "bantamkit-triggers"
 #: The `skills:` status line's last clause, by the switch (0.37.0: off unless opted in).
