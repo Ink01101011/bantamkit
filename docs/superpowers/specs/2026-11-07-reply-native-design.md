@@ -1,6 +1,6 @@
 # Reply-native: think in English, reply in the user's language, from the hook
 
-Date: 2026-11-07. Status: proposed. Brainstormed with the user 2026-11-07, every decision
+Date: 2026-11-07. Status: approved 2026-11-07; amended by the implementation plan (docs/superpowers/plans/2026-11-07-reply-native.md). Brainstormed with the user 2026-11-07, every decision
 below is theirs unless marked as a recommendation they accepted.
 
 ## The problem
@@ -52,7 +52,8 @@ inheriting job66's bare-name containment check.
 | `th.md` | both | 389 |
 | `ja.md` | both | 304 |
 
-Budgets: core ≤ 600 B, pack ≤ 450 B, `REPLY_NATIVE_INJECT_MAX = 1050` per injection. A
+Budgets: core ≤ 600 B, pack ≤ 450 B, `REPLY_NATIVE_INJECT_MAX = 1050` per injection. Parts
+are joined with `\n`, so core-latest + th is 885 B and core-fixed(th) + th is 898 B. A
 directive is never cut: over budget → nothing injected, `reason: over-budget` logged.
 
 `core-latest.md`:
@@ -142,7 +143,9 @@ No IO except asset reads.
 ### `UserPromptSubmit`
 
 1. The reply-native arm runs FIRST, right after `_turn_open`, BEFORE the
-   `PROMPT_MIN_CHARS = 12` skip (`ทำต่อ` is 5 code points). Mode 2 only.
+   `PROMPT_MIN_CHARS = 12` skip (`ทำต่อ` is 5 code points). Mode 2 only. Slash commands are
+   skipped, as recall skips them. A prompt whose parts are all already in the window logs
+   nothing and writes nothing.
 2. Targeted refactor: the recall part stops emitting and returning early from four places;
    it returns `ctx | None`. The hook joins `[reply, recall]` with a blank line and emits once.
    Without this, a recall miss would also swallow the directive.
@@ -164,9 +167,12 @@ No IO except asset reads.
 
 - Hook log gains `replyNative: {mode, lang, parts, bytes, reason?}`. The prompt text is NOT
   logged (job65 rule); only the `classify` result.
-- `bantamkit_status` reports what the hook last DID, read from the hook log's latest
-  `replyNative` record, not its own env: the MCP server and the hook are spawned separately
-  and need not share an environment. Example lines:
+- The hook keeps its last decision in `~/.bantamkit/hooks/reply-native.json`
+  (`{ts, event, mode, lang, parts, bytes, reason?, rawLang?, source?}`), written through an
+  exclusively created temp file (#250) and removed whenever the hook runs with the feature off.
+- `bantamkit_status` reports what the hook last DID, read from that state file, not from its
+  own env: the MCP server and the hook are spawned separately and need not share an
+  environment. The line is the report's LAST line. Example lines:
   `reply-native: mode latest, last injected core+th` /
   `reply-native: BANTAMKIT_REPLY_LANG=th-TH invalid, fell back to latest`.
 
