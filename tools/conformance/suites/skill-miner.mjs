@@ -321,6 +321,9 @@ const PAIRS = [
   [sig([], [], []), sig([], [], [])],
   [sig(['ไทย', 'ภาษา'], ['Read>Edit'], []), sig(['ไทย'], ['Read>Edit', 'Edit>Bash'], [])],
   [sig(['a', 'b', 'c'], [], ['x']), sig(['d'], [], ['y'])],
+  // #299: a piece with no keyword joins nothing, however alike its tools and paths are.
+  [sig([], ['Bash>Edit', 'Edit>Bash'], ['p1']), sig([], ['Bash>Edit', 'Edit>Bash'], ['p1'])],
+  [sig(['k1'], ['Bash>Edit'], ['p1']), sig([], ['Bash>Edit'], ['p1'])],
 ];
 
 

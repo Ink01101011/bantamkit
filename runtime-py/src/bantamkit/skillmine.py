@@ -33,7 +33,9 @@ tone marks (`ทำต่อ` became `ทํ ํา าต ต่ ่อ`) and l
 the clusters. It groups a base character with its combining marks and following vowels
 (`ะ า ำ ๅ` and Lao `ະ າ ຳ`, which are Lo, not marks) and a leading vowel with the character
 after it, drops `LABEL_STOPWORDS`, and forms bigrams of those units; spaced-script
-words are kept whole exactly as `tokenize_v2` keeps them. `tokenize_v2` is unchanged, because
+words are kept whole as `tokenize_v2` keeps them, minus English function words, one-code-point
+words and ASCII-digit-only words (#299, `LABEL_STOPWORDS_EN`). A piece left with no keyword
+joins no cluster (`similarity` is 0). `tokenize_v2` is unchanged, because
 recall is measured on it.
 
 **Clusters** (Task 5): leader clustering per source, the X1 bars on successful members only,
@@ -614,8 +616,9 @@ def _label_run(run: str, out: list[str]) -> None:
 
 
 def tokenize_label(text: str) -> list[str]:
-    """The miner's tokenizer (#289): `tokenize_v2`'s scan, but a no-space run is cut into
-    units (a base with its marks and following vowels, a leading vowel with what follows),
+    """The miner's tokenizer (#289, #299): `tokenize_v2`'s scan, minus English function words,
+    one-code-point words and ASCII-digit-only words (`LABEL_STOPWORDS_EN`); a no-space run is
+    cut into units (a base with its marks and following vowels, a leading vowel with what follows),
     `LABEL_STOPWORDS` end a segment and emit nothing, and a segment emits its one unit or its
     unit bigrams. A bigram of units can still span a syllable boundary, and a stopword's unit
     sequence also matches inside a longer word (`ต่อย` -> `ย`): there is no segmenter."""
@@ -678,7 +681,14 @@ def signature(piece: Piece, df: Mapping[str, int], n: int) -> Signature:
 
 
 def similarity(a: Signature, b: Signature) -> tuple[int, int]:
-    """Weighted Jaccard as a reduced fraction; empty-union components count in neither sum."""
+    """Weighted Jaccard as a reduced fraction; empty-union components count in neither sum.
+
+    #299 review: a piece with no keyword at all (`1`, `do it`, `ทำต่อ`) joins nothing. Two
+    such replies would otherwise be judged on tool n-grams and paths alone, and a cluster of
+    them would clear the bar with no keyword to describe or recall it by.
+    """
+    if not a.keywords or not b.keywords:
+        return 0, 1
     num, den = 0, 1
     weight = 0
     for comp, w in SIM_WEIGHTS:

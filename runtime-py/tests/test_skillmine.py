@@ -303,6 +303,14 @@ def _sig(k: set[str], g: set[str], p: set[str]) -> Signature:
     return Signature(frozenset(k), frozenset(g), frozenset(p))
 
 
+def test_a_piece_with_no_keyword_joins_nothing() -> None:
+    # #299 review: replies like `1`, `do it`, `ทำต่อ` keep no keyword; judged on tool n-grams and
+    # paths alone they would cluster, and the cluster would clear the bar with nothing to say.
+    same = _sig(set(), {"Bash>Edit", "Edit>Bash"}, {"p1"})
+    assert similarity(same, same) == (0, 1)
+    assert similarity(_sig({"k1"}, {"Bash>Edit"}, {"p1"}), same) == (0, 1)
+
+
 def test_similarity_at_exactly_one_half_meets_and_one_less_does_not() -> None:
     # keywords 1/2 (w2), ngrams 2/3, paths 1/3: (1 + 2/3 + 1/3) / 4 = 1/2 exactly; a float
     # sum of the same terms is 0.49999999999999994.

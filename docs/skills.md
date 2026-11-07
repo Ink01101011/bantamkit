@@ -59,7 +59,10 @@ in more than half of a source's pieces is dropped), the tool-name 2- and 3-grams
 touched paths.
 
 `tokenize_label` (`tokenizeLabel` in Node) is the miner's own tokenizer (#289). Spaced-script
-words come out as recall's `tokenize_v2` would give them, but a no-space run (Thai, Lao, …) is
+words come out as recall's `tokenize_v2` would give them, minus English function words, words
+of one code point and words of ASCII digits only (#299: a cluster mined from one template used
+to keep `the`, `for`, `in`, `2026` as keywords, which reach the `[skill]` layer); a piece left
+with no keyword joins no cluster. But a no-space run (Thai, Lao, …) is
 cut into units: a base character with its combining marks and its following vowels, a leading
 vowel (เ แ โ ใ ไ and Lao's ເ–ໄ) attached forward to the unit after it, and SARA AM recomposed
 after NFKC splits it. The following vowels — Thai SARA A, SARA AA, SARA AM and LAKKHANGYAO

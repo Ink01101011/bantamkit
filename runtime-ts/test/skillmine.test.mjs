@@ -264,6 +264,12 @@ test('n-grams of the tool sequence', () => {
 
 const sig = (k, g, p) => ({ keywords: new Set(k), ngrams: new Set(g), paths: new Set(p) });
 
+test('a piece with no keyword joins nothing (#299)', () => {
+  const same = sig([], ['Bash>Edit', 'Edit>Bash'], ['p1']);
+  assert.deepEqual(sm.similarity(same, same), [0, 1]);
+  assert.deepEqual(sm.similarity(sig(['k1'], ['Bash>Edit'], ['p1']), same), [0, 1]);
+});
+
 test('similarity at exactly one half meets and one less does not', () => {
   const a = sig(['k1', 'k2'], ['g1', 'g2', 'g3'], ['p1', 'p2']);
   const b = sig(['k1'], ['g1', 'g2'], ['p2', 'p3']);
