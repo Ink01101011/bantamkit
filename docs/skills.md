@@ -22,8 +22,8 @@ See *The switches*.
 
 **Since 0.39.1 (#301)** a skill you approve is promoted to a native link in the same call (see
 *Approve promotes*), and the `[skill]` layer can fire on a **trigger phrase** mined from your own
-prompts (see *Trigger phrases*). Firing is behind `BANTAMKIT_SKILL_TRIGGERS`, **off** by default
-until the ship bar is measured. The design is
+prompts (see *Trigger phrases*). Firing is behind `BANTAMKIT_SKILL_TRIGGERS`, **off** by default:
+the ship bar was measured and did not pass (see *Trigger phrases*). The design is
 `docs/superpowers/specs/2026-11-08-skill-surfacing-design.md`.
 
 ## What is read, and what never is (X1, X4)
@@ -275,8 +275,20 @@ at most once per 5 uses.
 case, trimmed) turn it on, any other value is off, and unset or blank is `TRIGGERS_DEFAULT`. In
 this release `TRIGGERS_DEFAULT` is **off**: the spec's ship bar (precision@inject ≥ 0.432 over
 ≥ 20 injections, the top-3 unchanged on every replayed prompt, ≤ 5 ms median added hook latency)
-decides whether it turns on, and it has not been measured yet. Mining, storage and the backfill
-run whatever the switch says.
+decides whether it turns on. It was measured on 2026-11-08 (`tools/skillsurface/replay.py`,
+968 real prompts replayed in a sandbox HOME, 25 eligible clusters installed, 22 with triggers):
+
+| bar item | measured | result |
+|---|---|---|
+| precision@inject ≥ 0.432 over ≥ 20 injections | 6 injections, 5 relevant (0.833) | insufficient data: no claim |
+| top-3 memory lines unchanged on every prompt | 0 of 968 differ | pass |
+| median added hook latency ≤ 5 ms | 11.951 ms (p90 12.216 ms) | fail (#302: `fire` re-reads every `SKILL.md`) |
+| approve promotes; over-budget refusal | `skill-promote` conformance cases, both runtimes | pass |
+
+So the switch stays off. Mining, storage and the backfill run whatever the switch says. A
+`SKILL.md` carries at most `TRIGGERS_TOP` (5) phrases when read, in file order; a phrase is
+matched as written, so a hand-written trigger must already be lower-case `tokenize_label`
+tokens to fire.
 
 **Known limit: clients other than Claude Code.** Their recall goes through `memory_recall`,
 whose query the model writes, not you. Triggers are mined from your own prompts, so they may
@@ -437,7 +449,7 @@ A refusal is a sentence in the answer, never an RPC error.
 | `BANTAMKIT_SKILL_AUDIT` | on | no daily miner (and no audit), no SessionStart skills line. The command still works |
 | `BANTAMKIT_SKILL_AUTO` | **off** in 0.37.0; `on`, `1`, `true`, `yes` (any case) opt in, any other value is off | no automatic draft, install, edit or promotion. Mining, proposals, the command, the waiting tunes, probation of earlier automatic installs, the judge and rollback all still run |
 | `BANTAMKIT_LLM_URL`, `BANTAMKIT_LLM_MODEL` | unset | no endpoint drafter |
-| `BANTAMKIT_SKILL_TRIGGERS` | **off** (`TRIGGERS_DEFAULT`, pending the #301 ship bar); `on`, `1`, `true`, `yes` (any case) turn it on, any other value is off | no `[skill]` line fired on a trigger phrase. Mining and stamping triggers and the daily backfill still run |
+| `BANTAMKIT_SKILL_TRIGGERS` | **off** (`TRIGGERS_DEFAULT`; the #301 ship bar did not pass); `on`, `1`, `true`, `yes` (any case) turn it on, any other value is off | no `[skill]` line fired on a trigger phrase. Mining and stamping triggers and the daily backfill still run |
 | `BANTAMKIT_SKILL_BUDGET` | 8192 | the promotion budget in bytes; a value that is not 1–15 digits falls back to 8192 |
 | `BANTAMKIT_RETENTION` | on | the sweep only; it does not stop the miner |
 
