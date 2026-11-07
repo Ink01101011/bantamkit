@@ -59,15 +59,15 @@ drifts.
 
 The checklist below is the hand-run form, and it is still what the script does — but doing it
 by hand is how job56 happened. **`tools/release/publish.sh` is the whole release in one
-command**: test → build → prepublish → npm → PyPI, refusing before it ships and skipping what
-is already published.
+command**: test → build → prepublish → npm → PyPI → verify both at once, refusing before it
+ships and skipping what is already published.
 
 ```bash
 tools/release/publish.sh --dry-run    # phases 0-3; nothing leaves the machine
 tools/release/publish.sh              # the real thing, from a terminal
 ```
 
-Eight phases, in this order, because the order is a safety property — everything that can be
+Seven phases, in this order, because the order is a safety property — everything that can be
 checked before the first upload is checked before the first upload:
 
 | phase | what it does |
@@ -77,12 +77,11 @@ checked before the first upload is checked before the first upload:
 | 2 build | both artifacts, into a **clean directory named for the version** |
 | 3 prepublish | `npx-cold-start.mjs`, `twine check`, and the asset pack inside each artifact **hashed** against `assets/` |
 | 4 npm | `npm publish --access public` (plus `--tag beta` for a prerelease, see below), output streamed live |
-| 5 verify npm | `registry.npmjs.org` directly, then the **published** tarball driven over stdio |
-| 6 PyPI | `twine upload`, **by exact filename** |
-| 7 verify PyPI | the per-version endpoint, sha256 against the local build, then an install with the `[mcp]` extra driven over stdio |
-| 8 summary | what shipped, and what is still yours to do (tag, GitHub release) |
+| 5 PyPI | `twine upload`, **by exact filename**, right after npm (a real npm publish failure in phase 4 still stops it) |
+| 6 verify both | two lanes **at the same time** (#293), each with its own log and budget: npm — `registry.npmjs.org` directly, then the **published** tarball driven over stdio; PyPI — the per-version endpoint, sha256 against the local build, then an install with the `[mcp]` extra driven over stdio. Each registry is reported on its own line; the phase takes as long as the slower lane |
+| 7 summary | what shipped, and what is still yours to do (tag, GitHub release) |
 
-Four properties are worth knowing before you trust it:
+Five properties are worth knowing before you trust it:
 
 - **It is resumable.** A version already on a registry is skipped, never republished — npm
   forbids republishing a version anyway, so skipping is the only correct behaviour and not a
@@ -94,7 +93,14 @@ Four properties are worth knowing before you trust it:
   you authenticate in a browser, which is why the script streams npm's output straight through
   and never captures it. twine reads its token from `~/.pypirc`, whose *existence* preflight
   checks and whose contents it never reads — a missing credential is a refusal in phase 0, not
-  a prompt in phase 6 after npm has already published.
+  a prompt in phase 5 after npm has already published.
+- **Verifying npm no longer gates PyPI** (#293, user ruling 2026-11-07). Verification used to
+  sit between the two uploads, and npm's side of it — a registry poll, then `npm install`
+  retrying ETARGET out of npm's metadata cache — timed out often enough that releases stopped
+  with PyPI never uploaded. Both uploads are irreversible, so that gate could only produce a
+  half-done release. Now both go up, then both are verified concurrently; a lane that fails is a
+  rerun (which skips both uploads) or, if it persists, a defect in the published artifact.
+  `tools/release/test_run_lanes.sh` pins the lane runner.
 - **`--dry-run` is a real rehearsal.** It runs phases 0–3 — including a real `npm pack`, a real
   `python -m build` and the cold-start gate — and stops before the first publish.
 
