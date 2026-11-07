@@ -38,7 +38,9 @@ const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(packageRoot, 'dist', 'cli.js');
 
 const scratch = mkdtempSync(join(tmpdir(), 'bk-hookflag-'));
-after(() => rmSync(scratch, { recursive: true, force: true }));
+// Retries: a hook's detached child can still be writing into a bed when the suite ends under
+// load, and rmSync then races it with ENOTEMPTY (seen once in the 0.39.0 gate run).
+after(() => rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
 let n = 0;
 function newDir(prefix) {
