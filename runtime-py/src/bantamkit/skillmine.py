@@ -75,12 +75,13 @@ import re
 import unicodedata
 import zlib
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from bantamkit.memory.retrieval import _nospace, _wordchar
+from bantamkit.replynative import frame
 from bantamkit.touch.log import AGENT_ID
 
 SOURCE_SHIFTWORK = "shiftwork"
@@ -90,6 +91,13 @@ KEYWORDS_TOP = 12
 #: A term in more than KEYWORD_DF_MAX of a source's pieces is a corpus stop-word.
 KEYWORD_DF_MAX = (1, 2)
 NGRAM_SIZES = (2, 3)
+#: #301: a cluster's trigger phrases (spec §2). At most TRIGGERS_TOP; each a 2- or 3-token
+#: phrase of a successful member's `frame()`d prompt, in at least TRIGGER_SHARE of the
+#: successes and in at most TRIGGER_DF_MAX of the source's pieces.
+TRIGGERS_TOP = 5
+TRIGGER_SHARE = (1, 2)
+TRIGGER_DF_MAX = (1, 8)
+TRIGGER_SIZES = (2, 3)
 SIM_WEIGHTS = (("keywords", 2), ("ngrams", 1), ("paths", 1))
 SIM_MIN = (1, 2)
 
@@ -664,6 +672,63 @@ def doc_freq(pieces: Iterable[Piece]) -> tuple[Counter[str], int]:
     return df, n
 
 
+Phrase = tuple[str, ...]
+
+
+def phrases(tokens: Sequence[str]) -> set[Phrase]:
+    """Every contiguous `TRIGGER_SIZES`-token run of `tokens`."""
+    t = list(tokens)
+    return {tuple(t[i : i + k]) for k in TRIGGER_SIZES for i in range(len(t) - k + 1)}
+
+
+def prompt_phrases(prompt: str) -> set[Phrase]:
+    """The phrases of what the user typed: pasted blocks, code, URLs and paths framed out."""
+    return phrases(tokenize_label(frame(prompt)))
+
+
+def phrase_doc_freq(pieces: Iterable[Piece]) -> tuple[Counter[Phrase], int]:
+    """Document frequency of each phrase over one source's pieces, and the count."""
+    df: Counter[Phrase] = Counter()
+    n = 0
+    for p in pieces:
+        n += 1
+        df.update(prompt_phrases(p.prompt))
+    return df, n
+
+
+def _within(short: Phrase, long: Phrase) -> bool:
+    k = len(short)
+    return any(long[i : i + k] == short for i in range(len(long) - k + 1))
+
+
+def cluster_triggers(members: Sequence[Piece], df: Mapping[Phrase, int], n: int) -> tuple[str, ...]:
+    """A cluster's trigger phrases, space-joined (spec §2).
+
+    Candidates are counted once per SUCCESSFUL member. Kept: in at least `TRIGGER_SHARE` of the
+    successes and in at most `TRIGGER_DF_MAX` of the source's `n` pieces. Ranked by member count
+    (desc), length (desc), then tokens in code-point order; the first `TRIGGERS_TOP` are taken,
+    and a 2-gram inside a taken 3-gram is dropped.
+    """
+    ok = [p for p in members if p.ok is True]
+    if not ok:
+        return ()
+    count: Counter[Phrase] = Counter()
+    for p in ok:
+        count.update(prompt_phrases(p.prompt))
+    s_num, s_den = TRIGGER_SHARE
+    d_num, d_den = TRIGGER_DF_MAX
+    kept = [
+        ph
+        for ph, c in count.items()
+        if c * s_den >= len(ok) * s_num and df.get(ph, 0) * d_den <= n * d_num
+    ]
+    kept.sort(key=lambda ph: (-count[ph], -len(ph), ph))
+    top = kept[:TRIGGERS_TOP]
+    longs = [ph for ph in top if len(ph) == 3]
+    out = [ph for ph in top if len(ph) == 3 or not any(_within(ph, lg) for lg in longs)]
+    return tuple(" ".join(ph) for ph in out)
+
+
 def ngrams(tools: Iterable[str]) -> frozenset[str]:
     seq = list(tools)
     return frozenset(">".join(seq[i : i + k]) for k in NGRAM_SIZES for i in range(len(seq) - k + 1))
@@ -756,6 +821,8 @@ class Cluster:
     repos: tuple[str, ...]
     level: str
     top: str | None
+    #: #301: the trigger phrases (`cluster_triggers`), space-joined.
+    triggers: tuple[str, ...] = ()
 
 
 def _utf8(text: str) -> bytes:
@@ -777,7 +844,13 @@ def _ngram_seq(tools: tuple[str, ...]) -> list[str]:
     return out
 
 
-def _make_cluster(source: str, members: list[Piece], sigs: list[Signature]) -> Cluster:
+def _make_cluster(
+    source: str,
+    members: list[Piece],
+    sigs: list[Signature],
+    pdf: Mapping[Phrase, int],
+    pn: int,
+) -> Cluster:
     ok = [i for i, p in enumerate(members) if p.ok is True]
     successes = len(ok)
     bar = _BARS[source]
@@ -814,6 +887,7 @@ def _make_cluster(source: str, members: list[Piece], sigs: list[Signature]) -> C
         repos=tuple(sorted(k for k in keys if k)),
         level=level,
         top=top,
+        triggers=cluster_triggers(members, pdf, pn),
     )
 
 
@@ -832,6 +906,7 @@ def cluster(pieces: Iterable[Piece]) -> list[Cluster]:
         if not group:
             continue
         df, n = doc_freq(group)
+        pdf, pn = phrase_doc_freq(group)
         sigs = [signature(p, df, n) for p in group]
         leaders: list[Signature] = []
         groups: list[list[int]] = []
@@ -847,7 +922,11 @@ def cluster(pieces: Iterable[Piece]) -> list[Cluster]:
             else:
                 groups[best].append(i)
         for idxs in groups:
-            out.append(_make_cluster(source, [group[i] for i in idxs], [sigs[i] for i in idxs]))
+            out.append(
+                _make_cluster(
+                    source, [group[i] for i in idxs], [sigs[i] for i in idxs], pdf, pn
+                )
+            )
     return out
 
 
@@ -968,6 +1047,7 @@ def proposals(
             "steps": list(c.steps),
             "successes": c.successes,
             "top": c.top,
+            "triggers": list(c.triggers),
         }
         if rejected_at is not None:
             rec["rejected_at"] = rejected_at
@@ -2007,6 +2087,7 @@ def _daily(home: str | Path, cwd: str | None, now: str, clock: Any) -> None:
         judge_step,
         probation_step,
         stats_step,
+        triggers_step,
     )
     from bantamkit.skillpromote import promote_step
     from bantamkit.storage.retention import parse_now
@@ -2042,6 +2123,13 @@ def _daily(home: str | Path, cwd: str | None, now: str, clock: Any) -> None:
     events = auto_step(doc, state, home, now)
     if proposals_bytes(doc) != written:
         write_proposals(home, doc)
+    # #301: trigger phrases for skills installed before the miner had them. On its own like
+    # the steps below; it replaces `state` with the state it wrote, so probation reads the
+    # new hash and never takes a backfilled skill for a hand-edited one.
+    try:
+        events += triggers_step(state, doc, home, now)
+    except Exception:  # noqa: BLE001
+        pass
     events += probation_step(state, skill_uses(home, state), home, now)
     # Task 10a: count, promote, judge. Each step is on its own: one that fails leaves the
     # events already made to be recorded, and the next day's run tries it again.

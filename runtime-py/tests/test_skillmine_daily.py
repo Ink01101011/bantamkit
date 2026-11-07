@@ -416,3 +416,35 @@ def test_error_name_is_oserror_for_any_filesystem_error() -> None:
     assert sm.error_name(PermissionError(13, "x")) == "OSError"
     assert sm.error_name(sm.ProposalsError("x")) == "ProposalsError"
     assert sm.error_name(KeyError("x")) == "KeyError"
+
+
+def test_the_daily_run_backfills_triggers_on_an_older_install(tmp_path: Path, monkeypatch) -> None:
+    """#301: a skill installed before the miner had triggers gets them from its cluster's record
+    on the next daily run, as a new version, and the run logs the event. The bed's own phrases
+    are each in 6 of 13 pieces (over 1/8), so the record's triggers are put in by hand."""
+    home, proj = bed(tmp_path, trap=False)
+    assert child(home, proj) == 0
+    [c] = [c for c in sm.read_proposals(home)["clusters"] if c["successes"] == 6]
+    assert c["triggers"] == []
+    si.install(c, good_draft(), None, home, NOW, auto=False)
+    skill = proj / ".bantamkit" / "skills" / NAME / "SKILL.md"
+    assert si.TRIGGERS_KEY not in sf.parse_skill(skill.read_text(encoding="utf-8")).metadata
+
+    real = sm.mine
+
+    def mine(*a: object, **k: object) -> dict:
+        doc = real(*a, **k)
+        for r in doc["clusters"]:
+            if r["id"] == c["id"]:
+                r["triggers"] = ["fix lexer crash"]
+        return doc
+
+    monkeypatch.setattr(sm, "mine", mine)
+    later = "2026-10-28T00:00:00.000Z"
+    sm.daily(home, str(proj), later)
+    text = skill.read_text(encoding="utf-8")
+    assert sf.parse_skill(text).metadata[si.TRIGGERS_KEY] == "fix lexer crash"
+    assert not sf.is_edited(text)
+    state = sf.read_state(home)
+    assert state["skills"][NAME]["version"] == 2
+    assert {"at": later, "event": f"added triggers to skill {NAME}"} in state["events"]

@@ -83,6 +83,8 @@ from bantamkit.skillfile import (
 from bantamkit.storage.retention import parse_now
 
 AUTO_ENV = "BANTAMKIT_SKILL_AUTO"
+#: #301: the SKILL.md metadata key holding the cluster's trigger phrases, `|`-joined.
+TRIGGERS_KEY = "bantamkit-triggers"
 #: The `skills:` status line's last clause, by the switch (0.37.0: off unless opted in).
 AUTO_SAID_ON = "auto on"
 AUTO_SAID_OFF = f"auto off ({AUTO_ENV}=on to opt in)"
@@ -260,19 +262,29 @@ def install_root(
     return level, project_skills_root(top)
 
 
+def _triggers(rec: Mapping[str, Any]) -> list[str]:
+    """A record's trigger phrases that can be `|`-joined."""
+    return [t for t in _strs(rec.get("triggers")) if t and "|" not in t]
+
+
 def skill_text(cluster: Mapping[str, Any], text: str) -> str:
-    """The draft stamped with bantamkit's metadata and, last, its hash."""
+    """The draft stamped with bantamkit's metadata and, last, its hash.
+
+    `bantamkit-triggers` (#301) is written only when the record has trigger phrases, so a
+    record without them stamps exactly what it did before.
+    """
     keywords = _strs(cluster.get("keywords"))[:KEYWORDS_MAX]
-    return stamp(
-        _clean(text),
-        {
-            "bantamkit-cluster": _clean(cluster["id"]),
-            "bantamkit-evidence": ",".join(evidence_ids(cluster)),
-            "bantamkit-generated-by": GENERATED_BY,
-            "bantamkit-keywords": ",".join(keywords),
-            "bantamkit-version": "1",
-        },
-    )
+    meta = {
+        "bantamkit-cluster": _clean(cluster["id"]),
+        "bantamkit-evidence": ",".join(evidence_ids(cluster)),
+        "bantamkit-generated-by": GENERATED_BY,
+        "bantamkit-keywords": ",".join(keywords),
+        "bantamkit-version": "1",
+    }
+    triggers = _triggers(cluster)
+    if triggers:
+        meta[TRIGGERS_KEY] = "|".join(triggers)
+    return stamp(_clean(text), meta)
 
 
 _counter = itertools.count(1)
@@ -933,6 +945,55 @@ def new_version(
         undo_dir(backup_root(home), name, target)
         raise
     return _refreshed(f"updated skill {name} to v{m}", name, home)
+
+
+def triggers_step(
+    state: dict[str, Any], doc: Mapping[str, Any], home: str | Path, now: str
+) -> list[str]:
+    """Backfill `bantamkit-triggers` on installed skills that predate #301; the events.
+
+    Only a live, unedited skill (`_edited`) whose SKILL.md has no `bantamkit-triggers` yet and
+    whose `bantamkit-cluster` names a record of `doc` with trigger phrases. Written as the next
+    version (`new_version`, kind `auto`), so history, the hash and the promoted copy stay
+    consistent; one that is refused is left for the next run. `state` is read for the
+    decisions and, when anything was written, replaced in place by the state written, so a
+    later step does not take the new hash for a hand edit.
+    """
+    clusters = doc.get("clusters") if isinstance(doc.get("clusters"), list) else []
+    by_id = {
+        r["id"]: _triggers(r)
+        for r in clusters
+        if isinstance(r, dict) and isinstance(r.get("id"), str)
+    }
+    skills = state.get("skills") if isinstance(state.get("skills"), dict) else {}
+    events: list[str] = []
+    for name in sorted(skills):
+        entry = skills[name]
+        if not isinstance(entry, dict):
+            continue
+        live = _live_text(entry)
+        if live is None or _edited(live[1], entry):
+            continue
+        try:
+            text = live[1].decode("utf-8")
+            meta = parse_skill(text).metadata
+        except (UnicodeDecodeError, SkillFileError):
+            continue
+        if TRIGGERS_KEY in meta:
+            continue
+        found = by_id.get(meta.get("bantamkit-cluster", ""))
+        if not found:
+            continue
+        try:
+            new_version(name, _with(text, None, {TRIGGERS_KEY: "|".join(found)}), home, now, "auto")
+        except (InstallError, SkillFileError):
+            continue
+        events.append(f"added triggers to skill {name}")
+    if events:
+        fresh = read_state(home)
+        state.clear()
+        state.update(fresh)
+    return events
 
 
 def _fell(s_n: int, u_n: int, s_f: int, u_f: int) -> bool:
