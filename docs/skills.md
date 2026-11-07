@@ -5,7 +5,8 @@ records, finds the same kind of work done successfully again and again, has a mo
 skill for it, checks the draft, and keeps it as a proposal for you — or, if you opt in and the
 evidence is strong, installs it on probation. An installed skill reaches the agent through the
 `[skill]` recall layer first (it costs nothing until a prompt matches it), is promoted to a
-native link once it has proved itself, and keeps improving under automatic rollback.
+native link once it has proved itself — at once, when you approved it (#301) — and keeps
+improving under automatic rollback.
 
 The design and every decision in it are the user's: `docs/superpowers/specs/2026-10-15-skills-from-experience-design.md`
 (X1–X10). The implementation plan, its readings of the spec and its constants are
@@ -18,6 +19,12 @@ conformance suites at the end of this page compare them.
 real-use bar could not be met before a stable release, and "an unmet bar changes a default; it
 never holds the release"). With the default, bantamkit mines, proposes and surfaces; you approve.
 See *The switches*.
+
+**Since 0.39.1 (#301)** a skill you approve is promoted to a native link in the same call (see
+*Approve promotes*), and the `[skill]` layer can fire on a **trigger phrase** mined from your own
+prompts (see *Trigger phrases*). Firing is behind `BANTAMKIT_SKILL_TRIGGERS`, **off** by default
+until the ship bar is measured. The design is
+`docs/superpowers/specs/2026-11-08-skill-surfacing-design.md`.
 
 ## What is read, and what never is (X1, X4)
 
@@ -131,14 +138,16 @@ after #205's audit and under the same switch (`BANTAMKIT_SKILL_AUDIT`):
 2. **Draft** one cluster, only when an endpoint is configured AND `BANTAMKIT_SKILL_AUTO` is on:
    the best auto-eligible one (most successes, then the oldest).
 3. **Install** at most one (`BANTAMKIT_SKILL_AUTO` on only; see *Installing*).
-4. **Probation**: remove an unused automatic install whose 30 days are up.
-5. **Count** each live version's uses, successes, injections and false fires.
-6. **Promote** a skill used 3 times in 30 days (`BANTAMKIT_SKILL_AUTO` on only; see *Promotion*).
-7. **Improve** installed skills from the signals (see *Self-improvement*).
-8. **Judge** a version used 5 times against the one before it, and roll it back if it is worse.
-9. Record the events for the SessionStart line.
+4. **Triggers** (#301): add `bantamkit-triggers` to an installed skill that has none (see
+   *Trigger phrases*). Not gated by `BANTAMKIT_SKILL_AUTO`.
+5. **Probation**: remove an unused automatic install whose 30 days are up.
+6. **Count** each live version's uses, successes, injections and false fires.
+7. **Promote** a skill used 3 times in 30 days (`BANTAMKIT_SKILL_AUTO` on only; see *Promotion*).
+8. **Improve** installed skills from the signals (see *Self-improvement*).
+9. **Judge** a version used 5 times against the one before it, and roll it back if it is worse.
+10. Record the events for the SessionStart line.
 
-Each of steps 5–8 is on its own: one that fails leaves the others' events recorded and is tried
+Step 4 and each of steps 6–9 is on its own: one that fails leaves the others' events recorded and is tried
 again the next day. A version made today is never judged today.
 
 **The bar (≤ 5 s, plan Q6: the warm daily run).** Measured by job73 C9 with
@@ -181,12 +190,17 @@ deleted; its removal is proposed to you instead. Every install is written in a t
 directory and renamed into place, so a failure leaves nothing half-written.
 
 **A skill you approved** through the command is not on probation (plan R13 / Q3) and is never
-removed for disuse.
+removed for disuse. Since #301 it is also promoted at once (see *Approve promotes*).
 
 **Undo always works:** every change bantamkit makes first copies the skill directory to
 `skill-backups/`, and `skill_propose undo <name>` restores the newest copy (or removes a fresh
 install). Undoing an install marks its proposal rejected, so the daily run does not install it
 again.
+
+**Undoing an approve takes two steps** (#301). `undo` of a promoted skill demotes it and does
+nothing else, so right after `approve` the first `undo <name>` removes the native link and the
+second removes the install. When approve's promotion was refused there is no link, and one
+`undo` removes the install.
 
 The installed-skill state is written to a temporary file, synced, and atomically
 replaces `skills-state.json` while holding the storage lock. This supports repeated
@@ -200,6 +214,73 @@ An installed skill is first delivered through recall: #199's scorer and gate mat
 against the skill's name, description and `bantamkit-keywords`, one header line is injected
 (`[skill] [<name>] (skill) <description>`), and the body is read through `memory_recall`. No new
 tool, and it works for any MCP client. The details are `docs/memory.md`, *The `[skill]` layer*.
+
+## Trigger phrases (#301)
+
+The `[skill]` layer used to be reached only through #199's score and gate, which a skill's short
+description rarely passes, so a skill was almost never recalled and therefore never counted
+toward promotion. A trigger phrase is a short phrase you typed every time you did that work; when
+it appears in a new prompt, the skill is offered by one extra line.
+
+**Mining.** Each cluster gains `triggers`: at most `TRIGGERS_TOP` = 5 phrases of 2 or 3 tokens
+(`TRIGGER_SIZES`). The text is each SUCCESSFUL member's prompt after `replynative.frame()` —
+pasted blocks, code, URLs, paths and quotes are removed, so a trigger is something you typed —
+tokenized by the miner's `tokenize_label` (with #299's stop-word, one-character and digit drops;
+`merge เข้า develop` gives `merge`, `เข้า`, `develop`). Every contiguous 2- and 3-token run is
+counted once per member. A phrase is kept when it occurs in at least `TRIGGER_SHARE` = 1/2 of the
+cluster's successful members and in at most `TRIGGER_DF_MAX` = 1/8 of all the source's pieces,
+so a phrase every prompt shares never triggers. Ranking: member count descending, then length
+descending (a 3-gram first on a tie), then the token sequence in code-point order. The first 5
+are taken, and a 2-gram inside a taken 3-gram is dropped. A cluster with no successful member
+has none.
+
+**Storage.** The proposal record carries `triggers`, a list of space-joined phrases. An install
+writes `metadata.bantamkit-triggers`: the phrases joined with `|`, quoted like every metadata
+value (`bantamkit-triggers: "merge เข้า develop|tag release"`). A phrase containing `|` is never
+written. The key is written **only when there is at least one phrase**, so a record without
+triggers stamps exactly the bytes it did before #301. When the layer reads it back, a phrase of
+fewer than two tokens is ignored.
+
+**Backfill.** A skill installed before #301 has no `bantamkit-triggers`. The daily run (step 4 of
+*The daily run*) adds it to every live, unedited skill (`bantamkit-sha256` still matches) that
+has none and whose `bantamkit-cluster` names a record with triggers. It writes a new version
+through `new_version` (kind `auto`), so the backup, the history, the hash and a promoted copy all
+stay consistent, and it records the event `added triggers to skill <name>`. A skill you edited is
+never touched; a write that is refused is left for the next run. The backfill is **not** gated by
+`BANTAMKIT_SKILL_AUTO`: it only adds metadata, and firing has its own switch. Because the
+backfill is a version, the judge can roll it back (step 9); the restored version has no
+`bantamkit-triggers`, so the next daily run backfills it again. That loop is bounded by the
+judge: a backfilled version is judged only after `JUDGE_USES` = 5 uses, so it can be rolled back
+at most once per 5 uses.
+
+**Firing** (both runtimes, in `recall_outcome`, after the top-k is picked):
+
+- Only when `BANTAMKIT_SKILL_TRIGGERS` is on and the `[skill]` layer is bound.
+- The prompt is matched as `tokenize_label(frame(prompt))`, so a phrase inside a pasted block,
+  code or a quote never fires.
+- A skill fires when one of its triggers occurs as a contiguous run of those tokens.
+- **At most one** `[skill]` line is appended, **after** every other line (the top-k, the
+  archived lines and a `via` line). The top-k is byte-identical to what it is with the switch
+  off; the line is only ever appended. When several skills fire, the longest matched trigger
+  (in tokens) wins, then the name in code-point order.
+- **Never fires:** a promoted skill (its native link carries it), a skill already shown in this
+  answer, and a skill an earlier bantamkit layer shadows by name (the same rule that drops it
+  from the pool), so a fired `[skill] [<name>]` is always what a recall of that name answers.
+- A fired line counts toward `returned` and, like every other hit, is recorded as a
+  `recall_hit` only when the recall stamps. `memory_recall` stamps; the `UserPromptSubmit` hook
+  does not, so a hook injection is not a use, and the model's later `memory_recall` of the body
+  is (`body_read`).
+
+**`BANTAMKIT_SKILL_TRIGGERS`** uses `BANTAMKIT_SKILL_AUTO`'s parse: `on`, `1`, `true`, `yes` (any
+case, trimmed) turn it on, any other value is off, and unset or blank is `TRIGGERS_DEFAULT`. In
+this release `TRIGGERS_DEFAULT` is **off**: the spec's ship bar (precision@inject ≥ 0.432 over
+≥ 20 injections, the top-3 unchanged on every replayed prompt, ≤ 5 ms median added hook latency)
+decides whether it turns on, and it has not been measured yet. Mining, storage and the backfill
+run whatever the switch says.
+
+**Known limit: clients other than Claude Code.** Their recall goes through `memory_recall`,
+whose query the model writes, not you. Triggers are mined from your own prompts, so they may
+fire less often there. Claude Code's `UserPromptSubmit` hook recalls on your prompt as typed.
 
 ## Promotion and demotion
 
@@ -233,6 +314,27 @@ next write tries again.
 **Automatic promotion follows `BANTAMKIT_SKILL_AUTO`** (orchestrator ruling 2026-10-28,
 implemented by job73 C15): with the switch off (the default) the daily run promotes nothing and
 records nothing as refused, and `skill_propose promote <name>` still promotes on request.
+
+### Approve promotes (#301)
+
+`skill_propose approve <id>` installs the skill and then promotes it in the same call, on both
+runtimes (user ruling 2026-11-08, option ก). Approving is your say-so, so this promotion is
+**not** gated by `BANTAMKIT_SKILL_AUTO`. Automatic installs keep the 3-uses rule. The reply gains
+one line between the install line and the undo line:
+
+```
+installed skill <name> at <path> (<level> level).
+promoted skill <name>
+undo: /mcp__bantamkit__skill_propose undo <name>
+```
+
+A refused promotion — over the catalogue budget (`promoting <name> would take the catalogue to
+<n> bytes, over the budget of <limit>`), a foreign file at the link path (`<link> already exists
+and is not this skill's link`), or a link that could not be made — reads `not promoted:
+<reason>` on that line. The skill stays installed and in the `[skill]` layer, and the refusal is
+recorded as `promote_refused {at, reason}` exactly as the daily run records one. On a host other
+than Claude Code, approve prints the stamped file for you to place and never reaches the
+promotion. `undo`, `demote`, probation and the daily promotion step are unchanged.
 
 ## Self-improvement (X10)
 
@@ -305,7 +407,7 @@ An MCP prompt, in Claude Code `/mcp__bantamkit__skill_propose [action] [target] 
 | Action | Target | What it does |
 |---|---|---|
 | `list` (default) | — | the pending proposals (id, source, successes against the bar, level, keywords, steps, pitfalls, evidence ids), the changes waiting on you (with their diff), the skills waiting on a drafter, and the installed skills (version, auto or approved, level, probation end, promotion) |
-| `approve` | a proposal id | drafts it if needed (sampling → endpoint → host agent), gates it, installs it at its level or at `level`. With the host agent, the answer names `~/.bantamkit/skill-handoff/<id>/SKILL.md`; write the file there and approve again. On a host with no `.claude` the stamped file is printed for you to place |
+| `approve` | a proposal id | drafts it if needed (sampling → endpoint → host agent), gates it, installs it at its level or at `level`, and promotes it to a native link (#301; `not promoted: <reason>` when refused). With the host agent, the answer names `~/.bantamkit/skill-handoff/<id>/SKILL.md`; write the file there and approve again. On a host with no `.claude` the stamped file is printed for you to place |
 | `approve` | a skill name | applies the change waiting on it (a removal, a new text, or a tune that waited on a drafter) |
 | `reject` | an id or a name | rejects a proposal (not offered again until its cluster doubles) or a waiting change |
 | `undo` | a skill name | demotes a promoted skill; otherwise restores the newest backup |
@@ -335,6 +437,7 @@ A refusal is a sentence in the answer, never an RPC error.
 | `BANTAMKIT_SKILL_AUDIT` | on | no daily miner (and no audit), no SessionStart skills line. The command still works |
 | `BANTAMKIT_SKILL_AUTO` | **off** in 0.37.0; `on`, `1`, `true`, `yes` (any case) opt in, any other value is off | no automatic draft, install, edit or promotion. Mining, proposals, the command, the waiting tunes, probation of earlier automatic installs, the judge and rollback all still run |
 | `BANTAMKIT_LLM_URL`, `BANTAMKIT_LLM_MODEL` | unset | no endpoint drafter |
+| `BANTAMKIT_SKILL_TRIGGERS` | **off** (`TRIGGERS_DEFAULT`, pending the #301 ship bar); `on`, `1`, `true`, `yes` (any case) turn it on, any other value is off | no `[skill]` line fired on a trigger phrase. Mining and stamping triggers and the daily backfill still run |
 | `BANTAMKIT_SKILL_BUDGET` | 8192 | the promotion budget in bytes; a value that is not 1–15 digits falls back to 8192 |
 | `BANTAMKIT_RETENTION` | on | the sweep only; it does not stop the miner |
 
@@ -357,6 +460,9 @@ side by a conformance literal.
 | `REJECT_FACTOR` | 2 | | `EVIDENCE_PROMPT_CHARS` | 500 (80 at project level in `evidence.md`) |
 | `MINE_DAYS` | 30 | | `TOGETHER_SESSIONS` / `TOGETHER_SHARE` | 5 / 1/2 |
 | budget | 8192 bytes | | `PITFALL_CHARS` | 200 |
+| `TRIGGERS_TOP` (#301) | 5 | | `TRIGGER_SIZES` (#301) | 2, 3 |
+| `TRIGGER_SHARE` (#301) | 1/2 | | `TRIGGER_DF_MAX` (#301) | 1/8 |
+| `TRIGGERS_DEFAULT` (#301) | off | | | |
 
 R1 a piece of work; R2 success; R3 the user's own words; R4 structure that is not a tool result;
 R5 the three session signals; R6 evidence ids (`<job>/<unit>`, `s<first 8 of the session id>#<turn>`);
