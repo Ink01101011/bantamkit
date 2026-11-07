@@ -100,6 +100,27 @@ export async function run(ctx) {
     golden('mode/raw lang capped at 32 code points', py.at(-1).rawLang, node.at(-1).rawLang, '😀'.repeat(32));
   }
 
+  // 1b. whitespace parity (r1 #2): Python's str.strip, not JS trim, on both sides. U+0085 and
+  //     U+001F are stripped by Python and not by trim; U+FEFF the other way round.
+  {
+    const calls = ['th\u0085', '\u001fth', '\ufeffth'].map((l) => ({ fn: 'mode', env: { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: l } }));
+    const [py, node] = both(calls);
+    pair('mode/whitespace', calls, py, node);
+    golden('mode/U+0085 stripped', py[0], node[0], { kind: 'fixed', lang: 'th', rawLang: null, reason: null });
+    golden('mode/U+001F stripped', py[1], node[1], { kind: 'fixed', lang: 'th', rawLang: null, reason: null });
+    golden('mode/U+FEFF kept, invalid', py[2], node[2], { kind: 'latest', lang: null, rawLang: '\ufeffth', reason: 'invalid-lang' });
+  }
+
+  // 1c. a REPLY_LANG that is not UTF-8 (r1 #1). Python's os.environ hands it over as lone
+  //     surrogates (surrogateescape), Node's process.env as U+FFFD, one per byte: each side gets
+  //     ITS OWN input, and both must record the same writable rawLang.
+  {
+    const env = (l) => [{ fn: 'mode', env: { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: l } }];
+    const [py] = both(env('\udcff\udcfe'));
+    const [, node] = both(env('\ufffd\ufffd'));
+    golden('mode/non-UTF-8 REPLY_LANG', py[0], node[0], { kind: 'latest', lang: null, rawLang: '\ufffd\ufffd', reason: 'invalid-lang' });
+  }
+
   // 2. frame + classify over the prompt table, classify pinned per side
   {
     const calls = PROMPTS.flatMap(([prompt]) => [{ fn: 'frame', prompt }, { fn: 'classify', prompt }]);

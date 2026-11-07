@@ -39,6 +39,7 @@ _STRIP = [
     re.compile(r"\"[^\"\n]*\"|“[^”\n]*”|'[^'\n]{2,}'|「[^」\n]*」|『[^』\n]*』"),
 ]
 _BLANK = re.compile(r"[ \t\r\n]*")
+_LONE = re.compile("[\ud800-\udfff]")
 _THAI = re.compile(r"[\u0E01-\u0E2E]")
 _KANA = re.compile(r"[\u3040-\u309F\u30A0-\u30FF]")
 
@@ -82,7 +83,10 @@ def mode(env: Mapping[str, str]) -> Mode:
     norm = raw.strip().lower()
     if _ISO.fullmatch(norm):
         return Mode("fixed", norm)
-    return Mode("latest", None, raw[:RAW_LANG_MAX], "invalid-lang")
+    # An env value that is not valid UTF-8 reaches os.environ as lone surrogates
+    # (surrogateescape), which cannot be written to a UTF-8 file. Node decodes the same bytes to
+    # U+FFFD, one per byte; so does this, so the record is writable and the same on both sides.
+    return Mode("latest", None, _LONE.sub("\ufffd", raw)[:RAW_LANG_MAX], "invalid-lang")
 
 
 def frame(prompt: str) -> str:

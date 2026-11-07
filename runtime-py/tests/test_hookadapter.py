@@ -2974,6 +2974,19 @@ def test_reply_native_invalid_lang_falls_back_and_is_recorded(tmp_path):
     assert rec["rawLang"] == "th-TH" and rec["mode"] == "latest"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX env bytes; Windows env is UTF-16")
+def test_reply_native_non_utf8_lang_still_injects_and_records(tmp_path):
+    # r1 #1: bytes \xff\xfe reach os.environ as lone surrogates; the state write used to raise
+    # UnicodeEncodeError (not OSError), crashing the hook before recall and the emit.
+    home, cwd = _bed(tmp_path, "rn-bytes")
+    env = {"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": "\udcff\udcfe"}
+    ctx = _rn_prompt(home, cwd, "ทำไมมันพัง", env=env)
+    assert ctx.startswith("[bantamkit reply-native] Think in English")
+    rec = json.loads((home / ".bantamkit" / "hooks" / "reply-native.json").read_text("utf-8"))
+    assert rec["rawLang"] == "\ufffd\ufffd" and rec["reason"] == "invalid-lang"
+    assert not [x for x in _log_lines(home) if x.get("event") == "error"]
+
+
 def _rn_session(home, cwd, source, env):
     r = _run_hook(
         {"hook_event_name": "SessionStart", "source": source, "transcript_path": _RN_T},

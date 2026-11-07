@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import { join } from 'node:path';
 
 import { AssetNotFound, loadLang } from './assets.js';
+import { pyStrip } from './pysem.js';
 
 export const NATIVE_ENV = 'BANTAMKIT_REPLY_NATIVE';
 export const LANG_ENV = 'BANTAMKIT_REPLY_LANG';
@@ -45,7 +46,9 @@ export interface ReplyPlan {
   reason: string | null;
 }
 
-const lower = (s: string): string => s.trim().toLowerCase();
+// Python's `str.strip()`, not JS `trim()`: the two strip different whitespace (U+0085, U+001F,
+// U+FEFF), and one env value must give one mode on both runtimes.
+const lower = (s: string): string => pyStrip(s).toLowerCase();
 
 export function mode(env: Record<string, string | undefined>): ReplyMode {
   if (!ON.has(lower(env[NATIVE_ENV] ?? ''))) return { kind: 'off', lang: null, rawLang: null, reason: null };
