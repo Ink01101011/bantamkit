@@ -3047,3 +3047,61 @@ def _load_th():
     from bantamkit.assets import load_lang
 
     return load_lang("th")
+
+
+def _hook_run(tmp_path: Path) -> H.HookRun:
+    state = tmp_path / ".bantamkit" / "hooks"
+    return H.HookRun(
+        home=str(tmp_path),
+        state=str(state),
+        log=str(state / "hook-log.jsonl"),
+        profile=str(tmp_path / ".bantamkit" / "memory"),
+        dream_state=str(state / "dream-state.json"),
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
+def test_ledger_temp_is_exclusive_and_never_follows_a_planted_link(tmp_path, monkeypatch):
+    # #297 (#250 class): the ledger temp used to be `{file}.{pid}.tmp`, opened "w", so a link
+    # planted at that name had its target truncated and overwritten.
+    run = _hook_run(tmp_path)
+    os.makedirs(run.state)
+    monkeypatch.setattr(H.secrets, "token_hex", lambda n: "abcd1234")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    file = H._ledger_path(run, "s1")
+    os.symlink(victim, f"{file}.{os.getpid()}.abcd1234.tmp")
+    with pytest.raises(FileExistsError):
+        H._write_ledger(run, "s1", {"reads": {}})
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert os.path.islink(f"{file}.{os.getpid()}.abcd1234.tmp")  # not ours: left alone
+
+
+def test_ledger_write_leaves_no_temp_behind(tmp_path):
+    run = _hook_run(tmp_path)
+    for i in range(5):
+        H._write_ledger(run, "s1", {"reads": {}, "n": i})
+    assert sorted(os.listdir(run.state)) == ["ledger-s1.json"]
+
+
+def test_js_str_reads_objects_and_arrays_as_js_does():
+    # g1 F3 (#297): `${obj}` is "[object Object]"; an array joins its elements with ",".
+    assert H._js_str({"a": 1}) == "[object Object]"
+    assert H._js_str([1, None, "x", [2, 3]]) == "1,,x,2,3"
+
+
+def test_js_or_is_js_truthiness():
+    # #297 review: Python's `or` treats {} and [] as false; JS `||` does not.
+    assert H._js_or({}, "S") == {}
+    assert H._js_or([], "S") == []
+    assert H._js_or(None, False, 0, float("nan"), "", "last") == "last"
+    assert H._js_or(0.0, "x") == "x" and H._js_or("a", "b") == "a"
+
+
+def test_ledger_path_names_the_file_as_node_does(tmp_path):
+    run = _hook_run(tmp_path)
+    name = lambda sid: os.path.basename(H._ledger_path(run, sid))  # noqa: E731
+    assert name(["a"]) == "ledger-a.json"
+    assert name(True) == "ledger-true.json"
+    assert name(5.0) == "ledger-5.json"
+    assert name(None) == "ledger-nosession.json"

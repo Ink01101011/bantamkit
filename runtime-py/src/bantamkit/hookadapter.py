@@ -313,6 +313,22 @@ def _js_number(value: float) -> str:
     return repr(float(value))
 
 
+def _js_or(*values: Any) -> Any:
+    """`a || b || c`: the first JS-truthy value, else the last (#297).
+
+    Python's `or` is not JS `||`: an empty dict or list is falsy here and truthy there, so
+    `{}` as a transcript_path keyed one context on each side. JS falsy: undefined/null,
+    false, 0, NaN and "".
+    """
+    for v in values[:-1]:
+        if v is None or v is False or v == "":
+            continue
+        if isinstance(v, int | float) and not isinstance(v, bool) and (v == 0 or v != v):
+            continue
+        return v
+    return values[-1]
+
+
 def _js_str(value: Any) -> str:
     """`${value}` for the scalars a hook payload can carry, `None` reading as `''`.
 
@@ -328,7 +344,11 @@ def _js_str(value: Any) -> str:
         return _js_number(value)
     if isinstance(value, str):
         return value
-    return _dumps(value)
+    if isinstance(value, list):
+        # Array.prototype.toString: elements joined by ",", null and undefined as "".
+        return ",".join("" if x is None else _js_str(x) for x in value)
+    # Any other JSON value is an object, and `${obj}` is "[object Object]" (g1 F3, #297).
+    return "[object Object]"
 
 
 def _mtime_ms(st: os.stat_result) -> float:
@@ -384,7 +404,7 @@ _LEDGER_UNSAFE = re.compile(r"[^\w-]", re.ASCII)
 
 
 def _ledger_path(run: HookRun, session_id: Any) -> str:
-    safe = _LEDGER_UNSAFE.sub("_", str(session_id or "nosession"))
+    safe = _LEDGER_UNSAFE.sub("_", _js_str(_js_or(session_id, "nosession")))
     return os.path.join(run.state, f"ledger-{safe}.json")
 
 
@@ -412,14 +432,23 @@ def _write_ledger(run: HookRun, session_id: Any, ledger: dict[str, Any]) -> None
 
     A reader that lands between a whole-file truncate and its write sees an empty ledger,
     which `_read_ledger` reads as "nothing seen". `os.replace` is atomic on both platforms;
-    the name carries the pid so two writers never share a temp file.
+    the name carries the pid and a random part, and the temp is created EXCLUSIVELY (#250 class,
+    #297): a planted file or symlink at that name is refused, never followed or truncated.
     """
     os.makedirs(run.state, exist_ok=True)
     file = _ledger_path(run, session_id)
-    tmp = f"{file}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(_dumps(ledger))
-    os.replace(tmp, file)
+    tmp = f"{file}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    fh = open(tmp, "x", encoding="utf-8")  # raises before anything of ours exists at `tmp`
+    try:
+        with fh:
+            fh.write(_dumps(ledger))
+        os.replace(tmp, file)
+    except BaseException:
+        try:
+            os.unlink(tmp)  # ours: created above
+        except OSError:
+            pass
+        raise
 
 
 #: How long a writer waits for the ledger lock before going ahead without it.
@@ -642,7 +671,7 @@ def _resolve_native_memory(run: HookRun, payload: dict[str, Any]) -> NativeMemor
         pass  # absent, unreadable, not JSON, not an object -- all "no answer", never an error
     tried.append("settings")
 
-    transcript = str(payload.get("transcript_path") or "").strip()
+    transcript = _js_str(_js_or(payload.get("transcript_path"), "")).strip()
     if transcript:
         directory = os.path.join(os.path.dirname(transcript), "memory")
         if _readable_file(os.path.join(directory, NATIVE_INDEX)):
@@ -1230,7 +1259,7 @@ def _touch_summary(run: HookRun, payload: dict[str, Any]) -> str:
         if repo is None:
             return ""
         rows = TouchLog(run.home, repo.id).read()
-        session = _js_str(payload.get("session_id") or "")
+        session = _js_str(_js_or(payload.get("session_id"), ""))
         compact = payload.get("source") == "compact"
         prev = None if compact else previous_session(rows, session)
         if not compact and prev is None:
@@ -1448,7 +1477,7 @@ def _reply_inject(
     earlier window of the same transcript recorded is not in this one. Plan against nothing
     and start the seen-set over with what is injected now.
     """
-    transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
+    transcript = _js_str(_js_or(payload.get("transcript_path"), payload.get("session_id"), ""))
     holder: dict[str, replynative.Plan] = {}
 
     def update(ledger: dict[str, Any]) -> bool:
@@ -1517,7 +1546,7 @@ def _reply_native_session(
 
 def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     _turn_open(run, payload)  # #200: before the skip; a command's turn can still run Bash
-    prompt = str(payload.get("prompt") or "").strip()
+    prompt = _js_str(_js_or(payload.get("prompt"), "")).strip()
     # #292: BEFORE the short-prompt skip ("ทำต่อ" is 5 code points) and independent of recall,
     # so a recall miss can never swallow the directive. One emit carries both.
     reply = _reply_native_prompt(run, payload, prompt)
@@ -1558,7 +1587,7 @@ def _recall_context(run: HookRun, payload: dict[str, Any], prompt: str) -> str |
     touch = _touch_context(run, payload, m)
     # #207 amendment 3 (Q3): a short prompt borrows the session's previous prompt for its
     # BM25F terms. `memory_recall` never does; only this payload carries `transcript_path`.
-    head = _head_query(prompt, _js_str(payload.get("transcript_path") or ""))
+    head = _head_query(prompt, _js_str(_js_or(payload.get("transcript_path"), "")))
     o = m.recall_outcome(prompt, 3, stamp=False, context=touch, head=head)
     skipped = [dict(s) for s in o.skipped]
     degraded: dict[str, Any] = {"skipped": skipped} if skipped else {}
@@ -1596,7 +1625,7 @@ def _recall_context(run: HookRun, payload: dict[str, Any], prompt: str) -> str |
     # un-deduped arm would have sent, so its precision can only rise, and a repeated prompt
     # says nothing rather than walking down the ranking on every repeat. The seen-set is the
     # session ledger's, so it is forgotten exactly when the window is (compaction, `/clear`).
-    transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
+    transcript = _js_str(_js_or(payload.get("transcript_path"), payload.get("session_id"), ""))
     ledger = _read_ledger(run, payload.get("session_id"))
     seen = _injected_seen(ledger, transcript)
     fresh: list[str] = []
@@ -1696,7 +1725,7 @@ def _touch_context(run: HookRun, payload: dict[str, Any], m: Memory) -> TouchCon
         repo = find_repo(str(payload.get("cwd") or os.getcwd()))
         if repo is None:
             return None
-        session = _js_str(payload.get("session_id") or "")
+        session = _js_str(_js_or(payload.get("session_id"), ""))
         seq = current_seq(run.state, session)
         paths = window(TouchLog(run.home, repo.id).tail(session, seq - TOUCH_WINDOW), seq)
         if not paths:
@@ -1914,7 +1943,7 @@ def _pre_tool_use_read(run: HookRun, payload: dict[str, Any]) -> None:
     # The transcript is the CONTEXT dimension: a subagent has its own transcript and has not
     # seen the parent's reads. It is carried on the record as well as in the key, because
     # `_pre_compact` must filter on it and a path may itself contain the key's delimiter.
-    transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
+    transcript = _js_str(_js_or(payload.get("transcript_path"), payload.get("session_id"), ""))
     key = f"{transcript}|{file}|{_js_str(offset)}|{_js_str(limit)}"
     sig = f"{_js_number(_mtime_ms(st))}|{st.st_size}"
     decision = {"action": "record", "refused_at": ""}
@@ -2003,7 +2032,7 @@ def _record_touch(run: HookRun, payload: dict[str, Any]) -> None:
         repo = find_repo(str(payload.get("cwd") or os.getcwd()))
         if repo is None or not git_on_path(state_dir=run.state):
             return
-        session = _js_str(payload.get("session_id") or "")
+        session = _js_str(_js_or(payload.get("session_id"), ""))
         seq = next_seq(run.state, session)  # EVERY tool call counts, Bash included
         tool = payload.get("tool_name") if isinstance(payload.get("tool_name"), str) else ""
         ti = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
@@ -2036,7 +2065,7 @@ def _turn_open(run: HookRun, payload: dict[str, Any]) -> None:
             return
         snap = snapshot(repo)
         if snap is not None:
-            session = _js_str(payload.get("session_id") or "")
+            session = _js_str(_js_or(payload.get("session_id"), ""))
             save_turn(run.state, session, snap, current_seq(run.state, session))
     except Exception:  # noqa: BLE001 - the graph is an enhancement (#200, Error handling)
         _log(run, {"event": "UserPromptSubmit", "touch": "miss"})
@@ -2056,7 +2085,7 @@ def _turn_close(run: HookRun, payload: dict[str, Any]) -> None:
         repo = find_repo(str(payload.get("cwd") or os.getcwd()))
         if repo is None:
             return
-        session = _js_str(payload.get("session_id") or "")
+        session = _js_str(_js_or(payload.get("session_id"), ""))
         turn = load_turn(run.state, session)
         if turn is None:
             return
@@ -2089,7 +2118,7 @@ def _append_usage_event(run: HookRun, payload: dict[str, Any]) -> None:
     if tool == "Skill":
         detail = _js_str(ti.get("skill") if ti.get("skill") is not None else "")
     elif tool == "Agent":
-        detail = _js_str(ti.get("subagent_type") or "general-purpose")
+        detail = _js_str(_js_or(ti.get("subagent_type"), "general-purpose"))
     else:
         detail = ""
     record = {
@@ -2098,7 +2127,7 @@ def _append_usage_event(run: HookRun, payload: dict[str, Any]) -> None:
         # The HOST's slug, not tool-metrics': `token-ledger.mjs` uses this same expression,
         # and mapping `.` to a dash as well (which `log_event.py` did and the host does not)
         # split one project into two keys.
-        "project": re.sub(r"[\\/:]", "-", _js_str(payload.get("cwd") or "")),
+        "project": re.sub(r"[\\/:]", "-", _js_str(_js_or(payload.get("cwd"), ""))),
         "tool": tool,
         "server": parts[1] if tool.startswith("mcp__") and len(parts) >= 3 else "builtin",
         # The dedupe key. Two writers append to this file by design and one machine can
@@ -2933,7 +2962,7 @@ def _stop(run: HookRun, payload: dict[str, Any]) -> None:
         return
     try:
         with open(
-            _js_str(payload.get("transcript_path") or ""), encoding="utf-8", errors="replace"
+            _js_str(_js_or(payload.get("transcript_path"), "")), encoding="utf-8", errors="replace"
         ) as fh:
             text = fh.read()
     except OSError:
