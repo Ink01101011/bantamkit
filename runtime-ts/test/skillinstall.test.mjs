@@ -308,3 +308,103 @@ test('constants', () => {
   assert.deepEqual([si.AUTO_PER_DAY, si.AUTO_LIVE_MAX, si.PROBATION_DAYS], [1, 5, 30]);
   assert.deepEqual([si.KEYWORDS_MAX, si.EVIDENCE_PROJECT_CHARS, si.EVIDENCE_USER_CHARS], [16, 80, 500]);
 });
+
+// ------------------------------------------------------------ trigger phrases (#301 Task 4)
+
+const liveText = (h, name) => readFileSync(join(target(h, name), 'SKILL.md'), 'utf8');
+
+test('triggers key', () => {
+  assert.equal(si.TRIGGERS_KEY, 'bantamkit-triggers');
+});
+
+test('skillText stamps triggers only when present', () => {
+  const rec = record('fixing-a', 6, { okDraft: false });
+  const withT = si.skillText({ ...rec, triggers: ['merge feature', 'merge feature into'] }, draft('fixing-a'));
+  // skillfile renders every metadata value quoted
+  assert.ok(withT.includes('bantamkit-triggers: "merge feature|merge feature into"'));
+  assert.equal(sf.isEdited(withT), false);
+  assert.ok(!si.skillText({ ...rec, triggers: [] }, draft('fixing-a')).includes('bantamkit-triggers'));
+  // a record without the key renders byte for byte as it did before #301
+  assert.equal(si.skillText(rec, draft('fixing-a')), si.skillText({ ...rec, triggers: [] }, draft('fixing-a')));
+});
+
+test("an install writes the record's triggers", () => {
+  const h = home();
+  const rec = { ...record('fixing-a'), triggers: ['lexer crash', 'fix lexer crash'] };
+  si.install(rec, draft('fixing-a'), null, h, NOW, false);
+  const meta = sf.parseSkill(liveText(h, 'fixing-a')).metadata;
+  assert.equal(meta['bantamkit-triggers'], 'lexer crash|fix lexer crash');
+});
+
+const plainInstall = (h) => {
+  si.install(record('fixing-a'), draft('fixing-a'), null, h, NOW, false);
+  return 'c-fixing-a';
+};
+
+test('triggersStep backfills an unedited install', () => {
+  const h = home();
+  const cid = plainInstall(h);
+  const doc = { clusters: [{ id: cid, triggers: ['merge feature', 'fix lexer crash'] }] };
+  const state = sf.readState(h);
+  assert.deepEqual(si.triggersStep(state, doc, h, at(1)), ['added triggers to skill fixing-a']);
+  const text = liveText(h, 'fixing-a');
+  const meta = sf.parseSkill(text).metadata;
+  assert.equal(meta['bantamkit-triggers'], 'merge feature|fix lexer crash');
+  assert.equal(meta['bantamkit-version'], '2');
+  assert.equal(sf.isEdited(text), false);
+  // the caller's state is the state written: a later step does not see a hand edit
+  const entry = state.skills['fixing-a'];
+  assert.equal(entry.sha256, sf.canonicalHash(text));
+  assert.equal(entry.version, 2);
+  assert.equal(entry.versions['2'].kind, 'auto');
+  assert.ok(statSync(join(target(h, 'fixing-a'), 'references', 'history', 'v1.md')).isFile());
+  assert.deepEqual(si.triggersStep(sf.readState(h), doc, h, at(2)), []);
+});
+
+test('triggersStep runs with auto off', () => {
+  const h = home();
+  const cid = plainInstall(h);
+  const was = process.env[si.AUTO_ENV];
+  process.env[si.AUTO_ENV] = 'off';
+  try {
+    const doc = { clusters: [{ id: cid, triggers: ['merge feature'] }] };
+    assert.deepEqual(si.triggersStep(sf.readState(h), doc, h, at(1)), ['added triggers to skill fixing-a']);
+  } finally {
+    process.env[si.AUTO_ENV] = was;
+  }
+});
+
+test('triggersStep never touches an edited skill', () => {
+  const h = home();
+  const cid = plainInstall(h);
+  const skill = join(target(h, 'fixing-a'), 'SKILL.md');
+  writeFileSync(skill, readFileSync(skill, 'utf8').replace('When asked.', 'When I ask.'));
+  const before = readFileSync(skill);
+  const doc = { clusters: [{ id: cid, triggers: ['merge feature'] }] };
+  assert.deepEqual(si.triggersStep(sf.readState(h), doc, h, at(1)), []);
+  assert.ok(readFileSync(skill).equals(before));
+});
+
+test('triggersStep skips no record and an empty list', () => {
+  const h = home();
+  const cid = plainInstall(h);
+  const skill = join(target(h, 'fixing-a'), 'SKILL.md');
+  const before = readFileSync(skill);
+  for (const doc of [
+    { clusters: [] },
+    { clusters: [{ id: 'c-other', triggers: ['merge feature'] }] },
+    { clusters: [{ id: cid, triggers: [] }] },
+    { clusters: [{ id: cid }] },
+  ]) {
+    assert.deepEqual(si.triggersStep(sf.readState(h), doc, h, at(1)), []);
+  }
+  assert.ok(readFileSync(skill).equals(before));
+});
+
+test('a backfill on probation day 30 is still removed as unused', () => {
+  const h = home();
+  const state = installed(h);
+  const doc = { clusters: [{ id: 'c-fixing-a', triggers: ['merge feature'] }] };
+  assert.deepEqual(si.triggersStep(state, doc, h, at(30)), ['added triggers to skill fixing-a']);
+  assert.deepEqual(si.probationStep(state, {}, h, at(30)), ['removed unused skill fixing-a']);
+});

@@ -432,6 +432,36 @@ const carryPrev = {
     { id: 7, source: 'shiftwork', evidence: [] },
   ],
 };
+/**
+ * #301 trigger phrases. TRIG_DROPS is one cluster of 4 successes and a failure, n = 40: the
+ * 3-gram "merge เข้า develop" (Thai) is in every success; its inner 2-grams reach the top 5
+ * and must drop; "please check" is in all 40 pieces (over 1/8) and must be absent; "deploy
+ * staging" is only inside a fenced block (`frame`) and must be absent; the failure's
+ * "zebra yonder" never counts. TRIG_ORDER's five 3-grams lead with U+0E40, U+FA0E and
+ * U+20000: code-point order puts U+FA0E before U+20000, UTF-16 order (0xD840) the reverse.
+ */
+const trigPiece = (i, prompt, ok = true) => ({
+  id: `t/${pz(i)}`,
+  source: 'session',
+  ts: `2026-01-01T00:00:${pz(i)}Z`,
+  repo: '/r/a/.git',
+  prompt,
+  tools: [],
+  paths: [],
+  ok,
+  signals: {},
+  failure: ok ? null : 'it failed',
+});
+const TRIG_BASE = 'please check merge เข้า develop\n```\ndeploy staging\n```\n';
+const TRIG_DROPS = [
+  ...[0, 1, 2, 3].map((i) => trigPiece(i, TRIG_BASE + (i % 2 ? '\uFA0Eq xray' : '\u{20000}q xray'))),
+  trigPiece(4, TRIG_BASE + '\uFA0Eq xray zebra yonder', false),
+  ...Array.from({ length: 35 }, (_, i) => trigPiece(10 + i, `please check filler${i} odd${i}`)),
+];
+const TRIG_ORDER = [
+  ...[0, 1].map((i) => trigPiece(i, '\u{20000}q merge เข้า develop \uFA0Eq please check')),
+  ...Array.from({ length: 20 }, (_, i) => trigPiece(10 + i, `noise words item${i}`)),
+];
 const MINES = [
   { label: 'shiftwork bars', pieces: SW, previous: null, now: NOW, ms: 0 },
   { label: 'session bars', pieces: SE, previous: null, now: NOW, ms: 1234 },
@@ -439,6 +469,8 @@ const MINES = [
   { label: 'rejected at 3, mined at 6', pieces: corpus([['bravo', 6, 0]], 'shiftwork', 8), previous: rejectedPrev, now: NOW, ms: 0 },
   { label: 'carried state', pieces: CARRY, previous: carryPrev, now: NOW, ms: 0 },
   { label: 'both sources, no previous', pieces: [...SW, ...SE], previous: { version: 1, clusters: 'x' }, now: NOW, ms: 0 },
+  { label: 'trigger phrases — share, df cap, frame, Thai, inner 2-grams (#301)', pieces: TRIG_DROPS, previous: null, now: NOW, ms: 0 },
+  { label: 'trigger phrases — code-point order, the top cut (#301)', pieces: TRIG_ORDER, previous: null, now: NOW, ms: 0 },
 ];
 
 /** Two worktrees of one repo (project level) and a second repo (user level), as real trees. */
@@ -828,6 +860,26 @@ export async function run(ctx) {
         .filter((c) => c.successes === 3)
         .map((c) => [c.successes, c.level, c.top === null ? null : c.top, c.repos.length])
         .sort((a, b) => (a[1] < b[1] ? -1 : 1)),
+    });
+    // #301: the trigger lists, pinned per side, so a change made to BOTH miners alike is red.
+    const trig = (label) => ans.mines[MINES.findIndex((m) => m.label === label)].clusters.filter((c) => c.members > 1).map((c) => c.triggers);
+    cases.push({
+      name: `LITERAL: trigger phrases — share, df cap, frame, Thai, inner 2-grams dropped (#301) — ${side}`,
+      kind: 'json',
+      expected: [['check merge เข้า', 'merge เข้า develop', 'please check merge']],
+      actual: trig('trigger phrases — share, df cap, frame, Thai, inner 2-grams (#301)'),
+    });
+    cases.push({
+      name: `LITERAL: trigger phrases — code-point order, U+FA0E before U+20000 (#301) — ${side}`,
+      kind: 'json',
+      expected: [['develop \uFA0Eq please', 'merge เข้า develop', 'เข้า develop \uFA0Eq', '\uFA0Eq please check', '\u{20000}q merge เข้า']],
+      actual: trig('trigger phrases — code-point order, the top cut (#301)'),
+    });
+    cases.push({
+      name: `LITERAL: every record carries a triggers list (#301) — ${side}`,
+      kind: 'json',
+      expected: true,
+      actual: ans.mines.every((d) => d.clusters.every((c) => Array.isArray(c.triggers))),
     });
   }
   const part3 = await sessionCases(ctx, base);

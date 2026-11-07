@@ -44,6 +44,8 @@ import { LogSegment } from './storage/logsegment.js';
 import { parseNow } from './storage/retention.js';
 
 export const AUTO_ENV = 'BANTAMKIT_SKILL_AUTO';
+/** #301: the SKILL.md metadata key holding the cluster's trigger phrases, `|`-joined. */
+export const TRIGGERS_KEY = 'bantamkit-triggers';
 /** The `skills:` status line's last clause, by the switch (0.37.0: off unless opted in). */
 export const AUTO_SAID_ON = 'auto on';
 export const AUTO_SAID_OFF = `auto off (${AUTO_ENV}=on to opt in)`;
@@ -194,15 +196,29 @@ export function installRoot(cluster: Rec, levelOverride: string | null, home: st
   return [level, projectSkillsRoot(top)];
 }
 
+/** A record's trigger phrases that can be `|`-joined. */
+function triggersOf(rec: Rec): string[] {
+  return strs(rec['triggers']).filter((t) => t && !t.includes('|'));
+}
+
+/**
+ * The draft stamped with bantamkit's metadata and, last, its hash.
+ *
+ * `bantamkit-triggers` (#301) is written only when the record has trigger phrases, so a
+ * record without them stamps exactly what it did before.
+ */
 export function skillText(cluster: Rec, text: string): string {
   const keywords = strs(cluster['keywords']).slice(0, KEYWORDS_MAX);
-  return stamp(clean(text), {
+  const meta: Record<string, string> = {
     'bantamkit-cluster': clean(cluster['id'] as string),
     'bantamkit-evidence': evidenceIds(cluster).join(','),
     'bantamkit-generated-by': GENERATED_BY,
     'bantamkit-keywords': keywords.join(','),
     'bantamkit-version': '1',
-  });
+  };
+  const triggers = triggersOf(cluster);
+  if (triggers.length > 0) meta[TRIGGERS_KEY] = triggers.join('|');
+  return stamp(clean(text), meta);
 }
 
 let counter = 0;
@@ -822,6 +838,55 @@ function pyStr(v: unknown): string {
   if (v === true) return 'True';
   if (v === false) return 'False';
   return String(v);
+}
+
+/**
+ * Backfill `bantamkit-triggers` on installed skills that predate #301; the events. The
+ * reference's `triggers_step`.
+ *
+ * Only a live, unedited skill (`editedNow`) whose SKILL.md has no `bantamkit-triggers` yet and
+ * whose `bantamkit-cluster` names a record of `doc` with trigger phrases. Written as the next
+ * version (`newVersion`, kind `auto`), so history, the hash and the promoted copy stay
+ * consistent; one that is refused is left for the next run. `state` is read for the
+ * decisions and, when anything was written, replaced in place by the state written, so a
+ * later step does not take the new hash for a hand edit.
+ */
+export function triggersStep(state: Rec, doc: Rec, home: string, now: string): string[] {
+  const clusters = Array.isArray(doc['clusters']) ? doc['clusters'] : [];
+  const byId = new Map<string, string[]>();
+  for (const r of clusters) {
+    if (isObj(r) && typeof r['id'] === 'string') byId.set(r['id'], triggersOf(r));
+  }
+  const skills = isObj(state['skills']) ? state['skills'] : {};
+  const events: string[] = [];
+  for (const name of Object.keys(skills).sort(cmpCodepoint)) {
+    const entry = skills[name];
+    if (!isObj(entry)) continue;
+    const live = liveText(entry);
+    if (live === null || editedNow(live[1], entry)) continue;
+    let text: string;
+    let meta: Record<string, unknown>;
+    try {
+      text = UTF8.decode(live[1]);
+      meta = parseSkill(text).metadata;
+    } catch (e) {
+      if (e instanceof TypeError || e instanceof SkillFileError) continue;
+      throw e;
+    }
+    if (Object.hasOwn(meta, TRIGGERS_KEY)) continue;
+    const cid = Object.hasOwn(meta, 'bantamkit-cluster') ? meta['bantamkit-cluster'] : '';
+    const found = typeof cid === 'string' ? byId.get(cid) : undefined;
+    if (!found || found.length === 0) continue;
+    try {
+      newVersion(name, withMeta(text, null, { [TRIGGERS_KEY]: found.join('|') }), home, now, 'auto');
+    } catch (e) {
+      if (e instanceof SkillFileError) continue;
+      throw e;
+    }
+    events.push(`added triggers to skill ${name}`);
+  }
+  if (events.length > 0) replaceState(state, readState(home));
+  return events;
 }
 
 function fell(sN: number, uN: number, sF: number, uF: number): boolean {

@@ -155,6 +155,10 @@ def run(bed: Path, op: dict):
                 out["state"] = state
             elif kind == "undo":
                 out["said"] = si.undo(op["name"], home)
+            elif kind == "triggers":
+                state = sf.read_state(home)
+                out["events"] = si.triggers_step(state, op["doc"], home, op["now"])
+                out["state"] = state
             else:
                 raise SystemExit(f"skillinstall_ref: unknown op {kind!r}")
         except sf.SkillFileError as e:

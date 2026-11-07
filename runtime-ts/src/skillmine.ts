@@ -32,6 +32,7 @@ import zlib from 'node:zlib';
 import { nospace, WORDCHAR } from './memory/retrieval.js';
 import { dumpJson, fromJs } from './pyjson.js';
 import { cmpCodepoint, pyLstrip, pyStrip } from './pysem.js';
+import { frame } from './replynative.js';
 import { exclusive } from './storage/lock.js';
 import { HOST_CLAUDE_CODE, jsonlFiles } from './skillhost.js';
 import { parseTs } from './memory/usage.js';
@@ -53,6 +54,7 @@ import {
   liveAuto,
   probationStep,
   statsStep,
+  triggersStep,
 } from './skillinstall.js';
 import { PROMOTE_DAYS, promoteStep } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
@@ -67,6 +69,15 @@ export const KEYWORDS_TOP = 12;
 /** A term in more than KEYWORD_DF_MAX of a source's pieces is a corpus stop-word. */
 export const KEYWORD_DF_MAX: readonly [number, number] = [1, 2];
 export const NGRAM_SIZES: readonly number[] = [2, 3];
+/**
+ * #301: a cluster's trigger phrases (spec §2). At most TRIGGERS_TOP; each a 2- or 3-token
+ * phrase of a successful member's `frame()`d prompt, in at least TRIGGER_SHARE of the
+ * successes and in at most TRIGGER_DF_MAX of the source's pieces.
+ */
+export const TRIGGERS_TOP = 5;
+export const TRIGGER_SHARE: readonly [number, number] = [1, 2];
+export const TRIGGER_DF_MAX: readonly [number, number] = [1, 8];
+export const TRIGGER_SIZES: readonly number[] = [2, 3];
 export const SIM_WEIGHTS: readonly (readonly ['keywords' | 'ngrams' | 'paths', number])[] = [
   ['keywords', 2],
   ['ngrams', 1],
@@ -606,6 +617,91 @@ export function docFreq(pieces: Iterable<Piece>): [Map<string, number>, number] 
   return [df, n];
 }
 
+/** A phrase's key: its tokens `\u0000`-joined (a token never holds U+0000). */
+const PHRASE_SEP = '\u0000';
+
+/** Every contiguous `TRIGGER_SIZES`-token run of `tokens`, keyed by its `\u0000`-joined tokens. */
+export function phrases(tokens: readonly string[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const k of TRIGGER_SIZES) {
+    for (let i = 0; i + k <= tokens.length; i += 1) {
+      const ph = tokens.slice(i, i + k);
+      out.set(ph.join(PHRASE_SEP), ph);
+    }
+  }
+  return out;
+}
+
+/** The phrases of what the user typed: pasted blocks, code, URLs and paths framed out. */
+export function promptPhrases(prompt: string): Map<string, string[]> {
+  return phrases(tokenizeLabel(frame(prompt)));
+}
+
+/** Document frequency of each phrase over one source's pieces, and the count. */
+export function phraseDocFreq(pieces: Iterable<Piece>): [Map<string, number>, number] {
+  const df = new Map<string, number>();
+  let n = 0;
+  for (const p of pieces) {
+    n += 1;
+    for (const key of promptPhrases(p.prompt).keys()) df.set(key, (df.get(key) ?? 0) + 1);
+  }
+  return [df, n];
+}
+
+function within(short: readonly string[], long: readonly string[]): boolean {
+  const k = short.length;
+  for (let i = 0; i + k <= long.length; i += 1) {
+    if (short.every((t, j) => long[i + j] === t)) return true;
+  }
+  return false;
+}
+
+/** Python's tuple-of-str order: element by element in code-point order, a prefix first. */
+function cmpSeq(a: readonly string[], b: readonly string[]): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+    const d = cmpCodepoint(a[i]!, b[i]!);
+    if (d !== 0) return d;
+  }
+  return a.length - b.length;
+}
+
+/**
+ * A cluster's trigger phrases, space-joined (spec §2). Python's `cluster_triggers`.
+ *
+ * Candidates are counted once per SUCCESSFUL member. Kept: in at least `TRIGGER_SHARE` of the
+ * successes and in at most `TRIGGER_DF_MAX` of the source's `n` pieces. Ranked by member count
+ * (desc), length (desc), then tokens in code-point order; the first `TRIGGERS_TOP` are taken,
+ * and a 2-gram inside a taken 3-gram is dropped.
+ */
+export function clusterTriggers(members: readonly Piece[], df: ReadonlyMap<string, number>, n: number): string[] {
+  const ok = members.filter((p) => p.ok === true);
+  if (ok.length === 0) return [];
+  const counts = new Map<string, number>();
+  const seq = new Map<string, string[]>();
+  for (const p of ok) {
+    for (const [key, ph] of promptPhrases(p.prompt)) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      seq.set(key, ph);
+    }
+  }
+  const [sNum, sDen] = TRIGGER_SHARE;
+  const [dNum, dDen] = TRIGGER_DF_MAX;
+  const kept = [...counts.keys()].filter(
+    (k) => counts.get(k)! * sDen >= ok.length * sNum && (df.get(k) ?? 0) * dDen <= n * dNum,
+  );
+  kept.sort(
+    (a, b) =>
+      counts.get(b)! - counts.get(a)! ||
+      seq.get(b)!.length - seq.get(a)!.length ||
+      cmpSeq(seq.get(a)!, seq.get(b)!),
+  );
+  const top = kept.slice(0, TRIGGERS_TOP).map((k) => seq.get(k)!);
+  const longs = top.filter((ph) => ph.length === 3);
+  return top
+    .filter((ph) => ph.length === 3 || !longs.some((lg) => within(ph, lg)))
+    .map((ph) => ph.join(' '));
+}
+
 export function ngrams(tools: readonly string[]): Set<string> {
   const out = new Set<string>();
   for (const k of NGRAM_SIZES) {
@@ -712,6 +808,8 @@ export interface Cluster {
   readonly repos: readonly string[];
   readonly level: string;
   readonly top: string | null;
+  /** #301: the trigger phrases (`clusterTriggers`), space-joined. */
+  readonly triggers: readonly string[];
 }
 
 export type ProposalsDoc = Record<string, unknown>;
@@ -734,7 +832,13 @@ function count(into: Map<string, number>, xs: Iterable<string>): void {
   for (const x of xs) into.set(x, (into.get(x) ?? 0) + 1);
 }
 
-function makeCluster(source: string, members: Piece[], sigs: Signature[]): Cluster {
+function makeCluster(
+  source: string,
+  members: Piece[],
+  sigs: Signature[],
+  pdf: ReadonlyMap<string, number>,
+  pn: number,
+): Cluster {
   const ok: number[] = [];
   members.forEach((p, i) => {
     if (p.ok === true) ok.push(i);
@@ -776,6 +880,7 @@ function makeCluster(source: string, members: Piece[], sigs: Signature[]): Clust
     repos: sortCp([...keys].filter((k) => k !== '')),
     level,
     top,
+    triggers: clusterTriggers(members, pdf, pn),
   };
 }
 
@@ -793,6 +898,7 @@ export function cluster(pieces: Iterable<Piece>): Cluster[] {
       .sort((a, b) => cmpCodepoint(a.ts, b.ts) || cmpCodepoint(a.id, b.id));
     if (group.length === 0) continue;
     const [df, n] = docFreq(group);
+    const [pdf, pn] = phraseDocFreq(group);
     const sigs = group.map((p) => signature(p, df, n));
     const leaders: Signature[] = [];
     const groups: number[][] = [];
@@ -819,6 +925,8 @@ export function cluster(pieces: Iterable<Piece>): Cluster[] {
           source,
           idxs.map((i) => group[i]!),
           idxs.map((i) => sigs[i]!),
+          pdf,
+          pn,
         ),
       );
     }
@@ -917,6 +1025,7 @@ export function proposals(clusters: Iterable<Cluster>, previous: unknown, now: s
       steps: [...c.steps],
       successes: c.successes,
       top: c.top,
+      triggers: [...c.triggers],
     };
     if (rejectedAt !== null) rec['rejected_at'] = rejectedAt;
     if (prev !== null && Object.prototype.hasOwnProperty.call(prev, 'draft')) rec['draft'] = prev['draft'];
@@ -1880,6 +1989,14 @@ async function dailyRun(home: string, cwd: string | null, now: string): Promise<
   const state = readState(home) as Rec;
   const events = autoStep(doc, state, home, now);
   if (!proposalsBytes(doc).equals(written)) writeProposals(home, doc);
+  // #301: trigger phrases for skills installed before the miner had them. On its own like
+  // the steps below; it replaces `state` with the state it wrote, so probation reads the
+  // new hash and never takes a backfilled skill for a hand-edited one.
+  try {
+    events.push(...triggersStep(state, doc, home, now));
+  } catch {
+    /* the next day's run tries again */
+  }
   events.push(...probationStep(state, skillUses(home, state), home, now));
   // Task 10a: count, promote, judge; each on its own (see the reference).
   let sources: Rec = {};
