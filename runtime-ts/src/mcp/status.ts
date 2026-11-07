@@ -40,6 +40,7 @@ import { INDEX_PRESSURE_PERCENT } from '../memory/store.js';
 import { statusLine } from '../memory/usage.js';
 import { statusLine as queriesStatusLine } from '../memory/queries.js';
 import type { MemoryStore } from '../memory/store.js';
+import { statusLine as replyNativeStatusLine } from '../replynative.js';
 import { statusLine as minerStatusLine } from '../skillmine.js';
 import { statusLine as skillStatusLine } from '../skillreport.js';
 import { currentCwd, statusLines } from '../storage/tiers.js';
@@ -514,6 +515,8 @@ export function statusReport(
     // line keeps its number. `sampling` is the client's declared capability (Task 11): the drafter
     // a `skill_propose` approve would reach first.
     minerStatusLine(homedir(), sampling),
+    // #292: the reply-native hook's last decision, LAST; read from the hook's state file, never env.
+    replyNativeStatusLine(homedir()),
   ];
   if (conditions.length > 0) {
     lines.push(`${plural(conditions.length, 'problem')}:`);
