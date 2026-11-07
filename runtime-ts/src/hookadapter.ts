@@ -389,7 +389,7 @@ function writeLedger(run: HookRun, sessionId: string | undefined, ledger: Ledger
   const fd = fs.openSync(tmp, 'wx'); // throws before anything of ours exists at `tmp`
   try {
     try {
-      fs.writeSync(fd, JSON.stringify(ledger));
+      fs.writeFileSync(fd, JSON.stringify(ledger)); // loops to the end; a bare writeSync may stop short
     } finally {
       fs.closeSync(fd);
     }

@@ -2659,12 +2659,16 @@ export async function run(ctx) {
       const sp = srcOf('py');
       const sn = srcOf('node');
       cases.push(...literalCases('source' in sp ? sp.source : 'ABSENT', 'source' in sn ? sn.source : 'ABSENT', 'SessionStart with no source logs source: null', null));
+      // `{}` and `[]` are TRUTHY in JS, so `transcript_path || session_id` stops at them: `{}`
+      // keys "[object Object]" and `[]` keys "" (String([])), never the session id.
       const keysOf = (side) => {
-        records(side, { hook_event_name: 'UserPromptSubmit', prompt: 'ทำไมมันพัง', transcript_path: { a: 1 } }, ON);
+        for (const tp of [{ a: 1 }, {}, []]) {
+          records(side, { hook_event_name: 'UserPromptSubmit', prompt: 'ทำไมมันพัง', transcript_path: tp }, ON);
+        }
         const led = JSON.parse(readFileSync(join(home(id, side), '.bantamkit', 'hooks', `ledger-${id}.json`), 'utf8'));
-        return Object.keys(led.replyNative ?? {});
+        return Object.keys(led.replyNative ?? {}).sort();
       };
-      cases.push(...literalCases(keysOf('py'), keysOf('node'), 'an object transcript_path keys the ledger as "[object Object]"', ['[object Object]']));
+      cases.push(...literalCases(keysOf('py'), keysOf('node'), 'object and array transcript_paths key the ledger as JS String() does', ['', '[object Object]']));
     }
   }
 

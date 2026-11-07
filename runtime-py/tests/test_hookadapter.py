@@ -3088,3 +3088,20 @@ def test_js_str_reads_objects_and_arrays_as_js_does():
     # g1 F3 (#297): `${obj}` is "[object Object]"; an array joins its elements with ",".
     assert H._js_str({"a": 1}) == "[object Object]"
     assert H._js_str([1, None, "x", [2, 3]]) == "1,,x,2,3"
+
+
+def test_js_or_is_js_truthiness():
+    # #297 review: Python's `or` treats {} and [] as false; JS `||` does not.
+    assert H._js_or({}, "S") == {}
+    assert H._js_or([], "S") == []
+    assert H._js_or(None, False, 0, float("nan"), "", "last") == "last"
+    assert H._js_or(0.0, "x") == "x" and H._js_or("a", "b") == "a"
+
+
+def test_ledger_path_names_the_file_as_node_does(tmp_path):
+    run = _hook_run(tmp_path)
+    name = lambda sid: os.path.basename(H._ledger_path(run, sid))  # noqa: E731
+    assert name(["a"]) == "ledger-a.json"
+    assert name(True) == "ledger-true.json"
+    assert name(5.0) == "ledger-5.json"
+    assert name(None) == "ledger-nosession.json"
