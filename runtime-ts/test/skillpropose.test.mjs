@@ -149,6 +149,27 @@ test('approve over budget installs but does not promote', async () => {
   }
 });
 
+test('approve survives a promote that throws', async () => {
+  // #301 review M1: `.claude/skills` is a regular file, so promote's mkdir throws after the
+  // install already happened. Approve still answers its three lines and records the refusal.
+  const h = home();
+  writeFileSync(join(h, '.claude', 'skills'), 'not a dir');
+  write(h, record('fixing-a'));
+  const lines = (await render(h, 'approve', 'c-fixing-a')).split('\n');
+  const link = join(h, '.claude', 'skills', 'fixing-a');
+  assert.equal(lines.length, 3);
+  assert.ok(lines[0].startsWith('installed skill fixing-a at '));
+  assert.ok(
+    [`not promoted: could not link ${link}: EEXIST`, `not promoted: could not link ${link}: ENOTDIR`].includes(lines[1]),
+    lines[1],
+  );
+  assert.equal(lines[2], `undo: ${C} undo fixing-a`);
+  const entry = sf.readState(h).skills['fixing-a'];
+  assert.ok(!('promoted' in entry));
+  assert.deepEqual(entry.promote_refused, { at: NOW, reason: lines[1].slice('not promoted: '.length) });
+  assert.equal(doc(h).clusters[0].status, 'installed');
+});
+
 test('approve promote ignores skill auto off', async () => {
   const was = process.env.BANTAMKIT_SKILL_AUTO;
   delete process.env.BANTAMKIT_SKILL_AUTO;

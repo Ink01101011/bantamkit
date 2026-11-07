@@ -28,7 +28,9 @@
  * line, appended last; the same phrase inside a fenced block does not (matching reads
  * `frame(prompt)`); a promoted skill never fires; two skills tied on phrase length fire the
  * first by name; and with the switch `off` the reply is the one the `on` reply extends. The
- * switch is blank for every other call, so the earlier scenarios are what they were.
+ * switch is blank for every other call, so the earlier scenarios are what they were. A skill
+ * with seven phrases fires on its fifth and not its sixth or seventh: at most TRIGGERS_TOP (5)
+ * are read, in file order (#301 review).
  *
  * THE LITERALS. A tag both runtimes change together (`[skills]`) leaves every differential
  * green, so the header line, the layer order and the promoted exclusion are also pinned per
@@ -112,6 +114,12 @@ const SHADOWED = {
   [`${PROJ}/web-driving/SKILL.md`]: skill('web-driving', 'drive the browser', { triggers: 'เปิด chrome|chrome tab' }),
   [`${PROJ}/tab-other/SKILL.md`]: skill('tab-other', 'an unrelated helper', { triggers: 'open tabs' }),
 };
+/** #301 review M2: seven phrases; only the first TRIGGERS_TOP (5), in file order, are read. */
+const SEVEN = [1, 2, 3, 4, 5, 6, 7].map((i) => `w${i} v${i}`).join('|');
+const CAPPED = {
+  'proj/.bantamkit/memory/facts/deploy.md': fact('deploy', 'how we deploy', 'real deploy'),
+  [`${PROJ}/many-phrases/SKILL.md`]: skill('many-phrases', 'an unrelated helper', { triggers: SEVEN }),
+};
 const LIVE = 'deploy then เปิด chrome tab';
 const FENCED = 'look at this\n```\nเปิด chrome\n```';
 const TIE = 'zzz open chrome zzz';
@@ -183,6 +191,16 @@ const SCENARIOS = [
       ['a skill a project fact shadows never fires', on('zzz เปิด chrome zzz')],
       ['an unshadowed skill still fires on the same walk', on('zzz open tabs zzz')],
       ['a recall of the name answers the fact', recall('web-driving')],
+    ],
+  },
+  {
+    label: 'seven trigger phrases',
+    files: CAPPED,
+    native: null,
+    calls: [
+      ['the fifth phrase fires', on('xx w5 v5 xx')],
+      ['the sixth phrase is past the cap and does not fire', on('xx w6 v6 xx')],
+      ['the seventh phrase does not fire either', on('xx w7 v7 xx')],
     ],
   },
 ];
@@ -392,14 +410,23 @@ export async function run(ctx) {
       expected: ['[skill] [web-driving] (skill) drive the browser', '[skill] [a-two] (skill) first of a tie'],
       actual: [r[0].headers.at(-1), r[4].headers.at(-1)],
     });
+    // The TIE prompt matches nothing with the switch off, so "the off reply is a prefix of the
+    // on reply" would hold for any on reply; the tie is pinned instead as the off status and the
+    // one header the on reply carries: the tie winner, and nothing else (#301 review).
     cases.push({
       name: `literal (${who}): trigger phrases: the off reply is a prefix of the on reply`,
       kind: 'json',
-      expected: { live: true, tie: true, liveTop: ['[project] [deploy] (project) how we deploy'] },
+      expected: {
+        live: true,
+        liveTop: ['[project] [deploy] (project) how we deploy'],
+        tieOff: 'empty-no-match',
+        tieOn: ['[skill] [a-two] (skill) first of a tie'],
+      },
       actual: {
-        live: r[1].status !== 'answered' || r[0].reply.startsWith(r[1].reply + '\n\n'),
-        tie: r[5].status !== 'answered' || r[4].reply.startsWith(r[5].reply + '\n\n'),
+        live: r[1].status === 'answered' && r[0].reply.startsWith(r[1].reply + '\n\n'),
         liveTop: r[1].headers,
+        tieOff: r[5].status,
+        tieOn: r[4].headers,
       },
     });
   }
@@ -417,6 +444,17 @@ export async function run(ctx) {
         shadowedLine: r[0].headers.some((h) => h.startsWith('[skill] [web-driving]')),
         factAnswers: r[2].reply.includes('fact copy'),
       },
+    });
+  }
+  // #301 review M2, per side: a cap both runtimes lose together (all seven read) leaves the
+  // differential green, so the firing over the seven phrases is pinned on each side.
+  for (const side of ['py', 'node']) {
+    const r = answers[5][side].got.results;
+    cases.push({
+      name: `literal (${side === 'py' ? 'python' : 'node'}): seven trigger phrases: only the first five fire`,
+      kind: 'json',
+      expected: ['many-phrases', null, null],
+      actual: r.map((o) => o.fired),
     });
   }
   cases.push(...(await runLateMcp(ctx)).cases);

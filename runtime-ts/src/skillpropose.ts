@@ -44,7 +44,7 @@ import {
   undo,
 } from './skillinstall.js';
 import { PENDING_MAX, ProposalsError, readProposals, writeProposals } from './skillmine.js';
-import { demote, promote, recordRefusal } from './skillpromote.js';
+import { codeOf, demote, isOsError, linkPath, promote, recordRefusal, type PromoteResult } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
 import { auditEnabled } from './storage/retention.js';
 
@@ -312,7 +312,16 @@ function installNow(
   writeProposals(home, doc);
   fs.rmSync(path.dirname(handoffPath(home, id)), { recursive: true, force: true });
   // Approve is the user's say-so, so it promotes at once, not gated by BANTAMKIT_SKILL_AUTO.
-  const p = promote(got.name, home, cwd, now);
+  let p: PromoteResult;
+  try {
+    p = promote(got.name, home, cwd, now);
+  } catch (e) {
+    // The install already happened, so a promote that throws (the link's parent cannot be
+    // made, the copy fallback fails) is a refusal like any other, not a lost reply (#301).
+    if (!isOsError(e) && !(e instanceof SkillFileError)) throw e;
+    const code = isOsError(e) ? codeOf(e) : 'EUNKNOWN';
+    p = { ok: false, mode: null, reason: `could not link ${linkPath(got.path)}: ${code}` };
+  }
   if (!p.ok) recordRefusal(home, got.name, now, p.reason);
   const said = p.ok ? p.reason : `not promoted: ${p.reason}`;
   return `installed skill ${got.name} at ${got.path} (${got.level} level).\n${said}\nundo: ${COMMAND} undo ${got.name}`;

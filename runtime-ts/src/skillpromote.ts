@@ -172,12 +172,13 @@ function ours(link: string, source: string, entry: Rec): boolean {
   return isDir(link) && rec !== null && rec['mode'] === MODE_COPY && rec['link'] === link;
 }
 
-const codeOf = (e: unknown): string => {
+/** The errno name of an OS error (`EEXIST`), `EUNKNOWN` without one: Python's `_code`. */
+export const codeOf = (e: unknown): string => {
   const c = (e as { code?: unknown } | null)?.code;
   return typeof c === 'string' && c !== '' ? c : 'EUNKNOWN';
 };
 
-const isOsError = (e: unknown): boolean => e instanceof Error && typeof (e as { code?: unknown }).code === 'string';
+export const isOsError = (e: unknown): boolean => e instanceof Error && typeof (e as { code?: unknown }).code === 'string';
 
 function rootsOf(gathered: Gathered, home: string, cwd: string | null): [string, string][] {
   const roots: [string, string][] = gathered.roots.filter(([label]) => label === 'plugins').map(([l, p]) => [l, p]);

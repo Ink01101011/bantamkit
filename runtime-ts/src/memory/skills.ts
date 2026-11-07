@@ -27,6 +27,8 @@ export const TRIGGERS_KEY = 'bantamkit-triggers';
  * names both in `skillinstall`; see the note above `TRIGGERS_KEY` there for why this port does not.
  */
 export const TRIGGERS_ENV = 'BANTAMKIT_SKILL_TRIGGERS';
+/** #301: the most trigger phrases a skill has; the miner writes no more, and no more are read. */
+export const TRIGGERS_TOP = 5;
 /** Set by the #301 ship-bar measurement (plan Task 8): true iff precision@inject passed. */
 export const TRIGGERS_DEFAULT = false;
 const ON: ReadonlySet<string> = new Set(['on', '1', 'true', 'yes']);
@@ -100,14 +102,19 @@ export function triggersEnabled(): boolean {
 
 /**
  * `metadata.bantamkit-triggers` split on `|`, each phrase split on spaces; empties dropped.
- * A phrase of fewer than two tokens is dropped: the miner never writes one (#301).
+ * A phrase of fewer than two tokens is dropped: the miner never writes one (#301). At most
+ * `TRIGGERS_TOP` phrases are kept, the first in file order after that filter: the miner never
+ * writes more, and a hand-edited file must not buy more matching work or more ways in.
  */
 export function triggersOf(value: unknown): string[][] {
   if (typeof value !== 'string') return [];
   const out: string[][] = [];
   for (const part of value.split('|')) {
     const toks = part.split(' ').filter((t) => t !== '');
-    if (toks.length >= 2) out.push(toks);
+    if (toks.length >= 2) {
+      out.push(toks);
+      if (out.length === TRIGGERS_TOP) break;
+    }
   }
   return out;
 }

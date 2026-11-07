@@ -161,6 +161,18 @@ function opList() {
   add('approve c-a-two at BANTAMKIT_SKILL_BUDGET=1: installed, not promoted, refusal recorded', {
     op: 'approve', home: a, cwd: 'h7cwd', target: 'c-a-two', now: NOW, env: '1',
   });
+
+  // h8: a promote that throws (#301 review M1). `.claude/skills` is a regular file, so making
+  // the link's parent fails after the install already happened; approve must still answer its
+  // three lines and record the refusal, not lose the reply to an exception.
+  const f = 'h8';
+  add('h8: ~/.claude/skills is a regular file', { op: 'write', home: f, rel: '.claude/skills', text: 'not a dir' });
+  add('h8: one eligible proposal with a stored draft', {
+    op: 'write', home: f, rel: '.bantamkit/skill-proposals.json', text: proposals([proposal('a-one')]),
+  });
+  add('approve c-a-one over a file at .claude/skills: installed, not promoted, refusal recorded', {
+    op: 'approve', home: f, cwd: 'h8cwd', target: 'c-a-one', now: NOW,
+  });
   return { ops, label };
 }
 
@@ -520,6 +532,32 @@ export async function run(ctx) {
           JSON.stringify(got[iRefused].state?.skills?.['a-two']?.promote_refused ?? null) ===
           JSON.stringify({ at: NOW, reason: refusedLine.slice('not promoted: '.length) }),
         unpromoted: !Object.hasOwn(got[iRefused].state?.skills?.['a-two'] ?? {}, 'promoted') && !Object.hasOwn(got[iRefused].tree ?? {}, '.claude/skills/a-two'),
+      },
+    });
+    const iThrew = find('approve c-a-one over a file at .claude/skills: installed, not promoted, refusal recorded');
+    const threw = lines(iThrew);
+    const linkAt = join('<bed>', 'h8', '.claude', 'skills', 'a-one');
+    cases.push({
+      name: `LITERAL: approve survives a promote that throws: three lines, the errno named, the refusal recorded (#301) — ${side}`,
+      kind: 'json',
+      expected: {
+        lines: 3,
+        installed: true,
+        refused: true,
+        undo: 'undo: /mcp__bantamkit__skill_propose undo a-one',
+        recorded: true,
+        unpromoted: true,
+      },
+      actual: {
+        lines: threw.length,
+        installed: (threw[0] ?? '').startsWith('installed skill a-one at '),
+        // EEXIST where mkdir meets the file (POSIX); ENOTDIR is what another platform may say
+        refused: [`not promoted: could not link ${linkAt}: EEXIST`, `not promoted: could not link ${linkAt}: ENOTDIR`].includes(threw[1] ?? ''),
+        undo: threw[2] ?? null,
+        recorded:
+          JSON.stringify(got[iThrew].state?.skills?.['a-one']?.promote_refused ?? null) ===
+          JSON.stringify({ at: NOW, reason: (threw[1] ?? '').slice('not promoted: '.length) }),
+        unpromoted: !Object.hasOwn(got[iThrew].state?.skills?.['a-one'] ?? {}, 'promoted'),
       },
     });
     cases.push({

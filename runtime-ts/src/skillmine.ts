@@ -56,6 +56,7 @@ import {
   statsStep,
   triggersStep,
 } from './skillinstall.js';
+import { TRIGGERS_TOP } from './memory/skills.js';
 import { PROMOTE_DAYS, promoteStep } from './skillpromote.js';
 import { LogSegment } from './storage/logsegment.js';
 import { auditEnabled, parseNow } from './storage/retention.js';
@@ -73,8 +74,10 @@ export const NGRAM_SIZES: readonly number[] = [2, 3];
  * #301: a cluster's trigger phrases (spec §2). At most TRIGGERS_TOP; each a 2- or 3-token
  * phrase of a successful member's `frame()`d prompt, in at least TRIGGER_SHARE of the
  * successes and in at most TRIGGER_DF_MAX of the source's pieces.
+ * The reference defines TRIGGERS_TOP here; this port defines it in `memory/skills` (which caps
+ * the phrases it reads at it) and re-exports it, for the import cycle noted at `TRIGGERS_KEY`.
  */
-export const TRIGGERS_TOP = 5;
+export { TRIGGERS_TOP };
 export const TRIGGER_SHARE: readonly [number, number] = [1, 2];
 export const TRIGGER_DF_MAX: readonly [number, number] = [1, 8];
 export const TRIGGER_SIZES: readonly number[] = [2, 3];

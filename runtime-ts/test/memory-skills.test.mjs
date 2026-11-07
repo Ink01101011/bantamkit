@@ -18,6 +18,7 @@ import {
   SkillStore,
   skillRoots,
   TRIGGERS_DEFAULT,
+  TRIGGERS_TOP,
   triggersEnabled,
   triggersOf,
 } from '../dist/memory/skills.js';
@@ -445,6 +446,22 @@ test('a fired skill is a recall hit only when stamped', () =>
       assert.deepEqual(uses(bed, 'web-driving').map((r) => r.kind), ['recall_hit']);
     }),
   ));
+
+test('triggers capped at top five in file order', () =>
+  withBed((bed) => {
+    // #301 review M2: a hand-written or edited SKILL.md may list any number of phrases; only the
+    // first TRIGGERS_TOP (5) are read, the same cap the miner writes under.
+    assert.equal(TRIGGERS_TOP, 5);
+    const seven = [1, 2, 3, 4, 5, 6, 7].map((i) => `w${i} v${i}`).join('|');
+    assert.deepEqual(triggersOf(seven), [1, 2, 3, 4, 5].map((i) => [`w${i}`, `v${i}`]));
+    // the cap is after the filters: one-token phrases do not use up a slot
+    assert.equal(triggersOf(`solo|${seven}`).length, 5);
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { many: { description: 'zz qq', triggers: seven } });
+      assert.equal(firedOf(m.recallOutcome('xx w5 v5 xx', 3, RECALL_MIN_SCORE_RATIO, false)), 'many');
+      assert.equal(firedOf(m.recallOutcome('xx w6 v6 xx', 3, RECALL_MIN_SCORE_RATIO, false)), null);
+    });
+  }));
 
 test('triggersEnabled parses the switch', () => {
   for (const [v, want] of [
