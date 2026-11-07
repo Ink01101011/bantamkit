@@ -106,6 +106,12 @@ const TRIGGERED = {
   'home/.bantamkit/skills-state.json':
     JSON.stringify({ version: 1, skills: { 'promoted-skill': { promoted: 'symlink' } } }, null, 2) + '\n',
 };
+/** #301 f2: a skill a project fact shadows by name never fires; an unshadowed one still does. */
+const SHADOWED = {
+  'proj/.bantamkit/memory/facts/web-driving.md': fact('web-driving', 'the project note on driving', 'fact copy'),
+  [`${PROJ}/web-driving/SKILL.md`]: skill('web-driving', 'drive the browser', { triggers: 'เปิด chrome|chrome tab' }),
+  [`${PROJ}/tab-other/SKILL.md`]: skill('tab-other', 'an unrelated helper', { triggers: 'open tabs' }),
+};
 const LIVE = 'deploy then เปิด chrome tab';
 const FENCED = 'look at this\n```\nเปิด chrome\n```';
 const TIE = 'zzz open chrome zzz';
@@ -167,6 +173,16 @@ const SCENARIOS = [
       ['a tie on length fires the first by name', on(TIE)],
       ['the tie with the switch off', off(TIE)],
       ['a stamped fire is a recall_hit', on('เปิด chrome tab', { stamp: true })],
+    ],
+  },
+  {
+    label: 'a shadowed trigger skill',
+    files: SHADOWED,
+    native: null,
+    calls: [
+      ['a skill a project fact shadows never fires', on('zzz เปิด chrome zzz')],
+      ['an unshadowed skill still fires on the same walk', on('zzz open tabs zzz')],
+      ['a recall of the name answers the fact', recall('web-driving')],
     ],
   },
 ];
@@ -384,6 +400,22 @@ export async function run(ctx) {
         live: r[1].status !== 'answered' || r[0].reply.startsWith(r[1].reply + '\n\n'),
         tie: r[5].status !== 'answered' || r[4].reply.startsWith(r[5].reply + '\n\n'),
         liveTop: r[1].headers,
+      },
+    });
+  }
+  // #301 f2, per side: a symmetric regression (both fire the shadowed skill) leaves the
+  // differential green, so `fired` is pinned against a literal on each side.
+  for (const side of ['py', 'node']) {
+    const r = answers[4][side].got.results;
+    const who = side === 'py' ? 'python' : 'node';
+    cases.push({
+      name: `literal (${who}): a shadowed trigger skill: fired, per call`,
+      kind: 'json',
+      expected: { fired: [null, 'tab-other'], shadowedLine: false, factAnswers: true },
+      actual: {
+        fired: r.slice(0, 2).map((o) => o.fired),
+        shadowedLine: r[0].headers.some((h) => h.startsWith('[skill] [web-driving]')),
+        factAnswers: r[2].reply.includes('fact copy'),
       },
     });
   }

@@ -234,6 +234,17 @@ function isReadOnly(store: LayerStore): store is ReadOnlyStore {
   return store instanceof NativeStore || store instanceof SkillStore;
 }
 
+/**
+ * Whether a layer's names shadow every read-only layer after it (#199 J68-11, #206 X8).
+ *
+ * Every bantamkit store does, and the skill layer (a skill is bantamkit's own); the host's
+ * native layer never does. The one rule `pooled` walks by and `fire` (#301) reuses, so a
+ * skill dropped from the pool never fires either.
+ */
+function lendsShadow(store: LayerStore): boolean {
+  return !isReadOnly(store) || store instanceof SkillStore;
+}
+
 /** A layer's fact count: `facts/*.md` for a bantamkit store, the listing for a read-only one. */
 function countOf(store: LayerStore): number {
   return isReadOnly(store) ? store.count() : countFacts(store.root);
@@ -780,13 +791,38 @@ export class Memory {
    * #301: the one `[skill]` a trigger phrase in the user's own text names, or `null`.
    *
    * Matched against `tokenizeLabel(frame(query))`, so a phrase inside a pasted block never
-   * fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires.
+   * fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires, nor
+   * one an earlier layer shadows (`lendsShadow`, the rule `pooled` drops it from the pool
+   * by), so a fired `[skill] [name]` is always what a recall of that name answers.
    */
   private fire(query: string, shown: ReadonlySet<string>): [string, Fact] | null {
-    const layer = this.layers.find(([label]) => label === SKILL_LAYER);
-    if (layer === undefined || !triggersEnabled()) return null;
-    const fact = (layer[1] as SkillStore).fire(tokenizeLabel(frame(query)), shown);
-    return fact === null ? null : [layer[0], fact];
+    const at = this.layers.findIndex(([label]) => label === SKILL_LAYER);
+    if (at < 0 || !triggersEnabled()) return null;
+    const [label, store] = this.layers[at]!;
+    const fact = (store as SkillStore).fire(tokenizeLabel(frame(query)), shown, this.shadowBefore(at));
+    return fact === null ? null : [label, fact];
+  }
+
+  /**
+   * The names the layers before `at` that `lendsShadow` hold: the shadow `pooled` hands layer
+   * `at`. A read-only layer that cannot be read lends nothing (as in `pooled`); the project
+   * layer failing throws.
+   */
+  private shadowBefore(at: number): Set<string> {
+    const shadow = new Set<string>();
+    for (const [, store, writable] of this.layers.slice(0, at)) {
+      if (!lendsShadow(store)) continue;
+      let pool: Pool;
+      try {
+        pool = isReadOnly(store) ? store.pool([], [], new Set(shadow)) : store.pool([], []);
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
+        if (writable) throw e;
+        continue;
+      }
+      for (const name of allNames(pool)) shadow.add(name);
+    }
+    return shadow;
   }
 
   /** `[label, store, writable]` per layer, in precedence order (the touch graph's input). */
@@ -955,12 +991,12 @@ export class Memory {
         if (outcome !== null) {
           const native = isReadOnly(store);
           const got = native ? store.candidates(leftOut, shadow) : store.candidates(leftOut);
-          if (!native || store instanceof SkillStore) for (const f of got) shadow.add(pyText(f.name));
+          if (lendsShadow(store)) for (const f of got) shadow.add(pyText(f.name));
           pools.push(poolOf(got.filter((f) => f.outcome === outcome), q, everyRow));
         } else if (isReadOnly(store)) {
           const pool = store.pool(q, leftOut, shadow, everyRow);
           // a skill is bantamkit's own: the host's copy of a name never answers
-          if (store instanceof SkillStore) for (const name of allNames(pool)) shadow.add(name);
+          if (lendsShadow(store)) for (const name of allNames(pool)) shadow.add(name);
           pools.push(pool);
         } else {
           const pool = store.pool(q, leftOut, everyRow);

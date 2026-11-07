@@ -379,6 +379,24 @@ test('a trigger never fires a promoted skill', () =>
     }),
   ));
 
+test('a trigger never fires a shadowed skill', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      // f2 (#301): a project fact holding the skill's name shadows it in `pooled`, so the skill
+      // never fires either -- a `[skill] [web-driving]` line whose name recalls the fact would
+      // name one thing and answer another.
+      new MemoryStore(bed.store).save('project', 'web-driving', 'the project note on driving', 'fact copy');
+      const m = memWithSkills(bed, { 'web-driving': CHROME, 'tab-other': { description: 'o' } });
+      const o = quiet(m, 'zzz เปิด chrome zzz', 3);
+      assert.equal(firedOf(o), null);
+      assert.ok(!o.headers.some((h) => h.startsWith('[skill] [web-driving]')));
+      assert.ok(m.recall('web-driving').includes('fact copy'));
+      // an unshadowed skill still fires on the same walk
+      const m2 = memWithSkills(bed, { 'web-drive-2': CHROME });
+      assert.equal(quiet(m2, 'zzz เปิด chrome zzz', 3).fired, 'web-drive-2');
+    }),
+  ));
+
 test('a skill already shown is not appended twice', () =>
   withBed((bed) =>
     withSwitch('on', () => {

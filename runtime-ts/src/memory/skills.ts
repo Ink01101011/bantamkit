@@ -234,11 +234,11 @@ export class SkillStore {
    * The one skill a trigger phrase names in `tokens`: longest match, then name (#301).
    *
    * A trigger fires when it occurs as a contiguous run of `tokens`. A skill in `shown` never
-   * fires, nor a promoted one (`candidates` leaves those out).
+   * fires, nor a promoted or a shadowed one (`candidates` leaves those out, as for `pool`).
    */
-  fire(tokens: readonly string[], shown: ReadonlySet<string>): Fact | null {
+  fire(tokens: readonly string[], shown: ReadonlySet<string>, shadow: ReadonlySet<string> = EMPTY): Fact | null {
     let best: { k: number; name: string; fact: Fact } | null = null;
-    for (const fact of this.candidates()) {
+    for (const fact of this.candidates(undefined, shadow)) {
       const name = fact.name as string;
       if (shown.has(name)) continue;
       for (const ph of this.triggers.get(name) ?? []) {

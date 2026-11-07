@@ -401,6 +401,37 @@ test('triggersStep skips no record and an empty list', () => {
   assert.ok(readFileSync(skill).equals(before));
 });
 
+// A flow list and a number: Node's frontmatter reader refuses a block list or any mapping
+// nested this deep, so those never reach the id lookup here (the skill is skipped unread).
+for (const bad of [' [c-fixing-a]', ' 7']) {
+  test(`triggersStep skips a non-string cluster id only (${JSON.stringify(bad)})`, () => {
+    // f2 (#301): a list, mapping or number `bantamkit-cluster` is no id; that skill alone is
+    // skipped, as the Python step skips it.
+    const h = home();
+    for (const name of ['fixing-a', 'fixing-b']) si.install(record(name), draft(name), null, h, NOW, false);
+    const skill = join(target(h, 'fixing-a'), 'SKILL.md');
+    let text = liveText(h, 'fixing-a');
+    text = text.replace(/bantamkit-cluster: .*/, `bantamkit-cluster:${bad}`);
+    text = text.replace(/bantamkit-sha256: ".*"/, 'bantamkit-sha256: ""');
+    text = text.replace('bantamkit-sha256: ""', `bantamkit-sha256: "${sf.canonicalHash(text)}"`);
+    assert.notEqual(typeof sf.parseSkill(text).metadata['bantamkit-cluster'], 'string');
+    assert.equal(sf.isEdited(text), false);
+    writeFileSync(skill, text);
+    const state = sf.readState(h);
+    state.skills['fixing-a'].sha256 = sf.canonicalHash(text);
+    sf.writeState(h, state);
+    const doc = {
+      clusters: [
+        { id: 'c-fixing-a', triggers: ['merge feature'] },
+        { id: 'c-fixing-b', triggers: ['fix lexer crash'] },
+      ],
+    };
+    const before = readFileSync(skill);
+    assert.deepEqual(si.triggersStep(sf.readState(h), doc, h, at(1)), ['added triggers to skill fixing-b']);
+    assert.ok(readFileSync(skill).equals(before));
+  });
+}
+
 test('a backfill on probation day 30 is still removed as unused', () => {
   const h = home();
   const state = installed(h);
