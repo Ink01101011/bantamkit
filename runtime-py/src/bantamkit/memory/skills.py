@@ -238,15 +238,17 @@ class SkillStore:
         self._triggers = triggers
         return out
 
-    def fire(self, tokens: Sequence[str], shown: Collection[str]) -> Fact | None:
+    def fire(
+        self, tokens: Sequence[str], shown: Collection[str], shadow: Any = frozenset()
+    ) -> Fact | None:
         """The one skill a trigger phrase names in `tokens`: longest match, then name (#301).
 
         A trigger fires when it occurs as a contiguous run of `tokens`. A skill in `shown` never
-        fires, nor a promoted one (`candidates` leaves those out).
+        fires, nor a promoted or a shadowed one (`candidates` leaves those out, as for `pool`).
         """
         best: tuple[int, str, Fact] | None = None
         toks = list(tokens)
-        for fact in self.candidates():
+        for fact in self.candidates(None, shadow):
             if fact.name in shown:
                 continue
             for ph in self._triggers.get(fact.name, ()):

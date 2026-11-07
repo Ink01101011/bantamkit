@@ -985,7 +985,9 @@ def triggers_step(
             continue
         if TRIGGERS_KEY in meta:
             continue
-        found = by_id.get(meta.get("bantamkit-cluster", ""))
+        cid = meta.get("bantamkit-cluster", "")
+        # a list or mapping is no id (and unhashable): that skill alone is skipped, as in Node
+        found = by_id.get(cid) if isinstance(cid, str) else None
         if not found:
             continue
         try:

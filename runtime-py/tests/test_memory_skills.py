@@ -374,6 +374,25 @@ def test_trigger_never_fires_a_promoted_skill(mem_with_skills, monkeypatch):
     assert m.recall_outcome("เปิด chrome tab", 3, stamp=False).fired is None
 
 
+def test_trigger_never_fires_a_shadowed_skill(bed, mem_with_skills, monkeypatch):
+    # f1 (#301): a project fact holding the skill's name shadows it in `_pooled`, so the
+    # skill never fires either -- a `[skill] [web-driving]` line whose name recalls the fact
+    # would name one thing and answer another.
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    project = bed[0]
+    MemoryStore(project / ".bantamkit" / "memory").save(
+        "project", "web-driving", "the project note on driving", "fact copy"
+    )
+    m = mem_with_skills({"web-driving": CHROME, "tab-other": {"description": "o"}})
+    o = m.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False)
+    assert o.fired is None
+    assert not any(h.startswith("[skill] [web-driving]") for h in o.headers)
+    assert "fact copy" in m.recall("web-driving")
+    # an unshadowed skill still fires on the same walk
+    m2 = mem_with_skills({"web-drive-2": CHROME})
+    assert m2.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False).fired == "web-drive-2"
+
+
 def test_trigger_skill_already_shown_is_not_appended_twice(mem_with_skills, monkeypatch):
     monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
     m = mem_with_skills({"web-driving": CHROME})

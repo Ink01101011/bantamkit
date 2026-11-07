@@ -7,6 +7,7 @@ Every home is a tmp dir; nothing reaches the real `~/.bantamkit`. Every fixture 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -419,6 +420,34 @@ def test_triggers_step_skips_no_record_and_an_empty_list(tmp_path):
     ):
         assert si.triggers_step(sf.read_state(tmp_path), doc, tmp_path, day(1)) == []
     assert (target(tmp_path, "fixing-a") / "SKILL.md").read_bytes() == before
+
+
+@pytest.mark.parametrize("bad", ["\n    - c-fixing-a", "\n    k: c-fixing-a", " 7"])
+def test_triggers_step_skips_a_non_string_cluster_id_only(tmp_path, bad):
+    # f1 (#301): a list, mapping or number `bantamkit-cluster` is no id; that skill alone is
+    # skipped, as the Node step skips it (a list or mapping raised TypeError here).
+    for name in ("fixing-a", "fixing-b"):
+        si.install(record(name), draft(name), None, tmp_path, NOW, auto=False)
+    skill = target(tmp_path, "fixing-a") / "SKILL.md"
+    text = live_text(tmp_path, "fixing-a")
+    text = re.sub(r"bantamkit-cluster: .*", f"bantamkit-cluster:{bad}", text)
+    text = re.sub(r'bantamkit-sha256: ".*"', 'bantamkit-sha256: ""', text)
+    text = text.replace('bantamkit-sha256: ""', f'bantamkit-sha256: "{sf.canonical_hash(text)}"')
+    assert not isinstance(sf.parse_skill(text).metadata["bantamkit-cluster"], str)
+    assert not sf.is_edited(text)
+    skill.write_text(text, encoding="utf-8")
+    state = sf.read_state(tmp_path)
+    state["skills"]["fixing-a"]["sha256"] = sf.canonical_hash(text)
+    sf.write_state(tmp_path, state)
+    doc = {"clusters": [
+        {"id": "c-fixing-a", "triggers": ["merge feature"]},
+        {"id": "c-fixing-b", "triggers": ["fix lexer crash"]},
+    ]}  # fmt: skip
+    before = skill.read_bytes()
+    assert si.triggers_step(sf.read_state(tmp_path), doc, tmp_path, day(1)) == [
+        "added triggers to skill fixing-b"
+    ]
+    assert skill.read_bytes() == before
 
 
 def test_a_backfill_on_probation_day_30_is_still_removed_as_unused(tmp_path):

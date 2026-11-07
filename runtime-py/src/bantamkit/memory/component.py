@@ -268,6 +268,16 @@ def _layer_label(root: Path) -> str:
 _READ_ONLY = (NativeStore, SkillStore)
 
 
+def _lends_shadow(store: Any) -> bool:
+    """Whether a layer's names shadow every read-only layer after it (#199 J68-11, #206 X8).
+
+    Every bantamkit store does, and the skill layer (a skill is bantamkit's own); the host's
+    native layer never does. The one rule `_pooled` walks by and `_fire` (#301) reuses, so a
+    skill dropped from the pool never fires either.
+    """
+    return not isinstance(store, _READ_ONLY) or isinstance(store, SkillStore)
+
+
 def _count(store: Any) -> int:
     """A layer's fact count: `facts/*.md` for a bantamkit store, the listing for a read-only one."""
     return store.count() if isinstance(store, _READ_ONLY) else count_facts(store.root)
@@ -764,17 +774,40 @@ class Memory:
         """#301: the one `[skill]` a trigger phrase in the user's own text names, or None.
 
         Matched against `tokenize_label(frame(query))`, so a phrase inside a pasted block never
-        fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires.
+        fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires, nor
+        one an earlier layer shadows (`_lends_shadow`, the rule `_pooled` drops it from the pool
+        by), so a fired `[skill] [name]` is always what a recall of that name answers.
         """
         from bantamkit.memory.skills import triggers_enabled
         from bantamkit.replynative import frame
         from bantamkit.skillmine import tokenize_label
 
-        layer = next(((lab, st) for lab, st, _ in self._layers if lab == SKILL_LAYER), None)
-        if layer is None or not triggers_enabled():
+        at = next((i for i, (lab, _, _) in enumerate(self._layers) if lab == SKILL_LAYER), None)
+        if at is None or not triggers_enabled():
             return None
-        fact = layer[1].fire(tokenize_label(frame(query)), shown)
-        return None if fact is None else (layer[0], fact)
+        label, store, _ = self._layers[at]
+        fact = store.fire(tokenize_label(frame(query)), shown, self._shadow_before(at))
+        return None if fact is None else (label, fact)
+
+    def _shadow_before(self, at: int) -> set[str]:
+        """The names the layers before `at` that `_lends_shadow` hold: the shadow `_pooled`
+        hands layer `at`. A read-only layer that cannot be read lends nothing (as in
+        `_pooled`); the project layer failing raises."""
+        shadow: set[str] = set()
+        for _, store, writable in self._layers[:at]:
+            if not _lends_shadow(store):
+                continue
+            try:
+                if isinstance(store, _READ_ONLY):
+                    pool = store.pool([], skipped=[], shadow=frozenset(shadow))
+                else:
+                    pool = store.pool([], skipped=[])
+            except (BantamError, OSError, UnicodeDecodeError):
+                if writable:
+                    raise
+                continue
+            shadow.update(_text(n) for n in pool.all_names())
+        return shadow
 
     def layer_stores(self) -> list[tuple[str, Any, bool]]:
         """`(label, store, writable)` per layer, in precedence order (the touch graph's input)."""
@@ -954,12 +987,12 @@ class Memory:
                         if native
                         else store.candidates(left_out)
                     )
-                    if not native or isinstance(store, SkillStore):
+                    if _lends_shadow(store):
                         shadow.update(_text(f.name) for f in got)
                     pool = pool_of([f for f in got if f.outcome == outcome], q, every_row)
                 elif native:
                     pool = store.pool(q, skipped=left_out, shadow=shadow, every_row=every_row)
-                    if isinstance(store, SkillStore):
+                    if _lends_shadow(store):
                         # a skill is bantamkit's own: the host's copy of a name never answers
                         shadow.update(pool.all_names())
                 else:
