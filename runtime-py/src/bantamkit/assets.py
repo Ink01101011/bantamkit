@@ -91,3 +91,11 @@ def load_skill(name: str) -> str:
     if not path.exists():
         raise AssetNotFound(f"skill asset not found: {path}")
     return path.read_text(encoding="utf-8")
+
+
+def load_lang(name: str) -> str:
+    """A reply-native directive (`assets/langs/<name>.md`, #292), trailing newline stripped."""
+    path = _asset_path("lang", name, ".md")
+    if not path.exists():
+        raise AssetNotFound(f"lang asset not found: {path}")
+    return path.read_text(encoding="utf-8").rstrip("\r\n")
