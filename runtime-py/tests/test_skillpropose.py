@@ -106,11 +106,47 @@ def test_approve_with_a_stored_draft_installs_it_off_probation(tmp_path):
     _write(home, record("fixing-a"))
     text = _render(home, "approve", "c-fixing-a")
     path = sf.skills_root(home) / "fixing-a"
-    assert text == f"installed skill fixing-a at {path} (user level).\nundo: {C} undo fixing-a"
+    assert text == (
+        f"installed skill fixing-a at {path} (user level).\n"
+        "promoted skill fixing-a\n"
+        f"undo: {C} undo fixing-a"
+    )
     entry = sf.read_state(home)["skills"]["fixing-a"]
     assert entry["auto"] is False and "probation_until" not in entry
     assert _doc(home)["clusters"][0]["status"] == "installed"
     assert _render(home, "approve", "c-fixing-a") == "proposal c-fixing-a is already installed"
+
+
+def test_approve_promotes_right_after_install(tmp_path):
+    home = _home(tmp_path)
+    _write(home, record("fixing-a"))
+    lines = _render(home, "approve", "c-fixing-a").splitlines()
+    assert lines[0].startswith("installed skill fixing-a at ")
+    assert lines[1] == "promoted skill fixing-a"
+    assert lines[2] == f"undo: {C} undo fixing-a"
+    entry = sf.read_state(home)["skills"]["fixing-a"]
+    assert entry["promoted"]["mode"] in ("symlink", "copy")
+
+
+def test_approve_over_budget_installs_but_does_not_promote(tmp_path, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_BUDGET", "1")
+    home = _home(tmp_path)
+    _write(home, record("fixing-a"))
+    lines = _render(home, "approve", "c-fixing-a").splitlines()
+    assert lines[0].startswith("installed skill fixing-a at ")
+    assert lines[1].startswith("not promoted: promoting fixing-a would take the catalogue to ")
+    assert lines[1].endswith(" bytes, over the budget of 1")
+    assert lines[2] == f"undo: {C} undo fixing-a"
+    entry = sf.read_state(home)["skills"]["fixing-a"]
+    assert "promoted" not in entry
+    assert entry["promote_refused"] == {"at": NOW, "reason": lines[1][len("not promoted: ") :]}
+
+
+def test_approve_promote_ignores_skill_auto_off(tmp_path, monkeypatch):
+    monkeypatch.delenv("BANTAMKIT_SKILL_AUTO", raising=False)
+    home = _home(tmp_path)
+    _write(home, record("fixing-a"))
+    assert _render(home, "approve", "c-fixing-a").splitlines()[1] == "promoted skill fixing-a"
 
 
 class _Endpoint:
@@ -209,6 +245,9 @@ def test_undo_after_an_approve_removes_it_and_rejects_its_proposal(tmp_path):
     home = _home(tmp_path)
     _write(home, record("fixing-a"))
     _render(home, "approve", "c-fixing-a")
+    # Approve promotes (#301), and undo of a promoted skill demotes first (unchanged), so the
+    # first undo takes the native link away and the second removes the skill.
+    assert _render(home, "undo", "fixing-a") == "demoted skill fixing-a"
     said = _render(home, "undo", "fixing-a")
     assert said.endswith("; proposal c-fixing-a is marked rejected")
     assert "fixing-a" not in sf.read_state(home)["skills"]

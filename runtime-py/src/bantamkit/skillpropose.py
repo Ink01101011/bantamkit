@@ -291,12 +291,14 @@ def _install(
     text: str,
     level: str | None,
     home: str | Path,
+    cwd: str | None,
     now: str,
 ) -> str:
     from bantamkit.skillfile import SkillFileError
     from bantamkit.skillhost import HOST_CLAUDE_CODE, select_adapter
     from bantamkit.skillinstall import install, install_root, skill_text
     from bantamkit.skillmine import write_proposals
+    from bantamkit.skillpromote import promote, record_refusal
 
     if select_adapter(home).host != HOST_CLAUDE_CODE:
         try:
@@ -315,8 +317,14 @@ def _install(
         return f"could not install proposal {rec['id']}: {e}"
     write_proposals(home, doc)
     shutil.rmtree(handoff_path(home, rec["id"]).parent, ignore_errors=True)
+    # Approve is the user's say-so, so it promotes at once, not gated by BANTAMKIT_SKILL_AUTO.
+    got_p = promote(got.name, home, cwd, now)
+    if not got_p.ok:
+        record_refusal(home, got.name, now, got_p.reason)
+    said = got_p.reason if got_p.ok else f"not promoted: {got_p.reason}"
     return (
         f"installed skill {got.name} at {got.path} ({got.level} level).\n"
+        f"{said}\n"
         f"undo: {COMMAND} undo {got.name}"
     )
 
@@ -367,7 +375,7 @@ def _approve_proposal(
                 g.reasons,
                 f"It was discarded and logged; run {COMMAND} approve {cid} again to draft anew.",
             )
-        return _install(rec, doc, text, level, home, now)
+        return _install(rec, doc, text, level, home, cwd, now)
     staged = handoff_path(home, cid)
     if staged.is_file():
         try:
@@ -383,7 +391,7 @@ def _approve_proposal(
                 g.reasons,
                 f"Fix it and run {COMMAND} approve {cid} again.",
             )
-        return _install(rec, doc, text, level, home, now)
+        return _install(rec, doc, text, level, home, cwd, now)
     out = draft(rec, default_chain(sampler, host_agent=True), home, cwd, now)
     if out.handoff is not None:
         return _handoff_text(rec, out.handoff, home)
@@ -395,7 +403,7 @@ def _approve_proposal(
         )
     rec["draft"] = draft_entry(out.drafter, out.text, now)
     write_proposals(home, doc)
-    return _install(rec, doc, out.text, level, home, now)
+    return _install(rec, doc, out.text, level, home, cwd, now)
 
 
 def _split_handoff_text(

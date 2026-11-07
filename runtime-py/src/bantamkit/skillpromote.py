@@ -294,6 +294,17 @@ def promote(
     return PromoteResult(True, record["mode"], f"promoted skill {name}")
 
 
+def record_refusal(home: Path | str, name: str, now: str, reason: str) -> None:
+    """Record a refused promotion on `name` (`promote_refused`); not retried the same UTC day."""
+
+    def refuse(fresh: dict[str, Any]) -> None:
+        live = fresh["skills"].get(name)
+        if isinstance(live, dict):
+            live["promote_refused"] = {"at": now, "reason": reason}
+
+    update_state(home, refuse)
+
+
 def refresh_copy(name: str, home: Path | str) -> str | None:
     """Bring the COPY a promotion made of `name` up to its source's current files (#244).
 
@@ -428,13 +439,7 @@ def promote_step(
         if got.ok:
             events.append(got.reason)
             continue
-
-        def refuse(fresh: dict[str, Any], name: str = name, reason: str = got.reason) -> None:
-            live = fresh["skills"].get(name)
-            if isinstance(live, dict):
-                live["promote_refused"] = {"at": now, "reason": reason}
-
-        update_state(home, refuse)
+        record_refusal(home, name, now, got.reason)
     fresh = read_state(home)
     state.clear()
     state.update(fresh)
