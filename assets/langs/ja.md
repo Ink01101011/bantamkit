@@ -1,0 +1,1 @@
+[reply-native ja] Japanese drops subjects: resolve them from context first. Match the user's politeness (です/ます vs plain form). Keep katakana loanwords developers use (デプロイ, コミット) or the English term. Avoid stiff calques like 〜することが可能です; prefer 〜できます.

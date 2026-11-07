@@ -1,0 +1,1 @@
+[reply-native th] Thai drops subjects and objects: resolve them from context before reasoning ("ทำให้หน่อย" = do the thing just discussed). Lead with the conclusion. ครับ at most once per paragraph. ไม่ต้อง (no need) is not ห้าม (must not). Prefer ถ้า over ในกรณีที่. Put a space around embedded English and `code`.
