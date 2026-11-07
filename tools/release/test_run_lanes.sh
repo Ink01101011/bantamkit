@@ -93,6 +93,40 @@ check "the lane's own child is gone after TERM" "$( [ -n "$child" ] && ! kill -0
 check "cleanup still ran after TERM" "$([ -e "$DEFS/cleaned" ]; echo $?)"
 [ -n "$child" ] && kill "$child" 2>/dev/null || true
 
+# 7. A real Ctrl-C: SIGINT to the runner's whole process group while the main loop sleeps.
+#    `&` from a non-interactive shell starts the runner with SIGINT IGNORED, which would make
+#    this pass for the wrong reason, so perl resets it to default and gives the runner its own
+#    group before exec.
+rm -f "$DEFS/child.pid" "$DEFS/cleaned"
+perl -e '$SIG{INT}="DEFAULT"; setpgrp(0,0); exec @ARGV' bash -c "set -euo pipefail; source '$DEFS/lanes.sh'; cleanup() { touch '$DEFS/cleaned'; }; trap cleanup EXIT
+  LANE_HEARTBEAT_S=1000
+  spawner() { sleep 60 & echo \$! > '$DEFS/child.pid'; wait; }
+  idle() { sleep 60; }
+  run_lanes 'spawner' spawner '$DEFS/sp.log' 'idle' idle '$DEFS/id.log'" >/dev/null 2>&1 &
+runner=$!
+for _ in $(seq 1 50); do [ -s "$DEFS/child.pid" ] && break; sleep 0.1; done
+child="$(cat "$DEFS/child.pid" 2>/dev/null || true)"
+sleep 0.3
+kill -INT -- "-$runner" 2>/dev/null || true
+for _ in $(seq 1 50); do kill -0 "$runner" 2>/dev/null || break; sleep 0.1; done
+check "the runner ended on SIGINT to its group" "$(! kill -0 "$runner" 2>/dev/null; echo $?)"
+sleep 0.5
+check "the lane's own child is gone after SIGINT" "$( [ -n "$child" ] && ! kill -0 "$child" 2>/dev/null; echo $?)"
+check "cleanup still ran after SIGINT" "$([ -e "$DEFS/cleaned" ]; echo $?)"
+[ -n "$child" ] && kill "$child" 2>/dev/null || true
+kill -KILL -- "-$runner" 2>/dev/null || true
+
+# 8. A lane that ENDS but leaves a child behind in its group: the child is stopped when the lane
+#    is reaped, not left running after the scratch directory is gone.
+rm -f "$DEFS/orphan.pid"
+out="$(run_case 'leaver() { sleep 60 & echo $! > "$W/orphan.pid"; echo left; }
+  run_lanes "leaver" leaver "$W/l.log"; echo "failed=[$LANES_FAILED]"')"
+orphan="$(cat "$DEFS/orphan.pid" 2>/dev/null || true)"
+sleep 0.3
+check "the lane left a child to test against" "$([ -n "$orphan" ]; echo $?)"
+check "the finished lane's leftover child is stopped" "$( [ -n "$orphan" ] && ! kill -0 "$orphan" 2>/dev/null; echo $?)"
+[ -n "$orphan" ] && kill "$orphan" 2>/dev/null || true
+
 printf 'PASS %d\n' "$PASS"
 if [ "$FAIL" -gt 0 ]; then
   printf 'FAIL %d\n' "$FAIL" >&2

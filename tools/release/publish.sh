@@ -133,6 +133,9 @@ die()   { printf '\nREFUSED: %s\n' "$*" >&2; exit 1; }
 # The EXIT trap is `stop_lanes; cleanup` while lanes run and plain `cleanup` once they are reaped.
 # tools/release/test_run_lanes.sh reads these two functions out of this file and pins them.
 LANE_HEARTBEAT_S="${LANE_HEARTBEAT_S:-15}"
+case "$LANE_HEARTBEAT_S" in
+  '' | *[!0-9]* | 0 | 00*) die "LANE_HEARTBEAT_S must be a positive whole number of seconds, got '$LANE_HEARTBEAT_S'" ;;
+esac
 LANE_PIDS=""
 stop_lanes() {
   local p
@@ -141,18 +144,21 @@ stop_lanes() {
 }
 run_lanes() {
   local -a labels=() pids=() logs=() ended=()
-  local i status remaining alive elapsed=0
+  local i status remaining alive elapsed=0 last_beat=0 start=$SECONDS
   LANES_FAILED=""
+  LANE_PIDS=""
+  # The trap goes in BEFORE the first lane starts, and each pid joins LANE_PIDS the moment it
+  # exists, so no signal can land between a spawn and the trap that would stop it.
+  trap 'stop_lanes; cleanup' EXIT
   set -m
   while [ $# -ge 3 ]; do
     labels+=("$1"); logs+=("$3")
     "$2" </dev/null >"$3" 2>&1 &
     pids+=("$!")
+    LANE_PIDS="$LANE_PIDS $!"
     shift 3
   done
   set +m
-  LANE_PIDS="${pids[*]}"
-  trap 'stop_lanes; cleanup' EXIT
   for i in "${!pids[@]}"; do
     say "  --- ${labels[$i]}: started in the background (pid ${pids[$i]})"
     ended[$i]=""
@@ -168,22 +174,27 @@ run_lanes() {
       fi
       status=0
       wait "${pids[$i]}" || status=$?
+      # The leader is gone; anything it left in its group (a probe's MCP server, a stray npm or
+      # pip child) goes with it, before cleanup deletes the scratch directory under it.
+      kill -- "-${pids[$i]}" 2>/dev/null || true
       ended[$i]=1
       remaining=$((remaining - 1))
       say ""
       say "  --- ${labels[$i]}: lane ended after ${elapsed}s (exit $status); its log:"
-      cat "${logs[$i]}"
       if [ "$status" -eq 0 ]; then
+        cat "${logs[$i]}"
         ok "${labels[$i]} verified"
       else
+        cat "${logs[$i]}" >&2  # a failed lane's REFUSED line belongs on stderr, as it did inline
         bad "${labels[$i]} (exit $status)"
         LANES_FAILED="${LANES_FAILED:+$LANES_FAILED, }${labels[$i]}"
       fi
     done
     if [ "$remaining" -gt 0 ]; then
       sleep 1
-      elapsed=$((elapsed + 1))
-      if [ $((elapsed % LANE_HEARTBEAT_S)) -eq 0 ]; then
+      elapsed=$((SECONDS - start))
+      if [ "$elapsed" -ge "$((last_beat + LANE_HEARTBEAT_S))" ]; then
+        last_beat=$elapsed
         say "      still verifying after ${elapsed}s: $alive"
       fi
     fi

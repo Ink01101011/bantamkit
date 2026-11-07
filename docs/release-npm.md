@@ -81,7 +81,7 @@ checked before the first upload is checked before the first upload:
 | 6 verify both | two lanes **at the same time** (#293), each with its own log and budget: npm — `registry.npmjs.org` directly, then the **published** tarball driven over stdio; PyPI — the per-version endpoint, sha256 against the local build, then an install with the `[mcp]` extra driven over stdio. Each registry is reported on its own line; the phase takes as long as the slower lane |
 | 7 summary | what shipped, and what is still yours to do (tag, GitHub release) |
 
-Four properties are worth knowing before you trust it:
+Five properties are worth knowing before you trust it:
 
 - **It is resumable.** A version already on a registry is skipped, never republished — npm
   forbids republishing a version anyway, so skipping is the only correct behaviour and not a
