@@ -7,21 +7,34 @@
 import './_sandbox.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Memory } from '../dist/memory/component.js';
-import { keywordsOf, promotedNames, SkillStore, skillRoots } from '../dist/memory/skills.js';
+import {
+  keywordsOf,
+  promotedNames,
+  SkillStore,
+  skillRoots,
+  TRIGGERS_DEFAULT,
+  triggersEnabled,
+  triggersOf,
+} from '../dist/memory/skills.js';
+import { UsageLedger } from '../dist/memory/usage.js';
 import { MemoryStore, RECALL_MIN_SCORE_RATIO } from '../dist/memory/store.js';
 import { writeState } from '../dist/skillfile.js';
 
 const STEPS = '## Steps\n\n1. Run it.\n';
 
-function skill(root, name, description, { keywords = null, body = STEPS, dirname = null } = {}) {
+function skill(root, name, description, { keywords = null, body = STEPS, dirname = null, triggers = null } = {}) {
   const d = join(root, dirname ?? name);
   mkdirSync(d, { recursive: true });
-  const meta = keywords === null ? '' : `metadata:\n  bantamkit-keywords: "${keywords}"\n`;
+  const rows = [
+    ...(keywords === null ? [] : [`  bantamkit-keywords: "${keywords}"\n`]),
+    ...(triggers === null ? [] : [`  bantamkit-triggers: "${triggers}"\n`]),
+  ];
+  const meta = rows.length === 0 ? '' : `metadata:\n${rows.join('')}`;
   writeFileSync(join(d, 'SKILL.md'), `---\nname: ${name}\ndescription: "${description}"\n${meta}---\n\n${body}`);
   return d;
 }
@@ -262,3 +275,191 @@ test('layeredForEval takes skill roots', () =>
     assert.deepEqual(mem.layerLabels(), ['project', 'profile', 'skill']);
     assert.deepEqual(mem.injectCandidates('decode failures').map((f) => f.name), ['fixing-windows-encoding']);
   }));
+
+// ---------------------------------------------------------------------- trigger firing (#301)
+
+const CHROME = { description: 'drive the browser', triggers: 'เปิด chrome|chrome tab' };
+const ENV = 'BANTAMKIT_SKILL_TRIGGERS';
+
+/** Run `fn` with the switch set to `value` (`undefined` unsets it), the old value restored. */
+function withSwitch(value, fn) {
+  const before = process.env[ENV];
+  if (value === undefined) delete process.env[ENV];
+  else process.env[ENV] = value;
+  try {
+    return fn();
+  } finally {
+    if (before === undefined) delete process.env[ENV];
+    else process.env[ENV] = before;
+  }
+}
+
+/** `{name: {description, ...}}` written as the project's only skills; the layered `Memory`. */
+function memWithSkills({ project, proj }, skills) {
+  rmSync(proj, { recursive: true, force: true });
+  for (const [name, { description, ...kw }] of Object.entries(skills)) skill(proj, name, description, kw);
+  return Memory.layered(project);
+}
+
+/** The same recall with the switch off, the switch restored to `on` afterwards. */
+const off = (m, prompt) => withSwitch('off', () => quiet(m, prompt, 3));
+
+function uses({ home, project }, name) {
+  const ledger = new UsageLedger(home, join(project, '.bantamkit', 'memory')).path;
+  if (!existsSync(ledger)) return [];
+  return readFileSync(ledger, 'utf8')
+    .split('\n')
+    .filter((l) => l !== '')
+    .map((l) => JSON.parse(l))
+    .filter((r) => r.fact === name);
+}
+
+const firedOf = (o) => o.fired ?? null;
+
+test('a trigger fires one line after the top-k', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME });
+      const prompt = 'ช่วย เปิด chrome ให้หน่อย';
+      const base = off(m, prompt);
+      const o = quiet(m, prompt, 3);
+      assert.equal(o.fired, 'web-driving');
+      assert.equal(firedOf(base), null);
+      if (base.status === 'answered') {
+        assert.ok(o.reply.startsWith(base.reply + '\n\n'));
+        assert.deepEqual(o.headers.slice(0, base.headers.length), base.headers);
+      }
+      assert.equal(o.headers.at(-1), '[skill] [web-driving] (skill) drive the browser');
+      assert.ok(o.reply.endsWith('[skill] [web-driving] (skill) drive the browser\n' + STEPS.trimEnd()));
+      assert.equal(o.headers.filter((h) => h.startsWith('[skill] [web-driving]')).length, 1);
+      assert.equal(o.status, 'answered');
+      assert.equal(o.returned, base.returned + 1);
+    }),
+  ));
+
+test('a trigger appends after a live top-k byte for byte', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME });
+      const prompt = 'deploy then เปิด chrome tab';
+      const base = off(m, prompt);
+      assert.deepEqual(base.headers, ['[project] [deploy] (project) how we deploy']);
+      const o = quiet(m, prompt, 3);
+      assert.equal(o.reply, base.reply + '\n\n[skill] [web-driving] (skill) drive the browser\n' + STEPS.trimEnd());
+      assert.deepEqual(o.headers, [...base.headers, '[skill] [web-driving] (skill) drive the browser']);
+      assert.deepEqual([o.fired, o.returned, o.source], ['web-driving', 2, 'project']);
+    }),
+  ));
+
+test('a trigger inside a pasted block does not fire', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME });
+      assert.equal(firedOf(quiet(m, 'look at this\n```\nเปิด chrome\n```', 3)), null);
+    }),
+  ));
+
+test('the trigger switch off is byte identical', () =>
+  withBed((bed) => {
+    const m = memWithSkills(bed, { 'web-driving': CHROME });
+    const o = withSwitch('off', () => quiet(m, 'เปิด chrome tab', 3));
+    assert.equal(firedOf(o), null);
+    assert.deepEqual(o.headers, []);
+    const on = withSwitch('on', () => quiet(m, 'เปิด chrome tab', 3));
+    assert.equal(on.fired, 'web-driving');
+    assert.ok(on.reply.startsWith(o.reply) || o.status !== 'answered');
+  }));
+
+test('a trigger never fires a promoted skill', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      writeState(bed.home, { skills: { 'web-driving': { promoted: 'symlink' } } });
+      const m = memWithSkills(bed, { 'web-driving': CHROME });
+      assert.equal(firedOf(quiet(m, 'เปิด chrome tab', 3)), null);
+    }),
+  ));
+
+test('a skill already shown is not appended twice', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME });
+      const o = quiet(m, 'drive the browser chrome เปิด chrome', 3);
+      assert.equal(firedOf(o), null);
+      assert.equal(o.headers.filter((h) => h.startsWith('[skill] [web-driving]')).length, 1);
+    }),
+  ));
+
+test('the longest trigger then the name wins', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, {
+        'b-two': { description: 'b', triggers: 'open chrome' },
+        'a-two': { description: 'a', triggers: 'open chrome' },
+        'c-three': { description: 'c', triggers: 'open chrome tab' },
+      });
+      assert.equal(quiet(m, 'zzz open chrome tab zzz', 3).fired, 'c-three');
+      const m2 = memWithSkills(bed, {
+        'b-two': { description: 'b', triggers: 'open chrome' },
+        'a-two': { description: 'a', triggers: 'open chrome' },
+      });
+      assert.equal(quiet(m2, 'zzz open chrome zzz', 3).fired, 'a-two');
+    }),
+  ));
+
+test('the exact-name walk never fires a trigger', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME, 'chrome-tab': { description: 'x' } });
+      const o = quiet(m, 'chrome-tab', 3);
+      assert.equal(o.lookup, 'hit');
+      assert.deepEqual(o.headers, ['[skill] [chrome-tab] (skill) x']);
+      assert.equal(firedOf(o), null);
+    }),
+  ));
+
+test('a fired skill is a recall hit only when stamped', () =>
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME });
+      m.recallOutcome('เปิด chrome tab', 3, RECALL_MIN_SCORE_RATIO, false);
+      assert.deepEqual(uses(bed, 'web-driving'), []);
+      m.recallOutcome('เปิด chrome tab', 3, RECALL_MIN_SCORE_RATIO, true);
+      assert.deepEqual(uses(bed, 'web-driving').map((r) => r.kind), ['recall_hit']);
+    }),
+  ));
+
+test('triggersEnabled parses the switch', () => {
+  for (const [v, want] of [
+    ['on', true],
+    [' TRUE ', true],
+    ['1', true],
+    ['yes', true],
+    ['off', false],
+    ['0', false],
+    ['nah', false],
+  ]) {
+    withSwitch(v, () => assert.equal(triggersEnabled(), want));
+  }
+  for (const v of ['', '  ']) withSwitch(v, () => assert.equal(triggersEnabled(), TRIGGERS_DEFAULT));
+  withSwitch(undefined, () => assert.equal(triggersEnabled(), TRIGGERS_DEFAULT));
+});
+
+test('triggersOf splits on bars and spaces', () => {
+  assert.deepEqual(triggersOf('เปิด chrome|chrome  tab|solo||'), [
+    ['เปิด', 'chrome'],
+    ['chrome', 'tab'],
+  ]);
+  assert.deepEqual(triggersOf(['a b']), []);
+  assert.deepEqual(triggersOf(null), []);
+});
+
+test('a skipped duplicate lends the kept skill no triggers', () =>
+  withBed(({ project, proj, user }) =>
+    withSwitch('on', () => {
+      skill(proj, 'web-driving', 'drive the browser', { triggers: 'เปิด chrome' });
+      skill(user, 'web-driving', 'user copy', { triggers: 'chrome tab' });
+      const m = Memory.layered(project);
+      assert.equal(firedOf(quiet(m, 'zzz chrome tab zzz', 3)), null);
+      assert.equal(quiet(m, 'zzz เปิด chrome zzz', 3).fired, 'web-driving');
+    }),
+  ));

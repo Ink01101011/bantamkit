@@ -20,6 +20,16 @@ export const SKILL_LAYER = 'skill';
 export const SKILL_TYPE = 'skill';
 /** The metadata key whose comma-separated value is the fact's `keywords` (R9). */
 export const KEYWORDS_KEY = 'bantamkit-keywords';
+/** #301: the metadata key whose `|`-separated value is the skill's trigger phrases. */
+export const TRIGGERS_KEY = 'bantamkit-triggers';
+/**
+ * #301: the switch for firing on one, read with the `BANTAMKIT_SKILL_AUTO` parse. The reference
+ * names both in `skillinstall`; see the note above `TRIGGERS_KEY` there for why this port does not.
+ */
+export const TRIGGERS_ENV = 'BANTAMKIT_SKILL_TRIGGERS';
+/** Set by the #301 ship-bar measurement (plan Task 8): true iff precision@inject passed. */
+export const TRIGGERS_DEFAULT = false;
+const ON: ReadonlySet<string> = new Set(['on', '1', 'true', 'yes']);
 
 // What `skillfile`'s temp naming calls a directory it is building or has set aside.
 const NOT_A_SKILL_DIR = /^[\s\S]+\.(?:tmp|old)-[0-9]+-[0-9]+$/;
@@ -81,11 +91,36 @@ export function keywordsOf(value: unknown): string[] {
     .filter((k) => k !== '');
 }
 
+/** `BANTAMKIT_SKILL_TRIGGERS`: unset or blank is `TRIGGERS_DEFAULT`; else on iff in `ON`. */
+export function triggersEnabled(): boolean {
+  // The parse `autoEnabled` uses for `BANTAMKIT_SKILL_AUTO`.
+  const raw = (process.env[TRIGGERS_ENV] ?? '').trim().toLowerCase();
+  return raw === '' ? TRIGGERS_DEFAULT : ON.has(raw);
+}
+
+/**
+ * `metadata.bantamkit-triggers` split on `|`, each phrase split on spaces; empties dropped.
+ * A phrase of fewer than two tokens is dropped: the miner never writes one (#301).
+ */
+export function triggersOf(value: unknown): string[][] {
+  if (typeof value !== 'string') return [];
+  const out: string[][] = [];
+  for (const part of value.split('|')) {
+    const toks = part.split(' ').filter((t) => t !== '');
+    if (toks.length >= 2) out.push(toks);
+  }
+  return out;
+}
+
 export class SkillStore {
   readonly roots: string[];
   /** The store's identity for the queries sidecar and the unreadable-layer report. */
   readonly root: string;
   private readonly home: string | null;
+  // Each offered skill's trigger phrases, by name, as the last `candidates` walk kept them;
+  // `read` leaves the phrases of the file it just read in `lastTriggers`.
+  private triggers = new Map<string, string[][]>();
+  private lastTriggers: string[][] = [];
 
   constructor(roots: readonly string[], home: string | null = null) {
     this.roots = [...roots];
@@ -148,6 +183,7 @@ export class SkillStore {
     }
     const broken = validate(doc, pyName(pyParent(p)));
     if (broken.length > 0) throw new BantamError(`malformed skill ${p}: ${broken.join('; ')}`);
+    this.lastTriggers = triggersOf(doc.metadata[TRIGGERS_KEY]);
     return {
       name: doc.name,
       description: oneLine(doc.description),
@@ -168,6 +204,8 @@ export class SkillStore {
     const promoted = promotedNames(this.stateHome());
     const out: Fact[] = [];
     const held = new Map<string, string>();
+    // Only the copy that holds a name lends it triggers, never a skipped duplicate (#301).
+    const triggers = new Map<string, string[][]>();
     for (const p of this.listing()) {
       const file = `${pyName(pyParent(p))}/${SKILL_FILE}`;
       let fact: Fact;
@@ -185,9 +223,34 @@ export class SkillStore {
         continue;
       }
       held.set(name, p);
+      triggers.set(name, this.lastTriggers);
       if (!shadow.has(name) && !promoted.has(name)) out.push(fact);
     }
+    this.triggers = triggers;
     return out;
+  }
+
+  /**
+   * The one skill a trigger phrase names in `tokens`: longest match, then name (#301).
+   *
+   * A trigger fires when it occurs as a contiguous run of `tokens`. A skill in `shown` never
+   * fires, nor a promoted one (`candidates` leaves those out).
+   */
+  fire(tokens: readonly string[], shown: ReadonlySet<string>): Fact | null {
+    let best: { k: number; name: string; fact: Fact } | null = null;
+    for (const fact of this.candidates()) {
+      const name = fact.name as string;
+      if (shown.has(name)) continue;
+      for (const ph of this.triggers.get(name) ?? []) {
+        const k = ph.length;
+        let hit = false;
+        for (let i = 0; i + k <= tokens.length && !hit; i++) hit = ph.every((t, j) => tokens[i + j] === t);
+        if (hit && (best === null || k > best.k || (k === best.k && cmpCodepoint(name, best.name) < 0))) {
+          best = { k, name, fact };
+        }
+      }
+    }
+    return best === null ? null : best.fact;
   }
 
   /** How many skill directories the roots list; 0 when none is there. */

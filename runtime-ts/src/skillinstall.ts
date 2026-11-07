@@ -36,6 +36,7 @@ import {
 import type { SkillsState } from './skillfile.js';
 import { render as renderSkill } from './skillfile.js';
 import { tokenizeV2 } from './memory/retrieval.js';
+import { TRIGGERS_ENV, TRIGGERS_KEY } from './memory/skills.js';
 import { TUNE_KINDS, TUNE_NARROW, TUNE_WIDEN, draftsLog, gate, improve, improveBundle, logLine } from './skilldraft.js';
 import type { Bundle, ChainLink } from './skilldraft.js';
 import { REJECT_FACTOR, STEP_SHARE, ngrams } from './skillmine.js';
@@ -44,8 +45,15 @@ import { LogSegment } from './storage/logsegment.js';
 import { parseNow } from './storage/retention.js';
 
 export const AUTO_ENV = 'BANTAMKIT_SKILL_AUTO';
-/** #301: the SKILL.md metadata key holding the cluster's trigger phrases, `|`-joined. */
-export const TRIGGERS_KEY = 'bantamkit-triggers';
+/**
+ * #301: the SKILL.md metadata key holding the cluster's trigger phrases, `|`-joined, and the
+ * switch for firing a skill in recall on one. The reference names both here; this port defines
+ * them in `memory/skills` and re-exports them, because an import of this module from the recall
+ * layer closes an import cycle (`skillpromote` extends `SkillFileError` before it exists). Node
+ * has no `memory.divergence` scan of `BANTAMKIT_*` literals, the reason the reference keeps the
+ * switch out of `memory/`.
+ */
+export { TRIGGERS_ENV, TRIGGERS_KEY };
 /** The `skills:` status line's last clause, by the switch (0.37.0: off unless opted in). */
 export const AUTO_SAID_ON = 'auto on';
 export const AUTO_SAID_OFF = `auto off (${AUTO_ENV}=on to opt in)`;

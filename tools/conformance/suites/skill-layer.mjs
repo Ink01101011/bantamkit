@@ -23,6 +23,13 @@
  * Nested `metadata` is NOT in it: that shape is ruled different in `skill-file` and both
  * runtimes refuse it there.
  *
+ * TRIGGER PHRASES (#301). A fourth scenario stamps `bantamkit-triggers` and recalls with
+ * `BANTAMKIT_SKILL_TRIGGERS` set per call: a phrase in the user's own text fires one `[skill]`
+ * line, appended last; the same phrase inside a fenced block does not (matching reads
+ * `frame(prompt)`); a promoted skill never fires; two skills tied on phrase length fire the
+ * first by name; and with the switch `off` the reply is the one the `on` reply extends. The
+ * switch is blank for every other call, so the earlier scenarios are what they were.
+ *
  * THE LITERALS. A tag both runtimes change together (`[skills]`) leaves every differential
  * green, so the header line, the layer order and the promoted exclusion are also pinned per
  * side against literals.
@@ -41,10 +48,12 @@ const REF = join(here, 'ref', 'skilllayer_ref.py');
 const TODAY = '2026-10-27';
 const STEPS = '## Steps\n\n1. Read the failing line.\n2. Name the encoding.\n';
 
-const skill = (name, description, { keywords = null, body = STEPS, front = null } = {}) =>
+const skill = (name, description, { keywords = null, body = STEPS, front = null, triggers = null } = {}) =>
   front ??
   `---\nname: ${name}\ndescription: "${description}"\n` +
-    (keywords === null ? '' : `metadata:\n  bantamkit-generated-by: bantamkit\n  bantamkit-keywords: "${keywords}"\n`) +
+    (keywords === null && triggers === null ? '' : 'metadata:\n  bantamkit-generated-by: bantamkit\n') +
+    (keywords === null ? '' : `  bantamkit-keywords: "${keywords}"\n`) +
+    (triggers === null ? '' : `  bantamkit-triggers: "${triggers}"\n`) +
     `---\n\n${body}`;
 const fact = (name, description, body) =>
   `---\nname: ${name}\ndescription: ${description}\ntype: project\ncreated: '2026-10-01'\n` +
@@ -80,7 +89,26 @@ const FULL = {
   'host/tracing-flaky-tests.md': hostFact('tracing-flaky-tests', 'flaky tests flaky tests host copy', 'host copy'),
 };
 
-const recall = (q, { k = null, stamp = false } = {}) => ({ op: 'recall', q, k, stamp });
+const recall = (q, { k = null, stamp = false, triggers = null } = {}) =>
+  triggers === null ? { op: 'recall', q, k, stamp } : { op: 'recall', q, k, stamp, triggers };
+const on = (q, o = {}) => recall(q, { k: 3, ...o, triggers: 'on' });
+const off = (q, o = {}) => recall(q, { k: 3, ...o, triggers: 'off' });
+
+/** #301: the trigger-phrase fixture. */
+const TRIGGERED = {
+  'proj/.bantamkit/memory/facts/deploy.md': fact('deploy', 'how we deploy', 'real deploy'),
+  [`${PROJ}/web-driving/SKILL.md`]: skill('web-driving', 'drive the browser', { triggers: 'เปิด chrome|chrome tab' }),
+  [`${PROJ}/b-two/SKILL.md`]: skill('b-two', 'second of a tie', { triggers: 'open chrome' }),
+  [`${PROJ}/a-two/SKILL.md`]: skill('a-two', 'first of a tie', { triggers: 'open chrome' }),
+  [`${PROJ}/promoted-skill/SKILL.md`]: skill('promoted-skill', 'rotating signing certificates', {
+    triggers: 'rotate certs|certs now',
+  }),
+  'home/.bantamkit/skills-state.json':
+    JSON.stringify({ version: 1, skills: { 'promoted-skill': { promoted: 'symlink' } } }, null, 2) + '\n',
+};
+const LIVE = 'deploy then เปิด chrome tab';
+const FENCED = 'look at this\n```\nเปิด chrome\n```';
+const TIE = 'zzz open chrome zzz';
 
 const SCENARIOS = [
   {
@@ -127,6 +155,20 @@ const SCENARIOS = [
       ['a user skill', recall('flaky tests')],
     ],
   },
+  {
+    label: 'trigger phrases',
+    files: TRIGGERED,
+    native: null,
+    calls: [
+      ['a phrase fires one line after the top-k', on(LIVE)],
+      ['the same prompt with the switch off', off(LIVE)],
+      ['a phrase inside a fenced block does not fire', on(FENCED)],
+      ['a promoted skill never fires', on('please rotate certs now')],
+      ['a tie on length fires the first by name', on(TIE)],
+      ['the tie with the switch off', off(TIE)],
+      ['a stamped fire is a recall_hit', on('เปิด chrome tab', { stamp: true })],
+    ],
+  },
 ];
 
 function materialise(root, files, extraDirs) {
@@ -165,6 +207,7 @@ function outcome(o) {
     returned: o.returned,
     candidates: o.candidates,
     unreadable: o.unreadable,
+    fired: o.fired ?? null,
   };
 }
 
@@ -187,7 +230,14 @@ async function runNode(ctx, req, env) {
         materialise(req.start, { '.bantamkit/skills/late-skill/SKILL.md': call.text }, []);
         return null;
       }
-      return outcome(mem.recallOutcome(call.q, call.k, store.RECALL_MIN_SCORE_RATIO, call.stamp));
+      const was = process.env.BANTAMKIT_SKILL_TRIGGERS;
+      if ('triggers' in call) process.env.BANTAMKIT_SKILL_TRIGGERS = call.triggers;
+      try {
+        return outcome(mem.recallOutcome(call.q, call.k, store.RECALL_MIN_SCORE_RATIO, call.stamp));
+      } finally {
+        if (was === undefined) delete process.env.BANTAMKIT_SKILL_TRIGGERS;
+        else process.env.BANTAMKIT_SKILL_TRIGGERS = was;
+      }
     });
     const usage = join(env.HOME, '.bantamkit', 'usage');
     let ledgers = [];
@@ -232,6 +282,7 @@ export async function run(ctx) {
         USERPROFILE: join(bed, 'home'),
         BANTAMKIT_INDEX_DIR: join(bed, 'index'),
         BANTAMKIT_MEMORY_DIR: undefined,
+        BANTAMKIT_SKILL_TRIGGERS: undefined,
       };
       const req = {
         start: join(bed, sc.start ?? 'proj'),
@@ -243,7 +294,7 @@ export async function run(ctx) {
       const before = Object.fromEntries(req.watch.map((w) => [w, tree(w)]));
       const got =
         side === 'py'
-          ? ctx.runPython(REF, req, { ...env, BANTAMKIT_MEMORY_DIR: '' })
+          ? ctx.runPython(REF, req, { ...env, BANTAMKIT_MEMORY_DIR: '', BANTAMKIT_SKILL_TRIGGERS: '' })
           : await runNode(ctx, req, env);
       sides[side] = { got: scrub(got, bed), before: scrub(before, bed) };
     }
@@ -306,6 +357,34 @@ export async function run(ctx) {
       kind: 'json',
       expected: { inject: true, layers: true },
       actual: { inject: r[3].includes('late-skill'), layers: r[4].includes('skill') },
+    });
+  }
+  // #301, per side: a symmetric regression in firing (both stop, both fire inside a fence, both
+  // lose the order) leaves the differential green, so the trigger answers are pinned too.
+  for (const side of ['py', 'node']) {
+    const r = answers[3][side].got.results;
+    const who = side === 'py' ? 'python' : 'node';
+    cases.push({
+      name: `literal (${who}): trigger phrases: fired, per call`,
+      kind: 'json',
+      expected: ['web-driving', null, null, null, 'a-two', null, 'web-driving'],
+      actual: r.map((o) => o.fired),
+    });
+    cases.push({
+      name: `literal (${who}): trigger phrases: the fired header line is the last`,
+      kind: 'json',
+      expected: ['[skill] [web-driving] (skill) drive the browser', '[skill] [a-two] (skill) first of a tie'],
+      actual: [r[0].headers.at(-1), r[4].headers.at(-1)],
+    });
+    cases.push({
+      name: `literal (${who}): trigger phrases: the off reply is a prefix of the on reply`,
+      kind: 'json',
+      expected: { live: true, tie: true, liveTop: ['[project] [deploy] (project) how we deploy'] },
+      actual: {
+        live: r[1].status !== 'answered' || r[0].reply.startsWith(r[1].reply + '\n\n'),
+        tie: r[5].status !== 'answered' || r[4].reply.startsWith(r[5].reply + '\n\n'),
+        liveTop: r[1].headers,
+      },
     });
   }
   cases.push(...(await runLateMcp(ctx)).cases);

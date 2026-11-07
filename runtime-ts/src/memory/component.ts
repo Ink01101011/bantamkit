@@ -42,7 +42,9 @@ import {
 import { pyHome, pyIsDir, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
 import { homedir } from 'node:os';
 import { NATIVE_LAYER, NativeStore } from './native.js';
-import { SKILL_LAYER, SkillStore, skillRoots } from './skills.js';
+import { SKILL_LAYER, SkillStore, skillRoots, triggersEnabled } from './skills.js';
+import { frame } from '../replynative.js';
+import { tokenizeLabel } from '../skilllabel.js';
 import { BM25F, QueryScorer, queryTerms, type Scorer, stale, weightOf } from './retrieval.js';
 import * as queriesMod from './queries.js';
 import { loadSkill } from '../assets.js';
@@ -328,6 +330,8 @@ export interface RecallOutcome {
    * ` [via <file>]`; `null` when none was.
    */
   readonly via: string | null;
+  /** #301: the skill a trigger phrase fired, its header last; `null` when none did. */
+  readonly fired?: string | null;
 }
 
 /**
@@ -741,7 +745,17 @@ export class Memory {
     // The outcome filter (#219) holds for the archive's hits as for the live ones.
     if (outcome !== null) archived = archived.filter(([, fact]) => fact.outcome === outcome);
     if (archived.length > 0 || via !== null) counts.returned = picked.length + archived.length + (via !== null ? 1 : 0);
-    if (picked.length === 0 && archived.length === 0 && via === null) {
+    const fired = this.fire(
+      query,
+      new Set([
+        ...picked.map(([, fact]) => fact.name as string),
+        ...archived.map(([, fact]) => fact.name as string),
+        ...(via === null ? [] : [via[1].name as string]),
+      ]),
+    );
+    if (fired !== null && stamp) this.use([fired[1]], 'recall_hit');
+    if (fired !== null) counts.returned = picked.length + archived.length + (via !== null ? 1 : 0) + 1;
+    if (picked.length === 0 && archived.length === 0 && via === null && fired === null) {
       const [status, reply] = this.nothingToReport();
       return { reply: lead + reply + note, status, source: null, headers: [], via: null, ...counts };
     }
@@ -750,14 +764,29 @@ export class Memory {
       ...archived.map(([label, fact]): [string, Fact, boolean, string] => [label, fact, true, '']),
     ];
     if (via !== null) shown.push([via[0], via[1], false, via[2]]);
+    if (fired !== null) shown.push([fired[0], fired[1], false, '']);
     return {
       reply: lead + shown.map(([label, fact, old, tail]) => `${this.header(label, fact, old)}${tail}\n${fact.body}`).join('\n\n') + note,
       status: 'answered',
       source: shown[0]![0].split(':', 1)[0]!,
       headers: shown.map(([label, fact, old, tail]) => this.header(label, fact, old) + tail),
       via: via === null ? null : via[3],
+      fired: fired === null ? null : (fired[1].name as string),
       ...counts,
     };
+  }
+
+  /**
+   * #301: the one `[skill]` a trigger phrase in the user's own text names, or `null`.
+   *
+   * Matched against `tokenizeLabel(frame(query))`, so a phrase inside a pasted block never
+   * fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires.
+   */
+  private fire(query: string, shown: ReadonlySet<string>): [string, Fact] | null {
+    const layer = this.layers.find(([label]) => label === SKILL_LAYER);
+    if (layer === undefined || !triggersEnabled()) return null;
+    const fact = (layer[1] as SkillStore).fire(tokenizeLabel(frame(query)), shown);
+    return fact === null ? null : [layer[0], fact];
   }
 
   /** `[label, store, writable]` per layer, in precedence order (the touch graph's input). */
