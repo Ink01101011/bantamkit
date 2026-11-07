@@ -2982,7 +2982,8 @@ def test_reply_native_non_utf8_lang_still_injects_and_records(tmp_path):
     env = {"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": "\udcff\udcfe"}
     ctx = _rn_prompt(home, cwd, "ทำไมมันพัง", env=env)
     assert ctx.startswith("[bantamkit reply-native] Think in English")
-    rec = json.loads((home / ".bantamkit" / "hooks" / "reply-native.json").read_text("utf-8"))
+    state = home / ".bantamkit" / "hooks" / "reply-native.json"
+    rec = json.loads(state.read_text(encoding="utf-8"))
     assert rec["rawLang"] == "\ufffd\ufffd" and rec["reason"] == "invalid-lang"
     assert not [x for x in _log_lines(home) if x.get("event") == "error"]
 
