@@ -117,6 +117,7 @@ class RecallOutcome:
     skipped: tuple[dict[str, str], ...] = ()
     headers: tuple[str, ...] = ()
     via: str | None = None
+    fired: str | None = None
 
 
 def normalize_name(name: str) -> str:
@@ -265,6 +266,16 @@ def _layer_label(root: Path) -> str:
 #: The read-only layers that are not bantamkit stores: they list their own files, take the
 #: `shadow` of every bantamkit layer before them, and are never written.
 _READ_ONLY = (NativeStore, SkillStore)
+
+
+def _lends_shadow(store: Any) -> bool:
+    """Whether a layer's names shadow every read-only layer after it (#199 J68-11, #206 X8).
+
+    Every bantamkit store does, and the skill layer (a skill is bantamkit's own); the host's
+    native layer never does. The one rule `_pooled` walks by and `_fire` (#301) reuses, so a
+    skill dropped from the pool never fires either.
+    """
+    return not isinstance(store, _READ_ONLY) or isinstance(store, SkillStore)
 
 
 def _count(store: Any) -> int:
@@ -724,7 +735,17 @@ class Memory:
             archived = [(label, fact) for label, fact in archived if fact.outcome == outcome]
         if archived or via is not None:
             counts["returned"] = len(picked) + len(archived) + (via is not None)
-        if not picked and not archived and via is None:
+        fired = self._fire(
+            query,
+            seen
+            | {fact.name for _, fact in archived}
+            | (set() if via is None else {via[1].name}),
+        )
+        if fired is not None and stamp:
+            self._use([fired[1]], "recall_hit")
+        if fired is not None:
+            counts["returned"] = len(picked) + len(archived) + (via is not None) + 1
+        if not picked and not archived and via is None and fired is None:
             status, reply = self._nothing_to_report()
             return RecallOutcome(reply=lead + reply + note, status=status, **counts)
         shown = [(label, fact, False, "") for label, fact in picked] + [
@@ -732,6 +753,8 @@ class Memory:
         ]
         if via is not None:
             shown.append((via[0], via[1], False, via[2]))
+        if fired is not None:
+            shown.append((fired[0], fired[1], False, ""))
         return RecallOutcome(
             reply=lead
             + "\n\n".join(
@@ -743,8 +766,48 @@ class Memory:
             source=shown[0][0].split(":", 1)[0],
             headers=tuple(self._header(lab, fact, old) + tail for lab, fact, old, tail in shown),
             via=None if via is None else via[1].name,
+            fired=None if fired is None else fired[1].name,
             **counts,
         )
+
+    def _fire(self, query: str, shown: set[str]) -> tuple[str, Fact] | None:
+        """#301: the one `[skill]` a trigger phrase in the user's own text names, or None.
+
+        Matched against `tokenize_label(frame(query))`, so a phrase inside a pasted block never
+        fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires, nor
+        one an earlier layer shadows (`_lends_shadow`, the rule `_pooled` drops it from the pool
+        by), so a fired `[skill] [name]` is always what a recall of that name answers.
+        """
+        from bantamkit.memory.skills import triggers_enabled
+        from bantamkit.replynative import frame
+        from bantamkit.skillmine import tokenize_label
+
+        at = next((i for i, (lab, _, _) in enumerate(self._layers) if lab == SKILL_LAYER), None)
+        if at is None or not triggers_enabled():
+            return None
+        label, store, _ = self._layers[at]
+        fact = store.fire(tokenize_label(frame(query)), shown, self._shadow_before(at))
+        return None if fact is None else (label, fact)
+
+    def _shadow_before(self, at: int) -> set[str]:
+        """The names the layers before `at` that `_lends_shadow` hold: the shadow `_pooled`
+        hands layer `at`. A read-only layer that cannot be read lends nothing (as in
+        `_pooled`); the project layer failing raises."""
+        shadow: set[str] = set()
+        for _, store, writable in self._layers[:at]:
+            if not _lends_shadow(store):
+                continue
+            try:
+                if isinstance(store, _READ_ONLY):
+                    pool = store.pool([], skipped=[], shadow=frozenset(shadow))
+                else:
+                    pool = store.pool([], skipped=[])
+            except (BantamError, OSError, UnicodeDecodeError):
+                if writable:
+                    raise
+                continue
+            shadow.update(_text(n) for n in pool.all_names())
+        return shadow
 
     def layer_stores(self) -> list[tuple[str, Any, bool]]:
         """`(label, store, writable)` per layer, in precedence order (the touch graph's input)."""
@@ -924,12 +987,12 @@ class Memory:
                         if native
                         else store.candidates(left_out)
                     )
-                    if not native or isinstance(store, SkillStore):
+                    if _lends_shadow(store):
                         shadow.update(_text(f.name) for f in got)
                     pool = pool_of([f for f in got if f.outcome == outcome], q, every_row)
                 elif native:
                     pool = store.pool(q, skipped=left_out, shadow=shadow, every_row=every_row)
-                    if isinstance(store, SkillStore):
+                    if _lends_shadow(store):
                         # a skill is bantamkit's own: the host's copy of a name never answers
                         shadow.update(pool.all_names())
                 else:

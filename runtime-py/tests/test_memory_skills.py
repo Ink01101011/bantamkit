@@ -27,10 +27,14 @@ def _skill(
     keywords: str | None = None,
     body: str = STEPS,
     dirname: str | None = None,
+    triggers: str | None = None,
 ) -> Path:
     d = root / (dirname or name)
     d.mkdir(parents=True, exist_ok=True)
-    meta = "" if keywords is None else f'metadata:\n  bantamkit-keywords: "{keywords}"\n'
+    rows = ([] if keywords is None else [f'  bantamkit-keywords: "{keywords}"\n']) + (
+        [] if triggers is None else [f'  bantamkit-triggers: "{triggers}"\n']
+    )
+    meta = "" if not rows else "metadata:\n" + "".join(rows)
     (d / "SKILL.md").write_text(
         f'---\nname: {name}\ndescription: "{description}"\n{meta}---\n\n{body}',
         encoding="utf-8",
@@ -271,3 +275,207 @@ def test_layered_for_eval_takes_skill_roots(tmp_path, monkeypatch):
     mem = Memory.layered_for_eval(tmp_path / "p", tmp_path / "q", skills=roots)
     assert _labels(mem) == ["project", "profile", "skill"]
     assert [f.name for f in mem.inject_candidates("decode failures")] == ["fixing-windows-encoding"]
+
+
+# ---------------------------------------------------------------------- trigger firing (#301)
+
+CHROME = {"description": "drive the browser", "triggers": "เปิด chrome|chrome tab"}
+
+
+@pytest.fixture
+def mem_with_skills(bed):
+    """`{name: kwargs}` written as the project's only skills; the layered `Memory` over them."""
+    import shutil
+
+    project, proj, _ = bed
+
+    def make(skills: dict[str, dict[str, str]]) -> Memory:
+        shutil.rmtree(proj, ignore_errors=True)
+        for name, kw in skills.items():
+            _skill(proj, name, **kw)
+        return Memory.layered(start=project)
+
+    return make
+
+
+def _off(m: Memory, prompt: str, monkeypatch):
+    """The same recall with the switch off, the switch restored to `on` afterwards."""
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "off")
+    try:
+        return m.recall_outcome(prompt, 3, stamp=False)
+    finally:
+        monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+
+
+def _uses(bed, name: str) -> list[dict]:
+    project = bed[0]
+    ledger = UsageLedger(Path.home(), project / ".bantamkit" / "memory").path
+    if not ledger.exists():
+        return []
+    rows = map(json.loads, ledger.read_text(encoding="utf-8").splitlines())
+    return [r for r in rows if r["fact"] == name]
+
+
+def test_trigger_fires_one_line_after_topk(mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME})
+    prompt = "ช่วย เปิด chrome ให้หน่อย"
+    base = _off(m, prompt, monkeypatch)
+    o = m.recall_outcome(prompt, 3, stamp=False)
+    assert o.fired == "web-driving"
+    assert base.fired is None
+    if base.status == "answered":
+        assert o.reply.startswith(base.reply + "\n\n")
+        assert o.headers[: len(base.headers)] == base.headers
+    assert o.headers[-1] == "[skill] [web-driving] (skill) drive the browser"
+    assert o.reply.endswith("[skill] [web-driving] (skill) drive the browser\n" + STEPS.rstrip())
+    assert sum(h.startswith("[skill] [web-driving]") for h in o.headers) == 1
+    assert o.status == "answered"
+    assert o.returned == base.returned + 1
+
+
+def test_trigger_appends_after_a_live_topk_byte_for_byte(mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME})
+    prompt = "deploy then เปิด chrome tab"
+    base = _off(m, prompt, monkeypatch)
+    assert base.headers == ("[project] [deploy] (project) how we deploy",)
+    o = m.recall_outcome(prompt, 3, stamp=False)
+    assert o.reply == base.reply + "\n\n[skill] [web-driving] (skill) drive the browser\n" + (
+        STEPS.rstrip()
+    )
+    assert o.headers == base.headers + ("[skill] [web-driving] (skill) drive the browser",)
+    assert (o.fired, o.returned, o.source) == ("web-driving", 2, "project")
+
+
+def test_trigger_inside_pasted_block_does_not_fire(mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME})
+    o = m.recall_outcome("look at this\n```\nเปิด chrome\n```", 3, stamp=False)
+    assert o.fired is None
+
+
+def test_trigger_switch_off_is_byte_identical(mem_with_skills, monkeypatch):
+    m = mem_with_skills({"web-driving": CHROME})
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "off")
+    off = m.recall_outcome("เปิด chrome tab", 3, stamp=False)
+    assert off.fired is None
+    assert off.headers == ()
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    on = m.recall_outcome("เปิด chrome tab", 3, stamp=False)
+    assert on.fired == "web-driving"
+    assert on.reply.startswith(off.reply) or off.status != "answered"
+
+
+def test_trigger_never_fires_a_promoted_skill(mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    write_state(Path.home(), {"skills": {"web-driving": {"promoted": "symlink"}}})
+    m = mem_with_skills({"web-driving": CHROME})
+    assert m.recall_outcome("เปิด chrome tab", 3, stamp=False).fired is None
+
+
+def test_trigger_never_fires_a_shadowed_skill(bed, mem_with_skills, monkeypatch):
+    # f1 (#301): a project fact holding the skill's name shadows it in `_pooled`, so the
+    # skill never fires either -- a `[skill] [web-driving]` line whose name recalls the fact
+    # would name one thing and answer another.
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    project = bed[0]
+    MemoryStore(project / ".bantamkit" / "memory").save(
+        "project", "web-driving", "the project note on driving", "fact copy"
+    )
+    m = mem_with_skills({"web-driving": CHROME, "tab-other": {"description": "o"}})
+    o = m.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False)
+    assert o.fired is None
+    assert not any(h.startswith("[skill] [web-driving]") for h in o.headers)
+    assert "fact copy" in m.recall("web-driving")
+    # an unshadowed skill still fires on the same walk
+    m2 = mem_with_skills({"web-drive-2": CHROME})
+    assert m2.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False).fired == "web-drive-2"
+
+
+def test_trigger_skill_already_shown_is_not_appended_twice(mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME})
+    o = m.recall_outcome("drive the browser chrome เปิด chrome", 3, stamp=False)
+    assert o.fired is None
+    assert sum(h.startswith("[skill] [web-driving]") for h in o.headers) == 1
+
+
+def test_longest_trigger_then_name_wins(mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({
+        "b-two": {"description": "b", "triggers": "open chrome"},
+        "a-two": {"description": "a", "triggers": "open chrome"},
+        "c-three": {"description": "c", "triggers": "open chrome tab"},
+    })
+    assert m.recall_outcome("zzz open chrome tab zzz", 3, stamp=False).fired == "c-three"
+    m2 = mem_with_skills({
+        "b-two": {"description": "b", "triggers": "open chrome"},
+        "a-two": {"description": "a", "triggers": "open chrome"},
+    })
+    assert m2.recall_outcome("zzz open chrome zzz", 3, stamp=False).fired == "a-two"
+
+
+def test_trigger_exact_name_walk_never_fires(mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME, "chrome-tab": {"description": "x"}})
+    o = m.recall_outcome("chrome-tab", 3, stamp=False)
+    assert o.lookup == "hit" and o.headers == ("[skill] [chrome-tab] (skill) x",)
+    assert o.fired is None
+
+
+def test_fired_skill_is_a_recall_hit_only_when_stamped(bed, mem_with_skills, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME})
+    m.recall_outcome("เปิด chrome tab", 3, stamp=False)
+    assert _uses(bed, "web-driving") == []
+    m.recall_outcome("เปิด chrome tab", 3, stamp=True)
+    assert [r["kind"] for r in _uses(bed, "web-driving")] == ["recall_hit"]
+
+
+def test_triggers_capped_at_top_five_in_file_order(mem_with_skills, monkeypatch):
+    # #301 review M2: a hand-written or edited SKILL.md may list any number of phrases; only the
+    # first TRIGGERS_TOP (5) are read, the same cap the miner writes under.
+    from bantamkit.memory.skills import TRIGGERS_TOP, triggers_of
+
+    assert TRIGGERS_TOP == 5
+    seven = "|".join(f"w{i} v{i}" for i in range(1, 8))
+    assert triggers_of(seven) == [(f"w{i}", f"v{i}") for i in range(1, 6)]
+    # the cap is after the filters: one-token phrases do not use up a slot
+    assert len(triggers_of("solo|" + seven)) == 5
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"many": {"description": "zz qq", "triggers": seven}})
+    assert m.recall_outcome("xx w5 v5 xx", 3, stamp=False).fired == "many"
+    assert m.recall_outcome("xx w6 v6 xx", 3, stamp=False).fired is None
+
+
+def test_triggers_enabled_parse(monkeypatch):
+    from bantamkit.memory.skills import TRIGGERS_DEFAULT, triggers_enabled
+
+    for v, want in (("on", True), (" TRUE ", True), ("1", True), ("yes", True),
+                    ("off", False), ("0", False), ("nah", False)):
+        monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", v)
+        assert triggers_enabled() is want
+    for v in ("", "  "):
+        monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", v)
+        assert triggers_enabled() is TRIGGERS_DEFAULT
+    monkeypatch.delenv("BANTAMKIT_SKILL_TRIGGERS")
+    assert triggers_enabled() is TRIGGERS_DEFAULT
+
+
+def test_triggers_of_splits_on_bars_and_spaces():
+    from bantamkit.memory.skills import triggers_of
+
+    assert triggers_of("เปิด chrome|chrome  tab|solo||") == [("เปิด", "chrome"), ("chrome", "tab")]
+    assert triggers_of(["a b"]) == []
+    assert triggers_of(None) == []
+
+
+def test_a_skipped_duplicate_lends_the_kept_skill_no_triggers(bed, monkeypatch):
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    project, proj, user = bed
+    _skill(proj, "web-driving", "drive the browser", triggers="เปิด chrome")
+    _skill(user, "web-driving", "user copy", triggers="chrome tab")
+    m = Memory.layered(start=project)
+    assert m.recall_outcome("zzz chrome tab zzz", 3, stamp=False).fired is None
+    assert m.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False).fired == "web-driving"

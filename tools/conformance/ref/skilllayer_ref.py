@@ -7,12 +7,15 @@ and `BANTAMKIT_MEMORY_DIR` arrive in the environment, set by the harness to path
     {"start": path, "native": path | null, "today": "YYYY-MM-DD",
      "watch": [path, ...],
      "calls": [{"op": "labels"}
-             | {"op": "recall", "q": str, "k": int | null, "stamp": bool}]}
+             | {"op": "recall", "q": str, "k": int | null, "stamp": bool,
+                "triggers": "on" | "off" | absent}]}
       -> {"results": [...], "trees": {path: {relpath: b64}}, "ledgers": [str, ...]}
 
-A recall answers its outcome's fields; `trees` is every file under each watched directory
-after the calls, as bytes; `ledgers` is the text of every usage ledger, in file-name order
-(the file name is a hash of the store's path, which differs between the two beds).
+A recall's `triggers`, when present, is `BANTAMKIT_SKILL_TRIGGERS` for that call alone (#301);
+the harness passes the switch blank otherwise. A recall answers its outcome's fields; `trees`
+is every file under each watched directory after the calls, as bytes; `ledgers` is the text of
+every usage ledger, in file-name order (the file name is a hash of the store's path, which
+differs between the two beds).
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ def _outcome(o) -> dict:
         "returned": o.returned,
         "candidates": o.candidates,
         "unreadable": o.unreadable,
+        "fired": o.fired,
     }
 
 
@@ -75,7 +79,16 @@ def main() -> None:
             target.write_text(call["text"], encoding="utf-8")
             results.append(None)
         elif call["op"] == "recall":
-            o = mem.recall_outcome(call["q"], call.get("k"), stamp=call["stamp"])
+            before = os.environ.get("BANTAMKIT_SKILL_TRIGGERS")
+            if "triggers" in call:
+                os.environ["BANTAMKIT_SKILL_TRIGGERS"] = call["triggers"]
+            try:
+                o = mem.recall_outcome(call["q"], call.get("k"), stamp=call["stamp"])
+            finally:
+                if before is None:
+                    os.environ.pop("BANTAMKIT_SKILL_TRIGGERS", None)
+                else:
+                    os.environ["BANTAMKIT_SKILL_TRIGGERS"] = before
             results.append(_outcome(o))
         else:
             raise SystemExit(f"unknown call {call['op']}")

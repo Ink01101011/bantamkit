@@ -110,12 +110,76 @@ test('approve with a stored draft installs it off probation; again is refused', 
   const h = home();
   write(h, record('fixing-a'));
   const path = join(sf.skillsRoot(h), 'fixing-a');
-  assert.equal(await render(h, 'approve', 'c-fixing-a'), `installed skill fixing-a at ${path} (user level).\nundo: ${C} undo fixing-a`);
+  assert.equal(
+    await render(h, 'approve', 'c-fixing-a'),
+    `installed skill fixing-a at ${path} (user level).\npromoted skill fixing-a\nundo: ${C} undo fixing-a`,
+  );
   const entry = sf.readState(h).skills['fixing-a'];
   assert.equal(entry.auto, false);
   assert.ok(!('probation_until' in entry));
   assert.equal(doc(h).clusters[0].status, 'installed');
   assert.equal(await render(h, 'approve', 'c-fixing-a'), 'proposal c-fixing-a is already installed');
+});
+
+test('approve promotes right after install', async () => {
+  const h = home();
+  write(h, record('fixing-a'));
+  const lines = (await render(h, 'approve', 'c-fixing-a')).split('\n');
+  assert.ok(lines[0].startsWith('installed skill fixing-a at '));
+  assert.equal(lines[1], 'promoted skill fixing-a');
+  assert.equal(lines[2], `undo: ${C} undo fixing-a`);
+  assert.ok(['symlink', 'copy'].includes(sf.readState(h).skills['fixing-a'].promoted.mode));
+});
+
+test('approve over budget installs but does not promote', async () => {
+  process.env.BANTAMKIT_SKILL_BUDGET = '1';
+  try {
+    const h = home();
+    write(h, record('fixing-a'));
+    const lines = (await render(h, 'approve', 'c-fixing-a')).split('\n');
+    assert.ok(lines[0].startsWith('installed skill fixing-a at '));
+    assert.ok(lines[1].startsWith('not promoted: promoting fixing-a would take the catalogue to '));
+    assert.ok(lines[1].endsWith(' bytes, over the budget of 1'));
+    assert.equal(lines[2], `undo: ${C} undo fixing-a`);
+    const entry = sf.readState(h).skills['fixing-a'];
+    assert.ok(!('promoted' in entry));
+    assert.deepEqual(entry.promote_refused, { at: NOW, reason: lines[1].slice('not promoted: '.length) });
+  } finally {
+    delete process.env.BANTAMKIT_SKILL_BUDGET;
+  }
+});
+
+test('approve survives a promote that throws', async () => {
+  // #301 review M1: `.claude/skills` is a regular file, so promote's mkdir throws after the
+  // install already happened. Approve still answers its three lines and records the refusal.
+  const h = home();
+  writeFileSync(join(h, '.claude', 'skills'), 'not a dir');
+  write(h, record('fixing-a'));
+  const lines = (await render(h, 'approve', 'c-fixing-a')).split('\n');
+  const link = join(h, '.claude', 'skills', 'fixing-a');
+  assert.equal(lines.length, 3);
+  assert.ok(lines[0].startsWith('installed skill fixing-a at '));
+  assert.ok(
+    [`not promoted: could not link ${link}: EEXIST`, `not promoted: could not link ${link}: ENOTDIR`].includes(lines[1]),
+    lines[1],
+  );
+  assert.equal(lines[2], `undo: ${C} undo fixing-a`);
+  const entry = sf.readState(h).skills['fixing-a'];
+  assert.ok(!('promoted' in entry));
+  assert.deepEqual(entry.promote_refused, { at: NOW, reason: lines[1].slice('not promoted: '.length) });
+  assert.equal(doc(h).clusters[0].status, 'installed');
+});
+
+test('approve promote ignores skill auto off', async () => {
+  const was = process.env.BANTAMKIT_SKILL_AUTO;
+  delete process.env.BANTAMKIT_SKILL_AUTO;
+  try {
+    const h = home();
+    write(h, record('fixing-a'));
+    assert.equal((await render(h, 'approve', 'c-fixing-a')).split('\n')[1], 'promoted skill fixing-a');
+  } finally {
+    if (was !== undefined) process.env.BANTAMKIT_SKILL_AUTO = was;
+  }
 });
 
 test('approve with no draft drafts through sampling and never hits the endpoint', async (t) => {
@@ -176,6 +240,9 @@ test('undo after an approve removes it and rejects its proposal', async () => {
   const h = home();
   write(h, record('fixing-a'));
   await render(h, 'approve', 'c-fixing-a');
+  // Approve promotes (#301), and undo of a promoted skill demotes first (unchanged), so the
+  // first undo takes the native link away and the second removes the skill.
+  assert.equal(await render(h, 'undo', 'fixing-a'), 'demoted skill fixing-a');
   assert.ok((await render(h, 'undo', 'fixing-a')).endsWith('; proposal c-fixing-a is marked rejected'));
   assert.ok(!('fixing-a' in sf.readState(h).skills));
   assert.equal(doc(h).clusters[0].status, 'rejected');

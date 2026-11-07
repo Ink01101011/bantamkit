@@ -172,12 +172,13 @@ function ours(link: string, source: string, entry: Rec): boolean {
   return isDir(link) && rec !== null && rec['mode'] === MODE_COPY && rec['link'] === link;
 }
 
-const codeOf = (e: unknown): string => {
+/** The errno name of an OS error (`EEXIST`), `EUNKNOWN` without one: Python's `_code`. */
+export const codeOf = (e: unknown): string => {
   const c = (e as { code?: unknown } | null)?.code;
   return typeof c === 'string' && c !== '' ? c : 'EUNKNOWN';
 };
 
-const isOsError = (e: unknown): boolean => e instanceof Error && typeof (e as { code?: unknown }).code === 'string';
+export const isOsError = (e: unknown): boolean => e instanceof Error && typeof (e as { code?: unknown }).code === 'string';
 
 function rootsOf(gathered: Gathered, home: string, cwd: string | null): [string, string][] {
   const roots: [string, string][] = gathered.roots.filter(([label]) => label === 'plugins').map(([l, p]) => [l, p]);
@@ -273,6 +274,14 @@ export function promote(
     }
   });
   return { ok: true, mode: rec['mode'] as string, reason: `promoted skill ${name}` };
+}
+
+/** Record a refused promotion on `name` (`promote_refused`); not retried the same UTC day. */
+export function recordRefusal(home: string, name: string, now: string, reason: string): void {
+  updateState(home, (fresh: SkillsState) => {
+    const live = own(fresh.skills as Rec, name);
+    if (isObj(live)) live['promote_refused'] = { at: now, reason };
+  });
 }
 
 let counter = 0;
@@ -398,10 +407,7 @@ export function promoteStep(
       events.push(got.reason);
       continue;
     }
-    updateState(home, (fresh: SkillsState) => {
-      const live = own(fresh.skills as Rec, name);
-      if (isObj(live)) live['promote_refused'] = { at: now, reason: got.reason };
-    });
+    recordRefusal(home, name, now, got.reason);
   }
   const fresh = readState(home);
   for (const k of Object.keys(state)) delete state[k];

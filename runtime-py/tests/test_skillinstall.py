@@ -7,6 +7,7 @@ Every home is a tmp dir; nothing reaches the real `~/.bantamkit`. Every fixture 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -332,3 +333,127 @@ def test_undo_right_after_an_install_removes_it(tmp_path):
 def test_constants():
     assert (si.AUTO_PER_DAY, si.AUTO_LIVE_MAX, si.PROBATION_DAYS) == (1, 5, 30)
     assert (si.KEYWORDS_MAX, si.EVIDENCE_PROJECT_CHARS, si.EVIDENCE_USER_CHARS) == (16, 80, 500)
+
+
+# ------------------------------------------------------------ trigger phrases (#301 Task 3)
+
+
+def live_text(home: Path, name: str) -> str:
+    return (target(home, name) / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_triggers_key():
+    assert si.TRIGGERS_KEY == "bantamkit-triggers"
+
+
+def test_skill_text_stamps_triggers_only_when_present():
+    rec = record("fixing-a", ok_draft=False)
+    with_t = si.skill_text({**rec, "triggers": ["merge feature", "merge feature into"]},
+                           draft("fixing-a"))  # fmt: skip
+    # skillfile renders every metadata value quoted
+    assert 'bantamkit-triggers: "merge feature|merge feature into"' in with_t
+    assert not sf.is_edited(with_t)
+    assert "bantamkit-triggers" not in si.skill_text({**rec, "triggers": []}, draft("fixing-a"))
+    # a record without the key renders byte for byte as it did before #301
+    assert si.skill_text(rec, draft("fixing-a")) == si.skill_text(
+        {**rec, "triggers": []}, draft("fixing-a")
+    )
+
+
+def test_an_install_writes_the_records_triggers(tmp_path):
+    rec = {**record("fixing-a"), "triggers": ["lexer crash", "fix lexer crash"]}
+    si.install(rec, draft("fixing-a"), None, tmp_path, NOW, auto=False)
+    meta = sf.parse_skill(live_text(tmp_path, "fixing-a")).metadata
+    assert meta["bantamkit-triggers"] == "lexer crash|fix lexer crash"
+
+
+def _plain_install(tmp_path) -> str:
+    si.install(record("fixing-a"), draft("fixing-a"), None, tmp_path, NOW, auto=False)
+    return "c-fixing-a"
+
+
+def test_triggers_step_backfills_an_unedited_install(tmp_path):
+    cid = _plain_install(tmp_path)
+    doc = {"clusters": [{"id": cid, "triggers": ["merge feature", "fix lexer crash"]}]}
+    state = sf.read_state(tmp_path)
+    assert si.triggers_step(state, doc, tmp_path, day(1)) == ["added triggers to skill fixing-a"]
+    text = live_text(tmp_path, "fixing-a")
+    meta = sf.parse_skill(text).metadata
+    assert meta["bantamkit-triggers"] == "merge feature|fix lexer crash"
+    assert meta["bantamkit-version"] == "2"
+    assert not sf.is_edited(text)
+    # the caller's state is the state written: a later step does not see a hand edit
+    entry = state["skills"]["fixing-a"]
+    assert entry["sha256"] == sf.canonical_hash(text) and entry["version"] == 2
+    assert entry["versions"]["2"]["kind"] == "auto"
+    assert (target(tmp_path, "fixing-a") / "references" / "history" / "v1.md").is_file()
+    assert si.triggers_step(sf.read_state(tmp_path), doc, tmp_path, day(2)) == []
+
+
+def test_triggers_step_runs_with_auto_off(tmp_path, monkeypatch):
+    cid = _plain_install(tmp_path)
+    monkeypatch.setenv(si.AUTO_ENV, "off")
+    doc = {"clusters": [{"id": cid, "triggers": ["merge feature"]}]}
+    assert si.triggers_step(sf.read_state(tmp_path), doc, tmp_path, day(1)) == [
+        "added triggers to skill fixing-a"
+    ]
+
+
+def test_triggers_step_never_touches_an_edited_skill(tmp_path):
+    cid = _plain_install(tmp_path)
+    skill = target(tmp_path, "fixing-a") / "SKILL.md"
+    skill.write_bytes(skill.read_bytes().replace(b"When asked.", b"When I ask."))
+    before = skill.read_bytes()
+    doc = {"clusters": [{"id": cid, "triggers": ["merge feature"]}]}
+    assert si.triggers_step(sf.read_state(tmp_path), doc, tmp_path, day(1)) == []
+    assert skill.read_bytes() == before
+
+
+def test_triggers_step_skips_no_record_and_an_empty_list(tmp_path):
+    cid = _plain_install(tmp_path)
+    before = (target(tmp_path, "fixing-a") / "SKILL.md").read_bytes()
+    for doc in (
+        {"clusters": []},
+        {"clusters": [{"id": "c-other", "triggers": ["merge feature"]}]},
+        {"clusters": [{"id": cid, "triggers": []}]},
+        {"clusters": [{"id": cid}]},
+    ):
+        assert si.triggers_step(sf.read_state(tmp_path), doc, tmp_path, day(1)) == []
+    assert (target(tmp_path, "fixing-a") / "SKILL.md").read_bytes() == before
+
+
+@pytest.mark.parametrize("bad", ["\n    - c-fixing-a", "\n    k: c-fixing-a", " 7"])
+def test_triggers_step_skips_a_non_string_cluster_id_only(tmp_path, bad):
+    # f1 (#301): a list, mapping or number `bantamkit-cluster` is no id; that skill alone is
+    # skipped, as the Node step skips it (a list or mapping raised TypeError here).
+    for name in ("fixing-a", "fixing-b"):
+        si.install(record(name), draft(name), None, tmp_path, NOW, auto=False)
+    skill = target(tmp_path, "fixing-a") / "SKILL.md"
+    text = live_text(tmp_path, "fixing-a")
+    text = re.sub(r"bantamkit-cluster: .*", f"bantamkit-cluster:{bad}", text)
+    text = re.sub(r'bantamkit-sha256: ".*"', 'bantamkit-sha256: ""', text)
+    text = text.replace('bantamkit-sha256: ""', f'bantamkit-sha256: "{sf.canonical_hash(text)}"')
+    assert not isinstance(sf.parse_skill(text).metadata["bantamkit-cluster"], str)
+    assert not sf.is_edited(text)
+    skill.write_text(text, encoding="utf-8")
+    state = sf.read_state(tmp_path)
+    state["skills"]["fixing-a"]["sha256"] = sf.canonical_hash(text)
+    sf.write_state(tmp_path, state)
+    doc = {"clusters": [
+        {"id": "c-fixing-a", "triggers": ["merge feature"]},
+        {"id": "c-fixing-b", "triggers": ["fix lexer crash"]},
+    ]}  # fmt: skip
+    before = skill.read_bytes()
+    assert si.triggers_step(sf.read_state(tmp_path), doc, tmp_path, day(1)) == [
+        "added triggers to skill fixing-b"
+    ]
+    assert skill.read_bytes() == before
+
+
+def test_a_backfill_on_probation_day_30_is_still_removed_as_unused(tmp_path):
+    state = _installed(tmp_path)
+    doc = {"clusters": [{"id": "c-fixing-a", "triggers": ["merge feature"]}]}
+    assert si.triggers_step(state, doc, tmp_path, stamp_at(30)) == [
+        "added triggers to skill fixing-a"
+    ]
+    assert si.probation_step(state, {}, tmp_path, stamp_at(30)) == ["removed unused skill fixing-a"]

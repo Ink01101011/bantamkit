@@ -352,3 +352,47 @@ test('errorName is OSError for any filesystem error', () => {
   assert.equal(sm.errorName(new sm.ProposalsError('x')), 'ProposalsError');
   assert.equal(sm.errorName(new TypeError('x')), 'TypeError');
 });
+
+test('the daily run backfills triggers on an older install', async () => {
+  // #301: a skill installed before the miner had triggers gets them from its cluster's record
+  // on the next daily run, as a new version, and the run logs the event. The Python side puts
+  // the record's triggers in by hand (monkeypatched `mine`); an ESM export cannot be patched,
+  // so here the corpus grows instead: 42 more unrelated units make n = 48, and the bed's
+  // "fix lexer crash" (in 6 pieces, 6 * 8 <= 48) becomes the record's one trigger phrase.
+  const b = bed(false);
+  await withEnv({}, async () => {
+    assert.equal(await child(b), 0);
+    const [c] = sm.readProposals(b.home).clusters.filter((x) => x.successes === 6);
+    assert.deepEqual(c.triggers, []);
+    si.install(c, goodDraft(), null, b.home, NOW, false);
+    const skill = join(b.proj, '.bantamkit', 'skills', NAME, 'SKILL.md');
+    assert.ok(!Object.hasOwn(sf.parseSkill(readFileSync(skill, 'utf8')).metadata, si.TRIGGERS_KEY));
+
+    const sw = join(b.proj, '.shiftwork');
+    const ckpt = JSON.parse(readFileSync(join(sw, 'checkpoint-j.json'), 'utf8'));
+    const extra = Array.from({ length: 42 }, (_, i) => `X${i + 1}`);
+    for (const [i, id] of extra.entries()) {
+      ckpt.plan.units.push({ ...ckpt.plan.units[0], id, title: `extra${i} extra${i}notes` });
+    }
+    writeFileSync(join(sw, 'checkpoint-j.json'), JSON.stringify(ckpt));
+    const log = join(sw, 'checkpoint-j.json.log.jsonl');
+    writeFileSync(
+      log,
+      readFileSync(log, 'utf8') +
+        extra.map((u) => JSON.stringify({ unit: u, role: 'implementer', status: 'done', ts: '2026-10-10T00:00:00Z' })).join('\n') +
+        '\n',
+    );
+
+    const later = '2026-10-28T00:00:00.000Z';
+    await sm.daily(b.home, b.proj, later);
+    const [c2] = sm.readProposals(b.home).clusters.filter((x) => x.successes === 6);
+    assert.equal(c2.id, c.id);
+    assert.deepEqual(c2.triggers, ['fix lexer crash']);
+    const text = readFileSync(skill, 'utf8');
+    assert.equal(sf.parseSkill(text).metadata[si.TRIGGERS_KEY], 'fix lexer crash');
+    assert.equal(sf.isEdited(text), false);
+    const state = sf.readState(b.home);
+    assert.equal(state.skills[NAME].version, 2);
+    assert.ok(state.events.some((e) => e.at === later && e.event === `added triggers to skill ${NAME}`));
+  });
+});

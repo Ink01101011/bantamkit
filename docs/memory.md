@@ -1399,6 +1399,10 @@ tagged `[skill]`:
   first.
 - **Shadowing.** Any bantamkit layer's name drops a skill of that name before scoring, and a
   skill's name drops a `native` fact of that name.
+- **Trigger phrases (#301).** With `BANTAMKIT_SKILL_TRIGGERS` on (off by default), a skill whose
+  `metadata.bantamkit-triggers` phrase occurs in `tokenize_label(frame(query))` is appended as at
+  most one more `[skill]` line after every other line; the top-k is unchanged. Never a promoted,
+  shadowed or already-shown skill. The rules are `docs/skills.md`, *Trigger phrases*.
 - **Read-only, no hot index.** No stamp, no read-repair, no save, no compaction, no `dream`.
   A use is a `recall_hit` or `body_read` by name in the usage ledger, which is how the
   installer counts uses for probation, promotion and the judge. A skill is a directory and

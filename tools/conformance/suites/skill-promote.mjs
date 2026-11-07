@@ -149,6 +149,30 @@ function opList() {
   add('promote_step: the next day retries and promotes', { op: 'promote_step', auto: 'on', home: s, uses: { 's-two': 2, 's-three': 3, 's-zbig': 5 }, now: NEXT, budget: 1000 });
   add('promote_step: uses of the wrong type count as none', { op: 'promote_step', auto: 'on', home: s, uses: { 's-two': '3' }, now: NEXT, budget: 1000 });
   add('promote_step: a bad now', { op: 'promote_step', auto: 'on', home: s, uses: {}, now: 'yesterday', budget: 1000 });
+
+  // h7: approve promotes at once (#301); over the budget it installs, does not promote, and
+  // records the refusal as the daily step does. Not gated by BANTAMKIT_SKILL_AUTO (unset here).
+  const a = 'h7';
+  add('h7: ~/.claude exists', { op: 'mkdir', home: a, rel: '.claude' });
+  add('h7: two eligible proposals with stored drafts', {
+    op: 'write', home: a, rel: '.bantamkit/skill-proposals.json', text: proposals([proposal('a-one'), proposal('a-two')]),
+  });
+  add('approve c-a-one: installed and promoted at once', { op: 'approve', home: a, cwd: 'h7cwd', target: 'c-a-one', now: NOW });
+  add('approve c-a-two at BANTAMKIT_SKILL_BUDGET=1: installed, not promoted, refusal recorded', {
+    op: 'approve', home: a, cwd: 'h7cwd', target: 'c-a-two', now: NOW, env: '1',
+  });
+
+  // h8: a promote that throws (#301 review M1). `.claude/skills` is a regular file, so making
+  // the link's parent fails after the install already happened; approve must still answer its
+  // three lines and record the refusal, not lose the reply to an exception.
+  const f = 'h8';
+  add('h8: ~/.claude/skills is a regular file', { op: 'write', home: f, rel: '.claude/skills', text: 'not a dir' });
+  add('h8: one eligible proposal with a stored draft', {
+    op: 'write', home: f, rel: '.bantamkit/skill-proposals.json', text: proposals([proposal('a-one')]),
+  });
+  add('approve c-a-one over a file at .claude/skills: installed, not promoted, refusal recorded', {
+    op: 'approve', home: f, cwd: 'h8cwd', target: 'c-a-one', now: NOW,
+  });
   return { ops, label };
 }
 
@@ -205,6 +229,41 @@ const draft2 = (n) =>
   `---\nname: ${n}\ndescription: Does ${n}. Use when ${n} is asked.\n---\n\n` +
   '## When to use\n\nWhen asked.\n\n## Steps\n\n1. Do it [job1/U1].\n2. Check it [job1/U1].\n\n## Pitfalls\n\nNone.\n\n## Example\n\nx\n';
 
+const proposal = (n) => ({
+  auto_bar: 6,
+  auto_eligible: true,
+  bar: 3,
+  draft: { drafter: 'endpoint m', ok: true, text: draft(n), ts: NOW },
+  eligible: true,
+  evidence: Array.from({ length: 6 }, (_, i) => ({
+    commits: [],
+    failure: null,
+    id: `job1/U${i + 1}`,
+    ok: true,
+    paths: ['src/a.py'],
+    prompt: `fix the thing number ${i}`,
+    repo: '/r/.git',
+    signals: { commit: true, tests: false },
+    source: 'shiftwork',
+    tools: ['Read', 'Edit'],
+    ts: '2026-01-01T00:00:00Z',
+  })),
+  id: `c-${n}`,
+  keywords: ['fix', n],
+  level: 'user',
+  members: 6,
+  pitfalls: [],
+  repos: [],
+  source: 'shiftwork',
+  status: 'pending',
+  steps: ['Read>Edit'],
+  successes: 6,
+  top: null,
+});
+
+const proposals = (clusters) =>
+  `${JSON.stringify({ clusters, miner: { error: null, ms: 0, pieces: { session: 0, shiftwork: 6 } }, ts: NOW, version: 1 }, null, 2)}\n`;
+
 const cluster = (n, level, top) => ({
   evidence: [{ id: 'job1/U1', ok: true, ts: '2026-01-01T00:00:00Z' }],
   id: `c-${n}`,
@@ -229,6 +288,7 @@ function failing(kind) {
 async function runNode(ctx, bed, ops) {
   const dist = (m) => pathToFileURL(join(ctx.runtimeTs, 'dist', m)).href;
   const sp = await import(dist('skillpromote.js'));
+  const spp = await import(dist('skillpropose.js'));
   const si = await import(dist('skillinstall.js'));
   const sf = await import(dist('skillfile.js'));
   const { SkillStore } = await import(dist('memory/skills.js'));
@@ -310,6 +370,9 @@ async function runNode(ctx, bed, ops) {
           const state = sf.readState(home);
           out.events = sp.promoteStep(state, op.uses, home, cwd, op.now, op.budget ?? null, { symlink });
           out.returned_state = state;
+        } else if (op.op === 'approve') {
+          fs.mkdirSync(cwd, { recursive: true });
+          out.said = await spp.render('approve', op.target, null, home, cwd, op.now, null);
         } else {
           throw new Error(`skill-promote: unknown op ${op.op}`);
         }
@@ -443,6 +506,59 @@ export async function run(ctx) {
         JSON.stringify(got[i].state ?? null).includes('promote'),
         JSON.stringify(got[i].tree ?? null) === JSON.stringify(got[iBeforeOff].tree ?? null),
       ]),
+    });
+    const iApproved = find('approve c-a-one: installed and promoted at once');
+    const iRefused = find('approve c-a-two at BANTAMKIT_SKILL_BUDGET=1: installed, not promoted, refusal recorded');
+    const lines = (i) => (typeof got[i].said === 'string' ? got[i].said.split('\n') : [JSON.stringify(got[i])]);
+    const refusedLine = lines(iRefused)[1] ?? '';
+    const prefix = 'not promoted: promoting a-two would take the catalogue to ';
+    cases.push({
+      name: `LITERAL: approve promotes at once; over the budget it says why and records the refusal (#301) — ${side}`,
+      kind: 'json',
+      expected: {
+        approved: ['promoted skill a-one', 'undo: /mcp__bantamkit__skill_propose undo a-one'],
+        mode: 'symlink',
+        link: `-> ${join('..', '..', '.bantamkit', 'skills', 'a-one')}`,
+        refused: [true, true, 'undo: /mcp__bantamkit__skill_propose undo a-two'],
+        recorded: true,
+        unpromoted: true,
+      },
+      actual: {
+        approved: lines(iApproved).slice(1),
+        mode: got[iApproved].state?.skills?.['a-one']?.promoted?.mode ?? null,
+        link: got[iApproved].tree?.['.claude/skills/a-one'] ?? null,
+        refused: [refusedLine.startsWith(prefix), refusedLine.endsWith(' bytes, over the budget of 1'), lines(iRefused)[2] ?? null],
+        recorded:
+          JSON.stringify(got[iRefused].state?.skills?.['a-two']?.promote_refused ?? null) ===
+          JSON.stringify({ at: NOW, reason: refusedLine.slice('not promoted: '.length) }),
+        unpromoted: !Object.hasOwn(got[iRefused].state?.skills?.['a-two'] ?? {}, 'promoted') && !Object.hasOwn(got[iRefused].tree ?? {}, '.claude/skills/a-two'),
+      },
+    });
+    const iThrew = find('approve c-a-one over a file at .claude/skills: installed, not promoted, refusal recorded');
+    const threw = lines(iThrew);
+    const linkAt = join('<bed>', 'h8', '.claude', 'skills', 'a-one');
+    cases.push({
+      name: `LITERAL: approve survives a promote that throws: three lines, the errno named, the refusal recorded (#301) — ${side}`,
+      kind: 'json',
+      expected: {
+        lines: 3,
+        installed: true,
+        refused: true,
+        undo: 'undo: /mcp__bantamkit__skill_propose undo a-one',
+        recorded: true,
+        unpromoted: true,
+      },
+      actual: {
+        lines: threw.length,
+        installed: (threw[0] ?? '').startsWith('installed skill a-one at '),
+        // EEXIST where mkdir meets the file (POSIX); ENOTDIR is what another platform may say
+        refused: [`not promoted: could not link ${linkAt}: EEXIST`, `not promoted: could not link ${linkAt}: ENOTDIR`].includes(threw[1] ?? ''),
+        undo: threw[2] ?? null,
+        recorded:
+          JSON.stringify(got[iThrew].state?.skills?.['a-one']?.promote_refused ?? null) ===
+          JSON.stringify({ at: NOW, reason: (threw[1] ?? '').slice('not promoted: '.length) }),
+        unpromoted: !Object.hasOwn(got[iThrew].state?.skills?.['a-one'] ?? {}, 'promoted'),
+      },
     });
     cases.push({
       name: `LITERAL: the daily step's events [first, same day, next day] — ${side}`,

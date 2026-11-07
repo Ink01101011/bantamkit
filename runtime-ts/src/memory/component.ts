@@ -42,7 +42,9 @@ import {
 import { pyHome, pyIsDir, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
 import { homedir } from 'node:os';
 import { NATIVE_LAYER, NativeStore } from './native.js';
-import { SKILL_LAYER, SkillStore, skillRoots } from './skills.js';
+import { SKILL_LAYER, SkillStore, skillRoots, triggersEnabled } from './skills.js';
+import { frame } from '../replynative.js';
+import { tokenizeLabel } from '../skilllabel.js';
 import { BM25F, QueryScorer, queryTerms, type Scorer, stale, weightOf } from './retrieval.js';
 import * as queriesMod from './queries.js';
 import { loadSkill } from '../assets.js';
@@ -232,6 +234,17 @@ function isReadOnly(store: LayerStore): store is ReadOnlyStore {
   return store instanceof NativeStore || store instanceof SkillStore;
 }
 
+/**
+ * Whether a layer's names shadow every read-only layer after it (#199 J68-11, #206 X8).
+ *
+ * Every bantamkit store does, and the skill layer (a skill is bantamkit's own); the host's
+ * native layer never does. The one rule `pooled` walks by and `fire` (#301) reuses, so a
+ * skill dropped from the pool never fires either.
+ */
+function lendsShadow(store: LayerStore): boolean {
+  return !isReadOnly(store) || store instanceof SkillStore;
+}
+
 /** A layer's fact count: `facts/*.md` for a bantamkit store, the listing for a read-only one. */
 function countOf(store: LayerStore): number {
   return isReadOnly(store) ? store.count() : countFacts(store.root);
@@ -328,6 +341,8 @@ export interface RecallOutcome {
    * ` [via <file>]`; `null` when none was.
    */
   readonly via: string | null;
+  /** #301: the skill a trigger phrase fired, its header last; `null` when none did. */
+  readonly fired?: string | null;
 }
 
 /**
@@ -741,7 +756,17 @@ export class Memory {
     // The outcome filter (#219) holds for the archive's hits as for the live ones.
     if (outcome !== null) archived = archived.filter(([, fact]) => fact.outcome === outcome);
     if (archived.length > 0 || via !== null) counts.returned = picked.length + archived.length + (via !== null ? 1 : 0);
-    if (picked.length === 0 && archived.length === 0 && via === null) {
+    const fired = this.fire(
+      query,
+      new Set([
+        ...picked.map(([, fact]) => fact.name as string),
+        ...archived.map(([, fact]) => fact.name as string),
+        ...(via === null ? [] : [via[1].name as string]),
+      ]),
+    );
+    if (fired !== null && stamp) this.use([fired[1]], 'recall_hit');
+    if (fired !== null) counts.returned = picked.length + archived.length + (via !== null ? 1 : 0) + 1;
+    if (picked.length === 0 && archived.length === 0 && via === null && fired === null) {
       const [status, reply] = this.nothingToReport();
       return { reply: lead + reply + note, status, source: null, headers: [], via: null, ...counts };
     }
@@ -750,14 +775,54 @@ export class Memory {
       ...archived.map(([label, fact]): [string, Fact, boolean, string] => [label, fact, true, '']),
     ];
     if (via !== null) shown.push([via[0], via[1], false, via[2]]);
+    if (fired !== null) shown.push([fired[0], fired[1], false, '']);
     return {
       reply: lead + shown.map(([label, fact, old, tail]) => `${this.header(label, fact, old)}${tail}\n${fact.body}`).join('\n\n') + note,
       status: 'answered',
       source: shown[0]![0].split(':', 1)[0]!,
       headers: shown.map(([label, fact, old, tail]) => this.header(label, fact, old) + tail),
       via: via === null ? null : via[3],
+      fired: fired === null ? null : (fired[1].name as string),
       ...counts,
     };
+  }
+
+  /**
+   * #301: the one `[skill]` a trigger phrase in the user's own text names, or `null`.
+   *
+   * Matched against `tokenizeLabel(frame(query))`, so a phrase inside a pasted block never
+   * fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires, nor
+   * one an earlier layer shadows (`lendsShadow`, the rule `pooled` drops it from the pool
+   * by), so a fired `[skill] [name]` is always what a recall of that name answers.
+   */
+  private fire(query: string, shown: ReadonlySet<string>): [string, Fact] | null {
+    const at = this.layers.findIndex(([label]) => label === SKILL_LAYER);
+    if (at < 0 || !triggersEnabled()) return null;
+    const [label, store] = this.layers[at]!;
+    const fact = (store as SkillStore).fire(tokenizeLabel(frame(query)), shown, this.shadowBefore(at));
+    return fact === null ? null : [label, fact];
+  }
+
+  /**
+   * The names the layers before `at` that `lendsShadow` hold: the shadow `pooled` hands layer
+   * `at`. A read-only layer that cannot be read lends nothing (as in `pooled`); the project
+   * layer failing throws.
+   */
+  private shadowBefore(at: number): Set<string> {
+    const shadow = new Set<string>();
+    for (const [, store, writable] of this.layers.slice(0, at)) {
+      if (!lendsShadow(store)) continue;
+      let pool: Pool;
+      try {
+        pool = isReadOnly(store) ? store.pool([], [], new Set(shadow)) : store.pool([], []);
+      } catch (e) {
+        if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
+        if (writable) throw e;
+        continue;
+      }
+      for (const name of allNames(pool)) shadow.add(name);
+    }
+    return shadow;
   }
 
   /** `[label, store, writable]` per layer, in precedence order (the touch graph's input). */
@@ -926,12 +991,12 @@ export class Memory {
         if (outcome !== null) {
           const native = isReadOnly(store);
           const got = native ? store.candidates(leftOut, shadow) : store.candidates(leftOut);
-          if (!native || store instanceof SkillStore) for (const f of got) shadow.add(pyText(f.name));
+          if (lendsShadow(store)) for (const f of got) shadow.add(pyText(f.name));
           pools.push(poolOf(got.filter((f) => f.outcome === outcome), q, everyRow));
         } else if (isReadOnly(store)) {
           const pool = store.pool(q, leftOut, shadow, everyRow);
           // a skill is bantamkit's own: the host's copy of a name never answers
-          if (store instanceof SkillStore) for (const name of allNames(pool)) shadow.add(name);
+          if (lendsShadow(store)) for (const name of allNames(pool)) shadow.add(name);
           pools.push(pool);
         } else {
           const pool = store.pool(q, leftOut, everyRow);

@@ -216,6 +216,24 @@ function opList() {
   add('install fails at the directory rename: nothing left', { op: 'install', home: r, cluster: record('half-z'), text: draft('half-z'), level: null, now: NOW, auto: true, fail_at: 'rename2' });
   add('install fails writing evidence.md: nothing left', { op: 'install', home: r, cluster: record('half-w'), text: draft('half-w'), level: null, now: NOW, auto: true, fail_at: 'write3' });
   add('the draft carries its own metadata, kept beside the stamp', { op: 'install', home: r, cluster: record('own-meta'), text: draft('own-meta', 'metadata:\n  bantamkit-note: "kept"\n'), level: null, now: NOW, auto: true });
+  // #301: the trigger phrases a record carries are stamped as `bantamkit-triggers`; a record
+  // without them stamps what it did before; the backfill writes them on an older, unedited
+  // install as its next version and leaves an edited one, and one that has them, alone.
+  const t = 'trig';
+  add('#301 install with trigger phrases', { op: 'install', home: t, cluster: { ...record('with-trig'), triggers: ['lexer crash', 'fix lexer crash', 'a|b'] }, text: draft('with-trig'), level: null, now: NOW, auto: false });
+  add('#301 install without trigger phrases', { op: 'install', home: t, cluster: { ...record('plain-b'), triggers: [] }, text: draft('plain-b'), level: null, now: NOW, auto: false });
+  add('#301 install a skill to be edited', { op: 'install', home: t, cluster: record('edited-t'), text: draft('edited-t'), level: null, now: NOW, auto: false });
+  add('#301 edit edited-t by hand', { op: 'edit', home: t, rel: '.bantamkit/skills/edited-t/SKILL.md', find: 'When asked.', replace: 'When I ask.' });
+  const trigDoc = {
+    clusters: [
+      { id: 'c-with-trig', triggers: ['other phrase'] },
+      { id: 'c-plain-b', triggers: ['merge feature', 'fix lexer crash'] },
+      { id: 'c-edited-t', triggers: ['merge feature'] },
+      'not a record',
+    ],
+  };
+  add('#301 triggers_step backfills the unedited install only (auto unset)', { op: 'triggers', home: t, now: at(1), doc: trigDoc });
+  add('#301 triggers_step the next day: nothing left to fill', { op: 'triggers', home: t, now: at(2), doc: trigDoc });
   return { ops, label };
 }
 
@@ -327,6 +345,10 @@ async function runNode(ctx, bed, ops) {
           out.state = state;
         } else if (op.op === 'undo') {
           out.said = si.undo(op.name, home);
+        } else if (op.op === 'triggers') {
+          const state = sf.readState(home);
+          out.events = si.triggersStep(state, op.doc, home, op.now);
+          out.state = state;
         } else {
           throw new Error(`skill-install: unknown op ${op.op}`);
         }
@@ -385,6 +407,11 @@ export async function run(ctx) {
   const iEvU = find('evidence.md, user level');
   const iEvP = find('evidence.md, project level');
   const iUnused = find('install unused-a');
+  const iTrigWith = find('#301 install with trigger phrases');
+  const iTrigPlain = find('#301 install without trigger phrases');
+  const iTrigEdit = find('#301 edit edited-t by hand');
+  const iTrigFill = find('#301 triggers_step backfills the unedited install only (auto unset)');
+  const iTrigAgain = find('#301 triggers_step the next day: nothing left to fill');
   for (const [side, got] of [
     ['python', py],
     ['node', nd],
@@ -434,6 +461,29 @@ export async function run(ctx) {
       kind: 'json',
       expected: { rename: { tree: got[iBefore].tree, error: 'raised' }, write: { tree: got[iBefore].tree, error: 'raised' } },
       actual: { rename: { tree: got[iHalf].tree, error: got[iHalf].error }, write: { tree: got[iHalfW].tree, error: got[iHalfW].error } },
+    });
+    const trigLine = (tr, n) => (tr[`.bantamkit/skills/${n}/SKILL.md`] ?? '').split('\n').filter((l) => l.includes('bantamkit-triggers'));
+    cases.push({
+      name: `LITERAL: the bantamkit-triggers line, stamped and backfilled (#301) — ${side}`,
+      kind: 'json',
+      expected: {
+        with: ['  bantamkit-triggers: "lexer crash|fix lexer crash"'],
+        without: [],
+        events: [['added triggers to skill plain-b'], []],
+        backfilled: ['  bantamkit-triggers: "merge feature|fix lexer crash"'],
+        version: 2,
+        edited: true,
+      },
+      actual: {
+        with: trigLine(got[iTrigWith].tree, 'with-trig'),
+        without: trigLine(got[iTrigPlain].tree, 'plain-b'),
+        events: [got[iTrigFill].events, got[iTrigAgain].events],
+        backfilled: trigLine(got[iTrigFill].tree, 'plain-b'),
+        version: got[iTrigFill].state?.skills?.['plain-b']?.version ?? null,
+        edited:
+          got[iTrigFill].tree['.bantamkit/skills/edited-t/SKILL.md'] === got[iTrigEdit].tree['.bantamkit/skills/edited-t/SKILL.md'] &&
+          trigLine(got[iTrigFill].tree, 'edited-t').length === 0,
+      },
     });
     const evU = got[iEvU].text;
     const evP = got[iEvP].text;

@@ -260,6 +260,15 @@ def test_a_refusal_is_recorded_and_not_retried_the_same_day(home, auto_on):
     assert "promote_refused" not in state["skills"]["skill-a"]
 
 
+def test_record_refusal_sets_the_entry_and_ignores_an_unknown_name(home):
+    install(home, "p-one")
+    sp.record_refusal(home, "p-one", NOW, "why")
+    assert sf.read_state(home)["skills"]["p-one"]["promote_refused"] == {"at": NOW, "reason": "why"}
+    before = sf.read_state(home)
+    sp.record_refusal(home, "nope", NOW, "why")
+    assert sf.read_state(home) == before
+
+
 def test_unknown_and_unpromoted_names(home):
     assert sp.promote("nope", home, None, NOW, 8192).reason == "no skill named 'nope' is installed"
     with pytest.raises(sp.PromoteError, match="no skill named 'nope' is installed"):

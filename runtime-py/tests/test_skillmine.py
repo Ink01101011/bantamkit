@@ -1162,3 +1162,109 @@ def test_ide_notice_only_prompt_yields_no_piece_or_keyword(tmp_path: Path) -> No
     assert pieces == []
     for word in ("ide", "opened", "browser", "chrome"):
         assert word not in json.dumps(pieces)
+
+
+# ------------------------------------------------------------ trigger phrases (#301 Task 3)
+#
+# Every expected value below is derived by hand from the rules (spec §2), with the tokens
+# `tokenize_label` actually returns: it drops stop-words ("into", "the"), so a prompt's
+# phrases skip them, and a Thai run splits into its units (`รอบ1` -> `รอ`, `อบ`).
+
+
+def _tp(i: int, prompt: str, ok: bool = True) -> Piece:
+    return Piece(
+        id=f"p{i:03d}", source="session", ts=f"2026-11-01T00:00:{i % 60:02d}Z", repo="",
+        prompt=prompt, ok=ok,
+    )  # fmt: skip
+
+
+def test_trigger_constants() -> None:
+    assert (skillmine.TRIGGERS_TOP, skillmine.TRIGGER_SHARE) == (5, (1, 2))
+    assert (skillmine.TRIGGER_DF_MAX, skillmine.TRIGGER_SIZES) == ((1, 8), (2, 3))
+
+
+def test_phrases_are_contiguous_2_and_3_grams() -> None:
+    assert skillmine.phrases(["a1", "b2", "c3"]) == {
+        ("a1", "b2"), ("b2", "c3"), ("a1", "b2", "c3"),
+    }  # fmt: skip
+    assert skillmine.phrases(["a1"]) == set()
+
+
+def test_frame_strips_pasted_blocks_before_phrases() -> None:
+    got = skillmine.prompt_phrases("look\n```\ndeploy staging\n```\nnow")
+    assert ("deploy", "staging") not in got
+    assert got == {("look", "now")}
+
+
+def test_share_cut_and_a_2_gram_inside_a_kept_3_gram_drops() -> None:
+    # successes tokenize to [merge feature develop please], [merge feature develop now],
+    # [merge feature branch]; the failed member does not count. n = 44, so df <= 5 passes.
+    # Share needs 2 of 3: "merge feature" (3), "merge feature develop" (2), "feature develop"
+    # (2). Both 2-grams sit inside the kept 3-gram, so only the 3-gram is left.
+    members = [
+        _tp(1, "merge feature into develop please"),
+        _tp(2, "merge feature into develop now"),
+        _tp(3, "merge feature branch"),
+        _tp(4, "merge feature unrelated words here", ok=False),
+    ]
+    noise = [_tp(10 + i, f"other topic number{i} words") for i in range(40)]
+    df, n = skillmine.phrase_doc_freq(members + noise)
+    assert n == 44 and df[("merge", "feature")] == 4
+    assert skillmine.cluster_triggers(members, df, n) == ("merge feature develop",)
+
+
+def test_ranking_count_then_length_then_code_point_and_the_top_cut() -> None:
+    # Both members share all nine phrases (count 2): the four 3-grams lead in code-point order,
+    # the fifth slot is the first 2-gram "alpha bravo", which sits inside "alpha bravo charlie".
+    members = [_tp(i, "alpha bravo charlie delta echo foxtrot") for i in range(2)]
+    noise = [_tp(10 + i, f"noise words item{i}") for i in range(20)]
+    df, n = skillmine.phrase_doc_freq(members + noise)
+    assert skillmine.cluster_triggers(members, df, n) == (
+        "alpha bravo charlie", "bravo charlie delta", "charlie delta echo", "delta echo foxtrot",
+    )  # fmt: skip
+
+
+def test_df_cut_drops_a_phrase_every_prompt_shares() -> None:
+    # n = 43: "please check" is in all 43 pieces (> 43/8); every other phrase is in 3 (<= 43/8).
+    members = [_tp(i, "please check the build again") for i in range(3)]
+    noise = [_tp(10 + i, f"please check item{i}") for i in range(40)]
+    df, n = skillmine.phrase_doc_freq(members + noise)
+    got = skillmine.cluster_triggers(members, df, n)
+    assert "please check" not in got
+    assert got == ("check build again", "please check build")
+
+
+def test_df_cut_at_exactly_one_eighth_keeps_and_one_more_drops() -> None:
+    members = [_tp(i, "gamma delta") for i in range(2)]
+    for fillers, kept in ((14, True), (13, False)):  # n = 16: 2*8 <= 16; n = 15: 2*8 > 15
+        noise = [_tp(10 + i, f"noise item{i}") for i in range(fillers)]
+        df, n = skillmine.phrase_doc_freq(members + noise)
+        assert (skillmine.cluster_triggers(members, df, n) == ("gamma delta",)) is kept
+
+
+def test_no_successful_member_has_no_triggers() -> None:
+    members = [_tp(i, "gamma delta", ok=False) for i in range(3)]
+    df, n = skillmine.phrase_doc_freq(members + [_tp(9 + i, f"x{i} y{i}") for i in range(30)])
+    assert skillmine.cluster_triggers(members, df, n) == ()
+
+
+def test_thai_trigger_units() -> None:
+    assert skillmine.tokenize_label("merge เข้า develop") == ["merge", "เข้า", "develop"]
+    # [merge เข้า develop รอ อบ] in all 3 members, n = 43: three 3-grams in code-point order
+    # ("d" < "m" < U+0E40), then 2-grams "develop รอ", "merge เข้า" fill the top 5 and drop.
+    members = [_tp(i, f"merge เข้า develop รอบ{i}") for i in range(3)]
+    noise = [_tp(10 + i, f"เรื่องอื่น{i}") for i in range(40)]
+    df, n = skillmine.phrase_doc_freq(members + noise)
+    assert skillmine.cluster_triggers(members, df, n) == (
+        "develop รอ อบ", "merge เข้า develop", "เข้า develop รอ",
+    )  # fmt: skip
+
+
+def test_proposal_record_carries_triggers() -> None:
+    # bravo's 3 members share [bravo lexerbravo crashbravo]; n = 3 + 30 fillers = 33.
+    doc = skillmine.mine(_corpus([("bravo", 3, 0)], fillers=30), None, NOW)
+    assert all(isinstance(r["triggers"], list) for r in doc["clusters"])
+    assert _by_word(doc)["bravo"]["triggers"] == ["bravo lexerbravo crashbravo"]
+    # the 6-filler corpus: every bravo phrase is in 3 of 9 pieces, over 1/8, so none
+    doc = skillmine.mine(_corpus([("bravo", 3, 0)]), None, NOW)
+    assert _by_word(doc)["bravo"]["triggers"] == []

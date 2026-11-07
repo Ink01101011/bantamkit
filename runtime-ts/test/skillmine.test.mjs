@@ -929,3 +929,129 @@ test('commitSubject (job73 C8): the first line of the first -m, read off the com
   assert.deepEqual(sm.pieceDict(p).commits, ['feat: a']);
   assert.deepEqual(sm.pieceDict({ ...p, commits: undefined }).commits, []);
 });
+
+// ------------------------------------------------------------ trigger phrases (#301 Task 4)
+//
+// Mirrors the Python tests one for one, same inputs, same expected values (derived by hand
+// from spec §2 with the tokens `tokenizeLabel` actually returns: stop-words "into", "the"
+// drop, and a Thai run splits into its units: `รอบ1` -> `รอ`, `อบ`).
+
+const tp = (i, prompt, ok = true) => ({
+  id: `p${String(i).padStart(3, '0')}`,
+  source: 'session',
+  ts: `2026-11-01T00:00:${String(i % 60).padStart(2, '0')}Z`,
+  repo: '',
+  prompt,
+  tools: [],
+  paths: new Set(),
+  ok,
+  signals: {},
+  failure: null,
+});
+const K = (...t) => t.join('\u0000');
+const phraseSet = (m) => new Set([...m.values()].map((ph) => JSON.stringify(ph)));
+
+test('trigger constants', () => {
+  assert.deepEqual([sm.TRIGGERS_TOP, sm.TRIGGER_SHARE], [5, [1, 2]]);
+  assert.deepEqual([sm.TRIGGER_DF_MAX, sm.TRIGGER_SIZES], [[1, 8], [2, 3]]);
+});
+
+test('phrases are contiguous 2- and 3-grams', () => {
+  assert.deepEqual(
+    phraseSet(sm.phrases(['a1', 'b2', 'c3'])),
+    new Set([['a1', 'b2'], ['b2', 'c3'], ['a1', 'b2', 'c3']].map((x) => JSON.stringify(x))),
+  );
+  assert.equal(sm.phrases(['a1']).size, 0);
+  assert.deepEqual(sm.phrases(['a1', 'b2']).get(K('a1', 'b2')), ['a1', 'b2']);
+});
+
+test('frame strips pasted blocks before phrases', () => {
+  const got = sm.promptPhrases('look\n```\ndeploy staging\n```\nnow');
+  assert.ok(!got.has(K('deploy', 'staging')));
+  assert.deepEqual(phraseSet(got), new Set([JSON.stringify(['look', 'now'])]));
+});
+
+test('share cut, and a 2-gram inside a kept 3-gram drops', () => {
+  const members = [
+    tp(1, 'merge feature into develop please'),
+    tp(2, 'merge feature into develop now'),
+    tp(3, 'merge feature branch'),
+    tp(4, 'merge feature unrelated words here', false),
+  ];
+  const noise = Array.from({ length: 40 }, (_, i) => tp(10 + i, `other topic number${i} words`));
+  const [df, n] = sm.phraseDocFreq([...members, ...noise]);
+  assert.equal(n, 44);
+  assert.equal(df.get(K('merge', 'feature')), 4);
+  assert.deepEqual(sm.clusterTriggers(members, df, n), ['merge feature develop']);
+});
+
+test('ranking: count, then length, then code point, and the top cut', () => {
+  const members = [0, 1].map((i) => tp(i, 'alpha bravo charlie delta echo foxtrot'));
+  const noise = Array.from({ length: 20 }, (_, i) => tp(10 + i, `noise words item${i}`));
+  const [df, n] = sm.phraseDocFreq([...members, ...noise]);
+  assert.deepEqual(sm.clusterTriggers(members, df, n), [
+    'alpha bravo charlie',
+    'bravo charlie delta',
+    'charlie delta echo',
+    'delta echo foxtrot',
+  ]);
+});
+
+test('df cut drops a phrase every prompt shares', () => {
+  const members = [0, 1, 2].map((i) => tp(i, 'please check the build again'));
+  const noise = Array.from({ length: 40 }, (_, i) => tp(10 + i, `please check item${i}`));
+  const [df, n] = sm.phraseDocFreq([...members, ...noise]);
+  const got = sm.clusterTriggers(members, df, n);
+  assert.ok(!got.includes('please check'));
+  assert.deepEqual(got, ['check build again', 'please check build']);
+});
+
+test('df cut at exactly one eighth keeps, and one more drops', () => {
+  const members = [0, 1].map((i) => tp(i, 'gamma delta'));
+  for (const [fillers, kept] of [
+    [14, true],
+    [13, false],
+  ]) {
+    const noise = Array.from({ length: fillers }, (_, i) => tp(10 + i, `noise item${i}`));
+    const [df, n] = sm.phraseDocFreq([...members, ...noise]);
+    const got = sm.clusterTriggers(members, df, n);
+    assert.equal(got.length === 1 && got[0] === 'gamma delta', kept);
+  }
+});
+
+test('no successful member has no triggers', () => {
+  const members = [0, 1, 2].map((i) => tp(i, 'gamma delta', false));
+  const noise = Array.from({ length: 30 }, (_, i) => tp(9 + i, `x${i} y${i}`));
+  const [df, n] = sm.phraseDocFreq([...members, ...noise]);
+  assert.deepEqual(sm.clusterTriggers(members, df, n), []);
+});
+
+test('thai trigger units', () => {
+  assert.deepEqual(sm.tokenizeLabel('merge เข้า develop'), ['merge', 'เข้า', 'develop']);
+  const members = [0, 1, 2].map((i) => tp(i, `merge เข้า develop รอบ${i}`));
+  const noise = Array.from({ length: 40 }, (_, i) => tp(10 + i, `เรื่องอื่น${i}`));
+  const [df, n] = sm.phraseDocFreq([...members, ...noise]);
+  assert.deepEqual(sm.clusterTriggers(members, df, n), ['develop รอ อบ', 'merge เข้า develop', 'เข้า develop รอ']);
+});
+
+test('ranking orders by code point, not by UTF-16 unit', () => {
+  // U+FA0E < U+20000 by code point (Python's order); in UTF-16 units U+20000 leads with
+  // 0xD840 < 0xFA0E, so a plain `<` would put it first. Expected value from the Python side.
+  const members = [0, 1].map((i) => tp(i, '\u{20000}q zulu yankee \uFA0Eq zulu yankee'));
+  const noise = Array.from({ length: 20 }, (_, i) => tp(10 + i, `noise words item${i}`));
+  const [df, n] = sm.phraseDocFreq([...members, ...noise]);
+  assert.deepEqual(sm.clusterTriggers(members, df, n), [
+    'yankee \uFA0Eq zulu',
+    'zulu yankee \uFA0Eq',
+    '\uFA0Eq zulu yankee',
+    '\u{20000}q zulu yankee',
+  ]);
+});
+
+test('the proposal record carries triggers', () => {
+  let doc = sm.mine(corpus([['bravo', 3, 0]], 'shiftwork', 30), null, NOW);
+  assert.ok(doc.clusters.every((r) => Array.isArray(r.triggers)));
+  assert.deepEqual(byWord(doc).bravo.triggers, ['bravo lexerbravo crashbravo']);
+  doc = sm.mine(corpus([['bravo', 3, 0]]), null, NOW);
+  assert.deepEqual(byWord(doc).bravo.triggers, []);
+});
