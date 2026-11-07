@@ -440,6 +440,109 @@ LABEL_STOPWORDS = (
 )
 
 
+#: #299: English function words dropped from a label. Before this, a cluster mined from one
+#: template carried `the`, `for`, `in`, `one` as keywords (the document-frequency cut cannot
+#: drop a word every member shares), and the `[skill]` layer matched prompts on them. A word
+#: of one character and a word of digits only are dropped too (`c`, `5`, `2026`).
+LABEL_STOPWORDS_EN = frozenset(
+    (
+    "a",
+    "about",
+    "after",
+    "all",
+    "also",
+    "an",
+    "and",
+    "any",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "before",
+    "but",
+    "by",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "each",
+    "every",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "he",
+    "her",
+    "here",
+    "his",
+    "how",
+    "i",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "just",
+    "may",
+    "me",
+    "might",
+    "must",
+    "my",
+    "no",
+    "not",
+    "of",
+    "on",
+    "one",
+    "only",
+    "or",
+    "our",
+    "out",
+    "over",
+    "per",
+    "she",
+    "should",
+    "so",
+    "than",
+    "that",
+    "the",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "to",
+    "up",
+    "via",
+    "was",
+    "we",
+    "were",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "will",
+    "with",
+    "would",
+    "you",
+    "your",
+    )
+)
+
+
+def _label_word_kept(word: str) -> bool:
+    # ASCII digits only, as the port's /^[0-9]+$/: `str.isdigit` also takes `²` and `٣`.
+    digits = all("0" <= c <= "9" for c in word)
+    return len(word) > 1 and not digits and word not in LABEL_STOPWORDS_EN
+
+
 def _is_leading_vowel(cp: int) -> bool:
     return 0x0E40 <= cp <= 0x0E44 or 0x0EC0 <= cp <= 0x0EC4
 
@@ -523,7 +626,9 @@ def tokenize_label(text: str) -> list[str]:
 
     def flush_word() -> None:
         if word:
-            out.append("".join(word))
+            w = "".join(word)
+            if _label_word_kept(w):
+                out.append(w)
             word.clear()
 
     def flush_run() -> None:

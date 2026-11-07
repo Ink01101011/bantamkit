@@ -446,13 +446,112 @@ const STOP_UNITS: readonly string[][] = LABEL_STOPWORDS.map((w) => labelUnits(Ar
  * segment emits its one unit or its unit bigrams. `tokenizeV2` stays as it is: recall is
  * measured on it. ASCII text gives exactly `tokenizeV2`'s list.
  */
+/**
+ * #299: English function words dropped from a label. Before this, a cluster mined from one
+ * template carried `the`, `for`, `in`, `one` as keywords (the document-frequency cut cannot drop
+ * a word every member shares), and the `[skill]` layer matched prompts on them. A word of one
+ * character and a word of digits only are dropped too (`c`, `5`, `2026`).
+ */
+export const LABEL_STOPWORDS_EN: ReadonlySet<string> = new Set([
+  'a',
+  'about',
+  'after',
+  'all',
+  'also',
+  'an',
+  'and',
+  'any',
+  'are',
+  'as',
+  'at',
+  'be',
+  'been',
+  'before',
+  'but',
+  'by',
+  'can',
+  'could',
+  'did',
+  'do',
+  'does',
+  'each',
+  'every',
+  'for',
+  'from',
+  'had',
+  'has',
+  'have',
+  'he',
+  'her',
+  'here',
+  'his',
+  'how',
+  'i',
+  'if',
+  'in',
+  'into',
+  'is',
+  'it',
+  'its',
+  'just',
+  'may',
+  'me',
+  'might',
+  'must',
+  'my',
+  'no',
+  'not',
+  'of',
+  'on',
+  'one',
+  'only',
+  'or',
+  'our',
+  'out',
+  'over',
+  'per',
+  'she',
+  'should',
+  'so',
+  'than',
+  'that',
+  'the',
+  'their',
+  'them',
+  'then',
+  'there',
+  'these',
+  'they',
+  'this',
+  'those',
+  'to',
+  'up',
+  'via',
+  'was',
+  'we',
+  'were',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'will',
+  'with',
+  'would',
+  'you',
+  'your',
+]);
+
+const labelWordKept = (word: string): boolean =>
+  Array.from(word).length > 1 && !/^[0-9]+$/.test(word) && !LABEL_STOPWORDS_EN.has(word);
+
 export function tokenizeLabel(text: string): string[] {
   const s = labelFold(text);
   const out: string[] = [];
   let word = '';
   let run: string[] = [];
   const flushWord = (): void => {
-    if (word !== '') out.push(word);
+    if (word !== '' && labelWordKept(word)) out.push(word);
     word = '';
   };
   const flushRun = (): void => {

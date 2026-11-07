@@ -539,7 +539,7 @@ def test_identity_survives_the_leader_leaving() -> None:
 
 def test_match_previous_ties_go_to_the_lower_id() -> None:
     fill = [_wp(f"z/{i}", f"filler{i}") for i in range(3)]
-    c = skillmine.cluster([_wp("a/1", "x y"), _wp("a/2", "x y"), *fill])[0]
+    c = skillmine.cluster([_wp("a/1", "xray yoke"), _wp("a/2", "xray yoke"), *fill])[0]
     assert c.evidence == ("a/1", "a/2")
     recs = [
         {"id": "b", "source": "shiftwork", "evidence": [{"id": "a/1"}]},
@@ -1046,10 +1046,22 @@ def test_tokenize_label_vectors(text: str, want: list[str]) -> None:
 
 
 def test_tokenize_label_matches_tokenize_v2_on_ascii() -> None:
+    # tokenize_v2's words, minus what #299 drops from a label: English function words, a word
+    # of one character, and a word of ASCII digits only.
     from bantamkit.memory.retrieval import tokenize_v2
 
     for text in ["Fix the parser in src/parse.py, then run 2 tests!", "merge PR #12 & tag v0.38"]:
-        assert skillmine.tokenize_label(text) == tokenize_v2(text)
+        kept = [t for t in tokenize_v2(text) if skillmine._label_word_kept(t)]
+        assert skillmine.tokenize_label(text) == kept
+
+
+def test_tokenize_label_drops_function_words_digits_and_single_letters() -> None:
+    # #299: a cluster mined from one template kept `the`, `for`, `in`, `one`, `2026`, `c` as its
+    # keywords, and the [skill] layer matched prompts on them.
+    text = "If the tools are deferred, load ONE ToolSearch call for 2026 job73 C v2 x86"
+    assert skillmine.tokenize_label(text) == [
+        "tools", "deferred", "load", "toolsearch", "call", "job73", "v2", "x86",
+    ]
 
 
 _FOLLOWING_VOWELS = "\u0e30\u0e32\u0e33\u0e45\u0eb0\u0eb2\u0eb3"

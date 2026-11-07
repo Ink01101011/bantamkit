@@ -458,7 +458,7 @@ test('identity survives the leader leaving', () => {
 
 test('match previous ties go to the lower id', () => {
   const fill = [0, 1, 2].map((i) => wp(`z/${i}`, `filler${i}`));
-  const c = sm.cluster([wp('a/1', 'x y'), wp('a/2', 'x y'), ...fill])[0];
+  const c = sm.cluster([wp('a/1', 'xray yoke'), wp('a/2', 'xray yoke'), ...fill])[0];
   assert.deepEqual(c.evidence, ['a/1', 'a/2']);
   const recs = [
     { id: 'b', source: 'shiftwork', evidence: [{ id: 'a/1' }] },
@@ -698,11 +698,17 @@ test('no Thai label token starts with a following vowel', () => {
   }
 });
 
-test('tokenizeLabel equals tokenizeV2 on ASCII text', async () => {
+test('tokenizeLabel equals tokenizeV2 on ASCII text, minus the #299 drops', async () => {
   const { tokenizeV2 } = await import('../dist/memory/retrieval.js');
+  const kept = (t) => Array.from(t).length > 1 && !/^[0-9]+$/.test(t) && !sm.LABEL_STOPWORDS_EN.has(t);
   for (const text of ['Fix the Parser in src/parse.py, again!', 'merge then tag v0.38.1', '', '  --  ']) {
-    assert.deepEqual(sm.tokenizeLabel(text), tokenizeV2(text), text);
+    assert.deepEqual(sm.tokenizeLabel(text), tokenizeV2(text).filter(kept), text);
   }
+});
+
+test('tokenizeLabel drops function words, digits-only words and single letters (#299)', () => {
+  const text = 'If the tools are deferred, load ONE ToolSearch call for 2026 job73 C v2 x86';
+  assert.deepEqual(sm.tokenizeLabel(text), ['tools', 'deferred', 'load', 'toolsearch', 'call', 'job73', 'v2', 'x86']);
 });
 
 test('tokenizeV2 is unchanged for ทำต่อ (recall is measured on it)', async () => {
