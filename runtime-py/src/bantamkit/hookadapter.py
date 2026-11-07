@@ -328,7 +328,11 @@ def _js_str(value: Any) -> str:
         return _js_number(value)
     if isinstance(value, str):
         return value
-    return _dumps(value)
+    if isinstance(value, list):
+        # Array.prototype.toString: elements joined by ",", null and undefined as "".
+        return ",".join("" if x is None else _js_str(x) for x in value)
+    # Any other JSON value is an object, and `${obj}` is "[object Object]" (g1 F3, #297).
+    return "[object Object]"
 
 
 def _mtime_ms(st: os.stat_result) -> float:
@@ -412,14 +416,23 @@ def _write_ledger(run: HookRun, session_id: Any, ledger: dict[str, Any]) -> None
 
     A reader that lands between a whole-file truncate and its write sees an empty ledger,
     which `_read_ledger` reads as "nothing seen". `os.replace` is atomic on both platforms;
-    the name carries the pid so two writers never share a temp file.
+    the name carries the pid and a random part, and the temp is created EXCLUSIVELY (#250 class,
+    #297): a planted file or symlink at that name is refused, never followed or truncated.
     """
     os.makedirs(run.state, exist_ok=True)
     file = _ledger_path(run, session_id)
-    tmp = f"{file}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(_dumps(ledger))
-    os.replace(tmp, file)
+    tmp = f"{file}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    fh = open(tmp, "x", encoding="utf-8")  # raises before anything of ours exists at `tmp`
+    try:
+        with fh:
+            fh.write(_dumps(ledger))
+        os.replace(tmp, file)
+    except BaseException:
+        try:
+            os.unlink(tmp)  # ours: created above
+        except OSError:
+            pass
+        raise
 
 
 #: How long a writer waits for the ledger lock before going ahead without it.

@@ -2642,6 +2642,30 @@ export async function run(ctx) {
       };
       cases.push({ name: 'reply-native invalid lang — state file (ts removed)', kind: 'json', expected: stateOf('py'), actual: stateOf('node') });
     }
+
+    // D. #297, from the 0.39.0 release gate. (1) a SessionStart payload with no `source` logs
+    //    `source: null` on both sides (Node used to drop the key). (2) a transcript_path that is
+    //    an OBJECT keys the reply-native ledger as JS `${obj}` does, "[object Object]", on both
+    //    sides (Python used to key it as its JSON). Both pinned per side: a differential alone
+    //    would stay green through a symmetric regression.
+    {
+      const id = 'reply-native-shapes';
+      const records = (side, payload, env) => {
+        const h = home(id, side);
+        const cwd = cwdOf(id, side);
+        return runHook(ctx, side, { payload: { cwd, session_id: id, ...payload }, cwd, home: h, env }).records;
+      };
+      const srcOf = (side) => records(side, { hook_event_name: 'SessionStart' }, ON).filter((x) => x.event === 'SessionStart' && 'cwd' in x).at(-1) ?? {};
+      const sp = srcOf('py');
+      const sn = srcOf('node');
+      cases.push(...literalCases('source' in sp ? sp.source : 'ABSENT', 'source' in sn ? sn.source : 'ABSENT', 'SessionStart with no source logs source: null', null));
+      const keysOf = (side) => {
+        records(side, { hook_event_name: 'UserPromptSubmit', prompt: 'ทำไมมันพัง', transcript_path: { a: 1 } }, ON);
+        const led = JSON.parse(readFileSync(join(home(id, side), '.bantamkit', 'hooks', `ledger-${id}.json`), 'utf8'));
+        return Object.keys(led.replyNative ?? {});
+      };
+      cases.push(...literalCases(keysOf('py'), keysOf('node'), 'an object transcript_path keys the ledger as "[object Object]"', ['[object Object]']));
+    }
   }
 
   // ================================ an injection is not a recall (job64, J64-1)

@@ -378,15 +378,30 @@ function readLedger(run: HookRun, sessionId: string | undefined): Ledger {
 /**
  * Temp-and-rename, never a bare `writeFileSync` (job65, J65-4, #167): a reader that lands
  * between a whole-file truncate and its write sees an empty ledger, which `readLedger` reads
- * as "nothing seen". The rename is atomic on both platforms; the name carries the pid so two
- * writers never share a temp file.
+ * as "nothing seen". The rename is atomic on both platforms; the name carries the pid and a
+ * random part, and the temp is created EXCLUSIVELY (#250 class, #297): a planted file or symlink
+ * at that name is refused, never followed or truncated.
  */
 function writeLedger(run: HookRun, sessionId: string | undefined, ledger: Ledger): void {
   fs.mkdirSync(run.state, { recursive: true });
   const file = ledgerPath(run, sessionId);
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(ledger));
-  fs.renameSync(tmp, file);
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  const fd = fs.openSync(tmp, 'wx'); // throws before anything of ours exists at `tmp`
+  try {
+    try {
+      fs.writeSync(fd, JSON.stringify(ledger));
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp); // ours: created above
+    } catch {
+      /* already gone */
+    }
+    throw err;
+  }
 }
 
 /** How long a writer waits for the ledger lock before going ahead without it. */
@@ -1264,7 +1279,7 @@ function sessionStart(run: HookRun, input: HookInput, proposeLine: (home: string
   // a project block was injected at all.
   log(run, {
     event: 'SessionStart',
-    source: input.source,
+    source: input.source ?? null, // null, not absent, when the payload has none: as the reference (#297)
     cwd,
     bytes: Buffer.byteLength(ctx),
     ...(replyRec ? { replyNative: replyRec } : {}),
