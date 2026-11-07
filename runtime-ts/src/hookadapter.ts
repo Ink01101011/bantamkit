@@ -1574,14 +1574,20 @@ function replyRecord(m: ReplyMode, lang: string | null, p: ReplyPlan): Record<st
   };
 }
 
-function replyInject(run: HookRun, input: HookInput, m: ReplyMode, lang: string): ReplyPlan {
+/**
+ * Plan against this window's seen-set and record what was injected, under the ledger lock.
+ * `fresh` is SessionStart: the window is new (startup, clear, compact), so whatever an earlier
+ * window of the same transcript recorded is not in this one. Plan against nothing and start
+ * the seen-set over with what is injected now.
+ */
+function replyInject(run: HookRun, input: HookInput, m: ReplyMode, lang: string, fresh = false): ReplyPlan {
   const transcript = String(input.transcript_path || input.session_id || '');
   let planned: ReplyPlan | null = null;
   try {
     updateLedger(run, input.session_id, (ledger) => {
       const everyone =
         ledger.replyNative && typeof ledger.replyNative === 'object' && !Array.isArray(ledger.replyNative) ? ledger.replyNative : {};
-      const own = everyone[transcript];
+      const own = fresh ? null : everyone[transcript];
       const seen: Record<string, string> = own && typeof own === 'object' && !Array.isArray(own) ? own : {};
       const p = replyPlan(m, lang, Object.keys(seen));
       planned = p;
@@ -1622,7 +1628,7 @@ function replyNativeSession(run: HookRun, input: HookInput): [string | null, Rec
     return [null, null];
   }
   if (m.kind !== 'fixed' || input.source === 'resume') return [null, null];
-  const p = replyInject(run, input, m, m.lang ?? '');
+  const p = replyInject(run, input, m, m.lang ?? '', true);
   const record = { ...replyRecord(m, m.lang, p), source: input.source ?? null };
   writeReplyState(run, 'SessionStart', record);
   return [p.text || null, record];

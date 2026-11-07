@@ -16,7 +16,11 @@ const REF = join(here, 'ref', 'replynative_ref.py');
 const ENV_NATIVE = [undefined, 'on', 'ON', ' 1 ', 'off', 'garbage'];
 const ENV_LANG = [undefined, 'th', ' TH ', 'th-TH', 'thai', 'en', 'ko', ''];
 
-/** [prompt, golden classify] — the golden is the spec's table, pinned per side. */
+/**
+ * [prompt, golden classify] — the golden is the spec's table, pinned per side.
+ * platform-checked: the Windows paths below are prompt TEXT handed to a pure classifier, never
+ * opened or resolved, so they read the same on every OS.
+ */
 const PROMPTS = [
   ['What is this "สวัสดี"?', null],
   ['What is this สวัสดี?', 'th'],

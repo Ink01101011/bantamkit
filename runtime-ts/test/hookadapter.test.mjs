@@ -925,9 +925,10 @@ test('#292 reply-native: fixed mode at SessionStart', () => {
   assert.ok(!rnSession(bed, 'resume', env).includes('[bantamkit reply-native]'));
   assert.ok(rnSession(bed, 'compact', env).includes('[bantamkit reply-native]'));
   assert.equal(rnPrompt(bed, 'ทำไมมันพัง', env), '');
-  // DEVIATION from the plan's test: `ko` and `en` run on a FRESH bed. On the shared bed the ledger
-  // already marks `core` seen for this session (from the `compact` above), so `plan` correctly
-  // withholds it; a real `startup` arrives with a new session id, which a fresh bed models.
+  // SessionStart is always a fresh window: a second `startup` on the SAME transcript key, whose
+  // seen-set already holds `core` and `th`, still injects (the seen-set is not consulted).
+  assert.ok(rnSession(bed, 'startup', env).includes('[bantamkit reply-native]'));
+  // `ko` and `en` run on their own bed so each starts from an empty ledger.
   const ko = rnSession({ home: newDir('home'), cwd: newDir('cwd') }, 'startup', { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: 'ko' });
   assert.ok(ko.includes('ISO 639-1 code is ko,') && !ko.includes('[reply-native'));
   assert.ok(!rnSession({ home: newDir('home'), cwd: newDir('cwd') }, 'startup', { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: 'en' }).includes('[bantamkit reply-native]'));
