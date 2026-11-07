@@ -727,6 +727,37 @@ stayed green — and 5 failing tests on each side ((a), (c) through its suppress
 (e), (f)). (b) pins the "still injected" half and is green under that mutation by design.
 Removing only the `clear` reset on both sides reddens (e) and the identity literal.
 
+## Reply-native (#292)
+
+Opt-in. Off by default. Two switches, read from the hook's own environment:
+
+| `BANTAMKIT_REPLY_NATIVE` | `BANTAMKIT_REPLY_LANG` | What happens |
+|---|---|---|
+| unset or anything but `on`, `1`, `true`, `yes` | anything | nothing; the state file `bantamkit_status` reads is deleted at the next hook run |
+| on | unset or blank | **latest.** `UserPromptSubmit` classifies each prompt's own sentence (fenced and inline code, quotes, URLs, paths and `<pasted_content>`-style blocks removed first; a prompt that is nothing but those is judged whole). The first Thai or Japanese prompt in a context window gets a short directive (think in English, reply in the language of the latest message) plus that language's notes. Prompts that start with `/` or are empty are skipped. |
+| on | a two-letter code, case-insensitive (`th`, `JA`, `en`, `fr` ...) | **fixed.** `SessionStart` injects a directive to always reply in that language, plus its notes when bantamkit ships a pack (`th`, `ja`). It fires on every `SessionStart` source except `resume`: startup, clear and compact each start a fresh window, so it injects again each time, and the seen-set is not consulted there. `en` injects nothing and records `english`. `UserPromptSubmit` does nothing in this mode. |
+| on | anything else | invalid: behaves as latest, and `bantamkit_status` says `BANTAMKIT_REPLY_LANG=<raw> invalid, fell back to latest` (the raw value cut at 32 characters) |
+
+In latest mode each part (the directive, then the language's notes) is injected once per window.
+A window ends on `/clear` and on compaction, which forget the seen-set; `resume` keeps it. In
+fixed mode a `SessionStart` starts the seen-set over with what it injects.
+
+The directive text is `assets/langs/` (`core-latest.md`, `core-fixed.md` with `{lang}`
+substituted, `th.md`, `ja.md`). One injection is at most 1050 bytes (directive 600, notes 450)
+and is never cut: over budget, nothing is injected and the reason is `over-budget`. The prompt
+text is never logged. At `SessionStart` the directive sits after the rest of the block and is
+outside `SESSION_INJECT_MAX`, so profile facts never cut it; at `UserPromptSubmit` it is emitted
+with the recall context in the same payload.
+
+What it leaves behind: a `replyNative` object on the `UserPromptSubmit` / `SessionStart`
+hook-log record (mode, lang, parts, bytes, `reason`, `rawLang`; the `SessionStart` one also
+`source`), and `~/.bantamkit/hooks/reply-native.json`, the last decision, which
+`bantamkit_status` prints (`docs/status.md`). Both runtimes write the same shape; the conformance
+`reply-native` suite compares them.
+
+With `BANTAMKIT_REPLY_NATIVE` on, disable the `think-english-reply-native` skill in Claude Code
+if you have it installed: both together pay for the same instruction twice.
+
 ## The skill-audit line (#205, job73)
 
 `SessionStart` appends **at most one** line about the daily skill audit, and only for
