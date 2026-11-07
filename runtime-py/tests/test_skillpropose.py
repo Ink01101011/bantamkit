@@ -350,7 +350,8 @@ def test_the_server_lists_three_prompts_and_drafts_through_the_clients_sampling(
     assert asked[0].max_tokens == sp.SAMPLING_MAX_TOKENS
     assert asked[0].system_prompt == DRAFT_SYSTEM
     assert endpoint.hits == 0
-    assert status.content[0].text.split("\n")[-1].endswith(
+    # AMENDED #292 (reply-native): [-1] -> [-2], the `reply-native:` line is LAST now.
+    assert status.content[0].text.split("\n")[-2].endswith(
         "; drafter sampling; auto off (BANTAMKIT_SKILL_AUTO=on to opt in)"
     )
     assert json.loads(sf.state_path(home).read_text(encoding="utf-8"))["skills"]["fixing-a"]

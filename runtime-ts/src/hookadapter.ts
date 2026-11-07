@@ -41,7 +41,7 @@
  * Pure Node, POSIX + Windows; nothing here shells Python.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -60,6 +60,7 @@ import { keptCli, keptManifest, keptPrefix } from './npminstall.js';
 import { exclusive } from './storage/lock.js';
 import { parseJson, PyJSONDecodeError, PyValueError, type PyValue } from './pyjson.js';
 import { pyLstrip, pyStrip as pyStripSem, pyTruthy } from './pysem.js';
+import { classify, mode as replyMode, plan as replyPlan, STATE_FILE as REPLY_STATE_FILE, type ReplyMode, type ReplyPlan } from './replynative.js';
 import { LogSegment, ROTATE_BYTES } from './storage/logsegment.js';
 import { maybeSpawn as maybeSpawnRetention } from './storage/retention.js';
 import { sessionLine } from './skillreport.js';
@@ -334,6 +335,8 @@ interface Ledger {
   injected?: Record<string, Record<string, string>>;
   saved?: number;
   stopNudged?: boolean;
+  /** #292: per context, reply-native part -> ISO stamp it was injected at. */
+  replyNative?: Record<string, Record<string, string>>;
 }
 
 /**
@@ -1225,7 +1228,7 @@ function sessionStart(run: HookRun, input: HookInput, proposeLine: (home: string
     log(run, { event: 'SessionStart', warn: `update-signal: ${message(e)}` });
   }
   if (update.line) parts.push(update.line);
-  const ctx = parts.join('\n\n');
+  let ctx = parts.join('\n\n');
   if (input.source === 'compact') {
     // context was just rebuilt: earlier reads are gone, so the read ledger must not refuse them
     try {
@@ -1243,11 +1246,18 @@ function sessionStart(run: HookRun, input: HookInput, proposeLine: (home: string
     // own question, and `resume` restores the window, so it resets nothing. No ledger is
     // created when none exists (job64, J64-2).
     const ledger = readLedger(run, input.session_id);
-    if ('injected' in ledger) {
-      delete ledger.injected;
-      writeLedger(run, input.session_id, ledger);
+    let dropped = false;
+    for (const key of ['injected', 'replyNative'] as const) {
+      if (key in ledger) {
+        delete ledger[key];
+        dropped = true;
+      }
     }
+    if (dropped) writeLedger(run, input.session_id, ledger);
   }
+  // #292 mode 3: after the ledger reset, outside SESSION_INJECT_MAX.
+  const [reply, replyRec] = replyNativeSession(run, input);
+  if (reply) ctx = ctx ? `${ctx}\n\n${reply}` : reply;
   // `profileFacts` keeps its old meaning — files in the store — so older records stay
   // comparable; `profileInjected` / `profileDropped` are what the block carried and did
   // not, and `dropRule` is the order the drop followed. The project trio appears only when
@@ -1257,6 +1267,7 @@ function sessionStart(run: HookRun, input: HookInput, proposeLine: (home: string
     source: input.source,
     cwd,
     bytes: Buffer.byteLength(ctx),
+    ...(replyRec ? { replyNative: replyRec } : {}),
     touchBytes: Buffer.byteLength(touch),
     profileFacts,
     profileInjected: profile.injected,
@@ -1514,12 +1525,131 @@ export function headQuery(prompt: string, transcript: string): string | null {
   return prev ? `${prompt}\n${Array.from(prev).slice(0, HEAD_CUT).join('')}` : null;
 }
 
+// ------------------------------------------------------------ reply-native (#292)
+
+const replyStatePath = (run: HookRun): string => path.join(run.state, REPLY_STATE_FILE);
+
+/** The last decision, for `bantamkit_status`. Best-effort; an EXCLUSIVE temp (#250). */
+function writeReplyState(run: HookRun, event: string, record: Record<string, unknown>): void {
+  let tmp: string | null = null;
+  try {
+    fs.mkdirSync(run.state, { recursive: true });
+    const file = replyStatePath(run);
+    tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    // `JSON.stringify` is the port of `_dumps` (no spaces, non-ASCII as itself): same bytes.
+    fs.writeFileSync(tmp, JSON.stringify({ ts: new Date().toISOString(), event, ...record }), { flag: 'wx' });
+    fs.renameSync(tmp, file);
+    tmp = null;
+  } catch {
+    /* best-effort */
+  } finally {
+    if (tmp !== null) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* none */
+      }
+    }
+  }
+}
+
+function clearReplyState(run: HookRun): void {
+  try {
+    fs.lstatSync(replyStatePath(run));
+    fs.unlinkSync(replyStatePath(run));
+  } catch {
+    /* absent */
+  }
+}
+
+function replyRecord(m: ReplyMode, lang: string | null, p: ReplyPlan): Record<string, unknown> {
+  const reason = p.reason || m.reason;
+  return {
+    mode: m.kind,
+    lang,
+    parts: [...p.parts],
+    bytes: Buffer.byteLength(p.text),
+    ...(reason ? { reason } : {}),
+    ...(m.rawLang !== null ? { rawLang: m.rawLang } : {}),
+  };
+}
+
+/**
+ * Plan against this window's seen-set and record what was injected, under the ledger lock.
+ * `fresh` is SessionStart: the window is new (startup, clear, compact), so whatever an earlier
+ * window of the same transcript recorded is not in this one. Plan against nothing and start
+ * the seen-set over with what is injected now.
+ */
+function replyInject(run: HookRun, input: HookInput, m: ReplyMode, lang: string, fresh = false): ReplyPlan {
+  const transcript = String(input.transcript_path || input.session_id || '');
+  let planned: ReplyPlan | null = null;
+  try {
+    updateLedger(run, input.session_id, (ledger) => {
+      const everyone =
+        ledger.replyNative && typeof ledger.replyNative === 'object' && !Array.isArray(ledger.replyNative) ? ledger.replyNative : {};
+      // OWN keys only, and an own-property write: a transcript key of `__proto__` must read and
+      // write a ledger entry like any other, not Object.prototype (g1 F2, as job64 J64-8).
+      const own = fresh || !Object.hasOwn(everyone, transcript) ? null : everyone[transcript];
+      const seen: Record<string, string> = own && typeof own === 'object' && !Array.isArray(own) ? own : {};
+      const p = replyPlan(m, lang, Object.keys(seen));
+      planned = p;
+      if (p.parts.length === 0) return false;
+      const at = new Date().toISOString();
+      for (const part of p.parts) seen[part] = at;
+      Object.defineProperty(everyone, transcript, { value: seen, enumerable: true, writable: true, configurable: true });
+      ledger.replyNative = everyone;
+      return true;
+    });
+  } catch {
+    /* fall through */
+  }
+  return planned ?? replyPlan(m, lang, []);
+}
+
+function replyNativePrompt(run: HookRun, input: HookInput, prompt: string): string | null {
+  const m = replyMode(process.env);
+  if (m.kind === 'off') {
+    clearReplyState(run);
+    return null;
+  }
+  if (m.kind === 'fixed' || !prompt || prompt.startsWith('/')) return null;
+  const lang = classify(prompt);
+  if (lang === null) return null;
+  const p = replyInject(run, input, m, lang);
+  if (p.parts.length === 0 && !p.reason && m.reason === null) return null;
+  const record = replyRecord(m, lang, p);
+  log(run, { event: 'UserPromptSubmit', replyNative: record, session: input.session_id ?? null });
+  writeReplyState(run, 'UserPromptSubmit', record);
+  return p.text || null;
+}
+
+function replyNativeSession(run: HookRun, input: HookInput): [string | null, Record<string, unknown> | null] {
+  const m = replyMode(process.env);
+  if (m.kind === 'off') {
+    clearReplyState(run);
+    return [null, null];
+  }
+  if (m.kind !== 'fixed' || input.source === 'resume') return [null, null];
+  const p = replyInject(run, input, m, m.lang ?? '', true);
+  const record = { ...replyRecord(m, m.lang, p), source: input.source ?? null };
+  writeReplyState(run, 'SessionStart', record);
+  return [p.text || null, record];
+}
+
 function userPromptSubmit(run: HookRun, input: HookInput): void {
   turnOpen(run, input); // #200: before the skip; a command's turn can still run Bash
   const prompt = String(input.prompt || '').trim();
+  // #292: BEFORE the short-prompt skip and independent of recall; one emit carries both.
+  const reply = replyNativePrompt(run, input, prompt);
+  const recall = recallContext(run, input, prompt);
+  const parts = [reply, recall].filter((x): x is string => !!x);
+  if (parts.length) emit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: parts.join('\n\n') } });
+}
+
+function recallContext(run: HookRun, input: HookInput, prompt: string): string | null {
   if (prompt.length < PROMPT_MIN_CHARS || prompt.startsWith('/')) {
     log(run, { event: 'UserPromptSubmit', action: 'skip', reason: 'short-or-command' });
-    return;
+    return null;
   }
   // The host's auto-memory joins as the last, read-only `[native]` layer (#199 J68-11, user
   // ruling A+B), from the directory RULING Q1.2's resolver FOUND — all three branches, since this
@@ -1548,7 +1678,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   if (touch !== null) degraded.context = [...touch.weights.values()].filter((w) => w > 0.0).length;
   if (o.status !== 'answered') {
     log(run, { event: 'UserPromptSubmit', action: 'none', status: o.status, candidates: o.candidates, ...degraded });
-    return;
+    return null;
   }
   // Only the HEADER line of each hit — `[layer] [name] (type) description`. The body costs
   // ~1.5 KB a fact and would be re-sent on every later call; the header is ~150 B and
@@ -1559,7 +1689,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
   const heads = o.headers.filter((l) => RECALL_HEADER.test(l));
   if (heads.length === 0) {
     log(run, { event: 'UserPromptSubmit', action: 'none', reason: 'no-headers', ...degraded });
-    return;
+    return null;
   }
   // WHAT THIS CONTEXT HAS ALREADY BEEN SHOWN IS NOT SHOWN AGAIN (job64, J64-2). Measured
   // 2026-09-25: 333 of 598 injections in a week repeated a name injected earlier in the same
@@ -1595,7 +1725,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
       suppressed,
       ...degraded,
     });
-    return;
+    return null;
   }
   const ctx = capLines(
     `[bantamkit recall — memories that match this prompt; call mcp__bantamkit__memory_recall with {"query":"<name>"} for the body]\n${fresh.join('\n')}`,
@@ -1636,7 +1766,7 @@ function userPromptSubmit(run: HookRun, input: HookInput): void {
     ...degraded,
     ...(o.via !== null && injected.some((x) => x.name === o.via) ? { via: o.via } : {}),
   });
-  emit({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: ctx } });
+  return ctx;
 }
 
 /**

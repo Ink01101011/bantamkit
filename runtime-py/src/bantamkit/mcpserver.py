@@ -26,6 +26,7 @@ from bantamkit import (
     docread,
     hookadapter,
     hostinstall,
+    replynative,
     repomap,
     selfupdate,
     shiftwork,
@@ -1090,6 +1091,10 @@ def status_report(
         # earlier line keeps its number. `sampling` is the client's declared capability (Task
         # 11): the drafter a `skill_propose` approve would reach first.
         skillmine.status_line(Path.home(), sampling),
+        # #292: the reply-native hook's last decision, LAST so every line above keeps its number.
+        # Read from the hook's own state file, never from this process's env: the server and
+        # the hook are spawned separately and need not share an environment.
+        replynative.status_line(Path.home()),
     ]
     if conditions:
         lines.append(f"{_plural(len(conditions), 'problem')}:")

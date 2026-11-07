@@ -51,6 +51,10 @@ def _env(home: Path) -> dict[str, str]:
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)
     env.pop("BANTAMKIT_MEMORY_DIR", None)
+    # #292: the operator's shell may have reply-native on; every hook test starts with it off,
+    # and the reply-native tests set both variables explicitly through `env_extra`.
+    env.pop("BANTAMKIT_REPLY_NATIVE", None)
+    env.pop("BANTAMKIT_REPLY_LANG", None)
     return env
 
 
@@ -2892,3 +2896,153 @@ def test_session_start_names_a_skills_event_once_after_the_audit_line(tmp_path):
     again = json.loads(_run_hook(start, home=home, cwd=cwd, env_extra=on).stdout)
     assert ctx(again) == ctx(plain)
     assert _log_lines(home)[-1]["skillProposeBytes"] == 0
+
+
+# --- reply-native (#292) ---------------------------------------------------------------
+
+_RN_ON = {"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": ""}
+_RN_T = "/t/reply.jsonl"
+
+
+def _rn_prompt(home, cwd, prompt, env=_RN_ON):
+    r = _run_hook(
+        {"hook_event_name": "UserPromptSubmit", "prompt": prompt, "transcript_path": _RN_T},
+        home=home,
+        cwd=cwd,
+        env_extra=env,
+    )
+    assert r.returncode == 0, r.stderr
+    out = r.stdout.decode("utf-8").strip()
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+
+def test_reply_native_sequence_en_th_th_ja_clear_th(tmp_path):
+    home, cwd = _bed(tmp_path, "rn-seq")
+    assert "[bantamkit reply-native]" not in _rn_prompt(home, cwd, "fix the login bug please")
+    first = _rn_prompt(home, cwd, "ทำไมมันยังพังอยู่ครับ")
+    assert first.startswith("[bantamkit reply-native]") and "[reply-native th]" in first
+    assert "[reply-native" not in _rn_prompt(home, cwd, "ลองอีกทีได้ไหมครับ")
+    ja = _rn_prompt(home, cwd, "これはなぜ壊れていますか")
+    assert ja.startswith("[reply-native ja]") and "[bantamkit reply-native]" not in ja
+    assert set(_ledger(home)["replyNative"][_RN_T]) == {"core", "th", "ja"}
+    r = _run_hook(
+        {"hook_event_name": "SessionStart", "source": "clear", "transcript_path": _RN_T},
+        home=home,
+        cwd=cwd,
+        env_extra=_RN_ON,
+    )
+    assert r.returncode == 0
+    assert "replyNative" not in _ledger(home)
+    assert _rn_prompt(home, cwd, "ทำต่อ").startswith("[bantamkit reply-native]")
+
+
+def test_reply_native_short_prompt_and_slash_command(tmp_path):
+    home, cwd = _bed(tmp_path, "rn-short")
+    assert _rn_prompt(home, cwd, "/clear ทำต่อ") == ""
+    assert _rn_prompt(home, cwd, "ทำต่อ").startswith("[bantamkit reply-native]")
+
+
+def test_reply_native_off_injects_nothing_and_removes_state(tmp_path):
+    home, cwd = _bed(tmp_path, "rn-off")
+    _rn_prompt(home, cwd, "ทำไมมันพัง")
+    state = home / ".bantamkit" / "hooks" / "reply-native.json"
+    assert state.exists()
+    assert _rn_prompt(home, cwd, "ทำไมมันพังอีกแล้ว", env={"BANTAMKIT_REPLY_NATIVE": "off"}) == ""
+    assert not state.exists()
+
+
+def test_reply_native_prompt_text_is_not_logged(tmp_path):
+    home, cwd = _bed(tmp_path, "rn-log")
+    _rn_prompt(home, cwd, "ข้อความลับมากๆ ห้ามเก็บ")
+    raw = (home / ".bantamkit" / "hooks" / "hook-log.jsonl").read_text(encoding="utf-8")
+    assert "ข้อความลับ" not in raw
+    rec = [r for r in _log_lines(home) if "replyNative" in r][-1]["replyNative"]
+    assert rec == {"mode": "latest", "lang": "th", "parts": ["core", "th"], "bytes": 885}
+
+
+def test_reply_native_invalid_lang_falls_back_and_is_recorded(tmp_path):
+    home, cwd = _bed(tmp_path, "rn-bad")
+    ctx = _rn_prompt(
+        home,
+        cwd,
+        "ทำไมมันพัง",
+        env={"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": "th-TH"},
+    )
+    assert ctx.startswith("[bantamkit reply-native] Think in English") and "LATEST" in ctx
+    state = home / ".bantamkit" / "hooks" / "reply-native.json"
+    rec = json.loads(state.read_text(encoding="utf-8"))
+    assert rec["rawLang"] == "th-TH" and rec["mode"] == "latest"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX env bytes; Windows env is UTF-16")
+def test_reply_native_non_utf8_lang_still_injects_and_records(tmp_path):
+    # r1 #1: bytes \xff\xfe reach os.environ as lone surrogates; the state write used to raise
+    # UnicodeEncodeError (not OSError), crashing the hook before recall and the emit.
+    home, cwd = _bed(tmp_path, "rn-bytes")
+    env = {"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": "\udcff\udcfe"}
+    ctx = _rn_prompt(home, cwd, "ทำไมมันพัง", env=env)
+    assert ctx.startswith("[bantamkit reply-native] Think in English")
+    rec = json.loads((home / ".bantamkit" / "hooks" / "reply-native.json").read_text("utf-8"))
+    assert rec["rawLang"] == "\ufffd\ufffd" and rec["reason"] == "invalid-lang"
+    assert not [x for x in _log_lines(home) if x.get("event") == "error"]
+
+
+def test_reply_native_proto_transcript_key_is_an_ordinary_key(tmp_path):
+    # g1 F2 parity: Node used to read and write Object.prototype for this key.
+    home, cwd = _bed(tmp_path, "rn-proto")
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "ทำไมมันยังพังอยู่ครับ",
+        "transcript_path": "__proto__",
+    }
+
+    def ask():
+        r = _run_hook(payload, home=home, cwd=cwd, env_extra=_RN_ON)
+        out = r.stdout.decode("utf-8").strip()
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+    assert ask().startswith("[bantamkit reply-native]")
+    assert "[bantamkit reply-native]" not in ask()
+
+
+def _rn_session(home, cwd, source, env):
+    r = _run_hook(
+        {"hook_event_name": "SessionStart", "source": source, "transcript_path": _RN_T},
+        home=home,
+        cwd=cwd,
+        env_extra=env,
+    )
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.decode("utf-8"))["hookSpecificOutput"]["additionalContext"]
+
+
+def test_reply_native_fixed_mode_session_start(tmp_path):
+    home, cwd = _bed(tmp_path, "rn-fixed")
+    env = {"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": "th"}
+    ctx = _rn_session(home, cwd, "startup", env)
+    tail = ctx[ctx.index("[bantamkit reply-native]") :]
+    assert "ISO 639-1 code is th," in tail and tail.endswith(_load_th())
+    assert "[bantamkit reply-native]" not in _rn_session(home, cwd, "resume", env)
+    assert "[bantamkit reply-native]" in _rn_session(home, cwd, "compact", env)
+    assert _rn_prompt(home, cwd, "ทำไมมันพัง", env=env) == ""  # mode 3 never injects per prompt
+    # SessionStart is always a fresh window: a second `startup` on the SAME transcript key,
+    # whose seen-set already holds `core` and `th`, still injects (the seen-set is not consulted).
+    assert "[bantamkit reply-native]" in _rn_session(home, cwd, "startup", env)
+    # A `startup` is a NEW window: its own bed, so the seen-set the compact above recorded
+    # (`core`, under this session's transcript key) does not dedupe it.
+    home, cwd = _bed(tmp_path, "rn-fixed-ko")
+    ko = _rn_session(
+        home, cwd, "startup", {"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": "ko"}
+    )
+    assert "ISO 639-1 code is ko," in ko and "[reply-native" not in ko
+    home, cwd = _bed(tmp_path, "rn-fixed-en")
+    en = _rn_session(
+        home, cwd, "startup", {"BANTAMKIT_REPLY_NATIVE": "on", "BANTAMKIT_REPLY_LANG": "en"}
+    )
+    assert "[bantamkit reply-native]" not in en
+
+
+def _load_th():
+    from bantamkit.assets import load_lang
+
+    return load_lang("th")

@@ -32,6 +32,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { loadLang } from '../dist/assets.js';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const CLI = join(packageRoot, 'dist', 'cli.js');
@@ -862,4 +863,81 @@ test('SessionStart names a skills event once, after the skill-audit line', async
   assert.equal(last().skillProposeBytes, Buffer.byteLength(skills));
   assert.equal(ctx(runHook(start, { home, cwd, env })), plain);
   assert.equal(last().skillProposeBytes, 0);
+});
+
+// --- reply-native (#292) ----------------------------------------------------------------
+const RN_ON = { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: '' };
+const RN_T = '/t/reply.jsonl';
+const rnCtx = (r) => {
+  assert.equal(r.status, 0, r.stderr);
+  const out = r.stdout.trim();
+  return out ? JSON.parse(out).hookSpecificOutput.additionalContext : '';
+};
+const rnPrompt = (bed, prompt, env = RN_ON) =>
+  rnCtx(runHook({ hook_event_name: 'UserPromptSubmit', prompt, transcript_path: RN_T }, { ...bed, env }));
+const rnSession = (bed, source, env) =>
+  rnCtx(runHook({ hook_event_name: 'SessionStart', source, transcript_path: RN_T }, { ...bed, env }));
+const rnLedger = (home) => JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', 'ledger-probe-session.json'), 'utf8'));
+
+test('#292 reply-native: a __proto__ transcript key is an ordinary ledger key (g1 F2)', () => {
+  const bed = { home: newDir('home'), cwd: newDir('cwd') };
+  const ask = () => rnCtx(runHook({ hook_event_name: 'UserPromptSubmit', prompt: 'ทำไมมันยังพังอยู่ครับ', transcript_path: '__proto__' }, { ...bed, env: RN_ON }));
+  assert.ok(ask().startsWith('[bantamkit reply-native]'));
+  assert.ok(!ask().includes('[bantamkit reply-native]'), 'the second Thai prompt in the window is deduped');
+  assert.ok(Object.hasOwn(rnLedger(bed.home).replyNative, '__proto__'));
+});
+
+test('#292 reply-native: en, th, th, ja, /clear, th', () => {
+  const bed = { home: newDir('home'), cwd: newDir('cwd') };
+  assert.ok(!rnPrompt(bed, 'fix the login bug please').includes('[bantamkit reply-native]'));
+  const first = rnPrompt(bed, 'ทำไมมันยังพังอยู่ครับ');
+  assert.ok(first.startsWith('[bantamkit reply-native]') && first.includes('[reply-native th]'));
+  assert.ok(!rnPrompt(bed, 'ลองอีกทีได้ไหมครับ').includes('[reply-native'));
+  const ja = rnPrompt(bed, 'これはなぜ壊れていますか');
+  assert.ok(ja.startsWith('[reply-native ja]') && !ja.includes('[bantamkit reply-native]'));
+  assert.deepEqual(Object.keys(rnLedger(bed.home).replyNative[RN_T]).sort(), ['core', 'ja', 'th']);
+  rnSession(bed, 'clear', RN_ON);
+  assert.ok(!('replyNative' in rnLedger(bed.home)));
+  assert.ok(rnPrompt(bed, 'ทำต่อ').startsWith('[bantamkit reply-native]'));
+});
+
+test('#292 reply-native: slash command skipped, off removes state, prompt not logged', () => {
+  const bed = { home: newDir('home'), cwd: newDir('cwd') };
+  assert.equal(rnPrompt(bed, '/clear ทำต่อ'), '');
+  rnPrompt(bed, 'ข้อความลับมากๆ ห้ามเก็บ');
+  const logText = readFileSync(join(bed.home, '.bantamkit', 'hooks', 'hook-log.jsonl'), 'utf8');
+  assert.ok(!logText.includes('ข้อความลับ'));
+  const rec = logText.trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.replyNative).at(-1).replyNative;
+  assert.deepEqual(rec, { mode: 'latest', lang: 'th', parts: ['core', 'th'], bytes: 885 });
+  const state = join(bed.home, '.bantamkit', 'hooks', 'reply-native.json');
+  assert.ok(existsSync(state));
+  assert.equal(rnPrompt(bed, 'ทำไมมันพังอีกแล้ว', { BANTAMKIT_REPLY_NATIVE: 'off' }), '');
+  assert.ok(!existsSync(state));
+});
+
+test('#292 reply-native: invalid REPLY_LANG falls back to latest and is recorded', () => {
+  const bed = { home: newDir('home'), cwd: newDir('cwd') };
+  const ctx = rnPrompt(bed, 'ทำไมมันพัง', { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: 'th-TH' });
+  assert.ok(ctx.startsWith('[bantamkit reply-native] Think in English') && ctx.includes('LATEST'));
+  const rec = JSON.parse(readFileSync(join(bed.home, '.bantamkit', 'hooks', 'reply-native.json'), 'utf8'));
+  assert.equal(rec.rawLang, 'th-TH');
+  assert.equal(rec.mode, 'latest');
+});
+
+test('#292 reply-native: fixed mode at SessionStart', () => {
+  const bed = { home: newDir('home'), cwd: newDir('cwd') };
+  const env = { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: 'th' };
+  const ctx = rnSession(bed, 'startup', env);
+  const tail = ctx.slice(ctx.indexOf('[bantamkit reply-native]'));
+  assert.ok(tail.includes('ISO 639-1 code is th,') && tail.endsWith(loadLang('th')));
+  assert.ok(!rnSession(bed, 'resume', env).includes('[bantamkit reply-native]'));
+  assert.ok(rnSession(bed, 'compact', env).includes('[bantamkit reply-native]'));
+  assert.equal(rnPrompt(bed, 'ทำไมมันพัง', env), '');
+  // SessionStart is always a fresh window: a second `startup` on the SAME transcript key, whose
+  // seen-set already holds `core` and `th`, still injects (the seen-set is not consulted).
+  assert.ok(rnSession(bed, 'startup', env).includes('[bantamkit reply-native]'));
+  // `ko` and `en` run on their own bed so each starts from an empty ledger.
+  const ko = rnSession({ home: newDir('home'), cwd: newDir('cwd') }, 'startup', { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: 'ko' });
+  assert.ok(ko.includes('ISO 639-1 code is ko,') && !ko.includes('[reply-native'));
+  assert.ok(!rnSession({ home: newDir('home'), cwd: newDir('cwd') }, 'startup', { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: 'en' }).includes('[bantamkit reply-native]'));
 });

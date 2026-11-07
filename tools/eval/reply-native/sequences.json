@@ -1,0 +1,15 @@
+{
+  "S1": ["Why does this return undefined? function f(a){ a.map(x => { x * 2 }) } console.log(f([1,2]))",
+         "แล้วถ้าอยากให้คืนค่าเป็น array ใหม่ต้องแก้ตรงไหน",
+         "Is there a performance difference between map and a for loop here?",
+         "この関数をforループで書き直すとどうなりますか",
+         "สรุปแบบไหนดีกว่ากันสำหรับ array 10 ล้านตัว"],
+  "S2": ["What is this \"สวัสดี\"? It shows up in our i18n file next to the key greeting.hello",
+         "What is this สวัสดี? Same file, key greeting.morning"],
+  "S3": ["ช่วยดูว่าทำไม regex /^\\d{3}-\\d{4}$/ ถึงไม่ match '123-45678'",
+         "ทำต่อ"],
+  "S4": ["รัน test แล้วพัง ช่วยดูหน่อย\n<pasted_content id=\"x\">\nAssertionError: expected 3 to equal 4\n    at sum.test.js:12:5\n</pasted_content>\nโค้ดคือ const sum=(a,b)=>a+b-1"],
+  "S5": ["Why can't Python open C:\\Users\\สมชาย\\data\\input.csv when the path is passed from a .bat file?"],
+  "S6": ["ช่วยอธิบาย race condition ใน code นี้ let n=0; await Promise.all([1,2].map(async()=>{const v=n; await sleep(1); n=v+1}))",
+         "reply in English: how would a mutex fix it?"]
+}

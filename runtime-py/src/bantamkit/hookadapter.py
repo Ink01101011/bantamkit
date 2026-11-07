@@ -62,6 +62,7 @@ import json
 import math
 import os
 import re
+import secrets
 import signal as signal_module
 import stat
 import subprocess
@@ -75,6 +76,7 @@ from typing import Any
 
 import yaml
 
+from . import replynative
 from .client import BantamError
 from .memory import retrieval
 from .memory.component import Memory
@@ -1135,10 +1137,20 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
         # no-op. Only the seen-set: whether a re-read after `/clear` should still be
         # refused is the read ledger's own question, and `resume` restores the window, so
         # it resets nothing. No ledger is created when none exists (job64, J64-2).
+        # #292: the reply-native seen-set is forgotten with it.
         ledger = _read_ledger(run, payload.get("session_id"))
-        if "injected" in ledger:
-            del ledger["injected"]
+        dropped = False
+        for key in ("injected", "replyNative"):
+            if key in ledger:
+                del ledger[key]
+                dropped = True
+        if dropped:
             _write_ledger(run, payload.get("session_id"), ledger)
+    # #292 mode 3: after the ledger reset above, so a compaction re-injects and records afresh.
+    # Outside SESSION_INJECT_MAX: it has its own budget and is never cut by profile facts.
+    reply, reply_rec = _reply_native_session(run, payload)
+    if reply:
+        ctx = f"{ctx}\n\n{reply}" if ctx else reply
     # `profileFacts` keeps its old meaning -- files in the store -- so older records stay
     # comparable; `profileInjected` / `profileDropped` are what the block carried and did
     # not, and `dropRule` is the order the drop followed. The project trio appears only when
@@ -1150,6 +1162,8 @@ def _session_start(run: HookRun, payload: dict[str, Any]) -> None:
             "source": payload.get("source"),
             "cwd": cwd,
             "bytes": len(ctx.encode("utf-8")),
+            # #292: present only when mode 3 decided something; `bytes` above already counts it.
+            **({"replyNative": reply_rec} if reply_rec else {}),
             "touchBytes": len(touch.encode("utf-8")),
             "profileFacts": profile_facts,
             "profileInjected": profile.injected,
@@ -1376,12 +1390,155 @@ def _head_query(prompt: str, transcript: str) -> str | None:
     return f"{prompt}\n{prev[:HEAD_CUT]}" if prev else None
 
 
+# ------------------------------------------------------------ reply-native (#292)
+
+
+def _reply_state_path(run: HookRun) -> str:
+    return os.path.join(run.state, replynative.STATE_FILE)
+
+
+def _write_reply_state(run: HookRun, event: str, record: dict[str, Any]) -> None:
+    """The last decision, for `bantamkit_status`. Best-effort; an EXCLUSIVE temp (#250)."""
+    tmp = None
+    try:
+        os.makedirs(run.state, exist_ok=True)
+        path = _reply_state_path(run)
+        tmp = f"{path}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        with open(tmp, "x", encoding="utf-8") as fh:
+            fh.write(_dumps({"ts": _stamp(), "event": event, **record}))
+        os.replace(tmp, path)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _clear_reply_state(run: HookRun) -> None:
+    path = _reply_state_path(run)
+    try:
+        if os.path.lexists(path):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def _reply_record(m: replynative.Mode, lang: str | None, p: replynative.Plan) -> dict[str, Any]:
+    reason = p.reason or m.reason
+    return {
+        "mode": m.kind,
+        "lang": lang,
+        "parts": list(p.parts),
+        "bytes": len(p.text.encode("utf-8")),
+        **({"reason": reason} if reason else {}),
+        **({"rawLang": m.raw_lang} if m.raw_lang is not None else {}),
+    }
+
+
+def _reply_inject(
+    run: HookRun, payload: dict[str, Any], m: replynative.Mode, lang: str, fresh: bool = False
+) -> replynative.Plan:
+    """Plan against this window's seen-set and record what was injected, under the ledger lock.
+
+    `fresh` is SessionStart: the window is new (startup, clear, compact), so whatever an
+    earlier window of the same transcript recorded is not in this one. Plan against nothing
+    and start the seen-set over with what is injected now.
+    """
+    transcript = _js_str(payload.get("transcript_path") or payload.get("session_id") or "")
+    holder: dict[str, replynative.Plan] = {}
+
+    def update(ledger: dict[str, Any]) -> bool:
+        everyone = ledger.get("replyNative")
+        if not isinstance(everyone, dict):
+            everyone = {}
+        seen = None if fresh else everyone.get(transcript)
+        if not isinstance(seen, dict):
+            seen = {}
+        p = replynative.plan(m, lang, set(seen))
+        holder["plan"] = p
+        if not p.parts:
+            return False
+        at = _stamp()
+        for part in p.parts:
+            seen[part] = at
+        everyone[transcript] = seen
+        ledger["replyNative"] = everyone
+        return True
+
+    try:
+        _update_ledger(run, payload.get("session_id"), update)
+    except OSError:
+        if "plan" not in holder:
+            holder["plan"] = replynative.plan(m, lang, ())
+    return holder["plan"]
+
+
+def _reply_native_prompt(run: HookRun, payload: dict[str, Any], prompt: str) -> str | None:
+    m = replynative.mode(os.environ)
+    if m.kind == "off":
+        _clear_reply_state(run)
+        return None
+    if m.kind == "fixed" or not prompt or prompt.startswith("/"):
+        return None
+    lang = replynative.classify(prompt)
+    if lang is None:
+        return None
+    p = _reply_inject(run, payload, m, lang)
+    if not p.parts and not p.reason and m.reason is None:
+        return None  # already in this window: say nothing, write nothing
+    record = _reply_record(m, lang, p)
+    _log(
+        run,
+        {"event": "UserPromptSubmit", "replyNative": record, "session": payload.get("session_id")},
+    )
+    _write_reply_state(run, "UserPromptSubmit", record)
+    return p.text or None
+
+
+def _reply_native_session(
+    run: HookRun, payload: dict[str, Any]
+) -> tuple[str | None, dict[str, Any] | None]:
+    m = replynative.mode(os.environ)
+    if m.kind == "off":
+        _clear_reply_state(run)
+        return None, None
+    source = payload.get("source")
+    if m.kind != "fixed" or source == "resume":
+        return None, None
+    p = _reply_inject(run, payload, m, m.lang or "", fresh=True)
+    record = {**_reply_record(m, m.lang, p), "source": source}
+    _write_reply_state(run, "SessionStart", record)
+    return (p.text or None), record
+
+
 def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
     _turn_open(run, payload)  # #200: before the skip; a command's turn can still run Bash
     prompt = str(payload.get("prompt") or "").strip()
+    # #292: BEFORE the short-prompt skip ("ทำต่อ" is 5 code points) and independent of recall,
+    # so a recall miss can never swallow the directive. One emit carries both.
+    reply = _reply_native_prompt(run, payload, prompt)
+    recall = _recall_context(run, payload, prompt)
+    parts = [p for p in (reply, recall) if p]
+    if parts:
+        _emit(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "\n\n".join(parts),
+                }
+            }
+        )
+
+
+def _recall_context(run: HookRun, payload: dict[str, Any], prompt: str) -> str | None:
+    """The recall injection for `prompt`, or None. Logs exactly as the arm always has."""
     if len(prompt) < PROMPT_MIN_CHARS or prompt.startswith("/"):
         _log(run, {"event": "UserPromptSubmit", "action": "skip", "reason": "short-or-command"})
-        return
+        return None
     # The host's auto-memory joins as the last, read-only `[native]` layer (#199 J68-11, user
     # ruling A+B), from the directory RULING Q1.2's resolver FOUND -- all three branches, since
     # this payload carries `transcript_path` -- and never from a slug computed here.
@@ -1418,7 +1575,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
                 **degraded,
             },
         )
-        return
+        return None
     # Only the HEADER line of each hit -- `[layer] [name] (type) description`. The body costs
     # ~1.5 KB a fact and would be re-sent on every later call; the header is ~150 B and tells
     # the model exactly which name to pass to memory_recall if it wants the body.
@@ -1431,7 +1588,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
             run,
             {"event": "UserPromptSubmit", "action": "none", "reason": "no-headers", **degraded},
         )
-        return
+        return None
     # WHAT THIS CONTEXT HAS ALREADY BEEN SHOWN IS NOT SHOWN AGAIN (job64, J64-2). Measured
     # 2026-09-25: 333 of 598 injections in a week repeated a name injected earlier in the
     # same session. The top 3 are still asked for (RB-P1's floor stays) and the seen ones are
@@ -1467,7 +1624,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
                 **degraded,
             },
         )
-        return
+        return None
     joined = "\n".join(fresh)
     ctx = _cap_lines(
         "[bantamkit recall — memories that match this prompt; call "
@@ -1519,7 +1676,7 @@ def _user_prompt_submit(run: HookRun, payload: dict[str, Any]) -> None:
             **({"via": o.via} if any(x["name"] == o.via for x in injected) else {}),
         },
     )
-    _emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ctx}})
+    return ctx
 
 
 def _touch_context(run: HookRun, payload: dict[str, Any], m: Memory) -> TouchContext | None:

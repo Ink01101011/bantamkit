@@ -104,7 +104,8 @@ const TTY_REF = join(here, 'ref', 'cli_tty_ref.py');
  * decide which store a hook binds and which directory the exporter resolves; an operator with
  * either one set would otherwise be an input to a conformance result. `TOOL_METRICS_DIR` and
  * `BANTAMKIT_DREAM_TIMEOUT_MS` are the arms' other two seams. `BANTAMKIT_ASSETS`, `COLUMNS`
- * and `LINES` are scrubbed for the reasons `cli.mjs` scrubs them.
+ * and `LINES` are scrubbed for the reasons `cli.mjs` scrubs them. So are
+ * the two reply-native switches (#292), or the operator's own setting decides every case.
  */
 const SCRUBBED = [
   'BANTAMKIT_MEMORY_DIR',
@@ -114,6 +115,8 @@ const SCRUBBED = [
   'BANTAMKIT_ASSETS',
   'COLUMNS',
   'LINES',
+  'BANTAMKIT_REPLY_NATIVE',
+  'BANTAMKIT_REPLY_LANG',
 ];
 
 const dec = (buf) => new TextDecoder('utf-8', { fatal: false }).decode(buf);
@@ -2505,6 +2508,140 @@ export async function run(ctx) {
         'json',
       ).map((c, i) => ({ ...c, expected: i === 0 ? 62 : 65 })),
     );
+  }
+
+  // ================================ reply-native (#292)
+  //
+  // Both switches are passed on EVERY step (a `null` unsets one), on top of the SCRUBBED
+  // removal, so the operator's own shell never decides a case.
+  //
+  // Deviations from plan Task 7, each for a stated reason:
+  // - `rec` is the reply-native record THIS step wrote, not the last one in the whole log. The
+  //   log is append-only, so `.at(-1)` over all of it would hand a silent step the previous
+  //   step's record and a step that stopped logging would still compare green.
+  // - each side gets its own cwd, so nothing one side writes under cwd is an input to the other.
+  // - mode 3 pins the code as landed (544c9d04): SessionStart plans against a FRESH window, so
+  //   startup, clear and compact all re-inject even on the same transcript. Two steps the plan
+  //   lacks pin exactly that: a second `startup` and a `clear` on the transcript already shown.
+  {
+    const RN_T = '/t/reply.jsonl';
+    const ctxOf = (r) => {
+      const out = dec(r.stdout).trim();
+      return out ? (JSON.parse(out).hookSpecificOutput?.additionalContext ?? '') : '';
+    };
+    const replyTail = (s) =>
+      s.includes('[bantamkit reply-native]')
+        ? s.slice(s.indexOf('[bantamkit reply-native]'))
+        : s.startsWith('[reply-native')
+          ? s
+          : '';
+    const cwdOf = (id, side) => {
+      const c = join(root, id, `cwd-${side}`);
+      mkdirSync(c, { recursive: true });
+      return c;
+    };
+    const sequence = (side, id, steps) => {
+      const h = home(id, side);
+      const cwd = cwdOf(id, side);
+      let seen = existsSync(HOOK_LOG(h)) ? readFileSync(HOOK_LOG(h), 'utf8').split('\n').filter((l) => l.trim()).length : 0;
+      return steps.map(([event, field, value, env]) => {
+        const payload = { hook_event_name: event, transcript_path: RN_T, cwd, session_id: id, [field]: value };
+        const r = runHook(ctx, side, { payload, cwd, home: h, env });
+        const mine = r.records.slice(seen);
+        seen = r.records.length;
+        return { ctx: replyTail(ctxOf(r)), rec: mine.filter((x) => x.replyNative).at(-1)?.replyNative ?? null };
+      });
+    };
+    const ON = { BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: null };
+    const FIXED = (lang) => ({ BANTAMKIT_REPLY_NATIVE: 'on', BANTAMKIT_REPLY_LANG: lang });
+    const partsOf = (r) => r.map((x) => x.rec?.parts ?? null);
+
+    // A. mode 2 over a session: en, th, th, ja, /clear, th, quoted Thai, a Thai path
+    {
+      const id = 'reply-native-seq';
+      const steps = [
+        ['UserPromptSubmit', 'prompt', 'fix the login bug please', ON],
+        ['UserPromptSubmit', 'prompt', 'ทำไมมันยังพังอยู่ครับ', ON],
+        ['UserPromptSubmit', 'prompt', 'ลองอีกทีได้ไหมครับ', ON],
+        ['UserPromptSubmit', 'prompt', 'これはなぜ壊れていますか', ON],
+        ['SessionStart', 'source', 'clear', ON],
+        ['UserPromptSubmit', 'prompt', 'ทำต่อ', ON],
+        ['UserPromptSubmit', 'prompt', 'What is this "สวัสดี"?', ON],
+        ['UserPromptSubmit', 'prompt', 'check C:\\Users\\สมชาย\\app.log please', ON],
+      ];
+      const py = sequence('py', id, steps);
+      const nd = sequence('node', id, steps);
+      steps.forEach((s, i) => cases.push({ name: `reply-native seq/${i} ${s[0]} — context`, kind: 'string', expected: py[i].ctx, actual: nd[i].ctx }));
+      steps.forEach((s, i) => cases.push({ name: `reply-native seq/${i} ${s[0]} — log record`, kind: 'json', expected: py[i].rec, actual: nd[i].rec }));
+      const shape = (r) => r.map((x) => (x.ctx.startsWith('[bantamkit reply-native]') ? 'core' : x.ctx.startsWith('[reply-native ja]') ? 'ja' : x.ctx ? 'other' : ''));
+      cases.push(...literalCases(shape(py), shape(nd), 'reply-native seq: what each step injected', ['', 'core', '', 'ja', '', 'core', '', '']));
+      cases.push(
+        ...literalCases(partsOf(py), partsOf(nd), 'reply-native seq: the parts each step logged', [
+          null, ['core', 'th'], null, ['ja'], null, ['core', 'th'], null, null,
+        ]),
+      );
+    }
+
+    // B. mode 3: startup injects, resume does not, a second startup / compact / clear on the
+    // same transcript all re-inject (fresh window, 544c9d04), per-prompt never; `ko` has no
+    // pack and injects the core alone; `en` injects nothing and says why.
+    {
+      const id = 'reply-native-fixed';
+      const steps = [
+        ['SessionStart', 'source', 'startup', FIXED('th')],
+        ['SessionStart', 'source', 'resume', FIXED('th')],
+        ['SessionStart', 'source', 'startup', FIXED('th')],
+        ['SessionStart', 'source', 'compact', FIXED('th')],
+        ['SessionStart', 'source', 'clear', FIXED('th')],
+        ['UserPromptSubmit', 'prompt', 'ทำไมมันพัง', FIXED('th')],
+        ['SessionStart', 'source', 'startup', FIXED('ko')],
+        ['SessionStart', 'source', 'startup', FIXED('en')],
+      ];
+      const py = sequence('py', id, steps);
+      const nd = sequence('node', id, steps);
+      steps.forEach((s, i) => cases.push({ name: `reply-native fixed/${i} ${s[0]} ${s[2]} — context`, kind: 'string', expected: py[i].ctx, actual: nd[i].ctx }));
+      steps.forEach((s, i) => cases.push({ name: `reply-native fixed/${i} ${s[0]} ${s[2]} — log record`, kind: 'json', expected: py[i].rec, actual: nd[i].rec }));
+      const on = (r) => r.map((x) => x.ctx.startsWith('[bantamkit reply-native]'));
+      cases.push(...literalCases(on(py), on(nd), 'reply-native fixed: which steps injected', [true, false, true, true, true, false, true, false]));
+      cases.push(
+        ...literalCases(
+          py.map((x) => (x.rec ? { parts: x.rec.parts, source: x.rec.source, reason: x.rec.reason ?? null } : null)),
+          nd.map((x) => (x.rec ? { parts: x.rec.parts, source: x.rec.source, reason: x.rec.reason ?? null } : null)),
+          'reply-native fixed: parts, source and reason each step logged',
+          [
+            { parts: ['core', 'th'], source: 'startup', reason: null },
+            null,
+            { parts: ['core', 'th'], source: 'startup', reason: null },
+            { parts: ['core', 'th'], source: 'compact', reason: null },
+            { parts: ['core', 'th'], source: 'clear', reason: null },
+            null,
+            { parts: ['core'], source: 'startup', reason: null },
+            { parts: [], source: 'startup', reason: 'english' },
+          ],
+        ),
+      );
+    }
+
+    // C. invalid REPLY_LANG, and the state file bytes after it
+    {
+      const id = 'reply-native-invalid';
+      const env = FIXED('th-TH');
+      const steps = [['UserPromptSubmit', 'prompt', 'ทำไมมันพัง', env]];
+      const py = sequence('py', id, steps);
+      const nd = sequence('node', id, steps);
+      cases.push({ name: 'reply-native invalid lang — log record', kind: 'json', expected: py[0].rec, actual: nd[0].rec });
+      cases.push(
+        ...literalCases(py[0].rec, nd[0].rec, 'reply-native invalid lang — pinned', {
+          mode: 'latest', lang: 'th', parts: ['core', 'th'], bytes: 885, reason: 'invalid-lang', rawLang: 'th-TH',
+        }),
+      );
+      const stateOf = (side) => {
+        const rec = JSON.parse(readFileSync(join(home(id, side), '.bantamkit', 'hooks', 'reply-native.json'), 'utf8'));
+        delete rec.ts;
+        return rec;
+      };
+      cases.push({ name: 'reply-native invalid lang — state file (ts removed)', kind: 'json', expected: stateOf('py'), actual: stateOf('node') });
+    }
   }
 
   // ================================ an injection is not a recall (job64, J64-1)
