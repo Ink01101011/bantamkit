@@ -879,6 +879,14 @@ const rnSession = (bed, source, env) =>
   rnCtx(runHook({ hook_event_name: 'SessionStart', source, transcript_path: RN_T }, { ...bed, env }));
 const rnLedger = (home) => JSON.parse(readFileSync(join(home, '.bantamkit', 'hooks', 'ledger-probe-session.json'), 'utf8'));
 
+test('#292 reply-native: a __proto__ transcript key is an ordinary ledger key (g1 F2)', () => {
+  const bed = { home: newDir('home'), cwd: newDir('cwd') };
+  const ask = () => rnCtx(runHook({ hook_event_name: 'UserPromptSubmit', prompt: 'ทำไมมันยังพังอยู่ครับ', transcript_path: '__proto__' }, { ...bed, env: RN_ON }));
+  assert.ok(ask().startsWith('[bantamkit reply-native]'));
+  assert.ok(!ask().includes('[bantamkit reply-native]'), 'the second Thai prompt in the window is deduped');
+  assert.ok(Object.hasOwn(rnLedger(bed.home).replyNative, '__proto__'));
+});
+
 test('#292 reply-native: en, th, th, ja, /clear, th', () => {
   const bed = { home: newDir('home'), cwd: newDir('cwd') };
   assert.ok(!rnPrompt(bed, 'fix the login bug please').includes('[bantamkit reply-native]'));

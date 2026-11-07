@@ -2987,6 +2987,24 @@ def test_reply_native_non_utf8_lang_still_injects_and_records(tmp_path):
     assert not [x for x in _log_lines(home) if x.get("event") == "error"]
 
 
+def test_reply_native_proto_transcript_key_is_an_ordinary_key(tmp_path):
+    # g1 F2 parity: Node used to read and write Object.prototype for this key.
+    home, cwd = _bed(tmp_path, "rn-proto")
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "ทำไมมันยังพังอยู่ครับ",
+        "transcript_path": "__proto__",
+    }
+
+    def ask():
+        r = _run_hook(payload, home=home, cwd=cwd, env_extra=_RN_ON)
+        out = r.stdout.decode("utf-8").strip()
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+    assert ask().startswith("[bantamkit reply-native]")
+    assert "[bantamkit reply-native]" not in ask()
+
+
 def _rn_session(home, cwd, source, env):
     r = _run_hook(
         {"hook_event_name": "SessionStart", "source": source, "transcript_path": _RN_T},

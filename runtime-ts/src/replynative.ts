@@ -19,15 +19,18 @@ export const STATE_FILE = 'reply-native.json';
 const ON = new Set(['on', '1', 'true', 'yes']);
 const ISO = /^[a-z]{2}$/;
 
+// Every pattern below is linear: a scan that can fail stops at the next opening character
+// (`[^<>]`, `[^“”]`, ...) or is bounded (`{0,31}`), so a long unbroken token or a run of opening
+// quotes cannot make frame() quadratic (g1, 0.39.0 release gate).
 const END = '(?![\\s\\S])';
 const STRIP: RegExp[] = [
-  new RegExp(`<(pasted_content|ide_[a-z_]+|system-reminder)[^>]*>[\\s\\S]*?(?:</\\1>|${END})`, 'g'),
+  new RegExp(`<(pasted_content|ide_[a-z_]+|system-reminder)[^<>]*>[\\s\\S]*?(?:</\\1>|${END})`, 'g'),
   new RegExp(`\`\`\`[\\s\\S]*?(?:\`\`\`|${END})`, 'g'),
   /`[^`\n]*`/g,
-  /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^ \t\r\n]+/g,
+  /[A-Za-z][A-Za-z0-9+.-]{0,31}:\/\/[^ \t\r\n]+/g,
   /(?:[A-Za-z]:[\\/]|\\\\|\.{1,2}\\)[^ \t\r\n"'<>|]+/g,
   /(?:~|\.{1,2})?\/[^ \t\r\n"'<>|]+/g,
-  /"[^"\n]*"|“[^”\n]*”|'[^'\n]{2,}'|「[^」\n]*」|『[^』\n]*』/g,
+  /"[^"\n]*"|“[^“”\n]*”|'[^'\n]{2,}'|「[^「」\n]*」|『[^『』\n]*』/g,
 ];
 const BLANK = /^[ \t\r\n]*$/;
 const THAI = /[\u0E01-\u0E2E]/;

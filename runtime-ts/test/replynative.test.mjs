@@ -112,3 +112,18 @@ test('statusLine', () => {
     'reply-native: latest; last UserPromptSubmit at T: nothing injected (invalid-lang); BANTAMKIT_REPLY_LANG=th-TH invalid, fell back to latest',
   );
 });
+
+test('classify is linear on hostile input (0.39.0 gate g1)', () => {
+  // These were quadratic: 256 KB took 13 s through the hook, past its 10 s timeout.
+  const cases = [
+    ['long token', 'สวัสดี ' + '9f'.repeat(1 << 19)],
+    ['opening curly quotes', '“'.repeat(1 << 20)],
+    ['opening corner quotes', '「'.repeat(1 << 20)],
+    ['unclosed tags', '<pasted_content'.repeat(Math.floor((1 << 20) / 15))],
+  ];
+  for (const [name, text] of cases) {
+    const t = performance.now();
+    rn.classify(text);
+    assert.ok(performance.now() - t < 3000, name);
+  }
+});

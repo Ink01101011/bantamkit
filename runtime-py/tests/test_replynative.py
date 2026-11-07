@@ -192,3 +192,22 @@ def test_status_line(tmp_path):
         "reply-native: latest; last UserPromptSubmit at T: nothing injected (invalid-lang); "
         "BANTAMKIT_REPLY_LANG=th-TH invalid, fell back to latest"
     )
+
+
+@pytest.mark.parametrize(
+    "name,text",
+    [
+        ("long token", "สวัสดี " + "9f" * (1 << 19)),
+        ("opening curly quotes", "“" * (1 << 20)),
+        ("opening corner quotes", "「" * (1 << 20)),
+        ("unclosed tags", "<pasted_content" * ((1 << 20) // 15)),
+    ],
+)
+def test_classify_is_linear_on_hostile_input(name, text):
+    # g1 (0.39.0 gate): these were quadratic, 256 KB took 13 s through the hook (timeout 10 s).
+    # Linear patterns take well under a second for 1 MB; the old ones took minutes.
+    import time
+
+    t = time.perf_counter()
+    rn.classify(text)
+    assert time.perf_counter() - t < 3.0, name

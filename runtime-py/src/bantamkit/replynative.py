@@ -26,17 +26,20 @@ STATE_FILE = "reply-native.json"
 _ON = frozenset({"on", "1", "true", "yes"})
 _ISO = re.compile(r"[a-z]{2}")
 
+# Every pattern below is linear: a scan that can fail stops at the next opening character
+# (`[^<>]`, `[^“”]`, ...) or is bounded (`{0,31}`), so a long unbroken token or a run of opening
+# quotes cannot make frame() quadratic (g1, 0.39.0 release gate).
 _END = r"(?![\s\S])"
 _STRIP = [
     re.compile(
-        r"<(pasted_content|ide_[a-z_]+|system-reminder)[^>]*>[\s\S]*?(?:</\1>|" + _END + ")"
+        r"<(pasted_content|ide_[a-z_]+|system-reminder)[^<>]*>[\s\S]*?(?:</\1>|" + _END + ")"
     ),
     re.compile(r"```[\s\S]*?(?:```|" + _END + ")"),
     re.compile(r"`[^`\n]*`"),
-    re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^ \t\r\n]+"),
+    re.compile(r"[A-Za-z][A-Za-z0-9+.\-]{0,31}://[^ \t\r\n]+"),
     re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|\.{1,2}\\)[^ \t\r\n\"'<>|]+"),
     re.compile(r"(?:~|\.{1,2})?/[^ \t\r\n\"'<>|]+"),
-    re.compile(r"\"[^\"\n]*\"|“[^”\n]*”|'[^'\n]{2,}'|「[^」\n]*」|『[^』\n]*』"),
+    re.compile(r"\"[^\"\n]*\"|“[^“”\n]*”|'[^'\n]{2,}'|「[^「」\n]*」|『[^『』\n]*』"),
 ]
 _BLANK = re.compile(r"[ \t\r\n]*")
 _LONE = re.compile("[\ud800-\udfff]")

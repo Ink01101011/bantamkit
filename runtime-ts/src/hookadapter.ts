@@ -1587,14 +1587,16 @@ function replyInject(run: HookRun, input: HookInput, m: ReplyMode, lang: string,
     updateLedger(run, input.session_id, (ledger) => {
       const everyone =
         ledger.replyNative && typeof ledger.replyNative === 'object' && !Array.isArray(ledger.replyNative) ? ledger.replyNative : {};
-      const own = fresh ? null : everyone[transcript];
+      // OWN keys only, and an own-property write: a transcript key of `__proto__` must read and
+      // write a ledger entry like any other, not Object.prototype (g1 F2, as job64 J64-8).
+      const own = fresh || !Object.hasOwn(everyone, transcript) ? null : everyone[transcript];
       const seen: Record<string, string> = own && typeof own === 'object' && !Array.isArray(own) ? own : {};
       const p = replyPlan(m, lang, Object.keys(seen));
       planned = p;
       if (p.parts.length === 0) return false;
       const at = new Date().toISOString();
       for (const part of p.parts) seen[part] = at;
-      everyone[transcript] = seen;
+      Object.defineProperty(everyone, transcript, { value: seen, enumerable: true, writable: true, configurable: true });
       ledger.replyNative = everyone;
       return true;
     });
