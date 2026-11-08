@@ -61,6 +61,9 @@ _ON = ("on", "1", "true", "yes")
 # What `skillfile._temp` names a directory it is building or has set aside.
 _NOT_A_SKILL_DIR = re.compile(r".+\.(?:tmp|old)-[0-9]+-[0-9]+")
 
+#: One pool walk's offered skills, in listing order, and each one's trigger phrases (#302).
+Offer = tuple[list[Fact], dict[str, list[tuple[str, ...]]]]
+
 
 def skill_roots(project_store: Path | str, home: Path | str) -> list[Path]:
     """The layer's roots for a project store: its `.bantamkit/skills`, then the user's."""
@@ -148,6 +151,8 @@ class SkillStore:
         # `_read` leaves the phrases of the file it just read in `_last_triggers`.
         self._triggers: dict[str, list[tuple[str, ...]]] = {}
         self._last_triggers: list[tuple[str, ...]] = []
+        # What that same walk offered, so a recall fires from the walk it pooled (#302).
+        self._offered: list[Fact] = []
 
     def _state_home(self) -> Path:
         return self._home if self._home is not None else Path.home()
@@ -241,22 +246,31 @@ class SkillStore:
             if fact.name not in shadow and fact.name not in promoted:
                 out.append(fact)
         self._triggers = triggers
+        self._offered = out
         return out
 
-    def fire(
-        self, tokens: Sequence[str], shown: Collection[str], shadow: Any = frozenset()
-    ) -> Fact | None:
+    def offer(self) -> Offer:
+        """What the last `candidates` walk offered, and each offered skill's trigger phrases."""
+        offered = list(self._offered)
+        return (offered, {f.name: self._triggers.get(f.name, []) for f in offered})
+
+    @staticmethod
+    def fire(tokens: Sequence[str], shown: Collection[str], offer: Offer) -> Fact | None:
         """The one skill a trigger phrase names in `tokens`: longest match, then name (#301).
 
         A trigger fires when it occurs as a contiguous run of `tokens`. A skill in `shown` never
-        fires, nor a promoted or a shadowed one (`candidates` leaves those out, as for `pool`).
+        fires, nor a promoted or a shadowed one: `offer` is what the recall's own pool walk
+        offered (`offer()`), which left those out. No file is read (#302): the walk that pooled
+        the prompt already parsed every `SKILL.md`, and reading them all again was ~11.5 ms of
+        the ~12 ms the #301 ship bar measured per prompt.
         """
         best: tuple[int, str, Fact] | None = None
         toks = list(tokens)
-        for fact in self.candidates(None, shadow):
+        offered, triggers = offer
+        for fact in offered:
             if fact.name in shown:
                 continue
-            for ph in self._triggers.get(fact.name, ()):
+            for ph in triggers.get(fact.name, ()):
                 k = len(ph)
                 if any(tuple(toks[i : i + k]) == ph for i in range(len(toks) - k + 1)):
                     if best is None or (-k, fact.name) < (-best[0], best[1]):

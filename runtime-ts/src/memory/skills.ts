@@ -37,6 +37,9 @@ const ON: ReadonlySet<string> = new Set(['on', '1', 'true', 'yes']);
 const NOT_A_SKILL_DIR = /^[\s\S]+\.(?:tmp|old)-[0-9]+-[0-9]+$/;
 const EMPTY: ReadonlySet<string> = new Set();
 
+/** One pool walk's offered skills, in listing order, and each one's trigger phrases (#302). */
+export type Offer = readonly [Fact[], ReadonlyMap<string, string[][]>];
+
 /** The layer's roots for a project store: its `.bantamkit/skills`, then the user's. */
 export function skillRoots(projectStore: string, home: string): string[] {
   const roots: string[] = [];
@@ -128,6 +131,8 @@ export class SkillStore {
   // `read` leaves the phrases of the file it just read in `lastTriggers`.
   private triggers = new Map<string, string[][]>();
   private lastTriggers: string[][] = [];
+  // What that same walk offered, so a recall fires from the walk it pooled (#302).
+  private offered: Fact[] = [];
 
   constructor(roots: readonly string[], home: string | null = null) {
     this.roots = [...roots];
@@ -234,21 +239,33 @@ export class SkillStore {
       if (!shadow.has(name) && !promoted.has(name)) out.push(fact);
     }
     this.triggers = triggers;
+    this.offered = out;
     return out;
+  }
+
+  /** What the last `candidates` walk offered, and each offered skill's trigger phrases. */
+  offer(): Offer {
+    const triggers = new Map<string, string[][]>();
+    for (const f of this.offered) triggers.set(f.name as string, this.triggers.get(f.name as string) ?? []);
+    return [[...this.offered], triggers];
   }
 
   /**
    * The one skill a trigger phrase names in `tokens`: longest match, then name (#301).
    *
    * A trigger fires when it occurs as a contiguous run of `tokens`. A skill in `shown` never
-   * fires, nor a promoted or a shadowed one (`candidates` leaves those out, as for `pool`).
+   * fires, nor a promoted or a shadowed one: `offer` is what the recall's own pool walk
+   * offered (`offer()`), which left those out. No file is read (#302): the walk that pooled
+   * the prompt already parsed every `SKILL.md`, and reading them all again was ~11.5 ms of
+   * the ~12 ms the #301 ship bar measured per prompt.
    */
-  fire(tokens: readonly string[], shown: ReadonlySet<string>, shadow: ReadonlySet<string> = EMPTY): Fact | null {
+  static fire(tokens: readonly string[], shown: ReadonlySet<string>, offer: Offer): Fact | null {
     let best: { k: number; name: string; fact: Fact } | null = null;
-    for (const fact of this.candidates(undefined, shadow)) {
+    const [offered, triggers] = offer;
+    for (const fact of offered) {
       const name = fact.name as string;
       if (shown.has(name)) continue;
-      for (const ph of this.triggers.get(name) ?? []) {
+      for (const ph of triggers.get(name) ?? []) {
         const k = ph.length;
         let hit = false;
         for (let i = 0; i + k <= tokens.length && !hit; i++) hit = ph.every((t, j) => tokens[i + j] === t);
