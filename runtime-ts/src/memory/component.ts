@@ -42,7 +42,7 @@ import {
 import { pyHome, pyIsDir, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
 import { homedir } from 'node:os';
 import { NATIVE_LAYER, NativeStore } from './native.js';
-import { SKILL_LAYER, SkillStore, skillRoots, triggersEnabled } from './skills.js';
+import { type Offer, SKILL_LAYER, SkillStore, skillRoots, triggersEnabled } from './skills.js';
 import { frame } from '../replynative.js';
 import { tokenizeLabel } from '../skilllabel.js';
 import { BM25F, QueryScorer, queryTerms, type Scorer, stale, weightOf } from './retrieval.js';
@@ -375,6 +375,9 @@ export class Memory {
   readonly k: number;
   private readonly layers: Layer[];
   private pendingSkills: readonly string[] = [];
+  // The skill layer's offer from the last `pooled` walk, or null when that walk did not read
+  // it (#302): `fire` matches triggers against this and never re-reads a SKILL.md.
+  private offer: Offer | null = null;
   private showLayers = false;
   /**
    * How this store came to be the store, captured once. It is still captured here and not
@@ -794,35 +797,19 @@ export class Memory {
    * fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires, nor
    * one an earlier layer shadows (`lendsShadow`, the rule `pooled` drops it from the pool
    * by), so a fired `[skill] [name]` is always what a recall of that name answers.
+   *
+   * It matches against `this.offer`, what this recall's own `pooled` walk offered from the
+   * skill layer (#302): the same shadow, the same promoted set, the same parse, and no file
+   * read. WAS: `SkillStore.fire` walked `candidates()` again and the shadow was rebuilt by
+   * re-pooling every earlier layer, ~12 ms per prompt with 25 skills. A walk whose skill
+   * layer could not be read leaves no offer, and nothing fires.
    */
   private fire(query: string, shown: ReadonlySet<string>): [string, Fact] | null {
     const at = this.layers.findIndex(([label]) => label === SKILL_LAYER);
-    if (at < 0 || !triggersEnabled()) return null;
-    const [label, store] = this.layers[at]!;
-    const fact = (store as SkillStore).fire(tokenizeLabel(frame(query)), shown, this.shadowBefore(at));
+    if (at < 0 || this.offer === null || !triggersEnabled()) return null;
+    const label = this.layers[at]![0];
+    const fact = SkillStore.fire(tokenizeLabel(frame(query)), shown, this.offer);
     return fact === null ? null : [label, fact];
-  }
-
-  /**
-   * The names the layers before `at` that `lendsShadow` hold: the shadow `pooled` hands layer
-   * `at`. A read-only layer that cannot be read lends nothing (as in `pooled`); the project
-   * layer failing throws.
-   */
-  private shadowBefore(at: number): Set<string> {
-    const shadow = new Set<string>();
-    for (const [, store, writable] of this.layers.slice(0, at)) {
-      if (!lendsShadow(store)) continue;
-      let pool: Pool;
-      try {
-        pool = isReadOnly(store) ? store.pool([], [], new Set(shadow)) : store.pool([], []);
-      } catch (e) {
-        if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
-        if (writable) throw e;
-        continue;
-      }
-      for (const name of allNames(pool)) shadow.add(name);
-    }
-    return shadow;
   }
 
   /** `[label, store, writable]` per layer, in precedence order (the touch graph's input). */
@@ -982,6 +969,7 @@ export class Memory {
     // The names every bantamkit layer read so far holds: the native layer drops them before it
     // is scored (#199 J68-11), so an exported copy never answers twice.
     const shadow = new Set<string>();
+    this.offer = null;
     for (const [, store, writable] of this.layers) {
       reached += 1;
       const leftOut: SkippedFact[] = [];
@@ -1003,6 +991,8 @@ export class Memory {
           for (const name of allNames(pool)) shadow.add(name);
           pools.push(pool);
         }
+        // the walk just read every SKILL.md: `fire` reuses it (#302)
+        if (store instanceof SkillStore) this.offer = store.offer();
       } catch (e) {
         if (!readable(e)) throw e;
         if (writable) throw e; // the project layer failing is a real error, as in v1

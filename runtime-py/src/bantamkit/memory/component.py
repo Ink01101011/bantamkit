@@ -26,7 +26,7 @@ from bantamkit.memory.layers import (
 )
 from bantamkit.memory.native import NATIVE_LAYER, NativeStore
 from bantamkit.memory.retrieval import BM25F, QueryScorer, Scorer, query_terms, stale, weight_of
-from bantamkit.memory.skills import SKILL_LAYER, SkillStore, skill_roots
+from bantamkit.memory.skills import SKILL_LAYER, Offer, SkillStore, skill_roots
 from bantamkit.memory.store import (
     DEFAULT_INDEX_BUDGET,
     MIN_RATIO_RANGE,
@@ -314,6 +314,9 @@ class Memory:
         self.store = MemoryStore(store, index_budget=index_budget, k=k, create=False)
         self.k = k
         self._pending_skills: list[Path] = []
+        # The skill layer's offer from the last `_pooled` walk, or None when that walk did not
+        # read it (#302): `_fire` matches triggers against this and never re-reads a SKILL.md.
+        self._offer: Offer | None = None
         self._layers: list[tuple[str, MemoryStore, bool]] = [("project", self.store, True)]
         self._show_layers = False
         # How this store came to be the store, captured once. It is still captured here and
@@ -777,37 +780,23 @@ class Memory:
         fires. Off unless `BANTAMKIT_SKILL_TRIGGERS` is on; a skill in `shown` never fires, nor
         one an earlier layer shadows (`_lends_shadow`, the rule `_pooled` drops it from the pool
         by), so a fired `[skill] [name]` is always what a recall of that name answers.
+
+        It matches against `self._offer`, what this recall's own `_pooled` walk offered from the
+        skill layer (#302): the same shadow, the same promoted set, the same parse, and no file
+        read. WAS: `SkillStore.fire` walked `candidates()` again and the shadow was rebuilt by
+        re-pooling every earlier layer, ~12 ms per prompt with 25 skills. A walk whose skill
+        layer could not be read leaves no offer, and nothing fires.
         """
         from bantamkit.memory.skills import triggers_enabled
         from bantamkit.replynative import frame
         from bantamkit.skillmine import tokenize_label
 
         at = next((i for i, (lab, _, _) in enumerate(self._layers) if lab == SKILL_LAYER), None)
-        if at is None or not triggers_enabled():
+        if at is None or self._offer is None or not triggers_enabled():
             return None
-        label, store, _ = self._layers[at]
-        fact = store.fire(tokenize_label(frame(query)), shown, self._shadow_before(at))
+        label = self._layers[at][0]
+        fact = SkillStore.fire(tokenize_label(frame(query)), shown, self._offer)
         return None if fact is None else (label, fact)
-
-    def _shadow_before(self, at: int) -> set[str]:
-        """The names the layers before `at` that `_lends_shadow` hold: the shadow `_pooled`
-        hands layer `at`. A read-only layer that cannot be read lends nothing (as in
-        `_pooled`); the project layer failing raises."""
-        shadow: set[str] = set()
-        for _, store, writable in self._layers[:at]:
-            if not _lends_shadow(store):
-                continue
-            try:
-                if isinstance(store, _READ_ONLY):
-                    pool = store.pool([], skipped=[], shadow=frozenset(shadow))
-                else:
-                    pool = store.pool([], skipped=[])
-            except (BantamError, OSError, UnicodeDecodeError):
-                if writable:
-                    raise
-                continue
-            shadow.update(_text(n) for n in pool.all_names())
-        return shadow
 
     def layer_stores(self) -> list[tuple[str, Any, bool]]:
         """`(label, store, writable)` per layer, in precedence order (the touch graph's input)."""
@@ -974,6 +963,7 @@ class Memory:
         # The names every bantamkit layer read so far holds: the native layer drops them
         # before it is scored (#199 J68-11), so an exported copy never answers twice.
         shadow: set[str] = set()
+        self._offer = None
         for _, store, writable in self._layers:
             reached += 1
             left_out: list[dict[str, str]] = []
@@ -998,6 +988,9 @@ class Memory:
                 else:
                     pool = store.pool(q, skipped=left_out, every_row=every_row)
                     shadow.update(pool.all_names())
+                if isinstance(store, SkillStore):
+                    # the walk just read every SKILL.md: `_fire` reuses it (#302)
+                    self._offer = store.offer()
                 pools.append(pool)
             except (BantamError, OSError, UnicodeDecodeError):
                 if writable:

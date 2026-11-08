@@ -471,6 +471,40 @@ def test_triggers_of_splits_on_bars_and_spaces():
     assert triggers_of(None) == []
 
 
+def test_a_trigger_recall_reads_each_skill_file_once(mem_with_skills, monkeypatch):
+    # #302: firing reused nothing -- `fire` walked `candidates()` again, and the shadow was
+    # rebuilt by re-pooling, so each SKILL.md was parsed twice per prompt (~12 ms, 25 skills).
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME, "tab-other": {"description": "o"}})
+    reads: list[str] = []
+    real = SkillStore._read
+
+    def counted(self, path):
+        reads.append(path.parent.name)
+        return real(self, path)
+
+    monkeypatch.setattr(SkillStore, "_read", counted)
+    for prompt in ("zzz เปิด chrome zzz", "kubernetes ingress"):  # one fires, one does not
+        reads.clear()
+        m.recall_outcome(prompt, 3, stamp=False)
+        assert sorted(reads) == ["tab-other", "web-driving"], prompt
+    assert m.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False).fired == "web-driving"
+
+
+def test_a_skill_layer_that_cannot_be_read_fires_nothing(mem_with_skills, monkeypatch):
+    # #302: `_fire` matches the walk's own offer; a walk whose skill layer raised has none.
+    monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
+    m = mem_with_skills({"web-driving": CHROME})
+    assert m.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False).fired == "web-driving"
+
+    def broken(self, *a, **kw):
+        raise OSError("gone")
+
+    monkeypatch.setattr(SkillStore, "pool", broken)
+    o = m.recall_outcome("zzz เปิด chrome zzz", 3, stamp=False)
+    assert (o.fired, o.unreadable) == (None, 1)
+
+
 def test_a_skipped_duplicate_lends_the_kept_skill_no_triggers(bed, monkeypatch):
     monkeypatch.setenv("BANTAMKIT_SKILL_TRIGGERS", "on")
     project, proj, user = bed

@@ -285,6 +285,13 @@ decides whether it turns on. It was measured on 2026-11-08 (`tools/skillsurface/
 | median added hook latency ≤ 5 ms | 11.951 ms (p90 12.216 ms) | fail (#302: `fire` re-reads every `SKILL.md`) |
 | approve promotes; over-budget refusal | `skill-promote` conformance cases, both runtimes | pass |
 
+**#302 (0.39.2)** fixed the latency item: a recall now fires from the skills its own pooled walk
+already parsed, and reads each `SKILL.md` once instead of twice. Re-measured the same way on
+2026-11-08, old and new code on two clones of one sandbox (985 prompts, 26 installed, 23 with
+triggers): median added latency 12.742 ms (p90 13.362 ms) before, **0.090 ms** (p90 0.398 ms)
+after, a pass; every row's status, top-3 and fired skill identical between the two. The
+precision item is still insufficient data (16 injections < 20).
+
 So the switch stays off. Mining, storage and the backfill run whatever the switch says. A
 `SKILL.md` carries at most `TRIGGERS_TOP` (5) phrases when read, in file order; a phrase is
 matched as written, so a hand-written trigger must already be lower-case `tokenize_label`

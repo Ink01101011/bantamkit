@@ -25,6 +25,7 @@ import {
 import { UsageLedger } from '../dist/memory/usage.js';
 import { MemoryStore, RECALL_MIN_SCORE_RATIO } from '../dist/memory/store.js';
 import { writeState } from '../dist/skillfile.js';
+import { BantamError } from '../dist/errors.js';
 
 const STEPS = '## Steps\n\n1. Run it.\n';
 
@@ -487,6 +488,54 @@ test('triggersOf splits on bars and spaces', () => {
   assert.deepEqual(triggersOf(['a b']), []);
   assert.deepEqual(triggersOf(null), []);
 });
+
+/** `fn` with `SkillStore.prototype[method]` replaced by `wrap(original)`, restored after. */
+function patched(method, wrap, fn) {
+  const real = SkillStore.prototype[method];
+  SkillStore.prototype[method] = wrap(real);
+  try {
+    return fn();
+  } finally {
+    SkillStore.prototype[method] = real;
+  }
+}
+
+test('a trigger recall reads each skill file once', () =>
+  // #302: firing reused nothing -- `fire` walked `candidates()` again, and the shadow was
+  // rebuilt by re-pooling, so each SKILL.md was parsed twice per prompt (~12 ms, 25 skills).
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME, 'tab-other': { description: 'o' } });
+      const reads = [];
+      const count = (real) =>
+        function (p) {
+          reads.push(p.split(/[\\/]/).at(-2));
+          return real.call(this, p);
+        };
+      patched('read', count, () => {
+        for (const prompt of ['zzz เปิด chrome zzz', 'kubernetes ingress']) {
+          reads.length = 0;
+          quiet(m, prompt, 3);
+          assert.deepEqual(reads.sort(), ['tab-other', 'web-driving'], prompt);
+        }
+      });
+      assert.equal(quiet(m, 'zzz เปิด chrome zzz', 3).fired, 'web-driving');
+    }),
+  ));
+
+test('a skill layer that cannot be read fires nothing', () =>
+  // #302: `fire` matches the walk's own offer; a walk whose skill layer threw has none.
+  withBed((bed) =>
+    withSwitch('on', () => {
+      const m = memWithSkills(bed, { 'web-driving': CHROME });
+      assert.equal(quiet(m, 'zzz เปิด chrome zzz', 3).fired, 'web-driving');
+      const broken = () => () => {
+        throw new BantamError('gone');
+      };
+      const o = patched('pool', broken, () => quiet(m, 'zzz เปิด chrome zzz', 3));
+      assert.deepEqual([firedOf(o), o.unreadable], [null, 1]);
+    }),
+  ));
 
 test('a skipped duplicate lends the kept skill no triggers', () =>
   withBed(({ project, proj, user }) =>
