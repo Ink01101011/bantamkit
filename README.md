@@ -397,6 +397,7 @@ Measured on the bundled 22-task suite across four models, 528 runs each. Numbers
 | [Shift-work](docs/shiftwork.md) | Checkpoint contract and clock-in/clock-out driver (experimental) |
 | [Porting](docs/porting.md) | The Node port, `PyScalar`, and where the two runtimes deliberately differ |
 | [Conformance](docs/conformance.md) | The two-runtime diff harness and what a `ruling:` pins |
+| [1.0.0 roadmap](docs/roadmap-1.0.0.md) | One TypeScript source, npm and PyPI targets, and release criteria |
 | [Releasing to npm](docs/release-npm.md) | What ships and the pre-publish checklist |
 
 ## 📁 Repo layout

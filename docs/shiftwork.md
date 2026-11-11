@@ -744,10 +744,21 @@ two roles may share one. The code-fix template's reviewer declares
 `docs/superpowers/specs/2026-11-03-shiftwork-review-independence-design.md`.
 
 Grouped review can name several members in both `reviews` and `depends_on`.
+**Planner guidance (#307, adopted as guidance only):**
+- Group units under one reviewer when they share an outcome and acceptance
+  criteria and can be checked on one integrated revision.
+- Split the group at any point that needs approval before downstream work.
+- Keep fast checks per unit.
+- Use a separate reviewer context when the parent session authored the work.
+
 The [grouped-review pilot](superpowers/specs/2026-11-03-shiftwork-review-independence-design.md#grouped-review-pilot-307)
-defines planner/host guidance and a runnable measurement harness. Role checks do
-not establish executor independence, and graph readiness does not prove coverage
-or approval freshness. This pilot adds no runtime/schema guarantee.
+records the review-only replay evidence and its measurement harness. Some limits:
+- Full-workflow savings are unmeasured (#310).
+- Role checks do not establish executor independence.
+- Graph readiness does not prove coverage or approval freshness. A reviewer whose
+  reviewed member was `dropped` still becomes ready today; #309 tracks the planned fix.
+
+This guidance adds no runtime/schema guarantee.
 
 #### `job.budget`: price the next unit, refuse what does not fit (#262)
 
