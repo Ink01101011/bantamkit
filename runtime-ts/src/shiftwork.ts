@@ -930,6 +930,22 @@ function budgetView(log: string, doc: PyDict, exclude: string | null = null): Bu
   return budgetOf(ledger(log), limit, inFlight);
 }
 
+/**
+ * #309: the sentence when a non-terminal reviewer reviews a unit that was `dropped`, or null.
+ * The first id in `reviews` order whose unit is dropped is named; a terminal reviewer is never
+ * judged — exactly as `shiftwork.py`'s `_dropped_review`.
+ */
+function droppedReview(doc: PyDict, unit: PyDict): string | null {
+  if (TERMINAL_UNIT_STATUS.has(text(field(unit, 'status')))) return null;
+  for (const reviewed of strings(unit.v.get('reviews'))) {
+    const target = findUnit(doc, reviewed);
+    if (target !== null && text(field(target, 'status')) === 'dropped') {
+      return `unit ${text(field(unit, 'id'))} reviews ${reviewed}, which was dropped; remove it from reviews or restore it`;
+    }
+  }
+  return null;
+}
+
 function contention(log: string, doc: PyDict, unit: PyDict): string | null {
   const mine = touchesOf(unit);
   if (mine.length === 0 || unit.v.has('candidate')) return null; // #265: its worktree is its own
@@ -1028,6 +1044,9 @@ export function clockIn(checkpoint: string, unitId: string | null = null, option
   if (unit === null || !ready.includes(selected)) {
     return errorResult(`unit ${selected} is not ready; ready is ${ready.join(', ')}`);
   }
+  // #309: after readiness, so a reviewer that is not ready keeps the readiness sentence.
+  const dropped = droppedReview(doc, unit);
+  if (dropped !== null) return errorResult(dropped);
   const gate = irreversibleGate(doc, unit);
   if (gate !== null) return gate;
   const [, drifted] = frozen(logPath(pyJoin(checkpoint)), doc);
@@ -1727,6 +1746,11 @@ function clockOutLocked(
   if (drifted !== null) return errorResult(drifted);
   const unsubmitted = submitRefusal(doc, unit, status, historyEntry);
   if (unsubmitted !== null) return errorResult(unsubmitted);
+  // #309: only `done` is an approval; dropping or blocking the reviewer is not refused.
+  if (status === 'done') {
+    const dropped = droppedReview(doc, unit);
+    if (dropped !== null) return errorResult(dropped);
+  }
 
   if (followUps.length > 0) {
     const refused = followUpsRefusal(path, doc, unit, followUps);
