@@ -552,8 +552,11 @@ with Minor findings only.
    still stays unknown.
 
 Verification:
-- Harness tests: 57 passed, up from 41 at the maintainer's handoff. That count
-  includes the three Minor hardening tests added after round 4 approved.
+- Harness tests: 60 passed, up from 41 at the maintainer's handoff. That count
+  includes the Minor hardening added after round 4 approved, reviewed as unit R2.
+  A terminate that fails falls back to closing the KILL_ON_JOB_CLOSE job, so the
+  adapter's own result is kept. A jailing failure closes the job before a bounded
+  wait. A test pins the x64 job-limit layout.
 - Every new behavioural regression test was checked red against the earlier
   code: the pilot's executed snapshots, or the previous fix round.
 - The full Python suite passed 5114 with 0 failures (58 skipped, 3 xfailed)

@@ -452,10 +452,13 @@ class _WindowsJob:
             except OSError:
                 pass
             finally:
+                # Close first: if the assign succeeded, KILL_ON_JOB_CLOSE kills the
+                # adapter even when kill() failed; the wait is bounded either way.
+                self.close()
                 try:
-                    process.wait()
-                finally:
-                    self.close()
+                    process.wait(timeout=DRAIN_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
             raise
 
     def _jail(self, process: subprocess.Popen, kernel32, ntdll) -> None:
@@ -549,7 +552,12 @@ def run_contained(
 
     def kill_tree() -> None:
         if job is not None:
-            job.kill()
+            try:
+                job.kill()
+            except OSError:
+                # Closing the KILL_ON_JOB_CLOSE job still kills every member, and
+                # keeps a result the adapter already produced.
+                job.close()
             return
         try:
             os.killpg(process.pid, signal.SIGKILL)

@@ -692,3 +692,70 @@ def test_windows_jailing_failure_closes_adapter_pipes(monkeypatch):
         m.run_contained(["adapter"], "{}", ".", 5)
     process = spawned["process"]
     assert process.stdin.closed and process.stdout.closed and process.stderr.closed
+
+
+def test_windows_failed_terminate_keeps_the_result_and_closes_the_job(monkeypatch):
+    m = harness()
+    events = []
+
+    class Job:
+        def __init__(self, process):
+            events.append("jail")
+
+        def kill(self):
+            events.append("terminate")
+            raise OSError("TerminateJobObject failed")
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr(m, "_windows", lambda: True)
+    monkeypatch.setattr(m, "_popen", lambda command, **kw: FakeProcess(events, **kw))
+    monkeypatch.setattr(m, "_WindowsJob", Job)
+    done = m.run_contained(["adapter"], "{}", ".", 5)
+    # Closing the KILL_ON_JOB_CLOSE job is the backstop that still kills members.
+    assert (done.returncode, done.stdout) == (0, "{}")
+    assert events[events.index("terminate") + 1] == "close"
+
+
+def test_windows_jail_failure_closes_job_before_a_bounded_wait():
+    m = harness()
+    log = []
+
+    class Unkillable(FakeProcess):
+        def kill(self):
+            raise PermissionError("access denied")
+
+        def wait(self, timeout=None):
+            log.append(("wait", timeout))
+            return None
+
+    with pytest.raises(OSError, match="NtResumeProcess"):
+        m._WindowsJob(
+            Unkillable([]), kernel32=FakeDll(log), ntdll=FakeDll(log, {"NtResumeProcess"})
+        )
+    names = [entry[0] for entry in log]
+    assert names.index("CloseHandle") < names.index("wait")
+    assert log[names.index("wait")][1] is not None
+
+
+def test_windows_job_layout_matches_the_x64_sdk():
+    import ctypes
+
+    m = harness()
+    assert m.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION == 9
+    assert m.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == 0x2000
+    info = m._job_limit_info(ctypes)
+    if ctypes.sizeof(ctypes.c_void_p) == 8:
+        extended, basic = type(info), type(info.BasicLimitInformation)
+        assert ctypes.sizeof(info) == 144 and ctypes.sizeof(basic) == 64
+        assert basic.LimitFlags.offset == 16 and basic.SchedulingClass.offset == 60
+        assert extended.IoInfo.offset == 64 and extended.PeakJobMemoryUsed.offset == 136
+    kernel = FakeDll([])
+    m._WindowsJob(FakeProcess([]), kernel32=kernel, ntdll=FakeDll([]))
+    assert kernel.SetInformationJobObject.argtypes == (
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    )
