@@ -566,3 +566,31 @@ Verification:
 
 Still open, as before: full live-workflow evaluation and the adoption decision.
 #307 is not complete, and nothing here claims full-workflow savings.
+
+### Decision — design closed by scope split (2026-11-11)
+
+The maintainer closed #307's design scope. The *Implementation plan* above had
+listed closing #307 without full matched-work evidence as out of scope; this
+decision supersedes that line. The efficiency question is not answered. It
+moves out of #307, and nothing below claims full-workflow savings.
+
+1. **Adopted: explicit groups as planner guidance.** A planner may group related
+   units under one reviewer when they share an outcome and acceptance criteria and
+   can be checked together on one integrated revision. List every member in both
+   the reviewer's `reviews` and its `depends_on`. Split a group at any point that
+   needs approval before downstream work. Keep fast checks per unit. Use a
+   separate reviewer context when the parent session authored the work. This is
+   guidance only: no runtime or schema behaviour changes, automatic grouping is
+   not adopted, and the measured evidence is the review-only replay
+   (review-token median saving 65.3% on synthetic fixtures).
+2. **Implementation, #309:** the correctness gap does not depend on savings, so it
+   proceeds now. A reviewer whose `reviews` names a `dropped` unit still becomes
+   ready and can be approved without anyone deciding to shrink its scope. The
+   probe above shows this on both runtimes, still true on `main` at e0968c0c.
+   #309 holds such a reviewer until the scope decision is explicit, in both
+   runtimes with conformance cases. `blocked` reviewers staying ready is intended
+   (retryable) and unchanged.
+3. **Evaluation, #310:** the full live-workflow matched evaluation, run against the
+   frozen thresholds in *Matched evaluation and adoption criteria*. Only its
+   result can widen the guidance in (1) or justify any further runtime or schema
+   proposal.
