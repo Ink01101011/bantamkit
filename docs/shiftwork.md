@@ -743,6 +743,29 @@ two roles may share one. The code-fix template's reviewer declares
 `reviews: ["CF3"]`. Spec:
 `docs/superpowers/specs/2026-11-03-shiftwork-review-independence-design.md`.
 
+A fourth refusal holds a reviewer whose scope shrank without anyone deciding it
+(#309). A `dropped` dependency is satisfied, so on its own the graph would make a
+reviewer of `[A, C, D]` ready once C is dropped. The reviewer's approval would then
+cover less than it was planned for. `clock_in` (both the default and the named
+path, after the readiness test) and `clock_out` with `status: "done"` (before
+anything is written) refuse a non-terminal unit whose `reviews` names a `dropped`
+unit. They name the first such id in `reviews` order:
+
+    unit <id> reviews <r>, which was dropped; remove it from reviews or restore it
+
+Two edits release the reviewer:
+- remove `r` from `reviews` (it may stay in `depends_on`); or
+- restore `r` to a non-terminal status, so the reviewer waits for it as usual.
+
+Only that unit is held:
+- `shiftwork_plan` still lists the reviewer in `ready`, because `ready` is what the
+  graph permits. That matches `touches` contention, which `clock_in` also refuses by
+  name.
+- Every other unit keeps flowing.
+- A `clock_out` of the reviewer as `blocked` or `dropped` is not refused, since
+  dropping the reviewer is itself a scope decision.
+- A reviewer that is already `done` is not re-judged.
+
 Grouped review can name several members in both `reviews` and `depends_on`.
 **Planner guidance (#307, adopted as guidance only):**
 - Group units under one reviewer when they share an outcome and acceptance
@@ -756,7 +779,7 @@ records the review-only replay evidence and its measurement harness. Some limits
 - Full-workflow savings are unmeasured (#310).
 - Role checks do not establish executor independence.
 - Graph readiness does not prove coverage or approval freshness. A reviewer whose
-  reviewed member was `dropped` still becomes ready today; #309 tracks the planned fix.
+  reviewed member was `dropped` is held by the #309 refusal above, not by readiness.
 
 This guidance adds no runtime/schema guarantee.
 

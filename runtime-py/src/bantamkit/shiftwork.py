@@ -748,6 +748,30 @@ def _ready(
     return (batches[0] if batches else []), None, answer["declared"]
 
 
+def _dropped_review(document: dict, unit: dict) -> str | None:
+    """#309: the sentence when a non-terminal reviewer reviews a unit that was `dropped`.
+
+    The batch view treats a dropped dependency as satisfied, so without this a reviewer of a
+    group whose member was dropped is briefed and approved over less than it was planned for,
+    and nobody decided that. The first id in `reviews` order whose unit is dropped is named:
+
+        unit <id> reviews <r>, which was dropped; remove it from reviews or restore it
+
+    A terminal reviewer is history and is never judged. Only this unit is held: the plan, and
+    every other unit in it, is untouched.
+    """
+    if unit["status"] in TERMINAL_UNIT_STATUS:
+        return None
+    for reviewed in unit.get("reviews") or []:
+        target = _find_unit(document, reviewed)
+        if target is not None and target["status"] == "dropped":
+            return (
+                f"unit {unit['id']} reviews {reviewed}, which was dropped; "
+                "remove it from reviews or restore it"
+            )
+    return None
+
+
 def _contention(path: Path, document: dict, unit: dict) -> str | None:
     """#257/D4: the sentence when `unit` writes a file a unit still in flight writes.
 
@@ -908,6 +932,10 @@ def clock_in(checkpoint: str, unit_id: str | None = None) -> dict[str, Any]:
         return _error(batch_refusal["reason"])  # the sentence verbatim, `_read_valid`'s idiom
     if unit is None or selected not in ready:
         return _error(f"unit {selected} is not ready; ready is {', '.join(ready)}")
+    # #309: after readiness, so a reviewer that is not ready keeps the readiness sentence.
+    dropped = _dropped_review(document, unit)
+    if dropped is not None:
+        return _error(dropped)
     gate = _irreversible_gate(document, unit)
     if gate is not None:
         return gate
@@ -1581,6 +1609,11 @@ def _clock_out_locked(
     unsubmitted = _submit_refusal(document, unit, status, history_entry)
     if unsubmitted is not None:
         return _error(unsubmitted)
+    # #309: only `done` is an approval; dropping or blocking the reviewer is not refused.
+    if status == "done":
+        dropped = _dropped_review(document, unit)
+        if dropped is not None:
+            return _error(dropped)
 
     if follow_ups:
         refused = _follow_ups_refusal(path, document, unit, follow_ups)

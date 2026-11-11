@@ -1170,8 +1170,53 @@ function j655Sessions() {
       b64(raw(baseDocument({ plan: { cursor: 'A', units } }))),
       [IN(), IN('A'), OUT('A', 'done', { history_entry: b64('{"unit": "A", "outcome": "done"}') }), ST()],
     ]),
+
+    // ---- #309. A reviewer whose reviewed member is dropped is held until its scope is decided:
+    // refused on both clock_in paths and on clock_out(done), nothing written, other units flow.
+    ['reviews-dropped/held', b64(raw(droppedReviewDocument())), [
+      IN(),
+      IN('R'),
+      OUT('R', 'done'),
+      IN('X'),
+      OUT('R', 'blocked'),
+    ]],
+    ['reviews-dropped/removed-from-reviews', b64(raw(droppedReviewDocument({ reviews: ['A', 'D'] }))), [
+      IN('R'),
+      OUT('R', 'done'),
+    ]],
+    ['reviews-dropped/restored', b64(raw(droppedReviewDocument({ c: 'todo', cursor: 'C' }))), [
+      IN('R'),
+      IN('C'),
+      OUT('C', 'done'),
+      IN('R'),
+    ]],
+    ['reviews-dropped/dropped-by-clock-out', b64(raw(droppedReviewDocument({ c: 'todo', cursor: 'C' }))), [
+      IN('C'),
+      OUT('C', 'dropped'),
+      IN(),
+      IN('X'),
+      PL(),
+    ]],
   ];
 }
+
+/**
+ * #309: members A, C, D (A and D done), reviewer R of all three, unrelated X. `c` is C's status
+ * (dropped unless restored); `reviews` is R's list, its `depends_on` always all three.
+ */
+const droppedReviewDocument = ({ c = 'dropped', reviews = ['A', 'C', 'D'], cursor = 'R' } = {}) => baseDocument({
+  plan: {
+    cursor,
+    units: [
+      unit('A', [], { status: 'done' }),
+      unit('C', [], { status: c }),
+      unit('D', [], { status: 'done' }),
+      unit('R', ['A', 'C', 'D'], { role: 'reviewer', reviews }),
+      unit('X', []),
+    ],
+  },
+});
+const DROPPED_SENTENCE = 'unit R reviews C, which was dropped; remove it from reviews or restore it';
 
 /**
  * #259: `C` depends on `Z` then `A`, so `upstream` order is depends_on order, not plan order. `Z`
@@ -3247,6 +3292,30 @@ export async function run(ctx) {
       says(`reviews/${name}/clock-out-refused`, doc, 2, sentence);
       untouched(`reviews/${name}/clock-out-refused`, doc, 2);
       cursor(`reviews/${name}/cursor-unmoved`, doc, 3, 'A');
+    }
+
+    // #309, per side: the held reviewer is refused by name on both clock_in paths and on
+    // clock_out(done) with nothing written; an unrelated unit is briefed; a non-done clock_out
+    // of the reviewer is not refused; removing or restoring the member releases it.
+    {
+      const held = 'reviews-dropped/held';
+      for (const [label, step] of [['clock-in-default', 0], ['clock-in-named', 1], ['clock-out-done', 2]]) {
+        bit(`${held}/${label}`, held, step, 'error');
+        says(`${held}/${label}`, held, step, DROPPED_SENTENCE);
+      }
+      untouched(`${held}/clock-out-done`, held, 2);
+      bit(`${held}/unrelated-flows`, held, 3, 'brief');
+      bit(`${held}/clock-out-blocked`, held, 4, 'ok');
+      const removed = 'reviews-dropped/removed-from-reviews';
+      bit(`${removed}/clock-in`, removed, 0, 'brief');
+      bit(`${removed}/clock-out-done`, removed, 1, 'ok');
+      const restored = 'reviews-dropped/restored';
+      says(`${restored}/waits-on-member`, restored, 0, 'unit R is not ready; ready is C, X');
+      bit(`${restored}/released-after-member-done`, restored, 3, 'brief');
+      const viaTools = 'reviews-dropped/dropped-by-clock-out';
+      bit(`${viaTools}/member-dropped`, viaTools, 1, 'ok');
+      says(`${viaTools}/clock-in-default`, viaTools, 2, DROPPED_SENTENCE);
+      bit(`${viaTools}/unrelated-flows`, viaTools, 3, 'brief');
     }
 
     notes.push(
