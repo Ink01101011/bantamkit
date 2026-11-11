@@ -582,13 +582,17 @@ moves out of #307, and nothing below claims full-workflow savings.
    separate reviewer context when the parent session authored the work. This is
    guidance only: no runtime or schema behaviour changes, automatic grouping is
    not adopted, and the measured evidence is the review-only replay
-   (review-token median saving 65.3% on synthetic fixtures).
+   (review-token median saving 65.3% on synthetic fixtures; see *Measured
+   reviewer replay results* above and
+   `docs/eval-data/2026-11-11-grouped-review-pilot.json`).
 2. **Implementation, #309:** the correctness gap does not depend on savings, so it
    proceeds now. A reviewer whose `reviews` names a `dropped` unit still becomes
    ready and can be approved without anyone deciding to shrink its scope. The
-   probe above shows this on both runtimes, still true on `main` at e0968c0c.
-   #309 holds such a reviewer until the scope decision is explicit, in both
-   runtimes with conformance cases. `blocked` reviewers staying ready is intended
+   structural probe in *Evaluation record* answers `dropped-still-ready: ["R"]`
+   with equal Python and Node responses. It was rerun on `main` at e0968c0c on
+   2026-11-11. #309 will hold such a reviewer until the scope decision is
+   explicit, in both runtimes with conformance cases; until it lands, the gap
+   remains. `blocked` reviewers staying ready is intended
    (retryable) and unchanged.
 3. **Evaluation, #310:** the full live-workflow matched evaluation, run against the
    frozen thresholds in *Matched evaluation and adoption criteria*. Only its

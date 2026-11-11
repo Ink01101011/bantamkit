@@ -756,7 +756,7 @@ records the review-only replay evidence and its measurement harness. Some limits
 - Full-workflow savings are unmeasured (#310).
 - Role checks do not establish executor independence.
 - Graph readiness does not prove coverage or approval freshness. A reviewer whose
-  reviewed member was `dropped` still becomes ready today; #309 closes that gap.
+  reviewed member was `dropped` still becomes ready today; #309 tracks the planned fix.
 
 This guidance adds no runtime/schema guarantee.
 
