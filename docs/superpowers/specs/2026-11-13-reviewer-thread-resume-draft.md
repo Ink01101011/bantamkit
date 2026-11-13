@@ -132,3 +132,54 @@ convergence, and that is unmeasured.
 
 There is none. The #310 12M cap is used up by the tuning run. Both P0 and the
 comparison need a new budget from the maintainer.
+
+## Probe P0 result (2026-11-13, 56,658 raw tokens of the 80,000 approved)
+
+The probe script and raw output are outside the repo. Setup:
+
+- It used the tuned smoke's R review of mixed-fork-join, repeat 0, with members
+  B, C and I.
+- Call 1 was a fresh, non-ephemeral, tools-disabled, schema-free review of the
+  first request.
+- Call 2 was a `codex exec resume` of that thread, carrying only the delta:
+  C's new file text, every member's revision and fast check, and the change
+  flags. It was 2,454 chars, against 7,414 for the full prompt.
+- Both calls were run twice.
+
+| | input | cached | **uncached** | output | answer |
+| --- | ---: | ---: | ---: | ---: | --- |
+| r0 first review (fresh) | 12,631 | 8,960 | 3,671 | 313 | valid; finds the seeded C-sum defect |
+| r0 resumed re-review (delta) | 13,592 | 12,800 | **792** | 240 | valid; echoes the new id; no findings |
+| r1 first review (fresh) | 14,223 | 8,960 | 5,263 | 282 | valid; finds C-sum |
+| r1 resumed re-review (delta) | 15,153 | 14,336 | **817** | 224 | valid; echoes the new id; no findings |
+
+The resumed rows are per-thread deltas, because resume usage is cumulative.
+
+**Controls.** These are the fresh re-reviews already measured in the same smoke
+pair, with no new spend. The baseline R re-review left **5,394** uncached tokens
+and the tuned T3 re-review left **9,779**.
+
+**Gate: passed.**
+
+- **Uncached tokens.** The resumed re-review leaves about 800 uncached tokens:
+  85% below the baseline fresh re-review and 92% below T3. The gate was a 40%
+  drop.
+- **Tools.** Every call produced only `agent_message` items, so tools stayed off
+  under `exec resume` with `--disable` and `sandbox_mode="read-only"`.
+- **Answers.** All four answers were valid JSON and echoed the right
+  `reviewer_context_id`.
+
+**What it does not show:**
+
+- Raw input is not smaller. A resumed call rereads the thread, now from cache.
+- Two pairs on one group cannot show whether the resumed reviewer anchors on
+  its earlier approval. That is a quality question for the comparison's gates.
+
+**Revised size.** A re-review moves from about 5,000 to about 800 uncached input
+tokens. On the #310 grouped arms, 13 re-reviews would save about 55,000 tokens.
+That is roughly **9% of grouped uncached + output** on top of the tuned levers.
+The estimate is not measured.
+
+**Next step.** This needs a maintainer decision. The pre-declared comparison
+(T2+T4 against T2+T4+RR, 8 jobs plus a smoke pair, about 2.5–3.0M raw) needs a
+budget.
