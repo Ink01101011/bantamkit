@@ -127,3 +127,34 @@ above changed.
   - Gates compare complete pairs only.
   - A code-fenced reviewer answer under T1 is invalid and counted.
   - The latency gate compares the medians of accepted jobs per arm.
+
+## Maintainer ruling after the smoke pair (2026-11-13): 8 jobs inside the 12M cap
+
+Smoke pair, mixed-fork-join repeat 0. Both arms were accepted and neither was
+censored. Smoke data are not merged into the comparison.
+
+| Uncached + output | baseline-grouped | tuned-grouped |
+| --- | ---: | ---: |
+| Whole job | 60,692 | 57,817 |
+| Repair calls | 17,189 | 5,312 |
+| Reviewer calls | 18,319 | 23,029 |
+| Raw, cache reads included | 349,972 | 275,417 |
+
+- The two tuned repairs were both patch calls. Neither needed a fallback.
+- The baseline reviewers, which ran with `--output-schema`, read 9,088 cached
+  tokens per call. That is unlike #310 and the T1 probe, both of which read 0.
+- The tuned arm's delta re-review was larger than the baseline's, at 9,779
+  uncached input tokens.
+
+**Budget.** 625,389 raw tokens were spent on the smoke pair, which leaves
+4,058,115 of the 12M cap. The pessimistic projection for 12 jobs is
+4,199,664, so it does not fit.
+
+**Ruling.** The maintainer chose to stay inside the cap. The comparison runs
+**native-chain and sequential-delegates × 2 repeats × 2 arms = 8 jobs**.
+
+- mixed-fork-join gets **no verdict** in this experiment. The smoke pair is its
+  only data, and it is reported as indicative only.
+- The run's cap is 3,650,000 raw tokens. That is the remainder less a margin of
+  about one large job, because the cap is checked between jobs.
+- Every gate, the verdict rule and the other sections above are unchanged.
