@@ -43,7 +43,10 @@ resume = argv[:2] == ["exec", "resume"]
 # T1 drops --output-schema: a tools-disabled call carrying a review request is a review;
 # any other tools-disabled call is a T2 patch repair.
 tools_off = "shell_tool" in argv
-review = "--output-schema" in argv or (tools_off and "REVIEW REQUEST:\n" in prompt)
+# RR: a resumed re-review carries only a delta turn, not a REVIEW REQUEST.
+rereview = resume and tools_off and "RE-REVIEW DELTA:\n" in prompt
+review = ("--output-schema" in argv or (tools_off and "REVIEW REQUEST:\n" in prompt)
+          or rereview)
 patch = tools_off and not review
 cwd = Path(argv[argv.index("-C") + 1]) if "-C" in argv else Path.cwd()
 thread = argv[-2] if resume else str(uuid.uuid4())
@@ -63,9 +66,22 @@ def bump(name):
     return n
 
 
-emit({"type": "thread.started", "thread_id": thread})
+if not (review and not resume and "--ephemeral" not in argv
+        and bump("first_reviews") < scn.get("no_thread_first", 0)):
+    emit({"type": "thread.started", "thread_id": thread})
 if review and scn.get("fail_review"):
     sys.exit(4)
+if rereview and bump("rereviews_started") < scn.get("fail_resume", 0):
+    sys.exit(5)
+if (review and not resume and "--ephemeral" not in argv
+        and bump("persistent_reviews") < scn.get("garbage_persistent_reviews", 0)):
+    emit({"type": "item.completed", "item": {"type": "agent_message", "text": "not json"}})
+    emit({"type": "turn.completed", "usage": scn["fresh"]})
+    sys.exit(0)
+if rereview and bump("rereviews") < scn.get("garbage_rereviews", 0):
+    emit({"type": "item.completed", "item": {"type": "agent_message", "text": "not json"}})
+    emit({"type": "turn.completed", "usage": scn["resumed"]})
+    sys.exit(0)
 if not review and any(f in scn.get("fail_for", []) for f in files):
     sys.exit(3)
 if review and bump("reviews") < scn.get("garbage_reviews", 0):
@@ -78,7 +94,20 @@ if (review and "--output-schema" not in argv
     emit({"type": "turn.completed", "usage": scn["fresh"]})
     sys.exit(0)
 if review:
-    request = json.loads(prompt.split("REVIEW REQUEST:\n", 1)[1])
+    state_file = Path(scn["log"] + ".request." + thread)
+    if rereview:
+        # The thread remembers its last request; the delta updates it.
+        delta = json.loads(prompt.split("RE-REVIEW DELTA:\n", 1)[1])
+        request = json.loads(state_file.read_text())
+        by_id = {u["id"]: u for u in delta["units"]}
+        for u in request["units"]:
+            u["revision"] = by_id[u["id"]]["revision"]
+            u["fast_check_passed"] = by_id[u["id"]]["fast_check_passed"]
+        request["context_files"].update(delta["changed_files"])
+        request["reviewer_context_id"] = delta["reviewer_context_id"]
+    else:
+        request = json.loads(prompt.split("REVIEW REQUEST:\n", 1)[1])
+    state_file.write_text(json.dumps(request))
     findings = []
     for unit in request["units"]:
         ids = [c["id"] for c in unit["criteria"]]
@@ -133,13 +162,15 @@ state = Path(scn["log"] + ".total." + thread)
 before = json.loads(state.read_text()) if resume and state.exists() else {}
 total = {k: before.get(k, 0) + v for k, v in own.items()}
 state.write_text(json.dumps(total))
-if not any(f in scn.get("no_usage_for", []) for f in files):
+if not any(f in scn.get("no_usage_for", []) for f in files) and not (
+        rereview and scn.get("no_usage_rereview")):
     # per_turn_for: a call that reports its own usage, not the running total.
     per_turn = any(f in scn.get("per_turn_for", []) for f in files)
     emit({"type": "turn.completed", "usage": own if per_turn else total})
 with open(scn["log"], "a") as log:
     log.write(json.dumps({"argv": argv, "cwd": str(cwd), "resume": resume, "review": review,
-                          "patch": patch, "thread": thread, "files": files}) + "\n")
+                          "patch": patch, "thread": thread, "files": files,
+                          "rereview": bool(rereview)}) + "\n")
 '''
 
 
@@ -1803,3 +1834,453 @@ def test_cli_passes_comparison_and_budget_and_summarizes_tuning(tmp_path, monkey
     capsys.readouterr()
     lr.main()
     assert json.loads(capsys.readouterr().out)["verdicts"] == {m: "better" for m in MODES}
+
+
+# --- the RR comparison: reviewer thread resume (RR_DESIGN) --------------------------------
+
+
+def run_rr(tmp_path, monkeypatch, case_id, smoke=False, budget=10**12, **scenario):
+    codex, log = fake_codex(tmp_path, monkeypatch, case_id, **scenario)
+    out = tmp_path / "out"
+    summary = lr.run_live(out, [CASES[case_id]], repeats=1, smoke=smoke, codex_bin=codex,
+                          comparison="rr", budget_tokens=budget)
+    records = lr.read_runs(out) if (out / "runs.jsonl").exists() else []
+    calls = [json.loads(s) for s in log.read_text().splitlines()] if log.exists() else []
+    return out, summary, records, calls
+
+
+def reviewer_calls(record):
+    return [c for c in record["calls"] if c["kind"] == "reviewer"]
+
+
+def test_rr_variants_levers_schedule_and_defaults():
+    assert lr.COMPARISONS["rr"] == ("repair-tuned", "repair-tuned-rr")
+    assert lr.VARIANTS["repair-tuned"] == {"arm": "grouped", "levers": ("T1", "T2", "T4")}
+    assert lr.VARIANTS["repair-tuned-rr"] == {"arm": "grouped",
+                                              "levers": ("T1", "T2", "T4", "RR")}
+    cases = list(CASES.values())
+    jobs = [(c["id"], r, a) for c, r, a, _ in lr.schedule(cases, 2, False, "rr")]
+    assert len(jobs) == 12 and lr.RR_JOBS == 8 and lr.RR_REPEATS == 2
+    assert [a for c, r, a in jobs if c == "native-chain"] == [
+        "repair-tuned", "repair-tuned-rr", "repair-tuned-rr", "repair-tuned"]
+    assert [(c["id"], r, a) for c, r, a, _ in lr.schedule(cases, 2, True, "rr")] == [
+        ("mixed-fork-join", 0, "repair-tuned"), ("mixed-fork-join", 0, "repair-tuned-rr")]
+    assert lr.RR_CASES == ("native-chain", "sequential-delegates")
+    # The #310 and tuning defaults are untouched.
+    assert lr.DEFAULT_REPEATS == {"310": 3, "tuning": 2}
+
+
+def test_a_full_rr_run_refuses_to_start_without_a_cap(tmp_path):
+    with pytest.raises(ValueError, match="rr run needs budget_tokens"):
+        lr.run_live(tmp_path / "out", [CASES["native-chain"]], comparison="rr")
+    assert not (tmp_path / "out").exists()
+
+
+def test_rr_defaults_to_two_modes_two_repeats_and_smoke_keeps_fork_join(tmp_path, monkeypatch):
+    codex, _ = fake_codex(tmp_path, monkeypatch, "native-chain")
+    seen = []
+
+    async def fake_inner(out, cases, repeats, smoke, *args, **kwargs):
+        seen.append(([c["id"] for c in cases], repeats, smoke))
+        return []
+
+    monkeypatch.setattr(lr, "_run", fake_inner)
+    lr.run_live(tmp_path / "a", comparison="rr", budget_tokens=10**9, codex_bin=codex)
+    lr.run_live(tmp_path / "b", comparison="rr", smoke=True, codex_bin=codex)
+    assert seen[0] == (["native-chain", "sequential-delegates"], 2, False)
+    # A smoke keeps every case so the schedule can pick mixed-fork-join (repeat 0 only).
+    assert sorted(seen[1][0]) == sorted(CASES) and seen[1][2] is True
+
+
+def test_rr_argv_first_review_persists_and_a_re_review_resumes_the_same_thread(
+        tmp_path, monkeypatch):
+    out, summary, records, log = run_rr(tmp_path, monkeypatch, "native-chain")
+    # Counterbalanced: repeat 0 runs the base arm first.
+    assert [r["variant"] for r in records] == ["repair-tuned", "repair-tuned-rr"]
+    base, rr = records
+    assert base["levers"] == ["T1", "T2", "T4"] and rr["levers"] == ["RR", "T1", "T2", "T4"]
+    for record in records:
+        assert record["status"] == "accepted", record["stop_reason"]
+        assert record["quality"]["quality_failure"] is False
+        assert [s["caught"] for s in record["quality"]["seeds"]] == [True, True]
+        assert record["writes"]["unowned"] == [] and record["usage_unknown"] == []
+        lines = ledger(out, record)
+        briefs = [x for x in lines if x.get("event") == "brief"]
+        outs = [x for x in lines if "event" not in x]
+        deterministic = [u for u in record["units"] if u.get("i2_path") == "deterministic"]
+        assert len(briefs) == len(outs) == len(record["calls"]) + len(deterministic)
+
+    no_tools = {"shell_tool", "unified_exec", "apps", "multi_agent"}
+    first, again = reviewer_calls(rr)
+    a1, a2 = sent(out, first, "argv.json"), sent(out, again, "argv.json")
+    # First review: fresh, tools disabled, no schema, read-only, NOT --ephemeral.
+    assert "exec" in a1 and "resume" not in a1 and "--ephemeral" not in a1
+    assert "--output-schema" not in a1 and no_tools <= set(a1)
+    assert a1[a1.index("--sandbox") + 1] == "read-only"
+    assert sent(out, first, "prompt.txt").startswith(lr.TUNED_REVIEW_PROMPT)
+    # Re-review: `exec resume <the first review's thread>`, tools disabled, read-only by
+    # config override, no --sandbox / --ephemeral / schema / -C.
+    i = a2.index("resume")
+    assert a2[i - 1] == "exec" and a2[-2:] == [first["thread_id"], "-"]
+    assert no_tools <= set(a2) and "--ephemeral" not in a2 and "--output-schema" not in a2
+    assert 'sandbox_mode="read-only"' in a2 and "--sandbox" not in a2 and "-C" not in a2
+    assert again["resumed"] is True and again["thread_id"] == first["thread_id"]
+    # The process cwd of both reviewer calls is the reviewer cwd, never the workspace.
+    rows = [c for c in log if c["review"] and "--ephemeral" not in c["argv"]]
+    assert len(rows) == 2 and rows[0]["cwd"] == rows[1]["cwd"]
+    assert rows[1]["rereview"] is True and rows[1]["thread"] == first["thread_id"]
+    assert rr["reviews"][0]["resumed"] is False and rr["reviews"][1]["resumed"] is True
+    assert rr["reviews"][1]["calls"] == [again["id"]]
+    # The base arm re-reviews fresh and ephemeral, with the full request.
+    b1, b2 = reviewer_calls(base)
+    for call in (b1, b2):
+        argv = sent(out, call, "argv.json")
+        assert "--ephemeral" in argv and "resume" not in argv
+        assert "REVIEW REQUEST:" in sent(out, call, "prompt.txt")
+    assert not any(r.get("resumed") for r in base["reviews"])
+
+    # The delta turn: new context id, every member's revision and fast check with its flag,
+    # and the text of only the changed files. B did not change, so none of B's text is sent.
+    prompt = sent(out, again, "prompt.txt")
+    assert prompt.startswith(lr.RR_DELTA_PROMPT) and "REVIEW REQUEST:" not in prompt
+    delta = json.loads(prompt[len(lr.RR_DELTA_PROMPT):])
+    assert sent(out, again, "delta.json") == delta
+    request = sent(out, again, "request.json")
+    assert delta["reviewer_context_id"] == request["reviewer_context_id"] != (
+        sent(out, first, "request.json")["reviewer_context_id"])
+    assert {u["id"]: u["changed_since_last_review"] for u in delta["units"]} == {
+        "A": True, "B": False, "C": True}
+    assert all(u["fast_check_passed"] is True and u["revision"] for u in delta["units"])
+    files = {u["id"]: u["files"] for u in CASES["native-chain"]["units"]}
+    assert set(delta["changed_files"]) == set(files["A"]) | set(files["C"])
+    reference = Path(CASES["native-chain"]["reference_dir"])
+    for rel in files["B"]:
+        assert (reference / rel).read_text() not in prompt
+    assert "previous_findings" not in delta and "context_files" not in delta
+    assert len(prompt) < len(sent(out, first, "prompt.txt"))
+
+    # Accounting is by per-thread delta: the resumed call is its own usage, not the total.
+    assert again["usage"] == {"uncached_input": 50, "cache_read": 250, "output": 7, "turns": 1}
+    assert again["tokens_excl_cache"] == 57
+    # Counts, the re-review-only cost per arm, and every reviewer call's cache read.
+    assert rr["tuning"]["resumed_reviews"] == 1 and rr["tuning"]["resume_fallbacks"] == 0
+    assert rr["tuning"]["fresh_after_error"] == 0 and rr["tuning"]["reviewer_invalid_answers"] == 0
+    assert base["tuning"]["resumed_reviews"] == 0
+    assert rr["rereview_tokens_excl_cache"] == 57 and base["rereview_tokens_excl_cache"] == 70
+    assert rr["first_review_tokens_excl_cache"] == base["first_review_tokens_excl_cache"] == 70
+    assert [(c["review_index"], c["review_mode"], c["cache_read"])
+            for c in rr["reviewer_cache"]] == [(0, "fresh", 40), (1, "resumed", 250)]
+    assert [(c["review_index"], c["review_mode"], c["cache_read"])
+            for c in base["reviewer_cache"]] == [(0, "fresh", 40), (1, "fresh", 40)]
+    assert base["reviewer_zero_cache_calls"] == 0
+    # Only RR changes how a re-review is delivered: the repairs are the same patch calls.
+    assert [c["repair_mode"] for c in rr["calls"] if c["kind"] == "repair"] == ["patch"] * 2
+    assert [c["repair_mode"] for c in base["calls"] if c["kind"] == "repair"] == ["patch"] * 2
+    # The summary on disk is what runs.jsonl recomputes to, and says it is the RR comparison.
+    assert summary["comparison"] == "rr" and summary["design"] == lr.RR_DESIGN
+    written = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert written.pop("budget")["cap"] == 10**12
+    assert written == json.loads(json.dumps(lr.summarize_rr(records, 10**12)))
+    assert summary["modes"]["native-chain"]["repair-tuned-rr"]["resumed_reviews"] == 1
+    meta = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["comparison"] == "rr" and meta["design"] == lr.RR_DESIGN
+    assert meta["variants"]["repair-tuned-rr"]["levers"] == ["T1", "T2", "T4", "RR"]
+    assert meta["rr_prompts"] == {"review_rr_delta_turn": lr.RR_DELTA_PROMPT}
+
+
+def test_after_a_reviewer_error_round_the_next_review_is_fresh_on_a_new_thread(
+        tmp_path, monkeypatch):
+    _, _, records, _ = run_rr(tmp_path, monkeypatch, "native-chain",
+                              garbage_persistent_reviews=1)
+    base, rr = records
+    assert rr["status"] == "accepted", rr["stop_reason"]
+    r0, r1, r2 = rr["reviews"]
+    assert (r0["valid_answer"], r0["round_kind"]) == (False, "reviewer-error")
+    # Not a resume: the review after the error round is fresh, persistent, new thread.
+    assert r1["resumed"] is False and r1["thread_id"] != r0["thread_id"]
+    call = next(c for c in rr["calls"] if c["id"] == r1["call"])
+    assert call["review_mode"] == "fresh" and call["resumed"] is False
+    # The thread of the review after that is the new one.
+    assert r2["resumed"] is True and r2["thread_id"] == r1["thread_id"]
+    assert rr["tuning"]["fresh_after_error"] == 1 and rr["tuning"]["resumed_reviews"] == 1
+    assert rr["tuning"]["resume_fallbacks"] == 0
+    assert rr["tuning"]["reviewer_invalid_answers"] == 1
+    assert base["tuning"]["fresh_after_error"] == 0
+
+
+@pytest.mark.parametrize("scenario", [{"fail_resume": 1}, {"no_usage_rereview": True}])
+def test_a_resume_that_fails_at_harness_level_gets_exactly_one_counted_fresh_review(
+        tmp_path, monkeypatch, scenario):
+    out, _, records, _ = run_rr(tmp_path, monkeypatch, "native-chain", **scenario)
+    rr = records[1]
+    assert rr["status"] == "accepted", rr["stop_reason"]
+    first, failed, fresh = reviewer_calls(rr)
+    assert failed["resumed"] is True and failed["review_mode"] == "resumed"
+    assert fresh["review_mode"] == "fresh-fallback" and fresh["resumed"] is False
+    assert fresh["fallback_reason"] and failed["review_index"] == fresh["review_index"] == 1
+    argv = sent(out, fresh, "argv.json")
+    assert "resume" not in argv and "--ephemeral" not in argv
+    assert "REVIEW REQUEST:" in sent(out, fresh, "prompt.txt")
+    assert fresh["thread_id"] not in (None, first["thread_id"])
+    # Exactly one fallback, one review row for the round, and the failed call is clocked.
+    reviews = [r for r in rr["reviews"] if r["unit"] == "R"]
+    assert len(reviews) == 2 and reviews[1]["resumed"] is False
+    assert reviews[1]["resume_fallback"] == fresh["fallback_reason"]
+    assert rr["tuning"]["resume_fallbacks"] == 1 and rr["tuning"]["resumed_reviews"] == 0
+    assert len(reviewer_calls(rr)) == 3
+    lines = ledger(out, rr)
+    briefs = [x for x in lines if x.get("event") == "brief"]
+    outs = [x for x in lines if "event" not in x]
+    deterministic = [u for u in rr["units"] if u.get("i2_path") == "deterministic"]
+    assert len(briefs) == len(outs) == len(rr["calls"]) + len(deterministic)
+    trace = [(t["event"], t.get("status")) for t in rr["trace"] if t["unit"] == "R"]
+    assert ("clock_out", "in_progress") in trace
+    # The next review, if any, would resume the fallback's new thread.
+    assert records[0]["tuning"]["resume_fallbacks"] == 0
+
+
+def test_a_first_review_with_no_thread_is_followed_by_one_counted_fresh_review(
+        tmp_path, monkeypatch):
+    out, _, records, _ = run_rr(tmp_path, monkeypatch, "native-chain", no_thread_first=1)
+    rr = records[1]
+    assert rr["status"] == "accepted", rr["stop_reason"]
+    calls = reviewer_calls(rr)
+    assert len(calls) == 2 and calls[0]["thread_id"] is None
+    # No resume was possible, so none was attempted: one fresh full review, counted.
+    assert calls[1]["resumed"] is False and "resume" not in sent(out, calls[1], "argv.json")
+    assert rr["tuning"]["resume_fallbacks"] == 1 and rr["tuning"]["resumed_reviews"] == 0
+
+
+def test_an_invalid_resumed_answer_is_a_reviewer_error_round_not_a_fallback(
+        tmp_path, monkeypatch):
+    _, _, records, _ = run_rr(tmp_path, monkeypatch, "native-chain", garbage_rereviews=1)
+    rr = records[1]
+    assert rr["status"] == "accepted", rr["stop_reason"]
+    r0, r1, r2 = rr["reviews"]
+    assert r1["resumed"] is True and r1["valid_answer"] is False
+    assert r1["round_kind"] == "reviewer-error"
+    assert r2["resumed"] is False  # fresh after the error round, on a new thread
+    assert r2["thread_id"] != r1["thread_id"]
+    assert rr["tuning"]["resume_fallbacks"] == 0 and rr["tuning"]["fresh_after_error"] == 1
+    assert rr["tuning"]["reviewer_invalid_answers"] == 1
+
+
+def test_resumes_are_capped_per_thread_and_state_follows_the_rules():
+    arm = lr.Arm.__new__(lr.Arm)
+    arm.levers = {"RR"}
+    arm.counts = {"resume_fallbacks": 0, "fresh_after_error": 0, "resume_capped": 0}
+    arm.rr_state = {}
+    assert arm.rr_thread("R", 0) is None and arm.counts["fresh_after_error"] == 0
+    arm.rr_state["R"] = {"thread": "t1", "resumes": 0}
+    assert arm.rr_thread("R", 1) == "t1"
+    arm.rr_state["R"] = {"thread": "t1", "resumes": lr.MAX_RESUMES}
+    assert arm.rr_thread("R", 3) is None and arm.counts["resume_capped"] == 1
+    arm.rr_state["R"] = {"thread": None, "resumes": 0}
+    assert arm.rr_thread("R", 1) is None and arm.counts["resume_fallbacks"] == 1
+    del arm.rr_state["R"]
+    assert arm.rr_thread("R", 1) is None and arm.counts["fresh_after_error"] == 1
+    arm.levers = set()  # no RR: never a resume, nothing counted
+    arm.rr_state["R"] = {"thread": "t1", "resumes": 0}
+    assert arm.rr_thread("R", 1) is None and arm.counts["resume_capped"] == 1
+    assert lr.MAX_RESUMES == 2
+
+
+def test_convergence_counts_findings_on_members_unchanged_since_the_previous_review():
+    prior = {"revisions": {"A": "a1", "B": "b1", "C": "c1"}}
+    findings = [{"unit": "A", "criterion": "x", "detail": "d"},
+                {"unit": "B", "criterion": "x", "detail": "d"},
+                {"unit": "B", "criterion": "y", "detail": "d"},
+                {"unit": "C", "criterion": "x", "detail": "d"}]
+    now = {"A": "a2", "B": "b1", "C": "c1"}  # only A changed
+    assert [f["unit"] for f in lr.convergence_findings(prior, now, findings)] == [
+        "B", "B", "C"]
+    assert lr.convergence_findings(prior, {"A": "a2", "B": "b2", "C": "c2"}, findings) == []
+    assert lr.convergence_findings(None, now, findings) == []  # no previous review
+    assert lr.convergence_findings(prior, now, []) == []
+
+
+def test_convergence_is_counted_per_review_in_a_real_run(tmp_path, monkeypatch):
+    # A reviewer that finds something on every unit, every time: after the repair only A
+    # and C changed, so the finding on B is a finding on an unchanged member.
+    _, _, records, _ = run_rr(tmp_path, monkeypatch, "native-chain", reviewer="reject")
+    for record in records:
+        reviews = record["reviews"]
+        assert reviews[0]["convergence_findings"] == 0
+        assert reviews[1]["convergence_findings"] == 1
+        assert [f["unit"] for f in reviews[1]["convergence_detail"]] == ["B"]
+        assert record["tuning"]["convergence_findings"] == sum(
+            r["convergence_findings"] for r in reviews)
+    rr = records[1]
+    assert rr["tuning"]["resumed_reviews"] == 2  # two resumes on one thread: the cap
+    assert [r["resumed"] for r in rr["reviews"]] == [False, True, True]
+    assert len({r["thread_id"] for r in rr["reviews"]}) == 1
+    assert rr["stop_kind"] == "protocol"
+
+
+def test_rr_smoke_is_the_fork_join_pair_with_an_eight_job_projection(tmp_path, monkeypatch):
+    out, summary, records, _ = run_rr(tmp_path, monkeypatch, "mixed-fork-join", smoke=True,
+                                      budget=3_000_000)
+    assert [(r["variant"], r["repeat"], r["smoke"]) for r in records] == [
+        ("repair-tuned", 0, True), ("repair-tuned-rr", 0, True)]
+    for record in records:
+        assert record["status"] == "accepted", record["stop_reason"]
+        assert record["observations"]["holds"] is True
+    rr = records[1]
+    # The contract gate QA_K is reviewed once and approved; R is re-reviewed by resume.
+    assert any(c["unit"] == "QA_K" and c["kind"] == "reviewer" for c in rr["calls"])
+    assert rr["tuning"]["resumed_reviews"] >= 1
+    smoke = summary["smoke"]
+    assert smoke["projected_tokens_for_8_jobs"] == max(r["total_tokens"] for r in records) * 8
+    spent = sum(r["total_tokens"] for r in records)
+    assert smoke["tokens_measured"] == spent
+    assert smoke["projected_plus_smoke_tokens"] == smoke["projected_tokens_for_8_jobs"] + spent
+    assert smoke["run_cap_after_smoke"] == 3_000_000 - spent - lr.RR_CAP_MARGIN
+
+
+# --- summarize_rr on hand-built records ------------------------------------------------
+
+
+def rrrecord(case_id, variant, repeat=0, rereview=300, resumed=0, fallbacks=0, converged=0,
+             **kwargs):
+    r = trecord(case_id, "repair-tuned", repeat, **kwargs)
+    r.update(variant=variant, job_id=f"{case_id}-r{repeat}-{variant}",
+             rereview_tokens_excl_cache=rereview, rereview_tokens=rereview * 3)
+    r["tuning"].update(resumed_reviews=resumed, resume_fallbacks=fallbacks,
+                       fresh_after_error=0, resume_capped=0, convergence_findings=converged)
+    return r
+
+
+def good_rr(**rr_overrides):
+    records = []
+    for mode in MODES:
+        for repeat in range(2):
+            records.append(rrrecord(mode, "repair-tuned", repeat))
+            rr = {"cost": 800, "raw": 4500, "review": 300, "repair": 200, "latency": 90.0,
+                  "rereview": 60, "resumed": 1}
+            records.append(rrrecord(mode, "repair-tuned-rr", repeat,
+                                    **(rr | rr_overrides.get(mode, {}))))
+    return records
+
+
+def test_rr_summary_better_when_every_gate_holds_and_cost_falls():
+    summary = lr.summarize_rr(good_rr())
+    assert summary["comparison"] == "rr" and summary["design"] == lr.RR_DESIGN
+    assert summary["verdicts"] == {m: "better" for m in MODES}
+    pair = summary["pairs"][0]
+    assert pair["arms_present"] == ["repair-tuned", "repair-tuned-rr"]
+    assert pair["uncached_plus_output_saving"] == pytest.approx(0.2)
+    assert pair["rereview_uncached_plus_output_saving"] == pytest.approx(0.8)
+    assert pair["rereview_raw_saving"] == pytest.approx(0.8)
+    mode = summary["modes"]["native-chain"]
+    assert mode["verdict"]["median_saving_uncached_plus_output"] == pytest.approx(0.2)
+    assert mode["repair-tuned-rr"]["rereview_uncached_plus_output"]["median"] == 60
+    assert mode["repair-tuned"]["rereview_uncached_plus_output"]["median"] == 300
+    assert mode["repair-tuned-rr"]["resumed_reviews"] == 2
+    assert summary["counts"]["repair-tuned-rr"]["resumed_reviews"] == 6
+    assert summary["counts"]["repair-tuned"]["resumed_reviews"] == 0
+    assert "tuned-grouped" not in mode and "baseline-grouped" not in mode
+    assert all(v is True for v in mode["verdict"]["gates"].values())
+    assert lr.summarize(good_rr())["comparison"] == "rr"
+    assert lr.summarize(good_tuning())["comparison"] == "tuning"
+
+
+@pytest.mark.parametrize(
+    ("override", "gate"),
+    [
+        ({"caught": (False, True)}, "no_seed_missed_that_baseline_caught"),
+        ({"quality_failure": True}, "no_quality_failure"),
+        ({"accepted": False, "quality_failure": None, "stop_kind": "protocol"},
+         "no_extra_protocol_stop"),
+        ({"false_findings": 1}, "false_findings_not_more"),
+        ({"latency": 101.0}, "median_accepted_latency_not_higher"),
+    ],
+)
+def test_each_rr_gate_fails_its_mode_whatever_it_saves(override, gate):
+    summary = lr.summarize_rr(good_rr(**{"sequential-delegates": override}))
+    verdict = summary["modes"]["sequential-delegates"]["verdict"]
+    assert verdict["gates"][gate] is False
+    assert verdict["result"] == "fail"
+    assert verdict["median_saving_uncached_plus_output"] > 0
+    assert summary["verdicts"]["native-chain"] == "better"
+
+
+def test_rr_censored_pair_flat_cost_and_rerun_follow_the_tuning_rules():
+    records = good_rr()
+    for r in records:
+        if (r["case_id"], r["repeat"], r["variant"]) == ("native-chain", 0, "repair-tuned-rr"):
+            r.update(stop_kind="harness", accepted=False)
+    verdict = lr.summarize_rr(records)["modes"]["native-chain"]["verdict"]
+    assert verdict["result"] == "inconclusive"
+    assert verdict["harness_censored_pairs"] == ["native-chain#r0"]
+    flat = lr.summarize_rr(good_rr(**{"native-chain": {"cost": 1000}}))
+    assert flat["modes"]["native-chain"]["verdict"]["result"] == "not-better"
+    voided = dict(rrrecord("native-chain", "repair-tuned-rr", 0, raw=77), attempt=0,
+                  stop_kind="harness", accepted=False)
+    rerun = [dict(r, attempt=1) if (r["case_id"], r["repeat"]) == ("native-chain", 0) else r
+             for r in good_rr()]
+    again = lr.summarize_rr([voided, *rerun])
+    assert again["voided_attempts"]["total_tokens"] == 77
+    assert again["verdicts"]["native-chain"] == "better"
+
+
+def test_rr_smoke_projection_needs_the_whole_pair_and_fits_with_its_own_spend():
+    smoke = [dict(rrrecord("mixed-fork-join", v, raw=100_000), smoke=True)
+             for v in lr.RR_VARIANTS]
+    s = lr.summarize_rr(smoke, budget_tokens=3_000_000)["smoke"]
+    assert s["projected_tokens_for_8_jobs"] == 800_000
+    assert s["projected_plus_smoke_tokens"] == 1_000_000 and s["fits_budget"] is True
+    assert s["run_cap_after_smoke"] == 3_000_000 - 200_000 - 400_000
+    assert lr.summarize_rr(smoke, budget_tokens=900_000)["smoke"]["fits_budget"] is False
+    uneven = [dict(smoke[0], total_tokens=100), dict(smoke[1], total_tokens=300)]
+    again = lr.summarize_rr(uneven, 3000)["smoke"]
+    assert again["projected_tokens_for_8_jobs"] == 2400  # larger job x 8, never the mean
+    assert again["mean_projected_tokens_for_8_jobs"] == 1600
+    assert again["projected_plus_smoke_tokens"] == 2800 and again["fits_budget"] is True
+    half = lr.summarize_rr(smoke[:1], 3_000_000)["smoke"]
+    assert half["projected_tokens_for_8_jobs"] is None and half["fits_budget"] is None
+    assert half["run_cap_after_smoke"] == 3_000_000 - 100_000 - 400_000
+
+
+def test_cli_passes_rr_comparison_cases_and_summarizes_rr(tmp_path, monkeypatch, capsys):
+    seen = {}
+
+    def fake_run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
+                      **kwargs):
+        seen.update(cases=[c["id"] for c in cases], repeats=repeats, smoke=smoke, **kwargs)
+        return {}
+
+    monkeypatch.setattr(lr, "run_live", fake_run_live)
+    monkeypatch.setattr(sys, "argv", ["live_run", "--out", str(tmp_path / "o"),
+                                      "--comparison", "rr", "--budget-tokens", "2000000"])
+    lr.main()
+    assert seen["comparison"] == "rr" and seen["budget_tokens"] == 2_000_000
+    assert seen["cases"] == ["native-chain", "sequential-delegates"] and seen["repeats"] is None
+    monkeypatch.setattr(sys, "argv", ["live_run", "--out", str(tmp_path / "o"), "--smoke",
+                                      "--comparison", "rr", "--budget-tokens", "3000000"])
+    lr.main()
+    assert "mixed-fork-join" in seen["cases"] and seen["smoke"] is True
+    monkeypatch.setattr(sys, "argv", ["live_run", "--out", str(tmp_path / "o"),
+                                      "--comparison", "rr", "--budget-tokens", "1",
+                                      "--cases", "mixed-fork-join"])
+    lr.main()
+    assert seen["cases"] == ["mixed-fork-join"]
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text("".join(json.dumps(r) + "\n" for r in good_rr()), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["live_run", "--summarize", str(runs)])
+    capsys.readouterr()
+    lr.main()
+    assert json.loads(capsys.readouterr().out)["verdicts"] == {m: "better" for m in MODES}
+
+
+def test_host_argv_default_reviewer_is_unchanged_and_rr_only_adds_persist_and_resume():
+    host = lr.Host.__new__(lr.Host)
+    host.codex_bin, host.response_schema = ["codex"], Path("/s.json")
+    base = host.argv("review", Path("/w"), "review", None)
+    assert "--ephemeral" in base and "--output-schema" in base and "resume" not in base
+    assert host.argv("review", Path("/w"), "review", None, persist=False) == base
+    persisted = host.argv("review", Path("/w"), "review", None, schema=False, persist=True)
+    assert "--ephemeral" not in persisted and persisted.count("--sandbox") == 1
+    resumed = host.argv("review", Path("/w"), "review", "thr-1", schema=False, persist=True)
+    assert resumed[:3] == ["codex", "exec", "resume"] and resumed[-2:] == ["thr-1", "-"]
+    assert "--sandbox" not in resumed and 'sandbox_mode="read-only"' in resumed
+    assert {"shell_tool", "unified_exec", "apps", "multi_agent"} <= set(resumed)

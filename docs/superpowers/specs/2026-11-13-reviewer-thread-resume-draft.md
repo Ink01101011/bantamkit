@@ -249,3 +249,22 @@ and with the same #310 rerun rule for harness censors.
 - loud seeds, so the seed gate has little power;
 - anchoring shows only through the gates;
 - the probe ran on one group only.
+
+### Planner rulings from the harness review (2026-11-13, before any RR run)
+
+- **Delta file rule.** The delta turn sends every context file whose text
+  differs from what that thread last saw. That includes changed upstream files
+  that are not members, so the delta is a superset of "changed members' files".
+  This keeps the reviewer from judging a stale file. Acceptance still binds to
+  the full current request.
+- **Convergence count.** This counts every model finding on a member whose
+  revision is unchanged since the same reviewer unit's previous answered review.
+  It is applied identically in both arms.
+- **Unknown spend.** A failed resume with no usage counts as unknown spend. The
+  budget stop then halts the run before the next job, so any overshoot is
+  bounded by one review.
+- **Fallback.** The fresh fallback reuses the failed resume's request and
+  `reviewer_context_id`.
+- **Known test gaps.** Two were found, and neither is a code defect. There is no
+  end-to-end test of a file changed and then reverted between resumed reviews,
+  and none of the per-thread resume counter.

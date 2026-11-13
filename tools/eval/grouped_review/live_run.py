@@ -182,12 +182,26 @@ VARIANTS = {
     "grouped": {"arm": "grouped", "levers": ()},
     "baseline-grouped": {"arm": "grouped", "levers": ()},
     "tuned-grouped": {"arm": "grouped", "levers": TUNING_LEVERS},
+    # The RR comparison (reviewer thread resume): both arms carry T1, T2 and T4; only the
+    # second adds RR (RR_DESIGN, *Frozen comparison design*). T3 is not a lever here: RR
+    # delivers a re-review as a delta turn in the reviewer's own thread.
+    "repair-tuned": {"arm": "grouped", "levers": ("T1", "T2", "T4")},
+    "repair-tuned-rr": {"arm": "grouped", "levers": ("T1", "T2", "T4", "RR")},
 }
-COMPARISONS = {"310": ARMS, "tuning": ("baseline-grouped", "tuned-grouped")}
+COMPARISONS = {"310": ARMS, "tuning": ("baseline-grouped", "tuned-grouped"),
+               "rr": ("repair-tuned", "repair-tuned-rr")}
 TUNING_VARIANTS = COMPARISONS["tuning"]
+RR_VARIANTS = COMPARISONS["rr"]
 TUNING_JOBS = 12
 TUNING_REPEATS = 2
 DEFAULT_REPEATS = {"310": 3, "tuning": TUNING_REPEATS}
+RR_DESIGN = "docs/superpowers/specs/2026-11-13-reviewer-thread-resume-draft.md"
+RR_JOBS = 8
+RR_REPEATS = 2
+RR_CASES = ("native-chain", "sequential-delegates")
+RR_CAP_MARGIN = 400_000
+# At most two resumes per thread: the repair cap (MAX_REPAIR_ROUNDS) already bounds it.
+MAX_RESUMES = 2
 # T1: no --output-schema, so the shape is spelled out here. The fixed text comes first
 # (the #310 reviewer prompt, unchanged, then the shape) and the variable data last.
 TUNED_REVIEW_PROMPT = REVIEW_PROMPT + (
@@ -225,6 +239,18 @@ TUNING_PROMPTS = {
     "repair_fallback_t2": REPAIR_PROMPT,
     "review_delta_instructions_t3": DELTA_INSTRUCTIONS,
 }
+# RR: the re-review turn resumed in the reviewer's own thread. The previous request and the
+# reviewer's own previous answer are already in that thread, so only the changed files, the
+# new context id, every member's revision and fast check and the change flags are sent.
+# The wording is the P0 probe's (rr_probe.py), which is what was measured.
+RR_DELTA_PROMPT = (
+    "RE-REVIEW of the same group, in this same conversation. Your previous request and your "
+    "previous answer above still hold for anything not listed as changed. Only the files "
+    "below changed; the text of every other file is exactly as in the previous request. "
+    + DELTA_INSTRUCTIONS + " Reply with exactly one JSON object and nothing else, in the "
+    "same shape as before, echoing the new reviewer_context_id.\n\nRE-REVIEW DELTA:\n"
+)
+RR_PROMPTS = {"review_rr_delta_turn": RR_DELTA_PROMPT}
 TUNING_LIMITS = [
     "Two repeats per mode is a small sample: a better verdict supports tuning the host's "
     "guidance in these scopes only, not a general claim.",
@@ -237,6 +263,20 @@ TUNING_LIMITS = [
     "Reviewer-call cost reflects T1 and T3 together and repair-call cost T2 and T4 "
     "together; the levers inside each pair are not separated, and two repeats cannot rank "
     "them.",
+]
+RR_LIMITS = [
+    "Two repeats per mode is a small sample: a better verdict supports resuming the "
+    "reviewer's own thread for re-reviews in these scopes only, not a general claim.",
+    "The seeds are loud, so both arms are likely to catch all of them; the seed gate has "
+    "little power, as in #310. Anchoring on the reviewer's own earlier approval shows only "
+    "through the gates.",
+    "The P0 probe that cleared RR ran on one group only.",
+    "A re-review resumes the reviewer's own thread, which overrides the #310 design's "
+    "literal 'fresh context' wording for RR runs only (maintainer ruling 2026-11-13); an "
+    "author never shares that thread.",
+    "The base arm's Codex cache hit is not reliable: in the tuning run 4 of 9 baseline "
+    "reviewer calls read 0 cached. Per-call cache reads are recorded so the result can "
+    "say so; the base arm is not changed.",
 ]
 
 
@@ -880,6 +920,15 @@ def assess_review(request: dict, response: dict | None, error: str | None) -> di
     }
 
 
+def convergence_findings(prior: dict | None, revisions: dict, findings: list) -> list:
+    """RR's convergence figure: the findings of one review that name a member whose
+    revision is unchanged since the same reviewer unit's previous answered review (its
+    ``revisions``). None when there was no previous review: nothing to converge from."""
+    if prior is None:
+        return []
+    return [f for f in findings if prior["revisions"].get(f["unit"]) == revisions.get(f["unit"])]
+
+
 # --- the host ---------------------------------------------------------------------
 
 
@@ -916,10 +965,12 @@ class Host:
         return value
 
     def argv(self, kind: str, workspace: Path, mode: str, resume: str | None,
-             schema: bool = True, effort: str = "medium") -> list[str]:
+             schema: bool = True, effort: str = "medium", persist: bool = False) -> list[str]:
         """``schema=False`` is T1 (reviewer without --output-schema); ``effort`` is T4 on
-        repair calls; ``kind="patch"`` is T2's tools-disabled fresh call. The defaults
-        are the #310 argv exactly."""
+        repair calls; ``kind="patch"`` is T2's tools-disabled fresh call. ``persist`` is
+        RR: a reviewer session that is not --ephemeral, so it can be resumed; a reviewer
+        ``resume`` is that thread, resumed with tools disabled and a read-only sandbox.
+        The defaults are the #310 argv exactly."""
         common = [
             "--json", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
             "--model", MODEL, "-c", f'model_reasoning_effort="{effort}"',
@@ -927,10 +978,15 @@ class Host:
         ]
         no_tools = ["--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps",
                     "--disable", "multi_agent"]
+        if kind == "review" and resume is not None:
+            # `exec resume` has no --sandbox: the sandbox is a config override and the
+            # working root is the process cwd (the reviewer cwd), as for author resumes.
+            return [*self.codex_bin, "exec", "resume", *common, *no_tools,
+                    "-c", 'sandbox_mode="read-only"', resume, "-"]
         if kind == "review":
             return [
-                *self.codex_bin, "exec", *common, "--ephemeral", "--sandbox", "read-only",
-                *no_tools,
+                *self.codex_bin, "exec", *common, *([] if persist else ["--ephemeral"]),
+                "--sandbox", "read-only", *no_tools,
                 *(["--output-schema", str(self.response_schema)] if schema else []), "-",
             ]
         if kind == "patch":
@@ -1021,6 +1077,14 @@ class Arm:
         self.counts = {"delta_skipped_after_error": 0,
                        "patch_calls": 0, "patch_invalid_answers": 0, "patch_red_checks": 0,
                        "fallbacks": 0}
+        # The RR comparison's extra counts (both of its arms, so they compare); a #310 or
+        # tuning record has none of these keys.
+        self.rr_comparison = arm in RR_VARIANTS
+        if self.rr_comparison:
+            self.counts.update(resume_fallbacks=0, fresh_after_error=0, resume_capped=0)
+        # RR: per reviewer unit, the thread its last review left behind and what that
+        # thread has seen (revisions and context-file text), so a re-review can be a delta.
+        self.rr_state: dict[str, dict] = {}
         self.job_id = (f"{case['id']}-r{repeat}-{self.variant}"
                        + (f"-a{attempt}" if attempt else "")
                        + ("-smoke" if smoke else ""))
@@ -1348,11 +1412,14 @@ class Arm:
         return "medium"
 
     async def model(self, uid: str, call_id: str, prompt: str, kind: str,
-                    tag: dict | None = None) -> dict:
+                    tag: dict | None = None, review_thread: str | None = None) -> dict:
         mode = "patch" if kind == "patch" else self.mode_of(uid)
         resume = self.parent_thread if mode == "parent" and self.parent_thread else None
+        if kind == "review":
+            resume = review_thread  # RR: the reviewer's own thread, never an author's
         argv = self.host.argv(kind, self.workspace, mode, resume,
-                              schema="T1" not in self.levers, effort=self.effort_of(uid, kind))
+                              schema="T1" not in self.levers, effort=self.effort_of(uid, kind),
+                              persist=kind == "review" and "RR" in self.levers)
         timeout = self.host.review_timeout if kind == "review" else self.host.author_timeout
         extra = {"unit": uid, "kind": self.units[uid]["kind"], "context": mode,
                  "resumed": resume is not None, **(tag or {})}
@@ -1390,6 +1457,8 @@ class Arm:
             self.parent_thread = call["thread_id"]
         if mode == "parent" and call["thread_id"] is None:
             call["thread_id"] = self.parent_thread
+        if kind == "review" and review_thread is not None and call["thread_id"] is None:
+            call["thread_id"] = review_thread
         self.calls.append({k: v for k, v in call.items() if k not in ("stdout", "items")})
         self.units[uid].setdefault("calls", []).append(call_id)
         if call["thread_id"]:
@@ -1667,6 +1736,41 @@ class Arm:
             request["instructions"] = REVIEW_INSTRUCTIONS + " " + DELTA_INSTRUCTIONS
         return request, checks
 
+    def rr_thread(self, uid: str, index: int) -> str | None:
+        """RR: the thread this review resumes, or None for a fresh full review. A fresh
+        review is counted by why: a reviewer-error round before it (the next review starts
+        a new thread), a first review that left no thread to resume, or the resume cap."""
+        if "RR" not in self.levers or index == 0:
+            return None
+        state = self.rr_state.get(uid)
+        if state is None:
+            self.counts["fresh_after_error"] += 1
+        elif state["thread"] is None:
+            self.counts["resume_fallbacks"] += 1
+        elif state["resumes"] >= MAX_RESUMES:
+            self.counts["resume_capped"] += 1
+        else:
+            return state["thread"]
+        return None
+
+    @staticmethod
+    def rr_delta(request: dict, state: dict) -> dict:
+        """The re-review turn: the new context id, every member's revision and fast check
+        with its change flag, and the text of each context file that changed since the
+        thread last saw it (a changed member's files and any changed upstream file)."""
+        return {
+            "reviewer_context_id": request["reviewer_context_id"],
+            "membership": request["membership"],
+            "units": [
+                {"id": u["id"], "revision": u["revision"],
+                 "fast_check_passed": u["fast_check_passed"],
+                 "changed_since_last_review": u["revision"] != state["revisions"].get(u["id"])}
+                for u in request["units"]
+            ],
+            "changed_files": {rel: text for rel, text in request["context_files"].items()
+                              if state["files"].get(rel, object()) != text},
+        }
+
     async def review(self, uid: str, view: str, brief: str, call_id: str) -> dict:
         index = sum(1 for r in self.reviews if r["unit"] == uid)
         snapshot = self.dir / "snapshots" / f"{uid}-{index}"
@@ -1675,14 +1779,48 @@ class Arm:
             ignore=shutil.ignore_patterns("__pycache__"),
         )
         request, checks = await asyncio.to_thread(self.review_request, uid, snapshot)
-        prompt = (
-            (TUNED_REVIEW_PROMPT if "T1" in self.levers else REVIEW_PROMPT) + view + "\n\n" + brief
-            + "\n\nREVIEW REQUEST:\n" + json.dumps(request, ensure_ascii=False)
-        )
-        call = await self.model(uid, call_id, prompt, "review")
-        (self.host.out / call["artifact_dir"] / "request.json").write_text(
-            json.dumps(request, indent=2) + "\n", encoding="utf-8"
-        )
+
+        def full_prompt(view: str, brief: str) -> str:
+            return (
+                (TUNED_REVIEW_PROMPT if "T1" in self.levers else REVIEW_PROMPT) + view
+                + "\n\n" + brief + "\n\nREVIEW REQUEST:\n"
+                + json.dumps(request, ensure_ascii=False)
+            )
+
+        thread = self.rr_thread(uid, index)
+        state = self.rr_state.get(uid)
+        delta = None
+        tag = ({"review_index": index, "review_mode": "resumed" if thread else "fresh"}
+               if self.rr_comparison else None)
+        if thread is not None:
+            delta = self.rr_delta(request, state)
+            prompt = RR_DELTA_PROMPT + json.dumps(delta, ensure_ascii=False)
+        else:
+            prompt = full_prompt(view, brief)
+        call = await self.model(uid, call_id, prompt, "review", tag=tag, review_thread=thread)
+        self.write_review_request(call, request, delta)
+        resumed, fallback = thread is not None, None
+        if thread is not None and (call["error"] or not call["turn_usages"]):
+            # The resume failed at the harness level (nonzero exit, timeout, unsent prompt
+            # or no turn.completed): the call is handed back with its own accounting and
+            # exactly ONE fresh full review follows, counted.
+            fallback = call["error"] or "no turn.completed"
+            self.counts["resume_fallbacks"] += 1
+            await self.clock_out(uid, "in_progress", call,
+                                 f"reviewer resume failed: {fallback}"[:200], "", [])
+            clocked = await self.host.tool(
+                "shiftwork_clock_in", {"checkpoint": str(self.checkpoint), "unit_id": uid}
+            )
+            self.mark("clock_in", uid)
+            brief = Path(clocked["unit"]["brief_path"]).read_text(encoding="utf-8")
+            view = json.dumps(prompt_view(clocked), ensure_ascii=False)
+            call = await self.model(
+                uid, f"{self.job_id}-{len(self.calls):03d}-{uid}", full_prompt(view, brief),
+                "review", tag={"review_index": index, "review_mode": "fresh-fallback",
+                               "fallback_reason": fallback},
+            )
+            self.write_review_request(call, request, None)
+            resumed = False
         if call["error"]:
             # A Codex exit, timeout or unsent prompt says nothing about the work: harness.
             await self.clock_out(uid, "blocked", call,
@@ -1709,6 +1847,25 @@ class Arm:
         round_kind = None if verdict["approved"] else (
             "rejection" if findings else "reviewer-error"
         )
+        rr_fields = {}
+        if self.rr_comparison:
+            # Convergence: model findings on a member whose revision is unchanged since
+            # this reviewer unit's previous review (its previous answered review).
+            prior = next((r for r in reversed(self.reviews)
+                          if r["unit"] == uid and r["valid_answer"]), None)
+            revisions = {u["id"]: u["revision"] for u in request["units"]}
+            converged = convergence_findings(prior, revisions, verdict["findings"])
+            rr_fields = {
+                "resumed": resumed, "thread_id": call["thread_id"],
+                "resume_fallback": fallback,
+                "calls": [c["id"] for c in self.calls
+                          if c["unit"] == uid and c.get("review_index") == index],
+                "convergence_findings": len(converged),
+                "convergence_detail": converged,
+                **({"changed_members": sorted(
+                    u["id"] for u in delta["units"] if u["changed_since_last_review"]
+                )} if resumed else {}),
+            }
         self.reviews.append(
             {
                 "unit": uid,
@@ -1731,8 +1888,19 @@ class Arm:
                 "repair_findings": findings,
                 "round_kind": round_kind,
                 "adjudication": None,
+                **rr_fields,
             }
         )
+        if "RR" in self.levers:
+            if round_kind == "reviewer-error":
+                self.rr_state.pop(uid, None)  # the next review is fresh, on a new thread
+            else:
+                self.rr_state[uid] = {
+                    "thread": call["thread_id"],
+                    "resumes": (state["resumes"] + 1) if resumed else 0,
+                    "revisions": {u["id"]: u["revision"] for u in request["units"]},
+                    "files": request["context_files"],
+                }
         status = "done" if verdict["approved"] else "blocked"
         notes = (
             "approved" if verdict["approved"]
@@ -1746,6 +1914,14 @@ class Arm:
         if verdict["approved"]:
             return {"approved": True}
         return {"rejected": True, "findings": findings, "round_kind": round_kind}
+
+    def write_review_request(self, call: dict, request: dict, delta: dict | None) -> None:
+        directory = self.host.out / call["artifact_dir"]
+        (directory / "request.json").write_text(json.dumps(request, indent=2) + "\n",
+                                                encoding="utf-8")
+        if delta is not None:
+            (directory / "delta.json").write_text(json.dumps(delta, indent=2) + "\n",
+                                                  encoding="utf-8")
 
     # after the arm: judge seeds and findings on the saved snapshots -------------------
     def seed_presence(self, seed: dict, snapshot: Path) -> dict:
@@ -2058,6 +2234,10 @@ class Arm:
                 **self.counts,
                 "reviewer_invalid_answers": sum(not r["valid_answer"] for r in self.reviews),
                 "delta_reviews": sum(bool(r.get("delta")) for r in self.reviews),
+                **({"resumed_reviews": sum(bool(r.get("resumed")) for r in self.reviews),
+                    "convergence_findings": sum(r.get("convergence_findings", 0)
+                                                for r in self.reviews)}
+                   if self.rr_comparison else {}),
                 "repair_modes": {
                     mode: sum_usage([c["usage"] for c in self.calls
                                      if c.get("repair_mode") == mode])
@@ -2093,8 +2273,34 @@ class Arm:
             },
             "trace": self.trace,
         }
+        if self.rr_comparison:
+            record.update(self.rr_record())
         record["observations"] = observations(self.case, record)
         return record
+
+    def rr_record(self) -> dict:
+        """The RR comparison's extra figures: re-review-only cost, the counts, and every
+        reviewer call's own cache read (the base arm's Codex cache hit is not reliable, so
+        the result must be able to show it call by call)."""
+        calls = [c for c in self.calls if c["kind"] == "reviewer"]
+        later = sum_usage([c["usage"] for c in calls if c.get("review_index", 0) >= 1])
+        first = sum_usage([c["usage"] for c in calls if c.get("review_index", 0) == 0])
+        return {
+            "rereview_tokens_excl_cache": usage_tokens(later, include_cache=False),
+            "rereview_tokens": usage_tokens(later),
+            "first_review_tokens_excl_cache": usage_tokens(first, include_cache=False),
+            "first_review_tokens": usage_tokens(first),
+            "reviewer_cache": [
+                {"call": c["id"], "review_index": c.get("review_index"),
+                 "review_mode": c.get("review_mode"), "resumed": c["resumed"],
+                 "uncached_input": (c["usage"] or {}).get("uncached_input"),
+                 "cache_read": (c["usage"] or {}).get("cache_read"),
+                 "output": (c["usage"] or {}).get("output")}
+                for c in calls
+            ],
+            "reviewer_zero_cache_calls": sum(
+                (c["usage"] or {}).get("cache_read") == 0 for c in calls),
+        }
 
 
 def classify_failures(units: dict, failing: list[str], seeds: list[dict], case: dict,
@@ -2560,6 +2766,16 @@ TUNING_METRICS = {
 }
 TUNING_COUNTS = ("patch_calls", "patch_invalid_answers", "patch_red_checks", "fallbacks",
                  "reviewer_invalid_answers", "delta_reviews")
+# The RR comparison reads the same figures plus the re-review-only cost; T3's delta count
+# gives way to the resume counts.
+RR_METRICS = {
+    **TUNING_METRICS,
+    "rereview_uncached_plus_output": lambda r: r.get("rereview_tokens_excl_cache"),
+    "rereview_raw": lambda r: r.get("rereview_tokens"),
+}
+RR_COUNTS = ("patch_calls", "patch_invalid_answers", "patch_red_checks", "fallbacks",
+             "reviewer_invalid_answers", "resumed_reviews", "resume_fallbacks",
+             "fresh_after_error", "resume_capped", "convergence_findings")
 
 
 def rejection_stop(record: dict) -> bool:
@@ -2567,14 +2783,15 @@ def rejection_stop(record: dict) -> bool:
     return not record["accepted"] and stop_kind_of(record) == "protocol"
 
 
-def tuning_pair(case_id: str, repeat: int, base: dict | None, tuned: dict | None) -> dict:
+def tuning_pair(case_id: str, repeat: int, base: dict | None, tuned: dict | None,
+                metrics: dict = TUNING_METRICS) -> dict:
     """One (case, repeat) pair; the seed comparison is #310's, baseline in the per-task
     seat and tuned in the grouped seat."""
     p310 = pair_summary(case_id, repeat, base, tuned)
     pair = {k: p310[k] for k in ("case_id", "repeat", "attempt", "harness_censored",
                                  "complete")}
     pair["arms_present"] = sorted(r["variant"] for r in (base, tuned) if r)
-    for name, read in TUNING_METRICS.items():
+    for name, read in metrics.items():
         pair[f"{name}_saving"] = saving(read(base), read(tuned)) if pair["complete"] else None
     if pair["complete"]:
         s = p310["seeds"]
@@ -2593,7 +2810,8 @@ def tuning_pair(case_id: str, repeat: int, base: dict | None, tuned: dict | None
     return pair
 
 
-def tuning_cohort(records: list[dict]) -> dict:
+def tuning_cohort(records: list[dict], metrics: dict = TUNING_METRICS,
+                  counts: tuple = TUNING_COUNTS) -> dict:
     quality = [r["quality"] for r in records]
     return {
         "sample_size": len(records),
@@ -2602,7 +2820,7 @@ def tuning_cohort(records: list[dict]) -> dict:
         "rejection_cap_stops": sum(rejection_stop(r) for r in records),
         "quality_failures": sum(q.get("quality_failure") is True for q in quality),
         **{name: distribution([read(r) for r in records])
-           for name, read in TUNING_METRICS.items()},
+           for name, read in metrics.items()},
         "by_kind_uncached_plus_output": {
             kind: distribution([(r.get("kind_tokens_excl_cache") or {}).get(kind)
                                 for r in records])
@@ -2611,7 +2829,7 @@ def tuning_cohort(records: list[dict]) -> dict:
         "elapsed_to_accepted_ms": distribution([r.get("elapsed_to_accepted_ms")
                                                 for r in records]),
         **{key: sum((r.get("tuning") or {}).get(key, 0) for r in records)
-           for key in TUNING_COUNTS},
+           for key in counts},
         "false_findings": sum(q.get("false_findings", 0) for q in quality),
         "seeded_caught": sum(q.get("seeded_caught", 0) for q in quality),
         "seeded_missed": sum(q.get("seeded_missed", 0) for q in quality),
@@ -2678,49 +2896,71 @@ def tuning_verdict(base: list[dict], tuned: list[dict], pairs: list[dict]) -> di
             "incomplete_pairs": missing}
 
 
+TUNING_SPEC = {
+    "comparison": "tuning", "variants": TUNING_VARIANTS, "design": TUNING_DESIGN,
+    "limits": TUNING_LIMITS, "jobs": TUNING_JOBS, "metrics": TUNING_METRICS,
+    "counts": TUNING_COUNTS, "smoke_spend_counts": False,
+}
+RR_SPEC = {
+    "comparison": "rr", "variants": RR_VARIANTS, "design": RR_DESIGN,
+    "limits": RR_LIMITS, "jobs": RR_JOBS, "metrics": RR_METRICS,
+    "counts": RR_COUNTS, "smoke_spend_counts": True,
+}
+
+
 def summarize_tuning(records: list[dict], budget_tokens: int | None = None) -> dict:
     """The tuning comparison recomputed from runs.jsonl: baseline-grouped vs tuned-grouped
     per mode, paired by (case, repeat), with the #310 rerun rule (final attempt only;
     voided attempts kept with their spend) and smoke kept apart."""
-    records = [r for r in records if r.get("variant") in TUNING_VARIANTS]
+    return summarize_pairs(records, TUNING_SPEC, budget_tokens)
+
+
+def summarize_rr(records: list[dict], budget_tokens: int | None = None) -> dict:
+    """The RR comparison (repair-tuned vs repair-tuned-rr), by the tuning machinery: the
+    same gates, verdicts and rerun rule. Its smoke projection is the larger smoke job x 8,
+    and that projection plus the smoke's own spend must fit the budget (RR_DESIGN)."""
+    return summarize_pairs(records, RR_SPEC, budget_tokens)
+
+
+def summarize_pairs(records: list[dict], spec: dict, budget_tokens: int | None = None) -> dict:
+    names, jobs = spec["variants"], spec["jobs"]
+    records = [r for r in records if r.get("variant") in names]
     matched, voided = final_attempts([r for r in records if not r.get("smoke")])
     smoke, smoke_voided = final_attempts([r for r in records if r.get("smoke")])
     pairs = []
     for case_id, repeat in sorted({(r["case_id"], r["repeat"]) for r in matched}):
         arms = {r["variant"]: r for r in matched
                 if r["case_id"] == case_id and r["repeat"] == repeat}
-        pairs.append(tuning_pair(case_id, repeat, arms.get("baseline-grouped"),
-                                 arms.get("tuned-grouped")))
+        pairs.append(tuning_pair(case_id, repeat, arms.get(names[0]), arms.get(names[1]),
+                                 spec["metrics"]))
     modes = {}
     for case_id in sorted({r["case_id"] for r in matched}):
-        base = [r for r in matched if r["case_id"] == case_id
-                and r["variant"] == "baseline-grouped"]
-        tuned = [r for r in matched if r["case_id"] == case_id
-                 and r["variant"] == "tuned-grouped"]
+        base = [r for r in matched if r["case_id"] == case_id and r["variant"] == names[0]]
+        tuned = [r for r in matched if r["case_id"] == case_id and r["variant"] == names[1]]
         mine = [p for p in pairs if p["case_id"] == case_id]
         modes[case_id] = {
-            "baseline-grouped": tuning_cohort(base),
-            "tuned-grouped": tuning_cohort(tuned),
+            names[0]: tuning_cohort(base, spec["metrics"], spec["counts"]),
+            names[1]: tuning_cohort(tuned, spec["metrics"], spec["counts"]),
             "pairs": len(mine),
             **{f"{name}_saving": distribution([p[f"{name}_saving"] for p in mine])
-               for name in TUNING_METRICS},
+               for name in spec["metrics"]},
             "verdict": tuning_verdict(base, tuned, mine),
         }
     void = voided + smoke_voided
     void_tokens = [r.get("total_tokens") for r in void]
     summary = {
-        "comparison": "tuning",
-        "design": TUNING_DESIGN,
+        "comparison": spec["comparison"],
+        "design": spec["design"],
         "cost_metric": "uncached input + output (maintainer ruling 2026-11-13); raw totals "
                        "including cache reads reported alongside",
-        "limitations": TUNING_LIMITS,
+        "limitations": spec["limits"],
         "run_count": len(matched),
         "pairs": pairs,
         "modes": modes,
         "verdicts": {m: v["verdict"]["result"] for m, v in modes.items()},
         "counts": {variant: {key: sum((r.get("tuning") or {}).get(key, 0) for r in matched
-                                      if r["variant"] == variant) for key in TUNING_COUNTS}
-                   for variant in TUNING_VARIANTS},
+                                      if r["variant"] == variant) for key in spec["counts"]}
+                   for variant in names},
         "voided_attempts": {
             "label": "harness-censored attempts, rerun once; kept with their spend",
             "records": [{"job_id": r["job_id"], "attempt": r.get("attempt", 0),
@@ -2738,12 +2978,12 @@ def summarize_tuning(records: list[dict], budget_tokens: int | None = None) -> d
         totals = [r.get("total_tokens") for r in smoke]
         pair_total = None if None in totals else sum(totals)
         censored = sum(stop_kind_of(r) == "harness" for r in smoke)
-        whole = sorted(r["variant"] for r in smoke) == sorted(TUNING_VARIANTS) and not censored
+        whole = sorted(r["variant"] for r in smoke) == sorted(names) and not censored
         # Pessimistic: every job is projected at the larger smoke job (mixed-fork-join is
         # the only mode the smoke runs); the mean projection is reported beside it.
-        projected = (max(totals) * TUNING_JOBS
+        projected = (max(totals) * jobs
                      if whole and pair_total is not None else None)
-        mean_projected = (pair_total / len(smoke) * TUNING_JOBS
+        mean_projected = (pair_total / len(smoke) * jobs
                           if whole and pair_total is not None else None)
         summary["smoke"] = {
             "label": "smoke data; not merged into the matched sample",
@@ -2752,9 +2992,9 @@ def summarize_tuning(records: list[dict], budget_tokens: int | None = None) -> d
             "projection_basis": "both smoke variants ran and neither was harness-censored"
             if whole else "none: the smoke pair is incomplete or harness-censored",
             "tokens_measured": pair_total,
-            f"projected_tokens_for_{TUNING_JOBS}_jobs": projected,
+            f"projected_tokens_for_{jobs}_jobs": projected,
             "projection_rule": "largest smoke job x jobs (pessimistic)",
-            f"mean_projected_tokens_for_{TUNING_JOBS}_jobs": mean_projected,
+            f"mean_projected_tokens_for_{jobs}_jobs": mean_projected,
             "budget_tokens": budget_tokens,
             "fits_budget": (None if projected is None or budget_tokens is None
                             else projected <= budget_tokens),
@@ -2763,12 +3003,30 @@ def summarize_tuning(records: list[dict], budget_tokens: int | None = None) -> d
                          "total_tokens_excl_cache": r.get("total_tokens_excl_cache")}
                         for r in smoke],
         }
+        if spec["smoke_spend_counts"]:
+            # RR_DESIGN: the projection plus the smoke's own spend must fit the budget; the
+            # run's cap is what remains after the smoke, less a margin.
+            smoke_summary = summary["smoke"]
+            smoke_summary["projection_rule"] = (
+                f"largest smoke job x {jobs} (pessimistic); with the smoke's own spend it "
+                "must fit the budget")
+            smoke_summary["projected_plus_smoke_tokens"] = (
+                None if projected is None else projected + pair_total)
+            smoke_summary["fits_budget"] = (
+                None if projected is None or budget_tokens is None
+                else projected + pair_total <= budget_tokens)
+            smoke_summary["run_cap_after_smoke"] = (
+                None if pair_total is None or budget_tokens is None
+                else budget_tokens - pair_total - RR_CAP_MARGIN)
+            smoke_summary["run_cap_margin"] = RR_CAP_MARGIN
     return summary
 
 
 def summarize(records: list[dict], budget_tokens: int | None = None) -> dict:
-    """The summary a runs.jsonl recomputes to: tuning when its records are tuning
-    variants, else #310's."""
+    """The summary a runs.jsonl recomputes to: tuning or RR when its records are those
+    comparison's variants, else #310's."""
+    if any(r.get("variant") in RR_VARIANTS for r in records):
+        return summarize_rr(records, budget_tokens)
     if any(r.get("variant") in TUNING_VARIANTS for r in records):
         return summarize_tuning(records, budget_tokens)
     return summarize_live(records)
@@ -2876,12 +3134,15 @@ def metadata(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bin:
     if comparison != "310":
         meta.update(
             comparison=comparison,
-            design=TUNING_DESIGN,
+            design=RR_DESIGN if comparison == "rr" else TUNING_DESIGN,
             variants={v: {"arm": VARIANTS[v]["arm"], "levers": list(VARIANTS[v]["levers"])}
                       for v in COMPARISONS[comparison]},
             tuning_prompts=TUNING_PROMPTS,
             tuning_limitations=TUNING_LIMITS,
         )
+        if comparison == "rr":
+            meta.update(rr_prompts=RR_PROMPTS, rr_limitations=RR_LIMITS,
+                        rr_max_resumes_per_thread=MAX_RESUMES)
     if budget_tokens is not None:
         meta["budget_tokens"] = budget_tokens
     return meta
@@ -3062,15 +3323,18 @@ def run_live(out, cases: list[dict] | None = None, repeats: int | None = None,
     an isolated CODEX_HOME linking only that file; see isolated_codex_home.
 
     ``comparison="tuning"`` pairs baseline-grouped vs tuned-grouped (TUNING_DESIGN);
-    ``repeats`` defaults to 3 for #310 and 2 for tuning. ``budget_tokens`` caps this run's
+    ``"rr"`` pairs repair-tuned vs repair-tuned-rr (RR_DESIGN), by default over
+    native-chain and sequential-delegates. ``repeats`` defaults to 3 for #310 and 2 for
+    tuning and rr. ``budget_tokens`` caps this run's
     raw spend (see Budget); the summary is written either way."""
     if comparison not in COMPARISONS:
         raise ValueError(f"unknown comparison {comparison}; one of {', '.join(COMPARISONS)}")
     if budget_tokens is not None and (type(budget_tokens) is not int or budget_tokens < 1):
         raise ValueError("budget_tokens must be a positive integer")
-    if comparison == "tuning" and not smoke and budget_tokens is None:
-        raise ValueError("a tuning run needs budget_tokens (the design's budget stop)")
-    repeats = DEFAULT_REPEATS[comparison] if repeats is None else repeats
+    if comparison in ("tuning", "rr") and not smoke and budget_tokens is None:
+        raise ValueError(f"a {comparison} run needs budget_tokens (the design's budget stop)")
+    if repeats is None:
+        repeats = RR_REPEATS if comparison == "rr" else DEFAULT_REPEATS[comparison]
     run = {"comparison": comparison, "budget_tokens": budget_tokens}
     if codex_auth is None:
         return _run_live(out, cases, repeats, smoke, codex_bin, author_timeout,
@@ -3108,7 +3372,12 @@ def _run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_time
         raise ValueError(f"temporary directory {scratch_root} is inside the repository or "
                          "the output directory; arm workspaces would be reachable")
     out.mkdir(parents=True, exist_ok=False)
-    cases = live_cases.live_cases() if cases is None else copy.deepcopy(cases)
+    if cases is None:
+        cases = live_cases.live_cases()
+        if comparison == "rr" and not smoke:
+            cases = [c for c in cases if c["id"] in RR_CASES]
+    else:
+        cases = copy.deepcopy(cases)
     env = codex_environment(codex_bin, out)
     env["codex_home_isolated"] = (
         {"isolated": True, "contents": "auth.json symlink only (user ruling 2026-11-13)",
@@ -3131,6 +3400,7 @@ def _run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_time
         runs = out / "runs.jsonl"
         records = read_runs(out) if runs.exists() else []
         summary = (summarize_tuning(records, budget_tokens) if comparison == "tuning"
+                   else summarize_rr(records, budget_tokens) if comparison == "rr"
                    else summarize_live(records))
         if budget is not None:
             # The watcher's own state is not in runs.jsonl: written beside it.
@@ -3155,14 +3425,17 @@ def main() -> None:
                         help="repeats per case (default: 3 for 310, 2 for tuning)")
     parser.add_argument("--smoke", action="store_true",
                         help="mixed-fork-join repeat 0, both arms, plus a full-run projection "
-                        "(18 jobs for 310, 12 for tuning)")
+                        "(18 jobs for 310, 12 for tuning, 8 for rr)")
     parser.add_argument("--comparison", choices=sorted(COMPARISONS), default="310",
                         help="310: per-task vs grouped (default); tuning: baseline-grouped vs "
-                        "tuned-grouped (T1-T4)")
+                        "tuned-grouped (T1-T4); rr: repair-tuned vs repair-tuned-rr "
+                        "(reviewer thread resume)")
     parser.add_argument("--budget-tokens", type=int, default=None,
                         help="cap on this run's raw Codex tokens; checked before each job, "
                         "the run stops cleanly when the next job would cross it")
-    parser.add_argument("--cases", nargs="*", help="case ids (default: all three)")
+    parser.add_argument("--cases", nargs="*",
+                        help="case ids (default: all three; rr: native-chain and "
+                        "sequential-delegates, or mixed-fork-join with --smoke)")
     parser.add_argument("--codex", default='["codex"]', help="JSON argv prefix for Codex")
     parser.add_argument("--author-timeout", type=float, default=900)
     parser.add_argument("--review-timeout", type=float, default=300)
@@ -3178,6 +3451,8 @@ def main() -> None:
     if not args.out:
         parser.error("--out is required unless --summarize is given")
     cases = live_cases.live_cases()
+    if args.comparison == "rr" and not args.cases and not args.smoke:
+        cases = [c for c in cases if c["id"] in RR_CASES]
     if args.cases:
         unknown = set(args.cases) - {c["id"] for c in cases}
         if unknown:
@@ -3188,11 +3463,12 @@ def main() -> None:
                        args.author_timeout, args.review_timeout, codex_auth=auth,
                        comparison=args.comparison, budget_tokens=args.budget_tokens)
     print(json.dumps(summary, indent=2))
-    if args.smoke and args.comparison == "tuning":
+    if args.smoke and args.comparison in ("tuning", "rr"):
         smoke = summary.get("smoke", {})
+        jobs = RR_JOBS if args.comparison == "rr" else TUNING_JOBS
         print(
-            f"projection: {smoke.get(f'projected_tokens_for_{TUNING_JOBS}_jobs')} tokens for "
-            f"{TUNING_JOBS} jobs (budget {args.budget_tokens}; fits: "
+            f"projection: {smoke.get(f'projected_tokens_for_{jobs}_jobs')} tokens for "
+            f"{jobs} jobs (budget {args.budget_tokens}; fits: "
             f"{smoke.get('fits_budget')})",
             file=sys.stderr,
         )
