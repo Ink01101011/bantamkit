@@ -90,3 +90,13 @@ These are the tuning design's rules, unchanged.
   test. Only the gates guard against it.
 - Author cache misses are server-side noise. The comparison is paired but cannot
   remove that noise.
+
+## Planner rulings from the harness review (2026-11-13, before any run)
+
+- **Paragraph placement.** The paragraph goes between `AUTHOR_PROMPT` and the
+  brief view, as the arm table above says. Probe B appended it at the end of the
+  prompt, so the effect size may differ from the probe's. This is recorded as a
+  limit.
+- **Cache-miss counts.** These come from `tools/eval/codex_cache_audit.py`, which
+  this branch now carries. It runs after the run on the saved `codex-sessions`
+  rollouts.

@@ -187,11 +187,17 @@ VARIANTS = {
     # delivers a re-review as a delta turn in the reviewer's own thread.
     "repair-tuned": {"arm": "grouped", "levers": ("T1", "T2", "T4")},
     "repair-tuned-rr": {"arm": "grouped", "levers": ("T1", "T2", "T4", "RR")},
+    # The AB comparison (batched author prompt): rr-base is exactly repair-tuned-rr's
+    # configuration; rr-batched adds the one lever AB (BATCH_DESIGN, *Arms*).
+    "rr-base": {"arm": "grouped", "levers": ("T1", "T2", "T4", "RR")},
+    "rr-batched": {"arm": "grouped", "levers": ("T1", "T2", "T4", "RR", "AB")},
 }
 COMPARISONS = {"310": ARMS, "tuning": ("baseline-grouped", "tuned-grouped"),
-               "rr": ("repair-tuned", "repair-tuned-rr")}
+               "rr": ("repair-tuned", "repair-tuned-rr"),
+               "batch": ("rr-base", "rr-batched")}
 TUNING_VARIANTS = COMPARISONS["tuning"]
 RR_VARIANTS = COMPARISONS["rr"]
+BATCH_VARIANTS = COMPARISONS["batch"]
 TUNING_JOBS = 12
 TUNING_REPEATS = 2
 DEFAULT_REPEATS = {"310": 3, "tuning": TUNING_REPEATS}
@@ -200,6 +206,11 @@ RR_JOBS = 8
 RR_REPEATS = 2
 RR_CASES = ("native-chain", "sequential-delegates")
 RR_CAP_MARGIN = 400_000
+BATCH_DESIGN = "docs/superpowers/specs/2026-11-13-batched-author-design.md"
+BATCH_JOBS = 8
+BATCH_REPEATS = 2
+BATCH_CASES = RR_CASES
+BATCH_CAP_MARGIN = 400_000
 # At most two resumes per thread: the repair cap (MAX_REPAIR_ROUNDS) already bounds it.
 MAX_RESUMES = 2
 # T1: no --output-schema, so the shape is spelled out here. The fixed text comes first
@@ -251,6 +262,28 @@ RR_DELTA_PROMPT = (
     "same shape as before, echoing the new reviewer_context_id.\n\nRE-REVIEW DELTA:\n"
 )
 RR_PROMPTS = {"review_rr_delta_turn": RR_DELTA_PROMPT}
+# AB: the batching paragraph of probe B, verbatim from BATCH_DESIGN. It goes between
+# AUTHOR_PROMPT (which ends in a newline) and the brief view, on every author call of the
+# batched arm and on no other call.
+AB_PARAGRAPH = (
+    "Work in as few tool steps as you can: do not explore or re-read files you "
+    "already have in this prompt; write each file you own completely in a single "
+    "edit; then run the fast check once. Only if it fails, fix and run it again.\n"
+)
+BATCH_PROMPTS = {"author_batching_paragraph_ab": AB_PARAGRAPH}
+BATCH_LIMITS = [
+    "n = 2 per mode: a better verdict supports the batching paragraph in these scopes "
+    "only, not a general claim.",
+    "The seeds are loud, so both arms are likely to catch all of them; the seed gate has "
+    "little power, as in #310.",
+    "Fewer exploratory steps could hide a quality cost that the oracle does not test; only "
+    "the gates guard against it.",
+    "Author cache misses are server-side noise. The comparison is paired but cannot remove "
+    "that noise.",
+    "The paragraph sits between AUTHOR_PROMPT and the brief view, as the design's arm table "
+    "says; probe B measured it appended at the end of the prompt, so the effect size may "
+    "differ from the probe's.",
+]
 TUNING_LIMITS = [
     "Two repeats per mode is a small sample: a better verdict supports tuning the host's "
     "guidance in these scopes only, not a general claim.",
@@ -527,6 +560,14 @@ def root_argument(command: str) -> str | None:
         if ROOT_ARG.search(args):
             return "filesystem root"
     return None
+
+
+TOOL_STEP_TYPES = ("command_execution", "file_change")
+
+
+def tool_steps(items: list[dict]) -> int:
+    """Tool steps of one call: its completed command_execution and file_change items."""
+    return sum(item.get("type") in TOOL_STEP_TYPES for item in items)
 
 
 def audit_items(items: list[dict], workspace: Path) -> list[dict]:
@@ -1079,7 +1120,8 @@ class Arm:
                        "fallbacks": 0}
         # The RR comparison's extra counts (both of its arms, so they compare); a #310 or
         # tuning record has none of these keys.
-        self.rr_comparison = arm in RR_VARIANTS
+        self.batch_comparison = arm in BATCH_VARIANTS
+        self.rr_comparison = arm in RR_VARIANTS or self.batch_comparison
         if self.rr_comparison:
             self.counts.update(resume_fallbacks=0, fresh_after_error=0, resume_capped=0)
         # RR: per reviewer unit, the thread its last review left behind and what that
@@ -1453,6 +1495,8 @@ class Arm:
         # total with cache reads beside it.
         call["tokens_excl_cache"] = usage_tokens(call["usage"], include_cache=False)
         call["tokens"] = usage_tokens(call["usage"])
+        if self.batch_comparison and kind != "review":
+            call["tool_steps"] = tool_steps(call["items"])
         if mode == "parent" and self.parent_thread is None and call["thread_id"]:
             self.parent_thread = call["thread_id"]
         if mode == "parent" and call["thread_id"] is None:
@@ -1594,6 +1638,8 @@ class Arm:
             return await self.patch_repair(uid, view, brief, call_id)
         preamble = {"author": AUTHOR_PROMPT, "repair": REPAIR_PROMPT,
                     "integration": INTEGRATION_PROMPT}[unit["kind"]]
+        if unit["kind"] == "author" and "AB" in self.levers:
+            preamble += AB_PARAGRAPH
         prompt = preamble + view + "\n\n" + brief
         call = await self.model(uid, call_id, prompt, "author")
         if call["error"] or call["audit_hits"]:
@@ -2275,8 +2321,27 @@ class Arm:
         }
         if self.rr_comparison:
             record.update(self.rr_record())
+        if self.batch_comparison:
+            record.update(self.batch_record())
         record["observations"] = observations(self.case, record)
         return record
+
+    def batch_record(self) -> dict:
+        """The AB comparison's extra figures: the author calls' tool steps (completed
+        command_execution and file_change items), per call and in total, and the
+        author-only cost (uncached input + output, and the raw total)."""
+        calls = [c for c in self.calls if c["kind"] == "author"]
+        usage = sum_usage([c["usage"] for c in calls])
+        steps = [{"call": c["id"], "unit": c["unit"], "tool_steps": c.get("tool_steps")}
+                 for c in calls]
+        return {
+            "author_calls": len(calls),
+            "author_tool_steps": steps,
+            "author_tool_steps_total": (None if any(s["tool_steps"] is None for s in steps)
+                                        else sum(s["tool_steps"] for s in steps)),
+            "author_tokens_excl_cache": usage_tokens(usage, include_cache=False),
+            "author_tokens": usage_tokens(usage),
+        }
 
     def rr_record(self) -> dict:
         """The RR comparison's extra figures: re-review-only cost, the counts, and every
@@ -2778,6 +2843,15 @@ RR_COUNTS = ("patch_calls", "patch_invalid_answers", "patch_red_checks", "fallba
              "fresh_after_error", "resume_capped", "convergence_findings")
 
 
+# The AB comparison reads the RR figures plus the author-only cost and the author tool steps.
+BATCH_METRICS = {
+    **RR_METRICS,
+    "author_uncached_plus_output": lambda r: r.get("author_tokens_excl_cache"),
+    "author_raw": lambda r: r.get("author_tokens"),
+    "author_tool_steps": lambda r: r.get("author_tool_steps_total"),
+}
+
+
 def rejection_stop(record: dict) -> bool:
     """A protocol stop by the rejection cap (not an accepted arm whose oracle failed)."""
     return not record["accepted"] and stop_kind_of(record) == "protocol"
@@ -2906,6 +2980,11 @@ RR_SPEC = {
     "limits": RR_LIMITS, "jobs": RR_JOBS, "metrics": RR_METRICS,
     "counts": RR_COUNTS, "smoke_spend_counts": True,
 }
+BATCH_SPEC = {
+    "comparison": "batch", "variants": BATCH_VARIANTS, "design": BATCH_DESIGN,
+    "limits": BATCH_LIMITS, "jobs": BATCH_JOBS, "metrics": BATCH_METRICS,
+    "counts": RR_COUNTS, "smoke_spend_counts": True, "cap_margin": BATCH_CAP_MARGIN,
+}
 
 
 def summarize_tuning(records: list[dict], budget_tokens: int | None = None) -> dict:
@@ -2920,6 +2999,14 @@ def summarize_rr(records: list[dict], budget_tokens: int | None = None) -> dict:
     same gates, verdicts and rerun rule. Its smoke projection is the larger smoke job x 8,
     and that projection plus the smoke's own spend must fit the budget (RR_DESIGN)."""
     return summarize_pairs(records, RR_SPEC, budget_tokens)
+
+
+def summarize_batch(records: list[dict], budget_tokens: int | None = None) -> dict:
+    """The AB comparison (rr-base vs rr-batched), by the tuning machinery: the same gates,
+    verdicts, rerun rule and smoke projection (larger smoke job x 8, plus the smoke's own
+    spend, must fit the budget; BATCH_DESIGN), with author-only cost and author tool
+    steps among the reported metrics."""
+    return summarize_pairs(records, BATCH_SPEC, budget_tokens)
 
 
 def summarize_pairs(records: list[dict], spec: dict, budget_tokens: int | None = None) -> dict:
@@ -3007,6 +3094,7 @@ def summarize_pairs(records: list[dict], spec: dict, budget_tokens: int | None =
             # RR_DESIGN: the projection plus the smoke's own spend must fit the budget; the
             # run's cap is what remains after the smoke, less a margin.
             smoke_summary = summary["smoke"]
+            margin = spec.get("cap_margin", RR_CAP_MARGIN)
             smoke_summary["projection_rule"] = (
                 f"largest smoke job x {jobs} (pessimistic); with the smoke's own spend it "
                 "must fit the budget")
@@ -3017,14 +3105,16 @@ def summarize_pairs(records: list[dict], spec: dict, budget_tokens: int | None =
                 else projected + pair_total <= budget_tokens)
             smoke_summary["run_cap_after_smoke"] = (
                 None if pair_total is None or budget_tokens is None
-                else budget_tokens - pair_total - RR_CAP_MARGIN)
-            smoke_summary["run_cap_margin"] = RR_CAP_MARGIN
+                else budget_tokens - pair_total - margin)
+            smoke_summary["run_cap_margin"] = margin
     return summary
 
 
 def summarize(records: list[dict], budget_tokens: int | None = None) -> dict:
     """The summary a runs.jsonl recomputes to: tuning or RR when its records are those
     comparison's variants, else #310's."""
+    if any(r.get("variant") in BATCH_VARIANTS for r in records):
+        return summarize_batch(records, budget_tokens)
     if any(r.get("variant") in RR_VARIANTS for r in records):
         return summarize_rr(records, budget_tokens)
     if any(r.get("variant") in TUNING_VARIANTS for r in records):
@@ -3134,15 +3224,17 @@ def metadata(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bin:
     if comparison != "310":
         meta.update(
             comparison=comparison,
-            design=RR_DESIGN if comparison == "rr" else TUNING_DESIGN,
+            design={"rr": RR_DESIGN, "batch": BATCH_DESIGN}.get(comparison, TUNING_DESIGN),
             variants={v: {"arm": VARIANTS[v]["arm"], "levers": list(VARIANTS[v]["levers"])}
                       for v in COMPARISONS[comparison]},
             tuning_prompts=TUNING_PROMPTS,
             tuning_limitations=TUNING_LIMITS,
         )
-        if comparison == "rr":
+        if comparison in ("rr", "batch"):
             meta.update(rr_prompts=RR_PROMPTS, rr_limitations=RR_LIMITS,
                         rr_max_resumes_per_thread=MAX_RESUMES)
+        if comparison == "batch":
+            meta.update(batch_prompts=BATCH_PROMPTS, batch_limitations=BATCH_LIMITS)
     if budget_tokens is not None:
         meta["budget_tokens"] = budget_tokens
     return meta
@@ -3331,10 +3423,11 @@ def run_live(out, cases: list[dict] | None = None, repeats: int | None = None,
         raise ValueError(f"unknown comparison {comparison}; one of {', '.join(COMPARISONS)}")
     if budget_tokens is not None and (type(budget_tokens) is not int or budget_tokens < 1):
         raise ValueError("budget_tokens must be a positive integer")
-    if comparison in ("tuning", "rr") and not smoke and budget_tokens is None:
+    if comparison in ("tuning", "rr", "batch") and not smoke and budget_tokens is None:
         raise ValueError(f"a {comparison} run needs budget_tokens (the design's budget stop)")
     if repeats is None:
-        repeats = RR_REPEATS if comparison == "rr" else DEFAULT_REPEATS[comparison]
+        repeats = (RR_REPEATS if comparison == "rr" else BATCH_REPEATS if comparison == "batch"
+                   else DEFAULT_REPEATS[comparison])
     run = {"comparison": comparison, "budget_tokens": budget_tokens}
     if codex_auth is None:
         return _run_live(out, cases, repeats, smoke, codex_bin, author_timeout,
@@ -3374,7 +3467,7 @@ def _run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_time
     out.mkdir(parents=True, exist_ok=False)
     if cases is None:
         cases = live_cases.live_cases()
-        if comparison == "rr" and not smoke:
+        if comparison in ("rr", "batch") and not smoke:
             cases = [c for c in cases if c["id"] in RR_CASES]
     else:
         cases = copy.deepcopy(cases)
@@ -3401,6 +3494,7 @@ def _run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_time
         records = read_runs(out) if runs.exists() else []
         summary = (summarize_tuning(records, budget_tokens) if comparison == "tuning"
                    else summarize_rr(records, budget_tokens) if comparison == "rr"
+                   else summarize_batch(records, budget_tokens) if comparison == "batch"
                    else summarize_live(records))
         if budget is not None:
             # The watcher's own state is not in runs.jsonl: written beside it.
@@ -3429,7 +3523,8 @@ def main() -> None:
     parser.add_argument("--comparison", choices=sorted(COMPARISONS), default="310",
                         help="310: per-task vs grouped (default); tuning: baseline-grouped vs "
                         "tuned-grouped (T1-T4); rr: repair-tuned vs repair-tuned-rr "
-                        "(reviewer thread resume)")
+                        "(reviewer thread resume); batch: rr-base vs rr-batched (batched "
+                        "author prompt)")
     parser.add_argument("--budget-tokens", type=int, default=None,
                         help="cap on this run's raw Codex tokens; checked before each job, "
                         "the run stops cleanly when the next job would cross it")
@@ -3451,7 +3546,7 @@ def main() -> None:
     if not args.out:
         parser.error("--out is required unless --summarize is given")
     cases = live_cases.live_cases()
-    if args.comparison == "rr" and not args.cases and not args.smoke:
+    if args.comparison in ("rr", "batch") and not args.cases and not args.smoke:
         cases = [c for c in cases if c["id"] in RR_CASES]
     if args.cases:
         unknown = set(args.cases) - {c["id"] for c in cases}
@@ -3463,9 +3558,10 @@ def main() -> None:
                        args.author_timeout, args.review_timeout, codex_auth=auth,
                        comparison=args.comparison, budget_tokens=args.budget_tokens)
     print(json.dumps(summary, indent=2))
-    if args.smoke and args.comparison in ("tuning", "rr"):
+    if args.smoke and args.comparison in ("tuning", "rr", "batch"):
         smoke = summary.get("smoke", {})
-        jobs = RR_JOBS if args.comparison == "rr" else TUNING_JOBS
+        jobs = (RR_JOBS if args.comparison == "rr" else BATCH_JOBS if args.comparison == "batch"
+                else TUNING_JOBS)
         print(
             f"projection: {smoke.get(f'projected_tokens_for_{jobs}_jobs')} tokens for "
             f"{jobs} jobs (budget {args.budget_tokens}; fits: "
