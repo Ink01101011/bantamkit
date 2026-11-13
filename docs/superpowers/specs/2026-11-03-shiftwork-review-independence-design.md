@@ -598,3 +598,219 @@ moves out of #307, and nothing below claims full-workflow savings.
    frozen thresholds in *Matched evaluation and adoption criteria*. Only its
    result can widen the guidance in (1) or justify any further runtime or schema
    proposal.
+
+### Live core-mode evaluation results — 2026-11-13 (#310)
+
+Published [records, raw host events and summary](../../eval-data/2026-11-13-grouped-review-live-core.json).
+Design: [`2026-11-13-grouped-review-live-eval-design.md`](2026-11-13-grouped-review-live-eval-design.md).
+The frozen thresholds above are applied unchanged.
+
+Scope: the three core execution modes only (native chain, sequential delegates,
+parallel/mixed fork/join). The five scenarios (branch failure, evidence faults,
+risk decision, budget/reviewer bottleneck, investigation) were **not run**.
+Authors, repairers and reviewers are live Codex CLI `0.167.1` agents
+(`gpt-6.1-sol`, medium reasoning) under an isolated Codex home. Planner and
+dispatcher are deterministic harness code, zero model tokens in both arms.
+Every unit is a real Shiftwork unit in a per-arm checkpoint. 18 arms ran one at a
+time from 09:21:19 to 10:03:54 UTC: 3 modes × 2 arms × 3 repeats, arm order
+counterbalanced by repeat. Harness commit `c81be51c`; the executed sha256s of
+`live_run.py`, `live_cases.py`, `run_eval.py` and `codex_adapter.py` equal the
+files at that commit.
+
+Hygiene: 0 harness-censored arms, no voided attempts, no unknown usage, the
+access audit clean and no write conflicts in all 18 arms. No escalations and no
+human interventions. No call reported a nonzero `cache_write_input_tokens`.
+
+| Mode | Arm | Total tokens, median (range) | Review tokens, median (range) | Accepted latency, median (range) | Accepted |
+| --- | --- | ---: | ---: | ---: | ---: |
+| native-chain | per-task | 350,424 (329,303–355,243) | 70,186 (69,641–70,208) | 156.4s (151.2–163.1) | 3/3 |
+| native-chain | grouped | 314,703 (301,983–316,997) | 30,412 (30,338–30,526) | 129.6s (128.2–132.2) | 3/3 |
+| sequential-delegates | per-task | 356,395 (342,181–371,250) | 69,471 (69,329–69,548) | 159.6s (157.6–160.4) | 3/3 |
+| sequential-delegates | grouped | 317,218 (303,595–361,610) | 30,072 (29,980–45,904) | 126.8s (118.4–135.2), n=2 | 2/3 |
+| mixed-fork-join | per-task | 384,304 (366,316–385,018) | 78,390 (75,212–81,536) | 125.7s (122.0–144.7) | 3/3 |
+| mixed-fork-join | grouped | 360,618 (360,058–376,390) | 56,180 (54,656–56,260) | 132.8s (127.6–137.3) | 3/3 |
+
+Token totals include cache reads, unweighted; they are counts, not dollars. The
+stopped sequential-delegates grouped arm is in the token columns (spend to stop)
+but not in latency; its time to stop was 169.1s.
+
+Paired savings (frozen formulas, three pairs per mode):
+
+| Mode | Review saving, median (range) | Total saving, median (range) |
+| --- | ---: | ---: |
+| native-chain | 56.5% (56.4–56.7%) | 10.8% (4.4–13.8%) |
+| sequential-delegates | 56.8% (33.8–56.8%) | 7.3% (2.6–14.8%) |
+| mixed-fork-join | 28.3% (27.3–31.0%) | 6.2% (−2.8–6.5%) |
+| all nine pairs | 56.4% (27.3–56.8%) | 6.5% (−2.8–14.8%) |
+
+The 33.8% sequential-delegates pair is the one whose grouped arm stopped. Without
+cache reads, median total saving is 41.7%, 35.2% and 6.6% by mode (mixed-fork-join
+range −42.6% to 32.1%).
+
+Quality: every arm had two seeds and all 36 were caught at their first review.
+Grouped review missed no seed that per-task review caught. In the fork/join mode
+the contract seed (K) is caught by the QK gate in both arms, so only seed C
+tests grouping there. The final hidden oracle passed 9/9 criteria in all 18 arms,
+including on the stopped arm's last revision. There were 36 true findings and 2
+false findings by the oracle rule. Both false findings were in the stopped arm
+(below). Rework rounds: per-task arms always took 2, one per seeded unit.
+Grouped native-chain and sequential-delegates arms took 1, both seeds in one
+rejection, except the stopped arm with 3. Grouped fork/join took 2, QK then R.
+
+Per-mode threshold verdicts:
+
+| Mode | No grouped miss | Median total decreases | Latency not increased | Approval/coverage holds | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| native-chain | yes | yes | yes | yes | **pass** |
+| sequential-delegates | yes | yes | yes | **no** | **fail** |
+| mixed-fork-join | yes | yes | **no** | yes | **fail** |
+
+**Sequential delegates, repeat 2, grouped.** R rejected three times. The cap of
+two repair rounds was reached, a protocol stop that counts against the threshold.
+The hidden oracle was run on each reviewed snapshot afterwards, whole and per unit:
+
+1. Review 0 found both seeds (A-fields: no strip before matching; C-filter:
+   negated level comparison). Both were true. The oracle failed A-fields and all
+   three C criteria, which is the failing set the seeding step recorded for those
+   two seeds. Repairs A2-r1 and C2-r1 fixed both. At the next snapshot the oracle
+   passes 9/9.
+2. Review 1 found A-invalid: `re.IGNORECASE` covers the whole pattern, so a
+   lower-case `t`/`z` timestamp is accepted. That is true of the code; the
+   snapshot accepts `2026-01-01t00:00:00z INFO app: hello`. Task A fixes the
+   format as `YYYY-MM-DDTHH:MM:SSZ`, so it deviates from the written task. The
+   hidden oracle does not test it and passes, so the frozen rule scores it false.
+   The flag was already present at review 0, which did not raise it. Repair A2-r2
+   scoped the flag to the level, and the probe then returns None. The last
+   review snapshot of every other sequential-delegates arm rejects that line.
+3. Review 2 found B-order: `strftime('%Y')` might not zero-pad years below 1000
+   "on Unix platforms". `window.py` was byte-identical across all three reviews.
+   On the host that ran the oracle (macOS), the snapshot sorts `0999-12-31` before
+   `1000-01-01` correctly. The oracle passes, so the finding is scored false. Other
+   platforms were not tested.
+
+So R did not keep rejecting one real defect that repairs failed to fix. Every
+finding it raised was repaired by the next round. Each later round raised a new
+finding on code that had not changed since review 0. One was a real but
+oracle-untested deviation from the task. The other did not reproduce on the
+evaluation host. The arm stopped on reviewer non-convergence, not on a missed or
+unfixed defect. The frozen protocol counts that as an approval failure. The
+per-task arm of the same repeat was accepted in 160.4s.
+
+**Mixed fork/join latency.** Paired accepted latencies, per-task / grouped:
+repeat 0 144.7s / 137.3s, repeat 1 125.7s / 132.8s, repeat 2 122.0s / 127.6s.
+Repeat 1 ran grouped first, the others per-task first. The grouped median is
+7.1s (5.6%) higher. That is smaller than the per-task arm's own run-to-run range
+of 22.8s (grouped: 9.7s). One of the three pairs went the other way; excluding it (repeat 0), grouped
+was slower in both remaining pairs, by 7.1s and 5.6s. After B∥C,
+per-task runs QA_B∥QA_C, C2, QA_C, I, QA_I. Grouped runs I, R, C2, R. Each group
+review took 8.6–12.5s, against 5.6–9.8s for a per-task QA_B, QA_C or QA_I review. The data do
+not show grouping is slower in this mode. They also do not show it is not
+slower, and the frozen threshold, applied as frozen, fails.
+
+Spend. Every Codex token #310 spent, cache reads included:
+
+| Item | Tokens |
+| --- | ---: |
+| resume-usage probe | 58,587 |
+| skills probe (3 calls) | 59,618 |
+| isolated-home probes (3 calls) | 46,553 |
+| censored first smoke arm | 73,964 |
+| valid smoke pair (366,722 + 374,041) | 740,763 |
+| matched run (18 arms) | 6,253,606 |
+| **total** | **7,233,091** |
+
+The three probe figures come from the job's checkpoint history notes; their raw
+events are not published. The smoke figures and the run are recomputed from raw
+rows by the check below. Smoke data are outside the matched sample.
+
+Limits: three repeats per mode support limited pilot guidance only. Three repeats
+leave a 2:1 order imbalance per mode. Seeds are loud mutations, so the
+missed-defect check has little power against subtle defects. Single host, single
+model, one reviewer setting. A real orchestrator spends planner and dispatch
+tokens that this harness does not. Elapsed time is host wall clock with jobs run
+one at a time; seeding time is excluded from accepted latency. The full list is
+the `limitations` field in the published summary. For a resumed parent call,
+`calls/<id>/call.json` on disk reports the session's cumulative usage. The
+published per-call usage is the per-thread delta. The raw last row is kept as
+`reported_cumulative`. No fresh call had more than one `turn.completed` row.
+All 170 calls had exactly one.
+
+Published file, 2,183,434 bytes: run metadata, the 18 records, the summary, every
+Codex event, argv, prompt and stderr per call, and the smoke usage rows. Not
+published: Codex session rollouts and any auth material. Also not published: arm
+workspaces and snapshots, and the on-disk `call.json`. Absolute paths and the
+local user name are replaced by `$REPO`, `$RUN`, `$EVAL`, `$HOME`, `$TMPDIR` and
+`$USER`.
+
+Open harness items, none affecting these numbers:
+
+1. A timeout leaves the next resumed call on that thread with no baseline, so it
+   becomes unknown too. Such a pair is voided anyway. None occurred.
+2. `call.json` shows cumulative usage for resumed calls; publish from records.
+3. The cache-write flag would repeat on later resumed calls of a thread, because
+   it reads the cumulative row. No nonzero value occurred.
+4. A clock-out note gives a stale hard-coded reason.
+5. A fresh parent call with more than one `turn.completed` row would be summed
+   while later resumes subtract its last row. None occurred.
+6. A comment in `live_run.py` says `Arm.model` and means `Arm.account`.
+7. The sequential-delegates oracle does not test the timestamp's letter case.
+
+**Decision: blocked.** native-chain passes every core-mode threshold.
+sequential-delegates fails approval/coverage (one grouped arm stopped at the
+rejection cap). mixed-fork-join fails latency. A failing mode blocks adoption for
+that mode, so grouped review is not adopted for sequential delegates or mixed
+fork/join. For native chain, the best this job can record is "core mode passes;
+adoption beyond review-only guidance waits for the scenarios". The scenarios were
+not run, so no mode can be adopted beyond the review-only guidance in
+*Decision — design closed by scope split* item 1. That guidance stands
+unchanged. Grouped review used a median 56.4% fewer review tokens across the
+nine pairs, and median total saving was 6.5%. These savings are reported as the
+protocol requires and do not override the gate failures. No runtime or schema
+change is proposed.
+
+Offline verification of the published report (run from the repo root with `.venv/bin/python`):
+
+```python
+import json
+from pathlib import Path
+from tools.eval.grouped_review.live_run import summarize_live
+
+report = json.loads(Path('docs/eval-data/2026-11-13-grouped-review-live-core.json')
+                    .read_text(encoding='utf-8'))
+assert summarize_live(report['records']) == report['summary']
+F = ('input_tokens', 'cached_input_tokens', 'output_tokens')
+
+
+def check(run, rows_of):
+    last, total, review = {}, 0, 0
+    for call in run['calls']:
+        rows = rows_of(call)
+        if call['resumed']:  # cumulative: this call's last row minus the thread's previous
+            own = {k: rows[-1][k] - last[call['thread_id']][k] for k in F}
+        else:                # fresh: its own rows
+            own = {k: sum(r[k] for r in rows) for k in F}
+        last[call['thread_id']] = rows[-1]
+        u = call['usage']
+        assert (u['uncached_input'], u['cache_read'], u['output']) == (
+            own['input_tokens'] - own['cached_input_tokens'],
+            own['cached_input_tokens'], own['output_tokens'])
+        n = u['uncached_input'] + u['cache_read'] + u['output']
+        total += n
+        review += n if call['kind'] == 'reviewer' else 0
+    assert (total, review) == (run['total_tokens'], run['review_tokens'])
+
+
+events = report['raw_host_events']
+for run in report['records']:
+    check(run, lambda c: [e['usage'] for e in events[c['id']]['codex_events']
+                          if e['type'] == 'turn.completed'])
+for name in ('smoke', 'smoke2'):
+    for run in report['setup_spend'][name]['runs']:
+        check(run, lambda c: c['turn_completed'])
+spend = report['total_codex_spend']
+assert spend['matched_run'] == sum(r['total_tokens'] for r in report['records']) == 6253606
+assert spend['smoke_censored_arm'] + spend['smoke2_pair'] == sum(
+    r['total_tokens'] for n in ('smoke', 'smoke2') for r in report['setup_spend'][n]['runs'])
+assert spend['total'] == sum(spend['probes'].values()) + spend['smoke_censored_arm'] \
+    + spend['smoke2_pair'] + spend['matched_run'] == 7233091
+```

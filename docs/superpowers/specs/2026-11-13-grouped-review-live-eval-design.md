@@ -247,3 +247,16 @@ blocks adoption outright.
 | P | implementer | full 18-job run |
 | A | implementer | publish data, write the decision into the parent design |
 | QA | reviewer | independent review of data, recompute, decision text |
+
+## Results (2026-11-13)
+
+The full run is recorded in the parent design, *Live core-mode evaluation results
+— 2026-11-13 (#310)*. Data and an offline recompute check are in
+[`docs/eval-data/2026-11-13-grouped-review-live-core.json`](../../eval-data/2026-11-13-grouped-review-live-core.json).
+All 18 arms ran with no harness censor. native-chain **passes** its core-mode
+thresholds. sequential-delegates **fails** approval/coverage, because one grouped
+arm stopped at the rejection cap. mixed-fork-join **fails** latency: the grouped
+median was 7.1s higher. The decision is **blocked**, and the review-only
+guidance is unchanged. Median review saving was 56.4% and median total saving
+6.5% over nine pairs. All #310 Codex spend was 7,233,091 tokens, below the
+9–12M estimate.
