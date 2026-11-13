@@ -177,6 +177,33 @@ could never seed C. Per-task review would remove A's seed first, so the two arms
 would be seeded unequally. The final acceptance oracle still runs on the real
 integrated workspace.
 
+## Resumed-session usage is cumulative (measured 2026-11-13)
+
+Before the smoke pair ran, a three-turn no-tool probe on Codex CLI 0.167.1
+(`gpt-6.1-sol`, one session, resumed twice, each turn replying "OK") reported
+these `turn.completed` usages:
+
+| Call | input_tokens | cached_input_tokens | output_tokens |
+| --- | ---: | ---: | ---: |
+| fresh | 19,499 | 12,288 | 5 |
+| resume 1 | 39,023 | 24,576 | 10 |
+| resume 2 | 58,572 | 43,904 | 15 |
+
+Identical replies whose output goes 5 → 10 → 15 show that a resumed call
+reports the **session's running total**, not that call's own usage. The
+native-chain parent session (and the fork/join parent for K and I) is therefore
+accounted per call as **this call's reported totals minus the previous call's
+reported totals on the same thread**. Calls on one thread never overlap, so the
+subtraction is exact. The raw cumulative figures are kept beside the per-call
+figures. A missing earlier total, or a negative difference in any field, makes
+that call's usage **unknown**, never zero. Fresh calls (delegates, reviewers,
+and every #307 pilot call) are single-turn sessions and are unaffected.
+
+Reasoning tokens stay inside `output_tokens`, as in #307: in the 72 pilot
+events `reasoning_output_tokens` never exceeded `output_tokens`.
+`cache_write_input_tokens` is recorded raw. A nonzero value is flagged in the
+summary, because the #307 rule assumed that category does not occur.
+
 ## Decision rule
 
 Apply the frozen thresholds per execution-mode cohort: grouped misses no seeded
