@@ -149,8 +149,13 @@ An arm can stop two ways, recorded as `stop_kind`:
 Rerun rule: a harness censor voids the **whole pair** (both arms of that case and
 repeat). The pair is rerun **once**, in the same arm order, as a new attempt of
 the same repeat. If the rerun is also harness-censored, the pair is reported as
-inconclusive and so is that mode's verdict; it is never counted as a fail or a
-pass. Voided attempts are kept and published with their spend.
+inconclusive. It is never counted as a fail or a pass. Voided attempts are kept
+and published with their spend.
+
+A mode's verdict is **fail** if any threshold check is false on its clean
+(uncensored) pairs: every threshold must hold, so a missing pair cannot rescue
+it. Otherwise, if any pair is still censored, the verdict is **inconclusive**.
+The verdict is **pass** only when every pair is clean and every check holds.
 
 Isolation: every arm workspace is created in an opaque temporary directory
 outside the repository and outside the run's output directory. Run output
