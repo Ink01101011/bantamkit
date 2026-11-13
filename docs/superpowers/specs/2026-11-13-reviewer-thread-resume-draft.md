@@ -183,3 +183,69 @@ The estimate is not measured.
 **Next step.** This needs a maintainer decision. The pre-declared comparison
 (T2+T4 against T2+T4+RR, 8 jobs plus a smoke pair, about 2.5–3.0M raw) needs a
 budget.
+
+## Frozen comparison design (2026-11-13, before any RR comparison run)
+
+The maintainer approved a **3,000,000-token budget** for the comparison. It is
+separate from #310's 12M cap and from the 80,000 for the probe. This section
+governs. The earlier "Plan" section is replaced by it where they differ.
+
+**Arms.** Both arms use grouped review with the #310 fixtures, seeds, hidden
+oracle, isolated Codex home, model (`gpt-6.1-sol`) and author settings. They
+also share the access audit, write attribution, contract gate QA_K, I2 and the
+repair cap of two rounds.
+
+| | `repair-tuned` | `repair-tuned-rr` |
+| --- | --- | --- |
+| Repair | T2 patch with one shell fallback, T4 low effort | same |
+| Reviewer flags | tools disabled, no `--output-schema` (T1) | same |
+| First review of a group | fresh session, full request | fresh session, full request, **not** `--ephemeral` |
+| Re-review | fresh `--ephemeral` session, full request (no T3) | **resume the same reviewer's own thread** with a delta turn: the new `reviewer_context_id`, changed members' file text, every member's revision and fast check, the change flags and the T3 instructions |
+| After a reviewer-error round | fresh full review | fresh full review, which starts a new thread |
+| Resume fails at harness level | n/a | one fresh full review, counted as `resume_fallbacks` |
+
+The arms differ **only** in how a re-review is delivered. Accounting is by
+per-thread delta for resumed calls (W5). At most two resumes per thread, which
+follows from the repair cap.
+
+**Cells.**
+
+- native-chain and sequential-delegates, 2 repeats each, 2 arms: 8 jobs, run
+  one at a time. Even repeats run `repair-tuned` first.
+- A smoke pair (mixed-fork-join, repeat 0) runs first. It is reported as
+  indicative and is not merged into the comparison.
+
+**Metric.** The primary metric is the per-mode median uncached + output and the
+paired saving `1 − rr / base`. Alongside it are reported:
+
+- raw totals;
+- reviewer-only cost and re-review-only cost;
+- invalid answers and `resume_fallbacks`;
+- a **convergence count**: new findings on members whose revision is unchanged
+  since that reviewer's previous review.
+
+**Gates.** These are the tuning design's five gates, unchanged. The RR arm fails
+a mode if any of these hold:
+
+- it misses a seed the paired base caught;
+- it has a quality failure;
+- it has a protocol stop the paired base did not have;
+- it has more false findings summed over the mode;
+- its median accepted latency is higher.
+
+**Verdicts** are better, not-better, fail or inconclusive, under the same rules
+and with the same #310 rerun rule for harness censors.
+
+**Budget stop.**
+
+- The smoke projection is the larger smoke job × 8. It plus the smoke's spend
+  must fit 3,000,000, or the run stops and asks.
+- The run's cap is the remainder after the smoke, minus a margin of 400,000.
+  The comparison refuses to start without a cap.
+
+**Limits.** These are the tuning design's limits:
+
+- n = 2 per mode;
+- loud seeds, so the seed gate has little power;
+- anchoring shows only through the gates;
+- the probe ran on one group only.
