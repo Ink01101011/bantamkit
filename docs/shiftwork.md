@@ -840,23 +840,33 @@ not proven savings.
     - Whether a resumed reviewer anchors on its earlier approval is untested,
       because no re-review faced a surviving defect.
   - [RR results](superpowers/specs/2026-11-13-reviewer-thread-resume-draft.md).
-- **Promising, one sample: ask authors for fewer, larger tool steps.** The probe
-  appended one paragraph to the author prompt: do not re-read what the prompt
-  already holds, write each owned file in a single edit, and run the fast check
-  once. Both variants passed the fast check and the hidden oracle.
+- **Ask delegated authors to work in fewer, larger tool steps.** Add one
+  paragraph to the author prompt of a fresh delegate:
 
-  | Author on sequential-delegates unit A | Tool steps | Uncached input + output | Raw tokens |
-  | --- | ---: | ---: | ---: |
-  | Default prompt | 6 | 17,492 | 64,980 |
-  | With the batching paragraph | 1 | 3,216 | 25,232 |
+  > Work in as few tool steps as you can: do not explore or re-read files you
+  > already have in this prompt; write each file you own completely in a single
+  > edit; then run the fast check once. Only if it fails, fix and run it again.
 
-  - The default run was dearer than usual. Across 128 earlier fresh author and
-    repair calls, the median was 6,063 at 4 steps, and each extra step added
-    about 1,000.
-  - Fewer steps also means fewer chances to lose the cache, since each request
-    can miss.
-  - This is n=1 per variant, so it is a lever to test, not a measured saving.
-
+  - **Measured in sequential-delegates (2 pairs).** Author tool steps fell from
+    14 and 12 to 5 and 5. Whole-job uncached input + output fell 28% at the
+    median, or about 22–24% after a skills-block confound sensitivity. Raw tokens
+    fell 28%. All five quality gates held.
+  - **Cost to quality.** 2 of the 12 batched author calls skipped reading an
+    upstream file and ran their own check red once, then recovered. A dependent
+    unit may need its dependency's interface in its brief.
+  - **Not for an author that is a turn in a resumed parent session (native
+    chain).** There, raw tokens fell 28% and latency improved, but uncached input
+    + output rose 22% at the median. The cause was one cache miss in r0's author
+    thread; there is little exploration to cut in a session that already holds
+    the context.
+  - [AB results](superpowers/specs/2026-11-13-batched-author-design.md).
+- **Keep the Codex home identical for every session in a run.** Codex fills
+  `plugins/cache/*` in `CODEX_HOME` during a run. That changes the skills block
+  near the start of the preamble: 2,014 characters of skills when the cache is
+  cold, 8,641 when it is warm. It flipped both ways inside one run, and it moves a
+  fresh session's input by about 1,700 tokens, which also changes where its
+  cache prefix matches. Before comparing runs, warm the home first, or disable
+  plugin fetching. Neither has been measured yet.
 - **Not adopted, because no effect was demonstrated:**
   - dropping the output schema as a stand-alone caching lever (it is part of the
     measured re-review setup above, not an independent saving);
