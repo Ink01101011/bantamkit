@@ -104,8 +104,18 @@ else:
                 "id": "cmd1", "type": "command_execution", "status": "completed",
                 "command": scn["audit_for"][rel]}})
     emit({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
+# Like the real CLI (probe 2026-11-13), a resumed call reports the SESSION's running
+# total, not its own usage; a fresh call's total is its own. The session spends tokens
+# even when this call reports none, so the total grows either way.
+own = scn["resumed"] if resume else scn["fresh"]
+state = Path(scn["log"] + ".total." + thread)
+before = json.loads(state.read_text()) if resume and state.exists() else {}
+total = {k: before.get(k, 0) + v for k, v in own.items()}
+state.write_text(json.dumps(total))
 if not any(f in scn.get("no_usage_for", []) for f in files):
-    emit({"type": "turn.completed", "usage": scn["resumed"] if resume else scn["fresh"]})
+    # per_turn_for: a call that reports its own usage, not the running total.
+    per_turn = any(f in scn.get("per_turn_for", []) for f in files)
+    emit({"type": "turn.completed", "usage": own if per_turn else total})
 with open(scn["log"], "a") as log:
     log.write(json.dumps({"argv": argv, "cwd": str(cwd), "resume": resume, "review": review,
                           "thread": thread, "files": files}) + "\n")
@@ -267,8 +277,9 @@ def test_native_chain_detecting_reviewer_full_protocol(tmp_path, monkeypatch):
             prompt = (out / call["artifact_dir"] / "prompt.txt").read_text(encoding="utf-8")
             assert str(lr.ROOT) not in prompt and str(out) not in prompt
             assert "brief_path" not in prompt and "next_action" not in prompt
-            assert call["turn_usages"] and call.get("cumulative_hint") is not True
-        assert record["cumulative_hint"]["calls"] == []
+            assert call["turn_usages"] and call["reported_cumulative"]
+            assert call["usage_raw"] is not None and "usage_unknown_reason" not in call
+        assert record["usage_unknown"] == [] and record["cache_write"]["calls"] == []
         # clock_in precedes every model call and clock_out follows it.
         trace = record["trace"]
         for i, row in enumerate(trace):
@@ -309,9 +320,17 @@ def test_native_chain_detecting_reviewer_full_protocol(tmp_path, monkeypatch):
         review_calls = [c for c in record["calls"] if c["kind"] == "reviewer"]
         resumed = sum(c["resumed"] for c in author_calls)
         assert resumed == len(author_calls) - 1
+        # The fake reports running totals; per call, the harness counts only the delta.
         assert record["usage"]["total"] == usage_of(
             len(review_calls) + 1, resumed
         )
+        parent = [c for c in record["calls"] if c["context"] == "parent"]
+        assert len(parent) >= 3 and len({c["thread_id"] for c in parent}) == 1
+        for n, call in enumerate(parent):
+            want = {k: FRESH[k] + n * RESUMED[k] for k in FRESH}
+            assert call["reported_cumulative"] == want
+            assert call["usage_raw"] == (FRESH if n == 0 else RESUMED)
+            assert call["usage"] == usage_of(n == 0, n > 0)
         assert record["review_tokens"] == 110 * len(review_calls)
 
     per, grouped = arms["per-task"], arms["grouped"]
@@ -387,10 +406,38 @@ def test_unknown_usage_stays_none_and_makes_the_total_unknown(tmp_path, monkeypa
         assert record["review_tokens"] is not None
         line = next(x for x in ledger(out, record) if x.get("unit") == "B" and "tokens" in x)
         assert line["estimate"] is True and "unknown" in line["note"]
+        # C resumes after B reported nothing: no earlier total on the thread, so unknown,
+        # never C's running total counted as its own.
+        c = next(u for u in record["units"] if u["id"] == "C")
+        assert c["usage"] is None
+        reasons = {r["unit"]: r["reason"] for r in record["usage_unknown"]}
+        assert reasons["B"] == "no turn.completed usage"
+        assert reasons["C"] == "resumed call with no earlier reported total on its thread"
+        line = next(x for x in ledger(out, record) if x.get("unit") == "C" and "tokens" in x)
+        assert line["estimate"] is True and "no earlier reported total" in line["note"]
     assert summary["pairs"][0]["total_saving"] is None
     assert summary["modes"]["native-chain"]["verdict"]["checks"][
         "median_total_tokens_decrease"
     ] is None
+
+
+def test_a_resumed_total_that_falls_is_unknown_not_counted(tmp_path, monkeypatch):
+    """B reports its own usage instead of the running total: output falls 10 -> 7, a
+    negative delta, so B is unknown; C has no trustworthy baseline after it."""
+    out, summary, arms, _ = run(
+        tmp_path, monkeypatch, "native-chain", reviewer="approve",
+        per_turn_for=["ledgerkit/lines.py"],
+    )
+    for record in arms.values():
+        units = {u["id"]: u for u in record["units"]}
+        assert units["A"]["usage"] == usage_of(1, 0)
+        assert units["B"]["usage"] is None and units["C"]["usage"] is None
+        b = next(c for c in record["calls"] if c["unit"] == "B")
+        assert b["reported_cumulative"] == RESUMED and b["usage_raw"] is None
+        reasons = {r["unit"]: r["reason"] for r in record["usage_unknown"]}
+        assert reasons["B"] == "output_tokens fell from 10 to 7: not a cumulative total"
+        assert reasons["C"] == "resumed call with no earlier reported total on its thread"
+        assert record["total_tokens"] is None and record["review_tokens"] is not None
 
 
 def test_smoke_runs_the_fork_join_pair_with_concurrent_delegates(tmp_path, monkeypatch, capsys):
@@ -419,6 +466,10 @@ def test_smoke_runs_the_fork_join_pair_with_concurrent_delegates(tmp_path, monke
         assert contexts == {"K": "parent", "B": "delegate", "C": "delegate", "I": "parent"}
         resumed = {c["unit"]: c["resumed"] for c in record["calls"] if c["kind"] == "author"}
         assert resumed == {"K": False, "B": False, "C": False, "I": True}
+        # I resumes K's session: its report is K + I, its usage only I's.
+        i = next(c for c in record["calls"] if c["unit"] == "I" and c["kind"] == "author")
+        assert i["reported_cumulative"] == {k: FRESH[k] + RESUMED[k] for k in FRESH}
+        assert i["usage"] == usage_of(0, 1)
         repairs = [c for c in record["calls"] if c["kind"] in ("repair", "integration")]
         assert repairs and all(c["context"] == "delegate" for c in repairs)
     assert len([c for c in calls if c["resume"]]) == 2
@@ -867,24 +918,100 @@ def test_write_attribution_from_boundary_hashes():
     assert f["conflict_free"] is None and f["unattributed"][0]["active"] == []
 
 
-def test_cumulative_hint_is_a_hint_and_spares_multi_request_turns():
-    """QW round 2, finding 5: one resumed turn of 8 model requests at ~20k context each
-    exceeds the session's earlier input on its own; that is not a cumulative counter."""
-    prompt = "x" * 4000
-    previous = {"input": 8 * 12000, "output": 4000}
-    multi_request = [{"input_tokens": 8 * 20000, "cached_input_tokens": 140000,
-                      "output_tokens": 4000}]
-    assert lr.cumulative_hint(multi_request, previous, prompt) is False
-    cumulative = [{"input_tokens": 8 * 12000 + 9000, "cached_input_tokens": 0,
-                   "output_tokens": 4000 + 300}]
-    assert lr.cumulative_hint(cumulative, previous, prompt) is True
-    assert lr.cumulative_hint([], previous, prompt) is False
-    # No verdict reads it: a flagged arm leaves the summary unchanged.
+# The three real usages of the 2026-11-13 resume probe (Codex CLI 0.167.1, one session,
+# fresh then resumed twice, each turn replying "OK").
+PROBE = [
+    {"input_tokens": 19499, "cached_input_tokens": 12288, "cache_write_input_tokens": 0,
+     "output_tokens": 5, "reasoning_output_tokens": 0},
+    {"input_tokens": 39023, "cached_input_tokens": 24576, "cache_write_input_tokens": 0,
+     "output_tokens": 10, "reasoning_output_tokens": 0},
+    {"input_tokens": 58572, "cached_input_tokens": 43904, "cache_write_input_tokens": 0,
+     "output_tokens": 15, "reasoning_output_tokens": 0},
+]
+
+
+def probe_arm(rows_per_call):
+    """Run Arm.account over hand-made calls on one thread, as Arm.model would."""
+    arm = lr.Arm.__new__(lr.Arm)
+    arm.thread_totals, arm.usage_unknown = {}, []
+    calls, resume = [], None
+    for n, rows in enumerate(rows_per_call):
+        raw = "\n".join(json.dumps({"type": "turn.completed", "usage": u}) for u in rows)
+        call = {"id": f"c{n}", "usage": lr.parse_usage(raw), "turn_usages": lr.turn_usages(raw),
+                "thread_id": "t"}
+        arm.account(call, f"U{n}", resume)
+        calls.append(call)
+        resume = "t"
+    return arm, calls
+
+
+def test_probe_running_totals_become_per_call_usage():
+    _, calls = probe_arm([[u] for u in PROBE])
+    inputs = [c["usage"]["uncached_input"] + c["usage"]["cache_read"] for c in calls]
+    assert inputs == [19499, 19524, 19549]
+    assert [c["usage"]["output"] for c in calls] == [5, 5, 5]
+    assert [c["usage"]["cache_read"] for c in calls] == [12288, 12288, 19328]
+    assert [c["usage_raw"]["input_tokens"] for c in calls] == [19499, 19524, 19549]
+    # Raw totals kept beside the per-call figures; cache writes and reasoning recorded raw.
+    assert [c["reported_cumulative"] for c in calls] == PROBE
+    for c in calls:
+        assert c["usage_raw"]["cache_write_input_tokens"] == 0
+        assert c["usage_raw"]["reasoning_output_tokens"] == 0
+        assert not lr.cache_writes(c)
+    # The clock-out line uses the per-call figures, not the running total.
+    line = lr.clock_accounting(calls[2]["usage"], 1, "n")
+    assert line["tokens"] == 58572 - 43904 - (39023 - 24576) + 5
+
+
+def test_resumed_call_without_an_earlier_total_is_unknown_never_zero():
+    arm = lr.Arm.__new__(lr.Arm)
+    arm.thread_totals, arm.usage_unknown = {}, []
+    raw = json.dumps({"type": "turn.completed", "usage": PROBE[1]})
+    call = {"id": "c1", "usage": lr.parse_usage(raw), "turn_usages": lr.turn_usages(raw),
+            "thread_id": "t"}
+    arm.account(call, "B", "t")
+    assert call["usage"] is None and call["usage_raw"] is None
+    assert call["reported_cumulative"] == PROBE[1]
+    assert arm.usage_unknown == [{"call": "c1", "unit": "B", "reason":
+                                  "resumed call with no earlier reported total on its thread"}]
+    assert lr.sum_usage([usage_of(1, 0), call["usage"]]) is None
+    assert lr.clock_accounting(call["usage"], 1, "n")["estimate"] is True
+
+
+def test_negative_delta_is_unknown_and_poisons_the_next_baseline():
+    # A per-turn report after a running total: input falls, so not cumulative.
+    _, calls = probe_arm([[PROBE[1]], [PROBE[0]], [PROBE[2]]])
+    assert calls[0]["usage"] is not None
+    assert calls[1]["usage"] is None and calls[2]["usage"] is None
+    assert calls[1]["usage_unknown_reason"] == (
+        "cached_input_tokens fell from 24576 to 12288: not a cumulative total")
+    assert calls[2]["usage_unknown_reason"] == (
+        "resumed call with no earlier reported total on its thread")
+    # Output falling alone is enough (a true running total never shrinks).
+    shrunk = dict(PROBE[1], output_tokens=4)
+    assert lr.call_delta(shrunk, PROBE[0]) == (
+        None, "output_tokens fell from 5 to 4: not a cumulative total")
+    # A field with no baseline has an unknown delta; the usage stays known.
+    delta, why = lr.call_delta(dict(PROBE[1], extra_tokens=3), PROBE[0])
+    assert why is None and delta["extra_tokens"] is None and delta["output_tokens"] == 5
+
+
+def test_fresh_calls_are_their_own_report():
+    for rows in ([FRESH], [FRESH, RESUMED]):
+        _, calls = probe_arm([rows])
+        assert calls[0]["usage"] == usage_of(1, len(rows) - 1)
+        assert calls[0]["reported_cumulative"] == rows[-1]
+
+
+def test_nonzero_cache_write_is_flagged_in_the_summary():
+    _, calls = probe_arm([[PROBE[0]], [dict(PROBE[1], cache_write_input_tokens=64)]])
+    assert [lr.cache_writes(c) for c in calls] == [False, True]
+    assert calls[1]["usage_raw"]["cache_write_input_tokens"] == 64
     records = good_run()
-    plain = lr.summarize_live(records)
-    for r in records:
-        r["cumulative_hint"] = {"label": "x", "calls": ["c1"]}
-    assert lr.summarize_live(records) == plain
+    assert lr.summarize_live(records)["cache_write"] == {"nonzero": False, "jobs": []}
+    records[0]["cache_write"] = {"label": "x", "calls": ["c1"]}
+    flagged = lr.summarize_live(records)["cache_write"]
+    assert flagged == {"nonzero": True, "jobs": [f"{records[0]['job_id']}/c1"]}
 
 
 def test_smoke_projection_needs_both_arms_uncensored():

@@ -300,23 +300,90 @@ def turn_usages(raw: str) -> list:
     return [e.get("usage") for e in _events(raw) if e.get("type") == "turn.completed"]
 
 
-def cumulative_hint(turns: list, previous: dict, prompt: str) -> bool:
-    """A HEURISTIC HINT, never evidence and never in any verdict or token figure.
+# Codex `exec resume` reports the SESSION's running total in ``turn.completed``, not the
+# call's own usage (measured 2026-11-13: identical "OK" turns reported output 5, 10, 15).
+REQUIRED_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens")
 
-    True when a resumed call's first turn reports more output than the whole parent
-    session produced before it, and at least its previous input plus this prompt. A
-    per-turn counter can exceed the previous input on its own (one turn holds several
-    model requests, each resending the whole context), so input alone is not a signal;
-    a per-turn output larger than the session's entire earlier output is unusual, while a
-    cumulative counter always has it. Kept for the smoke run's direct probe (unit S) to
-    settle; never subtracted. ``previous``: {"input": int, "output": int} so far.
-    """
-    first = turns[0] if turns and isinstance(turns[0], dict) else None
-    if first is None or any(type(first.get(k)) is not int
-                            for k in ("input_tokens", "output_tokens")):
-        return False
-    return (first["output_tokens"] > previous["output"]
-            and first["input_tokens"] >= previous["input"] + len(prompt) // 4)
+
+def reported_total(rows: list) -> tuple[dict | None, str | None]:
+    """The running total a call reported: every numeric field of its last
+    ``turn.completed`` row, raw. None with a reason for no row or an incomplete or
+    invalid row anywhere in the call."""
+    if not rows:
+        return None, "no turn.completed usage"
+    for row in rows:
+        if not isinstance(row, dict) or any(
+            type(row.get(k)) is not int or row[k] < 0 for k in REQUIRED_USAGE
+        ):
+            return None, "incomplete or invalid turn.completed usage"
+    last = {k: v for k, v in rows[-1].items() if type(v) is int}
+    if any(v < 0 for v in last.values()):
+        return None, "negative turn.completed usage"
+    return last, None
+
+
+def summed_rows(rows: list) -> dict | None:
+    """A fresh call's own raw figures: its rows summed field by field, as parse_usage."""
+    total: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        for key, value in row.items():
+            if type(value) is int:
+                total[key] = total.get(key, 0) + value
+    return total or None
+
+
+def call_delta(reported: dict | None, previous: dict | None) -> tuple[dict | None, str | None]:
+    """A resumed call's own raw figures: its reported total minus the previous call's
+    reported total on the same thread, field by field. Unknown (None, with a reason) when
+    there is no earlier total or any required field falls, which a true cumulative
+    counter never does (so output falling below the earlier output is caught here). A
+    field reported only now has no baseline: its delta is None, the usage stays known."""
+    if reported is None:
+        return None, "the resumed call reported no complete total"
+    if previous is None:
+        return None, "resumed call with no earlier reported total on its thread"
+    delta: dict[str, int | None] = {}
+    for key in sorted(set(reported) | set(previous)):
+        if key not in reported:
+            if key in REQUIRED_USAGE:
+                return None, f"{key} missing from the resumed total"
+            continue
+        if key not in previous:
+            delta[key] = None
+            continue
+        diff = reported[key] - previous[key]
+        if diff < 0:
+            return None, (f"{key} fell from {previous[key]} to {reported[key]}: "
+                          "not a cumulative total")
+        delta[key] = diff
+    return delta, None
+
+
+def usage_of_raw(raw: dict | None, turns: int) -> tuple[dict | None, str | None]:
+    """The harness's usage categories from one call's own raw figures. Reasoning stays
+    inside output (#307); cache writes are recorded raw on the call, not counted here."""
+    if raw is None:
+        return None, None
+    if any(type(raw.get(k)) is not int for k in REQUIRED_USAGE):
+        return None, "incomplete per-call usage"
+    if raw["cached_input_tokens"] > raw["input_tokens"]:
+        return None, "cached input exceeds input in the per-call usage"
+    return {
+        "uncached_input": raw["input_tokens"] - raw["cached_input_tokens"],
+        "cache_read": raw["cached_input_tokens"],
+        "output": raw["output_tokens"],
+        "turns": turns,
+    }, None
+
+
+def cache_writes(call: dict) -> bool:
+    """Whether a call reported a nonzero ``cache_write_input_tokens`` anywhere."""
+    return any(
+        isinstance(src, dict) and (src.get("cache_write_input_tokens") or 0) > 0
+        for src in (call.get("reported_cumulative"), call.get("usage_raw"))
+    )
 
 
 def event_items(raw: str) -> list[dict]:
@@ -791,7 +858,7 @@ class Host:
             "returncode": returncode,
             "error": error,
             "usage": parse_usage(stdout),
-            # Raw rows, so the smoke run can check resumed usage is per turn.
+            # Raw rows; Arm.model splits a resumed call's running total by thread.
             "turn_usages": turn_usages(stdout),
             "item_types": sorted({str(i.get("type")) for i in items}),
             "thread_id": threads[0] if threads else None,
@@ -835,7 +902,9 @@ class Arm:
         self.repairs_of: dict[str, list[str]] = {}
         self.plan_edits: list[str] = []
         self.parent_thread: str | None = None
-        self.parent_spend = {"input": 0, "output": 0}
+        # Last reported running total per thread (None: unknown, so the next resumed
+        # call on that thread cannot be split).
+        self.thread_totals: dict[str, dict | None] = {}
         self.parent_busy = False
         self.fast_checks: dict[str, list[dict]] = {}
         self.escalations = 0
@@ -851,7 +920,7 @@ class Arm:
         self.write_spans: list[dict] = []
         self.harness_windows: list[dict] = []
         self.harness_ms = {"seeding": 0, "adjudication": 0}
-        self.cumulative_hints: list[str] = []
+        self.usage_unknown: list[dict] = []
         self.errors: list[dict] = []
         self.t0 = 0.0
 
@@ -1115,17 +1184,7 @@ class Arm:
             self.writers[call_id].update(
                 changed=changed, event_paths=changed_paths(call["items"], self.workspace)
             )
-        if mode == "parent":
-            if resume is not None and cumulative_hint(call["turn_usages"], self.parent_spend,
-                                                      prompt):
-                # A hint for the smoke probe only; no verdict or figure reads it.
-                call["cumulative_hint"] = True
-                self.cumulative_hints.append(call_id)
-            for turn in call["turn_usages"]:
-                if isinstance(turn, dict):
-                    for key, name in (("input", "input_tokens"), ("output", "output_tokens")):
-                        if type(turn.get(name)) is int:
-                            self.parent_spend[key] += turn[name]
+        self.account(call, uid, resume)
         if mode == "parent" and self.parent_thread is None and call["thread_id"]:
             self.parent_thread = call["thread_id"]
         if mode == "parent" and call["thread_id"] is None:
@@ -1135,6 +1194,34 @@ class Arm:
         if call["thread_id"]:
             self.units[uid].setdefault("threads", []).append(call["thread_id"])
         return call
+
+    def account(self, call: dict, uid: str, resume: str | None) -> None:
+        """Per-call usage. A fresh call's is its own report (unchanged). A resumed call
+        reports its session's running total, so its usage is that total minus the
+        previous call's on the same thread; unknown (None, reason recorded) when there is
+        no earlier total or a field falls. Raw totals stay beside the per-call figures."""
+        rows = call["turn_usages"]
+        reported, why = reported_total(rows)
+        call["reported_cumulative"] = reported
+        if resume is None:
+            call["usage_raw"] = summed_rows(rows) if call["usage"] is not None else None
+            if call["usage"] is None:
+                why = why or "no complete turn.completed usage"
+        else:
+            raw = None
+            if reported is not None:
+                raw, why = call_delta(reported, self.thread_totals.get(resume))
+            call["usage_raw"] = raw
+            usage, bad = usage_of_raw(raw, len(rows))
+            call["usage"] = usage
+            why = why or bad
+        if call["usage"] is None:
+            call["usage_unknown_reason"] = why
+            self.usage_unknown.append({"call": call["id"], "unit": uid, "reason": why})
+        thread = resume if resume is not None else call["thread_id"]
+        if thread:
+            # A total that could not be trusted is no baseline for the next resumed call.
+            self.thread_totals[thread] = reported if call["usage"] is not None else None
 
     async def clock_out(self, uid: str, status: str, call: dict | None, outcome: str,
                         notes: str, produced: list[dict], accounting: dict | None = None) -> None:
@@ -1152,7 +1239,9 @@ class Arm:
                                   "units shiftwork_plan reports ready."},
                 "accounting": accounting or clock_accounting(
                     call["usage"], call["elapsed_ms"],
-                    f"codex exec {call['context']} call {call['id']}",
+                    f"codex exec {call['context']} call {call['id']}"
+                    + (f"; {call['usage_unknown_reason']}"
+                       if call.get("usage_unknown_reason") else ""),
                 ),
                 **({"agent_id": agent} if agent and AGENT_ID.match(agent) else {}),
             },
@@ -1667,9 +1756,12 @@ class Arm:
             "human_interventions_label": HUMAN_INTERVENTIONS_LABEL,
             "planner_dispatch": PLANNER_DISPATCH,
             "usage": {"review": review_usage, "total": total_usage, "by_kind": kinds},
-            "cumulative_hint": {
-                "label": "heuristic hint for the smoke probe; read by no verdict or figure",
-                "calls": self.cumulative_hints,
+            # Why a call's usage is unknown; resumed calls are split by thread delta.
+            "usage_unknown": self.usage_unknown,
+            "cache_write": {
+                "label": "calls reporting nonzero cache_write_input_tokens; the #307 rule "
+                         "assumed this category does not occur",
+                "calls": [c["id"] for c in self.calls if cache_writes(c)],
             },
             "review_tokens": usage_tokens(review_usage),
             "total_tokens": usage_tokens(total_usage),
@@ -2121,6 +2213,12 @@ def summarize_live(records: list[dict]) -> dict:
                 for r in void
             ],
             "total_tokens": None if None in void_tokens else sum(void_tokens),
+        },
+        # The #307 rule assumed no cache writes; any nonzero report is flagged here.
+        "cache_write": {
+            "nonzero": any((r.get("cache_write") or {}).get("calls") for r in records),
+            "jobs": sorted({f"{r['job_id']}/{c}" for r in records
+                            for c in (r.get("cache_write") or {}).get("calls", [])}),
         },
     }
     if smoke:
