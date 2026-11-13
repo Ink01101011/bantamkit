@@ -172,6 +172,73 @@ PROMPTS = {
     "review_instructions": REVIEW_INSTRUCTIONS,
 }
 
+# --- the tuning comparison (job84, docs/superpowers/specs/2026-11-13-grouped-review-
+# tuning-design.md). Nothing below changes a #310 arm: a variant with no levers runs the
+# exact plans, prompts and argv of the #310 run.
+TUNING_DESIGN = "docs/superpowers/specs/2026-11-13-grouped-review-tuning-design.md"
+TUNING_LEVERS = ("T1", "T2", "T3", "T4")
+VARIANTS = {
+    "per-task": {"arm": "per-task", "levers": ()},
+    "grouped": {"arm": "grouped", "levers": ()},
+    "baseline-grouped": {"arm": "grouped", "levers": ()},
+    "tuned-grouped": {"arm": "grouped", "levers": TUNING_LEVERS},
+}
+COMPARISONS = {"310": ARMS, "tuning": ("baseline-grouped", "tuned-grouped")}
+TUNING_VARIANTS = COMPARISONS["tuning"]
+TUNING_JOBS = 12
+TUNING_REPEATS = 2
+DEFAULT_REPEATS = {"310": 3, "tuning": TUNING_REPEATS}
+# T1: no --output-schema, so the shape is spelled out here. The fixed text comes first
+# (the #310 reviewer prompt, unchanged, then the shape) and the variable data last.
+TUNED_REVIEW_PROMPT = REVIEW_PROMPT + (
+    "Reply with exactly one JSON object and nothing else: no prose, no code fence. Its "
+    'shape is {"reviewer_context_id": string, "findings": [{"unit": string, '
+    '"criterion": string, "detail": string}], "evidence": [{"unit": string, '
+    '"revision": string, "criteria": [string]}]}, with exactly one evidence row per '
+    "member.\n"
+)
+# T2: one tools-disabled call returns whole files; the harness writes only owned paths.
+PATCH_PROMPT = (
+    "You are repairing your earlier work after an independent review. You have no tools: "
+    "do not try to run commands or read files. Fix every reviewer finding quoted verbatim "
+    "in the clocked Shiftwork brief below, keeping all acceptance criteria satisfied, by "
+    "returning the complete corrected text of the files you change. The current text of "
+    "every file you own follows the brief. Reply with exactly one JSON object and nothing "
+    'else: no prose, no code fence. Its shape is {"files": [{"path": string, "content": '
+    "string}]}: each path exactly as named under Files you own, each content the whole "
+    "new file. Any other path makes the whole answer invalid.\n"
+)
+# T3: the re-review request carries the previous findings and per-member change flags.
+DELTA_INSTRUCTIONS = (
+    "This is a re-review. previous_findings are the last review's findings of this group, "
+    "verbatim. Re-check in full, against every criterion, each member whose "
+    "changed_since_last_review is true and each member that consumes one of them. For a "
+    "member whose changed_since_last_review is false you may reuse the previous review's "
+    'evidence: add "reused" to its evidence row, naming the reused evidence and why it '
+    "remains valid. A new finding on an unchanged member is allowed, but its detail must "
+    "say why the earlier review missed it. Evidence must still name every member, with "
+    "its exact supplied revision and every criterion ID."
+)
+TUNING_PROMPTS = {
+    "review_t1": TUNED_REVIEW_PROMPT,
+    "repair_patch_t2": PATCH_PROMPT,
+    "repair_fallback_t2": REPAIR_PROMPT,
+    "review_delta_instructions_t3": DELTA_INSTRUCTIONS,
+}
+TUNING_LIMITS = [
+    "Two repeats per mode is a small sample: a better verdict supports tuning the host's "
+    "guidance in these scopes only, not a general claim.",
+    "Patch-mode repair changes how native-chain repairs: a fresh tools-free call replaces "
+    "the parent session. That is part of what is being tested.",
+    "The seeds are loud, so both arms are likely to catch all of them; the seed gate has "
+    "little power, as in #310.",
+    "T1 removes the output schema: answer validity rests on the prompt and the harness "
+    "check, so invalid answers are counted and reported.",
+    "Reviewer-call cost reflects T1 and T3 together and repair-call cost T2 and T4 "
+    "together; the levers inside each pair are not separated, and two repeats cannot rank "
+    "them.",
+]
+
 
 class ArmStopped(Exception):
     """A refusal or failure that ends an arm as failed/censored."""
@@ -583,6 +650,57 @@ def only_in(first: list, second: list, limit: float | None = None) -> float:
     return total
 
 
+def parse_patch(raw: str, owned: list[str]) -> tuple[list[dict] | None, str | None]:
+    """A T2 patch answer: ``{"files": [{"path", "content"}]}`` naming only owned files.
+
+    Returns (files, None) or (None, reason). Any path the unit does not own rejects the
+    whole answer, so nothing at all is written for it."""
+    events = list(_events(raw))
+    if any(e.get("type") in ("turn.failed", "error") for e in events):
+        return None, "Codex turn failed"
+    items = [e.get("item") for e in events if e.get("type") == "item.completed"]
+    items = [i for i in items if isinstance(i, dict)]
+    if any(i.get("type") in ("command_execution", "mcp_tool_call", "file_change",
+                             "web_search") for i in items):
+        return None, "patch call used a tool"
+    messages = [i.get("text") for i in items if i.get("type") == "agent_message"]
+    if not messages or not isinstance(messages[-1], str):
+        return None, "no patch answer"
+    try:
+        answer = json.loads(messages[-1])
+    except ValueError:
+        return None, "patch answer is not JSON"
+    files = answer.get("files") if isinstance(answer, dict) else None
+    if not isinstance(files, list) or not files:
+        return None, "patch answer has no files list"
+    seen = set()
+    for row in files:
+        if (not isinstance(row, dict) or set(row) != {"path", "content"}
+                or not isinstance(row["path"], str) or not isinstance(row["content"], str)):
+            return None, "patch file row is not {path, content}"
+        if row["path"] not in owned:
+            return None, f"patch names a file the unit does not own: {row['path']}"
+        if row["path"] in seen:
+            return None, f"patch names {row['path']} twice"
+        seen.add(row["path"])
+    return [{"path": r["path"], "content": r["content"]} for r in files], None
+
+
+def call_spend(call: dict) -> int | None:
+    """Raw tokens a call spent, for the budget: its usage incl. cache reads when known;
+    else its reported running total (input + output, never less than the call's own);
+    None when the call reported nothing at all."""
+    known = usage_tokens(call.get("usage"))
+    if known is not None:
+        return known
+    reported = call.get("reported_cumulative")
+    if isinstance(reported, dict) and all(
+        type(reported.get(k)) is int for k in ("input_tokens", "output_tokens")
+    ):
+        return reported["input_tokens"] + reported["output_tokens"]
+    return None
+
+
 def stop_kind_of(record: dict) -> str | None:
     """``harness`` | ``protocol`` | None (accepted, oracle green or unknown)."""
     if "stop_kind" in record:
@@ -797,18 +915,28 @@ class Host:
             raise ShiftworkRefusal(name, value)
         return value
 
-    def argv(self, kind: str, workspace: Path, mode: str, resume: str | None) -> list[str]:
+    def argv(self, kind: str, workspace: Path, mode: str, resume: str | None,
+             schema: bool = True, effort: str = "medium") -> list[str]:
+        """``schema=False`` is T1 (reviewer without --output-schema); ``effort`` is T4 on
+        repair calls; ``kind="patch"`` is T2's tools-disabled fresh call. The defaults
+        are the #310 argv exactly."""
         common = [
             "--json", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
-            "--model", MODEL, "-c", 'model_reasoning_effort="medium"',
+            "--model", MODEL, "-c", f'model_reasoning_effort="{effort}"',
             "-c", 'web_search="disabled"',
         ]
+        no_tools = ["--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps",
+                    "--disable", "multi_agent"]
         if kind == "review":
             return [
                 *self.codex_bin, "exec", *common, "--ephemeral", "--sandbox", "read-only",
-                "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps",
-                "--disable", "multi_agent", "--output-schema", str(self.response_schema), "-",
+                *no_tools,
+                *(["--output-schema", str(self.response_schema)] if schema else []), "-",
             ]
+        if kind == "patch":
+            # Fresh, never a resume: the patch call sees only its prompt.
+            return [*self.codex_bin, "exec", *common, "--ephemeral", "--sandbox", "read-only",
+                    *no_tools, "-"]
         author = ["--disable", "apps", "--disable", "multi_agent"]
         if resume is not None:
             # `exec resume` has no --sandbox/--cd: the sandbox is a config override and
@@ -882,9 +1010,19 @@ class Arm:
 
     def __init__(self, host: Host, case: dict, arm: str, repeat: int, order: int, smoke: bool,
                  attempt: int = 0):
-        self.host, self.case, self.arm = host, case, arm
+        # ``arm`` is a variant name: a #310 arm (per-task, grouped) or a tuning variant
+        # (baseline-grouped, tuned-grouped). The plan shape is the variant's arm.
+        if arm not in VARIANTS:
+            raise ValueError(f"unknown arm {arm}")
+        self.variant = arm
+        self.levers = set(VARIANTS[arm]["levers"])
+        self.host, self.case, self.arm = host, case, VARIANTS[arm]["arm"]
         self.repeat, self.order, self.smoke, self.attempt = repeat, order, smoke, attempt
-        self.job_id = (f"{case['id']}-r{repeat}-{arm}" + (f"-a{attempt}" if attempt else "")
+        self.counts = {"delta_skipped_after_error": 0,
+                       "patch_calls": 0, "patch_invalid_answers": 0, "patch_red_checks": 0,
+                       "fallbacks": 0}
+        self.job_id = (f"{case['id']}-r{repeat}-{self.variant}"
+                       + (f"-a{attempt}" if attempt else "")
                        + ("-smoke" if smoke else ""))
         self.dir = host.out / "arms" / self.job_id
         self.scratch: list[Path] = []
@@ -1157,13 +1295,67 @@ class Arm:
             after = self.boundary(call_id, False)
         return call, before, diff_hashes(before, after)
 
-    async def model(self, uid: str, call_id: str, prompt: str, kind: str) -> dict:
-        mode = self.mode_of(uid)
+    def patch_target(self, rel: str) -> Path | None:
+        """T2: where the harness may read or write an owned file, or None. The harness runs
+        unsandboxed, so a symlink anywhere on the path (left by a shell-mode author) or a
+        path resolving outside the workspace would let a patch read or overwrite a file
+        outside it; such a path is refused."""
+        root = self.workspace.resolve()
+        node = self.workspace
+        for part in Path(rel).parts:
+            node = node / part
+            if node.is_symlink():
+                return None
+        target = self.workspace / rel
+        try:
+            target.resolve().relative_to(root)
+        except ValueError:
+            return None
+        return target
+
+    def _patch_call(self, call_id, uid, argv, prompt, timeout, extra) -> tuple[dict, list, list]:
+        """T2: the tools-disabled call runs in the empty review cwd; the harness writes
+        its owned files inside the same write boundary, so the write is this repair
+        unit's, hashed as any author call's."""
+        owned = self.owned(uid)
+        before = self.boundary(call_id, True, {"kind": "call", "call": call_id, "unit": uid,
+                                               "owned": owned, "event_paths": []})
+        applied = {"valid": False, "reason": None, "written": []}
+        try:
+            call = self.host.call(call_id, argv, prompt, self.review_cwd, timeout, extra)
+            if not call["error"]:
+                files, reason = parse_patch(call["stdout"], owned)
+                unsafe = sorted(r["path"] for r in files or [] if self.patch_target(r["path"]) is None)
+                if files is None:
+                    applied["reason"] = reason
+                elif unsafe:
+                    applied["reason"] = f"unsafe path (symlink or outside workspace): {unsafe[0]}"
+                else:
+                    for row in files:
+                        target = self.patch_target(row["path"])
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(row["content"], encoding="utf-8")
+                    applied.update(valid=True, written=sorted(r["path"] for r in files))
+        finally:
+            after = self.boundary(call_id, False)
+        call["patch"] = applied
+        return call, before, diff_hashes(before, after)
+
+    def effort_of(self, uid: str, kind: str) -> str:
+        """T4: low reasoning effort on repair calls only (patch and fallback)."""
+        if "T4" in self.levers and kind != "review" and self.units[uid]["kind"] == "repair":
+            return "low"
+        return "medium"
+
+    async def model(self, uid: str, call_id: str, prompt: str, kind: str,
+                    tag: dict | None = None) -> dict:
+        mode = "patch" if kind == "patch" else self.mode_of(uid)
         resume = self.parent_thread if mode == "parent" and self.parent_thread else None
-        argv = self.host.argv(kind, self.workspace, mode, resume)
+        argv = self.host.argv(kind, self.workspace, mode, resume,
+                              schema="T1" not in self.levers, effort=self.effort_of(uid, kind))
         timeout = self.host.review_timeout if kind == "review" else self.host.author_timeout
         extra = {"unit": uid, "kind": self.units[uid]["kind"], "context": mode,
-                 "resumed": resume is not None}
+                 "resumed": resume is not None, **(tag or {})}
         self.mark("model_start", uid, call=call_id, context=mode, resumed=resume is not None)
         start = self.clock()
         if kind == "review":
@@ -1171,6 +1363,10 @@ class Arm:
                 self.host.call, call_id, argv, prompt, self.review_cwd, timeout, extra
             )
             changed = []
+        elif kind == "patch":
+            call, _, changed = await asyncio.to_thread(
+                self._patch_call, call_id, uid, argv, prompt, timeout, extra
+            )
         else:
             call, _, changed = await asyncio.to_thread(
                 self._author_call, call_id, uid, argv, prompt, timeout, extra
@@ -1182,10 +1378,14 @@ class Arm:
             hits = audit_items(call["items"], self.workspace)
             call["audit_hits"] = hits
             self.audit_hits += [{"call": call_id, "unit": uid, **h} for h in hits]
-            self.writers[call_id].update(
-                changed=changed, event_paths=changed_paths(call["items"], self.workspace)
-            )
+            named = (call["patch"]["written"] if kind == "patch"
+                     else changed_paths(call["items"], self.workspace))
+            self.writers[call_id].update(changed=changed, event_paths=named)
         self.account(call, uid, resume)
+        # The cost metric (maintainer ruling 2026-11-13): uncached input + output; the raw
+        # total with cache reads beside it.
+        call["tokens_excl_cache"] = usage_tokens(call["usage"], include_cache=False)
+        call["tokens"] = usage_tokens(call["usage"])
         if mode == "parent" and self.parent_thread is None and call["thread_id"]:
             self.parent_thread = call["thread_id"]
         if mode == "parent" and call["thread_id"] is None:
@@ -1321,6 +1521,8 @@ class Arm:
             unit["i2_path"] = "model"
             red = [c["unit"] for c in first if not c["passed"]]
             brief += "\nFast checks red before this call: " + ", ".join(red) + "\n"
+        if unit["kind"] == "repair" and "T2" in self.levers:
+            return await self.patch_repair(uid, view, brief, call_id)
         preamble = {"author": AUTHOR_PROMPT, "repair": REPAIR_PROMPT,
                     "integration": INTEGRATION_PROMPT}[unit["kind"]]
         prompt = preamble + view + "\n\n" + brief
@@ -1339,6 +1541,63 @@ class Arm:
         if unit["kind"] == "author" and base_unit and base_unit["seed"]:
             await asyncio.to_thread(self.seed, unit["base"], uid, checks[0]["passed"])
         return await self.finish_author(uid, call, checks, checked)
+
+    async def patch_repair(self, uid: str, view: str, brief: str, call_id: str) -> dict:
+        """T2: one fresh tools-disabled call answers whole owned files; the harness writes
+        them and runs the fast check. An invalid answer or a red check is followed by
+        exactly ONE fallback repair in shell mode (the #310 path), counted and labelled.
+        Each call is clocked in and out on its own, as every other model call."""
+        unit = self.units[uid]
+        base = unit["base"]
+        texts = {}
+        for rel in self.owned(uid):
+            path = self.patch_target(rel)
+            texts[rel] = (path.read_text(encoding="utf-8", errors="replace")
+                          if path is not None and path.is_file() else None)
+        prompt = (PATCH_PROMPT + view + "\n\n" + brief
+                  + "\n\nOWNED FILES (current text):\n" + json.dumps(texts, ensure_ascii=False))
+        self.counts["patch_calls"] += 1
+        call = await self.model(uid, call_id, prompt, "patch", tag={"repair_mode": "patch"})
+        if call["error"] or call["audit_hits"]:
+            error = call["error"] or f"access audit: {call['audit_hits'][0]['reason']}"
+            await self.clock_out(uid, "blocked", call, f"patch call failed: {error}"[:200],
+                                 "", [])
+            return {"error": error}
+        patch = call["patch"]
+        if patch["valid"]:
+            checks = [await asyncio.to_thread(self.fast_check, base, self.workspace, uid)]
+            if checks[0]["passed"]:
+                unit["repair_path"] = "patch"
+                return await self.finish_author(uid, call, checks, [base])
+            self.counts["patch_red_checks"] += 1
+            reason = "fast check red after the patch"
+        else:
+            self.counts["patch_invalid_answers"] += 1
+            reason = f"invalid patch answer: {patch['reason']}"
+        unit["repair_path"], unit["fallback_reason"] = "fallback-shell", reason
+        # By id: a concurrent unit may have appended its own call since.
+        next(c for c in self.calls if c["id"] == call["id"])["fallback_reason"] = reason
+        # The patch call is handed back with its own accounting; the unit stays open.
+        await self.clock_out(uid, "in_progress", call, f"patch repair: {reason}"[:200],
+                             f"written: {', '.join(patch['written']) or 'nothing'}", [])
+        self.counts["fallbacks"] += 1
+        clocked = await self.host.tool(
+            "shiftwork_clock_in", {"checkpoint": str(self.checkpoint), "unit_id": uid}
+        )
+        self.mark("clock_in", uid)
+        brief = Path(clocked["unit"]["brief_path"]).read_text(encoding="utf-8")
+        view = json.dumps(prompt_view(clocked), ensure_ascii=False)
+        fallback_id = f"{self.job_id}-{len(self.calls):03d}-{uid}"
+        call = await self.model(uid, fallback_id, REPAIR_PROMPT + view + "\n\n" + brief,
+                                "author", tag={"repair_mode": "fallback-shell",
+                                               "fallback_reason": reason})
+        if call["error"] or call["audit_hits"]:
+            error = call["error"] or f"access audit: {call['audit_hits'][0]['reason']}"
+            await self.clock_out(uid, "blocked", call, f"fallback repair failed: {error}"[:200],
+                                 "", [])
+            return {"error": error}
+        checks = [await asyncio.to_thread(self.fast_check, base, self.workspace, uid)]
+        return await self.finish_author(uid, call, checks, [base])
 
     async def finish_author(self, uid, call, checks, checked, accounting=None) -> dict:
         unit = self.units[uid]
@@ -1359,6 +1618,15 @@ class Arm:
         """The reviewer's request, and this review's own fast-check rows by unit."""
         members = [m for m in self.units[uid]["members"] if self.units[m]["kind"] == "author"]
         context = upstream_closure(self.case, members)
+        # T3: a re-review carries the previous review's findings and, per member, whether
+        # its revision changed since then. Acceptance (assess_review) is unchanged.
+        previous = next((r for r in reversed(self.reviews) if r["unit"] == uid), None)
+        # A previous round whose answer was invalid left no evidence to reuse, so the
+        # next review is a full one (counted as delta_skipped_after_error).
+        if "T3" in self.levers and previous is not None and not previous["valid_answer"]:
+            self.counts["delta_skipped_after_error"] += 1
+            previous = None
+        delta = "T3" in self.levers and previous is not None
         units = []
         checks = {}
         for mid in members:
@@ -1374,6 +1642,10 @@ class Arm:
                     "fast_check_passed": check["passed"],
                 }
             )
+            if delta:
+                units[-1]["changed_since_last_review"] = (
+                    units[-1]["revision"] != previous["revisions"].get(mid)
+                )
         files = {}
         for cid in context:
             for rel in self.case_units[cid]["files"]:
@@ -1381,7 +1653,7 @@ class Arm:
                 # Author output may be any bytes; a bad byte must not abort the arm.
                 files[rel] = (path.read_text(encoding="utf-8", errors="replace")
                               if path.is_file() else None)
-        return {
+        request = {
             "reviewer_context_id": "reviewer-" + uuid.uuid4().hex,
             "case_id": self.case["id"],
             "membership": members,
@@ -1389,7 +1661,11 @@ class Arm:
             "units": units,
             "context_files": files,
             "instructions": REVIEW_INSTRUCTIONS,
-        }, checks
+        }
+        if delta:
+            request["previous_findings"] = previous["repair_findings"]
+            request["instructions"] = REVIEW_INSTRUCTIONS + " " + DELTA_INSTRUCTIONS
+        return request, checks
 
     async def review(self, uid: str, view: str, brief: str, call_id: str) -> dict:
         index = sum(1 for r in self.reviews if r["unit"] == uid)
@@ -1400,7 +1676,7 @@ class Arm:
         )
         request, checks = await asyncio.to_thread(self.review_request, uid, snapshot)
         prompt = (
-            REVIEW_PROMPT + view + "\n\n" + brief
+            (TUNED_REVIEW_PROMPT if "T1" in self.levers else REVIEW_PROMPT) + view + "\n\n" + brief
             + "\n\nREVIEW REQUEST:\n" + json.dumps(request, ensure_ascii=False)
         )
         call = await self.model(uid, call_id, prompt, "review")
@@ -1447,6 +1723,9 @@ class Arm:
                 "fast_checks": {u["id"]: u["fast_check_passed"] for u in request["units"]},
                 "evidence": response.get("evidence") if response else None,
                 "valid_answer": response is not None,
+                **({"delta": True, "changed_members": sorted(
+                    u["id"] for u in request["units"] if u["changed_since_last_review"]
+                )} if "previous_findings" in request else {}),
                 "error": error,
                 **verdict,
                 "repair_findings": findings,
@@ -1689,7 +1968,8 @@ class Arm:
                  "context": self.mode_of(uid), "calls": unit.get("calls", []),
                  "threads": unit.get("threads", []), "revision": unit.get("revision"),
                  "usage": self.unit_usage(uid),
-                 **({"i2_path": unit["i2_path"]} if "i2_path" in unit else {})}
+                 **({"i2_path": unit["i2_path"]} if "i2_path" in unit else {}),
+                 **{k: unit[k] for k in ("repair_path", "fallback_reason") if k in unit}}
             )
         kinds = {}
         for kind in ("author", "repair", "integration", "reviewer"):
@@ -1714,6 +1994,8 @@ class Arm:
             "repeat": self.repeat,
             "attempt": self.attempt,
             "arm": self.arm,
+            "variant": self.variant,
+            "levers": sorted(self.levers),
             "order": self.order,
             "smoke": self.smoke,
             "job_id": self.job_id,
@@ -1768,6 +2050,20 @@ class Arm:
             "total_tokens": usage_tokens(total_usage),
             "review_tokens_excl_cache": usage_tokens(review_usage, include_cache=False),
             "total_tokens_excl_cache": usage_tokens(total_usage, include_cache=False),
+            # Per kind: the cost metric (uncached input + output) and the raw total.
+            "kind_tokens_excl_cache": {k: usage_tokens(u, include_cache=False)
+                                       for k, u in kinds.items()},
+            "kind_tokens": {k: usage_tokens(u) for k, u in kinds.items()},
+            "tuning": {
+                **self.counts,
+                "reviewer_invalid_answers": sum(not r["valid_answer"] for r in self.reviews),
+                "delta_reviews": sum(bool(r.get("delta")) for r in self.reviews),
+                "repair_modes": {
+                    mode: sum_usage([c["usage"] for c in self.calls
+                                     if c.get("repair_mode") == mode])
+                    for mode in ("patch", "fallback-shell")
+                },
+            },
             "fast_checks": self.fast_checks,
             "access_audit": {"hits": self.audit_hits, "clean": not self.audit_hits},
             "writes": writes,
@@ -2251,18 +2547,248 @@ def summarize_live(records: list[dict]) -> dict:
     return summary
 
 
+# --- the tuning summary (TUNING_DESIGN, *Design and gates*) -------------------------------
+
+TUNING_METRICS = {
+    # name: (reader, cost metric?) -- uncached input + output is the ruled cost metric.
+    "uncached_plus_output": lambda r: r.get("total_tokens_excl_cache"),
+    "raw_total": lambda r: r.get("total_tokens"),
+    "review_uncached_plus_output": lambda r: r.get("review_tokens_excl_cache"),
+    "review_raw": lambda r: r.get("review_tokens"),
+    "repair_uncached_plus_output": lambda r: (r.get("kind_tokens_excl_cache") or {}).get("repair"),
+    "repair_raw": lambda r: (r.get("kind_tokens") or {}).get("repair"),
+}
+TUNING_COUNTS = ("patch_calls", "patch_invalid_answers", "patch_red_checks", "fallbacks",
+                 "reviewer_invalid_answers", "delta_reviews")
+
+
+def rejection_stop(record: dict) -> bool:
+    """A protocol stop by the rejection cap (not an accepted arm whose oracle failed)."""
+    return not record["accepted"] and stop_kind_of(record) == "protocol"
+
+
+def tuning_pair(case_id: str, repeat: int, base: dict | None, tuned: dict | None) -> dict:
+    """One (case, repeat) pair; the seed comparison is #310's, baseline in the per-task
+    seat and tuned in the grouped seat."""
+    p310 = pair_summary(case_id, repeat, base, tuned)
+    pair = {k: p310[k] for k in ("case_id", "repeat", "attempt", "harness_censored",
+                                 "complete")}
+    pair["arms_present"] = sorted(r["variant"] for r in (base, tuned) if r)
+    for name, read in TUNING_METRICS.items():
+        pair[f"{name}_saving"] = saving(read(base), read(tuned)) if pair["complete"] else None
+    if pair["complete"]:
+        s = p310["seeds"]
+        pair["seeds"] = {
+            "compared_units": s["compared_units"],
+            "excluded_unavailable": s["excluded_unavailable"],
+            "excluded_removed_before_review": s["excluded_removed_before_review"],
+            "baseline_caught": s["per_task_caught"],
+            "tuned_caught": s["grouped_caught"],
+            "tuned_missed_caught_by_baseline": s["grouped_missed_caught_by_per_task"],
+        }
+        pair["extra_protocol_stop"] = rejection_stop(tuned) and not rejection_stop(base)
+    else:
+        pair["seeds"] = None
+        pair["extra_protocol_stop"] = None
+    return pair
+
+
+def tuning_cohort(records: list[dict]) -> dict:
+    quality = [r["quality"] for r in records]
+    return {
+        "sample_size": len(records),
+        "accepted": sum(r["accepted"] for r in records),
+        "harness_censored": sum(stop_kind_of(r) == "harness" for r in records),
+        "rejection_cap_stops": sum(rejection_stop(r) for r in records),
+        "quality_failures": sum(q.get("quality_failure") is True for q in quality),
+        **{name: distribution([read(r) for r in records])
+           for name, read in TUNING_METRICS.items()},
+        "by_kind_uncached_plus_output": {
+            kind: distribution([(r.get("kind_tokens_excl_cache") or {}).get(kind)
+                                for r in records])
+            for kind in ("author", "repair", "integration", "reviewer")
+        },
+        "elapsed_to_accepted_ms": distribution([r.get("elapsed_to_accepted_ms")
+                                                for r in records]),
+        **{key: sum((r.get("tuning") or {}).get(key, 0) for r in records)
+           for key in TUNING_COUNTS},
+        "false_findings": sum(q.get("false_findings", 0) for q in quality),
+        "seeded_caught": sum(q.get("seeded_caught", 0) for q in quality),
+        "seeded_missed": sum(q.get("seeded_missed", 0) for q in quality),
+    }
+
+
+def tuning_verdict(base: list[dict], tuned: list[dict], pairs: list[dict]) -> dict:
+    """The frozen gates for one mode. Any gate false: fail (a censored or missing pair
+    cannot rescue it). Else a pair still censored after the one rerun, a missing arm or an
+    unknown gate or saving: inconclusive. Else better when the median paired saving on
+    uncached + output is above 0."""
+    complete = [p for p in pairs if p["complete"]]
+    keys = {(p["case_id"], p["repeat"]) for p in complete}
+    base = [r for r in base if (r["case_id"], r["repeat"]) in keys]
+    tuned = [r for r in tuned if (r["case_id"], r["repeat"]) in keys]
+    whole = len(complete) == len(pairs)
+    gates: dict[str, bool | None] = {}
+
+    def paired(bad: bool) -> bool | None:
+        if not complete:
+            return None
+        return False if bad else (True if whole else None)
+
+    gates["no_seed_missed_that_baseline_caught"] = paired(
+        any(p["seeds"]["tuned_missed_caught_by_baseline"] for p in complete))
+    if any(r["quality"].get("quality_failure") is True for r in tuned):
+        gates["no_quality_failure"] = False
+    elif not tuned or any(r["accepted"] and r["quality"].get("quality_failure") is None
+                          for r in tuned):
+        gates["no_quality_failure"] = None
+    else:
+        gates["no_quality_failure"] = True if whole else None
+    gates["no_extra_protocol_stop"] = paired(any(p["extra_protocol_stop"] for p in complete))
+    if complete:
+        more = (sum(r["quality"].get("false_findings", 0) for r in tuned)
+                > sum(r["quality"].get("false_findings", 0) for r in base))
+        gates["false_findings_not_more"] = paired(more)
+    else:
+        gates["false_findings_not_more"] = None
+    base_lat = [r["elapsed_to_accepted_ms"] for r in base if r["accepted"]]
+    tuned_lat = [r["elapsed_to_accepted_ms"] for r in tuned if r["accepted"]]
+    if not base_lat or not tuned_lat:
+        gates["median_accepted_latency_not_higher"] = None
+    else:
+        gates["median_accepted_latency_not_higher"] = paired(
+            statistics.median(tuned_lat) > statistics.median(base_lat))
+    savings = [p["uncached_plus_output_saving"] for p in complete]
+    median_saving = (None if not savings or None in savings else statistics.median(savings))
+    censored = [f"{p['case_id']}#r{p['repeat']}" for p in pairs if p["harness_censored"]]
+    missing = [f"{p['case_id']}#r{p['repeat']}" for p in pairs
+               if not p["complete"] and not p["harness_censored"]]
+    values = list(gates.values())
+    if False in values:
+        result = "fail"
+    elif censored or missing or None in values or median_saving is None:
+        result = "inconclusive"
+    elif median_saving > 0:
+        result = "better"
+    else:
+        # Every gate holds but nothing was saved: the design names no verdict for it.
+        result = "not-better"
+    return {"gates": gates, "median_saving_uncached_plus_output": median_saving,
+            "result": result, "harness_censored_pairs": censored,
+            "incomplete_pairs": missing}
+
+
+def summarize_tuning(records: list[dict], budget_tokens: int | None = None) -> dict:
+    """The tuning comparison recomputed from runs.jsonl: baseline-grouped vs tuned-grouped
+    per mode, paired by (case, repeat), with the #310 rerun rule (final attempt only;
+    voided attempts kept with their spend) and smoke kept apart."""
+    records = [r for r in records if r.get("variant") in TUNING_VARIANTS]
+    matched, voided = final_attempts([r for r in records if not r.get("smoke")])
+    smoke, smoke_voided = final_attempts([r for r in records if r.get("smoke")])
+    pairs = []
+    for case_id, repeat in sorted({(r["case_id"], r["repeat"]) for r in matched}):
+        arms = {r["variant"]: r for r in matched
+                if r["case_id"] == case_id and r["repeat"] == repeat}
+        pairs.append(tuning_pair(case_id, repeat, arms.get("baseline-grouped"),
+                                 arms.get("tuned-grouped")))
+    modes = {}
+    for case_id in sorted({r["case_id"] for r in matched}):
+        base = [r for r in matched if r["case_id"] == case_id
+                and r["variant"] == "baseline-grouped"]
+        tuned = [r for r in matched if r["case_id"] == case_id
+                 and r["variant"] == "tuned-grouped"]
+        mine = [p for p in pairs if p["case_id"] == case_id]
+        modes[case_id] = {
+            "baseline-grouped": tuning_cohort(base),
+            "tuned-grouped": tuning_cohort(tuned),
+            "pairs": len(mine),
+            **{f"{name}_saving": distribution([p[f"{name}_saving"] for p in mine])
+               for name in TUNING_METRICS},
+            "verdict": tuning_verdict(base, tuned, mine),
+        }
+    void = voided + smoke_voided
+    void_tokens = [r.get("total_tokens") for r in void]
+    summary = {
+        "comparison": "tuning",
+        "design": TUNING_DESIGN,
+        "cost_metric": "uncached input + output (maintainer ruling 2026-11-13); raw totals "
+                       "including cache reads reported alongside",
+        "limitations": TUNING_LIMITS,
+        "run_count": len(matched),
+        "pairs": pairs,
+        "modes": modes,
+        "verdicts": {m: v["verdict"]["result"] for m, v in modes.items()},
+        "counts": {variant: {key: sum((r.get("tuning") or {}).get(key, 0) for r in matched
+                                      if r["variant"] == variant) for key in TUNING_COUNTS}
+                   for variant in TUNING_VARIANTS},
+        "voided_attempts": {
+            "label": "harness-censored attempts, rerun once; kept with their spend",
+            "records": [{"job_id": r["job_id"], "attempt": r.get("attempt", 0),
+                         "stop_kind": stop_kind_of(r), "stop_reason": r.get("stop_reason"),
+                         "total_tokens": r.get("total_tokens")} for r in void],
+            "total_tokens": None if None in void_tokens else sum(void_tokens),
+        },
+        "cache_write": {
+            "nonzero": any((r.get("cache_write") or {}).get("calls") for r in records),
+            "jobs": sorted({f"{r['job_id']}/{c}" for r in records
+                            for c in (r.get("cache_write") or {}).get("calls", [])}),
+        },
+    }
+    if smoke:
+        totals = [r.get("total_tokens") for r in smoke]
+        pair_total = None if None in totals else sum(totals)
+        censored = sum(stop_kind_of(r) == "harness" for r in smoke)
+        whole = sorted(r["variant"] for r in smoke) == sorted(TUNING_VARIANTS) and not censored
+        # Pessimistic: every job is projected at the larger smoke job (mixed-fork-join is
+        # the only mode the smoke runs); the mean projection is reported beside it.
+        projected = (max(totals) * TUNING_JOBS
+                     if whole and pair_total is not None else None)
+        mean_projected = (pair_total / len(smoke) * TUNING_JOBS
+                          if whole and pair_total is not None else None)
+        summary["smoke"] = {
+            "label": "smoke data; not merged into the matched sample",
+            "jobs": len(smoke),
+            "harness_censored": censored,
+            "projection_basis": "both smoke variants ran and neither was harness-censored"
+            if whole else "none: the smoke pair is incomplete or harness-censored",
+            "tokens_measured": pair_total,
+            f"projected_tokens_for_{TUNING_JOBS}_jobs": projected,
+            "projection_rule": "largest smoke job x jobs (pessimistic)",
+            f"mean_projected_tokens_for_{TUNING_JOBS}_jobs": mean_projected,
+            "budget_tokens": budget_tokens,
+            "fits_budget": (None if projected is None or budget_tokens is None
+                            else projected <= budget_tokens),
+            "records": [{"job_id": r["job_id"], "status": r["status"],
+                         "stop_kind": stop_kind_of(r), "total_tokens": r.get("total_tokens"),
+                         "total_tokens_excl_cache": r.get("total_tokens_excl_cache")}
+                        for r in smoke],
+        }
+    return summary
+
+
+def summarize(records: list[dict], budget_tokens: int | None = None) -> dict:
+    """The summary a runs.jsonl recomputes to: tuning when its records are tuning
+    variants, else #310's."""
+    if any(r.get("variant") in TUNING_VARIANTS for r in records):
+        return summarize_tuning(records, budget_tokens)
+    return summarize_live(records)
+
+
 # --- the run --------------------------------------------------------------------------
 
 
-def schedule(cases: list[dict], repeats: int, smoke: bool) -> list[tuple[dict, int, str, int]]:
-    """Jobs one at a time; arm order counterbalanced by repeat (even: per-task first)."""
+def schedule(cases: list[dict], repeats: int, smoke: bool,
+             comparison: str = "310") -> list[tuple[dict, int, str, int]]:
+    """Jobs one at a time; arm order counterbalanced by repeat (even: the comparison's
+    first arm first: per-task in #310, baseline-grouped in the tuning comparison)."""
+    names = COMPARISONS[comparison]
     if smoke:
         cases = [c for c in cases if c["id"] == SMOKE_CASE]
         repeats = 1
     jobs = []
     for case in cases:
         for repeat in range(repeats):
-            arms = ARMS if repeat % 2 == 0 else tuple(reversed(ARMS))
+            arms = names if repeat % 2 == 0 else tuple(reversed(names))
             for order, arm in enumerate(arms):
                 jobs.append((case, repeat, arm, order))
     return jobs
@@ -2342,7 +2868,27 @@ def codex_environment(codex_bin: list[str], cwd: Path) -> dict:
 
 
 def metadata(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bin: list[str],
-             author_timeout: float, review_timeout: float, env: dict) -> dict:
+             author_timeout: float, review_timeout: float, env: dict,
+             comparison: str = "310", budget_tokens: int | None = None) -> dict:
+    meta = _metadata(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
+                     env)
+    # Keys added only off the #310 default, so its metadata stays as it was.
+    if comparison != "310":
+        meta.update(
+            comparison=comparison,
+            design=TUNING_DESIGN,
+            variants={v: {"arm": VARIANTS[v]["arm"], "levers": list(VARIANTS[v]["levers"])}
+                      for v in COMPARISONS[comparison]},
+            tuning_prompts=TUNING_PROMPTS,
+            tuning_limitations=TUNING_LIMITS,
+        )
+    if budget_tokens is not None:
+        meta["budget_tokens"] = budget_tokens
+    return meta
+
+
+def _metadata(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bin: list[str],
+              author_timeout: float, review_timeout: float, env: dict) -> dict:
     harness = {
         name: sha256_text((HERE / f"{name}.py").read_text(encoding="utf-8"))
         for name in ("live_run", "live_cases", "run_eval", "codex_adapter")
@@ -2388,7 +2934,8 @@ def crashed_record(arm: Arm, exc: BaseException) -> dict:
     arm.cleanup()
     return {
         "case_id": arm.case["id"], "mode": arm.case["mode"], "repeat": arm.repeat,
-        "attempt": arm.attempt, "arm": arm.arm, "order": arm.order, "smoke": arm.smoke,
+        "attempt": arm.attempt, "arm": arm.arm, "variant": arm.variant,
+        "levers": sorted(arm.levers), "order": arm.order, "smoke": arm.smoke,
         "job_id": arm.job_id, "accepted": False, "status": "failed/censored",
         "stop_kind": "harness", "stop_reason": f"arm crashed: {type(exc).__name__}: {exc}",
         "harness_errors": [{"where": "arm", "type": type(exc).__name__, "error": str(exc),
@@ -2410,8 +2957,61 @@ def pairs_of(jobs: list) -> list[list]:
     return list(grouped.values())
 
 
+def record_spend(record: dict) -> tuple[int, int]:
+    """(raw tokens a job spent, calls whose spend is unknown) from its calls."""
+    spent, unknown = 0, 0
+    for call in record.get("calls") or []:
+        value = call_spend(call)
+        if value is None:
+            unknown += 1
+        else:
+            spent += value
+    return spent, unknown
+
+
+class Budget:
+    """The run's token cap (raw tokens incl. cache reads, this run only), checked before
+    each job: the next job is projected at the largest job spend seen so far in the run,
+    and the run stops cleanly when spend + projection would cross the cap, or when a call's
+    spend could not be measured at all (the cap could no longer be kept)."""
+
+    def __init__(self, cap: int):
+        self.cap = cap
+        self.spent = 0
+        self.largest = 0
+        self.jobs = 0
+        self.unknown_calls = 0
+        self.stopped: dict | None = None
+
+    def allows(self, job_id: str) -> bool:
+        if self.stopped is not None:
+            return False
+        if self.unknown_calls:
+            self.stopped = {"before_job": job_id, "reason": "a call's spend is unknown, so the "
+                            "cap can no longer be kept"}
+        elif self.spent + self.largest > self.cap:
+            self.stopped = {"before_job": job_id, "reason": (
+                f"spent {self.spent} + projected next job {self.largest} > cap {self.cap}")}
+        return self.stopped is None
+
+    def add(self, record: dict) -> None:
+        spent, unknown = record_spend(record)
+        self.spent += spent
+        self.largest = max(self.largest, spent)
+        self.unknown_calls += unknown
+        self.jobs += 1
+
+    def state(self) -> dict:
+        return {"label": "raw Codex tokens incl. cache reads spent by this run; the next job "
+                         "is projected at the largest job so far",
+                "cap": self.cap, "spent": self.spent, "jobs_run": self.jobs,
+                "largest_job": self.largest, "unknown_spend_calls": self.unknown_calls,
+                "stopped": self.stopped is not None, "stop": self.stopped}
+
+
 async def _run(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bin: list[str],
-               author_timeout: float, review_timeout: float, env_sha: str) -> list[dict]:
+               author_timeout: float, review_timeout: float, env_sha: str,
+               comparison: str = "310", budget: Budget | None = None) -> list[dict]:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
@@ -2426,17 +3026,21 @@ async def _run(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bi
         await client.initialize()
         host.client = client
         with (out / "runs.jsonl").open("a", encoding="utf-8") as stream:
-            for pair in pairs_of(schedule(cases, repeats, smoke)):
+            for pair in pairs_of(schedule(cases, repeats, smoke, comparison)):
                 # Rerun rule: a harness censor voids the pair; one rerun, same arm order.
                 for attempt in range(1 if smoke else 2):
                     censored = False
                     for case, repeat, arm_name, order in pair:
                         arm = Arm(host, case, arm_name, repeat, order, smoke, attempt)
+                        if budget is not None and not budget.allows(arm.job_id):
+                            return records
                         try:
                             record = await arm.run()
                         except Exception as exc:  # noqa: BLE001 - never abort the run
                             record = crashed_record(arm, exc)
                         records.append(record)
+                        if budget is not None:
+                            budget.add(record)
                         stream.write(json.dumps(record) + "\n")
                         stream.flush()
                         if record["stop_kind"] == "harness":
@@ -2449,14 +3053,28 @@ async def _run(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bi
     return records
 
 
-def run_live(out, cases: list[dict] | None = None, repeats: int = 3, smoke: bool = False,
-             codex_bin: list[str] | None = None, author_timeout: float = 900,
-             review_timeout: float = 300, codex_auth: Path | None = None) -> dict:
+def run_live(out, cases: list[dict] | None = None, repeats: int | None = None,
+             smoke: bool = False, codex_bin: list[str] | None = None,
+             author_timeout: float = 900, review_timeout: float = 300,
+             codex_auth: Path | None = None, comparison: str = "310",
+             budget_tokens: int | None = None) -> dict:
     """With ``codex_auth`` (the CLI passes ~/.codex/auth.json), every Codex call runs under
-    an isolated CODEX_HOME linking only that file; see isolated_codex_home."""
+    an isolated CODEX_HOME linking only that file; see isolated_codex_home.
+
+    ``comparison="tuning"`` pairs baseline-grouped vs tuned-grouped (TUNING_DESIGN);
+    ``repeats`` defaults to 3 for #310 and 2 for tuning. ``budget_tokens`` caps this run's
+    raw spend (see Budget); the summary is written either way."""
+    if comparison not in COMPARISONS:
+        raise ValueError(f"unknown comparison {comparison}; one of {', '.join(COMPARISONS)}")
+    if budget_tokens is not None and (type(budget_tokens) is not int or budget_tokens < 1):
+        raise ValueError("budget_tokens must be a positive integer")
+    if comparison == "tuning" and not smoke and budget_tokens is None:
+        raise ValueError("a tuning run needs budget_tokens (the design's budget stop)")
+    repeats = DEFAULT_REPEATS[comparison] if repeats is None else repeats
+    run = {"comparison": comparison, "budget_tokens": budget_tokens}
     if codex_auth is None:
         return _run_live(out, cases, repeats, smoke, codex_bin, author_timeout,
-                         review_timeout, None)
+                         review_timeout, None, **run)
     out_path = Path(out).resolve()
     # Sessions are copied into the run's own output after it ends; a refused run has
     # made no Codex call, so it leaves no sessions to copy.
@@ -2470,11 +3088,12 @@ def run_live(out, cases: list[dict] | None = None, repeats: int = 3, smoke: bool
         isolated_bin = ["/usr/bin/env", f"HOME={home}", f"CODEX_HOME={home}",
                         *(codex_bin or ["codex"])]
         return _run_live(out, cases, repeats, smoke, isolated_bin, author_timeout,
-                         review_timeout, home)
+                         review_timeout, home, **run)
 
 
 def _run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
-              isolated_home: Path | None) -> dict:
+              isolated_home: Path | None, comparison: str = "310",
+              budget_tokens: int | None = None) -> dict:
     if type(repeats) is not int or repeats < 1 or author_timeout <= 0 or review_timeout <= 0:
         raise ValueError("repeats and timeouts must be positive")
     codex_bin = list(codex_bin or ["codex"])
@@ -2498,17 +3117,26 @@ def _run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_time
     )
     env["sha256"] = sha256_text(json.dumps({k: v for k, v in env.items() if k != "sha256"},
                                            sort_keys=True))
-    meta = metadata(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout, env)
+    meta = metadata(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout, env,
+                    comparison, budget_tokens)
     (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    budget = Budget(budget_tokens) if budget_tokens is not None else None
     try:
         asyncio.run(
             _run(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
-                 env["sha256"])
+                 env["sha256"], comparison, budget)
         )
     finally:
         # Whatever happened, the summary is what runs.jsonl recomputes to.
         runs = out / "runs.jsonl"
-        summary = summarize_live(read_runs(out) if runs.exists() else [])
+        records = read_runs(out) if runs.exists() else []
+        summary = (summarize_tuning(records, budget_tokens) if comparison == "tuning"
+                   else summarize_live(records))
+        if budget is not None:
+            # The watcher's own state is not in runs.jsonl: written beside it.
+            summary["budget"] = budget.state()
+            (out / "budget.json").write_text(json.dumps(summary["budget"], indent=2) + "\n",
+                                             encoding="utf-8")
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n",
                                           encoding="utf-8")
     return summary
@@ -2523,9 +3151,17 @@ def read_runs(path: Path) -> list[dict]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, help="new output directory (must not exist)")
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--repeats", type=int, default=None,
+                        help="repeats per case (default: 3 for 310, 2 for tuning)")
     parser.add_argument("--smoke", action="store_true",
-                        help="mixed-fork-join repeat 0, both arms, plus an 18-job projection")
+                        help="mixed-fork-join repeat 0, both arms, plus a full-run projection "
+                        "(18 jobs for 310, 12 for tuning)")
+    parser.add_argument("--comparison", choices=sorted(COMPARISONS), default="310",
+                        help="310: per-task vs grouped (default); tuning: baseline-grouped vs "
+                        "tuned-grouped (T1-T4)")
+    parser.add_argument("--budget-tokens", type=int, default=None,
+                        help="cap on this run's raw Codex tokens; checked before each job, "
+                        "the run stops cleanly when the next job would cross it")
     parser.add_argument("--cases", nargs="*", help="case ids (default: all three)")
     parser.add_argument("--codex", default='["codex"]', help="JSON argv prefix for Codex")
     parser.add_argument("--author-timeout", type=float, default=900)
@@ -2537,7 +3173,7 @@ def main() -> None:
                         help="existing runs.jsonl or output directory; print recomputed summary")
     args = parser.parse_args()
     if args.summarize:
-        print(json.dumps(summarize_live(read_runs(args.summarize)), indent=2))
+        print(json.dumps(summarize(read_runs(args.summarize), args.budget_tokens), indent=2))
         return
     if not args.out:
         parser.error("--out is required unless --summarize is given")
@@ -2549,9 +3185,18 @@ def main() -> None:
         cases = [c for c in cases if c["id"] in args.cases]
     auth = None if args.shared_codex_home else Path.home() / ".codex" / "auth.json"
     summary = run_live(args.out, cases, args.repeats, args.smoke, json.loads(args.codex),
-                       args.author_timeout, args.review_timeout, codex_auth=auth)
+                       args.author_timeout, args.review_timeout, codex_auth=auth,
+                       comparison=args.comparison, budget_tokens=args.budget_tokens)
     print(json.dumps(summary, indent=2))
-    if args.smoke:
+    if args.smoke and args.comparison == "tuning":
+        smoke = summary.get("smoke", {})
+        print(
+            f"projection: {smoke.get(f'projected_tokens_for_{TUNING_JOBS}_jobs')} tokens for "
+            f"{TUNING_JOBS} jobs (budget {args.budget_tokens}; fits: "
+            f"{smoke.get('fits_budget')})",
+            file=sys.stderr,
+        )
+    elif args.smoke:
         smoke = summary.get("smoke", {})
         print(
             f"projection: {smoke.get('projected_tokens_for_18_jobs')} tokens for "
@@ -2559,6 +3204,8 @@ def main() -> None:
             f"{smoke.get('exceeds_gate')})",
             file=sys.stderr,
         )
+    if summary.get("budget", {}).get("stopped"):
+        print(f"budget stop: {summary['budget']['stop']['reason']}", file=sys.stderr)
 
 
 if __name__ == "__main__":

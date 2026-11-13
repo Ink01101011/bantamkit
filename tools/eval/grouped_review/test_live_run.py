@@ -40,7 +40,11 @@ if argv[:2] == ["features", "list"]:
     sys.exit(0)
 prompt = sys.stdin.read()
 resume = argv[:2] == ["exec", "resume"]
-review = "--output-schema" in argv
+# T1 drops --output-schema: a tools-disabled call carrying a review request is a review;
+# any other tools-disabled call is a T2 patch repair.
+tools_off = "shell_tool" in argv
+review = "--output-schema" in argv or (tools_off and "REVIEW REQUEST:\n" in prompt)
+patch = tools_off and not review
 cwd = Path(argv[argv.index("-C") + 1]) if "-C" in argv else Path.cwd()
 thread = argv[-2] if resume else str(uuid.uuid4())
 reference = Path(scn["reference_dir"])
@@ -68,6 +72,11 @@ if review and bump("reviews") < scn.get("garbage_reviews", 0):
     emit({"type": "item.completed", "item": {"type": "agent_message", "text": "not json"}})
     emit({"type": "turn.completed", "usage": scn["fresh"]})
     sys.exit(0)
+if (review and "--output-schema" not in argv
+        and bump("schemaless_reviews") < scn.get("garbage_tuned_reviews", 0)):
+    emit({"type": "item.completed", "item": {"type": "agent_message", "text": "not json"}})
+    emit({"type": "turn.completed", "usage": scn["fresh"]})
+    sys.exit(0)
 if review:
     request = json.loads(prompt.split("REVIEW REQUEST:\n", 1)[1])
     findings = []
@@ -91,6 +100,18 @@ if review:
         ],
     }
     emit({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(answer)}})
+elif patch:
+    # One answer per patch call, in order: good | garbage | foreign | red.
+    modes = scn.get("patch", [])
+    n = bump("patches")
+    mode = modes[n] if n < len(modes) else "good"
+    rows = [{"path": f, "content": (reference / f).read_text()} for f in files]
+    if mode == "red":
+        rows = [{"path": f, "content": "this is not python (\n"} for f in files]
+    if mode == "foreign":
+        rows.append({"path": scn["foreign_path"], "content": "# overwritten\n"})
+    text = "not json" if mode == "garbage" else json.dumps({"files": rows})
+    emit({"type": "item.completed", "item": {"type": "agent_message", "text": text}})
 else:
     time.sleep(scn.get("delay", 0))
     for rel in files:
@@ -118,7 +139,7 @@ if not any(f in scn.get("no_usage_for", []) for f in files):
     emit({"type": "turn.completed", "usage": own if per_turn else total})
 with open(scn["log"], "a") as log:
     log.write(json.dumps({"argv": argv, "cwd": str(cwd), "resume": resume, "review": review,
-                          "thread": thread, "files": files}) + "\n")
+                          "patch": patch, "thread": thread, "files": files}) + "\n")
 '''
 
 
@@ -1218,3 +1239,567 @@ def test_run_live_isolates_home_only_for_codex_processes(tmp_path, monkeypatch):
     assert os.environ.get("HOME") == real_home
     assert meta["codex_environment"]["codex_home_isolated"]["isolated"] is True
     assert summary["smoke"]["harness_censored"] == 0
+
+
+# --- #310 tuning (job84 TW): the default stays byte-for-byte, tuned levers behind flags ---
+
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+
+def sent_calls(out, tmp_path, codex):
+    """Every call's argv and prompt as sent, keyed (job, unit, nth call of that unit) and
+    normalized: run paths, temp dirs, reviewer context ids and thread ids are masked."""
+    import re
+
+    rows = {}
+    seen = {}
+    for record in lr.read_runs(out):
+        for call in record["calls"]:
+            key = (record["job_id"], call["unit"])
+            n = seen[key] = seen.get(key, -1) + 1
+            d = out / call["artifact_dir"]
+            text = (d / "prompt.txt").read_text(encoding="utf-8") + "\n--argv--\n" + (
+                d / "argv.json").read_text(encoding="utf-8")
+            for path in sorted({str(p) for p in (out, out.resolve(), tmp_path,
+                                                  tmp_path.resolve())}, key=len, reverse=True):
+                text = text.replace(path, "<tmp>")
+            text = text.replace(json.dumps(codex[0])[1:-1], "<python>")
+            text = re.sub(r"/[^\s\"']*glr-[A-Za-z0-9_]+", "<scratch>", text)
+            text = re.sub(r"reviewer-[0-9a-f]{32}", "reviewer-<id>", text)
+            text = re.sub(UUID, "<thread>", text)
+            rows[f"{key[0]}|{key[1]}|{n}"] = text
+    return rows
+
+
+def golden_digest(tmp_path, monkeypatch, case_id):
+    import hashlib
+
+    codex, _ = fake_codex(tmp_path, monkeypatch, case_id)
+    out = tmp_path / "out"
+    lr.run_live(out, [CASES[case_id]], repeats=1, codex_bin=codex)
+    rows = sent_calls(out, tmp_path, codex)
+    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest(), rows
+
+
+# Captured from the #310 harness as committed (1f9c1f5f) before any tuning code existed:
+# every call's argv and prompt of a default run, normalized (see sent_calls).
+GOLDEN_310 = {
+    "mixed-fork-join": ("58f9e0747cd61e9318d4de346ac4dd3f40b0ed1ec419e9a1f2519a9165179331", 22),
+    "native-chain": ("0c33362b1d33389551397c5200438de73f8c98008b19aee743c2357c9b328e21", 17),
+    "sequential-delegates": (
+        "2386b5b2462fa8467f58e57d92e5704b0871af481124778f6cfdc3eb16c2670d", 17),
+}
+GOLDEN_PLANS = "db3498a3f3c217da8471506e183407161b79c72217f560f990e512ee4919d246"
+GOLDEN_PROMPTS = "b913365e11729c6f4d62b8a2e2836c2e9999e06c647004e945afd546f45accc9"
+
+
+@pytest.mark.parametrize("case_id", sorted(CASES))
+def test_default_310_argv_and_prompts_are_byte_for_byte_as_before(tmp_path, monkeypatch,
+                                                                   case_id):
+    import hashlib
+
+    digest, rows = golden_digest(tmp_path, monkeypatch, case_id)
+    assert (digest, len(rows)) == GOLDEN_310[case_id]
+    assert all("--output-schema" in t for k, t in rows.items() if "|QA_" in k or "|R|" in k)
+    plans = {c["id"]: {a: lr.arm_tickets(c, a) for a in lr.ARMS} for c in CASES.values()}
+    assert hashlib.sha256(json.dumps(plans, sort_keys=True).encode()).hexdigest() == GOLDEN_PLANS
+    assert hashlib.sha256(json.dumps(lr.PROMPTS, sort_keys=True).encode()).hexdigest() == (
+        GOLDEN_PROMPTS)
+    for record in lr.read_runs(tmp_path / "out"):
+        assert record["variant"] == record["arm"] and record["levers"] == []
+
+
+def run_tuning(tmp_path, monkeypatch, case_id, smoke=False, budget=10**12, **scenario):
+    codex, log = fake_codex(tmp_path, monkeypatch, case_id, **scenario)
+    out = tmp_path / "out"
+    summary = lr.run_live(out, [CASES[case_id]], repeats=1, smoke=smoke, codex_bin=codex,
+                          comparison="tuning", budget_tokens=budget)
+    records = lr.read_runs(out) if (out / "runs.jsonl").exists() else []
+    calls = [json.loads(s) for s in log.read_text().splitlines()] if log.exists() else []
+    return out, summary, records, calls
+
+
+def sent(out, call, name):
+    text = (out / call["artifact_dir"] / name).read_text(encoding="utf-8")
+    return json.loads(text) if name.endswith(".json") else text
+
+
+def test_baseline_grouped_sends_exactly_the_310_grouped_calls(tmp_path, monkeypatch):
+    """baseline-grouped is the #310 grouped arm: same argv, same prompts, call for call."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    codex_a, _ = fake_codex(a, monkeypatch, "native-chain")
+    lr.run_live(a / "out", [CASES["native-chain"]], repeats=1, codex_bin=codex_a)
+    rows_310 = sent_calls(a / "out", a, codex_a)
+    codex_b, _ = fake_codex(b, monkeypatch, "native-chain")
+    lr.run_live(b / "out", [CASES["native-chain"]], repeats=1, codex_bin=codex_b,
+                comparison="tuning", budget_tokens=10**12)
+    rows_tuning = sent_calls(b / "out", b, codex_b)
+
+    def arm(rows, job):
+        return {k.split("|", 1)[1]: v for k, v in rows.items() if k.split("|")[0] == job}
+
+    grouped = arm(rows_310, "native-chain-r0-grouped")
+    assert grouped and grouped == arm(rows_tuning, "native-chain-r0-baseline-grouped")
+    assert arm(rows_tuning, "native-chain-r0-tuned-grouped") != grouped
+
+
+def test_tuned_arm_runs_t1_to_t4_and_baseline_none(tmp_path, monkeypatch):
+    out, summary, records, log = run_tuning(tmp_path, monkeypatch, "native-chain")
+    # Counterbalanced: repeat 0 runs baseline first.
+    assert [r["variant"] for r in records] == ["baseline-grouped", "tuned-grouped"]
+    base, tuned = records
+    assert base["levers"] == [] and tuned["levers"] == ["T1", "T2", "T3", "T4"]
+    assert {r["arm"] for r in records} == {"grouped"}
+    for record in records:
+        assert record["status"] == "accepted", record["stop_reason"]
+        assert record["quality"]["quality_failure"] is False
+        assert record["observations"]["holds"] is True
+        assert [s["caught"] for s in record["quality"]["seeds"]] == [True, True]
+        assert record["writes"]["unowned"] == [] and record["writes"]["conflict_free"] is True
+        # Every call clocked in before and out after, as today.
+        lines = ledger(out, record)
+        briefs = [x for x in lines if x.get("event") == "brief"]
+        outs = [x for x in lines if "event" not in x]
+        deterministic = [u for u in record["units"] if u.get("i2_path") == "deterministic"]
+        assert len(briefs) == len(outs) == len(record["calls"]) + len(deterministic)
+        for call in record["calls"]:
+            assert call["tokens_excl_cache"] == (call["usage"]["uncached_input"]
+                                                 + call["usage"]["output"])
+            assert call["tokens"] == call["tokens_excl_cache"] + call["usage"]["cache_read"]
+
+    def calls(record, kind):
+        return [c for c in record["calls"] if c["kind"] == kind]
+
+    # T1: the tuned reviewer has no --output-schema, tools still disabled, shape in prompt.
+    for call in calls(tuned, "reviewer"):
+        argv = sent(out, call, "argv.json")
+        assert "--output-schema" not in argv
+        assert {"shell_tool", "unified_exec", "apps", "multi_agent"} <= set(argv)
+        assert 'model_reasoning_effort="medium"' in argv
+        prompt = sent(out, call, "prompt.txt")
+        assert prompt.startswith(lr.TUNED_REVIEW_PROMPT)
+        assert prompt.index('"evidence": [{"unit"') < prompt.index("REVIEW REQUEST:")
+    for call in calls(base, "reviewer"):
+        assert "--output-schema" in sent(out, call, "argv.json")
+        assert sent(out, call, "prompt.txt").startswith(lr.REVIEW_PROMPT + "{")
+    assert sum(c["review"] and "--output-schema" not in c["argv"] for c in log) == 2
+    # T2 + T4: each tuned repair is one fresh tools-disabled patch call at low effort.
+    repairs = calls(tuned, "repair")
+    assert [c["unit"] for c in repairs] == ["A2-r1", "C2-r1"]
+    for call in repairs:
+        argv = sent(out, call, "argv.json")
+        assert call["repair_mode"] == "patch" and call["context"] == "patch"
+        assert call["resumed"] is False and "resume" not in argv
+        assert 'model_reasoning_effort="low"' in argv and "shell_tool" in argv
+        assert "read-only" in argv and "--output-schema" not in argv
+        prompt = sent(out, call, "prompt.txt")
+        assert prompt.startswith(lr.PATCH_PROMPT)
+        assert "Reviewer findings (verbatim)" in prompt
+        assert "OWNED FILES (current text):" in prompt
+    for record in records:
+        for call in calls(record, "author") + calls(record, "reviewer"):
+            assert 'model_reasoning_effort="medium"' in sent(out, call, "argv.json")
+    for call in calls(base, "repair"):
+        argv = sent(out, call, "argv.json")
+        assert 'model_reasoning_effort="medium"' in argv and "repair_mode" not in call
+    # The patch write is the repair unit's own write, from the boundary hashes.
+    rows = {r["unit"]: r for r in tuned["writes"]["calls"]}
+    assert rows["A2-r1"]["written"] == ["ledgerkit/money.py"]
+    assert rows["C2-r1"]["written"] == CASES["native-chain"]["units"][2]["files"]
+    assert {u["id"]: u.get("repair_path") for u in tuned["units"]}["A2-r1"] == "patch"
+    # T3: the tuned re-review carries the previous findings and per-member change flags.
+    first, second = [sent(out, c, "request.json") for c in calls(tuned, "reviewer")]
+    assert "previous_findings" not in first
+    assert all("changed_since_last_review" not in u for u in first["units"])
+    assert second["previous_findings"] == tuned["reviews"][0]["repair_findings"]
+    assert {u["id"]: u["changed_since_last_review"] for u in second["units"]} == {
+        "A": True, "B": False, "C": True}
+    assert second["instructions"].endswith(lr.DELTA_INSTRUCTIONS)
+    assert tuned["reviews"][1]["delta"] is True
+    assert tuned["reviews"][1]["changed_members"] == ["A", "C"]
+    for call in calls(base, "reviewer"):
+        request = sent(out, call, "request.json")
+        assert "previous_findings" not in request
+        assert request["instructions"] == lr.REVIEW_INSTRUCTIONS
+    assert tuned["tuning"]["patch_calls"] == 2 and tuned["tuning"]["fallbacks"] == 0
+    assert tuned["tuning"]["delta_reviews"] == 1
+    assert base["tuning"]["patch_calls"] == base["tuning"]["delta_reviews"] == 0
+    # The metric per kind and per arm.
+    patch = tuned["tuning"]["repair_modes"]["patch"]
+    assert tuned["kind_tokens_excl_cache"]["repair"] == patch["uncached_input"] + patch["output"]
+    assert summary["comparison"] == "tuning"
+    assert summary["modes"]["native-chain"]["tuned-grouped"]["patch_calls"] == 2
+    meta = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["comparison"] == "tuning"
+    assert meta["variants"]["tuned-grouped"]["levers"] == ["T1", "T2", "T3", "T4"]
+    written = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert written.pop("budget")["cap"] == 10**12  # only the run's own summary has it
+    assert written == json.loads(json.dumps(lr.summarize_tuning(records, 10**12)))
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason", "counter"),
+    [
+        ("foreign", "invalid patch answer: patch names a file the unit does not own: "
+                    "ledgerkit/lines.py", "patch_invalid_answers"),
+        ("garbage", "invalid patch answer: patch answer is not JSON", "patch_invalid_answers"),
+        ("red", "fast check red after the patch", "patch_red_checks"),
+    ],
+)
+def test_patch_repair_falls_back_exactly_once(tmp_path, monkeypatch, mode, reason, counter):
+    out, _, records, _ = run_tuning(tmp_path, monkeypatch, "native-chain", patch=[mode],
+                                    foreign_path="ledgerkit/lines.py")
+    tuned = next(r for r in records if r["variant"] == "tuned-grouped")
+    assert tuned["status"] == "accepted", tuned["stop_reason"]
+    a2 = [c for c in tuned["calls"] if c["unit"] == "A2-r1"]
+    assert [c["repair_mode"] for c in a2] == ["patch", "fallback-shell"]
+    assert a2[0]["fallback_reason"] == reason == a2[1]["fallback_reason"]
+    # The fallback is today's shell path (native chain: the parent session), at low effort.
+    fallback = sent(out, a2[1], "argv.json")
+    assert a2[1]["context"] == "parent" and fallback[fallback.index("exec") + 1] == "resume"
+    assert 'model_reasoning_effort="low"' in fallback and "shell_tool" not in fallback
+    assert sent(out, a2[1], "prompt.txt").startswith(lr.REPAIR_PROMPT)
+    assert [c["repair_mode"] for c in tuned["calls"] if c["unit"] == "C2-r1"] == ["patch"]
+    unit = next(u for u in tuned["units"] if u["id"] == "A2-r1")
+    assert unit["repair_path"] == "fallback-shell" and unit["fallback_reason"] == reason
+    counts = tuned["tuning"]
+    assert counts[counter] == 1 and counts["fallbacks"] == 1 and counts["patch_calls"] == 2
+    # Each call has its own brief and clock-out; the patch call hands the unit back open.
+    lines = [x for x in ledger(out, tuned) if x.get("unit") == "A2-r1"]
+    assert sum(x.get("event") == "brief" for x in lines) == 2
+    assert sum("event" not in x for x in lines) == 2
+    doc = units_of(checkpoint(out, tuned))
+    assert doc["A2-r1"]["status"] == "done"
+    patch_row = next(r for r in tuned["writes"]["calls"] if r["call"] == a2[0]["id"])
+    if mode == "red":
+        # Written, then red, then repaired by the fallback.
+        assert patch_row["written"] == ["ledgerkit/money.py"]
+        assert [c["passed"] for c in tuned["fast_checks"]["A"] if c["label"] == "A2-r1"] == [
+            False, True]
+    else:
+        # A rejected answer writes nothing at all, the foreign path least of all.
+        assert patch_row["written"] == [] and patch_row["changed"] == []
+    assert tuned["writes"]["unowned"] == []
+    lines_py = out / tuned["workspace"] / "ledgerkit" / "lines.py"
+    assert lines_py.read_text(encoding="utf-8") != "# overwritten\n"
+
+
+def test_parse_patch_rules():
+    def raw(text, tool=False):
+        rows = [{"type": "item.completed", "item": {"type": "agent_message", "text": text}}]
+        if tool:
+            rows.insert(0, {"type": "item.completed",
+                            "item": {"type": "command_execution", "command": "ls"}})
+        return "\n".join(json.dumps(r) for r in rows)
+
+    owned = ["a.py", "b.py"]
+    good = {"files": [{"path": "a.py", "content": "x = 1\n"}]}
+    assert lr.parse_patch(raw(json.dumps(good)), owned) == (good["files"], None)
+    bad = {
+        "not json": "patch answer is not JSON",
+        json.dumps({"files": []}): "patch answer has no files list",
+        json.dumps([good]): "patch answer has no files list",
+        json.dumps({"files": [{"path": "a.py"}]}): "patch file row is not {path, content}",
+        json.dumps({"files": [{"path": "a.py", "content": 1}]}):
+            "patch file row is not {path, content}",
+        json.dumps({"files": [dict(good["files"][0], extra=1)]}):
+            "patch file row is not {path, content}",
+        json.dumps({"files": good["files"] + [{"path": "../c.py", "content": ""}]}):
+            "patch names a file the unit does not own: ../c.py",
+        json.dumps({"files": good["files"] * 2}): "patch names a.py twice",
+    }
+    for text, reason in bad.items():
+        assert lr.parse_patch(raw(text), owned) == (None, reason), text
+    assert lr.parse_patch(raw(json.dumps(good), tool=True), owned) == (
+        None, "patch call used a tool")
+    assert lr.parse_patch("", owned) == (None, "no patch answer")
+
+
+def test_tuned_invalid_reviewer_answer_is_a_counted_reviewer_error_round(tmp_path, monkeypatch):
+    _, _, records, _ = run_tuning(tmp_path, monkeypatch, "native-chain",
+                                  garbage_tuned_reviews=1)
+    base, tuned = records
+    assert tuned["status"] == "accepted", tuned["stop_reason"]
+    assert tuned["reviews"][0]["valid_answer"] is False
+    assert tuned["reviews"][0]["round_kind"] == "reviewer-error"
+    assert tuned["tuning"]["reviewer_invalid_answers"] == 1
+    assert tuned["rework"]["reviewer_error_rounds"] == 1
+    assert base["tuning"]["reviewer_invalid_answers"] == 0
+    # No delta after an error round: the next review of that group is a full one.
+    assert tuned["tuning"]["delta_skipped_after_error"] == 1
+    assert not tuned["reviews"][1].get("delta")
+
+
+def test_patch_target_refuses_symlinks_and_paths_outside_the_workspace(tmp_path):
+    from types import SimpleNamespace
+    ws = tmp_path / "ws"
+    (ws / "pkg").mkdir(parents=True)
+    (ws / "pkg" / "ok.py").write_text("x = 1\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n")
+    (ws / "pkg" / "link.py").symlink_to(outside)
+    (ws / "linkdir").symlink_to(tmp_path)
+    # A link that stays inside the workspace still names another file than the owned path.
+    (ws / "pkg" / "other.py").write_text("y = 2\n")
+    (ws / "pkg" / "alias.py").symlink_to(ws / "pkg" / "other.py")
+    arm = SimpleNamespace(workspace=ws)
+    assert lr.Arm.patch_target(arm, "pkg/ok.py") == ws / "pkg" / "ok.py"
+    assert lr.Arm.patch_target(arm, "pkg/new.py") == ws / "pkg" / "new.py"
+    assert lr.Arm.patch_target(arm, "pkg/link.py") is None
+    assert lr.Arm.patch_target(arm, "linkdir/outside.txt") is None
+    assert lr.Arm.patch_target(arm, "../outside.txt") is None
+    assert lr.Arm.patch_target(arm, "pkg/alias.py") is None
+    assert outside.read_text() == "secret\n"
+
+
+def test_a_full_tuning_run_refuses_to_start_without_a_budget(tmp_path):
+    with pytest.raises(ValueError, match="needs budget_tokens"):
+        lr.run_live(tmp_path / "out", [CASES["native-chain"]], comparison="tuning")
+    assert not (tmp_path / "out").exists()
+
+
+def test_tuning_smoke_is_the_fork_join_pair_with_a_twelve_job_projection(tmp_path, monkeypatch):
+    out, summary, records, _ = run_tuning(tmp_path, monkeypatch, "mixed-fork-join", smoke=True,
+                                          budget=None)
+    assert [(r["variant"], r["repeat"], r["smoke"]) for r in records] == [
+        ("baseline-grouped", 0, True), ("tuned-grouped", 0, True)]
+    for record in records:
+        assert record["status"] == "accepted", record["stop_reason"]
+        assert record["observations"]["holds"] is True
+    tuned = records[1]
+    # The contract gate QA_K stays in both arms; the tuned repairs are patch calls.
+    assert any(r["unit"] == "QA_K" for r in tuned["reviews"])
+    assert all(c["repair_mode"] == "patch" for c in tuned["calls"] if c["kind"] == "repair")
+    smoke = summary["smoke"]
+    raw = sum(r["total_tokens"] for r in records)
+    assert summary["run_count"] == 0 and summary["pairs"] == []
+    assert smoke["projected_tokens_for_12_jobs"] == max(r["total_tokens"] for r in records) * 12
+    assert smoke["mean_projected_tokens_for_12_jobs"] == raw / 2 * 12
+    # Unequal jobs: the projection takes the larger one, never the mean.
+    uneven = [dict(records[0], total_tokens=100), dict(records[1], total_tokens=300)]
+    again = lr.summarize_tuning(uneven, 3000)["smoke"]
+    assert again["projected_tokens_for_12_jobs"] == 3600 and again["fits_budget"] is False
+    assert again["mean_projected_tokens_for_12_jobs"] == 2400
+    assert smoke["fits_budget"] is None
+
+
+def test_budget_stops_cleanly_before_the_job_that_would_cross_it(tmp_path, monkeypatch):
+    out, summary, records, _ = run_tuning(tmp_path, monkeypatch, "native-chain", budget=1)
+    # The first job is projected at nothing yet; after it, spend + projection > 1.
+    assert [r["variant"] for r in records] == ["baseline-grouped"]
+    budget = summary["budget"]
+    assert budget["stopped"] is True and budget["jobs_run"] == 1
+    assert budget["stop"]["before_job"] == "native-chain-r0-tuned-grouped"
+    assert budget["spent"] == sum(c["tokens"] for c in records[0]["calls"]) > 1
+    assert json.loads((out / "budget.json").read_text(encoding="utf-8")) == budget
+    written = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert written == json.loads(json.dumps(summary))
+    verdict = summary["modes"]["native-chain"]["verdict"]
+    assert verdict["result"] == "inconclusive"
+    assert verdict["incomplete_pairs"] == ["native-chain#r0"]
+
+
+def test_budget_lets_a_run_that_fits_finish(tmp_path, monkeypatch):
+    out, summary, records, _ = run_tuning(tmp_path, monkeypatch, "native-chain",
+                                          budget=10**9)
+    assert len(records) == 2 and summary["budget"]["stopped"] is False
+    assert summary["budget"]["spent"] == sum(c["tokens"] for r in records for c in r["calls"])
+    assert summary["budget"]["largest_job"] == max(
+        sum(c["tokens"] for c in r["calls"]) for r in records)
+
+
+def test_budget_stops_when_a_calls_spend_is_unknown(tmp_path, monkeypatch):
+    _, summary, records, _ = run_tuning(tmp_path, monkeypatch, "native-chain", budget=10**9,
+                                        no_usage_for=["ledgerkit/lines.py"])
+    assert len(records) == 1
+    assert summary["budget"]["unknown_spend_calls"] >= 1
+    assert "unknown" in summary["budget"]["stop"]["reason"]
+
+
+def test_budget_projection_and_unknown_spend_rules():
+    budget = lr.Budget(1000)
+    assert budget.allows("j0")
+    budget.add({"calls": [{"usage": usage_of(1, 0)}]})  # 110 raw
+    assert budget.spent == budget.largest == 110 and budget.allows("j1")
+    budget.add({"calls": [{"usage": None, "reported_cumulative": RESUMED}]})  # 307 bound
+    assert budget.spent == 417 and budget.largest == 307 and budget.allows("j2")
+    budget.add({"calls": [{"usage": usage_of(0, 1)}]})  # 307 raw
+    assert budget.spent == 724 and not budget.allows("j3")  # 724 + 307 > 1000
+    assert budget.stopped["before_job"] == "j3"
+    assert not budget.allows("j4") and budget.stopped["before_job"] == "j3"
+    with pytest.raises(ValueError, match="budget_tokens"):
+        lr.run_live("unused", budget_tokens=0)
+    with pytest.raises(ValueError, match="unknown comparison"):
+        lr.run_live("unused", comparison="nope")
+
+
+def test_tuning_schedule_is_counterbalanced_and_310_is_the_default():
+    cases = list(CASES.values())
+    jobs = [(c["id"], r, a) for c, r, a, _ in lr.schedule(cases, 2, False, "tuning")]
+    assert len(jobs) == lr.TUNING_JOBS == 12
+    assert [a for c, r, a in jobs if c == "native-chain"] == [
+        "baseline-grouped", "tuned-grouped", "tuned-grouped", "baseline-grouped"]
+    assert [(c["id"], r, a) for c, r, a, _ in lr.schedule(cases, 2, True, "tuning")] == [
+        ("mixed-fork-join", 0, "baseline-grouped"), ("mixed-fork-join", 0, "tuned-grouped")]
+    assert lr.schedule(cases, 3, False) == lr.schedule(cases, 3, False, "310")
+    assert lr.DEFAULT_REPEATS == {"310": 3, "tuning": 2}
+
+
+# --- summarize_tuning on hand-built records --------------------------------------------
+
+
+def trecord(case_id, variant, repeat=0, cost=1000, raw=5000, review=400, repair=200,
+            latency=100.0, caught=(True, True), accepted=True, quality_failure=False,
+            false_findings=0, stop_kind="unset", invalid=0, fallbacks=0):
+    r = record(case_id, "grouped", repeat, total=raw, review=review * 4, latency=latency,
+               caught=caught, accepted=accepted, quality_failure=quality_failure)
+    r.update(variant=variant, job_id=f"{case_id}-r{repeat}-{variant}",
+             total_tokens_excl_cache=cost, review_tokens_excl_cache=review,
+             kind_tokens_excl_cache={"author": 100, "repair": repair, "integration": 0,
+                                     "reviewer": review},
+             kind_tokens={"author": 900, "repair": repair * 5, "integration": 0,
+                          "reviewer": review * 4},
+             tuning={"patch_calls": 0, "patch_invalid_answers": invalid,
+                     "patch_red_checks": 0, "fallbacks": fallbacks,
+                     "reviewer_invalid_answers": 0, "delta_reviews": 0})
+    r["quality"]["false_findings"] = false_findings
+    if stop_kind != "unset":
+        r["stop_kind"] = stop_kind
+    return r
+
+
+def good_tuning(**tuned_overrides):
+    records = []
+    for mode in MODES:
+        for repeat in range(2):
+            records.append(trecord(mode, "baseline-grouped", repeat))
+            tuned = {"cost": 700, "raw": 4000, "review": 300, "repair": 100, "latency": 90.0,
+                     "invalid": 1, "fallbacks": 1}
+            records.append(trecord(mode, "tuned-grouped", repeat,
+                                   **(tuned | tuned_overrides.get(mode, {}))))
+    return records
+
+
+def test_tuning_summary_better_when_every_gate_holds_and_cost_falls():
+    summary = lr.summarize_tuning(good_tuning())
+    assert summary["verdicts"] == {m: "better" for m in MODES}
+    pair = summary["pairs"][0]
+    assert pair["uncached_plus_output_saving"] == pytest.approx(0.3)
+    assert pair["raw_total_saving"] == pytest.approx(0.2)
+    assert pair["review_uncached_plus_output_saving"] == pytest.approx(0.25)
+    assert pair["repair_uncached_plus_output_saving"] == pytest.approx(0.5)
+    assert pair["review_raw_saving"] == pytest.approx(0.25)
+    assert pair["repair_raw_saving"] == pytest.approx(0.5)
+    mode = summary["modes"]["native-chain"]
+    assert mode["verdict"]["median_saving_uncached_plus_output"] == pytest.approx(0.3)
+    assert mode["tuned-grouped"]["uncached_plus_output"]["median"] == 700
+    assert mode["baseline-grouped"]["raw_total"]["median"] == 5000
+    assert mode["tuned-grouped"]["by_kind_uncached_plus_output"]["repair"]["median"] == 100
+    assert mode["tuned-grouped"]["patch_invalid_answers"] == 2
+    assert summary["counts"]["tuned-grouped"]["fallbacks"] == 6
+    assert summary["counts"]["baseline-grouped"]["fallbacks"] == 0
+    assert all(v is True for v in mode["verdict"]["gates"].values())
+
+
+@pytest.mark.parametrize(
+    ("override", "gate"),
+    [
+        ({"caught": (False, True)}, "no_seed_missed_that_baseline_caught"),
+        ({"quality_failure": True}, "no_quality_failure"),
+        ({"accepted": False, "quality_failure": None, "stop_kind": "protocol"},
+         "no_extra_protocol_stop"),
+        ({"false_findings": 1}, "false_findings_not_more"),
+        ({"latency": 101.0}, "median_accepted_latency_not_higher"),
+    ],
+)
+def test_each_tuning_gate_fails_its_mode_whatever_it_saves(override, gate):
+    summary = lr.summarize_tuning(good_tuning(**{"sequential-delegates": override}))
+    verdict = summary["modes"]["sequential-delegates"]["verdict"]
+    assert verdict["gates"][gate] is False
+    assert verdict["result"] == "fail"
+    assert verdict["median_saving_uncached_plus_output"] > 0
+    assert summary["verdicts"]["native-chain"] == "better"
+
+
+def test_a_protocol_stop_the_baseline_also_had_is_not_extra():
+    records = good_tuning(**{"native-chain": {"accepted": False, "quality_failure": None}})
+    for r in records:
+        if r["case_id"] == "native-chain" and r["variant"] == "baseline-grouped":
+            r.update(accepted=False, elapsed_to_accepted_ms=None)
+            r["quality"]["quality_failure"] = None
+    verdict = lr.summarize_tuning(records)["modes"]["native-chain"]["verdict"]
+    assert verdict["gates"]["no_extra_protocol_stop"] is True
+    assert verdict["gates"]["median_accepted_latency_not_higher"] is None
+    assert verdict["result"] == "inconclusive"
+
+
+def test_tuning_censored_pair_is_inconclusive_unless_a_gate_fails():
+    records = good_tuning()
+    for r in records:
+        if (r["case_id"], r["repeat"], r["variant"]) == ("native-chain", 0, "tuned-grouped"):
+            r.update(stop_kind="harness", accepted=False)
+    verdict = lr.summarize_tuning(records)["modes"]["native-chain"]["verdict"]
+    assert verdict["result"] == "inconclusive"
+    assert verdict["harness_censored_pairs"] == ["native-chain#r0"]
+    assert verdict["gates"]["no_quality_failure"] is None
+    failing = good_tuning(**{"native-chain": {"latency": 500.0}})
+    for r in failing:
+        if (r["case_id"], r["repeat"], r["variant"]) == ("native-chain", 0, "tuned-grouped"):
+            r.update(stop_kind="harness", accepted=False)
+    verdict = lr.summarize_tuning(failing)["modes"]["native-chain"]["verdict"]
+    assert verdict["gates"]["median_accepted_latency_not_higher"] is False
+    assert verdict["result"] == "fail"
+    # The rerun rule: the final attempt counts, the voided one is kept with its spend.
+    voided = dict(trecord("native-chain", "tuned-grouped", 0, raw=77), attempt=0,
+                  stop_kind="harness", accepted=False)
+    rerun = [dict(r, attempt=1) if (r["case_id"], r["repeat"]) == ("native-chain", 0) else r
+             for r in good_tuning()]
+    summary = lr.summarize_tuning([voided, *rerun])
+    assert summary["voided_attempts"]["total_tokens"] == 77
+    assert summary["verdicts"]["native-chain"] == "better"
+
+
+def test_tuning_no_saving_and_unknown_cost_are_never_better():
+    flat = lr.summarize_tuning(good_tuning(**{"native-chain": {"cost": 1000}}))
+    assert flat["modes"]["native-chain"]["verdict"]["result"] == "not-better"
+    unknown = lr.summarize_tuning(good_tuning(**{"native-chain": {"cost": None}}))
+    verdict = unknown["modes"]["native-chain"]["verdict"]
+    assert verdict["median_saving_uncached_plus_output"] is None
+    assert verdict["result"] == "inconclusive"
+
+
+def test_tuning_smoke_projection_against_the_budget_and_dispatch():
+    smoke = [dict(trecord("mixed-fork-join", v, raw=100_000), smoke=True)
+             for v in lr.TUNING_VARIANTS]
+    fits = lr.summarize_tuning(good_tuning() + smoke, budget_tokens=4_683_504)
+    assert fits["run_count"] == 12
+    assert fits["smoke"]["projected_tokens_for_12_jobs"] == 1_200_000
+    assert fits["smoke"]["fits_budget"] is True
+    assert lr.summarize_tuning(smoke, budget_tokens=1_000_000)["smoke"]["fits_budget"] is False
+    assert lr.summarize(good_tuning())["comparison"] == "tuning"
+    assert "comparison" not in lr.summarize(good_run())
+    assert lr.summarize(good_run()) == lr.summarize_live(good_run())
+
+
+def test_cli_passes_comparison_and_budget_and_summarizes_tuning(tmp_path, monkeypatch, capsys):
+    seen = {}
+
+    def fake_run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
+                      **kwargs):
+        seen.update(repeats=repeats, smoke=smoke, **kwargs)
+        return {}
+
+    monkeypatch.setattr(lr, "run_live", fake_run_live)
+    monkeypatch.setattr(sys, "argv", ["live_run", "--out", str(tmp_path / "o"), "--smoke",
+                                      "--comparison", "tuning", "--budget-tokens", "4683504"])
+    lr.main()
+    assert seen["comparison"] == "tuning" and seen["budget_tokens"] == 4683504
+    assert seen["repeats"] is None and seen["smoke"] is True
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text("".join(json.dumps(r) + "\n" for r in good_tuning()), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["live_run", "--summarize", str(runs)])
+    capsys.readouterr()
+    lr.main()
+    assert json.loads(capsys.readouterr().out)["verdicts"] == {m: "better" for m in MODES}

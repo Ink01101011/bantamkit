@@ -98,3 +98,32 @@ same in both arms.
   gate therefore has little power, as in #310.
 - T1 removes the output schema. Answer validity now rests on the prompt and the
   harness check, so invalid answers are counted and reported.
+
+## Planner rulings before any tuning run (2026-11-13)
+
+The harness review (TQW) raised gaps the frozen text does not settle. These rulings
+were made before the smoke pair or any comparison job ran. No gate or threshold
+above changed.
+
+- **No saving.** When every gate holds and the median paired saving is 0 or less,
+  the verdict is **not-better**. It is never reported as better.
+- **Budget metric.** The run's cap counts raw Codex tokens including cache reads,
+  the same unit as the 12M cap and the 7,233,091 already spent. The next job is
+  projected at the largest job so far. A call whose spend cannot be measured stops
+  the run. A comparison run refuses to start without a cap. The caller passes the
+  remainder minus a margin of about one large job, because the check runs between
+  jobs and cannot stop a job that is already running.
+- **Smoke projection.** The smoke projection is the larger smoke job × 12,
+  pessimistically. The mean-based figure is reported beside it.
+- **Delta after a reviewer error.** When the previous review of a group was a
+  reviewer-error round (invalid answer), it left no evidence to reuse. The next
+  review is a full review, not a delta one, and it is counted as
+  `delta_skipped_after_error`.
+- **Patch writes.** A patch path with a symlink anywhere along it, or one that
+  resolves outside the workspace, makes the answer invalid. This triggers the one
+  fallback. Owned files behind such a path are not read into the prompt.
+- **Other choices accepted as implemented:**
+  - The patch call runs tools-disabled in an empty directory.
+  - Gates compare complete pairs only.
+  - A code-fenced reviewer answer under T1 is invalid and counted.
+  - The latency gate compares the medians of accepted jobs per arm.
