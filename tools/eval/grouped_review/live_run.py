@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import copy
 import glob
 import hashlib
@@ -2267,6 +2268,38 @@ def schedule(cases: list[dict], repeats: int, smoke: bool) -> list[tuple[dict, i
     return jobs
 
 
+@contextlib.contextmanager
+def isolated_codex_home(auth_source: Path, out: Path):
+    """Run Codex under a temporary CODEX_HOME holding only a symlink to the real auth file.
+
+    User ruling 2026-11-13 (#310): `--ignore-user-config` still loads the user's
+    ~/.codex/skills and app connectors, and no feature flag stops it (measured), so an
+    author read a personal SKILL.md and the access audit censored the arm. The link is
+    never a copy and nothing under the real home is written. On exit the environment is
+    restored, the session rollouts are copied into ``out/codex-sessions`` (the link is
+    not), and the temporary home is removed; removing a symlink never touches its target.
+    """
+    auth_source = Path(auth_source).expanduser()
+    if not auth_source.is_file():
+        raise ValueError(f"no Codex auth file at {auth_source}; log in to Codex first")
+    previous = os.environ.get("CODEX_HOME")
+    home = Path(tempfile.mkdtemp(prefix="codex-home-")).resolve()
+    try:
+        (home / "auth.json").symlink_to(auth_source.resolve())
+        os.environ["CODEX_HOME"] = str(home)
+        yield home
+    finally:
+        if previous is None:
+            os.environ.pop("CODEX_HOME", None)
+        else:
+            os.environ["CODEX_HOME"] = previous
+        sessions = home / "sessions"
+        if sessions.is_dir():
+            shutil.copytree(sessions, Path(out) / "codex-sessions", symlinks=True,
+                            dirs_exist_ok=True)
+        shutil.rmtree(home, ignore_errors=True)
+
+
 def codex_environment(codex_bin: list[str], cwd: Path) -> dict:
     """What both arms run under, read-only: CLI version, effective features, the
     CODEX_HOME path and a digest of its skills directory. Nothing under CODEX_HOME is
@@ -2418,7 +2451,30 @@ async def _run(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bi
 
 def run_live(out, cases: list[dict] | None = None, repeats: int = 3, smoke: bool = False,
              codex_bin: list[str] | None = None, author_timeout: float = 900,
-             review_timeout: float = 300) -> dict:
+             review_timeout: float = 300, codex_auth: Path | None = None) -> dict:
+    """With ``codex_auth`` (the CLI passes ~/.codex/auth.json), every Codex call runs under
+    an isolated CODEX_HOME linking only that file; see isolated_codex_home."""
+    if codex_auth is None:
+        return _run_live(out, cases, repeats, smoke, codex_bin, author_timeout,
+                         review_timeout, None)
+    out_path = Path(out).resolve()
+    # Sessions are copied into the run's own output after it ends; a refused run has
+    # made no Codex call, so it leaves no sessions to copy.
+    if os.name != "posix":
+        raise ValueError("isolated Codex home needs /usr/bin/env (POSIX); pass "
+                         "codex_auth=None to use the shared home")
+    with isolated_codex_home(codex_auth, out_path) as home:
+        # Codex also reads ~/.agents/skills through HOME (measured 2026-11-13), so only
+        # the Codex processes see HOME = the isolated home; the harness and its MCP
+        # server keep the real HOME.
+        isolated_bin = ["/usr/bin/env", f"HOME={home}", f"CODEX_HOME={home}",
+                        *(codex_bin or ["codex"])]
+        return _run_live(out, cases, repeats, smoke, isolated_bin, author_timeout,
+                         review_timeout, home)
+
+
+def _run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
+              isolated_home: Path | None) -> dict:
     if type(repeats) is not int or repeats < 1 or author_timeout <= 0 or review_timeout <= 0:
         raise ValueError("repeats and timeouts must be positive")
     codex_bin = list(codex_bin or ["codex"])
@@ -2435,6 +2491,13 @@ def run_live(out, cases: list[dict] | None = None, repeats: int = 3, smoke: bool
     out.mkdir(parents=True, exist_ok=False)
     cases = live_cases.live_cases() if cases is None else copy.deepcopy(cases)
     env = codex_environment(codex_bin, out)
+    env["codex_home_isolated"] = (
+        {"isolated": True, "contents": "auth.json symlink only (user ruling 2026-11-13)",
+         "sessions_copied_to": "codex-sessions"}
+        if isolated_home is not None else {"isolated": False}
+    )
+    env["sha256"] = sha256_text(json.dumps({k: v for k, v in env.items() if k != "sha256"},
+                                           sort_keys=True))
     meta = metadata(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout, env)
     (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     try:
@@ -2467,6 +2530,9 @@ def main() -> None:
     parser.add_argument("--codex", default='["codex"]', help="JSON argv prefix for Codex")
     parser.add_argument("--author-timeout", type=float, default=900)
     parser.add_argument("--review-timeout", type=float, default=300)
+    parser.add_argument("--shared-codex-home", action="store_true",
+                        help="use the real CODEX_HOME (loads personal skills); default "
+                        "isolates it with an auth.json symlink")
     parser.add_argument("--summarize", type=Path,
                         help="existing runs.jsonl or output directory; print recomputed summary")
     args = parser.parse_args()
@@ -2481,8 +2547,9 @@ def main() -> None:
         if unknown:
             parser.error(f"unknown cases: {', '.join(sorted(unknown))}")
         cases = [c for c in cases if c["id"] in args.cases]
+    auth = None if args.shared_codex_home else Path.home() / ".codex" / "auth.json"
     summary = run_live(args.out, cases, args.repeats, args.smoke, json.loads(args.codex),
-                       args.author_timeout, args.review_timeout)
+                       args.author_timeout, args.review_timeout, codex_auth=auth)
     print(json.dumps(summary, indent=2))
     if args.smoke:
         smoke = summary.get("smoke", {})

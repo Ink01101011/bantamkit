@@ -204,6 +204,27 @@ events `reasoning_output_tokens` never exceeded `output_tokens`.
 `cache_write_input_tokens` is recorded raw. A nonzero value is flagged in the
 summary, because the #307 rule assumed that category does not occur.
 
+## Isolated Codex home (maintainer ruling 2026-11-13)
+
+The first smoke arm was censored by the access audit. A Codex author ran
+`cat ~/.codex/skills/using-superpowers/SKILL.md`, because every `codex exec`
+loads the operator's personal skills and app connectors even with
+`--ignore-user-config`. Probes found that `--enable skip_host_skill_discovery`
+and `--disable skill_search` change nothing: first-turn input was 19,519 tokens
+and the skill list was the same. Removing plugins did not help either. Seven
+more skills come from `~/.agents/skills`, which Codex finds through `HOME`.
+
+The maintainer chose isolation. Every Codex process starts with `HOME` and
+`CODEX_HOME` set to one temporary directory. That directory holds only a
+**symlink** to `~/.codex/auth.json`, never a copy, and nothing under the real
+home is edited. The harness and its MCP server keep the real `HOME`. After the
+run, the session rollouts are copied into the run output, without the link,
+and the temporary home is removed. Measured under isolation, first-turn input
+is 15,020 tokens and only Codex's four built-in skills remain (imagegen,
+openai-docs, skill-creator, skill-installer), the same for both arms. The
+censored first smoke arm and three probes cost 192,169 Codex tokens. That spend
+stays on record and is outside the matched sample.
+
 ## Decision rule
 
 Apply the frozen thresholds per execution-mode cohort: grouped misses no seeded

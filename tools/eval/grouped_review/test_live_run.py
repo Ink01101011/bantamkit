@@ -1160,3 +1160,61 @@ def test_limits_name_the_round_two_gaps():
     for phrase in ("reads command text only", "silently fix its own earlier seed",
                    "is judged false", "A2 and C2 can run concurrently"):
         assert phrase in limits, phrase
+
+
+def test_isolated_codex_home_links_auth_and_restores_everything(tmp_path, monkeypatch):
+    """User ruling 2026-11-13: Codex runs under a temp CODEX_HOME holding only a symlink to
+    the real auth file, so personal skills and app connectors never load; nothing is
+    copied, the environment is restored, and the auth link never reaches the run output."""
+    auth = tmp_path / "real-home" / "auth.json"
+    auth.parent.mkdir()
+    auth.write_text('{"token": "secret"}', encoding="utf-8")
+    (auth.parent / "skills" / "personal").mkdir(parents=True)
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setenv("CODEX_HOME", "/previous/home")
+    with lr.isolated_codex_home(auth, out) as home:
+        assert os.environ["CODEX_HOME"] == str(home)
+        link = home / "auth.json"
+        assert link.is_symlink() and link.resolve() == auth.resolve()
+        assert not (home / "skills" / "personal").exists()
+        assert sorted(p.name for p in home.iterdir()) == ["auth.json"]
+        (home / "sessions" / "2026").mkdir(parents=True)
+        (home / "sessions" / "2026" / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+    assert os.environ["CODEX_HOME"] == "/previous/home"
+    assert not home.exists()
+    assert auth.read_text(encoding="utf-8") == '{"token": "secret"}'
+    kept = out / "codex-sessions"
+    assert (kept / "2026" / "rollout.jsonl").is_file()
+    assert not any(p.name == "auth.json" for p in out.rglob("*"))
+
+
+def test_isolated_codex_home_refuses_a_missing_auth_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    with pytest.raises(ValueError, match="auth"):
+        with lr.isolated_codex_home(tmp_path / "nope" / "auth.json", tmp_path):
+            pass
+    assert "CODEX_HOME" not in os.environ
+
+
+def test_run_live_isolates_home_only_for_codex_processes(tmp_path, monkeypatch):
+    """~/.agents/skills is found through HOME, so Codex processes (and only they) start with
+    HOME and CODEX_HOME set to the isolated home; the run still completes end to end."""
+    auth = tmp_path / "real" / "auth.json"
+    auth.parent.mkdir()
+    auth.write_text("{}", encoding="utf-8")
+    codex, _ = fake_codex(tmp_path, monkeypatch, "mixed-fork-join")
+    real_home = os.environ.get("HOME")
+    out = tmp_path / "out"
+    summary = lr.run_live(out, [CASES["mixed-fork-join"]], repeats=1, smoke=True,
+                          codex_bin=codex, codex_auth=auth)
+    meta = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
+    argv = meta["codex_command"]
+    assert argv[0] == "/usr/bin/env"
+    home = argv[1].removeprefix("HOME=")
+    assert argv[1].startswith("HOME=") and argv[2] == f"CODEX_HOME={home}"
+    assert argv[3:] == codex
+    assert not Path(home).exists()
+    assert os.environ.get("HOME") == real_home
+    assert meta["codex_environment"]["codex_home_isolated"]["isolated"] is True
+    assert summary["smoke"]["harness_censored"] == 0
