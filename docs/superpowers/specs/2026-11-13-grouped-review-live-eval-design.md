@@ -133,6 +133,35 @@ recompute check, as in #307.
   tokens**, stop and ask the maintainer before the full run. Smoke data are kept
   and labelled, not merged into the matched sample.
 
+## Harness censors and the rerun rule
+
+Added 2026-11-13 after the pre-run harness review (unit QW), **before any live
+token was spent**.
+
+An arm can stop two ways, recorded as `stop_kind`:
+
+- **protocol**: the rejection cap was reached, or QA approved and the hidden
+  oracle then failed. These are real outcomes and count against the threshold.
+- **harness**: a Codex non-zero exit or timeout, an MCP refusal, an unexpected
+  exception, or an access-audit hit (an author touched a path outside its
+  workspace). These say nothing about review grouping.
+
+Rerun rule: a harness censor voids the **whole pair** (both arms of that case and
+repeat). The pair is rerun **once**, in the same arm order, as a new attempt of
+the same repeat. If the rerun is also harness-censored, the pair is reported as
+inconclusive and so is that mode's verdict; it is never counted as a fail or a
+pass. Voided attempts are kept and published with their spend.
+
+Isolation: every arm workspace is created in an opaque temporary directory
+outside the repository and outside the run's output directory. Run output
+(S and P) is written outside the repository too, and only the publish step (A)
+copies the records in. Prompts carry no absolute repository or output paths.
+
+Seeds count only on criteria that passed before the mutation and fail after it,
+and a seed is judged only if it is still present at the revision under review.
+A seed removed earlier (an author or integrator fixed it) is reported as
+`removed-before-review` and left out of the caught/missed comparison.
+
 ## Decision rule
 
 Apply the frozen thresholds per execution-mode cohort: grouped misses no seeded
