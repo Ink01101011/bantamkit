@@ -1,0 +1,2400 @@
+"""#310 live grouped-review evaluation: one matched live job per (case, repeat, arm).
+
+Authors, repairers and integrators are Codex ``exec`` agents writing real code in the
+arm's own copy of the fixture; reviewers are fresh read-only Codex contexts with the
+#307 settings. Every unit is a real Shiftwork unit in a per-arm checkpoint driven over
+MCP stdio (``node runtime-ts/dist/cli.js``): clock-in before each model call, clock-out
+with accounting after it. Planning and dispatch are this deterministic code: zero model
+tokens, recorded as such. Design: docs/superpowers/specs/2026-11-13-grouped-review-live-eval-design.md.
+
+Missing usage is unknown (None), never zero. ``summarize_live`` recomputes everything
+from runs.jsonl; ``adoption`` can never be ``adopt`` because the five scenarios of the
+frozen protocol are not run here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import copy
+import glob
+import hashlib
+import importlib.util
+import json
+import os
+import platform
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def _load(name: str):
+    spec = importlib.util.spec_from_file_location(f"grouped_live_run_{name}", HERE / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+live_cases = _load("live_cases")
+run_eval = _load("run_eval")
+codex_adapter = _load("codex_adapter")
+
+ROOT = codex_adapter.ROOT
+MODEL = codex_adapter.MODEL
+SCHEMA_PATH = ROOT / "assets/schemas/shiftwork-checkpoint.json"
+MAX_REPAIR_ROUNDS = 2
+BUDGET_GATE_TOKENS = 12_000_000
+FULL_RUN_JOBS = 18
+SMOKE_CASE = "mixed-fork-join"
+ARMS = ("per-task", "grouped")
+AGENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PLANNER_DISPATCH = {
+    "model_tokens": 0,
+    "label": "deterministic harness code (planner and dispatcher); no model call, exact zero",
+}
+AUTHOR_SETTINGS = {
+    "model": MODEL,
+    "reasoning_effort": "medium",
+    "sandbox": "workspace-write (arm workspace)",
+    "shell": True,
+    "disabled": ["apps", "multi_agent"],
+    "web_search": "disabled",
+}
+REVIEW_SETTINGS = {**codex_adapter.SETTINGS, "model": MODEL, "sandbox": "read-only"}
+LIMITS = [
+    "Core execution modes only; the five scenarios of the frozen protocol were not run, "
+    "so adoption beyond review-only guidance cannot be decided from these data.",
+    "Planner and dispatcher are deterministic harness code with zero model tokens in both "
+    "arms; a real orchestrator spends tokens this harness does not.",
+    "Seeds are mutations of live author output, so the seeded criterion can differ between "
+    "arms; the missed-defect comparison is per seeded unit, both arms having a seed.",
+    "Small samples (three repeats per mode) support limited pilot guidance only.",
+    "Arm order is counterbalanced by repeat, but three repeats give a 2:1 order imbalance "
+    "per mode (two repeats run per-task first, one runs grouped first).",
+    "Seeds are loud mutations (a seeded criterion fails outright), so the missed-defect "
+    "threshold has little power against subtle defects a grouped reviewer might miss.",
+    "The mixed-fork-join contract seed (unit K) is reviewed by its own gate reviewer in both "
+    "arms, so catching it says nothing about grouping.",
+    "A harness censor (Codex failure, MCP refusal, unexpected exception, access-audit hit) "
+    "voids the whole pair, which is rerun once; a pair censored twice is inconclusive, never "
+    "a pass or a fail. Voided attempts are kept with their spend.",
+    "The access audit reads command text only, so a read made inside a script the author "
+    "runs (for example a Python file that opens a path) is invisible to it.",
+    "Seeds removed before review are left out of the comparison; in the grouped "
+    "native-chain arm the one parent session can silently fix its own earlier seed, which "
+    "then drops out of the comparison instead of counting as caught or missed.",
+    "Isolated adjudication replaces other units' files by the reference, so a downstream "
+    "finding caused by an upstream seed that is still present is judged false; that only "
+    "happens in the grouped arm, where the upstream seed survives until the group review.",
+    "In grouped sequential-delegates the repairs A2 and C2 can run concurrently after one "
+    "group rejection, while the per-task arm never runs two repairs at once.",
+    "Write attribution hashes the workspace at every author-call and seed boundary; inside "
+    "a span where two calls run at once, a change no file_change event names is credited "
+    "to the one running unit that owns the file, so a shell write to a concurrently running "
+    "owner's file in that span is not seen as a conflict.",
+]
+HARNESS_MODEL = "harness-no-model"
+HUMAN_INTERVENTIONS_LABEL = "unattended; any manual action voids the arm"
+# Path components an author must never touch: the hidden judge, the reference
+# implementation and the run's own output.
+FORBIDDEN_NAME = re.compile(
+    r"live_fixtures|runs\.jsonl|oracle\.py|(?:^|[/\s'\"=])(?:oracle|reference|arms|calls)/"
+    r"|/(?:oracle|reference|arms|calls)(?:$|[\s'\";|&)])"
+)
+# A path only when a name character follows the slash: `/ 100` (division), `//`
+# (floor division) and a bare `/` are not paths here (QW round 2, finding 1).
+ABS_PATH = re.compile(
+    r"(?:^|(?<=[\s'\"=:(<>]))(~/[^\s'\";|&<>()`]*|~(?=[\s'\";|&<>()`]|$)"
+    r"|/[A-Za-z0-9_.~-][^\s'\";|&<>()`]*)"
+)
+# Everything after `://` is a URL, never a local path; `file://` keeps its path.
+URL = re.compile(r"\b(?!file://)[A-Za-z][A-Za-z0-9+.-]*://[^\s'\";|&<>()`]*")
+# A bare `/` (or `/.`, `/*`) is the filesystem root only as an argument of these.
+FS_COMMAND = re.compile(
+    r"(?:^|(?<=[\s;&|(`'\"]))(find|ls|grep|rg|du|cat|tree|cd)(?=[\s'\"]|$)([^;&|\n]*)"
+)
+ROOT_ARG = re.compile(r"""(?:^|(?<=\s))['"]?/[.*]?['"]?(?=\s|$)""")
+RECURSIVE = re.compile(r"(?:^|\s)(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)"
+                       r"(?=\s|$)")
+SYSTEM_PREFIXES = (
+    "/bin/", "/usr/", "/sbin/", "/etc/", "/private/etc/", "/opt/homebrew/", "/System/",
+    "/Library/", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty",
+)
+
+AUTHOR_PROMPT = (
+    "You are an author agent. Your working directory is a small Python package "
+    "workspace. Do exactly the work in the clocked Shiftwork brief below. Edit only "
+    "the files you own (named in the brief), and stay inside this directory. You may "
+    "run the fast check the brief names. End with a short summary of what you changed.\n"
+)
+REPAIR_PROMPT = (
+    "You are repairing your earlier work after an independent review. Fix every "
+    "reviewer finding quoted verbatim in the clocked Shiftwork brief below, keeping all "
+    "acceptance criteria satisfied. Edit only the files you own (named in the brief), "
+    "stay inside this directory, and run the fast check. End with a short summary.\n"
+)
+INTEGRATION_PROMPT = (
+    "You are the integration recheck after an upstream repair. Re-run every fast check "
+    "listed in the clocked Shiftwork brief below. If one fails, repair the listed files "
+    "so it passes again without changing the repaired upstream behaviour. Stay inside "
+    "this directory. End with a short summary of the checks and any change.\n"
+)
+REVIEW_PROMPT = (
+    "Review only the request in this clocked brief. Do not use tools, read files, or "
+    "infer defects from stage labels. Return findings only for units in membership, each "
+    "naming one of that unit's acceptance-criterion IDs. Echo reviewer_context_id exactly "
+    "and give, for every member, its exact supplied revision and every criterion ID you "
+    "checked. Use findings: [] only when no defect remains.\n"
+)
+REVIEW_INSTRUCTIONS = (
+    "Independently review every unit in membership against each of its acceptance "
+    "criteria, using context_files (the integrated workspace files at the exact reviewed "
+    "revision). Report concrete defects as {unit, criterion, detail}. Evidence binds "
+    "{unit, revision, criteria} to the supplied revision."
+)
+PROMPTS = {
+    "author": AUTHOR_PROMPT,
+    "repair": REPAIR_PROMPT,
+    "integration": INTEGRATION_PROMPT,
+    "review": REVIEW_PROMPT,
+    "review_instructions": REVIEW_INSTRUCTIONS,
+}
+
+
+class ArmStopped(Exception):
+    """A refusal or failure that ends an arm as failed/censored."""
+
+
+class ShiftworkRefusal(ArmStopped):
+    def __init__(self, tool: str, value: dict):
+        super().__init__(f"{tool}: {value.get('result')}: {value.get('reason')}")
+        self.escalate = value.get("result") == "escalate"
+
+
+def now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def tree_digest(root: Path) -> str:
+    h = hashlib.sha256()
+    for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
+        if "__pycache__" in path.parts:
+            continue
+        h.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
+        h.update(path.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+# --- usage ------------------------------------------------------------------------
+
+
+def parse_usage(raw: str) -> dict | None:
+    """Usage of one Codex call: every ``turn.completed`` once, categories separate.
+
+    None when the call reported no usage, an incomplete row or an invalid value:
+    unknown, never zero.
+    """
+    try:
+        totals = codex_adapter.extract_usage(raw)
+    except ValueError:
+        return None
+    if not totals:
+        return None
+    turns = 0
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "turn.completed":
+            turns += 1
+    return {
+        "uncached_input": totals["input_tokens"],
+        "cache_read": totals["cache_read_input_tokens"],
+        "output": totals["output_tokens"],
+        "turns": turns,
+    }
+
+
+def sum_usage(usages: list) -> dict | None:
+    """Sum known usages; any unknown member makes the sum unknown."""
+    total = {"uncached_input": 0, "cache_read": 0, "output": 0, "turns": 0}
+    for usage in usages:
+        if usage is None:
+            return None
+        for key in total:
+            total[key] += usage[key]
+    return total
+
+
+def usage_tokens(usage: dict | None, include_cache: bool = True) -> int | None:
+    if usage is None:
+        return None
+    return (
+        usage["uncached_input"]
+        + usage["output"]
+        + (usage["cache_read"] if include_cache else 0)
+    )
+
+
+def clock_accounting(usage: dict | None, duration_ms: int, note: str) -> dict:
+    """Shiftwork's line: ``tokens`` excludes cache reads; unknown is a flagged sentinel."""
+    if usage is None:
+        return {
+            "tokens": 0,
+            "estimate": True,
+            "duration_ms": duration_ms,
+            "model": MODEL,
+            "note": "usage unknown (no complete turn.completed usage); 0 is a sentinel, "
+            "not free work. " + note,
+        }
+    return {
+        "tokens": usage["uncached_input"] + usage["output"],
+        "cache_read_tokens": usage["cache_read"],
+        "duration_ms": duration_ms,
+        "model": MODEL,
+        "note": note,
+    }
+
+
+def thread_ids(raw: str) -> list[str]:
+    ids = []
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("type") == "thread.started":
+            if isinstance(event.get("thread_id"), str):
+                ids.append(event["thread_id"])
+    return ids
+
+
+def _events(raw: str):
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            yield event
+
+
+def turn_usages(raw: str) -> list:
+    """Every ``turn.completed`` usage row exactly as Codex reported it (per call)."""
+    return [e.get("usage") for e in _events(raw) if e.get("type") == "turn.completed"]
+
+
+def cumulative_hint(turns: list, previous: dict, prompt: str) -> bool:
+    """A HEURISTIC HINT, never evidence and never in any verdict or token figure.
+
+    True when a resumed call's first turn reports more output than the whole parent
+    session produced before it, and at least its previous input plus this prompt. A
+    per-turn counter can exceed the previous input on its own (one turn holds several
+    model requests, each resending the whole context), so input alone is not a signal;
+    a per-turn output larger than the session's entire earlier output is unusual, while a
+    cumulative counter always has it. Kept for the smoke run's direct probe (unit S) to
+    settle; never subtracted. ``previous``: {"input": int, "output": int} so far.
+    """
+    first = turns[0] if turns and isinstance(turns[0], dict) else None
+    if first is None or any(type(first.get(k)) is not int
+                            for k in ("input_tokens", "output_tokens")):
+        return False
+    return (first["output_tokens"] > previous["output"]
+            and first["input_tokens"] >= previous["input"] + len(prompt) // 4)
+
+
+def event_items(raw: str) -> list[dict]:
+    """The items of a call's events, last state per item id (started then completed)."""
+    items: dict[str, dict] = {}
+    order: list[str] = []
+    for n, event in enumerate(_events(raw)):
+        item = event.get("item")
+        if not isinstance(item, dict) or not str(event.get("type", "")).startswith("item."):
+            continue
+        key = str(item.get("id", f"#{n}"))
+        if key not in items:
+            order.append(key)
+        items[key] = item
+    return [items[k] for k in order]
+
+
+def _inside(path: Path, roots: list[Path]) -> bool:
+    return any(path == r or r in path.parents for r in roots)
+
+
+def _roots(path: Path) -> list[Path]:
+    path = Path(path)
+    return list(dict.fromkeys([Path(os.path.abspath(path)), path.resolve()]))
+
+
+def root_argument(command: str) -> str | None:
+    """``filesystem root`` when a bare ``/`` is an argument of a filesystem command
+    (``grep`` only when recursive); a ``/`` anywhere else is arithmetic, not a path."""
+    for name, args in FS_COMMAND.findall(command):
+        if name == "grep" and not RECURSIVE.search(args):
+            continue
+        if ROOT_ARG.search(args):
+            return "filesystem root"
+    return None
+
+
+def audit_items(items: list[dict], workspace: Path) -> list[dict]:
+    """Access-audit hits of one author call: a command or file change that names a path
+    outside the workspace (system tool prefixes aside), climbs out of it, or names the
+    hidden judge, the reference or the run output."""
+    roots = _roots(workspace)
+    hits = []
+    for item in items:
+        kind = item.get("type")
+        if kind == "command_execution":
+            command = str(item.get("command", ""))
+            if FORBIDDEN_NAME.search(command):
+                hits.append({"item": kind, "reason": "names a forbidden path", "text": command})
+                continue
+            text = URL.sub(" ", command).replace("file://", " ")
+            reason = root_argument(text)
+            if reason:
+                hits.append({"item": kind, "reason": reason, "text": command})
+                continue
+            for token in ABS_PATH.findall(text):
+                if token.startswith("~"):
+                    hits.append({"item": kind, "reason": "home path", "text": command})
+                    break
+                if token.startswith(SYSTEM_PREFIXES) or not _names_real_path(token):
+                    continue
+                if not _inside(Path(os.path.normpath(token)), roots):
+                    hits.append({"item": kind, "reason": f"outside workspace: {token}",
+                                 "text": command})
+                    break
+            else:
+                for token in re.findall(r"[^\s'\";|&<>()`]*\.\.[^\s'\";|&<>()`]*", text):
+                    target = Path(os.path.normpath(roots[0] / token))
+                    if not _inside(target, roots):
+                        hits.append({"item": kind, "reason": f"climbs out: {token}",
+                                     "text": command})
+                        break
+        elif kind == "file_change":
+            for change in item.get("changes") or []:
+                raw = str(change.get("path", "")) if isinstance(change, dict) else ""
+                path = Path(raw) if os.path.isabs(raw) else roots[0] / raw
+                if FORBIDDEN_NAME.search(raw) or not _inside(
+                    Path(os.path.normpath(path)), roots
+                ):
+                    hits.append({"item": kind, "reason": "file change outside workspace",
+                                 "text": raw})
+    return hits
+
+
+def changed_paths(items: list[dict], workspace: Path) -> list[str]:
+    """Workspace-relative paths a call's ``file_change`` items name (attribution aid)."""
+    roots = _roots(workspace)
+    found = []
+    for item in items:
+        if item.get("type") != "file_change":
+            continue
+        for change in item.get("changes") or []:
+            raw = str(change.get("path", "")) if isinstance(change, dict) else ""
+            path = Path(os.path.normpath(Path(raw) if os.path.isabs(raw) else roots[0] / raw))
+            for root in roots:
+                if _inside(path, [root]) and path != root:
+                    found.append(path.relative_to(root).as_posix())
+                    break
+    return sorted(set(found))
+
+
+def file_hashes(root: Path) -> dict[str, str]:
+    """sha256 of every workspace file (``__pycache__`` aside), keyed by relative path.
+
+    A file that vanishes between listing and reading (a sibling's temp file) is skipped.
+    """
+    hashes = {}
+    root = Path(root)
+    for path in sorted(root.rglob("*")):
+        if "__pycache__" in path.parts or not path.is_file() or path.is_symlink():
+            continue
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        hashes[path.relative_to(root).as_posix()] = hashlib.sha256(data).hexdigest()
+    return hashes
+
+
+def seed_claims(loop_ran: bool, unit_files: list[str]) -> list[str]:
+    """Files a seed window owns: all of its unit's files once the mutant loop ran."""
+    return list(unit_files) if loop_ran else []
+
+
+def _names_real_path(token: str) -> bool:
+    """True when the token's first absolute component exists on this machine.
+
+    `/def`, `/count` and `/2` (sed/awk addresses, spaced division) name nothing on disk;
+    `/tmp`, `/var` and `/Users` do (QW round 3, H2).
+    """
+    first = token.split("/", 2)[1] if token.startswith("/") else ""
+    if not first:
+        return False
+    head = "/" + first
+    if any(ch in first for ch in "*?["):
+        return bool(glob.glob(head))
+    return os.path.lexists(head)
+
+
+def diff_hashes(before: dict, after: dict) -> list[str]:
+    return sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+
+
+def prompt_view(clocked: dict) -> dict:
+    """What an agent sees of a clock-in: no brief path, no file list, no handoff (its
+    next_action names absolute paths and goes stale), upstream outcomes only."""
+    unit = {k: v for k, v in clocked.get("unit", {}).items() if k != "brief_path"}
+    if "attempts" in unit:
+        # Attempt notes and produced refs name call dirs, arms and job ids: status and
+        # outcome only (QW round 2, finding 6).
+        unit["attempts"] = [
+            {"status": a.get("status"), "outcome": a.get("outcome")}
+            for a in unit["attempts"] or [] if isinstance(a, dict)
+        ]
+    return {
+        "result": clocked.get("result"),
+        "unit": unit,
+        "role": clocked.get("role"),
+        "invariants": clocked.get("invariants", []),
+        "do_not": clocked.get("do_not", []),
+        "upstream": [
+            {"unit": u.get("unit"), "title": u.get("title"), "status": u.get("status"),
+             "outcome": (u.get("last") or {}).get("outcome")}
+            for u in clocked.get("upstream", []) if isinstance(u, dict)
+        ],
+        "prior_attempts": [
+            {"status": a.get("status"), "outcome": a.get("outcome")}
+            for a in clocked.get("prior_attempts", []) if isinstance(a, dict)
+        ],
+    }
+
+
+def merge_intervals(intervals: list) -> list[list[float]]:
+    merged: list[list[float]] = []
+    for start, end in sorted(i for i in intervals if i[1] > i[0]):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def only_in(first: list, second: list, limit: float | None = None) -> float:
+    """Length of ``first``'s union not covered by ``second``'s union, up to ``limit``."""
+    total = 0.0
+    cover = merge_intervals(second)
+    for start, end in merge_intervals(first):
+        if limit is not None:
+            end = min(end, limit)
+        if end <= start:
+            continue
+        span = end - start
+        for c_start, c_end in cover:
+            span -= max(0.0, min(end, c_end) - max(start, c_start))
+        total += span
+    return total
+
+
+def stop_kind_of(record: dict) -> str | None:
+    """``harness`` | ``protocol`` | None (accepted, oracle green or unknown)."""
+    if "stop_kind" in record:
+        return record["stop_kind"]
+    if not record["accepted"] or record["quality"].get("quality_failure") is True:
+        return "protocol"
+    return None
+
+
+# --- plans ------------------------------------------------------------------------
+
+
+def _units(case: dict) -> dict[str, dict]:
+    return {u["id"]: u for u in case["units"]}
+
+
+def gated_units(case: dict) -> list[str]:
+    """Fork/join keeps the contract gate in both arms: the root units of a case with an
+    integration unit get their own reviewer before any consumer runs."""
+    if not any(u["kind"] == "integration" for u in case["units"]):
+        return []
+    return [u["id"] for u in case["units"] if not u["depends_on"]]
+
+
+def author_brief(unit: dict) -> str:
+    criteria = "\n".join(f"- {c['id']}: {c['text']}" for c in unit["criteria"])
+    return (
+        f"{unit['task']}\n\nAcceptance criteria:\n{criteria}\n\n"
+        f"Files you own: {', '.join(unit['files'])}\n"
+        f"Fast check: python checks/check_{unit['id']}.py\n"
+    )
+
+
+def reviewer_brief(case: dict, members: list[str]) -> str:
+    return (
+        f"Review units {', '.join(members)} of fixture case {case['id']} against every "
+        "acceptance criterion. You authored none of them. The harness supplies the exact "
+        "integrated files, revisions and fast-check results with this brief when the "
+        "unit is clocked in; use only those."
+    )
+
+
+def arm_tickets(case: dict, arm: str) -> list[dict]:
+    """The shiftwork_draft tickets of one arm. Reviewers carry ``reviews`` ⊆ ``depends_on``."""
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm}")
+    gated = gated_units(case)
+    tickets = []
+
+    def author(unit: dict, deps: list[str]) -> None:
+        tickets.append(
+            {
+                "id": unit["id"],
+                "title": f"Author {unit['id']}: {', '.join(unit['files'])}",
+                "role": "implementer",
+                "depends_on": deps,
+                "touches": list(unit["files"]),
+                "verify": f"python checks/check_{unit['id']}.py",
+                "data_shape": "Python module files named in the brief",
+                "brief": author_brief(unit),
+            }
+        )
+
+    def reviewer(rid: str, members: list[str]) -> None:
+        tickets.append(
+            {
+                "id": rid,
+                "title": f"Review {', '.join(members)}",
+                "role": "reviewer",
+                "depends_on": list(members),
+                "reviews": list(members),
+                "verify": "harness: no findings, full criterion coverage, bound revision, "
+                "fast checks green",
+                "data_shape": "JSON verdict: findings and per-unit revision/criteria evidence",
+                "brief": reviewer_brief(case, members),
+            }
+        )
+
+    if arm == "per-task":
+        for unit in case["units"]:
+            author(unit, [f"QA_{d}" for d in unit["depends_on"]])
+            reviewer(f"QA_{unit['id']}", [unit["id"]])
+        return tickets
+    for unit in case["units"]:
+        author(unit, [f"QA_{d}" if d in gated else d for d in unit["depends_on"]])
+        if unit["id"] in gated:
+            reviewer(f"QA_{unit['id']}", [unit["id"]])
+    reviewer("R", [u["id"] for u in case["units"] if u["id"] not in gated])
+    return tickets
+
+
+def context_mode(case: dict, unit_kind: str, base: str | None) -> str:
+    """``parent`` (one resumed session) or ``delegate`` (fresh process) per the design."""
+    if case["mode"] == "native-chain":
+        return "parent"
+    if case["mode"] == "mixed-fork-join" and unit_kind == "author":
+        # The parent authors the contract (a root) and the integration; the branches are
+        # concurrent fresh delegates. Repairs outside native mode are fresh delegates.
+        unit = _units(case)[base]
+        return "parent" if unit["kind"] == "integration" or not unit["depends_on"] else "delegate"
+    return "delegate"
+
+
+def upstream_closure(case: dict, ids: list[str]) -> list[str]:
+    by = _units(case)
+    seen: list[str] = []
+    stack = list(ids)
+    while stack:
+        uid = stack.pop()
+        if uid in seen:
+            continue
+        seen.append(uid)
+        stack.extend(by[uid]["depends_on"])
+    return [u["id"] for u in case["units"] if u["id"] in seen]
+
+
+def downstream_closure(case: dict, ids: list[str]) -> list[str]:
+    result: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for unit in case["units"]:
+            if unit["id"] in result:
+                continue
+            if any(d in ids or d in result for d in unit["depends_on"]):
+                result.add(unit["id"])
+                changed = True
+    return [u["id"] for u in case["units"] if u["id"] in result]
+
+
+# --- review assessment ------------------------------------------------------------
+
+
+def assess_review(request: dict, response: dict | None, error: str | None) -> dict:
+    """Approval = no findings + full coverage + bound revision + fast checks green."""
+    if response is None:
+        return {"approved": False, "findings": [], "reasons": [error or "no reviewer answer"]}
+    reasons: list[str] = []
+    units = {u["id"]: u for u in request["units"]}
+    criteria = {uid: [c["id"] for c in u["criteria"]] for uid, u in units.items()}
+    if response.get("reviewer_context_id") != request["reviewer_context_id"]:
+        reasons.append("reviewer context not bound")
+    findings = []
+    raw = response.get("findings")
+    for finding in raw if isinstance(raw, list) else []:
+        if (
+            isinstance(finding, dict)
+            and finding.get("unit") in criteria
+            and finding.get("criterion") in criteria[finding["unit"]]
+            and isinstance(finding.get("detail"), str)
+            and finding["detail"].strip()
+        ):
+            findings.append(
+                {"unit": finding["unit"], "criterion": finding["criterion"],
+                 "detail": finding["detail"]}
+            )
+        else:
+            reasons.append("finding outside membership or criteria")
+    if not isinstance(raw, list):
+        reasons.append("findings is not a list")
+    evidence = response.get("evidence") if isinstance(response.get("evidence"), list) else []
+    for uid, unit in units.items():
+        rows = [e for e in evidence if isinstance(e, dict) and e.get("unit") == uid]
+        if (
+            len(rows) != 1
+            or rows[0].get("revision") != unit["revision"]
+            or not isinstance(rows[0].get("criteria"), list)
+            or set(rows[0]["criteria"]) != set(criteria[uid])
+        ):
+            reasons.append(f"incomplete or stale evidence for {uid}")
+        if unit["fast_check_passed"] is not True:
+            reasons.append(f"fast check red for {uid}")
+    return {
+        "approved": not findings and not reasons,
+        "findings": findings,
+        "reasons": sorted(set(reasons)),
+    }
+
+
+# --- the host ---------------------------------------------------------------------
+
+
+class Host:
+    """One MCP session, the output directory and the Codex command for a whole run."""
+
+    def __init__(self, out: Path, codex_bin: list[str], author_timeout: float,
+                 review_timeout: float):
+        self.out = out
+        self.codex_bin = list(codex_bin)
+        self.author_timeout = author_timeout
+        self.review_timeout = review_timeout
+        self.client = None
+        self.lock = asyncio.Lock()
+        self.schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.response_schema = out / "response-schema.json"
+        self.codex_env_sha: str | None = None
+        # No prompt may name the repository or the run output (QW finding 4).
+        self.secret_paths = sorted(
+            {str(p) for root in (ROOT, out) for p in _roots(root)}, key=len, reverse=True
+        )
+
+    def leaks(self, text: str) -> list[str]:
+        return [p for p in self.secret_paths if p in text]
+
+    async def tool(self, name: str, args: dict) -> dict:
+        async with self.lock:
+            result = await self.client.call_tool(name, args)
+        value = result.structured_content
+        if value is None:
+            value = json.loads(next(c.text for c in result.content if c.type == "text"))
+        if value.get("result") in ("error", "escalate"):
+            raise ShiftworkRefusal(name, value)
+        return value
+
+    def argv(self, kind: str, workspace: Path, mode: str, resume: str | None) -> list[str]:
+        common = [
+            "--json", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
+            "--model", MODEL, "-c", 'model_reasoning_effort="medium"',
+            "-c", 'web_search="disabled"',
+        ]
+        if kind == "review":
+            return [
+                *self.codex_bin, "exec", *common, "--ephemeral", "--sandbox", "read-only",
+                "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "apps",
+                "--disable", "multi_agent", "--output-schema", str(self.response_schema), "-",
+            ]
+        author = ["--disable", "apps", "--disable", "multi_agent"]
+        if resume is not None:
+            # `exec resume` has no --sandbox/--cd: the sandbox is a config override and
+            # the working root is the process cwd (run_contained's cwd).
+            return [
+                *self.codex_bin, "exec", "resume", *common, *author,
+                "-c", 'sandbox_mode="workspace-write"', resume, "-",
+            ]
+        return [
+            *self.codex_bin, "exec", *common, *author, "--sandbox", "workspace-write",
+            "-C", str(workspace), *(["--ephemeral"] if mode == "delegate" else []), "-",
+        ]
+
+    def call(self, call_id: str, argv: list[str], prompt: str, cwd: Path, timeout: float,
+             extra: dict) -> dict:
+        directory = self.out / "calls" / call_id
+        directory.mkdir(parents=True)
+        (directory / "prompt.txt").write_text(prompt, encoding="utf-8")
+        (directory / "argv.json").write_text(json.dumps(argv, indent=2) + "\n", encoding="utf-8")
+        started, started_at = time.monotonic(), now()
+        stdout, stderr, error, returncode = "", "", None, None
+        leaked = self.leaks(prompt)
+        if leaked:
+            # Never sent: a prompt naming the repo or the output dir would hand the agent
+            # the oracle's location. A harness censor, not a model outcome.
+            error = "prompt names an absolute repository or output path; not sent"
+        else:
+            try:
+                done = run_eval.run_contained(argv, prompt, str(cwd), timeout)
+                stdout, stderr, returncode = done.stdout, done.stderr, done.returncode
+                if returncode:
+                    error = f"codex exited {returncode}"
+            except subprocess.TimeoutExpired as exc:
+                stdout = run_eval._decode(exc.stdout)
+                stderr = run_eval._decode(exc.stderr)
+                error = f"timeout after {timeout}s"
+            except OSError as exc:
+                error = f"process error: {exc}"
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        threads = thread_ids(stdout)
+        items = event_items(stdout)
+        call = {
+            "id": call_id,
+            **extra,
+            "started_at": started_at,
+            "stopped_at": now(),
+            "elapsed_ms": elapsed_ms,
+            "returncode": returncode,
+            "error": error,
+            "usage": parse_usage(stdout),
+            # Raw rows, so the smoke run can check resumed usage is per turn.
+            "turn_usages": turn_usages(stdout),
+            "item_types": sorted({str(i.get("type")) for i in items}),
+            "thread_id": threads[0] if threads else None,
+            "artifact_dir": str(directory.relative_to(self.out)),
+        }
+        (directory / "events.jsonl").write_text(stdout, encoding="utf-8")
+        (directory / "stderr.txt").write_text(stderr, encoding="utf-8")
+        (directory / "call.json").write_text(json.dumps(call, indent=2) + "\n", encoding="utf-8")
+        call["stdout"] = stdout
+        call["items"] = items
+        return call
+
+
+class Arm:
+    """One matched live job: a case, a repeat and an arm, with its own checkpoint.
+
+    The arm's workspace is an opaque temporary directory outside the repository and the
+    run output; it is copied into the output only after the arm stops.
+    """
+
+    def __init__(self, host: Host, case: dict, arm: str, repeat: int, order: int, smoke: bool,
+                 attempt: int = 0):
+        self.host, self.case, self.arm = host, case, arm
+        self.repeat, self.order, self.smoke, self.attempt = repeat, order, smoke, attempt
+        self.job_id = (f"{case['id']}-r{repeat}-{arm}" + (f"-a{attempt}" if attempt else "")
+                       + ("-smoke" if smoke else ""))
+        self.dir = host.out / "arms" / self.job_id
+        self.scratch: list[Path] = []
+        self.workspace: Path | None = None
+        self.review_cwd: Path | None = None
+        self.checkpoint = self.dir / "shiftwork" / "checkpoint.json"
+        self.briefs = self.dir / "shiftwork" / "briefs"
+        self.case_units = _units(case)
+        self.units: dict[str, dict] = {}
+        self.calls: list[dict] = []
+        self.reviews: list[dict] = []
+        self.seeds: list[dict] = []
+        self.trace: list[dict] = []
+        self.rounds: dict[str, int] = {}
+        self.round_kinds: list[dict] = []
+        self.repairs_of: dict[str, list[str]] = {}
+        self.plan_edits: list[str] = []
+        self.parent_thread: str | None = None
+        self.parent_spend = {"input": 0, "output": 0}
+        self.parent_busy = False
+        self.fast_checks: dict[str, list[dict]] = {}
+        self.escalations = 0
+        self.audit_hits: list[dict] = []
+        # Write attribution (QW round 2, finding 3): the workspace is hashed at every
+        # author-call and seed boundary; each span between two boundaries knows which
+        # writers were active in it.
+        self.write_lock = threading.Lock()
+        self.ws_hashes: dict[str, str] = {}
+        self.ws_t = 0.0
+        self.active_writers: set[str] = set()
+        self.writers: dict[str, dict] = {}
+        self.write_spans: list[dict] = []
+        self.harness_windows: list[dict] = []
+        self.harness_ms = {"seeding": 0, "adjudication": 0}
+        self.cumulative_hints: list[str] = []
+        self.errors: list[dict] = []
+        self.t0 = 0.0
+
+    def clock(self) -> float:
+        return (time.monotonic() - self.t0) * 1000
+
+    # trace -------------------------------------------------------------------
+    def mark(self, event: str, unit: str | None = None, **extra) -> dict:
+        row = {
+            "event": event,
+            "unit": unit,
+            "t_ms": int(self.clock()),
+            "ts": now(),
+            **extra,
+        }
+        self.trace.append(row)
+        return row
+
+    def read_checkpoint(self) -> dict:
+        return json.loads(self.checkpoint.read_text(encoding="utf-8"))
+
+    # setup -------------------------------------------------------------------
+    def make_dirs(self) -> None:
+        """Opaque temp dirs outside the repo and the output dir (QW finding 4)."""
+        for name in ("workspace", "review_cwd"):
+            path = Path(tempfile.mkdtemp(prefix="glr-"))
+            self.scratch.append(path)
+            for forbidden in (ROOT, self.host.out):
+                if any(_inside(p, _roots(forbidden)) for p in _roots(path)):
+                    raise ArmStopped(f"temp dir {path} is inside {forbidden}")
+            setattr(self, name, path / "w" if name == "workspace" else path)
+        live_cases.make_workspace(self.case, self.workspace)
+        self.ws_hashes, self.ws_t = file_hashes(self.workspace), self.clock()
+
+    def boundary(self, actor: str | None, starting: bool, info: dict | None = None) -> dict:
+        """Hash the workspace, close the span since the last boundary (with the writers
+        active in it), then start or end ``actor``. Returns the hashes taken."""
+        with self.write_lock:
+            t = self.clock()
+            hashes = file_hashes(self.workspace)
+            changed = diff_hashes(self.ws_hashes, hashes)
+            if changed:
+                self.write_spans.append({"window_ms": [self.ws_t, t],
+                                         "active": sorted(self.active_writers),
+                                         "changed": changed})
+            self.ws_hashes, self.ws_t = hashes, t
+            if actor is not None and starting:
+                self.writers[actor] = {**(info or {}), "window_ms": [t, None]}
+                self.active_writers.add(actor)
+            elif actor is not None:
+                self.writers[actor]["window_ms"][1] = t
+                self.active_writers.discard(actor)
+            return hashes
+
+    async def draft(self) -> None:
+        tickets = arm_tickets(self.case, self.arm)
+        for ticket in tickets:
+            kind = "reviewer" if ticket["role"] == "reviewer" else "author"
+            self.units[ticket["id"]] = {
+                "id": ticket["id"],
+                "kind": kind,
+                "base": ticket["id"] if kind == "author" else None,
+                "files": list(ticket.get("touches", [])),
+                "members": list(ticket.get("reviews", [])),
+                "round": 0,
+            }
+        await self.host.tool(
+            "shiftwork_draft",
+            {
+                "checkpoint": str(self.checkpoint),
+                "briefs_dir": str(self.briefs),
+                "write": True,
+                "job": {
+                    "id": self.job_id,
+                    "goal": f"Implement fixture case {self.case['id']} with independent review "
+                    f"({self.arm} arm).",
+                    "done_definition": "Every reviewer approves the exact integrated revision.",
+                    "constraints": [
+                        "Authors work only inside the arm workspace and edit only the files "
+                        "they own.",
+                        "Reviewers use only the supplied request; no tools or files.",
+                    ],
+                    # HARNESS_MODEL: an integration recheck whose fast checks are green
+                    # makes no model call and says so.
+                    "roles": {"implementer": [MODEL, HARNESS_MODEL], "reviewer": [MODEL]},
+                },
+                "repo": {"branch": "live-eval-fixture", "head_sha": "not-a-git-revision",
+                         "dirty": False},
+                "tickets": tickets,
+            },
+        )
+        self.mark("draft", None, units=[t["id"] for t in tickets])
+
+    # dispatch ------------------------------------------------------------------
+    def mode_of(self, uid: str) -> str:
+        unit = self.units[uid]
+        if unit["kind"] == "reviewer":
+            return "review"
+        if unit["kind"] == "author":
+            return context_mode(self.case, "author", unit["base"])
+        return context_mode(self.case, unit["kind"], unit["base"])
+
+    def fail(self, where: str, exc: BaseException) -> str:
+        self.errors.append({"where": where, "type": type(exc).__name__, "error": str(exc),
+                            "traceback": traceback.format_exc()[-4000:]})
+        return f"{where}: {type(exc).__name__}: {exc}"
+
+    async def run(self) -> dict:
+        self.t0 = time.monotonic()
+        started_at = now()
+        stop_reason, stop_kind, accepted_at_ms, accepted_at = None, None, None, None
+        in_flight: dict[asyncio.Task, str] = {}
+        pending: list[dict] = []
+        try:
+            self.make_dirs()
+            await self.draft()
+        except Exception as exc:  # noqa: BLE001 - any setup failure censors the arm
+            stop_reason, stop_kind = self.fail("setup", exc), "harness"
+        while True:
+            try:
+                if stop_reason is None and pending and not in_flight:
+                    for edit in pending:
+                        await self.replan(edit)
+                    pending.clear()
+                if stop_reason is None and not pending:
+                    plan = await self.host.tool(
+                        "shiftwork_plan", {"checkpoint": str(self.checkpoint)}
+                    )
+                    status = {u["id"]: u["status"]
+                              for u in self.read_checkpoint()["plan"]["units"]}
+                    busy = set(in_flight.values())
+                    for uid in plan["ready"]:
+                        # A blocked reviewer is graph-ready; only a planner edit resumes it.
+                        if status.get(uid) != "todo" or uid in busy:
+                            continue
+                        if self.mode_of(uid) == "parent":
+                            if self.parent_busy:
+                                continue
+                            self.parent_busy = True
+                        in_flight[asyncio.create_task(self.run_unit(uid))] = uid
+                        busy.add(uid)
+            except Exception as exc:  # noqa: BLE001 - planner/MCP failure is a harness censor
+                stop_reason = stop_reason or self.fail("planner", exc)
+                stop_kind = stop_kind or "harness"
+                pending.clear()
+            if not in_flight:
+                break
+            finished, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+            for task in finished:
+                uid = in_flight.pop(task)
+                if self.mode_of(uid) == "parent":
+                    self.parent_busy = False
+                outcome = task.result()
+                if outcome.get("escalate"):
+                    self.escalations += 1
+                if outcome.get("error"):
+                    stop_reason = stop_reason or f"{uid}: {outcome['error']}"
+                    stop_kind = stop_kind or "harness"
+                    continue
+                if outcome.get("approved"):
+                    accepted_at_ms = self.clock()
+                    accepted_at = now()
+                if outcome.get("rejected") and stop_reason is None:
+                    self.rounds[uid] = self.rounds.get(uid, 0) + 1
+                    self.round_kinds.append({"reviewer": uid, "round": self.rounds[uid],
+                                             "kind": outcome["round_kind"]})
+                    if self.rounds[uid] > MAX_REPAIR_ROUNDS:
+                        stop_reason = (
+                            f"{uid} rejected after {MAX_REPAIR_ROUNDS} repair rounds: "
+                            "failed/censored"
+                        )
+                        stop_kind = "protocol"
+                    else:
+                        pending.append(
+                            {"reviewer": uid, "round": self.rounds[uid],
+                             "findings": outcome["findings"]}
+                        )
+        stop_ms = self.clock()
+        try:
+            statuses = {u["id"]: u["status"] for u in self.read_checkpoint()["plan"]["units"]}
+        except (OSError, ValueError, KeyError):
+            statuses = {}
+        accepted = stop_reason is None and bool(statuses) and all(
+            s == "done" for s in statuses.values()
+        )
+        if stop_reason is None and not accepted:
+            stop_reason, stop_kind = "plan ended with units not done", "harness"
+        try:
+            return self.record(started_at, accepted, stop_reason, stop_kind, stop_ms,
+                               accepted_at_ms, accepted_at)
+        finally:
+            self.cleanup()
+
+    def cleanup(self) -> None:
+        for path in self.scratch:
+            shutil.rmtree(path, ignore_errors=True)
+
+    # one unit --------------------------------------------------------------------
+    async def run_unit(self, uid: str) -> dict:
+        """Never raises: any failure inside a unit is a harness censor of this arm."""
+        try:
+            return await self._run_unit(uid)
+        except ShiftworkRefusal as exc:
+            return {"error": str(exc), "escalate": exc.escalate}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": self.fail(f"unit {uid}", exc)}
+
+    async def _run_unit(self, uid: str) -> dict:
+        unit = self.units[uid]
+        clocked = await self.host.tool(
+            "shiftwork_clock_in", {"checkpoint": str(self.checkpoint), "unit_id": uid}
+        )
+        self.mark("clock_in", uid)
+        brief = Path(clocked["unit"]["brief_path"]).read_text(encoding="utf-8")
+        call_id = f"{self.job_id}-{len(self.calls):03d}-{uid}"
+        view = json.dumps(prompt_view(clocked), ensure_ascii=False)
+        if unit["kind"] == "reviewer":
+            return await self.review(uid, view, brief, call_id)
+        return await self.author(uid, view, brief, call_id)
+
+    def owned(self, uid: str) -> list[str]:
+        unit = self.units[uid]
+        if unit["kind"] == "integration":
+            return sorted({f for c in unit["consumers"] for f in self.case_units[c]["files"]})
+        return list(self.case_units[unit["base"]]["files"])
+
+    def _author_call(self, call_id, uid, argv, prompt, timeout, extra) -> tuple[dict, list, list]:
+        before = self.boundary(call_id, True, {"kind": "call", "call": call_id, "unit": uid,
+                                               "owned": self.owned(uid), "event_paths": []})
+        try:
+            call = self.host.call(call_id, argv, prompt, self.workspace, timeout, extra)
+        finally:
+            after = self.boundary(call_id, False)
+        return call, before, diff_hashes(before, after)
+
+    async def model(self, uid: str, call_id: str, prompt: str, kind: str) -> dict:
+        mode = self.mode_of(uid)
+        resume = self.parent_thread if mode == "parent" and self.parent_thread else None
+        argv = self.host.argv(kind, self.workspace, mode, resume)
+        timeout = self.host.review_timeout if kind == "review" else self.host.author_timeout
+        extra = {"unit": uid, "kind": self.units[uid]["kind"], "context": mode,
+                 "resumed": resume is not None}
+        self.mark("model_start", uid, call=call_id, context=mode, resumed=resume is not None)
+        start = self.clock()
+        if kind == "review":
+            call = await asyncio.to_thread(
+                self.host.call, call_id, argv, prompt, self.review_cwd, timeout, extra
+            )
+            changed = []
+        else:
+            call, _, changed = await asyncio.to_thread(
+                self._author_call, call_id, uid, argv, prompt, timeout, extra
+            )
+        end = self.clock()
+        self.mark("model_end", uid, call=call_id)
+        call["window_ms"] = [start, end]
+        if kind != "review":
+            hits = audit_items(call["items"], self.workspace)
+            call["audit_hits"] = hits
+            self.audit_hits += [{"call": call_id, "unit": uid, **h} for h in hits]
+            self.writers[call_id].update(
+                changed=changed, event_paths=changed_paths(call["items"], self.workspace)
+            )
+        if mode == "parent":
+            if resume is not None and cumulative_hint(call["turn_usages"], self.parent_spend,
+                                                      prompt):
+                # A hint for the smoke probe only; no verdict or figure reads it.
+                call["cumulative_hint"] = True
+                self.cumulative_hints.append(call_id)
+            for turn in call["turn_usages"]:
+                if isinstance(turn, dict):
+                    for key, name in (("input", "input_tokens"), ("output", "output_tokens")):
+                        if type(turn.get(name)) is int:
+                            self.parent_spend[key] += turn[name]
+        if mode == "parent" and self.parent_thread is None and call["thread_id"]:
+            self.parent_thread = call["thread_id"]
+        if mode == "parent" and call["thread_id"] is None:
+            call["thread_id"] = self.parent_thread
+        self.calls.append({k: v for k, v in call.items() if k not in ("stdout", "items")})
+        self.units[uid].setdefault("calls", []).append(call_id)
+        if call["thread_id"]:
+            self.units[uid].setdefault("threads", []).append(call["thread_id"])
+        return call
+
+    async def clock_out(self, uid: str, status: str, call: dict | None, outcome: str,
+                        notes: str, produced: list[dict], accounting: dict | None = None) -> None:
+        agent = call.get("thread_id") if call else None
+        await self.host.tool(
+            "shiftwork_clock_out",
+            {
+                "checkpoint": str(self.checkpoint),
+                "unit_id": uid,
+                "status": status,
+                "history_entry": {"unit": uid, "outcome": outcome, "notes": notes[:2000],
+                                  **({"produced": produced} if produced else {})},
+                # Never leave a stale next_action (it named a brief path) behind.
+                "handoff_patch": {"next_action": f"{uid} clocked out {status}; dispatch the "
+                                  "units shiftwork_plan reports ready."},
+                "accounting": accounting or clock_accounting(
+                    call["usage"], call["elapsed_ms"],
+                    f"codex exec {call['context']} call {call['id']}",
+                ),
+                **({"agent_id": agent} if agent and AGENT_ID.match(agent) else {}),
+            },
+        )
+        self.mark("clock_out", uid, status=status, call=call["id"] if call else None)
+
+    def scrub(self, text: str, root: Path | None = None) -> str:
+        """The checked root (workspace or a review snapshot) becomes ``.``; any other
+        repository or output path becomes ``<harness>``. Longest path first, so a
+        snapshot under the output dir never leaves its arm, job id or ``snapshots/``."""
+        local = {str(p) for r in {self.workspace, root} if r is not None for p in _roots(r)}
+        swaps = [(p, ".") for p in local] + [
+            (p, "<harness>") for p in self.host.secret_paths if p not in local
+        ]
+        for path, label in sorted(swaps, key=lambda s: len(s[0]), reverse=True):
+            text = text.replace(path, label)
+        return text
+
+    def fast_check(self, base: str, root: Path, label: str) -> dict:
+        result = live_cases.run_fast_check(self.case, base, root)
+        row = {"unit": base, "label": label, "passed": result["passed"],
+               "output": self.scrub(result["output"], root)[-1500:], "ts": now()}
+        self.fast_checks.setdefault(base, []).append(row)
+        return row
+
+    def seed(self, base: str, uid: str, check_passed: bool) -> dict:
+        actor = f"seed-{base}-{len(self.harness_windows)}"
+        start = self.clock()
+        self.boundary(actor, True, {"kind": "seed", "unit": base, "claims": []})
+        try:
+            if check_passed:
+                seed = live_cases.seed_defect(self.case, base, self.workspace)
+            else:
+                seed = {"applied": False, "unit": base, "failing": [], "baseline_failing": [],
+                        "criterion": None, "reason": "fast check red; no seed"}
+        finally:
+            self.boundary(actor, False)
+            end = self.clock()
+            self.harness_ms["seeding"] += end - start
+            self.harness_windows.append({"what": f"seed {base}", "actor": actor,
+                                         "window_ms": [start, end], "changed": []})
+        # Once its mutant loop ran, the seed claims every file of its unit: seed_defect
+        # writes trial mutants only there, and a concurrent boundary may catch one even
+        # when no mutant was kept (QW round 3, H1). Other changes belong to author calls.
+        claims = seed_claims(check_passed, self.case_units[base]["files"])
+        self.writers[actor]["claims"] = claims
+        self.harness_windows[-1]["changed"] = claims
+        seed.update(key=[seed["unit"], seed["criterion"]] if seed["applied"] else None,
+                    status="applied" if seed["applied"] else "unavailable",
+                    seen_by=None, caught=None, presence=None)
+        self.seeds.append(seed)
+        self.mark("seed", uid, applied=seed["applied"])
+        return seed
+
+    async def author(self, uid: str, view: str, brief: str, call_id: str) -> dict:
+        unit = self.units[uid]
+        checked = [unit["base"]] if unit["kind"] != "integration" else unit["consumers"]
+        if unit["kind"] == "integration":
+            # Deterministic first: the dependents' fast checks. All green means no model
+            # call at all (exact zero tokens); a model call only for a red check.
+            start = time.monotonic()
+            first = [await asyncio.to_thread(self.fast_check, base, self.workspace, uid)
+                     for base in checked]
+            if all(c["passed"] for c in first):
+                unit["i2_path"] = "deterministic"
+                return await self.finish_author(
+                    uid, None, first, checked,
+                    accounting={
+                        "tokens": 0,
+                        "duration_ms": int((time.monotonic() - start) * 1000),
+                        "model": HARNESS_MODEL,
+                        "note": "integration recheck: dependents' fast checks green, no model "
+                        "call; exact zero tokens",
+                    },
+                )
+            unit["i2_path"] = "model"
+            red = [c["unit"] for c in first if not c["passed"]]
+            brief += "\nFast checks red before this call: " + ", ".join(red) + "\n"
+        preamble = {"author": AUTHOR_PROMPT, "repair": REPAIR_PROMPT,
+                    "integration": INTEGRATION_PROMPT}[unit["kind"]]
+        prompt = preamble + view + "\n\n" + brief
+        call = await self.model(uid, call_id, prompt, "author")
+        if call["error"] or call["audit_hits"]:
+            error = call["error"] or (
+                f"access audit: {call['audit_hits'][0]['reason']}"
+            )
+            await self.clock_out(uid, "blocked", call, f"author call failed: {error}"[:200],
+                                 "", [])
+            return {"error": error}
+        checks = [
+            await asyncio.to_thread(self.fast_check, base, self.workspace, uid) for base in checked
+        ]
+        base_unit = self.case_units.get(unit["base"] or "")
+        if unit["kind"] == "author" and base_unit and base_unit["seed"]:
+            await asyncio.to_thread(self.seed, unit["base"], uid, checks[0]["passed"])
+        return await self.finish_author(uid, call, checks, checked)
+
+    async def finish_author(self, uid, call, checks, checked, accounting=None) -> dict:
+        unit = self.units[uid]
+        files = sorted({f for base in checked for f in self.case_units[base]["files"]})
+        rev = live_cases.revision(self.workspace, files)
+        unit["revision"] = rev
+        notes = "; ".join(
+            f"fast check {c['unit']}: {'passed' if c['passed'] else 'FAILED'}" for c in checks
+        ) + f"; revision {rev}"
+        await self.clock_out(
+            uid, "done", call, "author work finished", notes,
+            [{"kind": "revision", "ref": rev}] + [{"kind": "file", "ref": f} for f in files],
+            accounting=accounting,
+        )
+        return {"done": True}
+
+    def review_request(self, uid: str, snapshot: Path) -> tuple[dict, dict]:
+        """The reviewer's request, and this review's own fast-check rows by unit."""
+        members = [m for m in self.units[uid]["members"] if self.units[m]["kind"] == "author"]
+        context = upstream_closure(self.case, members)
+        units = []
+        checks = {}
+        for mid in members:
+            base = self.case_units[mid]
+            check = checks[mid] = self.fast_check(mid, snapshot, f"review {uid}")
+            units.append(
+                {
+                    "id": mid,
+                    "task": base["task"],
+                    "criteria": base["criteria"],
+                    "files": base["files"],
+                    "revision": live_cases.revision(snapshot, base["files"]),
+                    "fast_check_passed": check["passed"],
+                }
+            )
+        files = {}
+        for cid in context:
+            for rel in self.case_units[cid]["files"]:
+                path = snapshot / rel
+                # Author output may be any bytes; a bad byte must not abort the arm.
+                files[rel] = (path.read_text(encoding="utf-8", errors="replace")
+                              if path.is_file() else None)
+        return {
+            "reviewer_context_id": "reviewer-" + uuid.uuid4().hex,
+            "case_id": self.case["id"],
+            "membership": members,
+            "shiftwork_reviews": self.units[uid]["members"],
+            "units": units,
+            "context_files": files,
+            "instructions": REVIEW_INSTRUCTIONS,
+        }, checks
+
+    async def review(self, uid: str, view: str, brief: str, call_id: str) -> dict:
+        index = sum(1 for r in self.reviews if r["unit"] == uid)
+        snapshot = self.dir / "snapshots" / f"{uid}-{index}"
+        await asyncio.to_thread(
+            shutil.copytree, self.workspace, snapshot,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        request, checks = await asyncio.to_thread(self.review_request, uid, snapshot)
+        prompt = (
+            REVIEW_PROMPT + view + "\n\n" + brief
+            + "\n\nREVIEW REQUEST:\n" + json.dumps(request, ensure_ascii=False)
+        )
+        call = await self.model(uid, call_id, prompt, "review")
+        (self.host.out / call["artifact_dir"] / "request.json").write_text(
+            json.dumps(request, indent=2) + "\n", encoding="utf-8"
+        )
+        if call["error"]:
+            # A Codex exit, timeout or unsent prompt says nothing about the work: harness.
+            await self.clock_out(uid, "blocked", call,
+                                 f"reviewer call failed: {call['error']}"[:200], "", [])
+            return {"error": f"reviewer call failed: {call['error']}"}
+        response, error = None, None
+        raw = (self.host.out / call["artifact_dir"] / "events.jsonl").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        try:
+            response = codex_adapter.normalize_events(raw, MODEL)
+        except (ValueError, KeyError, TypeError) as exc:
+            error = f"invalid reviewer answer: {exc}"
+        verdict = assess_review(request, response, error)
+        # Repair findings, merged per finding: the model's findings plus a harness finding
+        # for EVERY red fast check, so a model finding on a unit never hides that unit's
+        # red check output from its repair brief (QW round 2, finding 10).
+        harness = [
+            {"unit": u["id"], "criterion": "fast-check", "source": "harness",
+             "detail": "Fast check failed: " + checks[u["id"]]["output"]}
+            for u in request["units"] if not u["fast_check_passed"]
+        ]
+        findings = verdict["findings"] + harness
+        round_kind = None if verdict["approved"] else (
+            "rejection" if findings else "reviewer-error"
+        )
+        self.reviews.append(
+            {
+                "unit": uid,
+                "index": index,
+                "call": call["id"],
+                "t_ms": int(self.clock()),
+                "snapshot": str(snapshot.relative_to(self.host.out)),
+                "reviewer_context_id": request["reviewer_context_id"],
+                "membership": request["membership"],
+                "shiftwork_reviews": request["shiftwork_reviews"],
+                "revisions": {u["id"]: u["revision"] for u in request["units"]},
+                "fast_checks": {u["id"]: u["fast_check_passed"] for u in request["units"]},
+                "evidence": response.get("evidence") if response else None,
+                "valid_answer": response is not None,
+                "error": error,
+                **verdict,
+                "repair_findings": findings,
+                "round_kind": round_kind,
+                "adjudication": None,
+            }
+        )
+        status = "done" if verdict["approved"] else "blocked"
+        notes = (
+            "approved" if verdict["approved"]
+            else f"rejected ({round_kind}): {len(verdict['findings'])} model findings, "
+            f"{len(harness)} fast-check findings; {', '.join(verdict['reasons'])}"
+        )
+        await self.clock_out(
+            uid, status, call, "review approved" if verdict["approved"] else "review rejected",
+            notes, [{"kind": "review", "ref": call["artifact_dir"]}],
+        )
+        if verdict["approved"]:
+            return {"approved": True}
+        return {"rejected": True, "findings": findings, "round_kind": round_kind}
+
+    # after the arm: judge seeds and findings on the saved snapshots -------------------
+    def seed_presence(self, seed: dict, snapshot: Path) -> dict:
+        """Is the seed still in the reviewed revision? Exact bytes first, then the
+        unit-isolated oracle on the seed's newly failing criteria."""
+        files = self.case_units[seed["unit"]]["files"]
+        if live_cases.revision(snapshot, files) == seed["after_sha"]:
+            return {"presence": "present", "still_failing": list(seed["failing"]),
+                    "by": "bytes"}
+        oracle = live_cases.unit_criteria_status(self.case, snapshot, seed["unit"],
+                                                 seed["failing"])
+        if oracle["error"]:
+            return {"presence": "unknown", "still_failing": [], "by": "oracle",
+                    "error": oracle["error"]}
+        still = [c for c in seed["failing"] if oracle["results"].get(c) is False]
+        return {"presence": "present" if still else "removed-before-review",
+                "still_failing": still, "by": "oracle"}
+
+    def adjudicate(self) -> None:
+        """Seeds are judged at the first valid review that covered them, only if still
+        present there; every other finding by the unit-isolated oracle at the reviewed
+        revision. Runs after the arm, so it is never inside the accepted latency."""
+        start = time.monotonic()
+        for seed in self.seeds:
+            if not seed["applied"]:
+                continue
+            review = next((r for r in self.reviews if r["valid_answer"]
+                           and seed["unit"] in r["membership"]), None)
+            if review is None:
+                seed["status"] = "never-reviewed"
+                continue
+            seed["seen_by"] = f"{review['unit']}#{review['index']}"
+            presence = self.seed_presence(seed, self.host.out / review["snapshot"])
+            seed.update(presence=presence["presence"], presence_check=presence)
+            if presence["presence"] != "present":
+                seed["status"] = ("removed-before-review"
+                                  if presence["presence"] == "removed-before-review"
+                                  else "presence-unknown")
+                continue
+            hits = [f for f in review["findings"] if f["unit"] == seed["unit"]
+                    and f["criterion"] in presence["still_failing"]]
+            seed["caught"] = bool(hits)
+            seed["caught_criteria"] = sorted({f["criterion"] for f in hits})
+            seed["status"] = "caught" if hits else "missed"
+            review.setdefault("_seed_keys", set()).update(
+                (f["unit"], f["criterion"]) for f in hits
+            )
+        for review in self.reviews:
+            keyed = review.pop("_seed_keys", set())
+            rows = []
+            snapshot = self.host.out / review["snapshot"]
+            for finding in review["findings"]:
+                key = (finding["unit"], finding["criterion"])
+                if key in keyed:
+                    rows.append({**key_dict(key), "verdict": "true", "source": "seed"})
+                    continue
+                oracle = live_cases.unit_criteria_status(
+                    self.case, snapshot, finding["unit"], [finding["criterion"]]
+                )
+                result = oracle["results"].get(finding["criterion"])
+                rows.append(
+                    {**key_dict(key), "source": "oracle",
+                     "verdict": "unknown" if oracle["error"] or result is None
+                     else ("false" if result else "true")}
+                )
+            review["adjudication"] = rows
+        self.harness_ms["adjudication"] += (time.monotonic() - start) * 1000
+
+    # replan ----------------------------------------------------------------------
+    async def replan(self, edit: dict) -> None:
+        """Planner edit: repair units X2 (+ integration recheck I2), reviewer back to todo."""
+        reviewer, rnd, findings = edit["reviewer"], edit["round"], edit["findings"]
+        before_text = self.checkpoint.read_text(encoding="utf-8")
+        doc = json.loads(before_text)
+        units = {u["id"]: u for u in doc["plan"]["units"]}
+        repaired = []
+        for base in dict.fromkeys(f["unit"] for f in findings):
+            rid = f"{base}2-r{rnd}"
+            prev = (self.repairs_of.get(base) or [base])[-1]
+            mine = [f for f in findings if f["unit"] == base]
+            text = (
+                author_brief(self.case_units[base])
+                + "\nReviewer findings (verbatim):\n"
+                + json.dumps(mine, indent=2, ensure_ascii=False) + "\n"
+            )
+            repaired.append((rid, base, prev, text))
+        consumers = [
+            c for c in downstream_closure(self.case, [r[1] for r in repaired])
+            if units.get(c, {}).get("status") == "done" and c not in [r[1] for r in repaired]
+        ]
+        new_units, added = [], []
+        for rid, base, prev, text in repaired:
+            path = self.briefs / f"{rid}.md"
+            path.write_text(f"# {rid} — Repair {base}\n\n{text}", encoding="utf-8")
+            new_units.append(
+                {"id": rid, "title": f"Repair {base} after {reviewer} round {rnd}",
+                 "brief_path": str(path), "status": "todo", "role": "implementer",
+                 "depends_on": [prev], "verify": f"python checks/check_{base}.py",
+                 "touches": list(self.case_units[base]["files"])}
+            )
+            self.units[rid] = {"id": rid, "kind": "repair", "base": base, "round": rnd,
+                               "files": list(self.case_units[base]["files"]), "members": []}
+            self.repairs_of.setdefault(base, []).append(rid)
+            added.append(rid)
+        if consumers:
+            iid = f"I2-{reviewer}-r{rnd}"
+            files = [f for c in consumers for f in self.case_units[c]["files"]]
+            checks = "\n".join(f"- {c}: python checks/check_{c}.py" for c in consumers)
+            text = (
+                f"# {iid} — Integration recheck after {reviewer} round {rnd}\n\n"
+                f"Upstream units {', '.join(r[1] for r in repaired)} were repaired. These "
+                f"dependents consumed the changed artifact; re-run their fast checks:\n"
+                f"{checks}\n\nFiles you own: {', '.join(files)}\n\n"
+                "Reviewer findings that caused the repair (verbatim):\n"
+                + json.dumps(findings, indent=2, ensure_ascii=False) + "\n"
+            )
+            path = self.briefs / f"{iid}.md"
+            path.write_text(text, encoding="utf-8")
+            new_units.append(
+                {"id": iid, "title": f"Integration recheck after {reviewer} round {rnd}",
+                 "brief_path": str(path), "status": "todo", "role": "implementer",
+                 "depends_on": [r[0] for r in repaired] + consumers,
+                 "verify": "; ".join(f"python checks/check_{c}.py" for c in consumers),
+                 "touches": files}
+            )
+            self.units[iid] = {"id": iid, "kind": "integration", "base": None, "round": rnd,
+                               "consumers": consumers, "files": files, "members": []}
+            added.append(iid)
+        target = units[reviewer]
+        invalidated = sorted(
+            {c["id"] for r in repaired for c in self.case_units[r[1]]["criteria"]}
+            | {c["id"] for u in consumers for c in self.case_units[u]["criteria"]}
+        )
+        with Path(target["brief_path"]).open("a", encoding="utf-8") as brief:
+            brief.write(
+                f"\n## Replan round {rnd}\n\nAdded to reviews and depends_on: "
+                f"{', '.join(added) or 'none (fresh review only)'}. Invalidated criteria: "
+                f"{', '.join(invalidated) or 'none'}. The previous verdict does not carry "
+                "over: review the new exact revisions supplied at clock-in, every member, "
+                "every criterion.\n"
+            )
+        target["status"] = "todo"
+        target["depends_on"] = list(dict.fromkeys(target["depends_on"] + added))
+        target["reviews"] = list(dict.fromkeys(target.get("reviews", []) + added))
+        self.units[reviewer]["members"] = list(target["reviews"])
+        self.units[reviewer]["round"] = rnd
+        index = [u["id"] for u in doc["plan"]["units"]].index(reviewer)
+        doc["plan"]["units"][index:index] = new_units
+        rationale = (
+            f"replan {reviewer} round {rnd}: findings -> {', '.join(added) or 'fresh review'}; "
+            f"{reviewer} back to todo with them in depends_on and reviews"
+        )
+        doc["history"] = (doc.get("history") or [])[-4:] + [
+            {"unit": reviewer, "outcome": rationale[:200]}
+        ]
+        doc["handoff"]["next_action"] = (
+            f"Run {', '.join(added)} then re-review {reviewer}." if added
+            else f"Re-review {reviewer}."
+        )
+        candidate = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+        edit_dir = self.dir / "plan-edits" / f"{reviewer}-r{rnd}"
+        edit_dir.mkdir(parents=True)
+        (edit_dir / "before.json").write_text(before_text, encoding="utf-8")
+        (edit_dir / "after.json").write_text(candidate, encoding="utf-8")
+        (edit_dir / "rationale.json").write_text(
+            json.dumps({"rationale": rationale, "findings": findings, "added": added}, indent=2)
+            + "\n", encoding="utf-8"
+        )
+        valid = await self.host.tool("validate_json", {"output": candidate,
+                                                       "schema": self.host.schema})
+        if not valid.get("valid"):
+            raise ArmStopped(f"schema refused the replan: {valid.get('feedback')}")
+        tmp = self.checkpoint.with_name(self.checkpoint.name + ".replan.tmp")
+        tmp.write_text(candidate, encoding="utf-8")
+        os.replace(tmp, self.checkpoint)
+        try:
+            await self.host.tool("shiftwork_plan", {"checkpoint": str(self.checkpoint)})
+        except ArmStopped:
+            self.checkpoint.write_text(before_text, encoding="utf-8")
+            raise
+        self.plan_edits.append(str(edit_dir.relative_to(self.host.out)))
+        self.mark("plan_edit", reviewer, round=rnd, added=added)
+
+    # record ----------------------------------------------------------------------
+    def unit_usage(self, uid: str) -> dict | None:
+        calls = [c for c in self.calls if c["unit"] == uid]
+        return sum_usage([c["usage"] for c in calls]) if calls else sum_usage([])
+
+    def record(self, started_at, accepted, stop_reason, stop_kind, stop_ms, accepted_ms,
+               accepted_at):
+        try:
+            self.adjudicate()
+        except Exception as exc:  # noqa: BLE001 - unjudged seeds make the arm unusable
+            stop_reason = stop_reason or self.fail("adjudication", exc)
+            stop_kind, accepted = "harness", False
+        final = {"results": {}, "error": "no workspace", "details": {}}
+        failures = classify_failures({}, [], [], self.case, None)
+        if self.workspace is not None and self.workspace.is_dir():
+            try:
+                final = live_cases.run_hidden_oracle(self.case, self.workspace)
+                failing = sorted(c for c, ok in final["results"].items() if not ok)
+                failures = classify_failures(
+                    self.case_units, failing, self.seeds, self.case, self.workspace
+                )
+                shutil.copytree(self.workspace, self.dir / "workspace",
+                                ignore=shutil.ignore_patterns("__pycache__"))
+            except Exception as exc:  # noqa: BLE001
+                final = {"results": {}, "error": self.fail("final oracle", exc), "details": {}}
+                failures = classify_failures({}, [], [], self.case, None)
+        failing = sorted(c for c, ok in final["results"].items() if not ok)
+        quality_failure = None if final["error"] else bool(failing)
+        if accepted:
+            stop_kind = "protocol" if quality_failure is True else None
+        adjudicated = [row for r in self.reviews for row in r["adjudication"] or []]
+        units = []
+        for uid, unit in self.units.items():
+            units.append(
+                {"id": uid, "kind": unit["kind"], "base": unit["base"], "round": unit["round"],
+                 "members": unit["members"], "files": unit["files"],
+                 "context": self.mode_of(uid), "calls": unit.get("calls", []),
+                 "threads": unit.get("threads", []), "revision": unit.get("revision"),
+                 "usage": self.unit_usage(uid),
+                 **({"i2_path": unit["i2_path"]} if "i2_path" in unit else {})}
+            )
+        kinds = {}
+        for kind in ("author", "repair", "integration", "reviewer"):
+            calls = [c for c in self.calls if c["kind"] == kind]
+            kinds[kind] = sum_usage([c["usage"] for c in calls])
+        review_usage = kinds["reviewer"]
+        total_usage = sum_usage([c["usage"] for c in self.calls])
+        rework_calls = [c for c in self.calls if c["kind"] in ("repair", "integration")]
+        if self.workspace is not None and self.workspace.is_dir() and self.ws_hashes:
+            self.boundary(None, False)  # any change after the last writer: unattributed
+        writes = attribute_writes(
+            self.write_spans, self.writers,
+            {f for u in self.case_units.values() for f in u["files"]},
+        )
+        model_windows = [c["window_ms"] for c in self.calls if "window_ms" in c]
+        harness_windows = [h["window_ms"] for h in self.harness_windows]
+        excluded = (only_in(harness_windows, model_windows, accepted_ms)
+                    if accepted and accepted_ms is not None else 0.0)
+        record = {
+            "case_id": self.case["id"],
+            "mode": self.case["mode"],
+            "repeat": self.repeat,
+            "attempt": self.attempt,
+            "arm": self.arm,
+            "order": self.order,
+            "smoke": self.smoke,
+            "job_id": self.job_id,
+            "started_at": started_at,
+            "accepted_at": accepted_at if accepted else None,
+            "stopped_at": now(),
+            "accepted": accepted,
+            "status": "accepted" if accepted else "failed/censored",
+            "stop_kind": stop_kind,
+            "stop_reason": stop_reason,
+            # Wall time minus harness-only work (seeding while no model call ran).
+            "elapsed_to_accepted_ms": int(accepted_ms - excluded) if accepted else None,
+            "elapsed_to_accepted_wall_ms": int(accepted_ms) if accepted else None,
+            "elapsed_to_stop_ms": int(stop_ms),
+            "harness_ms": {
+                "seeding": int(self.harness_ms["seeding"]),
+                "adjudication_after_arm": int(self.harness_ms["adjudication"]),
+                "excluded_from_accepted_latency": int(excluded),
+            },
+            "checkpoint": str(self.checkpoint.relative_to(self.host.out)),
+            "workspace": str((self.dir / "workspace").relative_to(self.host.out)),
+            "workspace_tmp": str(self.workspace) if self.workspace else None,
+            "codex_env_sha256": self.host.codex_env_sha,
+            "units": units,
+            "calls": self.calls,
+            "reviews": self.reviews,
+            "repair_rounds": dict(self.rounds),
+            "rework": {
+                "units": [u for u, x in self.units.items() if x["kind"] in ("repair",
+                                                                         "integration")],
+                "rounds": sum(self.rounds.values()),
+                "rejection_rounds": sum(r["kind"] == "rejection" for r in self.round_kinds),
+                "reviewer_error_rounds": sum(r["kind"] == "reviewer-error"
+                                             for r in self.round_kinds),
+                "round_kinds": self.round_kinds,
+                "usage": sum_usage([c["usage"] for c in rework_calls]),
+            },
+            "plan_edits": self.plan_edits,
+            "escalations": self.escalations,
+            "human_interventions": 0,
+            "human_interventions_label": HUMAN_INTERVENTIONS_LABEL,
+            "planner_dispatch": PLANNER_DISPATCH,
+            "usage": {"review": review_usage, "total": total_usage, "by_kind": kinds},
+            "cumulative_hint": {
+                "label": "heuristic hint for the smoke probe; read by no verdict or figure",
+                "calls": self.cumulative_hints,
+            },
+            "review_tokens": usage_tokens(review_usage),
+            "total_tokens": usage_tokens(total_usage),
+            "review_tokens_excl_cache": usage_tokens(review_usage, include_cache=False),
+            "total_tokens_excl_cache": usage_tokens(total_usage, include_cache=False),
+            "fast_checks": self.fast_checks,
+            "access_audit": {"hits": self.audit_hits, "clean": not self.audit_hits},
+            "writes": writes,
+            "harness_errors": self.errors,
+            "quality": {
+                "seeds": self.seeds,
+                "seeded_caught": sum(s["caught"] is True for s in self.seeds),
+                "seeded_missed": sum(s["caught"] is False for s in self.seeds),
+                "seed_unavailable": sum(not s["applied"] for s in self.seeds),
+                "seed_removed_before_review": sum(
+                    s["status"] == "removed-before-review" for s in self.seeds
+                ),
+                "seed_not_judged": sum(
+                    s["status"] in ("never-reviewed", "presence-unknown") for s in self.seeds
+                ),
+                "true_findings": sum(r["verdict"] == "true" for r in adjudicated),
+                "false_findings": sum(r["verdict"] == "false" for r in adjudicated),
+                "unknown_findings": sum(r["verdict"] == "unknown" for r in adjudicated),
+                "final_oracle": {"results": final["results"], "error": final["error"],
+                                 "failing": failing},
+                # Final-oracle failures split by the unit-isolated oracle (QW round 2,
+                # finding 7): only a criterion that still fails on its own unit's code, and
+                # is not that unit's surviving seed, is an author defect.
+                "author_defects_missed": failures["author_defects_missed"],
+                "final_failures": failures,
+                "quality_failure": quality_failure if accepted else None,
+            },
+            "trace": self.trace,
+        }
+        record["observations"] = observations(self.case, record)
+        return record
+
+
+def classify_failures(units: dict, failing: list[str], seeds: list[dict], case: dict,
+                      workspace: Path | None) -> dict:
+    """Attribute each final-oracle failure with the unit-isolated oracle.
+
+    ``caused_by_other_units``: passes on its own unit's code with every other unit at the
+    reference (a seed side effect or another author's defect upstream).
+    ``seeded_still_failing``: fails in isolation and is a newly failing criterion of that
+    unit's applied seed. ``author_defects_missed``: fails in isolation otherwise.
+    ``unknown``: the isolated oracle could not say. Never a guess.
+    """
+    result = {"label": "final-oracle failures attributed by the unit-isolated oracle",
+              "author_defects_missed": [], "seeded_still_failing": [],
+              "caused_by_other_units": [], "unknown": []}
+    owner = {c["id"]: uid for uid, u in units.items() for c in u["criteria"]}
+    seeded = {(s["unit"], c) for s in seeds if s.get("applied") for c in s.get("failing", [])}
+    by_unit: dict[str | None, list[str]] = {}
+    for criterion in failing:
+        by_unit.setdefault(owner.get(criterion), []).append(criterion)
+    for uid, criteria in by_unit.items():
+        if uid is None:
+            result["unknown"] += criteria
+            continue
+        oracle = live_cases.unit_criteria_status(case, workspace, uid, criteria)
+        for criterion in criteria:
+            alone = None if oracle["error"] else oracle["results"].get(criterion)
+            if alone is None:
+                result["unknown"].append(criterion)
+            elif alone:
+                result["caused_by_other_units"].append(criterion)
+            elif (uid, criterion) in seeded:
+                result["seeded_still_failing"].append(criterion)
+            else:
+                result["author_defects_missed"].append(criterion)
+    return {k: sorted(v) if isinstance(v, list) else v for k, v in result.items()}
+
+
+def _overlap(a: list, b: list) -> bool:
+    """Half-open windows; an end never recorded (None) is still open."""
+    inf = float("inf")
+    return a[0] < (inf if b[1] is None else b[1]) and b[0] < (inf if a[1] is None else a[1])
+
+
+def attribute_writes(spans: list[dict], writers: dict[str, dict], owned: set[str]) -> dict:
+    """Who wrote what, from workspace hashes taken at every author-call and seed boundary.
+
+    ``spans``: {window_ms, active (writer ids), changed (files)} between two boundaries.
+    ``writers``: id -> {kind: call|seed, unit, window_ms, call: owned, event_paths;
+    seed: claims (the one file it mutated, or nothing)}. ``owned``: every unit's files.
+
+    A file changed in a span goes to the active calls whose file_change events name it;
+    else to an active seed that claims it (harness, not an author write); else to the one
+    active call if only one ran (so a shell write to another unit's file in a call's own
+    span is that call's); else to the one active call that owns it. Anything else is
+    ``unattributed``; it makes ``conflict_free`` unknown only when some unit owns it.
+    """
+    calls = {k: w for k, w in writers.items() if w.get("kind") == "call"}
+    written: dict[str, dict[str, str]] = {k: {} for k in calls}
+    harness, unattributed = [], []
+    for span in spans:
+        active = [a for a in span["active"] if a in calls]
+        seeds = [a for a in span["active"] if writers.get(a, {}).get("kind") == "seed"]
+        for f in span["changed"]:
+            namers = [a for a in active if f in calls[a].get("event_paths", [])]
+            claimers = [a for a in seeds if f in writers[a].get("claims", [])]
+            owners = [a for a in active if f in calls[a]["owned"]]
+            if namers:
+                for a in namers:
+                    written[a].setdefault(f, "event")
+            elif claimers:
+                harness += [{"writer": a, "file": f} for a in claimers]
+            elif len(active) == 1:
+                written[active[0]].setdefault(f, "only-writer")
+            elif len(owners) == 1:
+                written[owners[0]].setdefault(f, "owner")
+            else:
+                unattributed.append({"file": f, "window_ms": span["window_ms"],
+                                     "active": span["active"], "owned_by_a_unit": f in owned})
+    rows = []
+    for a, w in calls.items():
+        files = sorted(written[a])
+        rows.append({"call": a, "unit": w["unit"], "window_ms": w["window_ms"],
+                     "changed": w.get("changed", []), "written": files,
+                     "basis": {f: written[a][f] for f in files},
+                     "unowned": [f for f in files if f not in w["owned"]]})
+    conflicts = []
+    ids = list(calls)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            wa, wb = calls[a], calls[b]
+            if wa["unit"] == wb["unit"] or not _overlap(wa["window_ms"], wb["window_ms"]):
+                continue
+            fa, fb = set(written[a]), set(written[b])
+            shared = (fa & fb) | (fa & set(wb["owned"])) | (fb & set(wa["owned"]))
+            if shared:
+                conflicts.append({"calls": [a, b], "files": sorted(shared)})
+    unknown = any(u["owned_by_a_unit"] for u in unattributed)
+    return {
+        "calls": rows,
+        "spans": spans,
+        "unowned": [{"call": r["call"], "unit": r["unit"], "file": f}
+                    for r in rows for f in r["unowned"]],
+        "harness": harness,
+        "unattributed": unattributed,
+        "conflicts": conflicts,
+        "conflict_free": False if conflicts else (None if unknown else True),
+    }
+
+
+def key_dict(key: tuple[str, str]) -> dict:
+    return {"unit": key[0], "criterion": key[1]}
+
+
+# --- observations -------------------------------------------------------------------
+
+
+def observations(case: dict, record: dict) -> dict:
+    """The frozen case table's approval/coverage observations, from the record alone."""
+    units = {u["id"]: u for u in record["units"]}
+    authors = [u for u in record["units"] if u["kind"] != "reviewer"]
+    reviewers = [u for u in record["units"] if u["kind"] == "reviewer"]
+    author_threads = {t for u in authors for t in u["threads"]}
+    review_threads = [t for u in reviewers for t in u["threads"]]
+    contexts = [r["reviewer_context_id"] for r in record["reviews"]]
+    separate = (
+        None if len(review_threads) < sum(len(u["calls"]) for u in reviewers)
+        else not (author_threads & set(review_threads)) and len(set(contexts)) == len(contexts)
+    )
+    approved = {}
+    for review in record["reviews"]:
+        if review["approved"]:
+            for mid in review["membership"]:
+                approved[mid] = review
+    criteria = {u["id"]: {c["id"] for c in u["criteria"]} for u in case["units"]}
+    coverage = all(
+        mid in approved
+        and any(
+            isinstance(e, dict) and e.get("unit") == mid and set(e.get("criteria", []))
+            == criteria[mid]
+            for e in approved[mid]["evidence"] or []
+        )
+        for mid in criteria
+    )
+    first = {}
+    done = {}
+    for row in record["trace"]:
+        if row["event"] == "clock_in":
+            first.setdefault(row["unit"], row["t_ms"])
+        if row["event"] == "clock_out" and row.get("status") == "done":
+            done[row["unit"]] = row["t_ms"]
+    gated = gated_units(case)
+    consumers = [u["id"] for u in case["units"] if set(u["depends_on"]) & set(gated)]
+    contract = all(
+        f"QA_{g}" in done and all(c in first and done[f"QA_{g}"] <= first[c] for c in consumers)
+        for g in gated
+    )
+    integration_first = all(
+        all(m in done and done[m] <= first[r["id"]] for m in r["members"]
+            if units[m]["kind"] == "author")
+        for r in reviewers if r["id"] in first
+    )
+    checks = record["fast_checks"]
+    obs = {
+        "separate_reviewer": separate,
+        "equivalent_coverage": coverage,
+        "full_chain_evidence": all(units[u["id"]]["revision"] for u in case["units"]),
+        "contribution_attribution": all(u["threads"] for u in authors if u["calls"]),
+        "per_unit_checks_retained": all(u["id"] in checks for u in case["units"]),
+        "contract_approval_before_consumers": contract if gated else None,
+        "integration_before_review": integration_first,
+        # From the real writes (hashes around each author call), not declared files.
+        "conflicting_writes_deferred": record["writes"]["conflict_free"],
+    }
+    required = {
+        "native-chain": ["separate_reviewer", "equivalent_coverage"],
+        "sequential-delegates": ["full_chain_evidence", "contribution_attribution",
+                                 "per_unit_checks_retained"],
+        "mixed-fork-join": ["contract_approval_before_consumers", "integration_before_review",
+                            "conflicting_writes_deferred"],
+    }.get(case["mode"], [])
+    obs["required"] = required
+    values = [obs[k] for k in required]
+    obs["holds"] = None if None in values else all(values)
+    return obs
+
+
+# --- summary ------------------------------------------------------------------------
+
+
+def distribution(values: list) -> dict:
+    known = [v for v in values if v is not None]
+    return {
+        "sample_size": len(known),
+        "unknown_or_censored": len(values) - len(known),
+        "median": statistics.median(known) if known else None,
+        "range": [min(known), max(known)] if known else None,
+    }
+
+
+def saving(baseline, grouped):
+    """1 - grouped / per-task, only for an observed nonzero baseline; else unknown."""
+    if baseline is None or grouped is None or baseline == 0:
+        return None
+    return 1 - grouped / baseline
+
+
+JUDGED = ("caught", "missed")
+
+
+def seed_units(record: dict) -> dict:
+    return {s["unit"]: s for s in record["quality"]["seeds"]}
+
+
+def seed_judged(seed: dict) -> bool:
+    """Judged at a review that saw it still present (hand-built records: applied)."""
+    if "status" in seed and seed["status"] not in ("applied", "unavailable"):
+        return seed["status"] in JUDGED
+    return bool(seed.get("applied")) and seed.get("caught") is not None
+
+
+def pair_summary(case_id: str, repeat: int, per: dict | None, grouped: dict | None) -> dict:
+    present = [r for r in (per, grouped) if r]
+    harness = any(stop_kind_of(r) == "harness" for r in present)
+    pair = {"case_id": case_id, "repeat": repeat,
+            "attempt": max((r.get("attempt", 0) for r in present), default=0),
+            "harness_censored": harness,
+            "complete": bool(per and grouped) and not harness}
+    for key in ("review_tokens", "total_tokens", "review_tokens_excl_cache",
+                "total_tokens_excl_cache"):
+        name = key.replace("_tokens", "_saving")
+        pair[name] = saving(per[key], grouped[key]) if pair["complete"] else None
+    if pair["complete"]:
+        p, g = seed_units(per), seed_units(grouped)
+        both = sorted(u for u in set(p) & set(g) if seed_judged(p[u]) and seed_judged(g[u]))
+        per_caught = {u for u in both if p[u]["caught"] is True}
+        grouped_caught = {u for u in both if g[u]["caught"] is True}
+        removed = sorted(u for u in set(p) | set(g) if "removed-before-review" in (
+            p.get(u, {}).get("status"), g.get(u, {}).get("status")))
+        pair["seeds"] = {
+            "compared_units": both,
+            "excluded_unavailable": sorted((set(p) | set(g)) - set(both) - set(removed)),
+            "excluded_removed_before_review": removed,
+            "per_task_caught": sorted(per_caught),
+            "grouped_caught": sorted(grouped_caught),
+            "grouped_missed_caught_by_per_task": sorted(per_caught - grouped_caught),
+        }
+        pair["both_accepted"] = per["accepted"] and grouped["accepted"]
+    else:
+        pair["seeds"] = None
+        pair["both_accepted"] = False
+    return pair
+
+
+def cohort(records: list[dict]) -> dict:
+    quality = [r["quality"] for r in records]
+    return {
+        "sample_size": len(records),
+        "accepted": sum(r["accepted"] for r in records),
+        "failed_or_censored": sum(not r["accepted"] for r in records),
+        "harness_censored": sum(stop_kind_of(r) == "harness" for r in records),
+        "protocol_stops": sum(stop_kind_of(r) == "protocol" for r in records),
+        "quality_failures": sum(q["quality_failure"] is True for q in quality),
+        **{
+            key: distribution([r[key] for r in records])
+            for key in ("review_tokens", "total_tokens", "review_tokens_excl_cache",
+                        "total_tokens_excl_cache", "elapsed_to_accepted_ms",
+                        "elapsed_to_stop_ms")
+        },
+        "rework_rounds": distribution([r["rework"]["rounds"] for r in records]),
+        "reviewer_error_rounds": sum(r["rework"].get("reviewer_error_rounds", 0)
+                                     for r in records),
+        "rework_units": distribution([len(r["rework"]["units"]) for r in records]),
+        "escalations": sum(r["escalations"] for r in records),
+        "human_interventions": sum(r["human_interventions"] for r in records),
+        "human_interventions_label": HUMAN_INTERVENTIONS_LABEL,
+        "quality": {
+            key: sum(q.get(key, 0) for q in quality)
+            for key in ("seeded_caught", "seeded_missed", "seed_unavailable",
+                        "seed_removed_before_review", "seed_not_judged", "true_findings",
+                        "false_findings", "unknown_findings")
+        },
+        "author_defects_missed": sum(len(q["author_defects_missed"]) for q in quality),
+    }
+
+
+def mode_verdict(per: list[dict], grouped: list[dict], pairs: list[dict]) -> dict:
+    """The frozen thresholds for one execution-mode cohort; None is inconclusive.
+
+    Design, *Harness censors and the rerun rule*: the checks run on clean pairs only
+    (both arms of a still-censored pair are left out). The verdict is fail if any check
+    is false there, since a missing pair cannot rescue a failed threshold; otherwise
+    inconclusive if any pair is still censored or any check is unknown; else pass.
+    """
+    censored_keys = {(p["case_id"], p["repeat"]) for p in pairs if p["harness_censored"]}
+    per = [r for r in per if (r["case_id"], r["repeat"]) not in censored_keys]
+    grouped = [r for r in grouped if (r["case_id"], r["repeat"]) not in censored_keys]
+    checks: dict[str, bool | None] = {}
+    complete = [p for p in pairs if p["complete"]]
+    if not complete:
+        checks["grouped_misses_none_caught_by_per_task"] = None
+    elif any(p["seeds"]["grouped_missed_caught_by_per_task"] for p in complete):
+        checks["grouped_misses_none_caught_by_per_task"] = False
+    elif len(complete) < len(pairs):
+        checks["grouped_misses_none_caught_by_per_task"] = None
+    else:
+        checks["grouped_misses_none_caught_by_per_task"] = True
+    clean_per = [r for r in per if stop_kind_of(r) != "harness"]
+    clean_grp = [r for r in grouped if stop_kind_of(r) != "harness"]
+    per_tot = [r["total_tokens"] for r in clean_per]
+    grp_tot = [r["total_tokens"] for r in clean_grp]
+    if not per_tot or not grp_tot or None in per_tot or None in grp_tot:
+        checks["median_total_tokens_decrease"] = None
+    else:
+        checks["median_total_tokens_decrease"] = statistics.median(grp_tot) < statistics.median(
+            per_tot
+        )
+    per_lat = [r["elapsed_to_accepted_ms"] for r in clean_per if r["accepted"]]
+    grp_lat = [r["elapsed_to_accepted_ms"] for r in clean_grp if r["accepted"]]
+    if not per_lat or not grp_lat:
+        checks["median_accepted_latency_not_increase"] = None
+    else:
+        checks["median_accepted_latency_not_increase"] = statistics.median(
+            grp_lat
+        ) <= statistics.median(per_lat)
+    arms = per + grouped
+    clean = clean_per + clean_grp
+    if not arms:
+        checks["approval_coverage_holds"] = None
+    elif any(stop_kind_of(r) == "protocol" or r["quality"]["quality_failure"] is True
+             or r["observations"]["holds"] is False for r in clean):
+        checks["approval_coverage_holds"] = False
+    elif len(clean) < len(arms) or any(
+        r["quality"]["quality_failure"] is None or r["observations"]["holds"] is None
+        for r in clean
+    ):
+        checks["approval_coverage_holds"] = None
+    else:
+        checks["approval_coverage_holds"] = True
+    values = list(checks.values())
+    censored = [f"{p['case_id']}#r{p['repeat']}" for p in pairs if p["harness_censored"]]
+    if False in values:
+        result = "fail"
+    elif censored or None in values:
+        result = "inconclusive"
+    else:
+        result = "pass"
+    return {"checks": checks, "result": result, "harness_censored_pairs": censored}
+
+
+def final_attempts(records: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split records into the final attempt of each (case, repeat) and voided attempts."""
+    last: dict[tuple, int] = {}
+    for r in records:
+        key = (r["case_id"], r["repeat"])
+        last[key] = max(last.get(key, 0), r.get("attempt", 0))
+    final = [r for r in records if r.get("attempt", 0) == last[(r["case_id"], r["repeat"])]]
+    voided = [r for r in records if r.get("attempt", 0) != last[(r["case_id"], r["repeat"])]]
+    return final, voided
+
+
+def summarize_live(records: list[dict]) -> dict:
+    matched, voided = final_attempts([r for r in records if not r.get("smoke")])
+    smoke, smoke_voided = final_attempts([r for r in records if r.get("smoke")])
+    pairs = []
+    for case_id, repeat in sorted({(r["case_id"], r["repeat"]) for r in matched}):
+        arms = {r["arm"]: r for r in matched if r["case_id"] == case_id and r["repeat"] == repeat}
+        pairs.append(pair_summary(case_id, repeat, arms.get("per-task"), arms.get("grouped")))
+    modes = {}
+    for case_id in sorted({r["case_id"] for r in matched}):
+        per = [r for r in matched if r["case_id"] == case_id and r["arm"] == "per-task"]
+        grp = [r for r in matched if r["case_id"] == case_id and r["arm"] == "grouped"]
+        mine = [p for p in pairs if p["case_id"] == case_id]
+        modes[case_id] = {
+            "per-task": cohort(per),
+            "grouped": cohort(grp),
+            "pairs": len(mine),
+            **{
+                key: distribution([p[key] for p in mine])
+                for key in ("review_saving", "total_saving", "review_saving_excl_cache",
+                            "total_saving_excl_cache")
+            },
+            "verdict": mode_verdict(per, grp, mine),
+        }
+    results = [m["verdict"]["result"] for m in modes.values()]
+    if "fail" in results:
+        adoption, note = "blocked", "A core-mode threshold failed; adoption is blocked."
+    elif len(results) == 3 and all(r == "pass" for r in results):
+        adoption = "pending-scenarios"
+        note = ("Core modes pass; adoption beyond review-only guidance waits for the five "
+                "scenarios, which were not run.")
+    else:
+        adoption, note = "inconclusive", "Not every core mode has a conclusive pass."
+    void = voided + smoke_voided
+    void_tokens = [r["total_tokens"] for r in void]
+    summary = {
+        "adoption": adoption,
+        "adoption_note": note,
+        "limitations": LIMITS,
+        "run_count": len(matched),
+        "planner_dispatch": PLANNER_DISPATCH,
+        "human_interventions_label": HUMAN_INTERVENTIONS_LABEL,
+        "pairs": pairs,
+        "modes": modes,
+        "review_saving": distribution([p["review_saving"] for p in pairs]),
+        "total_saving": distribution([p["total_saving"] for p in pairs]),
+        "voided_attempts": {
+            "label": "harness-censored attempts, rerun once; kept with their spend",
+            "records": [
+                {"job_id": r["job_id"], "attempt": r.get("attempt", 0),
+                 "stop_kind": stop_kind_of(r), "stop_reason": r.get("stop_reason"),
+                 "total_tokens": r["total_tokens"]}
+                for r in void
+            ],
+            "total_tokens": None if None in void_tokens else sum(void_tokens),
+        },
+    }
+    if smoke:
+        totals = [r["total_tokens"] for r in smoke]
+        pair_total = None if None in totals else sum(totals)
+        censored = sum(stop_kind_of(r) == "harness" for r in smoke)
+        # A projection only from a whole, uncensored pair: a censored arm stopped early
+        # (or never ran) and would understate the spend (QW round 2, finding 2).
+        whole = sorted(r["arm"] for r in smoke) == sorted(ARMS) and not censored
+        projected = (pair_total / len(smoke) * FULL_RUN_JOBS
+                     if whole and pair_total is not None else None)
+        summary["smoke"] = {
+            "label": "smoke data; not merged into the matched sample",
+            "jobs": len(smoke),
+            "harness_censored": censored,
+            "projection_basis": "both smoke arms ran and neither was harness-censored"
+            if whole else "none: the smoke pair is incomplete or harness-censored",
+            "tokens_measured": pair_total,
+            "projected_tokens_for_18_jobs": projected,
+            "budget_gate_tokens": BUDGET_GATE_TOKENS,
+            "exceeds_gate": None if projected is None else projected > BUDGET_GATE_TOKENS,
+            "records": [
+                {"job_id": r["job_id"], "status": r["status"],
+                 "stop_kind": stop_kind_of(r), "total_tokens": r["total_tokens"],
+                 "review_tokens": r["review_tokens"]}
+                for r in smoke
+            ],
+        }
+    return summary
+
+
+# --- the run --------------------------------------------------------------------------
+
+
+def schedule(cases: list[dict], repeats: int, smoke: bool) -> list[tuple[dict, int, str, int]]:
+    """Jobs one at a time; arm order counterbalanced by repeat (even: per-task first)."""
+    if smoke:
+        cases = [c for c in cases if c["id"] == SMOKE_CASE]
+        repeats = 1
+    jobs = []
+    for case in cases:
+        for repeat in range(repeats):
+            arms = ARMS if repeat % 2 == 0 else tuple(reversed(ARMS))
+            for order, arm in enumerate(arms):
+                jobs.append((case, repeat, arm, order))
+    return jobs
+
+
+def codex_environment(codex_bin: list[str], cwd: Path) -> dict:
+    """What both arms run under, read-only: CLI version, effective features, the
+    CODEX_HOME path and a digest of its skills directory. Nothing under CODEX_HOME is
+    copied, moved or written; credentials are never read."""
+
+    def probe(args: list[str]) -> str:
+        try:
+            done = run_eval.run_contained([*codex_bin, *args], "", str(cwd), 30)
+            return (done.stdout or done.stderr).strip() or f"exit {done.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"unknown: {exc}"
+
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    skills = home / "skills"
+    try:
+        digest = tree_digest(skills) if skills.is_dir() else None
+    except OSError as exc:
+        digest = f"unreadable: {exc}"
+    # `codex features list` has no --ignore-user-config (codex-cli 0.167.1), so it cannot
+    # reproduce the runs' config exactly: it is probed with each arm role's --disable flags
+    # and labelled as such (QW round 2, finding 8).
+    author_probe = ["features", "list", "--disable", "apps", "--disable", "multi_agent"]
+    review_probe = [*author_probe, "--disable", "shell_tool", "--disable", "unified_exec"]
+    env = {
+        "codex_cli_version": probe(["--version"]),
+        "features": {
+            "label": "effective features as `codex features list` reports them WITH the "
+            "user's config.toml applied (the subcommand has no --ignore-user-config) and each "
+            "role's --disable flags; every exec run also passes --ignore-user-config, so the "
+            "runs may differ from this listing wherever config.toml sets a feature",
+            "author": {"argv": author_probe, "output": probe(author_probe)},
+            "review": {"argv": review_probe, "output": probe(review_probe)},
+        },
+        "codex_home": str(home),
+        "skills_dir": str(skills),
+        "skills_digest": digest,
+    }
+    env["sha256"] = sha256_text(json.dumps(env, sort_keys=True))
+    return env
+
+
+def metadata(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bin: list[str],
+             author_timeout: float, review_timeout: float, env: dict) -> dict:
+    harness = {
+        name: sha256_text((HERE / f"{name}.py").read_text(encoding="utf-8"))
+        for name in ("live_run", "live_cases", "run_eval", "codex_adapter")
+    }
+    return {
+        "started_at": now(),
+        "run": "smoke" if smoke else "full",
+        "repeats": 1 if smoke else repeats,
+        "codex_command": codex_bin,
+        "codex_cli_version": env["codex_cli_version"],
+        "codex_environment": env,
+        "model": MODEL,
+        "author_settings": AUTHOR_SETTINGS,
+        "review_settings": REVIEW_SETTINGS,
+        "timeouts": {"author": author_timeout, "review": review_timeout},
+        "max_repair_rounds": MAX_REPAIR_ROUNDS,
+        "rerun_rule": "a harness censor voids the pair; rerun once in the same order; "
+        "censored twice is inconclusive" + ("; smoke: no rerun" if smoke else ""),
+        "host": platform.platform(),
+        "python": platform.python_version(),
+        "shiftwork_runtime": str(ROOT / "runtime-ts/dist/cli.js"),
+        "harness_sha256": harness,
+        "fixture_digests": {
+            c["id"]: {part: tree_digest(Path(c[f"{part}_dir"])) for part in
+                      ("base", "oracle", "reference")}
+            for c in cases
+        },
+        "cases": [
+            {"id": c["id"], "mode": c["mode"], "units": c["units"],
+             "plans": {arm: arm_tickets(c, arm) for arm in ARMS}}
+            for c in cases
+        ],
+        "prompts": PROMPTS,
+        "response_schema": codex_adapter.response_schema(),
+        "planner_dispatch": PLANNER_DISPATCH,
+        "human_interventions": HUMAN_INTERVENTIONS_LABEL,
+        "limitations": LIMITS,
+    }
+
+
+def crashed_record(arm: Arm, exc: BaseException) -> dict:
+    """The record of an arm whose own bookkeeping failed: a harness censor, spend unknown."""
+    arm.cleanup()
+    return {
+        "case_id": arm.case["id"], "mode": arm.case["mode"], "repeat": arm.repeat,
+        "attempt": arm.attempt, "arm": arm.arm, "order": arm.order, "smoke": arm.smoke,
+        "job_id": arm.job_id, "accepted": False, "status": "failed/censored",
+        "stop_kind": "harness", "stop_reason": f"arm crashed: {type(exc).__name__}: {exc}",
+        "harness_errors": [{"where": "arm", "type": type(exc).__name__, "error": str(exc),
+                            "traceback": traceback.format_exc()[-4000:]}],
+        "elapsed_to_accepted_ms": None, "elapsed_to_stop_ms": None,
+        "review_tokens": None, "total_tokens": None, "review_tokens_excl_cache": None,
+        "total_tokens_excl_cache": None, "calls": arm.calls,
+        "rework": {"rounds": 0, "units": []}, "escalations": arm.escalations,
+        "human_interventions": 0, "human_interventions_label": HUMAN_INTERVENTIONS_LABEL,
+        "quality": {"seeds": [], "quality_failure": None, "author_defects_missed": []},
+        "observations": {"holds": None},
+    }
+
+
+def pairs_of(jobs: list) -> list[list]:
+    grouped: dict[tuple, list] = {}
+    for job in jobs:
+        grouped.setdefault((job[0]["id"], job[1]), []).append(job)
+    return list(grouped.values())
+
+
+async def _run(out: Path, cases: list[dict], repeats: int, smoke: bool, codex_bin: list[str],
+               author_timeout: float, review_timeout: float, env_sha: str) -> list[dict]:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    host = Host(out, codex_bin, author_timeout, review_timeout)
+    host.codex_env_sha = env_sha
+    host.response_schema.write_text(json.dumps(codex_adapter.response_schema()), encoding="utf-8")
+    params = StdioServerParameters(
+        command="node", args=[str(ROOT / "runtime-ts/dist/cli.js")], cwd=str(ROOT)
+    )
+    records = []
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
+        await client.initialize()
+        host.client = client
+        with (out / "runs.jsonl").open("a", encoding="utf-8") as stream:
+            for pair in pairs_of(schedule(cases, repeats, smoke)):
+                # Rerun rule: a harness censor voids the pair; one rerun, same arm order.
+                for attempt in range(1 if smoke else 2):
+                    censored = False
+                    for case, repeat, arm_name, order in pair:
+                        arm = Arm(host, case, arm_name, repeat, order, smoke, attempt)
+                        try:
+                            record = await arm.run()
+                        except Exception as exc:  # noqa: BLE001 - never abort the run
+                            record = crashed_record(arm, exc)
+                        records.append(record)
+                        stream.write(json.dumps(record) + "\n")
+                        stream.flush()
+                        if record["stop_kind"] == "harness":
+                            # The pair is void either way; its other arm would be spend
+                            # with no use.
+                            censored = True
+                            break
+                    if not censored:
+                        break
+    return records
+
+
+def run_live(out, cases: list[dict] | None = None, repeats: int = 3, smoke: bool = False,
+             codex_bin: list[str] | None = None, author_timeout: float = 900,
+             review_timeout: float = 300) -> dict:
+    if type(repeats) is not int or repeats < 1 or author_timeout <= 0 or review_timeout <= 0:
+        raise ValueError("repeats and timeouts must be positive")
+    codex_bin = list(codex_bin or ["codex"])
+    if not codex_bin or any(not isinstance(x, str) or not x for x in codex_bin):
+        raise ValueError("codex_bin must be a nonempty argv prefix")
+    out = Path(out).resolve()
+    if _inside(out, _roots(ROOT)):
+        raise ValueError(f"output directory {out} is inside the repository; run output "
+                         "lives outside it and only the publish step copies records in")
+    scratch_root = Path(tempfile.gettempdir()).resolve()
+    if _inside(scratch_root, _roots(ROOT)) or _inside(scratch_root, [out]):
+        raise ValueError(f"temporary directory {scratch_root} is inside the repository or "
+                         "the output directory; arm workspaces would be reachable")
+    out.mkdir(parents=True, exist_ok=False)
+    cases = live_cases.live_cases() if cases is None else copy.deepcopy(cases)
+    env = codex_environment(codex_bin, out)
+    meta = metadata(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout, env)
+    (out / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    try:
+        asyncio.run(
+            _run(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
+                 env["sha256"])
+        )
+    finally:
+        # Whatever happened, the summary is what runs.jsonl recomputes to.
+        runs = out / "runs.jsonl"
+        summary = summarize_live(read_runs(out) if runs.exists() else [])
+        (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n",
+                                          encoding="utf-8")
+    return summary
+
+
+def read_runs(path: Path) -> list[dict]:
+    source = path / "runs.jsonl" if path.is_dir() else path
+    return [json.loads(line) for line in source.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--out", type=Path, help="new output directory (must not exist)")
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--smoke", action="store_true",
+                        help="mixed-fork-join repeat 0, both arms, plus an 18-job projection")
+    parser.add_argument("--cases", nargs="*", help="case ids (default: all three)")
+    parser.add_argument("--codex", default='["codex"]', help="JSON argv prefix for Codex")
+    parser.add_argument("--author-timeout", type=float, default=900)
+    parser.add_argument("--review-timeout", type=float, default=300)
+    parser.add_argument("--summarize", type=Path,
+                        help="existing runs.jsonl or output directory; print recomputed summary")
+    args = parser.parse_args()
+    if args.summarize:
+        print(json.dumps(summarize_live(read_runs(args.summarize)), indent=2))
+        return
+    if not args.out:
+        parser.error("--out is required unless --summarize is given")
+    cases = live_cases.live_cases()
+    if args.cases:
+        unknown = set(args.cases) - {c["id"] for c in cases}
+        if unknown:
+            parser.error(f"unknown cases: {', '.join(sorted(unknown))}")
+        cases = [c for c in cases if c["id"] in args.cases]
+    summary = run_live(args.out, cases, args.repeats, args.smoke, json.loads(args.codex),
+                       args.author_timeout, args.review_timeout)
+    print(json.dumps(summary, indent=2))
+    if args.smoke:
+        smoke = summary.get("smoke", {})
+        print(
+            f"projection: {smoke.get('projected_tokens_for_18_jobs')} tokens for "
+            f"{FULL_RUN_JOBS} jobs (gate {BUDGET_GATE_TOKENS}; exceeds: "
+            f"{smoke.get('exceeds_gate')})",
+            file=sys.stderr,
+        )
+
+
+if __name__ == "__main__":
+    main()
