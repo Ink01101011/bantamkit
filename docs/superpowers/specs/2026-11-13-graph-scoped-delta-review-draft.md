@@ -155,5 +155,5 @@ conversation is cached under the same session.
 
 ## Budget
 
-There is none. The #310 12M cap is used up by the tuning run. Any live test of
+There is none. The #310 12M cap has 1,871,543 tokens left after the tuning run (10,128,457 spent), and that remainder is not assigned to this work. Any live test of
 G, or a probe of reviewer thread resume, needs a new budget from the maintainer.

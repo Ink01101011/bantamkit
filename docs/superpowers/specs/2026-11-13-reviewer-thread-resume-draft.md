@@ -130,7 +130,7 @@ convergence, and that is unmeasured.
 
 ## Budget
 
-There is none. The #310 12M cap is used up by the tuning run. Both P0 and the
+There is none. The #310 12M cap has 1,871,543 tokens left after the tuning run (10,128,457 spent), and that remainder is not assigned to this work. Both P0 and the
 comparison need a new budget from the maintainer.
 
 ## Probe P0 result (2026-11-13, 56,658 raw tokens of the 80,000 approved)
