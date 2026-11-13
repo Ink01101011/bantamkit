@@ -1,0 +1,127 @@
+# Reviewer thread resume for re-reviews (draft, #310 follow-on)
+
+Status: **draft**, 2026-11-13. It is not frozen, has not run, and has no budget.
+It has an open ruling on independence (below). Issue:
+[#310](https://github.com/Ink01101011/bantamkit/issues/310). It follows the request
+composition measurement in the
+[graph-scoped draft](2026-11-13-graph-scoped-delta-review-draft.md).
+
+## Why
+
+A fresh `codex exec --ephemeral` reviewer caches only Codex's shared preamble,
+about 9,000 tokens. Measured over 81 reviewer calls:
+
+- Everything after that preamble is uncached: Codex's per-session tail, about
+  2,700 tokens, and the harness prompt, about 1,700–3,300 tokens.
+- Reordering the request cannot change that.
+- Calls that **resume** a thread are different. Author and repair calls that
+  resumed read a median of 47,360 cached tokens, because the earlier conversation
+  is cached under the same session.
+
+A re-review repeats most of what the reviewer already read: the instructions,
+the tasks, the criteria and the unchanged members. If the reviewer resumes its
+own previous review thread, that part would come from cache.
+
+## Proposed lever (RR)
+
+1. **First review of a group.** This is the same as today, except the reviewer
+   session is **not** `--ephemeral`, so it can be resumed. Tools stay disabled
+   and there is no `--output-schema`, which is T1's setting and the one that
+   caches. The session lives in the run's isolated Codex home.
+2. **Re-review of the same group.** Resume **that reviewer's own thread**, never
+   an author's. The new turn carries only the following:
+   - a new `reviewer_context_id`;
+   - the changed members' full file text, revision and fast check;
+   - each unchanged member's revision (the same as before);
+   - the T3 delta instructions.
+
+   The previous request and the reviewer's own previous answer are already in
+   the thread, so the previous findings are not sent again.
+3. **Acceptance is unchanged.** The answer must name every member's exact
+   revision and every criterion, with reused evidence marked as T3 requires.
+   Invalid JSON is a reviewer-error round.
+4. **Fallbacks:**
+   - After a reviewer-error round, the next review is a fresh, non-resumed
+     review. This follows the ruling already made for T3.
+   - If a resume fails at the harness level (no thread, or a resume error),
+     the next review is one fresh review, counted.
+5. **Bound.** At most two resumes per thread. That is the existing repair cap,
+   so the thread stays small.
+6. **Accounting.** Resumed usage is cumulative per session, so each call is
+   accounted by the per-thread delta, as the harness already does for authors
+   (W5, `Arm.account`).
+
+## Independence: needs a maintainer ruling
+
+- **Parent design.** The parent design
+  ([review independence](2026-11-03-shiftwork-review-independence-design.md))
+  bases independence on contribution: the reviewer "contributed to none of those
+  outputs". A re-review issues "a fresh whole-group verdict naming reused
+  evidence". A resumed reviewer thread holds only harness-supplied review
+  requests and the reviewer's own verdicts. It holds no author context, no
+  tool output and no repair conversation. On the parent design's test, it stays
+  independent.
+- **#310 evaluation design.** That design says, literally, "Every reviewer is a
+  fresh context that authored nothing", and its step 3 is "Fresh review of the
+  whole membership". RR breaks the "fresh context" wording, although it does not
+  break "authored nothing".
+- **Question for the maintainer.** May a re-review resume the same reviewer's
+  own previous thread, with authors never sharing it? If not, RR is dropped.
+  Its only alternative would be a cached prefix across separate sessions, which
+  Codex does not provide (measured).
+
+## Quality risk
+
+- **Anchoring.** A reviewer that remembers its own approval of a member may be
+  less likely to look again. The quality gates catch the costly form of this,
+  because a missed seed or a final-oracle failure fails the arm. A subtler drop
+  in scrutiny would not show on loud seeds, the same limit #310 states.
+- **Convergence, which might be the opposite effect.** In seq-r2 (#310), each
+  fresh R raised a new finding on code that had not changed since review 0.
+  A reviewer that sees its own earlier reasoning might raise fewer late
+  findings. That is a hypothesis, not a measured effect, and it is the second
+  thing worth measuring.
+
+## Expected size, from the existing data
+
+- The #310 grouped arms made **13 re-reviews**.
+- Under today's caching, a fresh re-review leaves about 5,000 uncached input
+  tokens: 5,181–5,394 in the smoke baseline and 9,779 for the tuned T3 call.
+- If resume brings that down to 2,000–3,000 tokens, the saving is about
+  26,000–39,000 tokens over the 9 grouped arms. That is **about 4–7% of the
+  grouped arms' uncached + output** (600,372).
+- Against #310's own reviewers, which never cached, the same arithmetic gives
+  17–19%. That figure is no longer the baseline, because reviewers now cache the
+  preamble.
+
+So this is a **small** lever on whole-job cost. Its stronger reason may be
+convergence, and that is unmeasured.
+
+## Plan, if the ruling allows it
+
+1. **Probe P0, about 60,000–80,000 tokens.**
+   - On one fixture group, run a fresh non-ephemeral reviewer call, then a
+     resumed re-review carrying a one-member delta. Repeat this twice.
+   - Check that `codex exec resume` keeps tools disabled and the read-only
+     sandbox.
+   - Measure the re-review's uncached input against a fresh re-review of the
+     same revision.
+   - Count invalid answers.
+2. **Gate to continue.** The resumed re-review's uncached input must be at least
+   40% below the fresh one, every answer must be valid JSON, and the tools must
+   stay off. Otherwise RR stops at the probe.
+3. **Comparison**, pre-declared in the tuning design's form.
+   - Arms: T2+T4 against T2+T4+RR.
+   - Modes: native-chain and sequential-delegates × 2 repeats, which is 8 jobs,
+     plus a smoke pair.
+   - The gates are the same, the metric is uncached + output, the run is paired
+     and counterbalanced, and it has a budget stop.
+   - A convergence count is added: new findings on members unchanged since the
+     previous review.
+   - Estimated cost, from the tuned jobs measured so far (about 200,000–275,000
+     raw each): **about 2.5–3.0M raw tokens** with the smoke pair and the probe.
+
+## Budget
+
+There is none. The #310 12M cap is used up by the tuning run. Both P0 and the
+comparison need a new budget from the maintainer.
