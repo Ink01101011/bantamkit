@@ -776,12 +776,112 @@ Grouped review can name several members in both `reviews` and `depends_on`.
 
 The [grouped-review pilot](superpowers/specs/2026-11-03-shiftwork-review-independence-design.md#grouped-review-pilot-307)
 records the review-only replay evidence and its measurement harness. Some limits:
-- Full-workflow savings are unmeasured (#310).
+- The three core execution modes (not the five scenarios) were measured live in
+  #310, with 3 pairs each, and **no mode is adopted beyond this review-only
+  guidance**. native-chain passed the core thresholds. sequential-delegates failed
+  approval, because one grouped reviewer did not converge. mixed fork/join failed
+  latency, +7.1 s at the median. See the
+  [#310 results](superpowers/specs/2026-11-03-shiftwork-review-independence-design.md).
 - Role checks do not establish executor independence.
 - Graph readiness does not prove coverage or approval freshness. A reviewer whose
   reviewed member was `dropped` is held by the #309 refusal above, not by readiness.
 
 This guidance adds no runtime/schema guarantee.
+
+**Host practices measured in the #310 follow-ons (guidance only).** These are about
+how a host runs repairs and re-reviews. They were measured only inside grouped
+review, and the runtime enforces none of them. Each was compared live against a
+paired baseline under pre-declared quality gates: seeds caught, a hidden oracle,
+protocol stops, false findings and latency. Every gate held. The sample is two
+repeats per mode on one-line seeded defects, so treat these as defaults to try,
+not proven savings.
+
+- **Repair a delegated one-file finding with a tools-free patch call.**
+  - **The call.** Send one call with no tools the unit's task, the findings
+    verbatim and the full current text of the files the unit owns. It answers
+    `{"files": [{"path", "content"}]}`.
+  - **Writing the answer.** The host writes only owned paths. A symlinked path,
+    or one that resolves outside the workspace, makes the answer invalid. The host
+    then runs the fast check.
+  - **Fallback.** If the answer is invalid or the check is red, run exactly one
+    ordinary shell-capable repair.
+  - **Measured in sequential-delegates.** Repair uncached input + output fell 45%,
+    and raw tokens fell 77%. All 8 patch answers, across both modes, were valid and
+    green. The patch call also ran at low reasoning effort, which cannot be
+    separated from it. The fallback never ran, so its cost is unmeasured.
+  - **Not where the repair would resume an already-cached parent session (native
+    chain)**, judged on uncached input + output. There raw tokens fell 80%, but
+    uncached input + output rose, because the patch call is fresh.
+  - [Tuning results](superpowers/specs/2026-11-13-grouped-review-tuning-design.md).
+- **Run a re-review by resuming the same reviewer's own thread.**
+  - **Delta turn.** Send only these:
+    - a new reviewer context id;
+    - each member's revision, fast check and changed flag;
+    - the text of every file that changed since that thread last saw it.
+  - **Acceptance** still binds every member and criterion to the full current
+    revision.
+  - **Setup, as measured.**
+    - Make the group's first review non-ephemeral, so it can be resumed.
+    - Reviewers run tools-disabled with no output schema: the JSON shape is
+      asked for in the prompt and validated by the host.
+    - Resume at most twice per thread.
+    - After an invalid answer, or if the resume fails, run one fresh full review.
+  - **Independence.** The maintainer ruled (2026-11-13) that this does not breach
+    review independence. The thread never includes an author's context.
+  - **Measured.** At the median, the re-review itself cost less uncached input +
+    output: 67% less in native-chain and 52% less in sequential-delegates. It was
+    cheaper in 4 of 4 pairs (per-pair range 26–78%). If nothing else varied, that
+    is about 8% of a whole job.
+    - The whole-job medians were +18.8% in native-chain, carried by one pair, and
+      −21.1% in sequential-delegates, where author-call noise that RR cannot touch
+      dominated.
+    - Raw tokens rose, by 8–15% on the re-review and 3–4% on the whole job,
+      because the thread is reread from cache.
+    - Whether a resumed reviewer anchors on its earlier approval is untested,
+      because no re-review faced a surviving defect.
+  - [RR results](superpowers/specs/2026-11-13-reviewer-thread-resume-draft.md).
+- **Promising, one sample: ask authors for fewer, larger tool steps.** The probe
+  appended one paragraph to the author prompt: do not re-read what the prompt
+  already holds, write each owned file in a single edit, and run the fast check
+  once. Both variants passed the fast check and the hidden oracle.
+
+  | Author on sequential-delegates unit A | Tool steps | Uncached input + output | Raw tokens |
+  | --- | ---: | ---: | ---: |
+  | Default prompt | 6 | 17,492 | 64,980 |
+  | With the batching paragraph | 1 | 3,216 | 25,232 |
+
+  - The default run was dearer than usual. Across 128 earlier fresh author and
+    repair calls, the median was 6,063 at 4 steps, and each extra step added
+    about 1,000.
+  - Fewer steps also means fewer chances to lose the cache, since each request
+    can miss.
+  - This is n=1 per variant, so it is a lever to test, not a measured saving.
+
+- **Not adopted, because no effect was demonstrated:**
+  - dropping the output schema as a stand-alone caching lever (it is part of the
+    measured re-review setup above, not an independent saving);
+  - delta instructions that still resend every member's full text, which made
+    requests larger;
+  - low reasoning effort on one-line repairs, where reasoning tokens were
+    already 0.
+  - repairing by resuming the author's own delegate thread. In one probe on
+    sequential-delegates unit A, both repairs passed the fast check and the
+    oracle, but the resume cost 16,090 uncached input + output against 4,377 for a
+    patch call. 2 of its 3 resumed requests fell back to the 9,600-token preamble.
+    The probe is one sample, and its raw logs are outside the repo.
+- **Cache misses the host could not steer.**
+  - **How often.** In these Codex sessions, 23 of 241 model requests (counting
+    each session's requests after its first) lost the cached prefix mid-session.
+    22 of the 23 fell back to the shared ~9,600-token preamble or to nothing.
+  - **Cost.** The misses cost an estimated 32% extra uncached input. The estimate
+    counts the previous request's cached prefix that was lost. It was measured
+    over 275 requests in 34 sessions from raw session logs that are outside the
+    repo; `tools/eval/codex_cache_audit.py` recomputes it from any rollout
+    directory.
+  - **Noise.** Identical author prompts read cache very differently from run to
+    run. That noise was larger than any lever above at whole-job level.
+  - **No lever tried here steered it:** output schema, tools, or resume. Compare
+    levers per call kind, not on whole-job totals from a few runs.
 
 #### `job.budget`: price the next unit, refuse what does not fit (#262)
 
