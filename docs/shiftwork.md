@@ -840,6 +840,23 @@ not proven savings.
     - Whether a resumed reviewer anchors on its earlier approval is untested,
       because no re-review faced a surviving defect.
   - [RR results](superpowers/specs/2026-11-13-reviewer-thread-resume-draft.md).
+- **Promising, one sample: ask authors for fewer, larger tool steps.** The probe
+  appended one paragraph to the author prompt: do not re-read what the prompt
+  already holds, write each owned file in a single edit, and run the fast check
+  once. Both variants passed the fast check and the hidden oracle.
+
+  | Author on sequential-delegates unit A | Tool steps | Uncached input + output | Raw tokens |
+  | --- | ---: | ---: | ---: |
+  | Default prompt | 6 | 17,492 | 64,980 |
+  | With the batching paragraph | 1 | 3,216 | 25,232 |
+
+  - The default run was dearer than usual. Across 128 earlier fresh author and
+    repair calls, the median was 6,063 at 4 steps, and each extra step added
+    about 1,000.
+  - Fewer steps also means fewer chances to lose the cache, since each request
+    can miss.
+  - This is n=1 per variant, so it is a lever to test, not a measured saving.
+
 - **Not adopted, because no effect was demonstrated:**
   - dropping the output schema as a stand-alone caching lever (it is part of the
     measured re-review setup above, not an independent saving);
