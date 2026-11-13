@@ -86,17 +86,74 @@ Before any spend, a run of G would need:
    uncached + output metric, paired, counterbalanced, a budget stop, and a
    smoke projection.
 
-## A cheaper candidate the probe points to (not designed yet)
+## Request composition, measured offline (no Codex spend)
 
-The reviewer's uncached input, about 5,000 tokens, is mostly the per-call
-request JSON: tasks, criteria, revisions, fast-check results and files. Tasks
-and criteria are the same in every round. Ordering the request so the stable
-parts (instructions, then each member's task and criteria) come before the
-variable parts (revisions, checks, file text) could let re-reviews serve the
-stable part from cache. That needs a free offline measurement of the request's
-composition before it is worth designing.
+The test was whether reordering the request, with stable parts first, could let
+re-reviews read the request from cache. It cannot.
+
+**What a reviewer call's input is made of.** 81 reviewer calls were measured:
+the #310 run plus the tuning smoke pair. They used the saved `prompt.txt` and
+`turn.completed` usage. A least-squares fit gives:
+
+- `input_tokens ≈ 11,771 + 0.336 × prompt_chars`, about 2.97 chars per token.
+- The harness prompt is 3,473–9,840 chars, with a median of 5,133. That is about
+  **1,700 tokens, or 13% of the median input of 13,500**.
+- The other **~11,800 tokens are Codex's own preamble**:
+  - base instructions, about 21.5k chars;
+  - tool and skills text;
+  - multi-agent role text;
+  - `<environment_context>` with the cwd, date, timezone and permission profile;
+  - world state and turn context.
+
+**How much a fresh call can cache.** The cached figure never went above the
+shared preamble: 9,088, 8,960 or 4,864 tokens.
+
+- In the T1 probe, the same prompt sent twice read 8,960 cached tokens out of
+  11,137 on the second call. Even an identical repeat leaves about 2,200 tokens
+  uncached.
+- Every fresh `codex exec --ephemeral` session caches the common Codex prefix
+  and nothing after it. The cache stops inside Codex's own per-session tail,
+  before the harness prompt starts.
+- So the order of the harness request cannot change what is cached. **Reordering
+  is refuted: expected saving 0.**
+
+**Where a re-review's uncached tokens go:**
+
+| Part | Tokens |
+| --- | ---: |
+| Codex per-session tail | ~2,700 |
+| Harness prompt | ~1,700–3,300 |
+
+The harness cannot change the first part without leaving Codex CLI as the host,
+and changing the host is out of scope.
+
+**The one lever this points to: reviewer thread resume.** Author and repair calls
+that resume a thread read about 47,000 cached tokens, because the whole earlier
+conversation is cached under the same session.
+
+- A re-review could resume **the same reviewer's own previous thread**. It would
+  send only the delta as a new turn: the changed members' text, their revisions
+  and fast checks, and the change flags. The earlier request and answer, about
+  14,000 tokens, would then come from cache.
+- Rough size: a re-review's uncached input would fall from about 5,000 tokens to
+  about the delta plus the per-turn tail.
+- Re-reviews are about half of all reviewer calls, and reviewer calls are 30–45%
+  of uncached + output. A whole-job saving in the single digits to low teens of
+  percent is plausible. It is not measured.
+
+**Open questions before it can be designed:**
+
+1. **Independence.** Reviewer sessions run `--ephemeral` today and cannot be
+   resumed. A resumed reviewer remembers only its own earlier review, never an
+   author's context. Is that compatible with the parent design's
+   review-independence rules, and with the per-review `reviewer_context_id`?
+   That is the maintainer's ruling.
+2. **Probe cost.** The T1 and T2 probes cost about 50,000–75,000 tokens. A probe
+   of a reviewer resuming its own thread twice would cost about the same.
+3. **Interaction with T1.** It needs the tools-disabled reviewer to resume
+   without `--output-schema`. T1's probe showed that combination caches.
 
 ## Budget
 
 There is none. The #310 12M cap is used up by the tuning run. Any live test of
-G, or of the ordering candidate, needs a new budget from the maintainer.
+G, or a probe of reviewer thread resume, needs a new budget from the maintainer.
