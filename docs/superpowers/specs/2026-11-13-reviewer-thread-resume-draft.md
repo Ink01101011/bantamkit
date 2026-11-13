@@ -1,7 +1,7 @@
 # Reviewer thread resume for re-reviews (draft, #310 follow-on)
 
 Status: **draft**, 2026-11-13. It is not frozen, has not run, and has no budget.
-It has an open ruling on independence (below). Issue:
+The independence question is settled: the maintainer ruled it allowed (below). Issue:
 [#310](https://github.com/Ink01101011/bantamkit/issues/310). It follows the request
 composition measurement in the
 [graph-scoped draft](2026-11-13-graph-scoped-delta-review-draft.md).
@@ -69,6 +69,13 @@ own previous review thread, that part would come from cache.
   own previous thread, with authors never sharing it? If not, RR is dropped.
   Its only alternative would be a cached prefix across separate sessions, which
   Codex does not provide (measured).
+
+### Maintainer ruling (2026-11-13)
+
+**Allowed.** A re-review may resume the same reviewer's own previous thread, and
+this does not breach review independence. An author never shares the thread.
+For RR runs only, this overrides the #310 evaluation design's literal "fresh
+context" wording. The #310 results and thresholds are not edited.
 
 ## Quality risk
 
