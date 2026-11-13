@@ -162,6 +162,16 @@ and a seed is judged only if it is still present at the revision under review.
 A seed removed earlier (an author or integrator fixed it) is reported as
 `removed-before-review` and left out of the caught/missed comparison.
 
+**Unit-isolated oracle.** The harness judges a unit's criteria for seeding,
+seed presence and finding adjudication in a scratch copy where every *other*
+unit's files are replaced by the reference implementation. The overlay lives
+outside the workspace, and no agent sees it. Without this, an upstream seed
+still present in the grouped arm (A seeded and not yet reviewed when C is
+authored) makes every downstream criterion fail at baseline, so the grouped arm
+could never seed C. Per-task review would remove A's seed first, so the two arms
+would be seeded unequally. The final acceptance oracle still runs on the real
+integrated workspace.
+
 ## Decision rule
 
 Apply the frozen thresholds per execution-mode cohort: grouped misses no seeded
