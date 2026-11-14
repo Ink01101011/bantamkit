@@ -206,7 +206,7 @@ def run(tmp_path, monkeypatch, case_id, smoke=False, **scenario):
     out = tmp_path / "out"
     summary = lr.run_live(out, [CASES[case_id]], repeats=1, smoke=smoke, codex_bin=codex)
     records = lr.read_runs(out)
-    calls = [json.loads(s) for s in log.read_text().splitlines()]
+    calls = [json.loads(s) for s in log.read_text(encoding="utf-8").splitlines()]
     return out, summary, {r["arm"]: r for r in records}, calls
 
 
@@ -1355,7 +1355,7 @@ def run_tuning(tmp_path, monkeypatch, case_id, smoke=False, budget=10**12, **sce
     summary = lr.run_live(out, [CASES[case_id]], repeats=1, smoke=smoke, codex_bin=codex,
                           comparison="tuning", budget_tokens=budget)
     records = lr.read_runs(out) if (out / "runs.jsonl").exists() else []
-    calls = [json.loads(s) for s in log.read_text().splitlines()] if log.exists() else []
+    calls = [json.loads(s) for s in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
     return out, summary, records, calls
 
 
@@ -1576,13 +1576,13 @@ def test_patch_target_refuses_symlinks_and_paths_outside_the_workspace(tmp_path)
     from types import SimpleNamespace
     ws = tmp_path / "ws"
     (ws / "pkg").mkdir(parents=True)
-    (ws / "pkg" / "ok.py").write_text("x = 1\n")
+    (ws / "pkg" / "ok.py").write_text("x = 1\n", encoding="utf-8")
     outside = tmp_path / "outside.txt"
-    outside.write_text("secret\n")
+    outside.write_text("secret\n", encoding="utf-8")
     (ws / "pkg" / "link.py").symlink_to(outside)
     (ws / "linkdir").symlink_to(tmp_path)
     # A link that stays inside the workspace still names another file than the owned path.
-    (ws / "pkg" / "other.py").write_text("y = 2\n")
+    (ws / "pkg" / "other.py").write_text("y = 2\n", encoding="utf-8")
     (ws / "pkg" / "alias.py").symlink_to(ws / "pkg" / "other.py")
     arm = SimpleNamespace(workspace=ws)
     assert lr.Arm.patch_target(arm, "pkg/ok.py") == ws / "pkg" / "ok.py"
@@ -1591,7 +1591,7 @@ def test_patch_target_refuses_symlinks_and_paths_outside_the_workspace(tmp_path)
     assert lr.Arm.patch_target(arm, "linkdir/outside.txt") is None
     assert lr.Arm.patch_target(arm, "../outside.txt") is None
     assert lr.Arm.patch_target(arm, "pkg/alias.py") is None
-    assert outside.read_text() == "secret\n"
+    assert outside.read_text(encoding="utf-8") == "secret\n"
 
 
 def test_a_full_tuning_run_refuses_to_start_without_a_budget(tmp_path):
@@ -1854,7 +1854,7 @@ def run_rr(tmp_path, monkeypatch, case_id, smoke=False, budget=10**12, **scenari
     summary = lr.run_live(out, [CASES[case_id]], repeats=1, smoke=smoke, codex_bin=codex,
                           comparison="rr", budget_tokens=budget)
     records = lr.read_runs(out) if (out / "runs.jsonl").exists() else []
-    calls = [json.loads(s) for s in log.read_text().splitlines()] if log.exists() else []
+    calls = [json.loads(s) for s in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
     return out, summary, records, calls
 
 
@@ -1964,7 +1964,7 @@ def test_rr_argv_first_review_persists_and_a_re_review_resumes_the_same_thread(
     assert set(delta["changed_files"]) == set(files["A"]) | set(files["C"])
     reference = Path(CASES["native-chain"]["reference_dir"])
     for rel in files["B"]:
-        assert (reference / rel).read_text() not in prompt
+        assert (reference / rel).read_text(encoding="utf-8") not in prompt
     assert "previous_findings" not in delta and "context_files" not in delta
     assert len(prompt) < len(sent(out, first, "prompt.txt"))
 
@@ -2304,7 +2304,7 @@ def run_batch(tmp_path, monkeypatch, case_id, smoke=False, budget=10**12, **scen
     summary = lr.run_live(out, [CASES[case_id]], repeats=1, smoke=smoke, codex_bin=codex,
                           comparison="batch", budget_tokens=budget)
     records = lr.read_runs(out) if (out / "runs.jsonl").exists() else []
-    calls = [json.loads(s) for s in log.read_text().splitlines()] if log.exists() else []
+    calls = [json.loads(s) for s in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
     return out, summary, records, calls, codex
 
 
