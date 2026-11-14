@@ -12,7 +12,7 @@
  * to them rather than to whatever a dict or a `sort` happened to do.
  *
  * WHAT IS COMPARED
- *   1. THE 21 REAL GRAPHS, as literal data (see below). `workplan.plan` on both sides.
+ *   1. THE 21 REAL GRAPHS, as literal data (`fixtures/workplan-cases.json`). `workplan.plan` on both sides.
  *   2. A synthetic corpus: the edges (empty input, a single node, priority ties, an order in
  *      which insertion-order tie-breaking is observable) and the three refusals, each with
  *      the input that triggers it and each compared BOTH as the whole answer and as the bare
@@ -35,7 +35,9 @@
  *
  * THE 21 GRAPHS ARE LITERAL DATA, EXTRACTED ONCE — 2026-09-19, by
  * `{id, depends_on}` out of `plan.units` of all 20 `.shiftwork/*.json` in the main checkout
- * plus this job's own `.shiftwork/checkpoint-workplan.json`. 228 units, 126 batches.
+ * plus this job's own `.shiftwork/checkpoint-workplan.json`. 228 units, 126 batches. Since J85-2
+ * that data, and the synthetic corpus below, lives in `fixtures/workplan-cases.json` rather than
+ * in this file (see `fixtureCases`), so `suites/ts2py.mjs` compares the same inputs.
  * NOTHING HERE READS A LIVE CHECKPOINT, and `tools/conformance/suites/shiftwork.mjs`
  * records what happened the last time a suite did: `.shiftwork/` is `.gitignore`d, the
  * module threw ENOENT at IMPORT time on a runner and took `store`, `validate` and `wire`
@@ -84,34 +86,22 @@ const unb64 = (s) => Buffer.from(s, 'base64').toString('utf8');
 // ======================================================================== the real graphs
 
 /**
- * `[checkpoint name, [[unit id, [dependency id, ...]], ...]]`, extracted 2026-09-19.
+ * The 21 real graphs, `{id, depends_on}` in `plan.units` order as extracted 2026-09-19. Since
+ * J85-2 they live, with every other planner input, in `fixtures/workplan-cases.json` (#312:
+ * expected outcomes written once, as data, where both runtimes and `suites/ts2py.mjs` read them),
+ * as the cases named `graph/<checkpoint name>`. Read in `run()`, never at import time, and the
+ * file is tracked, so the import-time ENOENT `shiftwork.mjs` records cannot happen here.
  *
  * Ids and edges only: a graph is all this suite compares, and the titles, briefs and
  * verify commands of 228 real units would be 200 kB of noise that no case reads.
  */
-const GRAPHS = [
-  ["checkpoint-job1-archived.json", [["M1", []], ["M2", ["M1"]], ["M3", ["M2"]], ["M3.5", ["M3"]], ["M4", ["M3.5"]], ["M5", ["M4"]], ["M6", ["M5"]], ["M7", ["M6"]]]],
-  ["checkpoint-job41.json", [["D1", []], ["D2", []], ["D3", []], ["D4", []], ["D5", []], ["D6", []], ["D7", []], ["D8", ["D1"]], ["D9", ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"]]]],
-  ["checkpoint-job42.json", [["MC1", []], ["MC2", ["MC1"]], ["MC3", ["MC2"]], ["MC4", ["MC3"]], ["MC5", ["MC4"]]]],
-  ["checkpoint-job43.json", [["R1", []], ["R2", ["R1"]], ["R3", ["R2"]], ["R4", ["R3"]], ["R5", ["R4"]], ["R6", ["R5"]], ["F1", ["R6"]], ["F2", ["F1"]], ["F3", ["F2"]], ["F4", ["F3"]], ["G1", ["F4"]], ["G2", ["G1"]], ["G3", ["G2"]], ["H1", ["G3"]], ["H2", ["H1"]], ["H3", ["H2"]]]],
-  ["checkpoint-job44.json", [["U1", []], ["U2", []], ["U7", []], ["U8", []], ["U4", ["U1"]], ["U5", ["U2"]], ["U10", []], ["U12", []], ["U11", []], ["U13", []], ["U14", []], ["U17", ["U1", "U2"]], ["U18", []], ["U3", ["U1", "U2", "U4", "U5", "U7", "U8"]], ["U15", ["U3", "U10", "U11", "U12", "U13", "U14", "U17", "U18"]], ["U16", ["U15"]], ["F1", []], ["F2", ["F1"]], ["F3", ["F1", "F2"]], ["F4", []], ["F5", ["F3", "F4"]]]],
-  ["checkpoint-job45.json", [["J45-1", []], ["J45-2", ["J45-1"]], ["J45-3", ["J45-2"]], ["J45-4", ["J45-3"]], ["J45-5", []], ["J45-6", ["J45-5"]], ["J45-7", ["J45-6"]], ["J45-8", ["J45-7"]], ["J45-9", []], ["J45-10", ["J45-9"]], ["J45-11", ["J45-10"]], ["J45-12", ["J45-4", "J45-8", "J45-11"]], ["J45-13", ["J45-12"]]]],
-  ["checkpoint-job46.json", [["J46-1", []], ["J46-2", []], ["J46-3", ["J46-2"]], ["J46-25", []], ["J46-4", []], ["J46-5", ["J46-4"]], ["J46-6", ["J46-5"]], ["J46-7", []], ["J46-8", ["J46-7"]], ["J46-9", ["J46-8"]], ["J46-10", ["J46-9"]], ["J46-11", []], ["J46-12", ["J46-11"]], ["J46-13", ["J46-12"]], ["J46-14", []], ["J46-15", []], ["J46-16", []], ["J46-17", ["J46-16"]], ["J46-18", ["J46-17"]], ["J46-19", []], ["J46-20", ["J46-19"]], ["J46-21", ["J46-20"]], ["J46-22", ["J46-21"]], ["J46-24", ["J46-2"]], ["J46-26", []], ["J46-27", ["J46-26"]], ["J46-28", ["J46-26", "J46-27"]], ["J46-32", ["J46-13"]], ["J46-29", ["J46-11"]], ["J46-30", ["J46-12", "J46-29"]], ["J46-31", ["J46-29", "J46-30"]], ["J46-23", ["J46-10", "J46-13", "J46-14", "J46-15", "J46-18", "J46-22", "J46-24", "J46-6"]]]],
-  ["checkpoint-job47.json", [["J47-1", []], ["J47-2", ["J47-1"]], ["J47-3", ["J47-1", "J47-2"]], ["J47-3B", ["J47-2", "J47-3"]], ["J47-4", []], ["J47-5", ["J47-4"]], ["J47-6", ["J47-4", "J47-5"]], ["J47-7", ["J47-1", "J47-2"]], ["J47-8", ["J47-3", "J47-6", "J47-7"]], ["J47-9", ["J47-8"]]]],
-  ["checkpoint-job48.json", [["J48-1", []], ["J48-2", ["J48-1"]], ["J48-3", ["J48-1", "J48-2"]], ["J48-4", ["J48-3"]], ["J48-4B", ["J48-4"]], ["J48-5", ["J48-4"]]]],
-  ["checkpoint-job49.json", [["A1", []], ["A2", []], ["A3", []], ["A4", []]]],
-  ["checkpoint-job50.json", [["J50-1", []], ["J50-2A", ["J50-1"]], ["J50-2B", ["J50-2A"]], ["J50-2C", ["J50-2A", "J50-2B"]], ["J50-2D", ["J50-2A"]], ["J50-2E", ["J50-2D"]], ["J50-2", ["J50-2D"]], ["J50-3", []], ["J50-4", ["J50-3"]], ["J50-5", []], ["J50-6", ["J50-5"]], ["J50-7", ["J50-6"]], ["J50-8", ["J50-7"]], ["J50-9", ["J50-7"]], ["J50-9A", ["J50-8"]], ["J50-9B", ["J50-9A"]], ["J50-10", ["J50-8", "J50-9"]], ["J50-11", ["J50-10"]], ["J50-12", ["J50-10"]], ["J50-13", ["J50-11", "J50-12"]], ["J50-14", ["J50-13"]], ["J50-15", ["J50-13"]], ["J50-16", ["J50-14", "J50-15"]], ["J50-16B", ["J50-15", "J50-16"]], ["J50-16A", ["J50-13"]], ["J50-17", []], ["J50-18", []], ["J50-19", ["J50-18"]], ["J50-20", ["J50-2", "J50-4", "J50-6", "J50-13", "J50-16", "J50-17", "J50-19"]], ["J50-20A", ["J50-20"]], ["J50-21", ["J50-20"]], ["J50-22", ["J50-21"]]]],
-  ["checkpoint-job51.json", [["J51-1", []], ["J51-2", ["J51-1"]], ["J51-3", ["J51-2"]], ["J51-4", []], ["J51-5", ["J51-4"]], ["J51-6", ["J51-5"]], ["J51-7", ["J51-4"]], ["J51-8", ["J51-3", "J51-6", "J51-7"]], ["J51-8a", ["J51-8"]], ["J51-8b", ["J51-8a"]], ["J51-8c", ["J51-8b"]], ["J51-8d", ["J51-8c"]], ["J51-9", ["J51-8d"]], ["J51-9a", ["J51-9"]], ["J51-9b", ["J51-9a"]], ["J51-10", ["J51-9b"]], ["J51-11", ["J51-10"]]]],
-  ["checkpoint-job52.json", [["J52-1", []], ["J52-2", ["J52-1"]], ["J52-3", ["J52-2"]], ["J52-4", ["J52-3"]], ["J52-5", ["J52-4"]], ["J52-5a", ["J52-5"]], ["J52-6", ["J52-5a"]], ["J52-7", ["J52-6"]]]],
-  ["checkpoint-job53.json", [["J53-1", []], ["J53-2", ["J53-1"]], ["J53-3", ["J53-2"]], ["J53-4", ["J53-3"]], ["J53-5", ["J53-4"]]]],
-  ["checkpoint-job54.json", [["J54-1", []], ["J54-2", ["J54-1"]], ["J54-3", []], ["J54-4", []], ["J54-3b", ["J54-3"]], ["J54-5", ["J54-1", "J54-2", "J54-3", "J54-3b", "J54-4"]], ["J54-6", ["J54-5"]], ["J54-7", ["J54-6"]]]],
-  ["checkpoint-job55.json", [["J55-1", []], ["J55-2", []], ["J55-3", []], ["J55-4", ["J55-1", "J55-2", "J55-3"]]]],
-  ["checkpoint-memory-keeper.json", [["MK1", []], ["MK2", ["MK1"]], ["MK3", ["MK2"]], ["MK4", ["MK3"]]]],
-  ["checkpoint-readlever.json", [["R1", []], ["R2", []], ["R3", []], ["R4", []], ["R5", ["R1", "R2", "R3", "R4"]], ["R6", []], ["R7", []]]],
-  ["checkpoint-skill-audit.json", [["SA1", []], ["SA2", ["SA1"]], ["SA2b", ["SA2"]], ["SA3", ["SA2b"]], ["SA4", ["SA3"]], ["SA6", ["SA4"]], ["SA5", ["SA6"]]]],
-  ["checkpoint.json", [["TM1", []], ["TM3", ["TM1"]], ["TM2", ["TM3"]], ["TM4", ["TM2", "TM3"]]]],
-  ["checkpoint-workplan.json", [["W1", []], ["W2", []], ["W3", []], ["W4", ["W1", "W3"]], ["W5", ["W2", "W3"]], ["W6", ["W4", "W5"]], ["W7", ["W6"]], ["W8", ["W7"]]]],
-];
+const FIXTURE = join(here, 'fixtures', 'workplan-cases.json');
+
+/** The fixture's cases named `<prefix>/...`, as `[name without the prefix, input]`, in file order. */
+const fixtureCases = (prefix) =>
+  JSON.parse(readFileSync(FIXTURE, 'utf8'))
+    .filter((c) => c.name.startsWith(`${prefix}/`))
+    .map((c) => [c.name.slice(prefix.length + 1), c.input]);
 
 /**
  * Each graph's batch sizes, as typed numbers. `checkpoint-job46.json`'s `[11, 9, 7, 4, 1]`
@@ -171,111 +161,26 @@ const FIRST_BATCH = new Map([
   ["checkpoint-workplan.json", ["W1", "W2", "W3"]],
 ]);
 
-/** `[[id, [deps]], ...]` -> the node list both planners take. */
-const nodesOf = (pairs) => pairs.map(([id, deps]) => ({ id, depends_on: deps, priority: 0 }));
+/** A graph's nodes as both planners take them here: each with an explicit `priority: 0`. */
+const nodesOf = (nodes) => nodes.map(({ id, depends_on }) => ({ id, depends_on, priority: 0 }));
 
 // ========================================================================= the synthetic corpus
 
-const n = (id, depends_on = [], priority) =>
-  priority === undefined ? { id, depends_on } : { id, depends_on, priority };
-
-/** #257: a root node that declares `touches`. */
-const t = (id, touches) => ({ id, depends_on: [], touches });
-
-/**
- * The edges and the refusals, each named for the thing it is about.
+/*
+ * The edges and the refusals, each named for the thing it is about: the cases named
+ * `core/<name>` in `fixtures/workplan-cases.json`, in file order, each carrying its rationale
+ * in its `why` field.
  *
  * The refusal arms are as much about WHICH fault is named as about the sentence: a graph
  * carrying two faults has to produce the same one on both sides, so `dup-beats-unknown`,
  * `unknown-beats-cycle` and `first-cycle-in-input-order` are inputs built to be ambiguous
- * on purpose.
+ * on purpose. The `refuse/shape/*` cases (#127) are also pinned per side in `SHAPE_REFUSALS`
+ * below, and the `touches/*` ones (#257) in `TOUCHES_LITERALS`, because a sentence both
+ * runtimes copied is invisible to the differential. `3.0` is deliberately absent from THIS
+ * suite's use of the corpus: it travels to the reference as a JSON payload, and
+ * `JSON.stringify(3.0)` is `3`. `suites/ts2py.mjs` has the Python side read the file itself,
+ * which is where the float is exercised.
  */
-const CORPUS = [
-  // ---- the edges
-  ['empty', []],
-  ['single', [n('only')]],
-  ['single-with-priority', [n('only', [], 7)]],
-  ['chain', [n('a'), n('b', ['a']), n('c', ['b'])]],
-  ['diamond', [n('a'), n('b', ['a']), n('c', ['a']), n('d', ['b', 'c'])]],
-  ['two-roots-one-join', [n('a'), n('b'), n('c', ['a', 'b'])]],
-  // Declared c, a, b and all priority 0: the batch must come back c, a, b. Alphabetical
-  // order, a hash order and a set order would each give something else, so this is the case
-  // that makes "insertion order" observable rather than coincidental.
-  ['tie-is-insertion-order', [n('c'), n('a'), n('b')]],
-  ['priority-outranks-insertion', [n('a', [], 0), n('b', [], 5), n('c', [], 5), n('d', [], -3)]],
-  ['priority-negative-only', [n('a', [], -1), n('b', [], -2), n('c', [], -1)]],
-  // Priority sorts WITHIN a batch and never across one: `late` is high-priority and still
-  // cannot be emitted before the thing it depends on.
-  ['priority-cannot-jump-a-dependency', [n('early'), n('late', ['early'], 99)]],
-  ['wide-then-narrow', [n('a'), n('b'), n('c'), n('d'), n('e', ['a', 'b', 'c', 'd'])]],
-  ['duplicate-edge-declared-twice', [n('a'), n('b', ['a', 'a'])]],
-  ['unicode-ids', [n('หนึ่ง'), n('two — dashed', ['หนึ่ง']), n('三', ['two — dashed'])]],
-
-  // ---- the three refusals
-  ['refuse/duplicate-id', [n('a'), n('b'), n('a')]],
-  ['refuse/duplicate-id-unicode', [n('ที่หนึ่ง'), n('ที่หนึ่ง')]],
-  ['refuse/unknown-dependency', [n('a'), n('b', ['nowhere'])]],
-  ['refuse/unknown-dependency-unicode', [n('a', ['ไม่มี'])]],
-  ['refuse/self-cycle', [n('a', ['a'])]],
-  ['refuse/two-node-cycle', [n('a', ['b']), n('b', ['a'])]],
-  // The scan starts at `tail`, which is NOT in the cycle. What must come back is the cycle
-  // — `b -> c -> b` — with the tail that only led into it trimmed off (ruling R2).
-  ['refuse/cycle-with-a-tail', [n('tail', ['b']), n('b', ['c']), n('c', ['b'])]],
-  // Two disjoint cycles: input order decides which is named (ruling R1). `y1` is declared
-  // first, so `y1 -> y2 -> y1` is the answer and `z1 -> z2 -> z1` is not.
-  ['refuse/first-cycle-in-input-order', [n('y1', ['y2']), n('y2', ['y1']), n('z1', ['z2']), n('z2', ['z1'])]],
-  // The walk follows only UN-EMITTED dependencies (ruling R1). `x` depends on `root`, which
-  // IS emitted, and on `y`, which is not: a walk that followed `root` would dead-end on a
-  // graph that does have a cycle.
-  ['refuse/walk-skips-emitted-dependencies', [n('root'), n('x', ['root', 'y']), n('y', ['x'])]],
-  // The fixed order of the checks (ruling R3), each with a graph that carries both faults.
-  ['refuse/dup-beats-unknown', [n('a'), n('a'), n('b', ['nowhere'])]],
-  ['refuse/unknown-beats-cycle', [n('a', ['b']), n('b', ['a']), n('c', ['nowhere'])]],
-  ['refuse/dup-beats-cycle', [n('a', ['b']), n('b', ['a']), n('a')]],
-
-  // ---- #127 (job65): the fourth refusal, a node off the advertised item schema. Checked
-  // BEFORE the graph is read, in input order and field order, and named by position. Each
-  // of these is also pinned per side in `SHAPE_REFUSALS` below, because a sentence both
-  // runtimes copied is invisible to the differential. `3.0` is deliberately absent: the
-  // corpus travels as JSON and `JSON.stringify(3.0)` is `3`, so the reference would never
-  // see the float — that arm is pinned in each side's own unit tests instead.
-  ['refuse/shape/string-depends_on', [n('a', 'b'), n('b')]],
-  ['refuse/shape/non-string-in-depends_on', [n('a'), n('b', ['a', 2])]],
-  ['refuse/shape/string-priority', [n('a', [], '3'), n('b', [], 1)]],
-  ['refuse/shape/bool-priority', [n('a', [], true)]],
-  ['refuse/shape/fractional-priority', [n('a', [], 2.5)]],
-  ['refuse/shape/int-id', [{ id: 5, depends_on: [] }, n('5')]],
-  ['refuse/shape/node-is-not-an-object', [n('a'), 'b']],
-  // Both faults at once: the shape at index 0 is named, not the duplicate at index 1 —
-  // and the whole list is read for shape before any graph refusal, so a duplicate at
-  // index 1 does not beat a shape fault at index 2 either.
-  ['refuse/shape/shape-beats-duplicate', [n('a', [], 'x'), n('a')]],
-  ['refuse/shape/shape-at-2-beats-duplicate-at-1', [n('a'), n('a'), n('c', 'a')]],
-  // NOT a contradiction: `null` for either optional field is the default, as absent is.
-  ['null-priority-is-zero', [n('a', [], 5), { id: 'b', depends_on: null, priority: null }]],
-
-  // ---- #257 `touches`: one writer per file per batch. Each answer is also pinned per side in
-  // `TOUCHES_LITERALS` below, because a hold rule that regressed on both sides at once would
-  // still compare equal here.
-  ['touches/held-and-disjoint', [t('a', ['src/x.py']), t('b', ['src/x.py']), t('c', ['src/y.py'])]],
-  ['touches/priority-keeps-the-batch', [t('a', ['f']), { ...t('b', ['f']), priority: 5 }]],
-  ['touches/dependents-wait-for-the-held', [t('a', ['f']), t('b', ['f']), n('c', ['b'])]],
-  ['touches/first-path-in-held-order', [t('a', ['p', 'q']), t('b', ['r']), t('c', ['r', 'q'])]],
-  ['touches/held-twice', [t('a', ['f']), t('b', ['f']), t('c', ['f'])]],
-  ['touches/empty-declares-held', [t('a', [])]],
-  ['touches/null-is-no-declaration', [{ id: 'a', depends_on: [], touches: null }]],
-  ['refuse/touches/not-a-list', [t('a', 'src/x.py')]],
-  ['refuse/touches/empty', [t('a', [''])]],
-  ['refuse/touches/absolute', [t('a', ['/etc/passwd'])]],
-  ['refuse/touches/drive', [t('a', ['C:/x'])]],
-  ['refuse/touches/backslash', [t('a', ['a\\b'])]],
-  ['refuse/touches/dotdot', [t('a', ['a/../b'])]],
-  ['refuse/touches/dot', [t('a', ['./a'])]],
-  ['refuse/touches/empty-segment', [t('a', ['a//b'])]],
-  ['refuse/touches/non-string', [t('a', ['ok', 3])]],
-  ['refuse/touches/unicode', [t('a', ['ไฟล์/../x'])]],
-  ['refuse/touches/shape-beats-duplicate', [n('a'), t('a', ['/x'])]],
-];
 
 /**
  * The shape sentences, typed out once and asserted against EACH side. The differential
@@ -532,7 +437,9 @@ export async function run(ctx) {
 
   // ------------------------------------------------------------------ the real graphs
 
-  const graphNodes = GRAPHS.map(([graphName, pairs]) => [graphName, nodesOf(pairs)]);
+  const GRAPHS = fixtureCases('graph');
+  const CORPUS = fixtureCases('core');
+  const graphNodes = GRAPHS.map(([graphName, nodes]) => [graphName, nodesOf(nodes)]);
   const graphAnswers = ctx.runPython(REF, {
     op: 'plan',
     cases: graphNodes.map(([graphName, nodes]) => ({ name: graphName, nodes })),
