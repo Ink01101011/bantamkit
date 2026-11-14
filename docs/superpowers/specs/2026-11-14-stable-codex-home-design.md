@@ -64,3 +64,67 @@ run stays small is the open question.
 - n = 2.
 - If Codex changes its plugin behaviour, the flags may stop working. The flags
   are tested on Codex CLI 0.167.1 only.
+
+## Results — 2026-11-14
+
+The run used the Codex command with the three global `--disable` flags. It spent
+594,062 of the 800,000-token cap. The budget watcher stopped the run before the
+fourth job (r1 `rr-base`), because spent + projected was 815,623, which is more
+than 800,000. Three jobs ran, and all three were accepted.
+
+**Read this first.**
+
+- **The HS lever is refuted.** With the flags set, the skills block still
+  changed between sessions in one run. The skills element was 8,641, 2,014,
+  8,641, 2,014 and 8,641 characters across the five rollouts, the same two sizes
+  as in the AB run's default home. Disabling `plugins`, `remote_plugin` and
+  `plugin_discovery_prefetch` does not hold the preamble fixed on Codex CLI
+  0.167.1.
+- **The AB replicate failed a gate on its one complete pair.**
+  - The `rr-batched` arm had one false finding more than `rr-base`, and needed a
+    second rejection round.
+  - The false finding was A-invalid. The batched author's regex applied
+    `re.IGNORECASE` to the whole line, timestamp included. The reviewer raised
+    it, and it is correct against the task text, but the oracle does not test
+    it, so it scores as false. This is the same deviation as in the #310 seq-r2
+    arm.
+  - With n = 1 complete pair, the data cannot say whether batching made it more
+    likely.
+
+| | `rr-base` r0 | `rr-batched` r0 | `rr-batched` r1 (no pair) |
+| --- | ---: | ---: | ---: |
+| Uncached input + output | 56,441 | 60,358 | 30,287 |
+| Raw | 221,561 | 199,878 | 172,623 |
+| Author uncached input + output | 43,566 | 35,380 | 15,990 |
+| Author tool steps | 14 | 5 | 5 |
+| Rejection rounds | 1 | 2 | — |
+
+**r0 pair.**
+
+- **Cost.** Whole-job uncached input + output was −6.9% (the batched arm cost
+  more). Raw was +9.8% and author uncached input + output +18.8%.
+- **Gates.** Seeds: both arms caught A and C. False findings: the batched arm had
+  1 more, so that gate fails. The other gates have no verdict, because the pair
+  set is incomplete.
+- **Verdict:** **fail**, under the AB design's rule that any false gate fails. r1
+  is inconclusive (incomplete).
+
+**Cache.**
+
+| Run | Misses / requests after the first | Extra uncached |
+| --- | --- | ---: |
+| HS run, 3 rollout sessions | 1 / 4 | 14.8% |
+| AB run, default home | 3 / 36 | 17.3% |
+
+The samples are too small to compare.
+
+## What this changes
+
+- **Stable home.** The guidance to keep the Codex home identical stands as a
+  description of the problem. These three flags are not a fix. No measured fix
+  exists, and a pre-warmed home is still untested.
+- **Batched delegate authors.** The lever is **not established**. The AB run
+  gave sequential-delegates "better" (2 pairs), but a stable-home replicate pair
+  failed the false-findings gate. The paragraph may cut exploration that would
+  have caught the task's finer requirements, but n is too small to tell. Treat
+  it as unproven, and do not adopt it as a default.
