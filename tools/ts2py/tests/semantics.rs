@@ -185,3 +185,76 @@ print(m.numbers(data))
     );
     assert_eq!(String::from_utf8(run.stdout).unwrap().trim_end(), expected);
 }
+
+/// J85-R F1, F2 and F3: the three places where the generated code used to answer differently from
+/// JS without a word. Relational operators on strings compare UTF-16 code units, not code points
+/// (`'\uffff' < '😀'` is false in JS), and on anything but two numbers go through ToPrimitive and
+/// ToNumber; a regex without the `u` flag matches one code unit per `.`; and an int past the
+/// double range is not `Number.isInteger`. The expected line is what Node prints for the same
+/// function on the same input (`huge` is `JSON.parse('1' + '0'.repeat(400))`, i.e. Infinity).
+const UNITS: &str = r#"
+function lt(a: any, b: any): boolean {
+  return a < b;
+}
+export function units(input: any): string {
+  const xs = ['😀', '\uffff', 'a'];
+  xs.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+  return JSON.stringify([
+    lt('\uffff', '😀'),
+    '\uffff' < '😀', '\uffff' <= '😀', '\uffff' > '😀', '\uffff' >= '😀',
+    xs.join(','),
+    input.s < input.t, input.s > input.t,
+    '10' < 9, '10' < '9', null < 1, undefined < 1, undefined <= 1, undefined >= 1,
+    'a' < 1, 'a' >= 1, [2] > 1, ' 12 ' > 11, '0x10' > 15, true > 0, '' < 1, 'Infinity' > 1e300,
+    input.n <= input.n, input.nil >= 0, input.obj < 'b', input.list > '1,1',
+    Number.isInteger(input.huge), Number.isInteger(input.n),
+    /^a.b$/.test('a😀b'), /^a..b$/.test('a😀b'), /^[^x]$/.test('😀'), /^😀$/.test('😀'),
+    /^[😀]$/.test('😀'), /^[😀]+$/.test('😀'), /^a.b$/.test(input.astral), /^.$/.test('\uffff'),
+  ]);
+}
+"#;
+
+#[test]
+fn strings_and_regexes_compare_utf16_code_units_as_js_does() {
+    let module = ts2py::compile(UNITS, "units.ts", &ts2py::Options::default())
+        .unwrap_or_else(|lines| panic!("units probe refused:\n{}", lines.join("\n")));
+    let dir = std::env::temp_dir().join(format!("ts2py-units-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("units.py");
+    std::fs::write(&path, module).unwrap();
+    let driver = r#"
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("u", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+data = json.loads('{"s": "\\uffff", "t": "\\ud83d\\ude00", "n": 3, "nil": null, "obj": {}, "list": [1, 2], "astral": "a\\ud835\\udd18b", "huge": 1' + '0' * 400 + '}')
+sys.stdout.reconfigure(encoding="utf-8")
+print(m.units(data))
+"#;
+    let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let run = match Command::new(&python)
+        .arg("-c")
+        .arg(driver)
+        .arg(&path)
+        .output()
+    {
+        Ok(run) => run,
+        Err(err) => {
+            eprintln!("skipping: cannot run {python}: {err}");
+            return;
+        }
+    };
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let expected = concat!(
+        r#"[false,false,false,true,true,"a,😀,"#,
+        "\u{ffff}",
+        r#"",false,true,false,true,true,false,false,false,"#,
+        r#"false,false,true,true,true,true,true,true,true,true,true,true,false,true,"#,
+        r#"false,true,false,true,false,true,false,true]"#,
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap().trim_end(), expected);
+}

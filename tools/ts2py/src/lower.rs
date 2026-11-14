@@ -981,8 +981,21 @@ impl<'s> Lowerer<'s> {
                 }
             }
             Op::LessThan | Op::LessEqualThan | Op::GreaterThan | Op::GreaterEqualThan => {
-                let left = js_num(self.expr(&b.left));
-                let right = js_num(self.expr(&b.right));
+                let (left, right) = (self.expr(&b.left), self.expr(&b.right));
+                if !(left.is_num && right.is_num) {
+                    // Not two known numbers: JS's Abstract Relational Comparison, in the runtime.
+                    // Two strings compare by UTF-16 code unit (Python's `<` is by code point),
+                    // and anything else goes through ToPrimitive and ToNumber (SUBSET.md).
+                    let helper = match b.operator {
+                        Op::LessThan => "_js_lt",
+                        Op::LessEqualThan => "_js_le",
+                        Op::GreaterThan => "_js_gt",
+                        _ => "_js_ge",
+                    };
+                    return Py::boolean(format!("{helper}({}, {})", left.code, right.code), ATOM);
+                }
+                let left = js_num(left);
+                let right = js_num(right);
                 Py::boolean(
                     format!(
                         "{} {} {}",
@@ -1467,6 +1480,15 @@ pub fn translate_regex(pattern: &str) -> Option<String> {
                 Some(':') | Some('=') | Some('!') => out.push('('),
                 _ => return None,
             },
+            // Without the `u` flag JS reads the pattern as UTF-16 code units, so an astral
+            // literal is two units (in a class, two members). The subject is split the same
+            // way at match time (`_js_code_units`), so `.` and `[^x]` match one unit, as in JS.
+            c if c as u32 >= 0x10000 => {
+                let mut units = [0u16; 2];
+                for unit in c.encode_utf16(&mut units) {
+                    out.push_str(&format!("\\u{unit:04x}"));
+                }
+            }
             _ => out.push(c),
         }
         i += 1;
@@ -1485,5 +1507,12 @@ mod tests {
         assert_eq!(translate_regex("\\d+").unwrap(), "[0-9]+");
         assert!(translate_regex("\\s").is_none());
         assert!(translate_regex("(?<n>a)").is_none());
+        // J85-R F3: an astral literal is its two UTF-16 code units, in and out of a class.
+        assert_eq!(
+            translate_regex("^a.b$").unwrap(),
+            "^a[^\\n\\r\\u2028\\u2029]b\\Z"
+        );
+        assert_eq!(translate_regex("\u{1F600}").unwrap(), "\\ud83d\\ude00");
+        assert_eq!(translate_regex("[\u{1F600}]").unwrap(), "[\\ud83d\\ude00]");
     }
 }

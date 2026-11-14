@@ -7,6 +7,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_coalesce_value,
     _js_get,
+    _js_gt,
     _js_is_array,
     _js_is_nullish,
     _js_json_stringify,
@@ -154,7 +155,7 @@ def plan(input):
         for id in batch:
             _js_m_add(emitted, id)
             _js_m_push(sequence, id)
-        if _js_len(batch) > _js_num(width):
+        if _js_gt(_js_len(batch), width):
             width = _js_len(batch)
     answer = {"batches": batches, "sequence": sequence, "width": width}
     if _js_m_some(nodes, lambda node, *_: not _js_is_nullish(_js_get(node, "touches"))):

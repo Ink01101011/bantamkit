@@ -5,7 +5,7 @@
 input this file used to type out (the job41/44/46 graphs, the refusal sentences, the
 #127 shape sentences) is a case in `tools/conformance/fixtures/workplan-cases.json`,
 together with the 21 real graphs, the TypeScript tests' inputs and the adversarial
-Python/JS splits — 147 cases, each with ONE expected answer written as literal data.
+Python/JS splits — 148 cases, each with ONE expected answer written as literal data.
 The differential suites compare the runtimes with each other; this file compares the
 Python planner with that literal file, which is what catches a regression landing on
 both sides at once (`differential-is-blind-to-symmetric-regression`).
@@ -33,7 +33,7 @@ FIXTURE = REPO / "tools" / "conformance" / "fixtures" / "workplan-cases.json"
 CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 #: Typed out so a case dropped from the fixture is red, not a smaller suite that passes.
-CASE_COUNT = 147
+CASE_COUNT = 148
 
 
 def _text(value):

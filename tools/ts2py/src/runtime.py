@@ -116,9 +116,14 @@ def _js_is_number(value):
 
 
 def _js_number_is_integer(value):
-    """`Number.isInteger`: `3.0` is an integer, `True` is not a number at all."""
+    """`Number.isInteger`: `3.0` is an integer, `True` is not a number at all.
+
+    The value is first read as the double JS holds (`_js_num`), so an int past the double range
+    (a 309-digit literal, which `JSON.parse` reads as Infinity) is not an integer, as in JS.
+    """
     if not _js_is_number(value):
         return False
+    value = _js_num(value)
     if isinstance(value, int):
         return True
     return _js_math.isfinite(value) and value.is_integer()
@@ -194,6 +199,84 @@ def _js_add(left, right):
     if _js_is_number(left) and _js_is_number(right):
         return _js_num(_js_num(left) + _js_num(right))
     raise TypeError("ts2py: + on non-number, non-string operands is outside the subset")
+
+
+# StrWhiteSpaceChar: WhiteSpace and LineTerminator, what ToNumber trims off a string.
+_JS_WHITESPACE = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+_JS_DECIMAL = _js_re.compile(
+    r"[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)\Z", _js_re.ASCII
+)
+_JS_RADIX = _js_re.compile(r"0(?:[xX][0-9a-fA-F]+|[oO][0-7]+|[bB][01]+)\Z", _js_re.ASCII)
+
+
+def _js_to_number(value):
+    """ToNumber, for a value already through ToPrimitive (`_js_to_primitive`)."""
+    if _js_is_number(value):
+        return _js_num(value)
+    if value is _JS_UNDEFINED:
+        return _js_math.nan
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    text = value.strip(_JS_WHITESPACE)
+    if text == "":
+        return 0
+    if _JS_RADIX.match(text):
+        return _js_num(int(text[2:], {"x": 16, "o": 8, "b": 2}[text[1].lower()]))
+    if _JS_DECIMAL.match(text):
+        if text.lstrip("+-") == "Infinity":
+            return -_js_math.inf if text[0] == "-" else _js_math.inf
+        return float(text)
+    return _js_math.nan
+
+
+def _js_to_primitive(value):
+    """ToPrimitive (hint number) in the subset: an array, object, Map or Set is its `String()`."""
+    if value is None or value is _JS_UNDEFINED or isinstance(value, (bool, int, float, str)):
+        return value
+    return _js_str(value)
+
+
+def _js_less(left, right):
+    """IsLessThan(left, right): True, False, or None for JS `undefined` (a NaN operand).
+
+    Two strings compare by UTF-16 code unit, as JS does; Python's `<` compares code points, which
+    orders an astral character (one surrogate pair) after U+E000..U+FFFF instead of before it.
+    Anything else is compared as numbers after ToNumber, so `"10" < 9` is false and `null < 1` true.
+    """
+    left, right = _js_to_primitive(left), _js_to_primitive(right)
+    if isinstance(left, str) and isinstance(right, str):
+        if left.isascii() and right.isascii():
+            return left < right
+        return _js_utf16(left) < _js_utf16(right)
+    left, right = _js_to_number(left), _js_to_number(right)
+    if left != left or right != right:
+        return None
+    return left < right
+
+
+def _js_lt(left, right):
+    """`left < right`."""
+    return _js_less(left, right) is True
+
+
+def _js_gt(left, right):
+    """`left > right`."""
+    return _js_less(right, left) is True
+
+
+def _js_le(left, right):
+    """`left <= right`: false when `right < left` or either side is NaN."""
+    return _js_less(right, left) is False
+
+
+def _js_ge(left, right):
+    """`left >= right`: false when `left < right` or either side is NaN."""
+    return _js_less(left, right) is False
 
 
 def _js_index_key(key):
@@ -382,9 +465,27 @@ def _js_m_split(receiver, separator):
     raise _js_outside("split", receiver)
 
 
+def _js_code_units(text):
+    """`text` with every astral character split into its two surrogates: the string as a JS regex
+    without the `u` flag sees it, one UTF-16 code unit per Python character."""
+    if text.isascii() or max(text) < "\U00010000":
+        return text
+    out = []
+    for char in text:
+        code = ord(char)
+        if code < 0x10000:
+            out.append(char)
+        else:
+            code -= 0x10000
+            out.append(chr(0xD800 + (code >> 10)) + chr(0xDC00 + (code & 0x3FF)))
+    return "".join(out)
+
+
 def _js_m_test(receiver, text):
+    """`re.test(s)`: the pattern (astral literals already split by ts2py) runs over code units, so
+    `.` and a class match one UTF-16 code unit, never a whole astral character."""
     if isinstance(receiver, _js_re.Pattern):
-        return receiver.search(_js_str(text)) is not None
+        return receiver.search(_js_code_units(_js_str(text))) is not None
     raise _js_outside("test", receiver)
 
 

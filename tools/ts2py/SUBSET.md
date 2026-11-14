@@ -43,8 +43,36 @@ model without giving up `int`:
   same way.
 - So `9007199254740993 - 9007199254740992` is `0`, `9007199254740992 + 1 === 9007199254740992`,
   and `JSON.stringify(12345678901234567890)` is `12345678901234567000`, as in Node.
-- A value only read, stored or passed along is not rounded: rounding happens where JS would make
-  the difference observable through one of the operations above.
+- `Number.isInteger` reads its argument as that double too, so an int past the double range (the
+  309-digit integer spelling, which `JSON.parse` reads as Infinity) is not an integer, as in JS.
+- Otherwise a value only read, stored or passed along is not rounded: rounding happens where JS
+  would make the difference observable through one of the operations above or a check that
+  depends on the double (`Number.isInteger`).
+
+## Strings are compared as UTF-16 code units
+
+A JS string is a sequence of UTF-16 code units; a Python `str` is a sequence of code points. The
+two orders agree except where an astral character (U+10000 and up, one surrogate pair in JS)
+meets U+E000..U+FFFF: JS puts the astral character first (its lead unit is 0xD800..0xDBFF), Python
+last. ts2py lowers every construct that could tell the two apart faithfully rather than refusing
+it (J85-R F2, F3):
+
+- `<`, `<=`, `>`, `>=` on anything but two known numbers lower to `_js_lt` / `_js_le` / `_js_gt` /
+  `_js_ge`, JS's Abstract Relational Comparison: two strings compare by UTF-16 code unit, so
+  `'\uffff' < '😀'` is `false` and `['😀', '\uffff', 'a']` sorted by `(x, y) => x < y ? -1 : ...`
+  is `a,😀,\uffff`, as in Node. Any other pair goes through ToPrimitive (an array or object is its
+  `String()`) and ToNumber (JS's string-to-number grammar: trimmed JS whitespace, `0x` / `0o` /
+  `0b`, `Infinity`, empty is `0`, anything else `NaN`), so `'10' < 9` is `false`, `null < 1` is
+  `true`, and a comparison with `NaN` or `undefined` is `false` both ways. Two known numbers (a
+  literal, `.length`, `.size`, an arithmetic result) keep the plain Python operator.
+- A regex without flags (the only kind accepted) matches UTF-16 code units: ts2py writes an
+  astral literal in the pattern as its two surrogates (in a class, two members), and `re.test`
+  splits each astral character of the subject into its surrogates before matching. So `.` and a
+  class like `[^x]` match one code unit, and `/^a.b$/.test('a😀b')` is `false` while
+  `/^a..b$/.test('a😀b')` is `true`, as in Node.
+- `.sort()` without a comparator already ordered by code unit, and `===` is unaffected (equality
+  is the same in both models). What remains is searching for half of a surrogate pair (Known
+  limits).
 
 ## Accepted constructs
 
@@ -96,12 +124,12 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `a \|\| b`, `a && b` | `a or b` / `a and b` when both are known booleans; else `_js_or` / `_js_and` (lazy like `??`) | JS truthiness, and the operand value (not a bool) is returned |
 | `!x` | `not x` (known boolean) or `not _js_truthy(x)` | ToBoolean: `[]` and `{}` are truthy, `0`/`NaN`/`""` falsy |
 | `c ? a : b` | `a if c else b` | condition through ToBoolean |
-| `a < b`, `<=`, `>`, `>=` | same operator, each operand through `_js_num` unless it is a literal, a length or already rounded | numbers as doubles (Numbers above) |
+| `a < b`, `<=`, `>`, `>=` | two known numbers: same operator, each operand through `_js_num` unless it is a literal, a length or already rounded; anything else: `_js_lt` / `_js_le` / `_js_gt` / `_js_ge` | numbers as doubles (Numbers above); strings by UTF-16 code unit; mixed operands through ToPrimitive and ToNumber (Strings above) |
 | `a - b`, unary `-a` | `_js_num(_js_num(a) - _js_num(b))`, `-_js_num(a)` | numbers as doubles |
 | `a + b` | `_js_num(...)` of `a + b` when both are known numbers, `a + b` when both known strings, else `_js_add(a, b)` | string concatenation via `String()` when either side is a string; numbers as doubles |
 | `f(args)` (a module function or a local) | `f(args)` | |
 | `new Map(entries?)`, `new Set(items?)` | `_JsMap(...)`, `_JsSet(...)` | insertion order; SameValueZero keys, so `true` and `1` are different keys and `1.0` and `1` the same |
-| `/pattern/` (no flags) | `_JS_RE_<n> = re.compile(<translated>, re.ASCII)` | `\d`, `\w`, `\b` are ASCII; `$` is end of input (`\Z`); `.` excludes `\n \r    ` |
+| `/pattern/` (no flags) | `_JS_RE_<n> = re.compile(<translated>, re.ASCII)` | `\d`, `\w`, `\b` are ASCII; `$` is end of input (`\Z`); `.` excludes `\n`, `\r`, U+2028, U+2029; an astral literal is written as its two surrogates (Strings above) |
 | `(params) => expr` **as a callback argument** of the methods below | `lambda params, *_: expr` | JS passes `(item, index, array)`; extra arguments are absorbed |
 | `as T`, `x!`, `satisfies T`, `<T>x`, `f<T>(...)`, generics, `readonly`, parameter and return annotations, `p?:` | erased (`p?:` becomes `p=_JS_UNDEFINED`) | a missing optional argument is `undefined` |
 
@@ -110,7 +138,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | Call | Lowering | Preserved |
 |---|---|---|
 | `Array.isArray(x)` | `_js_is_array(x)` | a `list` only |
-| `Number.isInteger(x)` | `_js_number_is_integer(x)` | `3.0` is an integer; `True` is not (not a number) |
+| `Number.isInteger(x)` | `_js_number_is_integer(x)` | `3.0` is an integer; `True` is not (not a number); an int past the double range is not (it is Infinity in JS) |
 | `JSON.stringify(x)` (one argument) | `_js_json_stringify(x)` | byte for byte: compact, non-ASCII unescaped, lone surrogates and control characters `\u00xx`, integral floats as `3`, `1e21` as `1e+21`, an int beyond 2^53 as the double it rounds to, non-finite as `null`, `undefined` members skipped (`null` in arrays), object keys in JS own-property order (array-index keys ascending first, then insertion order) |
 | `m.has(k)`, `m.get(k)`, `m.set(k, v)` | `_js_m_has` / `_js_m_get` / `_js_m_set` | `Map`; `get` of a missing key is `undefined`; `set` keeps the original position |
 | `s.has(x)`, `s.add(x)` | `_js_m_has` / `_js_m_add` | `Set` |
@@ -125,7 +153,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `s.includes(x)`, `a.includes(x)` | `_js_m_includes` | substring; array membership by SameValueZero |
 | `s.startsWith(p)` | `_js_m_startsWith` | |
 | `s.split(sep)` (string separator) | `_js_m_split` | `""` splits into characters |
-| `re.test(s)` | `_js_m_test` | `re.search` on `String(s)` |
+| `re.test(s)` | `_js_m_test` | `re.search` on `String(s)` with each astral character split into its surrogates, so the pattern sees UTF-16 code units |
 
 A method above called on a receiver of the wrong runtime type raises
 `TypeError("ts2py: .<method>() on <type> is outside the subset")` instead of guessing.
@@ -174,6 +202,7 @@ local that shadows a module-level name, and any global identifier other than `un
 ## Known limits (documented, not refused)
 
 - Strings are indexed and split into characters by code point, not UTF-16 code unit (only
-  `.length` counts code units).
+  `.length` counts code units). For the same reason `.includes`, `.startsWith` and `.split` do not
+  find a lone surrogate that is half of a pair in the receiver (JS finds it).
 - Iterating a `Map` or `Set` sees a snapshot: entries added during the loop are not visited.
 - `JSON.stringify` on a cyclic structure raises `RecursionError` (JS raises `TypeError`).

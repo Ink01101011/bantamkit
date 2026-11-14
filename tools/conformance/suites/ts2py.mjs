@@ -61,7 +61,7 @@ const SOURCE = 'runtime-ts/src/workplan.ts';
  * The case count per category, typed out. A case dropped from the fixture is red here rather
  * than a smaller suite that still passes.
  */
-const HEADLINE = { cases: 147, graph: 21, core: 53, ts: 21, py: 13, adversarial: 39 };
+const HEADLINE = { cases: 148, graph: 21, core: 53, ts: 21, py: 13, adversarial: 40 };
 
 function findCargo() {
   if (process.env.TS2PY_CARGO) return process.env.TS2PY_CARGO;
