@@ -274,16 +274,25 @@ const asOptText = (value: PyValue | undefined): string | null => (value && value
  *
  * A NODE WITH NO `id` STILL RAISES, and raising is the port: `node["id"]` is a `KeyError` on
  * the reference, whose `str()` is the key in single quotes, so the SDK's envelope reads
- * `Error executing tool work_plan: 'id'` (`tool/no-id` in the same suite). It is reproduced
- * here, before the planner runs, because the planner's own answer to a missing id is the
- * non-string-id sentence and the reference never reaches that line.
+ * `Error executing tool work_plan: 'id'` (`tool/no-id` in the same suite). The reference read
+ * `node["id"]` inside its shape pass, IN INPUT ORDER, so a fault in an EARLIER node is refused
+ * first and the missing id is never reached. `idFault` reproduces exactly that: it maps the
+ * planner's `nodes[<i>].id must be a string` back to the raise only when node `<i>` is a dict
+ * with no `id` key — the same seam `mcpserver.py`'s handler uses. Until #314 (J85-5) this
+ * function threw before the planner ran, for ANY node lacking an id, so
+ * `[{id: 'a', depends_on: 5}, {depends_on: []}]` raised `'id'` here and was refused
+ * `nodes[0].depends_on must be a list of strings` on the reference (`tool/no-id-after-*`).
  */
-function planNodes(value: PyValue | undefined): unknown[] {
+function planNodes(value: PyValue | undefined): { nodes: unknown[]; idFault: (reason: string) => void } {
   const items = value !== undefined && value.t === 'list' ? value.v : [];
-  return items.map((item) => {
-    if (item.t === 'dict' && !item.v.has('id')) throw new BantamError("'id'");
-    return toJs(item);
-  });
+  return {
+    nodes: items.map((item) => toJs(item)),
+    idFault(reason: string): void {
+      const fault = /^nodes\[(\d+)\]\.id must be a string$/.exec(reason);
+      const item = fault === null ? undefined : items[Number(fault[1])];
+      if (item !== undefined && item.t === 'dict' && !item.v.has('id')) throw new BantamError("'id'");
+    },
+  };
 }
 
 /** `int | None` after validation: the tagged int, or `null` for the default. */
@@ -1127,8 +1136,12 @@ function runTool(
       return {
         value: notedDict(
           recordResult(log, name, () => {
-            const answer = plan(planNodes(args.get('nodes')));
-            if ('result' in answer) return { t: 'dict', v: new Map<string, PyValue>([['result', { t: 'str', v: 'error' }], ['reason', { t: 'str', v: answer.reason }]]) };
+            const given = planNodes(args.get('nodes'));
+            const answer = plan(given.nodes);
+            if ('result' in answer) {
+              given.idFault(answer.reason);
+              return { t: 'dict', v: new Map<string, PyValue>([['result', { t: 'str', v: 'error' }], ['reason', { t: 'str', v: answer.reason }]]) };
+            }
             return {
               t: 'dict',
               v: new Map<string, PyValue>([

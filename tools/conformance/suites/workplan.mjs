@@ -757,6 +757,14 @@ export async function run(ctx) {
     // Past pydantic (`list[dict]` holds) and into the planner's shape pass: a bool priority,
     // which CPython's `isinstance(True, int)` would otherwise have let through.
     ['shape-bool-priority', callTool(21, 'work_plan', { nodes: [{ id: 'a', depends_on: [], priority: true }] })],
+    // #314 (J85-R F5): a node with no `id` AFTER an earlier faulty node. The reference reads
+    // the nodes in input order, so the earlier fault is the answer and the missing id is never
+    // reached; the port used to check every node for an id before planning and raised `'id'`.
+    ['no-id-after-depends_on-fault', callTool(22, 'work_plan', { nodes: [{ id: 'a', depends_on: 5 }, { depends_on: [] }] })],
+    ['no-id-after-int-id', callTool(23, 'work_plan', { nodes: [{ id: 7 }, { depends_on: [] }] })],
+    ['no-id-after-touches-fault', callTool(24, 'work_plan', { nodes: [{ id: 'a', touches: 'x' }, { depends_on: [] }] })],
+    // And the other order: the missing id comes first, so it is the raise on both sides.
+    ['no-id-before-a-fault', callTool(25, 'work_plan', { nodes: [{ depends_on: [] }, { id: 'b', depends_on: 5 }] })],
   ];
 
   const session = {
