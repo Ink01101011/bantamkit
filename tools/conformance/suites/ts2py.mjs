@@ -21,6 +21,10 @@
  * `$TS2PY_CARGO`, or `cargo` on PATH) rebuilds the compiler from `tools/ts2py` and recompiles the
  * source on every run, and `generated/source-sha256` checks the module's header names the bytes
  * on disk. No Rust toolchain means this suite is red, with the reason, rather than skipped.
+ * `committed/workplan.py` and `committed/_ts2py_runtime.py` then compile again with the flags the
+ * committed files were made with (`--runtime-module ._ts2py_runtime`, `--emit-runtime`) and
+ * compare every byte with `runtime-py/src/bantamkit/_generated/`, so a hand-edited body or a
+ * compiler change that was never regenerated is red, with the regenerate command (J85-R F4).
  *
  * WHY THE PYTHON ARMS READ THE FIXTURE THEMSELVES. `ref/ts2py_ref.py` opens the file with
  * `json.load`; the cases are not sent as a payload, because the payload goes through
@@ -69,17 +73,58 @@ function findCargo() {
   return existsSync(home) ? home : 'cargo';
 }
 
-/** Compile `workplan.ts` with ts2py into `out`. Throws (a red suite) with cargo's own words. */
-function compile(out) {
+/** Run the ts2py binary with `args` (from the repo root). Throws (a red suite) with cargo's own words. */
+function ts2py(args, out) {
   const cargo = findCargo();
   const r = spawnSync(
     cargo,
-    ['run', '--release', '--quiet', '--manifest-path', join(repoRoot, 'tools', 'ts2py', 'Cargo.toml'), '--', SOURCE, '-o', out],
+    ['run', '--release', '--quiet', '--manifest-path', join(repoRoot, 'tools', 'ts2py', 'Cargo.toml'), '--', ...args],
     { cwd: repoRoot, encoding: 'utf8', timeout: 900_000, maxBuffer: 64 * 1024 * 1024 },
   );
   if (r.error) throw new Error(`ts2py: could not run ${cargo}: ${r.error.message} (set TS2PY_CARGO)`);
-  if (r.status !== 0) throw new Error(`ts2py: compiling ${SOURCE} failed (exit ${r.status})\n${r.stderr}`);
+  if (r.status !== 0) throw new Error(`ts2py ${args.join(' ')} failed (exit ${r.status})\n${r.stderr}`);
   if (!existsSync(out)) throw new Error(`ts2py: exited 0 but wrote no ${out}`);
+}
+
+/** Compile `workplan.ts` with ts2py into `out` (the runtime inlined). */
+function compile(out) {
+  ts2py([SOURCE, '-o', out], out);
+}
+
+/**
+ * THE COMMITTED FILES, byte for byte (J85-R F4). `runtime-py/src/bantamkit/_generated/` is what the
+ * wheel serves, and the header line alone cannot vouch for it: a hand-edited body keeps its
+ * header, and so does a module that a changed `lower.rs` or `runtime.py` would now write
+ * differently. So the suite compiles with exactly the flags the committed files were made with
+ * and compares every byte; a mismatch is red and its message is the command that regenerates.
+ */
+const COMMITTED = 'runtime-py/src/bantamkit/_generated';
+const REGENERATE =
+  'regenerate from the repository root:\n' +
+  `  cargo run --release --manifest-path tools/ts2py/Cargo.toml -- ${SOURCE} -o ${COMMITTED}/workplan.py --runtime-module ._ts2py_runtime\n` +
+  `  cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --emit-runtime ${COMMITTED}/_ts2py_runtime.py`;
+
+function committedCases(bed) {
+  const module = join(bed, 'committed_workplan.py');
+  const runtime = join(bed, 'committed_ts2py_runtime.py');
+  ts2py([SOURCE, '-o', module, '--runtime-module', '._ts2py_runtime'], module);
+  ts2py(['--emit-runtime', runtime], runtime);
+  return [
+    ['workplan.py', module],
+    ['_ts2py_runtime.py', runtime],
+  ].map(([file, fresh]) => {
+    const committed = join(repoRoot, COMMITTED, file);
+    const want = readFileSync(fresh);
+    const have = existsSync(committed) ? readFileSync(committed) : Buffer.alloc(0);
+    return {
+      name: `committed/${file}`,
+      kind: 'string',
+      expected: `${COMMITTED}/${file} is byte-identical to ts2py's output`,
+      actual: want.equals(have)
+        ? `${COMMITTED}/${file} is byte-identical to ts2py's output`
+        : `${COMMITTED}/${file} differs from what ts2py writes now (${have.length} bytes committed, ${want.length} fresh); ${REGENERATE}`,
+    };
+  });
 }
 
 export async function run(ctx) {
@@ -91,7 +136,7 @@ export async function run(ctx) {
   const generatedPath = join(bed, 'workplan_generated.py');
   compile(generatedPath);
 
-  const cases = [];
+  const cases = [...committedCases(bed)];
   const notes = [];
 
   // The module is what the source on disk compiles to NOW: its header names those bytes.
