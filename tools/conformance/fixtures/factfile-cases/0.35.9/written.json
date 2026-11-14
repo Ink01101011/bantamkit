@@ -1,0 +1,57 @@
+{
+  "bantamkit": "0.35.9",
+  "python": "3.12.13",
+  "facts": [
+    {
+      "name": "plain-fact",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "colon-in-description",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "number-lookalike",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "date-lookalike",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "bool-lookalike",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "unicode-thai",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "long-wrap",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "quotes-and-hash",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "with-links",
+      "saved": true,
+      "kwargs": []
+    },
+    {
+      "name": "leading-indicator",
+      "saved": true,
+      "kwargs": []
+    }
+  ],
+  "recall": true
+}

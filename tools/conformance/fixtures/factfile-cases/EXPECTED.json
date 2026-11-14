@@ -1,0 +1,1410 @@
+{
+  "0.27.0/bool-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "bool-lookalike"
+        ],
+        [
+          "description",
+          "yes"
+        ],
+        [
+          "type",
+          "user"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML 1.1 would read as a bool if unquoted."
+    },
+    "rt": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n",
+    "rtStore": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n"
+  },
+  "0.27.0/colon-in-description.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "colon-in-description"
+        ],
+        [
+          "description",
+          "rule: never deploy on a friday afternoon"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          "2026-01-02"
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Why: the on-call rota is thin."
+    },
+    "rt": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nWhy: the on-call rota is thin.\n",
+    "rtStore": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nWhy: the on-call rota is thin.\n"
+  },
+  "0.27.0/date-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "date-lookalike"
+        ],
+        [
+          "description",
+          "2026-08-23"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML would read as a date if unquoted."
+    },
+    "rt": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as a date if unquoted.\n",
+    "rtStore": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as a date if unquoted.\n"
+  },
+  "0.27.0/leading-indicator.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "leading-indicator"
+        ],
+        [
+          "description",
+          "- starts with a dash and a space"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body."
+    },
+    "rt": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody.\n",
+    "rtStore": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody.\n"
+  },
+  "0.27.0/long-wrap.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "long-wrap"
+        ],
+        [
+          "description",
+          "wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "The description is long enough that PyYAML folds it."
+    },
+    "rt": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nThe description is long enough that PyYAML folds it.\n",
+    "rtStore": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nThe description is long enough that PyYAML folds it.\n"
+  },
+  "0.27.0/number-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "number-lookalike"
+        ],
+        [
+          "description",
+          "12"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML would read as an int if unquoted."
+    },
+    "rt": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n",
+    "rtStore": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n"
+  },
+  "0.27.0/plain-fact.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "plain-fact"
+        ],
+        [
+          "description",
+          "a plain description with nothing special in it"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          "2026-01-02"
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body line one.\n\nBody line two."
+    },
+    "rt": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nBody line one.\n\nBody line two.\n",
+    "rtStore": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nBody line one.\n\nBody line two.\n"
+  },
+  "0.27.0/quotes-and-hash.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "quotes-and-hash"
+        ],
+        [
+          "description",
+          "it's a 'quoted' value with a # hash and \"double\" quotes"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body with --- inside\n---\nstill body"
+    },
+    "rt": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody with --- inside\n---\nstill body\n",
+    "rtStore": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody with --- inside\n---\nstill body\n"
+  },
+  "0.27.0/unicode-thai.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "unicode-thai"
+        ],
+        [
+          "description",
+          "ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "เนื้อหา\n\nbody"
+    },
+    "rt": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nเนื้อหา\n\nbody\n",
+    "rtStore": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nเนื้อหา\n\nbody\n"
+  },
+  "0.27.0/with-links.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "with-links"
+        ],
+        [
+          "description",
+          "a fact that links to three others by name"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          [
+            "plain-fact",
+            "long-wrap",
+            "a: b"
+          ]
+        ]
+      ],
+      "body": "Linked."
+    },
+    "rt": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\n---\n\nLinked.\n",
+    "rtStore": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\n---\n\nLinked.\n"
+  },
+  "0.35.9/bool-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "bool-lookalike"
+        ],
+        [
+          "description",
+          "yes"
+        ],
+        [
+          "type",
+          "user"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML 1.1 would read as a bool if unquoted."
+    },
+    "rt": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n",
+    "rtStore": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n"
+  },
+  "0.35.9/colon-in-description.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "colon-in-description"
+        ],
+        [
+          "description",
+          "rule: never deploy on a friday afternoon"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          "2026-01-02"
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Why: the on-call rota is thin."
+    },
+    "rt": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nWhy: the on-call rota is thin.\n",
+    "rtStore": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nWhy: the on-call rota is thin.\n"
+  },
+  "0.35.9/date-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "date-lookalike"
+        ],
+        [
+          "description",
+          "2026-08-23"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML would read as a date if unquoted."
+    },
+    "rt": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as a date if unquoted.\n",
+    "rtStore": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as a date if unquoted.\n"
+  },
+  "0.35.9/leading-indicator.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "leading-indicator"
+        ],
+        [
+          "description",
+          "- starts with a dash and a space"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body."
+    },
+    "rt": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody.\n",
+    "rtStore": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody.\n"
+  },
+  "0.35.9/long-wrap.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "long-wrap"
+        ],
+        [
+          "description",
+          "wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "The description is long enough that PyYAML folds it."
+    },
+    "rt": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nThe description is long enough that PyYAML folds it.\n",
+    "rtStore": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nThe description is long enough that PyYAML folds it.\n"
+  },
+  "0.35.9/number-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "number-lookalike"
+        ],
+        [
+          "description",
+          "12"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML would read as an int if unquoted."
+    },
+    "rt": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n",
+    "rtStore": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n"
+  },
+  "0.35.9/plain-fact.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "plain-fact"
+        ],
+        [
+          "description",
+          "a plain description with nothing special in it"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          "2026-01-02"
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body line one.\n\nBody line two."
+    },
+    "rt": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nBody line one.\n\nBody line two.\n",
+    "rtStore": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nBody line one.\n\nBody line two.\n"
+  },
+  "0.35.9/quotes-and-hash.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "quotes-and-hash"
+        ],
+        [
+          "description",
+          "it's a 'quoted' value with a # hash and \"double\" quotes"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body with --- inside\n---\nstill body"
+    },
+    "rt": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody with --- inside\n---\nstill body\n",
+    "rtStore": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody with --- inside\n---\nstill body\n"
+  },
+  "0.35.9/unicode-thai.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "unicode-thai"
+        ],
+        [
+          "description",
+          "ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "เนื้อหา\n\nbody"
+    },
+    "rt": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nเนื้อหา\n\nbody\n",
+    "rtStore": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nเนื้อหา\n\nbody\n"
+  },
+  "0.35.9/with-links.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "with-links"
+        ],
+        [
+          "description",
+          "a fact that links to three others by name"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          [
+            "plain-fact",
+            "long-wrap",
+            "a: b"
+          ]
+        ]
+      ],
+      "body": "Linked."
+    },
+    "rt": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\n---\n\nLinked.\n",
+    "rtStore": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\n---\n\nLinked.\n"
+  },
+  "0.36.2/bool-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "bool-lookalike"
+        ],
+        [
+          "description",
+          "yes"
+        ],
+        [
+          "type",
+          "user"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML 1.1 would read as a bool if unquoted."
+    },
+    "rt": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n",
+    "rtStore": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n"
+  },
+  "0.36.2/colon-in-description.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "colon-in-description"
+        ],
+        [
+          "description",
+          "rule: never deploy on a friday afternoon"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          "2026-01-02"
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "outcome",
+          "error"
+        ]
+      ],
+      "body": "Why: the on-call rota is thin."
+    },
+    "rt": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\noutcome: error\n---\n\nWhy: the on-call rota is thin.\n",
+    "rtStore": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\noutcome: error\n---\n\nWhy: the on-call rota is thin.\n"
+  },
+  "0.36.2/date-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "date-lookalike"
+        ],
+        [
+          "description",
+          "2026-08-23"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "outcome",
+          "success"
+        ]
+      ],
+      "body": "A description that YAML would read as a date if unquoted."
+    },
+    "rt": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: success\n---\n\nA description that YAML would read as a date if unquoted.\n",
+    "rtStore": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: success\n---\n\nA description that YAML would read as a date if unquoted.\n"
+  },
+  "0.36.2/leading-indicator.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "leading-indicator"
+        ],
+        [
+          "description",
+          "- starts with a dash and a space"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body."
+    },
+    "rt": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody.\n",
+    "rtStore": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nBody.\n"
+  },
+  "0.36.2/long-wrap.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "long-wrap"
+        ],
+        [
+          "description",
+          "wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "The description is long enough that PyYAML folds it."
+    },
+    "rt": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nThe description is long enough that PyYAML folds it.\n",
+    "rtStore": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nThe description is long enough that PyYAML folds it.\n"
+  },
+  "0.36.2/number-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "number-lookalike"
+        ],
+        [
+          "description",
+          "12"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML would read as an int if unquoted."
+    },
+    "rt": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n",
+    "rtStore": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n"
+  },
+  "0.36.2/plain-fact.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "plain-fact"
+        ],
+        [
+          "description",
+          "a plain description with nothing special in it"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          "2026-01-02"
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "Body line one.\n\nBody line two."
+    },
+    "rt": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nBody line one.\n\nBody line two.\n",
+    "rtStore": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: '2026-01-02'\nlinks: []\n---\n\nBody line one.\n\nBody line two.\n"
+  },
+  "0.36.2/quotes-and-hash.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "quotes-and-hash"
+        ],
+        [
+          "description",
+          "it's a 'quoted' value with a # hash and \"double\" quotes"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "outcome",
+          "success"
+        ]
+      ],
+      "body": "Body with --- inside\n---\nstill body"
+    },
+    "rt": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: success\n---\n\nBody with --- inside\n---\nstill body\n",
+    "rtStore": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: success\n---\n\nBody with --- inside\n---\nstill body\n"
+  },
+  "0.36.2/unicode-thai.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "unicode-thai"
+        ],
+        [
+          "description",
+          "ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "outcome",
+          "error"
+        ]
+      ],
+      "body": "เนื้อหา\n\nbody"
+    },
+    "rt": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: error\n---\n\nเนื้อหา\n\nbody\n",
+    "rtStore": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: error\n---\n\nเนื้อหา\n\nbody\n"
+  },
+  "0.36.2/with-links.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "with-links"
+        ],
+        [
+          "description",
+          "a fact that links to three others by name"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          [
+            "plain-fact",
+            "long-wrap",
+            "a: b"
+          ]
+        ],
+        [
+          "status",
+          "done"
+        ]
+      ],
+      "body": "Linked."
+    },
+    "rt": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\nstatus: done\n---\n\nLinked.\n",
+    "rtStore": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\nstatus: done\n---\n\nLinked.\n"
+  },
+  "0.39.3/bool-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "bool-lookalike"
+        ],
+        [
+          "description",
+          "yes"
+        ],
+        [
+          "type",
+          "user"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML 1.1 would read as a bool if unquoted."
+    },
+    "rt": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n",
+    "rtStore": "---\nname: bool-lookalike\ndescription: 'yes'\ntype: user\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML 1.1 would read as a bool if unquoted.\n"
+  },
+  "0.39.3/colon-in-description.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "colon-in-description"
+        ],
+        [
+          "description",
+          "rule: never deploy on a friday afternoon"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "outcome",
+          "error"
+        ]
+      ],
+      "body": "Why: the on-call rota is thin."
+    },
+    "rt": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: error\n---\n\nWhy: the on-call rota is thin.\n",
+    "rtStore": "---\nname: colon-in-description\ndescription: 'rule: never deploy on a friday afternoon'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: error\n---\n\nWhy: the on-call rota is thin.\n"
+  },
+  "0.39.3/date-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "date-lookalike"
+        ],
+        [
+          "description",
+          "2026-08-23"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "keywords",
+          [
+            "deploy",
+            "ภาษาไทย",
+            "2026"
+          ]
+        ],
+        [
+          "outcome",
+          "success"
+        ]
+      ],
+      "body": "A description that YAML would read as a date if unquoted."
+    },
+    "rt": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\noutcome: success\n---\n\nA description that YAML would read as a date if unquoted.\n",
+    "rtStore": "---\nname: date-lookalike\ndescription: '2026-08-23'\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\noutcome: success\n---\n\nA description that YAML would read as a date if unquoted.\n"
+  },
+  "0.39.3/leading-indicator.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "leading-indicator"
+        ],
+        [
+          "description",
+          "- starts with a dash and a space"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "keywords",
+          [
+            "deploy",
+            "ภาษาไทย",
+            "2026"
+          ]
+        ]
+      ],
+      "body": "Body."
+    },
+    "rt": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\n---\n\nBody.\n",
+    "rtStore": "---\nname: leading-indicator\ndescription: '- starts with a dash and a space'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\n---\n\nBody.\n"
+  },
+  "0.39.3/long-wrap.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "long-wrap"
+        ],
+        [
+          "description",
+          "wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "keywords",
+          [
+            "deploy",
+            "ภาษาไทย",
+            "2026"
+          ]
+        ]
+      ],
+      "body": "The description is long enough that PyYAML folds it."
+    },
+    "rt": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\n---\n\nThe description is long enough that PyYAML folds it.\n",
+    "rtStore": "---\nname: long-wrap\ndescription: wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping wrapping\n  wrapping wrapping wrapping wrapping wrapping past the eightieth column twice over\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\n---\n\nThe description is long enough that PyYAML folds it.\n"
+  },
+  "0.39.3/number-lookalike.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "number-lookalike"
+        ],
+        [
+          "description",
+          "12"
+        ],
+        [
+          "type",
+          "reference"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ]
+      ],
+      "body": "A description that YAML would read as an int if unquoted."
+    },
+    "rt": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n",
+    "rtStore": "---\nname: number-lookalike\ndescription: '12'\ntype: reference\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\n---\n\nA description that YAML would read as an int if unquoted.\n"
+  },
+  "0.39.3/plain-fact.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "plain-fact"
+        ],
+        [
+          "description",
+          "a plain description with nothing special in it"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "keywords",
+          [
+            "deploy",
+            "ภาษาไทย",
+            "2026"
+          ]
+        ]
+      ],
+      "body": "Body line one.\n\nBody line two."
+    },
+    "rt": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\n---\n\nBody line one.\n\nBody line two.\n",
+    "rtStore": "---\nname: plain-fact\ndescription: a plain description with nothing special in it\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\nkeywords:\n- deploy\n- ภาษาไทย\n- '2026'\n---\n\nBody line one.\n\nBody line two.\n"
+  },
+  "0.39.3/quotes-and-hash.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "quotes-and-hash"
+        ],
+        [
+          "description",
+          "it's a 'quoted' value with a # hash and \"double\" quotes"
+        ],
+        [
+          "type",
+          "feedback"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "outcome",
+          "success"
+        ]
+      ],
+      "body": "Body with --- inside\n---\nstill body"
+    },
+    "rt": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: success\n---\n\nBody with --- inside\n---\nstill body\n",
+    "rtStore": "---\nname: quotes-and-hash\ndescription: 'it''s a ''quoted'' value with a # hash and \"double\" quotes'\ntype: feedback\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: success\n---\n\nBody with --- inside\n---\nstill body\n"
+  },
+  "0.39.3/unicode-thai.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "unicode-thai"
+        ],
+        [
+          "description",
+          "ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          []
+        ],
+        [
+          "outcome",
+          "error"
+        ]
+      ],
+      "body": "เนื้อหา\n\nbody"
+    },
+    "rt": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: error\n---\n\nเนื้อหา\n\nbody\n",
+    "rtStore": "---\nname: unicode-thai\ndescription: ภาษาไทย ปนกับ ascii — em dash และ emoji 🐔 อยู่ในคำอธิบายเดียวกัน\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks: []\noutcome: error\n---\n\nเนื้อหา\n\nbody\n"
+  },
+  "0.39.3/with-links.md": {
+    "parse": {
+      "meta": [
+        [
+          "name",
+          "with-links"
+        ],
+        [
+          "description",
+          "a fact that links to three others by name"
+        ],
+        [
+          "type",
+          "project"
+        ],
+        [
+          "created",
+          "2026-01-02"
+        ],
+        [
+          "last_recalled",
+          null
+        ],
+        [
+          "links",
+          [
+            "plain-fact",
+            "long-wrap",
+            "a: b"
+          ]
+        ],
+        [
+          "status",
+          "done"
+        ]
+      ],
+      "body": "Linked."
+    },
+    "rt": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\nstatus: done\n---\n\nLinked.\n",
+    "rtStore": "---\nname: with-links\ndescription: a fact that links to three others by name\ntype: project\ncreated: '2026-01-02'\nlast_recalled: null\nlinks:\n- plain-fact\n- long-wrap\n- 'a: b'\nstatus: done\n---\n\nLinked.\n"
+  }
+}
