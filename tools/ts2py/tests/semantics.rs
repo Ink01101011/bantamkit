@@ -118,3 +118,70 @@ fn emit_runtime_writes_the_support_module() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), ts2py::RUNTIME);
     std::fs::remove_file(&path).unwrap();
 }
+
+/// Numbers are JS doubles (SUBSET.md, Numbers): an int beyond 2^53 from the input rounds the way
+/// `JSON.parse` would round it, in arithmetic, comparison, a sort comparator and stringify; a small
+/// int still prints without `.0`. The expected line is Node's output for the same function and
+/// the same JSON text.
+const NUMBERS: &str = r#"
+export function numbers(input: any): string {
+  const rows = [{ id: 'a', p: input.lo }, { id: 'b', p: input.hi }];
+  rows.sort((x, y) => y.p - x.p);
+  return JSON.stringify([
+    rows.map((r) => r.id).join(','),
+    input.hi - input.lo,
+    input.hi === input.lo,
+    input.hi > input.lo,
+    input.hi <= input.lo,
+    -input.hi,
+    input.lo + 1,
+    input.lo + 1 === input.lo,
+    input.big,
+    `${input.big}|${input.hi}|${input.small - 1}|${-input.small}`,
+    [input.small, input.small - 1, -input.small, input.small + 2, input.small + 0.5],
+    input.huge,
+    input.huge > input.big,
+  ]);
+}
+"#;
+
+#[test]
+fn numbers_beyond_2_pow_53_behave_as_js_doubles() {
+    let module = ts2py::compile(NUMBERS, "numbers.ts", &ts2py::Options::default())
+        .unwrap_or_else(|lines| panic!("numbers probe refused:\n{}", lines.join("\n")));
+    let dir = std::env::temp_dir().join(format!("ts2py-num-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("numbers.py");
+    std::fs::write(&path, module).unwrap();
+    let driver = r#"
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("n", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+data = json.loads('{"lo": 9007199254740992, "hi": 9007199254740993, "big": 12345678901234567890, "small": 3, "huge": 1' + '0' * 400 + '}')
+print(m.numbers(data))
+"#;
+    let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let run = match Command::new(&python)
+        .arg("-c")
+        .arg(driver)
+        .arg(&path)
+        .output()
+    {
+        Ok(run) => run,
+        Err(err) => {
+            eprintln!("skipping: cannot run {python}: {err}");
+            return;
+        }
+    };
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let expected = concat!(
+        r#"["a,b",0,true,false,true,-9007199254740992,9007199254740992,true,12345678901234567000,"#,
+        r#""12345678901234567000|9007199254740992|2|-3",[3,2,-3,5,3.5],null,true]"#,
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap().trim_end(), expected);
+}

@@ -40,15 +40,15 @@
  * expected answer is never fixed by editing the expected value or the legacy planner (J85-2
  * property 5). It is listed below with its reason and carried as a `ruling:` case, which the
  * harness REQUIRES to differ — so it is shown, not silenced, and the day it starts matching it
- * fails as a STALE RULING until someone deletes the entry. Two lists, because they end differently:
+ * fails as a STALE RULING until someone deletes the entry. The generated arm carries no ruling:
  *
  *   KNOWN_LEGACY_FINDINGS  the hand-written `workplan.py` disagrees with the TypeScript. These are
  *                          shipped Python/Node parity bugs that switching to the generated module
  *                          FIXES. J85-3 deletes this list when it switches; the stale rulings
- *                          force it to.
- *   TS2PY_NUMBER_LIMITS    both Python arms disagree with the TypeScript on integers beyond 2^53,
- *                          which a JS double rounds and a Python int does not. `tools/ts2py/
- *                          SUBSET.md` documents this as a known limit; it survives the switch.
+ *                          force it to. Two of them are integers beyond 2^53, which a JS double
+ *                          rounds and the legacy planner's Python ints do not; ts2py lowers
+ *                          numbers as doubles (`tools/ts2py/SUBSET.md`, Numbers), so the
+ *                          generated arm matches.
  *
  * The missing-`id` case is one of the legacy findings: `plan([{depends_on: []}])` refuses
  * `nodes[0].id must be a string` in TypeScript and raises `KeyError: 'id'` in the legacy planner.
@@ -99,16 +99,13 @@ const KNOWN_LEGACY_FINDINGS = new Map([
     'adversarial/touches/object-in-list',
     'legacy _json does not fold the nested integral float 1.0; JSON.stringify writes 1',
   ],
-]);
-
-const TS2PY_NUMBER_LIMITS = new Map([
   [
     'adversarial/priority/2^53-plus-one-ties-in-js',
-    '9007199254740993 rounds to 9007199254740992 as a JS double, so TypeScript sees a priority tie and keeps insertion order; a Python int keeps the larger value and sorts it first',
+    'legacy plan() subtracts exact Python ints, so 9007199254740993 outranks 9007199254740992; as JS doubles they tie and insertion order holds',
   ],
   [
     'adversarial/touches/int-beyond-2^53',
-    'JSON.stringify prints the rounded double 12345678901234567000; Python prints the exact int 12345678901234567890',
+    'legacy _json prints the exact int 12345678901234567890; JSON.stringify prints the rounded double 12345678901234567000',
   ],
 ]);
 
@@ -161,7 +158,7 @@ export async function run(ctx) {
 
   // Every ruling must name a case that exists, or a renamed case would carry its ruling nowhere.
   const names = new Set(fixture.map((c) => c.name));
-  for (const listed of [...KNOWN_LEGACY_FINDINGS.keys(), ...TS2PY_NUMBER_LIMITS.keys()]) {
+  for (const listed of KNOWN_LEGACY_FINDINGS.keys()) {
     cases.push({ name: `ruling-names-a-case/${listed}`, kind: 'json', expected: true, actual: names.has(listed) });
   }
 
@@ -177,16 +174,12 @@ export async function run(ctx) {
     }
     cases.push({ name: `node/${c.name}`, kind: 'string', expected, actual: node });
 
-    const limit = TS2PY_NUMBER_LIMITS.get(c.name);
     const legacyFinding = KNOWN_LEGACY_FINDINGS.get(c.name);
-    const generated = python.generated[i];
     const legacy = python.legacy[i];
-    cases.push({ name: `generated/${c.name}`, kind: 'string', expected, actual: generated, ...(limit ? { ruling: limit } : {}) });
-    const legacyRuling = limit ?? legacyFinding;
-    cases.push({ name: `legacy/${c.name}`, kind: 'string', expected, actual: legacy, ...(legacyRuling ? { ruling: legacyRuling } : {}) });
-    if (limit && generated !== expected) notes.push(`ts2py number limit, generated/${c.name}: expected ${expected}, got ${generated}`);
-    if (legacyRuling && legacy !== expected) {
-      notes.push(`${limit ? 'ts2py number limit' : 'known legacy finding'}, legacy/${c.name}: expected ${expected}, got ${legacy}`);
+    cases.push({ name: `generated/${c.name}`, kind: 'string', expected, actual: python.generated[i] });
+    cases.push({ name: `legacy/${c.name}`, kind: 'string', expected, actual: legacy, ...(legacyFinding ? { ruling: legacyFinding } : {}) });
+    if (legacyFinding && legacy !== expected) {
+      notes.push(`known legacy finding, legacy/${c.name}: expected ${expected}, got ${legacy}`);
     }
   });
 

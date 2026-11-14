@@ -86,12 +86,26 @@ def _js_coalesce_value(left, right):
     return right if _js_is_nullish(left) else left
 
 
+def _js_num(value):
+    """A number as a JS double holds it; anything that is not a number is returned unchanged.
+
+    An int beyond +-2^53 rounds to the nearest double (ties to even), as `Number()` would, and one
+    past the double range is +-Infinity. Within +-2^53 an int is already exact and stays an int.
+    """
+    if type(value) is int and not -(2**53) <= value <= 2**53:
+        try:
+            return float(value)
+        except OverflowError:
+            return _js_math.inf if value > 0 else -_js_math.inf
+    return value
+
+
 def _js_strict_eq(left, right):
     """`left === right`: no coercion, so `true !== 1`; numbers by value, objects by identity."""
     if isinstance(left, bool) or isinstance(right, bool):
         return isinstance(left, bool) and isinstance(right, bool) and left == right
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-        return left == right
+        return _js_num(left) == _js_num(right)
     if isinstance(left, str) and isinstance(right, str):
         return left == right
     return left is right
@@ -117,10 +131,9 @@ def _js_is_array(value):
 
 def _js_num_str(value):
     """`String(number)`: Number::toString, so `3.0` is `3`, `1e21` is `1e+21`, `1e-7` is `1e-7`."""
+    value = _js_num(value)
     if isinstance(value, int):
-        if -(10**21) < value < 10**21:
-            return str(value)
-        value = float(value)
+        return str(value)
     if value != value:
         return "NaN"
     if value == _js_math.inf:
@@ -179,7 +192,7 @@ def _js_add(left, right):
     if isinstance(left, str) or isinstance(right, str):
         return _js_str(left) + _js_str(right)
     if _js_is_number(left) and _js_is_number(right):
-        return left + right
+        return _js_num(_js_num(left) + _js_num(right))
     raise TypeError("ts2py: + on non-number, non-string operands is outside the subset")
 
 
@@ -250,6 +263,8 @@ def _js_key(key):
         return (_JsMap, key)
     if isinstance(key, float) and key != key:
         return (_JsMap, "NaN")
+    if isinstance(key, int):
+        return _js_num(key)
     if isinstance(key, (list, dict)):
         return (_JsSet, id(key))
     return key
@@ -512,6 +527,7 @@ def _js_json(value):
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
+        value = _js_num(value)
         if isinstance(value, float) and not _js_math.isfinite(value):
             return "null"
         return _js_num_str(value)

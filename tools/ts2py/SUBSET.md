@@ -21,12 +21,30 @@ source, cut at 80 characters. A syntax error is reported the same way as `syntax
 | `undefined` | `_JS_UNDEFINED`, a falsy singleton distinct from `None` |
 | `null` | `None` |
 | boolean | `bool` |
-| number | `int` or `float` (a Python `bool` is never a number, see `typeof`) |
+| number | `int` or `float` (a Python `bool` is never a number, see `typeof`); see Numbers below |
 | string | `str` |
 | array | `list` (only a `list`; a tuple is not an array) |
 | plain object | `dict` with `str` keys |
 | `Map` / `Set` | `_JsMap` / `_JsSet` (runtime support) |
 | regex literal | a compiled `re.Pattern`, hoisted to a module constant `_JS_RE_<n>` |
+
+## Numbers
+
+A JS number is an IEEE-754 double; a Python `int` is exact. The generated code keeps the JS
+model without giving up `int`:
+
+- An `int` within +-2^53 is exactly a double, so it stays an `int` and prints as JS prints it
+  (`3`, never `3.0`).
+- Wherever the lowering does arithmetic or compares numbers (`-`, `+`, unary `-`, `<`, `<=`, `>`,
+  `>=`, `===` / `!==`, so also a sort comparator's result), and wherever a number is stringified
+  (`JSON.stringify`, template literals, `.join`, a `Map` / `Set` key), an `int` beyond +-2^53 is
+  first rounded to the nearest double (ties to even, as `JSON.parse` rounds it; past the double
+  range it is +-Infinity) by the runtime helper `_js_num`. The result of `+` / `-` is rounded the
+  same way.
+- So `9007199254740993 - 9007199254740992` is `0`, `9007199254740992 + 1 === 9007199254740992`,
+  and `JSON.stringify(12345678901234567890)` is `12345678901234567000`, as in Node.
+- A value only read, stored or passed along is not rounded: rounding happens where JS would make
+  the difference observable through one of the operations above.
 
 ## Accepted constructs
 
@@ -72,15 +90,15 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `x.length` | `_js_len(x)` | string length in UTF-16 code units |
 | `x.size` | `_js_size(x)` | `Map` / `Set` size |
 | `typeof x` | `_js_typeof(x)` | `typeof true === 'boolean'`, never `'number'`; `typeof null === 'object'` |
-| `a === b` / `a !== b` | `_js_strict_eq(a, b)`; `a is None` / `a is _JS_UNDEFINED` against a `null`/`undefined` literal; plain `==` when one side is a string or both are known numbers | `true !== 1`; numbers by value, objects by identity; `null !== undefined` |
+| `a === b` / `a !== b` | `_js_strict_eq(a, b)`; `a is None` / `a is _JS_UNDEFINED` against a `null`/`undefined` literal; plain `==` when one side is a string or both are known numbers | `true !== 1`; numbers by value as doubles, objects by identity; `null !== undefined` |
 | `x == null` / `x != null` (either side `null` or `undefined`) | `_js_is_nullish(x)` / `not _js_is_nullish(x)` | a missing key (`undefined`) and `None` alike |
 | `a ?? b` | `_js_coalesce(a, lambda: b)`, or `_js_coalesce_value(a, b)` when `b` is side-effect free | `b` only when `a` is `null`/`undefined`; `0`, `""`, `false` kept |
 | `a \|\| b`, `a && b` | `a or b` / `a and b` when both are known booleans; else `_js_or` / `_js_and` (lazy like `??`) | JS truthiness, and the operand value (not a bool) is returned |
 | `!x` | `not x` (known boolean) or `not _js_truthy(x)` | ToBoolean: `[]` and `{}` are truthy, `0`/`NaN`/`""` falsy |
 | `c ? a : b` | `a if c else b` | condition through ToBoolean |
-| `a < b`, `<=`, `>`, `>=` | same operator | numbers |
-| `a - b`, unary `-a` | same operator | numbers |
-| `a + b` | `a + b` when both are known numbers or both known strings, else `_js_add(a, b)` | string concatenation via `String()` when either side is a string |
+| `a < b`, `<=`, `>`, `>=` | same operator, each operand through `_js_num` unless it is a literal, a length or already rounded | numbers as doubles (Numbers above) |
+| `a - b`, unary `-a` | `_js_num(_js_num(a) - _js_num(b))`, `-_js_num(a)` | numbers as doubles |
+| `a + b` | `_js_num(...)` of `a + b` when both are known numbers, `a + b` when both known strings, else `_js_add(a, b)` | string concatenation via `String()` when either side is a string; numbers as doubles |
 | `f(args)` (a module function or a local) | `f(args)` | |
 | `new Map(entries?)`, `new Set(items?)` | `_JsMap(...)`, `_JsSet(...)` | insertion order; SameValueZero keys, so `true` and `1` are different keys and `1.0` and `1` the same |
 | `/pattern/` (no flags) | `_JS_RE_<n> = re.compile(<translated>, re.ASCII)` | `\d`, `\w`, `\b` are ASCII; `$` is end of input (`\Z`); `.` excludes `\n \r    ` |
@@ -93,7 +111,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 |---|---|---|
 | `Array.isArray(x)` | `_js_is_array(x)` | a `list` only |
 | `Number.isInteger(x)` | `_js_number_is_integer(x)` | `3.0` is an integer; `True` is not (not a number) |
-| `JSON.stringify(x)` (one argument) | `_js_json_stringify(x)` | byte for byte: compact, non-ASCII unescaped, lone surrogates and control characters `\u00xx`, integral floats as `3`, `1e21` as `1e+21`, non-finite as `null`, `undefined` members skipped (`null` in arrays), object keys in JS own-property order (array-index keys ascending first, then insertion order) |
+| `JSON.stringify(x)` (one argument) | `_js_json_stringify(x)` | byte for byte: compact, non-ASCII unescaped, lone surrogates and control characters `\u00xx`, integral floats as `3`, `1e21` as `1e+21`, an int beyond 2^53 as the double it rounds to, non-finite as `null`, `undefined` members skipped (`null` in arrays), object keys in JS own-property order (array-index keys ascending first, then insertion order) |
 | `m.has(k)`, `m.get(k)`, `m.set(k, v)` | `_js_m_has` / `_js_m_get` / `_js_m_set` | `Map`; `get` of a missing key is `undefined`; `set` keeps the original position |
 | `s.has(x)`, `s.add(x)` | `_js_m_has` / `_js_m_add` | `Set` |
 | `a.every(cb)`, `a.some(cb)` | `_js_m_every` / `_js_m_some` | callback result through ToBoolean |
@@ -155,7 +173,6 @@ local that shadows a module-level name, and any global identifier other than `un
 
 ## Known limits (documented, not refused)
 
-- Numbers: Python `int` arithmetic does not round past 2^53 the way a JS double does.
 - Strings are indexed and split into characters by code point, not UTF-16 code unit (only
   `.length` counts code units).
 - Iterating a `Map` or `Set` sees a snapshot: entries added during the loop are not visited.

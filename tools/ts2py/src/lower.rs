@@ -40,6 +40,9 @@ struct Py {
     is_num: bool,
     /// Always a `str`.
     is_str: bool,
+    /// A value a JS double holds exactly (or not a number at all), so `_js_num` would return it
+    /// unchanged: a literal, a length, the result of an arithmetic lowering.
+    is_double: bool,
     /// Evaluating it has no side effect, so `||`, `&&`, `??` may evaluate it eagerly.
     pure: bool,
 }
@@ -753,6 +756,7 @@ impl<'s> Lowerer<'s> {
                     let prec = if code.starts_with('-') { UNARY } else { ATOM };
                     Py {
                         is_num: true,
+                        is_double: true,
                         pure: true,
                         ..Py::new(code, prec)
                     }
@@ -779,6 +783,7 @@ impl<'s> Lowerer<'s> {
                 Py {
                     is_bool: yes.is_bool && no.is_bool,
                     is_num: yes.is_num && no.is_num,
+                    is_double: yes.is_double && no.is_double,
                     is_str: yes.is_str && no.is_str,
                     ..Py::new(
                         format!("{} if {} else {}", yes.at(OR), test.at(OR), no.at(TERNARY)),
@@ -796,10 +801,12 @@ impl<'s> Lowerer<'s> {
                 match m.property.name.as_str() {
                     "length" => Py {
                         is_num: true,
+                        is_double: true,
                         ..Py::atom(format!("_js_len({})", object.code))
                     },
                     "size" => Py {
                         is_num: true,
+                        is_double: true,
                         ..Py::atom(format!("_js_size({})", object.code))
                     },
                     prop => Py::atom(format!("_js_get({}, {})", object.code, py_str(prop))),
@@ -974,8 +981,8 @@ impl<'s> Lowerer<'s> {
                 }
             }
             Op::LessThan | Op::LessEqualThan | Op::GreaterThan | Op::GreaterEqualThan => {
-                let left = self.expr(&b.left);
-                let right = self.expr(&b.right);
+                let left = js_num(self.expr(&b.left));
+                let right = js_num(self.expr(&b.right));
                 Py::boolean(
                     format!(
                         "{} {} {}",
@@ -987,21 +994,16 @@ impl<'s> Lowerer<'s> {
                 )
             }
             Op::Subtraction => {
-                let left = self.expr(&b.left);
-                let right = self.expr(&b.right);
-                Py {
-                    is_num: true,
-                    ..Py::new(format!("{} - {}", left.at(ADD), right.at(ADD + 1)), ADD)
-                }
+                let left = js_num(self.expr(&b.left));
+                let right = js_num(self.expr(&b.right));
+                rounded(format!("{} - {}", left.at(ADD), right.at(ADD + 1)))
             }
             Op::Addition => {
                 let left = self.expr(&b.left);
                 let right = self.expr(&b.right);
                 if left.is_num && right.is_num {
-                    Py {
-                        is_num: true,
-                        ..Py::new(format!("{} + {}", left.at(ADD), right.at(ADD + 1)), ADD)
-                    }
+                    let (left, right) = (js_num(left), js_num(right));
+                    rounded(format!("{} + {}", left.at(ADD), right.at(ADD + 1)))
                 } else if left.is_str && right.is_str {
                     Py {
                         is_str: true,
@@ -1040,6 +1042,11 @@ impl<'s> Lowerer<'s> {
         // anything that is not a str. Two known numbers compare by value in both languages.
         let exact = l.is_str || r.is_str || (l.is_num && r.is_num);
         if exact {
+            let (l, r) = if l.is_str || r.is_str {
+                (l, r)
+            } else {
+                (js_num(l), js_num(r))
+            };
             let op = if negate { "!=" } else { "==" };
             return Py::boolean(format!("{} {op} {}", l.at(CMP + 1), r.at(CMP + 1)), CMP);
         }
@@ -1079,6 +1086,7 @@ impl<'s> Lowerer<'s> {
                 };
                 Py {
                     is_num: left.is_num && right.is_num,
+                    is_double: left.is_double && right.is_double,
                     is_str: left.is_str && right.is_str,
                     ..Py::atom(code)
                 }
@@ -1093,9 +1101,11 @@ impl<'s> Lowerer<'s> {
                 Py::boolean(format!("not {}", value.at(NOT)), NOT)
             }
             UnaryOperator::UnaryNegation => {
-                let value = self.expr(&u.argument);
+                // Negating a double is exact, so normalising the operand is enough.
+                let value = js_num(self.expr(&u.argument));
                 Py {
                     is_num: true,
+                    is_double: true,
                     pure: value.pure,
                     ..Py::new(format!("-{}", value.at(UNARY)), UNARY)
                 }
@@ -1301,6 +1311,29 @@ fn join_params(names: &[(String, String)]) -> String {
         .map(|(_, py)| py.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// `value` as a JS double holds it (SUBSET.md, Numbers): wrapped in `_js_num` unless it already is.
+fn js_num(value: Py) -> Py {
+    if value.is_double || value.is_str {
+        value
+    } else {
+        Py {
+            is_num: value.is_num,
+            is_double: true,
+            pure: value.pure,
+            ..Py::atom(format!("_js_num({})", value.code))
+        }
+    }
+}
+
+/// The result of `+` or `-` on two doubles, rounded to a double as JS does.
+fn rounded(code: String) -> Py {
+    Py {
+        is_num: true,
+        is_double: true,
+        ..Py::atom(format!("_js_num({code})"))
+    }
 }
 
 fn truthy(value: Py) -> Py {
