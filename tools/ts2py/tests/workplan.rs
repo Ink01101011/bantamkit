@@ -102,6 +102,7 @@ fn pathdiff(target: &Path, base: &Path) -> PathBuf {
 fn runtime_module_mode_imports_only_what_it_uses() {
     let options = ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
+        ..ts2py::Options::default()
     };
     let module = compile_workplan(&options);
     assert!(module.contains("from ._ts2py_runtime import (  # noqa: F401\n"));

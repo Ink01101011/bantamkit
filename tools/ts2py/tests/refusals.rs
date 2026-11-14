@@ -19,11 +19,28 @@ fn assert_refused(source: &str, expected: &str) {
     );
 }
 
+/// J86 accepts classes (SUBSET.md, Classes); what a class may not carry is still refused.
 #[test]
 fn class() {
     assert_refused(
-        "export class A { x = 1; }\n",
-        "t.ts:1:8: unsupported class: class A { x = 1; }",
+        "export class A { static x = 1; }\n",
+        "t.ts:1:18: unsupported static, computed or declared class field: static x = 1;",
+    );
+    assert_refused(
+        "export class A extends Map<string, number> {}\n",
+        "t.ts:1:24: unsupported extends anything but Error: Map",
+    );
+    assert_refused(
+        "export class A { set v(x: number) {} }\n",
+        "t.ts:1:18: unsupported setter: set v(x: number) {}",
+    );
+    assert_refused(
+        "export class A { m(): number { return this.y; } }\n",
+        "t.ts:1:39: unsupported this.y for a member the class does not declare: this.y",
+    );
+    assert_refused(
+        "export class E extends Error { constructor(m: string) { super(m); } }\n",
+        "t.ts:1:32: unsupported constructor in a class that extends Error: constructor(m: string) { super(m); }",
     );
 }
 
@@ -58,7 +75,7 @@ fn async_and_await() {
 fn this() {
     assert_refused(
         "export function f(): unknown {\n  return this;\n}\n",
-        "t.ts:2:10: unsupported this: this",
+        "t.ts:2:10: unsupported this outside a class: this",
     );
 }
 
@@ -86,16 +103,16 @@ fn labelled_break_and_continue() {
 #[test]
 fn unsupported_builtin_calls() {
     assert_refused(
-        "export function f(x: object): string[] {\n  return Object.keys(x);\n}\n",
-        "t.ts:2:10: unsupported builtin call Object.keys: Object.keys(x)",
+        "export function f(x: object): object {\n  return Object.assign({}, x);\n}\n",
+        "t.ts:2:10: unsupported builtin call Object.assign: Object.assign({}, x)",
     );
     assert_refused(
-        "export function f(s: string): string {\n  return s.toUpperCase();\n}\n",
-        "t.ts:2:10: unsupported builtin method .toUpperCase: s.toUpperCase()",
+        "export function f(s: string): string {\n  return s.trim();\n}\n",
+        "t.ts:2:10: unsupported builtin method .trim: s.trim()",
     );
     assert_refused(
-        "export function f(): number {\n  return Math.max(1, 2);\n}\n",
-        "t.ts:2:10: unsupported builtin call Math.max: Math.max(1, 2)",
+        "export function f(): number {\n  return Math.round(1.5);\n}\n",
+        "t.ts:2:10: unsupported builtin call Math.round: Math.round(1.5)",
     );
 }
 
@@ -110,12 +127,16 @@ fn other_refusals() {
         "t.ts:2:10: unsupported optional chaining: a?.b",
     );
     assert_refused(
-        "export function f(a: number): number {\n  return a / 2;\n}\n",
-        "t.ts:2:10: unsupported operator /: a / 2",
+        "export function f(a: number): number {\n  return a ** 2;\n}\n",
+        "t.ts:2:10: unsupported operator **: a ** 2",
     );
     assert_refused(
         "export function f(xs: number[]): unknown {\n  const g = (x: number) => x;\n  return xs.map(g);\n}\n",
-        "t.ts:2:13: unsupported arrow function outside a callback argument: (x: number) => x",
+        "t.ts:3:17: unsupported callback that is not an inline arrow function: g",
+    );
+    assert_refused(
+        "export function f(): unknown {\n  let g = (x: number) => x;\n  return g;\n}\n",
+        "t.ts:2:11: unsupported arrow function outside a callback argument: (x: number) => x",
     );
     assert_refused(
         "export function f(x: number): number {\n  if (x) {\n    const x = 2;\n  }\n  return x;\n}\n",
@@ -141,12 +162,12 @@ fn other_refusals() {
 
 #[test]
 fn every_offence_is_reported_in_source_order() {
-    let lines = refusals("class A {}\nexport function f(): unknown {\n  return this;\n}\n");
+    let lines = refusals("enum E { A }\nexport function f(): unknown {\n  return this;\n}\n");
     assert_eq!(
         lines,
         vec![
-            "t.ts:1:1: unsupported class: class A {}",
-            "t.ts:3:10: unsupported this: this"
+            "t.ts:1:1: unsupported enum: enum E { A }",
+            "t.ts:3:10: unsupported this outside a class: this"
         ]
     );
 }
@@ -157,7 +178,7 @@ fn cli_writes_nothing_and_exits_nonzero() {
     std::fs::create_dir_all(&dir).unwrap();
     let input = dir.join("bad.ts");
     let output = dir.join("bad.py");
-    std::fs::write(&input, "export class A {}\n").unwrap();
+    std::fs::write(&input, "export enum E { A }\n").unwrap();
     let _ = std::fs::remove_file(&output);
     let run = Command::new(env!("CARGO_BIN_EXE_ts2py"))
         .arg(&input)
@@ -171,7 +192,7 @@ fn cli_writes_nothing_and_exits_nonzero() {
     assert!(
         stderr
             .trim_end()
-            .ends_with(":1:8: unsupported class: class A {}"),
+            .ends_with(":1:8: unsupported enum: enum E { A }"),
         "{stderr}"
     );
     std::fs::remove_dir_all(&dir).unwrap();

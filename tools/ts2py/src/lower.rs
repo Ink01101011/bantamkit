@@ -4,12 +4,13 @@
 //! going after a refusal so one run reports every offence, and the caller writes nothing when any
 //! refusal was recorded.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use oxc_ast::ast::*;
 use oxc_span::{GetSpan, Span};
 
-use crate::pyfmt::{py_name, py_number, py_str, py_str_utf16};
+use crate::adapters::{self, AdapterKind};
+use crate::pyfmt::{is_py_keyword, py_name, py_number, py_str, py_str_utf16};
 
 /// One refusal: where, and what construct.
 pub struct Refusal {
@@ -45,6 +46,11 @@ struct Py {
     is_double: bool,
     /// Evaluating it has no side effect, so `||`, `&&`, `??` may evaluate it eagerly.
     pure: bool,
+    /// J86: a string whose first UTF-16 unit is known not to be a trail surrogate (or that is
+    /// empty), so nothing concatenated before it can complete a surrogate pair.
+    safe_start: bool,
+    /// J86: a string whose last unit is known not to be a lead surrogate (or that is empty).
+    safe_end: bool,
 }
 
 impl Py {
@@ -73,34 +79,155 @@ impl Py {
     }
 }
 
+/// What a builtin method is known to return.
+#[derive(Clone, Copy, PartialEq)]
+enum Ret {
+    Bool,
+    Str,
+    /// Always a number (never `undefined`).
+    Num,
+    Any,
+}
+
 /// Methods the subset accepts, with the argument counts each takes and which argument (if any)
 /// is a callback that must be an inline arrow.
-const METHODS: &[(&str, usize, usize, Option<usize>, bool)] = &[
-    // name, min args, max args, callback index, returns bool
-    ("has", 1, 1, None, true),
-    ("get", 1, 1, None, false),
-    ("set", 2, 2, None, false),
-    ("add", 1, 1, None, false),
-    ("includes", 1, 1, None, true),
-    ("startsWith", 1, 1, None, true),
-    ("split", 1, 1, None, false),
-    ("test", 1, 1, None, true),
-    ("every", 1, 1, Some(0), true),
-    ("some", 1, 1, Some(0), true),
-    ("find", 1, 1, Some(0), false),
-    ("map", 1, 1, Some(0), false),
-    ("push", 1, usize::MAX, None, false),
-    ("slice", 0, 2, None, false),
-    ("join", 0, 1, None, false),
-    ("sort", 0, 1, Some(0), false),
-    ("entries", 0, 0, None, false),
+const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
+    // name, min args, max args, callback index, what it returns
+    ("has", 1, 1, None, Ret::Bool),
+    ("get", 1, 1, None, Ret::Any),
+    ("set", 2, 2, None, Ret::Any),
+    ("add", 1, 1, None, Ret::Any),
+    ("includes", 1, 1, None, Ret::Bool),
+    ("startsWith", 1, 1, None, Ret::Bool),
+    ("split", 1, 1, None, Ret::Any),
+    ("test", 1, 1, None, Ret::Bool),
+    ("every", 1, 1, Some(0), Ret::Bool),
+    ("some", 1, 1, Some(0), Ret::Bool),
+    ("find", 1, 1, Some(0), Ret::Any),
+    ("map", 1, 1, Some(0), Ret::Any),
+    ("push", 1, usize::MAX, None, Ret::Any),
+    ("slice", 0, 2, None, Ret::Any),
+    ("join", 0, 1, None, Ret::Str),
+    ("sort", 0, 1, Some(0), Ret::Any),
+    ("entries", 0, 0, None, Ret::Any),
+    // J86 (the fact-file codec).
+    ("codePointAt", 0, 1, None, Ret::Any),
+    ("indexOf", 1, 2, None, Ret::Num),
+    ("lastIndexOf", 1, 2, None, Ret::Num),
+    ("padStart", 1, 2, None, Ret::Str),
+    ("padEnd", 1, 2, None, Ret::Str),
+    ("repeat", 1, 1, None, Ret::Str),
+    ("toLowerCase", 0, 0, None, Ret::Str),
+    ("toUpperCase", 0, 0, None, Ret::Str),
+    ("replace", 2, 2, None, Ret::Str),
+    ("exec", 1, 1, None, Ret::Any),
+    ("reverse", 0, 0, None, Ret::Any),
+    ("pop", 0, 0, None, Ret::Any),
+    ("filter", 1, 1, Some(0), Ret::Any),
+    ("toString", 0, 1, None, Ret::Str),
 ];
+
+/// Static calls on a builtin namespace: object, method, helper, min args, max args, returns.
+const STATIC_CALLS: &[(&str, &str, &str, usize, usize, Ret)] = &[
+    ("Array", "isArray", "_js_is_array", 1, 1, Ret::Bool),
+    (
+        "Number",
+        "isInteger",
+        "_js_number_is_integer",
+        1,
+        1,
+        Ret::Bool,
+    ),
+    ("JSON", "stringify", "_js_json_stringify", 1, 1, Ret::Any),
+    // J86 (the fact-file codec).
+    ("Number", "isNaN", "_js_number_is_nan", 1, 1, Ret::Bool),
+    ("Math", "floor", "_js_floor", 1, 1, Ret::Num),
+    ("Math", "abs", "_js_abs", 1, 1, Ret::Num),
+    ("Math", "max", "_js_max", 0, usize::MAX, Ret::Num),
+    ("Math", "min", "_js_min", 0, usize::MAX, Ret::Num),
+    ("Object", "keys", "_js_object_keys", 1, 1, Ret::Any),
+    ("Object", "entries", "_js_object_entries", 1, 1, Ret::Any),
+    ("Object", "freeze", "_js_freeze", 1, 1, Ret::Any),
+    (
+        "Object",
+        "getPrototypeOf",
+        "_js_get_prototype_of",
+        1,
+        1,
+        Ret::Any,
+    ),
+    (
+        "String",
+        "fromCodePoint",
+        "_js_from_code_point",
+        0,
+        usize::MAX,
+        Ret::Str,
+    ),
+];
+
+/// Global functions (J86): name, helper, min args, max args, returns.
+const GLOBAL_CALLS: &[(&str, &str, usize, usize, Ret)] = &[
+    ("BigInt", "_js_bigint", 1, 1, Ret::Any),
+    ("Number", "_js_number", 0, 1, Ret::Num),
+    ("String", "_js_str", 1, 1, Ret::Str),
+    ("parseInt", "_js_parse_int", 1, 2, Ret::Num),
+];
+
+fn returned(ret: Ret, code: String) -> Py {
+    Py {
+        is_bool: ret == Ret::Bool,
+        is_str: ret == Ret::Str,
+        is_num: ret == Ret::Num,
+        is_double: ret == Ret::Num,
+        ..Py::atom(code)
+    }
+}
+
+/// What one compiled module exports, as another compiled module imports it (J86).
+#[derive(Clone, Default)]
+pub struct ModuleExports {
+    /// The Python module name (the TypeScript file's stem).
+    pub py_module: String,
+    /// Source name -> (Python name, is a class).
+    pub names: HashMap<String, (String, bool)>,
+}
+
+/// Everything about the other modules of a multi-module compile a module needs (J86).
+#[derive(Clone, Default)]
+pub struct ModuleCtx {
+    /// This module's path, as printed (`runtime-ts/src/memory/factfile.ts`).
+    pub path: String,
+    /// Every compiled module, by its normalised `.ts` path.
+    pub modules: HashMap<String, ModuleExports>,
+    /// Method names declared by any class in any compiled module, and by the adapter classes.
+    pub class_methods: HashSet<String>,
+    /// Where the hand-written adapters are imported from (`._ts2py_adapters`).
+    pub adapter_module: String,
+}
+
+/// A class being lowered: its members as JS spells them.
+#[derive(Clone, Default)]
+struct ClassCtx {
+    /// Fields, methods and getters this class (or a compiled base) declares.
+    members: HashSet<String>,
+    /// Methods only (callable as `this.m(...)`).
+    methods: HashSet<String>,
+}
+
+/// What an unlabelled `break` would leave: a loop (Python's `break` does the same) or a `switch`
+/// (lowered to an if-chain, so only a trailing `break` is accepted and dropped).
+#[derive(Clone, Copy, PartialEq)]
+enum BreakTarget {
+    Loop,
+    Switch,
+}
 
 pub struct Lowerer<'s> {
     src: &'s str,
     pub refusals: Vec<Refusal>,
-    /// Hoisted regex constants: translated pattern, in first-use order.
-    regexes: Vec<String>,
+    /// Hoisted regex constants: translated pattern and whether it has the `g` flag, in first-use order.
+    regexes: Vec<(String, bool)>,
     /// Module-level source name -> Python name.
     globals: HashMap<String, String>,
     /// Module-level functions annotated `: boolean`.
@@ -112,10 +239,27 @@ pub struct Lowerer<'s> {
     /// Python name -> the source name that claimed it, so two names never fold into one.
     owners: HashMap<String, String>,
     tmp: usize,
+    /// J86: the multi-module context (other modules' exports, adapters, class methods).
+    ctx: ModuleCtx,
+    /// J86: source names of classes visible here (declared or imported) -> Python name.
+    classes: HashMap<String, String>,
+    /// J86: `from <module> import <names>` lines this module needs, by module.
+    pub imports: BTreeMap<String, BTreeSet<String>>,
+    /// J86: the class whose body is being lowered.
+    class_ctx: Option<ClassCtx>,
+    /// J86: index into `scopes` where each enclosing `def` starts, innermost last, with the names
+    /// it must declare `nonlocal`.
+    defs: Vec<(usize, BTreeSet<String>)>,
+    /// J86: what an unlabelled `break` would leave, innermost last.
+    breaks: Vec<BreakTarget>,
 }
 
 impl<'s> Lowerer<'s> {
     pub fn new(src: &'s str) -> Self {
+        Self::with_ctx(src, ModuleCtx::default())
+    }
+
+    pub fn with_ctx(src: &'s str, ctx: ModuleCtx) -> Self {
         Lowerer {
             src,
             refusals: Vec::new(),
@@ -126,6 +270,12 @@ impl<'s> Lowerer<'s> {
             scopes: Vec::new(),
             owners: HashMap::new(),
             tmp: 0,
+            ctx,
+            classes: HashMap::new(),
+            imports: BTreeMap::new(),
+            class_ctx: None,
+            defs: Vec::new(),
+            breaks: Vec::new(),
         }
     }
 
@@ -168,12 +318,30 @@ impl<'s> Lowerer<'s> {
     pub fn program(&mut self, program: &Program<'_>) -> String {
         // Pass 1: module-level names, so a function may call one declared below it.
         for stmt in &program.body {
+            if let Statement::ImportDeclaration(i) = stmt {
+                self.import(i);
+                continue;
+            }
             let (decl, exported) = match stmt {
                 Statement::ExportDeclaration(e) => (Some(&e.declaration), true),
                 _ => (stmt.as_declaration(), false),
             };
             let Some(decl) = decl else { continue };
             match decl {
+                Declaration::ClassDeclaration(c) => {
+                    if let Some(id) = &c.id {
+                        let py = class_py_name(id.name.as_str(), exported);
+                        if is_py_keyword(&py) {
+                            self.refuse(id.span, "class name that is a Python keyword");
+                        }
+                        self.claim(id.name.as_str(), &py, id.span);
+                        if exported {
+                            self.exports.push(py.clone());
+                        }
+                        self.globals.insert(id.name.to_string(), py.clone());
+                        self.classes.insert(id.name.to_string(), py);
+                    }
+                }
                 Declaration::FunctionDeclaration(f) => {
                     if let Some(id) = &f.id {
                         self.declare_global(id.name.as_str(), exported, id.span);
@@ -209,11 +377,13 @@ impl<'s> Lowerer<'s> {
 
         let mut body = String::new();
         if !self.regexes.is_empty() {
-            for (i, pattern) in self.regexes.iter().enumerate() {
-                body.push_str(&format!(
-                    "_JS_RE_{i} = _js_re.compile({}, _js_re.ASCII)\n",
-                    py_str(pattern)
-                ));
+            for (i, (pattern, global)) in self.regexes.iter().enumerate() {
+                let compiled = format!("_js_re.compile({}, _js_re.ASCII)", py_str(pattern));
+                if *global {
+                    body.push_str(&format!("_JS_RE_{i} = _JsGlobalRegExp({compiled})\n"));
+                } else {
+                    body.push_str(&format!("_JS_RE_{i} = {compiled}\n"));
+                }
             }
             body.push_str("\n\n");
         }
@@ -236,7 +406,7 @@ impl<'s> Lowerer<'s> {
             Statement::ExportDeclaration(e) => self.top_declaration(&e.declaration, out),
             Statement::ExportNamedDeclaration(e) => {
                 if !e.export_kind.is_type() {
-                    self.refuse(e.span, "export list");
+                    self.export_list(e);
                 }
             }
             Statement::ExportFromDeclaration(e) => {
@@ -244,11 +414,8 @@ impl<'s> Lowerer<'s> {
                     self.refuse(e.span, "re-export");
                 }
             }
-            Statement::ImportDeclaration(i) => {
-                if !i.import_kind.is_type() {
-                    self.refuse(i.span, "import");
-                }
-            }
+            // Resolved in pass 1 (`import`), through a compiled module or the adapter seam.
+            Statement::ImportDeclaration(_) => {}
             Statement::EmptyStatement(_) => {}
             _ => match stmt.as_declaration() {
                 Some(decl) => self.top_declaration(decl, out),
@@ -300,9 +467,7 @@ impl<'s> Lowerer<'s> {
                     }
                 }
             }
-            Declaration::ClassDeclaration(c) => {
-                self.refuse(c.span, "class");
-            }
+            Declaration::ClassDeclaration(c) => self.class_decl(c, out),
             Declaration::TSEnumDeclaration(e) => {
                 self.refuse(e.span, "enum");
             }
@@ -334,12 +499,33 @@ impl<'s> Lowerer<'s> {
         self.collect_block(body, &mut stack, &mut locals);
         self.scopes.push(locals);
         out.push(format!("def {name}({}):", join_params(&names)));
-        let start = out.len();
+        self.param_defaults(params, 1, out);
         self.block(body, 1, out);
-        if out.len() == start {
-            out.push("    pass".to_string());
+        // J86: a body that can run off its end returns `undefined`, as JS does (Python: `None`).
+        if !ends_in_exit(body) {
+            out.push("    return _JS_UNDEFINED".to_string());
         }
         self.scopes.pop();
+    }
+
+    /// `if p is _JS_UNDEFINED: p = <default>` for each defaulted parameter, in order: JS applies a
+    /// default when the argument is missing or `undefined`, evaluated at call time (J86).
+    fn param_defaults(
+        &mut self,
+        params: &FormalParameters<'_>,
+        indent: usize,
+        out: &mut Vec<String>,
+    ) {
+        for p in &params.items {
+            let (Some(init), BindingPattern::BindingIdentifier(id)) = (&p.initializer, &p.pattern)
+            else {
+                continue;
+            };
+            let name = py_name(id.name.as_str(), false, false);
+            let value = self.expr(init);
+            out.push(format!("{}if {name} is _JS_UNDEFINED:", pad(indent)));
+            out.push(format!("{}{name} = {}", pad(indent + 1), value.code));
+        }
     }
 
     /// A module-level `const f = (...) => ...` becomes `def f(...)`.
@@ -360,14 +546,15 @@ impl<'s> Lowerer<'s> {
                 let mut stack = vec![locals.clone()];
                 self.collect_block(&body.statements, &mut stack, &mut locals);
                 self.scopes.push(locals);
-                let start = out.len();
+                self.param_defaults(&a.params, 1, out);
                 self.block(&body.statements, 1, out);
-                if out.len() == start {
-                    out.push("    pass".to_string());
+                if !ends_in_exit(&body.statements) {
+                    out.push("    return _JS_UNDEFINED".to_string());
                 }
             }
             other => {
                 self.scopes.push(locals);
+                self.param_defaults(&a.params, 1, out);
                 let expr = other
                     .as_expression()
                     .expect("an arrow body is a block or an expression");
@@ -383,16 +570,13 @@ impl<'s> Lowerer<'s> {
     fn params(&mut self, params: &FormalParameters<'_>) -> Vec<(String, String)> {
         let mut names = Vec::new();
         for p in &params.items {
-            if p.initializer.is_some() {
-                self.refuse(p.span, "default parameter");
-            }
             let BindingPattern::BindingIdentifier(id) = &p.pattern else {
                 self.refuse(p.span, "destructuring parameter");
                 continue;
             };
             let py = py_name(id.name.as_str(), false, false);
             self.claim(id.name.as_str(), &py, id.span);
-            let spelled = if p.optional {
+            let spelled = if p.optional || p.initializer.is_some() {
                 format!("{py}=_JS_UNDEFINED")
             } else {
                 py
@@ -452,6 +636,17 @@ impl<'s> Lowerer<'s> {
                 }
             }
             Statement::WhileStatement(w) => self.collect_nested(&w.body, stack, all),
+            Statement::ForStatement(f) => self.collect_nested(&f.body, stack, all),
+            // A switch body is one block scope, whatever case a declaration sits under.
+            Statement::SwitchStatement(sw) => {
+                stack.push(HashSet::new());
+                for case in &sw.cases {
+                    for s in &case.consequent {
+                        self.collect_stmt(s, stack, all);
+                    }
+                }
+                stack.pop();
+            }
             Statement::LabeledStatement(l) => self.collect_nested(&l.body, stack, all),
             Statement::ForOfStatement(f) => {
                 stack.push(HashSet::new());
@@ -497,6 +692,11 @@ impl<'s> Lowerer<'s> {
                     self.declare_pattern(element, stack, all);
                 }
             }
+            BindingPattern::ObjectPattern(o) => {
+                for property in &o.properties {
+                    self.declare_pattern(&property.value, stack, all);
+                }
+            }
             // Refused where the declaration is lowered.
             _ => {}
         }
@@ -519,6 +719,19 @@ impl<'s> Lowerer<'s> {
             return Py {
                 pure: true,
                 ..Py::atom("_JS_UNDEFINED")
+            };
+        }
+        // J86: the two non-finite number globals.
+        if name == "Infinity" || name == "NaN" {
+            return Py {
+                pure: true,
+                is_num: true,
+                is_double: true,
+                ..Py::atom(if name == "NaN" {
+                    "_JS_NAN"
+                } else {
+                    "_JS_INFINITY"
+                })
             };
         }
         let construct = format!("global {name}");
@@ -572,11 +785,31 @@ impl<'s> Lowerer<'s> {
                     self.refuse(v.span, "using declaration");
                 }
                 for d in &v.declarations {
-                    let BindingPattern::BindingIdentifier(id) = &d.id else {
-                        self.refuse(d.span, "destructuring declaration");
-                        continue;
+                    let id = match &d.id {
+                        BindingPattern::BindingIdentifier(id) => id,
+                        BindingPattern::ArrayPattern(a) => {
+                            self.array_pattern_decl(a, d.init.as_ref(), d.span, indent, out);
+                            continue;
+                        }
+                        BindingPattern::ObjectPattern(o) => {
+                            self.object_pattern_decl(o, d.init.as_ref(), d.span, indent, out);
+                            continue;
+                        }
+                        _ => {
+                            self.refuse(d.span, "destructuring declaration");
+                            continue;
+                        }
                     };
                     let name = py_name(id.name.as_str(), false, false);
+                    // J86: `const f = (...) => ...` inside a function is a nested `def` (a closure).
+                    if let (
+                        Some(Expression::ArrowFunctionExpression(a)),
+                        VariableDeclarationKind::Const,
+                    ) = (&d.init, v.kind)
+                    {
+                        self.nested_def(&name, a, indent, out);
+                        continue;
+                    }
                     let value = match &d.init {
                         Some(init) => self.expr(init).code,
                         None => "_JS_UNDEFINED".to_string(),
@@ -612,13 +845,35 @@ impl<'s> Lowerer<'s> {
             Statement::WhileStatement(w) => {
                 let test = self.condition(&w.test);
                 out.push(format!("{p}while {test}:"));
+                self.breaks.push(BreakTarget::Loop);
                 self.body(&w.body, indent + 1, out);
+                self.breaks.pop();
+            }
+            // J86: `for (;;)` only; a C-style loop with a clause stays refused.
+            Statement::ForStatement(f)
+                if f.init.is_none() && f.test.is_none() && f.update.is_none() =>
+            {
+                out.push(format!("{p}while True:"));
+                self.breaks.push(BreakTarget::Loop);
+                self.body(&f.body, indent + 1, out);
+                self.breaks.pop();
+            }
+            Statement::SwitchStatement(sw) => self.switch(sw, indent, out),
+            Statement::ThrowStatement(t) => {
+                let value = self.expr(&t.argument);
+                if self.is_error_construction(&t.argument) {
+                    out.push(format!("{p}raise {}", value.code));
+                } else {
+                    out.push(format!("{p}raise _js_throw({})", value.code));
+                }
             }
             Statement::ForOfStatement(f) => self.for_of(f, indent, out),
             Statement::BlockStatement(b) => self.block(&b.body, indent, out),
             Statement::BreakStatement(b) => {
                 if b.label.is_some() {
                     self.refuse(b.span, "labelled break");
+                } else if self.breaks.last() == Some(&BreakTarget::Switch) {
+                    self.refuse(b.span, "break that does not end its switch case");
                 } else {
                     out.push(format!("{p}break"));
                 }
@@ -648,24 +903,91 @@ impl<'s> Lowerer<'s> {
 
     fn assignment(&mut self, a: &AssignmentExpression<'_>, indent: usize, out: &mut Vec<String>) {
         let p = pad(indent);
-        if a.operator != AssignmentOperator::Assign {
-            self.refuse(a.span, "compound assignment");
+        // J86: `a = b = v` (identifiers only): one value, every target bound to it.
+        if a.operator == AssignmentOperator::Assign
+            && let Expression::AssignmentExpression(_) = &a.right
+        {
+            let mut targets = Vec::new();
+            let mut current = a;
+            loop {
+                let AssignmentTarget::AssignmentTargetIdentifier(id) = &current.left else {
+                    self.refuse(current.span, "chained assignment to anything but a local");
+                    return;
+                };
+                targets.push(id);
+                match &current.right {
+                    Expression::AssignmentExpression(next)
+                        if next.operator == AssignmentOperator::Assign =>
+                    {
+                        current = next;
+                    }
+                    Expression::AssignmentExpression(next) => {
+                        self.refuse(next.span, "compound assignment inside an expression");
+                        return;
+                    }
+                    _ => break,
+                }
+            }
+            let value = self.expr(&current.right);
+            let mut names = Vec::new();
+            for id in targets {
+                names.push(self.local_target(id.name.as_str(), id.span).code);
+            }
+            out.push(format!("{p}{} = {}", names.join(" = "), value.code));
             return;
         }
-        let value = self.expr(&a.right);
+        let op = match a.operator {
+            AssignmentOperator::Assign => None,
+            AssignmentOperator::Addition => Some(BinaryOperator::Addition),
+            AssignmentOperator::Subtraction => Some(BinaryOperator::Subtraction),
+            AssignmentOperator::Multiplication => Some(BinaryOperator::Multiplication),
+            _ => {
+                self.refuse(a.span, "compound assignment operator");
+                return;
+            }
+        };
         match &a.left {
             AssignmentTarget::AssignmentTargetIdentifier(id) => {
-                let target = self.resolve(id.name.as_str(), id.span);
+                let target = self.local_target(id.name.as_str(), id.span);
+                let value = self.assigned_value(op, target.clone(), &a.right);
+                out.push(format!("{p}{} = {}", target.code, value.code));
+            }
+            AssignmentTarget::StaticMemberExpression(m)
+                if matches!(strip(&m.object), Expression::ThisExpression(_)) =>
+            {
+                let target = self.this_member(m.property.name.as_str(), m.span);
+                let value = self.assigned_value(op, target.clone(), &a.right);
                 out.push(format!("{p}{} = {}", target.code, value.code));
             }
             AssignmentTarget::StaticMemberExpression(m) => {
+                if op.is_some() {
+                    self.refuse(a.span, "compound assignment to a property");
+                    return;
+                }
                 let object = self.expr(&m.object);
+                let value = self.expr(&a.right);
                 out.push(format!(
                     "{p}_js_put({}, {}, {})",
                     object.code,
                     py_str(m.property.name.as_str()),
                     value.code
                 ));
+            }
+            AssignmentTarget::ComputedMemberExpression(m) => {
+                if op.is_some() {
+                    self.refuse(a.span, "compound assignment to a property");
+                    return;
+                }
+                let object = self.expr(&m.object);
+                let key = self.expr(&m.expression);
+                let value = self.expr(&a.right);
+                out.push(format!(
+                    "{p}_js_put({}, {}, {})",
+                    object.code, key.code, value.code
+                ));
+            }
+            AssignmentTarget::ArrayAssignmentTarget(t) if op.is_none() => {
+                self.array_assignment(t, &a.right, indent, out);
             }
             other => {
                 self.refuse(other.span(), "assignment target");
@@ -730,7 +1052,9 @@ impl<'s> Lowerer<'s> {
                 return;
             }
         }
+        self.breaks.push(BreakTarget::Loop);
         self.body(&f.body, indent + 1, out);
+        self.breaks.pop();
     }
 
     /// An expression in a condition slot: a Python bool, through `_js_truthy` unless it already is.
@@ -763,11 +1087,16 @@ impl<'s> Lowerer<'s> {
                 }
                 None => self.refuse(n.span, "non-finite number literal"),
             },
-            Expression::StringLiteral(s) => Py {
-                is_str: true,
-                pure: true,
-                ..Py::atom(py_str_utf16(s.value.encode_utf16()))
-            },
+            Expression::StringLiteral(s) => {
+                let units: Vec<u16> = s.value.encode_utf16().collect();
+                Py {
+                    is_str: true,
+                    pure: true,
+                    safe_start: !units.first().is_some_and(|u| is_trail(*u)),
+                    safe_end: !units.last().is_some_and(|u| is_lead(*u)),
+                    ..Py::atom(py_str_utf16(units))
+                }
+            }
             Expression::TemplateLiteral(t) => self.template(t),
             Expression::Identifier(id) => self.resolve(id.name.as_str(), id.span),
             Expression::ArrayExpression(a) => self.array(a),
@@ -796,6 +1125,21 @@ impl<'s> Lowerer<'s> {
             Expression::StaticMemberExpression(m) => {
                 if m.optional {
                     return self.refuse(m.span, "optional chaining");
+                }
+                // J86: `this.x` is the attribute itself; `Object.prototype` a stand-in compared by
+                // identity (`Object.getPrototypeOf(o) === Object.prototype`).
+                if let Expression::ThisExpression(_) = strip(&m.object) {
+                    return self.this_member(m.property.name.as_str(), m.span);
+                }
+                if let Expression::Identifier(id) = strip(&m.object)
+                    && id.name == "Object"
+                    && m.property.name == "prototype"
+                    && !self.is_local("Object")
+                {
+                    return Py {
+                        pure: true,
+                        ..Py::atom("_JS_OBJECT_PROTOTYPE")
+                    };
                 }
                 let object = self.expr(&m.object);
                 match m.property.name.as_str() {
@@ -830,7 +1174,16 @@ impl<'s> Lowerer<'s> {
             Expression::ArrowFunctionExpression(a) => {
                 self.refuse(a.span, "arrow function outside a callback argument")
             }
-            Expression::ThisExpression(t) => self.refuse(t.span, "this"),
+            Expression::ThisExpression(t) => {
+                if self.class_ctx.is_some() {
+                    Py {
+                        pure: true,
+                        ..Py::atom("self")
+                    }
+                } else {
+                    self.refuse(t.span, "this outside a class")
+                }
+            }
             Expression::AwaitExpression(a) => self.refuse(a.span, "await"),
             Expression::YieldExpression(y) => self.refuse(y.span, "yield"),
             Expression::ClassExpression(c) => self.refuse(c.span, "class"),
@@ -842,18 +1195,29 @@ impl<'s> Lowerer<'s> {
             Expression::ChainExpression(c) => self.refuse(c.span, "optional chaining"),
             Expression::SequenceExpression(s) => self.refuse(s.span, "comma operator"),
             Expression::TaggedTemplateExpression(t) => self.refuse(t.span, "tagged template"),
-            Expression::BigIntLiteral(b) => self.refuse(b.span, "bigint literal"),
+            // J86: a BigInt is `_JsBigInt` (exact, never equal to a number).
+            Expression::BigIntLiteral(b) => Py {
+                pure: true,
+                ..Py::atom(format!("_JsBigInt({})", b.value.as_str()))
+            },
             other => self.refuse(other.span(), "expression"),
         }
     }
 
     fn template(&mut self, t: &TemplateLiteral<'_>) -> Py {
-        let mut parts: Vec<String> = Vec::new();
+        // Each part: its code, and whether its ends are known safe (SUBSET.md, Strings: a junction
+        // where a lead surrogate may meet a trail surrogate is joined by `_js_cat`, J86).
+        let mut parts: Vec<(String, bool, bool)> = Vec::new();
         for (i, quasi) in t.quasis.iter().enumerate() {
             match quasi.value.cooked {
                 Some(cooked) => {
-                    if cooked.len_utf16() > 0 {
-                        parts.push(py_str_utf16(cooked.encode_utf16()));
+                    let units: Vec<u16> = cooked.encode_utf16().collect();
+                    if !units.is_empty() {
+                        parts.push((
+                            py_str_utf16(units.iter().copied()),
+                            !is_trail(units[0]),
+                            !is_lead(units[units.len() - 1]),
+                        ));
                     }
                 }
                 None => {
@@ -862,27 +1226,43 @@ impl<'s> Lowerer<'s> {
             }
             if let Some(e) = t.expressions.get(i) {
                 let value = self.expr(e);
-                parts.push(if value.is_str {
+                let code = if value.is_str {
                     value.at(ADD + 1)
                 } else {
                     format!("_js_str({})", value.code)
-                });
+                };
+                parts.push((code, value.safe_start, value.safe_end));
             }
         }
-        match parts.len() {
-            0 => Py {
+        if parts.is_empty() {
+            return Py {
                 is_str: true,
                 pure: true,
+                safe_start: true,
+                safe_end: true,
                 ..Py::atom("\"\"")
-            },
-            1 => Py {
-                is_str: true,
-                ..Py::atom(parts.remove(0))
-            },
-            _ => Py {
-                is_str: true,
-                ..Py::new(parts.join(" + "), ADD)
-            },
+            };
+        }
+        let safe_start = parts[0].1;
+        let mut parts = parts.into_iter();
+        let (first, _, mut end_safe) = parts.next().expect("not empty");
+        let mut code = first;
+        let mut prec = ATOM;
+        for (part, start_safe, part_end_safe) in parts {
+            if end_safe || start_safe {
+                code = format!("{code} + {part}");
+                prec = ADD;
+            } else {
+                code = format!("_js_cat({code}, {part})");
+                prec = ATOM;
+            }
+            end_safe = part_end_safe;
+        }
+        Py {
+            is_str: true,
+            safe_start,
+            safe_end: end_safe,
+            ..Py::new(code, prec)
         }
     }
 
@@ -915,8 +1295,10 @@ impl<'s> Lowerer<'s> {
         let mut items = Vec::new();
         for property in &o.properties {
             match property {
+                // J86: `{...x}` copies x's own enumerable properties (`_js_spread`), in place.
                 ObjectPropertyKind::SpreadProperty(s) => {
-                    self.refuse(s.span, "object spread");
+                    let value = self.expr(&s.argument);
+                    items.push(format!("**_js_spread({})", value.code));
                 }
                 ObjectPropertyKind::ObjectProperty(p) => {
                     if p.method || p.kind != PropertyKind::Init {
@@ -1006,24 +1388,27 @@ impl<'s> Lowerer<'s> {
                     CMP,
                 )
             }
-            Op::Subtraction => {
-                let left = js_num(self.expr(&b.left));
-                let right = js_num(self.expr(&b.right));
-                rounded(format!("{} - {}", left.at(ADD), right.at(ADD + 1)))
-            }
-            Op::Addition => {
+            Op::Subtraction | Op::Addition | Op::Multiplication | Op::Division | Op::Remainder => {
                 let left = self.expr(&b.left);
                 let right = self.expr(&b.right);
-                if left.is_num && right.is_num {
-                    let (left, right) = (js_num(left), js_num(right));
-                    rounded(format!("{} + {}", left.at(ADD), right.at(ADD + 1)))
-                } else if left.is_str && right.is_str {
-                    Py {
-                        is_str: true,
-                        ..Py::new(format!("{} + {}", left.at(ADD), right.at(ADD + 1)), ADD)
+                arith(b.operator, left, right)
+            }
+            // J86: `key in obj`, own keys plus what Object.prototype supplies.
+            Op::In => {
+                let key = self.expr(&b.left);
+                let object = self.expr(&b.right);
+                Py::boolean(format!("_js_in({}, {})", key.code, object.code), ATOM)
+            }
+            // J86: `x instanceof C` for a compiled class or a built-in Error class.
+            Op::Instanceof => {
+                let value = self.expr(&b.left);
+                match self.class_ref(&b.right) {
+                    Some(class) => {
+                        Py::boolean(format!("isinstance({}, {class})", value.code), ATOM)
                     }
-                } else {
-                    Py::atom(format!("_js_add({}, {})", left.code, right.code))
+                    None => {
+                        self.refuse(b.span, "instanceof anything but a compiled or Error class")
+                    }
                 }
             }
             other => {
@@ -1035,8 +1420,25 @@ impl<'s> Lowerer<'s> {
 
     fn strict_eq(&mut self, left: &Expression<'_>, right: &Expression<'_>, negate: bool) -> Py {
         let (l, r) = (self.expr(left), self.expr(right));
+        self.strict_eq_parts(l, Some(left), r, right, negate)
+    }
+
+    /// `subject === <test>` with the subject already lowered (a `switch` discriminant, J86).
+    fn strict_eq_py(&mut self, l: Py, r: Py, right: &Expression<'_>, negate: bool) -> Py {
+        self.strict_eq_parts(l, None, r, right, negate)
+    }
+
+    fn strict_eq_parts(
+        &mut self,
+        l: Py,
+        left: Option<&Expression<'_>>,
+        r: Py,
+        right: &Expression<'_>,
+        negate: bool,
+    ) -> Py {
         // `x === null` / `x === undefined`: identity against the one sentinel.
-        for (value, other) in [(&l, right), (&r, left)] {
+        for (value, other) in [(&l, Some(right)), (&r, left)] {
+            let Some(other) = other else { continue };
             let literal = match strip(other) {
                 Expression::NullLiteral(_) => Some("None"),
                 Expression::Identifier(id)
@@ -1114,6 +1516,17 @@ impl<'s> Lowerer<'s> {
                 Py::boolean(format!("not {}", value.at(NOT)), NOT)
             }
             UnaryOperator::UnaryNegation => {
+                // J86: only a non-zero literal is negated in place; anything else may be 0 (whose
+                // negation is -0, which only a float holds) or a BigInt, so `_js_neg`.
+                if !matches!(strip(&u.argument), Expression::NumericLiteral(n) if n.value != 0.0) {
+                    let value = self.expr(&u.argument);
+                    return Py {
+                        is_num: value.is_num,
+                        is_double: true,
+                        pure: value.pure,
+                        ..Py::atom(format!("_js_neg({})", value.code))
+                    };
+                }
                 // Negating a double is exact, so normalising the operand is enough.
                 let value = js_num(self.expr(&u.argument));
                 Py {
@@ -1137,10 +1550,23 @@ impl<'s> Lowerer<'s> {
         }
     }
 
-    fn args(&mut self, args: &[Argument<'_>], callback: Option<usize>) -> Option<Vec<String>> {
+    fn args(
+        &mut self,
+        args: &[Argument<'_>],
+        callback: Option<usize>,
+        spread_ok: bool,
+    ) -> Option<Vec<String>> {
         let mut out = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             let Some(e) = arg.as_expression() else {
+                if let Argument::SpreadElement(spread) = arg
+                    && spread_ok
+                {
+                    // J86: `a.push(...xs)` spreads any iterable, as a Python `*xs` does.
+                    let value = self.expr(&spread.argument);
+                    out.push(format!("*{}", value.at(ATOM)));
+                    continue;
+                }
                 self.refuse(arg.span(), "spread argument");
                 return None;
             };
@@ -1163,12 +1589,12 @@ impl<'s> Lowerer<'s> {
     }
 
     /// An inline arrow passed as a callback: a lambda that also swallows the index and array JS
-    /// passes after the element.
+    /// passes after the element. A parameter may be an array pattern of names (J86), read through
+    /// the iterator as a declaration's pattern is.
     fn callback(&mut self, a: &ArrowFunctionExpression<'_>) -> Py {
         if a.r#async {
             return self.refuse(a.span, "async function");
         }
-        let names = self.params(&a.params);
         let body = match &a.body {
             ArrowFunctionBody::FunctionBody(b) => {
                 return self.refuse(b.span, "block-bodied arrow function in a callback");
@@ -1177,16 +1603,61 @@ impl<'s> Lowerer<'s> {
                 .as_expression()
                 .expect("an arrow body is a block or an expression"),
         };
-        self.scopes
-            .push(names.iter().map(|(src, _)| src.clone()).collect());
+        if a.params.rest.is_some() {
+            return self.refuse(a.span, "rest parameter");
+        }
+        let mut params: Vec<String> = Vec::new();
+        let mut scope: HashSet<String> = HashSet::new();
+        // (argument name, the names it destructures into)
+        let mut unpack: Vec<(String, Vec<String>)> = Vec::new();
+        for p in &a.params.items {
+            if p.initializer.is_some() {
+                return self.refuse(p.span, "default parameter in a callback");
+            }
+            match &p.pattern {
+                BindingPattern::BindingIdentifier(id) => {
+                    let py = py_name(id.name.as_str(), false, false);
+                    self.claim(id.name.as_str(), &py, id.span);
+                    scope.insert(id.name.to_string());
+                    params.push(py);
+                }
+                BindingPattern::ArrayPattern(pattern) if pattern.rest.is_none() => {
+                    let mut names = Vec::new();
+                    for element in &pattern.elements {
+                        match element {
+                            Some(BindingPattern::BindingIdentifier(id)) => {
+                                let py = py_name(id.name.as_str(), false, false);
+                                self.claim(id.name.as_str(), &py, id.span);
+                                scope.insert(id.name.to_string());
+                                names.push(py);
+                            }
+                            None => names.push("_".to_string()),
+                            Some(other) => {
+                                return self.refuse(other.span(), "destructuring pattern");
+                            }
+                        }
+                    }
+                    let arg = format!("_js_arg{}", self.tmp);
+                    self.tmp += 1;
+                    params.push(arg.clone());
+                    unpack.push((arg, names));
+                }
+                other => return self.refuse(other.span(), "destructuring parameter"),
+            }
+        }
+        self.scopes.push(scope);
         let value = self.expr(body);
         self.scopes.pop();
-        let mut params: Vec<String> = names.into_iter().map(|(_, py)| py).collect();
+        let mut code = value.at(TERNARY);
+        for (arg, names) in unpack.iter().rev() {
+            code = format!(
+                "(lambda {}: {code})(*_js_destructure({arg}, {}))",
+                names.join(", "),
+                names.len()
+            );
+        }
         params.push("*_".to_string());
-        Py::new(
-            format!("lambda {}: {}", params.join(", "), value.at(TERNARY)),
-            LAMBDA,
-        )
+        Py::new(format!("lambda {}: {code}", params.join(", ")), LAMBDA)
     }
 
     fn call(&mut self, c: &CallExpression<'_>) -> Py {
@@ -1195,12 +1666,30 @@ impl<'s> Lowerer<'s> {
         }
         match strip(&c.callee) {
             Expression::Identifier(id) => {
-                let callee = self.resolve(id.name.as_str(), id.span);
-                let Some(args) = self.args(&c.arguments, None) else {
+                let name = id.name.as_str();
+                if !self.is_local(name)
+                    && let Some(&(_, helper, min, max, ret)) =
+                        GLOBAL_CALLS.iter().find(|(n, ..)| *n == name)
+                {
+                    if c.arguments.len() < min || c.arguments.len() > max {
+                        let construct = format!("argument count for {name}()");
+                        return self.refuse(c.span, construct);
+                    }
+                    let Some(args) = self.args(&c.arguments, None, false) else {
+                        return Py::atom("None");
+                    };
+                    return returned(ret, format!("{helper}({})", args.join(", ")));
+                }
+                if self.classes.contains_key(name) && !self.scopes.iter().any(|s| s.contains(name))
+                {
+                    return self.refuse(c.span, "calling a class without new");
+                }
+                let callee = self.resolve(name, id.span);
+                let Some(args) = self.args(&c.arguments, None, false) else {
                     return Py::atom("None");
                 };
-                let is_bool = !self.scopes.iter().any(|s| s.contains(id.name.as_str()))
-                    && self.bool_fns.contains(id.name.as_str());
+                let is_bool =
+                    !self.scopes.iter().any(|s| s.contains(name)) && self.bool_fns.contains(name);
                 Py {
                     is_bool,
                     ..Py::atom(format!("{}({})", callee.code, args.join(", ")))
@@ -1211,98 +1700,198 @@ impl<'s> Lowerer<'s> {
                     return self.refuse(m.span, "optional chaining");
                 }
                 let method = m.property.name.as_str();
+                // J86: `this.m(...)` calls a method the class declares, directly.
+                if let Expression::ThisExpression(_) = strip(&m.object) {
+                    let declared = self
+                        .class_ctx
+                        .as_ref()
+                        .is_some_and(|class| class.methods.contains(method));
+                    if !declared {
+                        let construct =
+                            format!("this.{method}() for a method the class does not declare");
+                        return self.refuse(c.span, construct);
+                    }
+                    let Some(args) = self.args(&c.arguments, None, false) else {
+                        return Py::atom("None");
+                    };
+                    return Py::atom(format!("self.{method}({})", args.join(", ")));
+                }
                 if let Expression::Identifier(object) = strip(&m.object)
                     && !self.is_local(object.name.as_str())
                 {
                     return self.static_call(object.name.as_str(), method, c);
                 }
-                let Some(&(_, min, max, callback, returns_bool)) =
-                    METHODS.iter().find(|(name, ..)| *name == method)
-                else {
+                let builtin = METHODS.iter().find(|(name, ..)| *name == method);
+                let class_method = self.ctx.class_methods.contains(method);
+                let Some(&(_, min, max, callback, ret)) = builtin else {
+                    if class_method {
+                        // J86: a method a compiled class (or an adapter class) declares.
+                        let receiver = self.expr(&m.object);
+                        let Some(args) = self.args(&c.arguments, None, false) else {
+                            return Py::atom("None");
+                        };
+                        let mut all = vec![receiver.code, py_str(method)];
+                        all.extend(args);
+                        return Py::atom(format!("_js_invoke({})", all.join(", ")));
+                    }
                     let construct = format!("builtin method .{method}");
                     return self.refuse(c.span, construct);
                 };
-                if c.arguments.len() < min || c.arguments.len() > max {
+                // A name a class shares with a builtin is dispatched at run time, so the builtin's
+                // arity is checked only when no class could be the receiver.
+                if !class_method && (c.arguments.len() < min || c.arguments.len() > max) {
                     let construct = format!("argument count for .{method}");
                     return self.refuse(c.span, construct);
                 }
                 let receiver = self.expr(&m.object);
-                let Some(args) = self.args(&c.arguments, callback) else {
+                let Some(args) = self.args(&c.arguments, callback, method == "push") else {
                     return Py::atom("None");
                 };
+                if class_method && method != "toString" {
+                    // J86: a compiled class also declares this name, so the receiver decides, as
+                    // JS's prototype lookup does: the instance's method, else the builtin.
+                    // (`_js_m_toString` dispatches to an instance itself.)
+                    let mut all = vec![receiver.code, py_str(method), format!("_js_m_{method}")];
+                    all.extend(args);
+                    return Py::atom(format!("_js_dispatch({})", all.join(", ")));
+                }
                 let mut all = vec![receiver.code];
                 all.extend(args);
-                let code = format!("_js_m_{method}({})", all.join(", "));
-                Py {
-                    is_bool: returns_bool,
-                    is_str: method == "join",
-                    ..Py::atom(code)
-                }
+                returned(ret, format!("_js_m_{method}({})", all.join(", ")))
             }
             other => self.refuse(other.span(), "call of a computed callee"),
         }
     }
 
     fn static_call(&mut self, object: &str, method: &str, c: &CallExpression<'_>) -> Py {
-        let helper = match (object, method) {
-            ("Array", "isArray") => Some(("_js_is_array", true)),
-            ("Number", "isInteger") => Some(("_js_number_is_integer", true)),
-            ("JSON", "stringify") => Some(("_js_json_stringify", false)),
-            _ => None,
-        };
-        let Some((helper, is_bool)) = helper else {
+        let Some(&(_, _, helper, min, max, ret)) = STATIC_CALLS
+            .iter()
+            .find(|(o, m, ..)| *o == object && *m == method)
+        else {
             let construct = format!("builtin call {object}.{method}");
             return self.refuse(c.span, construct);
         };
-        if c.arguments.len() != 1 {
+        if c.arguments.len() < min || c.arguments.len() > max {
             let construct = format!("argument count for {object}.{method}");
             return self.refuse(c.span, construct);
         }
-        let Some(args) = self.args(&c.arguments, None) else {
+        let Some(args) = self.args(&c.arguments, None, false) else {
             return Py::atom("None");
         };
-        Py {
-            is_bool,
-            ..Py::atom(format!("{helper}({})", args[0]))
-        }
+        returned(ret, format!("{helper}({})", args.join(", ")))
     }
 
     fn new_expr(&mut self, n: &NewExpression<'_>) -> Py {
-        let class = match strip(&n.callee) {
-            Expression::Identifier(id) if !self.is_local(id.name.as_str()) => {
-                match id.name.as_str() {
-                    "Map" => Some("_JsMap"),
-                    "Set" => Some("_JsSet"),
-                    _ => None,
+        let Expression::Identifier(id) = strip(&n.callee) else {
+            let construct = format!("new {}", self.text(n.callee.span()));
+            return self.refuse(n.span, construct);
+        };
+        let name = id.name.as_str();
+        let shadowed = self.scopes.iter().any(|s| s.contains(name));
+        let class: Option<String> = if let Some(py) = self.classes.get(name).filter(|_| !shadowed) {
+            Some(py.clone())
+        } else if self.is_local(name) {
+            None
+        } else {
+            match name {
+                "Map" | "Set" => {
+                    if n.arguments.len() > 1 {
+                        return self.refuse(n.span, "argument count for new Map/Set");
+                    }
+                    Some(if name == "Map" { "_JsMap" } else { "_JsSet" }.to_string())
                 }
+                // J86: the built-in Errors the codec throws.
+                "Error" | "TypeError" => {
+                    if n.arguments.len() > 1 {
+                        return self.refuse(n.span, "argument count for new Error");
+                    }
+                    Some(
+                        if name == "Error" {
+                            "_JsError"
+                        } else {
+                            "_JsTypeError"
+                        }
+                        .to_string(),
+                    )
+                }
+                "RegExp" => return self.dynamic_regex(n),
+                _ => match adapters::global(name) {
+                    Some(adapter) if matches!(adapter.kind, AdapterKind::Class(_)) => {
+                        self.imports
+                            .entry(self.ctx.adapter_module.clone())
+                            .or_default()
+                            .insert(adapter.py_name.to_string());
+                        Some(adapter.py_name.to_string())
+                    }
+                    _ => None,
+                },
             }
-            _ => None,
         };
         let Some(class) = class else {
             let construct = format!("new {}", self.text(n.callee.span()));
             return self.refuse(n.span, construct);
         };
-        if n.arguments.len() > 1 {
-            return self.refuse(n.span, "argument count for new Map/Set");
-        }
-        let Some(args) = self.args(&n.arguments, None) else {
+        let Some(args) = self.args(&n.arguments, None, false) else {
             return Py::atom("None");
         };
         Py::atom(format!("{class}({})", args.join(", ")))
     }
 
+    /// `new RegExp(`...`)` (J86): a template literal whose every substitution is a whole `{n}`
+    /// repeat count, so the pattern is checked against the whitelist grammar at compile time and
+    /// only the count is supplied at run time (`_js_regexp_dynamic` checks it is an integer).
+    fn dynamic_regex(&mut self, n: &NewExpression<'_>) -> Py {
+        let template = match n.arguments.as_slice() {
+            [arg] => match arg.as_expression().map(strip) {
+                Some(Expression::TemplateLiteral(t)) => t,
+                _ => return self.refuse(n.span, "new RegExp of anything but a template literal"),
+            },
+            _ => return self.refuse(n.span, "new RegExp with flags"),
+        };
+        let mut source = String::new();
+        for (i, quasi) in template.quasis.iter().enumerate() {
+            match quasi
+                .value
+                .cooked
+                .and_then(|c| c.as_str().map(str::to_string))
+            {
+                Some(text) => source.push_str(&text),
+                None => return self.refuse(quasi.span, "template escape"),
+            }
+            if i + 1 < template.quasis.len() {
+                source.push(REGEX_HOLE);
+            }
+        }
+        let translated = match translate_regex(&source) {
+            Ok(pattern) => pattern,
+            Err(why) => return self.refuse(n.span, why),
+        };
+        let mut parts = Vec::new();
+        for (i, piece) in translated.split(REGEX_HOLE).enumerate() {
+            if i > 0 {
+                let value = self.expr(&template.expressions[i - 1]);
+                parts.push(value.code);
+            }
+            parts.push(py_str(piece));
+        }
+        Py::atom(format!("_js_regexp_dynamic({})", parts.join(", ")))
+    }
+
     fn regex(&mut self, r: &RegExpLiteral<'_>) -> Py {
-        if !r.regex.flags.is_empty() {
-            return self.refuse(r.span, "regex flags");
+        // J86: `g` is the one flag accepted (only `.replace` takes a `g` regex at run time).
+        let global = r.regex.flags == RegExpFlags::G;
+        if !r.regex.flags.is_empty() && !global {
+            return self.refuse(r.span, "regex flags other than g");
         }
         let pattern = match translate_regex(r.regex.pattern.text.as_str()) {
             Ok(pattern) => pattern,
             Err(why) => return self.refuse(r.span, why),
         };
-        let index = match self.regexes.iter().position(|p| *p == pattern) {
+        let key = (pattern, global);
+        let index = match self.regexes.iter().position(|p| *p == key) {
             Some(i) => i,
             None => {
-                self.regexes.push(pattern);
+                self.regexes.push(key);
                 self.regexes.len() - 1
             }
         };
@@ -1311,6 +1900,808 @@ impl<'s> Lowerer<'s> {
             ..Py::atom(format!("_JS_RE_{index}"))
         }
     }
+}
+
+// -------------------------------------------------------------------- J86: modules and classes
+
+impl<'s> Lowerer<'s> {
+    /// A value import: from a compiled module (`from .<module> import <names>`), or through the
+    /// adapter seam (`adapters.rs`). Anything else is refused, naming the import.
+    fn import(&mut self, i: &ImportDeclaration<'_>) {
+        if i.import_kind.is_type() {
+            return;
+        }
+        let Some(spec) = i.source.value.as_str() else {
+            self.refuse(i.span, "import specifier with a lone surrogate");
+            return;
+        };
+        let Some(specifiers) = &i.specifiers else {
+            self.refuse(i.span, "side-effect import");
+            return;
+        };
+        let resolved = resolve_specifier(&self.ctx.path, spec);
+        for specifier in specifiers {
+            let ImportDeclarationSpecifier::ImportSpecifier(s) = specifier else {
+                self.refuse(specifier.span(), "default or namespace import");
+                continue;
+            };
+            if s.import_kind.is_type() {
+                continue;
+            }
+            let imported = s.imported.name();
+            if imported != s.local.name {
+                self.refuse(s.span, "renamed import");
+                continue;
+            }
+            let local = s.local.name.as_str();
+            let compiled = resolved
+                .as_ref()
+                .and_then(|path| self.ctx.modules.get(path))
+                .cloned();
+            if let Some(module) = compiled {
+                let Some((py, is_class)) = module.names.get(local).cloned() else {
+                    let construct =
+                        format!("import of {local} from {spec}, which that module does not export");
+                    self.refuse(s.span, construct);
+                    continue;
+                };
+                self.claim(local, &py, s.span);
+                self.imports
+                    .entry(format!(".{}", module.py_module))
+                    .or_default()
+                    .insert(py.clone());
+                self.globals.insert(local.to_string(), py.clone());
+                if is_class {
+                    self.classes.insert(local.to_string(), py);
+                }
+                continue;
+            }
+            match resolved
+                .as_deref()
+                .and_then(|path| adapters::import(path, local))
+            {
+                Some(adapter) => {
+                    let py = adapter.py_name.to_string();
+                    self.claim(local, &py, s.span);
+                    self.imports
+                        .entry(self.ctx.adapter_module.clone())
+                        .or_default()
+                        .insert(py.clone());
+                    self.globals.insert(local.to_string(), py.clone());
+                    if matches!(adapter.kind, AdapterKind::Class(_)) {
+                        self.classes.insert(local.to_string(), py);
+                    }
+                }
+                None => {
+                    let construct = format!(
+                        "import of {local} from {spec}: no compiled module and no declared adapter"
+                    );
+                    self.refuse(s.span, construct);
+                    // Bound anyway, so each use is not refused again as an unknown global.
+                    self.globals
+                        .insert(local.to_string(), py_name(local, true, false));
+                }
+            }
+        }
+    }
+
+    /// `export { a, b }`: each a module-level name (declared or imported), exported as itself.
+    fn export_list(&mut self, e: &ExportNamedDeclaration<'_>) {
+        for specifier in &e.specifiers {
+            if specifier.export_kind.is_type() {
+                continue;
+            }
+            let local = specifier.local.name();
+            if specifier.exported.name() != local {
+                self.refuse(specifier.span, "renamed export");
+                continue;
+            }
+            match self.globals.get(local.as_str()) {
+                Some(py) => {
+                    if !self.exports.contains(py) {
+                        self.exports.push(py.clone());
+                    }
+                }
+                None => {
+                    self.refuse(specifier.span, "export of a name this module does not bind");
+                }
+            }
+        }
+    }
+
+    /// A class: a Python class over `_JsObject` (or `_JsError` for `extends Error`). Fields are
+    /// initialised in declaration order at the start of `__init__` (after the base's, as JS does
+    /// for a derived class), then the constructor body runs.
+    fn class_decl(&mut self, c: &Class<'_>, out: &mut Vec<String>) {
+        let Some(id) = &c.id else {
+            self.refuse(c.span, "anonymous class");
+            return;
+        };
+        let name = self.classes[id.name.as_str()].clone();
+        if !c.decorators.is_empty() {
+            self.refuse(c.span, "decorator");
+        }
+        if c.r#abstract {
+            self.refuse(c.span, "abstract class");
+        }
+        let is_error = match &c.heritage {
+            None => false,
+            Some(h) => match strip(&h.expression) {
+                Expression::Identifier(base) if base.name == "Error" && !self.is_local("Error") => {
+                    true
+                }
+                other => {
+                    self.refuse(other.span(), "extends anything but Error");
+                    return;
+                }
+            },
+        };
+        let base = if is_error { "_JsError" } else { "_JsObject" };
+
+        let mut fields: Vec<&PropertyDefinition<'_>> = Vec::new();
+        let mut methods: Vec<&MethodDefinition<'_>> = Vec::new();
+        let mut constructor: Option<&MethodDefinition<'_>> = None;
+        let mut own: BTreeSet<String> = BTreeSet::new();
+        let mut own_methods: BTreeSet<String> = BTreeSet::new();
+        for element in &c.body.body {
+            match element {
+                ClassElement::PropertyDefinition(p) => {
+                    if p.r#static || p.computed || p.declare || !p.decorators.is_empty() {
+                        self.refuse(p.span, "static, computed or declared class field");
+                        continue;
+                    }
+                    let Some(key) = self.member_name(&p.key, p.span, is_error) else {
+                        continue;
+                    };
+                    own.insert(key);
+                    fields.push(p);
+                }
+                ClassElement::MethodDefinition(m) => {
+                    if m.r#static || m.computed || !m.decorators.is_empty() {
+                        self.refuse(m.span, "static or computed method");
+                        continue;
+                    }
+                    if m.value.generator || m.value.r#async {
+                        self.refuse(m.span, "generator or async method");
+                        continue;
+                    }
+                    if m.value.body.is_none() {
+                        self.refuse(m.span, "method overload signature");
+                        continue;
+                    }
+                    match m.kind {
+                        MethodDefinitionKind::Constructor => {
+                            if is_error {
+                                self.refuse(m.span, "constructor in a class that extends Error");
+                                continue;
+                            }
+                            constructor = Some(m);
+                        }
+                        MethodDefinitionKind::Method | MethodDefinitionKind::Get => {
+                            let Some(key) = self.member_name(&m.key, m.span, is_error) else {
+                                continue;
+                            };
+                            if !own.insert(key.clone()) {
+                                self.refuse(m.span, "duplicate class member");
+                                continue;
+                            }
+                            if m.kind == MethodDefinitionKind::Method {
+                                own_methods.insert(key);
+                            }
+                            methods.push(m);
+                        }
+                        MethodDefinitionKind::Set => {
+                            self.refuse(m.span, "setter");
+                        }
+                    }
+                }
+                other => {
+                    self.refuse(other.span(), "class member");
+                }
+            }
+        }
+
+        let mut ctx = ClassCtx::default();
+        ctx.members.extend(own.iter().cloned());
+        ctx.methods.extend(own_methods.iter().cloned());
+        if is_error {
+            for member in ["message", "name", "toString"] {
+                ctx.members.insert(member.to_string());
+            }
+            ctx.methods.insert("toString".to_string());
+        }
+        let saved = self.class_ctx.replace(ctx);
+
+        let set = |names: &BTreeSet<String>| -> String {
+            if names.is_empty() {
+                "frozenset()".to_string()
+            } else {
+                let items: Vec<String> = names.iter().map(|n| py_str(n)).collect();
+                format!("frozenset({{{}}})", items.join(", "))
+            }
+        };
+        out.push(format!("class {name}({base}):"));
+        out.push(format!("    _js_name = {}", py_str(id.name.as_str())));
+        out.push(format!("    _js_own = {}", set(&own)));
+        out.push(format!("    _js_own_methods = {}", set(&own_methods)));
+
+        // __init__: base, then fields, then the constructor body.
+        if !fields.is_empty() || constructor.is_some() || !is_error {
+            out.push(String::new());
+            let (params, locals, body): (Vec<(String, String)>, HashSet<String>, &[Statement<'_>]) =
+                match constructor {
+                    Some(ctor) => {
+                        let names = self.params(&ctor.value.params);
+                        let mut locals: HashSet<String> =
+                            names.iter().map(|(src, _)| src.clone()).collect();
+                        let statements: &[Statement<'_>] = ctor
+                            .value
+                            .body
+                            .as_ref()
+                            .map_or(&[], |b| b.statements.as_slice());
+                        let mut stack = vec![locals.clone()];
+                        self.collect_block(statements, &mut stack, &mut locals);
+                        (names, locals, statements)
+                    }
+                    None => (Vec::new(), HashSet::new(), &[]),
+                };
+            let mut signature = vec!["self".to_string()];
+            signature.extend(params.iter().map(|(_, py)| py.clone()));
+            // Extra constructor arguments are ignored in JS.
+            signature.push("*_".to_string());
+            if is_error && constructor.is_none() {
+                out.push("    def __init__(self, *args):".to_string());
+                out.push("        _JsError.__init__(self, *args)".to_string());
+            } else {
+                out.push(format!("    def __init__({}):", signature.join(", ")));
+            }
+            self.scopes.push(locals);
+            if let Some(ctor) = constructor {
+                self.param_defaults(&ctor.value.params, 2, out);
+            }
+            for field in &fields {
+                let key = property_key_name(&field.key).expect("checked by member_name");
+                let value = match &field.value {
+                    Some(init) => self.expr(init).code,
+                    // ES2022 class fields: a declared field is an own property holding undefined.
+                    None => "_JS_UNDEFINED".to_string(),
+                };
+                out.push(format!("        self.{key} = {value}"));
+            }
+            self.block(body, 2, out);
+            if fields.is_empty() && body.is_empty() && !(is_error && constructor.is_none()) {
+                out.push("        pass".to_string());
+            }
+            self.scopes.pop();
+        }
+
+        for m in methods {
+            let key = property_key_name(&m.key).expect("checked by member_name");
+            let f = &m.value;
+            let statements: &[Statement<'_>] =
+                f.body.as_ref().map_or(&[], |b| b.statements.as_slice());
+            let names = self.params(&f.params);
+            let mut locals: HashSet<String> = names.iter().map(|(src, _)| src.clone()).collect();
+            let mut stack = vec![locals.clone()];
+            self.collect_block(statements, &mut stack, &mut locals);
+            self.scopes.push(locals);
+            out.push(String::new());
+            if m.kind == MethodDefinitionKind::Get {
+                if !names.is_empty() {
+                    self.refuse(m.span, "getter with parameters");
+                }
+                out.push("    @property".to_string());
+            }
+            let mut signature = vec!["self".to_string()];
+            signature.extend(names.iter().map(|(_, py)| py.clone()));
+            out.push(format!("    def {key}({}):", signature.join(", ")));
+            self.param_defaults(&f.params, 2, out);
+            self.block(statements, 2, out);
+            if !ends_in_exit(statements) {
+                out.push("        return _JS_UNDEFINED".to_string());
+            }
+            self.scopes.pop();
+        }
+        self.class_ctx = saved;
+    }
+
+    /// A class member's name, which is also its Python attribute: a plain identifier that is not a
+    /// Python keyword, not `_`-prefixed (the runtime's own attributes are), and for an Error
+    /// subclass not one of the attributes Python's exceptions already carry.
+    fn member_name(&mut self, key: &PropertyKey<'_>, span: Span, is_error: bool) -> Option<String> {
+        let Some(name) = property_key_name(key) else {
+            self.refuse(span, "class member key");
+            return None;
+        };
+        if is_py_keyword(&name)
+            || name.starts_with('_')
+            || (is_error && matches!(name.as_str(), "args" | "with_traceback" | "add_note"))
+        {
+            let construct = format!("class member named {name}");
+            self.refuse(span, construct);
+            return None;
+        }
+        Some(name)
+    }
+
+    /// `this.<name>` inside a class: the attribute, which the class (or Error) must declare.
+    fn this_member(&mut self, name: &str, span: Span) -> Py {
+        let declared = self
+            .class_ctx
+            .as_ref()
+            .map(|class| class.members.contains(name));
+        match declared {
+            None => self.refuse(span, "this outside a class"),
+            Some(false) => {
+                let construct = format!("this.{name} for a member the class does not declare");
+                self.refuse(span, construct)
+            }
+            Some(true) => Py::atom(format!("self.{name}")),
+        }
+    }
+
+    /// The Python class an `instanceof` right-hand side names, if it is a compiled class or one of
+    /// the built-in Errors.
+    fn class_ref(&mut self, e: &Expression<'_>) -> Option<String> {
+        let Expression::Identifier(id) = strip(e) else {
+            return None;
+        };
+        let name = id.name.as_str();
+        if self.scopes.iter().any(|s| s.contains(name)) {
+            return None;
+        }
+        if let Some(py) = self.classes.get(name) {
+            return Some(py.clone());
+        }
+        match name {
+            "Error" if !self.is_local(name) => Some("_JsError".to_string()),
+            "TypeError" if !self.is_local(name) => Some("_JsTypeError".to_string()),
+            _ => None,
+        }
+    }
+
+    /// `throw new X(...)` with X a class or a built-in Error: raised as itself.
+    fn is_error_construction(&mut self, e: &Expression<'_>) -> bool {
+        match strip(e) {
+            Expression::NewExpression(n) => {
+                let class = self.class_ref(&n.callee);
+                class.is_some()
+            }
+            _ => false,
+        }
+    }
+
+    // ---------------------------------------------------------------- J86: closures
+
+    /// `const f = (...) => ...` inside a function: a nested `def`, which closes over the enclosing
+    /// function's locals as the arrow does; one it assigns is declared `nonlocal`. Refused inside
+    /// a loop, where JS gives each iteration its own binding and Python would share one.
+    fn nested_def(
+        &mut self,
+        name: &str,
+        a: &ArrowFunctionExpression<'_>,
+        indent: usize,
+        out: &mut Vec<String>,
+    ) {
+        if a.r#async {
+            self.refuse(a.span, "async function");
+            return;
+        }
+        if self.breaks.contains(&BreakTarget::Loop) {
+            self.refuse(a.span, "function defined inside a loop");
+            return;
+        }
+        let names = self.params(&a.params);
+        let mut locals: HashSet<String> = names.iter().map(|(src, _)| src.clone()).collect();
+        if let ArrowFunctionBody::FunctionBody(body) = &a.body {
+            let mut stack = vec![locals.clone()];
+            self.collect_block(&body.statements, &mut stack, &mut locals);
+        }
+        self.scopes.push(locals);
+        self.defs.push((self.scopes.len() - 1, BTreeSet::new()));
+        let saved_breaks = std::mem::take(&mut self.breaks);
+        let mut body_out = Vec::new();
+        self.param_defaults(&a.params, indent + 1, &mut body_out);
+        match &a.body {
+            ArrowFunctionBody::FunctionBody(body) => {
+                self.block(&body.statements, indent + 1, &mut body_out);
+                if !ends_in_exit(&body.statements) {
+                    body_out.push(format!("{}return _JS_UNDEFINED", pad(indent + 1)));
+                }
+            }
+            other => {
+                let expr = other
+                    .as_expression()
+                    .expect("an arrow body is a block or an expression");
+                let value = self.expr(expr);
+                body_out.push(format!("{}return {}", pad(indent + 1), value.code));
+            }
+        }
+        self.breaks = saved_breaks;
+        let (_, nonlocals) = self.defs.pop().expect("pushed above");
+        self.scopes.pop();
+        out.push(format!(
+            "{}def {name}({}):",
+            pad(indent),
+            join_params(&names)
+        ));
+        if !nonlocals.is_empty() {
+            let names: Vec<String> = nonlocals.iter().map(|n| py_name(n, false, false)).collect();
+            out.push(format!("{}nonlocal {}", pad(indent + 1), names.join(", ")));
+        }
+        out.extend(body_out);
+    }
+
+    /// An assignment target that is a name: it must be a local (a module-level binding is a
+    /// `const` or an import, both read-only in JS); one that belongs to an enclosing function is
+    /// noted for `nonlocal`.
+    fn local_target(&mut self, name: &str, span: Span) -> Py {
+        let Some(index) = self.scopes.iter().rposition(|s| s.contains(name)) else {
+            return self.refuse(span, "assignment to a module-level name");
+        };
+        if let Some((start, nonlocals)) = self.defs.last_mut()
+            && index < *start
+        {
+            nonlocals.insert(name.to_string());
+        }
+        Py::atom(py_name(name, false, false))
+    }
+
+    /// The value of `target = right` or `target op= right`.
+    fn assigned_value(
+        &mut self,
+        op: Option<BinaryOperator>,
+        target: Py,
+        right: &Expression<'_>,
+    ) -> Py {
+        let value = self.expr(right);
+        match op {
+            None => value,
+            Some(op) => arith(op, target, value),
+        }
+    }
+
+    // ---------------------------------------------------------------- J86: destructuring
+
+    /// `const [a, , b] = e`: through the iterator (`_js_destructure`), so a string gives code points,
+    /// a short array reads `undefined`, and `null` is a TypeError.
+    fn array_pattern_decl(
+        &mut self,
+        a: &ArrayPattern<'_>,
+        init: Option<&Expression<'_>>,
+        span: Span,
+        indent: usize,
+        out: &mut Vec<String>,
+    ) {
+        let Some(init) = init else {
+            self.refuse(span, "destructuring declaration without initializer");
+            return;
+        };
+        if a.rest.is_some() {
+            self.refuse(a.span, "destructuring rest element");
+            return;
+        }
+        let mut names = Vec::new();
+        for element in &a.elements {
+            match element {
+                Some(BindingPattern::BindingIdentifier(id)) => {
+                    names.push(py_name(id.name.as_str(), false, false))
+                }
+                None => names.push("_".to_string()),
+                Some(other) => {
+                    self.refuse(other.span(), "nested or defaulted destructuring");
+                    return;
+                }
+            }
+        }
+        if names.iter().all(|n| n == "_") {
+            self.refuse(a.span, "destructuring that binds nothing");
+            return;
+        }
+        let value = self.expr(init);
+        out.push(format!(
+            "{}{} = _js_destructure({}, {})",
+            pad(indent),
+            unpack_target(&names),
+            value.code,
+            names.len()
+        ));
+    }
+
+    /// `const { a, b: c } = e`: one `_js_get` per property (a TypeError on `null`/`undefined`).
+    fn object_pattern_decl(
+        &mut self,
+        o: &ObjectPattern<'_>,
+        init: Option<&Expression<'_>>,
+        span: Span,
+        indent: usize,
+        out: &mut Vec<String>,
+    ) {
+        let Some(init) = init else {
+            self.refuse(span, "destructuring declaration without initializer");
+            return;
+        };
+        if o.rest.is_some() || o.properties.is_empty() {
+            self.refuse(
+                o.span,
+                "object destructuring with a rest element or nothing to bind",
+            );
+            return;
+        }
+        let value = self.expr(init);
+        let source = if value.pure {
+            value.code
+        } else {
+            let tmp = format!("_js_obj{}", self.tmp);
+            self.tmp += 1;
+            out.push(format!("{}{tmp} = {}", pad(indent), value.code));
+            tmp
+        };
+        for property in &o.properties {
+            let (Some(key), false, BindingPattern::BindingIdentifier(id)) = (
+                property_key_name(&property.key),
+                property.computed,
+                &property.value,
+            ) else {
+                self.refuse(property.span, "nested, computed or defaulted destructuring");
+                continue;
+            };
+            out.push(format!(
+                "{}{} = _js_get({source}, {})",
+                pad(indent),
+                py_name(id.name.as_str(), false, false),
+                py_str(&key)
+            ));
+        }
+    }
+
+    /// `[a, b] = e` (an expression statement): as the declaration, into existing locals.
+    fn array_assignment(
+        &mut self,
+        t: &ArrayAssignmentTarget<'_>,
+        right: &Expression<'_>,
+        indent: usize,
+        out: &mut Vec<String>,
+    ) {
+        if t.rest.is_some() {
+            self.refuse(t.span, "destructuring rest element");
+            return;
+        }
+        let mut names = Vec::new();
+        for element in &t.elements {
+            match element {
+                Some(AssignmentTargetMaybeDefault::AssignmentTargetIdentifier(id)) => {
+                    let target = self.local_target(id.name.as_str(), id.span);
+                    names.push(target.code);
+                }
+                None => names.push("_".to_string()),
+                Some(other) => {
+                    self.refuse(other.span(), "destructuring assignment target");
+                    return;
+                }
+            }
+        }
+        let value = self.expr(right);
+        out.push(format!(
+            "{}{} = _js_destructure({}, {})",
+            pad(indent),
+            unpack_target(&names),
+            value.code,
+            names.len()
+        ));
+    }
+
+    // ---------------------------------------------------------------- J86: switch
+
+    /// `switch` as an if-chain over `===` on the discriminant, evaluated once. Every case group must
+    /// end its body (return, throw, or a trailing `break`, which is dropped); a case that falls
+    /// into the next one other than by being empty is refused, and so is a `default` that is not
+    /// last.
+    fn switch(&mut self, sw: &SwitchStatement<'_>, indent: usize, out: &mut Vec<String>) {
+        let p = pad(indent);
+        let discriminant = self.expr(&sw.discriminant);
+        let subject = if discriminant.pure && discriminant.prec == ATOM {
+            discriminant
+        } else {
+            let tmp = format!("_js_switch{}", self.tmp);
+            self.tmp += 1;
+            out.push(format!("{p}{tmp} = {}", discriminant.code));
+            Py {
+                pure: true,
+                is_bool: discriminant.is_bool,
+                is_num: discriminant.is_num,
+                is_double: discriminant.is_double,
+                is_str: discriminant.is_str,
+                ..Py::atom(tmp)
+            }
+        };
+        let mut pending: Vec<&Expression<'_>> = Vec::new();
+        let mut first = true;
+        let count = sw.cases.len();
+        for (index, case) in sw.cases.iter().enumerate() {
+            let Some(test) = &case.test else {
+                if index + 1 != count || !pending.is_empty() {
+                    self.refuse(
+                        case.span,
+                        "default that is not the last, separate switch case",
+                    );
+                    return;
+                }
+                if first {
+                    // A switch with only a default: its body runs unconditionally.
+                    self.case_body(&case.consequent, case.span, indent, out);
+                } else {
+                    out.push(format!("{p}else:"));
+                    self.case_body(&case.consequent, case.span, indent + 1, out);
+                }
+                return;
+            };
+            pending.push(test);
+            if case.consequent.is_empty() {
+                if index + 1 == count {
+                    self.refuse(case.span, "empty last switch case");
+                }
+                continue;
+            }
+            let mut tests = Vec::new();
+            for test in std::mem::take(&mut pending) {
+                let value = self.expr(test);
+                tests.push(
+                    self.strict_eq_py(subject.clone(), value, test, false)
+                        .at(OR + 1),
+                );
+            }
+            let keyword = if first { "if" } else { "elif" };
+            first = false;
+            out.push(format!("{p}{keyword} {}:", tests.join(" or ")));
+            self.case_body(&case.consequent, case.span, indent + 1, out);
+        }
+    }
+
+    fn case_body(
+        &mut self,
+        body: &[Statement<'_>],
+        span: Span,
+        indent: usize,
+        out: &mut Vec<String>,
+    ) {
+        let statements = match body.last() {
+            Some(Statement::BreakStatement(b)) if b.label.is_none() => &body[..body.len() - 1],
+            _ if ends_in_exit(body) => body,
+            _ => {
+                self.refuse(span, "switch case that falls through");
+                return;
+            }
+        };
+        self.breaks.push(BreakTarget::Switch);
+        let start = out.len();
+        for s in statements {
+            self.stmt(s, indent, out);
+        }
+        if out.len() == start {
+            out.push(format!("{}pass", pad(indent)));
+        }
+        self.breaks.pop();
+    }
+}
+
+/// `a, b` / `[a]` as a Python unpacking target.
+fn unpack_target(names: &[String]) -> String {
+    if names.len() == 1 {
+        format!("[{}]", names[0])
+    } else {
+        names.join(", ")
+    }
+}
+
+/// A non-computed property key's name (`a`, `'a'`), if it is a plain one.
+fn property_key_name(key: &PropertyKey<'_>) -> Option<String> {
+    match key {
+        PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
+        PropertyKey::StringLiteral(s) => s.value.as_str().map(str::to_string),
+        _ => None,
+    }
+    .filter(|name| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !name.contains('$')
+    })
+}
+
+/// A relative import specifier resolved against the importing module's path, `.js` read as the
+/// `.ts` it is compiled from (`runtime-ts/src/memory/pyyaml.ts`). None for a bare specifier.
+pub fn resolve_specifier(importer: &str, spec: &str) -> Option<String> {
+    if !(spec.starts_with("./") || spec.starts_with("../")) {
+        return None;
+    }
+    let mut parts: Vec<&str> = importer.split('/').collect();
+    parts.pop();
+    for piece in spec.split('/') {
+        match piece {
+            "." | "" => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    let joined = parts.join("/");
+    Some(match joined.strip_suffix(".js") {
+        Some(stem) => format!("{stem}.ts"),
+        None => joined,
+    })
+}
+
+/// What one module exports (source name -> (Python name, is a class)) and the method names its
+/// classes declare, read off the AST before anything is lowered, so another module can import it.
+pub fn scan_module(program: &Program<'_>) -> (HashMap<String, (String, bool)>, HashSet<String>) {
+    let mut exports = HashMap::new();
+    let mut methods = HashSet::new();
+    let mut locals: HashMap<String, (String, bool)> = HashMap::new();
+    for stmt in &program.body {
+        let (decl, exported) = match stmt {
+            Statement::ExportDeclaration(e) => (Some(&e.declaration), true),
+            _ => (stmt.as_declaration(), false),
+        };
+        let Some(decl) = decl else { continue };
+        let mut bind = |name: &str, entry: (String, bool)| {
+            locals.insert(name.to_string(), entry.clone());
+            if exported {
+                exports.insert(name.to_string(), entry);
+            }
+        };
+        match decl {
+            Declaration::FunctionDeclaration(f) => {
+                if let Some(id) = &f.id {
+                    bind(
+                        id.name.as_str(),
+                        (py_name(id.name.as_str(), true, !exported), false),
+                    );
+                }
+            }
+            Declaration::VariableDeclaration(v) => {
+                for d in &v.declarations {
+                    if let BindingPattern::BindingIdentifier(id) = &d.id {
+                        bind(
+                            id.name.as_str(),
+                            (py_name(id.name.as_str(), true, !exported), false),
+                        );
+                    }
+                }
+            }
+            Declaration::ClassDeclaration(c) => {
+                if let Some(id) = &c.id {
+                    bind(
+                        id.name.as_str(),
+                        (class_py_name(id.name.as_str(), exported), true),
+                    );
+                }
+                for element in &c.body.body {
+                    if let ClassElement::MethodDefinition(m) = element
+                        && m.kind == MethodDefinitionKind::Method
+                        && let Some(name) = property_key_name(&m.key)
+                    {
+                        methods.insert(name);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for stmt in &program.body {
+        if let Statement::ExportNamedDeclaration(e) = stmt {
+            for specifier in &e.specifiers {
+                let name = specifier.local.name().to_string();
+                if let Some(entry) = locals.get(&name) {
+                    exports.insert(name, entry.clone());
+                }
+            }
+        }
+    }
+    (exports, methods)
 }
 
 // -------------------------------------------------------------------- helpers
@@ -1338,6 +2729,92 @@ fn js_num(value: Py) -> Py {
             pure: value.pure,
             ..Py::atom(format!("_js_num({})", value.code))
         }
+    }
+}
+
+/// `left <op> right` for `+ - * / %`, from lowered operands (shared by `a op b` and `a op= b`).
+fn arith(op: BinaryOperator, left: Py, right: Py) -> Py {
+    use BinaryOperator as Op;
+    match op {
+        Op::Subtraction => {
+            let (left, right) = (js_num(left), js_num(right));
+            rounded(format!("{} - {}", left.at(ADD), right.at(ADD + 1)))
+        }
+        Op::Addition => {
+            if left.is_num && right.is_num {
+                let (left, right) = (js_num(left), js_num(right));
+                rounded(format!("{} + {}", left.at(ADD), right.at(ADD + 1)))
+            } else if left.is_str && right.is_str {
+                // J86: a lead surrogate ending `left` and a trail surrogate starting `right` form
+                // one character in JS; `_js_cat` joins them unless either end is known safe.
+                let code = if left.safe_end || right.safe_start {
+                    format!("{} + {}", left.at(ADD), right.at(ADD + 1))
+                } else {
+                    format!("_js_cat({}, {})", left.code, right.code)
+                };
+                let prec = if code.starts_with("_js_cat(") {
+                    ATOM
+                } else {
+                    ADD
+                };
+                Py {
+                    is_str: true,
+                    safe_start: left.safe_start,
+                    safe_end: right.safe_end,
+                    ..Py::new(code, prec)
+                }
+            } else {
+                Py::atom(format!("_js_add({}, {})", left.code, right.code))
+            }
+        }
+        other => {
+            // J86: `*`, `/`, `%` through the runtime: doubles (with -0, Infinity and NaN where JS
+            // has them) or two BigInts exactly; a mix is the TypeError JS raises.
+            let helper = match other {
+                Op::Multiplication => "_js_mul",
+                Op::Division => "_js_div",
+                _ => "_js_mod",
+            };
+            Py {
+                is_num: left.is_num && right.is_num,
+                is_double: true,
+                ..Py::atom(format!("{helper}({}, {})", left.code, right.code))
+            }
+        }
+    }
+}
+
+fn is_lead(unit: u16) -> bool {
+    (0xd800..=0xdbff).contains(&unit)
+}
+
+fn is_trail(unit: u16) -> bool {
+    (0xdc00..=0xdfff).contains(&unit)
+}
+
+/// The statement list cannot run off its end: its last statement returns or throws (through
+/// blocks, and an `if` whose both arms exit).
+fn ends_in_exit(stmts: &[Statement<'_>]) -> bool {
+    stmts.last().is_some_and(exits)
+}
+
+fn exits(s: &Statement<'_>) -> bool {
+    match s {
+        Statement::ReturnStatement(_) | Statement::ThrowStatement(_) => true,
+        Statement::BlockStatement(b) => ends_in_exit(&b.body),
+        Statement::IfStatement(i) => {
+            exits(&i.consequent) && i.alternate.as_ref().is_some_and(exits)
+        }
+        _ => false,
+    }
+}
+
+/// A class's Python name: as written when exported, `_` + name otherwise (J86).
+pub fn class_py_name(name: &str, exported: bool) -> String {
+    if exported {
+        name.to_string()
+    } else {
+        format!("_{name}")
     }
 }
 
@@ -1430,6 +2907,26 @@ const REGEX_MAX_DEPTH: usize = 64;
 /// Largest `{n,m}` bound accepted: past `re`'s MAXREPEAT a bound is an error at import.
 const REGEX_MAX_REPEAT: u32 = 65_535;
 
+/// Stands for a `${...}` substitution while a `new RegExp(`...`)` template is translated (J86): a
+/// private-use plane-15 character, accepted only as the whole body of a `{n}` repeat count.
+const REGEX_HOLE: char = '\u{F0000}';
+
+fn regex_hole_misplaced() -> String {
+    "RegExp substitution anywhere but a whole {n} repeat count".to_string()
+}
+
+/// The code unit of a `\xHH` (2 digits) or `\uHHHH` (4 digits) escape starting at `chars[at]`
+/// (the `x` or `u`), or None when the digits are not there (Annex B would read it as a literal
+/// letter, which is refused rather than relied on).
+fn hex_escape(chars: &[char], at: usize) -> Option<u16> {
+    let width = if chars.get(at) == Some(&'x') { 2 } else { 4 };
+    let digits: String = chars.get(at + 1..at + 1 + width)?.iter().collect();
+    if digits.len() != width || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u16::from_str_radix(&digits, 16).ok()
+}
+
 /// One member of a character class, as written in the translation.
 struct ClassAtom {
     text: String,
@@ -1449,8 +2946,11 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
     let chars: Vec<char> = pattern.chars().collect();
     let syntax = || REGEX_SYNTAX.to_string();
     let mut out = String::new();
-    // Open groups: whether each is a lookahead (which takes no quantifier once closed).
+    // Open groups: whether each is a lookaround (which takes no quantifier once closed).
     let mut groups: Vec<bool> = Vec::new();
+    // J86: inside a lookbehind only single-width atoms are accepted, so its width is fixed (what
+    // Python's `re` requires) and matching it backwards (JS) or forwards (Python) is the same.
+    let mut in_lookbehind = false;
     // The previous term is an atom a quantifier may follow, and it has not been quantified yet.
     let mut quantifiable = false;
     let mut i = 0;
@@ -1481,6 +2981,12 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
                         out.push('\\');
                         out.push(next);
                     }
+                    // J86: `\xHH` and `\uHHHH`, one UTF-16 code unit each (no `u` flag).
+                    'x' | 'u' => {
+                        let unit = hex_escape(&chars, i).ok_or_else(syntax)?;
+                        out.push_str(&format!("\\u{unit:04x}"));
+                        i += if next == 'x' { 2 } else { 4 };
+                    }
                     '/' => out.push('/'),
                     c if "^$\\.*+?()[]{}|-".contains(c) => {
                         out.push('\\');
@@ -1494,9 +3000,29 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
                 quantifiable = true;
             }
             '(' => {
+                if in_lookbehind {
+                    return Err("regex group inside a lookbehind".to_string());
+                }
                 out.push('(');
                 let lookahead = if chars.get(i + 1) == Some(&'?') {
                     let kind = *chars.get(i + 2).ok_or_else(syntax)?;
+                    if kind == '<' && matches!(chars.get(i + 3), Some('=' | '!')) {
+                        // J86: a lookbehind (not a named group, which stays refused).
+                        out.push('?');
+                        out.push('<');
+                        out.push(chars[i + 3]);
+                        i += 3;
+                        in_lookbehind = true;
+                        groups.push(true);
+                        if groups.len() > REGEX_MAX_DEPTH {
+                            return Err(format!(
+                                "regex nesting deeper than {REGEX_MAX_DEPTH} groups"
+                            ));
+                        }
+                        quantifiable = false;
+                        i += 1;
+                        continue;
+                    }
                     if !matches!(kind, ':' | '=' | '!') {
                         return Err(syntax());
                     }
@@ -1519,8 +3045,12 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
                 let lookahead = groups.pop().ok_or_else(|| {
                     "regex `)` without a matching `(`, a SyntaxError in JS".to_string()
                 })?;
+                in_lookbehind = false;
                 out.push(')');
                 quantifiable = !lookahead;
+            }
+            '|' | '^' | '$' if in_lookbehind => {
+                return Err(format!("regex `{c}` inside a lookbehind"));
             }
             '|' => {
                 out.push('|');
@@ -1538,6 +3068,9 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
                 out.push_str("[^\\n\\r\\u2028\\u2029]");
                 quantifiable = true;
             }
+            '*' | '+' | '?' | '{' if in_lookbehind => {
+                return Err(format!("regex quantifier `{c}` inside a lookbehind"));
+            }
             '*' | '+' | '?' | '{' => {
                 if !quantifiable {
                     return Err(format!("regex quantifier `{c}` with nothing to repeat"));
@@ -1547,6 +3080,19 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
                         .find(|&j| chars[j] == '}')
                         .ok_or_else(syntax)?;
                     let body: String = chars[i + 1..close].iter().collect();
+                    if body == REGEX_HOLE.to_string() {
+                        // J86: `{${n}}`, the count supplied at run time.
+                        out.push('{');
+                        out.push(REGEX_HOLE);
+                        out.push('}');
+                        i = close + 1;
+                        if chars.get(i) == Some(&'?') {
+                            out.push('?');
+                            i += 1;
+                        }
+                        quantifiable = false;
+                        continue;
+                    }
                     let (min, max) = match body.split_once(',') {
                         None => (body.as_str(), Some(body.as_str())),
                         Some((min, "")) => (min, None),
@@ -1582,6 +3128,7 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
                 quantifiable = false;
             }
             ']' | '}' => return Err(syntax()),
+            REGEX_HOLE => return Err(regex_hole_misplaced()),
             // Without the `u` flag JS reads the pattern as UTF-16 code units, so an astral
             // literal is two units (in a class, two members). The subject is split the same
             // way at match time (`_js_code_units`), so `.` and `[^x]` match one unit, as in JS.
@@ -1635,6 +3182,12 @@ fn regex_class(chars: &[char], open: usize, out: &mut String) -> Result<usize, S
                     'n' => ("\\n".to_string(), Some(0x0a)),
                     'r' => ("\\r".to_string(), Some(0x0d)),
                     't' => ("\\t".to_string(), Some(0x09)),
+                    // J86: `\xHH` and `\uHHHH`, one code unit each.
+                    'x' | 'u' => {
+                        let unit = hex_escape(chars, i).ok_or_else(syntax)?;
+                        i += if next == 'x' { 2 } else { 4 };
+                        (format!("\\u{unit:04x}"), Some(unit))
+                    }
                     '/' => ("/".to_string(), Some(u16::from(b'/'))),
                     c if "^$\\.*+?()[]{}|-".contains(c) => (format!("\\{c}"), Some(c as u16)),
                     _ => return Err(syntax()),
@@ -1650,6 +3203,7 @@ fn regex_class(chars: &[char], open: usize, out: &mut String) -> Result<usize, S
                 unit: Some(u16::from(b'[')),
                 dash: false,
             }),
+            REGEX_HOLE => return Err(regex_hole_misplaced()),
             c => {
                 let mut units = [0u16; 2];
                 let encoded = c.encode_utf16(&mut units);

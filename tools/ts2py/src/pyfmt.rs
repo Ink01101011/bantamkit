@@ -12,14 +12,21 @@ const KEYWORDS: &[&str] = &[
 /// for the inlined helpers, so it gets a trailing `_` too. Locals may keep these names: a function
 /// local never reaches the helpers' globals.
 const RUNTIME_BUILTINS: &[&str] = &[
+    "BaseException",
+    "Exception",
     "abs",
     "all",
     "any",
     "bool",
     "callable",
+    "chr",
     "dict",
+    "divmod",
     "enumerate",
     "float",
+    "frozenset",
+    "getattr",
+    "hash",
     "id",
     "int",
     "isinstance",
@@ -29,8 +36,12 @@ const RUNTIME_BUILTINS: &[&str] = &[
     "max",
     "min",
     "object",
+    "ord",
+    "range",
     "repr",
+    "reversed",
     "set",
+    "setattr",
     "sorted",
     "str",
     "super",
@@ -69,6 +80,11 @@ pub fn snake_case(name: &str) -> String {
         }
     }
     out
+}
+
+/// `name` is a Python keyword (so it cannot be an attribute spelled `obj.name`).
+pub fn is_py_keyword(name: &str) -> bool {
+    KEYWORDS.contains(&name)
 }
 
 /// The Python name for a source binding. `module_level` adds the builtin guard; `private` adds the

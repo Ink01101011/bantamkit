@@ -3,6 +3,7 @@
 //! The parser is `oxc_parser`; this crate only lowers its AST. Anything outside the subset is a
 //! compile-time refusal with a source location, never a best-effort translation.
 
+pub mod adapters;
 pub mod lower;
 pub mod pyfmt;
 
@@ -15,10 +16,29 @@ use sha2::{Digest, Sha256};
 /// a module to import it from (`--emit-runtime` writes this text to that module's file).
 pub const RUNTIME: &str = include_str!("runtime.py");
 
+/// The hand-written adapters (J86, `adapters.rs`). `__RUNTIME__` stands for the runtime module.
+pub const ADAPTERS: &str = include_str!("adapters.py");
+
+/// The adapter module's text, importing the runtime from `runtime_module`.
+pub fn adapters_module(runtime_module: &str) -> String {
+    ADAPTERS.replace("__RUNTIME__", runtime_module)
+}
+
 #[derive(Default)]
 pub struct Options {
     /// Import the runtime helpers from this module (e.g. `._ts2py_runtime`) instead of inlining them.
     pub runtime_module: Option<String>,
+    /// J86: import adapters from this module (default `._ts2py_adapters`).
+    pub adapter_module: Option<String>,
+}
+
+/// One compiled module (J86).
+pub struct Compiled {
+    /// The TypeScript path, as printed.
+    pub path: String,
+    /// The Python module name (the file's stem): `<py_module>.py`.
+    pub py_module: String,
+    pub code: String,
 }
 
 /// Compile `source` (whose path, as printed in the header and in diagnostics, is `display_path`).
@@ -26,44 +46,117 @@ pub struct Options {
 /// `Ok` is the whole Python module. `Err` is one line per offence:
 /// `<path>:<line>:<col>: unsupported <construct>: <snippet>` (or `syntax error` for a parse error).
 pub fn compile(source: &str, display_path: &str, options: &Options) -> Result<String, Vec<String>> {
-    let allocator = Allocator::default();
-    let parsed = Parser::new(&allocator, source, SourceType::ts()).parse();
-    if parsed.fatal_error || !parsed.diagnostics.is_empty() {
-        let mut lines = Vec::new();
-        for diagnostic in parsed.diagnostics.iter() {
-            let offset = diagnostic.labels.first().map_or(0, |label| label.offset());
-            let (line, col) = line_col(source, offset);
-            lines.push(format!(
-                "{display_path}:{line}:{col}: syntax error: {}",
-                diagnostic.message
-            ));
+    compile_modules(&[(display_path, source)], options).map(|mut modules| modules.remove(0).code)
+}
+
+/// Compile several modules together (J86): each TypeScript module becomes one Python module, and an
+/// import of one of them from another is a relative import of the generated module. An import of
+/// anything else goes through the adapter seam (`adapters.rs`) or is refused.
+pub fn compile_modules(
+    sources: &[(&str, &str)],
+    options: &Options,
+) -> Result<Vec<Compiled>, Vec<String>> {
+    let allocators: Vec<Allocator> = sources.iter().map(|_| Allocator::default()).collect();
+    let mut errors = Vec::new();
+    let mut programs = Vec::new();
+    for ((display_path, source), allocator) in sources.iter().zip(&allocators) {
+        let parsed = Parser::new(allocator, source, SourceType::ts()).parse();
+        if parsed.fatal_error || !parsed.diagnostics.is_empty() {
+            let before = errors.len();
+            for diagnostic in parsed.diagnostics.iter() {
+                let offset = diagnostic.labels.first().map_or(0, |label| label.offset());
+                let (line, col) = line_col(source, offset);
+                errors.push(format!(
+                    "{display_path}:{line}:{col}: syntax error: {}",
+                    diagnostic.message
+                ));
+            }
+            if errors.len() == before {
+                errors.push(format!(
+                    "{display_path}:1:1: syntax error: the parser gave up"
+                ));
+            }
         }
-        if lines.is_empty() {
-            lines.push(format!(
-                "{display_path}:1:1: syntax error: the parser gave up"
-            ));
-        }
-        return Err(lines);
+        programs.push(parsed.program);
+    }
+    if !errors.is_empty() {
+        return Err(errors);
     }
 
-    let mut lowerer = lower::Lowerer::new(source);
-    let body = lowerer.program(&parsed.program);
-    if !lowerer.refusals.is_empty() {
-        let mut refusals = std::mem::take(&mut lowerer.refusals);
-        refusals.sort_by_key(|r| (r.span.start, r.span.end));
-        return Err(refusals
-            .iter()
-            .map(|r| {
+    // What each module exports, before anything is lowered, so imports between them resolve.
+    let mut ctx = lower::ModuleCtx {
+        adapter_module: options
+            .adapter_module
+            .clone()
+            .unwrap_or_else(|| "._ts2py_adapters".to_string()),
+        ..lower::ModuleCtx::default()
+    };
+    ctx.class_methods
+        .extend(adapters::class_methods().map(str::to_string));
+    let mut stems = Vec::new();
+    for ((display_path, _), program) in sources.iter().zip(&programs) {
+        let stem = py_module_name(display_path);
+        if !is_identifier(&stem) || stems.contains(&stem) {
+            errors.push(format!(
+                "{display_path}:1:1: unsupported module name: {stem} is not a distinct Python identifier"
+            ));
+        }
+        stems.push(stem.clone());
+        let (names, methods) = lower::scan_module(program);
+        ctx.class_methods.extend(methods);
+        ctx.modules.insert(
+            display_path.to_string(),
+            lower::ModuleExports {
+                py_module: stem,
+                names,
+            },
+        );
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut out = Vec::new();
+    for (((display_path, source), program), stem) in sources.iter().zip(&programs).zip(stems) {
+        let module_ctx = lower::ModuleCtx {
+            path: display_path.to_string(),
+            ..ctx.clone()
+        };
+        let mut lowerer = lower::Lowerer::with_ctx(source, module_ctx);
+        let body = lowerer.program(program);
+        if !lowerer.refusals.is_empty() {
+            let mut refusals = std::mem::take(&mut lowerer.refusals);
+            refusals.sort_by_key(|r| (r.span.start, r.span.end));
+            errors.extend(refusals.iter().map(|r| {
                 let (line, col) = line_col(source, r.span.start);
                 format!(
                     "{display_path}:{line}:{col}: unsupported {}: {}",
                     r.construct,
                     snippet(source, r.span)
                 )
-            })
-            .collect());
+            }));
+            continue;
+        }
+        let code = emit(source, display_path, options, &lowerer, &body);
+        out.push(Compiled {
+            path: display_path.to_string(),
+            py_module: stem,
+            code,
+        });
     }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(out)
+}
 
+fn emit(
+    source: &str,
+    display_path: &str,
+    options: &Options,
+    lowerer: &lower::Lowerer<'_>,
+    body: &str,
+) -> String {
     let mut exports = lowerer.exports.clone();
     exports.sort();
     let digest = Sha256::digest(source.as_bytes());
@@ -85,7 +178,7 @@ pub fn compile(source: &str, display_path: &str, options: &Options) -> Result<St
         Some(module) => {
             let used: Vec<&str> = runtime_names()
                 .into_iter()
-                .filter(|n| uses(&body, n))
+                .filter(|n| uses(body, n))
                 .collect();
             if !used.is_empty() {
                 out.push_str(&format!("from {module} import (  # noqa: F401\n"));
@@ -94,11 +187,17 @@ pub fn compile(source: &str, display_path: &str, options: &Options) -> Result<St
                 }
                 out.push_str(")\n");
             }
-            out.push('\n');
         }
     }
-    if options.runtime_module.is_none() {
-        out.push_str("\n\n");
+    // J86: imports from the other compiled modules and from the adapter module.
+    for (module, names) in &lowerer.imports {
+        let mut names: Vec<&str> = names.iter().map(String::as_str).collect();
+        names.sort_by_key(|n| (n.to_uppercase() != *n, n.to_lowercase(), n.to_string()));
+        out.push_str(&format!("from {module} import {}\n", names.join(", ")));
+    }
+    match &options.runtime_module {
+        None => out.push_str("\n\n"),
+        Some(_) => out.push('\n'),
     }
     out.push_str("__all__ = [");
     out.push_str(
@@ -109,8 +208,23 @@ pub fn compile(source: &str, display_path: &str, options: &Options) -> Result<St
             .join(", "),
     );
     out.push_str("]\n\n\n");
-    out.push_str(&body);
-    Ok(out)
+    out.push_str(body);
+    out
+}
+
+/// The Python module a TypeScript path compiles to: its file stem.
+pub fn py_module_name(display_path: &str) -> String {
+    let file = display_path.rsplit('/').next().unwrap_or(display_path);
+    file.split('.').next().unwrap_or(file).to_string()
+}
+
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !pyfmt::is_py_keyword(name)
 }
 
 /// Every module-level name the runtime defines, sorted.

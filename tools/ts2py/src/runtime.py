@@ -38,6 +38,8 @@ def _js_typeof(value):
         return "number"
     if isinstance(value, str):
         return "string"
+    if isinstance(value, _JsBigInt):
+        return "bigint"
     if callable(value):
         return "function"
     return "object"
@@ -53,6 +55,8 @@ def _js_truthy(value):
         return value == value and value != 0
     if isinstance(value, str):
         return value != ""
+    if isinstance(value, _JsBigInt):
+        return value.value != 0
     return True
 
 
@@ -108,6 +112,8 @@ def _js_strict_eq(left, right):
         return _js_num(left) == _js_num(right)
     if isinstance(left, str) and isinstance(right, str):
         return left == right
+    if isinstance(left, _JsBigInt) and isinstance(right, _JsBigInt):
+        return left.value == right.value
     return left is right
 
 
@@ -182,7 +188,13 @@ def _js_str(value):
     if isinstance(value, (int, float)):
         return _js_num_str(value)
     if isinstance(value, list):
-        return ",".join("" if _js_is_nullish(item) else _js_str(item) for item in value)
+        return _js_from_units(
+            ",".join("" if _js_is_nullish(item) else _js_str(item) for item in value)
+        )
+    if isinstance(value, _JsBigInt):
+        return str(value.value)
+    if isinstance(value, _JsObject):
+        return _js_object_to_string(value)
     if isinstance(value, _JsMap):
         return "[object Map]"
     if isinstance(value, _JsSet):
@@ -195,9 +207,12 @@ def _js_str(value):
 def _js_add(left, right):
     """`left + right`: string concatenation when either side is a string, else numeric addition."""
     if isinstance(left, str) or isinstance(right, str):
-        return _js_str(left) + _js_str(right)
+        return _js_cat(_js_str(left), _js_str(right))
     if _js_is_number(left) and _js_is_number(right):
         return _js_num(_js_num(left) + _js_num(right))
+    if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
+        a, b = _js_bigint_operands(left, right)
+        return _JsBigInt(a + b)
     raise TypeError("ts2py: + on non-number, non-string operands is outside the subset")
 
 
@@ -236,7 +251,11 @@ def _js_to_number(value):
 
 def _js_to_primitive(value):
     """ToPrimitive (hint number) in the subset: an array, object, Map or Set is its `String()`."""
-    if value is None or value is _JS_UNDEFINED or isinstance(value, (bool, int, float, str)):
+    if (
+        value is None
+        or value is _JS_UNDEFINED
+        or isinstance(value, (bool, int, float, str, _JsBigInt))
+    ):
         return value
     return _js_str(value)
 
@@ -253,6 +272,8 @@ def _js_less(left, right):
         if left.isascii() and right.isascii():
             return left < right
         return _js_utf16(left) < _js_utf16(right)
+    if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
+        return _js_bigint_less(left, right)
     left, right = _js_to_number(left), _js_to_number(right)
     if left != left or right != right:
         return None
@@ -297,26 +318,52 @@ def _js_get(obj, key):
     if isinstance(obj, dict):
         if not isinstance(key, str):
             key = _js_str(key)
-        return obj.get(key, _JS_UNDEFINED)
-    if isinstance(obj, (list, str)):
+        value = obj.get(key, _JS_UNDEFINED)
+        if value is _JS_UNDEFINED and key in _JS_OBJECT_PROTO_NAMES and key not in obj:
+            raise _js_inherited(key)
+        return value
+    if isinstance(obj, str):
+        if key == "length" and isinstance(key, str):
+            return _js_len(obj)
+        index = _js_index_key(key)
+        if index is None:
+            return _JS_UNDEFINED
+        # J86: a string is indexed by UTF-16 code unit, so an astral character reads as its lead
+        # or trail surrogate, as in JS.
+        units = _js_code_units(obj)
+        return units[index] if 0 <= index < len(units) else _JS_UNDEFINED
+    if isinstance(obj, list):
         if key == "length" and isinstance(key, str):
             return _js_len(obj)
         index = _js_index_key(key)
         if index is not None and 0 <= index < len(obj):
             return obj[index]
+        if key in ("index", "input") and isinstance(obj, _JsMatchArray):
+            return getattr(obj, key)
         return _JS_UNDEFINED
     if obj is None or obj is _JS_UNDEFINED:
         raise TypeError(f"Cannot read properties of {_js_str(obj)} (reading '{_js_str(key)}')")
     if isinstance(obj, (_JsMap, _JsSet)) and key == "size":
         return len(obj)
+    if isinstance(obj, _JsObject):
+        return _js_object_get(obj, key if isinstance(key, str) else _js_str(key))
     return _JS_UNDEFINED
 
 
 def _js_put(obj, key, value):
     """`obj.key = value` on a plain object."""
+    key = key if isinstance(key, str) else _js_str(key)
+    if isinstance(obj, _JsObject):
+        if key.startswith("_") or key in _JS_OBJECT_PROTO_NAMES:
+            raise TypeError(f"ts2py: assigning {key!r} on an instance is outside the subset")
+        setattr(obj, key, value)
+        return
     if not isinstance(obj, dict):
         raise TypeError("ts2py: property assignment on a non-object is outside the subset")
-    obj[key if isinstance(key, str) else _js_str(key)] = value
+    if key == "__proto__":
+        # `o.__proto__ = v` / `o["__proto__"] = v` sets the prototype in JS, not a key.
+        raise TypeError("ts2py: assigning __proto__ is outside the subset")
+    obj[key] = value
 
 
 def _js_len(value):
@@ -445,7 +492,10 @@ def _js_same_value_zero(left, right):
 
 def _js_m_includes(receiver, item):
     if isinstance(receiver, str):
-        return _js_str(item) in receiver
+        needle = _js_str(item)
+        if receiver.isascii() and needle.isascii():
+            return needle in receiver
+        return _js_code_units(needle) in _js_code_units(receiver)
     if isinstance(receiver, list):
         return any(_js_same_value_zero(element, item) for element in receiver)
     raise _js_outside("includes", receiver)
@@ -453,15 +503,23 @@ def _js_m_includes(receiver, item):
 
 def _js_m_startsWith(receiver, prefix):
     if isinstance(receiver, str):
-        return receiver.startswith(_js_str(prefix))
+        prefix = _js_str(prefix)
+        if receiver.isascii() and prefix.isascii():
+            return receiver.startswith(prefix)
+        return _js_code_units(receiver).startswith(_js_code_units(prefix))
     raise _js_outside("startsWith", receiver)
 
 
 def _js_m_split(receiver, separator):
     if isinstance(receiver, str) and isinstance(separator, str):
+        if receiver.isascii() and separator.isascii():
+            return list(receiver) if separator == "" else receiver.split(separator)
+        # J86: by UTF-16 code unit, so `""` splits an astral character into its two surrogates
+        # and a separator that is half of a pair is found inside one, as in JS.
+        units = _js_code_units(receiver)
         if separator == "":
-            return [unit for unit in receiver]
-        return receiver.split(separator)
+            return list(units)
+        return [_js_from_units(part) for part in units.split(_js_code_units(separator))]
     raise _js_outside("split", receiver)
 
 
@@ -538,6 +596,13 @@ def _js_slice_bound(value, length, default):
 
 
 def _js_m_slice(receiver, start=_JS_UNDEFINED, end=_JS_UNDEFINED):
+    if isinstance(receiver, str):
+        # J86: string positions are UTF-16 code units; a cut through a pair leaves a lone surrogate.
+        units = _js_code_units(receiver)
+        length = len(units)
+        return _js_from_units(
+            units[_js_slice_bound(start, length, 0) : _js_slice_bound(end, length, length)]
+        )
     items = _js_array("slice", receiver)
     length = len(items)
     return items[_js_slice_bound(start, length, 0) : _js_slice_bound(end, length, length)]
@@ -546,7 +611,9 @@ def _js_m_slice(receiver, start=_JS_UNDEFINED, end=_JS_UNDEFINED):
 def _js_m_join(receiver, separator=_JS_UNDEFINED):
     items = _js_array("join", receiver)
     glue = "," if separator is _JS_UNDEFINED else _js_str(separator)
-    return glue.join("" if _js_is_nullish(item) else _js_str(item) for item in items)
+    return _js_from_units(
+        glue.join("" if _js_is_nullish(item) else _js_str(item) for item in items)
+    )
 
 
 def _js_m_entries(receiver):
@@ -654,3 +721,860 @@ def _js_json_stringify(value):
     """`JSON.stringify(value)`, byte for byte, for JSON-shaped values (and `undefined`)."""
     text = _js_json(value)
     return _JS_UNDEFINED if text is None else text
+
+
+# ---------------------------------------------------------------- J86: strings as UTF-16
+
+_JS_SURROGATE = _js_re.compile("[\ud800-\udfff]")
+
+
+def _js_from_units(text):
+    """The canonical spelling of a JS string held as code units: every lead surrogate followed by a
+    trail surrogate joined into its astral character, lone surrogates kept. Two halves that meet by
+    concatenation form one character in JS, so they must here too."""
+    if text.isascii() or _JS_SURROGATE.search(text) is None:
+        return text
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+
+
+def _js_cat(left, right):
+    """`left + right` on two strings: a lead surrogate ending `left` and a trail surrogate starting
+    `right` become one astral character, as two UTF-16 halves do in JS."""
+    if left and right and "\ud800" <= left[-1] <= "\udbff" and "\udc00" <= right[0] <= "\udfff":
+        return _js_from_units(left + right)
+    return left + right
+
+
+def _js_to_integer(value):
+    """ToIntegerOrInfinity: NaN is 0, a fraction truncates toward zero, an infinity stays."""
+    value = _js_to_number(_js_to_primitive(value))
+    if value != value:
+        return 0
+    if value in (_js_math.inf, -_js_math.inf):
+        return value
+    return int(value)
+
+
+def _js_m_codePointAt(receiver, position=_JS_UNDEFINED):
+    if not isinstance(receiver, str):
+        raise _js_outside("codePointAt", receiver)
+    units = _js_code_units(receiver)
+    index = _js_to_integer(position)
+    if not 0 <= index < len(units):
+        return _JS_UNDEFINED
+    first = ord(units[index])
+    if 0xD800 <= first <= 0xDBFF and index + 1 < len(units):
+        second = ord(units[index + 1])
+        if 0xDC00 <= second <= 0xDFFF:
+            return 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00)
+    return first
+
+
+def _js_from_code_point(*points):
+    """`String.fromCodePoint`: each argument an integer in 0..0x10FFFF, else RangeError."""
+    out = []
+    for point in points:
+        number = _js_to_number(_js_to_primitive(point))
+        if not (
+            _js_is_number(number)
+            and number == number
+            and number not in (_js_math.inf, -_js_math.inf)
+            and number == int(number)
+            and 0 <= number <= 0x10FFFF
+        ):
+            raise _JsRangeError(f"Invalid code point {_js_str(number)}")
+        out.append(chr(int(number)))
+    return _js_from_units("".join(out))
+
+
+def _js_string_receiver(method, receiver):
+    if not isinstance(receiver, str):
+        raise _js_outside(method, receiver)
+    return receiver
+
+
+def _js_m_indexOf(receiver, search, position=_JS_UNDEFINED):
+    """`s.indexOf(search, position)` in UTF-16 code units (strings only)."""
+    units = _js_code_units(_js_string_receiver("indexOf", receiver))
+    needle = _js_code_units(_js_str(search))
+    start = min(max(_js_to_integer(position), 0), len(units))
+    return units.find(needle, int(start))
+
+
+def _js_m_lastIndexOf(receiver, search, position=_JS_UNDEFINED):
+    """`s.lastIndexOf(search, position)` in UTF-16 code units; a NaN or missing position is
+    +Infinity."""
+    units = _js_code_units(_js_string_receiver("lastIndexOf", receiver))
+    needle = _js_code_units(_js_str(search))
+    number = _js_to_number(_js_to_primitive(position))
+    start = _js_math.inf if number != number else _js_to_integer(number)
+    start = int(min(max(start, 0), len(units)))
+    return units.rfind(needle, 0, start + len(needle))
+
+
+def _js_pad(method, receiver, length, fill, at_start):
+    units = _js_code_units(_js_string_receiver(method, receiver))
+    target = _js_to_integer(length)
+    if target <= len(units):
+        return receiver
+    filler = " " if fill is _JS_UNDEFINED else _js_code_units(_js_str(fill))
+    if filler == "":
+        return receiver
+    need = int(target) - len(units)
+    padding = (filler * (need // len(filler) + 1))[:need]
+    return _js_from_units(padding + units if at_start else units + padding)
+
+
+def _js_m_padStart(receiver, length, fill=_JS_UNDEFINED):
+    return _js_pad("padStart", receiver, length, fill, True)
+
+
+def _js_m_padEnd(receiver, length, fill=_JS_UNDEFINED):
+    return _js_pad("padEnd", receiver, length, fill, False)
+
+
+def _js_m_repeat(receiver, count=_JS_UNDEFINED):
+    text = _js_string_receiver("repeat", receiver)
+    times = _js_to_integer(count)
+    if times < 0 or times == _js_math.inf:
+        raise _JsRangeError(
+            f"Invalid count value: {_js_str(_js_to_number(_js_to_primitive(count)))}"
+        )
+    return _js_from_units(text * int(times))
+
+
+def _js_m_toLowerCase(receiver):
+    """ASCII only: CPython and V8 follow different Unicode versions, so a non-ASCII string raises
+    rather than risk a different answer."""
+    text = _js_string_receiver("toLowerCase", receiver)
+    if not text.isascii():
+        raise TypeError("ts2py: .toLowerCase() on a non-ASCII string is outside the subset")
+    return text.lower()
+
+
+def _js_m_toUpperCase(receiver):
+    """ASCII only, as `.toLowerCase()`."""
+    text = _js_string_receiver("toUpperCase", receiver)
+    if not text.isascii():
+        raise TypeError("ts2py: .toUpperCase() on a non-ASCII string is outside the subset")
+    return text.upper()
+
+
+class _JsGlobalRegExp:
+    """A regex literal with the `g` flag. Only `.replace` accepts one: `.test` and `.exec` on a
+    global regex read and write `lastIndex`, which the subset does not model."""
+
+    __slots__ = ("pattern",)
+
+    def __init__(self, pattern):
+        self.pattern = pattern
+
+
+def _js_m_replace(receiver, pattern, replacement):
+    """`s.replace(pattern, replacement)`: a string pattern replaces its first occurrence, a regex
+    its first match, a `g` regex every match; matching runs over UTF-16 code units. A replacement
+    that is not a string, or that holds `$` (JS's substitution patterns), is outside the subset."""
+    text = _js_string_receiver("replace", receiver)
+    if not isinstance(replacement, str):
+        raise TypeError("ts2py: .replace() with a non-string replacement is outside the subset")
+    if "$" in replacement:
+        raise TypeError(
+            "ts2py: .replace() with a $ pattern in the replacement is outside the subset"
+        )
+    units = _js_code_units(text)
+    if isinstance(pattern, _JsGlobalRegExp):
+        return _js_from_units(pattern.pattern.sub(lambda _m: replacement, units))
+    if isinstance(pattern, _js_re.Pattern):
+        return _js_from_units(pattern.sub(lambda _m: replacement, units, count=1))
+    needle = _js_code_units(_js_str(pattern))
+    at = units.find(needle)
+    if at == -1:
+        return text
+    return _js_from_units(units[:at] + replacement + units[at + len(needle) :])
+
+
+class _JsMatchArray(list):
+    """What `re.exec(s)` returns: the match and its groups (`undefined` for one that did not take
+    part), plus `index` (a UTF-16 position) and `input`."""
+
+    __slots__ = ("index", "input")
+
+
+def _js_m_exec(receiver, text):
+    if not isinstance(receiver, _js_re.Pattern):
+        raise _js_outside("exec", receiver)
+    subject = _js_str(text)
+    match = receiver.search(_js_code_units(subject))
+    if match is None:
+        return None
+    out = _JsMatchArray(
+        _JS_UNDEFINED if group is None else _js_from_units(group)
+        for group in [match.group(0), *match.groups()]
+    )
+    out.index = match.start()
+    out.input = subject
+    return out
+
+
+_JS_DYNAMIC_RE = {}
+
+
+def _js_regexp_dynamic(*parts):
+    """`new RegExp(`...${n}...`)` where every substitution is a whole `{n}` repeat count: the even
+    parts are already-translated pattern text, each odd part the count, which must be an integer
+    in 0..65535 (anything else would spell a different pattern in JS)."""
+    pieces = []
+    for index, part in enumerate(parts):
+        if index % 2 == 0:
+            pieces.append(part)
+            continue
+        number = part
+        if not (
+            _js_is_number(number)
+            and number == number
+            and number == int(number)
+            and 0 <= number <= 65535
+        ):
+            raise TypeError(
+                "ts2py: a RegExp repeat count that is not an integer in 0..65535"
+                " is outside the subset"
+            )
+        pieces.append(str(int(number)))
+    source = "".join(pieces)
+    compiled = _JS_DYNAMIC_RE.get(source)
+    if compiled is None:
+        compiled = _JS_DYNAMIC_RE[source] = _js_re.compile(source, _js_re.ASCII)
+    return compiled
+
+
+def _js_m_reverse(receiver):
+    items = _js_array("reverse", receiver)
+    items.reverse()
+    return items
+
+
+def _js_m_pop(receiver):
+    items = _js_array("pop", receiver)
+    return items.pop() if items else _JS_UNDEFINED
+
+
+def _js_m_filter(receiver, callback):
+    items = _js_array("filter", receiver)
+    return [item for index, item in enumerate(items) if _js_truthy(callback(item, index, items))]
+
+
+# ---------------------------------------------------------------- J86: numbers
+
+_JS_INFINITY = _js_math.inf
+_JS_NAN = _js_math.nan
+
+
+def _js_double_out(value):
+    """A float result back in the int-when-exact spelling: an integral finite value within 2^53
+    becomes an `int`, except -0, which only a float can hold."""
+    if (
+        isinstance(value, float)
+        and value == value
+        and value not in (_js_math.inf, -_js_math.inf)
+        and value.is_integer()
+        and abs(value) <= 2**53
+        and not (value == 0 and _js_math.copysign(1.0, value) < 0)
+    ):
+        return int(value)
+    return value
+
+
+def _js_to_numeric(value):
+    """ToNumeric: a BigInt stays one, anything else is ToNumber of its primitive."""
+    value = _js_to_primitive(value)
+    if isinstance(value, _JsBigInt):
+        return value
+    return _js_to_number(value)
+
+
+def _js_mix_error():
+    return _JsTypeError("Cannot mix BigInt and other types, use explicit conversions")
+
+
+def _js_bigint_operands(left, right):
+    left, right = _js_to_numeric(left), _js_to_numeric(right)
+    if not (isinstance(left, _JsBigInt) and isinstance(right, _JsBigInt)):
+        raise _js_mix_error()
+    return left.value, right.value
+
+
+def _js_float_pair(left, right):
+    return float(_js_num(left)), float(_js_num(right))
+
+
+def _js_mul(left, right):
+    """`left * right`: numbers as doubles (the sign of a zero kept), two BigInts exactly."""
+    left, right = _js_to_numeric(left), _js_to_numeric(right)
+    if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
+        a, b = _js_bigint_operands(left, right)
+        return _JsBigInt(a * b)
+    left, right = _js_num(left), _js_num(right)
+    if type(left) is int and type(right) is int and left != 0 and right != 0:
+        return _js_num(left * right)
+    a, b = _js_float_pair(left, right)
+    return _js_double_out(a * b)
+
+
+def _js_div(left, right):
+    """`left / right`: IEEE division of the two doubles, so `1 / 0` is Infinity and `0 / 0` NaN;
+    two BigInts divide truncating toward zero and a BigInt zero divisor is a RangeError."""
+    left, right = _js_to_numeric(left), _js_to_numeric(right)
+    if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
+        a, b = _js_bigint_operands(left, right)
+        if b == 0:
+            raise _JsRangeError("Division by zero")
+        quotient = abs(a) // abs(b)
+        return _JsBigInt(quotient if (a < 0) == (b < 0) else -quotient)
+    a, b = _js_float_pair(left, right)
+    if b == 0:
+        if a == 0 or a != a:
+            return _js_math.nan
+        negative = (_js_math.copysign(1.0, a) < 0) != (_js_math.copysign(1.0, b) < 0)
+        return -_js_math.inf if negative else _js_math.inf
+    return _js_double_out(a / b)
+
+
+def _js_mod(left, right):
+    """`left % right`: the remainder takes the sign of the dividend (a zero result keeps it, so
+    `-4 % 2` is -0); a zero divisor or an infinite dividend is NaN. BigInts exactly."""
+    left, right = _js_to_numeric(left), _js_to_numeric(right)
+    if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
+        a, b = _js_bigint_operands(left, right)
+        if b == 0:
+            raise _JsRangeError("Division by zero")
+        rest = abs(a) % abs(b)
+        return _JsBigInt(-rest if a < 0 else rest)
+    a, b = _js_float_pair(left, right)
+    if b == 0 or a != a or b != b or a in (_js_math.inf, -_js_math.inf):
+        return _js_math.nan
+    if b in (_js_math.inf, -_js_math.inf):
+        return _js_double_out(a)
+    return _js_double_out(_js_math.fmod(a, b))
+
+
+def _js_neg(value):
+    """Unary `-`: `-0` is a float (an int has no negative zero); a BigInt negates exactly."""
+    value = _js_to_numeric(value)
+    if isinstance(value, _JsBigInt):
+        return _JsBigInt(-value.value)
+    value = _js_num(value)
+    if type(value) is int and value == 0:
+        return -0.0
+    return -value
+
+
+def _js_math_arg(value):
+    return _js_num(_js_to_number(_js_to_primitive(value)))
+
+
+def _js_floor(value):
+    """`Math.floor`: NaN, the infinities and -0 come back unchanged."""
+    value = _js_math_arg(value)
+    if type(value) is int or value != value or value in (_js_math.inf, -_js_math.inf) or value == 0:
+        return value
+    return _js_math.floor(value)
+
+
+def _js_abs(value):
+    """`Math.abs`."""
+    return abs(_js_math_arg(value))
+
+
+def _js_extreme(values, pick_max):
+    numbers = [_js_math_arg(value) for value in values]
+    best = -_js_math.inf if pick_max else _js_math.inf
+    for number in numbers:
+        if number != number:
+            return _js_math.nan
+        if number == best == 0:
+            # +0 is larger than -0 for Math.max, smaller for Math.min.
+            negative = _js_math.copysign(1.0, number) < 0
+            if negative != pick_max:
+                best = number
+        elif (number > best) if pick_max else (number < best):
+            best = number
+    return best
+
+
+def _js_max(*values):
+    """`Math.max`: any NaN is NaN, +0 beats -0, no argument is -Infinity."""
+    return _js_extreme(values, True)
+
+
+def _js_min(*values):
+    """`Math.min`: any NaN is NaN, -0 beats +0, no argument is Infinity."""
+    return _js_extreme(values, False)
+
+
+def _js_number(value=0):
+    """`Number(value)`: ToNumeric, and a BigInt converts to the nearest double."""
+    value = _js_to_numeric(value)
+    if isinstance(value, _JsBigInt):
+        return _js_num(value.value)
+    return _js_double_out(value) if isinstance(value, float) else value
+
+
+def _js_number_is_nan(value):
+    """`Number.isNaN`: a number that is NaN; nothing else, no coercion."""
+    return isinstance(value, float) and value != value
+
+
+_JS_DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def _js_parse_int(text, radix=_JS_UNDEFINED):
+    """`parseInt(text, radix)`: leading JS whitespace and a sign, then the longest run of digits in
+    the radix (16 also accepts a `0x` prefix; radix 0 or missing reads `0x` as 16, else 10). No
+    digit is NaN. A run whose value is past 2^53 in a radix other than 10 or a power of two is
+    outside the subset (V8 rounds those approximately)."""
+    text = _js_str(text).lstrip(_JS_WHITESPACE)
+    sign = 1
+    if text[:1] in ("+", "-"):
+        sign = -1 if text[0] == "-" else 1
+        text = text[1:]
+    base = (
+        0 if radix is _JS_UNDEFINED else int(_js_num(_js_to_number(_js_to_primitive(radix))) or 0)
+    )
+    strip_prefix = base in (0, 16)
+    if base == 0:
+        base = 10
+    elif not 2 <= base <= 36:
+        return _js_math.nan
+    if strip_prefix and text[:2] in ("0x", "0X"):
+        text = text[2:]
+        base = 16
+    digits = _JS_DIGITS[:base]
+    end = 0
+    while end < len(text) and text[end].lower() in digits and text[end].isascii():
+        end += 1
+    if end == 0:
+        return _js_math.nan
+    value = int(text[:end], base)
+    if value > 2**53 and base not in (2, 4, 8, 10, 16, 32):
+        raise TypeError("ts2py: parseInt past 2^53 in this radix is outside the subset")
+    if value == 0 and sign < 0:
+        return -0.0
+    return _js_num(sign * value)
+
+
+def _js_int_to_radix(value, radix):
+    if value == 0:
+        return "0"
+    negative = value < 0
+    value = abs(value)
+    out = []
+    while value:
+        value, digit = divmod(value, radix)
+        out.append(_JS_DIGITS[digit])
+    return ("-" if negative else "") + "".join(reversed(out))
+
+
+def _js_m_toString(receiver, radix=_JS_UNDEFINED):
+    """`x.toString(radix?)`: a class instance's own `toString`, `Error.prototype.toString`, a number
+    or BigInt in a radix 2..36 (a number with a fraction only in radix 10), a string as itself."""
+    if isinstance(receiver, _JsObject):
+        return _js_object_to_string(receiver)
+    base = 10 if radix is _JS_UNDEFINED else _js_to_integer(radix)
+    if not 2 <= base <= 36:
+        raise _JsRangeError("toString() radix must be between 2 and 36")
+    if isinstance(receiver, _JsBigInt):
+        return _js_int_to_radix(receiver.value, int(base))
+    if _js_is_number(receiver):
+        if base == 10:
+            return _js_num_str(receiver)
+        value = _js_num(receiver)
+        if value != value or value in (_js_math.inf, -_js_math.inf):
+            return _js_num_str(value)
+        if value != int(value):
+            raise TypeError("ts2py: .toString(radix) of a fraction is outside the subset")
+        return _js_int_to_radix(int(value), int(base))
+    if isinstance(receiver, (str, bool, list)) or receiver is None or isinstance(receiver, dict):
+        if receiver is None:
+            raise TypeError("Cannot read properties of null (reading 'toString')")
+        return _js_str(receiver)
+    raise _js_outside("toString", receiver)
+
+
+# ---------------------------------------------------------------- J86: BigInt
+
+
+class _JsBigInt:
+    """A JS BigInt: exact, and never equal to a number (`1n !== 1`, distinct Map keys)."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
+
+    def __eq__(self, other):
+        return isinstance(other, _JsBigInt) and other.value == self.value
+
+    def __hash__(self):
+        return hash((_JsBigInt, self.value))
+
+    def __repr__(self):
+        return f"{self.value}n"
+
+    # The J85 lowering of `a - b` and `-a` applies Python's operators to the operands; these keep
+    # that lowering exact for BigInts and make a mixed operation the TypeError JS raises.
+    def __sub__(self, other):
+        a, b = _js_bigint_operands(self, other)
+        return _JsBigInt(a - b)
+
+    def __rsub__(self, other):
+        a, b = _js_bigint_operands(other, self)
+        return _JsBigInt(a - b)
+
+    def __neg__(self):
+        return _JsBigInt(-self.value)
+
+    def __add__(self, other):
+        a, b = _js_bigint_operands(self, other)
+        return _JsBigInt(a + b)
+
+    def __radd__(self, other):
+        a, b = _js_bigint_operands(other, self)
+        return _JsBigInt(a + b)
+
+    # A BigInt compares with a number by exact value, as JS does (NaN is never less or greater).
+    def __lt__(self, other):
+        return _js_bigint_less(self, other) is True
+
+    def __gt__(self, other):
+        return _js_bigint_less(other, self) is True
+
+    def __le__(self, other):
+        return _js_bigint_less(other, self) is False
+
+    def __ge__(self, other):
+        return _js_bigint_less(self, other) is False
+
+
+_JS_BIGINT_TEXT = _js_re.compile(
+    r"[+-]?[0-9]+\Z|0[xX][0-9a-fA-F]+\Z|0[oO][0-7]+\Z|0[bB][01]+\Z", _js_re.ASCII
+)
+
+
+def _js_bigint(value):
+    """`BigInt(value)`: an integral number, a boolean, or a string in StringToBigInt's grammar (JS
+    whitespace trimmed, empty is 0n, a sign only on decimal digits, `0x` / `0o` / `0b`)."""
+    value = _js_to_primitive(value)
+    if isinstance(value, _JsBigInt):
+        return value
+    if isinstance(value, bool):
+        return _JsBigInt(int(value))
+    if _js_is_number(value):
+        value = _js_num(value)
+        if value != value or value in (_js_math.inf, -_js_math.inf) or value != int(value):
+            raise _JsRangeError(
+                f"The number {_js_num_str(value)} cannot be converted to a BigInt"
+                " because it is not an integer"
+            )
+        return _JsBigInt(int(value))
+    if isinstance(value, str):
+        text = value.strip(_JS_WHITESPACE)
+        if text == "":
+            return _JsBigInt(0)
+        if not _JS_BIGINT_TEXT.match(text):
+            raise _JsSyntaxError(f"Cannot convert {value} to a BigInt")
+        if text[:2].lower() in ("0x", "0o", "0b"):
+            return _JsBigInt(int(text[2:], {"x": 16, "o": 8, "b": 2}[text[1].lower()]))
+        return _JsBigInt(int(text))
+    raise _JsTypeError(f"Cannot convert {_js_str(value)} to a BigInt")
+
+
+def _js_bigint_less(left, right):
+    """IsLessThan with a BigInt on either side, compared exactly against a number."""
+
+    def exact(value):
+        if isinstance(value, _JsBigInt):
+            return value.value
+        if isinstance(value, str):
+            raise TypeError("ts2py: comparing a BigInt with a string is outside the subset")
+        return _js_to_number(value)
+
+    left, right = exact(left), exact(right)
+    if left != left or right != right:
+        return None
+    return left < right
+
+
+# ---------------------------------------------------------------- J86: objects and classes
+
+_JS_OBJECT_PROTO_NAMES = frozenset(
+    {
+        "__proto__",
+        "__defineGetter__",
+        "__defineSetter__",
+        "__lookupGetter__",
+        "__lookupSetter__",
+        "constructor",
+        "hasOwnProperty",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "toLocaleString",
+        "toString",
+        "valueOf",
+    }
+)
+
+
+def _js_inherited(key):
+    """A read that would reach `Object.prototype` in JS (`o.constructor`, `o["toString"]`): JS
+    answers with an inherited function, which the subset does not model, so it raises instead."""
+    return TypeError(f"ts2py: reading the inherited {key!r} is outside the subset")
+
+
+def _js_class_names(cls, attribute):
+    names = set()
+    for klass in cls.__mro__:
+        names |= klass.__dict__.get(attribute, frozenset())
+    return names
+
+
+class _JsObject:
+    """Base of every class ts2py compiles. Fields are instance attributes spelled as in JS; the
+    class lists its own members in `_js_own` and its methods in `_js_own_methods`, so a reflective
+    read (`_js_get`) sees exactly what JS would and nothing Python adds. `Object.freeze` makes every
+    later assignment the TypeError strict-mode JS raises."""
+
+    _js_name = "Object"
+    _js_own = frozenset()
+    _js_own_methods = frozenset()
+    _js_frozen = False
+
+    def __setattr__(self, name, value):
+        if self._js_frozen:
+            if name in self.__dict__:
+                raise _JsTypeError(
+                    f"Cannot assign to read only property '{name}' of object '#<{self._js_name}>'"
+                )
+            raise _JsTypeError(f"Cannot add property {name}, object is not extensible")
+        object.__setattr__(self, name, value)
+
+
+def _js_object_get(obj, key):
+    own = obj.__dict__
+    if key in own and not key.startswith("_"):
+        return own[key]
+    if key in _js_class_names(type(obj), "_js_own"):
+        return getattr(obj, key)
+    if key in _JS_OBJECT_PROTO_NAMES:
+        raise _js_inherited(key)
+    if key in ("stack", "cause") and isinstance(obj, _JsError):
+        raise TypeError(f"ts2py: reading an Error's {key!r} is outside the subset")
+    return _JS_UNDEFINED
+
+
+def _js_object_to_string(obj):
+    if "toString" in _js_class_names(type(obj), "_js_own_methods"):
+        result = obj.toString()
+        if isinstance(result, (dict, list, _JsObject)):
+            raise _JsTypeError("Cannot convert object to primitive value")
+        return _js_str(result)
+    return "[object Object]"
+
+
+def _js_invoke(receiver, name, *args):
+    """`receiver.name(...args)` for a method a compiled class declares."""
+    if isinstance(receiver, _JsObject) and name in _js_class_names(
+        type(receiver), "_js_own_methods"
+    ):
+        return getattr(receiver, name)(*args)
+    if receiver is None or receiver is _JS_UNDEFINED:
+        raise TypeError(f"Cannot read properties of {_js_str(receiver)} (reading '{name}')")
+    raise _js_outside(name, receiver)
+
+
+def _js_dispatch(receiver, name, builtin, *args):
+    """`receiver.name(...args)` where a compiled class and a builtin both declare `name`: an
+    instance of such a class runs its own method, anything else the builtin, as JS's lookup
+    would."""
+    if isinstance(receiver, _JsObject) and name in _js_class_names(
+        type(receiver), "_js_own_methods"
+    ):
+        return getattr(receiver, name)(*args)
+    return builtin(receiver, *args)
+
+
+def _js_freeze(value):
+    """`Object.freeze(value)` on a class instance (a plain object or array is outside the
+    subset)."""
+    if not isinstance(value, _JsObject):
+        raise TypeError(
+            "ts2py: Object.freeze of anything but a class instance is outside the subset"
+        )
+    object.__setattr__(value, "_js_frozen", True)
+    return value
+
+
+class _JsError(_JsObject, Exception):
+    """`Error`: `message` is own only when one was passed; `name` is inherited (`"Error"` for every
+    subclass that does not set its own), and `String(e)` is `name: message`."""
+
+    _js_name = "Error"
+    _js_own = frozenset({"message", "name", "toString"})
+    _js_own_methods = frozenset({"toString"})
+    name = "Error"
+    message = ""
+
+    def __init__(self, message=_JS_UNDEFINED, *_):
+        Exception.__init__(self, "" if message is _JS_UNDEFINED else _js_str(message))
+        if message is not _JS_UNDEFINED:
+            self.message = _js_str(message)
+
+    def toString(self):
+        name = _js_get(self, "name")
+        message = _js_get(self, "message")
+        name = "Error" if name is _JS_UNDEFINED else _js_str(name)
+        message = "" if message is _JS_UNDEFINED else _js_str(message)
+        if name == "":
+            return message
+        if message == "":
+            return name
+        return name + ": " + message
+
+    def __str__(self):
+        return _js_str(_js_get(self, "message"))
+
+
+class _JsTypeError(_JsError, TypeError):
+    _js_name = "TypeError"
+    name = "TypeError"
+
+
+class _JsRangeError(_JsError, ValueError):
+    _js_name = "RangeError"
+    name = "RangeError"
+
+
+class _JsSyntaxError(_JsError, ValueError):
+    _js_name = "SyntaxError"
+    name = "SyntaxError"
+
+
+def _js_throw(value):
+    """`throw value`: an Error (any Python exception) is raised as itself; throwing anything else
+    is outside the subset."""
+    if isinstance(value, BaseException):
+        return value
+    return TypeError("ts2py: throwing a value that is not an Error is outside the subset")
+
+
+_JS_PROTOTYPES = {}
+
+
+class _JsPrototype:
+    """A stand-in for a built-in prototype object, compared by identity only."""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name):
+        self.name = name
+
+
+_JS_OBJECT_PROTOTYPE = _JsPrototype("Object.prototype")
+
+
+def _js_get_prototype_of(value):
+    """`Object.getPrototypeOf(value)`: `Object.prototype` for a plain object, the class for a class
+    instance, a distinct stand-in for every other kind of value."""
+    if value is None or value is _JS_UNDEFINED:
+        raise _JsTypeError("Cannot convert undefined or null to object")
+    if isinstance(value, dict):
+        return _JS_OBJECT_PROTOTYPE
+    if isinstance(value, _JsObject):
+        return type(value)
+    kind = (
+        "Boolean"
+        if isinstance(value, bool)
+        else "Number"
+        if isinstance(value, (int, float))
+        else "String"
+        if isinstance(value, str)
+        else "Array"
+        if isinstance(value, list)
+        else type(value).__name__
+    )
+    if kind not in _JS_PROTOTYPES:
+        _JS_PROTOTYPES[kind] = _JsPrototype(kind + ".prototype")
+    return _JS_PROTOTYPES[kind]
+
+
+def _js_own_property_names(value):
+    if isinstance(value, dict):
+        return _js_own_keys(value)
+    if isinstance(value, list):
+        return [str(index) for index in range(len(value))]
+    if isinstance(value, str):
+        return [str(index) for index in range(_js_len(value))]
+    if isinstance(value, _JsObject):
+        return [key for key in value.__dict__ if not key.startswith("_")]
+    if value is None or value is _JS_UNDEFINED:
+        raise _JsTypeError("Cannot convert undefined or null to object")
+    if isinstance(value, (bool, int, float, _JsBigInt, _JsMap, _JsSet)):
+        return []
+    raise TypeError(f"ts2py: the keys of {type(value).__name__} are outside the subset")
+
+
+def _js_object_keys(value):
+    """`Object.keys(value)`: own enumerable string keys, array indices ascending first."""
+    return _js_own_property_names(value)
+
+
+def _js_object_entries(value):
+    """`Object.entries(value)`: `[key, value]` pairs in `Object.keys` order."""
+    return [[key, _js_get(value, key)] for key in _js_own_property_names(value)]
+
+
+def _js_spread(value):
+    """`{...value}`: the own enumerable properties; `null`, `undefined` and primitives give none."""
+    if value is None or value is _JS_UNDEFINED or isinstance(value, (bool, int, float, _JsBigInt)):
+        return {}
+    return {key: _js_get(value, key) for key in _js_own_property_names(value)}
+
+
+def _js_in(key, obj):
+    """`key in obj`: own keys, and on a plain object or instance also what `Object.prototype`
+    gives."""
+    if not isinstance(key, str):
+        key = _js_str(key)
+    if isinstance(obj, dict):
+        return key in obj or key in _JS_OBJECT_PROTO_NAMES
+    if isinstance(obj, _JsObject):
+        return (
+            (key in obj.__dict__ and not key.startswith("_"))
+            or key in _js_class_names(type(obj), "_js_own")
+            or key in _JS_OBJECT_PROTO_NAMES
+        )
+    if isinstance(obj, list):
+        index = _js_index_key(key)
+        if index is not None:
+            return 0 <= index < len(obj)
+        if key == "length":
+            return True
+        raise TypeError(f"ts2py: {key!r} in an array is outside the subset")
+    raise _JsTypeError(f"Cannot use 'in' operator to search for '{key}' in {_js_str(obj)}")
+
+
+def _js_destructure(value, count):
+    """The first `count` items an array pattern reads: through the iterator, so a string gives code
+    points; short input reads `undefined`; `null`, `undefined` or a plain object is a TypeError."""
+    if value is None or value is _JS_UNDEFINED:
+        raise _JsTypeError(f"{_js_str(value)} is not iterable")
+    if isinstance(value, list):
+        items = value[:count]
+    elif isinstance(value, (str, _JsMap, _JsSet)):
+        items = []
+        for item in value:
+            if len(items) == count:
+                break
+            items.append(item)
+    else:
+        raise _JsTypeError("object is not iterable")
+    return list(items) + [_JS_UNDEFINED] * (count - len(items))
