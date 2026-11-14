@@ -1,0 +1,22 @@
+[package]
+name = "ts2py"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Compile a TypeScript module in an explicit subset into a Python module (#314 pilot)."
+license = "MIT"
+
+[[bin]]
+name = "ts2py"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Every dependency is pinned exactly; Cargo.lock is committed.
+[dependencies]
+oxc_allocator = "=0.156.0"
+oxc_ast = "=0.156.0"
+oxc_parser = "=0.156.0"
+oxc_span = "=0.156.0"
+sha2 = "=0.10.9"
