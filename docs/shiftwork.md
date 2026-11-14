@@ -875,8 +875,10 @@ not proven savings.
   - That moves a fresh session's input by about 1,700 tokens, and it changes
     where its cache prefix matches.
   - Disabling `plugins`, `remote_plugin` and `plugin_discovery_prefetch` did
-    **not** stop the flips (measured 2026-11-14). Warming the home first is
-    untested.
+    **not** stop the flips (measured 2026-11-14).
+  - Warming the home until its plugin cache stopped changing did not stop them
+    either: the block still differed from one session to the next. No client
+    setting tried on Codex 0.167.1 holds it fixed.
   - Until a fix is measured, compare levers per call kind, not on whole-job
     totals.
 - **Not adopted, because no effect was demonstrated:**

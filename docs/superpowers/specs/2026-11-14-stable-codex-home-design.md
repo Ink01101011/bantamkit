@@ -128,3 +128,25 @@ The samples are too small to compare.
   failed the false-findings gate. The paragraph may cut exploration that would
   have caught the task's finer requirements, but n is too small to tell. Treat
   it as unproven, and do not adopt it as a default.
+
+## Follow-up: pre-warming the home (2026-11-14, 142,420 tokens of the same approval)
+
+This tested the last untested fix, a home warmed before the run. All calls used
+one fresh isolated home, the author flags and a one-word prompt.
+
+- **Warm-up.** The plugin cache kept growing across calls, not after one call:
+  13, then 134, 286, 505 and 505 files. It stopped at 505.
+- **Six calls during warm-up.** The skills element was 2,014 characters in the
+  first six sessions and 8,641 in the seventh.
+- **Five calls after the cache had settled at 505 files.** The skills element was
+  2,014, 8,641, 8,641, 2,014 and 8,641 characters. Input was 11,304 or 12,982
+  tokens.
+
+**Result: pre-warming is refuted.** With the plugin cache full and unchanged, the
+block still flips from one session to the next. It behaves like a per-session
+race, where the plugin skills may or may not have loaded when the prompt is
+built. The disable flags did not stop it either. No client-side setting tried
+holds the Codex 0.167.1 preamble fixed.
+
+**Spend** for the whole approval: 594,062 for the run and 142,420 for this
+follow-up, a total of 736,482 of 800,000.
