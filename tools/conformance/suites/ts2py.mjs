@@ -8,8 +8,8 @@
  *
  *   node/<case>       `plan` from `runtime-ts/dist/workplan.js` (run `npm run build` if stale)
  *   generated/<case>  the module ts2py writes into this run's scratch, compiled FRESH every run
- *   legacy/<case>     `bantamkit.workplan` from `runtime-py/src` — hand-written today, the
- *                     generated module once #314 switches (J85-3); the arm keeps working then
+ *   legacy/<case>     `bantamkit.workplan` from `runtime-py/src` — the committed generated module
+ *                     since #314 switched (J85-3); the arm checks what the package actually serves
  *
  * Every arm is compared as TEXT: Node's `JSON.stringify(answer)` against Python's
  * `json.dumps(answer, ensure_ascii=False, separators=(",", ":"))`, so key order (`held` last)
@@ -36,24 +36,10 @@
  * `expected` is the TypeScript planner's answer, written in on 2026-11-15 after every literal those
  * three locations pin (widths, first batches, refusal sentences, `held`) was checked against it.
  *
- * KNOWN DISAGREEMENTS ARE RULINGS, AND A RULING MUST STAY TRUE. An arm that disagrees with the
- * expected answer is never fixed by editing the expected value or the legacy planner (J85-2
- * property 5). It is listed below with its reason and carried as a `ruling:` case, which the
- * harness REQUIRES to differ — so it is shown, not silenced, and the day it starts matching it
- * fails as a STALE RULING until someone deletes the entry. The generated arm carries no ruling:
- *
- *   KNOWN_LEGACY_FINDINGS  the hand-written `workplan.py` disagrees with the TypeScript. These are
- *                          shipped Python/Node parity bugs that switching to the generated module
- *                          FIXES. J85-3 deletes this list when it switches; the stale rulings
- *                          force it to. Two of them are integers beyond 2^53, which a JS double
- *                          rounds and the legacy planner's Python ints do not; ts2py lowers
- *                          numbers as doubles (`tools/ts2py/SUBSET.md`, Numbers), so the
- *                          generated arm matches.
- *
- * The missing-`id` case is one of the legacy findings: `plan([{depends_on: []}])` refuses
- * `nodes[0].id must be a string` in TypeScript and raises `KeyError: 'id'` in the legacy planner.
- * The tool surface pins the KeyError separately (`suites/workplan.mjs`, `tool/no-id`), and that
- * case is untouched.
+ * NO RULINGS. Every arm must match the expected answer. Until #314 switched `bantamkit.workplan` to
+ * the generated module (J85-3), the hand-written planner differed from the TypeScript on 8 cases,
+ * carried here as `ruling:` cases; the switch fixed all 8 on the Python side and the list was
+ * deleted (`docs/porting.md`, Generated modules). A disagreement now is a red case, never a ruling.
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -76,38 +62,6 @@ const SOURCE = 'runtime-ts/src/workplan.ts';
  * than a smaller suite that still passes.
  */
 const HEADLINE = { cases: 147, graph: 21, core: 53, ts: 21, py: 13, adversarial: 39 };
-
-const KNOWN_LEGACY_FINDINGS = new Map([
-  [
-    'ts/shape-no-id',
-    "legacy plan() reads node['id'] before checking it and raises KeyError 'id'; TypeScript refuses `nodes[0].id must be a string`",
-  ],
-  [
-    'adversarial/touches/1e21',
-    "legacy _json prints a float with Python's repr, 1000000000000000000000; JSON.stringify prints 1e+21",
-  ],
-  ['adversarial/touches/1e-7', "legacy _json prints Python's repr 1e-07; JSON.stringify prints 1e-7"],
-  [
-    'adversarial/touches/object-nested-floats-and-keys',
-    'legacy _json folds only a TOP-LEVEL integral float (nested 3.0 stays 3.0) and keeps dict insertion order; JSON.stringify writes 3 and puts the array-index key "1" first',
-  ],
-  [
-    'adversarial/touches/object-array-index-keys',
-    'legacy _json keeps dict insertion order; JSON.stringify puts array-index keys first, ascending ("2", "10", then "b")',
-  ],
-  [
-    'adversarial/touches/object-in-list',
-    'legacy _json does not fold the nested integral float 1.0; JSON.stringify writes 1',
-  ],
-  [
-    'adversarial/priority/2^53-plus-one-ties-in-js',
-    'legacy plan() subtracts exact Python ints, so 9007199254740993 outranks 9007199254740992; as JS doubles they tie and insertion order holds',
-  ],
-  [
-    'adversarial/touches/int-beyond-2^53',
-    'legacy _json prints the exact int 12345678901234567890; JSON.stringify prints the rounded double 12345678901234567000',
-  ],
-]);
 
 function findCargo() {
   if (process.env.TS2PY_CARGO) return process.env.TS2PY_CARGO;
@@ -156,12 +110,6 @@ export async function run(ctx) {
   }
   cases.push({ name: 'fixture/headline', kind: 'json', expected: HEADLINE, actual: counts });
 
-  // Every ruling must name a case that exists, or a renamed case would carry its ruling nowhere.
-  const names = new Set(fixture.map((c) => c.name));
-  for (const listed of KNOWN_LEGACY_FINDINGS.keys()) {
-    cases.push({ name: `ruling-names-a-case/${listed}`, kind: 'json', expected: true, actual: names.has(listed) });
-  }
-
   const python = ctx.runPython(REF, { fixture: FIXTURE, generated: generatedPath });
 
   fixture.forEach((c, i) => {
@@ -174,13 +122,8 @@ export async function run(ctx) {
     }
     cases.push({ name: `node/${c.name}`, kind: 'string', expected, actual: node });
 
-    const legacyFinding = KNOWN_LEGACY_FINDINGS.get(c.name);
-    const legacy = python.legacy[i];
     cases.push({ name: `generated/${c.name}`, kind: 'string', expected, actual: python.generated[i] });
-    cases.push({ name: `legacy/${c.name}`, kind: 'string', expected, actual: legacy, ...(legacyFinding ? { ruling: legacyFinding } : {}) });
-    if (legacyFinding && legacy !== expected) {
-      notes.push(`known legacy finding, legacy/${c.name}: expected ${expected}, got ${legacy}`);
-    }
+    cases.push({ name: `legacy/${c.name}`, kind: 'string', expected, actual: python.legacy[i] });
   });
 
   notes.push(

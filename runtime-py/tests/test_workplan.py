@@ -1,423 +1,103 @@
-"""W1 — the Layer 1 Kahn planner, pinned against real answers.
+"""W1 — the Layer 1 planner, pinned against the shared expected answers (#314).
 
-The differential conformance harness compares Python against Node, so it is blind to
-a regression that lands on BOTH sides (`differential-is-blind-to-symmetric-regression`:
-this repo has already lost three parity bugs to exactly that). These tests are the
-second half of the gate: they pin REAL batch widths as LITERAL numbers typed into the
-file. A planner that degenerated to one-node-per-batch on both runtimes would still
-compare equal in the differential; it fails here.
+`bantamkit.workplan` is served by `bantamkit/_generated/workplan.py`, compiled from
+`runtime-ts/src/workplan.ts` by `tools/ts2py`. The cases are NOT restated here: every
+input this file used to type out (the job41/44/46 graphs, the refusal sentences, the
+#127 shape sentences) is a case in `tools/conformance/fixtures/workplan-cases.json`,
+together with the 21 real graphs, the TypeScript tests' inputs and the adversarial
+Python/JS splits — 147 cases, each with ONE expected answer written as literal data.
+The differential suites compare the runtimes with each other; this file compares the
+Python planner with that literal file, which is what catches a regression landing on
+both sides at once (`differential-is-blind-to-symmetric-regression`).
 
-The three graphs below were extracted ONCE, on 2026-09-18, from
-`.shiftwork/checkpoint-job46.json`, `checkpoint-job44.json` and `checkpoint-job41.json`
-and pasted in as literal data. These tests deliberately DO NOT read those files:
-`.shiftwork/*.json` is mutated by every running job and `.gitignore` can make it absent
-on a runner, so a test that read them would compare a different graph next month and
-prove nothing about this code. Same reasoning `tools/conformance/suites/shiftwork.mjs`
-records for its own corpus.
+The file is read with `json.load`, never re-encoded first, so `3.0` and `-0.0` reach the
+planner as Python floats — those are the values whose Python type is under test.
+Answers are compared as compact JSON text, so key order (`held` last) is checked too.
+
+What stays below is what the case file cannot pin: the input is not mutated, the
+`nodes` keyword and a tuple input still work, and two structural properties over every
+case.
 """
 
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+from bantamkit import workplan
 from bantamkit.workplan import plan
 
-# ---------------------------------------------------------------------------
-# Real graphs, extracted 2026-09-18, written as literal data (see module docstring).
-# ---------------------------------------------------------------------------
+REPO = Path(__file__).resolve().parents[2]
+FIXTURE = REPO / "tools" / "conformance" / "fixtures" / "workplan-cases.json"
+CASES = json.loads(FIXTURE.read_text(encoding="utf-8"))
 
-# .shiftwork/checkpoint-job46.json — 32 units, in plan.units order.
-JOB46 = [
-    ("J46-1", []),
-    ("J46-2", []),
-    ("J46-3", ["J46-2"]),
-    ("J46-25", []),
-    ("J46-4", []),
-    ("J46-5", ["J46-4"]),
-    ("J46-6", ["J46-5"]),
-    ("J46-7", []),
-    ("J46-8", ["J46-7"]),
-    ("J46-9", ["J46-8"]),
-    ("J46-10", ["J46-9"]),
-    ("J46-11", []),
-    ("J46-12", ["J46-11"]),
-    ("J46-13", ["J46-12"]),
-    ("J46-14", []),
-    ("J46-15", []),
-    ("J46-16", []),
-    ("J46-17", ["J46-16"]),
-    ("J46-18", ["J46-17"]),
-    ("J46-19", []),
-    ("J46-20", ["J46-19"]),
-    ("J46-21", ["J46-20"]),
-    ("J46-22", ["J46-21"]),
-    ("J46-24", ["J46-2"]),
-    ("J46-26", []),
-    ("J46-27", ["J46-26"]),
-    ("J46-28", ["J46-26", "J46-27"]),
-    ("J46-32", ["J46-13"]),
-    ("J46-29", ["J46-11"]),
-    ("J46-30", ["J46-12", "J46-29"]),
-    ("J46-31", ["J46-29", "J46-30"]),
-    ("J46-23", [
-        "J46-10", "J46-13", "J46-14", "J46-15",
-        "J46-18", "J46-22", "J46-24", "J46-6",
-    ]),
-]
-
-# .shiftwork/checkpoint-job44.json — 21 units, in plan.units order.
-JOB44 = [
-    ("U1", []),
-    ("U2", []),
-    ("U7", []),
-    ("U8", []),
-    ("U4", ["U1"]),
-    ("U5", ["U2"]),
-    ("U10", []),
-    ("U12", []),
-    ("U11", []),
-    ("U13", []),
-    ("U14", []),
-    ("U17", ["U1", "U2"]),
-    ("U18", []),
-    ("U3", ["U1", "U2", "U4", "U5", "U7", "U8"]),
-    ("U15", ["U3", "U10", "U11", "U12", "U13", "U14", "U17", "U18"]),
-    ("U16", ["U15"]),
-    ("F1", []),
-    ("F2", ["F1"]),
-    ("F3", ["F1", "F2"]),
-    ("F4", []),
-    ("F5", ["F3", "F4"]),
-]
-
-# .shiftwork/checkpoint-job41.json — 9 units, in plan.units order.
-JOB41 = [
-    ("D1", []),
-    ("D2", []),
-    ("D3", []),
-    ("D4", []),
-    ("D5", []),
-    ("D6", []),
-    ("D7", []),
-    ("D8", ["D1"]),
-    ("D9", ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"]),
-]
+#: Typed out so a case dropped from the fixture is red, not a smaller suite that passes.
+CASE_COUNT = 147
 
 
-def nodes(graph):
-    """The literal (id, depends_on) pairs above, in the input shape `plan` takes."""
-    return [{"id": node_id, "depends_on": list(deps)} for node_id, deps in graph]
+def _text(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-# ---------------------------------------------------------------------------
-# The real graphs. Widths are typed literals, never computed from the input.
-# ---------------------------------------------------------------------------
+def test_the_fixture_holds_every_case():
+    assert len(CASES) == CASE_COUNT
+    assert len({case["name"] for case in CASES}) == CASE_COUNT
 
 
-def test_job46_batch_widths_are_11_9_7_4_1():
-    result = plan(nodes(JOB46))
-    assert [len(batch) for batch in result["batches"]] == [11, 9, 7, 4, 1]
-    assert result["width"] == 11
-    assert len(result["sequence"]) == 32
+@pytest.mark.parametrize("case", CASES, ids=[case["name"] for case in CASES])
+def test_plan_answers_the_expected_answer(case):
+    assert _text(plan(copy.deepcopy(case["input"]))) == _text(case["expected"])
 
 
-def test_job44_batch_widths_are_12_4_2_2_1():
-    result = plan(nodes(JOB44))
-    assert [len(batch) for batch in result["batches"]] == [12, 4, 2, 2, 1]
-    assert result["width"] == 12
-    assert len(result["sequence"]) == 21
+def test_sequence_is_the_batches_flattened_in_order_on_every_answer():
+    answers = [case["expected"] for case in CASES if "batches" in case["expected"]]
+    assert answers
+    for answer in answers:
+        assert answer["sequence"] == [node_id for batch in answer["batches"] for node_id in batch]
+        assert answer["width"] == max((len(batch) for batch in answer["batches"]), default=0)
 
 
-def test_job41_batch_widths_are_7_1_1():
-    result = plan(nodes(JOB41))
-    assert [len(batch) for batch in result["batches"]] == [7, 1, 1]
-    assert result["width"] == 7
-    assert len(result["sequence"]) == 9
+def test_a_refusal_carries_no_batches():
+    refusals = [plan(copy.deepcopy(c["input"])) for c in CASES if "reason" in c["expected"]]
+    assert refusals
+    for refusal in refusals:
+        assert set(refusal) == {"result", "reason"}
+        assert refusal["result"] == "error"
 
 
-def test_job41_batches_are_the_literal_ids_in_plan_units_order():
-    # Every unit has priority 0, so ordering inside a batch is plan.units order.
-    result = plan(nodes(JOB41))
-    assert result["batches"] == [
-        ["D1", "D2", "D3", "D4", "D5", "D6", "D7"],
-        ["D8"],
-        ["D9"],
-    ]
-    assert result["sequence"] == ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9"]
+def test_plan_does_not_mutate_its_input():
+    for case in CASES:
+        given = copy.deepcopy(case["input"])
+        plan(given)
+        assert _text(given) == _text(case["input"]), case["name"]
 
 
-def test_job44_first_batch_is_the_twelve_roots_in_input_order():
-    result = plan(nodes(JOB44))
-    assert result["batches"][0] == [
-        "U1", "U2", "U7", "U8", "U10", "U12",
-        "U11", "U13", "U14", "U18", "F1", "F4",
-    ]
-    assert result["batches"][-1] == ["U16"]
+def test_nodes_is_still_accepted_by_keyword():
+    assert plan(nodes=[{"id": "a"}]) == {"batches": [["a"]], "sequence": ["a"], "width": 1}
 
 
-def test_sequence_is_the_batches_flattened_in_order():
-    result = plan(nodes(JOB46))
-    flattened = [node_id for batch in result["batches"] for node_id in batch]
-    assert result["sequence"] == flattened
-
-
-# ---------------------------------------------------------------------------
-# The answers that are answers, not refusals.
-# ---------------------------------------------------------------------------
-
-
-def test_empty_input_is_an_empty_plan_not_a_refusal():
-    assert plan([]) == {"batches": [], "sequence": [], "width": 0}
-
-
-def test_a_single_node_is_one_batch_of_one():
-    assert plan([{"id": "a", "depends_on": []}]) == {
-        "batches": [["a"]],
-        "sequence": ["a"],
+def test_a_tuple_of_nodes_is_still_accepted_as_the_hand_written_planner_did():
+    assert plan(({"id": "a"}, {"id": "b", "depends_on": ["a"]})) == {
+        "batches": [["a"], ["b"]],
+        "sequence": ["a", "b"],
         "width": 1,
     }
 
 
-def test_priority_is_optional_and_defaults_to_zero():
-    result = plan([{"id": "a"}, {"id": "b", "depends_on": []}])
-    assert result["batches"] == [["a", "b"]]
-
-
-# ---------------------------------------------------------------------------
-# Ordering inside a batch: priority descending, then insertion order.
-# ---------------------------------------------------------------------------
-
-
-def test_priority_orders_a_batch_descending():
-    result = plan([
-        {"id": "low", "depends_on": [], "priority": 1},
-        {"id": "high", "depends_on": [], "priority": 9},
-        {"id": "mid", "depends_on": [], "priority": 5},
-    ])
-    assert result["batches"] == [["high", "mid", "low"]]
-
-
-def test_a_priority_tie_is_broken_by_insertion_order():
-    # Both halves of the rule matter, and this is the half that makes two runtimes
-    # agree: given equal priority, the order the nodes were handed in wins -- NOT
-    # alphabetical, which would put "alpha" first in the second case too.
-    forwards = plan([
-        {"id": "zulu", "depends_on": [], "priority": 3},
-        {"id": "alpha", "depends_on": [], "priority": 3},
-    ])
-    assert forwards["batches"] == [["zulu", "alpha"]]
-
-    backwards = plan([
-        {"id": "alpha", "depends_on": [], "priority": 3},
-        {"id": "zulu", "depends_on": [], "priority": 3},
-    ])
-    assert backwards["batches"] == [["alpha", "zulu"]]
-
-
-def test_priority_beats_insertion_order_but_only_within_the_same_batch():
-    # "c" has the highest priority in the whole plan and still lands in batch 2,
-    # because a batch holds only nodes whose dependencies are already emitted.
-    result = plan([
-        {"id": "a", "depends_on": [], "priority": 0},
-        {"id": "b", "depends_on": [], "priority": 1},
-        {"id": "c", "depends_on": ["a"], "priority": 99},
-    ])
-    assert result["batches"] == [["b", "a"], ["c"]]
-    assert result["width"] == 2
-
-
-# ---------------------------------------------------------------------------
-# The three refusals, asserted as whole sentences.
-# ---------------------------------------------------------------------------
-
-
-def test_duplicate_node_id_refusal_sentence():
-    result = plan([
-        {"id": "a", "depends_on": []},
-        {"id": "b", "depends_on": []},
-        {"id": "a", "depends_on": []},
-    ])
-    assert result == {"result": "error", "reason": "duplicate node id a"}
-
-
-def test_unknown_dependency_refusal_sentence():
-    result = plan([
-        {"id": "a", "depends_on": []},
-        {"id": "b", "depends_on": ["ghost"]},
-    ])
-    assert result == {
+def test_a_node_with_no_id_is_the_library_refusal_not_a_key_error():
+    # #314: the TypeScript sentence. The `work_plan` TOOL still raises `KeyError('id')`
+    # (`test_sdk_wire_text.py`, `--suite workplan` `tool/no-id`).
+    assert plan([{"depends_on": []}]) == {
         "result": "error",
-        "reason": "node b depends on ghost, which no node declares",
+        "reason": "nodes[0].id must be a string",
     }
 
 
-def test_cycle_refusal_sentence():
-    result = plan([
-        {"id": "a", "depends_on": ["b"]},
-        {"id": "b", "depends_on": ["a"]},
-    ])
-    assert result == {"result": "error", "reason": "the graph has a cycle: a -> b -> a"}
-
-
-def test_a_self_dependency_is_a_cycle_of_length_one():
-    result = plan([{"id": "a", "depends_on": ["a"]}])
-    assert result == {"result": "error", "reason": "the graph has a cycle: a -> a"}
-
-
-def test_cycle_path_is_scanned_in_input_order_and_walked_in_declared_order():
-    # Two disjoint cycles, and "p"/"q" are the pair written adjacently in the middle.
-    # The scan still starts at the first un-emitted node in INPUT order, which is "x",
-    # so the x/y cycle is the one named -- not p/q, and not whichever a set happened
-    # to yield first.
-    result = plan([
-        {"id": "x", "depends_on": ["y"]},
-        {"id": "p", "depends_on": ["q"]},
-        {"id": "q", "depends_on": ["p"]},
-        {"id": "y", "depends_on": ["x"]},
-    ])
-    assert result == {"result": "error", "reason": "the graph has a cycle: x -> y -> x"}
-
-
-def test_cycle_path_drops_the_tail_that_only_leads_into_the_cycle():
-    # "a" is un-emittable but is not itself in a cycle: it only depends on one.
-    # The walk a -> b -> c -> b repeats "b", and what is reported is the CYCLE
-    # b -> c -> b, not the walk that reached it.
-    result = plan([
-        {"id": "a", "depends_on": ["b"]},
-        {"id": "b", "depends_on": ["c"]},
-        {"id": "c", "depends_on": ["b"]},
-    ])
-    assert result == {"result": "error", "reason": "the graph has a cycle: b -> c -> b"}
-
-
-def test_the_cycle_walk_ignores_dependencies_already_emitted():
-    # "b"'s first declared dependency is "root", which Kahn emitted in batch 1.
-    # An emitted id can never close a cycle, so the walk follows the un-emitted
-    # edge and names b -> c -> b.
-    result = plan([
-        {"id": "root", "depends_on": []},
-        {"id": "b", "depends_on": ["root", "c"]},
-        {"id": "c", "depends_on": ["b"]},
-    ])
-    assert result == {"result": "error", "reason": "the graph has a cycle: b -> c -> b"}
-
-
-def test_duplicate_is_refused_before_an_unknown_dependency():
-    # Both faults are present. The duplicate is named, so the refusal order is
-    # fixed rather than left to whichever check happens to run first.
-    result = plan([
-        {"id": "a", "depends_on": ["ghost"]},
-        {"id": "a", "depends_on": []},
-    ])
-    assert result == {"result": "error", "reason": "duplicate node id a"}
-
-
-def test_unknown_dependency_is_refused_before_a_cycle():
-    result = plan([
-        {"id": "a", "depends_on": ["b"]},
-        {"id": "b", "depends_on": ["a", "ghost"]},
-    ])
-    assert result == {
-        "result": "error",
-        "reason": "node b depends on ghost, which no node declares",
-    }
-
-
-def test_a_refusal_carries_no_batches():
-    result = plan([{"id": "a", "depends_on": ["a"]}])
-    assert "batches" not in result
-    assert "sequence" not in result
-    assert "width" not in result
-
-
-# ---------------------------------------------------------------------------
-# The planner is pure: it does not mutate what it was handed.
-# ---------------------------------------------------------------------------
-
-
-def test_plan_does_not_mutate_its_input():
-    given = [
-        {"id": "a", "depends_on": []},
-        {"id": "b", "depends_on": ["a"], "priority": 2},
-    ]
-    before = [dict(node) for node in given]
-    plan(given)
-    assert given == before
-
-
-# ---------------------------------------------------------------------------
-# #127 (job65): a node off the advertised item schema is refused by position, never
-# coerced. The four sentences are pinned HERE as literals because the conformance
-# differential cannot see a sentence both runtimes copied; the Node twin is in
-# `runtime-ts/test/workplan.test.mjs`.
-# ---------------------------------------------------------------------------
-
-
-def test_a_string_depends_on_is_refused_not_iterated_character_by_character():
-    # Before the check, `list("bb")` made this an edge `a -> b` and the refusal named a
-    # node nobody declared; with a one-letter id it would have silently planned.
-    result = plan([{"id": "a", "depends_on": "bb"}, {"id": "bb", "depends_on": []}])
-    assert result == {"result": "error", "reason": "nodes[0].depends_on must be a list of strings"}
-
-
-def test_a_depends_on_holding_a_non_string_is_refused_by_the_same_sentence():
-    result = plan([{"id": "a", "depends_on": []}, {"id": "b", "depends_on": ["a", 2]}])
-    assert result == {"result": "error", "reason": "nodes[1].depends_on must be a list of strings"}
-
-
-def test_a_string_priority_is_refused_not_a_type_error_at_the_sort():
-    result = plan([{"id": "a", "depends_on": [], "priority": "3"}])
-    assert result == {"result": "error", "reason": "nodes[0].priority must be an integer"}
-
-
-def test_a_bool_priority_is_refused_although_cpython_calls_it_an_int():
-    result = plan([{"id": "a", "depends_on": [], "priority": True}])
-    assert result == {"result": "error", "reason": "nodes[0].priority must be an integer"}
-
-
-def test_a_fractional_priority_is_refused_and_an_integral_float_is_an_integer():
-    # JSON Schema's `integer` admits `3.0`; the port cannot tell `3.0` from `3` once the
-    # value is a JS number, so the reference admits it too and the two agree.
-    assert plan([{"id": "a", "depends_on": [], "priority": 2.5}]) == {
-        "result": "error",
-        "reason": "nodes[0].priority must be an integer",
-    }
-    integral = [{"id": "a", "depends_on": []}, {"id": "b", "depends_on": [], "priority": 3.0}]
-    assert plan(integral) == {
-        "batches": [["b", "a"]],
-        "sequence": ["b", "a"],
-        "width": 2,
-    }
-
-
-def test_a_non_string_id_is_refused_so_5_and_the_string_5_cannot_collide():
-    result = plan([{"id": 5, "depends_on": []}, {"id": "5", "depends_on": []}])
-    assert result == {"result": "error", "reason": "nodes[0].id must be a string"}
-
-
-def test_a_node_that_is_not_an_object_is_refused_by_position():
-    result = plan([{"id": "a", "depends_on": []}, "b"])
-    assert result == {"result": "error", "reason": "nodes[1] must be an object"}
-
-
-def test_shape_is_checked_before_the_graph_so_a_shape_fault_outranks_a_duplicate():
-    # Both faults at once: the duplicate id would be named second, so the shape is.
-    result = plan([{"id": "a", "depends_on": [], "priority": "x"}, {"id": "a", "depends_on": []}])
-    assert result == {"result": "error", "reason": "nodes[0].priority must be an integer"}
-
-
-def test_shape_is_checked_across_every_node_before_any_graph_refusal():
-    # The duplicate sits at index 1 and the bad shape at index 2: the shape pass covers the
-    # whole list first, so the shape is still what is named.
-    result = plan([{"id": "a"}, {"id": "a"}, {"id": "c", "depends_on": "a"}])
-    assert result == {"result": "error", "reason": "nodes[2].depends_on must be a list of strings"}
-
-
-def test_a_null_depends_on_and_a_null_priority_are_the_defaults_not_contradictions():
-    result = plan([{"id": "a", "depends_on": None, "priority": None}])
-    assert result == {"batches": [["a"]], "sequence": ["a"], "width": 1}
-
-
-def test_a_node_with_no_id_is_still_the_key_error_the_tool_always_raised():
-    # Pinned by `tools/conformance/suites/workplan.mjs` `tool/no-id`: the envelope reads
-    # `Error executing tool work_plan: 'id'` on both sides, and #127 did not ask to move it.
-    import pytest
-
-    with pytest.raises(KeyError):
-        plan([{"depends_on": []}])
+def test_the_public_names_are_unchanged():
+    assert workplan.__all__ == ["plan", "touches_refusal"]
+    assert workplan.touches_refusal("a", None) is None
+    assert workplan.touches_refusal("a", ["src/x.py"]) is None
+    assert workplan.touches_refusal("a", ["../x"]) == (
+        'node a touches "../x", which is not a plain relative path'
+    )

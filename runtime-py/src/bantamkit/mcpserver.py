@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import stat as stat_module
 import sys
 from collections.abc import Callable, Iterable, Iterator
@@ -1814,7 +1815,18 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
         # `_record_result` reads that key to write the register's verdict to the log.
         def answered() -> dict[str, Any]:
             plan = workplan.plan(nodes)
-            return plan if plan.get("result") == "error" else {"result": "plan", **plan}
+            if plan.get("result") != "error":
+                return {"result": "plan", **plan}
+            # #314: the planner refuses a node with no `id` as `nodes[<i>].id must be a
+            # string`; this tool has always raised `KeyError('id')` there instead
+            # (`--suite workplan` `tool/no-id`). The planner stops at the first faulty
+            # node, which is where `node["id"]` used to raise, so only that node is read.
+            fault = re.fullmatch(r"nodes\[(\d+)\]\.id must be a string", plan["reason"])
+            if fault is not None:
+                node = nodes[int(fault.group(1))]
+                if isinstance(node, dict) and "id" not in node:
+                    raise KeyError("id")
+            return plan
 
         return _noted_dict(_record_result(log, "work_plan", answered))
 
