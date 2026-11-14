@@ -14,7 +14,7 @@ none of these figures is a budget yet. #313 says to capture first and agree budg
 
 | What | npm `bantamkit-mcp` 0.40.0 | PyPI `bantamkit` 0.40.0 |
 |---|---|---|
-| Source lines (`src/`) | 53,258 in 73 `.ts` files | 48,301 in 67 `.py` files |
+| Source lines (`src/`) | 53,258 in 75 `.ts` files | 48,301 in 71 `.py` files |
 | Test lines | 45,835 (`runtime-ts/test*`) | 74,334 in 133 files (`runtime-py/tests`) |
 | Shared conformance harness | 63,678 lines, 52 suites (`tools/conformance`) | — |
 | Packed artifact | tarball 1,004,330 B, 257 files, unpacked 3,319,977 B | wheel 898,098 B; sdist 1,713,863 B |
@@ -28,7 +28,7 @@ none of these figures is a budget yet. #313 says to capture first and agree budg
 |---|---|---|
 | `node tools/conformance/run.mjs --all` | PASS 20,893 cases: 3,721 byte-identical, 9,114 exact-string, 8,058 structural, 186 ruled-different, 0 failures | 730.9 s |
 | `pytest runtime-py/tests -q` | 5,108 passed, 58 skipped, 2 deselected, 3 xfailed | 451.7 s |
-| `bantamkit-mcp -h`, both runtimes (`COLUMNS=100`) | byte-identical, 25 lines | — |
+| `bantamkit-mcp -h`, both runtimes (`COLUMNS=100`) | byte-identical, 27 lines | — |
 
 OS coverage: these numbers are macOS only. Windows and Linux are the CI matrix
 (`.github/workflows/ci.yml`), and Actions is off on this account, so #318's matrix run must
@@ -58,23 +58,28 @@ are shared assets (`assets/tools/*.json`, 21 files: the 16 served plus `bantamki
   `structured`, `extract_json`, and their errors.
 - Shared names: `Memory`, `MemoryStore`, `BantamError`, `extract_json`/`extractJson`.
 
-Modules on one side only (module path without extension):
+Modules on one side only (module path without extension). A package's `index.ts` and its
+`__init__.py` count as the same module (`index`, `storage/index` and `touch/index` pair with
+`bantamkit/`, `storage/` and `touch/__init__.py`). `memory/__init__.py` is a re-export with no
+TypeScript file.
 
 - **Python only (16):** agent budget criticreplay critique docmanifest evalrun filegraph loopguard
   mcpserver mcpstdio memory/__main__ memory/divergence pdfread profile structured textutil
-- **TypeScript only (24):** charsets cli errors htmlentities index mcp/identity mcp/pyargs
+- **TypeScript only (21):** charsets cli errors htmlentities mcp/identity mcp/pyargs
   mcp/sdkjson mcp/server mcp/status mcp/transport memory/cli memory/factfile memory/pyfs
-  memory/pyyaml npminstall pyargparse pyjson pyjsonschema pysem skilllabel storage/index
-  storage/retention-child touch/index
-- **Both:** 51.
+  memory/pyyaml npminstall pyargparse pyjson pyjsonschema pysem skilllabel
+  storage/retention-child
+- **Both:** 54.
 
 ### Two decisions #312 does not settle yet
 
-1. **The Python-only agent library** (`agent`, `client`, `critique`, `criticreplay`,
+1. **The Python-only agent library** (`agent`, `critique`, `criticreplay`,
    `evalrun`, `filegraph`, `loopguard`, `structured`, `budget`, `profile`, `textutil`,
    `pdfread`, `docmanifest`, `memory/divergence`; 8,879 lines). #316 says "cover
-   Python-only public APIs". The options are: port it to TypeScript (npm gains it), keep it
+   Python-only public APIs". The options were: port it to TypeScript (npm gains it), keep it
    hand-written Python on top of the generated core, or retire it in 1.0.0 as a breaking change.
+   **Ruled 2026-11-15 by the maintainer: it stays hand-written Python** on top of the generated
+   core. It is neither ported nor retired.
 2. **The TypeScript emulations of CPython** (`pyjson`, `pyjsonschema`, `memory/pyyaml`,
    `memory/pyfs`, `pyargparse`, `pysem`; 6,829 lines). They exist so Node writes the bytes
    CPython writes. Compiled *to* Python they are either redundant (the generated code could call
@@ -84,33 +89,37 @@ Modules on one side only (module path without extension):
 
 ### Dependency order: migration groups for #316
 
-Internal import depth of `runtime-ts/src` (0 = imports nothing internal). There are **9 import
-cycles** (back-edges at `memory/pyfs`, `memory/store`, `skillfile`, `storage/retention`,
-`hookadapter`, `memory/component`, `memory/skills`, `skillmine`, `skillinstall`). Each cycle
-has to be broken first or migrated as one unit.
+Internal import depth of `runtime-ts/src`: 0 means the module imports nothing internal, and
+depth is the longest import chain down to such a module. The graph is not acyclic. A
+depth-first walk in file order cuts **19 back-edges**, which point into 9 modules: `memory/pyfs`,
+`memory/store`, `skillfile`, `storage/retention`, `hookadapter`, `memory/component`,
+`memory/skills`, `skillmine`, `skillinstall`. The depths below depend on that cut order. A
+different walk shifts some modules by a level; an independent walk put `pyjson` at 0 and
+topped out at 20. Each cycle has to be broken first or migrated as one unit.
 
 | Depth | Modules (lines) |
 |---|---|
-| 0 | charsets errors htmlentities jobbudget npminstall storage/lock workplan (1,276) |
-| 1–2 | pyjson storage/logsegment updatecheck mcp/pyargs mcp/sdkjson memory/usage pysem (2,728) |
-| 3–4 | client experiment memory/pyfs memory/retrieval skillaudit touch/* assets docread mcp/transport memory/pyyaml pyargparse pyjsonschema repomap skilllabel (14,950) |
-| 5–8 | mcp/identity memory/factfile pricing replynative contract selfupdate storage/hotindex tokenledger storage/coldindex touch/graph memory/store touch/index (9,170) |
-| 9–15 | eventlog hostinstall memory/dream memory/layers memory/native memory/queries mcpreport memory/cli storage/tiers skillhost statusline skilldraft skillpromote skillreport skillinstall skillmine storage/retention (14,516) |
-| 16–21 | shiftwork skillfile storage/index storage/retention-child memory/skills skillpropose memory/component hookadapter index mcp/status mcp/server cli (10,818) |
+| 0 | charsets errors htmlentities jobbudget npminstall storage/lock workplan (1,269) |
+| 1–2 | pyjson storage/logsegment updatecheck mcp/pyargs mcp/sdkjson memory/usage pysem (2,721) |
+| 3–4 | client experiment memory/pyfs memory/retrieval skillaudit touch/* assets docread mcp/transport memory/pyyaml pyargparse pyjsonschema repomap skilllabel (14,930) |
+| 5–8 | mcp/identity memory/factfile pricing replynative contract selfupdate storage/hotindex tokenledger storage/coldindex touch/graph memory/store touch/index (9,158) |
+| 9–15 | eventlog hostinstall memory/dream memory/layers memory/native memory/queries mcpreport memory/cli storage/tiers skillhost statusline skilldraft skillpromote skillreport skillinstall skillmine storage/retention (12,373) |
+| 16–21 | shiftwork skillfile storage/index storage/retention-child memory/skills skillpropose memory/component hookadapter index mcp/status mcp/server cli (12,807) |
 
 ### Every surface: its migration group and the check that guards it
 
 | Surface | Group | Compatibility check (existing) |
 |---|---|---|
-| `workplan`, `jobbudget`, `pricing` | G1 pure core | suites `workplan`, `pricing` |
+| `workplan`, `pricing` | G1 pure core | suites `workplan`, `pricing` |
+| `jobbudget` | G1 pure core | **missing**: only per-side tests (`test_jobbudget.py`, `jobbudget.test.mjs`); no conformance suite compares the two |
 | JSON output (`pyjson`) | G2 codecs | `wire`, `validate`, `store` byte-identical cases |
 | JSON Schema feedback (`validate_json`) | G2 codecs | suite `validate` |
 | Fact files (YAML front matter) | G2 codecs → **#315** | suites `codec`, `store`; real corpus `.bantamkit/memory` |
-| Event log, token ledger, log segments | G2 codecs | suites `tokenledger`, `storage-log` |
+| Event log, token ledger, log segments | G2 codecs | suites `tokenledger`, `storage-log` (`storage/logsegment` is covered only through these two; no suite names it directly) |
 | Memory store, recall, dream, layers, queries, usage | G3 memory | `store`, `dream`, `recall-*`, `memorycli` |
 | Hot/cold index, tiers, retention, lock | G4 storage | `storage-*` (6 suites) |
 | Shift-work checkpoint + `.log.jsonl` | G5 shiftwork | `shiftwork`, `shiftwork-draft` |
-| Skills (audit, miner, draft, file, host, install, layer, promote, propose, improve) | G6 skills | 11 `skill*` suites |
+| Skills (audit, miner, draft, file, host, install, layer, promote, propose, improve) | G6 skills | 10 `skill*` suites |
 | Hooks, touch, reply-native, statusline | G7 hooks | `hooks`, `touch-*` (7), `reply-native`, `statusline` |
 | Document reader, charsets, repo map | G8 reader | `docread`, `charsets`, `repomap` |
 | Install, self-update, update check, MCP report | G9 install | `install`, `updatecheck`, `mcpreport`, `version` |
@@ -118,6 +127,19 @@ has to be broken first or migrated as one unit.
 | Python-only agent library (except `client`) | G11, decision 1 above | pytest only; **no cross-runtime check exists** |
 | LLM client (`client`) | G11 | suite `llm-client` |
 | Reading files written by earlier releases | all | **missing**: no suite opens a store written by 0.39/0.40. #315 and #318 must add one |
+
+### Against #313's acceptance criterion
+
+Every public surface and stored format above has a migration group. Three have **no
+cross-runtime compatibility check yet**, and these are the open items #313 leaves for later
+phases:
+
+- `jobbudget`: per-side tests only. #316 adds a suite when the module migrates.
+- The Python-only agent library: pytest only. This is by ruling, since it stays Python, so a
+  cross-runtime check does not apply. #316 must keep its pytest coverage green against the
+  generated core.
+- Stores written by earlier releases: no suite opens one. #315 adds this for fact files, and
+  #318 adds it for whole stores.
 
 ### How each number was taken
 
