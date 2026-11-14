@@ -840,23 +840,45 @@ not proven savings.
     - Whether a resumed reviewer anchors on its earlier approval is untested,
       because no re-review faced a surviving defect.
   - [RR results](superpowers/specs/2026-11-13-reviewer-thread-resume-draft.md).
-- **Promising, one sample: ask authors for fewer, larger tool steps.** The probe
-  appended one paragraph to the author prompt: do not re-read what the prompt
-  already holds, write each owned file in a single edit, and run the fast check
-  once. Both variants passed the fast check and the hidden oracle.
+- **Unproven: ask delegated authors to work in fewer, larger tool steps.** One
+  paragraph added to the author prompt of a fresh delegate:
 
-  | Author on sequential-delegates unit A | Tool steps | Uncached input + output | Raw tokens |
-  | --- | ---: | ---: | ---: |
-  | Default prompt | 6 | 17,492 | 64,980 |
-  | With the batching paragraph | 1 | 3,216 | 25,232 |
+  > Work in as few tool steps as you can: do not explore or re-read files you
+  > already have in this prompt; write each file you own completely in a single
+  > edit; then run the fast check once. Only if it fails, fix and run it again.
 
-  - The default run was dearer than usual. Across 128 earlier fresh author and
-    repair calls, the median was 6,063 at 4 steps, and each extra step added
-    about 1,000.
-  - Fewer steps also means fewer chances to lose the cache, since each request
-    can miss.
-  - This is n=1 per variant, so it is a lever to test, not a measured saving.
-
+  - **AB comparison, sequential-delegates (2 pairs).**
+    - Author tool steps fell from 14 and 12 to 5 and 5.
+    - Whole-job uncached input + output fell 28% at the median, or about
+      22–24% after a skills-block confound sensitivity.
+    - All five gates held, and the verdict was *better*.
+  - **Native chain**, where the author is a turn in a resumed parent session.
+    - Raw tokens fell 28%, but uncached input + output rose 22%.
+    - The verdict was *not-better*.
+  - **A replicate failed a gate.**
+    - In the
+      [stable-home run](superpowers/specs/2026-11-14-stable-codex-home-design.md),
+      the one complete sequential-delegates pair had one more false finding in
+      the batched arm. The author applied `re.IGNORECASE` to the whole line,
+      which the task text forbids, and the oracle does not test.
+    - That arm needed a second rejection round and cost 6.9% more.
+    - Separately, 2 of 12 batched author calls in the AB run skipped reading an
+      upstream file and ran their own check red once.
+  - Do not adopt it as a default. The step cut may also cut the reading that
+    catches a task's finer requirements, and n is too small to tell.
+  - [AB results](superpowers/specs/2026-11-13-batched-author-design.md).
+- **Keep the Codex home identical for every session in a run, when you compare
+  levers.**
+  - Codex fills `plugins/cache/*` in `CODEX_HOME` during a run. The skills block
+    near the start of the preamble then flips between 2,014 and 8,641
+    characters, both ways, inside one run.
+  - That moves a fresh session's input by about 1,700 tokens, and it changes
+    where its cache prefix matches.
+  - Disabling `plugins`, `remote_plugin` and `plugin_discovery_prefetch` did
+    **not** stop the flips (measured 2026-11-14). Warming the home first is
+    untested.
+  - Until a fix is measured, compare levers per call kind, not on whole-job
+    totals.
 - **Not adopted, because no effect was demonstrated:**
   - dropping the output schema as a stand-alone caching lever (it is part of the
     measured re-review setup above, not an independent saving);
