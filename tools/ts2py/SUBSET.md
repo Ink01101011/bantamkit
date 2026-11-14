@@ -64,7 +64,14 @@ it (J85-R F2, F3):
   `String()`) and ToNumber (JS's string-to-number grammar: trimmed JS whitespace, `0x` / `0o` /
   `0b`, `Infinity`, empty is `0`, anything else `NaN`), so `'10' < 9` is `false`, `null < 1` is
   `true`, and a comparison with `NaN` or `undefined` is `false` both ways. Two known numbers (a
-  literal, `.length`, `.size`, an arithmetic result) keep the plain Python operator.
+  literal, the `.length` of a known string, an arithmetic result) keep the plain Python operator.
+- `.length` and `.size` are known numbers only on a receiver known to be a string (a string
+  literal, a template, a concatenation of strings). On anything else they are whatever the
+  receiver holds: an array's length or a `Map`'s size, but a plain object's own `length` or `size`
+  key when it has one, which may be a string or `true`. So they are compared, added and equated
+  through the runtime as any unknown value is: `{length: '\uffff'}.length < {length: '😀'}.length`
+  is `false` (UTF-16 order), `{length: true}.length === 1` is `false`, and
+  `{size: '2'}.size + 1` is `'21'`, as in Node (J85-R2 L1).
 - A regex without flags (the only kind accepted) matches UTF-16 code units: ts2py writes an
   astral literal in the pattern as its two surrogates (in a class, two members), and `re.test`
   splits each astral character of the subject into its surrogates before matching. So `.` and a
@@ -115,8 +122,8 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `[a, ...b]` | `[a, *b]` | spread of any iterable above |
 | `{ k: v, s }` (static keys, shorthand) | `{"k": v, "s": s}` | insertion order |
 | `o.k`, `o[k]` | `_js_get(o, "k")`, `_js_get(o, k)` | missing key / out-of-range index reads `undefined`; reading a property of `null`/`undefined` raises `TypeError` |
-| `x.length` | `_js_len(x)` | string length in UTF-16 code units |
-| `x.size` | `_js_size(x)` | `Map` / `Set` size |
+| `x.length` | `_js_len(x)` | string length in UTF-16 code units, array length, else the receiver's own `length` value; a known number only when `x` is a known string |
+| `x.size` | `_js_size(x)` | `Map` / `Set` size, else the receiver's own `size` value; never a known number |
 | `typeof x` | `_js_typeof(x)` | `typeof true === 'boolean'`, never `'number'`; `typeof null === 'object'` |
 | `a === b` / `a !== b` | `_js_strict_eq(a, b)`; `a is None` / `a is _JS_UNDEFINED` against a `null`/`undefined` literal; plain `==` when one side is a string or both are known numbers | `true !== 1`; numbers by value as doubles, objects by identity; `null !== undefined` |
 | `x == null` / `x != null` (either side `null` or `undefined`) | `_js_is_nullish(x)` / `not _js_is_nullish(x)` | a missing key (`undefined`) and `None` alike |
@@ -124,12 +131,12 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `a \|\| b`, `a && b` | `a or b` / `a and b` when both are known booleans; else `_js_or` / `_js_and` (lazy like `??`) | JS truthiness, and the operand value (not a bool) is returned |
 | `!x` | `not x` (known boolean) or `not _js_truthy(x)` | ToBoolean: `[]` and `{}` are truthy, `0`/`NaN`/`""` falsy |
 | `c ? a : b` | `a if c else b` | condition through ToBoolean |
-| `a < b`, `<=`, `>`, `>=` | two known numbers: same operator, each operand through `_js_num` unless it is a literal, a length or already rounded; anything else: `_js_lt` / `_js_le` / `_js_gt` / `_js_ge` | numbers as doubles (Numbers above); strings by UTF-16 code unit; mixed operands through ToPrimitive and ToNumber (Strings above) |
+| `a < b`, `<=`, `>`, `>=` | two known numbers: same operator, each operand through `_js_num` unless it is a literal, a known string's length or already rounded; anything else: `_js_lt` / `_js_le` / `_js_gt` / `_js_ge` | numbers as doubles (Numbers above); strings by UTF-16 code unit; mixed operands through ToPrimitive and ToNumber (Strings above) |
 | `a - b`, unary `-a` | `_js_num(_js_num(a) - _js_num(b))`, `-_js_num(a)` | numbers as doubles |
 | `a + b` | `_js_num(...)` of `a + b` when both are known numbers, `a + b` when both known strings, else `_js_add(a, b)` | string concatenation via `String()` when either side is a string; numbers as doubles |
 | `f(args)` (a module function or a local) | `f(args)` | |
 | `new Map(entries?)`, `new Set(items?)` | `_JsMap(...)`, `_JsSet(...)` | insertion order; SameValueZero keys, so `true` and `1` are different keys and `1.0` and `1` the same |
-| `/pattern/` (no flags) | `_JS_RE_<n> = re.compile(<translated>, re.ASCII)` | `\d`, `\w`, `\b` are ASCII; `$` is end of input (`\Z`); `.` excludes `\n`, `\r`, U+2028, U+2029; an astral literal is written as its two surrogates (Strings above) |
+| `/pattern/` (no flags) | `_JS_RE_<n> = re.compile(<translated>, re.ASCII)` | `\d`, `\w`, `\b` are ASCII; `$` is end of input (`\Z`); `.` excludes `\n`, `\r`, U+2028, U+2029; an astral literal is written as its two surrogates (Strings above). The pattern is parsed against a whitelist grammar, so every accepted pattern is valid JS and compiles under `re`; anything else is refused at compile time with its reason, never an `re.error` at import (Refused below) |
 | `(params) => expr` **as a callback argument** of the methods below | `lambda params, *_: expr` | JS passes `(item, index, array)`; extra arguments are absorbed |
 | `as T`, `x!`, `satisfies T`, `<T>x`, `f<T>(...)`, generics, `readonly`, parameter and return annotations, `p?:` | erased (`p?:` becomes `p=_JS_UNDEFINED`) | a missing optional argument is `undefined` |
 
@@ -195,7 +202,11 @@ arrows there), a callback that is not an inline arrow, optional chaining `?.`, l
 expression, the comma operator, `throw`, `try`, `switch`, `do-while`, C-style `for`, `for-in`,
 `for await`, object spread, computed or integer-like object keys, getters/setters and object
 methods, tagged templates, bigint, non-finite literals, regex flags and regex syntax whose
-meaning differs between the engines (`\s`, named groups, lookbehind, backreferences), `enum`,
+meaning differs between the engines (`\s`, `\B`, named groups, lookbehind, backreferences,
+Annex B leniencies such as a bare `{`, `}` or `]`, a quantified lookahead, a class escape as a
+range endpoint), regexes JS itself rejects (a range out of order in UTF-16 code units such as
+`[😀-😂]`, `{3,2}`, a quantifier with nothing to repeat, unbalanced parentheses), and regexes
+`re` cannot compile (a repeat count above 65535, groups nested deeper than 64), `enum`,
 `namespace`, value imports and exports lists, a block binding that shadows an enclosing one, a
 local that shadows a module-level name, and any global identifier other than `undefined`.
 

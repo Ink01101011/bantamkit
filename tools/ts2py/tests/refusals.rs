@@ -176,3 +176,51 @@ fn cli_writes_nothing_and_exits_nonzero() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// J85-R2 L3: a range out of order in UTF-16 code units is a SyntaxError in JS (without the `u`
+/// flag `[😀-😂]` is `[😀-😂]`, whose middle range runs backwards). It used
+/// to compile into a module that raised `re.error` on import; it is refused here, with the reason.
+#[test]
+fn regex_range_out_of_order() {
+    assert_refused(
+        "export const R = /^[😀-😂]$/;\n",
+        "t.ts:1:18: unsupported regex range out of order in UTF-16 code units (\\ude00-\\ud83d), a SyntaxError in JS: /^[😀-😂]$/",
+    );
+    assert_refused(
+        "export const R = /[z-a]/;\n",
+        "t.ts:1:18: unsupported regex range out of order in UTF-16 code units (\\u007a-\\u0061), a SyntaxError in JS: /[z-a]/",
+    );
+}
+
+/// J85-R2 L3, the general case: patterns `re` cannot compile (or that mean something else there)
+/// are refused at compile time, each with its reason.
+#[test]
+fn regex_python_cannot_compile() {
+    for (pattern, why) in [
+        (
+            "a{3,2}",
+            "regex repeat {3,2} with min above max, a SyntaxError in JS",
+        ),
+        ("a**", "regex quantifier `*` with nothing to repeat"),
+        ("(?=a)*", "regex quantifier `*` with nothing to repeat"),
+        (
+            "(a",
+            "regex `(` without a matching `)`, a SyntaxError in JS",
+        ),
+        ("[a-\\d]", "regex class escape as a range endpoint"),
+        ("a{99999}", "regex repeat count above 65535"),
+        ("a{,2}", "regex syntax"),
+        ("{", "regex quantifier `{` with nothing to repeat"),
+        ("]", "regex syntax"),
+        (
+            "a\\B",
+            "regex \\B, which Python's re does not match in an empty string",
+        ),
+    ] {
+        let source = format!("export const R = /{pattern}/;\n");
+        assert_refused(
+            &source,
+            &format!("t.ts:1:18: unsupported {why}: /{pattern}/"),
+        );
+    }
+}

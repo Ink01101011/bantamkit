@@ -799,16 +799,16 @@ impl<'s> Lowerer<'s> {
                 }
                 let object = self.expr(&m.object);
                 match m.property.name.as_str() {
-                    "length" => Py {
+                    // A known number only on a known string: on any other receiver `.length` is
+                    // whatever the object holds (`{length: '1'}`), so it is compared, added and
+                    // equated through the runtime, as any unknown value is (J85-R2 L1).
+                    "length" if object.is_str => Py {
                         is_num: true,
                         is_double: true,
                         ..Py::atom(format!("_js_len({})", object.code))
                     },
-                    "size" => Py {
-                        is_num: true,
-                        is_double: true,
-                        ..Py::atom(format!("_js_size({})", object.code))
-                    },
+                    "length" => Py::atom(format!("_js_len({})", object.code)),
+                    "size" => Py::atom(format!("_js_size({})", object.code)),
                     prop => Py::atom(format!("_js_get({}, {})", object.code, py_str(prop))),
                 }
             }
@@ -1295,8 +1295,9 @@ impl<'s> Lowerer<'s> {
         if !r.regex.flags.is_empty() {
             return self.refuse(r.span, "regex flags");
         }
-        let Some(pattern) = translate_regex(r.regex.pattern.text.as_str()) else {
-            return self.refuse(r.span, "regex syntax");
+        let pattern = match translate_regex(r.regex.pattern.text.as_str()) {
+            Ok(pattern) => pattern,
+            Err(why) => return self.refuse(r.span, why),
         };
         let index = match self.regexes.iter().position(|p| *p == pattern) {
             Some(i) => i,
@@ -1419,31 +1420,62 @@ fn statement_kind(s: &Statement<'_>) -> &'static str {
     }
 }
 
-/// A JS regex (no flags) as a Python `re` pattern compiled with `re.ASCII`, or None when it
-/// uses syntax whose meaning differs between the two engines and is not translated here.
-pub fn translate_regex(pattern: &str) -> Option<String> {
+/// Why a regex is refused: the text after `unsupported ` in the diagnostic.
+const REGEX_SYNTAX: &str = "regex syntax";
+
+/// Deepest group nesting accepted: Python's `re` parser recurses per group, so a deep enough
+/// nesting is a `RecursionError` at import rather than a pattern.
+const REGEX_MAX_DEPTH: usize = 64;
+
+/// Largest `{n,m}` bound accepted: past `re`'s MAXREPEAT a bound is an error at import.
+const REGEX_MAX_REPEAT: u32 = 65_535;
+
+/// One member of a character class, as written in the translation.
+struct ClassAtom {
+    text: String,
+    /// The single UTF-16 code unit it matches, or None for a class escape (`\d`, `\w`).
+    unit: Option<u16>,
+    /// An unescaped `-`, which may join two members into a range.
+    dash: bool,
+}
+
+/// A JS regex (no flags) as a Python `re` pattern compiled with `re.ASCII`, or the reason it is
+/// refused. The pattern is parsed against a whitelist grammar, not passed through: every pattern
+/// this returns is valid in JS without flags, means the same in both engines, and compiles under
+/// `re` (J85-R2 L3). Anything else (syntax whose meaning differs, Annex B leniencies such as a
+/// bare `{` or a quantified lookahead, and patterns JS itself rejects) is refused here, at
+/// compile time, rather than surfacing as `re.error` when the module is imported.
+pub fn translate_regex(pattern: &str) -> Result<String, String> {
     let chars: Vec<char> = pattern.chars().collect();
+    let syntax = || REGEX_SYNTAX.to_string();
     let mut out = String::new();
-    let mut in_class = false;
+    // Open groups: whether each is a lookahead (which takes no quantifier once closed).
+    let mut groups: Vec<bool> = Vec::new();
+    // The previous term is an atom a quantifier may follow, and it has not been quantified yet.
+    let mut quantifiable = false;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
         match c {
             '\\' => {
-                let next = *chars.get(i + 1)?;
+                let next = *chars.get(i + 1).ok_or_else(syntax)?;
                 i += 1;
+                quantifiable = true;
                 match next {
-                    'd' => out.push_str(if in_class { "0-9" } else { "[0-9]" }),
-                    'w' => out.push_str(if in_class {
-                        "A-Za-z0-9_"
-                    } else {
-                        "[A-Za-z0-9_]"
-                    }),
-                    'D' if !in_class => out.push_str("[^0-9]"),
-                    'W' if !in_class => out.push_str("[^A-Za-z0-9_]"),
-                    'b' | 'B' => {
-                        out.push('\\');
-                        out.push(next);
+                    'd' => out.push_str("[0-9]"),
+                    'w' => out.push_str("[A-Za-z0-9_]"),
+                    'D' => out.push_str("[^0-9]"),
+                    'W' => out.push_str("[^A-Za-z0-9_]"),
+                    'b' => {
+                        out.push_str("\\b");
+                        quantifiable = false;
+                    }
+                    // Python's `\B` never matches in an empty string; JS's does (`/\B/.test('')`).
+                    'B' => {
+                        return Err(
+                            "regex \\B, which Python's re does not match in an empty string"
+                                .to_string(),
+                        );
                     }
                     'n' | 'r' | 't' => {
                         out.push('\\');
@@ -1454,32 +1486,102 @@ pub fn translate_regex(pattern: &str) -> Option<String> {
                         out.push('\\');
                         out.push(c);
                     }
-                    _ => return None,
+                    _ => return Err(syntax()),
                 }
             }
-            '[' if !in_class => {
-                in_class = true;
-                out.push('[');
-                if chars.get(i + 1) == Some(&'^') {
-                    out.push('^');
+            '[' => {
+                i = regex_class(&chars, i, &mut out)?;
+                quantifiable = true;
+            }
+            '(' => {
+                out.push('(');
+                let lookahead = if chars.get(i + 1) == Some(&'?') {
+                    let kind = *chars.get(i + 2).ok_or_else(syntax)?;
+                    if !matches!(kind, ':' | '=' | '!') {
+                        return Err(syntax());
+                    }
+                    out.push('?');
+                    out.push(kind);
+                    i += 2;
+                    kind != ':'
+                } else {
+                    false
+                };
+                groups.push(lookahead);
+                if groups.len() > REGEX_MAX_DEPTH {
+                    return Err(format!(
+                        "regex nesting deeper than {REGEX_MAX_DEPTH} groups"
+                    ));
+                }
+                quantifiable = false;
+            }
+            ')' => {
+                let lookahead = groups.pop().ok_or_else(|| {
+                    "regex `)` without a matching `(`, a SyntaxError in JS".to_string()
+                })?;
+                out.push(')');
+                quantifiable = !lookahead;
+            }
+            '|' => {
+                out.push('|');
+                quantifiable = false;
+            }
+            '^' => {
+                out.push('^');
+                quantifiable = false;
+            }
+            '$' => {
+                out.push_str("\\Z");
+                quantifiable = false;
+            }
+            '.' => {
+                out.push_str("[^\\n\\r\\u2028\\u2029]");
+                quantifiable = true;
+            }
+            '*' | '+' | '?' | '{' => {
+                if !quantifiable {
+                    return Err(format!("regex quantifier `{c}` with nothing to repeat"));
+                }
+                if c == '{' {
+                    let close = (i..chars.len())
+                        .find(|&j| chars[j] == '}')
+                        .ok_or_else(syntax)?;
+                    let body: String = chars[i + 1..close].iter().collect();
+                    let (min, max) = match body.split_once(',') {
+                        None => (body.as_str(), Some(body.as_str())),
+                        Some((min, "")) => (min, None),
+                        Some((min, max)) => (min, Some(max)),
+                    };
+                    let bound = |text: &str| -> Result<u32, String> {
+                        if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+                            return Err(syntax());
+                        }
+                        match text.parse::<u32>() {
+                            Ok(n) if n <= REGEX_MAX_REPEAT => Ok(n),
+                            _ => Err(format!("regex repeat count above {REGEX_MAX_REPEAT}")),
+                        }
+                    };
+                    let min = bound(min)?;
+                    let max = max.map(bound).transpose()?;
+                    if max.is_some_and(|max| min > max) {
+                        return Err(format!(
+                            "regex repeat {{{body}}} with min above max, a SyntaxError in JS"
+                        ));
+                    }
+                    out.push('{');
+                    out.push_str(&body);
+                    out.push('}');
+                    i = close;
+                } else {
+                    out.push(c);
+                }
+                if chars.get(i + 1) == Some(&'?') {
+                    out.push('?');
                     i += 1;
                 }
-                if chars.get(i + 1) == Some(&']') {
-                    return None;
-                }
+                quantifiable = false;
             }
-            '[' => out.push_str("\\["),
-            ']' if in_class => {
-                in_class = false;
-                out.push(']');
-            }
-            '&' | '~' | '|' | '-' if in_class && chars.get(i + 1) == Some(&c) => return None,
-            '$' if !in_class => out.push_str("\\Z"),
-            '.' if !in_class => out.push_str("[^\\n\\r\\u2028\\u2029]"),
-            '(' if !in_class && chars.get(i + 1) == Some(&'?') => match chars.get(i + 2) {
-                Some(':') | Some('=') | Some('!') => out.push('('),
-                _ => return None,
-            },
+            ']' | '}' => return Err(syntax()),
             // Without the `u` flag JS reads the pattern as UTF-16 code units, so an astral
             // literal is two units (in a class, two members). The subject is split the same
             // way at match time (`_js_code_units`), so `.` and `[^x]` match one unit, as in JS.
@@ -1488,12 +1590,114 @@ pub fn translate_regex(pattern: &str) -> Option<String> {
                 for unit in c.encode_utf16(&mut units) {
                     out.push_str(&format!("\\u{unit:04x}"));
                 }
+                quantifiable = true;
             }
-            _ => out.push(c),
+            _ => {
+                out.push(c);
+                quantifiable = true;
+            }
         }
         i += 1;
     }
-    if in_class { None } else { Some(out) }
+    if !groups.is_empty() {
+        return Err("regex `(` without a matching `)`, a SyntaxError in JS".to_string());
+    }
+    Ok(out)
+}
+
+/// The class opening at `chars[open]`, written to `out`; returns the index of its closing `]`.
+fn regex_class(chars: &[char], open: usize, out: &mut String) -> Result<usize, String> {
+    let syntax = || REGEX_SYNTAX.to_string();
+    let mut i = open + 1;
+    out.push('[');
+    if chars.get(i) == Some(&'^') {
+        out.push('^');
+        i += 1;
+    }
+    // `[]` and `[^]` mean "nothing" and "anything" in JS and are errors in `re`.
+    if chars.get(i) == Some(&']') {
+        return Err(syntax());
+    }
+    let mut atoms: Vec<ClassAtom> = Vec::new();
+    loop {
+        let c = *chars.get(i).ok_or_else(syntax)?;
+        match c {
+            ']' => break,
+            // Doubled, these are set operations under the `v` flag and warnings in `re`.
+            '&' | '~' | '|' | '-' if chars.get(i + 1) == Some(&c) => return Err(syntax()),
+            '\\' => {
+                let next = *chars.get(i + 1).ok_or_else(syntax)?;
+                i += 1;
+                let (text, unit) = match next {
+                    'd' => ("0-9".to_string(), None),
+                    'w' => ("A-Za-z0-9_".to_string(), None),
+                    'b' => ("\\b".to_string(), Some(0x08)),
+                    'n' => ("\\n".to_string(), Some(0x0a)),
+                    'r' => ("\\r".to_string(), Some(0x0d)),
+                    't' => ("\\t".to_string(), Some(0x09)),
+                    '/' => ("/".to_string(), Some(u16::from(b'/'))),
+                    c if "^$\\.*+?()[]{}|-".contains(c) => (format!("\\{c}"), Some(c as u16)),
+                    _ => return Err(syntax()),
+                };
+                atoms.push(ClassAtom {
+                    text,
+                    unit,
+                    dash: false,
+                });
+            }
+            '[' => atoms.push(ClassAtom {
+                text: "\\[".to_string(),
+                unit: Some(u16::from(b'[')),
+                dash: false,
+            }),
+            c => {
+                let mut units = [0u16; 2];
+                let encoded = c.encode_utf16(&mut units);
+                let astral = encoded.len() == 2;
+                for &unit in encoded.iter() {
+                    atoms.push(ClassAtom {
+                        text: if astral {
+                            format!("\\u{unit:04x}")
+                        } else {
+                            c.to_string()
+                        },
+                        unit: Some(unit),
+                        dash: c == '-',
+                    });
+                }
+            }
+        }
+        i += 1;
+    }
+    let mut k = 0;
+    while k < atoms.len() {
+        let is_range = k + 2 < atoms.len() && atoms[k + 1].dash && !atoms[k].dash;
+        if !is_range {
+            out.push_str(&atoms[k].text);
+            k += 1;
+            continue;
+        }
+        let (Some(lo), Some(hi)) = (atoms[k].unit, atoms[k + 2].unit) else {
+            // `[a-\d]` is three members in JS (Annex B) and an error in `re`.
+            return Err("regex class escape as a range endpoint".to_string());
+        };
+        if lo > hi {
+            return Err(format!(
+                "regex range out of order in UTF-16 code units (\\u{lo:04x}-\\u{hi:04x}), a SyntaxError in JS"
+            ));
+        }
+        out.push_str(&atoms[k].text);
+        out.push('-');
+        out.push_str(&atoms[k + 2].text);
+        k += 3;
+        // A `-` straight after a range, not last: JS and `re` read `[a-c-e]` alike, but only by
+        // grammar details this translator does not lean on.
+        if k + 1 < atoms.len() && atoms[k].dash {
+            return Err(syntax());
+        }
+    }
+    out.push(']');
+    Ok(i)
 }
 
 #[cfg(test)]
@@ -1505,8 +1709,8 @@ mod tests {
         assert_eq!(translate_regex("^[A-Za-z]:").unwrap(), "^[A-Za-z]:");
         assert_eq!(translate_regex("a$").unwrap(), "a\\Z");
         assert_eq!(translate_regex("\\d+").unwrap(), "[0-9]+");
-        assert!(translate_regex("\\s").is_none());
-        assert!(translate_regex("(?<n>a)").is_none());
+        assert!(translate_regex("\\s").is_err());
+        assert!(translate_regex("(?<n>a)").is_err());
         // J85-R F3: an astral literal is its two UTF-16 code units, in and out of a class.
         assert_eq!(
             translate_regex("^a.b$").unwrap(),

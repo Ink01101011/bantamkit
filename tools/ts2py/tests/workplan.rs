@@ -4,6 +4,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// J85-R2 L2: these tests are the gate, so an interpreter that cannot be started is a failure,
+/// never a silent pass. `TS2PY_PYTHON` picks the interpreter; default `python3`.
+fn python_missing(python: &str, err: &std::io::Error) -> String {
+    format!(
+        "cannot run {python}: {err}; this test runs the generated module under Python and fails without one (set TS2PY_PYTHON to an interpreter)"
+    )
+}
+
 use sha2::{Digest, Sha256};
 
 fn repo() -> PathBuf {
@@ -109,7 +117,7 @@ fn runtime_module_mode_imports_only_what_it_uses() {
     );
 }
 
-/// Run the generated module under Python, when one is available, on a real graph, a hold and a
+/// Run the generated module under Python on a real graph, a hold and a
 /// refusal. `TS2PY_PYTHON` picks the interpreter; default `python3`.
 #[test]
 fn generated_module_runs_under_python() {
@@ -132,18 +140,12 @@ cases = [
 print(json.dumps([m.plan(c) for c in cases], ensure_ascii=False, separators=(",", ":")))
 "#;
     let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let run = match Command::new(&python)
+    let run = Command::new(&python)
         .arg("-c")
         .arg(driver)
         .arg(&path)
         .output()
-    {
-        Ok(run) => run,
-        Err(err) => {
-            eprintln!("skipping: cannot run {python}: {err}");
-            return;
-        }
-    };
+        .unwrap_or_else(|err| panic!("{}", python_missing(&python, &err)));
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
         run.status.success(),

@@ -3,6 +3,14 @@
 
 use std::process::Command;
 
+/// J85-R2 L2: these tests are the gate, so an interpreter that cannot be started is a failure,
+/// never a silent pass. `TS2PY_PYTHON` picks the interpreter; default `python3`.
+fn python_missing(python: &str, err: &std::io::Error) -> String {
+    format!(
+        "cannot run {python}: {err}; this test runs the generated module under Python and fails without one (set TS2PY_PYTHON to an interpreter)"
+    )
+}
+
 const PROBE: &str = r#"
 export function probe(input: any): unknown[] {
   const m = new Map<unknown, string>();
@@ -55,18 +63,12 @@ data = {"flag": True, "n": 3.0, "f": 3.0, "nil": None, "big": 1e21, "tiny": 1e-7
 print(json.dumps(m.probe(data), ensure_ascii=False, separators=(",", ":")))
 "#;
     let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let run = match Command::new(&python)
+    let run = Command::new(&python)
         .arg("-c")
         .arg(driver)
         .arg(&path)
         .output()
-    {
-        Ok(run) => run,
-        Err(err) => {
-            eprintln!("skipping: cannot run {python}: {err}");
-            return;
-        }
-    };
+        .unwrap_or_else(|err| panic!("{}", python_missing(&python, &err)));
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
         run.status.success(),
@@ -161,18 +163,12 @@ data = json.loads('{"lo": 9007199254740992, "hi": 9007199254740993, "big": 12345
 print(m.numbers(data))
 "#;
     let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let run = match Command::new(&python)
+    let run = Command::new(&python)
         .arg("-c")
         .arg(driver)
         .arg(&path)
         .output()
-    {
-        Ok(run) => run,
-        Err(err) => {
-            eprintln!("skipping: cannot run {python}: {err}");
-            return;
-        }
-    };
+        .unwrap_or_else(|err| panic!("{}", python_missing(&python, &err)));
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
         run.status.success(),
@@ -231,18 +227,12 @@ sys.stdout.reconfigure(encoding="utf-8")
 print(m.units(data))
 "#;
     let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let run = match Command::new(&python)
+    let run = Command::new(&python)
         .arg("-c")
         .arg(driver)
         .arg(&path)
         .output()
-    {
-        Ok(run) => run,
-        Err(err) => {
-            eprintln!("skipping: cannot run {python}: {err}");
-            return;
-        }
-    };
+        .unwrap_or_else(|err| panic!("{}", python_missing(&python, &err)));
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
         run.status.success(),
@@ -257,4 +247,207 @@ print(m.units(data))
         r#"false,true,false,true,false,true,false,true]"#,
     );
     assert_eq!(String::from_utf8(run.stdout).unwrap().trim_end(), expected);
+}
+
+/// J85-R2 L1: `.length` and `.size` are known numbers only on a receiver known to be a string.
+/// On anything else the property is whatever the object holds, so a plain object whose `length`
+/// is a string, or `true`, compares, adds and equals as JS does instead of as Python's `<`, `+`
+/// and `==` would (`'￿' < '😀'` by code unit, `true !== 1`, `'2' + 1`). The expected line is
+/// what Node prints for the same function on the same input.
+const LENGTHS: &str = r#"
+export function lengths(input: any): string {
+  const a = input.a;
+  const b = input.b;
+  return JSON.stringify([
+    a.length < b.length, a.length <= b.length, a.length > b.length, a.length >= b.length,
+    input.t.length === 1, input.t.length !== 1, input.a.length + 1,
+    input.s.size < 10, input.s.size === 2, input.s.size + 1,
+    input.xs.length < input.str.length, input.xs.length === 3, 'ab'.length < input.str.length,
+    input.str.length - 1,
+  ]);
+}
+"#;
+
+#[test]
+fn length_of_a_plain_object_is_not_assumed_numeric() {
+    let module = ts2py::compile(LENGTHS, "lengths.ts", &ts2py::Options::default())
+        .unwrap_or_else(|lines| panic!("lengths probe refused:\n{}", lines.join("\n")));
+    // A string's length is still a known number, so it keeps the plain operator.
+    let fast = ts2py::compile(
+        "export function k(): boolean {\n  return 'ab'.length < 3;\n}\n",
+        "k.ts",
+        &ts2py::Options::default(),
+    )
+    .unwrap_or_else(|lines| panic!("{}", lines.join("\n")));
+    assert!(
+        fast.contains("return _js_len(\"ab\") < 3\n"),
+        "the string-receiver fast path is gone:\n{fast}"
+    );
+    let dir = std::env::temp_dir().join(format!("ts2py-lengths-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("lengths.py");
+    std::fs::write(&path, module).unwrap();
+    let driver = r#"
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("l", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+data = json.loads('{"a": {"length": "\\uffff"}, "b": {"length": "\\ud83d\\ude00"}, "t": {"length": true}, "s": {"size": "2"}, "xs": [1, 2, 3], "str": "\\ud83d\\ude00"}')
+sys.stdout.reconfigure(encoding="utf-8")
+print(m.lengths(data))
+"#;
+    let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let run = Command::new(&python)
+        .arg("-c")
+        .arg(driver)
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|err| panic!("{}", python_missing(&python, &err)));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let expected = concat!(
+        r#"[false,false,true,true,false,true,""#,
+        "\u{ffff}",
+        r#"1",true,false,"21",false,true,false,1]"#,
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap().trim_end(), expected);
+}
+
+/// J85-R2 L3: every pattern ts2py accepts compiles under Python's `re`, so a regex can fail only
+/// at compile time, never at import. Checked on hand-picked edge cases plus a deterministic
+/// random sweep over the characters the grammar treats specially; the accepted translations are
+/// compiled in one Python run. `TS2PY_REGEX_DUMP=<file>` also writes each pattern and whether it
+/// its translation (null when refused), one JSON pair per line, for checking against JS by hand.
+#[test]
+fn every_accepted_regex_compiles_under_python() {
+    let mut patterns: Vec<String> = [
+        "^[A-Za-z]:",
+        "a$",
+        "\\d+",
+        "^a.b$",
+        "😀",
+        "[😀]",
+        "[^😀]+",
+        "[a-z😀]+",
+        "(😀|b)+",
+        "^a😀?$",
+        "[😀-😂]",
+        "[z-a]",
+        "[a-c-e]",
+        "[a-c-]",
+        "[-a]",
+        "[a-]",
+        "[\\b-\\n]",
+        "[\\--\\/]",
+        "a{2}",
+        "a{2,}",
+        "a{2,3}?",
+        "a{3,2}",
+        "(?:a|b)*",
+        "(?=a)b",
+        "(?!a)*",
+        "()*",
+        "(|a)+",
+        "a|",
+        "|",
+        "[\\]]",
+        "[[]",
+        "\\[",
+        "a{",
+        "}",
+        "a**",
+        "a*?",
+        "a??",
+        "^*",
+        "\\b+",
+        "[\\d-z]",
+        "[a-\\d]",
+        "[]",
+        "[^]",
+        "\\s",
+        "(?<n>a)",
+        "(?<=a)",
+        "\\1",
+        "\\u0041",
+        "\\x41",
+        "\\cA",
+        "[a&&b]",
+        "[a--b]",
+        "#",
+        " ",
+        "(((((a)))))",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let alphabet: Vec<char> = "ab()[]{}*+?|^$.-\\dwbB2,:=!😀😂z".chars().collect();
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    for _ in 0..20_000 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let len = (seed >> 60) as usize + 1;
+        let mut p = String::new();
+        for _ in 0..len {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            p.push(alphabet[(seed >> 33) as usize % alphabet.len()]);
+        }
+        patterns.push(p);
+    }
+    let mut accepted = Vec::new();
+    let mut dump = String::new();
+    for p in &patterns {
+        let result = ts2py::lower::translate_regex(p);
+        let shown = match &result {
+            Ok(t) => format!("{t:?}"),
+            Err(_) => "null".to_string(),
+        };
+        dump.push_str(&format!("[{p:?}, {shown}]\n"));
+        if let Ok(t) = result {
+            accepted.push(t);
+        }
+    }
+    if let Ok(file) = std::env::var("TS2PY_REGEX_DUMP") {
+        std::fs::write(file, &dump).unwrap();
+    }
+    assert!(
+        accepted.len() > 1000,
+        "the sweep accepted only {}",
+        accepted.len()
+    );
+    let dir = std::env::temp_dir().join(format!("ts2py-regex-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("patterns.txt");
+    // One translation per line; a translation never holds a raw newline.
+    std::fs::write(&path, accepted.join("\n")).unwrap();
+    let driver = r#"
+import re, sys
+bad = []
+for p in open(sys.argv[1], encoding="utf-8").read().split("\n"):
+    try:
+        re.compile(p, re.ASCII)
+    except Exception as e:
+        bad.append(f"{p!r}: {type(e).__name__}: {e}")
+print(len(bad))
+print("\n".join(bad[:20]))
+"#;
+    let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let run = Command::new(&python)
+        .arg("-c")
+        .arg(driver)
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|err| panic!("{}", python_missing(&python, &err)));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8(run.stdout).unwrap();
+    assert!(
+        stdout.starts_with("0\n"),
+        "accepted patterns that re cannot compile:\n{stdout}"
+    );
 }

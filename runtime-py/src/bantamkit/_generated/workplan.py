@@ -12,6 +12,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_is_nullish,
     _js_json_stringify,
     _js_len,
+    _js_lt,
     _js_m_add,
     _js_m_entries,
     _js_m_every,
@@ -36,6 +37,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_re,
     _js_size,
     _js_str,
+    _js_strict_eq,
     _js_typeof,
     _JsMap,
     _JsSet,
@@ -129,14 +131,14 @@ def plan(input):
     sequence = []
     held = []
     width = 0
-    while _js_size(emitted) < _js_len(nodes):
+    while _js_lt(_js_size(emitted), _js_len(nodes)):
         ready = []
         for index, node in _js_m_entries(nodes):
             if _js_m_has(emitted, _js_get(node, "id")):
                 continue
             if _js_m_every(_js_get(node, "depends_on"), lambda dep, *_: _js_m_has(emitted, dep)):
                 _js_m_push(ready, {"id": _js_get(node, "id"), "priority": _js_coalesce_value(_js_get(node, "priority"), 0), "index": index})
-        if _js_len(ready) == 0:
+        if _js_strict_eq(_js_len(ready), 0):
             return _refuse("the graph has a cycle: " + _js_m_join(_cycle_path(nodes, emitted), " -> "))
         _js_m_sort(ready, lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "priority")) - _js_num(_js_get(a, "priority"))), lambda: _js_num(_js_num(_js_get(a, "index")) - _js_num(_js_get(b, "index")))))
         batch = []
