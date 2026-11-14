@@ -167,10 +167,11 @@ regenerate, the freshness gate, and the 8 Python-side parity fixes are in `docs/
 | Python planner lines | `workplan.py` 311 | generated `workplan.py` 162 + shim `workplan.py` 50; support `_ts2py_runtime.py` 555, shared by any future generated module |
 | TypeScript source | `workplan.ts` 280 | unchanged |
 | `test_workplan.py` | 423 lines, cases typed inline | 104 lines (155 tests), reads the shared fixture; plus `test_ts2py_fresh.py` 66 lines |
-| Shared expected answers | none | `fixtures/workplan-cases.json`: 147 cases (graph 21, core 53, ts 21, py 13, adversarial 39) |
-| `--suite ts2py` | 451 cases, 8 ruled-different (legacy findings) | 443 cases, 0 ruled-different, 0 failures |
-| `--suite workplan` | 290 cases, 0 failures | 290 cases, 0 failures (`tool/no-id` unchanged) |
-| Python vs TypeScript on the 147 cases | 139 match | 147 match |
+| Shared expected answers | none | `fixtures/workplan-cases.json`: 148 cases (graph 21, core 53, ts 21, py 13, adversarial 40) |
+| `--suite ts2py` | 451 cases, 8 ruled-different (legacy findings) | 448 cases, 0 ruled-different, 0 failures; includes a byte-compare of the committed generated files against a fresh compile |
+| `--suite workplan` | 290 cases, 0 failures | 294 cases, 0 failures (`tool/no-id` unchanged; 4 new cases for a missing `id` after an earlier fault, which Node had answered differently) |
+| Python vs TypeScript on the shared cases | 139 of 147 match | 148 of 148 match |
+| Random-graph differential (generated Python vs Node `dist/workplan.js`) | not run | 100,000 JSON graphs, 0 mismatches (review J85-R); 60,000 more with integers past the double range, 0 mismatches after the J85-5 fix |
 | Wheel | 898,098 B (#313 baseline; `runtime-py` unchanged since) | 901,232 B (+3,134 B) |
 | Rust needed to build or install the wheel | no | no (generated files committed; wheel checked to contain `bantamkit/_generated/*`) |
 
