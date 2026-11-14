@@ -153,6 +153,15 @@ else:
             emit({"type": "item.completed", "item": {
                 "id": "cmd1", "type": "command_execution", "status": "completed",
                 "command": scn["audit_for"][rel]}})
+    for n in range(scn.get("steps", 0)):
+        emit({"type": "item.completed", "item": {
+            "id": f"step{n}", "type": "command_execution", "status": "completed",
+            "command": "true"}})
+    if scn.get("change_items"):
+        for rel in files:
+            emit({"type": "item.completed", "item": {
+                "type": "file_change", "status": "completed",
+                "changes": [{"path": rel, "kind": "update"}]}})
     emit({"type": "item.completed", "item": {"type": "agent_message", "text": "done"}})
 # Like the real CLI (probe 2026-11-13), a resumed call reports the SESSION's running
 # total, not its own usage; a fresh call's total is its own. The session spends tokens
@@ -2284,3 +2293,352 @@ def test_host_argv_default_reviewer_is_unchanged_and_rr_only_adds_persist_and_re
     assert resumed[:3] == ["codex", "exec", "resume"] and resumed[-2:] == ["thr-1", "-"]
     assert "--sandbox" not in resumed and 'sandbox_mode="read-only"' in resumed
     assert {"shell_tool", "unified_exec", "apps", "multi_agent"} <= set(resumed)
+
+
+# --- the AB comparison (batched author prompt): --comparison batch ------------------------
+
+
+def run_batch(tmp_path, monkeypatch, case_id, smoke=False, budget=10**12, **scenario):
+    codex, log = fake_codex(tmp_path, monkeypatch, case_id, **scenario)
+    out = tmp_path / "out"
+    summary = lr.run_live(out, [CASES[case_id]], repeats=1, smoke=smoke, codex_bin=codex,
+                          comparison="batch", budget_tokens=budget)
+    records = lr.read_runs(out) if (out / "runs.jsonl").exists() else []
+    calls = [json.loads(s) for s in log.read_text().splitlines()] if log.exists() else []
+    return out, summary, records, calls, codex
+
+
+def test_batch_variants_levers_schedule_and_defaults():
+    assert lr.COMPARISONS["batch"] == ("rr-base", "rr-batched")
+    # rr-base is the RR comparison's repair-tuned-rr, lever for lever; AB is the only add.
+    assert lr.VARIANTS["rr-base"] == lr.VARIANTS["repair-tuned-rr"]
+    assert lr.VARIANTS["rr-batched"] == {"arm": "grouped",
+                                         "levers": ("T1", "T2", "T4", "RR", "AB")}
+    cases = list(CASES.values())
+    jobs = [(c["id"], r, a) for c, r, a, _ in lr.schedule(cases, 2, False, "batch")]
+    assert len(jobs) == 12 and lr.BATCH_JOBS == 8 and lr.BATCH_REPEATS == 2
+    # Counterbalanced: even repeats run rr-base first.
+    assert [a for c, r, a in jobs if c == "native-chain"] == [
+        "rr-base", "rr-batched", "rr-batched", "rr-base"]
+    assert [(c["id"], r, a) for c, r, a, _ in lr.schedule(cases, 2, True, "batch")] == [
+        ("mixed-fork-join", 0, "rr-base"), ("mixed-fork-join", 0, "rr-batched")]
+    assert lr.BATCH_CASES == ("native-chain", "sequential-delegates")
+    assert lr.BATCH_CAP_MARGIN == 400_000
+    assert lr.DEFAULT_REPEATS == {"310": 3, "tuning": 2}
+    # The other comparisons' arms are untouched.
+    assert lr.COMPARISONS["rr"] == ("repair-tuned", "repair-tuned-rr")
+
+
+def test_a_full_batch_run_refuses_to_start_without_a_cap(tmp_path):
+    with pytest.raises(ValueError, match="batch run needs budget_tokens"):
+        lr.run_live(tmp_path / "out", [CASES["native-chain"]], comparison="batch")
+    assert not (tmp_path / "out").exists()
+
+
+def test_batch_defaults_to_two_modes_two_repeats_and_smoke_keeps_fork_join(
+        tmp_path, monkeypatch):
+    codex, _ = fake_codex(tmp_path, monkeypatch, "native-chain")
+    seen = []
+
+    async def fake_inner(out, cases, repeats, smoke, *args, **kwargs):
+        seen.append(([c["id"] for c in cases], repeats, smoke))
+        return []
+
+    monkeypatch.setattr(lr, "_run", fake_inner)
+    lr.run_live(tmp_path / "a", comparison="batch", budget_tokens=10**9, codex_bin=codex)
+    lr.run_live(tmp_path / "b", comparison="batch", smoke=True, codex_bin=codex)
+    assert seen[0] == (["native-chain", "sequential-delegates"], 2, False)
+    assert sorted(seen[1][0]) == sorted(CASES) and seen[1][2] is True
+
+
+def test_tool_steps_counts_only_command_executions_and_file_changes():
+    items = [{"type": "command_execution"}, {"type": "file_change"},
+             {"type": "agent_message"}, {"type": "reasoning"}, {"type": "command_execution"}]
+    assert lr.tool_steps(items) == 3 and lr.tool_steps([]) == 0
+
+
+@pytest.mark.parametrize("case_id", ["native-chain", "sequential-delegates"])
+def test_batched_prompt_is_on_every_author_call_once_and_nothing_else_differs(
+        tmp_path, monkeypatch, case_id):
+    out, summary, records, log, codex = run_batch(tmp_path, monkeypatch, case_id)
+    assert [r["variant"] for r in records] == ["rr-base", "rr-batched"]
+    base, batched = records
+    assert base["levers"] == ["RR", "T1", "T2", "T4"]
+    assert batched["levers"] == ["AB", "RR", "T1", "T2", "T4"]
+    for record in records:
+        assert record["status"] == "accepted", record["stop_reason"]
+        assert record["quality"]["quality_failure"] is False
+    # The paragraph is the design's, verbatim.
+    assert lr.AB_PARAGRAPH == (
+        "Work in as few tool steps as you can: do not explore or re-read files you "
+        "already have in this prompt; write each file you own completely in a single "
+        "edit; then run the fast check once. Only if it fails, fix and run it again.\n")
+    kinds = {c["kind"] for c in batched["calls"]}
+    assert "author" in kinds and "reviewer" in kinds and "repair" in kinds
+    for record in records:
+        for call in record["calls"]:
+            prompt = sent(out, call, "prompt.txt")
+            want = 1 if record is batched and call["kind"] == "author" else 0
+            assert prompt.count(lr.AB_PARAGRAPH) == want, (record["variant"], call["id"])
+            if want:
+                assert prompt.startswith(lr.AUTHOR_PROMPT + lr.AB_PARAGRAPH)
+            elif call["kind"] == "author":
+                assert prompt.startswith(lr.AUTHOR_PROMPT)
+                assert not prompt.startswith(lr.AUTHOR_PROMPT + "Work in")
+    # Nothing else differs: with the paragraph taken out, the batched arm's calls are the
+    # base arm's, argv and prompt, call for call.
+    rows = sent_calls(out, tmp_path, codex)
+
+    def arm(job):
+        return {k.split("|", 1)[1]: v for k, v in rows.items() if k.split("|")[0] == job}
+
+    one, two = arm(f"{case_id}-r0-rr-base"), arm(f"{case_id}-r0-rr-batched")
+    assert one and set(one) == set(two)
+    assert {k: v.replace(lr.AB_PARAGRAPH, "") for k, v in two.items()} == one
+    assert two != one
+    # Both arms carry the RR comparison's counts and figures, and both resume re-reviews.
+    for record in records:
+        assert record["tuning"]["resumed_reviews"] >= 1 or case_id != "native-chain"
+        assert {"rereview_tokens_excl_cache", "reviewer_cache", "reviewer_zero_cache_calls",
+                "first_review_tokens_excl_cache"} <= set(record)
+        assert {"resume_fallbacks", "fresh_after_error", "resume_capped",
+                "convergence_findings"} <= set(record["tuning"])
+    delegates = [c for c in batched["calls"] if c["kind"] == "author" and c["context"] != "parent"]
+    assert bool(delegates) == (case_id == "sequential-delegates")
+
+
+def test_rr_base_sends_exactly_the_rr_comparisons_repair_tuned_rr_calls(tmp_path, monkeypatch):
+    """rr-base is repair-tuned-rr: same argv, same prompts, call for call."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    codex_a, _ = fake_codex(a, monkeypatch, "native-chain")
+    lr.run_live(a / "out", [CASES["native-chain"]], repeats=1, codex_bin=codex_a,
+                comparison="rr", budget_tokens=10**12)
+    rows_rr = sent_calls(a / "out", a, codex_a)
+    codex_b, _ = fake_codex(b, monkeypatch, "native-chain")
+    lr.run_live(b / "out", [CASES["native-chain"]], repeats=1, codex_bin=codex_b,
+                comparison="batch", budget_tokens=10**12)
+    rows_batch = sent_calls(b / "out", b, codex_b)
+
+    def arm(rows, job):
+        return {k.split("|", 1)[1]: v for k, v in rows.items() if k.split("|")[0] == job}
+
+    base = arm(rows_rr, "native-chain-r0-repair-tuned-rr")
+    assert base and base == arm(rows_batch, "native-chain-r0-rr-base")
+    assert arm(rows_batch, "native-chain-r0-rr-batched") != base
+
+
+def test_author_tool_steps_are_counted_per_author_call_and_only_for_authors(
+        tmp_path, monkeypatch):
+    out, summary, records, _, _ = run_batch(tmp_path, monkeypatch, "native-chain",
+                                            steps=3, change_items=True)
+    own = {u["id"]: u["files"] for u in CASES["native-chain"]["units"]}
+    for record in records:
+        authors = [c for c in record["calls"] if c["kind"] == "author"]
+        assert authors and record["author_calls"] == len(authors)
+        rows = {r["call"]: r for r in record["author_tool_steps"]}
+        assert list(rows) == [c["id"] for c in authors]
+        for call in authors:
+            # 3 commands, plus one file_change per owned file; messages are not steps.
+            assert call["tool_steps"] == 3 + len(own[call["unit"]])
+            assert rows[call["id"]]["tool_steps"] == call["tool_steps"]
+        assert record["author_tool_steps_total"] == sum(c["tool_steps"] for c in authors)
+        # Author-only cost: the author kind's uncached + output, and its raw total.
+        assert record["author_tokens_excl_cache"] == record["kind_tokens_excl_cache"]["author"]
+        assert record["author_tokens"] == record["kind_tokens"]["author"]
+        assert record["author_tokens_excl_cache"] == sum(
+            c["tokens_excl_cache"] for c in authors)
+        # A repair (patch) call carries no step figure into the author total.
+        assert [c["kind"] for c in record["calls"]].count("repair") >= 1
+    assert summary["modes"]["native-chain"]["rr-batched"]["author_tool_steps"][
+        "median"] == records[1]["author_tool_steps_total"]
+    # A #310 or RR record has none of these keys.
+    codex, _ = fake_codex(tmp_path, monkeypatch, "native-chain")
+    other = tmp_path / "rr-out"
+    lr.run_live(other, [CASES["native-chain"]], repeats=1, codex_bin=codex, comparison="rr",
+                budget_tokens=10**12)
+    for record in lr.read_runs(other):
+        assert "author_tool_steps" not in record and "tool_steps" not in record["calls"][0]
+
+
+def test_batch_smoke_is_the_fork_join_pair_with_an_eight_job_projection(tmp_path, monkeypatch):
+    out, summary, records, _, _ = run_batch(tmp_path, monkeypatch, "mixed-fork-join",
+                                            smoke=True, budget=3_000_000)
+    assert [(r["variant"], r["repeat"], r["smoke"]) for r in records] == [
+        ("rr-base", 0, True), ("rr-batched", 0, True)]
+    for record in records:
+        assert record["status"] == "accepted", record["stop_reason"]
+    smoke = summary["smoke"]
+    assert smoke["projected_tokens_for_8_jobs"] == max(r["total_tokens"] for r in records) * 8
+    spent = sum(r["total_tokens"] for r in records)
+    assert smoke["projected_plus_smoke_tokens"] == smoke["projected_tokens_for_8_jobs"] + spent
+    assert smoke["run_cap_after_smoke"] == 3_000_000 - spent - 400_000
+    assert summary["comparison"] == "batch" and summary["design"] == lr.BATCH_DESIGN
+    written = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert written["budget"]["cap"] == 3_000_000
+    assert (out / "budget.json").exists()
+    assert written.pop("budget") and written == json.loads(
+        json.dumps(lr.summarize_batch(records, 3_000_000)))
+    meta = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["comparison"] == "batch" and meta["design"] == lr.BATCH_DESIGN
+    assert meta["variants"]["rr-batched"]["levers"] == ["T1", "T2", "T4", "RR", "AB"]
+    assert meta["batch_prompts"] == {"author_batching_paragraph_ab": lr.AB_PARAGRAPH}
+
+
+def test_a_full_batch_run_stops_cleanly_at_the_cap(tmp_path, monkeypatch):
+    out, summary, records, _, _ = run_batch(tmp_path, monkeypatch, "native-chain", budget=1)
+    # The first job runs (nothing was spent yet); the second would cross the cap.
+    assert [r["variant"] for r in records] == ["rr-base"]
+    assert summary["budget"]["stopped"] is True
+
+
+# --- summarize_batch on hand-built records ---------------------------------------------
+
+
+def bkrecord(case_id, variant, repeat=0, steps=6, author=100, author_raw=900, **kwargs):
+    r = rrrecord(case_id, variant, repeat, **kwargs)
+    r.update(author_calls=2, author_tool_steps_total=steps, author_tokens_excl_cache=author,
+             author_tokens=author_raw)
+    return r
+
+
+def good_batch(**batched_overrides):
+    records = []
+    for mode in MODES:
+        for repeat in range(2):
+            records.append(bkrecord(mode, "rr-base", repeat))
+            batched = {"cost": 800, "raw": 4500, "review": 300, "repair": 200, "latency": 90.0,
+                       "steps": 2, "author": 40, "author_raw": 300}
+            records.append(bkrecord(mode, "rr-batched", repeat,
+                                    **(batched | batched_overrides.get(mode, {}))))
+    return records
+
+
+def test_batch_summary_better_reports_author_cost_and_steps_and_dispatches():
+    summary = lr.summarize_batch(good_batch())
+    assert summary["comparison"] == "batch" and summary["design"] == lr.BATCH_DESIGN
+    assert summary["limitations"] == lr.BATCH_LIMITS
+    assert summary["verdicts"] == {m: "better" for m in MODES}
+    pair = summary["pairs"][0]
+    assert pair["arms_present"] == ["rr-base", "rr-batched"]
+    assert pair["uncached_plus_output_saving"] == pytest.approx(0.2)
+    assert pair["author_uncached_plus_output_saving"] == pytest.approx(0.6)
+    assert pair["author_raw_saving"] == pytest.approx(1 - 300 / 900)
+    assert pair["author_tool_steps_saving"] == pytest.approx(1 - 2 / 6)
+    mode = summary["modes"]["native-chain"]
+    assert mode["verdict"]["median_saving_uncached_plus_output"] == pytest.approx(0.2)
+    assert mode["rr-batched"]["author_uncached_plus_output"]["median"] == 40
+    assert mode["rr-base"]["author_tool_steps"]["median"] == 6
+    assert mode["rr-batched"]["raw_total"]["median"] == 4500
+    assert "repair-tuned" not in mode
+    assert all(v is True for v in mode["verdict"]["gates"].values())
+    assert set(summary["counts"]) == {"rr-base", "rr-batched"}
+    assert lr.summarize(good_batch())["comparison"] == "batch"
+    assert lr.summarize(good_rr())["comparison"] == "rr"
+    # The cost verdict does not follow the author-only figure: flat total cost is not-better.
+    flat = lr.summarize_batch(good_batch(**{"native-chain": {"cost": 1000}}))
+    assert flat["modes"]["native-chain"]["verdict"]["result"] == "not-better"
+
+
+@pytest.mark.parametrize(
+    ("override", "gate"),
+    [
+        ({"caught": (False, True)}, "no_seed_missed_that_baseline_caught"),
+        ({"quality_failure": True}, "no_quality_failure"),
+        ({"accepted": False, "quality_failure": None, "stop_kind": "protocol"},
+         "no_extra_protocol_stop"),
+        ({"false_findings": 1}, "false_findings_not_more"),
+        ({"latency": 101.0}, "median_accepted_latency_not_higher"),
+    ],
+)
+def test_each_batch_gate_fails_its_mode_whatever_it_saves(override, gate):
+    summary = lr.summarize_batch(good_batch(**{"sequential-delegates": override}))
+    verdict = summary["modes"]["sequential-delegates"]["verdict"]
+    assert verdict["gates"][gate] is False
+    assert verdict["result"] == "fail"
+    assert verdict["median_saving_uncached_plus_output"] > 0
+    assert summary["verdicts"]["native-chain"] == "better"
+
+
+def test_batch_censored_pair_and_rerun_follow_the_tuning_rules():
+    records = good_batch()
+    for r in records:
+        if (r["case_id"], r["repeat"], r["variant"]) == ("native-chain", 0, "rr-batched"):
+            r.update(stop_kind="harness", accepted=False)
+    verdict = lr.summarize_batch(records)["modes"]["native-chain"]["verdict"]
+    assert verdict["result"] == "inconclusive"
+    assert verdict["harness_censored_pairs"] == ["native-chain#r0"]
+    voided = dict(bkrecord("native-chain", "rr-batched", 0, raw=77), attempt=0,
+                  stop_kind="harness", accepted=False)
+    rerun = [dict(r, attempt=1) if (r["case_id"], r["repeat"]) == ("native-chain", 0) else r
+             for r in good_batch()]
+    again = lr.summarize_batch([voided, *rerun])
+    assert again["voided_attempts"]["total_tokens"] == 77
+    assert again["verdicts"]["native-chain"] == "better"
+
+
+def test_batch_smoke_projection_counts_its_own_spend_and_keeps_a_400k_margin():
+    smoke = [dict(bkrecord("mixed-fork-join", v, raw=100_000), smoke=True)
+             for v in lr.BATCH_VARIANTS]
+    s = lr.summarize_batch(smoke, budget_tokens=2_500_000)["smoke"]
+    assert s["projected_tokens_for_8_jobs"] == 800_000
+    assert s["projected_plus_smoke_tokens"] == 1_000_000 and s["fits_budget"] is True
+    assert s["run_cap_after_smoke"] == 2_500_000 - 200_000 - 400_000
+    assert s["run_cap_margin"] == 400_000
+    assert lr.summarize_batch(smoke, budget_tokens=900_000)["smoke"]["fits_budget"] is False
+    uneven = [dict(smoke[0], total_tokens=100), dict(smoke[1], total_tokens=300)]
+    again = lr.summarize_batch(uneven, 3000)["smoke"]
+    assert again["projected_tokens_for_8_jobs"] == 2400  # larger job x 8, never the mean
+    assert again["projected_plus_smoke_tokens"] == 2800 and again["fits_budget"] is True
+    # The RR comparison keeps its own margin.
+    rr = [dict(rrrecord("mixed-fork-join", v, raw=100_000), smoke=True) for v in lr.RR_VARIANTS]
+    assert lr.summarize_rr(rr, 2_500_000)["smoke"]["run_cap_margin"] == 400_000
+
+
+def test_cli_passes_batch_comparison_cases_and_summarizes_batch(tmp_path, monkeypatch, capsys):
+    seen = {}
+
+    def fake_run_live(out, cases, repeats, smoke, codex_bin, author_timeout, review_timeout,
+                      **kwargs):
+        seen.update(cases=[c["id"] for c in cases], repeats=repeats, smoke=smoke, **kwargs)
+        return {}
+
+    monkeypatch.setattr(lr, "run_live", fake_run_live)
+    monkeypatch.setattr(sys, "argv", ["live_run", "--out", str(tmp_path / "o"),
+                                      "--comparison", "batch", "--budget-tokens", "2000000"])
+    lr.main()
+    assert seen["comparison"] == "batch" and seen["budget_tokens"] == 2_000_000
+    assert seen["cases"] == ["native-chain", "sequential-delegates"] and seen["repeats"] is None
+    monkeypatch.setattr(sys, "argv", ["live_run", "--out", str(tmp_path / "o"), "--smoke",
+                                      "--comparison", "batch", "--budget-tokens", "2500000"])
+    lr.main()
+    assert "mixed-fork-join" in seen["cases"] and seen["smoke"] is True
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text("".join(json.dumps(r) + "\n" for r in good_batch()), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["live_run", "--summarize", str(runs)])
+    capsys.readouterr()
+    lr.main()
+    out = json.loads(capsys.readouterr().out)
+    assert out["comparison"] == "batch" and out["verdicts"] == {m: "better" for m in MODES}
+
+
+def test_an_integration_model_call_never_carries_the_batching_paragraph(tmp_path, monkeypatch):
+    original = lr.Arm.fast_check
+    seen = set()
+
+    def red_once(self, base, root, label):
+        if label.startswith("I2") and self.job_id not in seen:
+            seen.add(self.job_id)
+            return {"unit": base, "label": label, "passed": False, "output": "red", "ts": ""}
+        return original(self, base, root, label)
+
+    monkeypatch.setattr(lr.Arm, "fast_check", red_once)
+    out, _, records, _, _ = run_batch(tmp_path, monkeypatch, "native-chain")
+    assert seen == {r["job_id"] for r in records} and len(records) == 2
+    for record in records:
+        assert record["status"] == "accepted", record["stop_reason"]
+        integrations = [c for c in record["calls"] if c["kind"] == "integration"]
+        assert len(integrations) == 1
+        prompt = sent(out, integrations[0], "prompt.txt")
+        assert prompt.startswith(lr.INTEGRATION_PROMPT) and lr.AB_PARAGRAPH not in prompt
