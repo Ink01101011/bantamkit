@@ -51,17 +51,9 @@ def record(**kw) -> str:
 # ------------------------------------------------------------------ the accounting identity
 
 
-def test_every_line_is_counted_or_omitted_over_the_committed_corpus():
-    """`lines == requests + sum(omission counts)`, over the tree the conformance suite reads.
-
-    This is the property that makes a small total readable: it separates "your transcripts
-    hold no usage" from "I skipped most of your transcripts". A reader who cannot tell those
-    apart cannot act on either.
-    """
-    ledger = tokenledger.read(CORPUS)
-    omitted = sum(o.count for o in ledger.omissions)
-    assert ledger.lines == ledger.requests + omitted
-    assert (ledger.lines, ledger.requests, omitted) == (19, 7, 12)
+# The committed corpus's `lines == requests + omitted` (19 == 7 + 12) is pinned per side by
+# `--suite tokenledger`'s `LITERAL: the committed corpus counts what it counts` (#316 G2, J88-2
+# retired the duplicate here).
 
 
 def test_the_identity_holds_when_nothing_at_all_is_counted(tmp_path):

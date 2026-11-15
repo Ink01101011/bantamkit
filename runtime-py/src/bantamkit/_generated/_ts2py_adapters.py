@@ -2,24 +2,71 @@
 # Every name here is declared in tools/ts2py/src/adapters.rs with the reason it is faithful, and
 # RULES.md (Adapters) records how each was measured. Nothing else may be imported this way.
 import datetime as _datetime
+import errno as _errno
+import gzip as _gzip
 import os as _os
+import pathlib as _pathlib
+import stat as _stat
+import zlib as _zlib
 
-from ._ts2py_runtime import _JS_UNDEFINED, _js_num, _JsError, _JsObject
+from ._ts2py_runtime import (
+    _JS_UNDEFINED,
+    _js_num,
+    _js_truthy,
+    _JsError,
+    _JsObject,
+    _JsTypeError,
+)
 
-# `BantamError` is provided lazily by `__getattr__` below and is not listed, so a star import does
-# not build it (and import `bantamkit.client`).
+# `BantamError` (and J88-2's `LOCK_*_MS`) are provided lazily by `__getattr__` below and are not
+# listed, so a star import does not build them (and import `bantamkit.client` / `storage.lock`).
 __all__ = [
     "Date",
+    "PyOSError",
+    "Stats",
     "TextDecoder",
+    "append_file_sync",
     "assets_root",
+    "bantamkit_dir_for",
+    "buffer_alloc",
+    "buffer_concat",
+    "buffer_from",
+    "close_sync",
     "cmp_codepoint",
+    "ensure_bantamkit_gitignore",
+    "exclusive",
     "exists_sync",
+    "fstat_sync",
+    "gunzip_sync",
+    "gzip_sync",
+    "link_sync",
+    "lstat_sync",
+    "mkdir_sync",
+    "open_sync",
+    "os_error_class_name",
+    "path_basename",
+    "path_dirname",
     "path_join",
     "process_env",
+    "process_env_all",
+    "process_pid",
+    "py_exists",
     "py_float_repr",
+    "py_is_dir",
+    "py_join",
+    "py_name",
+    "py_parent",
     "py_repr",
     "py_strip",
+    "random_bytes",
+    "read_file_bytes",
     "read_file_sync",
+    "read_sync",
+    "readdir_sync",
+    "rename_sync",
+    "rm_sync",
+    "stat_sync",
+    "write_sync",
 ]
 
 
@@ -35,22 +82,47 @@ def py_strip(s):
 
 
 class TextDecoder(_JsObject):
-    """`new TextDecoder('utf-8')`: WHATWG UTF-8 decode. Invalid bytes become one U+FFFD per maximal
-    subpart (Python's 'replace' handler does the same) and a leading BOM is dropped."""
+    """`new TextDecoder('utf-8', {fatal?, ignoreBOM?})`: WHATWG UTF-8 decode. Invalid bytes become
+    one U+FFFD per maximal subpart (Python's 'replace' handler does the same); with `fatal: true`
+    they are refused instead, as the TypeError Node throws (code
+    `ERR_ENCODING_INVALID_ENCODED_DATA`), exactly where CPython's strict decoder refuses (J88-2
+    measured the two acceptance sets equal). A
+    leading BOM is dropped unless `ignoreBOM: true` keeps it. Nothing else is touched: no newline
+    translation."""
 
     _js_name = "TextDecoder"
     _js_own = frozenset({"decode"})
     _js_own_methods = frozenset({"decode"})
 
-    def __init__(self, label="utf-8", *_):
+    def __init__(self, label="utf-8", options=_JS_UNDEFINED, *_):
         if str(label).strip().lower() not in ("utf-8", "utf8", "unicode-1-1-utf-8"):
             raise TypeError("ts2py: a TextDecoder for anything but UTF-8 is outside the subset")
+        fatal = ignore_bom = False
+        if options is not _JS_UNDEFINED and options is not None:
+            if not isinstance(options, dict) or set(options) - {"fatal", "ignoreBOM"}:
+                raise TypeError(
+                    "ts2py: TextDecoder options other than fatal/ignoreBOM are outside the subset"
+                )
+            fatal = _js_truthy(options.get("fatal", _JS_UNDEFINED))
+            ignore_bom = _js_truthy(options.get("ignoreBOM", _JS_UNDEFINED))
+        object.__setattr__(self, "_js_fatal", fatal)
+        object.__setattr__(self, "_js_ignore_bom", ignore_bom)
 
     def decode(self, data=_JS_UNDEFINED, *_):
         if data is _JS_UNDEFINED:
             return ""
-        text = bytes(data).decode("utf-8", "replace")
-        return text[1:] if text.startswith("﻿") else text
+        if self._js_fatal:
+            try:
+                text = bytes(data).decode("utf-8")
+            except UnicodeDecodeError:
+                error = _JsTypeError("The encoded data was not valid for encoding utf-8")
+                error.code = "ERR_ENCODING_INVALID_ENCODED_DATA"
+                raise error from None
+        else:
+            text = bytes(data).decode("utf-8", "replace")
+        if self._js_ignore_bom:
+            return text
+        return text[1:] if text.startswith("\ufeff") else text
 
 
 class Date(_JsObject):
@@ -129,16 +201,23 @@ def exists_sync(path, *_):
     error, never a raise; a non-string argument (null, a number) is false, as Node answers it."""
     if path is None or path is _JS_UNDEFINED or isinstance(path, (bool, int, float)):
         return False
-    return _os.path.exists(_checked_path(path, "fs.existsSync"))
+    if isinstance(path, str) and "\0" in path:
+        # J88-2: Node validates the path inside its try and answers false for a NUL.
+        return False
+    return _os.path.exists(_node_path(path, "fs.existsSync"))
 
 
 def read_file_sync(path, encoding=_JS_UNDEFINED, *_):
-    """`fs.readFileSync(path, 'utf8')`: the file's bytes decoded as Node decodes UTF-8, one U+FFFD
+    """`fs.readFileSync(path, 'utf8')` (J88-2: or no encoding, the bytes): the file's bytes decoded
+    as Node decodes UTF-8, one U+FFFD
     per maximal invalid subpart and a BOM kept. A failure is the `OSError` CPython's `open()` raises
     for the same path (class, errno, strerror, filename), which a generated `catch` sees as Node's
     fs Error and which reaches a Python caller unchanged otherwise."""
+    if encoding is _JS_UNDEFINED:
+        # J88-2: no encoding is the file's bytes, a Buffer.
+        return read_file_bytes(path)
     if encoding not in ("utf8", "utf-8"):
-        raise TypeError("ts2py: fs.readFileSync without the 'utf8' encoding is outside the subset")
+        raise TypeError("ts2py: fs.readFileSync with an encoding but 'utf8' is outside the subset")
     with open(_checked_path(path, "fs.readFileSync"), "rb") as handle:
         data = handle.read()
     return data.decode("utf-8", "replace")
@@ -329,6 +408,526 @@ def path_join(*parts):
     return _posix_join(list(parts))
 
 
+# ---------------------------------------------------------------- J88-2 (#316 G2): event log,
+# token ledger, log segment
+
+
+def _node_path(path, what):
+    """A path as Node hands it to libuv: a string; a lone surrogate is the U+FFFD that Node's UTF-8
+    encoding of the string writes (on Windows the UTF-16 libuv rebuilds from it carries the same);
+    a NUL is the TypeError Node throws (code `ERR_INVALID_ARG_VALUE`)."""
+    if not isinstance(path, str):
+        raise TypeError(f"ts2py: {what} of anything but a string path is outside the subset")
+    if "\0" in path:
+        error = _JsTypeError("The argument 'path' must be a string without null bytes")
+        error.code = "ERR_INVALID_ARG_VALUE"
+        raise error
+    if any(0xD800 <= ord(c) <= 0xDFFF for c in path):
+        path = "".join("\ufffd" if 0xD800 <= ord(c) <= 0xDFFF else c for c in path)
+    return path
+
+
+class Stats(_JsObject):
+    """`fs.Stats` from `statSync`/`lstatSync`/`fstatSync`: `size`, `mtimeMs` (libuv's seconds and
+    nanoseconds as Node combines them, `sec * 1e3 + nsec / 1e6`), and the type tests. On Windows a
+    junction is a symbolic link to `lstat`, as libuv reports one."""
+
+    _js_name = "Stats"
+    _js_own = frozenset({"size", "mtimeMs", "isDirectory", "isFile", "isSymbolicLink"})
+    _js_own_methods = frozenset({"isDirectory", "isFile", "isSymbolicLink"})
+
+    def __init__(self, st, *_):
+        object.__setattr__(self, "_js_st", st)
+        self.size = st.st_size
+        ns = st.st_mtime_ns
+        self.mtimeMs = (ns // 1_000_000_000) * 1e3 + (ns % 1_000_000_000) / 1e6
+
+    def isDirectory(self, *_):
+        return _stat.S_ISDIR(self._js_st.st_mode)
+
+    def isFile(self, *_):
+        return _stat.S_ISREG(self._js_st.st_mode)
+
+    def isSymbolicLink(self, *_):
+        st = self._js_st
+        if _stat.S_ISLNK(st.st_mode):
+            return True
+        tag = getattr(st, "st_reparse_tag", 0)
+        return tag in (
+            getattr(_stat, "IO_REPARSE_TAG_SYMLINK", -1),
+            getattr(_stat, "IO_REPARSE_TAG_MOUNT_POINT", -1),
+        )
+
+
+def stat_sync(path, *rest):
+    """`fs.statSync(path)`: `os.stat` (symlinks followed); a failure is CPython's OSError."""
+    if rest:
+        raise TypeError("ts2py: fs.statSync options are outside the subset")
+    return Stats(_os.stat(_node_path(path, "fs.statSync")))
+
+
+def lstat_sync(path, *rest):
+    """`fs.lstatSync(path)`: `os.lstat`; a failure is CPython's OSError."""
+    if rest:
+        raise TypeError("ts2py: fs.lstatSync options are outside the subset")
+    return Stats(_os.lstat(_node_path(path, "fs.lstatSync")))
+
+
+def fstat_sync(fd, *rest):
+    """`fs.fstatSync(fd)`: `os.fstat`."""
+    if rest or isinstance(fd, bool) or not isinstance(fd, int):
+        raise TypeError("ts2py: fs.fstatSync of anything but a descriptor is outside the subset")
+    return Stats(_os.fstat(fd))
+
+
+def readdir_sync(path, *rest):
+    """`fs.readdirSync(path)`: the entry names in the order the directory gives them (`.` and `..`
+    left out), each decoded from its bytes as Node decodes them (UTF-8, one U+FFFD per invalid
+    subpart); on Windows the UTF-16 names with any lone surrogate as U+FFFD."""
+    if rest:
+        raise TypeError("ts2py: fs.readdirSync options are outside the subset")
+    path = _node_path(path, "fs.readdirSync")
+    if _os.name == "nt":
+        return [_node_path(name, "fs.readdirSync") for name in _os.listdir(path)]
+    return [name.decode("utf-8", "replace") for name in _os.listdir(path.encode("utf-8"))]
+
+
+def mkdir_sync(path, options=_JS_UNDEFINED, *_):
+    """`fs.mkdirSync(path, {recursive: true})`: every missing directory made (mode 0o777 under the
+    umask), an existing directory accepted; an existing file is EEXIST, a file on the way ENOTDIR,
+    as `os.makedirs(exist_ok=True)` raises them. Without `recursive` it is outside the subset."""
+    recursive = isinstance(options, dict) and set(options) == {"recursive"}
+    if not (recursive and options["recursive"] is True):
+        raise TypeError("ts2py: fs.mkdirSync without {recursive: true} is outside the subset")
+    _os.makedirs(_node_path(path, "fs.mkdirSync"), exist_ok=True)
+    return _JS_UNDEFINED
+
+
+def rename_sync(old, new, *_):
+    """`fs.renameSync(old, new)`: rename(2), replacing `new` (`os.replace`, which is MoveFileEx's
+    replace on Windows, as libuv's rename is)."""
+    _os.replace(_node_path(old, "fs.renameSync"), _node_path(new, "fs.renameSync"))
+    return _JS_UNDEFINED
+
+
+def rm_sync(path, options=_JS_UNDEFINED, *_):
+    """`fs.rmSync(path, {force: true})`: a file or symlink unlinked, a missing path ignored; a
+    directory is refused (Node's ERR_FS_EISDIR, here CPython's IsADirectoryError, both an error with
+    a string `code`). `recursive` is outside the subset."""
+    if not (isinstance(options, dict) and set(options) == {"force"} and options["force"] is True):
+        raise TypeError("ts2py: fs.rmSync without exactly {force: true} is outside the subset")
+    path = _node_path(path, "fs.rmSync")
+    try:
+        st = _os.lstat(path)
+    except FileNotFoundError:
+        return _JS_UNDEFINED
+    if _stat.S_ISDIR(st.st_mode):
+        raise IsADirectoryError(_errno.EISDIR, _os.strerror(_errno.EISDIR), path)
+    try:
+        _os.unlink(path)
+    except FileNotFoundError:
+        pass
+    return _JS_UNDEFINED
+
+
+def link_sync(existing, new, *_):
+    """`fs.linkSync(existing, new)`: link(2), as `os.link` calls it."""
+    _os.link(_node_path(existing, "fs.linkSync"), _node_path(new, "fs.linkSync"))
+    return _JS_UNDEFINED
+
+
+_OPEN_FLAGS = {
+    "r": _os.O_RDONLY,
+    "r+": _os.O_RDWR,
+    "w": _os.O_TRUNC | _os.O_CREAT | _os.O_WRONLY,
+    "wx": _os.O_TRUNC | _os.O_CREAT | _os.O_WRONLY | _os.O_EXCL,
+    "w+": _os.O_TRUNC | _os.O_CREAT | _os.O_RDWR,
+    "a": _os.O_APPEND | _os.O_CREAT | _os.O_WRONLY,
+    "ax": _os.O_APPEND | _os.O_CREAT | _os.O_WRONLY | _os.O_EXCL,
+    "a+": _os.O_APPEND | _os.O_CREAT | _os.O_RDWR,
+}
+# libuv opens every file in binary mode on Windows; the C runtime's default there is text.
+_BINARY = getattr(_os, "O_BINARY", 0)
+
+
+def open_sync(path, flags="r", *rest):
+    """`fs.openSync(path, flags)`: Node's `stringToFlags` for the flags listed above, mode 0o666
+    (Node's default, under the umask), binary on Windows; the descriptor is an int."""
+    if rest or flags not in _OPEN_FLAGS:
+        raise TypeError(f"ts2py: fs.openSync with flags {flags!r} or a mode is outside the subset")
+    return _os.open(_node_path(path, "fs.openSync"), _OPEN_FLAGS[flags] | _BINARY, 0o666)
+
+
+def close_sync(fd, *_):
+    """`fs.closeSync(fd)`: `os.close`."""
+    if isinstance(fd, bool) or not isinstance(fd, int):
+        raise TypeError("ts2py: fs.closeSync of anything but a descriptor is outside the subset")
+    _os.close(fd)
+    return _JS_UNDEFINED
+
+
+def write_sync(fd, data, *rest):
+    """`fs.writeSync(fd, buffer)`: ONE write(2) of the whole buffer at the descriptor's position,
+    answering the count written, as Node's single `writeBuffer` call does (neither loops)."""
+    if rest or not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("ts2py: fs.writeSync of anything but (fd, buffer) is outside the subset")
+    return _os.write(fd, data)
+
+
+def read_sync(fd, buffer, offset, length, position, *_):
+    """`fs.readSync(fd, buffer, offset, length, position)`: one read of up to `length` bytes into
+    `buffer[offset:]`, at `position` (pread) when it is a number, answering the count read."""
+    if not isinstance(buffer, bytearray) or not all(
+        isinstance(v, int) and not isinstance(v, bool) for v in (offset, length)
+    ):
+        raise TypeError(
+            "ts2py: fs.readSync of anything but (fd, Buffer.alloc, int, int, pos)"
+            " is outside the subset"
+        )
+    if offset < 0 or length < 0 or offset + length > len(buffer):
+        raise TypeError("ts2py: fs.readSync out of the buffer's bounds is outside the subset")
+    if isinstance(position, (int, float)) and not isinstance(position, bool) and position >= 0:
+        pos = int(position)
+        if hasattr(_os, "pread"):
+            data = _os.pread(fd, length, pos)
+        else:  # Windows: libuv reads at the offset and restores the file pointer
+            here = _os.lseek(fd, 0, _os.SEEK_CUR)
+            try:
+                _os.lseek(fd, pos, _os.SEEK_SET)
+                data = _os.read(fd, length)
+            finally:
+                _os.lseek(fd, here, _os.SEEK_SET)
+    elif position is None or position is _JS_UNDEFINED:
+        data = _os.read(fd, length)
+    else:
+        raise TypeError("ts2py: fs.readSync at that position is outside the subset")
+    buffer[offset : offset + len(data)] = data
+    return len(data)
+
+
+def append_file_sync(path, data, *rest):
+    """`fs.appendFileSync(path, buffer)`: opened `a` (mode 0o666, binary), the whole buffer written
+    (Node loops until it is), closed."""
+    if rest or not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError(
+            "ts2py: fs.appendFileSync of anything but (path, buffer) is outside the subset"
+        )
+    fd = _os.open(_node_path(path, "fs.appendFileSync"), _OPEN_FLAGS["a"] | _BINARY, 0o666)
+    try:
+        view = memoryview(data)
+        while len(view):
+            view = view[_os.write(fd, view) :]
+    finally:
+        _os.close(fd)
+    return _JS_UNDEFINED
+
+
+def read_file_bytes(path):
+    """`fs.readFileSync(path)` with no encoding: every byte; a failure is CPython's OSError."""
+    with open(_node_path(path, "fs.readFileSync"), "rb") as handle:
+        return handle.read()
+
+
+def _posix_dirname(path):
+    """`path.posix.dirname` (lib/path.js), statement for statement."""
+    if not path:
+        return "."
+    has_root = path[0] == "/"
+    end = -1
+    matched_slash = True
+    for i in range(len(path) - 1, 0, -1):
+        if path[i] == "/":
+            if not matched_slash:
+                end = i
+                break
+        else:
+            matched_slash = False
+    if end == -1:
+        return "/" if has_root else "."
+    if has_root and end == 1:
+        return "//"
+    return path[:end]
+
+
+def _posix_basename(path):
+    """`path.posix.basename` (lib/path.js) with no suffix argument."""
+    start = 0
+    end = -1
+    matched_slash = True
+    for i in range(len(path) - 1, -1, -1):
+        if path[i] == "/":
+            if not matched_slash:
+                start = i + 1
+                break
+        elif end == -1:
+            matched_slash = False
+            end = i + 1
+    if end == -1:
+        return ""
+    return path[start:end]
+
+
+def _win32_dirname(path):
+    """`path.win32.dirname` (lib/path.js), statement for statement."""
+    length = len(path)
+    if length == 0:
+        return "."
+    root_end = -1
+    offset = 0
+    code = path[0]
+    if length == 1:
+        return path if _win32_separator(code) else "."
+    if _win32_separator(code):
+        root_end = offset = 1
+        if _win32_separator(path[1]):
+            j = 2
+            last = j
+            while j < length and not _win32_separator(path[j]):
+                j += 1
+            if j < length and j != last:
+                last = j
+                while j < length and _win32_separator(path[j]):
+                    j += 1
+                if j < length and j != last:
+                    last = j
+                    while j < length and not _win32_separator(path[j]):
+                        j += 1
+                    if j == length:
+                        return path
+                    if j != last:
+                        root_end = offset = j + 1
+    elif code.isascii() and code.isalpha() and path[1] == ":":
+        root_end = 3 if length > 2 and _win32_separator(path[2]) else 2
+        offset = root_end
+    end = -1
+    matched_slash = True
+    for i in range(length - 1, offset - 1, -1):
+        if _win32_separator(path[i]):
+            if not matched_slash:
+                end = i
+                break
+        else:
+            matched_slash = False
+    if end == -1:
+        if root_end == -1:
+            return "."
+        end = root_end
+    return path[:end]
+
+
+def _win32_basename(path):
+    """`path.win32.basename` (lib/path.js) with no suffix argument."""
+    start = 0
+    end = -1
+    matched_slash = True
+    if len(path) >= 2 and path[0].isascii() and path[0].isalpha() and path[1] == ":":
+        start = 2
+    for i in range(len(path) - 1, start - 1, -1):
+        if _win32_separator(path[i]):
+            if not matched_slash:
+                start = i + 1
+                break
+        elif end == -1:
+            matched_slash = False
+            end = i + 1
+    if end == -1:
+        return ""
+    return path[start:end]
+
+
+def path_dirname(path, *_):
+    """`path.dirname(path)` (Node's lib/path.js, ported): posix on POSIX, win32 on Windows."""
+    if not isinstance(path, str):
+        raise TypeError("ts2py: path.dirname of anything but a string is outside the subset")
+    return _win32_dirname(path) if _os.name == "nt" else _posix_dirname(path)
+
+
+def path_basename(path, *rest):
+    """`path.basename(path)` (Node's lib/path.js, ported, no suffix)."""
+    if rest or not isinstance(path, str):
+        raise TypeError("ts2py: path.basename of anything but one string is outside the subset")
+    return _win32_basename(path) if _os.name == "nt" else _posix_basename(path)
+
+
+def _zlib_error(message, code):
+    error = _JsError(message)
+    error.code = code
+    return error
+
+
+def gzip_sync(data, *rest):
+    """`zlib.gzipSync(buffer)`: a gzip member with mtime 0 (`gzip.compress(mtime=0)`). Node's zlib
+    (Chromium's) writes a different deflate stream for the same input, which no Python library
+    reproduces: only the DECOMPRESSED bytes are compared, a ruled difference (`storage-log`)."""
+    if rest or not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("ts2py: zlib.gzipSync of anything but a buffer is outside the subset")
+    return _gzip.compress(bytes(data), mtime=0)
+
+
+def gunzip_sync(data, *rest):
+    """`zlib.gunzipSync(buffer)`: every member decompressed and joined, trailing zero padding
+    ignored (`gzip.decompress`). Where Node refuses, this refuses with Node's error code: empty or
+    truncated input is `Z_BUF_ERROR` (CPython returns b"" for the empty one), a bad header, CRC or
+    trailing garbage `Z_DATA_ERROR`."""
+    if rest or not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("ts2py: zlib.gunzipSync of anything but a buffer is outside the subset")
+    data = bytes(data)
+    if not data:
+        raise _zlib_error("unexpected end of file", "Z_BUF_ERROR")
+    try:
+        return _gzip.decompress(data)
+    except EOFError:
+        raise _zlib_error("unexpected end of file", "Z_BUF_ERROR") from None
+    except (OSError, _zlib.error):
+        raise _zlib_error("incorrect header check", "Z_DATA_ERROR") from None
+
+
+def random_bytes(size, *rest):
+    """`crypto.randomBytes(size)`: `os.urandom` (both read the OS CSPRNG)."""
+    if rest or isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise TypeError("ts2py: crypto.randomBytes of anything but a count is outside the subset")
+    return _os.urandom(size)
+
+
+def buffer_from(value, encoding=_JS_UNDEFINED, *_):
+    """`Buffer.from(string, 'utf8')`: the string's UTF-8, a lone surrogate written as U+FFFD's three
+    bytes (EF BF BD), as Node's encoder writes it."""
+    if not isinstance(value, str) or encoding not in (_JS_UNDEFINED, "utf8", "utf-8"):
+        raise TypeError("ts2py: Buffer.from of anything but a string as utf8 is outside the subset")
+    if not value.isascii() and any(0xD800 <= ord(c) <= 0xDFFF for c in value):
+        value = "".join("\ufffd" if 0xD800 <= ord(c) <= 0xDFFF else c for c in value)
+    return value.encode("utf-8")
+
+
+def buffer_concat(items, *rest):
+    """`Buffer.concat(list)`: one new buffer holding each in order."""
+    buffers = isinstance(items, list) and all(
+        isinstance(b, (bytes, bytearray, memoryview)) for b in items
+    )
+    if rest or not buffers:
+        raise TypeError(
+            "ts2py: Buffer.concat of anything but a list of buffers is outside the subset"
+        )
+    return b"".join(items)
+
+
+def buffer_alloc(size, *rest):
+    """`Buffer.alloc(size)`: `size` zero bytes, writable in place (`bytearray`)."""
+    if rest or isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise TypeError("ts2py: Buffer.alloc of anything but a count is outside the subset")
+    return bytearray(size)
+
+
+def process_env_all():
+    """`process.env` as a value (only read): this process's environment as a plain object."""
+    return dict(_os.environ)
+
+
+def process_pid():
+    """`process.pid`: this process's id (`os.getpid()`), each runtime its own."""
+    return _os.getpid()
+
+
+# pyfs.ts is the CPython OS seam: each of these is the CPython call it ports (its doc comment).
+
+
+def py_exists(path):
+    """`pyExists` (runtime-ts/src/memory/pyfs.ts): `Path.exists()`, which it ports."""
+    return _pathlib.Path(path).exists()
+
+
+def py_is_dir(path):
+    """`pyIsDir` (runtime-ts/src/memory/pyfs.ts): `Path.is_dir()`, which it ports."""
+    return _pathlib.Path(path).is_dir()
+
+
+def py_join(*parts):
+    """`pyJoin` (runtime-ts/src/memory/pyfs.ts): `str(PurePath(*parts))`, which it ports."""
+    return str(_pathlib.PurePath(*parts))
+
+
+def py_parent(path):
+    """`pyParent` (runtime-ts/src/memory/pyfs.ts): `str(PurePath(path).parent)`."""
+    return str(_pathlib.PurePath(path).parent)
+
+
+def py_name(path):
+    """`pyName` (runtime-ts/src/memory/pyfs.ts): `PurePath(path).name`."""
+    return _pathlib.PurePath(path).name
+
+
+_OSERROR_SUBCLASS = {
+    "EACCES": "PermissionError",
+    "EAGAIN": "BlockingIOError",
+    "ECHILD": "ChildProcessError",
+    "EEXIST": "FileExistsError",
+    "EINTR": "InterruptedError",
+    "EISDIR": "IsADirectoryError",
+    "ENOENT": "FileNotFoundError",
+    "ENOTDIR": "NotADirectoryError",
+    "EPERM": "PermissionError",
+    "EPIPE": "BrokenPipeError",
+    "ESRCH": "ProcessLookupError",
+}
+
+
+def os_error_class_name(code, *_):
+    """`osErrorClassName` (runtime-ts/src/memory/pyfs.ts): the class CPython's `OSError.__new__`
+    picks for an errno name, from the same table, `OSError` for any other."""
+    return _OSERROR_SUBCLASS.get(code, "OSError") if isinstance(code, str) else "OSError"
+
+
+# `PyOSError` (pyfs.ts) is the port of CPython's OSError, so `x instanceof PyOSError` is
+# `isinstance(x, OSError)`.
+PyOSError = OSError
+
+
+def bantamkit_dir_for(path):
+    """`bantamkitDirFor` (runtime-ts/src/memory/store.ts):
+    `bantamkit.memory.store.bantamkit_dir_for`, the hand-written Python it ports (#316 G3 is not
+    generated yet), as a string or `null`."""
+    from ..memory.store import bantamkit_dir_for as _for
+
+    found = _for(_pathlib.Path(path))
+    return None if found is None else str(found)
+
+
+def ensure_bantamkit_gitignore(directory, created, *_):
+    """`ensureBantamkitGitignore` (runtime-ts/src/memory/store.ts): the hand-written Python it
+    ports (`bantamkit.memory.store.ensure_bantamkit_gitignore`, #316 G3 not generated yet)."""
+    from ..memory.store import ensure_bantamkit_gitignore as _ensure
+
+    _ensure(_pathlib.Path(directory), created=bool(created))
+    return _JS_UNDEFINED
+
+
+def _lock_constant(name):
+    from ..storage import lock as _lock
+
+    return getattr(_lock, name)
+
+
+def exclusive(target, body, options=_JS_UNDEFINED, *_):
+    """`exclusive(target, body, options)` (runtime-ts/src/storage/lock.ts): the hand-written Python
+    lock it ports (`bantamkit.storage.lock.exclusive`, #316 G4 not generated yet; `--suite
+    storage-lock` compares the two), with `body(held)` run inside it and its answer returned. An
+    option left out takes the lock's default, as `?? LOCK_*_MS` does."""
+    from ..storage.lock import exclusive as _exclusive
+
+    kwargs = {}
+    if options is not _JS_UNDEFINED and options is not None:
+        if not isinstance(options, dict) or set(options) - {"waitMs", "staleMs", "pollMs"}:
+            raise TypeError(
+                "ts2py: lock options other than waitMs/staleMs/pollMs are outside the subset"
+            )
+        for js, py in (("waitMs", "wait_ms"), ("staleMs", "stale_ms"), ("pollMs", "poll_ms")):
+            value = options.get(js, _JS_UNDEFINED)
+            if value is not _JS_UNDEFINED and value is not None:
+                kwargs[py] = value
+    with _exclusive(target, **kwargs) as held:
+        return body(held)
+
+
 def _lazy_bantam_error():
     # `bantamkit.client.BantamError` is the reference; it is imported only when a generated module
     # first asks for this name, so modules that never use it do not pay for `bantamkit.client`.
@@ -366,4 +965,9 @@ def __getattr__(name):
         cls = _lazy_bantam_error()
         globals()["BantamError"] = cls
         return cls
+    # J88-2: `storage/lock.ts`'s constants, read from the hand-written lock on first import.
+    if name in ("LOCK_POLL_MS", "LOCK_STALE_MS", "LOCK_WAIT_MS"):
+        value = _lock_constant(name)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

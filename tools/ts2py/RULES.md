@@ -216,6 +216,55 @@ literals with and without substitutions, BigInt arithmetic and `BigInt()`, `in`,
 helper changed. Generated: `pricing.py` 340 lines, `jobbudget.py` 179 (519, against the census's
 320-386: J87-2's typed bodies and guarded entries write five functions twice).
 
+## J88-2 rules (#316 G2: `eventlog`, `tokenledger`, `storage/logsegment`)
+
+Census estimate for the three modules (J88-1, `node tools/ts2py/census.mjs` restricted to them):
+1,208 lines, 2 new syntax kinds, 11 new builtin calls, 22 Node adapters, 11-14 rules. Actual:
+**16 new rules, 9 extended; 37 new adapter rows, 3 extended.** The census undercounts for the
+reason J87-3 gave (an import of an uncompiled `src` module, here `pyfs`, `store` and `lock`, reads
+as user code: 15 of the 37 rows) and because it counts a construct once where the lowering needed
+a value model (Buffers) or a statement form (`finally`, an arrow as a value) behind it.
+
+| # | Rule | Status | Pinned by (`tests/`) |
+|---|---|---|---|
+| G2-1 | `import * as fs from 'node:fs'`: `fs.name(...)` is that module's adapter row; a name with none, or a namespace import of anything else, refused | new | `g2.rs` (fs probe, real modules); `refusals.rs` (`fs.watch`, `* as m`) |
+| G2-2 | an adapter may be a constant, read by name (`LOCK_STALE_MS`, `LOCK_POLL_MS`) | new | `g2.rs` real modules |
+| G2-3 | `try` / `finally` (with or without a `catch`) -> Python `try:` / `finally:` | new | `g2.rs` probe (`finallies`: a return through a finally, a throw through two) |
+| G2-4 | a `catch` binding read as a value; `_js_get` of a Python exception answers `code` (an `OSError`'s errno name, else `undefined`) and refuses every other property | extended (G1-5) | `g2.rs` probe (`reflection`: `e.code` of a JS Error); fs probe (`code` of every fs failure); `refusals.rs` comment |
+| G2-5 | an arrow used as a value (an argument, a `let`) -> a loose nested `def` before the statement (every parameter defaults to `undefined`, extra arguments swallowed, `nonlocal` for what it assigns); refused in a loop and inside a callback lambda | new (J86 rule `nested def` reused) | `g2.rs` probe (`closures`: two closures assigning one local, a call with no arguments); `refusals.rs` (an arrow inside a callback) |
+| G2-6 | a block-bodied callback -> the same hoisted `def` | extended (J85 callbacks) | `g2.rs` probe (`doubled`) |
+| G2-7 | a module function named as a callback (`rows.map(dumpsLine)`) -> a lambda passing the first N arguments | extended (J85 callbacks) | `g2.rs` probe (`['x','yy'].map(trimmed)`) |
+| G2-8 | `o.k op= v` / `o[k] op= v` on a local object, key a local or literal | extended (J86 compound assignment) | `g2.rs` probe (`row.requests += 2`, `row[key] -= 1`); `refusals.rs` (`o.a.n += 1`) |
+| G2-9 | `a << b`: folded for small literals, else `_js_shl` (ToInt32, count mod 32) | new | `g2.rs` probe (`1 << 20`); `refusals.rs` (`>>`) |
+| G2-10 | `new RangeError(m)`, `instanceof RangeError` | extended (J86 errors) | `g2.rs` probe (`stringify`, `dates`) |
+| G2-11 | `static m(...)` -> `@staticmethod`; `C.m(...)` on a compiled class | new | `g2.rs` probe (`Clocked.make()`) |
+| G2-12 | `this.f(...)` of a field holding a function -> `self.f(...)` | new | `g2.rs` probe (`Clocked.now`) |
+| G2-13 | `x.constructor` (for its `name`) -> `_js_constructor_of` | new | `g2.rs` probe (`names`: Object, Array, a compiled Error, TypeError, Error) |
+| G2-14 | `process.pid`, `process.env` as a value | extended (G1-16) | `g2.rs` real modules; `--suite eventlog` (`from_env` with no env) |
+| G2-15 | `JSON.stringify(x, replacer, space)` -> `_js_json_stringify_with` | new | `g2.rs` probe (`stringify`: indent 2, a string space, empty containers, a replacer that throws RangeError, `undefined` members, a lone surrogate) |
+| G2-16 | `JSON.parse` past CPython's recursion limit -> `_js_json_parse_deep` | extended (G1-7) | `g2.rs` probe (`deepParse`: 50,000-deep array and its malformed twin, 30,000-deep object); J88-2: 20,017 texts, the deep parser and `json.loads` agree on every one |
+| G2-17 | `new Date(ms).toISOString()` -> `_js_date_to_iso` | new | `g2.rs` probe (`dates`: toward zero, year 0, -1, 10000, both TimeClip ends, three RangeErrors) |
+| G2-18 | `Date.now()` -> `_js_now` | new | `--suite eventlog` beds |
+| G2-19 | `.trim()`, `.endsWith()` | new | `g2.rs` probe (`strings`: U+FEFF trimmed, U+001C / U+0085 kept, a lone trail surrogate suffix) |
+| G2-20 | `.toLowerCase()` of a non-ASCII string, outside 55 code points and U+03A3 | extended (J86) | `g2.rs` probe (`ÀÉÎ İ ẞ`); J88-2: the 1,462 non-ASCII code points with a lowercase, 55 differ (all assigned after Unicode 15.0) |
+| G2-21 | `m.values()` | new | `g2.rs` probe (`[...m.values()]`) |
+| G2-22 | `Object.assign(target, ...sources)` | new | `g2.rs` probe (`Object.assign(new Error, {code})`) |
+| G2-23 | `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)` -> `_js_sleep_ms`; any other `Atomics.wait` refused | new | `refusals.rs`; `--suite storage-log` (the #208 drain) |
+| G2-24 | Buffers: `bytes` / `bytearray` / `memoryview`, `.length`, `[i]`, `.toString('utf8' / 'hex')`, `.subarray` | new | `g2.rs` probe (`buffers`) and fs probe |
+| G2-25 | an adapter function called with `...xs` of a value proven a list | extended (G1-12) | `g2.rs` real modules (`pyJoin(root, ...DEFAULT_RELATIVE_PATH)`) |
+
+Runtime names added (26): `_js_buffer_to_string`, `_js_m_subarray`, `_js_m_endsWith`, `_js_m_trim`,
+`_js_m_values`, `_js_to_int32`, `_js_shl`, `_js_now`, `_js_sleep_ms`, `_js_civil`,
+`_js_date_to_iso`, `_js_object_assign`, `_js_constructor_of`, `_js_json_gap`, `_js_json_full`,
+`_js_json_stringify_with`, `_js_json_parse_deep` and its two patterns, `_JS_BYTES`,
+`_JS_LOWER_DIFFERS`, and the `errno` / `time` imports. Changed: `_js_get` (a Buffer's `length` and
+index; a Python exception's `code`, any other property refused), `_js_len` (a Buffer),
+`_js_m_toString` (a Buffer), `_js_json_parse` (the deep fallback), `_js_m_toLowerCase` (non-ASCII).
+Every other generated module (`workplan`, `pyyaml`, `factfile`, `pricing`, `jobbudget`) recompiles
+byte for byte unchanged but for the `# ruff: noqa` header, which gains E741 (a TypeScript name
+`l` is kept as spelled). Generated: `logsegment.py` 554 lines, `eventlog.py` 225, `tokenledger.py`
+468 (1,247, against the census's 1,208 TypeScript lines: typed bodies write 19 functions twice).
+
 ## Adapters (J86)
 
 Declared in `src/adapters.rs`, written in `src/adapters.py`. Measured against Node's own
@@ -248,3 +297,32 @@ Measured against Node v26.13.0 (`runtime-ts` `dist/` and Node's own builtins) on
 A path holding a NUL or a lone surrogate is refused by both fs adapters (Node throws its own
 TypeError for a NUL and writes a lone surrogate as U+FFFD; CPython raises `ValueError` and maps some
 lone surrogates to bytes).
+
+### Adapters (J88-2, #316 G2)
+
+Measured against Node v26.13.0 on 2026-11-15. Node builtins are pinned by `tests/g2.rs`'s fs
+probe, which runs the same calls on the same directory under Node and under the generated Python
+and compares every answer (a file, a directory, a symlink to one, invalid UTF-8, a NUL path).
+
+| TypeScript | Python | Why it is the same function | Measurement |
+|---|---|---|---|
+| `statSync`, `lstatSync`, `fstatSync`, `Stats` (`node:fs`) | `os.stat` / `os.lstat` / `os.fstat` as a `Stats` (`size`, `mtimeMs` = `sec * 1e3 + nsec / 1e6`, `isDirectory` / `isFile` / `isSymbolicLink` from `st_mode`; a Windows junction is a link) | libuv's stat fields as Node combines them | fs probe: sizes, types, a symlink both ways, ENOENT / ENOTDIR / ERR_INVALID_ARG_VALUE codes |
+| `readdirSync` | `os.listdir` of the encoded path, names decoded with U+FFFD | Node decodes entry names as UTF-8 with replacement; directory order either way | fs probe |
+| `mkdirSync(p, {recursive: true})` | `os.makedirs(exist_ok=True)` | EEXIST for a file in the way, ENOTDIR for a file on the path | fs probe |
+| `renameSync`, `linkSync` | `os.replace`, `os.link` | rename(2) replacing the target; link(2) | fs probe (EEXIST for a second link) |
+| `rmSync(p, {force: true})` | unlink, ENOENT ignored, a directory refused | Node's `rm` of a file without `recursive` | fs probe |
+| `openSync`, `closeSync`, `writeSync`, `readSync`, `appendFileSync` | `os.open` with `stringToFlags`'s bits, mode 0o666, O_BINARY on Windows; one `os.write`; `os.pread`; an `a`-mode loop | the syscalls Node's binding makes | fs probe (EEXIST for `wx` twice, a pread at 4 and past EOF); `test_write_over_and_rotate_write_temp_then_rename` and its Node twin (the order and mode of a crash-safe write) |
+| `readFileSync(p)` with no encoding | the bytes (`open(p, 'rb')`) | a Buffer | fs probe (EISDIR for a directory) |
+| `dirname`, `basename` (`node:path`) | lib/path.js `posix` / `win32` ported | the same statements | 60,000 random paths over separators, dots, drive letters, colons and non-ASCII: 0 disagreements on each of the four functions |
+| `gzipSync`, `gunzipSync` (`node:zlib`) | `gzip.compress(mtime=0)`; `gzip.decompress` with Node's refusals | RULED for the compressed bytes (Chromium zlib's deflate stream: 300 of 300 inputs differ from CPython's zlib at level 6 too); decompression equal | nine shapes (empty, one and two members, zero padding, trailing garbage, truncated, a bad CRC, plain text, two magic bytes): CPython returned `b""` for the empty input where Node throws Z_BUF_ERROR, and the adapter throws |
+| `randomBytes` (`node:crypto`) | `os.urandom` | the OS CSPRNG | only the count and use are compared |
+| `TextDecoder` (`fatal`, `ignoreBOM`) | strict `bytes.decode('utf-8')` raising Node's TypeError (code ERR_ENCODING_INVALID_ENCODED_DATA); the BOM kept with `ignoreBOM` | WHATWG's well-formed UTF-8 and CPython's strict codec accept the same byte strings | 40,000 random byte strings biased to UTF-8 edge bytes, 33,013 refused by Node: 0 disagreements |
+| `Buffer.from(s, 'utf8')`, `Buffer.concat`, `Buffer.alloc` | `s.encode` with each lone surrogate as U+FFFD, a bytes join, `bytearray(n)` | Node's UTF-8 encoder writes EF BF BD for a lone surrogate | `g2.rs` probe |
+| `process.pid`, `process.env` (a value) | `os.getpid()`, `dict(os.environ)` | each runtime its own process | `--suite eventlog` |
+| `cmpCodepoint`, `pyExists`, `pyIsDir`, `pyJoin`, `pyParent`, `pyName`, `osErrorClassName`, `PyOSError` (`memory/pyfs.ts`) | the CPython call each ports (`Path.exists`, `Path.is_dir`, `str(PurePath(...))`, `.parent`, `.name`, the errnomap table, `OSError`) | Python is the reference (`pyfs.ts` is the CPython OS seam) | `--suite eventlog` (beds: a never-saved store, a parent that is a file, the errno names), `--suite store` |
+| `bantamkitDirFor`, `ensureBantamkitGitignore` (`memory/store.ts`) | `bantamkit.memory.store`'s functions | Python is the reference; #316 G3 is not generated yet | `--suite eventlog` (`.gitignore` beds), `--suite store` |
+| `exclusive`, `LOCK_STALE_MS`, `LOCK_POLL_MS` (`storage/lock.ts`) | `bantamkit.storage.lock` (the context manager around `body(held)`) | Python is the reference; #316 G4 is not generated yet | `--suite storage-lock`, `--suite storage-log` (#208 beds) |
+
+`existsSync` changed with them: a NUL in the path answers `false` (Node validates inside its
+`try`), and a lone surrogate is looked up as the U+FFFD Node's encoding writes, where J87-3 refused
+both.

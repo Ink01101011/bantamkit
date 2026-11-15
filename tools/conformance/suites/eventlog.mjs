@@ -29,15 +29,14 @@
  *      `.gitignore`) beside an existing one (none), `raised` for five errnos, and the rotation
  *      boundary (`size + payload == cap` stays, one byte more rotates).
  *
- * RULED AS NODE (J88-1F). J88-1 found inputs on which the hand-written runtimes disagree. The
- * `__proto__` detail key was a Node defect and is fixed (an ordinary case now). Every other one is
- * ruled as Node by the #316 G2 orchestrator: Node's answer is the behaviour J88-2 generates for
- * Python from `eventlog.ts`, so each is a `ruling:` case naming its docs/porting.md row (`G2 as
- * Node: ...`) until J88-2 switches Python, when it goes STALE by design and becomes an ordinary
- * case. Node's answers are pinned per side as literals (`LITERAL: G2 ruled as Node ...`), so the
- * ruling cannot stay green while Node drifts. Where the difference is an exception on one side,
- * the non-ruled companion beside it compares what both still agree on (`write_failed`, the
- * refusal bit). The generators of (2)-(5) stay out of those inputs.
+ * CLOSED BY G2 (J88-2). J88-1 found inputs on which the hand-written runtimes disagreed. The
+ * `__proto__` detail key was a Node defect, fixed by J88-1F. Every other one was ruled as Node
+ * (J88-1F, docs/porting.md `G2 as Node: ...` rows) and became the generated behaviour when J88-2
+ * switched `bantamkit.eventlog` to the module ts2py compiles from `eventlog.ts`: each is now an
+ * ordinary agreeing case (`... (G2: was ruled as Node)`). Because both sides now run one source, a
+ * change to `eventlog.ts` moves both answers together and no differential can see it, so the
+ * answers stay pinned as literals PER SIDE (`LITERAL: G2 ...`), Python's and Node's against one
+ * expected value.
  *
  * NOTHING REAL IS READ OR WRITTEN. Every bed lives in the harness scratch directory.
  */
@@ -53,15 +52,8 @@ const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const REF = join(here, 'ref', 'eventlog_ref.py');
 
 const b64 = (bytes) => Buffer.from(bytes).toString('base64');
-/** The ruling text of a J88-1 input ruled as Node by J88-1F, naming its docs/porting.md row. */
-const RULED = (family) =>
-  `RULED AS NODE (J88-1F, #316 G2; docs/porting.md divergence table, "G2 as Node: ${family}"): Node's answer is ` +
-  'the behaviour J88-2 generates for Python from eventlog.ts, which then agrees and this case goes STALE by design; ';
-const F_TS = 'timestamps outside the ISO range';
-const F_NUM = 'record numbers and key order';
-const F_SUR = 'lone surrogates';
-const F_SWITCH = 'the switch spelling';
-const F_SLASH = 'a literal path ending in /';
+/** The suffix naming an input J88-1F ruled as Node and J88-2's generation closed. */
+const CLOSED = ' (G2: was ruled as Node)';
 
 /** The detail objects, by name, as `eventlog_ref.DETAILS` builds them. */
 const DETAILS = {
@@ -84,7 +76,7 @@ const DETAILS = {
 // `proto_key` agrees since J88-1F (#5): Node's sorted copy writes own properties.
 const AGREEING_DETAILS = ['empty', 'tokens', 'unsorted', 'non_ascii_keys', 'non_ascii_value', 'ints', 'proto_key'];
 
-/** [detail name, why the two answers differ]. */
+/** [detail name, what the hand-written runtimes did apart before G2 (docs/porting.md)]. */
 const DIVERGENT_DETAILS = [
   ['integer_keys', 'both sort the keys by code point, then a JS object moves integer-like keys first in numeric order: Node `{"9":2,"10":1,"a":3}`, Python `{"10":1,"9":2,"a":3}` (the J69-4 LogSegment ruling names a caller object, not this sorted detail)'],
   ['float_integral', 'a float the caller passes: Python `1.0`, Node `1` (the J69-4 class, at encode_record rather than LogSegment.append)'],
@@ -110,7 +102,7 @@ const TIMESTAMP_LITERALS = [
   '9999-12-31T23:59:59.999Z',
   '0001-01-01T00:00:00.000Z',
 ];
-/** [ms, why they differ]. */
+/** [ms, what the hand-written runtimes did apart before G2]. */
 const DIVERGENT_TIMESTAMPS = [
   [-1.5, 'a negative fractional count: Date truncates toward zero (`23:59:59.999Z`), timedelta rounds the microseconds toward -inf (`23:59:59.998Z`)'],
   [253402300800000, 'year 10000: toISOString writes `+010000-01-01T00:00:00.000Z`, Python raises OverflowError'],
@@ -127,7 +119,7 @@ const CONSTANTS = {
 
 /** Switch spellings both runtimes read the same way. `null` is the variable unset. */
 const RAWS = [null, '', '0', 'off', 'false', 'no', ' OFF ', '\tFalse\n', '1', 'on', 'true', 'yes', ' ON ', 'Yes', '\ton\r\n', 'TRUE'];
-/** [raw, why they differ] — `resolve_path` / `from_env` only; nothing is written for these. */
+/** [raw, what the hand-written runtimes did apart before G2] — nothing is written for these. */
 const DIVERGENT_RAWS = [
   ['﻿on', "String.prototype.trim strips U+FEFF and str.strip does not: Node turns the log on in the store, Python takes the literal path '\\ufeffon'"],
   ['on\u0085', "str.strip strips U+0085 (NEL) and String.prototype.trim does not: Python turns the log on in the store, Node takes the literal relative path 'on\\u0085'"],
@@ -229,21 +221,17 @@ export async function run(ctx) {
   cases.push(
     ...literalCases(pyTs.slice(0, TIMESTAMPS.length), TIMESTAMPS.map(fmt), 'format_timestamp over the samples', TIMESTAMP_LITERALS),
   );
-  DIVERGENT_TIMESTAMPS.forEach(([ms, why], j) => {
-    cases.push({
-      name: `ruling: G2 as Node — format_timestamp(${ms})`,
-      kind: 'json',
-      expected: pyTs[TIMESTAMPS.length + j],
-      actual: fmt(ms),
-      ruling: RULED(F_TS) + why,
-    });
+  DIVERGENT_TIMESTAMPS.forEach(([ms], j) => {
+    cases.push({ name: `format_timestamp(${ms})${CLOSED}`, kind: 'json', expected: pyTs[TIMESTAMPS.length + j], actual: fmt(ms) });
   });
-  cases.push({
-    name: `LITERAL: G2 ruled as Node — node's format_timestamp outside the ISO range`,
-    kind: 'json',
-    expected: ['1969-12-31T23:59:59.999Z', '+010000-01-01T00:00:00.000Z', '0000-12-31T23:59:59.999Z', '+275760-09-13T00:00:00.000Z'],
-    actual: DIVERGENT_TIMESTAMPS.map(([ms]) => fmt(ms)),
-  });
+  cases.push(
+    ...literalCases(
+      pyTs.slice(TIMESTAMPS.length),
+      DIVERGENT_TIMESTAMPS.map(([ms]) => fmt(ms)),
+      'G2 format_timestamp outside the ISO range (toward zero, extended years)',
+      ['1969-12-31T23:59:59.999Z', '+010000-01-01T00:00:00.000Z', '0000-12-31T23:59:59.999Z', '+275760-09-13T00:00:00.000Z'],
+    ),
+  );
 
   // ------------------------------------------------------------------ 3. encode_record
   const encodeArgs = [
@@ -290,14 +278,8 @@ export async function run(ctx) {
       'bytes',
     ),
   );
-  DIVERGENT_DETAILS.forEach(([d, why], j) => {
-    cases.push({
-      name: `ruling: G2 as Node — encode_record detail ${d}`,
-      kind: 'json',
-      expected: pyEnc[agreeing + j],
-      actual: ndEnc[agreeing + j],
-      ruling: RULED(d === 'lone_surrogate' ? F_SUR : F_NUM) + why,
-    });
+  DIVERGENT_DETAILS.forEach(([d], j) => {
+    cases.push({ name: `encode_record detail ${d}${CLOSED}`, kind: 'json', expected: pyEnc[agreeing + j], actual: ndEnc[agreeing + j] });
   });
   {
     const rec = (detail) => `{"v":1,"ts":"1970-01-01T00:00:00.000Z","tool":"memory_save","outcome":"saved","detail":${detail}}\n`;
@@ -310,12 +292,14 @@ export async function run(ctx) {
       bigint: '{"b":18446744073709552000}',
       neg_zero: '{"z":0}',
     };
-    cases.push({
-      name: `LITERAL: G2 ruled as Node — node's encode_record over the ruled details`,
-      kind: 'json',
-      expected: DIVERGENT_DETAILS.map(([d]) => ({ b64: b64(Buffer.from(rec(NODE_DETAILS[d]), 'utf8')) })),
-      actual: DIVERGENT_DETAILS.map((_, j) => ndEnc[agreeing + j]),
-    });
+    cases.push(
+      ...literalCases(
+        DIVERGENT_DETAILS.map((_, j) => pyEnc[agreeing + j]),
+        DIVERGENT_DETAILS.map((_, j) => ndEnc[agreeing + j]),
+        'G2 encode_record spells numbers, integer-like keys and surrogates as JSON.stringify does',
+        DIVERGENT_DETAILS.map(([d]) => ({ b64: b64(Buffer.from(rec(NODE_DETAILS[d]), 'utf8')) })),
+      ),
+    );
   }
 
   // ------------------------------------------------------------------ 4. the switch
@@ -351,22 +335,23 @@ export async function run(ctx) {
       ],
     ),
   );
-  DIVERGENT_RAWS.forEach(([raw, why], j) => {
+  DIVERGENT_RAWS.forEach(([raw], j) => {
     const i = agreeingRaws + j;
     cases.push({
-      name: `ruling: G2 as Node — resolve_path(${JSON.stringify(raw)})`,
+      name: `resolve_path(${JSON.stringify(raw)}) and from_env${CLOSED}`,
       kind: 'json',
       expected: [pyRes.out[i], pyEnv[i]],
       actual: [ndRes[i], ndEnv[i]],
-      ruling: RULED(F_SWITCH) + why,
     });
   });
-  cases.push({
-    name: `LITERAL: G2 ruled as Node — node's resolve_path over the ruled spellings`,
-    kind: 'json',
-    expected: [join(store, 'events', 'mcp.jsonl'), 'on\u0085', '\u001con', './events.jsonl', 'a//b.jsonl'],
-    actual: DIVERGENT_RAWS.map((_, j) => ndRes[agreeingRaws + j]),
-  });
+  cases.push(
+    ...literalCases(
+      DIVERGENT_RAWS.map((_, j) => pyRes.out[agreeingRaws + j]),
+      DIVERGENT_RAWS.map((_, j) => ndRes[agreeingRaws + j]),
+      'G2 resolve_path trims as String.prototype.trim and keeps a literal path as spelled',
+      [join(store, 'events', 'mcp.jsonl'), 'on\u0085', '\u001con', './events.jsonl', 'a//b.jsonl'],
+    ),
+  );
 
   // ------------------------------------------------------------------ 5. beds
   const line = Buffer.byteLength(Buffer.from(ev.encodeRecord(0, 'memory_save', 'saved', DETAILS.tokens())));
@@ -441,21 +426,25 @@ export async function run(ctx) {
       ['FileNotFoundError', 'PermissionError', 'NotADirectoryError', 'FileExistsError', 'IsADirectoryError', 'PermissionError', 'OSError'],
     ),
   );
-  DIVERGENT_BEDS.forEach(([label, , why], j) => {
+  DIVERGENT_BEDS.forEach(([label], j) => {
     const i = BEDS.length + j;
-    cases.push({ name: `ruling: G2 as Node — bed: ${label}`, kind: 'json', expected: pyBeds[i], actual: ndBeds[i], ruling: RULED(j === 0 ? F_SLASH : F_SUR) + why });
+    cases.push({ name: `bed: ${label}${CLOSED}`, kind: 'json', expected: pyBeds[i], actual: ndBeds[i] });
   });
-  // Node's answer over each ruled bed: the slash loses the record; the surrogate is written escaped.
+  // Each side's answer over the two beds: the slash loses the record; the surrogate is written escaped.
   {
-    const nd0 = ndBeds[BEDS.length];
-    const nd1 = ndBeds[BEDS.length + 1];
-    cases.push({
-      name: `LITERAL: G2 ruled as Node — node's beds: a / path is a lost record, a lone surrogate is written escaped`,
-      kind: 'json',
-      // The file's own bytes: the surrogate is the six ASCII characters `\ud800` on disk.
-      expected: [{ write_failed: true, names: [] }, { write_failed: false, sur: b64(Buffer.from(`{"v":1,"ts":"1970-01-01T00:00:00.000Z","tool":"memory_save","outcome":"saved","detail":{"s":"x\\ud800y"}}\n`, 'utf8')) }],
-      actual: [view(nd0), { write_failed: nd1.write_failed, sur: nd1.tree.find(([rel]) => rel === 'sur.jsonl')?.[1] ?? null }],
-    });
+    const pair = (beds) => [
+      view(beds[BEDS.length]),
+      { write_failed: beds[BEDS.length + 1].write_failed, sur: beds[BEDS.length + 1].tree.find(([rel]) => rel === 'sur.jsonl')?.[1] ?? null },
+    ];
+    cases.push(
+      ...literalCases(
+        pair(pyBeds),
+        pair(ndBeds),
+        'G2 beds: a / path is a lost record, a lone surrogate is written escaped',
+        // The file's own bytes: the surrogate is the six ASCII characters `\ud800` on disk.
+        [{ write_failed: true, names: [] }, { write_failed: false, sur: b64(Buffer.from(`{"v":1,"ts":"1970-01-01T00:00:00.000Z","tool":"memory_save","outcome":"saved","detail":{"s":"x\\ud800y"}}\n`, 'utf8')) }],
+      ),
+    );
   }
   // The companions: what the two still agree on beside each divergent bed.
   const slash = BEDS.length;
@@ -464,7 +453,7 @@ export async function run(ctx) {
 
   notes.push(
     `${TIMESTAMPS.length} timestamps, ${agreeing} records, ${agreeingRaws} switch spellings and ${BEDS.length} beds agree; ` +
-      `${DIVERGENT_TIMESTAMPS.length + DIVERGENT_DETAILS.length + DIVERGENT_RAWS.length + DIVERGENT_BEDS.length} inputs ruled as Node (J88-1F) until J88-2`,
+      `${DIVERGENT_TIMESTAMPS.length + DIVERGENT_DETAILS.length + DIVERGENT_RAWS.length + DIVERGENT_BEDS.length} inputs J88-1F ruled as Node now agree (closed by G2, J88-2)`,
   );
   return { cases, notes };
 }

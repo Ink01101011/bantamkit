@@ -23,7 +23,8 @@
  * on disk. No Rust toolchain means this suite is red, with the reason, rather than skipped.
  * `committed/<file>` then compiles EVERY generated file under `runtime-py/src/bantamkit/_generated/`
  * again with the flags it was made with (`workplan.py`; since #315 the codec's `pyyaml.py` and
- * `factfile.py`; since #316 G1 `pricing.py` and `jobbudget.py`; `--emit-runtime`,
+ * `factfile.py`; since #316 G1 `pricing.py` and `jobbudget.py`; since G2 `logsegment.py`,
+ * `eventlog.py` and `tokenledger.py`; `--emit-runtime`,
  * `--emit-adapters`) and compares every byte, so a hand-edited body or a compiler change that was
  * never regenerated is red, with the regenerate command (J85-R F4);
  * `committed/coverage` lists the directory, so a generated file outside the gate is red too.
@@ -103,8 +104,19 @@ function compile(out) {
 const COMMITTED = 'runtime-py/src/bantamkit/_generated';
 /** The fact-file codec (#315, J86-3): one ts2py call compiles both into one package. */
 const CODEC_SOURCES = ['runtime-ts/src/memory/pyyaml.ts', 'runtime-ts/src/memory/factfile.ts'];
-/** #316 G1 (J87-3): pricing and jobbudget, one ts2py call into the same package. */
-const G1_SOURCES = ['runtime-ts/src/pricing.ts', 'runtime-ts/src/jobbudget.ts'];
+/**
+ * #316 G1 (J87-3): pricing and jobbudget; G2 (J88-2): the log segment, the event log and the token
+ * ledger. One ts2py call into the same package, because the token ledger imports pricing and the
+ * event log imports the log segment, and an import between compiled modules resolves only inside
+ * one call.
+ */
+const G1_SOURCES = [
+  'runtime-ts/src/pricing.ts',
+  'runtime-ts/src/jobbudget.ts',
+  'runtime-ts/src/storage/logsegment.ts',
+  'runtime-ts/src/eventlog.ts',
+  'runtime-ts/src/tokenledger.ts',
+];
 const CARGO_RUN = 'cargo run --release --manifest-path tools/ts2py/Cargo.toml --';
 const REGENERATE =
   'regenerate from the repository root:\n' +

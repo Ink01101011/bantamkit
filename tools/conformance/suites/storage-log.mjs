@@ -33,10 +33,16 @@
  * line's repair newline counted); `fold_lines`, the fold the usage ledger's reducer runs
  * through (lines kept as read, `older_than: null` folding the whole live file, a file with no
  * object rewritten empty); the event log, which appends through `LogSegment` but keeps its own
- * plain `.1` rotation (docs/eventlog.md), pinned per side; and the CALLER-OBJECT RULING: a
- * float and an integer-like key are spelled by each serialiser (`1.0`/`1`, `1e-07`/`1e-7`, key
- * `"1"` moved first by `JSON.stringify`), a `ruling:` case on the bytes with a non-ruled read
- * beside it and a literal per side.
+ * plain `.1` rotation (docs/eventlog.md), pinned per side; and the CALLER-OBJECT case: a float
+ * and an integer-like key (`1.0` -> `1`, `1e-07` -> `1e-7`, key `"1"` moved first). Until #316 G2
+ * each serialiser spelled them its own way, a `ruling:` case (J69-4); J88-2 generates the Python
+ * from logsegment.ts, so both spell them as `JSON.stringify` and the case agrees, its bytes
+ * pinned per side as a literal.
+ *
+ * CLOSED BY G2 (J88-2). The J88-1 scenarios J88-1F ruled as Node (`G2 as Node: <family>` rows in
+ * docs/porting.md) agree since the Python is generated from the same source: each is an ordinary
+ * case over every op, and its answer is pinned per side as a literal, because a change to
+ * logsegment.ts now moves both sides at once and only a literal can see it.
  *
  * WINDOWS. The lock and temp-then-rename are exercised on macOS only; the Windows run is
  * Task 8's manual step in `docs/superpowers/plans/2026-10-15-storage-layer.md`.
@@ -135,7 +141,6 @@ const TWO_SIZE = TWO.reduce((n, o) => n + lineBytes(o), 0);
 const FOLD_LINES_RAW = enc('{"ts":"2026-09-03T00:00:00Z","x":1.0}\r\n[1]\n{"ts":"2026-10-03T00:00:00Z","e":1e-7}\n');
 const EV_LINE = `${JSON.stringify({ v: 1, ts: '1970-01-01T00:00:00.000Z', tool: 'memory_save', outcome: 'saved', detail: { a: true, z: 1 } })}\n`;
 const EV_CAP = 2 * Buffer.byteLength(EV_LINE);
-const NUMBERS_PY = '{"b":1,"1":2,"f":1.0,"e":1e-07,"ts":"n"}\n';
 const NUMBERS_NODE = '{"1":2,"b":1,"f":1,"e":1e-7,"ts":"n"}\n';
 
 function scenarios() {
@@ -276,7 +281,7 @@ function scenarios() {
       ],
     },
     {
-      label: 'caller numbers: a float and an integer-like key, spelled by each serialiser',
+      label: 'caller numbers: a float and an integer-like key, spelled as JSON.stringify spells them',
       ops: [{ op: 'append_numbers' }, { op: 'bytesruled' }, { op: 'read' }, { op: 'skipped' }],
     },
     // ---- J88-1 (#316 G2): the public helpers and refusals no scenario above reached.
@@ -317,17 +322,15 @@ function scenarios() {
       label: 'J88-1 rewrite_held on a log that is not there',
       ops: [{ op: 'rewrite_held', build: 'none' }, { op: 'listdir' }],
     },
-    // ---- J88-1 inputs RULED AS NODE by J88-1F (#316 G2): Node's answer is what J88-2 generates
-    // for Python from logsegment.ts, so each is ONE `ruling:` case over all its ops naming its
-    // docs/porting.md row (`G2 as Node: <family>`), going STALE by design when J88-2 lands, plus
-    // the ops listed in `agree`, compared as ordinary cases.
+    // ---- J88-1 inputs J88-1F RULED AS NODE (#316 G2), closed by J88-2's generation: each is ONE
+    // case over all its ops (`family` names its docs/porting.md row) plus every op as its own
+    // case; `divergent` records what the hand-written runtimes did apart.
     {
       label: 'J88-1 a line nested 100000 deep',
       family: 'a line nested 100000 deep',
       divergent:
         "Python's json.loads raises RecursionError, which _load does not catch (it catches ValueError): read() and fold() raise it out of " +
         "LogSegment, which promises no OSError and here gives up the 'never raises' reading; JSON.parse reads an array, Node skips it in read and drops it in fold",
-      agree: [],
       ops: [
         { op: 'raw', b64: b64(enc(`${'['.repeat(100000)}${']'.repeat(100000)}\n{"ts":"0","a":1}\n`)) },
         { op: 'read' },
@@ -342,7 +345,6 @@ function scenarios() {
       divergent:
         "_is_old is Python's str `<` (code point) and isOld is JS `<` (UTF-16 unit): U+FFFF is older than U+1F600 on Python and newer on Node, " +
         'so the same fold reduces 2 lines on Python and 1 on Node',
-      agree: [0, 1, 2],
       ops: [
         append({ ts: '\uffff' }),
         append({ ts: '\u{1F600}' }),
@@ -373,7 +375,6 @@ function scenarios() {
       divergent:
         'a reducer row is re-serialised: Python keeps 18446744073709551616 exact, a JS number holds 18446744073709552000 ' +
         '(not the J69-4 float/key ruling: an integer read off disk, not a caller float)',
-      agree: [0, 3],
       ops: [
         { op: 'raw', b64: b64(enc('{"ts":"0","b":18446744073709551616}\n')) },
         { op: 'fold', older_than: '1', reducer: 'identity' },
@@ -594,18 +595,14 @@ export async function run(ctx) {
   all.forEach((s, i) => {
     if (s.divergent) {
       cases.push({
-        name: `ruling: G2 as Node — ${s.label} — every op`,
+        name: `${s.label} — every op (G2: was ruled as Node, "${s.family}")`,
         kind: 'json',
         expected: py.beds[i],
         actual: nd.beds[i],
-        ruling:
-          `RULED AS NODE (J88-1F, #316 G2; docs/porting.md divergence table, "G2 as Node: ${s.family}"): Node's answer is ` +
-          `the behaviour J88-2 generates for Python from logsegment.ts, which then agrees and this case goes STALE by design; ${s.divergent}`,
       });
     }
     s.ops.forEach((op, j) => {
-      if (s.divergent && !s.agree.includes(j)) return;
-      if (op.op === 'gzraw' || op.op === 'bytesruled') return; // the rulings below, not differentials
+      if (op.op === 'gzraw' || op.op === 'bytesruled') return; // compared below, with their literals
       const what = op.op === 'append' ? 'append' : `${op.op}${op.n ? ` ${op.n}` : ''}${op.name ? ` ${op.name}` : ''}${op.reducer ? ` ${op.reducer}` : ''}`;
       cases.push({
         name: `${s.label} — #${String(j).padStart(2, '0')} ${what}${op.op === 'gz' ? ' (decompressed)' : ''}`,
@@ -661,7 +658,7 @@ export async function run(ctx) {
   }
 
   {
-    // J88-1F: Node's answer over each scenario ruled as Node — what J88-2 must reach on Python.
+    // The answer over each scenario J88-1F ruled as Node, which J88-2's generation made Python's too.
     const ruled = all.map((sc, i) => [sc, i]).filter(([sc]) => sc.family);
     const line = (t) => b64(enc(t));
     const want = {
@@ -675,12 +672,14 @@ export async function run(ctx) {
       // A JS number: the re-serialised row holds the nearest double.
       'J88-1 a folded row holding an integer past 2**53': [null, null, line('{"ts":"0","b":18446744073709552000}\n'), 0],
     };
-    cases.push({
-      name: "LITERAL: G2 ruled as Node — node's ops over the ruled scenarios",
-      kind: 'json',
-      expected: ruled.map(([sc]) => [sc.label, want[sc.label]]),
-      actual: ruled.map(([sc, i]) => [sc.label, nd.beds[i]]),
-    });
+    cases.push(
+      ...literalCases(
+        ruled.map(([sc, i]) => [sc.label, py.beds[i]]),
+        ruled.map(([sc, i]) => [sc.label, nd.beds[i]]),
+        'LITERAL: G2 ops over the scenarios J88-1F ruled as Node',
+        ruled.map(([sc]) => [sc.label, want[sc.label]]),
+      ),
+    );
   }
 
   // --------------------------------------------------------------------- the ruling
@@ -730,34 +729,25 @@ export async function run(ctx) {
     ...literalCases(py.beds[unw][0], nd.beds[unw][0], 'LITERAL: an append into an unwritable directory answers false', false),
   );
 
-  // ------------------------------------------------- J69-4: the caller-object ruling
+  // ------------------------------------------------- J69-4: the caller object (closed by G2)
+  // Was a `ruling:` case (each serialiser spelled the caller's numbers its own way, docs/porting.md
+  // J69-4 row); J88-2 generates the Python from logsegment.ts, so both write JSON.stringify's bytes.
   const num = all.findIndex((s) => s.label.startsWith('caller numbers:'));
   const numOp = all[num].ops.findIndex((op) => op.op === 'bytesruled');
   cases.push({
-    name: 'ruling: a caller\'s float and integer-like key are spelled by each serialiser (rows compared beside it)',
+    name: 'a caller\'s float and integer-like key are spelled as JSON.stringify spells them (J69-4, closed by G2)',
     kind: 'bytes',
     expected: decodeOrMarker(py.beds[num][numOp]),
     actual: decodeOrMarker(nd.beds[num][numOp]),
-    ruling:
-      "json.dumps keeps 1.0 and writes 1e-07 and insertion order; JSON.stringify writes 1 and 1e-7 and moves an " +
-      'integer-like key first. No log on LogSegment writes either from its own code; the rows read back are ' +
-      'compared as a non-ruled case beside this one (docs/porting.md divergence table)',
   });
   cases.push(
     ...literalCases(
       decodeOrMarker(py.beds[num][numOp]),
-      Buffer.from(NUMBERS_PY, 'utf8'),
-      'LITERAL: the reference spells the caller numbers',
-      Buffer.from(NUMBERS_PY, 'utf8'),
-      'bytes',
-    ).slice(0, 1),
-    ...literalCases(
-      Buffer.from(NUMBERS_NODE, 'utf8'),
       decodeOrMarker(nd.beds[num][numOp]),
-      'LITERAL: the port spells the caller numbers',
+      'LITERAL: both spell the caller numbers as JSON.stringify (1, 1e-7, key "1" first)',
       Buffer.from(NUMBERS_NODE, 'utf8'),
       'bytes',
-    ).slice(1),
+    ),
   );
 
   // ----------------------------------------------- J69-4: the event log's own rotation

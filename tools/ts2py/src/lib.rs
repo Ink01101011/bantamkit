@@ -196,7 +196,8 @@ fn emit(
     out.push_str(&format!("# source-sha256: {hex}\n"));
     // Generated lines are not wrapped; and every lambda is a callback a helper calls before the
     // enclosing statement ends (SUBSET.md), so a loop variable it reads is never stale.
-    out.push_str("# ruff: noqa: E501, B023\n");
+    // J88-2: and a TypeScript name like `l` is kept as spelled (E741).
+    out.push_str("# ruff: noqa: E501, B023, E741\n");
     out.push_str(&format!(
         "\"\"\"Generated from `{display_path}` by tools/ts2py; the TypeScript source is the documentation.\"\"\"\n\n"
     ));

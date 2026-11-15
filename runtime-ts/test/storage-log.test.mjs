@@ -340,3 +340,76 @@ test('a read-only directory fails fast (208 item 7)', { skip: process.platform =
     chmodSync(d, 0o755);
   }
 });
+
+// #316 G2 (J88-2): the crash-safe write's order, which `test_storage_log.py`'s
+// `test_write_over_and_rotate_write_temp_then_rename` pins for the generated Python: the body is
+// written to a fresh `<target>.<pid>.<hex>.tmp` opened `wx` with mode 0o666, closed, then renamed
+// over the target; a refused rename removes the temp and nothing else changes. Neither side fsyncs.
+test('write_over and rotate write a temp then rename it (J88-2, #316 G2)', async () => {
+  const { writeOver } = await import('../dist/storage/index.js');
+  const d = tmp();
+  const p = join(d, 'x.jsonl');
+  const kind = (q) => {
+    const name = q.slice(d.length + 1);
+    if (name.endsWith('.tmp')) return 'tmp';
+    if (name.endsWith('.keep')) return 'keep';
+    if (name.endsWith('.lock')) return 'lock';
+    return name;
+  };
+  const trace = [];
+  const fds = new Map();
+  const names = ['openSync', 'writeSync', 'closeSync', 'renameSync', 'rmSync', 'fsyncSync', 'fdatasyncSync'];
+  const real = Object.fromEntries(names.map((n) => [n, fs[n]]));
+  fs.openSync = (q, flags, mode) => {
+    const fd = real.openSync(q, flags, mode);
+    if (String(q).startsWith(d)) {
+      fds.set(fd, kind(String(q)));
+      trace.push(`open ${kind(String(q))} ${flags} ${mode ?? 0o666}`);
+    }
+    return fd;
+  };
+  fs.writeSync = (fd, ...rest) => {
+    if (fds.has(fd)) trace.push(`write ${fds.get(fd)}`);
+    return real.writeSync(fd, ...rest);
+  };
+  fs.closeSync = (fd) => {
+    if (fds.has(fd)) trace.push(`close ${fds.get(fd)}`);
+    fds.delete(fd);
+    return real.closeSync(fd);
+  };
+  fs.renameSync = (a, b) => {
+    trace.push(`rename ${kind(String(a))} ${kind(String(b))}`);
+    return real.renameSync(a, b);
+  };
+  fs.rmSync = (q, o) => {
+    trace.push(`rm ${kind(String(q))}`);
+    return real.rmSync(q, o);
+  };
+  fs.fsyncSync = (...a) => {
+    trace.push('fsync');
+    return real.fsyncSync(...a);
+  };
+  fs.fdatasyncSync = (...a) => {
+    trace.push('fdatasync');
+    return real.fdatasyncSync(...a);
+  };
+  syncBuiltinESMExports();
+  try {
+    writeOver(join(d, 'w.bin'), Buffer.from('x'));
+    const wrote = trace.splice(0);
+    mkdirSync(join(d, 'adir'));
+    writeFileSync(join(d, 'adir', 'f'), 'y');
+    assert.throws(() => writeOver(join(d, 'adir'), Buffer.from('x')));
+    const refused = trace.splice(0);
+    writeFileSync(p, '{"ts":"a"}\n'.repeat(4));
+    assert.equal(new LogSegment(p).rotate(1), true);
+    const rotated = trace.filter((t) => t.includes('tmp') || t.startsWith('fsync') || t.startsWith('fdatasync'));
+    assert.deepEqual(wrote, ['open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp w.bin']);
+    assert.deepEqual(refused, ['open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp adir', 'rm tmp']);
+    assert.deepEqual(rotated, ['open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp x.jsonl.1.gz', 'open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp x.jsonl']);
+  } finally {
+    Object.assign(fs, real);
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(readdirSync(d).sort(), ['adir', 'w.bin', 'x.jsonl', 'x.jsonl.1.gz']);
+});

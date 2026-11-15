@@ -1,10 +1,12 @@
 # ts2py runtime support: the JavaScript semantics the generated code leans on.
 # Pure standard library. Every name starts with `_js_`, `_Js` or `_JS_`, and ts2py refuses a
 # TypeScript identifier with one of those prefixes, so nothing here can be shadowed by source.
+import errno as _js_errno
 import functools as _js_functools
 import json as _js_jsonlib
 import math as _js_math
 import re as _js_re
+import time as _js_time
 
 
 class _JsUndefined:
@@ -424,6 +426,28 @@ def _js_get(obj, key):
         return _JS_UNDEFINED
     if obj is None or obj is _JS_UNDEFINED:
         raise TypeError(f"Cannot read properties of {_js_str(obj)} (reading '{_js_str(key)}')")
+    if isinstance(obj, _JS_BYTES):
+        # J88-2: a Buffer (`bytes`, `bytearray` or a `memoryview` sharing one): `length` and an
+        # index in range are the byte; anything else is outside the subset.
+        if key == "length":
+            return len(obj)
+        index = _js_index_key(key)
+        if index is not None:
+            return obj[index] if 0 <= index < len(obj) else _JS_UNDEFINED
+        raise TypeError(f"ts2py: reading {key!r} of a Buffer is outside the subset")
+    if isinstance(obj, BaseException) and not isinstance(obj, _JsObject):
+        # J88-2: a Python exception a `catch` holds (an adapter's OSError, the runtime's JS-worded
+        # TypeError) or a hand-written caller passed. Its `code` is what JS reads: an fs error's is
+        # libuv's errno name, the C errno's name CPython records in `errno.errorcode`; any other
+        # has none. Every other property (`message`, `errno`, `path`) is spelled differently by
+        # Node and CPython, so reading one is outside the subset.
+        if key == "code":
+            errno = getattr(obj, "errno", None) if isinstance(obj, OSError) else None
+            name = _js_errno.errorcode.get(errno) if isinstance(errno, int) else None
+            return _JS_UNDEFINED if name is None else name
+        raise TypeError(
+            f"ts2py: reading {_js_str(key)!r} of a Python exception is outside the subset"
+        )
     if isinstance(obj, (_JsMap, _JsSet)) and key == "size":
         return len(obj)
     if isinstance(obj, _JsObject):
@@ -455,7 +479,7 @@ def _js_len(value):
         # J86-5: one code unit per character of `_js_code_units` (an ASCII string is its own),
         # the count the UTF-16 encoding gives, without encoding the string on every read.
         return len(value) if value.isascii() else len(_js_code_units(value))
-    if isinstance(value, list):
+    if isinstance(value, (list, _JS_BYTES)):
         return len(value)
     return _js_get(value, "length")
 
@@ -1104,12 +1128,27 @@ def _js_m_repeat(receiver, count=_JS_UNDEFINED):
     return _js_from_units(text * int(times))
 
 
+# J88-2: the code points whose lowercase CPython 3.12 (Unicode 15.0) and Node 26.13 (ICU) spell
+# differently, measured over every code point but the surrogates: 55, each assigned after 15.0.
+_JS_LOWER_DIFFERS = _js_re.compile(
+    "[\u1c89\ua7cb\ua7cc\ua7ce\ua7d2\ua7d4\ua7da\ua7dc\U00010d50-\U00010d65\U00016ea0-\U00016eb8\u03a3]"
+)
+
+
 def _js_m_toLowerCase(receiver):
-    """ASCII only: CPython and V8 follow different Unicode versions, so a non-ASCII string raises
-    rather than risk a different answer."""
+    """`s.toLowerCase()`: full Unicode lowercase mapping, which `str.lower()` is for every code
+    point but the 55 whose mapping CPython's Unicode tables do not yet have (J88-2 measured the
+    1,462 non-ASCII code points with a lowercase against Node 26.13). A string holding one of those,
+    or U+03A3 (whose final-sigma context depends on neighbours the two tables may classify
+    apart), raises rather than risk a different answer."""
     text = _js_string_receiver("toLowerCase", receiver)
-    if not text.isascii():
-        raise TypeError("ts2py: .toLowerCase() on a non-ASCII string is outside the subset")
+    if text.isascii():
+        return text.lower()
+    if _JS_LOWER_DIFFERS.search(text):
+        raise TypeError(
+            "ts2py: .toLowerCase() of a code point the two Unicode tables map apart"
+            " is outside the subset"
+        )
     return text.lower()
 
 
@@ -1440,6 +1479,8 @@ def _js_m_toString(receiver, radix=_JS_UNDEFINED):
     or BigInt in a radix 2..36 (a number with a fraction only in radix 10), a string as itself."""
     if isinstance(receiver, _JsObject):
         return _js_object_to_string(receiver)
+    if isinstance(receiver, _JS_BYTES):
+        return _js_buffer_to_string(receiver, radix)
     base = 10 if radix is _JS_UNDEFINED else _js_to_integer(radix)
     if not 2 <= base <= 36:
         raise _JsRangeError("toString() radix must be between 2 and 36")
@@ -2047,7 +2088,8 @@ def _js_json_parse(text):
     non-standard constants refused), numbers as JS numbers (`_js_json_number`), objects as dicts in
     source order with a repeated key keeping its first position and its last value, as JS's
     CreateDataProperty does, and `__proto__` an ordinary own key. A malformed text is a SyntaxError
-    (`_JsJsonParseError`). Nesting deeper than CPython's recursion limit is outside the subset."""
+    (`_JsJsonParseError`). Nesting deeper than CPython's recursion limit is read without recursion
+    (`_js_json_parse_deep`, J88-2), as V8 reads it."""
     if not isinstance(text, str):
         raise TypeError("ts2py: JSON.parse of anything but a string is outside the subset")
     try:
@@ -2058,9 +2100,15 @@ def _js_json_parse(text):
             parse_constant=_js_json_reject_constant,
         )
     except RecursionError:
-        raise TypeError(
-            "ts2py: JSON.parse nested deeper than the recursion limit is outside the subset"
-        ) from None
+        # J88-2: V8 parses any depth; the iterative reading answers what `json.loads` would
+        # have answered with no recursion limit.
+        pass
+    except ValueError as error:
+        raise _JsJsonParseError(str(error)) from None
+    try:
+        return _js_json_parse_deep(text)
+    except _JsJsonParseError:
+        raise
     except ValueError as error:
         raise _JsJsonParseError(str(error)) from None
 
@@ -2108,3 +2156,373 @@ def _js_py_value(value):
     raise TypeError(
         f"ts2py: lifting {type(value).__name__} into a Python value is outside the subset"
     )
+
+
+# ---------------------------------------------------------------- J88-2 (#316 G2: event log,
+# token ledger, log segment)
+
+# A Node `Buffer`: `bytes` (what Node hands back from a read or a `concat`), a `bytearray` (from
+# `Buffer.alloc`, which `readSync` fills in place) or a `memoryview` of one (`subarray`, which
+# shares the bytes it views, as Node's does).
+_JS_BYTES = (bytes, bytearray, memoryview)
+
+
+def _js_buffer_to_string(buffer, encoding=_JS_UNDEFINED):
+    """`buf.toString(encoding?)`: `utf8` (the default) decodes as Node's does, one U+FFFD per
+    maximal invalid subpart and a BOM kept, which `bytes.decode('utf-8', 'replace')` is (J86's
+    measurement, the TextDecoder row); `hex` is two lowercase digits a byte."""
+    if encoding is _JS_UNDEFINED or encoding in ("utf8", "utf-8"):
+        return bytes(buffer).decode("utf-8", "replace")
+    if encoding == "hex":
+        return bytes(buffer).hex()
+    raise TypeError(f"ts2py: Buffer.toString({encoding!r}) is outside the subset")
+
+
+def _js_m_subarray(receiver, start=_JS_UNDEFINED, end=_JS_UNDEFINED):
+    """`buf.subarray(start, end)`: a view sharing the bytes (a `memoryview`), bounds as `slice`."""
+    if not isinstance(receiver, _JS_BYTES):
+        raise _js_outside("subarray", receiver)
+    length = len(receiver)
+    lo = _js_slice_bound(start, length, 0)
+    hi = _js_slice_bound(end, length, length)
+    return memoryview(receiver)[lo : max(lo, hi)]
+
+
+def _js_m_endsWith(receiver, suffix):
+    """`s.endsWith(suffix)`, by UTF-16 code unit (as `_js_m_startsWith`)."""
+    if isinstance(receiver, str):
+        suffix = _js_str(suffix)
+        if receiver.isascii() and suffix.isascii():
+            return receiver.endswith(suffix)
+        return _js_code_units(receiver).endswith(_js_code_units(suffix))
+    raise _js_outside("endsWith", receiver)
+
+
+def _js_m_trim(receiver):
+    """`s.trim()`: WhiteSpace and LineTerminator off both ends (`_JS_WHITESPACE`, which is not
+    `str.strip()`'s set: U+FEFF is JS whitespace, U+001C-U+001F and U+0085 are not)."""
+    if isinstance(receiver, str):
+        return receiver.strip(_JS_WHITESPACE)
+    raise _js_outside("trim", receiver)
+
+
+def _js_m_values(receiver):
+    """`m.values()` spread at once (`[...m.values()]`, `for (const v of m.values())`): a Map's
+    values, a Set's items or an array's elements, in order, as a fresh list."""
+    if isinstance(receiver, _JsMap):
+        return [value for _, value in receiver]
+    if isinstance(receiver, (_JsSet, list)):
+        return list(receiver)
+    raise _js_outside("values", receiver)
+
+
+def _js_to_int32(value):
+    number = _js_to_number(_js_to_primitive(value))
+    if number != number or number in (_js_math.inf, -_js_math.inf):
+        return 0
+    n = int(number) & 0xFFFFFFFF
+    return n - 0x100000000 if n >= 0x80000000 else n
+
+
+def _js_shl(left, right):
+    """`left << right`: ToInt32 of the left, the count mod 32, the result wrapped to Int32."""
+    if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
+        raise TypeError("ts2py: << on a BigInt is outside the subset")
+    n = (_js_to_int32(left) << (_js_to_int32(right) & 31)) & 0xFFFFFFFF
+    return n - 0x100000000 if n >= 0x80000000 else n
+
+
+def _js_now():
+    """`Date.now()`: whole milliseconds since the epoch, the realtime clock floored."""
+    return _js_time.time_ns() // 1_000_000
+
+
+def _js_sleep_ms(ms):
+    """`Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)`: nothing ever notifies a
+    fresh buffer, so the call blocks for `ms` milliseconds (ToNumber; NaN is forever, a negative
+    count no time) and answers `"timed-out"`."""
+    wait = _js_to_number(_js_to_primitive(ms))
+    if wait != wait or wait == _js_math.inf:
+        raise TypeError("ts2py: an Atomics.wait that never times out is outside the subset")
+    if wait > 0:
+        _js_time.sleep(wait / 1000)
+    return "timed-out"
+
+
+def _js_civil(days):
+    """(year, month, day) of a day count since 1970-01-01, proleptic Gregorian, any year."""
+    z = days + 719468
+    era = z // 146097
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    year = yoe + era * 400
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    day = doy - (153 * mp + 2) // 5 + 1
+    month = mp + 3 if mp < 10 else mp - 9
+    return year + (month <= 2), month, day
+
+
+def _js_date_to_iso(value):
+    """`new Date(value).toISOString()` for a number (a boolean or `null` read through ToNumber,
+    `undefined` as NaN; a string, which `Date.parse` would read, is outside the subset): TimeClip
+    (a value that is not finite or past 8.64e15 in magnitude is the RangeError `Invalid time
+    value`), the time truncated toward zero, then `YYYY-MM-DDTHH:mm:ss.sssZ`, a year outside
+    0..9999 spelled `+YYYYYY` / `-YYYYYY`."""
+    if isinstance(value, bool) or value is None:
+        value = 1 if value is True else 0  # ToNumber(true) is 1; false and null are 0
+    elif value is _JS_UNDEFINED:
+        raise _JsRangeError("Invalid time value")  # ToNumber(undefined) is NaN
+    elif not isinstance(value, (int, float)):
+        raise TypeError("ts2py: new Date() of anything but a number is outside the subset")
+    if isinstance(value, float) and (value != value or value in (_js_math.inf, -_js_math.inf)):
+        raise _JsRangeError("Invalid time value")
+    if abs(value) > 8.64e15:
+        raise _JsRangeError("Invalid time value")
+    ms = int(value)  # toward zero, as ToIntegerOrInfinity
+    days, rest = divmod(ms, 86_400_000)
+    year, month, day = _js_civil(days)
+    hours, rest = divmod(rest, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1000)
+    if 0 <= year <= 9999:
+        spelled = f"{year:04d}"
+    else:
+        spelled = ("-" if year < 0 else "+") + f"{abs(year):06d}"
+    return f"{spelled}-{month:02d}-{day:02d}T{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}Z"
+
+
+def _js_object_assign(target, *sources):
+    """`Object.assign(target, ...sources)` onto a class instance (an Error) or a plain object: each
+    source's own enumerable properties [[Set]] in key order; `null`/`undefined` sources skipped."""
+    if not isinstance(target, (_JsObject, dict)):
+        raise TypeError("ts2py: Object.assign onto anything but an object is outside the subset")
+    for source in sources:
+        if source is None or source is _JS_UNDEFINED:
+            continue
+        if not isinstance(source, dict):
+            raise TypeError(
+                "ts2py: Object.assign from anything but a plain object is outside the subset"
+            )
+        for key in _js_own_keys(source):
+            _js_put(target, key, source[key])
+    return target
+
+
+def _js_constructor_of(value):
+    """`value.constructor`, read only for its `name`: a plain object's is `Object`, an array's
+    `Array`, a compiled class's or a built-in Error's its JS name, a Python exception a
+    hand-written caller passed its Python class name (what `type(exc).__name__` reads)."""
+    if value is None or value is _JS_UNDEFINED:
+        raise TypeError(f"Cannot read properties of {_js_str(value)} (reading 'constructor')")
+    if isinstance(value, _JsObject):
+        name = type(value)._js_name
+    elif isinstance(value, bool):
+        name = "Boolean"
+    elif isinstance(value, (int, float)):
+        name = "Number"
+    elif isinstance(value, str):
+        name = "String"
+    elif isinstance(value, list):
+        name = "Array"
+    elif isinstance(value, dict):
+        name = "Object"
+    elif isinstance(value, _JsMap):
+        name = "Map"
+    elif isinstance(value, _JsSet):
+        name = "Set"
+    elif isinstance(value, BaseException):
+        name = type(value).__name__
+    else:
+        raise TypeError(f"ts2py: the constructor of {type(value).__name__} is outside the subset")
+    return {"name": name}
+
+
+def _js_json_gap(space):
+    if isinstance(space, bool) or space is None or space is _JS_UNDEFINED:
+        return ""
+    if isinstance(space, (int, float)):
+        count = min(10, int(_js_to_integer(space)))
+        return " " * count if count >= 1 else ""
+    if isinstance(space, str):
+        return _js_from_units(_js_code_units(space)[:10])
+    raise TypeError("ts2py: a JSON.stringify space of that type is outside the subset")
+
+
+def _js_json_full(value, replacer, gap):
+    """SerializeJSONProperty over the whole value with a function `replacer` and a `gap`, both as
+    ECMA-262 25.5.2.2 orders them (the replacer sees the root under the key `""`). A cycle is the
+    TypeError JS throws; nesting past Python's recursion limit is outside the subset."""
+    stack = []
+
+    def prop(holder_value, key, indent):
+        value = holder_value
+        if replacer is not None:
+            value = replacer(key, value)
+        if value is None:
+            return "null"
+        if value is _JS_UNDEFINED or (callable(value) and not isinstance(value, _JsObject)):
+            return None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            number = _js_num(value)
+            if isinstance(number, float) and not _js_math.isfinite(number):
+                return "null"
+            return _js_num_str(number)
+        if isinstance(value, str):
+            return _js_json_quote(value)
+        if isinstance(value, _JsBigInt):
+            raise _JsTypeError("Do not know how to serialize a BigInt")
+        if isinstance(value, (_JsMap, _JsSet)):
+            items = []
+        elif isinstance(value, (list, dict)):
+            items = None
+        else:
+            raise TypeError(
+                f"ts2py: JSON.stringify of {type(value).__name__} is outside the subset"
+            )
+        if any(entry is value for entry in stack):
+            raise _JsTypeError("Converting circular structure to JSON")
+        stack.append(value)
+        inner = indent + gap
+        if isinstance(value, list):
+            parts = []
+            for index, item in enumerate(value):
+                part = prop(item, str(index), inner)
+                parts.append("null" if part is None else part)
+            open_, close = "[", "]"
+        else:
+            parts = []
+            if items is None:
+                lookup = {k if isinstance(k, str) else _js_str(k): k for k in value}
+                for k in _js_own_keys(value):
+                    part = prop(value[lookup[k]], k, inner)
+                    if part is not None:
+                        parts.append(_js_json_quote(k) + (": " if gap else ":") + part)
+            open_, close = "{", "}"
+        stack.pop()
+        if not parts:
+            return open_ + close
+        if not gap:
+            return open_ + ",".join(parts) + close
+        return open_ + "\n" + inner + (",\n" + inner).join(parts) + "\n" + indent + close
+
+    try:
+        return prop(value, "", "")
+    except RecursionError:
+        raise TypeError(
+            "ts2py: JSON.stringify nested deeper than the recursion limit is outside the subset"
+        ) from None
+
+
+def _js_json_stringify_with(value, replacer=_JS_UNDEFINED, space=_JS_UNDEFINED):
+    """`JSON.stringify(value, replacer, space)`: `replacer` a function or `null`/`undefined` (an
+    array of keys is outside the subset), `space` a count or a string, as JS reads them."""
+    if replacer is None or replacer is _JS_UNDEFINED:
+        replacer = None
+    elif not callable(replacer) or isinstance(replacer, (list, dict, _JsObject)):
+        raise TypeError(
+            "ts2py: a JSON.stringify replacer that is not a function is outside the subset"
+        )
+    gap = _js_json_gap(space)
+    if replacer is None and not gap:
+        return _js_json_stringify(value)
+    text = _js_json_full(value, replacer, gap)
+    return _JS_UNDEFINED if text is None else text
+
+
+_JS_JSON_WS = _js_re.compile(r"[ \t\n\r]*")
+_JS_JSON_NUMBER = _js_re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?")
+
+
+def _js_json_parse_deep(text):
+    """`JSON.parse` for a text nested past CPython's recursion limit: the same grammar, strings
+    read by `json.decoder.scanstring` (the decoder's own, so escapes, surrogates and control
+    characters are refused or kept exactly as `json.loads` does), with an explicit stack in place
+    of recursion. V8's parser is iterative, so such a text is a value in JS too."""
+    scan = _js_jsonlib.decoder.scanstring
+    ws = _JS_JSON_WS.match
+    number = _JS_JSON_NUMBER.match
+    n = len(text)
+
+    def fail(at):
+        raise _JsJsonParseError(f"Expecting value: char {at}")
+
+    # Each frame: [container, pending key or None]
+    stack = []
+    i = ws(text, 0).end()
+    while True:
+        if i >= n:
+            fail(i)
+        ch = text[i]
+        # 1. read one value (or open a container)
+        if ch == "{":
+            i = ws(text, i + 1).end()
+            if i < n and text[i] == "}":
+                value = {}
+                i += 1
+            else:
+                if i >= n or text[i] != '"':
+                    fail(i)
+                key, i = scan(text, i + 1, True)
+                i = ws(text, i).end()
+                if i >= n or text[i] != ":":
+                    fail(i)
+                i = ws(text, i + 1).end()
+                stack.append([{}, key])
+                continue
+        elif ch == "[":
+            i = ws(text, i + 1).end()
+            if i < n and text[i] == "]":
+                value = []
+                i += 1
+            else:
+                stack.append([[], None])
+                continue
+        elif ch == '"':
+            value, i = scan(text, i + 1, True)
+        elif ch == "n" and text.startswith("null", i):
+            value, i = None, i + 4
+        elif ch == "t" and text.startswith("true", i):
+            value, i = True, i + 4
+        elif ch == "f" and text.startswith("false", i):
+            value, i = False, i + 5
+        else:
+            m = number(text, i)
+            if m is None:
+                fail(i)
+            value, i = _js_json_number(m.group()), m.end()
+        # 2. hand it to the open container, closing every container that ends here
+        while True:
+            if not stack:
+                i = ws(text, i).end()
+                if i != n:
+                    raise _JsJsonParseError(f"Extra data: char {i}")
+                return value
+            frame = stack[-1]
+            container = frame[0]
+            if isinstance(container, list):
+                container.append(value)
+            else:
+                container[frame[1]] = value
+            i = ws(text, i).end()
+            if i < n and text[i] == ",":
+                i = ws(text, i + 1).end()
+                if isinstance(container, dict):
+                    if i >= n or text[i] != '"':
+                        fail(i)
+                    key, i = scan(text, i + 1, True)
+                    i = ws(text, i).end()
+                    if i >= n or text[i] != ":":
+                        fail(i)
+                    i = ws(text, i + 1).end()
+                    frame[1] = key
+                break
+            closer = "]" if isinstance(container, list) else "}"
+            if i < n and text[i] == closer:
+                i += 1
+                stack.pop()
+                value = container
+                continue
+            fail(i)

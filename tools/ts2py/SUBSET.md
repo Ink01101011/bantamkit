@@ -143,6 +143,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `x = e` (statement) | `x = e` | `x` must be a local (a module-level binding is a const or an import) |
 | `a = b = e` (J86) | `a = b = e` | one value, every target bound to it |
 | `x += e`, `x -= e`, `x *= e` (J86; `x` a local or `this.x`) | `x = <x + e>` as the binary operator lowers | `x` read before `e` is evaluated |
+| `o.k += e`, `o[k] -= e` (J88-2; `o` a local, `k` a local or a literal) | `_js_put(o, "k", <_js_get(o, "k") + e>)` | the property read before `e` is evaluated, then written back; anything else as the object (`o.a.k += 1`) is refused, since it would be evaluated twice |
 | `[a, b] = e` (J86) | `a, b = _js_destructure(e, 2)` | as the declaration |
 | `o.k = e`, `o[k] = e` (statement) | `_js_put(o, "k", e)` | sets a key on a plain object (`__proto__` is refused at run time: JS would set the prototype); on a class instance (J86) the attribute, a TypeError on a frozen one |
 | `this.x = e` (J86) | `self.x = e` | a declared member; a TypeError once `Object.freeze(this)` ran |
@@ -150,7 +151,8 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `while (c)` | `while c:` | condition through ToBoolean |
 | `for (;;)` (J86) | `while True:` | |
 | `for (let i = a; test; i -= 1) body` (J87-3) | `i = a`, `while test:`, the body, then the update as the body's last statement | the init must be a `let` declaration (or absent), the update an assignment (or absent); a `continue` that would continue this loop is refused (in JS it runs the update, in Python it would skip it); closures in the body are refused as in any loop |
-| `try { ... } catch (e?) { ... }` (J87-3) | `_js_caughtN = None` / `try:` / `except Exception as _js_errorN: _js_caughtN = _js_catch(_js_errorN)` / `if _js_caughtN is not None:` the handler | a `catch` sees only what JS could have thrown (`_js_catch`): a JS Error (`_JsError`), an `OSError` an fs adapter raised where Node throws an fs Error, or the runtime's JS-worded `TypeError` (`Cannot read properties of null ...`); a subset refusal (`ts2py: ...`), a `RecursionError` and any other Python exception propagate. The handler runs after the `try` statement, so nothing it raises is chained to what was caught (a JS throw carries no implicit cause). A binding `e` may only be rethrown (`throw e` is `raise` of the caught object, unchanged); `finally` is refused |
+| `try { ... } finally { ... }`, `try { ... } catch { ... } finally { ... }` (J88-2) | `try:` holding the try (and its catch, as below) / `finally:` the finalizer | Python's `finally` runs where JS's does: a normal end, a `return`, a `break` and a throw; a `return` inside the finalizer replaces the completion in both |
+| `try { ... } catch (e?) { ... }` (J87-3) | `_js_caughtN = None` / `try:` / `except Exception as _js_errorN: _js_caughtN = _js_catch(_js_errorN)` / `if _js_caughtN is not None:` the handler | a `catch` sees only what JS could have thrown (`_js_catch`): a JS Error (`_JsError`), an `OSError` an fs adapter raised where Node throws an fs Error, or the runtime's JS-worded `TypeError` (`Cannot read properties of null ...`); a subset refusal (`ts2py: ...`), a `RecursionError` and any other Python exception propagate. The handler runs after the `try` statement, so nothing it raises is chained to what was caught (a JS throw carries no implicit cause). `throw e` is `raise` of the caught object, unchanged; J88-2: `e` may be read as a value (passed on, `e.code`, `typeof e`), and the runtime answers only what JS would read of it: a Python exception's `code` is the errno name of an `OSError` (libuv's spelling) or `undefined`, and any other property of a Python exception (`message`, `errno`, ...) is outside the subset at run time |
 | `switch (x) { case a: ... }` (J86) | `x` once into `_js_switchN`, then `if _js_strict_eq(...) / elif / else` | `===` per case, in order; empty cases group (`case a: case b:`); each case group must end in `return` / `throw` or a trailing `break` (dropped); fallthrough, a `break` elsewhere in a case, and a `default` that is not last are refused |
 | `throw e` (J86) | `raise e` for `new <class or Error>(...)`, else `raise _js_throw(e)`; J87-3: `throw e` of a `catch` binding is `raise` of what was caught | throwing a value that is not an Error raises a TypeError instead |
 | `for (const x of xs)` | `for x in xs:` | iterates a list, a `Map` (as `[key, value]` pairs), a `Set`, a string |
@@ -179,8 +181,12 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `o?.k`, `o?.[k]` (J87-3) | `_js_opt_get(o, k)` | `undefined` when `o` is `null` / `undefined`, else the read `_js_get` makes; one optional member read only: an optional call, a link after it (`o?.k.j`) and two optional links are refused |
 | `process.env[k]`, `process.env.K` (J87-3, a read) | `process_env(k)` from the adapter module | the process environment; `undefined` when unset (`adapters.rs`) |
 | `this` (J86, in a class) | `self` | refused outside a class body |
-| `this.x`, `this.m(...)` (J86) | `self.x`, `self.m(...)` | refused unless the class (or Error) declares the member |
-| `new C(...)` (J86) | `C(...)` for a compiled class; `_JsError(...)` / `_JsTypeError(...)` for `Error` / `TypeError`; an adapter class (`new TextDecoder(...)`, `new Date()`) from the adapter module | extra arguments ignored, as JS ignores them |
+| `this.x`, `this.m(...)` (J86) | `self.x`, `self.m(...)` | refused unless the class (or Error) declares the member; J88-2: `this.f(...)` of a FIELD holding a function (a clock the constructor was given) calls it without `this` (a field value ts2py compiles never reads `this`) |
+| `C.m(...)` (J88-2) | `C.m(...)`, a `@staticmethod` the class declares | a static method's body has no `this` |
+| `x.constructor` (J88-2, read for its `name`) | `_js_constructor_of(x)`, an object whose `name` is the JS constructor's name (`Object`, `Array`, a compiled class's, `TypeError`), or a Python exception's class name | the function itself is never handed out |
+| `process.pid`, `process.env` as a value (J88-2) | `process_pid()`, `process_env_all()` (a snapshot of the environment, only ever read) | each runtime its own process |
+| `a << b` (J88-2) | folded for two small non-negative integer literals (`1 << 20` is `1048576`), else `_js_shl(a, b)` | ToInt32 of the left, the count mod 32, the result wrapped to Int32; `>>` and `>>>` stay refused |
+| `new C(...)` (J86) | `C(...)` for a compiled class; `_JsError(...)` / `_JsTypeError(...)` / `_JsRangeError(...)` (J88-2) for `Error` / `TypeError` / `RangeError`; an adapter class (`new TextDecoder(...)`, `new Date()`) from the adapter module | extra arguments ignored, as JS ignores them |
 | `new RegExp(`...${n}...`)` (J86) | `_js_regexp_dynamic("<pattern>", n, ...)` | the template is checked against the whitelist grammar at compile time with each substitution as a whole `{n}` repeat count, and `n` must be an integer in 0..65535 at run time; a substitution anywhere else is refused |
 | `x instanceof C` (J86) | `isinstance(x, C)` | `C` a compiled class or `Error` / `TypeError`; a primitive is never an instance |
 | `k in o` (J86) | `_js_in(k, o)` | own keys, plus the names `Object.prototype` gives a plain object or instance (`'toString' in {}` is true); an array index; a TypeError on a primitive |
@@ -202,6 +208,8 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `f(args)` (a module function or a local) | `f(args)` | |
 | `new Map(entries?)`, `new Set(items?)` | `_JsMap(...)`, `_JsSet(...)` | insertion order; SameValueZero keys, so `true` and `1` are different keys and `1.0` and `1` the same |
 | `/pattern/` (no flags, or `g`, J86) | `_JS_RE_<n> = re.compile(<translated>, re.ASCII)`; with `g`, wrapped in `_JsGlobalRegExp` (only `.replace` accepts it: `.test` / `.exec` on a `g` regex read `lastIndex`, which is not modelled, and raise) | `\d`, `\w`, `\b` are ASCII; `$` is end of input (`\Z`); `.` excludes `\n`, `\r`, U+2028, U+2029; an astral literal is written as its two surrogates (Strings above). The pattern is parsed against a whitelist grammar, so every accepted pattern is valid JS and compiles under `re`; anything else is refused at compile time with its reason, never an `re.error` at import (Refused below). J86 adds `\xHH` and `\uHHHH` (one code unit each, in and out of a class) and a lookbehind `(?<=...)` / `(?<!...)` holding only single-unit atoms, so its width is fixed (as `re` requires) and reading it backwards (JS) or forwards (`re`) is the same |
+| an arrow used as a value (J88-2): passed to a function or method (`exclusive(p, (held) => {...})`), a block-bodied callback, or bound by `let` | a nested `def _js_fnN(p=_JS_UNDEFINED, ..., *_)` emitted just before the statement, closing over the enclosing locals (`nonlocal` for each it assigns) | a JS function called with fewer arguments sees `undefined`, with more ignores them; refused inside a loop (as any closure) and inside a callback lambda (the `def` could not see the lambda's parameters) |
+| a module function named as a callback (J88-2, `rows.map(dumpsLine)`) | `lambda _js_a0=_JS_UNDEFINED, ..., *_: f(_js_a0, ...)` with as many arguments as `f` declares | JS binds the first N of `(item, index, array)` to a function of N parameters |
 | `(params) => expr` **as a callback argument** of the methods below | `lambda params, *_: expr` | JS passes `(item, index, array)`; extra arguments are absorbed. J86: a parameter may be an array pattern of names, `([k]) => e` is `lambda _js_argN, *_: (lambda k: e)(*_js_destructure(_js_argN, 1))` |
 | `as T`, `x!`, `satisfies T`, `<T>x`, `f<T>(...)`, generics, `readonly`, parameter and return annotations, `p?:` | erased (`p?:` becomes `p=_JS_UNDEFINED`); J87: a parameter annotation may give its function a typed body behind a guard (Types below) | a missing optional argument is `undefined` |
 
@@ -214,7 +222,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `Number(x)`, `String(x)`, `BigInt(x)`, `parseInt(s, radix?)` (J86) | `_js_number`, `_js_str`, `_js_bigint`, `_js_parse_int` | ToNumeric / `String()` / StringToBigInt / parseInt's prefix grammar (JS whitespace, sign, `0x`); a parseInt past 2^53 in a radix V8 rounds approximately is outside the subset |
 | `Math.floor`, `Math.abs`, `Math.max(...)`, `Math.min(...)` (J86) | `_js_floor`, `_js_abs`, `_js_max`, `_js_min` | NaN, the infinities and `-0` kept; any NaN argument makes max/min NaN; +0 beats -0 for max; no argument is -Infinity / Infinity; J87-3: a spread argument (`Math.min(...xs)`) only of a value proven a list |
 | `Math.trunc(x)`, `Number.isFinite(x)` (J87-3) | `_js_trunc`, `_js_number_is_finite` | ToNumber then toward zero, NaN / the infinities / the sign of a zero kept (`Math.trunc(-0.5)` is `-0`); a number that is not NaN or an infinity, no coercion |
-| `JSON.parse(text)` (J87-3, one argument) | `_js_json_parse` | the JSON grammar exactly (CPython's strict decoder, the bare `NaN` / `Infinity` it accepts refused); numbers as JS numbers (`3000000.0` is the int `3000000`, a long integer rounds to the double, past the range is Infinity); a repeated key keeps its first position and its last value; `__proto__` an ordinary own key; a malformed text is a SyntaxError whose `message` is outside the subset (V8's wording is not reproduced) and whose Python text is CPython's decoder message; a text nested past the recursion limit is outside the subset |
+| `JSON.parse(text)` (J87-3, one argument) | `_js_json_parse` | the JSON grammar exactly (CPython's strict decoder, the bare `NaN` / `Infinity` it accepts refused); numbers as JS numbers (`3000000.0` is the int `3000000`, a long integer rounds to the double, past the range is Infinity); a repeated key keeps its first position and its last value; `__proto__` an ordinary own key; a malformed text is a SyntaxError whose `message` is outside the subset (V8's wording is not reproduced) and whose Python text is CPython's decoder message; J88-2: a text nested past CPython's recursion limit is read by an iterative parser over the same grammar (`_js_json_parse_deep`, strings by `json.decoder.scanstring`), as V8 reads any depth |
 | `Object.keys(o)`, `Object.entries(o)` (J86) | `_js_object_keys`, `_js_object_entries` | own enumerable keys in JS order (array indices ascending first); an instance's fields in definition order |
 | `Object.hasOwn(o, k)`, `Object.fromEntries(entries)` (J87-3F) | `_js_object_has_own`, `_js_object_from_entries` | an OWN property only, never what `Object.prototype` gives (`__proto__` is own when the object holds it; an array or a string owns its indices in range and `length`; a number, boolean or BigInt owns nothing; `null` / `undefined` throw TypeError); `fromEntries` of an array of `[key, value]` arrays, each key an own data property (CreateDataProperty, so `__proto__` is a key), a repeated key keeping its first position and its last value, a missing value `undefined`; any other receiver, iterable, entry or a non-primitive key is outside the subset |
 | `Object.freeze(this)` (J86) | `_js_freeze(self)` | later writes raise JS's TypeError; freezing a plain object or array is outside the subset |
@@ -223,7 +231,14 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `s.codePointAt(i)` (J86) | `_js_m_codePointAt` | UTF-16 position; a lead surrogate followed by a trail gives the astral code point, otherwise the unit; out of range is `undefined` |
 | `s.indexOf(x, from?)`, `s.lastIndexOf(x, from?)` (J86) | `_js_m_indexOf`, `_js_m_lastIndexOf` | UTF-16 positions, `from` clamped as JS clamps it (a NaN `from` of lastIndexOf is +Infinity); strings only |
 | `s.padStart(n, f?)`, `s.padEnd(n, f?)`, `s.repeat(n)` (J86) | `_js_m_padStart`, `_js_m_padEnd`, `_js_m_repeat` | length in UTF-16 units; the filler cut to fit; a negative or infinite count is RangeError |
-| `s.toLowerCase()`, `s.toUpperCase()` (J86) | `_js_m_toLowerCase`, `_js_m_toUpperCase` | ASCII exactly; a non-ASCII string raises (CPython and V8 follow different Unicode versions) |
+| `s.toLowerCase()`, `s.toUpperCase()` (J86) | `_js_m_toLowerCase`, `_js_m_toUpperCase` | ASCII exactly; a non-ASCII string raises (CPython and V8 follow different Unicode versions); J88-2: `toLowerCase` of a non-ASCII string is `str.lower()` unless it holds one of the 55 code points whose mapping the two tables differ on, or U+03A3 (final sigma is contextual), which raise |
+| `s.trim()`, `s.endsWith(x)` (J88-2) | `_js_m_trim`, `_js_m_endsWith` | JS's WhiteSpace and LineTerminator (U+FEFF trimmed, U+001C-U+001F and U+0085 not: not `str.strip()`); by UTF-16 unit |
+| `m.values()` (J88-2) | `_js_m_values` | a Map's values, a Set's items or an array's elements, as a fresh list (only spread or iterated at once) |
+| `new Date(ms).toISOString()` (J88-2) | `_js_date_to_iso(ms)` | TimeClip then toward zero; `+YYYYYY` / `-YYYYYY` outside years 0-9999; a value past 8.64e15 or not finite is the RangeError `Invalid time value`; a string is outside the subset |
+| `Date.now()` (J88-2) | `_js_now()` | whole milliseconds, `time.time_ns() // 1_000_000` |
+| `Object.assign(target, ...sources)` (J88-2) | `_js_object_assign` | each source's own enumerable keys [[Set]] on a plain object or an instance (an Error given a `code`); a source that is not a plain object is outside the subset |
+| `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)` (J88-2) | `_js_sleep_ms(ms)` | the one spelling of a synchronous sleep (nothing can notify a fresh buffer); a wait that never ends is outside the subset; any other `Atomics.wait` is refused |
+| Buffers (J88-2) | `bytes` / `bytearray` (`Buffer.alloc`) / `memoryview` (`subarray`, sharing the bytes as Node's does) | `buf.length`, `buf[i]` (`undefined` out of range), `buf.toString('utf8' / 'hex')`; `Buffer.from(s, 'utf8')`, `Buffer.concat`, `Buffer.alloc` through the adapter seam |
 | `s.replace(p, r)` (J86) | `_js_m_replace` | a string `p` replaces its first occurrence, a regex its first match, a `g` regex every match (empty matches as JS steps over them); `r` must be a string without `$` (JS's substitution patterns are outside the subset) |
 | `re.exec(s)` (J86) | `_js_m_exec` | `null` on no match; else an array of the match and groups (`undefined` for a group that did not take part) with `index` and `input` |
 | `x.toString(radix?)` (J86) | `_js_m_toString` | an instance's own `toString`; `Error.prototype.toString` (`name: message`); a number or BigInt in radix 2..36 (a fraction only in radix 10) |
@@ -231,6 +246,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `a.splice(start, count?, ...items)`, `a.reduce(cb, init?)` (J87-3) | `_js_m_splice`, `_js_m_reduce` | in place, the removed elements returned, `start` / `count` clamped as JS clamps them; left to right over the length read at the start, JS's TypeError for an empty array with no initial value |
 | `x.m(...)` for a method a compiled class declares (J86) | `_js_invoke(x, "m", ...)`; when a builtin above has the same name, `_js_dispatch(x, "m", _js_m_m, ...)` | the receiver decides, as JS's prototype lookup does: an instance runs its own method, anything else the builtin |
 | `Number.isInteger(x)` | `_js_number_is_integer(x)` | `3.0` is an integer; `True` is not (not a number); an int past the double range is not (it is Infinity in JS) |
+| `JSON.stringify(x, replacer, space)` (J88-2) | `_js_json_stringify_with(x, replacer, space)` | SerializeJSONProperty in ECMA-262 order: a function replacer called `(key, value)` on every value, the root under `""`, before the type is read; `space` a count (at most 10) or a string (its first 10 units); `"key": value` and one value per line when indented, `[]` / `{}` when empty; a cycle is JS's TypeError; an array-of-keys replacer and nesting past the recursion limit are outside the subset |
 | `JSON.stringify(x)` (one argument) | `_js_json_stringify(x)` | byte for byte: compact, non-ASCII unescaped, lone surrogates and control characters `\u00xx`, integral floats as `3`, `1e21` as `1e+21`, an int beyond 2^53 as the double it rounds to, non-finite as `null`, `undefined` members skipped (`null` in arrays), object keys in JS own-property order (array-index keys ascending first, then insertion order) |
 | `m.has(k)`, `m.get(k)`, `m.set(k, v)` | `_js_m_has` / `_js_m_get` / `_js_m_set` | `Map`; `get` of a missing key is `undefined`; `set` keeps the original position |
 | `s.has(x)`, `s.add(x)` | `_js_m_has` / `_js_m_add` | `Set` |
@@ -378,6 +394,12 @@ runtime's own attributes do), and on an Error subclass a member named `args`, `w
 
 ## Modules and the adapter seam (J86)
 
+J88-2: `import * as fs from 'node:fs'` (a namespace import of a `node:` builtin) is accepted, and
+`fs.name(...)` is that module's adapter row (`adapters.rs`); a name with no row is refused at
+compile time, and a namespace import of anything else stays refused. An adapter may be a
+constant (`LOCK_STALE_MS`), read by name. An adapter function may be called with `...xs` of an
+array proven a list.
+
 - Several modules compiled in one run (`--out-dir`) import each other: `import { a } from
   './m.js'` in a module whose path is `runtime-ts/src/memory/x.ts` resolves to
   `runtime-ts/src/memory/m.ts`; if that is one of the inputs, the import is
@@ -430,17 +452,16 @@ runtime's own attributes do), and on an Error subclass a member named `args`, `w
 
 Generator functions and `yield`, `async` functions and `await`, `this` outside a class body,
 labelled statements / `break label` / `continue label`, any builtin or method not in the tables
-above (`Object.assign`, `Math.round`, `s.trim()`, `s.charCodeAt()`, `String.fromCharCode()`,
-...), `var`, `let` bound to an arrow function, nested `function` declarations, function
-expressions, a `const` arrow inside a loop, arrow functions anywhere else but as an inline
-callback argument (and block-bodied arrows there), a callback that is not an inline arrow,
+above (`Object.create`, `Math.round`, `s.trimEnd()`, `s.charCodeAt()`, `String.fromCharCode()`,
+...), `var`, nested `function` declarations, function expressions, an arrow inside a loop, an
+arrow inside a callback lambda (J88-2 accepts one anywhere else), a callback that is neither an
+inline arrow nor a module function or adapter named directly,
 destructuring with defaults, rest elements, nesting or computed keys, rest parameters, optional
 chaining other than one member read (J87-3), loose equality `==` other than against
 `null`/`undefined`, `**` other than of two integer literals with an exact result (J87-3), the
-bitwise operators, `void`, `delete`, unary `+`, `++`/`--`, compound assignment other than `+=`
-`-=` `*=` on a local or `this.x`, assignment inside an expression (other than a chain of `=`
-between locals), assignment to a module-level name, the comma operator, `finally`, a `catch`
-binding used other than to rethrow it (J87-3), `switch` fallthrough between non-empty cases, a
+bitwise operators but `<<` (J88-2), `void`, `delete`, unary `+`, `++`/`--`, compound assignment
+other than `+=` `-=` `*=` on a local, `this.x` or a property of a local (J88-2), assignment inside an expression (other than a chain of `=`
+between locals), assignment to a module-level name, the comma operator, `switch` fallthrough between non-empty cases, a
 `break` that does not end its case, a `default` that is not the last case, `do-while`, a C-style
 `for` whose init is not a `let` declaration, whose update is not an assignment or whose body
 `continue`s it (J87-3), `for-in`, `for await`,

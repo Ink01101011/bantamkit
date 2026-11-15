@@ -102,13 +102,14 @@ fn labelled_break_and_continue() {
 
 #[test]
 fn unsupported_builtin_calls() {
+    // J88-2 lowered `Object.assign` and `.trim`; their neighbours stay refused.
     assert_refused(
-        "export function f(x: object): object {\n  return Object.assign({}, x);\n}\n",
-        "t.ts:2:10: unsupported builtin call Object.assign: Object.assign({}, x)",
+        "export function f(x: object): object {\n  return Object.create(x);\n}\n",
+        "t.ts:2:10: unsupported builtin call Object.create: Object.create(x)",
     );
     assert_refused(
-        "export function f(s: string): string {\n  return s.trim();\n}\n",
-        "t.ts:2:10: unsupported builtin method .trim: s.trim()",
+        "export function f(s: string): string {\n  return s.trimEnd();\n}\n",
+        "t.ts:2:10: unsupported builtin method .trimEnd: s.trimEnd()",
     );
     assert_refused(
         "export function f(): number {\n  return Math.round(1.5);\n}\n",
@@ -153,9 +154,11 @@ fn other_refusals() {
         "export function f(xs: number[]): unknown {\n  const g = (x: number) => x;\n  return xs.map(g);\n}\n",
         "t.ts:3:17: unsupported callback that is not an inline arrow function: g",
     );
+    // J88-2: an arrow used as a value is a nested `def`, but not inside a callback lambda (the
+    // `def` would be hoisted out of reach of the lambda's parameters).
     assert_refused(
-        "export function f(): unknown {\n  let g = (x: number) => x;\n  return g;\n}\n",
-        "t.ts:2:11: unsupported arrow function outside a callback argument: (x: number) => x",
+        "export function f(xs: number[]): unknown {\n  return xs.map((x) => () => x);\n}\n",
+        "t.ts:2:24: unsupported arrow function outside a callback argument: () => x",
     );
     assert_refused(
         "export function f(x: number): number {\n  if (x) {\n    const x = 2;\n  }\n  return x;\n}\n",
@@ -339,15 +342,8 @@ fn method_called_directly_still_compiles() {
 /// J87-3 (#316 G1): what the G1 constructs still refuse, each where JS and Python would part.
 #[test]
 fn g1_refusals() {
-    assert_refused(
-        "export function f(): number {\n  try {\n    return 1;\n  } finally {\n    g();\n  }\n}\nfunction g(): void {}\n",
-        "t.ts:4:13: unsupported finally: { ...",
-    );
-    // A catch binding may hold a Python exception (an adapter's OSError): only rethrowing it.
-    assert_refused(
-        "export function f(): string {\n  try {\n    return g();\n  } catch (e) {\n    return String(e);\n  }\n}\nfunction g(): string {\n  return 'x';\n}\n",
-        "t.ts:5:19: unsupported use of a catch binding other than rethrowing it: e",
-    );
+    // J88-2 lowered `finally` and reading a catch binding (the runtime answers only what JS
+    // would read of a Python exception, `code`, and refuses the rest; tests/g2.rs).
     // A `continue` in a C-style loop would skip the update in Python.
     assert_refused(
         "export function f(n: number): number {\n  let s = 0;\n  for (let i = 0; i < n; i += 1) {\n    if (i === 2) continue;\n    s += i;\n  }\n  return s;\n}\n",
@@ -369,5 +365,35 @@ fn g1_refusals() {
     assert_refused(
         "export function f(): unknown {\n  return process.argv;\n}\n",
         "t.ts:2:10: unsupported global process: process",
+    );
+}
+
+/// J88-2 (#316 G2): what the G2 constructs still refuse.
+#[test]
+fn g2_refusals() {
+    // A Node module's function with no adapter row, through a namespace import.
+    assert_refused(
+        "import * as fs from 'node:fs';\nexport function f(p: string): void {\n  fs.watch(p);\n}\n",
+        "t.ts:3:3: unsupported node:fs function watch: no declared adapter: fs.watch(p)",
+    );
+    // A namespace import of anything but a Node builtin.
+    assert_refused(
+        "import * as m from './m.js';\nexport const x = 1;\n",
+        "t.ts:1:8: unsupported default or namespace import: * as m",
+    );
+    // `Atomics.wait` on anything but a fresh buffer: a notify could end it early.
+    assert_refused(
+        "export function f(a: Int32Array): void {\n  Atomics.wait(a, 0, 0, 5);\n}\n",
+        "t.ts:2:3: unsupported Atomics.wait other than a sleep on a fresh buffer: Atomics.wait(a, 0, 0, 5)",
+    );
+    // A compound assignment through anything but a local object.
+    assert_refused(
+        "export function f(o: { a: { n: number } }): void {\n  o.a.n += 1;\n}\n",
+        "t.ts:2:3: unsupported compound assignment to a property of anything but a local: o.a.n += 1",
+    );
+    // `<<` is lowered; `>>` and `>>>` are not.
+    assert_refused(
+        "export function f(a: number): number {\n  return a >> 1;\n}\n",
+        "t.ts:2:10: unsupported operator >>: a >> 1",
     );
 }

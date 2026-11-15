@@ -30,7 +30,7 @@ below. Shared by job69 units: append a section, do not reorder the ones above it
     {"op": "ev", "cap"}                        -> bool    (one EventLog record at `<dir>/mcp.jsonl`,
                                                            clock 0; answers `write_failed`)
     {"op": "file", "name"}                     -> b64 | null   (a file beside the log)
-    {"op": "bytesruled"}                       -> b64 | null   (`bytes`, compared by a ruling)
+    {"op": "bytesruled"}                       -> b64 | null   (`bytes`; the J69-4 caller numbers, a literal per side)
 
 J88-1 (#316 G2) added, after every op above so none of them moves:
 

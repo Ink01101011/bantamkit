@@ -444,11 +444,10 @@ export async function run(ctx) {
   // (base64 of UTF-8 cannot carry a lone surrogate) with ANY exception reported by its type, so
   // an input that makes one side raise something the MCP handler does not catch is a red case
   // and not a dead harness. The agreeing beds come first; the inputs on which the hand-written
-  // runtimes disagree are pinned after them as `ruling:` cases RULED AS NODE by J88-1F (#316 G2):
-  // Node's answer is what J88-2 generates for Python from tokenledger.ts, so each names its
-  // docs/porting.md row (`G2 as Node: ...`) and goes STALE by design when J88-2 lands. Each has a
-  // companion that compares what both still agree on (the refusal bit where one side refuses),
-  // and Node's counts are pinned per side as a literal.
+  // runtimes disagreed follow (J88-1F ruled each as Node; J88-2's generation closed them, so each
+  // is an ordinary agreeing case now, `(G2: was ruled as Node)`). Each keeps its companion (the
+  // refusal bit where one side used to refuse), and the counts are pinned PER SIDE as literals:
+  // both sides now run one source, so only a literal can see a change to tokenledger.ts.
   const units = (s) => Array.from({ length: s.length }, (_, i) => s.charCodeAt(i));
   const ndUnits = (root) => {
     try {
@@ -489,7 +488,7 @@ export async function run(ctx) {
   AGREE.push(['a root spelled with a trailing slash', `${join(g2, 'shapes')}/`]);
   AGREE.push(['a root spelled with a doubled slash', join(g2, 'shapes').replace(/\/j88\//, '/j88//')]);
 
-  // [label, root, why they differ, what both still agree on]
+  // [label, root, what the hand-written runtimes did apart before G2]
   const DIVERGE = [
     ['CRLF line endings', bedOf('crlf', `${REC({ requestId: 'q1' })}\r\n\r\n${REC({ requestId: 'q2' })}\r\n`),
       "read_text() is universal-newline text mode, so Python sees `\\r\\n` as `\\n` and the blank `\\r\\n` line as empty (lines 2); Node splits on `\\n` alone and counts the lone `\\r` as an unparsed line (lines 3)"],
@@ -532,17 +531,9 @@ export async function run(ctx) {
     'a root whose name is longer than NAME_MAX': 'a root past NAME_MAX',
     'a subdirectory that can be listed but not searched': 'an unsearchable subdirectory',
   };
-  DIVERGE.forEach(([label, , why], j) => {
+  DIVERGE.forEach(([label], j) => {
     const i = AGREE.length + j;
-    cases.push({
-      name: `ruling: G2 as Node — read: ${label}`,
-      kind: 'json',
-      expected: pyUnits[i],
-      actual: ndAll[i],
-      ruling:
-        `RULED AS NODE (J88-1F, #316 G2; docs/porting.md divergence table, "G2 as Node: ${FAMILY[label]}"): Node's answer ` +
-        `is the behaviour J88-2 generates for Python from tokenledger.ts, which then agrees and this case goes STALE by design; ${why}`,
-    });
+    cases.push({ name: `J88-1 read: ${label} (G2: was ruled as Node, "${FAMILY[label]}")`, kind: 'json', expected: pyUnits[i], actual: ndAll[i] });
   });
   // Companions: for each divergent input, the part the two still agree on.
   const at88 = (label) => AGREE.length + DIVERGE.findIndex(([l]) => l === label);
@@ -571,7 +562,7 @@ export async function run(ctx) {
     ...literalCases(countsOf88(pyUnits[notCounts]), countsOf88(ndAll[notCounts]), 'J88-1: only 2**53-1 of the seven spellings is a count',
       { lines: 7, requests: 1, input_tokens: 9007199254740991, omissions: [['malformed-usage', 6]] }),
   );
-  // J88-1F: Node's answer over each input ruled as Node — the counts J88-2 must reach on Python.
+  // The answer over each input J88-1F ruled as Node, which J88-2's generation made Python's too.
   {
     const nodeView = (v) => (refuses(v) ? { refuses: v.error.type } : countsOf88(v));
     const want = {
@@ -585,12 +576,14 @@ export async function run(ctx) {
       'a subdirectory that can be listed but not searched': { lines: 1, requests: 0, input_tokens: 0, omissions: [['undecodable-file', 1]] },
     };
     const labels = DIVERGE.map(([l]) => l);
-    cases.push({
-      name: "LITERAL: G2 ruled as Node — node's counts over the ruled inputs",
-      kind: 'json',
-      expected: labels.map((l) => [l, want[l]]),
-      actual: labels.map((l) => [l, nodeView(ndAll[at88(l)])]),
-    });
+    cases.push(
+      ...literalCases(
+        labels.map((l) => [l, nodeView(pyUnits[at88(l)])]),
+        labels.map((l) => [l, nodeView(ndAll[at88(l)])]),
+        'G2 counts over the inputs J88-1F ruled as Node',
+        labels.map((l) => [l, want[l]]),
+      ),
+    );
   }
 
   notes.push(

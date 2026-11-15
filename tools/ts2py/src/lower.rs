@@ -236,6 +236,11 @@ const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
     // J87-3 (#316 G1: jobbudget).
     ("splice", 1, usize::MAX, None, Ret::List),
     ("reduce", 1, 2, Some(0), Ret::Any),
+    // J88-2 (#316 G2: eventlog, tokenledger, storage/logsegment).
+    ("endsWith", 1, 1, None, Ret::Bool),
+    ("trim", 0, 0, None, Ret::Str),
+    ("values", 0, 0, None, Ret::List),
+    ("subarray", 0, 2, None, Ret::Any),
 ];
 
 /// J86-R finding 3: every method a builtin prototype the subset can reach carries (String, Array,
@@ -327,6 +332,16 @@ const STATIC_CALLS: &[(&str, &str, &str, usize, usize, Ret)] = &[
         "_js_object_from_entries",
         1,
         1,
+        Ret::Any,
+    ),
+    // J88-2 (#316 G2). `JSON.stringify` with a replacer or a space goes to its own helper.
+    ("Date", "now", "_js_now", 0, 0, Ret::Num),
+    (
+        "Object",
+        "assign",
+        "_js_object_assign",
+        1,
+        usize::MAX,
         Ret::Any,
     ),
 ];
@@ -455,6 +470,14 @@ pub struct Lowerer<'s> {
     narrow: Vec<(Key, Fact)>,
     /// J87: the identifier being lowered is read where its value cannot escape (`peek`).
     peek_read: bool,
+    /// J88-2: `import * as fs from 'node:fs'`: local name -> the module specifier.
+    namespaces: HashMap<String, String>,
+    /// J88-2: lines to emit before the statement being lowered (an arrow function used as a value
+    /// becomes a nested `def` there), and that statement's indent.
+    pre: Vec<String>,
+    cur_indent: usize,
+    /// J88-2: how many callback lambdas enclose the expression being lowered.
+    in_callback: usize,
 }
 
 /// J87: a module function's signature, as the fixpoint and its call sites need it.
@@ -526,6 +549,10 @@ impl<'s> Lowerer<'s> {
             consts: HashSet::new(),
             narrow: Vec::new(),
             peek_read: false,
+            namespaces: HashMap::new(),
+            pre: Vec::new(),
+            cur_indent: 0,
+            in_callback: 0,
         }
     }
 
@@ -1447,8 +1474,11 @@ impl<'s> Lowerer<'s> {
         let peeked = std::mem::take(&mut self.peek_read);
         // J87-3: what a `catch` binding holds may be a Python exception (an adapter's OSError),
         // whose properties JS would read differently; only rethrowing it is accepted.
-        if self.catch_params.iter().any(|(n, _)| n == name) {
-            return self.refuse(span, "use of a catch binding other than rethrowing it");
+        // J88-2: read as a value, it is what was caught; the runtime answers only what JS would
+        // read of it (`_js_get`: an fs error's `code`, a JS Error's own properties) and refuses
+        // the rest.
+        if let Some((_, caught)) = self.catch_params.iter().rev().find(|(n, _)| n == name) {
+            return Py::atom(caught.clone());
         }
         if self.scopes.iter().rev().any(|scope| scope.contains(name)) {
             // J87: a `const` read anywhere its value can escape keeps no array contents.
@@ -1585,6 +1615,20 @@ impl<'s> Lowerer<'s> {
     }
 
     fn stmt(&mut self, s: &Statement<'_>, indent: usize, out: &mut Vec<String>) {
+        // J88-2: an arrow function used as a value inside this statement is a nested `def`
+        // emitted just before it (`pre`); a statement nested inside keeps its own.
+        let start = out.len();
+        let saved_pre = std::mem::take(&mut self.pre);
+        let saved_indent = std::mem::replace(&mut self.cur_indent, indent);
+        self.stmt_inner(s, indent, out);
+        self.cur_indent = saved_indent;
+        let pre = std::mem::replace(&mut self.pre, saved_pre);
+        if !pre.is_empty() {
+            out.splice(start..start, pre);
+        }
+    }
+
+    fn stmt_inner(&mut self, s: &Statement<'_>, indent: usize, out: &mut Vec<String>) {
         let p = pad(indent);
         match s {
             Statement::ExpressionStatement(e) => match &e.expression {
@@ -1783,11 +1827,34 @@ impl<'s> Lowerer<'s> {
     /// the `try` statement, outside the `except`, so nothing it raises is chained to what was
     /// caught: a JS throw carries no implicit cause. `finally` is refused.
     fn try_stmt(&mut self, t: &TryStatement<'_>, indent: usize, out: &mut Vec<String>) {
-        let p = pad(indent);
+        // J88-2: `finally` is Python's own: the try (and its catch) inside `try:`, the finalizer
+        // under `finally:`. Both run it on a normal end, a return, a break and a throw, and a
+        // `return` inside the finalizer replaces the completion in both.
         if let Some(finalizer) = &t.finalizer {
-            self.refuse(finalizer.span, "finally");
+            let p = pad(indent);
+            out.push(format!("{p}try:"));
+            let start = out.len();
+            if t.handler.is_some() {
+                self.try_catch(t, indent + 1, out);
+            } else {
+                self.block(&t.block.body, indent + 1, out);
+            }
+            if out.len() == start {
+                out.push(format!("{p}    pass"));
+            }
+            out.push(format!("{p}finally:"));
+            let start = out.len();
+            self.block(&finalizer.body, indent + 1, out);
+            if out.len() == start {
+                out.push(format!("{p}    pass"));
+            }
             return;
         }
+        self.try_catch(t, indent, out);
+    }
+
+    fn try_catch(&mut self, t: &TryStatement<'_>, indent: usize, out: &mut Vec<String>) {
+        let p = pad(indent);
         let Some(handler) = &t.handler else {
             self.refuse(t.span, "try without catch");
             return;
@@ -1962,7 +2029,23 @@ impl<'s> Lowerer<'s> {
             }
             AssignmentTarget::StaticMemberExpression(m) => {
                 if op.is_some() {
-                    self.refuse(a.span, "compound assignment to a property");
+                    // J88-2: `o.k op= v` on a local object: read, combine, put back.
+                    if !matches!(strip(&m.object), Expression::Identifier(id) if self.is_scoped(id.name.as_str()))
+                    {
+                        self.refuse(
+                            a.span,
+                            "compound assignment to a property of anything but a local",
+                        );
+                        return;
+                    }
+                    let object = self.expr(&m.object);
+                    let key = py_str(m.property.name.as_str());
+                    let current = Py::atom(format!("_js_get({}, {key})", object.code));
+                    let value = self.assigned_value(op, current, &a.right);
+                    out.push(format!(
+                        "{p}_js_put({}, {key}, {})",
+                        object.code, value.code
+                    ));
                     return;
                 }
                 let object = self.expr(&m.object);
@@ -1976,7 +2059,28 @@ impl<'s> Lowerer<'s> {
             }
             AssignmentTarget::ComputedMemberExpression(m) => {
                 if op.is_some() {
-                    self.refuse(a.span, "compound assignment to a property");
+                    // J88-2: `o[k] op= v` with a local object and a local or literal key.
+                    let local = |e: &Expression<'_>, this: &Self| matches!(strip(e), Expression::Identifier(id) if this.is_scoped(id.name.as_str()));
+                    let simple_key = local(&m.expression, self)
+                        || matches!(
+                            strip(&m.expression),
+                            Expression::StringLiteral(_) | Expression::NumericLiteral(_)
+                        );
+                    if !local(&m.object, self) || !simple_key {
+                        self.refuse(
+                            a.span,
+                            "compound assignment to a property of anything but a local",
+                        );
+                        return;
+                    }
+                    let object = self.expr(&m.object);
+                    let key = self.expr(&m.expression);
+                    let current = Py::atom(format!("_js_get({}, {})", object.code, key.code));
+                    let value = self.assigned_value(op, current, &a.right);
+                    out.push(format!(
+                        "{p}_js_put({}, {}, {})",
+                        object.code, key.code, value.code
+                    ));
                     return;
                 }
                 let object = self.expr(&m.object);
@@ -2181,6 +2285,42 @@ impl<'s> Lowerer<'s> {
                     let key = py_str(m.property.name.as_str());
                     return self.process_env_read(key);
                 }
+                // J88-2: `process.env` itself as a value (a default parameter): a snapshot of the
+                // environment taken where it is read (`process_env_all`), which a read-only use
+                // cannot tell from the live object.
+                if m.property.name == "env"
+                    && matches!(strip(&m.object), Expression::Identifier(p) if p.name == "process")
+                    && !self.is_local("process")
+                {
+                    let adapter =
+                        adapters::global("process.env.all").expect("declared in adapters.rs");
+                    self.imports
+                        .entry(self.ctx.adapter_module.clone())
+                        .or_default()
+                        .insert(adapter.py_name.to_string());
+                    return Py::atom(format!("{}()", adapter.py_name));
+                }
+                // J88-2: `process.pid`, the adapter.
+                if let Expression::Identifier(id) = strip(&m.object)
+                    && id.name == "process"
+                    && m.property.name == "pid"
+                    && !self.is_local("process")
+                {
+                    let adapter = adapters::global("process.pid").expect("declared in adapters.rs");
+                    self.imports
+                        .entry(self.ctx.adapter_module.clone())
+                        .or_default()
+                        .insert(adapter.py_name.to_string());
+                    return returned(Ret::Num, format!("{}()", adapter.py_name));
+                }
+                // J88-2: `x.constructor`, as an object whose `name` is the constructor's name
+                // (`_js_constructor_of`); the function itself is never handed out.
+                if m.property.name == "constructor"
+                    && !matches!(strip(&m.object), Expression::ThisExpression(_))
+                {
+                    let object = self.expr(&m.object);
+                    return Py::atom(format!("_js_constructor_of({})", object.code));
+                }
                 // J86-R finding 3: this arm is never a call's callee (`call` takes that member
                 // itself), so a callable name here is a method read as a value.
                 // J87: unless the receiver's declared type makes the member a data field.
@@ -2344,9 +2484,11 @@ impl<'s> Lowerer<'s> {
             Expression::TSNonNullExpression(x) => self.expr(&x.expression),
             Expression::TSTypeAssertion(x) => self.expr(&x.expression),
             Expression::TSInstantiationExpression(x) => self.expr(&x.expression),
-            Expression::ArrowFunctionExpression(a) => {
-                self.refuse(a.span, "arrow function outside a callback argument")
-            }
+            // J88-2: an arrow used as a value (passed to a function, say) is a nested `def` emitted
+            // before the statement, which closes over the enclosing locals as the arrow does;
+            // refused inside a callback lambda (whose parameters the `def` could not see) and,
+            // by `nested_def`, inside a loop.
+            Expression::ArrowFunctionExpression(a) => self.hoisted_arrow(a),
             Expression::ThisExpression(t) => {
                 if self.class_ctx.is_some() {
                     Py {
@@ -2693,6 +2835,29 @@ impl<'s> Lowerer<'s> {
             }
 
             Op::Exponential => self.exponent(b),
+            // J88-2: `a << b`, folded when both are small non-negative integer literals.
+            Op::ShiftLeft => {
+                if let (Expression::NumericLiteral(l), Expression::NumericLiteral(r)) =
+                    (strip(&b.left), strip(&b.right))
+                    && l.value >= 0.0
+                    && l.value.fract() == 0.0
+                    && r.value >= 0.0
+                    && r.value.fract() == 0.0
+                    && r.value < 31.0
+                    && l.value < 2f64.powi(31 - r.value as i32)
+                {
+                    let folded = (l.value as i64) << (r.value as i64);
+                    return Py {
+                        is_num: true,
+                        is_double: true,
+                        pure: true,
+                        ..Py::atom(folded.to_string())
+                    };
+                }
+                let left = self.expr(&b.left);
+                let right = self.expr(&b.right);
+                returned(Ret::Num, format!("_js_shl({}, {})", left.code, right.code))
+            }
             // J86: `key in obj`, own keys plus what Object.prototype supplies.
             Op::In => {
                 let key = self.expr(&b.left);
@@ -2901,6 +3066,30 @@ impl<'s> Lowerer<'s> {
             if callback == Some(i) {
                 match strip(e) {
                     Expression::ArrowFunctionExpression(a) => out.push(self.callback(a)),
+                    // J88-2: a module function by name (`rows.map(dumpsLine)`): called with as
+                    // many of the callback's arguments as it declares parameters, as JS binds
+                    // them (the rest JS passes are ignored by a function that declares none).
+                    Expression::Identifier(id)
+                        if !self.is_scoped(id.name.as_str())
+                            && self.sigs.contains_key(id.name.as_str()) =>
+                    {
+                        let n = self.sigs[id.name.as_str()].params.len();
+                        let callee = self.resolve(id.name.as_str(), id.span);
+                        let args: Vec<String> =
+                            (0..n).map(|k| format!("_js_a{k}=_JS_UNDEFINED")).collect();
+                        let pass: Vec<String> = (0..n).map(|k| format!("_js_a{k}")).collect();
+                        let mut params = args;
+                        params.push("*_".to_string());
+                        out.push(Py::new(
+                            format!(
+                                "lambda {}: {}({})",
+                                params.join(", "),
+                                callee.code,
+                                pass.join(", ")
+                            ),
+                            LAMBDA,
+                        ));
+                    }
                     other => {
                         self.refuse(
                             other.span(),
@@ -2924,8 +3113,12 @@ impl<'s> Lowerer<'s> {
             return self.refuse(a.span, "async function");
         }
         let body = match &a.body {
+            // J88-2: a block body is a loose nested `def` before the statement (`hoisted_arrow`).
             ArrowFunctionBody::FunctionBody(b) => {
-                return self.refuse(b.span, "block-bodied arrow function in a callback");
+                if self.in_callback > 0 || self.scopes.is_empty() {
+                    return self.refuse(b.span, "block-bodied arrow function in a callback");
+                }
+                return self.hoisted_arrow(a);
             }
             other => other
                 .as_expression()
@@ -2979,7 +3172,9 @@ impl<'s> Lowerer<'s> {
             self.bind(&name, Fact::default());
         }
         self.rets.push(None);
+        self.in_callback += 1;
         let value = self.expr(body);
+        self.in_callback -= 1;
         self.rets.pop();
         self.pop_scope();
         let mut code = value.at(TERNARY);
@@ -3190,6 +3385,34 @@ impl<'s> Lowerer<'s> {
                     return self.module_call(name, &sig, c);
                 }
                 let callee = self.resolve(name, id.span);
+                // J88-2: an adapter function called with `...xs` of an array PROVEN a list.
+                if self.adapter_fns.contains(name)
+                    && !self.is_scoped(name)
+                    && c.arguments
+                        .iter()
+                        .any(|a| matches!(a, Argument::SpreadElement(_)))
+                {
+                    let mut codes = Vec::new();
+                    for arg in &c.arguments {
+                        match arg {
+                            Argument::SpreadElement(spread) => {
+                                let value = self.expr(&spread.argument);
+                                if !value.is_list {
+                                    return self.refuse(
+                                        spread.span,
+                                        "spread of a value not proven an array",
+                                    );
+                                }
+                                codes.push(format!("*{}", value.at(ATOM)));
+                            }
+                            other => {
+                                let e = other.as_expression().expect("not a spread");
+                                codes.push(self.expr(e).code);
+                            }
+                        }
+                    }
+                    return Py::atom(format!("{}({})", callee.code, codes.join(", ")));
+                }
                 let Some(args) = self.args(&c.arguments, None, false) else {
                     return Py::atom("None");
                 };
@@ -3206,6 +3429,20 @@ impl<'s> Lowerer<'s> {
                         .class_ctx
                         .as_ref()
                         .is_some_and(|class| class.methods.contains(method));
+                    // J88-2: `this.f(...)` where `f` is a FIELD holding a function (a clock the
+                    // constructor was given): the attribute called. JS passes `this` and Python
+                    // does not, which only a function reading `this` could see; such a function
+                    // is a method or a class, never a field value ts2py compiles.
+                    let field = self
+                        .class_ctx
+                        .as_ref()
+                        .is_some_and(|class| class.members.contains(method));
+                    if !declared && field {
+                        let Some(args) = self.args(&c.arguments, None, false) else {
+                            return Py::atom("None");
+                        };
+                        return Py::atom(format!("self.{method}({})", args.join(", ")));
+                    }
                     if !declared {
                         let construct =
                             format!("this.{method}() for a method the class does not declare");
@@ -3216,10 +3453,34 @@ impl<'s> Lowerer<'s> {
                     };
                     return Py::atom(format!("self.{method}({})", args.join(", ")));
                 }
+                // J88-2: `new Date(ms).toISOString()`.
+                if method == "toISOString"
+                    && c.arguments.is_empty()
+                    && let Expression::NewExpression(n) = strip(&m.object)
+                    && matches!(strip(&n.callee), Expression::Identifier(d) if d.name == "Date")
+                    && !self.is_local("Date")
+                    && n.arguments.len() == 1
+                {
+                    let Some(args) = self.args(&n.arguments, None, false) else {
+                        return Py::atom("None");
+                    };
+                    return returned(Ret::Str, format!("_js_date_to_iso({})", args[0]));
+                }
                 if let Expression::Identifier(object) = strip(&m.object)
                     && !self.is_local(object.name.as_str())
+                    && !self.classes.contains_key(object.name.as_str())
                 {
                     return self.static_call(object.name.as_str(), method, c);
+                }
+                // J88-2: `C.m(...)`, a static method a compiled class declares.
+                if let Expression::Identifier(object) = strip(&m.object)
+                    && !self.is_scoped(object.name.as_str())
+                    && let Some(py) = self.classes.get(object.name.as_str()).cloned()
+                {
+                    let Some(args) = self.args(&c.arguments, None, false) else {
+                        return Py::atom("None");
+                    };
+                    return Py::atom(format!("{py}.{method}({})", args.join(", ")));
                 }
                 let builtin = METHODS.iter().find(|(name, ..)| *name == method);
                 let class_method = self.ctx.class_methods.contains(method);
@@ -3289,6 +3550,56 @@ impl<'s> Lowerer<'s> {
     }
 
     fn static_call(&mut self, object: &str, method: &str, c: &CallExpression<'_>) -> Py {
+        // J88-2: a function of a namespace-imported Node module, or a Node global's static
+        // (`Buffer.from`): its adapter row, called with the arguments as given.
+        let adapter = match self.namespaces.get(object) {
+            Some(module) => {
+                let module = module.clone();
+                match adapters::import(&module, method) {
+                    Some(a) if a.kind == AdapterKind::Function => Some(a),
+                    _ => {
+                        let construct = format!("{module} function {method}: no declared adapter");
+                        return self.refuse(c.span, construct);
+                    }
+                }
+            }
+            None => adapters::global(&format!("{object}.{method}"))
+                .filter(|a| a.kind == AdapterKind::Function),
+        };
+        if let Some(adapter) = adapter {
+            self.imports
+                .entry(self.ctx.adapter_module.clone())
+                .or_default()
+                .insert(adapter.py_name.to_string());
+            let Some(args) = self.args(&c.arguments, None, false) else {
+                return Py::atom("None");
+            };
+            return Py::atom(format!("{}({})", adapter.py_name, args.join(", ")));
+        }
+        // J88-2: `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)`, the one
+        // spelling of a synchronous sleep: nothing can notify that fresh buffer.
+        if object == "Atomics" && method == "wait" && !self.is_local("Atomics") {
+            let fresh = c.arguments.len() == 4
+                && matches!(c.arguments[0].as_expression().map(strip), Some(Expression::NewExpression(n))
+                    if matches!(strip(&n.callee), Expression::Identifier(i) if i.name == "Int32Array")
+                        && n.arguments.len() == 1
+                        && matches!(n.arguments[0].as_expression().map(strip), Some(Expression::NewExpression(inner))
+                            if matches!(strip(&inner.callee), Expression::Identifier(i) if i.name == "SharedArrayBuffer")))
+                && matches!(c.arguments[1].as_expression().map(strip), Some(Expression::NumericLiteral(n)) if n.value == 0.0)
+                && matches!(c.arguments[2].as_expression().map(strip), Some(Expression::NumericLiteral(n)) if n.value == 0.0);
+            if !fresh {
+                return self.refuse(c.span, "Atomics.wait other than a sleep on a fresh buffer");
+            }
+            let ms = self.expr(c.arguments[3].as_expression().expect("checked above"));
+            return returned(Ret::Str, format!("_js_sleep_ms({})", ms.code));
+        }
+        // J88-2: `JSON.stringify(value, replacer, space)`.
+        if object == "JSON" && method == "stringify" && (2..=3).contains(&c.arguments.len()) {
+            let Some(args) = self.args(&c.arguments, None, false) else {
+                return Py::atom("None");
+            };
+            return Py::atom(format!("_js_json_stringify_with({})", args.join(", ")));
+        }
         let Some(&(_, _, helper, min, max, ret)) = STATIC_CALLS
             .iter()
             .find(|(o, m, ..)| *o == object && *m == method)
@@ -3348,15 +3659,15 @@ impl<'s> Lowerer<'s> {
                     Some(if name == "Map" { "_JsMap" } else { "_JsSet" }.to_string())
                 }
                 // J86: the built-in Errors the codec throws.
-                "Error" | "TypeError" => {
+                "Error" | "TypeError" | "RangeError" => {
                     if n.arguments.len() > 1 {
                         return self.refuse(n.span, "argument count for new Error");
                     }
                     Some(
-                        if name == "Error" {
-                            "_JsError"
-                        } else {
-                            "_JsTypeError"
+                        match name {
+                            "Error" => "_JsError",
+                            "TypeError" => "_JsTypeError",
+                            _ => "_JsRangeError",
                         }
                         .to_string(),
                     )
@@ -3469,6 +3780,15 @@ impl<'s> Lowerer<'s> {
         };
         let resolved = resolve_specifier(&self.ctx.path, spec);
         for specifier in specifiers {
+            // J88-2: `import * as fs from 'node:fs'`: `fs.name(...)` is that module's adapter row.
+            if let ImportDeclarationSpecifier::ImportNamespaceSpecifier(ns) = specifier
+                && spec.starts_with("node:")
+            {
+                let local = ns.local.name.as_str();
+                self.claim(local, local, ns.span);
+                self.namespaces.insert(local.to_string(), spec.to_string());
+                continue;
+            }
             let ImportDeclarationSpecifier::ImportSpecifier(s) = specifier else {
                 self.refuse(specifier.span(), "default or namespace import");
                 continue;
@@ -3528,6 +3848,7 @@ impl<'s> Lowerer<'s> {
                         AdapterKind::Function => {
                             self.adapter_fns.insert(local.to_string());
                         }
+                        AdapterKind::Constant => {}
                     }
                 }
                 None => {
@@ -3610,6 +3931,7 @@ impl<'s> Lowerer<'s> {
 
         let mut fields: Vec<&PropertyDefinition<'_>> = Vec::new();
         let mut methods: Vec<&MethodDefinition<'_>> = Vec::new();
+        let mut statics: Vec<&MethodDefinition<'_>> = Vec::new();
         let mut constructor: Option<&MethodDefinition<'_>> = None;
         let mut own: BTreeSet<String> = BTreeSet::new();
         let mut own_methods: BTreeSet<String> = BTreeSet::new();
@@ -3627,8 +3949,22 @@ impl<'s> Lowerer<'s> {
                     fields.push(p);
                 }
                 ClassElement::MethodDefinition(m) => {
-                    if m.r#static || m.computed || !m.decorators.is_empty() {
+                    if m.computed || !m.decorators.is_empty() {
                         self.refuse(m.span, "static or computed method");
+                        continue;
+                    }
+                    // J88-2: a static METHOD (not a getter, not a field) is a `@staticmethod`
+                    // whose body has no `this`; it is not an own member of an instance.
+                    if m.r#static {
+                        if m.kind != MethodDefinitionKind::Method
+                            || m.value.generator
+                            || m.value.r#async
+                            || m.value.body.is_none()
+                        {
+                            self.refuse(m.span, "static or computed method");
+                            continue;
+                        }
+                        statics.push(m);
                         continue;
                     }
                     if m.value.generator || m.value.r#async {
@@ -3781,6 +4117,36 @@ impl<'s> Lowerer<'s> {
             self.rets.pop();
             self.pop_scope();
         }
+        // J88-2: static methods, lowered with no class context (so `this` is refused).
+        let instance_ctx = self.class_ctx.take();
+        for m in statics {
+            let key = match self.member_name(&m.key, m.span, is_error) {
+                Some(key) => key,
+                None => continue,
+            };
+            let f = &m.value;
+            let statements: &[Statement<'_>] =
+                f.body.as_ref().map_or(&[], |b| b.statements.as_slice());
+            let names = self.params(&f.params);
+            let mut locals: HashSet<String> = names.iter().map(|(src, _)| src.clone()).collect();
+            let mut stack = vec![locals.clone()];
+            self.collect_block(statements, &mut stack, &mut locals);
+            self.push_scope(locals, m.span.start);
+            self.rets.push(None);
+            self.bind_params(&f.params, &[]);
+            out.push(String::new());
+            out.push("    @staticmethod".to_string());
+            out.push(format!("    def {key}({}):", join_params(&names)));
+            self.param_defaults(&f.params, 2, out);
+            self.hoist_params(&f.params, 2, out);
+            self.block(statements, 2, out);
+            if !ends_in_exit(statements) {
+                out.push("        return _JS_UNDEFINED".to_string());
+            }
+            self.rets.pop();
+            self.pop_scope();
+        }
+        drop(instance_ctx);
         self.class_ctx = saved;
     }
 
@@ -3849,6 +4215,7 @@ impl<'s> Lowerer<'s> {
         match name {
             "Error" if !self.is_local(name) => Some("_JsError".to_string()),
             "TypeError" if !self.is_local(name) => Some("_JsTypeError".to_string()),
+            "RangeError" if !self.is_local(name) => Some("_JsRangeError".to_string()),
             _ => None,
         }
     }
@@ -3866,6 +4233,20 @@ impl<'s> Lowerer<'s> {
 
     // ---------------------------------------------------------------- J86: closures
 
+    /// J88-2: an arrow used as a value: a loose nested `def` emitted before the statement.
+    fn hoisted_arrow(&mut self, a: &ArrowFunctionExpression<'_>) -> Py {
+        if self.in_callback > 0 || self.scopes.is_empty() {
+            return self.refuse(a.span, "arrow function outside a callback argument");
+        }
+        let name = format!("_js_fn{}", self.tmp);
+        self.tmp += 1;
+        let mut lines = Vec::new();
+        let indent = self.cur_indent;
+        self.nested_def_with(&name, a, indent, &mut lines, true);
+        self.pre.extend(lines);
+        Py::atom(name)
+    }
+
     /// `const f = (...) => ...` inside a function: a nested `def`, which closes over the enclosing
     /// function's locals as the arrow does; one it assigns is declared `nonlocal`. Refused inside
     /// a loop, where JS gives each iteration its own binding and Python would share one.
@@ -3876,6 +4257,19 @@ impl<'s> Lowerer<'s> {
         indent: usize,
         out: &mut Vec<String>,
     ) {
+        self.nested_def_with(name, a, indent, out, false);
+    }
+
+    /// `loose` (J88-2, an arrow used as a value): every parameter defaults to `undefined` and
+    /// extra arguments are swallowed, as a JS function called with fewer or more does.
+    fn nested_def_with(
+        &mut self,
+        name: &str,
+        a: &ArrowFunctionExpression<'_>,
+        indent: usize,
+        out: &mut Vec<String>,
+        loose: bool,
+    ) {
         if a.r#async {
             self.refuse(a.span, "async function");
             return;
@@ -3884,7 +4278,14 @@ impl<'s> Lowerer<'s> {
             self.refuse(a.span, "function defined inside a loop");
             return;
         }
-        let names = self.params(&a.params);
+        let mut names = self.params(&a.params);
+        if loose {
+            for (_, py) in names.iter_mut() {
+                if !py.ends_with("=_JS_UNDEFINED") {
+                    py.push_str("=_JS_UNDEFINED");
+                }
+            }
+        }
         let mut locals: HashSet<String> = names.iter().map(|(src, _)| src.clone()).collect();
         if let ArrowFunctionBody::FunctionBody(body) = &a.body {
             let mut stack = vec![locals.clone()];
@@ -3917,11 +4318,15 @@ impl<'s> Lowerer<'s> {
         let (_, nonlocals) = self.defs.pop().expect("pushed above");
         self.rets.pop();
         self.pop_scope();
-        out.push(format!(
-            "{}def {name}({}):",
-            pad(indent),
-            join_params(&names)
-        ));
+        let mut signature = join_params(&names);
+        if loose {
+            signature = if signature.is_empty() {
+                "*_".to_string()
+            } else {
+                format!("{signature}, *_")
+            };
+        }
+        out.push(format!("{}def {name}({signature}):", pad(indent)));
         if !nonlocals.is_empty() {
             let names: Vec<String> = nonlocals.iter().map(|n| py_name(n, false, false)).collect();
             out.push(format!("{}nonlocal {}", pad(indent + 1), names.join(", ")));

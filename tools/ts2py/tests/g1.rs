@@ -180,7 +180,7 @@ except TypeError as e:
     assert_eq!(
         out,
         format!(
-            "FileNotFoundError True\nFileNotFoundError True\ncaught\n{directory} True\n{directory} True\ncaught\nts2py: fs.readFileSync without the 'utf8' encoding is outside the subset\n"
+            "FileNotFoundError True\nFileNotFoundError True\ncaught\n{directory} True\n{directory} True\ncaught\nts2py: fs.readFileSync with an encoding but 'utf8' is outside the subset\n"
         )
     );
 }

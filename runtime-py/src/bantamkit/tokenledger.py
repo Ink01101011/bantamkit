@@ -87,105 +87,68 @@ default.json` ships with NO rates on purpose, so for every model this answers
 `{"unavailable": "no rate recorded for model ..."}` until an operator records one with its date
 and its source. That is the default answer a user sees, not an error path -- it is the point of
 AS-1(b), and this is the surface it was waiting for.
+
+**Generated, not hand-written (#316 G2, J88-2).** The walk, every omission rule and the ceiling
+are `bantamkit/_generated/tokenledger.py`, compiled from `runtime-ts/src/tokenledger.ts` by
+`tools/ts2py` (`docs/porting.md`, *Generated modules*; do not edit it, regenerate it), so both
+runtimes run one source and `tools/conformance/suites/tokenledger.mjs` compares them. This
+module keeps the public surface the hand-written one had (shim conveniences, listed in
+`docs/porting.md`): `read(root, model=None, prices=None)` answers the frozen `Ledger` /
+`Session` / `Omission` dataclasses (a `Path` root or prices path is used as `str()`), the
+`OMIT_*` constants, `OMISSION_ORDER` and `TOKEN_CLASSES` as tuples, `TokenLedgerError` (the
+generated class, a `bantamkit.client.BantamError`), and `_walk(base)` as `(Path, relpath)` pairs.
+`Ledger.as_json()` is the TypeScript's `asJson` (`JSON.stringify(doc, null, 2)`).
 """
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from bantamkit.client import BantamError
-from bantamkit.pricing import (
-    MAX_SAFE_INT,
-    TOKEN_CLASSES,
-    load_price_table,
-    price_tokens,
-)
-
-#: Every omission subject, in the order they are reported. Fixed here rather than derived from
-#: what a run happened to see, so two corpora produce comparable documents and a subject that
-#: never fires is visibly absent rather than merely unmentioned.
-OMIT_UNDECODABLE = "undecodable-file"
-OMIT_UNPARSED = "unparsed-line"
-OMIT_NOT_OBJECT = "not-an-object"
-OMIT_NO_SESSION = "no-session-id"
-OMIT_NOT_ASSISTANT = "not-an-assistant-record"
-OMIT_NO_USAGE = "no-usage"
-OMIT_MALFORMED_USAGE = "malformed-usage"
-OMIT_NO_REQUEST_ID = "no-request-id"
-OMIT_DUPLICATE_REQUEST = "duplicate-request"
-
-OMISSION_ORDER = (
-    OMIT_UNDECODABLE,
-    OMIT_UNPARSED,
-    OMIT_NOT_OBJECT,
-    OMIT_NO_SESSION,
-    OMIT_NOT_ASSISTANT,
-    OMIT_NO_USAGE,
+from bantamkit._generated import tokenledger as _generated
+from bantamkit._generated._ts2py_runtime import _js_py_value
+from bantamkit._generated.tokenledger import (
+    OMIT_DUPLICATE_REQUEST,
     OMIT_MALFORMED_USAGE,
     OMIT_NO_REQUEST_ID,
-    OMIT_DUPLICATE_REQUEST,
+    OMIT_NO_SESSION,
+    OMIT_NO_USAGE,
+    OMIT_NOT_ASSISTANT,
+    OMIT_NOT_OBJECT,
+    OMIT_UNDECODABLE,
+    OMIT_UNPARSED,
+    TRANSCRIPT_SUFFIX,
+    TokenLedgerError,
 )
+from bantamkit.pricing import MAX_SAFE_INT, TOKEN_CLASSES
 
-#: The transcript extension the host writes. Anything else under `root` is not read and is not
-#: counted -- it is not a transcript, so it is not an omission either.
-TRANSCRIPT_SUFFIX = ".jsonl"
+__all__ = [
+    "MAX_SAFE_INT",
+    "OMISSION_ORDER",
+    "OMIT_DUPLICATE_REQUEST",
+    "OMIT_MALFORMED_USAGE",
+    "OMIT_NOT_ASSISTANT",
+    "OMIT_NOT_OBJECT",
+    "OMIT_NO_REQUEST_ID",
+    "OMIT_NO_SESSION",
+    "OMIT_NO_USAGE",
+    "OMIT_UNDECODABLE",
+    "OMIT_UNPARSED",
+    "TOKEN_CLASSES",
+    "TRANSCRIPT_SUFFIX",
+    "Ledger",
+    "Omission",
+    "Session",
+    "TokenLedgerError",
+    "read",
+]
 
-
-class TokenLedgerError(BantamError):
-    """The scan could not be run at all: the message names what was wrong with the request.
-
-    Reserved for a failure of the SCAN, exactly as `SkillAuditError` is. A file that will not
-    decode, a line that will not parse and a record with no usage are omissions and are counted;
-    a ledger that refused because one of eight hundred transcripts is truncated would have told
-    the operator nothing about the other seven hundred and ninety-nine.
-    """
-
-
-def _reject_constant(name: str) -> float:
-    raise ValueError(name)
-
-
-def _decode_line(text: str) -> object:
-    """One transcript line, decoded the way `JSON.parse` decodes it.
-
-    `parse_constant` closes CPython's non-standard extension in the same place and for the same
-    reason `pricing.decode_price_json` does: `json.loads` accepts the bare tokens `NaN`,
-    `Infinity` and `-Infinity` and `JSON.parse` rejects them, so without this a transcript
-    carrying one is a counted record here and an `unparsed-line` there.
-    """
-    return json.loads(text, parse_constant=_reject_constant)
-
-
-def _is_count(value: object) -> bool:
-    """A non-negative integer below `2**53` both runtimes hold exactly, however JSON spelled it.
-
-    `pricing._is_count`'s rule, restated here because it is this module's rule too and the
-    two hold the same two measured holes: `True` is an `int` in Python and a boolean in Node,
-    and `json.loads('7.0')` is a float here and indistinguishable from `7` there.
-    """
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        return 0 <= value <= MAX_SAFE_INT
-    if isinstance(value, float):
-        return value.is_integer() and 0 <= value <= MAX_SAFE_INT
-    return False
+OMISSION_ORDER = tuple(_generated.OMISSION_ORDER)
 
 
 @dataclass(frozen=True)
 class Omission:
-    """A line that was read and not counted, as a COUNT and one place to go look.
-
-    - `subject` -- one of the `OMIT_*` tokens.
-    - `count` -- how many lines. Never an estimate.
-    - `what` -- the FIRST site, `<relpath>:<1-based line>`, plus `and N more` when there are
-      more. Bounded on purpose: a real corpus omits tens of thousands of lines as
-      `not-an-assistant-record`, and a tool that listed them all would hand a model a megabyte
-      of paths in place of an answer.
-    """
+    """A line that was read and not counted, as a COUNT and one place to go look."""
 
     subject: str
     count: int
@@ -249,241 +212,46 @@ class Ledger:
         return doc
 
     def as_json(self) -> str:
-        """Two-space indent and no ASCII escaping, so `JSON.stringify(doc, null, 2)` in the
-        port produces the same bytes and a conformance case can compare them."""
-        return json.dumps(self.as_dict(), indent=2, ensure_ascii=False)
+        """`asJson`: `JSON.stringify(doc, null, 2)`, the bytes the port prints. `as_dict()` is a
+        ledger-shaped document itself, so the generated `asDict` reads it back unchanged."""
+        return _generated.as_json(self.as_dict())
 
 
-@dataclass
-class _Accumulator:
-    """One session while the walk is still running."""
-
-    session: str
-    cwd: str = ""
-    first: str = ""
-    last: str = ""
-    requests: int = 0
-    sidechain_requests: int = 0
-    tokens: dict = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.tokens is None:
-            self.tokens = {cls: 0 for cls in TOKEN_CLASSES}
-
-
-def _is_junction(path: Path) -> bool:
-    """`Path.is_junction()` where it exists (3.12+); before it, no junction is named."""
-    probe = getattr(path, "is_junction", None)
-    return bool(probe()) if probe is not None else False
-
-
-def _walk(base: Path) -> list[tuple[Path, str]]:
-    """Every `*.jsonl` under `base`, in one deterministic order, each with the name it is called by.
-
-    Sorted by entry NAME in code-point order at every level, directories and files in the same
-    listing, so the sequence is a property of the tree and not of the filesystem. It has to be:
-    the walk order decides which copy of a duplicated `requestId` is the one that counts, so an
-    unsorted walk would make the ANSWER depend on inode order.
-
-    The relative name is BUILT during the descent -- `'/'.join(names)` -- rather than derived
-    afterwards from the two paths. `Path('./x')` normalises to `x` here and `path.join('a//b',
-    'c')` normalises in the port, and neither normalisation is the other's; carrying the name
-    down means the string a caller reads in `omissions[].what` never passed through either.
-    """
-    found: list[tuple[Path, str]] = []
-
-    def visit(directory: Path, prefix: str) -> None:
-        try:
-            names = sorted(os.listdir(directory))
-        except OSError:
-            return
-        for name in names:
-            child = directory / name
-            rel = f"{prefix}{name}"
-            if child.is_dir():
-                # #151: a symlinked directory is not a transcript tree. `is_dir()` follows the
-                # link, so a link to a directory lands in this arm and is skipped here: neither
-                # walked nor read. Node's `lstatSync` calls a Windows junction a symbolic link,
-                # so a junction is skipped too where this Python can name one.
-                if not (child.is_symlink() or _is_junction(child)):
-                    visit(child, f"{rel}/")
-            elif name.endswith(TRANSCRIPT_SUFFIX):
-                found.append((child, rel))
-
-    visit(base, "")
-    return found
-
-
-def _usage_of(record: dict) -> object:
-    message = record.get("message")
-    if not isinstance(message, dict):
-        return None
-    return message.get("usage")
+def _walk(base: Path | str) -> list[tuple[Path, str]]:
+    """Every `*.jsonl` under `base`, in one deterministic order, each with its relative name."""
+    return [(Path(path), rel) for path, rel in _generated.walk(str(base))]
 
 
 def read(
     root: str | Path,
     model: str | None = None,
-    prices: str | None = None,
+    prices: str | Path | None = None,
 ) -> Ledger:
-    """Walk `root` and answer the ledger.
-
-    An empty `root` is refused rather than resolved, the same refusal `skill_audit` makes and
-    for the same measured reason: `Path("")` is `Path(".")` here and `statSync('')` throws in
-    the port, so the two runtimes would answer a CWD-relative ledger and a refusal for one
-    input.
-
-    `model` omitted is not `model` empty. An absent model asks for no cost and gets no `cost`
-    key at all; an empty string names no model and is refused, because it would otherwise be
-    looked up in the rate table and reported as "no rate recorded for model ''", which reads
-    like a missing price rather than a missing argument.
-    """
-    if str(root) == "":
-        raise TokenLedgerError(
-            "root must not be empty; name the directory of transcripts to read"
+    """Walk `root` and answer the ledger (`runtime-ts/src/tokenledger.ts`'s `read`)."""
+    js = _generated.read(
+        str(root), {"model": model, "prices": None if prices is None else str(prices)}
+    )
+    sessions = tuple(
+        Session(
+            session=s["session"],
+            cwd=s["cwd"],
+            first=s["first"],
+            last=s["last"],
+            requests=s["requests"],
+            sidechain_requests=s["sidechain_requests"],
+            tokens={cls: s[cls] for cls in TOKEN_CLASSES},
         )
-    if model is not None and model == "":
-        raise TokenLedgerError("model must not be empty; name the model to price, or omit it")
-    base = Path(root)
-    if not base.exists():
-        raise TokenLedgerError(f"no such directory: {root}")
-    if not base.is_dir():
-        raise TokenLedgerError(f"{root} is a file, not a directory of transcripts")
-
-    files = _walk(base)
-    sessions: dict[str, _Accumulator] = {}
-    omissions: dict[str, list] = {subject: [0, ""] for subject in OMISSION_ORDER}
-    totals = {cls: 0 for cls in TOKEN_CLASSES}
-    seen_requests: set[str] = set()
-    lines = 0
-
-    def omit(subject: str, site: str) -> None:
-        entry = omissions[subject]
-        if entry[0] == 0:
-            entry[1] = site
-        entry[0] += 1
-
-    for path, relpath in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            # The file exists and is a transcript by name; it is one line of nothing anyone can
-            # read. Counted as ONE omission and not as N, because N is not knowable.
-            lines += 1
-            omit(OMIT_UNDECODABLE, f"{relpath}:1")
-            continue
-        for index, line in enumerate(text.split("\n")):
-            if line == "":
-                # Not a record. The last one is the file's trailing newline; counting it would
-                # put a permanent off-by-one in `lines == requests + sum(counts)`.
-                continue
-            lines += 1
-            site = f"{relpath}:{index + 1}"
-            try:
-                record = _decode_line(line)
-            except ValueError:
-                omit(OMIT_UNPARSED, site)
-                continue
-            if not isinstance(record, dict):
-                omit(OMIT_NOT_OBJECT, site)
-                continue
-            session_id = record.get("sessionId")
-            if not isinstance(session_id, str) or session_id == "":
-                omit(OMIT_NO_SESSION, site)
-                continue
-            if record.get("type") != "assistant":
-                omit(OMIT_NOT_ASSISTANT, site)
-                continue
-            usage = _usage_of(record)
-            if usage is None:
-                omit(OMIT_NO_USAGE, site)
-                continue
-            if not isinstance(usage, dict) or not all(
-                _is_count(usage.get(cls)) for cls in TOKEN_CLASSES
-            ):
-                # A real `usage` also carries `service_tier`, `iterations` and friends. Those
-                # are the host's and are ignored; what is required is that all FOUR classes
-                # this ledger reports are present and are counts. A class silently defaulted
-                # to zero is a token silently invented, which is `pricing`'s rule about money
-                # applied one layer earlier.
-                omit(OMIT_MALFORMED_USAGE, site)
-                continue
-            request_id = record.get("requestId")
-            if not isinstance(request_id, str) or request_id == "":
-                omit(OMIT_NO_REQUEST_ID, site)
-                continue
-            if request_id in seen_requests:
-                omit(OMIT_DUPLICATE_REQUEST, site)
-                continue
-            seen_requests.add(request_id)
-
-            acc = sessions.get(session_id)
-            if acc is None:
-                acc = _Accumulator(session_id)
-                sessions[session_id] = acc
-            cwd = record.get("cwd")
-            if acc.cwd == "" and isinstance(cwd, str):
-                acc.cwd = cwd
-            stamp = record.get("timestamp")
-            if isinstance(stamp, str) and stamp != "":
-                if acc.first == "" or stamp < acc.first:
-                    acc.first = stamp
-                if stamp > acc.last:
-                    acc.last = stamp
-            acc.requests += 1
-            if record.get("isSidechain") is True:
-                acc.sidechain_requests += 1
-            for cls in TOKEN_CLASSES:
-                count = int(usage[cls])
-                # BEFORE the addition, and phrased as a subtraction of two values the ceiling
-                # already holds -- `total + count` above 2**53 is rounded by a JS `number`, so
-                # a check written after the fact would be comparing a number one side already
-                # got wrong.
-                if count > MAX_SAFE_INT - totals[cls]:
-                    raise TokenLedgerError(
-                        f"{cls} total exceeds 2**53-1, which is the largest integer both "
-                        f"runtimes represent exactly"
-                    )
-                acc.tokens[cls] += count
-                totals[cls] += count
-
-    ordered = sorted(sessions.values(), key=lambda a: (a.first, a.session))
-    records = tuple(
-        Omission(subject, omissions[subject][0], _what(omissions[subject]))
-        for subject in OMISSION_ORDER
-        if omissions[subject][0] > 0
+        for s in js["sessions"]
     )
-
-    cost = None
-    if model is not None:
-        cost = price_tokens(load_price_table(prices), model, dict(totals))
-
+    omissions = tuple(Omission(o["subject"], o["count"], o["what"]) for o in js["omissions"])
+    cost = js.get("cost")
     return Ledger(
-        root=str(root),
-        transcripts=len(files),
-        lines=lines,
-        requests=len(seen_requests),
-        totals=totals,
-        sessions=tuple(
-            Session(
-                session=a.session,
-                cwd=a.cwd,
-                first=a.first,
-                last=a.last,
-                requests=a.requests,
-                sidechain_requests=a.sidechain_requests,
-                tokens=a.tokens,
-            )
-            for a in ordered
-        ),
-        omissions=records,
-        cost=cost,
+        root=js["root"],
+        transcripts=js["transcripts"],
+        lines=js["lines"],
+        requests=js["requests"],
+        totals=dict(js["totals"]),
+        sessions=sessions,
+        omissions=omissions,
+        cost=None if cost is None else _js_py_value(cost),
     )
-
-
-def _what(entry: list) -> str:
-    """`<relpath>:<line>` for the first site, plus `and N more` when there are more."""
-    count, site = entry[0], entry[1]
-    if count <= 1:
-        return site
-    return f"{site} and {count - 1} more"

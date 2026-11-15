@@ -56,146 +56,108 @@ path whose parent cannot be created: the record disappears, the call does not. A
 encoding or type error is NOT swallowed — that would be a programming error in this
 module, and hiding it would leave the log silently empty forever.
 
-THE RECORD IS A CROSS-RUNTIME CONTRACT, not an implementation detail. `runtime-ts`
-emits the same bytes and a conformance case compares them. The shape, the key order,
-the timestamp format, the file location and the rotation rule are all specified in
+THE RECORD IS A CROSS-RUNTIME CONTRACT, not an implementation detail. The shape, the key
+order, the timestamp format, the file location and the rotation rule are all specified in
 `docs/eventlog.md`; change them there and in both runtimes or not at all.
+
+**Generated, not hand-written (#316 G2, J88-2).** Every rule is
+`bantamkit/_generated/eventlog.py`, compiled from `runtime-ts/src/eventlog.ts` by `tools/ts2py`
+(`docs/porting.md`, *Generated modules*; do not edit it, regenerate it), so both runtimes run
+one source and `tools/conformance/suites/eventlog.mjs` compares them. This module keeps the
+public surface the hand-written one had (shim conveniences, listed in `docs/porting.md`):
+
+- paths are `Path`s on the way in and out; a literal `BANTAMKIT_EVENT_LOG` path keeps its exact
+  spelling (`str()` gives it back, a trailing `/` included), because the TypeScript uses the
+  string as given and a `Path` would normalise it;
+- `EventLog(path, cap_bytes=..., clock=..., requires_dir=...)`, `.cap_bytes`, `.requires_dir`,
+  `.write_failed` and `from_env(store_root, env=None, clock=...)` (`None` is `os.environ`);
+- a caller's tuple inside `detail` is handed over as a list, as `json.dumps` wrote one;
+- `raised(tool, exc)` records `type(exc).__name__`, the CPython reference the TypeScript's
+  `typeNameOf` reproduces for every exception Node can throw (an OSError subclass constructed
+  with no errno, or an errno outside `pyfs.ts`'s table, keeps its Python class name here).
 """
 
 from __future__ import annotations
 
-import json
 import os
-import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from bantamkit.memory.store import bantamkit_dir_for, ensure_bantamkit_gitignore
-from bantamkit.storage.logsegment import LogSegment
+from bantamkit._generated import eventlog as _generated
+from bantamkit._generated._ts2py_runtime import _js_now
+from bantamkit._generated.eventlog import (
+    CAP_BYTES,
+    EVENT_LOG_ENV,
+    SCHEMA_VERSION,
+    format_timestamp,
+)
+from bantamkit.storage.logsegment import _js
 
-#: Environment switch. Unset or `off`/`0`/`false`/`no`/empty -> disabled. `on`/`1`/
-#: `true`/`yes` -> the default file inside the memory store. Anything else is taken as
-#: the literal path of the log file.
-EVENT_LOG_ENV = "BANTAMKIT_EVENT_LOG"
+__all__ = [
+    "CAP_BYTES",
+    "DEFAULT_RELATIVE_PATH",
+    "EVENT_LOG_ENV",
+    "SCHEMA_VERSION",
+    "EventLog",
+    "default_path",
+    "encode_record",
+    "format_timestamp",
+    "resolve_path",
+]
 
-#: Relative to the memory store root. NOT `facts/`, NOT `archive/`, NOT `index.md`, and
-#: not a `*.md` name anywhere — see `default_path` for the measured scan boundary.
-DEFAULT_RELATIVE_PATH = ("events", "mcp.jsonl")
+#: Relative to the memory store root (a tuple, as before; the generated module holds a list).
+DEFAULT_RELATIVE_PATH = tuple(_generated.DEFAULT_RELATIVE_PATH)
 
-#: The live file is rotated before it would exceed this many bytes; exactly one previous
-#: generation is kept, at `<path>.1`. On-disk ceiling for the pair: 2 MiB, plus at most
-#: one oversized record (a record is never split).
-CAP_BYTES = 1 << 20  # 1048576
 
-#: Record schema version. Bump only when a key is added, removed or renamed; both
-#: runtimes move together.
-SCHEMA_VERSION = 1
+class _SpelledPath(type(Path())):  # type: ignore[misc]
+    """A `Path` whose `str()` is the exact string it was made from (`a//b/` stays `a//b/`).
 
-_OFF = frozenset({"", "0", "off", "false", "no"})
-_ON = frozenset({"1", "on", "true", "yes"})
+    The TypeScript opens a literal log path as spelled; a plain `Path` would normalise the
+    spelling away, and with it the answer (a trailing `/` is a write failure in Node)."""
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+    def __init__(self, spelled: str) -> None:
+        super().__init__(spelled)
+        self._spelled = spelled
+
+    def __str__(self) -> str:
+        return self._spelled
+
+    def __fspath__(self) -> str:
+        return self._spelled
+
+    def __repr__(self) -> str:
+        return f"{type(Path()).__name__}({self._spelled!r})"
+
+    def with_segments(self, *segments: Any) -> Path:
+        # A path derived from this one (`/`, `.parent`, `.with_name`) is an ordinary `Path`.
+        return Path(*segments)
+
+
+def _as_path(spelled: str | None) -> Path | None:
+    if spelled is None:
+        return None
+    return Path(spelled) if str(Path(spelled)) == spelled else _SpelledPath(spelled)
 
 
 def _default_clock() -> int:
-    """Integer milliseconds since the epoch — the unit `Date.now()` returns.
-
-    Deliberately not `time.time()`: a float seconds value would round differently in the
-    two runtimes at the millisecond boundary, and the timestamp is a compared field.
-    `time_ns()` is an exact integer, so the truncation happens once, here, in both.
-    """
-    return time.time_ns() // 1_000_000
-
-
-def format_timestamp(epoch_ms: int) -> str:
-    """`2026-08-24T09:12:33.412Z` — byte-identical to JavaScript's `toISOString()`.
-
-    UTC with a literal `Z`, always three fractional digits, always the same width. No
-    locale, no local time, no offset spelling to disagree about. Built from an INTEGER
-    millisecond count so the two runtimes cannot round apart.
-    """
-    moment = _EPOCH + timedelta(milliseconds=epoch_ms)
-    return (
-        f"{moment.year:04d}-{moment.month:02d}-{moment.day:02d}"
-        f"T{moment.hour:02d}:{moment.minute:02d}:{moment.second:02d}"
-        f".{moment.microsecond // 1000:03d}Z"
-    )
+    """Integer milliseconds since the epoch, the unit `Date.now()` returns."""
+    return _js_now()
 
 
 def encode_record(epoch_ms: int, tool: str, outcome: str, detail: dict[str, Any]) -> bytes:
-    """One record as the bytes that go on disk, LF included.
-
-    KEY ORDER IS FIXED AND IS PART OF THE CONTRACT: `v`, `ts`, `tool`, `outcome`,
-    `detail`. Inside `detail` the keys are SORTED, so neither runtime needs a per-tool
-    ordering table to agree. `detail` is always present, `{}` when there is nothing to
-    say, because an optional key is a second shape to port.
-
-    Separators carry no spaces (`JSON.stringify`'s default) and `ensure_ascii=False`
-    matches `JSON.stringify`, which does not escape non-ASCII. No value written by this
-    module is non-ASCII today; the setting is what keeps that a fact about the data
-    rather than a difference between the runtimes if it ever stops being one.
-    """
-    text = json.dumps(
-        _record_object(epoch_ms, tool, outcome, detail), ensure_ascii=False, separators=(",", ":")
-    )
-    return text.encode("utf-8") + b"\n"
-
-
-def _record_object(
-    epoch_ms: int, tool: str, outcome: str, detail: dict[str, Any]
-) -> dict[str, Any]:
-    """The record `encode_record` spells, as the object `LogSegment.append` writes."""
-    return {
-        "v": SCHEMA_VERSION,
-        "ts": format_timestamp(epoch_ms),
-        "tool": tool,
-        "outcome": outcome,
-        "detail": {key: detail[key] for key in sorted(detail)},
-    }
+    """One record as the bytes that go on disk, LF included (`encodeRecord`)."""
+    return _generated.encode_record(epoch_ms, tool, outcome, _js(detail))
 
 
 def default_path(store_root: Path) -> Path:
-    """`<store>/events/mcp.jsonl` — provably outside everything `MemoryStore` reads.
-
-    THE SCAN BOUNDARY, MEASURED IN `memory/store.py` RATHER THAN ASSUMED. A store reads
-    exactly three things: `<store>/facts/` listed and filtered with
-    `fnmatch(name, "*.md")`, `<store>/archive/` listed and filtered the same way, and
-    `<store>/index.md`. `memory/layers.py::count_facts` uses the same `facts/` filter,
-    and `memory/divergence.py` additionally globs `<store>/*.md` at the root when it
-    reads a store as a flat-layout one.
-
-    `events/mcp.jsonl` misses every one of them, and on three independent counts, not
-    one: it is not in `facts/`, not in `archive/`, and its name does not match `*.md`
-    under any case folding — which matters because `fnmatch` is CASE-INSENSITIVE ON
-    WINDOWS, so an `events/MCP.MD` would have been found there and not here. The
-    directory `events/` is itself invisible to the root `*.md` glob.
-
-    Guarded by `test_eventlog.py::test_the_log_is_outside_every_path_the_store_reads`,
-    which recomputes the store's whole read set and asserts the log is not in it, and by
-    `test_a_full_log_does_not_change_what_the_store_reports`. A comment is not a guard.
-    """
-    return store_root.joinpath(*DEFAULT_RELATIVE_PATH)
+    """`<store>/events/mcp.jsonl` -- provably outside everything `MemoryStore` reads."""
+    return Path(_generated.default_path(str(store_root)))
 
 
 def resolve_path(store_root: Path, raw: str | None) -> Path | None:
-    """Turn the environment's answer into a file path, or `None` for disabled.
-
-    DISABLED IS THE DEFAULT, and the reason is measured rather than stylistic:
-    `node tools/conformance/run.mjs --all` reads the operator's LIVE memory store, by
-    design and read-only. A log that were on by default would turn that read into a
-    write against real user data every time the suite runs. An operator diagnostic opts
-    in; it does not arrive uninvited inside somebody's memory store.
-    """
-    if raw is None:
-        return None
-    token = raw.strip()
-    if token.lower() in _OFF:
-        return None
-    if token.lower() in _ON:
-        return default_path(store_root)
-    return Path(token)
+    """Turn the environment's answer into a file path, or `None` for disabled."""
+    return _as_path(_generated.resolve_path(str(store_root), raw))
 
 
 class EventLog:
@@ -203,42 +165,17 @@ class EventLog:
 
     def __init__(
         self,
-        path: Path | None,
+        path: Path | str | None,
         cap_bytes: int = CAP_BYTES,
         clock: Callable[[], int] = _default_clock,
-        requires_dir: Path | None = None,
+        requires_dir: Path | str | None = None,
     ) -> None:
-        self.path = path
-        self.cap_bytes = cap_bytes
-        self._clock = clock
-        #: job65/#154: the directory that must already exist before a record is written.
-        #:
-        #: `from_env` sets it to the store root when the switch is `on` (the default file
-        #: lives INSIDE the store). WAS: the `mkdir` in `_append` brought a never-saved store
-        #: into existence -- `--store <absent>` plus one `work_plan` call left
-        #: `<store>/events/mcp.jsonl` behind, and the next layered session walking up through
-        #: it bound that directory as its store. The log does not create the store: while the
-        #: store is not there a record has nowhere to go and is DROPPED -- not redirected, and
-        #: not counted as `write_failed`, because nothing was offered to the filesystem. The
-        #: first save creates the store; records after it land. A literal path is the
-        #: operator's own choice and keeps `requires_dir` None.
-        self.requires_dir = requires_dir
-        #: Set the first time `record` swallows an `OSError`, and never cleared.
-        #:
-        #: FAILING TO LOG STILL NEVER FAILS THE TOOL — that contract is unchanged and
-        #: nothing here raises. What the flag buys is that the failure stops being
-        #: INVISIBLE. An operator who turned the log on and is getting nothing is the one
-        #: person who cannot tell "no records because nothing happened" from "no records
-        #: because the path is unwritable", and the log is the one channel that cannot
-        #: report its own silence. `mcpserver.degraded_conditions` reads this and says so
-        #: on the tool surface instead.
-        #:
-        #: NOT CLEARED BY A LATER SUCCESS, deliberately: a log with a hole in it is not a
-        #: log to read as complete, and the next write succeeding does not put the missing
-        #: records back. It is a bool and not a count for the metadata rule's sake — a
-        #: count would still be metadata, but nothing reads one, and an unused number is a
-        #: second thing to keep true in two runtimes.
-        self.write_failed = False
+        self._log = _generated.EventLog(
+            None if path is None else str(path),
+            cap_bytes,
+            clock,
+            None if requires_dir is None else str(requires_dir),
+        )
 
     @classmethod
     def from_env(
@@ -247,108 +184,42 @@ class EventLog:
         env: dict[str, str] | None = None,
         clock: Callable[[], int] = _default_clock,
     ) -> EventLog:
-        source = os.environ if env is None else env
-        raw = source.get(EVENT_LOG_ENV)
-        in_store = raw is not None and raw.strip().lower() in _ON
-        return cls(
-            resolve_path(store_root, raw),
-            clock=clock,
-            requires_dir=Path(store_root) if in_store else None,
+        log = cls.__new__(cls)
+        log._log = _generated.EventLog.fromEnv(
+            str(store_root), dict(os.environ if env is None else env), clock
         )
+        return log
+
+    @property
+    def path(self) -> Path | None:
+        return _as_path(self._log.path)
+
+    @property
+    def cap_bytes(self) -> int:
+        return self._log.capBytes
+
+    @property
+    def requires_dir(self) -> Path | None:
+        spelled = self._log.requiresDir
+        return None if spelled is None else Path(spelled)
+
+    @property
+    def write_failed(self) -> bool:
+        return self._log.writeFailed
+
+    @write_failed.setter
+    def write_failed(self, value: bool) -> None:
+        self._log.writeFailed = value
 
     @property
     def enabled(self) -> bool:
-        return self.path is not None
+        return self._log.enabled
 
     def record(self, tool: str, outcome: str, detail: dict[str, Any] | None = None) -> None:
-        """Append one record, or silently do nothing. NEVER raises, NEVER writes a stream.
-
-        The `except OSError` is the whole failure contract: an unwritable store, a full
-        disk, a path whose parent is a file, a revoked permission. `encode_record` is
-        deliberately OUTSIDE it — a `TypeError` there is a bug in a caller's `detail`,
-        not a disk that said no, and swallowing it would leave the log empty forever
-        with nothing to notice.
-
-        `write_failed` is set inside that `except` and nowhere else, so it means exactly
-        "a record was composed, offered to the filesystem, and lost" — never "the log is
-        off" (which returns above, before any I/O) and never "nothing has been logged
-        yet".
-        """
-        if self.path is None:
-            return
-        obj = _record_object(self._clock(), tool, outcome, detail or {})
-        payload = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
-        try:
-            self._append(obj, payload)
-        except OSError:
-            self.write_failed = True
-            return
+        """Append one record, or silently do nothing. NEVER raises an OSError, NEVER writes a
+        stream; a `detail` that is not JSON raises, as a programming error must."""
+        self._log.record(tool, outcome, {} if detail is None else _js(detail))
 
     def raised(self, tool: str, exc: BaseException) -> None:
-        """Record that a handler threw, by exception TYPE ONLY.
-
-        `type(exc).__name__` and nothing else. `str(exc)` is where the host already
-        leaked an argument value to disk (see the module docstring); a class name is a
-        fact about the code, never about the call.
-        """
+        """Record that a handler threw, by exception TYPE ONLY: `type(exc).__name__`."""
         self.record(tool, "raised", {"type": type(exc).__name__})
-
-    def _append(self, obj: dict[str, Any], payload: bytes) -> None:
-        """Rotate if this record would cross the cap, then append through `LogSegment`.
-
-        #204 (J69-4): the line goes through `storage.LogSegment.append` (the shared O_EXCL
-        lock, a newline before a cut last line, the same bytes `encode_record` spells). THE
-        ROTATION RULE BELOW IS NOT `LogSegment.rotate`'s, on purpose: this log keeps exactly
-        one plain `<path>.1` that `--statusline` and `--mcp-report` read in both runtimes, and
-        a 2 MiB ceiling with no retention job behind it; docs/eventlog.md says one rotation
-        rule cannot be right for both this log and the hook log.
-
-        Binary, not text: a text-mode write translates `\\n` to `os.linesep`, which is
-        `\\r\\n` on Windows, and a Node reader byte-comparing the file would see a
-        different stream on a different platform. This is the same defect
-        `test_newline_gate.py` exists to keep out of the repository.
-
-        THE ROTATION RULE, stated as a number: if the live file already holds bytes and
-        appending this record would take it past `cap_bytes` (1048576), the live file is
-        MOVED to `<path>.1`, replacing any previous generation, and a fresh file starts.
-        So the live file never exceeds the cap and the pair never exceeds twice it. A
-        single record larger than the cap is written whole rather than split — records
-        here are a few hundred bytes by construction, so that branch is a statement of
-        intent, not a live path.
-        """
-        assert self.path is not None
-        # job65/#154: `is_dir()` raises PermissionError for EACCES, which lands in `record`'s
-        # `except OSError` as a lost record -- the verdict `eventlog.ts` reaches too.
-        if self.requires_dir is not None and not self.requires_dir.is_dir():
-            return
-        # AUDIT FINDING (J51-1): this `mkdir(parents=True)` can bring a whole `.bantamkit`
-        # directory into existence on its own -- `BANTAMKIT_EVENT_LOG=on` with a project
-        # store that was never saved to reaches here first -- entirely bypassing
-        # `MemoryStore._ensure_dirs`, which is the only other place a `.bantamkit`
-        # directory gets created. Without this call a store built that way would never get
-        # its self-ignoring `.gitignore`. Cheap and idempotent: a no-op unless one of
-        # `self.path`'s ancestors is literally named `.bantamkit`.
-        #
-        # USER RULING #2 (J51-8a): the ignore file is written only when THIS call is what
-        # creates `.bantamkit`, so existence has to be checked BEFORE the mkdir below --
-        # after it, the directory unconditionally exists and the question is unanswerable.
-        #
-        # J54-3: the walk moved into `bantamkit_dir_for` beside the writer it feeds, so the
-        # two creators in this runtime ask the same question in the same words rather than
-        # keeping a copy each. The answer here is unchanged -- a log file is never itself
-        # named `.bantamkit`, so self-or-ancestors and ancestors give the same directory.
-        bantamkit_dir = bantamkit_dir_for(self.path)
-        bantamkit_dir_existed_before = bantamkit_dir is not None and bantamkit_dir.exists()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if bantamkit_dir is not None:
-            ensure_bantamkit_gitignore(
-                bantamkit_dir, created=not bantamkit_dir_existed_before
-            )
-        try:
-            size = self.path.stat().st_size
-        except FileNotFoundError:
-            size = 0
-        if size and size + len(payload) > self.cap_bytes:
-            os.replace(self.path, self.path.with_name(self.path.name + ".1"))
-        if not LogSegment(self.path).append(obj):
-            raise OSError("the record could not be appended")  # caught by `record`

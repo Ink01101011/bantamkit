@@ -29,7 +29,6 @@ pytest.importorskip("mcp")
 from mcp import Client  # noqa: E402
 
 from bantamkit.eventlog import (  # noqa: E402
-    CAP_BYTES,
     EVENT_LOG_ENV,
     SCHEMA_VERSION,
     EventLog,
@@ -526,8 +525,8 @@ def test_a_bad_detail_is_not_swallowed(tmp_path):
 # ---- bounded ------------------------------------------------------------------------
 
 
-def test_the_cap_is_one_mebibyte_and_keeps_one_generation():
-    assert CAP_BYTES == 1048576
+# `CAP_BYTES == 1048576` is pinned per side by `--suite eventlog`'s `LITERAL: the constants are
+# what docs/eventlog.md says` (#316 G2, J88-2 retired the duplicate here).
 
 
 def test_rotation_fires_on_the_byte_that_would_cross_the_cap(tmp_path):
