@@ -412,18 +412,31 @@ def path_join(*parts):
 # token ledger, log segment
 
 
+def _os_char(c):
+    """One code point of a path as the OS receives it: kept when Python's own `os` functions can
+    encode it (`os.fsencode`), else the U+FFFD Node's UTF-8 encoding writes for it."""
+    try:
+        _os.fsencode(c)
+    except UnicodeEncodeError:
+        return "\ufffd"
+    return c
+
+
 def _node_path(path, what):
-    """A path as Node hands it to libuv: a string; a lone surrogate is the U+FFFD that Node's UTF-8
-    encoding of the string writes (on Windows the UTF-16 libuv rebuilds from it carries the same);
-    a NUL is the TypeError Node throws (code `ERR_INVALID_ARG_VALUE`)."""
+    """A path as the OS receives it: a string, handed over the way Python's own `os` functions
+    encode it, so a POSIX surrogateescape path (U+DC80..U+DCFF standing for the undecodable bytes
+    of a real name, as `os.getcwd` / `os.listdir` return it) is that real name, as on main and in
+    the hand-written store and lock (J88-RF F4b: target-specific I/O, docs/porting.md). A lone
+    surrogate Python cannot encode at all is the U+FFFD that Node's UTF-8 encoding of the string
+    writes. A NUL is the TypeError Node throws (code `ERR_INVALID_ARG_VALUE`)."""
     if not isinstance(path, str):
         raise TypeError(f"ts2py: {what} of anything but a string path is outside the subset")
     if "\0" in path:
         error = _JsTypeError("The argument 'path' must be a string without null bytes")
         error.code = "ERR_INVALID_ARG_VALUE"
         raise error
-    if any(0xD800 <= ord(c) <= 0xDFFF for c in path):
-        path = "".join("\ufffd" if 0xD800 <= ord(c) <= 0xDFFF else c for c in path)
+    if not path.isascii() and any(0xD800 <= ord(c) <= 0xDFFF for c in path):
+        path = "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in path)
     return path
 
 
@@ -488,8 +501,13 @@ def readdir_sync(path, *rest):
         raise TypeError("ts2py: fs.readdirSync options are outside the subset")
     path = _node_path(path, "fs.readdirSync")
     if _os.name == "nt":
-        return [_node_path(name, "fs.readdirSync") for name in _os.listdir(path)]
-    return [name.decode("utf-8", "replace") for name in _os.listdir(path.encode("utf-8"))]
+        # A NAME comes back as Node reports it: every lone surrogate U+FFFD (only a path handed
+        # IN keeps what Python's `os` can encode, J88-RF F4b).
+        return [
+            "".join("\ufffd" if 0xD800 <= ord(c) <= 0xDFFF else c for c in name)
+            for name in _os.listdir(path)
+        ]
+    return [name.decode("utf-8", "replace") for name in _os.listdir(_os.fsencode(path))]
 
 
 def mkdir_sync(path, options=_JS_UNDEFINED, *_):
@@ -768,7 +786,10 @@ def gunzip_sync(data, *rest):
     """`zlib.gunzipSync(buffer)`: every member decompressed and joined, trailing zero padding
     ignored (`gzip.decompress`). Where Node refuses, this refuses with Node's error code: empty or
     truncated input is `Z_BUF_ERROR` (CPython returns b"" for the empty one), a bad header, CRC or
-    trailing garbage `Z_DATA_ERROR`."""
+    trailing garbage `Z_DATA_ERROR`. NOT exact on two hand-crafted shapes neither runtime writes
+    (J88-RF F5, docs/porting.md): Node ends the input at a zero byte after a member, so a member,
+    a zero, then a non-zero byte reads as that member (this refuses it), and a member, a zero, a
+    second member reads as the first alone (this reads both)."""
     if rest or not isinstance(data, (bytes, bytearray, memoryview)):
         raise TypeError("ts2py: zlib.gunzipSync of anything but a buffer is outside the subset")
     data = bytes(data)
@@ -924,7 +945,8 @@ def exclusive(target, body, options=_JS_UNDEFINED, *_):
             value = options.get(js, _JS_UNDEFINED)
             if value is not _JS_UNDEFINED and value is not None:
                 kwargs[py] = value
-    with _exclusive(target, **kwargs) as held:
+    # J88-RF F4a: the lock file is named from the path every fs adapter hands the OS.
+    with _exclusive(_node_path(target, "exclusive"), **kwargs) as held:
         return body(held)
 
 

@@ -405,6 +405,8 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | G2 as Node: a transcript subdirectory that lists but does not search (J88-1 #26; J88-1F, #316 G2) | **CLOSED BY G2 (J88-2): Python is generated from the TypeScript and answers Node's; the suite case is an ordinary agreeing case with a per-side literal.** Was RULED AS NODE until J88-2. A directory under `root` with read but no execute permission. Python before: `Path.is_dir()` raises `PermissionError(EACCES)` out of `_walk`, so `read` raises. Node (and Python after): `statSync`'s throw is caught, the child is taken for a file, and its read fails as one `undecodable-file` omission — the ledger's rule that nothing about the tree's content refuses (`docs/ledger.md`). The two refusal bits DIFFER (one side raises), so no side-to-side bit can be green; Node's answer is pinned per side instead. Built only off Windows and not as root. Cases: `ruling: G2 as Node — read: a subdirectory that can be listed but not searched` and `LITERAL: G2 ruled as Node — node's counts over the ruled inputs`. **J88-2 makes it agree**: Python is then compiled from the TypeScript and inherits Node's answer, the `ruling:` case goes STALE by design and J88-2 turns it into an ordinary case and closes this row. |
 | G2 as Node: fold timestamp order (J88-1 #28; J88-1F, #316 G2) | **CLOSED BY G2 (J88-2): Python is generated from the TypeScript and answers Node's; the suite case is an ordinary agreeing case with a per-side literal.** Was RULED AS NODE until J88-2. `LogSegment.fold` keeps a row older than `older_than` by comparing `ts` strings. Python before: `_is_old` is `str <`, code-point order. Node (and Python after): `isOld` is JS `<`, UTF-16 code-unit order. They part only when one `ts` holds a character above U+FFFF and the other one in U+E000–U+FFFF: folding at U+1F600 reduces 2 lines on Python (U+FFFF and `a`) and 1 on Node (`a`). Every `ts` bantamkit writes is an ASCII ISO stamp. No earlier row rules this order (`tokenledger`'s code-point stamp order, `docs/ledger.md`, is another module and is unaffected). Cases: `storage-log`'s `ruling: G2 as Node — J88-1 fold compares ts by code point or by UTF-16 unit — every op`, its three unruled appends, and Node's bytes in `LITERAL: G2 ruled as Node — node's ops over the ruled scenarios`. **J88-2 makes it agree**: Python is then compiled from the TypeScript and inherits Node's answer, the `ruling:` case goes STALE by design and J88-2 turns it into an ordinary case and closes this row. |
 | G2 as Node: an integer past 2**53 in a folded row (J88-1 #29; J88-1F, #316 G2) | **CLOSED BY G2 (J88-2): Python is generated from the TypeScript and answers Node's; the suite case is an ordinary agreeing case with a per-side literal.** Was RULED AS NODE until J88-2. A row read off disk and re-serialised by `fold`. Python before: `18446744073709551616`, exact. Node (and Python after): a JS number, `18446744073709552000` (the J87-1F rule: a figure is a double). Not the J69-4 caller-float class: the integer was read off disk, not handed in by a caller. Cases: `storage-log`'s `ruling: G2 as Node — J88-1 a folded row holding an integer past 2**53 — every op`, its unruled ops, and Node's bytes in `LITERAL: G2 ruled as Node — node's ops over the ruled scenarios`. **J88-2 makes it agree**: Python is then compiled from the TypeScript and inherits Node's answer, the `ruling:` case goes STALE by design and J88-2 turns it into an ordinary case and closes this row. |
+| G2 target-specific I/O: a Python `str` path holding U+DC80..U+DCFF (J88-RF F4b, #316 G2) | **the Python side hands a path to the OS as Python's own `os` functions encode it; no conformance case feeds such a path, so no ruling.** A POSIX Python caller meets these code points in a path as the surrogateescape stand-ins for the undecodable bytes of a real name (`os.getcwd`, `os.listdir`, `os.fsdecode`): `/x/\udcff` IS the directory `b"/x/\xff"`. The generated log segment and event log reach the OS through `_ts2py_adapters._node_path`, which keeps every code point `os.fsencode` accepts and turns only the rest (a lone surrogate no encoding takes: U+D800..U+DC7F, U+DD00..U+DFFF on POSIX) into the U+FFFD Node's UTF-8 encoding writes. So the log, its `.lock` (the `exclusive` adapter maps its target the same way since J88-RF F4a) and the hand-written store all land in the one real directory, as on main; at `eb929048` the data went to a new U+FFFD directory while the lock stayed in the real one. Node has no such string from its own fs (its names decode to U+FFFD), so a Node caller handing `\udcff` writes a `\ufffd` name where a Python caller writes the byte `0xff`. On Windows `os.fsencode` takes every lone surrogate (UTF-16 `surrogatepass`), so a Python caller's lone surrogate reaches NTFS as itself, where Node writes U+FFFD; measured on POSIX only (no Windows run). Pinned by `test_storage_log.py::test_a_surrogateescape_directory_holds_the_log_and_its_lock` (Linux; APFS refuses the name and the test skips) and, for the lone surrogates both sides map to U+FFFD, `--suite eventlog`'s two `a lone surrogate in the ... is written under U+FFFD` beds. |
+| G2 adapters: two hand-crafted `.gz` segments (J88-RF F5, #316 G2) | **pre-existing, and neither runtime writes such a file; documented, not changed.** `gunzipSync` and the `gunzip_sync` adapter (`gzip.decompress` with Node's refusals) agree on the nine shapes `RULES.md` lists, but not on two: a member followed by zero bytes and then a non-zero byte (`m + b"\0\x01"`) is read by Node as that one member (Node's gunzip ends the input at a zero byte after a member) and refused by Python (`skipped` 1: `gzip.decompress` skips the zero padding and refuses the byte after it as a header), and a member, a zero byte, a second member (`m + b"\0" + m`) is ONE member to Node and both to Python. The hand-written module at main used `gzip.decompress` too, so this is not a G2 change. Rotation writes one `gzip` member and nothing after it on both sides. Measured by the J88-R reviewer's `gz.py` over 13 shapes, 11 equal. |
 
 **#200 (job70, the touch graph) adds no row to the table above.** Every touch surface is
 compared by `touch-log`, `touch-refs`, `touch-turn`, `touch-graph`, `touch-context`, `touch-bound`,
@@ -1340,7 +1342,11 @@ adapters onto Python itself.
   `BANTAMKIT_EVENT_LOG` path keeps its exact spelling: `resolve_path` and `EventLog.path` answer a
   `Path` whose `str()` (and `os.fspath`) is the string as given, trailing `/` and `//` included,
   because the TypeScript opens the string as spelled and a plain `Path` would normalise it (such a
-  `Path` compares by that spelling; a path derived from it, `/` or `.parent`, is an ordinary one).
+  `Path` is equal to, and hashes as, the plain `Path` of its spelling; a path derived from it, `/`
+  or `.parent`, answers as an ordinary one). J88-RF F3: it works on every Python `requires-python`
+  admits (it raised `TypeError` on 3.11 and 3.10, where `Path.__init__` is `object.__init__`);
+  `test_eventlog.py::test_a_literal_path_keeps_its_spelling_on_every_python`, run on 3.11, 3.12,
+  3.13 and 3.14.
 - *Python names.* `LogSegment(path, *, wait_ms=None, stale_ms=None, poll_ms=None)` (the
   TypeScript's `{waitMs, staleMs, pollMs}`), `fold_lines`, `.skipped` and `.size`;
   `EventLog(path, cap_bytes, clock, requires_dir)`, `.cap_bytes`, `.requires_dir`,
@@ -1353,6 +1359,11 @@ adapters onto Python itself.
   an event `detail` is handed over as a list, as `json.dumps` wrote one; `fold_lines` hands its
   reducer `(row, line)` tuples, as before. An object nested past the recursion limit is handed
   over unconverted, and the generated serialiser refuses it (below).
+- *Python-only values are what `json.dumps` made of them (J88-RF F6).* A float subclass (an
+  `Enum` over `float`) is its float value, never its `repr`; a dict key that is not a string is
+  coerced as `json.dumps` coerces it (`7` -> `"7"`, `2.5` -> `"2.5"`, `True` -> `"true"`, `None`
+  -> `"null"`), the same in `dumps_line`, `append` and `encode_record` (the event log dropped such
+  a key silently at `eb929048`), and any other key is `json.dumps`'s `TypeError`.
 - *The token ledger's answer* is the frozen `Ledger` / `Session` / `Omission` dataclasses built
   from the generated document; `Ledger.as_json()` is the generated `asJson` over `as_dict()` (a
   ledger-shaped document itself); `OMISSION_ORDER` and `DEFAULT_RELATIVE_PATH` stay tuples.
@@ -1388,7 +1399,15 @@ write is the same order it was: `<target>.<pid>.<hex>.tmp` opened `wx` with mode
 closed, renamed over the target, the temp removed when the rename is refused, and no fsync on
 either side (`test_storage_log.py::test_write_over_and_rotate_write_temp_then_rename` and its twin
 in `runtime-ts/test/storage-log.test.mjs` trace the calls on each side; the hand-written module
-opened the temp without `O_TRUNC`, a no-op with `O_EXCL`).
+opened the temp without `O_TRUNC`, a no-op with `O_EXCL`). J88-RF F1: every write of a whole buffer (`writeOver`,
+`LogSegment`'s temp writer, `append`) goes through `writeAll`, which writes the rest after a short
+count, so a disk that fills mid-write is the ENOSPC of the next `writeSync` and the temp is removed
+with the log byte-unchanged, as main's buffered `write` answered; at `eb929048` both runtimes renamed
+the short temp over the log (800 rows folded to 269 on a full tmpfs). A short `append` now answers
+`false`, as main's did; the bytes it did write stay on disk as a cut line (as on main), and the next
+append starts on a new line. `test_a_short_write_renames_nothing_over_the_log` and its Node twin
+inject the short writer; an emptied live file is no bytes and so no `write(2)`, which the trace
+tests now record.
 
 **Closed by G2.** Every `G2 as Node` row in *Where the two runtimes deliberately differ* and the
 J69-4 caller-object row is CLOSED: the cases agree, and each answer is pinned PER SIDE by a
@@ -1408,6 +1427,14 @@ once, which no differential can see. `--suite eventlog` 111 cases, `tokenledger`
 | `dumps_line` of NaN / Infinity | `ValueError` | `RangeError`, a `ValueError` subclass |
 | `format_timestamp(2**60)` / `(nan)` | `OverflowError` / `ValueError` | `RangeError: Invalid time value` (a `ValueError`) |
 | `encode_record(..., None)` | `TypeError` | the generated `TypeError` (a `TypeError` subclass) |
+
+**The switch is lowercased only when it is ASCII (J88-RF F2).** `resolvePath` and `fromEnv` match
+`BANTAMKIT_EVENT_LOG` against ASCII tokens; a spelling holding any non-ASCII code point is left as
+it is, because the one code point whose lowercase is ASCII is U+212A (to `k`, which no token holds;
+`eventlog.test.mjs` re-measures all 1,114,112 on every run). Node's answer is unchanged for every
+input, and the generated Python no longer raises the subset's `TypeError` for U+03A3 or U+1C89
+(`toLowerCase` of a code point the two Unicode tables map apart), which `EventLog.from_env` did at
+`eb929048`; `--suite eventlog` compares eight such spellings.
 
 The gzip ruling stays as it was: a rotated segment's raw `.gz` bytes are `gzip.compress(mtime=0)`
 on the Python side and Chromium zlib's stream on Node's (J88-2 measured 300 of 300 inputs apart at

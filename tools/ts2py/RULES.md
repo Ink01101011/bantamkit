@@ -307,14 +307,14 @@ and compares every answer (a file, a directory, a symlink to one, invalid UTF-8,
 | TypeScript | Python | Why it is the same function | Measurement |
 |---|---|---|---|
 | `statSync`, `lstatSync`, `fstatSync`, `Stats` (`node:fs`) | `os.stat` / `os.lstat` / `os.fstat` as a `Stats` (`size`, `mtimeMs` = `sec * 1e3 + nsec / 1e6`, `isDirectory` / `isFile` / `isSymbolicLink` from `st_mode`; a Windows junction is a link) | libuv's stat fields as Node combines them | fs probe: sizes, types, a symlink both ways, ENOENT / ENOTDIR / ERR_INVALID_ARG_VALUE codes |
-| `readdirSync` | `os.listdir` of the encoded path, names decoded with U+FFFD | Node decodes entry names as UTF-8 with replacement; directory order either way | fs probe |
+| `readdirSync` | `os.listdir` of the path as `os.fsencode` encodes it, names decoded with U+FFFD | Node decodes entry names as UTF-8 with replacement; directory order either way | fs probe |
 | `mkdirSync(p, {recursive: true})` | `os.makedirs(exist_ok=True)` | EEXIST for a file in the way, ENOTDIR for a file on the path | fs probe |
 | `renameSync`, `linkSync` | `os.replace`, `os.link` | rename(2) replacing the target; link(2) | fs probe (EEXIST for a second link) |
 | `rmSync(p, {force: true})` | unlink, ENOENT ignored, a directory refused | Node's `rm` of a file without `recursive` | fs probe |
-| `openSync`, `closeSync`, `writeSync`, `readSync`, `appendFileSync` | `os.open` with `stringToFlags`'s bits, mode 0o666, O_BINARY on Windows; one `os.write`; `os.pread`; an `a`-mode loop | the syscalls Node's binding makes | fs probe (EEXIST for `wx` twice, a pread at 4 and past EOF); `test_write_over_and_rotate_write_temp_then_rename` and its Node twin (the order and mode of a crash-safe write) |
+| `openSync`, `closeSync`, `writeSync`, `readSync`, `appendFileSync` | `os.open` with `stringToFlags`'s bits, mode 0o666, O_BINARY on Windows; one `os.write`; `os.pread`; an `a`-mode loop | the syscalls Node's binding makes | fs probe (EEXIST for `wx` twice, a pread at 4 and past EOF); `test_write_over_and_rotate_write_temp_then_rename` and its Node twin (the order and mode of a crash-safe write); J88-RF F1: `writeSync` answers a short count as write(2) does, and `logsegment.ts`'s `writeAll` loops on it, so a short write is never renamed into place (`test_a_short_write_renames_nothing_over_the_log` and its Node twin) |
 | `readFileSync(p)` with no encoding | the bytes (`open(p, 'rb')`) | a Buffer | fs probe (EISDIR for a directory) |
 | `dirname`, `basename` (`node:path`) | lib/path.js `posix` / `win32` ported | the same statements | 60,000 random paths over separators, dots, drive letters, colons and non-ASCII: 0 disagreements on each of the four functions |
-| `gzipSync`, `gunzipSync` (`node:zlib`) | `gzip.compress(mtime=0)`; `gzip.decompress` with Node's refusals | RULED for the compressed bytes (Chromium zlib's deflate stream: 300 of 300 inputs differ from CPython's zlib at level 6 too); decompression equal | nine shapes (empty, one and two members, zero padding, trailing garbage, truncated, a bad CRC, plain text, two magic bytes): CPython returned `b""` for the empty input where Node throws Z_BUF_ERROR, and the adapter throws |
+| `gzipSync`, `gunzipSync` (`node:zlib`) | `gzip.compress(mtime=0)`; `gzip.decompress` with Node's refusals | RULED for the compressed bytes (Chromium zlib's deflate stream: 300 of 300 inputs differ from CPython's zlib at level 6 too); decompression equal | nine shapes (empty, one and two members, zero padding, trailing garbage, truncated, a bad CRC, plain text, two magic bytes): CPython returned `b""` for the empty input where Node throws Z_BUF_ERROR, and the adapter throws. J88-RF F5: two more shapes differ and are left as they are (a member, a zero, a non-zero byte; a member, a zero, a member: Node ends the input at the zero), named in `docs/porting.md`; neither runtime writes them |
 | `randomBytes` (`node:crypto`) | `os.urandom` | the OS CSPRNG | only the count and use are compared |
 | `TextDecoder` (`fatal`, `ignoreBOM`) | strict `bytes.decode('utf-8')` raising Node's TypeError (code ERR_ENCODING_INVALID_ENCODED_DATA); the BOM kept with `ignoreBOM` | WHATWG's well-formed UTF-8 and CPython's strict codec accept the same byte strings | 40,000 random byte strings biased to UTF-8 edge bytes, 33,013 refused by Node: 0 disagreements |
 | `Buffer.from(s, 'utf8')`, `Buffer.concat`, `Buffer.alloc` | `s.encode` with each lone surrogate as U+FFFD, a bytes join, `bytearray(n)` | Node's UTF-8 encoder writes EF BF BD for a lone surrogate | `g2.rs` probe |
@@ -326,3 +326,10 @@ and compares every answer (a file, a directory, a symlink to one, invalid UTF-8,
 `existsSync` changed with them: a NUL in the path answers `false` (Node validates inside its
 `try`), and a lone surrogate is looked up as the U+FFFD Node's encoding writes, where J87-3 refused
 both.
+
+J88-RF (F4a, F4b): every G2 fs adapter and the `exclusive` lock adapter hand a path to the OS as
+Python's own `os` functions encode it (`os.fsencode`): a POSIX surrogateescape code point
+(U+DC80..U+DCFF, an undecodable byte of a real name) is that byte, and only a lone surrogate no
+encoding takes becomes the U+FFFD Node writes. The lock is named from the same path as the data
+(it raised `UnicodeEncodeError` on a lone surrogate before). The target-specific row is in
+`docs/porting.md`.

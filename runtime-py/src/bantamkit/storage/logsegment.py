@@ -55,6 +55,30 @@ def _js(value: Any) -> Any:
         return value
 
 
+def _json_key(key: Any) -> Any:
+    """A dict key as `json.dumps` coerces it (J88-RF F6): a `str` (or subclass) kept; `True` /
+    `False` / `None` as `true` / `false` / `null`; an int as `int.__repr__`, a float as
+    `float.__repr__` (`NaN` / `Infinity` / `-Infinity` for the non-finite ones), so `1` is `"1"`
+    and `1.0` is `"1.0"`, as on main. Any other key is the TypeError `json.dumps` raises."""
+    if isinstance(key, str):
+        return key
+    if key is True:
+        return "true"
+    if key is False:
+        return "false"
+    if key is None:
+        return "null"
+    if isinstance(key, int):
+        return int.__repr__(key)
+    if isinstance(key, float):
+        if key != key:
+            return "NaN"
+        if key in (float("inf"), float("-inf")):
+            return "Infinity" if key > 0 else "-Infinity"
+        return float.__repr__(key)
+    raise TypeError(f"keys must be str, int, float, bool or None, not {type(key).__name__}")
+
+
 def _lists(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_lists(item) for item in value]
@@ -62,8 +86,15 @@ def _lists(value: Any) -> Any:
         converted = [_lists(item) for item in value]
         return value if all(a is b for a, b in zip(converted, value, strict=True)) else converted
     if isinstance(value, dict):
-        converted = {key: _lists(item) for key, item in value.items()}
-        return value if all(converted[k] is v for k, v in value.items()) else converted
+        converted = {_json_key(key): _lists(item) for key, item in value.items()}
+        same = len(converted) == len(value) and all(
+            type(k) is str and k in converted and converted[k] is v for k, v in value.items()
+        )
+        return value if same else converted
+    if isinstance(value, float) and type(value) is not float:
+        # J88-RF F6: a float subclass (`class FE(float, Enum)`) is its float value, as `json.dumps`
+        # wrote it on main; its own `repr` may not be a number at all.
+        return float(value)
     return value
 
 

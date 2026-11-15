@@ -70,13 +70,29 @@ function isOld(row: Row, olderThan: string): boolean {
   return typeof row.ts === 'string' && row.ts < olderThan;
 }
 
-/** `data` to `<target>.<pid>.<hex>.tmp`, then renamed over `target`. */
+/**
+ * Every byte of `data` to `fd`, or a throw: one `writeSync` may write fewer bytes than asked
+ * (a full disk does exactly that), so the rest is written by the next call, whose refusal is
+ * the error. Python's buffered `write` loops the same way, so the file is never left short
+ * while the caller is told it was written (J88-RF F1).
+ */
+function writeAll(fd: number, data: Buffer): void {
+  let done = 0;
+  while (done < data.length) {
+    const n = fs.writeSync(fd, data.subarray(done));
+    // write(2) answers 0 only for an empty buffer; never spin on one that answers 0 anyway
+    if (n <= 0) throw Object.assign(new Error('EIO: i/o error, write wrote no bytes'), { code: 'EIO' });
+    done += n;
+  }
+}
+
+/** `data` to `<target>.<pid>.<hex>.tmp`, then renamed over `target`; a short write renames nothing. */
 export function writeOver(target: string, data: Buffer): void {
   const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   const fd = fs.openSync(tmp, 'wx');
   try {
     try {
-      fs.writeSync(fd, data);
+      writeAll(fd, data);
     } finally {
       fs.closeSync(fd);
     }
@@ -272,7 +288,7 @@ export class LogSegment {
                 fs.readSync(fd, last, 0, 1, size - 1);
                 if (last[0] !== 10) data = Buffer.concat([Buffer.from('\n'), data]);
               }
-              fs.writeSync(fd, data);
+              writeAll(fd, data); // a short write is `false`, as a refused one is
               this.size = size + data.length;
             } finally {
               fs.closeSync(fd);
@@ -300,7 +316,7 @@ export class LogSegment {
     const fd = fs.openSync(tmp, 'wx');
     try {
       try {
-        fs.writeSync(fd, data);
+        writeAll(fd, data);
       } finally {
         fs.closeSync(fd);
       }

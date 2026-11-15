@@ -418,6 +418,120 @@ def test_write_over_and_rotate_write_temp_then_rename(tmp_path, monkeypatch):
     assert refused == ["open tmp wx 438", "write tmp", "close tmp", "rename tmp adir", "rm tmp"]
     assert rotated == [
         "open tmp wx 438", "write tmp", "close tmp", "rename tmp x.jsonl.1.gz",
-        "open tmp wx 438", "write tmp", "close tmp", "rename tmp x.jsonl",
+        # J88-RF F1: the emptied live file is no bytes, so no write(2), as main's buffered write
+        "open tmp wx 438", "close tmp", "rename tmp x.jsonl",
     ]
     assert sorted(os.listdir(tmp_path)) == ["adir", "w.bin", "x.jsonl", "x.jsonl.1.gz"]
+
+
+def test_a_short_write_renames_nothing_over_the_log(tmp_path, monkeypatch):
+    # J88-RF F1, mirrored by `storage-log.test.mjs`'s `a short write renames nothing over the
+    # log`: a disk that fills mid-write. Each write(2) writes what is left of a byte budget (the
+    # short count a full disk answers) and refuses with ENOSPC once it is spent. A temp file that
+    # could not take every byte is never renamed over the log: fold, rotate and write_over answer
+    # as a refused write does (the log byte-unchanged, the temp removed), as on main, whose
+    # buffered `write` looped; an append that could not write its whole line answers False.
+    import errno
+
+    from bantamkit._generated import logsegment as gen
+    from bantamkit.storage import write_over
+
+    p = tmp_path / "x.jsonl"
+    _fill(p, 400)
+    data = p.read_bytes()
+    budget = [0]
+
+    def short(fd, buf):
+        if budget[0] <= 0:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        n = os.write(fd, bytes(buf)[: budget[0]])
+        budget[0] -= n
+        return n
+
+    monkeypatch.setattr(gen, "write_sync", short)
+    seg = LogSegment(p)
+    answers = []
+    budget[0] = 100
+    seg.fold("3000", lambda rows: rows)  # identity rewrite of every line
+    budget[0] = 100
+    answers.append(seg.rotate(0))
+    budget[0] = 100
+    try:
+        write_over(p, b"a" * len(data))
+        answers.append("wrote")
+    except OSError as e:
+        answers.append(errno.errorcode[e.errno])
+    budget[0] = 10
+    answers.append(seg.append({"ts": "2026-10-01T00:00:00Z", "pad": "x" * 50}))
+    monkeypatch.undo()
+    assert answers == [False, "ENOSPC", False]
+    # the append's 10 bytes are on disk, as on main (its buffered write wrote them too)
+    assert p.read_bytes()[: len(data)] == data and len(p.read_bytes()) == len(data) + 10
+    assert sorted(os.listdir(tmp_path)) == ["x.jsonl"]
+
+
+def test_a_surrogateescape_directory_holds_the_log_and_its_lock(tmp_path, monkeypatch):
+    # J88-RF F4b: a Python caller's path for a directory whose name is not UTF-8 holds
+    # U+DC80..U+DCFF for those bytes (`os.fsdecode`, as `os.listdir` / `os.getcwd` return it). It is
+    # handed to the OS as Python's own `os` encodes it, so the log, its lock and the event log all
+    # land in that real directory, as on main; no U+FFFD twin is made (target-specific I/O,
+    # docs/porting.md).
+    from bantamkit._generated import logsegment as gen
+    from bantamkit.eventlog import EventLog
+
+    real = os.fsencode(str(tmp_path)) + b"/\xff"
+    try:
+        os.mkdir(real)
+    except OSError:
+        pytest.skip("this filesystem refuses a name that is not UTF-8 (APFS)")
+    d = os.fsdecode(real)
+    seen = []
+    exclusive = gen.exclusive
+
+    def spy(target, body, *rest):
+        def inside(held, *_):
+            seen.append(sorted(os.listdir(real)))
+            return body(held)
+
+        return exclusive(target, inside, *rest)
+
+    monkeypatch.setattr(gen, "exclusive", spy)
+    seg = LogSegment(os.path.join(d, "seg.jsonl"))
+    assert seg.append({"a": 1}) is True and seg.read() == [{"a": 1}]
+    log = EventLog(os.path.join(d, "events", "mcp.jsonl"), clock=lambda: 0)
+    log.record("t", "ok", {})
+    assert log.write_failed is False
+    assert seen[0] == [b"seg.jsonl.lock"]
+    assert sorted(os.listdir(real)) == [b"events", b"seg.jsonl"]
+    assert os.listdir(real + b"/events") == [b"mcp.jsonl"]
+    assert os.listdir(tmp_path) == ["\udcff"]
+
+
+def test_python_only_serialiser_inputs_answer_as_on_main():
+    # J88-RF F6: inputs only a Python caller can hand over. A float subclass whose repr is not a
+    # number (an Enum) is its float value, never an invalid line; a key that is not a string is
+    # coerced as `json.dumps` coerces it, the same in `dumps_line` and `encode_record`, never
+    # dropped.
+    import enum
+    import json
+
+    from bantamkit.eventlog import encode_record
+    from bantamkit.storage import dumps_line
+
+    class FE(float, enum.Enum):
+        A = 1.5
+
+    detail = {"e": FE.A, "n": [FE.A, {"k": FE.A}]}
+    line = dumps_line(detail)
+    assert line == b'{"e":1.5,"n":[1.5,{"k":1.5}]}\n' and json.loads(line) == detail
+    assert json.loads(encode_record(0, "t", "o", detail))["detail"] == detail
+    keys = {7: "i", 2.5: "f", True: "t", None: "n", "s": 0}
+    want = {"7": "i", "2.5": "f", "true": "t", "null": "n", "s": 0}
+    assert json.loads(dumps_line(keys)) == want
+    assert json.loads(encode_record(0, "t", "o", keys))["detail"] == want
+    assert json.loads(json.dumps(keys)) == want  # main's serialiser, for the record
+    for bad in ({(1, 2): 0}, {"x": {frozenset(): 0}}):
+        with pytest.raises(TypeError):
+            dumps_line(bad)
+        with pytest.raises(TypeError):
+            encode_record(0, "t", "o", bad)

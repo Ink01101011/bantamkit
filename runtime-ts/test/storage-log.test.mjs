@@ -406,10 +406,59 @@ test('write_over and rotate write a temp then rename it (J88-2, #316 G2)', async
     const rotated = trace.filter((t) => t.includes('tmp') || t.startsWith('fsync') || t.startsWith('fdatasync'));
     assert.deepEqual(wrote, ['open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp w.bin']);
     assert.deepEqual(refused, ['open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp adir', 'rm tmp']);
-    assert.deepEqual(rotated, ['open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp x.jsonl.1.gz', 'open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp x.jsonl']);
+    // J88-RF F1: the emptied live file is no bytes, so no write(2), as Python's buffered write
+    assert.deepEqual(rotated, ['open tmp wx 438', 'write tmp', 'close tmp', 'rename tmp x.jsonl.1.gz', 'open tmp wx 438', 'close tmp', 'rename tmp x.jsonl']);
   } finally {
     Object.assign(fs, real);
     syncBuiltinESMExports();
   }
   assert.deepEqual(readdirSync(d).sort(), ['adir', 'w.bin', 'x.jsonl', 'x.jsonl.1.gz']);
+});
+
+// J88-RF F1: a disk that fills mid-write. Each `writeSync` writes what is left of a byte budget
+// (a short write, as write(2) answers on a full disk) and refuses with ENOSPC once it is spent.
+// A temp file that could not take every byte must never be renamed over the log: fold, rotate and
+// writeOver answer as a refused write does (the log byte-unchanged, the temp removed), and an
+// append that could not write its whole line answers `false`.
+test('a short write renames nothing over the log, and an append answers false (J88-RF F1)', async () => {
+  const { writeOver } = await import('../dist/storage/index.js');
+  const d = tmp();
+  const p = join(d, 'x.jsonl');
+  fill(p, 400);
+  const data = bytes(p);
+  const real = fs.writeSync;
+  let budget = 0;
+  fs.writeSync = (fd, buf, ...rest) => {
+    if (rest.length > 0 || !Buffer.isBuffer(buf)) return real(fd, buf, ...rest);
+    if (budget <= 0) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC', errno: -28, syscall: 'write' });
+    const n = real(fd, buf.subarray(0, Math.min(buf.length, budget)));
+    budget -= n;
+    return n;
+  };
+  syncBuiltinESMExports();
+  const answers = [];
+  try {
+    const seg = new LogSegment(p);
+    budget = 100;
+    seg.fold('3000', (rows) => rows); // identity rewrite of every line
+    budget = 100;
+    answers.push(seg.rotate(0));
+    budget = 100;
+    try {
+      writeOver(p, Buffer.alloc(data.length, 0x61));
+      answers.push('wrote');
+    } catch (e) {
+      answers.push(e.code);
+    }
+    budget = 10;
+    answers.push(seg.append({ ts: '2026-10-01T00:00:00Z', pad: 'x'.repeat(50) }));
+  } finally {
+    fs.writeSync = real;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual(answers, [false, 'ENOSPC', false]);
+  // the append's 10 bytes are on disk, as on main's Python (its buffered write wrote them too)
+  assert.deepEqual(bytes(p).subarray(0, data.length), data);
+  assert.equal(bytes(p).length, data.length + 10);
+  assert.deepEqual(readdirSync(d), ['x.jsonl']);
 });

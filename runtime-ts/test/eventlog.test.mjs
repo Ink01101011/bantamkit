@@ -941,3 +941,22 @@ test('job65/#154: a literal log path is still created where the operator named i
     rmSync(bed, { recursive: true, force: true });
   }
 });
+
+// J88-RF F2: `resolvePath` / `fromEnv` lowercase a spelling only when it is ASCII. That keeps
+// Node's answer for every input exactly when no non-ASCII code point lowercases to a string a
+// switch token could hold; this pins the measurement the argument rests on, so an ICU update that
+// adds such a mapping is red here.
+test('only U+212A lowercases to ASCII, and to a letter no switch token holds (J88-RF F2)', () => {
+  const ascii = /^[\x00-\x7f]*$/;
+  const found = [];
+  for (let cp = 0x80; cp <= 0x10ffff; cp += 1) {
+    const s = cp >= 0xd800 && cp <= 0xdfff ? String.fromCharCode(cp) : String.fromCodePoint(cp);
+    if (ascii.test(s.toLowerCase())) found.push([cp.toString(16), s.toLowerCase()]);
+  }
+  assert.deepEqual(found, [['212a', 'k']]);
+  for (const token of ['', '0', 'off', 'false', 'no', '1', 'on', 'true', 'yes']) assert.equal(token.includes('k'), false);
+  for (const raw of ['Σ', 'Ᲊ', 'onΣ', 'K', 'truK', 'YESİ']) {
+    assert.equal(resolvePath('/s', raw), raw);
+    assert.equal(EventLog.fromEnv('/s', { BANTAMKIT_EVENT_LOG: raw }).requiresDir, null);
+  }
+});

@@ -118,7 +118,11 @@ const CONSTANTS = {
 };
 
 /** Switch spellings both runtimes read the same way. `null` is the variable unset. */
-const RAWS = [null, '', '0', 'off', 'false', 'no', ' OFF ', '\tFalse\n', '1', 'on', 'true', 'yes', ' ON ', 'Yes', '\ton\r\n', 'TRUE'];
+const RAWS = [null, '', '0', 'off', 'false', 'no', ' OFF ', '\tFalse\n', '1', 'on', 'true', 'yes', ' ON ', 'Yes', '\ton\r\n', 'TRUE',
+  // J88-RF F2: code points whose lowercase the generated Python once refused (U+03A3, U+1C89), and
+  // the ones Unicode folds toward ASCII (U+212A to `k`, U+0130 to `i` + U+0307, U+017F): each is a
+  // literal path on both sides, and neither raises.
+  '\u03a3', '\u1c89', 'on\u03a3', ' \u03a3ON ', '\u212a', 'YES\u0130', 'of\u017f', 'tru\u212a'];
 /** [raw, what the hand-written runtimes did apart before G2] — nothing is written for these. */
 const DIVERGENT_RAWS = [
   ['﻿on', "String.prototype.trim strips U+FEFF and str.strip does not: Node turns the log on in the store, Python takes the literal path '\\ufeffon'"],
@@ -383,6 +387,12 @@ export async function run(ctx) {
     // J88-1F (#20): agreeing since Node's sorted copy writes own properties.
     ['a detail holding a __proto__ key keeps it',
       { setup: [], log: { path: 'proto.jsonl' }, calls: [['record', 'memory_save', 'saved', 'proto_key']] }],
+    // J88-RF F4a: a lone surrogate no OS encoding takes is U+FFFD in the directory, the file AND the
+    // lock beside it (the lock adapter raised UnicodeEncodeError out of record before).
+    ['a lone surrogate in the directory is written under U+FFFD',
+      { setup: [], log: { path: 'lone\ud800/ev.jsonl' }, calls: [['record', 'memory_save', 'saved', 'tokens'], ['record', 'memory_save', 'saved', 'tokens']] }],
+    ['a lone surrogate in the file name is written under U+FFFD',
+      { setup: [], log: { path: 'ev\udfff\ud800.jsonl' }, calls: [['record', 'memory_save', 'saved', 'tokens']] }],
   ];
   const DIVERGENT_BEDS = [
     ['a literal path ending in / (BANTAMKIT_EVENT_LOG=<dir>/)',

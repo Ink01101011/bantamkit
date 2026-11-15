@@ -80,6 +80,7 @@ public surface the hand-written one had (shim conveniences, listed in `docs/port
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -114,23 +115,46 @@ class _SpelledPath(type(Path())):  # type: ignore[misc]
     """A `Path` whose `str()` is the exact string it was made from (`a//b/` stays `a//b/`).
 
     The TypeScript opens a literal log path as spelled; a plain `Path` would normalise the
-    spelling away, and with it the answer (a trailing `/` is a write failure in Node)."""
+    spelling away, and with it the answer (a trailing `/` is a write failure in Node).
+
+    J88-RF F3: written for every Python `requires-python` admits. On 3.12+ `Path.__init__` takes
+    the segments and a derived path (`/`, `.parent`, `.with_name`) is built by `with_segments`, an
+    ordinary `Path`. On 3.11 `Path.__init__` is `object.__init__` (the parts are parsed in
+    `__new__`) and a derived path is built without `__init__`, so it is this class with no
+    spelling: it then answers exactly as the `Path` it is, through the fallbacks below."""
+
+    _spelled: str | None = None
 
     def __init__(self, spelled: str) -> None:
-        super().__init__(spelled)
+        if sys.version_info >= (3, 12):
+            super().__init__(spelled)
         self._spelled = spelled
 
     def __str__(self) -> str:
-        return self._spelled
+        return super().__str__() if self._spelled is None else self._spelled
 
     def __fspath__(self) -> str:
-        return self._spelled
+        return super().__fspath__() if self._spelled is None else self._spelled
 
     def __repr__(self) -> str:
-        return f"{type(Path()).__name__}({self._spelled!r})"
+        spelled = self.as_posix() if self._spelled is None else self._spelled
+        return f"{type(Path()).__name__}({spelled!r})"
+
+    def _plain(self) -> Path:
+        return Path(super().__str__() if self._spelled is None else self._spelled)
+
+    # Equal to, and hashed as, the `Path` of its spelling, as on 3.11 and on main (3.12+ would
+    # compare the spelled `str`, so `a//b` would differ from `Path("a//b")`).
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _SpelledPath):
+            other = other._plain()
+        return self._plain() == other
+
+    def __hash__(self) -> int:
+        return hash(self._plain())
 
     def with_segments(self, *segments: Any) -> Path:
-        # A path derived from this one (`/`, `.parent`, `.with_name`) is an ordinary `Path`.
+        # 3.12+: a path derived from this one (`/`, `.parent`, `.with_name`) is an ordinary `Path`.
         return Path(*segments)
 
 
