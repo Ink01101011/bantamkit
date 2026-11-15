@@ -8,8 +8,9 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
     _js_and,
-    _js_and_value,
+    _js_cat,
     _js_coalesce_value,
+    _js_code_units,
     _js_destructure,
     _js_dispatch,
     _js_from_code_point,
@@ -20,10 +21,13 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_in,
     _js_invoke,
     _js_is_array,
+    _js_is_double,
     _js_is_nullish,
     _js_json_stringify,
     _js_le,
     _js_len,
+    _js_list_at,
+    _js_list_join,
     _js_lt,
     _js_m_every,
     _js_m_exec,
@@ -31,7 +35,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_get,
     _js_m_includes,
     _js_m_indexOf,
-    _js_m_join,
     _js_m_lastIndexOf,
     _js_m_map,
     _js_m_padStart,
@@ -50,13 +53,22 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_parse_int,
     _js_put,
     _js_re,
+    _js_re_exec,
+    _js_re_replace,
     _js_regexp_dynamic,
     _js_spread,
     _js_str,
+    _js_str_at,
+    _js_str_includes,
+    _js_str_index_of,
+    _js_str_len,
     _js_strict_eq,
     _js_throw,
     _js_truthy,
     _js_typeof,
+    _js_units_at,
+    _js_units_index_of,
+    _js_units_slice,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
@@ -92,7 +104,13 @@ class FactParseError(_JsError):
 OWNED_KEYS = ["name", "description", "type", "created", "last_recalled", "links", "keywords", "outcome", "status"]
 
 
+def _is_text_key__typed(key):
+    return _js_typeof(construct_plain(key)) == "string"
+
+
 def is_text_key(key):
+    if type(key) is str:
+        return _is_text_key__typed(key)
     return _js_typeof(construct_plain(key)) == "string"
 
 
@@ -125,7 +143,7 @@ def decode_fact_bytes(bytes):
 
 
 def format_fact(fact):
-    if _js_truthy(_is_parsed(fact)):
+    if _is_parsed(fact):
         fact = _fact_of_parsed(fact)
     front = safe_dump_mapping([["name", _js_get(fact, "name")], ["description", _js_get(fact, "description")], ["type", _js_get(fact, "type")], ["created", _js_coalesce_value(_js_get(fact, "created"), None)], ["last_recalled", _js_coalesce_value(_js_get(fact, "last_recalled"), None)], ["links", _js_get(fact, "links")], *([["keywords", _js_get(fact, "keywords")]] if _js_truthy(_js_and(_js_get(fact, "keywords"), lambda: _js_gt(_js_len(_js_get(fact, "keywords")), 0))) else []), *([["outcome", _js_get(fact, "outcome")]] if not _js_is_nullish(_js_get(fact, "outcome")) else []), *([["status", _js_get(fact, "status")]] if not _js_is_nullish(_js_get(fact, "status")) and _js_get(fact, "status") != "active" else []), *_js_m_filter(_js_coalesce_value(_js_get(fact, "extra"), []), lambda _js_arg0, *_: (lambda k: not _js_m_includes(OWNED_KEYS, k))(*_js_destructure(_js_arg0, 1)))])
     return _js_add(_js_add(_js_add(_js_add("---\n", front), "---\n\n"), py_strip(_js_get(fact, "body"))), "\n")
@@ -141,10 +159,10 @@ def _fact_of_parsed(parsed):
     alias = lifecycle_of(meta)
     for key in ["name", "description", "type"]:
         if not _js_in("type", meta) and _js_get(alias, "type") is None if key == "type" else not _js_in(key, meta):
-            raise FactParseError("formatFact: the frontmatter has no '" + _js_str(key) + "' key, and a fact must carry name, description and type")
+            raise FactParseError("formatFact: the frontmatter has no '" + key + "' key, and a fact must carry name, description and type")
     def one(key):
         return _js_get(meta, key)
-    return {"name": one("name"), "description": one("description"), "type": _js_get(alias, "type"), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "created": None if _js_get(meta, "created") is _JS_UNDEFINED else one("created"), "last_recalled": None if _js_get(meta, "last_recalled") is _JS_UNDEFINED else one("last_recalled"), "links": py_list(_js_get(meta, "links")), **_js_spread({"keywords": [*_js_get(meta, "keywords")]} if _js_is_array(_js_get(meta, "keywords")) and _js_m_every(_js_get(meta, "keywords"), lambda k, *_: _js_typeof(k) == "string") else {}), **_js_spread({"extra": extra_of(meta)} if _js_gt(_js_len(extra_of(meta)), 0) else {}), "body": body}
+    return {"name": one("name"), "description": one("description"), "type": _js_get(alias, "type"), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "created": None if _js_get(meta, "created") is _JS_UNDEFINED else one("created"), "last_recalled": None if _js_get(meta, "last_recalled") is _JS_UNDEFINED else one("last_recalled"), "links": py_list(_js_get(meta, "links")), **_js_spread({"keywords": [*_js_get(meta, "keywords")]} if _js_is_array(_js_get(meta, "keywords")) and _js_m_every(_js_get(meta, "keywords"), lambda k, *_: _js_typeof(k) == "string") else {}), **_js_spread({"extra": extra_of(meta)} if len(extra_of(meta)) > 0 else {}), "body": body}
 
 
 def py_truthy(value):
@@ -169,56 +187,125 @@ def py_list(value):
     raise _js_throw(e)
 
 
+def _parse_fact_text__typed(text):
+    parts = _py_split__typed(text, "---\n", 2)
+    if len(parts) != 3:
+        raise FactParseError("expected 3 parts from split('---\\n', 2), got " + _js_str(len(parts)))
+    return {"meta": parse_frontmatter(_js_list_at(parts, 1)), "body": py_strip(_js_list_at(parts, 2))}
+
+
 def parse_fact_text(text):
+    if type(text) is str:
+        return _parse_fact_text__typed(text)
     parts = py_split(text, "---\n", 2)
-    if not _js_strict_eq(_js_len(parts), 3):
-        raise FactParseError("expected 3 parts from split('---\\n', 2), got " + _js_str(_js_len(parts)))
-    return {"meta": parse_frontmatter(_js_get(parts, 1)), "body": py_strip(_js_get(parts, 2))}
+    if len(parts) != 3:
+        raise FactParseError("expected 3 parts from split('---\\n', 2), got " + _js_str(len(parts)))
+    return {"meta": parse_frontmatter(_js_list_at(parts, 1)), "body": py_strip(_js_list_at(parts, 2))}
 
 
-def py_split(text, sep, maxsplit):
+def _py_split__typed(text, sep, maxsplit):
+    _jsu_text = _js_code_units(text)
+    _jsu_sep = _js_code_units(sep)
     out = []
     from_ = 0
-    while _js_lt(_js_len(out), maxsplit):
-        at = _js_m_indexOf(text, sep, from_)
-        if _js_strict_eq(at, -1):
+    while len(out) < maxsplit:
+        at = _js_str_index_of(text, sep, from_)
+        if at == -1:
             break
-        _js_dispatch(out, "push", _js_m_push, _js_m_slice(text, from_, at))
-        from_ = _js_add(at, _js_len(sep))
-    _js_dispatch(out, "push", _js_m_push, _js_m_slice(text, from_))
+        out.append(_js_units_slice(_jsu_text, from_, at))
+        from_ = _js_num(at + len(_jsu_sep))
+    out.append(_js_units_slice(_jsu_text, from_))
     return out
 
 
+def py_split(text, sep, maxsplit):
+    if type(text) is str and type(sep) is str and _js_is_double(maxsplit):
+        return _py_split__typed(text, sep, maxsplit)
+    out = []
+    from_ = 0
+    while _js_lt(len(out), maxsplit):
+        at = _js_m_indexOf(text, sep, from_)
+        if at == -1:
+            break
+        out.append(_js_m_slice(text, from_, at))
+        from_ = _js_add(at, _js_len(sep))
+    out.append(_js_m_slice(text, from_))
+    return out
+
+
+def _parse_frontmatter__typed(front):
+    _jsu_front = _js_code_units(front)
+    meta = {}
+    pos = 0
+    while pos < len(_jsu_front):
+        blank = _js_re_exec(_JS_RE_1, _js_units_slice(_jsu_front, pos))
+        if _js_truthy(_js_and(blank, lambda: _js_str_len(_js_get(blank, 0)) > 0)):
+            pos = _js_num(pos + _js_str_len(_js_get(blank, 0)))
+            continue
+        key = _js_re_exec(_JS_RE_2, _js_units_slice(_jsu_front, pos, _js_or_value(_js_num(_js_units_index_of(_jsu_front, "\n", pos) + 1), _JS_UNDEFINED)))
+        if not _js_truthy(key):
+            raise FactParseError("frontmatter line is not a plain \"key:\" mapping entry: " + _js_str(_line__typed(front, pos)))
+        pos = _js_num(pos + _js_str_len(_js_get(key, 0)))
+        value = _JS_UNDEFINED
+        empty = _js_re_exec(_JS_RE_3, _js_units_slice(_jsu_front, pos))
+        if (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == " " and empty is not None:
+            pos = _js_num(pos + _js_str_len(_js_get(empty, 0)))
+        if (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == "\n":
+            pos = _js_num(pos + 1)
+            gap = _js_str_len(_js_get(_js_re_exec(_JS_RE_4, _js_units_slice(_jsu_front, pos)), 0))
+            if _JS_RE_5.search(_js_code_units(_js_units_slice(_jsu_front, _js_num(pos + gap)))) is not None:
+                value, pos = _scan_block_sequence__typed(front, _js_num(pos + gap))
+            else:
+                nested = _scan_nested_mapping__typed(front, pos)
+                if nested is not None:
+                    value, pos = [nested[0], nested[1]]
+                else:
+                    value = None
+        elif (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == " ":
+            pos = _js_num(pos + 1)
+            value, pos = _scan_node__typed(front, pos)
+            pos = _skip_trailing_comment__typed(front, pos)
+            if pos < len(_jsu_front) and (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) != "\n":
+                raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(key, 1)) + "\": " + _js_str(_line__typed(front, pos)))
+            pos = _js_num(pos + 1)
+        else:
+            raise FactParseError("expected \" \" or end of line after \"" + _js_str(_js_get(key, 1)) + ":\"")
+        _js_put(meta, _js_get(key, 1), value)
+    return _well_formed_meta(meta) if _js_str_includes(front, "\\u") or _js_str_includes(front, "\\U") else meta
+
+
 def parse_frontmatter(front):
+    if type(front) is str:
+        return _parse_frontmatter__typed(front)
     meta = {}
     pos = 0
     while _js_lt(pos, _js_len(front)):
         blank = _js_m_exec(_JS_RE_1, _js_m_slice(front, pos))
-        if _js_truthy(_js_and(blank, lambda: _js_gt(_js_len(_js_get(blank, 0)), 0))):
-            pos = _js_add(pos, _js_len(_js_get(blank, 0)))
+        if _js_truthy(_js_and(blank, lambda: _js_str_len(_js_get(blank, 0)) > 0)):
+            pos = _js_add(pos, _js_str_len(_js_get(blank, 0)))
             continue
         key = _js_m_exec(_JS_RE_2, _js_m_slice(front, pos, _js_or_value(_js_num(_js_m_indexOf(front, "\n", pos) + 1), _JS_UNDEFINED)))
         if not _js_truthy(key):
             raise FactParseError("frontmatter line is not a plain \"key:\" mapping entry: " + _js_str(_line(front, pos)))
-        pos = _js_add(pos, _js_len(_js_get(key, 0)))
+        pos = _js_add(pos, _js_str_len(_js_get(key, 0)))
         value = _JS_UNDEFINED
         empty = _js_m_exec(_JS_RE_3, _js_m_slice(front, pos))
         if _js_get(front, pos) == " " and empty is not None:
-            pos = _js_add(pos, _js_len(_js_get(empty, 0)))
+            pos = _js_add(pos, _js_str_len(_js_get(empty, 0)))
         if _js_get(front, pos) == "\n":
             pos = _js_add(pos, 1)
-            gap = _js_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, pos)), 0))
+            gap = _js_str_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, pos)), 0))
             if _js_m_test(_JS_RE_5, _js_m_slice(front, _js_add(pos, gap))):
-                value, pos = _js_destructure(_scan_block_sequence(front, _js_add(pos, gap)), 2)
+                value, pos = _scan_block_sequence(front, _js_add(pos, gap))
             else:
                 nested = _scan_nested_mapping(front, pos)
                 if nested is not None:
-                    value, pos = _js_destructure([_js_get(nested, 0), _js_get(nested, 1)], 2)
+                    value, pos = [nested[0], nested[1]]
                 else:
                     value = None
         elif _js_get(front, pos) == " ":
             pos = _js_add(pos, 1)
-            value, pos = _js_destructure(_scan_node(front, pos), 2)
+            value, pos = _scan_node(front, pos)
             pos = _skip_trailing_comment(front, pos)
             if _js_lt(pos, _js_len(front)) and _js_get(front, pos) != "\n":
                 raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(key, 1)) + "\": " + _js_str(_line(front, pos)))
@@ -232,7 +319,13 @@ def parse_frontmatter(front):
 _LONE_SURROGATES = _JS_RE_6
 
 
+def _well_formed__typed(text):
+    return _js_m_replace(text, _LONE_SURROGATES, "�")
+
+
 def well_formed(text):
+    if type(text) is str:
+        return _well_formed__typed(text)
     return _js_m_replace(text, _LONE_SURROGATES, "�")
 
 
@@ -247,32 +340,67 @@ def _well_formed_meta(meta):
     return meta
 
 
+def _scan_nested_mapping__typed(front, start):
+    _jsu_front = _js_code_units(front)
+    out = {}
+    pos = start
+    indent = -1
+    any = False
+    while pos < len(_jsu_front):
+        eol = _js_units_index_of(_jsu_front, "\n", pos)
+        end = len(_jsu_front) if eol == -1 else eol
+        text = _js_units_slice(_jsu_front, pos, end)
+        _jsu_text = _js_code_units(text)
+        m = _js_re_exec(_JS_RE_7, text)
+        if m is None or not _js_strict_eq(indent, -1) and not _js_strict_eq(_js_len(_js_get(m, 1)), indent):
+            break
+        indent = _js_len(_js_get(m, 1))
+        value, after = _scan_node__typed(text + "\n", _js_str_len(_js_get(m, 0)))
+        tail = _skip_trailing_comment__typed(text + "\n", after)
+        if tail < len(_jsu_text):
+            raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(m, 2)) + "\": " + _js_str(_line__typed(text, tail)))
+        _js_put(out, _js_get(m, 2), value)
+        any = True
+        pos = len(_jsu_front) if eol == -1 else _js_num(eol + 1)
+    return [out, pos] if any else None
+
+
 def _scan_nested_mapping(front, start):
+    if type(front) is str and _js_is_double(start):
+        return _scan_nested_mapping__typed(front, start)
     out = {}
     pos = start
     indent = -1
     any = False
     while _js_lt(pos, _js_len(front)):
         eol = _js_m_indexOf(front, "\n", pos)
-        end = _js_len(front) if _js_strict_eq(eol, -1) else eol
+        end = _js_len(front) if eol == -1 else eol
         text = _js_m_slice(front, pos, end)
         m = _js_m_exec(_JS_RE_7, text)
         if m is None or not _js_strict_eq(indent, -1) and not _js_strict_eq(_js_len(_js_get(m, 1)), indent):
             break
         indent = _js_len(_js_get(m, 1))
-        value, after = _js_destructure(_scan_node(_js_add(text, "\n"), _js_len(_js_get(m, 0))), 2)
+        value, after = _scan_node(_js_add(text, "\n"), _js_str_len(_js_get(m, 0)))
         tail = _skip_trailing_comment(_js_add(text, "\n"), after)
         if _js_lt(tail, _js_len(text)):
             raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(m, 2)) + "\": " + _js_str(_line(text, tail)))
         _js_put(out, _js_get(m, 2), value)
         any = True
-        pos = _js_len(front) if _js_strict_eq(eol, -1) else _js_add(eol, 1)
-    return [out, pos] if _js_truthy(any) else None
+        pos = _js_len(front) if eol == -1 else _js_num(eol + 1)
+    return [out, pos] if any else None
+
+
+def _line__typed(text, pos):
+    _jsu_text = _js_code_units(text)
+    end = _js_units_index_of(_jsu_text, "\n", pos)
+    return _js_json_stringify(_js_units_slice(_jsu_text, pos, _JS_UNDEFINED if end == -1 else end))
 
 
 def _line(text, pos):
+    if type(text) is str and _js_is_double(pos):
+        return _line__typed(text, pos)
     end = _js_m_indexOf(text, "\n", pos)
-    return _js_json_stringify(_js_m_slice(text, pos, _JS_UNDEFINED if _js_strict_eq(end, -1) else end))
+    return _js_json_stringify(_js_m_slice(text, pos, _JS_UNDEFINED if end == -1 else end))
 
 
 _REFUSED_INDICATORS = {"&": "an anchor", "*": "an alias", "!": "a tag", "%": "a directive", "@": "a reserved indicator", "`": "a reserved indicator", "{": "a flow mapping", "}": "a flow-mapping end outside a flow collection", "]": "a flow-sequence end outside a flow collection", ",": "a flow-entry separator outside a flow collection", "\t": "a tab, which cannot start a YAML token"}
@@ -282,11 +410,32 @@ def _blank_or_end(ch):
     return ch is _JS_UNDEFINED or _js_m_includes(" \t\r\n\u0085\u2028\u2029", ch)
 
 
+def _refuse_indicator__typed(front, pos, what):
+    _jsu_front = _js_code_units(front)
+    raise FactParseError(_js_str(_js_json_stringify(_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos))) + " starts " + what + " — YAML this codec does not implement, " + ("so it is refused rather than read as plain text: " + _js_str(_line__typed(front, pos))))
+
+
 def _refuse_indicator(front, pos, what):
+    if type(front) is str and _js_is_double(pos) and type(what) is str:
+        return _refuse_indicator__typed(front, pos, what)
     raise FactParseError(_js_str(_js_json_stringify(_js_get(front, pos))) + " starts " + _js_str(what) + " — YAML this codec does not implement, " + ("so it is refused rather than read as plain text: " + _js_str(_line(front, pos))))
 
 
+def _skip_trailing_comment__typed(front, pos):
+    _jsu_front = _js_code_units(front)
+    i = pos
+    while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
+        i = _js_num(i + 1)
+    if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "#":
+        while i < len(_jsu_front) and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != "\n":
+            i = _js_num(i + 1)
+        return i
+    return i if i == len(_jsu_front) or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n" else pos
+
+
 def _skip_trailing_comment(front, pos):
+    if type(front) is str and _js_is_double(pos):
+        return _skip_trailing_comment__typed(front, pos)
     i = pos
     while _js_get(front, i) == " ":
         i = _js_add(i, 1)
@@ -297,7 +446,35 @@ def _skip_trailing_comment(front, pos):
     return i if _js_strict_eq(i, _js_len(front)) or _js_get(front, i) == "\n" else pos
 
 
+def _scan_node__typed(front, pos):
+    _jsu_front = _js_code_units(front)
+    while (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == " ":
+        pos = _js_num(pos + 1)
+    ch = _jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)
+    if ch is _JS_UNDEFINED or ch == "\n":
+        return [None, pos]
+    if ch == "#":
+        eol = _js_units_index_of(_jsu_front, "\n", pos)
+        return [None, len(_jsu_front) if eol == -1 else eol]
+    if ch == "'":
+        return _scan_quoted__typed(front, pos, "'")
+    if ch == "\"":
+        return _scan_quoted__typed(front, pos, "\"")
+    if ch == "[":
+        return _scan_flow_sequence__typed(front, pos)
+    if ch == "|" or ch == ">":
+        return _scan_block_scalar__typed(front, pos)
+    refused = _js_get(_REFUSED_INDICATORS, ch)
+    if refused is not _JS_UNDEFINED:
+        _refuse_indicator__typed(front, pos, refused)
+    if (ch == "-" or ch == "?" or ch == ":") and _blank_or_end(_js_units_at(_jsu_front, front, _js_num(pos + 1))):
+        _refuse_indicator__typed(front, pos, "a sequence entry" if ch == "-" else "a mapping key" if ch == "?" else "a mapping value")
+    return _scan_plain__typed(front, pos)
+
+
 def _scan_node(front, pos):
+    if type(front) is str and _js_is_double(pos):
+        return _scan_node__typed(front, pos)
     while _js_get(front, pos) == " ":
         pos = _js_add(pos, 1)
     ch = _js_get(front, pos)
@@ -305,7 +482,7 @@ def _scan_node(front, pos):
         return [None, pos]
     if ch == "#":
         eol = _js_m_indexOf(front, "\n", pos)
-        return [None, _js_len(front) if _js_strict_eq(eol, -1) else eol]
+        return [None, _js_len(front) if eol == -1 else eol]
     if ch == "'":
         return _scan_quoted(front, pos, "'")
     if ch == "\"":
@@ -322,11 +499,122 @@ def _scan_node(front, pos):
     return _scan_plain(front, pos)
 
 
+def _column__typed(front, pos):
+    return _js_num(pos - _js_num(_js_m_lastIndexOf(front, "\n", _js_num(pos - 1)) + 1))
+
+
 def _column(front, pos):
+    if type(front) is str and _js_is_double(pos):
+        return _column__typed(front, pos)
     return _js_num(_js_num(pos) - _js_num(_js_m_lastIndexOf(front, "\n", _js_num(_js_num(pos) - 1)) + 1))
 
 
+def _scan_block_scalar__typed(front, pos):
+    _jsu_front = _js_code_units(front)
+    folded = (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == ">"
+    def bad(why):
+        return FactParseError("while scanning a block scalar, " + _js_str(why) + ": " + _js_str(_line__typed(front, pos)))
+    def digit(c):
+        return c is not _JS_UNDEFINED and _js_ge(c, "0") and _js_le(c, "9")
+    i = _js_num(pos + 1)
+    chomping = None
+    increment = None
+    if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "+" or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "-":
+        chomping = (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "+"
+        i = _js_num(i + 1)
+        if _js_truthy(digit(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i))):
+            increment = _js_number(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i))
+            if _js_strict_eq(increment, 0):
+                raise _js_throw(bad("expected indentation indicator in the range 1-9, but found 0"))
+            i = _js_num(i + 1)
+    elif _js_truthy(digit(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i))):
+        increment = _js_number(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i))
+        if _js_strict_eq(increment, 0):
+            raise _js_throw(bad("expected indentation indicator in the range 1-9, but found 0"))
+        i = _js_num(i + 1)
+        if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "+" or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "-":
+            chomping = (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "+"
+            i = _js_num(i + 1)
+    if not (i == len(_jsu_front) or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " " or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n"):
+        raise _js_throw(bad("expected chomping or indentation indicators, but found " + _js_str(_js_json_stringify(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)))))
+    while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
+        i = _js_num(i + 1)
+    if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "#":
+        while i < len(_jsu_front) and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != "\n":
+            if _js_m_includes("\r\u0085\u2028\u2029", _jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)):
+                raise _js_throw(bad("a line break other than \\n"))
+            i = _js_num(i + 1)
+    if i < len(_jsu_front) and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != "\n":
+        raise _js_throw(bad("expected a comment or a line break, but found " + _js_str(_js_json_stringify(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)))))
+    if i < len(_jsu_front):
+        i = _js_num(i + 1)
+    def scan_breaks(indent):
+        nonlocal i
+        chunks = []
+        while _js_lt(_column__typed(front, i), indent) and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
+            i = _js_num(i + 1)
+        while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
+            chunks.append("\n")
+            i = _js_num(i + 1)
+            while _js_lt(_column__typed(front, i), indent) and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
+                i = _js_num(i + 1)
+        return chunks
+    min_indent = 1
+    indent = _JS_UNDEFINED
+    breaks = _JS_UNDEFINED
+    if increment is None:
+        breaks = []
+        max_indent = 0
+        while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " " or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
+            if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
+                _js_dispatch(breaks, "push", _js_m_push, "\n")
+                i = _js_num(i + 1)
+            else:
+                i = _js_num(i + 1)
+                max_indent = _js_max(max_indent, _column__typed(front, i))
+        indent = _js_max(min_indent, max_indent)
+    else:
+        indent = _js_num(_js_num(_js_add(min_indent, increment)) - 1)
+        breaks = scan_breaks(indent)
+    chunks = []
+    line_break = ""
+    while _js_strict_eq(_column__typed(front, i), indent) and i < len(_jsu_front):
+        _js_dispatch(chunks, "push", _js_m_push, *breaks)
+        leading_non_space = (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != " " and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != "\t"
+        eol = _js_units_index_of(_jsu_front, "\n", i)
+        end = len(_jsu_front) if eol == -1 else eol
+        text = _js_units_slice(_jsu_front, i, end)
+        if _JS_RE_8.search(_js_code_units(text)) is not None:
+            raise _js_throw(bad("a line break other than \\n"))
+        chunks.append(text)
+        i = end
+        line_break = "\n" if i < len(_jsu_front) else ""
+        if line_break != "":
+            i = _js_num(i + 1)
+        breaks = scan_breaks(indent)
+        if _js_strict_eq(_column__typed(front, i), indent) and i < len(_jsu_front):
+            if folded and line_break == "\n" and leading_non_space and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != " " and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != "\t":
+                if _js_strict_eq(_js_len(breaks), 0):
+                    chunks.append(" ")
+            else:
+                chunks.append(line_break)
+        else:
+            break
+    if not _js_strict_eq(chomping, False):
+        chunks.append(line_break)
+    if _js_strict_eq(chomping, True):
+        _js_dispatch(chunks, "push", _js_m_push, *breaks)
+    if i < len(_jsu_front) and _column__typed(front, i) != 0 and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "#":
+        eol = _js_units_index_of(_jsu_front, "\n", i)
+        return [_js_list_join(chunks, ""), len(_jsu_front) if eol == -1 else eol]
+    if i < len(_jsu_front) and _column__typed(front, i) != 0:
+        raise FactParseError("content after a block scalar is not at column 0: " + _js_str(_line__typed(front, i)))
+    return [_js_list_join(chunks, ""), i if i == len(_jsu_front) else _js_num(i - 1)]
+
+
 def _scan_block_scalar(front, pos):
+    if type(front) is str and _js_is_double(pos):
+        return _scan_block_scalar__typed(front, pos)
     folded = _js_get(front, pos) == ">"
     def bad(why):
         return FactParseError("while scanning a block scalar, " + _js_str(why) + ": " + _js_str(_line(front, pos)))
@@ -370,7 +658,7 @@ def _scan_block_scalar(front, pos):
         while _js_lt(_column(front, i), indent) and _js_get(front, i) == " ":
             i = _js_add(i, 1)
         while _js_get(front, i) == "\n":
-            _js_dispatch(chunks, "push", _js_m_push, "\n")
+            chunks.append("\n")
             i = _js_add(i, 1)
             while _js_lt(_column(front, i), indent) and _js_get(front, i) == " ":
                 i = _js_add(i, 1)
@@ -398,39 +686,122 @@ def _scan_block_scalar(front, pos):
         _js_dispatch(chunks, "push", _js_m_push, *breaks)
         leading_non_space = _js_get(front, i) != " " and _js_get(front, i) != "\t"
         eol = _js_m_indexOf(front, "\n", i)
-        end = _js_len(front) if _js_strict_eq(eol, -1) else eol
+        end = _js_len(front) if eol == -1 else eol
         text = _js_m_slice(front, i, end)
         if _js_m_test(_JS_RE_8, text):
             raise _js_throw(bad("a line break other than \\n"))
-        _js_dispatch(chunks, "push", _js_m_push, text)
+        chunks.append(text)
         i = end
         line_break = "\n" if _js_lt(i, _js_len(front)) else ""
-        if _js_truthy(line_break):
+        if line_break != "":
             i = _js_add(i, 1)
         breaks = scan_breaks(indent)
         if _js_strict_eq(_column(front, i), indent) and _js_lt(i, _js_len(front)):
-            if _js_truthy(_js_and(_js_and(_js_and_value(_js_and(folded, lambda: line_break == "\n"), leading_non_space), lambda: _js_get(front, i) != " "), lambda: _js_get(front, i) != "\t")):
+            if folded and line_break == "\n" and leading_non_space and _js_get(front, i) != " " and _js_get(front, i) != "\t":
                 if _js_strict_eq(_js_len(breaks), 0):
-                    _js_dispatch(chunks, "push", _js_m_push, " ")
+                    chunks.append(" ")
             else:
-                _js_dispatch(chunks, "push", _js_m_push, line_break)
+                chunks.append(line_break)
         else:
             break
     if not _js_strict_eq(chomping, False):
-        _js_dispatch(chunks, "push", _js_m_push, line_break)
+        chunks.append(line_break)
     if _js_strict_eq(chomping, True):
         _js_dispatch(chunks, "push", _js_m_push, *breaks)
-    if _js_lt(i, _js_len(front)) and not _js_strict_eq(_column(front, i), 0) and _js_get(front, i) == "#":
+    if _js_lt(i, _js_len(front)) and _column(front, i) != 0 and _js_get(front, i) == "#":
         eol = _js_m_indexOf(front, "\n", i)
-        return [_js_m_join(chunks, ""), _js_len(front) if _js_strict_eq(eol, -1) else eol]
-    if _js_lt(i, _js_len(front)) and not _js_strict_eq(_column(front, i), 0):
+        return [_js_list_join(chunks, ""), _js_len(front) if eol == -1 else eol]
+    if _js_lt(i, _js_len(front)) and _column(front, i) != 0:
         raise FactParseError("content after a block scalar is not at column 0: " + _js_str(_line(front, i)))
-    return [_js_m_join(chunks, ""), i if _js_strict_eq(i, _js_len(front)) else _js_num(_js_num(i) - 1)]
+    return [_js_list_join(chunks, ""), i if _js_strict_eq(i, _js_len(front)) else _js_num(_js_num(i) - 1)]
+
+
+def _scan_flow_sequence__typed(front, pos):
+    _jsu_front = _js_code_units(front)
+    eol = _js_units_index_of(_jsu_front, "\n", pos)
+    end = len(_jsu_front) if eol == -1 else eol
+    def refuse(why):
+        raise FactParseError("a flow sequence " + _js_str(why) + " is outside this codec's language: " + _js_str(_line__typed(front, pos)))
+    items = []
+    i = _js_num(pos + 1)
+    def skip_spaces():
+        nonlocal i
+        while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
+            i = _js_num(i + 1)
+        return _JS_UNDEFINED
+    skip_spaces()
+    if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "]":
+        return [items, _js_num(i + 1)]
+    while True:
+        if i >= end:
+            refuse("that continues past its line")
+        ch = _jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)
+        if ch == "'" or ch == "\"":
+            value, next = _scan_quoted__typed(front, i, ch)
+            if next > end:
+                refuse("whose quoted item spans lines")
+            items.append(value)
+            i = next
+        elif ch == "[" or ch == "{":
+            refuse("holding a nested collection")
+        elif ch == "?" or ch == ":":
+            refuse("holding a mapping entry")
+        elif ch == "-" and _blank_or_end(_js_units_at(_jsu_front, front, _js_num(i + 1))):
+            refuse("holding a block sequence entry")
+        elif _js_get(_REFUSED_INDICATORS, ch) is not _JS_UNDEFINED or ch == "#" or ch == "|" or ch == ">":
+            _refuse_indicator(front, i, "a comment" if ch == "#" else "a block scalar" if ch == "|" or ch == ">" else _js_get(_REFUSED_INDICATORS, ch))
+        else:
+            text = ""
+            spaces = ""
+            while True:
+                if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "#":
+                    break
+                length = 0
+                while True:
+                    c = _js_units_at(_jsu_front, front, _js_num(i + length))
+                    if _blank_or_end(c):
+                        break
+                    if c == ":" and (_blank_or_end(_js_units_at(_jsu_front, front, _js_num(_js_num(i + length) + 1))) or _js_m_includes(",[]{}", _js_units_at(_jsu_front, front, _js_num(_js_num(i + length) + 1)))):
+                        break
+                    if _js_m_includes(",?[]{}", c):
+                        break
+                    length = _js_num(length + 1)
+                if length == 0:
+                    break
+                text = _js_cat(text, _js_cat(spaces, _js_units_slice(_jsu_front, i, _js_num(i + length))))
+                i = _js_num(i + length)
+                from_ = i
+                while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
+                    i = _js_num(i + 1)
+                spaces = _js_units_slice(_jsu_front, from_, i)
+                if i >= end:
+                    refuse("that continues past its line")
+                if spaces == "" or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "#":
+                    break
+            items.append(construct_plain(text))
+        skip_spaces()
+        if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "]":
+            return [items, _js_num(i + 1)]
+        if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != ",":
+            if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == ":" or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "?":
+                refuse("holding a mapping entry")
+            if i >= end:
+                refuse("that continues past its line")
+            refuse("with " + _js_str(_js_json_stringify(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i))) + " where \",\" or \"]\" belongs")
+        i = _js_num(i + 1)
+        skip_spaces()
+        if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "]":
+            return [items, _js_num(i + 1)]
+        if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == ",":
+            refuse("with an empty entry")
+    return _JS_UNDEFINED
 
 
 def _scan_flow_sequence(front, pos):
+    if type(front) is str and _js_is_double(pos):
+        return _scan_flow_sequence__typed(front, pos)
     eol = _js_m_indexOf(front, "\n", pos)
-    end = _js_len(front) if _js_strict_eq(eol, -1) else eol
+    end = _js_len(front) if eol == -1 else eol
     def refuse(why):
         raise FactParseError("a flow sequence " + _js_str(why) + " is outside this codec's language: " + _js_str(_line(front, pos)))
     items = []
@@ -448,10 +819,10 @@ def _scan_flow_sequence(front, pos):
             refuse("that continues past its line")
         ch = _js_get(front, i)
         if ch == "'" or ch == "\"":
-            value, next = _js_destructure(_scan_quoted(front, i, ch), 2)
+            value, next = _scan_quoted(front, i, ch)
             if _js_gt(next, end):
                 refuse("whose quoted item spans lines")
-            _js_dispatch(items, "push", _js_m_push, value)
+            items.append(value)
             i = next
         elif ch == "[" or ch == "{":
             refuse("holding a nested collection")
@@ -476,8 +847,8 @@ def _scan_flow_sequence(front, pos):
                         break
                     if _js_m_includes(",?[]{}", c):
                         break
-                    length = _js_add(length, 1)
-                if _js_strict_eq(length, 0):
+                    length = _js_num(length + 1)
+                if length == 0:
                     break
                 text = _js_add(text, _js_add(spaces, _js_m_slice(front, i, _js_add(i, length))))
                 i = _js_add(i, length)
@@ -489,7 +860,7 @@ def _scan_flow_sequence(front, pos):
                     refuse("that continues past its line")
                 if spaces == "" or _js_get(front, i) == "#":
                     break
-            _js_dispatch(items, "push", _js_m_push, construct_plain(text))
+            items.append(construct_plain(text))
         skip_spaces()
         if _js_get(front, i) == "]":
             return [items, _js_add(i, 1)]
@@ -508,35 +879,74 @@ def _scan_flow_sequence(front, pos):
     return _JS_UNDEFINED
 
 
+def _scan_plain__typed(front, pos):
+    _jsu_front = _js_code_units(front)
+    pieces = []
+    i = pos
+    while True:
+        eol = _js_units_index_of(_jsu_front, "\n", i)
+        raw = _js_units_slice(_jsu_front, i) if eol == -1 else _js_units_slice(_jsu_front, i, eol)
+        _jsu_raw = _js_code_units(raw)
+        hash = _js_units_index_of(_jsu_raw, " #")
+        cut = raw if hash == -1 else _js_units_slice(_jsu_raw, 0, hash)
+        if _js_str_includes(cut, "\t"):
+            raise FactParseError("a tab inside a plain scalar is not readable YAML — PyYAML rejects it too: " + _js_str(_line__typed(front, i)))
+        piece = _js_re_replace(_js_re_replace(cut, _JS_RE_9, ""), _JS_RE_10, "")
+        if len(pieces) > 0 and piece == "":
+            rest = _js_get(_js_re_exec(_JS_RE_4, _js_units_slice(_jsu_front, i)), 0)
+            _jsu_rest = _js_code_units(rest)
+            after = _js_num(i + len(_jsu_rest))
+            if after >= len(_jsu_front) or (_jsu_front[after] if type(after) is int and 0 <= after < len(_jsu_front) else _js_str_at(front, after)) != " ":
+                i = _js_num(i - 1)
+                break
+            raise FactParseError("a blank line inside a plain scalar is outside this codec's language")
+        pieces.append(piece)
+        next = len(_jsu_front) if eol == -1 else _js_num(eol + 1)
+        if hash != -1:
+            i = len(_jsu_front) if eol == -1 else eol
+            break
+        if next >= len(_jsu_front) or (_jsu_front[next] if type(next) is int and 0 <= next < len(_jsu_front) else _js_str_at(front, next)) != " ":
+            i = len(_jsu_front) if eol == -1 else eol
+            break
+        i = next
+    value = _js_list_join(pieces, " ")
+    if _JS_RE_11.search(_js_code_units(value)) is not None:
+        raise FactParseError("a plain scalar containing \": \" is not readable YAML — PyYAML rejects it too: " + _js_str(_js_json_stringify(value)))
+    return [_resolve_plain(value), i]
+
+
 def _scan_plain(front, pos):
+    if type(front) is str and _js_is_double(pos):
+        return _scan_plain__typed(front, pos)
     pieces = []
     i = pos
     while True:
         eol = _js_m_indexOf(front, "\n", i)
-        raw = _js_m_slice(front, i) if _js_strict_eq(eol, -1) else _js_m_slice(front, i, eol)
+        raw = _js_m_slice(front, i) if eol == -1 else _js_m_slice(front, i, eol)
         hash = _js_m_indexOf(raw, " #")
-        cut = raw if _js_strict_eq(hash, -1) else _js_m_slice(raw, 0, hash)
+        cut = raw if hash == -1 else _js_m_slice(raw, 0, hash)
         if _js_m_includes(cut, "\t"):
             raise FactParseError("a tab inside a plain scalar is not readable YAML — PyYAML rejects it too: " + _js_str(_line(front, i)))
-        piece = _js_m_replace(_js_m_replace(cut, _JS_RE_9, ""), _JS_RE_10, "")
-        if _js_gt(_js_len(pieces), 0) and piece == "":
+        piece = _js_re_replace(_js_m_replace(cut, _JS_RE_9, ""), _JS_RE_10, "")
+        if len(pieces) > 0 and piece == "":
             rest = _js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, i)), 0)
-            after = _js_add(i, _js_len(rest))
+            _jsu_rest = _js_code_units(rest)
+            after = _js_add(i, len(_jsu_rest))
             if _js_ge(after, _js_len(front)) or _js_get(front, after) != " ":
                 i = _js_num(_js_num(i) - 1)
                 break
             raise FactParseError("a blank line inside a plain scalar is outside this codec's language")
-        _js_dispatch(pieces, "push", _js_m_push, piece)
-        next = _js_len(front) if _js_strict_eq(eol, -1) else _js_add(eol, 1)
-        if not _js_strict_eq(hash, -1):
-            i = _js_len(front) if _js_strict_eq(eol, -1) else eol
+        pieces.append(piece)
+        next = _js_len(front) if eol == -1 else _js_num(eol + 1)
+        if hash != -1:
+            i = _js_len(front) if eol == -1 else eol
             break
         if _js_ge(next, _js_len(front)) or _js_get(front, next) != " ":
-            i = _js_len(front) if _js_strict_eq(eol, -1) else eol
+            i = _js_len(front) if eol == -1 else eol
             break
         i = next
-    value = _js_m_join(pieces, " ")
-    if _js_m_test(_JS_RE_11, value):
+    value = _js_list_join(pieces, " ")
+    if _JS_RE_11.search(_js_code_units(value)) is not None:
         raise FactParseError("a plain scalar containing \": \" is not readable YAML — PyYAML rejects it too: " + _js_str(_js_json_stringify(value)))
     return [_resolve_plain(value), i]
 
@@ -545,7 +955,50 @@ def _resolve_plain(value):
     return construct_plain(value)
 
 
+def _scan_quoted__typed(front, pos, quote):
+    _jsu_front = _js_code_units(front)
+    out = []
+    i = _js_num(pos + 1)
+    while True:
+        if i >= len(_jsu_front):
+            raise FactParseError("unterminated " + ("single" if quote == "'" else "double") + "-quoted scalar")
+        ch = _jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)
+        if ch == quote:
+            if quote == "'" and _js_units_at(_jsu_front, front, _js_num(i + 1)) == "'":
+                out.append("'")
+                i = _js_num(i + 2)
+                continue
+            return [_js_list_join(out, ""), _js_num(i + 1)]
+        if quote == "\"" and ch == "\\":
+            next = _js_units_at(_jsu_front, front, _js_num(i + 1))
+            if next == "\n":
+                i = _js_num(i + 2)
+                while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " " or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\t":
+                    i = _js_num(i + 1)
+                continue
+            text, used = _unescape__typed(front, i)
+            out.append(text)
+            i = _js_num(i + used)
+            continue
+        if ch == "\n":
+            while len(out) > 0 and _js_m_test(_JS_RE_12, _js_list_at(out, _js_num(len(out) - 1))):
+                _js_m_pop(out)
+            breaks = 0
+            while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
+                breaks = _js_num(breaks + 1)
+                i = _js_num(i + 1)
+                while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " " or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\t":
+                    i = _js_num(i + 1)
+            out.append(" " if breaks == 1 else _js_m_repeat("\n", _js_num(breaks - 1)))
+            continue
+        out.append(ch)
+        i = _js_num(i + 1)
+    return _JS_UNDEFINED
+
+
 def _scan_quoted(front, pos, quote):
+    if type(front) is str and _js_is_double(pos) and type(quote) is str:
+        return _scan_quoted__typed(front, pos, quote)
     out = []
     i = _js_add(pos, 1)
     while True:
@@ -554,10 +1007,10 @@ def _scan_quoted(front, pos, quote):
         ch = _js_get(front, i)
         if _js_strict_eq(ch, quote):
             if quote == "'" and _js_get(front, _js_add(i, 1)) == "'":
-                _js_dispatch(out, "push", _js_m_push, "'")
+                out.append("'")
                 i = _js_add(i, 2)
                 continue
-            return [_js_m_join(out, ""), _js_add(i, 1)]
+            return [_js_list_join(out, ""), _js_add(i, 1)]
         if quote == "\"" and ch == "\\":
             next = _js_get(front, _js_add(i, 1))
             if next == "\n":
@@ -565,22 +1018,22 @@ def _scan_quoted(front, pos, quote):
                 while _js_get(front, i) == " " or _js_get(front, i) == "\t":
                     i = _js_add(i, 1)
                 continue
-            text, used = _js_destructure(_unescape(front, i), 2)
-            _js_dispatch(out, "push", _js_m_push, text)
+            text, used = _unescape(front, i)
+            out.append(text)
             i = _js_add(i, used)
             continue
         if ch == "\n":
-            while _js_gt(_js_len(out), 0) and _js_m_test(_JS_RE_12, _js_get(out, _js_num(_js_num(_js_len(out)) - 1))):
+            while len(out) > 0 and _js_m_test(_JS_RE_12, _js_list_at(out, _js_num(len(out) - 1))):
                 _js_m_pop(out)
             breaks = 0
             while _js_get(front, i) == "\n":
-                breaks = _js_add(breaks, 1)
+                breaks = _js_num(breaks + 1)
                 i = _js_add(i, 1)
                 while _js_get(front, i) == " " or _js_get(front, i) == "\t":
                     i = _js_add(i, 1)
-            _js_dispatch(out, "push", _js_m_push, " " if _js_strict_eq(breaks, 1) else _js_m_repeat("\n", _js_num(_js_num(breaks) - 1)))
+            out.append(" " if breaks == 1 else _js_m_repeat("\n", _js_num(breaks - 1)))
             continue
-        _js_dispatch(out, "push", _js_m_push, ch)
+        out.append(ch)
         i = _js_add(i, 1)
     return _JS_UNDEFINED
 
@@ -591,7 +1044,26 @@ _UNESCAPE = _JsMap([["0", "\x00"], ["a", "\x07"], ["b", "\x08"], ["t", "\t"], ["
 _NUMERIC_ESCAPE = {"x": 2, "u": 4, "U": 8}
 
 
+def _unescape__typed(front, at):
+    _jsu_front = _js_code_units(front)
+    code = _js_units_at(_jsu_front, front, _js_num(at + 1))
+    if code is _JS_UNDEFINED:
+        raise FactParseError("a double-quoted scalar ends in a backslash")
+    simple = _js_m_get(_UNESCAPE, code)
+    if simple is not _JS_UNDEFINED:
+        return [simple, 2]
+    width = _js_get(_NUMERIC_ESCAPE, code)
+    if width is _JS_UNDEFINED:
+        raise FactParseError("unknown escape \\" + code)
+    digits = _js_units_slice(_jsu_front, _js_num(at + 2), _js_num(_js_num(at + 2) + width))
+    if not _js_m_test(_js_regexp_dynamic("^[0-9A-Fa-f]{", width, "}\\Z"), digits):
+        raise FactParseError("malformed \\" + code + " escape: " + _js_str(_js_json_stringify(digits)))
+    return [_js_from_code_point(_js_parse_int(digits, 16)), _js_num(2 + width)]
+
+
 def _unescape(front, at):
+    if type(front) is str and _js_is_double(at):
+        return _unescape__typed(front, at)
     code = _js_get(front, _js_add(at, 1))
     if code is _JS_UNDEFINED:
         raise FactParseError("a double-quoted scalar ends in a backslash")
@@ -604,28 +1076,57 @@ def _unescape(front, at):
     digits = _js_m_slice(front, _js_add(at, 2), _js_add(_js_add(at, 2), width))
     if not _js_m_test(_js_regexp_dynamic("^[0-9A-Fa-f]{", width, "}\\Z"), digits):
         raise FactParseError("malformed \\" + _js_str(code) + " escape: " + _js_str(_js_json_stringify(digits)))
-    return [_js_from_code_point(_js_parse_int(digits, 16)), _js_add(2, width)]
+    return [_js_from_code_point(_js_parse_int(digits, 16)), _js_num(2 + width)]
 
 
-def _scan_block_sequence(front, pos):
+def _scan_block_sequence__typed(front, pos):
+    _jsu_front = _js_code_units(front)
     items = []
     i = pos
     while True:
-        gap = _js_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, i)), 0))
-        if _js_gt(gap, 0) and _js_get(front, _js_add(i, gap)) == "-":
+        gap = _js_str_len(_js_get(_js_re_exec(_JS_RE_4, _js_units_slice(_jsu_front, i)), 0))
+        if gap > 0 and _js_units_at(_jsu_front, front, _js_num(i + gap)) == "-":
+            i = _js_num(i + gap)
+        if not (i < len(_jsu_front) and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "-"):
+            break
+        if _js_units_at(_jsu_front, front, _js_num(i + 1)) == "\n" or _js_num(i + 1) == len(_jsu_front):
+            items.append(None)
+            i = _js_num(i + 2)
+            continue
+        if _js_units_at(_jsu_front, front, _js_num(i + 1)) != " ":
+            raise FactParseError("expected \"- \" at the start of a sequence item: " + _js_str(_line__typed(front, i)))
+        value, next = _scan_node__typed(front, _js_num(i + 2))
+        if _js_is_array(value):
+            raise FactParseError("a nested sequence item is not in this codec's language")
+        items.append(value)
+        after = _skip_trailing_comment__typed(front, next)
+        if after < len(_jsu_front) and (_jsu_front[after] if type(after) is int and 0 <= after < len(_jsu_front) else _js_str_at(front, after)) != "\n":
+            raise FactParseError("trailing content after a sequence item: " + _js_str(_line__typed(front, after)))
+        i = _js_num(after + 1)
+    return [items, i]
+
+
+def _scan_block_sequence(front, pos):
+    if type(front) is str and _js_is_double(pos):
+        return _scan_block_sequence__typed(front, pos)
+    items = []
+    i = pos
+    while True:
+        gap = _js_str_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, i)), 0))
+        if gap > 0 and _js_get(front, _js_add(i, gap)) == "-":
             i = _js_add(i, gap)
         if not (_js_lt(i, _js_len(front)) and _js_get(front, i) == "-"):
             break
         if _js_get(front, _js_add(i, 1)) == "\n" or _js_strict_eq(_js_add(i, 1), _js_len(front)):
-            _js_dispatch(items, "push", _js_m_push, None)
+            items.append(None)
             i = _js_add(i, 2)
             continue
         if _js_get(front, _js_add(i, 1)) != " ":
             raise FactParseError("expected \"- \" at the start of a sequence item: " + _js_str(_line(front, i)))
-        value, next = _js_destructure(_scan_node(front, _js_add(i, 2)), 2)
+        value, next = _scan_node(front, _js_add(i, 2))
         if _js_is_array(value):
             raise FactParseError("a nested sequence item is not in this codec's language")
-        _js_dispatch(items, "push", _js_m_push, value)
+        items.append(value)
         after = _skip_trailing_comment(front, next)
         if _js_lt(after, _js_len(front)) and _js_get(front, after) != "\n":
             raise FactParseError("trailing content after a sequence item: " + _js_str(_line(front, after)))

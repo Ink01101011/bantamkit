@@ -149,6 +149,32 @@ pass with it.
 `pyyaml.ts` and `factfile.ts`. Two runtime mutations were checked to turn the probe test red
 (Python's `%` in `_js_mod`; code-point indexing in `_js_get`).
 
+## J87 rules (#316: type-directed lowering)
+
+No J85 or J86 rule changed what it answers; J87 adds proofs and, under them, cheaper lowerings of
+existing rules (SUBSET.md, *Types*). `tests/types.rs` pins each one taken and not taken, against
+Node. The 14 runtime names added (`_js_is_double`, `_js_str_len`, `_js_str_at`, `_js_list_at`,
+`_js_units_at`, `_js_units_index_of`, `_js_units_slice`, `_js_str_includes`,
+`_js_str_starts_with`, `_js_str_index_of`, `_js_str_slice`, `_js_list_join`, `_js_re_exec`,
+`_js_re_replace`) each return what the general helper returns for a proven receiver; no existing
+helper changed.
+
+| # | Rule | Where |
+|---|---|---|
+| J87-1 | facts by greatest fixpoint: re-lower until a round observes what it assumed (64-round cap) | `lib.rs`, `types.rs` |
+| J87-2 | a binding's facts: the meet of every value bound to it, flags only | `lower.rs` `bind` |
+| J87-3 | a function's return facts: the meet of its returns (falling off the end counts unless the end is unreachable) | `function_body`, `types::completes` |
+| J87-4 | typed body for guardable parameter annotations; guarded entry when exported, read as a value or called unproven | `module_function`, `module_call` |
+| J87-5 | fresh tuples: an array literal, or a return every path of which is one; a literal index of one | `array`, `computed member` |
+| J87-6 | frozen module constants (array: destructuring `for-of` only; object: member reads only) | `global_read`, `member_object`, `for_of` |
+| J87-7 | held `const`: read only by a literal index, a nullish or a truthiness test (`peek`) | `resolve`, `peek` |
+| J87-8 | nullability ("X or undefined", `null`, `undefined`, match arrays) and narrowing of `const` bindings | `narrowings`, `block`, `if` |
+| J87-9 | hoisted UTF-16 view of a never-reassigned `str` binding | `units_of`, `hoist_line` |
+| J87-10 | proven-receiver fast paths: `===` of two bools, `.length`, index, `push`, `includes`, `startsWith`, `indexOf`, `slice`, `join`, `test`, `exec`, `replace`, truthiness | `fast_method`, member arms, `truthy` |
+| J87-11 | direct unpack of a fresh tuple / a frozen row of exactly the pattern's length | `destructured`, `for_of` |
+| J87-12 | a data field named like a method is read as data where the declared type says so (J86-R finding 3 carried) | `declared_data`, `types::TypeDecls` |
+| J87-13 | a refusal in a function lowered twice (typed and untyped) is reported once | `lib.rs` |
+
 ## Adapters (J86)
 
 Declared in `src/adapters.rs`, written in `src/adapters.py`. Measured against Node's own

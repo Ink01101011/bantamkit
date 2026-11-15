@@ -88,7 +88,8 @@ it (J85-R F2, F3):
   `true`, and a comparison with `NaN` or `undefined` is `false` both ways. Two known numbers (a
   literal, the `.length` of a known string, an arithmetic result) keep the plain Python operator.
 - `.length` and `.size` are known numbers only on a receiver known to be a string (a string
-  literal, a template, a concatenation of strings). On anything else they are whatever the
+  literal, a template, a concatenation of strings; J87: any proven `str`, and `.length` of a proven
+  list, Types below). On anything else they are whatever the
   receiver holds: an array's length or a `Map`'s size, but a plain object's own `length` or `size`
   key when it has one, which may be a string or `true`. So they are compared, added and equated
   through the runtime as any unknown value is: `{length: '\uffff'}.length < {length: '😀'}.length`
@@ -196,7 +197,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `new Map(entries?)`, `new Set(items?)` | `_JsMap(...)`, `_JsSet(...)` | insertion order; SameValueZero keys, so `true` and `1` are different keys and `1.0` and `1` the same |
 | `/pattern/` (no flags, or `g`, J86) | `_JS_RE_<n> = re.compile(<translated>, re.ASCII)`; with `g`, wrapped in `_JsGlobalRegExp` (only `.replace` accepts it: `.test` / `.exec` on a `g` regex read `lastIndex`, which is not modelled, and raise) | `\d`, `\w`, `\b` are ASCII; `$` is end of input (`\Z`); `.` excludes `\n`, `\r`, U+2028, U+2029; an astral literal is written as its two surrogates (Strings above). The pattern is parsed against a whitelist grammar, so every accepted pattern is valid JS and compiles under `re`; anything else is refused at compile time with its reason, never an `re.error` at import (Refused below). J86 adds `\xHH` and `\uHHHH` (one code unit each, in and out of a class) and a lookbehind `(?<=...)` / `(?<!...)` holding only single-unit atoms, so its width is fixed (as `re` requires) and reading it backwards (JS) or forwards (`re`) is the same |
 | `(params) => expr` **as a callback argument** of the methods below | `lambda params, *_: expr` | JS passes `(item, index, array)`; extra arguments are absorbed. J86: a parameter may be an array pattern of names, `([k]) => e` is `lambda _js_argN, *_: (lambda k: e)(*_js_destructure(_js_argN, 1))` |
-| `as T`, `x!`, `satisfies T`, `<T>x`, `f<T>(...)`, generics, `readonly`, parameter and return annotations, `p?:` | erased (`p?:` becomes `p=_JS_UNDEFINED`) | a missing optional argument is `undefined` |
+| `as T`, `x!`, `satisfies T`, `<T>x`, `f<T>(...)`, generics, `readonly`, parameter and return annotations, `p?:` | erased (`p?:` becomes `p=_JS_UNDEFINED`); J87: a parameter annotation may give its function a typed body behind a guard (Types below) | a missing optional argument is `undefined` |
 
 ### Builtins
 
@@ -238,6 +239,109 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 
 A method above called on a receiver of the wrong runtime type raises
 `TypeError("ts2py: .<method>() on <type> is outside the subset")` instead of guessing.
+
+## Types: proven facts and the fast paths they take (J87, #316)
+
+ts2py uses the types the TypeScript declares only where the compiler can PROVE what the Python
+value is, and lowers a construct to cheaper exact Python only under that proof; anywhere the proof
+fails, the J85/J86 lowering above (the JS-semantics helper) is what runs. Every fast path below is
+pinned twice in `tests/types.rs` (taken where proven, not taken where the proof fails), and the
+probe runs under Python against Node's output for the same source.
+
+**Mechanism.** oxc (exact-pinned) parses and gives the AST; it has no type checker, and its
+semantic crate would only give scopes and symbols, which `src/lower.rs` already computes. `tsc`'s
+checker would give declared types, but they are not proofs of a Python value (`any`, `as`, `!`,
+`JSON.parse`, bivariant parameters, adapters) and would put Node into every compile. So ts2py
+infers locally (`src/types.rs`): facts come from what the compiler itself controls, and are found
+by a **greatest fixpoint** over the module. `lib.rs` lowers the module, collects what each round
+observed (every binding's value, every function's returns, every call site, every use of a frozen
+constant), and lowers again under those facts until a round observes exactly what it assumed.
+The first round assumes everything ("optimistic"); every later round can only take a fact away or
+add a guarded entry or an escape, so it ends (it is refused after 64 rounds). At the fixpoint every
+fact was re-proved by every assignment, return and call site of the final lowering. An optimistic
+fact still standing there belongs to a value no code ever produces (a function that never
+returns), so nothing reads it.
+
+**What is a fact.** A fact is a property of the Python value:
+
+| Fact | The value | Proved by |
+|---|---|---|
+| `str` | `type(v) is str` | a string literal or template; `+` of two strings; `typeof`; a method whose result is always a string (`join`, `slice` of a string, ...); a `string` parameter in a typed body; a narrowing |
+| `num` | a plain `int` within +-2^53, or a `float` (what `_js_num` leaves unchanged) | a number literal; `+ - * / %` of two numbers (rounded by `_js_num`); `.length` of a proven string or list; `indexOf`; `Math.*`; a `number` parameter in a typed body |
+| `bool` | `type(v) is bool` | a comparison, `!`, a method or builtin that always returns a boolean; a `boolean` parameter in a typed body |
+| `list` | a Python `list` | an array literal; `split`, `map`, `filter`, `sort`, `reverse`, `entries`; an array or tuple parameter in a typed body |
+| `regex` | a compiled `re.Pattern` without `g` | a regex literal |
+| `match` | `None` or a match array (element 0 the matched `str`) | `.exec` |
+| tuple | a FRESH array of exactly n items with these facts | an array literal; a function every return of which is one; a `const` whose every read is a literal index or a nullish or truthiness test (so nothing else can hold, and mutate, it) |
+| elements | what every element (or property value) is | a non-exported module `const` bound to an array or object literal whose every use is a destructuring `for-of` (arrays) or a member read (objects): a **frozen** constant; any other use escapes it |
+| "X or undefined" | X whenever not nullish | an index into a proven string (`str` or `undefined`); a property of a frozen object |
+
+A binding (a `const`, `let`, parameter, loop or destructured name) holds the meet of every value
+any assignment gives it, met over the whole function (flow-insensitive), and keeps only the flags:
+an array it holds may be mutated later, so no tuple or element fact survives a binding (except the
+two `const` cases above). **Narrowing** is the one flow-sensitive rule, and only on a `const`
+(local or module, never reassigned): after `if (<test>) <exits>` for the rest of the block, inside
+`if (<test>)` for the consequent and in a plain `else`, a test that rules out `null` and
+`undefined` (`x === undefined` when `x` is never `null`, `x == null`, `!x`, `x`), that compares
+`x === '<string literal>'`, or `typeof x === 'string'` / `'boolean'` (and `&&` / `||` of such
+tests) narrows `x` to what it is there. A number literal does not narrow: `===` compares numbers as
+doubles, so an int past 2^53 can equal one.
+
+**Typed bodies and the guarded entry.** A module function whose parameters carry an annotation
+the guard can check (`string` and string-literal unions, `number` and numeric literals,
+`boolean`, arrays and tuples, `readonly` of those, aliases of these) gets a typed body in which
+those parameters hold their facts. A call whose arguments prove them calls the typed body. When
+anything else can reach the function (it is exported, read as a value, or called with an argument
+a call site cannot prove), the function's own name is a guarded entry:
+
+```python
+def _scan_quoted(front, pos, quote):
+    if type(front) is str and _js_is_double(pos) and type(quote) is str:
+        return _scan_quoted__typed(front, pos, quote)
+    <the untyped body: the J86 lowering>
+```
+
+so a Python caller, an adapter or `JSON.parse` data with any value runs the untyped body and gets
+JS's answer for it (`tests/types.rs` calls an exported function with an array where its
+annotation says `string`). Optional and defaulted parameters are not guarded. Class methods,
+constructors and closures have untyped bodies only. A call into another compiled module goes
+through that module's guarded entry, and its result proves nothing. The typed body's name is
+`_<name>__typed`; a collision with a source name is refused like any other.
+
+**Not proof**, anywhere: `any`, `unknown`, `as`, `!`, `satisfies`, a return-type annotation (the
+J85 `: boolean` call rule aside), a union the path does not cover, and any value from
+`JSON.parse`, an adapter or another module.
+
+**The fast paths.** Each is exact for the receiver and argument facts it requires and takes the
+general helper otherwise; each helper in `src/runtime.py` returns exactly what the general helper
+returns for that receiver and falls back to it for any argument its own fast case does not cover
+(`proven_receiver_helpers_answer_as_the_general_helpers` fuzzes every pair; a helper mutant turns
+it red).
+
+| Construct | Proven | Lowering | Otherwise |
+|---|---|---|---|
+| `a === b` | both `str` (or one), both `num`, both `bool` | `a == b` | `_js_strict_eq` |
+| `a + b`, `a - b`, `<` ... | both `num` | `_js_num(a + b)`, `a < b` (J85 rule, now reached through facts) | `_js_add`, `_js_lt` ... |
+| `x.length` | `str` / `list` | `_js_str_len(x)` / `len(x)` | `_js_len` |
+| `x[i]` | `str` / `list` | `_js_str_at(x, i)` / `_js_list_at(x, i)` | `_js_get` |
+| `x[k]`, `k` a literal | a fresh tuple of more than `k` items | `x[k]` | as above |
+| `xs.push(v)` | `list` | `xs.append(v)` as a statement, else `_js_m_push(xs, v)` | `_js_dispatch(...)` / `_js_m_push` |
+| `xs.includes(s)` | `list` and `str`, one side pure | `s in xs` (no runtime value but a `str` equals one) | `_js_m_includes` |
+| `s.includes(t)`, `s.startsWith(t)` | both `str` | `_js_str_includes`, `_js_str_starts_with` | `_js_m_*` |
+| `s.indexOf(t, p?)` | `str`, `t` a `str` | `_js_str_index_of` | `_js_m_indexOf` |
+| `s.slice(a?, b?)` | `str` | `_js_str_slice` | `_js_m_slice` |
+| `xs.join(sep?)` | `list`, `sep` a `str` | `_js_list_join` (`str.join`, which refuses all but `str` elements, then the general join) | `_js_m_join` |
+| `re.test(s)` | `regex` and `str` | `re.search(_js_code_units(s)) is not None` | `_js_m_test` |
+| `re.exec(s)` | `regex` and `str` | `_js_re_exec` | `_js_m_exec` |
+| `s.replace(re, 'lit')` | `str`, `regex`, a literal without `$` or `\` | `_js_re_replace` (`re.sub` with the literal) | `_js_m_replace` |
+| truthiness, `!s` | `str` | `s != ""` | `_js_truthy` |
+| `const [a, b] = e` | `e` a fresh tuple of exactly that length | `a, b = e` | `_js_destructure` |
+| `for (const [a, b] of T)` | `T` frozen, rows of exactly that length | `for a, b in T:` | `_js_get(row, i)` |
+| a `str` binding indexed or `.length`-ed | a parameter or declared local never assigned again | its UTF-16 view `_jsu_<name> = _js_code_units(<name>)` beside the binding; `len(_jsu_s)`, `_jsu_s[i] if type(i) is int and 0 <= i < len(_jsu_s) else _js_str_at(s, i)`, `_js_units_at` / `_js_units_index_of` / `_js_units_slice` | the `_js_str_*` helpers |
+
+Known limits: a binding's facts are met over the whole function, so one unproven assignment
+(`i += used` where `used` is unproven) makes every read of it unproven; narrowing applies to
+`const` bindings only and never across a loop's back edge; methods and closures are untyped.
 
 ## Classes (J86)
 
@@ -338,13 +442,25 @@ shadows a module-level name, and any global identifier other than `undefined`, `
 the callee of a direct call: `const f = a.get`, `a.get === a.get`, `[xs.push]`, `g(s.trim)`,
 `xs['map']` and `this.m` are refused, `a.get(k)` and `this.m()` are not. In JS such a read is a
 function (`this` lost on a later call, the same function on every read); in Python it was a fresh
-bound method or `undefined`. ts2py has no type checker, so on any receiver but `this` the NAME
-decides: a method of String, Array, Map, Set, RegExp, Number, Function or `Object.prototype`
-(`JS_METHOD_NAMES` in `src/lower.rs`, the whole prototype, not only the methods the call table
-lowers), or a method any compiled or adapter class declares. So a data property that shares such
-a name (`input.big`, `o.link`) is refused too, because the receiver's type is not known to the
-compiler; on `this` the class's own method list decides exactly. A computed key the compiler
-cannot see is checked at run time (below).
+bound method or `undefined`. On any receiver but `this` the NAME decides: a method of String,
+Array, Map, Set, RegExp, Number, Function or `Object.prototype` (`JS_METHOD_NAMES` in
+`src/lower.rs`, the whole prototype, not only the methods the call table lowers), or a method any
+compiled or adapter class declares; on `this` the class's own method list decides exactly.
+
+J87 (#316): **a data field named like a method is read as data where the receiver's declared type
+says so.** When the receiver is a binding (a `const`/`let`, a parameter, a module `const`) whose
+annotation is an object type literal, an interface or a type alias of either, declared in the
+module, and that type declares the member as a property signature whose type is data (a
+primitive, a literal, an array or tuple, an object type with no call signature, a `Record`/`Map`/
+`Set`, or a union of those, never a function type), the read is `_js_get(o, "get")`. So
+`const o: { get: number } = { get: 5 }; o.get` is `5` and `function f(x: Opts) { return x.map }`
+with `interface Opts { map: string }` reads the field (`tests/types.rs`, pinned to Node). The
+annotation only lifts the compile-time refusal: `_js_get` still raises at run time for a name that
+is a method of the value's actual JS type (an array, a string, a `Map`, an instance), so a value
+that is not what its annotation says (`any`, an adapter, `JSON.parse`) cannot read a method as
+data. An untyped or `any` receiver, a method signature (`get(): number`), a function-typed field
+(`get: () => number`) and a read through `as` stay refused. A computed key the compiler cannot see
+is checked at run time (below).
 
 Some operations are checked at run time instead, because only the value can tell: each raises
 a `TypeError` naming the subset rather than answering differently from JS. `.toLowerCase()` /

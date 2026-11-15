@@ -459,6 +459,141 @@ def _js_len(value):
     return _js_get(value, "length")
 
 
+# J87 (#316): helpers for a receiver the compiler PROVED to be a `str` or a `list` (SUBSET.md,
+# Types). Each returns exactly what the general helper named in its docstring returns for that
+# receiver; it only skips the type dispatch the proof made redundant, and takes the general path for
+# any argument its own fast case does not cover.
+
+
+def _js_is_double(value):
+    """The guard of a parameter annotated `number`: an int a double holds exactly, or a float."""
+    kind = type(value)
+    return kind is float or (kind is int and _JS_SAFE_MIN <= value <= _JS_SAFE_MAX)
+
+
+def _js_str_len(text):
+    """`_js_len(text)` for a `str`: UTF-16 code units."""
+    return len(text) if text.isascii() else len(_js_code_units(text))
+
+
+def _js_str_at(text, key):
+    """`_js_get(text, key)` for a `str`: the UTF-16 code unit at a plain int index."""
+    if type(key) is int:
+        units = text if text.isascii() else _js_code_units(text)
+        return units[key] if 0 <= key < len(units) else _JS_UNDEFINED
+    return _js_get(text, key)
+
+
+def _js_units_at(units, text, key):
+    """`_js_str_at(text, key)` given `units`, the hoisted `_js_code_units(text)`."""
+    if type(key) is int:
+        return units[key] if 0 <= key < len(units) else _JS_UNDEFINED
+    return _js_get(text, key)
+
+
+def _js_units_index_of(units, search, position=0):
+    """`_js_m_indexOf(text, search, position)` given `units`, the hoisted `_js_code_units(text)`,
+    and an ASCII `search` (its own code units)."""
+    if type(position) is int:
+        return units.find(search, min(max(position, 0), len(units)))
+    return units.find(search, int(min(max(_js_to_integer(position), 0), len(units))))
+
+
+def _js_units_slice(units, start=_JS_UNDEFINED, end=_JS_UNDEFINED):
+    """`_js_m_slice(text, start, end)` given `units`, the hoisted `_js_code_units(text)`."""
+    length = len(units)
+    if type(start) is int and (end is _JS_UNDEFINED or type(end) is int):
+        lo = max(length + start, 0) if start < 0 else min(start, length)
+        if end is _JS_UNDEFINED:
+            hi = length
+        else:
+            hi = max(length + end, 0) if end < 0 else min(end, length)
+    else:
+        lo = _js_slice_bound(start, length, 0)
+        hi = _js_slice_bound(end, length, length)
+    return _js_from_units(units[lo:hi])
+
+
+def _js_list_join(items, separator):
+    """`_js_m_join(items, separator)` for a `list` and a `str` separator: when every element is a
+    `str` (the only elements `str.join` accepts), joining them is the same join."""
+    try:
+        joined = separator.join(items)
+    except TypeError:
+        return _js_m_join(items, separator)
+    return _js_from_units(joined)
+
+
+def _js_re_exec(pattern, text):
+    """`_js_m_exec(pattern, text)` for a regex literal and a `str`; an ASCII subject is its own code
+    units and every group of it is its own canonical spelling."""
+    if not text.isascii():
+        return _js_m_exec(pattern, text)
+    match = pattern.search(text)
+    if match is None:
+        return None
+    out = _JsMatchArray(
+        _JS_UNDEFINED if group is None else group for group in [match.group(0), *match.groups()]
+    )
+    out.index = match.start()
+    out.input = text
+    return out
+
+
+def _js_re_replace(text, pattern, replacement):
+    """`_js_m_replace(text, pattern, replacement)` for a `str`, a regex literal (no `g`) and a
+    literal replacement holding neither `$` nor a backslash, which `re.sub` inserts as it is."""
+    units = text if text.isascii() else _js_code_units(text)
+    return _js_from_units(pattern.sub(replacement, units, count=1))
+
+
+def _js_list_at(items, key):
+    """`_js_get(items, key)` for a `list`: the element at a plain int index."""
+    if type(key) is int:
+        return items[key] if 0 <= key < len(items) else _JS_UNDEFINED
+    return _js_get(items, key)
+
+
+def _js_str_includes(text, search):
+    """`_js_m_includes(text, search)` for two `str`s: by UTF-16 code unit."""
+    if text.isascii() and search.isascii():
+        return search in text
+    return _js_code_units(search) in _js_code_units(text)
+
+
+def _js_str_starts_with(text, prefix):
+    """`_js_m_startsWith(text, prefix)` for two `str`s."""
+    if text.isascii() and prefix.isascii():
+        return text.startswith(prefix)
+    return _js_code_units(text).startswith(_js_code_units(prefix))
+
+
+def _js_str_index_of(text, search, position=0):
+    """`_js_m_indexOf(text, search, position)` for two `str`s (a missing position is 0, which is
+    what ToIntegerOrInfinity makes of `undefined`)."""
+    if type(position) is int and text.isascii() and search.isascii():
+        return text.find(search, min(max(position, 0), len(text)))
+    return _js_m_indexOf(text, search, position)
+
+
+def _js_str_slice(text, start=_JS_UNDEFINED, end=_JS_UNDEFINED):
+    """`_js_m_slice(text, start, end)` for a `str`; an ASCII string cut at plain int bounds is its
+    own code units, so the cut is Python's."""
+    if (
+        text.isascii()
+        and type(start) is int
+        and (end is _JS_UNDEFINED or type(end) is int)
+    ):
+        length = len(text)
+        lo = max(length + start, 0) if start < 0 else min(start, length)
+        if end is _JS_UNDEFINED:
+            hi = length
+        else:
+            hi = max(length + end, 0) if end < 0 else min(end, length)
+        return text[lo:hi]
+    return _js_m_slice(text, start, end)
+
+
 def _js_size(value):
     """`value.size` of a Map or Set."""
     if isinstance(value, (_JsMap, _JsSet)):

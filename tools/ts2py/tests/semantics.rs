@@ -98,9 +98,18 @@ export function first<T>(xs: readonly T[], fallback?: T): T | undefined {
     let body = module.split("__all__").nth(1).unwrap();
     assert_eq!(
         body,
+        // J87: `xs: readonly T[]` gives the exported function a typed body (where `xs` is a
+        // proven list) and a guarded entry that admits a list or runs the untyped body.
         concat!(
             " = [\"first\"]\n\n\n",
+            "def _first__typed(xs, fallback=_JS_UNDEFINED):\n",
+            "    head = _js_list_at(xs, 0)\n",
+            "    conf = {\"k\": 1}\n",
+            "    return _js_coalesce_value(_js_coalesce_value(head, fallback), conf)\n",
+            "\n\n",
             "def first(xs, fallback=_JS_UNDEFINED):\n",
+            "    if type(xs) is list:\n",
+            "        return _first__typed(xs, fallback)\n",
             "    head = _js_get(xs, 0)\n",
             "    conf = {\"k\": 1}\n",
             "    return _js_coalesce_value(_js_coalesce_value(head, fallback), conf)\n",
@@ -280,7 +289,7 @@ fn length_of_a_plain_object_is_not_assumed_numeric() {
     )
     .unwrap_or_else(|lines| panic!("{}", lines.join("\n")));
     assert!(
-        fast.contains("return _js_len(\"ab\") < 3\n"),
+        fast.contains("return _js_str_len(\"ab\") < 3\n"),
         "the string-receiver fast path is gone:\n{fast}"
     );
     let dir = std::env::temp_dir().join(format!("ts2py-lengths-{}", std::process::id()));

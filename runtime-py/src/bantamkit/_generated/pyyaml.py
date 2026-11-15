@@ -15,6 +15,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_bigint,
     _js_cat,
     _js_coalesce_value,
+    _js_code_units,
     _js_destructure,
     _js_dispatch,
     _js_div,
@@ -27,9 +28,12 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_gt,
     _js_invoke,
     _js_is_array,
+    _js_is_double,
     _js_json_stringify,
     _js_le,
     _js_len,
+    _js_list_at,
+    _js_list_join,
     _js_lt,
     _js_m_codePointAt,
     _js_m_exec,
@@ -46,7 +50,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_slice,
     _js_m_some,
     _js_m_split,
-    _js_m_startsWith,
     _js_m_test,
     _js_m_toLowerCase,
     _js_m_toString,
@@ -59,9 +62,13 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_number_is_nan,
     _js_object_entries,
     _js_or,
-    _js_or_value,
     _js_re,
+    _js_re_exec,
     _js_str,
+    _js_str_at,
+    _js_str_includes,
+    _js_str_slice,
+    _js_str_starts_with,
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
@@ -125,13 +132,20 @@ class YamlEmitError(_JsError):
 _RESOLVERS = [[_BOOL_TAG, _JS_RE_0, ["y", "Y", "n", "N", "t", "T", "f", "F", "o", "O"]], [_FLOAT_TAG, _JS_RE_1, ["-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."]], [_INT_TAG, _JS_RE_2, ["-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]], [_MERGE_TAG, _JS_RE_3, ["<"]], [NULL_TAG, _JS_RE_4, ["~", "n", "N", ""]], [TIMESTAMP_TAG, _JS_RE_5, ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]], [_VALUE_TAG, _JS_RE_6, ["="]], [_YAML_TAG, _JS_RE_7, ["!", "&", "*"]]]
 
 
-def resolve_implicit_tag(value):
+def _resolve_implicit_tag__typed(value):
     first = "" if value == "" else _js_from_code_point(_js_m_codePointAt(value, 0))
-    for _js_item0 in _RESOLVERS:
-        tag = _js_get(_js_item0, 0)
-        pattern = _js_get(_js_item0, 1)
-        firsts = _js_get(_js_item0, 2)
-        if _js_m_includes(firsts, first) and _js_m_test(pattern, value):
+    for tag, pattern, firsts in _RESOLVERS:
+        if first in firsts and pattern.search(_js_code_units(value)) is not None:
+            return tag
+    return STR_TAG
+
+
+def resolve_implicit_tag(value):
+    if type(value) is str:
+        return _resolve_implicit_tag__typed(value)
+    first = "" if value == "" else _js_from_code_point(_js_m_codePointAt(value, 0))
+    for tag, pattern, firsts in _RESOLVERS:
+        if first in firsts and _js_m_test(pattern, value):
             return tag
     return STR_TAG
 
@@ -142,14 +156,20 @@ _BREAKS = "\n\u0085\u2028\u2029"
 _WS_OR_BREAK = "\x00 \t\r\n\u0085\u2028\u2029"
 
 
+def _is_break__typed(ch):
+    return _js_str_includes(_BREAKS, ch)
+
+
 def _is_break(ch):
+    if type(ch) is str:
+        return _is_break__typed(ch)
     return _js_m_includes(_BREAKS, ch)
 
 
 def _analyze_scalar(chars):
-    if _js_strict_eq(_js_len(chars), 0):
+    if len(chars) == 0:
         return {"empty": True, "multiline": False, "allowFlowPlain": False, "allowBlockPlain": True, "allowSingleQuoted": True, "allowDoubleQuoted": True, "allowBlock": False}
-    scalar = _js_m_join(chars, "")
+    scalar = _js_list_join(chars, "")
     block_indicators = False
     flow_indicators = False
     line_breaks = False
@@ -160,25 +180,25 @@ def _analyze_scalar(chars):
     trailing_break = False
     break_space = False
     space_break = False
-    if _js_m_startsWith(scalar, "---") or _js_m_startsWith(scalar, "..."):
+    if _js_str_starts_with(scalar, "---") or _js_str_starts_with(scalar, "..."):
         block_indicators = True
         flow_indicators = True
     preceded_by_whitespace = True
-    followed_by_whitespace = _js_strict_eq(_js_len(chars), 1) or _js_m_includes(_WS_OR_BREAK, _js_get(chars, 1))
+    followed_by_whitespace = len(chars) == 1 or _js_m_includes(_WS_OR_BREAK, _js_list_at(chars, 1))
     previous_space = False
     previous_break = False
     index = 0
-    while _js_lt(index, _js_len(chars)):
-        ch = _js_get(chars, index)
-        if _js_strict_eq(index, 0):
+    while index < len(chars):
+        ch = _js_list_at(chars, index)
+        if index == 0:
             if _js_m_includes("#,[]{}&*!|>'\"%@`", ch):
                 flow_indicators = True
                 block_indicators = True
             if ch == "?" or ch == ":":
                 flow_indicators = True
-                if _js_truthy(followed_by_whitespace):
+                if followed_by_whitespace:
                     block_indicators = True
-            if _js_truthy(_js_and_value(ch == "-", followed_by_whitespace)):
+            if ch == "-" and followed_by_whitespace:
                 flow_indicators = True
                 block_indicators = True
         else:
@@ -186,9 +206,9 @@ def _analyze_scalar(chars):
                 flow_indicators = True
             if ch == ":":
                 flow_indicators = True
-                if _js_truthy(followed_by_whitespace):
+                if followed_by_whitespace:
                     block_indicators = True
-            if _js_truthy(_js_and_value(ch == "#", preceded_by_whitespace)):
+            if ch == "#" and preceded_by_whitespace:
                 flow_indicators = True
                 block_indicators = True
         if _is_break(ch):
@@ -196,50 +216,50 @@ def _analyze_scalar(chars):
         cp = _js_m_codePointAt(ch, 0)
         if not (ch == "\n" or _js_ge(cp, 32) and _js_le(cp, 126)):
             printable = (_js_strict_eq(cp, 133) or _js_ge(cp, 160) and _js_le(cp, 55295) or _js_ge(cp, 57344) and _js_le(cp, 65533) or _js_ge(cp, 65536) and _js_lt(cp, 1114111)) and not _js_strict_eq(cp, 65279)
-            if not _js_truthy(printable):
+            if not printable:
                 special_characters = True
         if ch == " ":
-            if _js_strict_eq(index, 0):
+            if index == 0:
                 leading_space = True
-            if _js_strict_eq(index, _js_num(_js_num(_js_len(chars)) - 1)):
+            if index == _js_num(len(chars) - 1):
                 trailing_space = True
-            if _js_truthy(previous_break):
+            if previous_break:
                 break_space = True
             previous_space = True
             previous_break = False
         elif _is_break(ch):
-            if _js_strict_eq(index, 0):
+            if index == 0:
                 leading_break = True
-            if _js_strict_eq(index, _js_num(_js_num(_js_len(chars)) - 1)):
+            if index == _js_num(len(chars) - 1):
                 trailing_break = True
-            if _js_truthy(previous_space):
+            if previous_space:
                 space_break = True
             previous_space = False
             previous_break = True
         else:
             previous_space = False
             previous_break = False
-        index = _js_add(index, 1)
+        index = _js_num(index + 1)
         preceded_by_whitespace = _js_m_includes(_WS_OR_BREAK, ch)
-        followed_by_whitespace = _js_ge(_js_add(index, 1), _js_len(chars)) or _js_m_includes(_WS_OR_BREAK, _js_get(chars, _js_add(index, 1)))
+        followed_by_whitespace = _js_num(index + 1) >= len(chars) or _js_m_includes(_WS_OR_BREAK, _js_list_at(chars, _js_num(index + 1)))
     allow_flow_plain = True
     allow_block_plain = True
     allow_single_quoted = True
     allow_double_quoted = True
     allow_block = True
-    if _js_truthy(_js_or_value(_js_or_value(_js_or_value(leading_space, leading_break), trailing_space), trailing_break)):
+    if leading_space or leading_break or trailing_space or trailing_break:
         allow_flow_plain = allow_block_plain = False
-    if _js_truthy(trailing_space):
+    if trailing_space:
         allow_block = False
-    if _js_truthy(break_space):
+    if break_space:
         allow_flow_plain = allow_block_plain = allow_single_quoted = False
-    if _js_truthy(_js_or_value(space_break, special_characters)):
+    if space_break or special_characters:
         allow_flow_plain = allow_block_plain = allow_single_quoted = allow_block = False
-    if _js_truthy(line_breaks):
+    if line_breaks:
         allow_flow_plain = allow_block_plain = False
-    if _js_truthy(flow_indicators):
+    if flow_indicators:
         allow_flow_plain = False
-    if _js_truthy(block_indicators):
+    if block_indicators:
         allow_block_plain = False
     return {"empty": False, "multiline": line_breaks, "allowFlowPlain": allow_flow_plain, "allowBlockPlain": allow_block_plain, "allowSingleQuoted": allow_single_quoted, "allowDoubleQuoted": allow_double_quoted, "allowBlock": allow_block}
 
@@ -247,7 +267,13 @@ def _analyze_scalar(chars):
 _ESCAPE_REPLACEMENTS = _JsMap([[0, "0"], [7, "a"], [8, "b"], [9, "t"], [10, "n"], [11, "v"], [12, "f"], [13, "r"], [27, "e"], [34, "\""], [92, "\\"], [133, "N"], [160, "_"], [8232, "L"], [8233, "P"]])
 
 
+def _hex__typed(cp, width):
+    return _js_m_padStart(_js_m_toUpperCase(_js_m_toString(cp, 16)), width, "0")
+
+
 def _hex(cp, width):
+    if _js_is_double(cp) and _js_is_double(width):
+        return _hex__typed(cp, width)
     return _js_m_padStart(_js_m_toUpperCase(_js_m_toString(cp, 16)), width, "0")
 
 
@@ -271,7 +297,7 @@ class _Emitter(_JsObject):
 
     def push(self, data):
         _js_dispatch(self.parts, "push", _js_m_push, data)
-        self.column = _js_add(self.column, _js_len([*data]))
+        self.column = _js_add(self.column, len([*data]))
         return _JS_UNDEFINED
 
     def increaseIndent(self, flow, indentless):
@@ -323,10 +349,10 @@ class _Emitter(_JsObject):
     def writeScalar(self, value, tag, simple_key_context):
         chars = [*value]
         analysis = _analyze_scalar(chars)
-        implicit = _js_strict_eq(resolve_implicit_tag(value), tag)
+        implicit = resolve_implicit_tag(value) == tag
         split = not _js_truthy(simple_key_context)
         style = "\""
-        if _js_truthy(_js_and(_js_and(implicit, lambda: not _js_truthy(_js_and(simple_key_context, lambda: _js_or(_js_get(analysis, "empty"), lambda: _js_get(analysis, "multiline"))))), lambda: _js_get(analysis, "allowBlockPlain"))):
+        if _js_truthy(_js_and(implicit and not _js_truthy(_js_and(simple_key_context, lambda: _js_or(_js_get(analysis, "empty"), lambda: _js_get(analysis, "multiline")))), lambda: _js_get(analysis, "allowBlockPlain"))):
             style = ""
         elif _js_truthy(_js_and(_js_get(analysis, "allowSingleQuoted"), lambda: not _js_truthy(_js_and(simple_key_context, lambda: _js_get(analysis, "multiline"))))):
             style = "'"
@@ -351,16 +377,16 @@ class _Emitter(_JsObject):
         end = 0
         while _js_le(end, _js_len(chars)):
             ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
-            if _js_truthy(spaces):
+            if spaces:
                 if ch != " ":
-                    if _js_truthy(_js_and_value(_js_strict_eq(_js_add(start, 1), end) and _js_gt(self.column, self.bestWidth), split)):
+                    if _js_truthy(_js_and_value(_js_num(start + 1) == end and _js_gt(self.column, self.bestWidth), split)):
                         self.writeIndent()
                         self.whitespace = False
                         self.indention = False
                     else:
                         self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
                     start = end
-            elif _js_truthy(breaks):
+            elif breaks:
                 if ch is None or not _is_break(ch):
                     if _js_get(chars, start) == "\n":
                         self.writeLineBreak()
@@ -377,7 +403,7 @@ class _Emitter(_JsObject):
             if ch is not None:
                 spaces = ch == " "
                 breaks = _is_break(ch)
-            end = _js_add(end, 1)
+            end = _js_num(end + 1)
         return _JS_UNDEFINED
 
     def writeSingleQuoted(self, chars, split):
@@ -388,14 +414,14 @@ class _Emitter(_JsObject):
         end = 0
         while _js_le(end, _js_len(chars)):
             ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
-            if _js_truthy(spaces):
+            if spaces:
                 if ch is None or ch != " ":
-                    if _js_truthy(_js_and(_js_and(_js_and_value(_js_strict_eq(_js_add(start, 1), end) and _js_gt(self.column, self.bestWidth), split), lambda: not _js_strict_eq(start, 0)), lambda: not _js_strict_eq(end, _js_len(chars)))):
+                    if _js_truthy(_js_and(_js_and(_js_and_value(_js_num(start + 1) == end and _js_gt(self.column, self.bestWidth), split), lambda: start != 0), lambda: not _js_strict_eq(end, _js_len(chars)))):
                         self.writeIndent()
                     else:
                         self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
                     start = end
-            elif _js_truthy(breaks):
+            elif breaks:
                 if ch is None or not _is_break(ch):
                     if _js_get(chars, start) == "\n":
                         self.writeLineBreak()
@@ -405,16 +431,16 @@ class _Emitter(_JsObject):
                     start = end
             else:
                 if ch is None or ch == " " or _is_break(ch) or ch == "'":
-                    if _js_lt(start, end):
+                    if start < end:
                         self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
                         start = end
             if ch == "'":
                 self.push("''")
-                start = _js_add(end, 1)
+                start = _js_num(end + 1)
             if ch is not None:
                 spaces = ch == " "
                 breaks = _is_break(ch)
-            end = _js_add(end, 1)
+            end = _js_num(end + 1)
         self.writeIndicator("'", False)
         return _JS_UNDEFINED
 
@@ -426,8 +452,8 @@ class _Emitter(_JsObject):
             ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
             cp = -1 if ch is None else _js_m_codePointAt(ch, 0)
             must_escape = ch is None or _js_m_includes("\"\\\u0085\u2028\u2029\ufeff", ch) or not (_js_ge(cp, 32) and _js_le(cp, 126) or _js_ge(cp, 160) and _js_le(cp, 55295) or _js_ge(cp, 57344) and _js_le(cp, 65533))
-            if _js_truthy(must_escape):
-                if _js_lt(start, end):
+            if must_escape:
+                if start < end:
                     self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
                     start = end
                 if ch is not None:
@@ -436,16 +462,16 @@ class _Emitter(_JsObject):
                     if rep is not _JS_UNDEFINED:
                         data = _js_add("\\", rep)
                     elif _js_le(cp, 255):
-                        data = _js_add("\\x", _hex(cp, 2))
+                        data = "\\x" + _hex(cp, 2)
                     elif _js_le(cp, 65535):
-                        data = _js_add("\\u", _hex(cp, 4))
+                        data = "\\u" + _hex(cp, 4)
                     else:
-                        data = _js_add("\\U", _hex(cp, 8))
+                        data = "\\U" + _hex(cp, 8)
                     self.push(data)
-                    start = _js_add(end, 1)
-            if _js_truthy(_js_and_value(_js_lt(0, end) and _js_lt(end, _js_num(_js_num(_js_len(chars)) - 1)) and (ch == " " or _js_ge(start, end)) and _js_gt(_js_add(self.column, _js_num(_js_num(end) - _js_num(start))), self.bestWidth), split)):
+                    start = _js_num(end + 1)
+            if _js_truthy(_js_and_value(0 < end and end < _js_num(_js_num(_js_len(chars)) - 1) and (ch == " " or start >= end) and _js_gt(_js_add(self.column, _js_num(end - start)), self.bestWidth), split)):
                 data = _js_m_join(_js_m_slice(chars, start, end), "") + "\\"
-                if _js_lt(start, end):
+                if start < end:
                     start = end
                 self.push(data)
                 self.writeIndent()
@@ -453,12 +479,27 @@ class _Emitter(_JsObject):
                 self.indention = False
                 if _js_get(chars, start) == " ":
                     self.push("\\")
-            end = _js_add(end, 1)
+            end = _js_num(end + 1)
         self.writeIndicator("\"", False)
         return _JS_UNDEFINED
 
 
+def _safe_dump_mapping__typed(entries):
+    e = _Emitter()
+    seen = []
+    _js_invoke(e, "increaseIndent", False, False)
+    for _js_item0 in entries:
+        key = _js_get(_js_item0, 0)
+        value = _js_get(_js_item0, 1)
+        _emit_mapping_entry(e, key, value, key, seen)
+    _js_invoke(e, "popIndent")
+    _js_invoke(e, "writeIndent")
+    return _js_m_toString(e)
+
+
 def safe_dump_mapping(entries):
+    if type(entries) is list:
+        return _safe_dump_mapping__typed(entries)
     e = _Emitter()
     seen = []
     _js_invoke(e, "increaseIndent", False, False)
@@ -471,13 +512,39 @@ def safe_dump_mapping(entries):
     return _js_m_toString(e)
 
 
-def _is_simple_key(key):
+def _is_simple_key__typed(key):
     chars = [*key]
     analysis = _analyze_scalar(chars)
-    return _js_lt(_js_add(5, _js_len(chars)), 128) and not _js_truthy(_js_get(analysis, "empty")) and not _js_truthy(_js_get(analysis, "multiline"))
+    return _js_num(5 + len(chars)) < 128 and not _js_truthy(_js_get(analysis, "empty")) and not _js_truthy(_js_get(analysis, "multiline"))
+
+
+def _is_simple_key(key):
+    if type(key) is str:
+        return _is_simple_key__typed(key)
+    chars = [*key]
+    analysis = _analyze_scalar(chars)
+    return _js_num(5 + len(chars)) < 128 and not _js_truthy(_js_get(analysis, "empty")) and not _js_truthy(_js_get(analysis, "multiline"))
+
+
+def _emit_mapping_entry__typed(e, key, value, path, seen):
+    _js_invoke(e, "writeIndent")
+    if _is_simple_key__typed(key):
+        _js_invoke(e, "writeScalar", key, STR_TAG, True)
+        _js_invoke(e, "writeIndicator", ":", False)
+    else:
+        _js_invoke(e, "writeIndicator", "?", True, False, True)
+        _js_invoke(e, "increaseIndent", False, False)
+        _js_invoke(e, "writeScalar", key, STR_TAG, False)
+        _js_invoke(e, "popIndent")
+        _js_invoke(e, "writeIndent")
+        _js_invoke(e, "writeIndicator", ":", True, False, True)
+    _emit_node__typed(e, value, True, path, seen)
+    return _JS_UNDEFINED
 
 
 def _emit_mapping_entry(e, key, value, path, seen):
+    if type(key) is str and type(path) is str and type(seen) is list:
+        return _emit_mapping_entry__typed(e, key, value, path, seen)
     _js_invoke(e, "writeIndent")
     if _is_simple_key(key):
         _js_invoke(e, "writeScalar", key, STR_TAG, True)
@@ -493,18 +560,85 @@ def _emit_mapping_entry(e, key, value, path, seen):
     return _JS_UNDEFINED
 
 
+def _claim__typed(value, path, seen):
+    if _js_m_some(seen, lambda s, *_: _js_strict_eq(s, value)):
+        raise YamlEmitError("cannot emit " + path + ": the same collection appears twice in one document, which PyYAML writes as an anchor and an alias")
+    seen.append(value)
+    return _JS_UNDEFINED
+
+
 def _claim(value, path, seen):
+    if type(path) is str and type(seen) is list:
+        return _claim__typed(value, path, seen)
     if _js_m_some(seen, lambda s, *_: _js_strict_eq(s, value)):
         raise YamlEmitError("cannot emit " + _js_str(path) + ": the same collection appears twice in one document, which PyYAML writes as an anchor and an alias")
     _js_dispatch(seen, "push", _js_m_push, value)
     return _JS_UNDEFINED
 
 
+def _is_array_index_key__typed(key):
+    return _JS_RE_8.search(_js_code_units(key)) is not None and _js_number(key) < 4294967295
+
+
 def _is_array_index_key(key):
+    if type(key) is str:
+        return _is_array_index_key__typed(key)
     return _js_m_test(_JS_RE_8, key) and _js_number(key) < 4294967295
 
 
+def _emit_node__typed(e, value, mapping_context, path, seen):
+    if value is None:
+        _js_invoke(e, "increaseIndent", False, False)
+        _js_invoke(e, "writeScalar", "null", NULL_TAG, False)
+        _js_invoke(e, "popIndent")
+    elif _js_typeof(value) == "string":
+        _js_invoke(e, "increaseIndent", False, False)
+        _js_invoke(e, "writeScalar", value, STR_TAG, False)
+        _js_invoke(e, "popIndent")
+    elif isinstance(value, PyScalar):
+        _js_invoke(e, "increaseIndent", False, False)
+        _js_invoke(e, "writeScalar", _js_get(value, "yaml"), _js_get(value, "tag"), False)
+        _js_invoke(e, "popIndent")
+    elif _js_is_array(value):
+        _claim__typed(value, path, seen)
+        items = value
+        if _js_strict_eq(_js_len(items), 0):
+            _js_invoke(e, "writeIndicator", "[", True, True)
+            _js_invoke(e, "writeIndicator", "]", False)
+        else:
+            _js_invoke(e, "increaseIndent", False, mapping_context and not _js_truthy(_js_get(e, "atIndention")))
+            i = 0
+            for item in items:
+                _js_invoke(e, "writeIndent")
+                _js_invoke(e, "writeIndicator", "-", True, False, True)
+                _emit_node__typed(e, item, False, path + "[" + _js_str(i) + "]", seen)
+                i = _js_num(i + 1)
+            _js_invoke(e, "popIndent")
+    elif _js_typeof(value) == "object" and _js_strict_eq(_js_get_prototype_of(value), _JS_OBJECT_PROTOTYPE):
+        _claim__typed(value, path, seen)
+        entries = _js_object_entries(value)
+        if _js_strict_eq(_js_len(entries), 0):
+            _js_invoke(e, "writeIndicator", "{", True, True)
+            _js_invoke(e, "writeIndicator", "}", False)
+        else:
+            _js_invoke(e, "increaseIndent", False, False)
+            for _js_item2 in entries:
+                key = _js_get(_js_item2, 0)
+                item = _js_get(_js_item2, 1)
+                if _js_typeof(key) != "string":
+                    raise YamlEmitError("cannot emit " + _js_typeof(key) + " key under " + path)
+                if _is_array_index_key(key):
+                    raise YamlEmitError("cannot emit key " + _js_str(key) + " under " + path + ": an array-index key is listed first by Object.entries, so the mapping no longer holds its own order")
+                _emit_mapping_entry(e, key, item, path + "." + _js_str(key), seen)
+            _js_invoke(e, "popIndent")
+    else:
+        raise YamlEmitError("cannot emit " + _js_typeof(value) + " for key " + path)
+    return _JS_UNDEFINED
+
+
 def _emit_node(e, value, mapping_context, path, seen):
+    if type(mapping_context) is bool and type(path) is str and type(seen) is list:
+        return _emit_node__typed(e, value, mapping_context, path, seen)
     if value is None:
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", "null", NULL_TAG, False)
@@ -530,7 +664,7 @@ def _emit_node(e, value, mapping_context, path, seen):
                 _js_invoke(e, "writeIndent")
                 _js_invoke(e, "writeIndicator", "-", True, False, True)
                 _emit_node(e, item, False, _js_str(path) + "[" + _js_str(i) + "]", seen)
-                i = _js_add(i, 1)
+                i = _js_num(i + 1)
             _js_invoke(e, "popIndent")
     elif _js_typeof(value) == "object" and _js_strict_eq(_js_get_prototype_of(value), _JS_OBJECT_PROTOTYPE):
         _claim(value, path, seen)
@@ -540,9 +674,9 @@ def _emit_node(e, value, mapping_context, path, seen):
             _js_invoke(e, "writeIndicator", "}", False)
         else:
             _js_invoke(e, "increaseIndent", False, False)
-            for _js_item2 in entries:
-                key = _js_get(_js_item2, 0)
-                item = _js_get(_js_item2, 1)
+            for _js_item3 in entries:
+                key = _js_get(_js_item3, 0)
+                item = _js_get(_js_item3, 1)
                 if _js_typeof(key) != "string":
                     raise YamlEmitError("cannot emit " + _js_typeof(key) + " key under " + _js_str(path))
                 if _is_array_index_key(key):
@@ -585,33 +719,33 @@ class YamlConstructError(_JsError):
 
 
 def _days_from_civil(y, m, d):
-    yy = _js_num(_js_num(y) - (1 if _js_le(m, 2) else 0))
+    yy = _js_num(y - (1 if m <= 2 else 0))
     era = _js_floor(_js_div(yy, 400))
-    yoe = _js_num(_js_num(yy) - _js_mul(era, 400))
-    doy = _js_num(_js_num(_js_add(_js_floor(_js_div(_js_add(_js_mul(153, _js_add(m, -3 if _js_gt(m, 2) else 9)), 2), 5)), d)) - 1)
-    doe = _js_add(_js_num(_js_num(_js_add(_js_mul(yoe, 365), _js_floor(_js_div(yoe, 4)))) - _js_floor(_js_div(yoe, 100))), doy)
-    return _js_num(_js_num(_js_add(_js_mul(era, 146097), doe)) - 719468)
+    yoe = _js_num(yy - _js_mul(era, 400))
+    doy = _js_num(_js_num(_js_floor(_js_div(_js_num(_js_mul(153, _js_num(m + (-3 if m > 2 else 9))) + 2), 5)) + d) - 1)
+    doe = _js_num(_js_num(_js_num(_js_mul(yoe, 365) + _js_floor(_js_div(yoe, 4))) - _js_floor(_js_div(yoe, 100))) + doy)
+    return _js_num(_js_num(_js_mul(era, 146097) + doe) - 719468)
 
 
 _BOOL_VALUES = {"yes": True, "no": False, "true": True, "false": False, "on": True, "off": False}
 
 
-def _construct_int(raw):
+def _construct_int__typed(raw):
     value = _js_m_replace(raw, _JS_RE_9, "")
     sign = _JsBigInt(1)
-    if _js_get(value, 0) == "-":
+    if _js_str_at(value, 0) == "-":
         sign = _js_neg(_JsBigInt(1))
-    if _js_get(value, 0) == "+" or _js_get(value, 0) == "-":
-        value = _js_m_slice(value, 1)
+    if _js_str_at(value, 0) == "+" or _js_str_at(value, 0) == "-":
+        value = _js_str_slice(value, 1)
     if value == "0":
         return _JsBigInt(0)
-    if _js_m_startsWith(value, "0b"):
-        return _js_mul(sign, _js_bigint("0b" + _js_str(_js_m_slice(value, 2))))
-    if _js_m_startsWith(value, "0x"):
-        return _js_mul(sign, _js_bigint("0x" + _js_str(_js_m_slice(value, 2))))
-    if _js_get(value, 0) == "0":
-        return _js_mul(sign, _js_bigint("0o" + _js_str(_js_m_slice(value, 1))))
-    if _js_m_includes(value, ":"):
+    if _js_str_starts_with(value, "0b"):
+        return _js_mul(sign, _js_bigint("0b" + _js_str_slice(value, 2)))
+    if _js_str_starts_with(value, "0x"):
+        return _js_mul(sign, _js_bigint("0x" + _js_str_slice(value, 2)))
+    if _js_str_at(value, 0) == "0":
+        return _js_mul(sign, _js_bigint("0o" + _js_str_slice(value, 1)))
+    if _js_str_includes(value, ":"):
         total = _JsBigInt(0)
         base = _JsBigInt(1)
         for part in _js_m_reverse(_js_m_split(value, ":")):
@@ -621,22 +755,72 @@ def _construct_int(raw):
     return _js_mul(sign, _js_bigint(value))
 
 
-def _construct_float(raw):
+def _construct_int(raw):
+    if type(raw) is str:
+        return _construct_int__typed(raw)
+    value = _js_m_replace(raw, _JS_RE_9, "")
+    sign = _JsBigInt(1)
+    if _js_str_at(value, 0) == "-":
+        sign = _js_neg(_JsBigInt(1))
+    if _js_str_at(value, 0) == "+" or _js_str_at(value, 0) == "-":
+        value = _js_str_slice(value, 1)
+    if value == "0":
+        return _JsBigInt(0)
+    if _js_str_starts_with(value, "0b"):
+        return _js_mul(sign, _js_bigint("0b" + _js_str_slice(value, 2)))
+    if _js_str_starts_with(value, "0x"):
+        return _js_mul(sign, _js_bigint("0x" + _js_str_slice(value, 2)))
+    if _js_str_at(value, 0) == "0":
+        return _js_mul(sign, _js_bigint("0o" + _js_str_slice(value, 1)))
+    if _js_str_includes(value, ":"):
+        total = _JsBigInt(0)
+        base = _JsBigInt(1)
+        for part in _js_m_reverse(_js_m_split(value, ":")):
+            total = _js_add(total, _js_mul(_js_bigint(part), base))
+            base = _js_mul(base, _JsBigInt(60))
+        return _js_mul(sign, total)
+    return _js_mul(sign, _js_bigint(value))
+
+
+def _construct_float__typed(raw):
     value = _js_m_toLowerCase(_js_m_replace(raw, _JS_RE_9, ""))
     sign = 1
-    if _js_get(value, 0) == "-":
+    if _js_str_at(value, 0) == "-":
         sign = -1
-    if _js_get(value, 0) == "+" or _js_get(value, 0) == "-":
-        value = _js_m_slice(value, 1)
+    if _js_str_at(value, 0) == "+" or _js_str_at(value, 0) == "-":
+        value = _js_str_slice(value, 1)
     if value == ".inf":
         return _js_mul(sign, _JS_INFINITY)
     if value == ".nan":
         return _JS_NAN
-    if _js_m_includes(value, ":"):
+    if _js_str_includes(value, ":"):
         total = 0
         base = 1
         for part in _js_m_reverse(_js_m_split(value, ":")):
-            total = _js_add(total, _js_mul(_js_number(part), base))
+            total = _js_num(total + _js_mul(_js_number(part), base))
+            base = _js_mul(base, 60)
+        return _js_mul(sign, total)
+    return _js_mul(sign, _js_number(value))
+
+
+def _construct_float(raw):
+    if type(raw) is str:
+        return _construct_float__typed(raw)
+    value = _js_m_toLowerCase(_js_m_replace(raw, _JS_RE_9, ""))
+    sign = 1
+    if _js_str_at(value, 0) == "-":
+        sign = -1
+    if _js_str_at(value, 0) == "+" or _js_str_at(value, 0) == "-":
+        value = _js_str_slice(value, 1)
+    if value == ".inf":
+        return _js_mul(sign, _JS_INFINITY)
+    if value == ".nan":
+        return _JS_NAN
+    if _js_str_includes(value, ":"):
+        total = 0
+        base = 1
+        for part in _js_m_reverse(_js_m_split(value, ":")):
+            total = _js_num(total + _js_mul(_js_number(part), base))
             base = _js_mul(base, 60)
         return _js_mul(sign, total)
     return _js_mul(sign, _js_number(value))
@@ -645,12 +829,12 @@ def _construct_float(raw):
 def _represent_float(x):
     if _js_number_is_nan(x):
         return ".nan"
-    if _js_strict_eq(x, _JS_INFINITY):
+    if x == _JS_INFINITY:
         return ".inf"
-    if _js_strict_eq(x, _js_neg(_JS_INFINITY)):
+    if x == _js_neg(_JS_INFINITY):
         return "-.inf"
     value = _js_m_toLowerCase(py_float_repr(x))
-    return _js_m_replace(value, "e", ".0e") if not _js_m_includes(value, ".") and _js_m_includes(value, "e") else value
+    return _js_m_replace(value, "e", ".0e") if not _js_str_includes(value, ".") and _js_str_includes(value, "e") else value
 
 
 _TIMESTAMP_RE = _JS_RE_10
@@ -661,7 +845,7 @@ def _pad(n, w):
 
 
 def _LEAP(y):
-    return _js_strict_eq(_js_mod(y, 4), 0) and not _js_strict_eq(_js_mod(y, 100), 0) or _js_strict_eq(_js_mod(y, 400), 0)
+    return _js_mod(y, 4) == 0 and _js_mod(y, 100) != 0 or _js_mod(y, 400) == 0
 
 
 _MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -669,43 +853,43 @@ _MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 def _repr_timedelta(total_seconds):
     days = _js_floor(_js_div(total_seconds, 86400))
-    seconds = _js_num(_js_num(total_seconds) - _js_mul(days, 86400))
+    seconds = _js_num(total_seconds - _js_mul(days, 86400))
     parts = []
-    if not _js_strict_eq(days, 0):
-        _js_dispatch(parts, "push", _js_m_push, "days=" + _js_str(days))
-    if not _js_strict_eq(seconds, 0):
-        _js_dispatch(parts, "push", _js_m_push, "seconds=" + _js_str(seconds))
-    if _js_strict_eq(_js_len(parts), 0):
-        _js_dispatch(parts, "push", _js_m_push, "0")
-    return "datetime.timedelta(" + _js_m_join(parts, ", ") + ")"
+    if days != 0:
+        parts.append("days=" + _js_str(days))
+    if seconds != 0:
+        parts.append("seconds=" + _js_str(seconds))
+    if len(parts) == 0:
+        parts.append("0")
+    return "datetime.timedelta(" + _js_list_join(parts, ", ") + ")"
 
 
-def _construct_timestamp(raw):
-    m = _js_m_exec(_TIMESTAMP_RE, raw)
+def _construct_timestamp__typed(raw):
+    m = _js_re_exec(_TIMESTAMP_RE, raw)
     if m is None:
         raise YamlConstructError(_js_str(_js_json_stringify(raw)) + " resolved to a timestamp but does not parse as one")
     _, y, mo, d, h, mi, s, frac, tz, tz_sign, tz_hour, tz_minute = _js_destructure(m, 12)
     year = _js_number(y)
     month = _js_number(mo)
     day = _js_number(d)
-    if _js_lt(year, 1):
+    if year < 1:
         raise YamlConstructError("year " + _js_str(year) + " is out of range")
-    if _js_lt(month, 1) or _js_gt(month, 12):
+    if month < 1 or month > 12:
         raise YamlConstructError("month must be in 1..12")
-    max_day = 29 if _js_strict_eq(month, 2) and _LEAP(year) else _js_get(_MONTH_DAYS, _js_num(_js_num(month) - 1))
-    if _js_lt(day, 1) or _js_gt(day, max_day):
+    max_day = 29 if month == 2 and _LEAP(year) else _js_list_at(_MONTH_DAYS, _js_num(month - 1))
+    if day < 1 or _js_gt(day, max_day):
         raise YamlConstructError("day is out of range for month")
-    date = _js_str(_pad(year, 4)) + "-" + _js_str(_pad(month, 2)) + "-" + _js_str(_pad(day, 2))
+    date = _pad(year, 4) + "-" + _pad(month, 2) + "-" + _pad(day, 2)
     if h is _JS_UNDEFINED:
         return PyScalar(TIMESTAMP_TAG, "datetime.date", date, date, True, {"kind": "date", "iso": date})
     hour = _js_number(h)
     minute = _js_number(mi)
     second = _js_number(s)
-    if _js_gt(hour, 23):
+    if hour > 23:
         raise YamlConstructError("hour must be in 0..23")
-    if _js_gt(minute, 59):
+    if minute > 59:
         raise YamlConstructError("minute must be in 0..59")
-    if _js_gt(second, 59):
+    if second > 59:
         raise YamlConstructError("second must be in 0..59")
     micro = _js_number(_js_m_padEnd(_js_m_slice(frac, 0, 6), 6, "0")) if _js_truthy(frac) else 0
     offset = ""
@@ -714,37 +898,111 @@ def _construct_timestamp(raw):
     if tz_sign is not _JS_UNDEFINED:
         total = _js_mul(_js_num(_js_mul(_js_number(tz_hour), 3600) + _js_mul(_js_number(_js_coalesce_value(tz_minute, 0)), 60)), -1 if tz_sign == "-" else 1)
         if _js_abs(total) >= 86400:
-            raise YamlConstructError("offset must be a timedelta strictly between -timedelta(hours=24) and " + ("timedelta(hours=24), not " + _js_str(_repr_timedelta(total)) + "."))
-        sign = "-" if _js_lt(total, 0) else "+"
+            raise YamlConstructError("offset must be a timedelta strictly between -timedelta(hours=24) and " + ("timedelta(hours=24), not " + _repr_timedelta(total) + "."))
+        sign = "-" if total < 0 else "+"
         abs = _js_abs(total)
-        offset = _js_cat(_js_str(sign), _js_str(_pad(_js_floor(_js_div(abs, 3600)), 2))) + ":" + _js_str(_pad(_js_mod(_js_floor(_js_div(abs, 60)), 60), 2))
+        offset = _js_cat(sign, _pad(_js_floor(_js_div(abs, 3600)), 2)) + ":" + _pad(_js_mod(_js_floor(_js_div(abs, 60)), 60), 2)
         offset_seconds = total
         aware = True
     elif tz is not _JS_UNDEFINED:
         offset = "+00:00"
         aware = True
-    text = _js_cat(_js_str(date) + " " + _js_str(_pad(hour, 2)) + ":" + _js_str(_pad(minute, 2)) + ":" + _js_str(_pad(second, 2)), _js_cat(("." + _js_str(_pad(micro, 6)) if _js_truthy(micro) else ""), _js_str(offset)))
-    sec = _js_num(_js_num(_js_add(_js_add(_js_add(_js_mul(_days_from_civil(year, month, day), 86400), _js_mul(hour, 3600)), _js_mul(minute, 60)), second)) - _js_num(offset_seconds))
+    text = _js_cat(date + " " + _pad(hour, 2) + ":" + _pad(minute, 2) + ":" + _pad(second, 2), _js_cat(("." + _pad(micro, 6) if _js_truthy(micro) else ""), offset))
+    sec = _js_num(_js_num(_js_num(_js_num(_js_mul(_days_from_civil(year, month, day), 86400) + _js_mul(hour, 3600)) + _js_mul(minute, 60)) + second) - offset_seconds)
     return PyScalar(TIMESTAMP_TAG, "datetime.datetime", text, text, True, {"kind": "datetime", "aware": aware, "sec": sec, "us": micro})
 
 
-def construct_plain(value):
-    tag = resolve_implicit_tag(value)
-    if _js_strict_eq(tag, STR_TAG):
+def _construct_timestamp(raw):
+    if type(raw) is str:
+        return _construct_timestamp__typed(raw)
+    m = _js_m_exec(_TIMESTAMP_RE, raw)
+    if m is None:
+        raise YamlConstructError(_js_str(_js_json_stringify(raw)) + " resolved to a timestamp but does not parse as one")
+    _, y, mo, d, h, mi, s, frac, tz, tz_sign, tz_hour, tz_minute = _js_destructure(m, 12)
+    year = _js_number(y)
+    month = _js_number(mo)
+    day = _js_number(d)
+    if year < 1:
+        raise YamlConstructError("year " + _js_str(year) + " is out of range")
+    if month < 1 or month > 12:
+        raise YamlConstructError("month must be in 1..12")
+    max_day = 29 if month == 2 and _LEAP(year) else _js_list_at(_MONTH_DAYS, _js_num(month - 1))
+    if day < 1 or _js_gt(day, max_day):
+        raise YamlConstructError("day is out of range for month")
+    date = _pad(year, 4) + "-" + _pad(month, 2) + "-" + _pad(day, 2)
+    if h is _JS_UNDEFINED:
+        return PyScalar(TIMESTAMP_TAG, "datetime.date", date, date, True, {"kind": "date", "iso": date})
+    hour = _js_number(h)
+    minute = _js_number(mi)
+    second = _js_number(s)
+    if hour > 23:
+        raise YamlConstructError("hour must be in 0..23")
+    if minute > 59:
+        raise YamlConstructError("minute must be in 0..59")
+    if second > 59:
+        raise YamlConstructError("second must be in 0..59")
+    micro = _js_number(_js_m_padEnd(_js_m_slice(frac, 0, 6), 6, "0")) if _js_truthy(frac) else 0
+    offset = ""
+    offset_seconds = 0
+    aware = False
+    if tz_sign is not _JS_UNDEFINED:
+        total = _js_mul(_js_num(_js_mul(_js_number(tz_hour), 3600) + _js_mul(_js_number(_js_coalesce_value(tz_minute, 0)), 60)), -1 if tz_sign == "-" else 1)
+        if _js_abs(total) >= 86400:
+            raise YamlConstructError("offset must be a timedelta strictly between -timedelta(hours=24) and " + ("timedelta(hours=24), not " + _repr_timedelta(total) + "."))
+        sign = "-" if total < 0 else "+"
+        abs = _js_abs(total)
+        offset = _js_cat(sign, _pad(_js_floor(_js_div(abs, 3600)), 2)) + ":" + _pad(_js_mod(_js_floor(_js_div(abs, 60)), 60), 2)
+        offset_seconds = total
+        aware = True
+    elif tz is not _JS_UNDEFINED:
+        offset = "+00:00"
+        aware = True
+    text = _js_cat(date + " " + _pad(hour, 2) + ":" + _pad(minute, 2) + ":" + _pad(second, 2), _js_cat(("." + _pad(micro, 6) if _js_truthy(micro) else ""), offset))
+    sec = _js_num(_js_num(_js_num(_js_num(_js_mul(_days_from_civil(year, month, day), 86400) + _js_mul(hour, 3600)) + _js_mul(minute, 60)) + second) - offset_seconds)
+    return PyScalar(TIMESTAMP_TAG, "datetime.datetime", text, text, True, {"kind": "datetime", "aware": aware, "sec": sec, "us": micro})
+
+
+def _construct_plain__typed(value):
+    tag = _resolve_implicit_tag__typed(value)
+    if tag == STR_TAG:
         return value
-    elif _js_strict_eq(tag, NULL_TAG):
+    elif tag == NULL_TAG:
         return None
-    elif _js_strict_eq(tag, _BOOL_TAG):
+    elif tag == _BOOL_TAG:
         b = _js_get(_BOOL_VALUES, _js_m_toLowerCase(value))
         return PyScalar(tag, "bool", "True" if _js_truthy(b) else "False", "true" if _js_truthy(b) else "false", b, {"kind": "num", "n": _JsBigInt(1) if _js_truthy(b) else _JsBigInt(0)})
-    elif _js_strict_eq(tag, _INT_TAG):
+    elif tag == _INT_TAG:
+        n = _construct_int__typed(value)
+        return PyScalar(tag, "int", _js_m_toString(n), _js_m_toString(n), not _js_strict_eq(n, _JsBigInt(0)), {"kind": "num", "n": n})
+    elif tag == _FLOAT_TAG:
+        f = _construct_float__typed(value)
+        return PyScalar(tag, "float", py_float_repr(f), _represent_float(f), f != 0, {"kind": "num", "n": f})
+    elif tag == TIMESTAMP_TAG:
+        return _construct_timestamp__typed(value)
+    else:
+        raise YamlConstructError("could not determine a constructor for the tag '" + tag + "'")
+    return _JS_UNDEFINED
+
+
+def construct_plain(value):
+    if type(value) is str:
+        return _construct_plain__typed(value)
+    tag = resolve_implicit_tag(value)
+    if tag == STR_TAG:
+        return value
+    elif tag == NULL_TAG:
+        return None
+    elif tag == _BOOL_TAG:
+        b = _js_get(_BOOL_VALUES, _js_m_toLowerCase(value))
+        return PyScalar(tag, "bool", "True" if _js_truthy(b) else "False", "true" if _js_truthy(b) else "false", b, {"kind": "num", "n": _JsBigInt(1) if _js_truthy(b) else _JsBigInt(0)})
+    elif tag == _INT_TAG:
         n = _construct_int(value)
         return PyScalar(tag, "int", _js_m_toString(n), _js_m_toString(n), not _js_strict_eq(n, _JsBigInt(0)), {"kind": "num", "n": n})
-    elif _js_strict_eq(tag, _FLOAT_TAG):
+    elif tag == _FLOAT_TAG:
         f = _construct_float(value)
-        return PyScalar(tag, "float", py_float_repr(f), _represent_float(f), not _js_strict_eq(f, 0), {"kind": "num", "n": f})
-    elif _js_strict_eq(tag, TIMESTAMP_TAG):
+        return PyScalar(tag, "float", py_float_repr(f), _represent_float(f), f != 0, {"kind": "num", "n": f})
+    elif tag == TIMESTAMP_TAG:
         return _construct_timestamp(value)
     else:
-        raise YamlConstructError("could not determine a constructor for the tag '" + _js_str(tag) + "'")
+        raise YamlConstructError("could not determine a constructor for the tag '" + tag + "'")
     return _JS_UNDEFINED

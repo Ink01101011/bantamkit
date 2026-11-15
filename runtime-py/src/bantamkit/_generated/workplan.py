@@ -7,11 +7,11 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_coalesce_value,
     _js_get,
-    _js_gt,
     _js_is_array,
     _js_is_nullish,
     _js_json_stringify,
     _js_len,
+    _js_list_join,
     _js_lt,
     _js_m_add,
     _js_m_entries,
@@ -20,9 +20,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_get,
     _js_m_has,
     _js_m_includes,
-    _js_m_join,
     _js_m_map,
-    _js_m_push,
     _js_m_set,
     _js_m_slice,
     _js_m_some,
@@ -37,7 +35,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_re,
     _js_size,
     _js_str,
-    _js_strict_eq,
     _js_typeof,
     _JsMap,
     _JsSet,
@@ -65,7 +62,18 @@ def _plain_path(path):
     return _js_m_every(_js_m_split(path, "/"), lambda segment, *_: segment != "" and segment != "." and segment != "..")
 
 
+def _touches_refusal__typed(node_id, touches):
+    if _js_is_nullish(touches):
+        return None
+    bad = touches if not _js_is_array(touches) else _js_m_find(touches, lambda path, *_: not _plain_path(path))
+    if _js_is_array(touches) and bad is _JS_UNDEFINED:
+        return None
+    return "node " + node_id + " touches " + _js_str(_js_json_stringify(bad)) + ", which is not a plain relative path"
+
+
 def touches_refusal(node_id, touches):
+    if type(node_id) is str:
+        return _touches_refusal__typed(node_id, touches)
     if _js_is_nullish(touches):
         return None
     bad = touches if not _js_is_array(touches) else _js_m_find(touches, lambda path, *_: not _plain_path(path))
@@ -74,7 +82,7 @@ def touches_refusal(node_id, touches):
     return "node " + _js_str(node_id) + " touches " + _js_str(_js_json_stringify(bad)) + ", which is not a plain relative path"
 
 
-def _read_nodes(nodes):
+def _read_nodes__typed(nodes):
     read = []
     for index, raw in _js_m_entries(nodes):
         if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
@@ -90,14 +98,39 @@ def _read_nodes(nodes):
         if not _js_is_nullish(priority) and not _is_integer(priority):
             return _refuse("nodes[" + _js_str(index) + "].priority must be an integer")
         touches = _js_get(node, "touches")
-        touches_fault = touches_refusal(id, touches)
+        touches_fault = _touches_refusal__typed(id, touches)
         if touches_fault is not None:
             return _refuse(touches_fault)
-        _js_m_push(read, {"id": id, "depends_on": [] if _js_is_nullish(depends_on) else depends_on, "priority": 0 if _js_is_nullish(priority) else priority, "touches": None if _js_is_nullish(touches) else touches})
+        read.append({"id": id, "depends_on": [] if _js_is_nullish(depends_on) else depends_on, "priority": 0 if _js_is_nullish(priority) else priority, "touches": None if _js_is_nullish(touches) else touches})
     return read
 
 
-def _cycle_path(nodes, emitted):
+def _read_nodes(nodes):
+    if type(nodes) is list:
+        return _read_nodes__typed(nodes)
+    read = []
+    for index, raw in _js_m_entries(nodes):
+        if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
+            return _refuse("nodes[" + _js_str(index) + "] must be an object")
+        node = raw
+        id = _js_get(node, "id")
+        if _js_typeof(id) != "string":
+            return _refuse("nodes[" + _js_str(index) + "].id must be a string")
+        depends_on = _js_get(node, "depends_on")
+        if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_m_every(depends_on, lambda dep, *_: _js_typeof(dep) == "string")):
+            return _refuse("nodes[" + _js_str(index) + "].depends_on must be a list of strings")
+        priority = _js_get(node, "priority")
+        if not _js_is_nullish(priority) and not _is_integer(priority):
+            return _refuse("nodes[" + _js_str(index) + "].priority must be an integer")
+        touches = _js_get(node, "touches")
+        touches_fault = _touches_refusal__typed(id, touches)
+        if touches_fault is not None:
+            return _refuse(touches_fault)
+        read.append({"id": id, "depends_on": [] if _js_is_nullish(depends_on) else depends_on, "priority": 0 if _js_is_nullish(priority) else priority, "touches": None if _js_is_nullish(touches) else touches})
+    return read
+
+
+def _cycle_path__typed(nodes, emitted):
     by_id = _JsMap(_js_m_map(nodes, lambda node, *_: [_js_get(node, "id"), node]))
     path = []
     at = _JsMap()
@@ -106,14 +139,86 @@ def _cycle_path(nodes, emitted):
         repeat = _js_m_get(at, _js_get(current, "id"))
         if repeat is not _JS_UNDEFINED:
             return [*_js_m_slice(path, repeat), _js_get(current, "id")]
-        _js_m_set(at, _js_get(current, "id"), _js_len(path))
-        _js_m_push(path, _js_get(current, "id"))
+        _js_m_set(at, _js_get(current, "id"), len(path))
+        path.append(_js_get(current, "id"))
         next = _js_m_find(_js_get(current, "depends_on"), lambda dep, *_: not _js_m_has(emitted, dep))
         current = _JS_UNDEFINED if next is _JS_UNDEFINED else _js_m_get(by_id, next)
     return path
 
 
+def _cycle_path(nodes, emitted):
+    if type(nodes) is list:
+        return _cycle_path__typed(nodes, emitted)
+    by_id = _JsMap(_js_m_map(nodes, lambda node, *_: [_js_get(node, "id"), node]))
+    path = []
+    at = _JsMap()
+    current = _js_m_find(nodes, lambda node, *_: not _js_m_has(emitted, _js_get(node, "id")))
+    while current is not _JS_UNDEFINED:
+        repeat = _js_m_get(at, _js_get(current, "id"))
+        if repeat is not _JS_UNDEFINED:
+            return [*_js_m_slice(path, repeat), _js_get(current, "id")]
+        _js_m_set(at, _js_get(current, "id"), len(path))
+        path.append(_js_get(current, "id"))
+        next = _js_m_find(_js_get(current, "depends_on"), lambda dep, *_: not _js_m_has(emitted, dep))
+        current = _JS_UNDEFINED if next is _JS_UNDEFINED else _js_m_get(by_id, next)
+    return path
+
+
+def _plan__typed(input):
+    nodes = _read_nodes__typed(input)
+    if not _js_is_array(nodes):
+        return nodes
+    declared = _JsSet()
+    for node in nodes:
+        if _js_m_has(declared, _js_get(node, "id")):
+            return _refuse("duplicate node id " + _js_str(_js_get(node, "id")))
+        _js_m_add(declared, _js_get(node, "id"))
+    for node in nodes:
+        for dep in _js_get(node, "depends_on"):
+            if not _js_m_has(declared, dep):
+                return _refuse("node " + _js_str(_js_get(node, "id")) + " depends on " + _js_str(dep) + ", which no node declares")
+    emitted = _JsSet()
+    batches = []
+    sequence = []
+    held = []
+    width = 0
+    while _js_lt(_js_size(emitted), _js_len(nodes)):
+        ready = []
+        for index, node in _js_m_entries(nodes):
+            if _js_m_has(emitted, _js_get(node, "id")):
+                continue
+            if _js_m_every(_js_get(node, "depends_on"), lambda dep, *_: _js_m_has(emitted, dep)):
+                ready.append({"id": _js_get(node, "id"), "priority": _js_coalesce_value(_js_get(node, "priority"), 0), "index": index})
+        if len(ready) == 0:
+            return _refuse("the graph has a cycle: " + _js_list_join(_cycle_path(nodes, emitted), " -> "))
+        _js_m_sort(ready, lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "priority")) - _js_num(_js_get(a, "priority"))), lambda: _js_num(_js_num(_js_get(a, "index")) - _js_num(_js_get(b, "index")))))
+        batch = []
+        owner = _JsMap()
+        for entry in ready:
+            touches = _js_coalesce_value(_js_get(_js_get(nodes, _js_get(entry, "index")), "touches"), [])
+            clash = _js_m_find(touches, lambda path, *_: _js_m_has(owner, path))
+            if clash is not _JS_UNDEFINED:
+                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": _js_m_get(owner, clash), "path": clash})
+                continue
+            batch.append(_js_get(entry, "id"))
+            for path in touches:
+                if not _js_m_has(owner, path):
+                    _js_m_set(owner, path, _js_get(entry, "id"))
+        batches.append(batch)
+        for id in batch:
+            _js_m_add(emitted, id)
+            sequence.append(id)
+        if len(batch) > width:
+            width = len(batch)
+    answer = {"batches": batches, "sequence": sequence, "width": width}
+    if _js_m_some(nodes, lambda node, *_: not _js_is_nullish(_js_get(node, "touches"))):
+        _js_put(answer, "held", held)
+    return answer
+
+
 def plan(input):
+    if type(input) is list:
+        return _plan__typed(input)
     nodes = _read_nodes(input)
     if not _js_is_array(nodes):
         return nodes
@@ -137,9 +242,9 @@ def plan(input):
             if _js_m_has(emitted, _js_get(node, "id")):
                 continue
             if _js_m_every(_js_get(node, "depends_on"), lambda dep, *_: _js_m_has(emitted, dep)):
-                _js_m_push(ready, {"id": _js_get(node, "id"), "priority": _js_coalesce_value(_js_get(node, "priority"), 0), "index": index})
-        if _js_strict_eq(_js_len(ready), 0):
-            return _refuse("the graph has a cycle: " + _js_m_join(_cycle_path(nodes, emitted), " -> "))
+                ready.append({"id": _js_get(node, "id"), "priority": _js_coalesce_value(_js_get(node, "priority"), 0), "index": index})
+        if len(ready) == 0:
+            return _refuse("the graph has a cycle: " + _js_list_join(_cycle_path(nodes, emitted), " -> "))
         _js_m_sort(ready, lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "priority")) - _js_num(_js_get(a, "priority"))), lambda: _js_num(_js_num(_js_get(a, "index")) - _js_num(_js_get(b, "index")))))
         batch = []
         owner = _JsMap()
@@ -147,18 +252,18 @@ def plan(input):
             touches = _js_coalesce_value(_js_get(_js_get(nodes, _js_get(entry, "index")), "touches"), [])
             clash = _js_m_find(touches, lambda path, *_: _js_m_has(owner, path))
             if clash is not _JS_UNDEFINED:
-                _js_m_push(held, {"id": _js_get(entry, "id"), "batch": _js_len(batches), "by": _js_m_get(owner, clash), "path": clash})
+                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": _js_m_get(owner, clash), "path": clash})
                 continue
-            _js_m_push(batch, _js_get(entry, "id"))
+            batch.append(_js_get(entry, "id"))
             for path in touches:
                 if not _js_m_has(owner, path):
                     _js_m_set(owner, path, _js_get(entry, "id"))
-        _js_m_push(batches, batch)
+        batches.append(batch)
         for id in batch:
             _js_m_add(emitted, id)
-            _js_m_push(sequence, id)
-        if _js_gt(_js_len(batch), width):
-            width = _js_len(batch)
+            sequence.append(id)
+        if len(batch) > width:
+            width = len(batch)
     answer = {"batches": batches, "sequence": sequence, "width": width}
     if _js_m_some(nodes, lambda node, *_: not _js_is_nullish(_js_get(node, "touches"))):
         _js_put(answer, "held", held)

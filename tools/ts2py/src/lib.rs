@@ -6,6 +6,7 @@
 pub mod adapters;
 pub mod lower;
 pub mod pyfmt;
+pub mod types;
 
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
@@ -45,6 +46,9 @@ pub struct Compiled {
 ///
 /// `Ok` is the whole Python module. `Err` is one line per offence:
 /// `<path>:<line>:<col>: unsupported <construct>: <snippet>` (or `syntax error` for a parse error).
+/// J87: rounds of the type-fact fixpoint before a module is refused as not settling.
+const MAX_ROUNDS: usize = 64;
+
 pub fn compile(source: &str, display_path: &str, options: &Options) -> Result<String, Vec<String>> {
     compile_modules(&[(display_path, source)], options).map(|mut modules| modules.remove(0).code)
 }
@@ -122,10 +126,33 @@ pub fn compile_modules(
             path: display_path.to_string(),
             ..ctx.clone()
         };
-        let mut lowerer = lower::Lowerer::with_ctx(source, module_ctx);
-        let body = lowerer.program(program);
+        // J87: rounds of the type-fact fixpoint (`types.rs`): each lowers the whole module under
+        // the facts the last one left standing, until a round observes exactly what it assumed.
+        // Every fact only shrinks and every wrapper or escape only grows, so this ends.
+        let mut assume = types::Assume::default();
+        let mut rounds = 0;
+        let (mut lowerer, body) = loop {
+            let mut lowerer =
+                lower::Lowerer::with_assume(source, module_ctx.clone(), assume.clone());
+            let body = lowerer.program(program);
+            let next = lowerer.next_assume();
+            rounds += 1;
+            if next == *lowerer.assumed() || rounds >= MAX_ROUNDS {
+                break (lowerer, body);
+            }
+            assume = next;
+        };
+        if rounds >= MAX_ROUNDS && lowerer.next_assume() != *lowerer.assumed() {
+            errors.push(format!(
+                "{display_path}:1:1: unsupported module: type facts did not settle in {MAX_ROUNDS} rounds"
+            ));
+            continue;
+        }
         if !lowerer.refusals.is_empty() {
             let mut refusals = std::mem::take(&mut lowerer.refusals);
+            // A function with a typed body is lowered twice (J87): one offence, one line.
+            let mut seen = std::collections::HashSet::new();
+            refusals.retain(|r| seen.insert((r.span.start, r.span.end, r.construct.clone())));
             refusals.sort_by_key(|r| (r.span.start, r.span.end));
             errors.extend(refusals.iter().map(|r| {
                 let (line, col) = line_col(source, r.span.start);
