@@ -51,7 +51,7 @@
  * They are spelled here rather than derived, because deriving them from the same walk that
  * produced them would assert nothing.
  */
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -437,6 +437,122 @@ export async function run(ctx) {
       ),
     );
   }
+
+  // ------------------------------------------------------------------ J88-1 (#316 G2)
+  //
+  // Line shapes and roots the corpus above never reached, compared as `as_json()` CODE UNITS
+  // (base64 of UTF-8 cannot carry a lone surrogate) with ANY exception reported by its type, so
+  // an input that makes one side raise something the MCP handler does not catch is a red case
+  // and not a dead harness. The agreeing beds come first; the inputs on which the hand-written
+  // runtimes disagree today are pinned after them as `UNRULED DIVERGENCE` cases (not ruled in
+  // docs/porting.md, not fixed: the orchestrator decides each), each with a companion that
+  // compares what both still agree on.
+  const units = (s) => Array.from({ length: s.length }, (_, i) => s.charCodeAt(i));
+  const ndUnits = (root) => {
+    try {
+      return { units: units(tokenledger.asJson(tokenledger.read(root))) };
+    } catch (err) {
+      return { error: { type: err?.constructor?.name ?? 'thrown', units: units(String(err?.message ?? err)) } };
+    }
+  };
+  const REC = (o) => JSON.stringify({ type: 'assistant', sessionId: 's', requestId: 'q', message: { usage: usage({ input_tokens: 1 }) }, ...o });
+  const g2 = join(bed, 'j88');
+  const bedOf = (nameOf, body) => {
+    write(`j88/${nameOf}/a.jsonl`, body);
+    return join(g2, nameOf);
+  };
+  const AGREE = [
+    ['a U+0085 (NEL) between two records is not a line break', bedOf('nel', `${REC({ requestId: 'q1' })}\u0085${REC({ requestId: 'q2' })}\n`)],
+    ['a U+2028 after a record is not a line break', bedOf('ls', `${REC({ requestId: 'q1' })}\u2028\n${REC({ requestId: 'q2' })}\n`)],
+    ['a form feed after a record is not JSON whitespace', bedOf('ff', `${REC({ requestId: 'q1' })}\f\n`)],
+    ['counts spelled 7.0, -0, 1e2 and 0.0e0 are counts', bedOf('spelled', '{"type":"assistant","sessionId":"s","requestId":"q","message":{"usage":{"input_tokens":7.0,"cache_creation_input_tokens":-0,"cache_read_input_tokens":1e2,"output_tokens":0.0e0}}}\n')],
+    ['true, 7.5, -1, "1", 1e400 and 2**53+1 are not counts', bedOf('notcounts', [
+      ['true', 'q1'], ['7.5', 'q2'], ['-1', 'q3'], ['"1"', 'q4'], ['1e400', 'q5'], ['9007199254740993', 'q6'], ['9007199254740991', 'q7'],
+    ].map(([v, q]) => `{"type":"assistant","sessionId":"s","requestId":"${q}","message":{"usage":{"input_tokens":${v},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}`).join('\n') + '\n')],
+    ['a __proto__ key on the record and in its message', bedOf('proto', '{"__proto__":{"type":"user"},"type":"assistant","sessionId":"s","requestId":"q","message":{"__proto__":{"usage":null},"usage":{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}}\n')],
+    ['a duplicate key keeps its last value', bedOf('dupkey', '{"type":"user","type":"assistant","sessionId":"x","sessionId":"s","requestId":"q","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"input_tokens":2}}}\n')],
+    ['isSidechain must be the boolean true', bedOf('sidechain', [`${REC({ requestId: 'q1', isSidechain: 'true' })}`, `${REC({ requestId: 'q2', isSidechain: 1 })}`, `${REC({ requestId: 'q3', isSidechain: true })}`].join('\n') + '\n')],
+    // Two stamps only, so `first` and `last` are both decided by the U+FF5A / U+1F600 pair: by code
+    // point U+FF5A is first, by UTF-16 unit the astral one (lead surrogate 0xD83D) would be.
+    ['timestamps compare by code point (U+FF5A below U+1F600)', bedOf('stamps', [
+      REC({ requestId: 'q1', timestamp: '2026-\u{1F600}' }), REC({ requestId: 'q2', timestamp: '2026-\uff5a' }),
+    ].join('\n') + '\n')],
+    ['an escaped surrogate PAIR in a session id is one astral character', bedOf('pair', `${REC({}).replace('"sessionId":"s"', '"sessionId":"\\ud83d\\ude00"')}\n`)],
+    ['a nested object 500 deep is not a record', bedOf('deep500', `${'['.repeat(500)}${']'.repeat(500)}\n${REC({})}\n`)],
+  ];
+  // A directory named like a transcript is walked, and an upper-case suffix is not read.
+  write('j88/shapes/x.jsonl/a.jsonl', `${REC({ requestId: 'q1' })}\n`);
+  write('j88/shapes/b.JSONL', `${REC({ requestId: 'q2' })}\n`);
+  AGREE.push(['a directory named x.jsonl is walked, b.JSONL is not read', join(g2, 'shapes')]);
+  AGREE.push(['a root spelled with a trailing slash', `${join(g2, 'shapes')}/`]);
+  AGREE.push(['a root spelled with a doubled slash', join(g2, 'shapes').replace(/\/j88\//, '/j88//')]);
+
+  // [label, root, why they differ, what both still agree on]
+  const DIVERGE = [
+    ['CRLF line endings', bedOf('crlf', `${REC({ requestId: 'q1' })}\r\n\r\n${REC({ requestId: 'q2' })}\r\n`),
+      "read_text() is universal-newline text mode, so Python sees `\\r\\n` as `\\n` and the blank `\\r\\n` line as empty (lines 2); Node splits on `\\n` alone and counts the lone `\\r` as an unparsed line (lines 3)"],
+    ['a lone CR between two records', bedOf('cr', `${REC({ requestId: 'q1' })}\r${REC({ requestId: 'q2' })}\n`),
+      'universal newlines make the lone `\\r` a line break on Python (2 requests); Node reads one unparsed line (0 requests)'],
+    ['a line nested 100000 deep', bedOf('deep', `${'['.repeat(100000)}${']'.repeat(100000)}\n${REC({})}\n`),
+      "Python's json.loads raises RecursionError, which read() does not catch (nor does the MCP handler, which catches TokenLedgerError, PriceTableError and OSError); JSON.parse reads an array and Node counts a not-an-object"],
+    ['a lone surrogate in a session id and a cwd', bedOf('lone', `${REC({}).replace('"sessionId":"s"', '"sessionId":"\\ud800","cwd":"\\udfff"')}\n`),
+      'json.dumps(ensure_ascii=False) writes the lone surrogate RAW into as_json() (a str no UTF-8 encoder accepts); JSON.stringify escapes it as the six characters `\\ud800`'],
+    ['a root whose name is longer than NAME_MAX', join(g2, 'x'.repeat(300)),
+      "Path.exists() raises OSError(ENAMETOOLONG); existsSync answers false and Node refuses `no such directory: ...` as a TokenLedgerError (both refuse: the companion)"],
+  ];
+  const canChmod = process.platform !== 'win32' && process.getuid?.() !== 0;
+  if (canChmod) {
+    // A subdirectory readable but not searchable: its listing works and every stat inside fails.
+    write('j88/noexec/sub/a.jsonl', `${REC({})}\n`);
+    chmodSync(join(g2, 'noexec', 'sub'), 0o644);
+    DIVERGE.push(['a subdirectory that can be listed but not searched', join(g2, 'noexec'),
+      "Path.is_dir() raises PermissionError(EACCES) out of _walk and read() raises it; statSync's throw is caught, the child is taken for a file and Node counts one undecodable-file"]);
+  } else notes.push('J88-1: the EACCES subdirectory bed is not built on this host (Windows or root)');
+
+  let pyUnits;
+  let ndAll;
+  try {
+    pyUnits = ctx.runPython(REF, { op: 'read_units', roots: [...AGREE, ...DIVERGE].map(([, r]) => r) }).out;
+    ndAll = [...AGREE, ...DIVERGE].map(([, r]) => ndUnits(r));
+  } finally {
+    // Searchable again, so the harness can remove its scratch directory.
+    if (canChmod) chmodSync(join(g2, 'noexec', 'sub'), 0o755);
+  }
+  AGREE.forEach(([label], i) => {
+    cases.push({ name: `J88-1 read: ${label}`, kind: 'json', expected: pyUnits[i], actual: ndAll[i] });
+  });
+  const refuses = (v) => 'error' in v;
+  DIVERGE.forEach(([label, , why], j) => {
+    const i = AGREE.length + j;
+    cases.push({ name: `ruling: UNRULED DIVERGENCE read: ${label}`, kind: 'json', expected: pyUnits[i], actual: ndAll[i], ruling: `UNRULED DIVERGENCE (J88-1): not ruled in docs/porting.md and not fixed; ${why}` });
+  });
+  // Companions: for each divergent input, the part the two still agree on.
+  const at88 = (label) => AGREE.length + DIVERGE.findIndex(([l]) => l === label);
+  const docOf = (v) => JSON.parse(String.fromCharCode(...v.units));
+  {
+    const i = at88('CRLF line endings');
+    cases.push({ name: 'J88-1 read: CRLF line endings — both count the two requests', kind: 'json',
+      expected: refuses(pyUnits[i]) ? pyUnits[i] : { requests: docOf(pyUnits[i]).requests, totals: docOf(pyUnits[i]).totals },
+      actual: refuses(ndAll[i]) ? ndAll[i] : { requests: docOf(ndAll[i]).requests, totals: docOf(ndAll[i]).totals } });
+    const n = at88('a root whose name is longer than NAME_MAX');
+    cases.push({ name: 'J88-1 read: a root longer than NAME_MAX — both refuse', kind: 'json', expected: refuses(pyUnits[n]), actual: refuses(ndAll[n]) });
+    const l = at88('a lone surrogate in a session id and a cwd');
+    const counts = (v) => (refuses(v) ? v : (({ units: u }) => {
+      const t = String.fromCharCode(...u);
+      return { requests: /"requests": (\d+)/.exec(t)?.[1], sessions: (t.match(/"session":/g) ?? []).length };
+    })(v));
+    cases.push({ name: 'J88-1 read: a lone surrogate session id — both count one request in one session', kind: 'json', expected: counts(pyUnits[l]), actual: counts(ndAll[l]) });
+  }
+  // Literals per side for two agreeing beds a symmetric edit could move.
+  const countsOf88 = (v) => (refuses(v) ? v : (({ lines, requests, totals, omissions }) => ({ lines, requests, input_tokens: totals.input_tokens, omissions: omissions.map((o) => [o.subject, o.count]) }))(docOf(v)));
+  const spelled = AGREE.findIndex(([l]) => l.startsWith('counts spelled'));
+  const notCounts = AGREE.findIndex(([l]) => l.startsWith('true, 7.5'));
+  cases.push(
+    ...literalCases(countsOf88(pyUnits[spelled]), countsOf88(ndAll[spelled]), 'J88-1: 7.0, -0, 1e2 and 0.0e0 count as 7, 0, 100, 0',
+      { lines: 1, requests: 1, input_tokens: 7, omissions: [] }),
+    ...literalCases(countsOf88(pyUnits[notCounts]), countsOf88(ndAll[notCounts]), 'J88-1: only 2**53-1 of the seven spellings is a count',
+      { lines: 7, requests: 1, input_tokens: 9007199254740991, omissions: [['malformed-usage', 6]] }),
+  );
 
   notes.push(
     `corpus: ${CORPUS_HEADLINE.transcripts} transcripts, ${CORPUS_HEADLINE.lines} lines, ` +

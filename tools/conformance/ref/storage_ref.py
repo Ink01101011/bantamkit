@@ -32,6 +32,19 @@ below. Shared by job69 units: append a section, do not reorder the ones above it
     {"op": "file", "name"}                     -> b64 | null   (a file beside the log)
     {"op": "bytesruled"}                       -> b64 | null   (`bytes`, compared by a ruling)
 
+J88-1 (#316 G2) added, after every op above so none of them moves:
+
+    {"op": "append_nonfinite"}                 -> [bool, bool, bool]  (NaN, Infinity, -Infinity)
+    {"op": "segments"}                         -> [basename, ...]
+    {"op": "mkdir", "name"}                    -> null    (a directory beside the log)
+    {"op": "write_over", "name", "b64"}        -> null | {"errno": code name}  (beside the log)
+    {"op": "rewrite_held", "build"}            -> bool | {"errno": code name}  (build: none|upper|empty)
+    {"op": "fold_raises", "reducer"}           -> {"raised": bool}  (reducer: throws|nonjson)
+
+and ANY op that raises answers `{"raises": <type name>}` instead of ending the process, so an
+input that makes one runtime raise is a red case rather than a dead harness. The request's
+answer also carries `ROTATE_BYTES`.
+
 The Node half of `storage-log.mjs` runs the same ops against `dist/storage/index.js`
 with an interpreter written to the same table, and the same reducers.
 
@@ -174,61 +187,115 @@ def _read_or_none(p: Path) -> bytes | None:
         return None
 
 
+def _errno_of(exc: OSError) -> dict:
+    import errno as _errno
+
+    return {"errno": _errno.errorcode.get(exc.errno or 0, str(exc.errno))}
+
+
+BUILDS = {
+    "none": lambda data: None,
+    "upper": lambda data: data.upper(),
+    "empty": lambda data: b"",
+}
+
+
 def _log_bed(bed: dict) -> list:
     seg = LogSegment(Path(bed["path"]))
     out: list = []
     for op in bed["ops"]:
-        kind = op["op"]
-        if kind == "append":
-            out.append(seg.append(op["obj"]))
-        elif kind == "raw":
-            with open(seg.path, "ab") as f:
-                f.write(base64.b64decode(op["b64"]))
-            out.append(None)
-        elif kind == "rawfile":
-            (seg.path.parent / op["name"]).write_bytes(base64.b64decode(op["b64"]))
-            out.append(None)
-        elif kind == "read":
-            out.append(seg.read())
-        elif kind == "skipped":
-            out.append(seg.skipped)
-        elif kind == "rotate":
-            out.append(seg.rotate(op["max_bytes"]))
-        elif kind == "fold":
-            seg.fold(op["older_than"], REDUCERS[op["reducer"]](op["older_than"]))
-            out.append(None)
-        elif kind in ("bytes", "bytesruled"):
-            out.append(_b64(_read_or_none(seg.path)))
-        elif kind in ("gz", "gzraw"):
-            raw = _read_or_none(Path(f"{seg.path}.{op['n']}.gz"))
-            out.append(_b64(gzip.decompress(raw) if raw is not None and kind == "gz" else raw))
-        elif kind == "listdir":
-            try:
-                out.append(sorted(os.listdir(seg.path.parent)))
-            except OSError:
-                out.append(None)
-        elif kind == "size":
-            out.append(seg.size)
-        elif kind == "fold_lines":
-            seg.fold_lines(op["older_than"], LINE_REDUCERS[op["reducer"]])
-            out.append(None)
-        elif kind == "append_numbers":
-            out.append(seg.append({"b": 1, "1": 2, "f": 1.0, "e": 1e-7, "ts": "n"}))
-        elif kind == "ev":
-            from bantamkit.eventlog import EventLog
-
-            log = EventLog(seg.path.parent / "mcp.jsonl", cap_bytes=op["cap"], clock=lambda: 0)
-            log.record("memory_save", "saved", {"z": 1, "a": True})
-            out.append(log.write_failed)
-        elif kind == "file":
-            out.append(_b64(_read_or_none(seg.path.parent / op["name"])))
-        else:
-            raise SystemExit(f"storage_ref: unknown storage-log op {kind!r}")
+        try:
+            _log_op(seg, op, out)
+        except Exception as exc:  # noqa: BLE001 - J88-1: a raise is an answer here
+            out.append({"raises": type(exc).__name__})
     return out
 
 
+def _log_op(seg: LogSegment, op: dict, out: list) -> None:
+    kind = op["op"]
+    if kind == "append":
+        out.append(seg.append(op["obj"]))
+    elif kind == "raw":
+        with open(seg.path, "ab") as f:
+            f.write(base64.b64decode(op["b64"]))
+        out.append(None)
+    elif kind == "rawfile":
+        (seg.path.parent / op["name"]).write_bytes(base64.b64decode(op["b64"]))
+        out.append(None)
+    elif kind == "read":
+        out.append(seg.read())
+    elif kind == "skipped":
+        out.append(seg.skipped)
+    elif kind == "rotate":
+        out.append(seg.rotate(op["max_bytes"]))
+    elif kind == "fold":
+        seg.fold(op["older_than"], REDUCERS[op["reducer"]](op["older_than"]))
+        out.append(None)
+    elif kind in ("bytes", "bytesruled"):
+        out.append(_b64(_read_or_none(seg.path)))
+    elif kind in ("gz", "gzraw"):
+        raw = _read_or_none(Path(f"{seg.path}.{op['n']}.gz"))
+        out.append(_b64(gzip.decompress(raw) if raw is not None and kind == "gz" else raw))
+    elif kind == "listdir":
+        try:
+            out.append(sorted(os.listdir(seg.path.parent)))
+        except OSError:
+            out.append(None)
+    elif kind == "size":
+        out.append(seg.size)
+    elif kind == "fold_lines":
+        seg.fold_lines(op["older_than"], LINE_REDUCERS[op["reducer"]])
+        out.append(None)
+    elif kind == "append_numbers":
+        out.append(seg.append({"b": 1, "1": 2, "f": 1.0, "e": 1e-7, "ts": "n"}))
+    elif kind == "ev":
+        from bantamkit.eventlog import EventLog
+
+        log = EventLog(seg.path.parent / "mcp.jsonl", cap_bytes=op["cap"], clock=lambda: 0)
+        log.record("memory_save", "saved", {"z": 1, "a": True})
+        out.append(log.write_failed)
+    elif kind == "file":
+        out.append(_b64(_read_or_none(seg.path.parent / op["name"])))
+    elif kind == "append_nonfinite":
+        out.append([seg.append({"x": v}) for v in (float("nan"), float("inf"), float("-inf"))])
+    elif kind == "segments":
+        out.append([p.name for p in seg.segments()])
+    elif kind == "mkdir":
+        (seg.path.parent / op["name"]).mkdir()
+        out.append(None)
+    elif kind == "write_over":
+        from bantamkit.storage import write_over
+
+        try:
+            write_over(seg.path.parent / op["name"], base64.b64decode(op["b64"]))
+            out.append(None)
+        except OSError as exc:
+            out.append(_errno_of(exc))
+    elif kind == "rewrite_held":
+        from bantamkit.storage import rewrite_held
+
+        try:
+            out.append(rewrite_held(seg.path, BUILDS[op["build"]]))
+        except OSError as exc:
+            out.append(_errno_of(exc))
+    elif kind == "fold_raises":
+        def throws(old):
+            raise KeyError("x")
+
+        reducer = throws if op["reducer"] == "throws" else (lambda old: [{"x": float("nan")}])
+        try:
+            seg.fold("~", reducer)
+            out.append({"raised": False})
+        except Exception:  # noqa: BLE001
+            out.append({"raised": True})
+    else:
+        raise SystemExit(f"storage_ref: unknown storage-log op {kind!r}")
+
+
 def storage_log(req: dict) -> dict:
-    return {"beds": [_log_bed(b) for b in req.get("beds", [])]}
+    from bantamkit.storage import ROTATE_BYTES
+
+    return {"beds": [_log_bed(b) for b in req.get("beds", [])], "ROTATE_BYTES": ROTATE_BYTES}
 
 
 # ------------------------------------------------------------------------- storage-index

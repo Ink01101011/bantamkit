@@ -16,6 +16,8 @@ non-BMP session ids for precisely that: before them every emitted string was ASC
         -> {"out": [{"json": b64} | {"error": {"type": str, "message": b64}}]}
 
     {"op": "walk", "root": str}   -> {"out": [b64 relpath, ...]}
+    {"op": "read_units", "roots": [str, ...]}
+        -> {"out": [{"units": [int, ...]} | {"error": {"type": str, "units": [int, ...]}}]}
     {"op": "constants"}           -> the pinned tokens, in their pinned order
 
 `walk` is here as well as `read` because the walk ORDER is not visible in the answer except
@@ -69,6 +71,28 @@ def run_read(request: dict) -> dict:
     return {"out": results}
 
 
+def _units(text: str) -> list:
+    """`text` as UTF-16 code units, a lone surrogate kept: base64 of UTF-8 cannot carry one."""
+    data = text.encode("utf-16-le", "surrogatepass")
+    return [int.from_bytes(data[i : i + 2], "little") for i in range(0, len(data), 2)]
+
+
+def run_read_units(request: dict) -> dict:
+    """`read(root).as_json()` as code units, and ANY exception as its type (J88-1).
+
+    `read` catches the three refusals the MCP handler catches; this op catches everything,
+    because an input that makes one runtime raise something else (`RecursionError`,
+    `PermissionError`) is a finding the harness must report rather than die on.
+    """
+    results = []
+    for root in request["roots"]:
+        try:
+            results.append({"units": _units(tokenledger.read(root).as_json())})
+        except Exception as exc:  # noqa: BLE001 - a raise is an answer here
+            results.append({"error": {"type": type(exc).__name__, "units": _units(str(exc))}})
+    return {"out": results}
+
+
 def run_walk(request: dict) -> dict:
     found = tokenledger._walk(Path(request["root"]))
     return {"out": [b64(rel) for _, rel in found]}
@@ -99,6 +123,8 @@ def main() -> None:
         out = run_read(request)
     elif op == "walk":
         out = run_walk(request)
+    elif op == "read_units":
+        out = run_read_units(request)
     elif op == "constants":
         out = run_constants()
     else:

@@ -42,7 +42,7 @@
  * Task 8's manual step in `docs/superpowers/plans/2026-10-15-storage-layer.md`.
  */
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
 
@@ -279,6 +279,87 @@ function scenarios() {
       label: 'caller numbers: a float and an integer-like key, spelled by each serialiser',
       ops: [{ op: 'append_numbers' }, { op: 'bytesruled' }, { op: 'read' }, { op: 'skipped' }],
     },
+    // ---- J88-1 (#316 G2): the public helpers and refusals no scenario above reached.
+    {
+      label: 'J88-1 helpers: non-finite refused, segments, write_over, rewrite_held, a reducer that raises',
+      ops: [
+        { op: 'append_nonfinite' },
+        { op: 'bytes' },
+        { op: 'segments' },
+        append({ ts: '2026-10-01T00:00:00Z', k: 'ก' }),
+        { op: 'rotate', max_bytes: 0 },
+        { op: 'segments' },
+        append({ ts: '2026-10-02T00:00:00Z', n: 1 }),
+        { op: 'write_over', name: 'w.bin', b64: b64(enc('hello ไทย\n')) },
+        { op: 'file', name: 'w.bin' },
+        { op: 'write_over', name: 'w.bin', b64: b64(enc('bye')) },
+        { op: 'file', name: 'w.bin' },
+        { op: 'write_over', name: 'nodir/w.bin', b64: b64(enc('x')) },
+        { op: 'write_over', name: '.', b64: b64(enc('x')) },
+        { op: 'mkdir', name: 'sub' },
+        { op: 'write_over', name: 'sub', b64: b64(enc('x')) },
+        { op: 'listdir' },
+        { op: 'rewrite_held', build: 'none' },
+        { op: 'bytes' },
+        { op: 'fold_raises', reducer: 'throws' },
+        { op: 'bytes' },
+        { op: 'fold_raises', reducer: 'nonjson' },
+        { op: 'bytes' },
+        { op: 'rewrite_held', build: 'upper' },
+        { op: 'bytes' },
+        { op: 'rewrite_held', build: 'empty' },
+        { op: 'bytes' },
+        { op: 'read' },
+        { op: 'listdir' },
+      ],
+    },
+    {
+      label: 'J88-1 rewrite_held on a log that is not there',
+      ops: [{ op: 'rewrite_held', build: 'none' }, { op: 'listdir' }],
+    },
+    // ---- J88-1 UNRULED DIVERGENCES: each scenario is ONE `ruling:` case over all its ops, plus
+    // the ops listed in `agree`, compared as ordinary cases.
+    {
+      label: 'J88-1 a line nested 100000 deep',
+      divergent:
+        "Python's json.loads raises RecursionError, which _load does not catch (it catches ValueError): read() and fold() raise it out of " +
+        "LogSegment, which promises no OSError and here gives up the 'never raises' reading; JSON.parse reads an array, Node skips it in read and drops it in fold",
+      agree: [],
+      ops: [
+        { op: 'raw', b64: b64(enc(`${'['.repeat(100000)}${']'.repeat(100000)}\n{"ts":"0","a":1}\n`)) },
+        { op: 'read' },
+        { op: 'skipped' },
+        { op: 'fold', older_than: '1', reducer: 'identity' },
+        { op: 'bytes' },
+      ],
+    },
+    {
+      label: 'J88-1 fold compares ts by code point or by UTF-16 unit',
+      divergent:
+        "_is_old is Python's str `<` (code point) and isOld is JS `<` (UTF-16 unit): U+FFFF is older than U+1F600 on Python and newer on Node, " +
+        'so the same fold reduces 2 lines on Python and 1 on Node',
+      agree: [0, 1, 2],
+      ops: [
+        append({ ts: '\uffff' }),
+        append({ ts: '\u{1F600}' }),
+        append({ ts: 'a' }),
+        { op: 'fold', older_than: '\u{1F600}', reducer: 'sum_n' },
+        { op: 'bytes' },
+      ],
+    },
+    {
+      label: 'J88-1 a folded row holding an integer past 2**53',
+      divergent:
+        'a reducer row is re-serialised: Python keeps 18446744073709551616 exact, a JS number holds 18446744073709552000 ' +
+        '(not the J69-4 float/key ruling: an integer read off disk, not a caller float)',
+      agree: [0, 3],
+      ops: [
+        { op: 'raw', b64: b64(enc('{"ts":"0","b":18446744073709551616}\n')) },
+        { op: 'fold', older_than: '1', reducer: 'identity' },
+        { op: 'bytes' },
+        { op: 'skipped' },
+      ],
+    },
   ];
 }
 
@@ -313,6 +394,24 @@ function runNode(storage, eventlog, bed) {
   const seg = new storage.LogSegment(bed.path);
   const out = [];
   for (const op of bed.ops) {
+    try {
+      nodeOp(storage, eventlog, seg, op, out);
+    } catch (err) {
+      out.push({ raises: err?.constructor?.name ?? 'thrown' });
+    }
+  }
+  return out;
+}
+
+const BUILDS = {
+  none: () => null,
+  // bytes.upper(): ASCII a-z only, every other byte as it is.
+  upper: (data) => Buffer.from([...data].map((b) => (b >= 0x61 && b <= 0x7a ? b - 0x20 : b))),
+  empty: () => Buffer.alloc(0),
+};
+
+function nodeOp(storage, eventlog, seg, op, out) {
+  {
     switch (op.op) {
       case 'append':
         out.push(seg.append(op.obj));
@@ -379,11 +478,47 @@ function runNode(storage, eventlog, bed) {
           out.push(null);
         }
         break;
+      case 'append_nonfinite':
+        out.push([NaN, Infinity, -Infinity].map((x) => seg.append({ x })));
+        break;
+      case 'segments':
+        out.push(seg.segments().map((p) => basename(p)));
+        break;
+      case 'mkdir':
+        mkdirSync(join(dirname(seg.path), op.name));
+        out.push(null);
+        break;
+      case 'write_over':
+        try {
+          storage.writeOver(join(dirname(seg.path), op.name), Buffer.from(op.b64, 'base64'));
+          out.push(null);
+        } catch (err) {
+          if (typeof err?.code !== 'string') throw err;
+          out.push({ errno: err.code });
+        }
+        break;
+      case 'rewrite_held':
+        try {
+          out.push(storage.rewriteHeld(seg.path, BUILDS[op.build]));
+        } catch (err) {
+          if (typeof err?.code !== 'string') throw err;
+          out.push({ errno: err.code });
+        }
+        break;
+      case 'fold_raises': {
+        const reducer = op.reducer === 'throws' ? () => { throw new TypeError('x'); } : () => [{ x: NaN }];
+        try {
+          seg.fold('~', reducer);
+          out.push({ raised: false });
+        } catch {
+          out.push({ raised: true });
+        }
+        break;
+      }
       default:
         throw new Error(`storage-log: unknown op ${op.op}`);
     }
   }
-  return out;
 }
 
 // ------------------------------------------------------------------------- literals
@@ -426,7 +561,17 @@ export async function run(ctx) {
 
   const isBytes = (op) => ['bytes', 'gz', 'gzraw', 'file', 'bytesruled'].includes(op.op);
   all.forEach((s, i) => {
+    if (s.divergent) {
+      cases.push({
+        name: `ruling: UNRULED DIVERGENCE ${s.label} — every op`,
+        kind: 'json',
+        expected: py.beds[i],
+        actual: nd.beds[i],
+        ruling: `UNRULED DIVERGENCE (J88-1): not ruled in docs/porting.md and not fixed; ${s.divergent}`,
+      });
+    }
     s.ops.forEach((op, j) => {
+      if (s.divergent && !s.agree.includes(j)) return;
       if (op.op === 'gzraw' || op.op === 'bytesruled') return; // the rulings below, not differentials
       const what = op.op === 'append' ? 'append' : `${op.op}${op.n ? ` ${op.n}` : ''}${op.name ? ` ${op.name}` : ''}${op.reducer ? ` ${op.reducer}` : ''}`;
       cases.push({
@@ -438,6 +583,37 @@ export async function run(ctx) {
     });
   });
   notes.push(`${all.length} scripted scenarios, ${all.reduce((n, s) => n + s.ops.length, 0)} ops per side`);
+
+  cases.push({ name: 'ROTATE_BYTES agrees', kind: 'json', expected: py.ROTATE_BYTES, actual: storage.ROTATE_BYTES });
+  cases.push(...literalCases(py.ROTATE_BYTES, storage.ROTATE_BYTES, 'LITERAL: ROTATE_BYTES is 1000000', 1_000_000));
+  {
+    // J88-1: the helper scenario's refusals, pinned per side (a symmetric edit is invisible above).
+    const h = all.findIndex((s) => s.label.startsWith('J88-1 helpers:'));
+    const pick = (side) => {
+      const r = (side === 'py' ? py : nd).beds[h];
+      const ops = all[h].ops;
+      const where = (pred) => ops.map((op, k) => (pred(op) ? k : -1)).filter((k) => k >= 0);
+      const [noDir, overDir, overSub] = where((op) => op.op === 'write_over' && op.name !== 'w.bin');
+      return {
+        nonfinite: r[0],
+        noDir: r[noDir],
+        overDir: r[overDir],
+        overSub: r[overSub],
+        raises: where((op) => op.op === 'fold_raises').map((k) => r[k]),
+        missing: (side === 'py' ? py : nd).beds[h + 1][0],
+      };
+    };
+    cases.push(
+      ...literalCases(pick('py'), pick('node'), 'LITERAL: J88-1 refusals (non-finite append, write_over errnos, raising reducers, rewrite of a missing log)', {
+        nonfinite: [false, false, false],
+        noDir: { errno: 'ENOENT' },
+        overDir: { errno: 'EISDIR' },
+        overSub: { errno: 'EISDIR' },
+        raises: [{ raised: true }, { raised: true }],
+        missing: { errno: 'ENOENT' },
+      }),
+    );
+  }
 
   // --------------------------------------------------------------------- the ruling
   const rawIdx = all.findIndex((s) => s.label.startsWith('raw gz:'));
