@@ -317,10 +317,13 @@ function scenarios() {
       label: 'J88-1 rewrite_held on a log that is not there',
       ops: [{ op: 'rewrite_held', build: 'none' }, { op: 'listdir' }],
     },
-    // ---- J88-1 UNRULED DIVERGENCES: each scenario is ONE `ruling:` case over all its ops, plus
+    // ---- J88-1 inputs RULED AS NODE by J88-1F (#316 G2): Node's answer is what J88-2 generates
+    // for Python from logsegment.ts, so each is ONE `ruling:` case over all its ops naming its
+    // docs/porting.md row (`G2 as Node: <family>`), going STALE by design when J88-2 lands, plus
     // the ops listed in `agree`, compared as ordinary cases.
     {
       label: 'J88-1 a line nested 100000 deep',
+      family: 'a line nested 100000 deep',
       divergent:
         "Python's json.loads raises RecursionError, which _load does not catch (it catches ValueError): read() and fold() raise it out of " +
         "LogSegment, which promises no OSError and here gives up the 'never raises' reading; JSON.parse reads an array, Node skips it in read and drops it in fold",
@@ -335,6 +338,7 @@ function scenarios() {
     },
     {
       label: 'J88-1 fold compares ts by code point or by UTF-16 unit',
+      family: 'fold timestamp order',
       divergent:
         "_is_old is Python's str `<` (code point) and isOld is JS `<` (UTF-16 unit): U+FFFF is older than U+1F600 on Python and newer on Node, " +
         'so the same fold reduces 2 lines on Python and 1 on Node',
@@ -348,12 +352,9 @@ function scenarios() {
       ],
     },
     {
+      // J88-1F (#30): agreeing since Python opens each temp with mode 0o666, as Node's
+      // openSync(tmp, 'wx') does, so every file is 0o666 & ~umask on both (was 0o777 on Python).
       label: 'J88-1 the permission bits of a rewritten log, a segment and a write_over target',
-      divergent:
-        "write_over / _replace / _mark open their file with os.open(..., O_CREAT|O_EXCL|O_WRONLY), whose default mode is 0o777, so under " +
-        "umask 022 a folded log, a .gz segment and a write_over target are 0o755 on Python; Node's openSync(tmp, 'wx') defaults to 0o666 " +
-        '(0o644). An appended-only log is 0o644 on both (the companion)',
-      agree: [0, 1],
       ops: [
         append({ ts: '0' }),
         { op: 'mode', name: 'x.jsonl' },
@@ -368,6 +369,7 @@ function scenarios() {
     },
     {
       label: 'J88-1 a folded row holding an integer past 2**53',
+      family: 'integers past 2**53 in a fold',
       divergent:
         'a reducer row is re-serialised: Python keeps 18446744073709551616 exact, a JS number holds 18446744073709552000 ' +
         '(not the J69-4 float/key ruling: an integer read off disk, not a caller float)',
@@ -592,11 +594,13 @@ export async function run(ctx) {
   all.forEach((s, i) => {
     if (s.divergent) {
       cases.push({
-        name: `ruling: UNRULED DIVERGENCE ${s.label} — every op`,
+        name: `ruling: G2 as Node — ${s.label} — every op`,
         kind: 'json',
         expected: py.beds[i],
         actual: nd.beds[i],
-        ruling: `UNRULED DIVERGENCE (J88-1): not ruled in docs/porting.md and not fixed; ${s.divergent}`,
+        ruling:
+          `RULED AS NODE (J88-1F, #316 G2; docs/porting.md divergence table, "G2 as Node: ${s.family}"): Node's answer is ` +
+          `the behaviour J88-2 generates for Python from logsegment.ts, which then agrees and this case goes STALE by design; ${s.divergent}`,
       });
     }
     s.ops.forEach((op, j) => {
@@ -645,17 +649,38 @@ export async function run(ctx) {
   }
 
   {
-    // J88-1: each side's permission bits, as a literal per side. The umask is read off a fresh
+    // J88-1 / J88-1F: each side's permission bits, as a literal per side. The umask is read off a fresh
     // directory (mkdir's default mode is 0o777 on both runtimes), so the literal holds on any host.
     const probe = join(ctx.scratch, 'storage-log-umask-probe');
     mkdirSync(probe, { recursive: true });
     const dirMode = statSync(probe).mode & 0o777;
     const m = all.findIndex((s) => s.label.startsWith('J88-1 the permission bits'));
     const modes = (side) => all[m].ops.map((op, k) => (op.op === 'mode' ? (side === 'py' ? py : nd).beds[m][k] : undefined)).filter((v) => v !== undefined);
-    cases.push(
-      ...literalCases(modes('py'), [dirMode & 0o666, dirMode, dirMode, dirMode], 'LITERAL: J88-1 Python: appended 0o666 & ~umask, rewritten 0o777 & ~umask', [dirMode & 0o666, dirMode, dirMode, dirMode]).slice(0, 1),
-      ...literalCases([0, 0, 0, 0].map(() => dirMode & 0o666), modes('node'), 'LITERAL: J88-1 Node: every file 0o666 & ~umask', [0, 0, 0, 0].map(() => dirMode & 0o666)).slice(1),
-    );
+    const want = [0, 0, 0, 0].map(() => dirMode & 0o666);
+    cases.push(...literalCases(modes('py'), modes('node'), 'LITERAL: J88-1F every file, appended or rewritten, is 0o666 & ~umask', want));
+  }
+
+  {
+    // J88-1F: Node's answer over each scenario ruled as Node — what J88-2 must reach on Python.
+    const ruled = all.map((sc, i) => [sc, i]).filter(([sc]) => sc.family);
+    const line = (t) => b64(enc(t));
+    const want = {
+      // JSON.parse reads the deep array: read skips it, fold drops it, nothing raises.
+      'J88-1 a line nested 100000 deep': [null, [{ ts: '0', a: 1 }], 1, null, line('{"ts":"0","a":1}\n')],
+      // JS `<` by UTF-16 unit: only `a` is older than U+1F600 (U+FFFF is not), so one line folds.
+      'J88-1 fold compares ts by code point or by UTF-16 unit': [
+        true, true, true, null,
+        line('{"ts":"\u{1F600}","kind":"folded","lines":1,"sum":0}\n{"ts":"\uffff"}\n{"ts":"\u{1F600}"}\n'),
+      ],
+      // A JS number: the re-serialised row holds the nearest double.
+      'J88-1 a folded row holding an integer past 2**53': [null, null, line('{"ts":"0","b":18446744073709552000}\n'), 0],
+    };
+    cases.push({
+      name: "LITERAL: G2 ruled as Node — node's ops over the ruled scenarios",
+      kind: 'json',
+      expected: ruled.map(([sc]) => [sc.label, want[sc.label]]),
+      actual: ruled.map(([sc, i]) => [sc.label, nd.beds[i]]),
+    });
   }
 
   // --------------------------------------------------------------------- the ruling

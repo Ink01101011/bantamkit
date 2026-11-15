@@ -158,8 +158,14 @@ function recordObject(
   outcome: string,
   detail: Readonly<Record<string, DetailValue>>,
 ): Record<string, unknown> {
-  const sorted: Record<string, DetailValue> = {};
-  for (const key of Object.keys(detail).sort(cmpCodepoint)) sorted[key] = detail[key]!;
+  // `Object.fromEntries` defines each key as an OWN data property (J88-1F, #316 G2). The
+  // assignment it replaces, `sorted[key] = ...`, is a [[Set]]: on `__proto__` it set the
+  // prototype and the key never reached the line, where Python's dict writes it.
+  const sorted: Record<string, DetailValue> = Object.fromEntries(
+    Object.keys(detail)
+      .sort(cmpCodepoint)
+      .map((key) => [key, detail[key]!]),
+  );
   return { v: SCHEMA_VERSION, ts: formatTimestamp(epochMs), tool, outcome, detail: sorted };
 }
 

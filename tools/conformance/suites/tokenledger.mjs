@@ -444,9 +444,11 @@ export async function run(ctx) {
   // (base64 of UTF-8 cannot carry a lone surrogate) with ANY exception reported by its type, so
   // an input that makes one side raise something the MCP handler does not catch is a red case
   // and not a dead harness. The agreeing beds come first; the inputs on which the hand-written
-  // runtimes disagree today are pinned after them as `UNRULED DIVERGENCE` cases (not ruled in
-  // docs/porting.md, not fixed: the orchestrator decides each), each with a companion that
-  // compares what both still agree on.
+  // runtimes disagree are pinned after them as `ruling:` cases RULED AS NODE by J88-1F (#316 G2):
+  // Node's answer is what J88-2 generates for Python from tokenledger.ts, so each names its
+  // docs/porting.md row (`G2 as Node: ...`) and goes STALE by design when J88-2 lands. Each has a
+  // companion that compares what both still agree on (the refusal bit where one side refuses),
+  // and Node's counts are pinned per side as a literal.
   const units = (s) => Array.from({ length: s.length }, (_, i) => s.charCodeAt(i));
   const ndUnits = (root) => {
     try {
@@ -522,9 +524,25 @@ export async function run(ctx) {
     cases.push({ name: `J88-1 read: ${label}`, kind: 'json', expected: pyUnits[i], actual: ndAll[i] });
   });
   const refuses = (v) => 'error' in v;
+  const FAMILY = {
+    'CRLF line endings': 'CR and CRLF line ends',
+    'a lone CR between two records': 'CR and CRLF line ends',
+    'a line nested 100000 deep': 'a line nested 100000 deep',
+    'a lone surrogate in a session id and a cwd': 'lone surrogates',
+    'a root whose name is longer than NAME_MAX': 'a root past NAME_MAX',
+    'a subdirectory that can be listed but not searched': 'an unsearchable subdirectory',
+  };
   DIVERGE.forEach(([label, , why], j) => {
     const i = AGREE.length + j;
-    cases.push({ name: `ruling: UNRULED DIVERGENCE read: ${label}`, kind: 'json', expected: pyUnits[i], actual: ndAll[i], ruling: `UNRULED DIVERGENCE (J88-1): not ruled in docs/porting.md and not fixed; ${why}` });
+    cases.push({
+      name: `ruling: G2 as Node — read: ${label}`,
+      kind: 'json',
+      expected: pyUnits[i],
+      actual: ndAll[i],
+      ruling:
+        `RULED AS NODE (J88-1F, #316 G2; docs/porting.md divergence table, "G2 as Node: ${FAMILY[label]}"): Node's answer ` +
+        `is the behaviour J88-2 generates for Python from tokenledger.ts, which then agrees and this case goes STALE by design; ${why}`,
+    });
   });
   // Companions: for each divergent input, the part the two still agree on.
   const at88 = (label) => AGREE.length + DIVERGE.findIndex(([l]) => l === label);
@@ -553,6 +571,27 @@ export async function run(ctx) {
     ...literalCases(countsOf88(pyUnits[notCounts]), countsOf88(ndAll[notCounts]), 'J88-1: only 2**53-1 of the seven spellings is a count',
       { lines: 7, requests: 1, input_tokens: 9007199254740991, omissions: [['malformed-usage', 6]] }),
   );
+  // J88-1F: Node's answer over each input ruled as Node — the counts J88-2 must reach on Python.
+  {
+    const nodeView = (v) => (refuses(v) ? { refuses: v.error.type } : countsOf88(v));
+    const want = {
+      // `\n` alone ends a line: the blank `\r` between the two records is one unparsed line.
+      'CRLF line endings': { lines: 3, requests: 2, input_tokens: 2, omissions: [['unparsed-line', 1]] },
+      'a lone CR between two records': { lines: 1, requests: 0, input_tokens: 0, omissions: [['unparsed-line', 1]] },
+      // JSON.parse reads the deep array; it is a line that is not an object, never a raise.
+      'a line nested 100000 deep': { lines: 2, requests: 1, input_tokens: 1, omissions: [['not-an-object', 1]] },
+      'a lone surrogate in a session id and a cwd': { lines: 1, requests: 1, input_tokens: 1, omissions: [] },
+      'a root whose name is longer than NAME_MAX': { refuses: 'TokenLedgerError' },
+      'a subdirectory that can be listed but not searched': { lines: 1, requests: 0, input_tokens: 0, omissions: [['undecodable-file', 1]] },
+    };
+    const labels = DIVERGE.map(([l]) => l);
+    cases.push({
+      name: "LITERAL: G2 ruled as Node — node's counts over the ruled inputs",
+      kind: 'json',
+      expected: labels.map((l) => [l, want[l]]),
+      actual: labels.map((l) => [l, nodeView(ndAll[at88(l)])]),
+    });
+  }
 
   notes.push(
     `corpus: ${CORPUS_HEADLINE.transcripts} transcripts, ${CORPUS_HEADLINE.lines} lines, ` +

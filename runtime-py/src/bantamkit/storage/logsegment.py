@@ -92,6 +92,13 @@ def _load(line: str) -> dict[str, Any] | None:
     return v if isinstance(v, dict) else None
 
 
+# The mode every file this module creates is opened with (J88-1F, #316 G2): 0o666, which is what
+# Node's `fs.openSync(p, 'wx')` passes, so a folded log, a .gz segment and a write_over target are
+# 0o666 & ~umask on both runtimes. `os.open`'s own default is 0o777, which left them executable.
+_FILE_MODE = 0o666
+_TEMP_FLAGS = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+
+
 def _is_old(row: dict[str, Any], older_than: str) -> bool:
     ts = row.get("ts")
     return isinstance(ts, str) and ts < older_than
@@ -100,7 +107,7 @@ def _is_old(row: dict[str, Any], older_than: str) -> bool:
 def write_over(target: Path | str, data: bytes) -> None:
     """`data` to `<target>.<pid>.<hex>.tmp`, then renamed over `target`."""
     tmp = f"{target}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
+    fd = os.open(tmp, _TEMP_FLAGS, _FILE_MODE)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -117,7 +124,7 @@ def _mark(path: Path) -> str | None:
     """An unlocked appender's marker, created before it opens the log; None when refused."""
     mark = f"{path}.{os.getpid()}.{os.urandom(4).hex()}.writing"
     try:
-        os.close(os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        os.close(os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _FILE_MODE))
     except OSError:
         return None
     return mark
@@ -292,7 +299,7 @@ class LogSegment:
 
     def _replace(self, target: Path, data: bytes) -> None:
         tmp = f"{self.path}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
-        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
+        fd = os.open(tmp, _TEMP_FLAGS, _FILE_MODE)
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)

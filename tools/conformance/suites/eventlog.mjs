@@ -29,11 +29,15 @@
  *      `.gitignore`) beside an existing one (none), `raised` for five errnos, and the rotation
  *      boundary (`size + payload == cap` stays, one byte more rotates).
  *
- * UNRULED DIVERGENCES. J88-1 found inputs on which the hand-written runtimes disagree today. Each
- * is pinned as a `ruling:` case whose ruling text starts `UNRULED DIVERGENCE (J88-1)`: it is NOT
- * ruled in docs/porting.md and NOT fixed — the orchestrator decides each. Where the difference is
- * an exception on one side, the non-ruled companion beside it compares what both still agree on
- * (`write_failed`, the refusal bit). The generators of (2)-(5) stay out of those inputs.
+ * RULED AS NODE (J88-1F). J88-1 found inputs on which the hand-written runtimes disagree. The
+ * `__proto__` detail key was a Node defect and is fixed (an ordinary case now). Every other one is
+ * ruled as Node by the #316 G2 orchestrator: Node's answer is the behaviour J88-2 generates for
+ * Python from `eventlog.ts`, so each is a `ruling:` case naming its docs/porting.md row (`G2 as
+ * Node: ...`) until J88-2 switches Python, when it goes STALE by design and becomes an ordinary
+ * case. Node's answers are pinned per side as literals (`LITERAL: G2 ruled as Node ...`), so the
+ * ruling cannot stay green while Node drifts. Where the difference is an exception on one side,
+ * the non-ruled companion beside it compares what both still agree on (`write_failed`, the
+ * refusal bit). The generators of (2)-(5) stay out of those inputs.
  *
  * NOTHING REAL IS READ OR WRITTEN. Every bed lives in the harness scratch directory.
  */
@@ -49,7 +53,15 @@ const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const REF = join(here, 'ref', 'eventlog_ref.py');
 
 const b64 = (bytes) => Buffer.from(bytes).toString('base64');
-const UNRULED = 'UNRULED DIVERGENCE (J88-1): not ruled in docs/porting.md and not fixed; ';
+/** The ruling text of a J88-1 input ruled as Node by J88-1F, naming its docs/porting.md row. */
+const RULED = (family) =>
+  `RULED AS NODE (J88-1F, #316 G2; docs/porting.md divergence table, "G2 as Node: ${family}"): Node's answer is ` +
+  'the behaviour J88-2 generates for Python from eventlog.ts, which then agrees and this case goes STALE by design; ';
+const F_TS = 'timestamps outside the ISO range';
+const F_NUM = 'record numbers and key order';
+const F_SUR = 'lone surrogates';
+const F_SWITCH = 'the switch spelling';
+const F_SLASH = 'a literal path ending in /';
 
 /** The detail objects, by name, as `eventlog_ref.DETAILS` builds them. */
 const DETAILS = {
@@ -69,11 +81,11 @@ const DETAILS = {
   bigint: () => ({ b: 2 ** 64 }),
   neg_zero: () => ({ z: -0 }),
 };
-const AGREEING_DETAILS = ['empty', 'tokens', 'unsorted', 'non_ascii_keys', 'non_ascii_value', 'ints'];
+// `proto_key` agrees since J88-1F (#5): Node's sorted copy writes own properties.
+const AGREEING_DETAILS = ['empty', 'tokens', 'unsorted', 'non_ascii_keys', 'non_ascii_value', 'ints', 'proto_key'];
 
 /** [detail name, why the two answers differ]. */
 const DIVERGENT_DETAILS = [
-  ['proto_key', "Node's recordObject writes the sorted detail with `sorted[key] = ...`, whose [[Set]] on `__proto__` sets the prototype and drops the key: Node `{\"a\":2}`, Python `{\"__proto__\":1,\"a\":2}`"],
   ['integer_keys', 'both sort the keys by code point, then a JS object moves integer-like keys first in numeric order: Node `{"9":2,"10":1,"a":3}`, Python `{"10":1,"9":2,"a":3}` (the J69-4 LogSegment ruling names a caller object, not this sorted detail)'],
   ['float_integral', 'a float the caller passes: Python `1.0`, Node `1` (the J69-4 class, at encode_record rather than LogSegment.append)'],
   ['float_exponent', 'Python `1e-07`, Node `1e-7` (the J69-4 class, at encode_record)'],
@@ -219,12 +231,18 @@ export async function run(ctx) {
   );
   DIVERGENT_TIMESTAMPS.forEach(([ms, why], j) => {
     cases.push({
-      name: `ruling: UNRULED DIVERGENCE format_timestamp(${ms})`,
+      name: `ruling: G2 as Node — format_timestamp(${ms})`,
       kind: 'json',
       expected: pyTs[TIMESTAMPS.length + j],
       actual: fmt(ms),
-      ruling: UNRULED + why,
+      ruling: RULED(F_TS) + why,
     });
+  });
+  cases.push({
+    name: `LITERAL: G2 ruled as Node — node's format_timestamp outside the ISO range`,
+    kind: 'json',
+    expected: ['1969-12-31T23:59:59.999Z', '+010000-01-01T00:00:00.000Z', '0000-12-31T23:59:59.999Z', '+275760-09-13T00:00:00.000Z'],
+    actual: DIVERGENT_TIMESTAMPS.map(([ms]) => fmt(ms)),
   });
 
   // ------------------------------------------------------------------ 3. encode_record
@@ -263,16 +281,42 @@ export async function run(ctx) {
       recLine('{"v":1,"ts":"1970-01-01T00:00:00.000Z","tool":"memory_save","outcome":"saved","detail":{"a":4,"ก":1,"ｚ":2,"😀":3}}'),
       'bytes',
     ),
+     // J88-1F (#5): a `__proto__` key is an own key on the line, on both sides.
+    ...literalCases(
+      Buffer.from(pyEnc[AGREEING_DETAILS.indexOf('proto_key')].b64 ?? '', 'base64'),
+      Buffer.from(ndEnc[AGREEING_DETAILS.indexOf('proto_key')].b64 ?? '', 'base64'),
+      'a __proto__ detail key is written as a key, sorted like any other',
+      recLine('{"v":1,"ts":"1970-01-01T00:00:00.000Z","tool":"memory_save","outcome":"saved","detail":{"__proto__":1,"a":2}}'),
+      'bytes',
+    ),
   );
   DIVERGENT_DETAILS.forEach(([d, why], j) => {
     cases.push({
-      name: `ruling: UNRULED DIVERGENCE encode_record detail ${d}`,
+      name: `ruling: G2 as Node — encode_record detail ${d}`,
       kind: 'json',
       expected: pyEnc[agreeing + j],
       actual: ndEnc[agreeing + j],
-      ruling: UNRULED + why,
+      ruling: RULED(d === 'lone_surrogate' ? F_SUR : F_NUM) + why,
     });
   });
+  {
+    const rec = (detail) => `{"v":1,"ts":"1970-01-01T00:00:00.000Z","tool":"memory_save","outcome":"saved","detail":${detail}}\n`;
+    const NODE_DETAILS = {
+      integer_keys: '{"9":2,"10":1,"a":3}',
+      float_integral: '{"f":1}',
+      float_exponent: '{"f":1e-7}',
+      nan: '{"n":null}',
+      lone_surrogate: '{"s":"x\\ud800y"}',
+      bigint: '{"b":18446744073709552000}',
+      neg_zero: '{"z":0}',
+    };
+    cases.push({
+      name: `LITERAL: G2 ruled as Node — node's encode_record over the ruled details`,
+      kind: 'json',
+      expected: DIVERGENT_DETAILS.map(([d]) => ({ b64: b64(Buffer.from(rec(NODE_DETAILS[d]), 'utf8')) })),
+      actual: DIVERGENT_DETAILS.map((_, j) => ndEnc[agreeing + j]),
+    });
+  }
 
   // ------------------------------------------------------------------ 4. the switch
   const store = join(bedRoot, 'switch-store');
@@ -310,12 +354,18 @@ export async function run(ctx) {
   DIVERGENT_RAWS.forEach(([raw, why], j) => {
     const i = agreeingRaws + j;
     cases.push({
-      name: `ruling: UNRULED DIVERGENCE resolve_path(${JSON.stringify(raw)})`,
+      name: `ruling: G2 as Node — resolve_path(${JSON.stringify(raw)})`,
       kind: 'json',
       expected: [pyRes.out[i], pyEnv[i]],
       actual: [ndRes[i], ndEnv[i]],
-      ruling: UNRULED + why,
+      ruling: RULED(F_SWITCH) + why,
     });
+  });
+  cases.push({
+    name: `LITERAL: G2 ruled as Node — node's resolve_path over the ruled spellings`,
+    kind: 'json',
+    expected: [join(store, 'events', 'mcp.jsonl'), 'on\u0085', '\u001con', './events.jsonl', 'a//b.jsonl'],
+    actual: DIVERGENT_RAWS.map((_, j) => ndRes[agreeingRaws + j]),
   });
 
   // ------------------------------------------------------------------ 5. beds
@@ -345,6 +395,9 @@ export async function run(ctx) {
         calls: [['record', 'memory_save', 'saved', 'tokens'], ['record', 'memory_save', 'saved', 'tokens']] }],
     ['a non-finite detail value is refused on both sides as a lost record',
       { setup: [], log: { path: 'nan.jsonl' }, calls: [['record', 'memory_save', 'saved', 'nan']] }],
+    // J88-1F (#20): agreeing since Node's sorted copy writes own properties.
+    ['a detail holding a __proto__ key keeps it',
+      { setup: [], log: { path: 'proto.jsonl' }, calls: [['record', 'memory_save', 'saved', 'proto_key']] }],
   ];
   const DIVERGENT_BEDS = [
     ['a literal path ending in / (BANTAMKIT_EVENT_LOG=<dir>/)',
@@ -353,9 +406,6 @@ export async function run(ctx) {
     ['a detail holding a lone surrogate',
       { setup: [], log: { path: 'sur.jsonl' }, calls: [['record', 'memory_save', 'saved', 'lone_surrogate']] },
       'Python raises UnicodeEncodeError out of record() (the payload is encoded before the OSError guard) and writes nothing; Node writes the line with the surrogate escaped'],
-    ['a detail holding a __proto__ key',
-      { setup: [], log: { path: 'proto.jsonl' }, calls: [['record', 'memory_save', 'saved', 'proto_key']] },
-      'Node drops the key (the [[Set]] in recordObject), Python writes it'],
   ];
   const allBeds = [...BEDS, ...DIVERGENT_BEDS].map(([, b], i) => {
     const root = join(bedRoot, `bed-${String(i + 1).padStart(2, '0')}`);
@@ -393,20 +443,28 @@ export async function run(ctx) {
   );
   DIVERGENT_BEDS.forEach(([label, , why], j) => {
     const i = BEDS.length + j;
-    cases.push({ name: `ruling: UNRULED DIVERGENCE bed: ${label}`, kind: 'json', expected: pyBeds[i], actual: ndBeds[i], ruling: UNRULED + why });
+    cases.push({ name: `ruling: G2 as Node — bed: ${label}`, kind: 'json', expected: pyBeds[i], actual: ndBeds[i], ruling: RULED(j === 0 ? F_SLASH : F_SUR) + why });
   });
+  // Node's answer over each ruled bed: the slash loses the record; the surrogate is written escaped.
+  {
+    const nd0 = ndBeds[BEDS.length];
+    const nd1 = ndBeds[BEDS.length + 1];
+    cases.push({
+      name: `LITERAL: G2 ruled as Node — node's beds: a / path is a lost record, a lone surrogate is written escaped`,
+      kind: 'json',
+      // The file's own bytes: the surrogate is the six ASCII characters `\ud800` on disk.
+      expected: [{ write_failed: true, names: [] }, { write_failed: false, sur: b64(Buffer.from(`{"v":1,"ts":"1970-01-01T00:00:00.000Z","tool":"memory_save","outcome":"saved","detail":{"s":"x\\ud800y"}}\n`, 'utf8')) }],
+      actual: [view(nd0), { write_failed: nd1.write_failed, sur: nd1.tree.find(([rel]) => rel === 'sur.jsonl')?.[1] ?? null }],
+    });
+  }
   // The companions: what the two still agree on beside each divergent bed.
   const slash = BEDS.length;
   cases.push({ name: 'bed: a literal path ending in / — both stay enabled and neither raises', kind: 'json',
     expected: { enabled: pyBeds[slash].enabled, calls: pyBeds[slash].calls }, actual: { enabled: ndBeds[slash].enabled, calls: ndBeds[slash].calls } });
-  const proto = BEDS.length + 2;
-  cases.push({ name: 'bed: a __proto__ detail key — both write one line and lose nothing', kind: 'json',
-    expected: { write_failed: pyBeds[proto].write_failed, names: pyBeds[proto].tree.map(([r]) => r) },
-    actual: { write_failed: ndBeds[proto].write_failed, names: ndBeds[proto].tree.map(([r]) => r) } });
 
   notes.push(
     `${TIMESTAMPS.length} timestamps, ${agreeing} records, ${agreeingRaws} switch spellings and ${BEDS.length} beds agree; ` +
-      `${DIVERGENT_TIMESTAMPS.length + DIVERGENT_DETAILS.length + DIVERGENT_RAWS.length + DIVERGENT_BEDS.length} UNRULED DIVERGENCE inputs pinned`,
+      `${DIVERGENT_TIMESTAMPS.length + DIVERGENT_DETAILS.length + DIVERGENT_RAWS.length + DIVERGENT_BEDS.length} inputs ruled as Node (J88-1F) until J88-2`,
   );
   return { cases, notes };
 }
