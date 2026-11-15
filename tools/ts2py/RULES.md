@@ -535,3 +535,35 @@ other spelling of the lines Node printed):
 | `bantamkitDirFor`, `ensureBantamkitGitignore` | (the rows above, kept) | the committed event log now imports the compiled store's; the rows serve only a call that compiles the event log without store.ts |
 
 
+
+## J89-5 rules (#316 G3 U3: `memory/native.ts` generated)
+
+`native.ts` joins the G1/G2/G3 call and is shipped as `_generated/native.py` (the shim is
+`bantamkit.memory.native`). Two constructs and two adapter rows; J89-4a's method-name clash ruling
+stands (a member named like a method a compiled or adapter class declares is refused unless a
+DECLARED TYPE makes it a data field), and both constructs only widen where a declared type exists:
+
+| Construct | Lowering | Why it is the same | Measurement |
+|---|---|---|---|
+| `import { type Pool }` / `import type { Pool }` from a compiled module of the call | the type's data fields (`TypeDecls::fields` of the declaring module) declared under the local name, so `pool.facts` reads the field (`_js_get`) as it does in store.ts | a type annotation changes nothing at run time in Node; the read is the same `_js_get` an undeclared non-method name gets, and on a compiled-class instance `_js_object_get` still refuses a method read at run time | `g3_store.rs` `j89_5_an_imported_type_declares_its_data_fields` (Node: `[[1,2],null]`; the same read through an undeclared object stays refused) |
+| an annotated arrow parameter (`(o: Omission) => o.count`) | the annotation's data fields declared for the parameter, as `bind_params` does for a function's | as above; tokenledger.ts annotates its one omission callback, which `NativeStore.count()` (a class method of the call now) would otherwise refuse | `g3_store.rs` `j89_5_an_annotated_callback_parameter_declares_its_fields` (Node: `[2,5]`; unannotated stays refused) |
+
+| TypeScript | Python | Why it is the same function |
+|---|---|---|
+| `DUPLICATE` (`storage/hotindex.ts`) | `bantamkit.storage.hotindex.DUPLICATE`, imported lazily | Python is the reference: the same `duplicate name` sentence head the port declares |
+| `parseNative` (`storage/hotindex.ts`) | `divergence.parse_fact`, answering `{name, description, type, body}` (`meta` is read by no compiled caller and not carried), its `MemoryValidationError` restated as the adapter's `BantamError` with the same message | Python is the reference: `parseNative` is `divergence.parse_fact` for the native shape (its doc comment). The layer reads every file through exactly the function the hand-written layer called, so `--suite recall-strings` (the native pool), `skill-layer` and `hooks` compare the same reads |
+
+TS refactors (Node's answers unchanged; types and a guard only): native.ts's two `skipped?.push(...)`
+are `if (skipped != null) skipped.push(...)` (optional chaining on a call is outside the subset; `!=
+null` short-circuits on exactly the two values `?.` does); tokenledger.ts's omission callback is
+annotated `(o: Omission)`.
+
+Runtime and adapter changes, each answering what it replaces (`g3_store.rs`
+`j89_5_codepoint_sort_and_join_memo_answer_as_the_paths_they_replace`, 20,000 seeded inputs, 0
+differences; red under a UTF-16-order mutation of the sort, 8,704 differences):
+
+| Where | Change | Why it is the same |
+|---|---|---|
+| `_js_m_sort` (runtime) | a comparator marked `_js_codepoint_order` (only `cmp_codepoint`'s adapter) over a list of strings sorts with Python's own `str` order, the comparator never called | Python compares `str` by code point, which is `cmpCodepoint`'s order; both sorts are stable and the strings it ties are equal |
+| `py_join` (adapter) | `str(PurePath(*parts))` memoised (8,192 entries) for string parts | `PurePath` reads no filesystem: the same parts give the same string on one OS |
+| `_native_bantam_error` (adapter) | restates into the `BantamError` class already built (`globals()`) | a FIX: a direct `__getattr__` call built a second class, so a module that had imported `BantamError` saw `instanceof BantamError` false for a restated error. Found by the native layer (`candidates` raised on a malformed file); `--suite recall-strings` `native candidates past a malformed file and a duplicate name` is red without it |

@@ -394,6 +394,10 @@ pub struct ModuleExports {
     pub names: HashMap<String, (String, bool)>,
     /// J89-4a: the module's generator functions (`function*`), by source name.
     pub generators: HashSet<String>,
+    /// J89-5: the data fields each named object type declares (`types::TypeDecls::fields`), so a
+    /// module that imports the type (`import { type Pool }`) reads `pool.facts` as the data field
+    /// the declaring module reads it as.
+    pub type_fields: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Everything about the other modules of a multi-module compile a module needs (J86).
@@ -4147,6 +4151,13 @@ impl<'s> Lowerer<'s> {
         for name in callback_params {
             self.bind(&name, Fact::default());
         }
+        // J89-5: an annotated parameter declares its data fields (`(o: Omission) => o.count`), as
+        // a function's parameter does (`bind_params`).
+        for p in &a.params.items {
+            if let BindingPattern::BindingIdentifier(id) = &p.pattern {
+                self.declare_annotation(id.name.as_str(), p.type_annotation.as_deref());
+            }
+        }
         self.rets.push(None);
         self.in_callback += 1;
         let value = self.expr(body);
@@ -4869,6 +4880,7 @@ impl<'s> Lowerer<'s> {
     /// A value import: from a compiled module (`from .<module> import <names>`), or through the
     /// adapter seam (`adapters.rs`). Anything else is refused, naming the import.
     fn import(&mut self, i: &ImportDeclaration<'_>) {
+        self.import_type_fields(i);
         if i.import_kind.is_type() {
             return;
         }
@@ -4971,6 +4983,41 @@ impl<'s> Lowerer<'s> {
                     self.globals
                         .insert(local.to_string(), py_name(local, true, false));
                 }
+            }
+        }
+    }
+
+    /// J89-5: a type imported from a compiled module of the call (`import type { Fact }`,
+    /// `import { type Pool }`) declares the data fields it declares there, under the local name. A
+    /// type the module itself declares under that name keeps its own (TypeScript refuses both).
+    fn import_type_fields(&mut self, i: &ImportDeclaration<'_>) {
+        let Some(spec) = i.source.value.as_str() else {
+            return;
+        };
+        let Some(specifiers) = &i.specifiers else {
+            return;
+        };
+        let Some(module) = resolve_specifier(&self.ctx.path, spec)
+            .as_ref()
+            .and_then(|path| self.ctx.modules.get(path))
+        else {
+            return;
+        };
+        for specifier in specifiers {
+            let ImportDeclarationSpecifier::ImportSpecifier(s) = specifier else {
+                continue;
+            };
+            if !(i.import_kind.is_type() || s.import_kind.is_type()) {
+                continue;
+            }
+            let imported = s.imported.name();
+            let Some(fields) = module.type_fields.get(imported.as_str()) else {
+                continue;
+            };
+            let local = s.local.name.to_string();
+            if !self.types.fields.contains_key(&local) {
+                self.types.fields.insert(local.clone(), fields.clone());
+                self.types.data.insert(local);
             }
         }
     }

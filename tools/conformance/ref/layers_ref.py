@@ -139,6 +139,20 @@ def main() -> None:
     op = request["op"]
     if op == "memory":
         out = run_memory(request)
+    elif op == "native_candidates":
+        # J89-5: the native layer's own file read (`candidates`), a malformed file and a second
+        # file claiming a name among the files: both go to `skipped`, with the index's sentences.
+        from bantamkit.memory.native import NativeStore
+
+        root = unb64(request["dir"])
+        skipped: list[dict[str, str]] = []
+        facts = NativeStore(root).candidates(skipped, shadow={unb64(x) for x in request["shadow"]})
+        out = {
+            "facts": [[b64(f.name), b64(f.type), b64(f.description), b64(f.body)] for f in facts],
+            "skipped": [
+                [b64(s["file"]), b64(s["reason"].replace(root, "<DIR>"))] for s in skipped
+            ],
+        }
     elif op == "native_pool":
         # #199 J68-11: the native layer's pool with the `shadow` names dropped before scoring.
         from bantamkit.memory.native import NativeStore

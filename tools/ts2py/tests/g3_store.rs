@@ -365,3 +365,87 @@ print(json.dumps(out, separators=(",", ":")))
     );
     assert_eq!(out.trim(), expected);
 }
+
+/// J89-5 (#316 G3 U3, `memory/native.ts`): a type imported from a compiled module of the call
+/// declares its data fields where it is imported, as it does where it is declared. `pool.facts` in
+/// native.ts names the `facts` field of store.ts's `Pool`; `MemoryStore` declares a method
+/// `facts()`, so without the imported type the read is still refused (J89-4a's clash ruling
+/// stands: the declared type decides, never the name alone). The answer is the property, as Node
+/// prints it (`[[1,2],null]` for the two pools below).
+#[test]
+fn j89_5_an_imported_type_declares_its_data_fields() {
+    let store = "export interface Pool {\n  facts: number[] | null;\n}\nexport class Store {\n  facts(): number[] {\n    return [];\n  }\n}\n";
+    let typed = "import { type Pool } from './store.js';\nexport function rows(pool: Pool): unknown {\n  return pool.facts;\n}\n";
+    let whole = "import type { Pool } from './store.js';\nexport function rows(pool: Pool): unknown {\n  return pool.facts;\n}\n";
+    let bare = "export function rows(pool: { names: string[] }): unknown {\n  const p = pool as unknown as Record<string, unknown>;\n  return p.facts;\n}\n";
+    for reader in [typed, whole] {
+        let modules = compile_package(&[("store.ts", store), ("reader.ts", reader)]);
+        let dir = scratch("j89-5-typed");
+        package(&dir, &modules);
+        let got = run_python(
+            "import json, sys\nsys.path.insert(0, sys.argv[1])\nfrom pkg.reader import rows\nprint(json.dumps([rows({'facts': [1, 2]}), rows({'facts': None})], separators=(',', ':')))\n",
+            &[&dir],
+        );
+        assert_eq!(got.trim(), "[[1,2],null]");
+    }
+    let lines = refusals(&[("store.ts", store), ("reader.ts", bare)]);
+    assert!(
+        lines.contains(&"reader.ts:3:10: unsupported method .facts read as a value (a method may only be called directly): p.facts".to_string()),
+        "{lines:?}"
+    );
+}
+
+/// J89-5: an annotated callback parameter declares its data fields, as a function parameter does
+/// (`(o: Omission) => o.count` in tokenledger.ts, once native.ts's `NativeStore.count()` joined
+/// the call). Unannotated, the same read is refused. Node prints `[2,5]`.
+#[test]
+fn j89_5_an_annotated_callback_parameter_declares_its_fields() {
+    let layer = "export class Layer {\n  count(): number {\n    return 0;\n  }\n}\n";
+    let typed = "interface Omission {\n  count: number;\n}\nexport function counts(xs: Omission[]): number[] {\n  return xs.map((o: Omission) => o.count);\n}\n";
+    let bare = "interface Omission {\n  count: number;\n}\nexport function counts(xs: Omission[]): number[] {\n  return xs.map((o) => o.count);\n}\n";
+    let modules = compile_package(&[("layer.ts", layer), ("ledger.ts", typed)]);
+    let dir = scratch("j89-5-callback");
+    package(&dir, &modules);
+    let got = run_python(
+        "import json, sys\nsys.path.insert(0, sys.argv[1])\nfrom pkg.ledger import counts\nprint(json.dumps(counts([{'count': 2}, {'count': 5}]), separators=(',', ':')))\n",
+        &[&dir],
+    );
+    assert_eq!(got.trim(), "[2,5]");
+    let lines = refusals(&[("layer.ts", layer), ("ledger.ts", bare)]);
+    assert!(
+        lines.contains(&"ledger.ts:5:24: unsupported method .count read as a value (a method may only be called directly): o.count".to_string()),
+        "{lines:?}"
+    );
+}
+
+/// J89-5: two adapter-side speedups the native layer's listing needed, each held to the path it
+/// replaces over 20,000 seeded inputs (strings drawn from ASCII, `/`, `.`, U+00E9, a lone
+/// surrogate and an astral character): `_js_m_sort` with `cmpCodepoint` sorts strings by Python's
+/// own `str` order, which must equal the comparator path (Node-equal since J87-3), and `py_join`'s
+/// memo must answer `str(PurePath(*parts))`.
+#[test]
+fn j89_5_codepoint_sort_and_join_memo_answer_as_the_paths_they_replace() {
+    let dir = scratch("j89-5-fast");
+    package(&dir, &[]);
+    let got = run_python(
+        r#"import random, sys, pathlib
+sys.path.insert(0, sys.argv[1])
+from pkg._ts2py_runtime import _js_m_sort
+from pkg._ts2py_adapters import cmp_codepoint, py_join
+rng = random.Random(895)
+alphabet = ["a", "b", "Z", "0", "/", ".", "é", "\ud800", "\U0001f600", "-"]
+word = lambda: "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 6)))
+bad_sort = bad_join = 0
+for _ in range(20000):
+    xs = [word() for _ in range(rng.randrange(0, 9))]
+    fast = _js_m_sort(list(xs), cmp_codepoint)
+    slow = _js_m_sort(list(xs), lambda a, b, *_: cmp_codepoint(a, b))
+    bad_sort += fast != slow
+    parts = [word() for _ in range(rng.randrange(1, 4))]
+    bad_join += py_join(*parts) != str(pathlib.PurePath(*parts))
+print(bad_sort, bad_join)
+"#,
+        &[&dir],
+    );
+    assert_eq!(got.trim(), "0 0");
+}

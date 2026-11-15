@@ -114,6 +114,7 @@ pub fn compile_modules(
                 py_module: stem,
                 names,
                 generators: lower::generator_names(program),
+                type_fields: types::TypeDecls::read(program).fields,
             },
         );
     }

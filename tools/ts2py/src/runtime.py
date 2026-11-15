@@ -944,6 +944,11 @@ def _js_m_sort(receiver, compare=_JS_UNDEFINED):
     missing = len(items) - len(present)
     if compare is _JS_UNDEFINED:
         present.sort(key=lambda item: _js_utf16(_js_str(item)))
+    elif getattr(compare, "_js_codepoint_order", False) and all(type(x) is str for x in present):
+        # J89-5: a comparator that IS code-point order on strings (`cmpCodepoint`'s adapter says
+        # so) sorts strings exactly as Python's own `<` on `str` does; both sorts are stable and
+        # two strings it ties are equal, so the order is the same and the comparator never runs.
+        present.sort()
     else:
 
         def order(left, right):

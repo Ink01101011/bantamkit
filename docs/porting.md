@@ -1008,7 +1008,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval and the memory store are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store and the native layer are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1020,7 +1020,7 @@ generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
 Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
-`jobbudget.ts`, a G2/G3 module (`memory/store.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
+`jobbudget.ts`, a G2/G3 module (`memory/store.ts` and `memory/native.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
@@ -1032,7 +1032,7 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
-  runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts \
+  runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -1856,6 +1856,60 @@ stride, and typed fact fields), not a shim change.
 **Gates.** `--suite store` 428 cases, 0 failures, 11 ruled (13 before); `--all` 23,133 cases, 0
 failures, 193 ruled; the F4 byte comparison and the sha256 header each red once on a scratch copy
 (`ts2py/committed/store.py`; `test_generated_module_names_the_typescript_on_disk[store.py]`).
+
+### The native layer (#316 G3 U3, J89-5): generated, behind its shim
+
+Since J89-5 `bantamkit.memory.native` runs `_generated/native.py`, compiled from
+`runtime-ts/src/memory/native.ts` in the G1/G2/G3 call (it imports the compiled store). The
+hand-written layer is retired; `memory/native.py` is the shim: `NativeStore` keeps its Python
+surface (a `Path` root, `Fact` / `Pool` dataclasses through the store shim's `_fact_out` /
+`_pool_out`, `index()` answering the hand-written `HotIndex`, `_indexed`, `_listing`, `_read`,
+`_named`, and the Python-only no-op `snapshot()`). A host file is read by `divergence.parse_fact`
+through the new `parseNative` adapter, the function the hand-written layer called. The layer is
+read-only on both sides: a probe over six files (two facts, a `metadata.type` fact, a file with no
+fences, a duplicate name, `MEMORY.md`) through `pool`, `resolve`, `lookup`, `candidates` and
+`count` left every file's mode, mtime and sha256 unchanged on Python generated, Python at
+`8693f406` and Node, and all three gave the same answers. (The native MIRROR on save is
+`hookadapter._export_to_native`, not this module, and is not generated.)
+
+ts2py: a type imported from a compiled module declares its data fields (`pool.facts`), and an
+annotated arrow parameter declares its fields (tokenledger.ts's `(o: Omission) => o.count`, which
+`NativeStore.count()` would otherwise refuse under J89-4a's clash ruling); `tools/ts2py/RULES.md`,
+*J89-5 rules*. TS refactors, Node's answers unchanged (`npm test` 2460 pass / 0 fail): native.ts's
+two `skipped?.push(...)` are `if (skipped != null) skipped.push(...)`, and the callback annotation.
+
+**A fix found by generating it.** The adapter that restates a hand-written `BantamError` built a
+SECOND `BantamError` class on each direct call, so a compiled `e instanceof BantamError` missed the
+restated error and the generated `candidates` raised on a malformed host file instead of skipping it.
+No case covered it; `--suite recall-strings` now has `native candidates past a malformed file and a
+duplicate name` (agreeing, plus a per-side literal), red (exit 2) against the old adapter.
+
+**Cost (J89-5, macOS arm64, CPython 3.12.13; n = 9 interleaved rounds, medians; before = `8693f406`,
+after = this tree; the native directory a copy of this project's 211-file Claude Code auto-memory,
+the project store a copy of the 91-fact `.bantamkit/memory`, HOME a scratch directory per side).**
+
+| Path | Before | After | |
+|---|---|---|---|
+| `NativeStore.pool` (warm, indexed) | 331 us | 342 us | +3.2% |
+| `pool` + `resolve` of the top rows | 925 us | 952 us | +2.9% |
+| `lookup` | 217 us | 231 us | +6.2% |
+| `candidates` (parses all 211 files) | 40.4 ms | 42.2 ms | +4.5% |
+| `count` | 211 us | 714 us | **+238%**: native.ts lists by `readdirSync` and then `statSync`s every name (`isFile`), where the hand-written layer read `os.scandir`'s cached type; two adapter speedups (`py_join` memoised, a code-point sort without the comparator) took it from 2,128 us |
+| layered `Memory.recall` (`memory_recall`, native layer last) | 14.0 ms | 14.7 ms | +5.1% |
+| cold `import bantamkit.memory.native` | 136.3 ms | 139.8 ms | +2.6% |
+| `--hook` UserPromptSubmit with the native layer, a process | 419.6 ms | 415.3 ms | -1.0% (output byte-identical, and equal to Node's) |
+
+**Gates.** `--all` 23,136 cases, 0 failures, 193 ruled; the F4 byte comparison
+(`ts2py/committed/native.py`) and the sha256 header
+(`test_generated_module_names_the_typescript_on_disk[native.py]`) each red once on a scratch edit.
+
+### Not generated in J89-5: `layers`, `queries`, `dream`
+
+`memory/layers.ts` is stopped on a decision: its config reader is a TypeScript reduction of
+`yaml.safe_load`, so generating it moves Python off PyYAML. That turns the ruled `a config outside
+the reader's language` case STALE, and J89-5 found an UNRULED outcome difference under it:
+`extra_stores: &a [g]` (an anchored list) is a grant on Python and `extra_stores must be a list of
+paths` on Node. `queries.ts` and `dream.ts` need the constructs listed in the J89-5 hand-off.
 
 ## Concurrency
 

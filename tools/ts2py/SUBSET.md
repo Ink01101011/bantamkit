@@ -595,6 +595,10 @@ that is not what its annotation says (`any`, an adapter, `JSON.parse`) cannot re
 data. An untyped or `any` receiver, a method signature (`get(): number`), a function-typed field
 (`get: () => number`) and a read through `as` stay refused. A computed key the compiler cannot see
 is checked at run time (below).
+J89-5: the annotating type may also be IMPORTED from a compiled module of the same call (`import {
+type Pool } from './store.js'`, `import type { ... }`): it declares there what it declares in the
+module that declares it. An annotated ARROW parameter (`(o: Omission) => o.count`) declares its
+fields as a function parameter does (`tests/g3_store.rs`, `j89_5_*`, pinned to Node).
 
 Some operations are checked at run time instead, because only the value can tell: each raises
 a `TypeError` naming the subset rather than answering differently from JS. `.toLowerCase()` /

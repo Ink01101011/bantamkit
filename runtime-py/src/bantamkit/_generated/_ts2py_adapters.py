@@ -4,6 +4,7 @@
 import datetime as _datetime
 import errno as _errno
 import fnmatch as _fnmatch
+import functools as _functools
 import gzip as _gzip
 import hashlib as _hashlib
 import json as _json
@@ -27,7 +28,8 @@ from ._ts2py_runtime import (
     _JsTypeError,
 )
 
-# `BantamError` (and J88-2's `LOCK_*_MS`; J89-4a's `PyScalar`, `VALID_OUTCOMES`, `INDEX_DIR_ENV`)
+# `BantamError` (and J88-2's `LOCK_*_MS`; J89-4a's `PyScalar`, `VALID_OUTCOMES`, `INDEX_DIR_ENV`;
+# J89-5's `DUPLICATE`)
 # are provided lazily by `__getattr__` below and are not listed, so a star import does not build
 # them (and import `bantamkit.client` / `storage.lock` / the codec / the hot index).
 __all__ = [
@@ -70,6 +72,7 @@ __all__ = [
     "open_sync",
     "os_error_class_name",
     "parse_frontmatter",
+    "parse_native",
     "path_basename",
     "path_dirname",
     "path_join",
@@ -219,6 +222,11 @@ def cmp_codepoint(a, b, *_):
         if x != y:
             return -1 if x < y else 1
     return len(a) - len(b)
+
+
+# J89-5: `_js_m_sort` sorts a list of strings by this comparator with Python's own `str` order,
+# which is code-point order (the fast path is pinned against this function by `g3_store.rs`).
+cmp_codepoint._js_codepoint_order = True
 
 
 def process_env(name):
@@ -940,8 +948,19 @@ def py_is_dir(path):
     return _pathlib.Path(path).is_dir()
 
 
+@_functools.lru_cache(maxsize=8192)
+def _pure_join(parts):
+    return str(_pathlib.PurePath(*parts))
+
+
 def py_join(*parts):
-    """`pyJoin` (runtime-ts/src/memory/pyfs.ts): `str(PurePath(*parts))`, which it ports."""
+    """`pyJoin` (runtime-ts/src/memory/pyfs.ts): `str(PurePath(*parts))`, which it ports.
+
+    J89-5: memoised for string parts. `PurePath` is pure (no filesystem access, the same string
+    for the same parts on one OS), so the cache answers exactly what it computes; a layer's
+    listing joins the same directory and names on every recall (`native.ts`'s `listing`)."""
+    if all(type(p) is str for p in parts):
+        return _pure_join(parts)
     return str(_pathlib.PurePath(*parts))
 
 
@@ -1171,6 +1190,9 @@ def __getattr__(name):
         from .factfile import VALID_OUTCOMES as value
     elif name == "INDEX_DIR_ENV":
         from ..storage.hotindex import INDEX_DIR_ENV as value
+    elif name == "DUPLICATE":
+        # J89-5: the native layer's duplicate-name sentence head.
+        from ..storage.hotindex import DUPLICATE as value
     else:
         value = None
     if value is not None:
@@ -1283,7 +1305,10 @@ class _DictEntries:
 def _native_bantam_error(error):
     """A `bantamkit.client.BantamError` the hand-written index raised, as the adapter's
     `BantamError` (a JS Error a compiled `catch` holds) with the same message."""
-    cls = __getattr__("BantamError")
+    # J89-5: the class already built when there is one. `__getattr__` builds a NEW class on every
+    # direct call, so a module that imported `BantamError` before the first restatement held a
+    # different class, and its `instanceof BantamError` was false for the restated error.
+    cls = globals().get("BantamError") or __getattr__("BantamError")
     if isinstance(error, cls):
         return error
     return cls(str(error))
@@ -1388,6 +1413,28 @@ class HotIndex(_JsObject):
     @property
     def loose(self):
         return self._call("__getattribute__", "loose")
+
+
+def parse_native(path, *_):
+    """`parseNative` (runtime-ts/src/storage/hotindex.ts): `divergence.parse_fact`, which it ports
+    for the native shape (J89-5). The name, description, type and body it read, as the object the
+    TypeScript returns; its `MemoryValidationError` (a `bantamkit.client.BantamError`) restated as
+    the adapter's `BantamError` with the same message."""
+    from ..client import BantamError as _Native
+    from ..memory.divergence import parse_fact
+
+    if not isinstance(path, str):
+        raise TypeError("ts2py: parseNative of anything but a string path is outside the subset")
+    try:
+        stored = parse_fact(path)
+    except _Native as error:
+        raise _native_bantam_error(error) from None
+    return {
+        "name": stored.name,
+        "description": stored.description,
+        "type": stored.type,
+        "body": stored.body,
+    }
 
 
 class ColdIndexError(_JsError):

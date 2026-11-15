@@ -121,13 +121,13 @@ export class NativeStore {
         fact = this.read(p);
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError)) throw e;
-        skipped?.push({ file, reason: e.message });
+        if (skipped != null) skipped.push({ file, reason: e.message });
         continue;
       }
       const name = fact.name as string;
       const first = held.get(name);
       if (first !== undefined) {
-        skipped?.push({ file, reason: `${DUPLICATE} '${name}': ${first} holds it` });
+        if (skipped != null) skipped.push({ file, reason: `${DUPLICATE} '${name}': ${first} holds it` });
         continue;
       }
       held.set(name, file);

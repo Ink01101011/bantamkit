@@ -532,6 +532,21 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Constant,
         why: "Python is the reference: `bantamkit.storage.hotindex.INDEX_DIR_ENV`, the same `BANTAMKIT_INDEX_DIR` the port declares.",
     },
+    // J89-5 (#316 G3 U3: memory/native).
+    Adapter {
+        module: Some("runtime-ts/src/storage/hotindex.ts"),
+        name: "DUPLICATE",
+        py_name: "DUPLICATE",
+        kind: AdapterKind::Constant,
+        why: "Python is the reference: `bantamkit.storage.hotindex.DUPLICATE`, the same `duplicate name` sentence head the port declares (the native index and the native layer report a second file claiming a name with it).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/storage/hotindex.ts"),
+        name: "parseNative",
+        py_name: "parse_native",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `parseNative` is `divergence.parse_fact` for the native shape (its doc comment), so the adapter is that function, answering the name, description, type and body it read as the object the TypeScript returns (`meta`, which no compiled caller reads, is not carried), and its `MemoryValidationError` restated as the adapter's `BantamError` with the same message, so a compiled `catch` sees it (`--suite store`, `skill-layer` and `hooks` compare the native layer over the same files).",
+    },
     Adapter {
         module: Some("runtime-ts/src/storage/coldindex.ts"),
         name: "ColdIndex",

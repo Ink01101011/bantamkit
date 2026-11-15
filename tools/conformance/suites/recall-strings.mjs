@@ -1062,6 +1062,50 @@ export async function run(ctx) {
       actual: { python: py, node: nd },
     });
   }
+  // ---- J89-5 (#316 G3 U3): the native layer's own file read, `candidates`, with a file that
+  // does not parse and a second file claiming a name. Both are SKIPPED with the index's
+  // sentences, never fatal. The generated layer first raised here: the restated `BantamError`
+  // was a second class, so `e instanceof BantamError` missed it (`_native_bantam_error`).
+  {
+    const natDir = join(shapes, 'native-candidates');
+    materialise(natDir, {
+      files: {
+        'MEMORY.md': '# Memory index\n',
+        'a.md': nativeFile('a', 'alpha one'),
+        'b.md': 'no frontmatter fences here\n',
+        'c.md': nativeFile('a', 'a second alpha'),
+        'd.md': nativeFile('d', 'delta'),
+        'e.md': nativeFile('e', 'shadowed'),
+      },
+    });
+    const req = { op: 'native_candidates', dir: b64(natDir), shadow: [b64('e')] };
+    const raw = ctx.runPython(REF, req, probeEnv);
+    const py = {
+      facts: raw.facts.map((f) => f.map(unb64)),
+      skipped: raw.skipped.map((s) => s.map(unb64)),
+    };
+    const nativeMod = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'native.js')).href);
+    const skipped = [];
+    const facts = new nativeMod.NativeStore(natDir).candidates(skipped, new Set(['e']));
+    const nd = {
+      facts: facts.map((f) => [f.name, f.type, f.description, f.body]),
+      skipped: skipped.map((s) => [s.file, s.reason.split(natDir).join('<DIR>')]),
+    };
+    cases.push({ name: 'native candidates past a malformed file and a duplicate name: the two sides agree', kind: 'json', expected: py, actual: nd });
+    const SKIPPED = [
+      ['b.md', 'malformed fact file <DIR>/b.md: no frontmatter fences'],
+      ['c.md', "duplicate name 'a': a.md holds it"],
+    ];
+    cases.push({
+      name: 'PINNED PER SIDE: native candidates skip b.md and c.md and keep a and d',
+      kind: 'json',
+      expected: { python: [['a', 'd'], SKIPPED], node: [['a', 'd'], SKIPPED] },
+      actual: {
+        python: [py.facts.map((f) => f[0]), py.skipped],
+        node: [nd.facts.map((f) => f[0]), nd.skipped],
+      },
+    });
+  }
   const countRoots = ['populated', 'empty', 'nofacts', 'dangling', 'filefacts', 'dotted', 'dirfact']
     .map((r) => join(shapes, r));
   const pyCounts = ctx.runPython(REF, { op: 'count_facts', roots: countRoots.map(b64) }, probeEnv).counts;

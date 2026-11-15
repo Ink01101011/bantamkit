@@ -412,7 +412,7 @@ export function asDict(ledger: Ledger): Record<string, unknown> {
       for (const cls of TOKEN_CLASSES) row[cls] = s[cls];
       return row;
     }),
-    omissions: ledger.omissions.map((o) => ({
+    omissions: ledger.omissions.map((o: Omission) => ({
       subject: o.subject,
       count: o.count,
       what: o.what,
