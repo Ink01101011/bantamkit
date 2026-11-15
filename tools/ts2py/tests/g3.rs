@@ -1,5 +1,5 @@
 //! J89-2 (#316 G3 U1): the constructs `memory/usage.ts` needed and those J89-2 lowered for
-//! `memory/retrieval.ts` (which stays hand-written: docs/porting.md says why) (`x++` /
+//! `memory/retrieval.ts` (generated since J89-3, `g3_numeric.rs`) (`x++` /
 //! `--x` as a loop update, `.charCodeAt`, `.match`, `.toFixed`, a module-level `let` assigned by a
 //! module function, an array element write, `buf.indexOf(byte)`, `in` on a Map or Set, a parameter
 //! named as a Python builtin), the `node:crypto` hash, and the six #316 modules compiled together. Every expected value is what Node v26.13.0 printed for the
@@ -158,8 +158,8 @@ fn g3_to_fixed_fuzz_like_node() {
     );
 }
 
-/// The six #316 modules in one ts2py call (G1, G2, and G3 U1's usage ledger): usage imports the
-/// compiled log segment, and pysem / pyfs / node:crypto come through the seam.
+/// The seven #316 modules in one ts2py call (G1, G2, G3's usage ledger and retrieval): usage
+/// imports the compiled log segment, and pysem / pyfs / node:crypto come through the seam.
 #[test]
 fn g3_modules_compile_together() {
     let root = repo_root();
@@ -170,6 +170,7 @@ fn g3_modules_compile_together() {
         "runtime-ts/src/eventlog.ts",
         "runtime-ts/src/tokenledger.ts",
         "runtime-ts/src/memory/usage.ts",
+        "runtime-ts/src/memory/retrieval.ts",
     ];
     let sources: Vec<String> = paths
         .iter()

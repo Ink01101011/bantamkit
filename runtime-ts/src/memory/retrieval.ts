@@ -4,8 +4,13 @@
  * Port of runtime-py/src/bantamkit/memory/retrieval.py. The reference is Python; every
  * difference is a defect unless docs/porting.md rules it. `recall-retrieval` conformance
  * pins it. `store.tokens` (v1) is NOT replaced: dream/dedupe's Jaccard still runs on it.
+ *
+ * #316 G3 (J89-2): ts2py compiles this file into `runtime-py/src/bantamkit/_generated/
+ * retrieval.py`, which `bantamkit.memory.retrieval` serves. CPython's own float and text rules
+ * (`round`, `math.log`, `math.log1p`, NFKC + `lower`, the word-character test) are called through
+ * `pysem.ts`, which the adapter seam maps onto CPython; read the note there.
  */
-import { cmpCodepoint } from '../pysem.js';
+import { cmpCodepoint, pyLog, pyLog1p, pyNfkcLower, pyRoundFloat9, pyWordchar } from '../pysem.js';
 
 // Scripts written WITHOUT spaces between words. Codepoint ranges, not a Unicode-database
 // lookup, so the two runtimes cannot disagree through different Unicode versions.
@@ -32,12 +37,13 @@ export const nospace = (cp: number): boolean =>
           (cp <= 0x17ff ||
             (cp >= 0x3040 && (cp <= 0x30ff || (cp >= 0x3400 && (cp <= 0x4dbf || (cp >= 0x4e00 && cp <= 0x9fff))))))))));
 /** The table itself, for the equality test only. */
-export const nospaceTable = (cp: number): boolean => NOSPACE.some(([lo, hi]) => cp >= lo && cp <= hi);
+export function nospaceTable(cp: number): boolean {
+  for (const [lo, hi] of NOSPACE) if (cp >= lo && cp <= hi) return true;
+  return false;
+}
 // Every NOSPACE range is in the BMP and outside the surrogates, so a code-UNIT class matches
 // exactly the code points the table holds, and never half of a pair.
 const NOSPACE_UNITS = /[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/g;
-/** A spaced-script word character (one code point); also the miner's `tokenizeLabel` (#289). */
-export const WORDCHAR = /^[\p{L}\p{N}\p{M}]$/u;
 
 /**
  * Every code point of a no-space script replaced by one space, on the RAW text (before NFKC).
@@ -63,7 +69,7 @@ const ASCII_WORDS = /[a-z0-9]+/g;
 
 export function tokenizeV2(text: string): string[] {
   if (ASCII_ONLY.test(text)) return text.toLowerCase().match(ASCII_WORDS) ?? [];
-  const s = text.normalize('NFKC').toLowerCase();
+  const s = pyNfkcLower(text);
   const out: string[] = [];
   // Words and no-space runs are CONTIGUOUS spans of `s`, so they are sliced, not built one
   // character at a time (J72-30). Iterates CODE POINTS, as Python's str does: a surrogate pair
@@ -102,7 +108,7 @@ export function tokenizeV2(text: string): string[] {
     } else if (
       cp < 0x80
         ? (cp >= 0x61 && cp <= 0x7a) || (cp >= 0x30 && cp <= 0x39) || (cp >= 0x41 && cp <= 0x5a)
-        : WORDCHAR.test(step === 1 ? s[i]! : s.slice(i, i + 2))
+        : pyWordchar(step === 1 ? s[i]! : s.slice(i, i + 2))
     ) {
       flushRun(i);
       if (wordAt < 0) wordAt = i;
@@ -135,57 +141,11 @@ export const SCORE_ROUND = 9;
 export const QUERY_WEIGHT = 1.0;
 
 /**
- * Python's `round(x, ndigits)` for a float, ndigits >= 0: CPython's `double_round`.
- *
- * CPython takes the correctly rounded decimal (`_Py_dg_dtoa` mode 3: round HALF TO EVEN on
- * the EXACT binary value of the double) and parses it back with a correctly rounded strtod.
- * `toFixed` rounds ties away from zero and `Math.round(x * 1e9) / 1e9` rounds twice, so
- * neither is it. Here the double is decomposed to `mantissa * 2**exponent` over BigInt, the
- * tie is decided exactly, and `Number()` (correctly rounded in V8) parses the decimal back.
- * The sign survives a round to zero (`round(-1e-12, 9)` is `-0.0`), as in CPython.
- */
-export function roundHalfEven(x: number, ndigits: number): number {
-  if (!Number.isFinite(x)) return x;
-  const view = new DataView(new ArrayBuffer(8));
-  view.setFloat64(0, x);
-  const bits = view.getBigUint64(0);
-  const negative = bits >> 63n === 1n;
-  const rawExponent = Number((bits >> 52n) & 0x7ffn);
-  const rawMantissa = bits & 0xfffffffffffffn;
-  const mantissa = rawExponent === 0 ? rawMantissa : rawMantissa | (1n << 52n);
-  const exponent = (rawExponent === 0 ? 1 : rawExponent) - 1075;
-  // An integer-valued double has no fractional digits to lose: round returns it unchanged.
-  if (exponent >= 0) return x;
-  const scale = 10n ** BigInt(ndigits);
-  const numerator = mantissa * scale;
-  const denominator = 1n << BigInt(-exponent);
-  let quotient = numerator / denominator;
-  const twice = (numerator % denominator) * 2n;
-  if (twice > denominator || (twice === denominator && quotient % 2n === 1n)) quotient += 1n;
-  const magnitude = Number(`${quotient}e-${ndigits}`);
-  return negative ? -magnitude : magnitude;
-}
-
-/**
- * Python's `round(x, 9)`: the rounding every BM25 score takes before a comparison.
- *
- * FAST PATH (J68-5, 2.4 ms of a 5,000-fact recall went to BigInt): for `0 < x` with
- * `y = x * 1e9 < 2**40`, `y` is within 2**-13 of the exact `x * 10**9`, so when `y`'s
- * fractional part is more than 1e-3 away from one half, `Math.round(y)` IS the correctly
- * rounded integer the reference takes, and `q / 1e9` (one correctly rounded IEEE division by
- * an exact power of ten) IS the double that decimal parses back to. Every other value — ties,
- * near-ties, negatives, zero, huge — goes through `roundHalfEven`, exactly as before.
+ * Python's `round(x, 9)`: the rounding every BM25 score takes before a comparison. CPython's
+ * `round` is `pysem.pyRoundFloat` (moved there by #316 G3, J89-2, with the J68-5 fast path).
  */
 export function pyRound9(x: number): number {
-  if (x > 0) {
-    const y = x * 1e9;
-    if (y < 1099511627776) {
-      const fl = Math.floor(y);
-      const frac = y - fl;
-      if (Math.abs(frac - 0.5) > 1e-3) return (frac < 0.5 ? fl : fl + 1) / 1e9;
-    }
-  }
-  return roundHalfEven(x, SCORE_ROUND);
+  return pyRoundFloat9(x);
 }
 
 function fields(d: Doc): Record<'name' | 'description' | 'keywords', string[]> {
@@ -221,9 +181,7 @@ export function queryTerms(query: string): string[] {
  */
 export function lengthOf(lens: readonly number[]): number {
   let length = 0;
-  FIELD_BOOST.forEach(([, boost], i) => {
-    length += boost * lens[i]!;
-  });
+  for (let i = 0; i < FIELD_BOOST.length; i += 1) length += FIELD_BOOST[i]![1] * lens[i]!;
   return length;
 }
 
@@ -245,12 +203,12 @@ export function bm25Postings(
   const avgdl = total / n || 1.0;
   const k1 = BM25_K1 + 1.0;
   const norm = lengths.map((dl) => BM25_K1 * (1.0 - BM25_B + (BM25_B * dl) / avgdl));
-  const s = new Array<number>(lengths.length).fill(0);
+  const s = lengths.map(() => 0.0);
   for (const t of q) {
     const hits = postings.get(t);
     if (hits === undefined || hits.length === 0) continue;
     const d = df.get(t) ?? 0;
-    const idf = Math.log(1.0 + (n - d + 0.5) / (d + 0.5));
+    const idf = pyLog(1.0 + (n - d + 0.5) / (d + 0.5));
     for (const [i, w] of hits) {
       if (w !== 0) s[i] = s[i]! + (idf * (w * k1)) / (w + norm[i]!);
     }
@@ -273,9 +231,11 @@ export function bm25Segments(
   segs: ReadonlyMap<string, readonly number[]>,
 ): number[] {
   const m = lengths.length;
-  if (q.length === 0 || n <= 0) return new Array<number>(m).fill(0.0);
+  if (q.length === 0 || n <= 0) return lengths.map(() => 0.0);
   const avgdl = total / n || 1.0;
   const k1 = BM25_K1 + 1.0;
+  // Counted loops over Float64Arrays: ts2py proves each one's indexes and numbers once, before
+  // it runs (#316 G3, J89-3; tools/ts2py/SUBSET.md, *Typed arrays and counted loops*).
   const norm = new Float64Array(m);
   for (let i = 0; i < m; i += 1) norm[i] = BM25_K1 * (1.0 - BM25_B + (BM25_B * lengths[i]!) / avgdl);
   const s = new Float64Array(m);
@@ -283,18 +243,24 @@ export function bm25Segments(
     const seg = segs.get(t);
     if (seg === undefined || seg.length === 0) continue;
     const d = df.get(t) ?? 0;
-    const idf = Math.log(1.0 + (n - d + 0.5) / (d + 0.5));
+    const idf = pyLog(1.0 + (n - d + 0.5) / (d + 0.5));
     for (let j = 0; j < seg.length; j += 3) {
       const a = seg[j]!;
       const b = a + seg[j + 1]!;
       const w = seg[j + 2]!;
-      if (w === 0) continue;
-      const num = idf * (w * k1);
-      for (let i = a; i < b; i += 1) s[i] = s[i]! + num / (w + norm[i]!);
+      if (w !== 0) {
+        const num = idf * (w * k1);
+        for (let i = a; i < b; i += 1) {
+          const den = w + norm[i]!;
+          s[i] = s[i]! + num / den;
+        }
+      }
     }
   }
-  const out = new Array<number>(m);
-  for (let i = 0; i < m; i += 1) out[i] = pyRound9(s[i]!);
+  // Every element is overwritten: `slice` only allocates (V8 writes into it as fast as into the
+  // `new Array(m)` this was, which ts2py has no lowering for: it would hold holes).
+  const out = lengths.slice();
+  for (let i = 0; i < m; i += 1) out[i] = pyRoundFloat9(s[i]!);
   return out;
 }
 
@@ -307,12 +273,13 @@ export function bm25Pooled(
   rows: ReadonlyArray<readonly [ReadonlyMap<string, number>, number]>,
 ): number[] {
   const postings = new Map<string, Array<[number, number]>>(q.map((t) => [t, []]));
-  rows.forEach(([weights], i) => {
+  for (let i = 0; i < rows.length; i += 1) {
+    const weights = rows[i]![0];
     for (const t of q) {
       const w = weights.get(t);
       if (w !== undefined) postings.get(t)!.push([i, w]);
     }
-  });
+  }
   return bm25Postings(
     q,
     n,
@@ -353,35 +320,45 @@ export function bm25Rows(
   if (q.length === 0 || rows.length === 0) return rows.map(() => 0.0);
   const at = new Map<string, number>(q.map((t, k) => [t, k]));
   const hits: Array<Array<[number, number]>> = q.map(() => []);
-  const lengths = new Array<number>(rows.length);
+  const lengths = rows.map(() => 0.0);
   let total = 0;
+  // One callback for every row, reading the row it is called for (`scan` calls it synchronously).
+  let row = 0;
+  const hit = (k: number, c: number): void => {
+    hits[k]!.push([row, c]);
+  };
   for (let i = 0; i < rows.length; i += 1) {
     const r = rows[i] ?? null;
     if (r === null) {
       lengths[i] = 0.0;
       total += 0.0;
-      continue;
-    }
-    const [w, dl] = r;
-    lengths[i] = dl;
-    total += dl;
-    const scan = (w as { scan?: (at: ReadonlyMap<string, number>, hit: (k: number, c: number) => void) => void }).scan;
-    if (typeof scan === 'function') {
-      scan.call(w, at, (k, c) => hits[k]!.push([i, c]));
     } else {
-      for (let k = 0; k < q.length; k += 1) {
-        const v = w.get(q[k]!);
-        if (v !== undefined) hits[k]!.push([i, v]);
+      const [w, dl] = r;
+      lengths[i] = dl;
+      total += dl;
+      if ('scan' in w) {
+        row = i;
+        (w as unknown as Scannable).scan(at, hit);
+      } else {
+        for (let k = 0; k < q.length; k += 1) {
+          const v = w.get(q[k]!);
+          if (v !== undefined) hits[k]!.push([i, v]);
+        }
       }
     }
   }
   const df = new Map<string, number>();
   const postings = new Map<string, Array<[number, number]>>();
-  q.forEach((t, k) => {
-    df.set(t, hits[k]!.length);
-    postings.set(t, hits[k]!);
-  });
+  for (let k = 0; k < q.length; k += 1) {
+    df.set(q[k]!, hits[k]!.length);
+    postings.set(q[k]!, hits[k]!);
+  }
   return bm25Postings(q, rows.length, total, df, lengths, postings);
+}
+
+/** `queries.ts`'s cached row view: `hit(at[t], count)` once for every term of `at` it holds. */
+interface Scannable {
+  scan(at: ReadonlyMap<string, number>, hit: (k: number, c: number) => void): void;
 }
 
 /** The pooled collection `pooledRanking` hands a scorer: BM25's inputs, in `bm25Segments` order. */
@@ -414,7 +391,10 @@ export interface Scorer {
 /** Today's scorer, unchanged: `bm25Segments` over the pooled columns. */
 export class Bm25fScorer implements Scorer {
   readonly dense = false;
-  constructor(public fallback: string | null = null) {}
+  fallback: string | null;
+  constructor(fallback: string | null = null) {
+    this.fallback = fallback;
+  }
   label(): string {
     return 'bm25f';
   }
@@ -442,7 +422,10 @@ export const BM25F = new Bm25fScorer();
 export class QueryScorer implements Scorer {
   readonly dense = true;
   fallback: string | null = null;
-  constructor(readonly prompt: string) {}
+  readonly prompt: string;
+  constructor(prompt: string) {
+    this.prompt = prompt;
+  }
   label(): string {
     return 'bm25f+queries';
   }
@@ -509,7 +492,7 @@ export function stale(description: string): boolean {
   for (const word of STALE_WORDS) {
     if (s.startsWith(word)) {
       const next = String.fromCodePoint(s.codePointAt(word.length) ?? 0);
-      return s.length === word.length || !(WORDCHAR.test(next) || next === '_');
+      return s.length === word.length || !(pyWordchar(next) || next === '_');
     }
   }
   return false;
@@ -518,9 +501,7 @@ export function stale(description: string): boolean {
 /** True iff `s > 0 && s >= floor && s >= ratio * max(scores)`: relevance alone. */
 export function gate(scores: readonly number[], ratio = GATE_RATIO, floor = GATE_FLOOR): boolean[] {
   let best = 0.0;
-  scores.forEach((s, i) => {
-    if (i === 0 || s > best) best = s;
-  });
+  for (let i = 0; i < scores.length; i += 1) if (i === 0 || scores[i]! > best) best = scores[i]!;
   return scores.map((s) => s > 0.0 && s >= floor && s >= ratio * best);
 }
 
@@ -538,7 +519,8 @@ export function weight(
   usage: ReadonlyMap<string, number>,
   context: ReadonlyMap<string, number> | null = null,
 ): number {
-  return weightOf(c.type, stale(c.description), usage.get(c.name) ?? 0.0, context?.get(c.name) ?? 0.0);
+  const ctx = context === null || context === undefined ? undefined : context.get(c.name);
+  return weightOf(c.type, stale(c.description), usage.get(c.name) ?? 0.0, ctx ?? 0.0);
 }
 
 /**
@@ -548,7 +530,7 @@ export function weight(
 export function weightOf(type: string, isStale: boolean, usage: number, ctx = 0.0): number {
   const u = usage > 0.0 ? usage : 0.0; // a negative or NaN usage is no usage, never log1p(<= -1)
   const c = !(ctx > 0.0) ? 0.0 : ctx > 1.0 ? 1.0 : ctx;
-  const w = (W_TYPE.get(type) ?? W_TYPE_OTHER) + (isStale ? W_FRESH_DEMOTE : 0.0) + W_USAGE * Math.log1p(u) + W_CONTEXT * c;
+  const w = (W_TYPE.get(type) ?? W_TYPE_OTHER) + (isStale ? W_FRESH_DEMOTE : 0.0) + W_USAGE * pyLog1p(u) + W_CONTEXT * c;
   return w > W_FLOOR ? w : W_FLOOR;
 }
 
@@ -564,18 +546,20 @@ export function rankColumns(
   ratio = GATE_RATIO,
   floor: number | null = null,
 ): number[] {
+  const m = scores.length;
   let best = 0.0;
-  scores.forEach((s, i) => {
-    if (i === 0 || s > best) best = s;
-  });
+  for (let i = 0; i < m; i += 1) {
+    const x = scores[i]!;
+    if (i === 0 || x > best) best = x;
+  }
   const least = Math.max(floor ?? GATE_FLOOR, ratio * best);
   const admitted: number[] = [];
-  const final = new Float64Array(scores.length);
-  for (let i = 0; i < scores.length; i += 1) {
+  const final = new Float64Array(m);
+  for (let i = 0; i < m; i += 1) {
     const x = scores[i]!;
     if (x > 0.0 && x >= least) {
       admitted.push(i);
-      final[i] = pyRound9(x * weights[i]!);
+      final[i] = pyRoundFloat9(x * weights[i]!);
     }
   }
   return admitted.sort((a, b) => final[b]! - final[a]! || a - b);
@@ -591,10 +575,14 @@ export function rank(
 ): number[] {
   const admitted = gate(scores, ratio);
   const final = new Map<number, number>();
-  items.forEach((c, i) => {
-    if (admitted[i]) final.set(i, pyRound9(scores[i]! * weight(c, usage, context)));
-  });
-  return [...final.keys()].sort(
+  const order: number[] = [];
+  for (let i = 0; i < items.length; i += 1) {
+    if (admitted[i]) {
+      final.set(i, pyRound9(scores[i]! * weight(items[i]!, usage, context)));
+      order.push(i);
+    }
+  }
+  return order.sort(
     (a, b) =>
       final.get(b)! - final.get(a)! ||
       items[a]!.layerOrder - items[b]!.layerOrder ||

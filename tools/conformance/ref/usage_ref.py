@@ -44,6 +44,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src
 from bantamkit.memory.usage import UsageLedger, store_id
 
 
+def _fixed9(v: float) -> str:
+    """`v.toFixed(9)` as node's arm spells it for the values these beds produce: nine decimals, and
+    a non-finite value as JS names it (J89-3: a far-future folded line weighs Infinity)."""
+    if v != v:
+        return "NaN"
+    if v in (float("inf"), float("-inf")):
+        return "Infinity" if v > 0 else "-Infinity"
+    return f"{v:.9f}"
+
+
 def run_bed(bed: dict) -> list:
     home = Path(bed["home"])
     led = UsageLedger(
@@ -71,7 +81,7 @@ def run_bed(bed: dict) -> list:
             except Exception as e:  # noqa: BLE001 -- a raise is an answer
                 out.append({"error": type(e).__name__})
             else:
-                out.append({"weights": [[k, f"{v:.9f}"] for k, v in got.items()]})
+                out.append({"weights": [[k, _fixed9(v)] for k, v in got.items()]})
         elif kind == "last_used":
             out.append(led.last_used(op["fact"]))
         elif kind == "keywords_copy":

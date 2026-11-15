@@ -302,6 +302,7 @@ returns), so nothing reads it.
 |---|---|---|
 | `str` | `type(v) is str` | a string literal or template; `+` of two strings; `typeof`; a method whose result is always a string (`join`, `slice` of a string, ...); a `string` parameter in a typed body; a narrowing |
 | `num` | a plain `int` within +-2^53, or a `float` (what `_js_num` leaves unchanged) | a number literal; `+ - * / %` of two numbers (rounded by `_js_num`); `.length` of a proven string or list; `indexOf`; `Math.*`; a `number` parameter in a typed body |
+| `f64` (J89-3) | `type(v) is float` (so also `num`) | a literal Python spells as a float (`0.75`, `1e+21`, `-0.0`); a Float64Array element read in a proven loop copy; `+ - * /` of two proven numbers one of which is a float |
 | `bool` | `type(v) is bool` | a comparison, `!`, a method or builtin that always returns a boolean; a `boolean` parameter in a typed body |
 | `list` | a Python `list` | an array literal; `split`, `map`, `filter`, `sort`, `reverse`, `entries`; an array or tuple parameter in a typed body |
 | `regex` | a compiled `re.Pattern` without `g` | a regex literal |
@@ -375,11 +376,71 @@ it red).
 | truthiness, `!s` | `str` | `s != ""` | `_js_truthy` |
 | `const [a, b] = e` | `e` a fresh tuple of exactly that length | `a, b = e` | `_js_destructure` |
 | `for (const [a, b] of T)` | `T` frozen, rows of exactly that length | `for a, b in T:` | `_js_get(row, i)` |
+| `a + b`, `a - b`, `a * b` (J89-3) | both `num`, one `f64` | the native operator (IEEE-754; an int within 2^53 converts exactly), a `float` | `_js_num(a + b)`, `_js_mul` ... |
+| `a / b` (J89-3) | both `num`, one `f64` | `a / b if b else _js_div(a, b)` (a name or literal `b`), else `_js_fdiv(a, b)`: Python's `/` but a zero divisor's JS answer | `_js_div` |
 | a `str` binding indexed or `.length`-ed | a parameter or declared local never assigned again | its UTF-16 view `_jsu_<name> = _js_code_units(<name>)` beside the binding; `len(_jsu_s)`, `_jsu_s[i] if type(i) is int and 0 <= i < len(_jsu_s) else _js_str_at(s, i)`, `_js_units_at` / `_js_units_index_of` / `_js_units_slice` | the `_js_str_*` helpers |
 
 Known limits: a binding's facts are met over the whole function, so one unproven assignment
 (`i += used` where `used` is unproven) makes every read of it unproven; narrowing applies to
 `const` bindings only and never across a loop's back edge; methods and closures are untyped.
+
+## Typed arrays and counted loops (J89-3, #316 G3)
+
+**`Float64Array`.** `const t = new Float64Array(n)` is a Python `list` of `float`s
+(`_js_f64_new`: ToIndex of `n`, so `2.7` is 2 and NaN is 0; a negative length, or one past
+2^53 - 1, is the RangeError Node throws with the value in its message; a BigInt is Node's TypeError;
+an object argument, which Node would copy, and a length past 2^26 are refused at run time). A write
+converts its value (ToNumber, then a float), so every element is always a float: that is the proof
+the lowerings below use. The binding may only be
+
+- indexed, `t[k]` (`_js_ta_get`): the element, or `undefined` for a numeric key that is not a valid
+  index (out of range, a fraction, NaN, an infinity, the string `"-0"`); the number `-0` names
+  element 0, as its key is `"0"`;
+- written by index, `t[k] = v` (`_js_ta_put`): ToNumber of `v` first, then the float stored at a
+  valid index and nothing stored otherwise;
+- measured, `t.length` (`len(t)`, fixed when it is made);
+- the keys of the key sort below.
+
+A key that is not a number or a canonical numeric string is refused at run time (JS would read or
+make an ordinary property). Anything else is refused at compile time: the array as a value
+(returned, passed, aliased, iterated, spread, a method called on it), `let t = new Float64Array`,
+`new Float64Array` anywhere but a `const`'s initializer, `t[k] op= v`.
+
+**Counted loops proven once.** `for (let i = a; i < b; i += 1)` (or `i++`, `++i`, `i = i + 1`)
+whose body indexes arrays by `i` itself is lowered twice: a proven copy under a guard, and the
+general loop as before:
+
+```python
+i = <a>
+if type(i) is int and 0 <= i and type(b) is int and b <= len(t) and type(xs) is list and b <= len(xs) and _js_doubles(xs, i, b) and _js_is_double(w):
+    for i in range(i, b):  # noqa: B020
+        t[i] = t[i] + xs[i] * w        # floats and proven numbers, native
+else:
+    while ...:                         # the general loop
+```
+
+The guard checks, once: `i` an int at least 0; `b` an int (a name the body does not assign, a
+literal, or a Float64Array's length) no larger than the length of every Float64Array and every fresh
+array the body indexes at `i`; every plain array the body reads at `i` a list that long whose
+elements over `[i, b)` are proven numbers (`_js_doubles`: floats, and ints within 2^53, nothing
+else); every `const` or parameter the body uses as an operand of arithmetic or a comparison a proven
+number; and every outer `let` the body assigns and uses as an operand, when each assignment the copy
+makes to it is a proven number (else the copy is made without it). It holds for the whole loop
+because the body cannot change any of it: the body holds expression statements, `if`, `const` /
+`let`, `return` and an unlabelled `break` only; it assigns locals, Float64Array elements at `i`
+and fresh-array elements at `i` (a fresh array is a `const` bound to an array literal or to
+`.slice(...)`, which no parameter can alias), pushes onto fresh arrays only, and calls adapters and
+`Math.max/min/abs/floor/ceil/trunc/round/sign/sqrt` only, so no compiled code and no caller's code
+runs while it loops; it reads no member but `x[i]` and a Float64Array's `.length`; it holds no
+closure, no nested loop, no template. In the copy, `i` is a proven number, `t[i]` is a proven float,
+`xs[i]` a proven number, and `t[i] = v` / `fresh[i] = v` are the stores themselves.
+
+**The key sort.** `xs.sort((a, b) => t[b] - t[a] || a - b)` (or `t[a] - t[b] || a - b`) with `t` a
+Float64Array is `_js_sort_by_f64`: when every item is an int index into `t` and no key it names is
+NaN, the comparator is a total order (key, then index), so two stable sorts (by index, then by key)
+are V8's order at C speed; otherwise V8's own sort runs with the comparator (`_js_v8_sort`, V8's
+`Array.prototype.sort` step for step, so even a NaN key's inconsistent comparator leaves V8's
+order). Any other comparator is the general `.sort`.
 
 ## Classes (J86)
 
@@ -535,4 +596,9 @@ the subset`).
 - J86 removed the J85 limit that strings were indexed and split by code point: every position is
   now a UTF-16 code unit (Strings above).
 - Iterating a `Map` or `Set` sees a snapshot: entries added during the loop are not visited.
+- J89-3: the general `.sort(compare)` (`_js_m_sort`) is CPython's `list.sort`, which orders an
+  INCONSISTENT comparator (one a NaN makes so) differently from V8 (561 of 30,000 seeded sorts); the
+  key sort above uses V8's own algorithm (`_js_v8_sort`) for that case.
+- J89-3: a Float64Array longer than 2^26 elements is refused at run time (Node allocates one of
+  10^10 lazily; Python would build the list).
 - `JSON.stringify` on a cyclic structure raises `RecursionError` (JS raises `TypeError`).

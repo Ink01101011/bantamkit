@@ -406,6 +406,37 @@ export async function run(ctx) {
   cases.push({ name: 'rankColumns equals rank over (layer, name)-ordered items, 60 seeded runs — node', kind: 'json', expected: nodeRank, actual: nodeCols });
   cases.push({ name: 'rankColumns: node against python, 60 seeded runs', kind: 'json', expected: pyCols.cols, actual: nodeCols });
 
+  // #316 G3 (J89-3): `rankColumns` on raw columns, where generating it moved python's answer to
+  // node's: a NaN weight (the comparator turns inconsistent, and the order is V8's sort's), an
+  // infinite score under ratio 0 (`0 * Infinity` is NaN and `Math.max(0, NaN)` is NaN, so nothing is
+  // admitted; python's `max` kept 0.0), and signed zeros, ties, a floor. Seeded runs plus fixed ones.
+  const rawRuns = [
+    { scores: [1, 1, 1], weights: [1, NaN, 2], ratio: 0, floor: null },
+    { scores: [3, 1, 2, 5, 4], weights: [NaN, 1, NaN, 1, 1], ratio: 0, floor: null },
+    { scores: [Infinity, 1, 2], weights: [0, 1, 1], ratio: 0, floor: null },
+    { scores: [Infinity, 1, 2], weights: [1, 1, 1], ratio: 0.5, floor: 0 },
+    { scores: [2, 2, 2, -0, 0], weights: [1, 1, -0, 1, 1], ratio: 0, floor: 1.5 },
+  ];
+  const RAW = [NaN, Infinity, 0, -0, 0.5, 1, 1.25, 2, 1e300];
+  for (let k = 0; k < 120; k += 1) {
+    const m = Math.floor(rnd() * (k % 10 === 0 ? 90 : 12));
+    rawRuns.push({
+      scores: Array.from({ length: m }, () => (rnd() < 0.2 ? pick(RAW) : Math.floor(rnd() * 8) / 4)),
+      weights: Array.from({ length: m }, () => (rnd() < 0.15 ? pick(RAW) : 1 + Math.floor(rnd() * 4) / 4)),
+      ratio: pick([0.0, 0.0, 0.3, 1.0]),
+      floor: pick([null, null, 0.0, 0.5]),
+    });
+  }
+  const pyRaw = ctx.runPython(REF, {
+    op: 'rank_columns_raw',
+    runs: rawRuns.map((x) => ({ scores: x.scores.map(toBits), weights: x.weights.map(toBits), ratio: toBits(x.ratio), floor: x.floor === null ? null : toBits(x.floor) })),
+  });
+  const nodeRaw = rawRuns.map((x) => r.rankColumns(x.scores, x.weights, x.ratio, x.floor));
+  cases.push({ name: `J89-3 rankColumns on raw columns (NaN, infinities, -0, ties): node against python, ${rawRuns.length} runs`, kind: 'json', expected: pyRaw.cols, actual: nodeRaw });
+  // Per side, the two answers generation moved (a symmetric regression would leave the line above green).
+  cases.push(...literalCases(pyRaw.cols[1], nodeRaw[1], 'LITERAL: J89-3 rankColumns with NaN weights is V8\'s sort order', [0, 3, 4, 1, 2]));
+  cases.push(...literalCases(pyRaw.cols[2], nodeRaw[2], 'LITERAL: J89-3 rankColumns admits nothing past an infinite score at ratio 0', []));
+
   // #316 G3 (J89-1): memory/retrieval's constants and pure functions, compared directly.
   const g3 = await g3Cases(ctx, 'retrieval');
   cases.push(...g3.cases);

@@ -5,7 +5,8 @@
  * module evaluated (`skillfile`) is not yet initialised. `skillmine` re-exports all three names;
  * the reference keeps them in `skillmine.py` and imports lazily.
  */
-import { nospace, WORDCHAR } from './memory/retrieval.js';
+import { nospace } from './memory/retrieval.js';
+import { WORDCHAR } from './pysem.js';
 
 /** #289: Thai words that only steer a session ("go on", "done", "please"); they never label one. */
 export const LABEL_STOPWORDS: readonly string[] = [

@@ -23,6 +23,8 @@ Every string travels as base64, so a byte the JSON layer might normalise arrives
                                  "lengths": [hex16], "segs": {b64: [int, int, hex16, ...]}}]}
       -> {"seg": [[hex16, ...]], "post": [[hex16, ...]]}   bm25_segments, and bm25_postings
                                                           over the same runs expanded (J68-5)
+    {"op": "rank_columns_raw", "runs": [{"scores": [bits], "weights": [bits], "ratio": bits, "floor": bits | null}]}
+      -> {"cols": [[int, ...]]}                            rank_columns on raw columns (J89-3)
     {"op": "rank_columns", "runs": <as rank>}
       -> {"cols": [[int, ...]], "rank": [[int, ...]]}      rank_columns on `weight`, and rank
 
@@ -156,6 +158,19 @@ def main() -> None:
             cols.append(rank_columns(scores, [weight(c, usage) for c in items], ratio))
             ranks.append(rank(items, scores, usage, ratio))
         out = {"cols": cols, "rank": ranks}
+    elif op == "rank_columns_raw":
+        # J89-3: `rank_columns` straight on score and weight columns (NaN, the infinities, -0).
+        out = {
+            "cols": [
+                rank_columns(
+                    [unbits(x) for x in run["scores"]],
+                    [unbits(x) for x in run["weights"]],
+                    unbits(run["ratio"]),
+                    None if run["floor"] is None else unbits(run["floor"]),
+                )
+                for run in request["runs"]
+            ]
+        }
     else:
         raise SystemExit(f"unknown op {op!r}")
     json.dump(out, sys.stdout)

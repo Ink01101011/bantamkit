@@ -22,6 +22,9 @@ pub struct Fact {
     pub str_: bool,
     /// A Python `int` (not a bool) or `float` that a JS double holds exactly: `_js_num(v) is v`.
     pub num: bool,
+    /// J89-3: `type(v) is float` (so also `num`): a Float64Array element, a float literal, or
+    /// arithmetic with such an operand. Python's float arithmetic on it is IEEE-754's.
+    pub f64: bool,
     /// `type(v) is bool`.
     pub bool_: bool,
     /// `isinstance(v, list)`: a JS array.
@@ -74,6 +77,14 @@ impl Fact {
             ..Fact::default()
         }
     }
+    /// J89-3: a Python `float` (a proven number).
+    pub fn f64() -> Fact {
+        Fact {
+            num: true,
+            f64: true,
+            ..Fact::default()
+        }
+    }
     pub fn bool_() -> Fact {
         Fact {
             bool_: true,
@@ -115,6 +126,7 @@ impl Fact {
         Fact {
             str_: self.str_,
             num: self.num,
+            f64: self.f64,
             bool_: self.bool_,
             list: self.list,
             regex: self.regex,
@@ -155,6 +167,7 @@ impl Fact {
         Fact {
             str_: self.str_ && other.str_,
             num: self.num && other.num,
+            f64: self.f64 && other.f64,
             bool_: self.bool_ && other.bool_,
             list: self.list && other.list,
             regex: self.regex && other.regex,
@@ -192,6 +205,7 @@ impl Fact {
         Fact {
             str_: self.str_ && other.str_,
             num: self.num && other.num,
+            f64: self.f64 && other.f64,
             bool_: self.bool_ && other.bool_,
             list: self.list && other.list,
             regex: self.regex && other.regex,
@@ -220,6 +234,7 @@ impl Fact {
         self.top
             || (!need.str_ || self.str_)
                 && (!need.num || self.num)
+                && (!need.f64 || self.f64)
                 && (!need.bool_ || self.bool_)
                 && (!need.list || self.list)
                 && (!need.regex || self.regex)
@@ -252,6 +267,9 @@ pub enum Key {
         typed: bool,
         owner: u32,
         name: String,
+        /// J89-3: 0, or the span start of the counted loop whose proven copy (`lower.rs`,
+        /// `fast_loop`) declares this binding: the copy's facts are kept apart from the loop's.
+        ver: u32,
     },
     /// What a module function returns, from its typed or its untyped body.
     Ret { name: String, typed: bool },

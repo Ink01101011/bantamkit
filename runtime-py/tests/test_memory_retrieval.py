@@ -261,3 +261,46 @@ def test_pooled_ranking_honours_a_rebound_gate_floor(monkeypatch):
     assert len(every) == 2
     monkeypatch.setattr(retrieval, "GATE_FLOOR", 10.0)
     assert list(pooled_ranking([pool_of(facts, q)], q, 0.0, dict)) == []
+
+
+# ------------------------------------------------------------------ #316 G3 (J89-3): generated
+
+
+def test_retrieval_is_the_generated_module():
+    from bantamkit._generated import retrieval as generated
+
+    assert retrieval._generated is generated
+    assert retrieval.tokenize_v2("Release Lessons") == generated.tokenize_v2("Release Lessons")
+    # The skill miner's two names.
+    assert retrieval._nospace(0x0E01) is True and retrieval._nospace(0x41) is False
+    assert retrieval._wordchar("é") is True and retrieval._wordchar("-") is False
+
+
+def test_weight_table_writes_reach_the_generated_map():
+    # `tune.py` assigns `retrieval.W_TYPE["feedback"]`; the generated `weightOf` reads its own Map.
+    saved = retrieval.W_TYPE["feedback"]
+    try:
+        retrieval.W_TYPE["feedback"] = 2.0
+        assert retrieval.weight_of("feedback", False, 0.0) == 2.0
+    finally:
+        retrieval.W_TYPE["feedback"] = saved
+    assert retrieval.weight_of("feedback", False, 0.0) == saved
+
+
+def test_gate_floor_set_here_is_read_at_call_time(monkeypatch):
+    monkeypatch.setattr(retrieval, "GATE_FLOOR", 0.75)
+    assert BM25F.floor() == 0.75
+    # `gate`'s default floor is read when it is called (node's default parameter), not bound once.
+    assert retrieval.gate([0.5, 1.0]) == [False, True]
+    monkeypatch.undo()
+    assert retrieval.gate([0.5, 1.0]) == [True, True]
+
+
+def test_rank_columns_on_nan_and_infinity_answers_as_node():
+    # Moved to node's answer by generation (docs/porting.md, *Retrieval*): a NaN weight leaves V8's
+    # sort order (python's `sorted` by key left [0, 1, 2, 3, 4]); an infinite best score at ratio 0
+    # makes the threshold NaN (`0 * Infinity`), so nothing is admitted (python's `max` kept 0.0).
+    nan, inf = float("nan"), float("inf")
+    assert rank_columns([3, 1, 2, 5, 4], [nan, 1, nan, 1, 1], 0.0) == [0, 3, 4, 1, 2]
+    assert rank_columns([inf, 1, 2], [0, 1, 1], 0.0) == []
+    assert rank_columns([nan, 2.0], [2.0, 1.0], 0.5) == []

@@ -1,96 +1,128 @@
 """Retrieval for recall (#199): script-aware tokens, BM25F, the gate and the ranker.
 
-Byte-identical to runtime-ts/src/memory/retrieval.ts; `recall-retrieval` conformance pins it.
-`store.tokens` (v1) is NOT replaced: dream/dedupe's Jaccard still runs on it.
+**Generated, not hand-written (#316 G3, J89-3).** Every rule is `bantamkit/_generated/retrieval.py`,
+compiled from `runtime-ts/src/memory/retrieval.ts` by `tools/ts2py` (`docs/porting.md`, *Generated
+modules*; do not edit it, regenerate it), so the two runtimes run one source and
+`tools/conformance/suites/recall-retrieval.mjs` compares them. CPython's own float and text rules
+(`round(x, 9)`, `math.log`, `math.log1p`, NFKC + `lower`, the word-character test) reach the
+generated code through the adapter seam (`runtime-ts/src/pysem.ts`). `store.tokens` (v1) is NOT
+replaced: dream/dedupe's Jaccard still runs on it.
+
+This module keeps the public surface the hand-written one had (shim conveniences, listed in
+`docs/porting.md`):
+
+- Python shapes in: a `Doc`, a `Candidate` (`layer_order`), `Columns`, dicts for the term maps and
+  `(weights, length)` tuples for rows are handed to the generated code as the objects, Maps and
+  arrays the TypeScript reads; `doc_terms` answers `(dict, float)`.
+- `FIELD_BOOST`, `STALE_WORDS` are tuples and the numeric constants floats, as before; `W_TYPE` is
+  a dict whose writes reach the generated `Map`.
+- `GATE_FLOOR`, `GATE_RATIO`, `W_TYPE_OTHER`, `W_FRESH_DEMOTE`, `W_USAGE`, `W_CONTEXT`, `W_FLOOR`
+  and `QUERY_WEIGHT` set here (by `tune.py`, the eval, a test's `monkeypatch`) are set on the
+  generated module, which reads them at call time.
+- `_nospace(cp)` and `_wordchar(ch)` (the skill miner's) are the generated `nospace` and the
+  `pyWordchar` adapter.
 """
 
 from __future__ import annotations
 
-import math
-import operator
-import unicodedata
+import sys
+import types
 from collections.abc import Mapping
 from dataclasses import dataclass
-from itertools import repeat
 from typing import Any, NamedTuple, Protocol
 
-# Scripts written WITHOUT spaces between words. Codepoint ranges, not a Unicode-database
-# lookup, so the two runtimes cannot disagree through different Unicode versions.
-_NOSPACE = (
-    (0x0E00, 0x0E7F),  # Thai
-    (0x0E80, 0x0EFF),  # Lao
-    (0x1000, 0x109F),  # Myanmar
-    (0x1780, 0x17FF),  # Khmer
-    (0x3040, 0x30FF),  # Hiragana, Katakana
-    (0x3400, 0x4DBF),  # CJK Extension A
-    (0x4E00, 0x9FFF),  # CJK Unified
+from bantamkit._generated import retrieval as _generated
+from bantamkit._generated._ts2py_adapters import py_wordchar as _py_wordchar
+from bantamkit._generated._ts2py_runtime import _JS_UNDEFINED, _JsMap
+
+BM25_K1 = float(_generated.BM25_K1)
+BM25_B = float(_generated.BM25_B)
+# Field order IS the summation order.
+FIELD_BOOST = tuple((field, float(boost)) for field, boost in _generated.FIELD_BOOST)
+SCORE_ROUND = _generated.SCORE_ROUND
+# #207 amendment 3 (Q2): the weight on the likely-prompt vector.
+QUERY_WEIGHT = float(_generated.QUERY_WEIGHT)
+GATE_FLOOR = float(_generated.GATE_FLOOR)
+# `store.RECALL_MIN_SCORE_RATIO` is this number (store imports it from here).
+GATE_RATIO = float(_generated.GATE_RATIO)
+W_TYPE_OTHER = float(_generated.W_TYPE_OTHER)
+W_FRESH_DEMOTE = float(_generated.W_FRESH_DEMOTE)
+W_USAGE = float(_generated.W_USAGE)
+W_CONTEXT = float(_generated.W_CONTEXT)  # the #200 slot: file context
+W_FLOOR = float(_generated.W_FLOOR)
+STALE_WORDS = tuple(_generated.STALE_WORDS)
+
+# Read by the generated code at call time: assigning one here assigns it there too (as a float, the
+# number the TypeScript declares).
+_FORWARD = frozenset(
+    {
+        "GATE_FLOOR",
+        "GATE_RATIO",
+        "W_TYPE_OTHER",
+        "W_FRESH_DEMOTE",
+        "W_USAGE",
+        "W_CONTEXT",
+        "W_FLOOR",
+        "QUERY_WEIGHT",
+    }
 )
 
 
-def _nospace(cp: int) -> bool:
-    return any(lo <= cp <= hi for lo, hi in _NOSPACE)
+class _WeightTable(dict):
+    """`W_TYPE`: a dict (as before) whose every write rebuilds the generated module's `Map`."""
+
+    def _sync(self) -> None:
+        _generated.W_TYPE = _JsMap([[k, float(v)] for k, v in dict.items(self)])
+
+    def __setitem__(self, key: str, value: float) -> None:
+        super().__setitem__(key, value)
+        self._sync()
+
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(key)
+        self._sync()
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        super().update(*args, **kwargs)
+        self._sync()
+
+    def clear(self) -> None:
+        super().clear()
+        self._sync()
+
+    def pop(self, *args: Any) -> Any:
+        value = super().pop(*args)
+        self._sync()
+        return value
+
+    def popitem(self) -> tuple[str, float]:
+        item = super().popitem()
+        self._sync()
+        return item
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        value = super().setdefault(key, default)
+        self._sync()
+        return value
 
 
-def strip_nospace(text: str) -> str:
-    """Every code point of a no-space script replaced by one space, on the RAW text (before NFKC).
-
-    Q2's qdoc keeps only the spaced-script tokens of a query: the Thai bigrams were
-    measured as noise (J72-20). The order matters for fidelity: the probe stripped first
-    and tokenized after.
-    """
-    return "".join(" " if _nospace(ord(ch)) else ch for ch in text)
+W_TYPE: dict[str, float] = _WeightTable((k, float(v)) for k, v in _generated.W_TYPE)
 
 
-def _wordchar(ch: str) -> bool:
-    return unicodedata.category(ch)[0] in "LNM"
+class _Module(types.ModuleType):
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in _FORWARD:
+            setattr(_generated, name, float(value))
+        elif name == "W_TYPE":
+            value = _WeightTable(value)
+            value._sync()
+        super().__setattr__(name, value)
 
 
-def tokenize_v2(text: str) -> list[str]:
-    """NFKC, lowercase, then words for spaced scripts and character bigrams for the rest.
-
-    A list, not a set: BM25 needs term frequency. A no-space run of one character is
-    emitted as that character, so a one-letter Thai query still has a token.
-    """
-    s = unicodedata.normalize("NFKC", text).lower()
-    out: list[str] = []
-    word: list[str] = []
-    run: list[str] = []
-
-    def flush_word() -> None:
-        if word:
-            out.append("".join(word))
-            word.clear()
-
-    def flush_run() -> None:
-        if len(run) == 1:
-            out.append(run[0])
-        else:
-            out.extend(run[i] + run[i + 1] for i in range(len(run) - 1))
-        run.clear()
-
-    for ch in s:
-        if _nospace(ord(ch)):
-            flush_word()
-            run.append(ch)
-        elif _wordchar(ch):
-            flush_run()
-            word.append(ch)
-        else:
-            flush_word()
-            flush_run()
-    flush_word()
-    flush_run()
-    return out
+sys.modules[__name__].__class__ = _Module
 
 
-BM25_K1 = 1.2
-BM25_B = 0.75
-# Field order IS the summation order; runtime-ts/src/memory/retrieval.ts sums the same way.
-FIELD_BOOST = (("name", 2.0), ("description", 1.0), ("keywords", 2.0))
-SCORE_ROUND = 9
-# #207 amendment 3 (Q2): the weight on the likely-prompt vector. Frozen by gold look 6;
-# never tuned on gold.
-QUERY_WEIGHT = 1.0
+# ------------------------------------------------------------------ Python shapes in and out
 
 
 @dataclass(frozen=True)
@@ -100,176 +132,14 @@ class Doc:
     keywords: tuple[str, ...]
 
 
-def _fields(d: Doc) -> dict[str, list[str]]:
-    # The kebab name is words too: "release-lessons" -> ["release", "lessons"].
-    return {
-        "name": tokenize_v2(d.name),
-        "description": tokenize_v2(d.description),
-        "keywords": tokenize_v2(" ".join(d.keywords)),
-    }
+class Candidate(NamedTuple):
+    """One fact as the ranker sees it. A tuple, not a dataclass: the hook builds thousands."""
 
-
-def doc_terms(d: Doc) -> tuple[dict[str, float], float]:
-    """One doc's BM25F term weights (`Σ boost` per occurrence) and its length `Σ boost·|field|`."""
-    f = _fields(d)
-    weights: dict[str, float] = {}
-    length = 0.0
-    for field, boost in FIELD_BOOST:
-        for t in f[field]:
-            weights[t] = weights.get(t, 0.0) + boost
-        length += boost * len(f[field])
-    return weights, length
-
-
-def query_terms(query: str) -> list[str]:
-    """The query's `tokenize_v2` tokens, unique, in first-seen order: what BM25 sums over."""
-    return list(dict.fromkeys(tokenize_v2(query)))
-
-
-def length_of(lens: Any) -> float:
-    """`Σ boost·count` over FIELD_BOOST order, from per-field token COUNTS (the index keeps those).
-
-    The counts are kept rather than the length so a change of boost never needs a new index.
-    Equal to `doc_terms(d)[1]` term for term, in the same order.
-    """
-    length = 0.0
-    for (_, boost), count in zip(FIELD_BOOST, lens, strict=True):
-        length += boost * count
-    return length
-
-
-def bm25_postings(
-    q: list[str],
-    n: int,
-    total: float,
-    df: Mapping[str, int],
-    lengths: list[float],
-    postings: Mapping[str, list[tuple[int, float]]],
-) -> list[float]:
-    """BM25F for the docs `lengths` indexes, from per-term `(doc, weight)` postings.
-
-    `n`, `total` (summed length) and `df` describe the WHOLE collection; `lengths` and
-    `postings` need hold only the docs that carry a query term, since the others score 0.
-    This is how recall scores several layers as one collection (#199 D3) without reading a
-    doc it will not return: each layer hands over its counts and its postings for `q`.
-
-    TERM-MAJOR, and still the per-doc formula to the bit: `q` is walked in order and each
-    doc's sum starts at 0.0 and takes its terms in that order, skipping a weight of 0, which
-    is the sequence of additions a doc-by-doc loop makes. The idf of a term and the length
-    norm of a doc are hoisted; each is the same double wherever it is computed.
-    """
-    if not q or n <= 0:
-        return [0.0] * len(lengths)
-    avgdl = (total / n) or 1.0
-    k1 = BM25_K1 + 1.0
-    norm = [BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl) for dl in lengths]
-    s = [0.0] * len(lengths)
-    for t in q:
-        hits = postings.get(t)
-        if not hits:
-            continue
-        d = df.get(t, 0)
-        idf = math.log(1.0 + (n - d + 0.5) / (d + 0.5))
-        for i, w in hits:
-            if w != 0.0:
-                s[i] += idf * (w * k1) / (w + norm[i])
-    return [round(x, SCORE_ROUND) for x in s]
-
-
-def bm25_segments(
-    q: list[str],
-    n: int,
-    total: float,
-    df: Mapping[str, int],
-    lengths: list[float],
-    segs: Mapping[str, list[float]],
-) -> list[float]:
-    """`bm25_postings` over RUN-LENGTH postings: `segs[t]` is a flat `[start, count, w, ...]`
-    whose every run gives the docs `start..start+count-1` the weight `w` (J68-5).
-
-    The same doubles, added in the same order: each doc still takes its terms in `q` order
-    from 0.0, and each addition is `idf * (w * k1) / (w + norm)` -- computed once per
-    distinct `norm` within a run, which is the same double for every doc that has it, and
-    added a slice at a time. `lengths` covers every doc a run can name.
-    """
-    if not q or n <= 0:
-        return [0.0] * len(lengths)
-    avgdl = (total / n) or 1.0
-    k1 = BM25_K1 + 1.0
-    by_len = {dl: BM25_K1 * (1.0 - BM25_B + BM25_B * dl / avgdl) for dl in set(lengths)}
-    norm = list(map(by_len.__getitem__, lengths))
-    s = [0.0] * len(lengths)
-    add = operator.add
-    for t in q:
-        seg = segs.get(t)
-        if not seg:
-            continue
-        d = df.get(t, 0)
-        idf = math.log(1.0 + (n - d + 0.5) / (d + 0.5))
-        for j in range(0, len(seg), 3):
-            a, c, w = seg[j], seg[j + 1], seg[j + 2]
-            if w == 0.0:
-                continue
-            num = idf * (w * k1)
-            if c == 1:
-                s[a] += num / (w + norm[a])
-                continue
-            b = a + c
-            part = norm[a:b]
-            per = {v: num / (w + v) for v in set(part)}
-            s[a:b] = list(map(add, s[a:b], map(per.__getitem__, part)))
-    return list(map(round, s, repeat(SCORE_ROUND, len(s))))
-
-
-def bm25_pooled(
-    q: list[str],
-    n: int,
-    total: float,
-    df: Mapping[str, int],
-    rows: list[tuple[Mapping[str, float], float]],
-) -> list[float]:
-    """`bm25_postings` for `rows` = `(term weights, length)`, one per doc."""
-    postings: dict[str, list[tuple[int, float]]] = {t: [] for t in q}
-    for i, (weights, _) in enumerate(rows):
-        for t in q:
-            w = weights.get(t)
-            if w is not None:
-                postings[t].append((i, w))
-    return bm25_postings(q, n, total, df, [dl for _, dl in rows], postings)
-
-
-def bm25_scores(query: str, docs: list[Doc]) -> list[float]:
-    """BM25F over name, description and keywords; one score per doc, in `docs` order.
-
-    Rounded to SCORE_ROUND decimals before anyone compares or sorts them, so a last-ulp
-    difference between `math.log` and `Math.log` cannot split a ranking between runtimes.
-    """
-    if not query_terms(query) or not docs:
-        return [0.0] * len(docs)
-    return bm25_rows(query, [doc_terms(d) for d in docs])
-
-
-_NO_ROW: tuple[dict[str, float], float] = ({}, 0.0)
-
-
-def bm25_rows(query: str, rows: list[tuple[Mapping[str, float], float] | None]) -> list[float]:
-    """`bm25_scores` over docs already reduced to `doc_terms` rows; `None` is an empty doc.
-
-    The arithmetic of `bm25_scores`, which calls it: the queries vector (#207 Q2) scores the
-    cached rows of `queries.layer_terms` (J72-30) through here, so the cache cannot drift from
-    tokenizing the qdoc in place.
-    """
-    q = query_terms(query)
-    if not q or not rows:
-        return [0.0] * len(rows)
-    full = [_NO_ROW if r is None else r for r in rows]
-    df = {t: sum(1 for weights, _ in full if t in weights) for t in q}
-    # A plain loop, not `sum()`: since 3.12 `sum` of floats is compensated, and the port adds
-    # one length at a time.
-    total = 0.0
-    for _, dl in full:
-        total += dl
-    return bm25_pooled(q, len(full), total, df, full)
+    name: str
+    description: str
+    type: str
+    layer_order: int
+    keywords: tuple[str, ...]
 
 
 class Columns(NamedTuple):
@@ -284,10 +154,146 @@ class Columns(NamedTuple):
     segs: Mapping[str, list[Any]]
 
 
+def _list(xs: Any) -> list[Any]:
+    return xs if type(xs) is list else list(xs)
+
+
+def _map(m: Mapping[Any, Any] | None) -> Any:
+    """A Python mapping as the `Map` the TypeScript reads (`None` stays `null`)."""
+    if m is None or isinstance(m, _JsMap):
+        return m
+    return _JsMap([[k, v] for k, v in m.items()])
+
+
+def _doc(d: Doc) -> dict[str, Any]:
+    return {"name": d.name, "description": d.description, "keywords": list(d.keywords)}
+
+
+def _candidate(c: Candidate) -> dict[str, Any]:
+    return {
+        "name": c.name,
+        "description": c.description,
+        "type": c.type,
+        "layerOrder": c.layer_order,
+        "keywords": list(c.keywords),
+    }
+
+
+def _row(r: Any) -> Any:
+    """A `(term weights, length)` row as the `[Map, number]` the TypeScript reads; `None` stays."""
+    if r is None:
+        return None
+    weights, length = r
+    return [_map(weights), length]
+
+
+def _cols(cols: Columns) -> dict[str, Any]:
+    return {
+        "q": _list(cols.q),
+        "n": cols.n,
+        "total": cols.total,
+        "df": _map(cols.df),
+        "lengths": _list(cols.lengths),
+        "segs": _map(cols.segs),
+    }
+
+
+def _arg(value: Any) -> Any:
+    return _JS_UNDEFINED if value is _DEFAULT else value
+
+
+_DEFAULT: Any = object()
+
+
+# ------------------------------------------------------------------ tokens
+
+
+def _nospace(cp: int) -> bool:
+    return _generated.nospace(cp)
+
+
+def _wordchar(ch: str) -> bool:
+    return _py_wordchar(ch)
+
+
+def strip_nospace(text: str) -> str:
+    """Every code point of a no-space script replaced by one space, on the RAW text (pre-NFKC)."""
+    return _generated.strip_nospace(text)
+
+
+def tokenize_v2(text: str) -> list[str]:
+    """NFKC, lowercase, then words for spaced scripts and character bigrams for the rest."""
+    return _generated.tokenize_v2(text)
+
+
+def query_terms(query: str) -> list[str]:
+    """The query's `tokenize_v2` tokens, unique, in first-seen order: what BM25 sums over."""
+    return _generated.query_terms(query)
+
+
+# ------------------------------------------------------------------ BM25F
+
+
+def doc_terms(d: Doc) -> tuple[dict[str, float], float]:
+    """One doc's BM25F term weights (`Σ boost` per occurrence) and its length `Σ boost·|field|`."""
+    weights, length = _generated.doc_terms(_doc(d))
+    return {t: float(w) for t, w in weights}, float(length)
+
+
+def length_of(lens: Any) -> float:
+    """`Σ boost·count` over FIELD_BOOST order, from per-field token COUNTS."""
+    return float(_generated.length_of(_list(lens)))
+
+
+def bm25_postings(
+    q: list[str],
+    n: int,
+    total: float,
+    df: Mapping[str, int],
+    lengths: list[float],
+    postings: Mapping[str, list[tuple[int, float]]],
+) -> list[float]:
+    """BM25F for the docs `lengths` indexes, from per-term `(doc, weight)` postings."""
+    hits = _JsMap([[t, [[i, w] for i, w in p]] for t, p in postings.items()])
+    return _generated.bm25_postings(_list(q), n, total, _map(df), _list(lengths), hits)
+
+
+def bm25_segments(
+    q: list[str],
+    n: int,
+    total: float,
+    df: Mapping[str, int],
+    lengths: list[float],
+    segs: Mapping[str, list[float]],
+) -> list[float]:
+    """`bm25_postings` over RUN-LENGTH postings: `segs[t]` is a flat `[start, count, w, ...]`."""
+    return _generated.bm25_segments(_list(q), n, total, _map(df), _list(lengths), _map(segs))
+
+
+def bm25_pooled(
+    q: list[str],
+    n: int,
+    total: float,
+    df: Mapping[str, int],
+    rows: list[tuple[Mapping[str, float], float]],
+) -> list[float]:
+    """`bm25_postings` for `rows` = `(term weights, length)`, one per doc."""
+    return _generated.bm25_pooled(_list(q), n, total, _map(df), [_row(r) for r in rows])
+
+
+def bm25_scores(query: str, docs: list[Doc]) -> list[float]:
+    """BM25F over name, description and keywords; one score per doc, in `docs` order."""
+    return _generated.bm25_scores(query, [_doc(d) for d in docs])
+
+
+def bm25_rows(query: str, rows: list[tuple[Mapping[str, float], float] | None]) -> list[float]:
+    """`bm25_scores` over docs already reduced to `doc_terms` rows; `None` is an empty doc."""
+    return _generated.bm25_rows(query, [_row(r) for r in rows])
+
+
 class Scorer(Protocol):
-    """What ranks the pooled rows (#207 D1). Only the score column changes; gate, weights and
-    the inject cap stay where they are. `column` returns `None` when it cannot score every row;
-    the caller then ranks the whole recall with BM25F and the scorer's `fallback` says why."""
+    """What ranks the pooled rows (#207 D1). `column` returns `None` when it cannot score every
+    row; the caller then ranks the whole recall with BM25F and the scorer's `fallback` says why."""
 
     dense: bool
     fallback: str | None
@@ -299,178 +305,115 @@ class Scorer(Protocol):
 
 
 class Bm25fScorer:
-    """Today's scorer, unchanged: `bm25_segments` over the pooled columns."""
+    """Today's scorer: `bm25_segments` over the pooled columns (the generated `Bm25fScorer`)."""
 
     dense = False
 
     def __init__(self, fallback: str | None = None) -> None:
-        self.fallback = fallback
+        self._scorer = _generated.Bm25fScorer(fallback)
+
+    @property
+    def fallback(self) -> str | None:
+        return self._scorer.fallback
+
+    @fallback.setter
+    def fallback(self, value: str | None) -> None:
+        self._scorer.fallback = value
 
     def label(self) -> str:
-        return "bm25f"
+        return self._scorer.label()
 
     def used(self) -> str:
-        return "bm25f"
+        return self._scorer.used()
 
     def floor(self) -> float:
-        return GATE_FLOOR  # a call-time read: tune.py rebinds the module global
+        return self._scorer.floor()  # a call-time read of GATE_FLOOR
 
-    def column(self, cols: Columns, vecs: list[Any] | None) -> list[float]:
-        return bm25_segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs)
+    def column(self, cols: Columns, vecs: list[Any] | None = None) -> list[float]:
+        return self._scorer.column(_cols(cols))
 
 
 BM25F = Bm25fScorer()
 
 
 class QueryScorer:
-    """BM25F over the pooled columns plus `QUERY_WEIGHT` times BM25 of the bare prompt over
-    each row's qdoc (#207 amendment 3, Q2). Dense: `vecs` is one row per pooled row, in row
-    order (`pooled_ranking`'s `rows`): the qdoc's `doc_terms` (`queries.layer_terms`, J72-30),
-    or `None` for a fact with no queries. A row whose name or description holds no prompt term
-    can still be lifted by its queries."""
+    """BM25F over the pooled columns plus `QUERY_WEIGHT` times BM25 of the bare prompt over each
+    row's qdoc (#207 amendment 3, Q2): the generated `QueryScorer`. `vecs` is one row per pooled
+    row: the qdoc's `doc_terms` (`queries.layer_terms`), or `None` for a fact with no queries."""
 
     dense = True
 
     def __init__(self, prompt: str) -> None:
-        self.prompt = prompt
-        self.fallback: str | None = None
+        self._scorer = _generated.QueryScorer(prompt)
+
+    @property
+    def prompt(self) -> str:
+        return self._scorer.prompt
+
+    @property
+    def fallback(self) -> str | None:
+        return self._scorer.fallback
+
+    @fallback.setter
+    def fallback(self, value: str | None) -> None:
+        self._scorer.fallback = value
 
     def label(self) -> str:
-        return "bm25f+queries"
+        return self._scorer.label()
 
     def used(self) -> str:
-        return "bm25f+queries"
+        return self._scorer.used()
 
     def floor(self) -> float:
-        return GATE_FLOOR  # a call-time read, as `Bm25fScorer.floor`
+        return self._scorer.floor()
 
     def column(self, cols: Columns, vecs: list[Any] | None) -> list[float] | None:
-        if vecs is None:
-            return None
-        a = bm25_segments(cols.q, cols.n, cols.total, cols.df, cols.lengths, cols.segs)
-        b = bm25_rows(self.prompt, vecs)
-        # NOT rounded: the probe summed two rounded columns, and `rank_columns` rounds
-        # `score * weight`.
-        return [x + QUERY_WEIGHT * y for x, y in zip(a, b, strict=True)]
+        rows = None if vecs is None else [_row(r) for r in vecs]
+        return self._scorer.column(_cols(cols), rows)
 
 
 # ------------------------------------------------------------------ the gate and the ranker
-#
-# D3: the GATE decides eligibility on relevance alone; the WEIGHTS only order what passed.
-# A weight never lifts a fact over the gate: `rank` takes the gate's survivors and nothing
-# else. Initial values keep today's behaviour (the gate admits every score > 0) until Task 7
-# tunes them on silver; the gold set is never used to tune them.
-
-GATE_FLOOR = 0.0
-# `store.RECALL_MIN_SCORE_RATIO` is this number (store imports it from here).
-GATE_RATIO = 0.0
-W_TYPE = {"feedback": 1.3, "project": 1.1, "reference": 1.0, "user": 1.0}
-# A type outside W_TYPE (a hand-edited file) weighs as a reference does.
-W_TYPE_OTHER = 1.0
-W_FRESH_DEMOTE = -0.5
-W_USAGE = 0.2
-W_CONTEXT = 0.0  # the #200 slot: file context, zero until #200 gives it a signal
-W_FLOOR = 0.1
-STALE_WORDS = ("SUPERSEDED", "CLOSED", "REFUTED")
-_STALE_FIRST = frozenset(" \t" + "".join(w[0] for w in STALE_WORDS))
-
-
-class Candidate(NamedTuple):
-    """One fact as the ranker sees it. A tuple, not a dataclass: the hook builds thousands."""
-
-    name: str
-    description: str
-    type: str
-    layer_order: int
-    keywords: tuple[str, ...]
 
 
 def stale(description: str) -> bool:
-    """The description opens with SUPERSEDED, CLOSED or REFUTED as a whole word.
-
-    Spelled out rather than a regex: the whitespace class and the word boundary match different
-    code points in Python and in JavaScript, so a regex would split the two runtimes on a
-    description such as "CLOSEDé" or one that opens with U+001C. Leading spaces and tabs
-    are skipped; the word ends where the next character is not a letter, digit, mark or
-    underscore.
-    """
-    if not description or description[0] not in _STALE_FIRST:
-        return False  # the common case, decided on one character
-    s = description.lstrip(" \t")
-    for word in STALE_WORDS:
-        if s.startswith(word):
-            rest = s[len(word) :]
-            return not rest or not (_wordchar(rest[0]) or rest[0] == "_")
-    return False
+    """The description opens with SUPERSEDED, CLOSED or REFUTED as a whole word."""
+    return _generated.stale(description)
 
 
-def gate(
-    scores: list[float], ratio: float = GATE_RATIO, floor: float = GATE_FLOOR
-) -> list[bool]:
+def gate(scores: list[float], ratio: float = _DEFAULT, floor: float = _DEFAULT) -> list[bool]:
     """True iff `s > 0 and s >= floor and s >= ratio * max(scores)`: relevance alone."""
-    best = max(scores, default=0.0)
-    return [s > 0.0 and s >= floor and s >= ratio * best for s in scores]
+    return _generated.gate(_list(scores), _arg(ratio), _arg(floor))
 
 
 def weight(
     c: Candidate, usage: Mapping[str, float], context: Mapping[str, float] | None = None
 ) -> float:
     """`max(W_FLOOR, w_type + w_fresh + w_usage + w_context)`, the factor on relevance."""
-    ctx = context.get(c.name, 0.0) if context else 0.0
-    return weight_of(c.type, stale(c.description), usage.get(c.name, 0.0), ctx)
+    return float(_generated.weight(_candidate(c), _map(usage), _map(context)))
 
 
-def weight_of(type_: str, is_stale: bool, u: float, ctx: float = 0.0) -> float:
+def weight_of(type_: str, is_stale: bool, u: float, ctx: float = _DEFAULT) -> float:
     """`weight` from its inputs: a type, whether the description is stale, a usage, and the
     file context `ctx` (#200, `touch.context`), clamped into `[0, 1]` (NaN is no context)."""
-    u = u if u > 0.0 else 0.0  # a negative or NaN usage is no usage, never log1p(<= -1)
-    ctx = 0.0 if not (ctx > 0.0) else (1.0 if ctx > 1.0 else ctx)
-    w = (
-        W_TYPE.get(type_, W_TYPE_OTHER)
-        + (W_FRESH_DEMOTE if is_stale else 0.0)
-        + W_USAGE * math.log1p(u)
-        + W_CONTEXT * ctx
-    )
-    return w if w > W_FLOOR else W_FLOOR
+    return float(_generated.weight_of(type_, is_stale, u, _arg(ctx)))
 
 
 def rank(
     items: list[Candidate],
     scores: list[float],
     usage: Mapping[str, float],
-    ratio: float = GATE_RATIO,
+    ratio: float = _DEFAULT,
     context: Mapping[str, float] | None = None,
 ) -> list[int]:
-    """Indices of the items the gate admits, best first by `(-final, layer_order, name)`.
-
-    `final = round(score * weight, SCORE_ROUND)`; names compare by code point.
-    """
-    admitted = gate(scores, ratio)
-    keyed = [
-        (-round(scores[i] * weight(c, usage, context), SCORE_ROUND), c.layer_order, c.name, i)
-        for i, c in enumerate(items)
-        if admitted[i]
-    ]
-    # `i` last: equal keys keep input order, as a stable sort on the first three does.
-    keyed.sort()
-    return [k[3] for k in keyed]
+    """Indices of the items the gate admits, best first by `(-final, layer_order, name)`."""
+    return _generated.rank(
+        [_candidate(c) for c in items], _list(scores), _map(usage), _arg(ratio), _map(context)
+    )
 
 
 def rank_columns(
-    scores: list[float], weights: list[float], ratio: float = GATE_RATIO, floor: float | None = None
+    scores: list[float], weights: list[float], ratio: float = _DEFAULT, floor: float | None = None
 ) -> list[int]:
-    """`rank` over columns: the ids `gate` admits, best first by `(-final, id)`.
-
-    `floor` is the scorer's absolute floor (#207: `Scorer.floor()`); `None` reads `GATE_FLOOR`
-    at call time.
-
-    Equal to `rank` when ids run in `(layer_order, name)` order, which is how the pooled
-    columns are laid out (each layer's docs in name order, layers in order): the sort is
-    stable and `reverse` keeps equal keys in input order, so a tie goes to the smaller id.
-    """
-    best = max(scores, default=0.0)
-    least = max(GATE_FLOOR if floor is None else floor, ratio * best)
-    admitted = [i for i, x in enumerate(scores) if x > 0.0 and x >= least]
-    # Every row's final, at C speed; only the admitted ones are read.
-    final = list(map(round, map(operator.mul, scores, weights), repeat(SCORE_ROUND, len(scores))))
-    return sorted(admitted, key=final.__getitem__, reverse=True)
+    """`rank` over columns: the ids `gate` admits, best first by `(-final, id)`. `floor` is the
+    scorer's absolute floor; `None` reads `GATE_FLOOR` at call time."""
+    return _generated.rank_columns(_list(scores), _list(weights), _arg(ratio), floor)

@@ -342,3 +342,23 @@ def test_the_ledger_path_is_joined_as_node_joins_it(tmp_path):
     home.mkdir()
     led = UsageLedger(f"{home}/../a/./", tmp_path / "store")
     assert led.path == home / ".bantamkit" / "usage" / f"{store_id(tmp_path / 'store')}.jsonl"
+
+
+def test_a_folded_line_dated_far_past_now_weighs_infinity(tmp_path):
+    # Moved to node's answer by J89-3: the decay `0.5 ** (age / 14)` of a huge negative age
+    # overflows; CPython's `**` raised OverflowError out of `weights`, node's `Math.pow` answers
+    # Infinity, and so does the `pyPow` adapter now (only where `**` overflows).
+    import math
+
+    from bantamkit._generated._ts2py_adapters import py_pow
+
+    led = UsageLedger(tmp_path, tmp_path / "store")
+    led.path.parent.mkdir(parents=True, exist_ok=True)
+    led.path.write_text(
+        '{"ts":"9999-12-31T00:00:00Z","fact":"f","kind":"folded","weight":1.0}\n', encoding="utf-8"
+    )
+    assert led.weights("2026-10-01T00:00:00Z") == {"f": math.inf}
+    assert py_pow(0.5, -1e6) == math.inf
+    assert py_pow(0.5, 2.0) == 0.25 and py_pow(2.0, 0.5) == 2.0**0.5
+    with pytest.raises(ZeroDivisionError):
+        py_pow(0.0, -1.0)

@@ -197,19 +197,112 @@ export function pyRepr(s: string): string {
   return out + quote;
 }
 
-// ---------------------------------------------------------- the usage ledger's float semantics
+// ------------------------------------------------- the memory modules' float and text semantics
+//
+// #316 G3 (J89-2). `memory/retrieval.ts` and `memory/usage.ts` are ports of
+// `bantamkit/memory/retrieval.py` and `usage.py`, whose arithmetic and text rules ARE CPython's:
+// `round(x, n)`, `math.log`, `math.log1p`, `float ** float`, `unicodedata.normalize('NFKC', s)
+// .lower()` and `unicodedata.category(ch)[0] in 'LNM'`. Each is written here once, with the Node
+// spelling the two modules used before (moved, not changed), so ts2py's adapter seam maps each
+// onto the CPython function it ports (`tools/ts2py/src/adapters.rs`). ts2py refuses `Math.log`,
+// `Math.log1p` and `Math.pow`: Node's are not CPython's (J89-2 measured, macOS arm64, Node
+// 26.13 against CPython 3.12, 30,000 doubles: `Math.log` differs in the last bit on 549,
+// `Math.log1p` on 561, `Math.pow(x, 0.37)` on 131, `Math.pow(0.5, x)` on none), and V8's own
+// answer is not one function of its input across platforms (a straight port of its fdlibm `log`
+// still differs on 86 of 40,021 on arm64, where the compiler fuses multiply-adds), so no Python
+// helper can reproduce "Node's" bits. Every score these feed is rounded to nine decimals by
+// `pyRoundFloat` before anything compares it, which is what absorbs the last-bit drift.
 
 /**
- * CPython's `float ** float` (`x ** y` on two floats): `memory/usage.ts` is a port of
- * `bantamkit/memory/usage.py`, whose decay is `0.5 ** (age / half)`. Node's spelling is
- * `Math.pow`, and ts2py's adapter seam maps this function onto CPython's `**` (#316 G3, J89-2).
- * ts2py refuses `Math.pow` itself: V8's transcendental results are not one function of the input
- * across platforms (J89-2 measured, macOS arm64, Node 26.13 against CPython 3.12, 30,000 doubles:
- * `Math.pow(x, 0.37)` differs from CPython in the last bit on 131, `Math.log` on 549; a straight
- * Python port of V8's fdlibm `log` still differs from Node on 86 of 40,021, because the C compiler
- * fuses multiply-adds on arm64), so no Python helper can reproduce "Node's" bits.
- * `Math.pow(0.5, y)` and CPython agreed on all 30,000.
+ * CPython's `round(x, ndigits)` for a float, `ndigits >= 0` (`double_round`): the correctly
+ * rounded decimal (`_Py_dg_dtoa` mode 3, round HALF TO EVEN on the EXACT binary value) parsed
+ * back with a correctly rounded strtod. `toFixed` rounds ties away from zero and
+ * `Math.round(x * 1e9) / 1e9` rounds twice, so neither is it. The double is decomposed to
+ * `mantissa * 2**exponent` over BigInt, the tie is decided exactly, and `Number()` (correctly
+ * rounded in V8) parses the decimal back. The sign survives a round to zero (`round(-1e-12, 9)`
+ * is `-0.0`), as in CPython. Was `retrieval.ts`'s `roundHalfEven`.
+ */
+export function pyRoundFloat(x: number, ndigits: number): number {
+  if (!Number.isFinite(x)) return x;
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, x);
+  const bits = view.getBigUint64(0);
+  const negative = bits >> 63n === 1n;
+  const rawExponent = Number((bits >> 52n) & 0x7ffn);
+  const rawMantissa = bits & 0xfffffffffffffn;
+  const mantissa = rawExponent === 0 ? rawMantissa : rawMantissa | (1n << 52n);
+  const exponent = (rawExponent === 0 ? 1 : rawExponent) - 1075;
+  // An integer-valued double has no fractional digits to lose: round returns it unchanged.
+  if (exponent >= 0) return x;
+  const scale = 10n ** BigInt(ndigits);
+  const numerator = mantissa * scale;
+  const denominator = 1n << BigInt(-exponent);
+  let quotient = numerator / denominator;
+  const twice = (numerator % denominator) * 2n;
+  if (twice > denominator || (twice === denominator && quotient % 2n === 1n)) quotient += 1n;
+  const magnitude = Number(`${quotient}e-${ndigits}`);
+  return negative ? -magnitude : magnitude;
+}
+
+/**
+ * CPython's `round(x, 9)`: `pyRoundFloat(x, 9)` with a fast path. Was `retrieval.ts`'s `pyRound9`.
+ *
+ * FAST PATH (J68-5, 2.4 ms of a 5,000-fact recall went to BigInt): for `0 < x` with
+ * `y = x * 1e9 < 2**40`, `y` is within 2**-13 of the exact `x * 10**9`, so when `y`'s
+ * fractional part is more than 1e-3 away from one half, `Math.round(y)` IS the correctly
+ * rounded integer the reference takes, and `q / 1e9` (one correctly rounded IEEE division by
+ * an exact power of ten) IS the double that decimal parses back to. Every other value — ties,
+ * near-ties, negatives, zero, huge — goes through `pyRoundFloat`, exactly as before.
+ */
+export function pyRoundFloat9(x: number): number {
+  if (x > 0) {
+    const y = x * 1e9;
+    if (y < 1099511627776) {
+      const fl = Math.floor(y);
+      const frac = y - fl;
+      if (Math.abs(frac - 0.5) > 1e-3) return (frac < 0.5 ? fl : fl + 1) / 1e9;
+    }
+  }
+  return pyRoundFloat(x, 9);
+}
+
+/** CPython's `math.log(x)` for `x > 0` (every caller's domain); Node's `Math.log` (see above). */
+export function pyLog(x: number): number {
+  return Math.log(x);
+}
+
+/** CPython's `math.log1p(x)` for `x >= 0` (every caller's domain); Node's `Math.log1p`. */
+export function pyLog1p(x: number): number {
+  return Math.log1p(x);
+}
+
+/**
+ * CPython's `float ** float` (`x ** y` on two floats; usage.py's decay `0.5 ** (age / half)`);
+ * Node's `Math.pow` (see above; `Math.pow(0.5, y)` and CPython agreed on all 30,000). Where
+ * CPython's `**` overflows (it raises OverflowError) the adapter answers Infinity, as `Math.pow`
+ * does (J89-3: a folded ledger line dated far past `now`); every other result is CPython's.
  */
 export function pyPow(x: number, y: number): number {
   return Math.pow(x, y);
+}
+
+/**
+ * CPython's `unicodedata.normalize('NFKC', text).lower()`. Node's spelling is
+ * `normalize('NFKC').toLowerCase()`; the two agree except where Node's ICU has Unicode data
+ * CPython's tables do not yet have (code points CPython leaves unassigned).
+ */
+export function pyNfkcLower(text: string): string {
+  return text.normalize('NFKC').toLowerCase();
+}
+
+/**
+ * A spaced-script word character (one code point): CPython's
+ * `unicodedata.category(ch)[0] in 'LNM'`. Also the miner's `tokenizeLabel` (#289). Was
+ * `retrieval.ts`'s `WORDCHAR`; the same drift as `pyNfkcLower` (Node's ICU is newer).
+ */
+export const WORDCHAR = /^[\p{L}\p{N}\p{M}]$/u;
+
+/** `WORDCHAR.test(ch)`: CPython's `unicodedata.category(ch)[0] in 'LNM'` for one code point. */
+export function pyWordchar(ch: string): boolean {
+  return WORDCHAR.test(ch);
 }

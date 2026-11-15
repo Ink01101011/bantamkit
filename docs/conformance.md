@@ -118,7 +118,13 @@ with node literals, red at b3e570be; `recall-usage`'s `tie:` bed (a folded weigh
 new `UNRULED DIVERGENCE` cases, not ruled and not fixed: `dream`'s `tonight` spelled with U+0131
 (python raises `KeyError`, node reports it unresolved) and `recall-usage`'s `future:` bed (a folded
 line dated far past `now`: python raises `OverflowError`, node weighs it Infinity), each with
-per-side literals. `ts2py` now recompiles `usage.py` in the G1/G2 call.
+per-side literals. `ts2py` now recompiles `usage.py` in the G1/G2 call. **J89-3 (#316 G3)**:
+`recall-usage`'s `future:` case is no longer `UNRULED`: python weighs the far-future folded line
+Infinity as node does (red before the `pyPow` adapter changed), with a per-side literal each;
+`recall-retrieval`'s `J89-3 rankColumns on raw columns …` (125 runs with NaN, infinite, signed-zero
+scores and weights) and two per-side literals (a NaN weight's V8 order, nothing admitted past an
+infinite score at ratio 0), red against the hand-written module; `ts2py` recompiles `retrieval.py`
+in the same call.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

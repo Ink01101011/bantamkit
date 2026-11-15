@@ -1355,7 +1355,12 @@ def _js_mul(left, right):
     # J89-2: the general path's answer for two floats, or two non-zero ints in the exact range.
     kind = type(left)
     if kind is float and type(right) is float:
-        return _js_double_out(left * right)
+        product = left * right
+        # J89-3: a product that is not integral (NaN and the infinities included) is what
+        # `_js_double_out` returns unchanged.
+        if not product.is_integer():
+            return product
+        return _js_double_out(product)
     if (
         kind is int
         and type(right) is int
@@ -2756,3 +2761,572 @@ def _js_buffer_index_of(buffer, search, offset):
     if isinstance(buffer, (bytes, bytearray)):
         return buffer.find(byte, int(start))
     return bytes(buffer).find(byte, int(start))
+
+
+# ---------------------------------------------------------------- J89-3 (#316 G3): numeric lowering
+#
+# A `Float64Array` is a Python `list` whose every element is a `float` (SUBSET.md, *Typed arrays*):
+# the compiler admits one only as a `const`'s initializer and only indexed, written by index or
+# measured (`.length`), so nothing but these helpers and the proven fast lowerings ever touch it,
+# and every write stores a `float`.
+
+# The longest Float64Array a Python list is built for (Node allocates far longer ones lazily).
+_JS_F64_MAX = 2**26
+_JS_FLOAT_KINDS = frozenset({float})
+_JS_NUMBER_KINDS = frozenset({float, int})
+_JS_INT_KINDS = frozenset({int})
+
+
+def _js_f64_new(length):
+    """`new Float64Array(length)` for a primitive `length`: ToIndex (ToNumber, a fraction truncated
+    toward zero, NaN as 0); a negative length, or one past 2**53 - 1, is the RangeError Node throws,
+    naming the value as given. Every element is the float 0.0. An object argument (Node copies its
+    elements) is outside the subset."""
+    original = length
+    if not _js_is_number(length):
+        if isinstance(length, _JsBigInt):
+            raise _JsTypeError("Cannot convert a BigInt value to a number")
+        if not (length is None or length is _JS_UNDEFINED or isinstance(length, (bool, str))):
+            raise TypeError(
+                "ts2py: new Float64Array of anything but a length is outside the subset"
+            )
+        length = _js_to_number(length)
+    length = _js_num(length)
+    if length != length:
+        count = 0
+    elif length in (_js_math.inf, -_js_math.inf):
+        count = -1
+    else:
+        count = int(length)
+    if count < 0 or count > 2**53 - 1:
+        raise _JsRangeError("Invalid typed array length: " + _js_str(original))
+    if count > _JS_F64_MAX:
+        raise TypeError("ts2py: a Float64Array longer than 2**26 elements is outside the subset")
+    return [0.0] * count
+
+
+def _js_f64_index(array, key):
+    """The element index `array[key]` names (a number, or a string that is a canonical numeric
+    string), or -1 when that numeric key is not a valid integer index (out of range, a fraction,
+    -0 spelled as the string `"-0"`, NaN, an infinity). Any other key would be an ordinary property
+    of the typed array, which the subset does not have."""
+    kind = type(key)
+    if kind is int:
+        return key if 0 <= key < len(array) else -1
+    if kind is float:
+        # `-0.0` is the key "0" (ToPropertyKey), so it names element 0.
+        if key.is_integer() and 0 <= key < len(array):
+            return int(key)
+        return -1
+    if kind is str:
+        if key == "-0":
+            return -1
+        number = _js_to_number(key)
+        if _js_num_str(number) == key:
+            return _js_f64_index(array, number)
+    if _js_is_number(key):  # a subclass of int or float, or an int past 2**53
+        return _js_f64_index(array, float(_js_num(key)))
+    raise TypeError("ts2py: a Float64Array key that is not a number is outside the subset")
+
+
+def _js_ta_get(array, key):
+    """`array[key]` on a Float64Array: the element, or `undefined` for a numeric key that is not a
+    valid index."""
+    if type(key) is int:
+        return array[key] if 0 <= key < len(array) else _JS_UNDEFINED
+    at = _js_f64_index(array, key)
+    return array[at] if at >= 0 else _JS_UNDEFINED
+
+
+def _js_to_f64(value):
+    """What a Float64Array stores for `value`: ToNumber (a BigInt is the TypeError Node throws), as
+    a float."""
+    if type(value) is float:
+        return value
+    number = _js_to_numeric(value)
+    if isinstance(number, _JsBigInt):
+        raise _JsTypeError("Cannot convert a BigInt value to a number")
+    return float(_js_num(number))
+
+
+def _js_ta_put(array, key, value):
+    """`array[key] = value` on a Float64Array: the value is converted first (ToNumber), then stored
+    as a float at a valid index; a numeric key that is not one stores nothing."""
+    number = _js_to_f64(value)
+    if type(key) is int:
+        if 0 <= key < len(array):
+            array[key] = number
+        return
+    at = _js_f64_index(array, key)
+    if at >= 0:
+        array[at] = number
+
+
+def _js_fdiv(left, right):
+    """`left / right` for two numbers at least one of which is a float: IEEE division, and a zero
+    divisor is `_js_div`'s answer (NaN or a signed Infinity, never Python's ZeroDivisionError)."""
+    return left / right if right else _js_div(left, right)
+
+
+def _js_doubles(items, start, stop):
+    """The guard of a counted loop that reads `items[i]` for `start <= i < stop` (the caller has
+    checked `0 <= start` and `stop <= len(items)`): every element read is a float or an int a
+    double holds exactly, so each read is a proven number."""
+    part = items if start == 0 and stop == len(items) else items[start:stop]
+    kinds = frozenset(map(type, part))
+    if kinds <= _JS_FLOAT_KINDS:
+        return True
+    if not kinds <= _JS_NUMBER_KINDS:
+        return False
+    if kinds == _JS_INT_KINDS:
+        return _JS_SAFE_MIN <= min(part) and max(part) <= _JS_SAFE_MAX
+    return all(_JS_SAFE_MIN <= v <= _JS_SAFE_MAX for v in part if type(v) is int)
+
+
+# J89-3: V8's Array.prototype.sort (`third_party/v8/builtins/array-sort.tq`, a port of CPython's
+# listsort as it was before 3.11), step for step: the comparator is called on the same pairs in the
+# same order, so an inconsistent comparator (one a NaN makes so) leaves the order V8 leaves.
+# CPython's own `list.sort` is TimSort too, but since 3.11 merges runs by another rule
+# (powersort), and V8 insertion-sorts a short array without looking for a run first: on an
+# inconsistent comparator the two orders differ (J89-3 measured 561 of 30,000 seeded sorts against
+# Node; this port, 0, with the same number of comparator calls in every one).
+_JS_V8_MIN_GALLOP = 7
+
+
+def _js_v8_timsort(items, cmp):
+    n = len(items)
+    if n < 2:
+        return items
+    a = items  # work array, sorted in place
+    # Node v26.13.0 (V8) sorts seven or fewer elements by binary insertion alone, without
+    # looking for a run first (measured: the comparator calls it makes).
+    if n <= 7:
+        _js_v8_binary_insertion(a, cmp, 0, 1, n)
+        return items
+    st = {"min_gallop": _JS_V8_MIN_GALLOP}
+    runs = []  # [base, len]
+    remaining = n
+    low = 0
+    minrun = _js_v8_min_run(n)
+    while remaining:
+        run = _js_v8_count_run(a, cmp, low, low + remaining)
+        if run < minrun:
+            forced = min(minrun, remaining)
+            _js_v8_binary_insertion(a, cmp, low, low + run, low + forced)
+            run = forced
+        runs.append([low, run])
+        _js_v8_merge_collapse(a, cmp, runs, st)
+        low += run
+        remaining -= run
+    _js_v8_merge_force_collapse(a, cmp, runs, st)
+    return items
+
+
+def _js_v8_lt(cmp, x, y):
+    return cmp(x, y) < 0
+
+
+def _js_v8_min_run(n):
+    r = 0
+    while n >= 64:
+        r |= n & 1
+        n >>= 1
+    return n + r
+
+
+def _js_v8_binary_insertion(a, cmp, low, start, high):
+    if start == low:
+        start += 1
+    while start < high:
+        pivot = a[start]
+        left, right = low, start
+        while left < right:
+            mid = left + ((right - left) >> 1)
+            if _js_v8_lt(cmp, pivot, a[mid]):
+                right = mid
+            else:
+                left = mid + 1
+        a[left + 1 : start + 1] = a[left:start]
+        a[left] = pivot
+        start += 1
+
+
+def _js_v8_count_run(a, cmp, low, high):
+    lo = low + 1
+    if lo == high:
+        return 1
+    run = 2
+    descending = _js_v8_lt(cmp, a[lo], a[lo - 1])
+    prev = a[lo]
+    idx = lo + 1
+    while idx < high:
+        cur = a[idx]
+        order_lt = _js_v8_lt(cmp, cur, prev)
+        if descending:
+            if not order_lt:
+                break
+        elif order_lt:
+            break
+        prev = cur
+        run += 1
+        idx += 1
+    if descending:
+        a[low : low + run] = a[low : low + run][::-1]
+    return run
+
+
+def _js_v8_merge_collapse(a, cmp, runs, st):
+    while len(runs) > 1:
+        n = len(runs) - 2
+        if (n > 0 and runs[n - 1][1] <= runs[n][1] + runs[n + 1][1]) or (
+            n > 1 and runs[n - 2][1] <= runs[n - 1][1] + runs[n][1]
+        ):
+            if runs[n - 1][1] < runs[n + 1][1]:
+                n -= 1
+            _js_v8_merge_at(a, cmp, runs, n, st)
+        elif runs[n][1] <= runs[n + 1][1]:
+            _js_v8_merge_at(a, cmp, runs, n, st)
+        else:
+            break
+
+
+def _js_v8_merge_force_collapse(a, cmp, runs, st):
+    while len(runs) > 1:
+        n = len(runs) - 2
+        if n > 0 and runs[n - 1][1] < runs[n + 1][1]:
+            n -= 1
+        _js_v8_merge_at(a, cmp, runs, n, st)
+
+
+def _js_v8_merge_at(a, cmp, runs, i, st):
+    base_a, len_a = runs[i]
+    base_b, len_b = runs[i + 1]
+    runs[i][1] = len_a + len_b
+    del runs[i + 1]
+    k = _js_v8_gallop_right(a, cmp, a[base_b], base_a, len_a, 0)
+    base_a += k
+    len_a -= k
+    if len_a == 0:
+        return
+    len_b = _js_v8_gallop_left(a, cmp, a[base_a + len_a - 1], base_b, len_b, len_b - 1)
+    if len_b == 0:
+        return
+    if len_a <= len_b:
+        _js_v8_merge_low(a, cmp, base_a, len_a, base_b, len_b, st)
+    else:
+        _js_v8_merge_high(a, cmp, base_a, len_a, base_b, len_b, st)
+
+
+def _js_v8_gallop_left(arr, cmp, key, base, length, hint):
+    """The leftmost position in arr[base:base+length] where key belongs (a[k-1] < key <= a[k])."""
+    last_ofs, ofs = 0, 1
+    if _js_v8_lt(cmp, arr[base + hint], key):
+        max_ofs = length - hint
+        while ofs < max_ofs:
+            if _js_v8_lt(cmp, arr[base + hint + ofs], key):
+                last_ofs = ofs
+                ofs = (ofs << 1) + 1
+            else:
+                break
+        if ofs > max_ofs:
+            ofs = max_ofs
+        last_ofs += hint
+        ofs += hint
+    else:
+        max_ofs = hint + 1
+        while ofs < max_ofs:
+            if _js_v8_lt(cmp, arr[base + hint - ofs], key):
+                break
+            last_ofs = ofs
+            ofs = (ofs << 1) + 1
+        if ofs > max_ofs:
+            ofs = max_ofs
+        last_ofs, ofs = hint - ofs, hint - last_ofs
+    last_ofs += 1
+    while last_ofs < ofs:
+        m = last_ofs + ((ofs - last_ofs) >> 1)
+        if _js_v8_lt(cmp, arr[base + m], key):
+            last_ofs = m + 1
+        else:
+            ofs = m
+    return ofs
+
+
+def _js_v8_gallop_right(arr, cmp, key, base, length, hint):
+    """The rightmost position where key belongs (a[k-1] <= key < a[k])."""
+    last_ofs, ofs = 0, 1
+    if _js_v8_lt(cmp, key, arr[base + hint]):
+        max_ofs = hint + 1
+        while ofs < max_ofs:
+            if _js_v8_lt(cmp, key, arr[base + hint - ofs]):
+                last_ofs = ofs
+                ofs = (ofs << 1) + 1
+            else:
+                break
+        if ofs > max_ofs:
+            ofs = max_ofs
+        last_ofs, ofs = hint - ofs, hint - last_ofs
+    else:
+        max_ofs = length - hint
+        while ofs < max_ofs:
+            if _js_v8_lt(cmp, key, arr[base + hint + ofs]):
+                break
+            last_ofs = ofs
+            ofs = (ofs << 1) + 1
+        if ofs > max_ofs:
+            ofs = max_ofs
+        last_ofs += hint
+        ofs += hint
+    last_ofs += 1
+    while last_ofs < ofs:
+        m = last_ofs + ((ofs - last_ofs) >> 1)
+        if _js_v8_lt(cmp, key, arr[base + m]):
+            ofs = m
+        else:
+            last_ofs = m + 1
+    return ofs
+
+
+def _js_v8_merge_low(a, cmp, base_a, len_a, base_b, len_b, st):
+    temp = a[base_a : base_a + len_a]
+    dest = base_a
+    ct = 0
+    cb = base_b
+    a[dest] = a[cb]
+    dest += 1
+    cb += 1
+    len_b -= 1
+    if len_b == 0:
+        a[dest : dest + len_a] = temp[ct : ct + len_a]
+        return
+    if len_a == 1:
+        a[dest : dest + len_b] = a[cb : cb + len_b]
+        a[dest + len_b] = temp[ct]
+        return
+    min_gallop = st["min_gallop"]
+    while True:
+        wins_a = wins_b = 0
+        done = None
+        while True:
+            if _js_v8_lt(cmp, a[cb], temp[ct]):
+                a[dest] = a[cb]
+                dest += 1
+                cb += 1
+                wins_b += 1
+                wins_a = 0
+                len_b -= 1
+                if len_b == 0:
+                    done = "succeed"
+                    break
+                if wins_b >= min_gallop:
+                    break
+            else:
+                a[dest] = temp[ct]
+                dest += 1
+                ct += 1
+                wins_a += 1
+                wins_b = 0
+                len_a -= 1
+                if len_a == 1:
+                    done = "copyb"
+                    break
+                if wins_a >= min_gallop:
+                    break
+        if done is None:
+            min_gallop += 1
+            first = True
+            while first or wins_a >= _JS_V8_MIN_GALLOP or wins_b >= _JS_V8_MIN_GALLOP:
+                first = False
+                min_gallop = max(1, min_gallop - 1)
+                st["min_gallop"] = min_gallop
+                wins_a = _js_v8_gallop_right(temp, cmp, a[cb], ct, len_a, 0)
+                if wins_a > 0:
+                    a[dest : dest + wins_a] = temp[ct : ct + wins_a]
+                    dest += wins_a
+                    ct += wins_a
+                    len_a -= wins_a
+                    if len_a == 1:
+                        done = "copyb"
+                        break
+                    if len_a == 0:
+                        done = "succeed"
+                        break
+                a[dest] = a[cb]
+                dest += 1
+                cb += 1
+                len_b -= 1
+                if len_b == 0:
+                    done = "succeed"
+                    break
+                wins_b = _js_v8_gallop_left(a, cmp, temp[ct], cb, len_b, 0)
+                if wins_b > 0:
+                    a[dest : dest + wins_b] = a[cb : cb + wins_b]
+                    dest += wins_b
+                    cb += wins_b
+                    len_b -= wins_b
+                    if len_b == 0:
+                        done = "succeed"
+                        break
+                a[dest] = temp[ct]
+                dest += 1
+                ct += 1
+                len_a -= 1
+                if len_a == 1:
+                    done = "copyb"
+                    break
+            if done is None:
+                min_gallop += 1
+                st["min_gallop"] = min_gallop
+                continue
+        if done == "succeed":
+            if len_a > 0:
+                a[dest : dest + len_a] = temp[ct : ct + len_a]
+        else:
+            a[dest : dest + len_b] = a[cb : cb + len_b]
+            a[dest + len_b] = temp[ct]
+        return
+
+
+def _js_v8_merge_high(a, cmp, base_a, len_a, base_b, len_b, st):
+    temp = a[base_b : base_b + len_b]
+    dest = base_b + len_b - 1
+    ct = len_b - 1
+    ca = base_a + len_a - 1
+    a[dest] = a[ca]
+    dest -= 1
+    ca -= 1
+    len_a -= 1
+    if len_a == 0:
+        a[dest - (len_b - 1) : dest + 1] = temp[0:len_b]
+        return
+    if len_b == 1:
+        dest -= len_a
+        ca -= len_a
+        a[dest + 1 : dest + 1 + len_a] = a[ca + 1 : ca + 1 + len_a]
+        a[dest] = temp[ct]
+        return
+    min_gallop = st["min_gallop"]
+    while True:
+        wins_a = wins_b = 0
+        done = None
+        while True:
+            if _js_v8_lt(cmp, temp[ct], a[ca]):
+                a[dest] = a[ca]
+                dest -= 1
+                ca -= 1
+                wins_a += 1
+                wins_b = 0
+                len_a -= 1
+                if len_a == 0:
+                    done = "succeed"
+                    break
+                if wins_a >= min_gallop:
+                    break
+            else:
+                a[dest] = temp[ct]
+                dest -= 1
+                ct -= 1
+                wins_b += 1
+                wins_a = 0
+                len_b -= 1
+                if len_b == 1:
+                    done = "copya"
+                    break
+                if wins_b >= min_gallop:
+                    break
+        if done is None:
+            min_gallop += 1
+            first = True
+            while first or wins_a >= _JS_V8_MIN_GALLOP or wins_b >= _JS_V8_MIN_GALLOP:
+                first = False
+                min_gallop = max(1, min_gallop - 1)
+                st["min_gallop"] = min_gallop
+                k = _js_v8_gallop_right(a, cmp, temp[ct], base_a, len_a, len_a - 1)
+                wins_a = len_a - k
+                if wins_a > 0:
+                    dest -= wins_a
+                    ca -= wins_a
+                    a[dest + 1 : dest + 1 + wins_a] = a[ca + 1 : ca + 1 + wins_a]
+                    len_a -= wins_a
+                    if len_a == 0:
+                        done = "succeed"
+                        break
+                a[dest] = temp[ct]
+                dest -= 1
+                ct -= 1
+                len_b -= 1
+                if len_b == 1:
+                    done = "copya"
+                    break
+                k = _js_v8_gallop_left(temp, cmp, a[ca], 0, len_b, len_b - 1)
+                wins_b = len_b - k
+                if wins_b > 0:
+                    dest -= wins_b
+                    ct -= wins_b
+                    a[dest + 1 : dest + 1 + wins_b] = temp[ct + 1 : ct + 1 + wins_b]
+                    len_b -= wins_b
+                    if len_b == 1:
+                        done = "copya"
+                        break
+                    if len_b == 0:
+                        done = "succeed"
+                        break
+                a[dest] = a[ca]
+                dest -= 1
+                ca -= 1
+                len_a -= 1
+                if len_a == 0:
+                    done = "succeed"
+                    break
+            if done is None:
+                min_gallop += 1
+                st["min_gallop"] = min_gallop
+                continue
+        if done == "succeed":
+            if len_b > 0:
+                a[dest - (len_b - 1) : dest + 1] = temp[0:len_b]
+        else:
+            dest -= len_a
+            ca -= len_a
+            a[dest + 1 : dest + 1 + len_a] = a[ca + 1 : ca + 1 + len_a]
+            a[dest] = temp[ct]
+        return
+
+
+def _js_v8_sort(items, compare):
+    """`items.sort(compare)` as V8 orders it: `undefined` last (never compared), the comparator's
+    sign orders (NaN is 0, a boolean its number), in place."""
+    present = [item for item in items if item is not _JS_UNDEFINED]
+    missing = len(items) - len(present)
+
+    def order(left, right):
+        result = compare(left, right)
+        if isinstance(result, bool):
+            result = int(result)
+        if not _js_is_number(result) or result != result:
+            return 0
+        return result
+
+    _js_v8_timsort(present, order)
+    items[:] = present + [_JS_UNDEFINED] * missing
+    return items
+
+
+def _js_sort_by_f64(items, keys, descending, compare):
+    """`items.sort((a, b) => keys[b] - keys[a] || a - b)` (`descending`), or with `keys[a] -
+    keys[b]`, for `keys` a Float64Array. When every item is an int index into `keys` and no key it
+    names is NaN, the comparator is a total order (key, then index), so any stable sort gives V8's
+    order: ascending by index, then stably by key. Otherwise (a NaN key makes the comparator
+    inconsistent) V8's own sort runs with `compare` (`_js_v8_sort`), so the order is still V8's.
+    Anything but a list is the general `.sort`'s refusal."""
+    if type(items) is list:
+        if not items:
+            return items
+        ints = frozenset(map(type, items)) == _JS_INT_KINDS
+        if ints and min(items) >= 0 and max(items) < len(keys):
+            if not any(map(_js_math.isnan, map(keys.__getitem__, items))):
+                items.sort()
+                items.sort(key=keys.__getitem__, reverse=descending)
+                return items
+        return _js_v8_sort(items, compare)
+    return _js_m_sort(items, compare)

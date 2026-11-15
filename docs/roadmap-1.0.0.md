@@ -640,3 +640,26 @@ No `ruling: G3 as Node` case closes in U1 (both belong to `store.ts`); no ruling
 | python:3.11-slim (Docker): `test_memory_usage.py`, `test_ts2py_fresh.py`, `test_storage_log_consumers.py`, `test_memory_skills.py` | 100 passed, 1 skipped (3.11.18) |
 | `node tools/conformance/run.mjs --all` | PASS 23,121 cases: 3,754 byte-identical, 10,864 exact-string, 8,503 structural, 196 ruled-different, 0 failures |
 | `ruff check runtime-py tools` | clean |
+
+## #316 J89-3: G3 — numeric lowering in ts2py; `memory/retrieval` generated; the far-future ledger line closed (measured 2026-11-15 on `feat/316-g3`, macOS arm64, Node 26.13.0, CPython 3.12.13)
+
+`runtime-ts/src/memory/retrieval.ts` is compiled by `tools/ts2py` (in the G1/G2/usage call) to
+`runtime-py/src/bantamkit/_generated/retrieval.py` (888 lines), committed, and
+`bantamkit.memory.retrieval` serves it through a shim; the hand-written module is retired. What it
+took: `Float64Array` with proven-float elements, native IEEE arithmetic on proven floats, counted
+loops proven once before they run, the key sort `(a, b) => t[b] - t[a] || a - b`, and a port of
+V8's sort for its inconsistent-comparator fallback (`tools/ts2py/RULES.md`, J89-3; `SUBSET.md`,
+*Typed arrays and counted loops*). The #204 bar: **7.13 ms** (was 78 ms in J89-2's attempt; 6.10 ms
+hand-written). The usage ledger's far-future folded line now weighs Infinity in Python as in Node
+(`pyPow`'s adapter, overflow only). Shims, refactors, moved answers and cost: `docs/porting.md`,
+*Retrieval (#316 G3, J89-3)*.
+
+| Gate on this tree | Result |
+|---|---|
+| `cargo test --release` (tools/ts2py) / clippy `--all-targets -D warnings` / fmt | 72 passed, 0 failed / clean / clean |
+| `--suite ts2py` / `recall-usage` / `recall-retrieval` / `recall-strings` / `recall-queries` / `recall-gate` / `store` / `dream` / `skill-layer` / `hooks` / `wire` | 459 / 256 (1 ruled) / 161 / 161 / 450 / 49 / 423 / 136 / 94 / 330 / 712 cases, 0 failures each |
+| `cd runtime-ts && npm run build && npm test` | 2,507 tests: 2,460 pass, 0 fail, 47 skipped |
+| `pytest runtime-py/tests -q` | 5,320 passed, 59 skipped, 2 deselected, 3 xfailed (416.7 s) |
+| python:3.11-slim (Docker, 3.11.18): `test_memory_retrieval.py`, `test_memory_usage.py`, `test_ts2py_fresh.py`, `test_storage_bar.py`, `test_touch_context.py`, `test_memory_queries.py`, `test_skillmine.py` | 283 passed, 1 skipped |
+| `node tools/conformance/run.mjs --all` | PASS 23,127 cases: 3,754 byte-identical, 10,865 exact-string, 8,508 structural, 195 ruled-different, 0 failures, no stale ruling |
+| `ruff check runtime-py tools` | clean |

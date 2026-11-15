@@ -5,9 +5,11 @@ import datetime as _datetime
 import errno as _errno
 import gzip as _gzip
 import hashlib as _hashlib
+import math as _math
 import os as _os
 import pathlib as _pathlib
 import stat as _stat
+import unicodedata as _unicodedata
 import zlib as _zlib
 
 from __RUNTIME__ import (
@@ -22,6 +24,7 @@ from __RUNTIME__ import (
 # `BantamError` (and J88-2's `LOCK_*_MS`) are provided lazily by `__getattr__` below and are not
 # listed, so a star import does not build them (and import `bantamkit.client` / `storage.lock`).
 __all__ = [
+    "CountsView",
     "Date",
     "Hash",
     "PyOSError",
@@ -57,12 +60,17 @@ __all__ = [
     "py_float_repr",
     "py_is_dir",
     "py_join",
+    "py_log",
+    "py_log1p",
     "py_name",
+    "py_nfkc_lower",
     "py_parent",
     "py_pow",
     "py_realpath",
     "py_repr",
+    "py_round_float9",
     "py_strip",
+    "py_wordchar",
     "random_bytes",
     "read_file_bytes",
     "read_file_sync",
@@ -959,16 +967,47 @@ def exclusive(target, body, options=_JS_UNDEFINED, *_):
         return body(held)
 
 
-# ---------------------------------------------------------------- J89-2 (#316 G3 U1): usage
+# ---------------------------------------------------------------- J89-2 (#316 G3): usage, retrieval
+
+
+def py_round_float9(x, *_):
+    """`pyRoundFloat9` (runtime-ts/src/pysem.ts): CPython's `round(x, 9)`, which it ports."""
+    return round(x if type(x) is float else _js_num(x), 9)
+
+
+def py_log(x, *_):
+    """`pyLog` (pysem.ts): CPython's `math.log`, which it ports."""
+    return _math.log(_js_num(x))
+
+
+def py_log1p(x, *_):
+    """`pyLog1p` (pysem.ts): CPython's `math.log1p`, which it ports."""
+    return _math.log1p(_js_num(x))
 
 
 def py_pow(x, y, *_):
-    """`pyPow` (pysem.ts): CPython's `float ** float`, which it ports (an OverflowError where it
-    raises one). A negative base is refused: Python's answer there is a complex number."""
+    """`pyPow` (pysem.ts): CPython's `float ** float`, which it ports, except where `**` overflows:
+    there CPython raises OverflowError and Node's `Math.pow` answers Infinity, and since J89-3 this
+    answers Infinity too (the base is not negative, so an overflow is +Infinity). Every other
+    result, a ZeroDivisionError included, is CPython's. A negative base is refused: Python's answer
+    there is a complex number."""
     base = float(_js_num(x))
     if base < 0:
         raise TypeError("ts2py: pyPow of a negative base is outside the subset")
-    return base ** float(_js_num(y))
+    try:
+        return base ** float(_js_num(y))
+    except OverflowError:
+        return _math.inf
+
+
+def py_nfkc_lower(text, *_):
+    """`pyNfkcLower` (pysem.ts): `unicodedata.normalize('NFKC', text).lower()`, which it ports."""
+    return _unicodedata.normalize("NFKC", text).lower()
+
+
+def py_wordchar(ch, *_):
+    """`pyWordchar` (pysem.ts): `unicodedata.category(ch)[0] in 'LNM'` for one code point."""
+    return _unicodedata.category(ch)[0] in "LNM"
 
 
 def _os_text(text):
@@ -1069,3 +1108,19 @@ def __getattr__(name):
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+class CountsView(_JsObject):
+    """queries.ts's cached row view, declared for its `scan` method only (#316 G3 U3 generates
+    queries.ts later). No Python code builds one: `queries.layer_terms` answers dicts, which the
+    retrieval shim hands over as Maps."""
+
+    _js_name = "CountsView"
+    _js_own = frozenset({"scan"})
+    _js_own_methods = frozenset({"scan"})
+
+    def __init__(self, *_):
+        raise TypeError("ts2py: a CountsView is never built in Python")
+
+    def scan(self, *_):  # pragma: no cover - never constructed
+        raise TypeError("ts2py: a CountsView is never built in Python")

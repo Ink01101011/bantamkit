@@ -1007,7 +1007,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment and the usage ledger are compiled from TypeScript (#314, #315, #316 G1, G2, G3 U1)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger and retrieval are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1031,7 +1031,7 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
-  --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
+  runtime-ts/src/memory/retrieval.ts --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
@@ -1542,12 +1542,12 @@ and `valid` read each field once.
 | `append` past the fold threshold with a `ts` the fold cannot parse | the event written, then `ValueError` out of `append` | the event written, `False` |
 | `UsageLedger(home, ...)` with `..`, `.` or a doubled separator in `home` | `.path` kept them (`Path(home) / ...`) | `path.join` normalises them (the same file); `missed_writes` / `status_line` key on that spelling |
 
-**Found by J89-2, pinned UNRULED, not changed** (for the orchestrator): a folded line dated far past
-`now` (`9999-12-31`) decays by `0.5 ** (age / 14)` with a huge negative age; CPython's `**` raises
-`OverflowError`, so the reference's `weights` and the recall that reads them raise, where node's
-`Math.pow` answers Infinity and the fact weighs Infinity. Generation keeps Python's answer (`pyPow`
-IS CPython's `**`). `--suite recall-usage` `ruling: UNRULED DIVERGENCE future: …` and two per-side
-literals. (The dotless-i `tonight` difference is in the D2 row above.)
+**Found by J89-2, pinned UNRULED; CLOSED toward Node by J89-3**: a folded line dated far past `now`
+(`9999-12-31`) decays by `0.5 ** (age / 14)` with a huge negative age; CPython's `**` raises
+`OverflowError`, so the reference's `weights` and the recall that reads them raised, where node's
+`Math.pow` answers Infinity and the fact weighs Infinity. Since J89-3 the `pyPow` adapter answers
+Infinity where `**` overflows, and nowhere else (*Retrieval* below). (The dotless-i `tonight`
+difference is in the D2 row above.)
 
 **No `ruling: G3 as Node` case closed.** The two `G3 as Node` rows (a store root holding a NUL or a
 lone U+D800) belong to `store.ts` (U2); `--suite store` still has its 13 ruled cases, none stale,
@@ -1599,6 +1599,103 @@ JS-semantics runtime's per-operation cost, which G2 met in warm loops too.
 
 **Tests.** Added (`test_memory_usage.py`): the ledger is the generated class; lock constants set on
 the shim reach the generated module; the tie; the bad-`ts` auto-fold; the joined path. None retired.
+
+### Retrieval (#316 G3, J89-3): generated, after numeric lowering in ts2py
+
+Since J89-3 `bantamkit.memory.retrieval` runs code compiled from `runtime-ts/src/memory/retrieval.ts`:
+`_generated/retrieval.py` (888 lines), from the same ts2py call as G1, G2 and the usage ledger. The
+hand-written module (476 lines at `b3e570be`) is retired; `memory/retrieval.py` is a shim (419
+lines). J89-2 had compiled the module and kept it hand-written because a 5,000-fact recall took
+78 ms against the #204 bar of 15 ms; J89-3 gave ts2py what that code needed, and only where the
+TypeScript proves it (`tools/ts2py/SUBSET.md`, *Typed arrays and counted loops*; `RULES.md`, J89-3):
+a `Float64Array` whose elements are proven floats, native IEEE arithmetic on proven floats, counted
+loops whose array bounds and element numbers are checked once before they run, and the key sort
+`(a, b) => t[b] - t[a] || a - b`. The bar now measures **7.0 ms** (`test_storage_bar.py` passes).
+
+**What the shim keeps (Python-only conveniences).**
+
+- *Python shapes in*: a `Doc` (frozen dataclass), a `Candidate` (`NamedTuple`, `layer_order`),
+  `Columns` (`NamedTuple`), dicts for `df`, `segs`, `postings` and usage, and `(weights, length)`
+  rows are handed over as the objects, Maps and arrays the TypeScript reads. `doc_terms` answers
+  `(dict, float)`, `weight` / `weight_of` / `length_of` a float, as before.
+- *Constants*: `FIELD_BOOST` and `STALE_WORDS` stay tuples and every numeric constant a float.
+  `W_TYPE` is a dict whose every write rebuilds the generated `Map` (`tune.py` assigns
+  `W_TYPE["feedback"]`). `GATE_FLOOR`, `GATE_RATIO`, `W_TYPE_OTHER`, `W_FRESH_DEMOTE`, `W_USAGE`,
+  `W_CONTEXT`, `W_FLOOR` and `QUERY_WEIGHT` assigned on the shim (or by `monkeypatch`) are assigned,
+  as floats, on the generated module, which reads them at call time.
+- *Scorers*: `BM25F`, `Bm25fScorer` and `QueryScorer` are Python classes over the generated ones
+  (`column(cols, vecs)` takes `Columns`; `fallback` is settable; `QueryScorer.column` can be patched
+  on the class, as `queries_ref.py` does). `Scorer` stays the `Protocol`.
+- *The skill miner's names*: `_nospace(cp)` is the generated `nospace`, `_wordchar(ch)` the
+  `pyWordchar` adapter.
+
+**TypeScript refactors, each pure (Node's answers unchanged; `npm test` and every `recall-*` suite
+green).** From J89-2's attempt: CPython's `round(x, 9)` (with the J68-5 fast path), `math.log`,
+`math.log1p`, NFKC + `lower` and the word-character test moved into `pysem.ts` as `pyRoundFloat9`,
+`pyLog`, `pyLog1p`, `pyNfkcLower`, `pyWordchar` (`roundHalfEven` is `pysem.pyRoundFloat`, `WORDCHAR`
+moved there too; `skilllabel.ts` imports it from `pysem`), each mapped onto the CPython function it
+ports; `forEach` loops became counted loops; `context?.get(...)` an explicit test; `rank` collects
+its order in an array; `bm25Rows` asks `'scan' in row`; parameter properties became fields. New in
+J89-3: `bm25Segments` and `rankColumns` keep their `Float64Array`s (J89-2 had turned them into plain
+arrays) with the division's denominator in a `const`, the scores are written into `lengths.slice()`
+(as fast in V8 as the `new Array(m)` it replaces, which ts2py would have to hold holes for: a `push`
+loop measured 13% slower), and `rankColumns` takes its maximum in a counted loop. Node, interleaved
+medians against `b3e570be`'s build (25 rounds; `bm25Segments` over one run per term 37.7 against
+36.5 us in three more runs of 2,500): every function within 5% (`bm25Segments` +3.3%, `weightOf`
++2.3% / +3.9%, `stale` +4.1% / -5.2%, the rest within 2.5%).
+
+**Python-side behaviour changes, all toward Node** (`before` is the hand-written module at
+`b3e570be`. A differential of the two Python modules, 27,000 calls over edge inputs (NaN, ±0,
+±Infinity, 5e-324, mixed scripts, U+0130 / U+0131, lone surrogates) to `tokenize_v2`,
+`strip_nospace`, `stale`, `query_terms`, `weight_of`, `gate`, `rank_columns`, `length_of`,
+`bm25_segments` and `bm25_scores`, values compared as doubles, found only `rank_columns`, 415 times;
+the last two rows are by reading the code):
+
+| Input | Python before | Python now = Node |
+|---|---|---|
+| `rank_columns` with a NaN weight (`[3, 1, 2, 5, 4]`, weights `[NaN, 1, NaN, 1, 1]`) | `sorted(admitted, key=final, reverse=True)` over NaN keys: `[0, 1, 2, 3, 4]` | V8's sort with the comparator a NaN makes inconsistent: `[0, 3, 4, 1, 2]` |
+| `rank_columns` whose best score is Infinity or NaN at ratio 0 (`ratio * best` is NaN) | `max(floor, NaN)` is `floor`, so every positive score was admitted | `Math.max(floor, NaN)` is NaN, so nothing is admitted: `[]` |
+| `gate(scores)` / `rank(...)` after `GATE_FLOOR` was reassigned | the default floor bound when the module was imported | the default read when called (a JS default parameter) |
+| a score list that is all zeros (no query term, `n <= 0`) | `[0.0, ...]` | `[0, ...]`: the same numbers, spelled as ints |
+
+`--suite recall-retrieval` `J89-3 rankColumns on raw columns (NaN, infinities, -0, ties): node
+against python, 125 runs` and two per-side literals pin the first two (3 cases red against the
+hand-written module, green now).
+
+**The usage ledger's far-future line (J89-2's UNRULED pin), closed toward Node.** `pyPow`'s adapter
+answers Infinity where CPython's `**` raises OverflowError, and changes no other result (a
+ZeroDivisionError stays one). `--suite recall-usage`'s `future:` case is an agreeing case now (red
+before the adapter changed: 2 failures) with a per-side literal for each runtime;
+`test_memory_usage.py` pins the Python side.
+
+**Cost, measured (J89-3, macOS arm64, CPython 3.12.13; n = 9 medians; before = `b3e570be`, J89-2 =
+`181d7a8f` (usage generated, retrieval hand-written), after = this tree).** Over 20% against
+`b3e570be` is flagged with its cause.
+
+| Path | Before | J89-2 | After | vs before |
+|---|---|---|---|---|
+| #204 bar: 5,000-fact recall p50 of 20 (bar 15 ms) | 6.10 ms | 6.16 ms | 7.13 ms | +16.9% |
+| `recall` over the 307-fact store, warm, unstamped | 10.40 ms | 11.65 ms | 12.64 ms | **+21.5%** (J89-2's ledger +12.0%, retrieval +8.5%) |
+| `recall`, warm, stamped (`memory_recall`) | 10.85 ms | 12.45 ms | 13.42 ms | **+23.7%** (J89-2's ledger +14.7%, retrieval +7.8%) |
+| `recall` in a fresh process, import included | 102.5 ms | 120.4 ms | 121.2 ms | +18.2% (retrieval +0.7%) |
+| `--hook` UserPromptSubmit, a process | 362.4 ms | 382.0 ms | 385.4 ms | +6.4% (retrieval +0.9%) |
+| cold `import bantamkit.memory.retrieval` | 95.3 ms | | 96.1 ms | +0.8% |
+
+Warm calls (us, two runs each; the user paths above are what they cost a recall):
+
+| Call | Before | After | |
+|---|---|---|---|
+| `bm25_segments`, 5,000 docs, 7 terms of one run each (the bar's shape) | 1,998 / 2,012 | 2,241 / 2,224 | +12% / +11% |
+| `bm25_segments`, 5,000 docs, 4 terms of ~1,500 one-doc runs | 1,318 / 1,314 | 6,885 / 6,898 | **+422%**: each run is a turn of the outer loop over `seg[j]`, `seg[j + 1]`, `seg[j + 2]`, whose step of 3 and offsets the proven copy does not cover, so it runs the general lowering (about 1 us a run); the per-doc work inside is proven |
+| `rank_columns` over 5,000 | 1,142 / 1,145 | 1,636 / 1,633 | **+43%**: one Python loop where the hand-written module mapped at C speed, and `x * weights[i]` through `_js_mul` (two proven numbers, neither proven a float) |
+| `weight_of`, 5,000 calls | 421 / 436 | 11,456 / 11,528 | **+2,600%**: a scalar function of a Map value and adapter results, which prove nothing, so every operation is a JS-semantics call (`store` calls it once per type and once per used fact, not per row) |
+| `stale`, 5,000 calls | 1,151 / 1,107 | 6,467 / 6,491 | **+470%**: the string helpers per character (the hot index calls it once per fact it writes) |
+| `tokenize_v2`, mixed-script text | 38 / 37 | 46 / 47 | **+25%**: the code-unit loop; ASCII text is 94% faster (the `[a-z0-9]+` fast path) |
+| `bm25_scores` over 200 docs | 10,573 / 10,414 | 10,225 / 10,200 | -3% |
+
+**Tests.** Added (`test_memory_retrieval.py`): the module is the generated one and keeps the miner's
+names; `W_TYPE` writes reach the generated Map; `GATE_FLOOR` is read at call time; the two moved
+`rank_columns` answers. (`test_memory_usage.py`): the far-future line weighs Infinity. None retired.
 
 ## Concurrency
 

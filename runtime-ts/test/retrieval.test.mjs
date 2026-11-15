@@ -20,11 +20,12 @@ import {
   bm25Postings,
   bm25Segments,
   weight,
-  roundHalfEven,
   stale,
   tokenizeV2,
   W_TYPE,
 } from '../dist/memory/retrieval.js';
+// #316 G3 (J89-2): CPython's `round` moved to pysem, where ts2py's adapter seam maps it.
+import { pyRoundFloat as roundHalfEven } from '../dist/pysem.js';
 
 const CASES = [
   ['Release Lessons 0.35.9', ['release', 'lessons', '0', '35', '9']],

@@ -414,14 +414,50 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Constant,
         why: "Python is the reference: `bantamkit.storage.lock.LOCK_POLL_MS`, the same 5 the port declares (`--suite storage-lock`).",
     },
-    // J89-2 (#316 G3 U1: memory/usage). `pyPow` is "Python is the reference": the TypeScript
-    // function is a port of the CPython operator named, so CPython is the definition.
+    // J89-2 (#316 G3: memory/usage, memory/retrieval). `pysem.ts` rows first: each TypeScript
+    // function is a port of the CPython function named, so CPython is the definition (pysem.ts,
+    // "the memory modules' float and text semantics", has the measurement).
+    Adapter {
+        module: Some("runtime-ts/src/pysem.ts"),
+        name: "pyRoundFloat9",
+        py_name: "py_round_float9",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyRoundFloat9` is CPython's `round(x, 9)` (its doc comment: `double_round`, half to even on the exact binary value). J89-2: 40,000 seeded doubles (and `recall-retrieval`'s 1,000) equal bit for bit against Node.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pysem.ts"),
+        name: "pyLog",
+        py_name: "py_log",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyLog` is CPython's `math.log` (retrieval.py's idf). Node's `Math.log` differs from it in the last bit on 549 of 30,000 doubles (J89-2, arm64), and no Python helper can reproduce V8's bits on every platform (a port of its fdlibm `log` still differs on 86 of 40,021 on arm64); every score it feeds is rounded to nine decimals.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pysem.ts"),
+        name: "pyLog1p",
+        py_name: "py_log1p",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyLog1p` is CPython's `math.log1p` (retrieval.py's usage weight); Node's `Math.log1p` differs in the last bit on 561 of 30,000 doubles (J89-2), absorbed as `pyLog`'s is.",
+    },
     Adapter {
         module: Some("runtime-ts/src/pysem.ts"),
         name: "pyPow",
         py_name: "py_pow",
         kind: AdapterKind::Function,
-        why: "Python is the reference: `pyPow` is CPython's `float ** float` (usage.py's `0.5 ** (age / half)`), raising where it raises (OverflowError); a negative base is refused (Python answers a complex). Node's `Math.pow(0.5, y)` agreed with it on 30,000 of 30,000 doubles (J89-2, arm64); ts2py refuses `Math.pow` itself (pysem.ts says why).",
+        why: "Python is the reference: `pyPow` is CPython's `float ** float` (usage.py's `0.5 ** (age / half)`), except that where `**` overflows (CPython raises OverflowError) it answers Infinity, as `Math.pow` does (J89-3, `--suite recall-usage` `future:`); a negative base is refused (Python answers a complex). Node's `Math.pow(0.5, y)` agreed with it on 30,000 of 30,000 doubles (J89-2, arm64); ts2py refuses `Math.pow` itself (pysem.ts says why).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pysem.ts"),
+        name: "pyNfkcLower",
+        py_name: "py_nfkc_lower",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyNfkcLower` is `unicodedata.normalize('NFKC', s).lower()` (retrieval.py's tokenizer); Node's spelling differs only where its ICU has Unicode data CPython's tables do not (code points CPython leaves unassigned).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pysem.ts"),
+        name: "pyWordchar",
+        py_name: "py_wordchar",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyWordchar` is `unicodedata.category(ch)[0] in 'LNM'` (retrieval.py's `_wordchar`), with `pyNfkcLower`'s Unicode-version drift.",
     },
     Adapter {
         module: Some("runtime-ts/src/memory/pyfs.ts"),
@@ -443,6 +479,13 @@ pub const ADAPTERS: &[Adapter] = &[
         py_name: "Hash",
         kind: AdapterKind::Class(&["update", "digest"]),
         why: "Node builtin: `hash.update(string, 'utf8')` hashes the string's UTF-8, a lone surrogate as U+FFFD (EF BF BD), as Node's encoder writes it; under the G2 path policy (its only caller hashes a path, `storeId`) a POSIX surrogateescape code point U+DC80..U+DCFF is the real byte it stands for (the ruled target-specific difference, docs/porting.md). `digest('hex')` is `hexdigest()`; a finished hash is refused, as Node throws ERR_CRYPTO_HASH_FINALIZED.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/queries.ts"),
+        name: "CountsView",
+        py_name: "CountsView",
+        kind: AdapterKind::Class(&["scan"]),
+        why: "Declared for its `scan` method only (#316 G3 U3 generates queries.ts later): retrieval's `bm25Rows` calls `row.scan(...)` on a row that has one (`'scan' in row`). No Python code builds one: `queries.layer_terms` answers dicts, which the retrieval shim hands over as Maps, and `'scan' in` a Map is false.",
     },
 ];
 

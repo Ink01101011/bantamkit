@@ -252,12 +252,12 @@ function scenarios() {
         { op: 'bytes' },
       ],
     },
-    // J89-2 found, NOT ruled and NOT fixed: a folded line dated far past `now` (a hand edit, a
-    // clock that ran ahead) decays by `0.5 ** (age / 14)` with a huge NEGATIVE age. CPython's
-    // float `**` raises OverflowError, so the reference's `weights` (and the recall that reads
-    // it) raises; node's `Math.pow` answers Infinity and the fact weighs Infinity. Unchanged by
-    // generation: `pysem.pyPow` IS CPython's `**`, so python still raises. Pinned for the
-    // orchestrator as an UNRULED DIVERGENCE, with each side's answer as a literal below.
+    // J89-2 found it, J89-3 closed it toward node: a folded line dated far past `now` (a hand
+    // edit, a clock that ran ahead) decays by `0.5 ** (age / 14)` with a huge NEGATIVE age.
+    // CPython's float `**` raises OverflowError there, so python's `weights` (and the recall that
+    // reads it) used to raise; node's `Math.pow` answers Infinity and the fact weighs Infinity.
+    // Since J89-3 `pysem.pyPow`'s adapter answers Infinity where `**` overflows (and nowhere
+    // else), so the two agree; each side's answer is also a literal below.
     {
       label: 'future: a folded line dated far past now',
       fold_lines: null,
@@ -498,15 +498,11 @@ export async function run(ctx) {
     s.ops.forEach((op, j) => {
       const what = op.op === 'append' ? `append ${op.kind} ${op.fact}` : `${op.op}${op.n ? ` ${op.n} (decompressed)` : ''}${op.fact ? ` ${op.fact}` : ''}${op.now ? ` @${op.now}` : ''}`;
       const isBytes = op.op === 'bytes' || op.op === 'gz';
-      const unruled = s.label.startsWith('future:') && op.op === 'weights_or_error';
       cases.push({
-        name: `${unruled ? 'ruling: UNRULED DIVERGENCE ' : ''}${s.label} — #${String(j).padStart(2, '0')} ${what}`,
+        name: `${s.label} — #${String(j).padStart(2, '0')} ${what}`,
         kind: isBytes ? 'bytes' : 'json',
         expected: isBytes ? decodeOrMarker(py.beds[i][j]) : py.beds[i][j],
         actual: isBytes ? decodeOrMarker(nd.beds[i][j]) : nd.beds[i][j],
-        ...(unruled
-          ? { ruling: 'UNRULED DIVERGENCE (J89-2): not ruled in docs/porting.md and not fixed; python raises OverflowError from 0.5 ** (a huge negative age / 14), node weighs the fact Infinity' }
-          : {}),
       });
     });
   });
@@ -529,10 +525,10 @@ export async function run(ctx) {
   cases.push(
     ...literalCases(tieLine('py'), tieLine('node'), 'LITERAL: J89-2 a folded weight of 0.5 ** 10 is written 0.000976563', '{"ts":"2026-10-15T00:00:00Z","fact":"t","kind":"folded","last":"2026-05-28T00:00:00Z","weight":0.000976563}\n'),
   );
-  // J89-2: the future-dated folded line, each side's own answer (the ruling above only says they
-  // differ).
+  // J89-3: the future-dated folded line, each side's own answer (a symmetric regression back to
+  // a raise would leave the differential green).
   const futureAt = all.findIndex((s) => s.label.startsWith('future:'));
-  cases.push({ name: 'LITERAL: J89-2 python raises OverflowError for a folded line dated far past now', kind: 'json', expected: { error: 'OverflowError' }, actual: py.beds[futureAt].at(-1) });
+  cases.push({ name: 'LITERAL: J89-3 python weighs a folded line dated far past now Infinity', kind: 'json', expected: { weights: [['f', 'Infinity']] }, actual: py.beds[futureAt].at(-1) });
   cases.push({ name: 'LITERAL: J89-2 node weighs a folded line dated far past now Infinity', kind: 'json', expected: { weights: [['f', 'Infinity']] }, actual: nd.beds[futureAt].at(-1) });
   // J68-5: `last_used` across two folds, per side — a fold that went back to reading its own
   // `ts` on BOTH sides leaves every differential green and reddens this.
