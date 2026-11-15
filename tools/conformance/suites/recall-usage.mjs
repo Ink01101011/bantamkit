@@ -34,6 +34,7 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync, symlinkSync } fro
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { g3Cases } from '../lib/g3pure.mjs';
 
 export const name = 'recall-usage';
 export const summary = 'the usage ledger: bytes, decayed weights, keyword copies, skipped lines, fold';
@@ -392,6 +393,36 @@ export async function run(ctx) {
     });
   });
 
+  // #316 G3 (J89-1): UNRULED DIVERGENCES in storeId, the key of the usage ledger (and of the
+  // hot index's directory). NOT ruled in docs/porting.md and NOT fixed; the orchestrator
+  // decides. Python's `os.path.realpath` FOLLOWS a dangling symlink to its target text; the
+  // port's `realpath` (`fs.realpathSync.native`, falling back to the parent) cannot resolve it
+  // and keeps the link's own name, so one store gets two ledgers. A lone surrogate: python's
+  // `.encode("utf-8")` raises UnicodeEncodeError, node hashes the U+FFFD its encoder writes.
+  // The live-symlink and non-ASCII paths above are the agreeing companions.
+  {
+    const g3ref = join(ctx.repoRoot, 'tools', 'conformance', 'ref', 'g3_ref.py');
+    const UNRULED = 'UNRULED DIVERGENCE (J89-1): not ruled in docs/porting.md and not fixed; ';
+    const dangling = join(ctx.scratch, 'usage-store', 'dangling');
+    symlinkSync(join(ctx.scratch, 'usage-store', 'no-such-target'), dangling, 'dir');
+    const odd = [
+      [dangling, 'a dangling symlink', 'python hashes the link TARGET (os.path.realpath follows it); node hashes the link path'],
+      [join(dangling, 'below'), 'a path below a dangling symlink', 'python hashes <target>/below; node hashes <link>/below'],
+      [join(ctx.scratch, 'usage-store', 's\ud800x'), 'a lone surrogate', 'python raises UnicodeEncodeError; node hashes U+FFFD'],
+      [join(ctx.scratch, 'usage-store', 's\udc80x'), 'a surrogateescape code point', 'python raises UnicodeEncodeError (realpath keeps the str, .encode is strict); node hashes U+FFFD'],
+    ];
+    const pyIds = ctx.runPython(g3ref, { op: 'store_id', paths: odd.map(([p]) => p) }).out;
+    odd.forEach(([p, label, why], i) => {
+      let nd;
+      try {
+        nd = { ok: usage.storeId(p) };
+      } catch (e) {
+        nd = { err: e?.name ?? 'Error' };
+      }
+      cases.push({ name: `ruling: UNRULED DIVERGENCE storeId — ${label}`, kind: 'json', expected: pyIds[i], actual: nd, ruling: UNRULED + why });
+    });
+  }
+
   all.forEach((s, i) => {
     s.ops.forEach((op, j) => {
       const what = op.op === 'append' ? `append ${op.kind} ${op.fact}` : `${op.op}${op.n ? ` ${op.n} (decompressed)` : ''}${op.fact ? ` ${op.fact}` : ''}${op.now ? ` @${op.now}` : ''}`;
@@ -483,6 +514,12 @@ export async function run(ctx) {
     }),
   );
 
+  {
+    // #316 G3 (J89-1): memory/usage's constants and pure functions, compared directly.
+    const g3 = await g3Cases(ctx, 'usage');
+    cases.push(...g3.cases);
+    notes.push(...g3.notes);
+  }
   return { cases, notes };
 }
 

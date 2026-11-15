@@ -36,6 +36,7 @@ import { EOL } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { auditCorpus, corpusIntegrityCase } from '../lib/corpus.mjs';
+import { g3Cases } from '../lib/g3pure.mjs';
 
 export const name = 'store';
 export const summary = 'save/recall/index: the directory after the call, byte for byte';
@@ -1403,6 +1404,29 @@ async function runIn(ctx, home) {
       cases.push({ name: 'j65-6: #161 a write cut short by a file-size limit leaves no temp — answer', kind: 'json', expected: huge.py, actual: huge.node });
       cases.push({ name: 'j65-6: #161 a write cut short by a file-size limit leaves no temp — python against the literal', kind: 'json', expected, actual: huge.py });
       cases.push({ name: 'j65-6: #161 a write cut short by a file-size limit leaves no temp — node against the literal', kind: 'json', expected, actual: huge.node });
+      // #316 G3 (J89-1): UNRULED DIVERGENCE. The SENTENCE the same failed write raises, the one a
+      // caller (and `memory_save`'s reply) carries. CPython's `OSError` from the buffered write
+      // has no filename: `[Errno 27] File too large`. The port's `asPyOSError` over
+      // `writeFileSync`'s error keeps libuv's own text and the temp's path:
+      // `[Errno 27] EFBIG: EFBIG: file too large, write: '<temp>'`. ENOSPC takes the same arm.
+      // NOT ruled and NOT fixed; the agreeing half (both refuse, no temp left) is the case above.
+      const said = {};
+      for (const side of ['py', 'node']) {
+        const root = join(ctx.scratch, 'j891-efbig', side);
+        materialise(root, base);
+        const [cmd, ...args] = side === 'py'
+          ? [ctx.python, '-c', "import sys, signal; signal.signal(signal.SIGXFSZ, signal.SIG_IGN); sys.path.insert(0, sys.argv[2]); from bantamkit.memory.store import MemoryStore\ntry: MemoryStore(sys.argv[1]).save('project', 'huge', 'big body', 'z' * 8192)\nexcept OSError as e: print(type(e).__name__ + ': ' + str(e).replace(sys.argv[1], '<ROOT>'))", root, join(ctx.repoRoot, 'runtime-py', 'src')]
+          : [process.execPath, '--input-type=module', '-e', `process.on('SIGXFSZ', () => {}); import { MemoryStore } from ${JSON.stringify(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'store.js')).href)}; try { new MemoryStore(process.argv[1]).save('project', 'huge', 'big body', 'z'.repeat(8192)); } catch (e) { console.log(e.name + ': ' + String(e.message).split(process.argv[1]).join('<ROOT>')); }`, root];
+        const r = spawnSync('/bin/sh', ['-c', 'ulimit -f 4; exec "$@"', 'sh', cmd, ...args], { encoding: 'utf8' });
+        said[side] = r.stdout.trim().replace(/\.\d+\.[0-9a-f]{8}\.tmp/, '.<pid>.<hex>.tmp');
+      }
+      cases.push({
+        name: 'ruling: UNRULED DIVERGENCE a fact write cut short by EFBIG — the sentence raised',
+        kind: 'string',
+        expected: said.py,
+        actual: said.node,
+        ruling: 'UNRULED DIVERGENCE (J89-1): not ruled in docs/porting.md and not fixed; python raises `OSError: [Errno 27] File too large` (no filename), node raises `OSError: [Errno 27] EFBIG: EFBIG: file too large, write: \'<temp>\'`',
+      });
     }
     // #184: `load_grants` over a config naming a regular file, and one naming nothing.
     const layers = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'layers.js')).href);
@@ -2207,5 +2231,132 @@ async function runIn(ctx, home) {
     );
   }
 
+  // #316 G3 (J89-1): UNRULED DIVERGENCES on the paths a user's data takes. Each input below is
+  // one on which the hand-written runtimes disagree TODAY. Each is pinned as a `ruling:` case
+  // whose text starts `UNRULED DIVERGENCE (J89-1)`: NOT ruled in docs/porting.md and NOT fixed,
+  // the orchestrator decides each. Beside each one an unruled companion compares what the two
+  // still agree on, so a ruling never licenses more than the one difference it names.
+  {
+    const UNRULED = 'UNRULED DIVERGENCE (J89-1): not ruled in docs/porting.md and not fixed; ';
+    const g3ref = join(here, 'ref', 'g3_ref.py');
+    let bedN = 0;
+    const bed = () => join(ctx.scratch, `g3-${String((bedN += 1)).padStart(2, '0')}`);
+    const runBoth = (spec, calls) => {
+      const b = bed();
+      const roots = { py: join(b, 'py'), node: join(b, 'node') };
+      for (const side of ['py', 'node']) materialise(roots[side], spec);
+      const request = (root) => ({ op: 'run', root, today: TODAY, index_budget: null, k: null, create: true, calls });
+      return {
+        roots,
+        py: scrub(ctx.runPython(REF, request(roots.py)).results, roots.py),
+        nd: scrub(runNode(store, request(roots.node)).results, roots.node),
+      };
+    };
+
+    // D1. A `__proto__` key in a fact's frontmatter (J87-R F1, carried from G1). `factfile.ts`'s
+    // `parseFrontmatter` assigns `meta[key] =` and `scanNestedMapping` builds a plain object, so on
+    // Node a top-level `__proto__:` sets the prototype and a nested one vanishes; CPython keeps
+    // both as ordinary keys. A save that UPDATES the fact writes `Fact.extra` back: python keeps
+    // the two lines, node drops them. Data loss on the node side, on a hand-edited file.
+    const protoFact = (proto) =>
+      '---\nname: pfact\ndescription: proto probe word\ntype: project\ncreated: \'2026-08-01\'\n' +
+      `last_recalled: null\nlinks: []\n${proto ? '__proto__: polluted\n' : ''}constructor: c\n` +
+      `meta:\n${proto ? '  __proto__: inner\n' : ''}  toString: t\n---\n\nbody\n`;
+    const protoSpec = (proto) => ({
+      dirs: ['facts', 'archive'],
+      files: { 'facts/pfact.md': protoFact(proto), 'index.md': '- [[pfact]] (project) — proto probe word\n' },
+      mtimes: { 'facts/pfact.md': 1755990000 },
+    });
+    const update = [save('project', 'pfact', 'proto probe word', 'new body')];
+    const withProto = runBoth(protoSpec(true), update);
+    cases.push({ name: 'J89-1 a save over a fact with __proto__ keys — both answer saved', kind: 'json', expected: withProto.py, actual: withProto.nd });
+    cases.push({
+      name: 'ruling: UNRULED DIVERGENCE a save over a fact with __proto__ keys — the tree',
+      kind: 'bytes',
+      expected: manifest(withProto.roots.py),
+      actual: manifest(withProto.roots.node),
+      ruling: UNRULED + 'python writes `__proto__: polluted` and the nested `__proto__: inner` back into the updated fact; node drops both (memory/factfile.ts `meta[key] =`, `scanNestedMapping`)',
+    });
+    const noProto = runBoth(protoSpec(false), update);
+    cases.push({ name: 'J89-1 a save over a fact with constructor / toString keys — answer', kind: 'json', expected: noProto.py, actual: noProto.nd });
+    cases.push({ name: 'J89-1 a save over a fact with constructor / toString keys — tree', kind: 'bytes', expected: manifest(noProto.roots.py), actual: manifest(noProto.roots.node) });
+
+    // D2. `candidates_done`'s done-word next to U+0345 COMBINING GREEK YPOGEGRAMMENI. Node spells
+    // CPython's `\b` as `(?<![\p{L}\p{N}_])...(?![\p{L}\p{N}_])` under the `iu` flags, and under
+    // `i` U+0345 case-folds to iota, a letter: the boundary is gone and the word is not found.
+    // CPython's `\w` does not hold U+0345 (category Mn), so `done` is a whole word to python.
+    // Measured over every code point: U+0345 is the only one on which the two classes disagree.
+    const doneFact = (desc) => ({
+      dirs: ['facts', 'archive'],
+      files: {
+        'facts/d-fact.md': `---\nname: d-fact\ndescription: ${desc}\ntype: project\ncreated: '2026-08-01'\nlast_recalled: null\nlinks: []\n---\n\nb\n`,
+        'index.md': '- [[d-fact]] (project) — x\n',
+      },
+    });
+    const done = (desc) => {
+      const b = bed();
+      const roots = { py: join(b, 'py'), node: join(b, 'node') };
+      for (const side of ['py', 'node']) materialise(roots[side], doneFact(desc));
+      const py = ctx.runPython(g3ref, { op: 'candidates_done', root: roots.py }).out;
+      const s = new store.MemoryStore(roots.node, { today: () => TODAY, create: false });
+      const nd = s.candidatesDone().map(([f, why]) => [store.pyText(f.name), why]);
+      return { py, nd };
+    };
+    const ypo = done('work doneͅ today');
+    cases.push({
+      name: 'ruling: UNRULED DIVERGENCE candidates_done: "done" followed by U+0345',
+      kind: 'json',
+      expected: ypo.py,
+      actual: ypo.nd,
+      ruling: UNRULED + 'python lists the fact (done-word \'done\'); node lists nothing, because `[\\p{L}\\p{N}_]` under `iu` matches U+0345 (it folds to iota) where CPython\'s `\\w` does not',
+    });
+    const plain = done('work done today');
+    cases.push({ name: 'J89-1 candidates_done: "done" followed by a space', kind: 'json', expected: plain.py, actual: plain.nd });
+
+    // D3-D5. A store ROOT the OS cannot be handed as the caller spelled it. A NUL: both refuse,
+    // python with CPython's `ValueError` from `mkdir`, node with the store's not-writable sentence.
+    // A POSIX surrogateescape code point (U+DC80, the undecodable byte 0x80 of a real name) and a
+    // lone surrogate no encoding takes (U+D800): python hands the OS byte 0x80 (refused by APFS,
+    // created on ext4) or raises `UnicodeEncodeError`; node's fs writes U+FFFD and SAVES, into
+    // a different directory from the one the caller named. Each answer is
+    // `[what the caller is told, the base directory's entry names as bytes]`.
+    const rootAnswer = (base, suffix) => {
+      const py = ctx.runPython(g3ref, { op: 'store_root', roots: [`${base.py}/${suffix}`] }).out[0];
+      const pyList = ctx.runPython(g3ref, { op: 'listing', base: base.py }).out;
+      let nd;
+      try {
+        const s = new store.MemoryStore(`${base.node}/${suffix}`, { today: () => TODAY, now: () => `${TODAY}T00:00:00Z` });
+        const saved = s.save('project', 'x-fact', 'desc words here', 'body');
+        nd = { ok: [saved.status, s.recall('desc words', 3, true).length] };
+      } catch (e) {
+        nd = { err: [e?.name ?? 'Error', String(e?.message ?? e)] };
+      }
+      const ndList = readdirSync(Buffer.from(base.node), { encoding: 'buffer' }).map((n) => n.toString('hex')).sort();
+      const clean = (a, root) => JSON.parse(JSON.stringify(a).split(JSON.stringify(root).slice(1, -1)).join('<BASE>'));
+      return { py: [clean(py, base.py), pyList], nd: [clean(nd, base.node), ndList] };
+    };
+    for (const [label, suffix, why] of [
+      ['a NUL', 'a\u0000b', 'python raises ValueError (`mkdir: embedded null character in path`); node raises MemoryValidationError (`memory store could not be created: ...`)'],
+      ['U+DC80 (a surrogateescape byte)', 's\udc80x', 'python hands the OS the byte 0x80 (APFS refuses it: MemoryValidationError; ext4 would create it); node saves into `s\\uFFFDx`, a directory the caller did not name'],
+      ['a lone U+D800', 's\ud800x', 'python raises UnicodeEncodeError (`surrogates not allowed`); node saves into `s\\uFFFDx`'],
+    ]) {
+      const b = bed();
+      const base = { py: join(b, 'py'), node: join(b, 'node') };
+      for (const side of ['py', 'node']) mkdirSync(base[side], { recursive: true });
+      const a = rootAnswer(base, suffix);
+      cases.push({ name: `ruling: UNRULED DIVERGENCE a store root holding ${label}`, kind: 'json', expected: a.py, actual: a.nd, ruling: UNRULED + why });
+      if (suffix.includes('\u0000')) {
+        // Both refuse, and nothing is written: compared unruled.
+        cases.push({ name: `J89-1 a store root holding ${label} — both refuse and write nothing`, kind: 'json', expected: [Boolean(a.py[0].err), a.py[1]], actual: [Boolean(a.nd[0].err), a.nd[1]] });
+      }
+    }
+  }
+
+  {
+    // #316 G3 (J89-1): memory/store's constants and pure functions, compared directly.
+    const g3 = await g3Cases(ctx, 'store');
+    cases.push(...g3.cases);
+    notes.push(...g3.notes);
+  }
   return { cases, notes };
 }

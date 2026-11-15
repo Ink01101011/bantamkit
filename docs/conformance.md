@@ -92,6 +92,23 @@ sides, not by reading either.
 | `wire` | the MCP surface: sixteen tools, one prompt, two templates, and the frames themselves — including a `retired` session over `repo_map` and `bantamkit_read`, refused by name on both sides with the event log on, now that job50 I5 (2026-09-12) retired them from the roster and removed the six sessions that used to exercise the reader over the wire (`read`, `read-ruled`, `read-edges`, `read-round2`, `read-round3`, `read-cache`); the reader's own parity stays gated at the library layer, `tools/conformance/suites/docread.mjs` |
 | `workplan` | the dependency planner: `plan()` over 21 real graphs — `{id, depends_on}` extracted ONCE from `plan.units` of every checkpoint in `.shiftwork/`, 228 units, and written into the suite as LITERAL DATA — plus a synthetic corpus of the edges (empty input, a single node, priority ties, an order in which insertion-order tie-breaking is observable), the three graph refusals and the node-shape refusals of #127 (`nodes[<i>] must be an object`, `.id must be a string`, `.depends_on must be a list of strings`, `.priority must be an integer`, and a shape refusal beating a duplicate id), each compared both as the whole answer and as the bare sentence; `shiftwork_plan` over the tracked template copied into scratch and over the four refusals a checkpoint can produce before the graph is reached, as `json.dumps` TEXT; and the `work_plan` TOOL over stdio on both servers, which is the only place a node with no `depends_on` can be compared at all — the reference defaults it in `workplan.plan` and the port in `planNodes`, so the core cannot carry that case and the schema's `required` keeps it out of `shiftwork_plan`. 86 of its cases are NOT differential: each graph's batch WIDTHS, each graph's FIRST BATCH and the corpus's own headline (21 graphs, 228 units, 126 batches) are pinned as typed numbers and typed id lists against each runtime separately, and they are teeth against two different mutations — measured 2026-09-19, reversing the order inside a batch reddens 35 cases and NO width case, while emitting one node per batch on BOTH sides at once reddens 52 literal cases and NOT ONE differential one. There is no `ruling:` case here, deliberately: nothing in the planner is supposed to differ |
 
+**#316 G3 coverage (job89 J89-1).** Seven suites now also compare the memory modules' public
+constants and pure functions directly, through one shared helper (`lib/g3pure.mjs`, reference
+`ref/g3_ref.py`): `recall-usage` (`memory/usage`), `recall-retrieval` (`memory/retrieval`),
+`store` (`memory/store`), `recall-strings` (`memory/layers`, `memory/native`), `recall-queries`
+(`memory/queries`), `dream` (`memory/dream`) and `skill-layer` (`memory/skills`). Each module
+gets one constants case (54 names across the eight modules) and one case per pure function
+over 400 seeded generated inputs (24 functions). The generator's alphabet leaves out one
+code point on purpose, U+0345, the only one on which a JS `[\p{L}\p{N}_]` under the `iu` flags
+and CPython's `\w` disagree; every input holding it is pinned instead. **Inputs on which the
+hand-written runtimes disagree today are pinned as `UNRULED DIVERGENCE` cases carrying
+`ruling:`, NOT ruled in `docs/porting.md` and NOT fixed:** in `store`, a `__proto__` key in a
+fact's frontmatter dropped by Node on rewrite (the tree), `candidates_done` on `done` before
+U+0345, a store root holding a NUL, U+DC80 or a lone U+D800, and the sentence an EFBIG fact
+write raises; in `dream`, three `absolutise` terms next to U+0345; in `recall-usage`, `storeId`
+of a dangling symlink, a path below one, a lone surrogate and a surrogateescape code point.
+Each has an agreeing companion beside it.
+
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream
 a message lands on or what the process exits with. Those four spawn both CLIs and diff the

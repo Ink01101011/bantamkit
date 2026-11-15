@@ -40,6 +40,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runNode as runNodeServer } from './wire.mjs';
+import { g3Cases } from '../lib/g3pure.mjs';
 
 export const name = 'recall-queries';
 export const summary = 'likely-prompt queries and the session head: ranking, sidecar, limits, memory_queries, status (#207)';
@@ -1125,6 +1126,12 @@ export async function run(ctx) {
   }
 
   notes.push(`beds under ${root}; every side ran with its own HOME, BANTAMKIT_INDEX_DIR and BANTAMKIT_RETENTION=off`);
+  {
+    // #316 G3 (J89-1): memory/queries's constants and pure functions, compared directly.
+    const g3 = await g3Cases(ctx, 'queries');
+    cases.push(...g3.cases);
+    notes.push(...g3.notes);
+  }
   return { cases, notes };
 }
 

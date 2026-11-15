@@ -38,6 +38,7 @@ import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { g3Cases } from '../lib/g3pure.mjs';
 
 export const name = 'recall-strings';
 export const summary = 'the binding layer: every sentence an empty recall can produce';
@@ -1301,5 +1302,17 @@ export async function run(ctx) {
       'pinned exactly by the config battery above; only the reason after the colon differs.',
   });
 
+  {
+    // #316 G3 (J89-1): memory/layers's constants and pure functions, compared directly.
+    const g3 = await g3Cases(ctx, 'layers');
+    cases.push(...g3.cases);
+    notes.push(...g3.notes);
+  }
+  {
+    // #316 G3 (J89-1): memory/native's constants and pure functions, compared directly.
+    const g3 = await g3Cases(ctx, 'native');
+    cases.push(...g3.cases);
+    notes.push(...g3.notes);
+  }
   return { cases, notes };
 }

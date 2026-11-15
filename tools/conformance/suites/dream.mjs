@@ -44,6 +44,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { g3Cases } from '../lib/g3pure.mjs';
 
 export const name = 'dream';
 export const summary = 'cross-layer consolidation: the plan, and both directories after it';
@@ -1052,6 +1053,32 @@ export async function run(ctx) {
       actual: ndBoundary[i],
     });
   });
+  // #316 G3 (J89-1): UNRULED DIVERGENCE. A relative-date term next to U+0345 COMBINING GREEK
+  // YPOGEGRAMMENI. Node spells CPython's `\b` as `(?<![\p{L}\p{N}_])` / `(?![\p{L}\p{N}_])`
+  // under the `giu` flags, and under `i` U+0345 folds to iota, a letter, so the boundary is
+  // gone; CPython's `\w` does not hold U+0345 (category Mn), so the term is a whole word there.
+  // Python annotates the date (or reports it unresolved), node leaves the body alone. NOT ruled
+  // and NOT fixed: the orchestrator decides. The same text without U+0345 is the companion.
+  {
+    const UNRULED = 'UNRULED DIVERGENCE (J89-1): not ruled in docs/porting.md and not fixed; ';
+    const ypo = [
+      ['a resolved term followed by U+0345', 'It landed yesterdayͅ, they said.', 'python writes `yesterday (<basis - 1>)` and reports the hit; node writes nothing and reports none'],
+      ['a resolved term preceded by U+0345', 'Note ͅtoday we ship.', 'python writes `today (<basis>)`; node writes nothing'],
+      ['an unresolved term followed by U+0345', 'It shipped recentlyͅ.', 'python reports `recently` unresolved; node reports nothing'],
+    ];
+    const rows = ypo.flatMap(([, body]) => [body, body.replace(/ͅ/g, '')]).map((body) => [b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']);
+    const pyRows = ctx.runPython(REF, { op: 'absolutise', cases: rows }).out;
+    const ndRows = rows.map(([body, basis, nm, layer]) => {
+      const [text, hits, unresolved] = dreamer.absolutise(Buffer.from(body, 'base64').toString('utf8'), basis, Buffer.from(nm, 'base64').toString('utf8'), layer);
+      const hit = (h) => ({ name: b64(store.pyText(h.name)), layer: b64(h.layer), term: b64(h.term), resolved: b64(h.resolved), basis: b64(h.basis) });
+      return { body: b64(text), hits: hits.map(hit), unresolved: unresolved.map(hit) };
+    });
+    ypo.forEach(([label, , why], i) => {
+      cases.push({ name: `ruling: UNRULED DIVERGENCE absolutise: ${label}`, kind: 'json', expected: pyRows[2 * i], actual: ndRows[2 * i], ruling: UNRULED + why });
+      cases.push({ name: `J89-1 absolutise: ${label.replace('U+0345', 'nothing')}`, kind: 'json', expected: pyRows[2 * i + 1], actual: ndRows[2 * i + 1] });
+    });
+  }
+
   const sentence = (row) => {
     if (row.error) return `RAISED ${row.error.type}`;
     return Buffer.from(row.body, 'base64').toString('utf8');
@@ -1252,5 +1279,11 @@ export async function run(ctx) {
     );
   }
 
+  {
+    // #316 G3 (J89-1): memory/dream's constants and pure functions, compared directly.
+    const g3 = await g3Cases(ctx, 'dream');
+    cases.push(...g3.cases);
+    notes.push(...g3.notes);
+  }
   return { cases, notes };
 }

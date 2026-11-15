@@ -41,6 +41,7 @@ import { dirname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { run as runLateMcp } from '../lib/skill-late-mcp.mjs';
+import { g3Cases } from '../lib/g3pure.mjs';
 
 export const name = 'skill-layer';
 export const summary = 'the [skill] recall layer: order, gate, shadow, promoted, invalid, read-only';
@@ -458,6 +459,9 @@ export async function run(ctx) {
     });
   }
   cases.push(...(await runLateMcp(ctx)).cases);
-  return { cases, notes: [] };
+  // #316 G3 (J89-1): memory/skills's constants and pure functions, compared directly.
+  const g3 = await g3Cases(ctx, 'skills');
+  cases.push(...g3.cases);
+  return { cases, notes: g3.notes };
 }
 

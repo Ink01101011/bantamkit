@@ -38,6 +38,7 @@
  */
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { g3Cases } from '../lib/g3pure.mjs';
 
 export const name = 'recall-retrieval';
 export const summary = 'tokenize v2, BM25F, gate and ranker: Python against Node (#199)';
@@ -405,9 +406,14 @@ export async function run(ctx) {
   cases.push({ name: 'rankColumns equals rank over (layer, name)-ordered items, 60 seeded runs — node', kind: 'json', expected: nodeRank, actual: nodeCols });
   cases.push({ name: 'rankColumns: node against python, 60 seeded runs', kind: 'json', expected: pyCols.cols, actual: nodeCols });
 
+  // #316 G3 (J89-1): memory/retrieval's constants and pure functions, compared directly.
+  const g3 = await g3Cases(ctx, 'retrieval');
+  cases.push(...g3.cases);
+
   return {
     cases,
     notes: [
+      ...g3.notes,
       `gate x rank: ${runs.length} runs (${BM25_QUERIES.length} queries x ${RATIOS.length} ratios), ${STALE.length} stale openings`,
       `corpus ${CORPUS.length} inputs, ${LITERALS.length} per-side literals`,
       `bm25 ${BM25_DOCS.length} docs x ${BM25_QUERIES.length} queries; round9 ${groups.length} x 200 seeded doubles`,
