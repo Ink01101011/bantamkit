@@ -238,15 +238,94 @@ and lists the directory).
 | `node tools/conformance/run.mjs --all` | PASS 21,594 cases: 3,733 byte-identical, 9,694 exact-string, 8,167 structural, 190 ruled-different, 0 failures | 702 s |
 | `pytest runtime-py/tests -q` | 5,266 passed, 58 skipped, 2 deselected, 3 xfailed | 440.0 s |
 
-### Read cost, the unknown this phase found
+### Read cost, the unknown this phase found, and what J86-5 did about it
 
-The generated read costs 830 µs per frontmatter against 21 µs for the libyaml path it replaced and
-181 µs for pure `yaml.safe_load` (684 real frontmatters, best of 3); `MemoryStore._facts()` over 91
-facts is 82 ms against 4.6 ms. The JS-semantics support layer is the cost, not the codec's logic.
-Every module #316 moves will pay the same per-operation overhead, so #316 needs a budget for it
-before G3/G4 (recall and the hot index read every fact), and probably a ts2py unit that lowers
-the common helpers (`_js_get`, `_js_strict_eq`, UTF-16 length) to plain Python where the types are
-known. That unit is not in the estimate below.
+J86-3 measured the generated read at 830 µs per frontmatter against 21 µs for the libyaml path it
+replaced and 181 µs for pure `yaml.safe_load` (684 real frontmatters, best of 3), and
+`MemoryStore._facts()` over 91 facts at 82 ms against 4.6 ms. **Correction (J86-5):** most of that
+was not the general per-operation overhead of the JS-semantics layer but one quadratic: every
+`s[i]` and `s.length` on a non-ASCII string recomputed the whole string's UTF-16 view (an O(n)
+`max()` or `encode` per read), so a scanner walking a Thai or emoji description char by char was
+O(n²). The profile before J86-5 (cProfile, 3 passes over the corpus, 3.57 s): `isinstance` 14.5 M
+calls, `max` 181 k calls 0.43 s self, `_js_strict_eq` 1.2 M, `_js_get` 727 k, `_js_same_value_zero`
+991 k. After (1.43 s, same work): `_js_get` 0.17 s self, then a flat tail (`_js_m_includes`,
+`_scan_quoted`, `resolve_implicit_tag`, `_js_code_units`, `_js_len`), `max` 0.017 s.
+
+What changed, semantics untouched:
+
+- **Runtime fast paths** (`tools/ts2py/src/runtime.py`): `===`, `+`, `<` `<=` `>` `>=` take two
+  plain ints inside ±2^53 or two `str` directly; `s[i]`/`xs[i]` with a plain int index;
+  `.length` of an ASCII string is `len`; `[...].includes(str)`; `codePointAt(int)`;
+  `fromCodePoint(int in 0..0x10FFFF)`; `push`/dispatch on a list. Each tests its own precondition
+  at run time with `type(x) is` (so a bool, a float or an int past 2^53 goes the general way) and
+  returns what the general path returns. `_js_code_units` of a non-ASCII string is memoised
+  (a pure function of the value; bounded at 512 entries and 65,536 characters). Pinned by
+  `semantics.rs::fast_paths_answer_exactly_as_the_general_paths_and_js_do`, whose expected line is
+  Node's for the same source; five mutants (bound dropped from `===`, from `+`, `isinstance` for
+  `type is` in `>`, the units view skipped in `s[i]`, `str(element)` in `includes`) each turn it red.
+- **A read cache in the adapter** (`factcodec.load_frontmatter`): keyed by the frontmatter text
+  itself (not path/mtime/size, which a same-size edit within one mtime tick would fool), only the
+  generated codec's answers kept, every hit a fresh copy of its lists and dicts; bounded at 4,096
+  texts of at most 32 KiB. A SessionStart parses 316 frontmatters for ~190 files, and the server
+  re-read every fact on every save.
+
+No lowering rule changed, so the five generated modules are byte-identical; only
+`_ts2py_runtime.py` moved.
+
+**Before / after** (J86-5 harness, scratchpad `j86-5/bench.py` + `inproc.py`: scratch copies of
+the repo store (91 facts + 80 archived), `~/.bantamkit/memory` (98 + 38) and Claude Code's native
+store for this repo (208 files) under a throwaway HOME; n = 7, medians; hooks and the CLI are
+process wall time with cold imports; the rest in-process. Pre-#315 is `f6a5b74e` in a scratch
+worktree; "J86-3" is `76751838`.)
+
+| Operation | pre-#315 | J86-3 | J86-5 | vs pre-#315 |
+|---|---|---|---|---|
+| hook SessionStart, index warm | 376.8 ms | 549.1 ms | 419.3 ms | +11.3% |
+| hook UserPromptSubmit, index warm | 384.5 ms | 380.0 ms | 386.8 ms | +0.6% |
+| hook SessionStart, no index (cold build) | 584.6 ms | 928.9 ms | 620.8 ms | +6.2% |
+| hook UserPromptSubmit, no index | 598.5 ms | 763.8 ms | 634.8 ms | +6.1% |
+| `python -m bantamkit.memory list` | 120.5 ms | 195.7 ms | 139.4 ms | +15.7% |
+| `memory_recall`, long-lived server | 2.10 ms | 2.84 ms | 1.99 ms | -5.0% |
+| `memory_recall`, first call in a process | 4.81 ms | — | 5.24 ms | +8.8% |
+| `memory_save`, long-lived server | 4.60 ms | 78.5 ms | 2.40 ms | -47.8% |
+| **`memory_save`, first call in a process** | 4.65 ms | — | 20.99 ms | **+351%** |
+| **hot index build from nothing** (in-process) | 37.8 ms | 113.8 ms | 54.9 ms | **+45%** |
+| **cold index build from nothing** (in-process) | 31.6 ms | 61.0 ms | 41.2 ms | **+30%** |
+| `MemoryStore._facts()`, 91 facts, caches cold / warm | 4.56 / 4.51 ms | 78.5 ms | 20.9 / 2.40 ms | +359% / -47% |
+| one frontmatter, first parse, caches cold (517 files) | 21 µs | 360 µs¹ | 145 µs | ≤ 200 µs bar met |
+
+¹ best of 3 (no cache existed then); J86-3's own figure on 684 files was 830 µs.
+
+**The bar** (no user-facing operation more than 20% slower at the median; a frontmatter parse at
+most 200 µs) **is met for every hook, the CLI, recall, a long-lived server's save, and the parse;
+it is NOT met for the three whole-store cold parses in bold.** Those are N files × ~145 µs against
+N × 21 µs for libyaml: a cache cannot help the first read of a text in a process, and the hooks
+absorb it only because their fixed ~370 ms of process start dominates. In absolute terms the first
+`memory_save` of a server's life costs +16 ms and a from-nothing index build +17 ms (hot) / +10 ms
+(cold); the user-facing hook that performs that build is +6.2%.
+
+What the floor is made of now: per-character scanner loops (`_scan_quoted` builds a string one
+`push` at a time through ~8 helper calls per character) and `resolve_implicit_tag` (~12 calls per
+frontmatter, each walking 8 resolvers through `_js_get`/`_js_m_includes`/`_js_m_test`), about 30%
+each. Options left, with their costs:
+
+1. **Type-directed lowering in ts2py** (the brief's first preference, not done here): track
+   locals proven `number`/`string` from their initialisers and every assignment, so `i + 1`,
+   `i < s.length`, `s[i]` lower to plain Python. Needs a fact lattice over `let` reassignment and
+   closures, cargo tests per fact, and the full differential; parameters stay unproven (the Python
+   adapter is a caller TypeScript cannot check). Estimated 1.5-2x on the scanners: closes the hot
+   index build to roughly +20%, not the first save.
+2. **Change the TypeScript scanners** (`factfile.ts`, outside this unit's layer): scan a quoted
+   scalar by `indexOf`/regex chunks instead of per character; behaviour-neutral for Node, guarded
+   by `--suite ts2py-codec`/`codec`. Probably the largest single gain on quoted descriptions.
+3. **A persistent parse cache** (e.g. beside the hot index): would make the first read in a
+   process cheap, but it is a new on-disk artifact in one runtime only, so it would need a ruling
+   under the two-runtimes rule.
+4. Accept the three cold paths (+10 to +17 ms absolute, once per process).
+
+Every module #316 moves still pays some per-operation overhead; the fast paths above are shared by
+all generated code, so it is smaller than J86-3 feared, but #316's G3/G4 should be re-measured
+with this harness rather than budgeted from either number here.
 
 ### Estimate for #316, by dependency group
 

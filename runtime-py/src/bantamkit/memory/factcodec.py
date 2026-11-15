@@ -69,15 +69,50 @@ def load_frontmatter(text: str) -> Any:
     """
     from .store import well_formed_frontmatter
 
+    held = _READ.get(text)
+    if held is not None:
+        return _fresh(held)
     try:
         meta = _gen.parse_frontmatter(text)
         if meta:
             # The store's own normalisation as well as the codec's (#212): idempotent, and it
             # is the one every other reader of a frontmatter in this package applies.
-            return well_formed_frontmatter(text, _native_mapping(meta))
+            value = well_formed_frontmatter(text, _native_mapping(meta))
+            _remember(text, value)
+            return _fresh(value)
     except Exception:  # noqa: BLE001 -- a JS throw lowers to several types; any is a refusal
         pass
     return _pyyaml_load(text)
+
+
+# J86-5: THE READ CACHE. The generated read costs ~7x libyaml's (docs/roadmap-1.0.0.md, #315), and
+# one process reads the same unchanged file many times: a SessionStart hook parses 316 frontmatters
+# for ~190 files, and the MCP server re-reads every fact on every save. The answer is a function of
+# the frontmatter TEXT alone, so it is keyed by the text itself -- not by path and mtime, which a
+# same-size edit inside one mtime tick would fool -- and a hit is the answer a fresh parse gives.
+# Every hit is a fresh copy of the lists and dicts (scalars are immutable), so no caller can change
+# what the next one reads. Only the generated codec's answers are kept; a PyYAML fallback is read
+# again each time, exactly as before. Bounded: emptied when full, and a long text is never kept.
+_READ: dict[str, Any] = {}
+_READ_ENTRIES = 4096
+_READ_LONGEST = 1 << 15
+
+
+def _remember(text: str, value: Any) -> None:
+    if len(text) > _READ_LONGEST:
+        return
+    if len(_READ) >= _READ_ENTRIES:
+        _READ.clear()
+    _READ[text] = _fresh(value)
+
+
+def _fresh(value: Any) -> Any:
+    """`value` with every list and dict rebuilt; the scalars the codec yields are immutable."""
+    if isinstance(value, dict):
+        return {k: _fresh(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fresh(v) for v in value]
+    return value
 
 
 def _pyyaml_load(text: str) -> Any:

@@ -151,3 +151,58 @@ def test_a_refusal_keeps_pyyamls_sentence():
     with pytest.raises(yaml.YAMLError) as ours:
         factcodec.load_frontmatter("a: b: c\n")
     assert str(ours.value) == str(theirs.value)
+
+
+# ------------------------------------------------------------------ J86-5: the read cache
+
+
+def test_a_cached_read_is_the_fresh_read_and_never_the_same_object(monkeypatch):
+    monkeypatch.setattr(factcodec, "_READ", {})
+    rnd = random.Random(317)
+    for i in range(600):
+        front = factcodec._pyyaml_fact_text(_fact(rnd, i)).split("---\n", 2)[1]
+        first = factcodec.load_frontmatter(front)
+        again = factcodec.load_frontmatter(front)
+        assert _same(again, yaml.safe_load(front)), front
+        assert _same(again, first), front
+        if isinstance(first, dict):
+            assert again is not first
+    assert factcodec._READ, "the generated reads were not remembered"
+
+
+def test_changing_what_a_read_returned_does_not_change_the_next_read(monkeypatch):
+    monkeypatch.setattr(factcodec, "_READ", {})
+    front = "name: n\nlinks:\n- a\nmetadata:\n  type: user\n  tags:\n  - x\n"
+    got = factcodec.load_frontmatter(front)
+    got["links"].append("forged")
+    got["metadata"]["tags"].append("forged")
+    got["name"] = "forged"
+    assert factcodec.load_frontmatter(front) == yaml.safe_load(front) == {
+        "name": "n", "links": ["a"], "metadata": {"type": "user", "tags": ["x"]},
+    }
+
+
+def test_the_cache_is_keyed_by_the_text_so_any_edit_is_a_new_read(monkeypatch):
+    monkeypatch.setattr(factcodec, "_READ", {})
+    assert factcodec.load_frontmatter("name: a\n") == {"name": "a"}
+    # Same length, same everything but one byte: a path+mtime+size key could miss this edit.
+    assert factcodec.load_frontmatter("name: b\n") == {"name": "b"}
+    assert factcodec.load_frontmatter("name: a\n") == {"name": "a"}
+
+
+def test_only_the_generated_answers_are_kept_and_the_cache_is_bounded(monkeypatch):
+    monkeypatch.setattr(factcodec, "_READ", {})
+    # A PyYAML-only read (an anchor) and a refusal are read again every time, never kept.
+    assert factcodec.load_frontmatter("a: &x 1\nb: *x\n") == {"a": 1, "b": 1}
+    with pytest.raises(yaml.YAMLError):
+        factcodec.load_frontmatter("a: b: c\n")
+    assert factcodec._READ == {}
+    # A text longer than the bound is answered and not kept.
+    long = "name: " + "x" * (factcodec._READ_LONGEST + 1) + "\n"
+    assert factcodec.load_frontmatter(long) == yaml.safe_load(long)
+    assert factcodec._READ == {}
+    # Full means emptied, then the new answer kept: never more than the bound.
+    monkeypatch.setattr(factcodec, "_READ_ENTRIES", 3)
+    for i in range(7):
+        assert factcodec.load_frontmatter(f"name: n{i}\n") == {"name": f"n{i}"}
+        assert len(factcodec._READ) <= 3

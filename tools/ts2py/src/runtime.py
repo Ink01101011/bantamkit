@@ -90,6 +90,12 @@ def _js_coalesce_value(left, right):
     return right if _js_is_nullish(left) else left
 
 
+# J86-5: the ints a double holds exactly. A fast path below takes an int only inside this range,
+# where `_js_num` would return it unchanged, so it never skips a rounding JS would do.
+_JS_SAFE_MIN = -(2**53)
+_JS_SAFE_MAX = 2**53
+
+
 def _js_num(value):
     """A number as a JS double holds it; anything that is not a number is returned unchanged.
 
@@ -106,6 +112,19 @@ def _js_num(value):
 
 def _js_strict_eq(left, right):
     """`left === right`: no coercion, so `true !== 1`; numbers by value, objects by identity."""
+    # J86-5 fast paths, each the answer the general path below gives for exactly these types: two
+    # `str` compare by value; two plain ints inside the exact range compare by value (`_js_num`
+    # would return both unchanged). `type(...) is` excludes bool and every subclass.
+    kind = type(left)
+    if kind is str and type(right) is str:
+        return left == right
+    if (
+        kind is int
+        and type(right) is int
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return left == right
     if isinstance(left, bool) or isinstance(right, bool):
         return isinstance(left, bool) and isinstance(right, bool) and left == right
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
@@ -206,6 +225,15 @@ def _js_str(value):
 
 def _js_add(left, right):
     """`left + right`: string concatenation when either side is a string, else numeric addition."""
+    # J86-5: two plain ints inside the exact range add exactly; `_js_num` rounds the sum as the
+    # general path does.
+    if (
+        type(left) is int
+        and type(right) is int
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return _js_num(left + right)
     if isinstance(left, str) or isinstance(right, str):
         return _js_cat(_js_str(left), _js_str(right))
     if _js_is_number(left) and _js_is_number(right):
@@ -267,6 +295,14 @@ def _js_less(left, right):
     orders an astral character (one surrogate pair) after U+E000..U+FFFF instead of before it.
     Anything else is compared as numbers after ToNumber, so `"10" < 9` is false and `null < 1` true.
     """
+    # J86-5: two plain ints inside the exact range are their own ToNumber, never NaN.
+    if (
+        type(left) is int
+        and type(right) is int
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return left < right
     left, right = _js_to_primitive(left), _js_to_primitive(right)
     if isinstance(left, str) and isinstance(right, str):
         if left.isascii() and right.isascii():
@@ -282,21 +318,53 @@ def _js_less(left, right):
 
 def _js_lt(left, right):
     """`left < right`."""
+    # J86-5: `_js_less`'s exact-int fast path, taken here to save the call.
+    if (
+        type(left) is int
+        and type(right) is int
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return left < right
     return _js_less(left, right) is True
 
 
 def _js_gt(left, right):
     """`left > right`."""
+    # J86-5: `_js_less`'s exact-int fast path, taken here to save the call.
+    if (
+        type(left) is int
+        and type(right) is int
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return left > right
     return _js_less(right, left) is True
 
 
 def _js_le(left, right):
     """`left <= right`: false when `right < left` or either side is NaN."""
+    # J86-5: `_js_less`'s exact-int fast path, taken here to save the call.
+    if (
+        type(left) is int
+        and type(right) is int
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return left <= right
     return _js_less(right, left) is False
 
 
 def _js_ge(left, right):
     """`left >= right`: false when `left < right` or either side is NaN."""
+    # J86-5: `_js_less`'s exact-int fast path, taken here to save the call.
+    if (
+        type(left) is int
+        and type(right) is int
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return left >= right
     return _js_less(left, right) is False
 
 
@@ -315,6 +383,14 @@ def _js_index_key(key):
 
 def _js_get(obj, key):
     """`obj[key]` / `obj.key`: a missing key reads as `undefined`, never raises."""
+    # J86-5: an index into a string or an array by a plain int, the general path's answer for
+    # exactly that pair of types (`_js_index_key` returns such an int as itself).
+    if type(key) is int:
+        if type(obj) is str:
+            units = obj if obj.isascii() else _js_code_units(obj)
+            return units[key] if 0 <= key < len(units) else _JS_UNDEFINED
+        if isinstance(obj, list):
+            return obj[key] if 0 <= key < len(obj) else _JS_UNDEFINED
     if isinstance(obj, dict):
         if not isinstance(key, str):
             key = _js_str(key)
@@ -369,7 +445,9 @@ def _js_put(obj, key, value):
 def _js_len(value):
     """`value.length`: UTF-16 code units for a string, element count for an array."""
     if isinstance(value, str):
-        return len(value.encode("utf-16-le", "surrogatepass")) // 2
+        # J86-5: one code unit per character of `_js_code_units` (an ASCII string is its own),
+        # the count the UTF-16 encoding gives, without encoding the string on every read.
+        return len(value) if value.isascii() else len(_js_code_units(value))
     if isinstance(value, list):
         return len(value)
     return _js_get(value, "length")
@@ -497,6 +575,13 @@ def _js_m_includes(receiver, item):
             return needle in receiver
         return _js_code_units(needle) in _js_code_units(receiver)
     if isinstance(receiver, list):
+        if type(item) is str:
+            # J86-5: SameValueZero against a `str` is true for a `str` element of equal value
+            # and for nothing else (a bool, number, BigInt or object is never one).
+            for element in receiver:
+                if isinstance(element, str) and element == item:
+                    return True
+            return False
         return any(_js_same_value_zero(element, item) for element in receiver)
     raise _js_outside("includes", receiver)
 
@@ -523,10 +608,32 @@ def _js_m_split(receiver, separator):
     raise _js_outside("split", receiver)
 
 
+# J86-5: `_js_code_units` of a non-ASCII string, remembered. The answer is a function of the
+# string's value alone, so a remembered one is the one a fresh computation gives; the scanners
+# index one string thousands of times, and each read recomputed it (an O(n) `max`) before.
+# Bounded: cleared when full, and a long string is never kept.
+_JS_UNITS = {}
+_JS_UNITS_ENTRIES = 512
+_JS_UNITS_LONGEST = 1 << 16
+
+
 def _js_code_units(text):
     """`text` with every astral character split into its two surrogates: the string as a JS regex
     without the `u` flag sees it, one UTF-16 code unit per Python character."""
-    if text.isascii() or max(text) < "\U00010000":
+    if text.isascii():
+        return text
+    units = _JS_UNITS.get(text)
+    if units is None:
+        units = _js_code_units_of(text)
+        if len(text) <= _JS_UNITS_LONGEST:
+            if len(_JS_UNITS) >= _JS_UNITS_ENTRIES:
+                _JS_UNITS.clear()
+            _JS_UNITS[text] = units
+    return units
+
+
+def _js_code_units_of(text):
+    if max(text) < "\U00010000":
         return text
     out = []
     for char in text:
@@ -578,6 +685,10 @@ def _js_m_map(receiver, callback):
 
 
 def _js_m_push(receiver, *items):
+    if type(receiver) is list:
+        # J86-5: `_js_array` passes a list unchanged.
+        receiver.extend(items)
+        return len(receiver)
     _js_array("push", receiver).extend(items)
     return len(receiver)
 
@@ -759,7 +870,11 @@ def _js_m_codePointAt(receiver, position=_JS_UNDEFINED):
     if not isinstance(receiver, str):
         raise _js_outside("codePointAt", receiver)
     units = _js_code_units(receiver)
-    index = _js_to_integer(position)
+    # J86-5: a plain int inside the exact range is its own ToIntegerOrInfinity.
+    if type(position) is int and _JS_SAFE_MIN <= position <= _JS_SAFE_MAX:
+        index = position
+    else:
+        index = _js_to_integer(position)
     if not 0 <= index < len(units):
         return _JS_UNDEFINED
     first = ord(units[index])
@@ -774,6 +889,10 @@ def _js_from_code_point(*points):
     """`String.fromCodePoint`: each argument an integer in 0..0x10FFFF, else RangeError."""
     out = []
     for point in points:
+        if type(point) is int and 0 <= point <= 0x10FFFF:
+            # J86-5: the one shape the check below passes without converting anything.
+            out.append(chr(point))
+            continue
         number = _js_to_number(_js_to_primitive(point))
         if not (
             _js_is_number(number)
@@ -1395,6 +1514,9 @@ def _js_dispatch(receiver, name, builtin, *args):
     """`receiver.name(...args)` where a compiled class and a builtin both declare `name`: an
     instance of such a class runs its own method, anything else the builtin, as JS's lookup
     would."""
+    if type(receiver) is list:
+        # J86-5: a list is never a `_JsObject`, so it always takes the builtin.
+        return builtin(receiver, *args)
     if isinstance(receiver, _JsObject) and name in _js_class_names(
         type(receiver), "_js_own_methods"
     ):
