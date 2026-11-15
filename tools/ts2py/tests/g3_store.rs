@@ -309,3 +309,59 @@ print(bad)
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(out.trim(), "0");
 }
+
+/// J89-4b: the store's OS seam as the generated store reaches it. `pyOSErrorText` /
+/// `pyOSErrorStrerror` over three CPython errors, `_store_path`'s NUL (the OSError `asPyOSError`
+/// makes of Node's ERR_INVALID_ARG_VALUE, the inspected path cut at 128 code units) and lone
+/// surrogate (written at U+FFFD), and `pyLexists` of a NUL (false). Every expected line is what
+/// Node v26.13.0 printed for the same calls of `runtime-ts/src/memory/pyfs.ts`, run in an empty
+/// directory with the same relative paths (macOS; the errno numbers are the platform's).
+#[test]
+fn j89_4b_store_os_seam_answers_like_node() {
+    let dir = scratch("j89-4b-seam");
+    package(&dir, &[]);
+    let bed = dir.join("bed");
+    std::fs::create_dir_all(&bed).unwrap();
+    let out = run_python(
+        r#"import json, os, sys
+sys.path.insert(0, sys.argv[1])
+from pkg import _ts2py_adapters as a
+os.chdir(sys.argv[2])
+open("file.md", "w").write("x")
+out = []
+def attempt(f):
+    try:
+        f()
+        out.append(None)
+    except OSError as e:
+        out.append([type(e).__name__, a.py_os_error_text(e), a.py_os_error_strerror(e)])
+attempt(lambda: a.py_scandir_names("missing"))
+attempt(lambda: a.py_scandir_names("file.md"))
+attempt(lambda: a.py_read_text("."))
+attempt(lambda: a.py_mkdir_parents("it's\x00\n"))
+attempt(lambda: a.py_mkdir_parents("x" * 130 + "\x00"))
+a.py_write_text_atomic("s\ud800x.md", "hi")
+out.append(a.py_lexists("a\x00b"))
+out.append(sorted(os.fsencode(n).hex() for n in os.listdir(".")))
+print(json.dumps(out, separators=(",", ":")))
+"#,
+        &[&dir, &bed],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let long = format!("'{}...", "x".repeat(127));
+    let nul = "ERR_INVALID_ARG_VALUE: The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received ";
+    let expected = format!(
+        concat!(
+            r#"[["FileNotFoundError","[Errno 2] No such file or directory: 'missing'","No such file or directory"],"#,
+            r#"["NotADirectoryError","[Errno 20] Not a directory: 'file.md'","Not a directory"],"#,
+            r#"["IsADirectoryError","[Errno 21] Is a directory: '.'","Is a directory"],"#,
+            r#"["OSError","[Errno 0] {nul}\"it's\\x00\\n\": \"it's\\x00\\n\"","{nul}\"it's\\x00\\n\""],"#,
+            r#"["OSError","[Errno 0] {nul}{long}: '{x}\\x00'","{nul}{long}"],"#,
+            r#"false,["66696c652e6d64","73efbfbd782e6d64"]]"#
+        ),
+        nul = nul,
+        long = long,
+        x = "x".repeat(130),
+    );
+    assert_eq!(out.trim(), expected);
+}

@@ -158,8 +158,9 @@ fn g3_to_fixed_fuzz_like_node() {
     );
 }
 
-/// The seven #316 modules in one ts2py call (G1, G2, G3's usage ledger and retrieval): usage
-/// imports the compiled log segment, and pysem / pyfs / node:crypto come through the seam.
+/// The eight #316 modules in one ts2py call (G1, G2, G3's usage ledger, retrieval and, since J89-4b,
+/// the store): usage imports the compiled log segment, the event log the compiled store's
+/// `.bantamkit` helpers, and pysem / pyfs / node:crypto come through the seam.
 #[test]
 fn g3_modules_compile_together() {
     let root = repo_root();
@@ -171,6 +172,7 @@ fn g3_modules_compile_together() {
         "runtime-ts/src/tokenledger.ts",
         "runtime-ts/src/memory/usage.ts",
         "runtime-ts/src/memory/retrieval.ts",
+        "runtime-ts/src/memory/store.ts",
     ];
     let sources: Vec<String> = paths
         .iter()

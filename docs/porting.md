@@ -357,6 +357,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone. **#120 adds 8:** an anchor, `!!str`, a flow mapping, an empty flow mapping, a nested flow sequence, a flow-sequence pair, a flow sequence over two lines and an anchored sequence item are READ by PyYAML and REFUSED by the port with a named `FactParseError` — reading them means porting the scanner, anchors and the composer. A refusal names the file and writes nothing, which is the point: the plain-text guess it replaced was stamped back to disk. Ruled in `tools/conformance/suites/codec.mjs` as `ruling: #120 node refuses where python reads: …`, with the refusal-bit companions as per-side literals (`#120 per side: the ruled inputs — python reads every one` / `— node refuses every one, with a named FactParseError`), because the two bits DIFFER and a side-to-side bit could never be green. Teeth: forcing the ruled answers equal reddened all 8 as `STALE RULING`; dropping `&` from the refused set left every ruling green and reddened the node literal (1 failure). **job67 (J67-3), user ruling 2026-10-15 on #120's remainder: these eight are the FINAL answer** — the PyYAML scanner is not ported, and the refusal is by name. What the ruling changed is what a refusal COSTS: a `memory_save` on Node no longer refuses the whole store because one fact file is one of these shapes. Both runtimes' `save` now skip any fact file they cannot read, name it (`SaveResult.skipped`, and a closing paragraph on the reply: `N fact file(s) could not be read and was/were skipped; the duplicate check read every other fact:` + `[project] <the store's sentence>`), and land; the one file a save never skips is the one it would WRITE (`<sentence>; saving '<name>' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`). So over a store holding an anchored fact the save lands on both sides, Python reads the fact and Node names it skipped, and the `index.md` each rebuilds differs by that one line — ruled in `tools/conformance/suites/store.mjs` as `ruling: #120 save past a file only python reads — the answers`, with the refusal bit (`— the save lands on both sides`) and the written fact's bytes compared unruled and each side's skip pinned as a literal. Blank lines, lines of spaces and comment lines inside a block sequence — and `links: ` / `links: # c` before one — were NOT a ruled shape to keep: they are READ now, as PyYAML reads them, compared in `codec.mjs` as read-alike cases and a second 1500-frontmatter seeded corpus where node must neither guess nor refuse. **Since #315 (J86-3) runtime-py's store reads through the code compiled from the port's own `factfile.ts` first** (*Generated modules*), and that code refuses these eight shapes by the same names; `memory/factcodec.py` then reads the file with `yaml.safe_load`, exactly as before, so python still reads every one and this row's answers are unchanged (`ts2py-codec`'s `node-refuses` class: runtime-py reads each, `py=before` holds it equal to the pre-#315 read). |
 | the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. **#315 (J86-3) leaves the mirror on `yaml.safe_load`:** the store now reads generated-first with a PyYAML fallback (*Generated modules*), and over these shapes the fallback answers, so the store and the mirror on the reference both read them as before; the mirror itself was not routed through the generated codec, because generated-first would also move the two classes #315's ruling licenses for the store (`yaml11-breaks`, `pyyaml-refuses`) into the mirror's outcomes, which this row pins. |
+| `MemoryStore.snapshot()` (Python only; J89-4b, #316 G3 U2) | **a Python-only API, kept by the shim, not a difference in any answer.** The pinned read set exists for ONE caller, `component.Memory.batch`, which `agent.py`'s loop (the Python eval agent, an unported module: no Node counterpart) enters around each assistant turn (RB-P1: a speculative save between two reads of one turn). `store.ts` deliberately omits it: the Node MCP server has no turn to pin. Since store.ts is generated it is hand-written in the shim (`bantamkit.memory.store`), built on the generated store: the pin is the generated `facts()` at entry, and while it holds the generated `candidates` answers it and `indexed` answers `null` (so `recall`, `lookup` and `pool` read the pin and `save` stays live), the same three moments `test_memory.py`'s snapshot cases pin. No `ruling:` case: no MCP tool, CLI or hook reaches it, so there is no Node answer to compare. |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
 | on Windows, CRLF | **no longer a difference.** N11 reversed it: the emitter builds LF text, the WRITER translates, and the budget still counts the LF text — which is what CPython does. See [conformance.md](conformance.md). |
@@ -422,8 +423,8 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | `index.md` and `save`'s budget rollback rewritten in place (J89-1 shared weakness; J89-1F, #316 G3) | **WAS the same weakness on both sides — fixed in both; agreeing before and after.** Before: `_rebuild_index` / `rebuildIndex` wrote `index.md` with `write_text` / `pyWriteText`, and `save`'s rollback after `MemoryBudgetExceeded` rewrote the fact the same way: truncate, then write. A write cut short left a PREFIX: measured at 64a69df8 under `ulimit -f 4`, `index.md` went from 3,800 bytes to the first 4,096 of the new index and the 6,000-byte fact the rollback was restoring to its first 4,096 bytes, on both sides. After: both go through a per-writer temp and a rename, exactly as the fact write does (`<path>.<pid>.<8 hex>.tmp`, `O_EXCL`, every byte written — Node loops over `writeSync`, G2's `writeAll` lesson; CPython's buffered writer loops itself — unlink on any failure): Python `store._write_text_atomic`, Node `pyfs.pyWriteTextAtomic`, and `_write_fact` / `writeFact` now call the same helper. A failed `index.md` write leaves the old file byte for byte; a failed rollback leaves the whole updated fact (never a prefix) and raises the write's `OSError`. Measured under ENOSPC too, in a 1 MiB tmpfs (Docker, CPython 3.13 and Node 22): at 64a69df8 `index.md` 3,800 -> 4,096 bytes on both; now unchanged on both, no temp left. Pinned by `--suite store`: `J89-1F a save whose index.md write is cut short — answer and tree`, `J89-1F a budget rollback whose fact write is cut short — answer and tree`, and four per-side `LITERAL: J89-1F <side>: …`. **Residual, not measured:** on Windows a rename onto a file another process holds open without `FILE_SHARE_DELETE` fails, so `index.md` now shares the fact write's exposure there (no Windows run). |
 | `storeId`, `skills._same`, `component._same_directory` — a dangling symlink, and a path below one (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node resolved with `fs.realpathSync.native` and, on a throw, the parent resolved plus the name (`usage.ts`, `skills.ts`), or a lexical `path.resolve` (`component.ts`); the native call is strict, so a dangling symlink kept the LINK's own name where `os.path.realpath` follows it to the target text: one store had two usage ledgers, and a project under a dangling link to the home was two skill roots on Node, one on Python. After: all three call `pyfs.pyRealpath`, the port of `os.path.realpath(strict=False)` written once (`posixpath._joinrealpath` + `abspath` on POSIX; the `ntpath` non-strict arm `pyResolve` already used on Windows, unmeasured there), meant to be the `realpathSync.native` adapter's contract when these modules are generated. It also keeps the caller's spelling of a case-folded macOS name, as CPython does, where `realpath(3)` answered the filesystem's. Pinned by `--suite recall-usage` (`J89-1F storeId — a dangling symlink`, `— a path below a dangling symlink`, and per-side literals against each side's own target id) and `--suite skill-layer` (`J89-1F skill_roots: a project under a dangling symlink to the home` and its per-side literals). |
 | `storeId`, `skills._same`, `component._same_directory` — a lone surrogate outside U+DC80..U+DCFF (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Python; now agreeing, so no ruling.** Before: `os.path.realpath` (or the `.encode("utf-8")` after it) raised `UnicodeEncodeError` for `s\ud800x`, out of `store_id` and out of `skill_roots`; Node answered, hashing and comparing the U+FFFD its fs writes. After: Python hands the path over through `usage.os_realpath`, which applies the G2 path policy (`_ts2py_adapters._os_char`: a code point `os.fsencode` cannot take is U+FFFD) before `os.path.realpath`, and hashes `encode("utf-8", "surrogateescape")`; so both hash U+FFFD. Pinned by `--suite recall-usage` `J89-1F storeId — a lone surrogate` and `--suite skill-layer` `J89-1F skill_roots: a home holding a lone U+D800`. The surrogateescape range is the target-specific row below. |
-| G3 as Node: a store root holding a lone surrogate outside U+DC80..U+DCFF (J89-1; J89-1F, #316 G3) | **RULED AS NODE; Python moves to Node's answer when `store.ts` is generated (#316 G3 U2).** Python today: `MemoryStore('<base>/s\ud800x')` raises `UnicodeEncodeError` (`surrogates not allowed`) from the first `mkdir`, nothing written. Node: its fs writes U+FFFD, so the store is `<base>/s�x` and the save lands (`saved`, recall 1). Why Node: it is the G2 lone-surrogate policy (a lone surrogate no encoding takes is U+FFFD, as `_os_char` maps it), and the generated module will reach the OS through that adapter. The refusal bits differ (one side raises), so no side-to-side bit can be green; Node's answer is pinned per side. Cases: `--suite store` `ruling: G3 as Node — a store root holding a lone U+D800` and `LITERAL: J89-1F G3 ruled as Node — node's answer for a store root holding a lone U+D800`. **Generation makes it agree**: the `ruling:` case goes STALE by design and becomes an ordinary case. |
-| G3 as Node: a store root holding a NUL (J89-1; J89-1F, #316 G3) | **RULED AS NODE — a refusal on both sides, with different words; Python moves at generation.** Python today: `ValueError: mkdir: embedded null character in path`. Node: `MemoryValidationError: memory store could not be created: <root>; the directory is not there and this filesystem would not make it, so nothing was written` — the store's own sentence, which `memory_save` already answers. Both write nothing. Cases: `--suite store` `ruling: G3 as Node — a store root holding a NUL`, the unruled refusal-bit companion `J89-1 a store root holding a NUL — both refuse and write nothing`, and `LITERAL: J89-1F G3 ruled as Node — node's answer for a store root holding a NUL`. **Generation makes it agree**: the `ruling:` case goes STALE by design. |
+| ~~G3 as Node~~: a store root holding a lone surrogate outside U+DC80..U+DCFF (J89-1; J89-1F; **closed by J89-4b**, #316 G3 U2) | **WAS RULED AS NODE — now agreeing, so no ruling.** Before generation Python raised `UnicodeEncodeError` (`surrogates not allowed`) from the first `mkdir` and wrote nothing, where Node's fs wrote U+FFFD and saved at `<base>/s�x`. Since J89-4b the generated store reaches the OS through the `pyfs` adapters, which take the G2 path policy (`_store_path` in `tools/ts2py/src/adapters.py`: a lone surrogate CPython cannot encode is U+FFFD), and the hot index adapter hands the hand-written index the same path, so both save at `s�x` and recall it (`saved`, recall 1). The `ruling:` case went STALE as designed (`--suite store`, 2 stale, 0 other failures) and is now `J89-4b a store root holding a lone U+D800 — both answer as node (was ruled G3 as Node)` with `LITERAL: J89-4b python's / node's answer for a store root holding a lone U+D800`. |
+| ~~G3 as Node~~: a store root holding a NUL (J89-1; J89-1F; **closed by J89-4b**, #316 G3 U2) | **WAS RULED AS NODE — now agreeing, so no ruling.** Before generation Python raised `ValueError: mkdir: embedded null character in path`; Node answered `MemoryValidationError: memory store could not be created: <root>; the directory is not there and this filesystem would not make it, so nothing was written`; both wrote nothing. Since J89-4b a `pyfs` adapter handed a NUL raises the `OSError` `asPyOSError` makes of Node's `ERR_INVALID_ARG_VALUE` (errno 0; `g3_store.rs` `j89_4b_store_os_seam_answers_like_node` pins its text to Node's), so the generated `ensureDirs` answers the store's own sentence on both sides. Cases: `J89-4b a store root holding a NUL — both answer as node (was ruled G3 as Node)` (the whole answer and the directory listing, which replaces the old refusal-bit companion) and a `LITERAL: J89-4b <side>'s answer …` per side. |
 
 **#200 (job70, the touch graph) adds no row to the table above.** Every touch surface is
 compared by `touch-log`, `touch-refs`, `touch-turn`, `touch-graph`, `touch-context`, `touch-bound`,
@@ -1007,7 +1008,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger and retrieval are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval and the memory store are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1019,7 +1020,7 @@ generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
 Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
-`jobbudget.ts` or `tools/ts2py`, regenerate from the repository root (all five; each is
+`jobbudget.ts`, a G2/G3 module (`memory/store.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
@@ -1031,7 +1032,8 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
-  runtime-ts/src/memory/retrieval.ts --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
+  runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts \
+  --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
@@ -1742,6 +1744,118 @@ the compiled codec's functions here, and the PyYAML fallback (#315's owner rulin
 route; (3) the pyfs adapters call CPython with the path as given (not the G2 `_os_char` policy), so a
 lone-surrogate store root takes CPython's answers (`os.scandir` raises `UnicodeEncodeError`,
 `Path.exists` answers false), not the Node answers `--suite store`'s `G3 as Node` rulings pin.
+
+### The store (#316 G3 U2, J89-4b): generated, behind its shim
+
+Since J89-4b `bantamkit.memory.store` runs code compiled from `runtime-ts/src/memory/store.ts`:
+`_generated/store.py`, from the same ts2py call as G1, G2, the usage ledger and retrieval (the event
+log now imports the compiled store's `.bantamkit` helpers from it). The hand-written module (2,635
+lines at `5fc230c8`) is retired; `memory/store.py` is the shim. The orchestrator's three rulings on
+J89-4's design questions are what it implements.
+
+**1. The boundary.** The Python surface is unchanged: `Fact`, `Pool`, `SaveResult`, `ArchivedFact`,
+`MergeResult` and `CompactResult` stay dataclasses of the values `yaml.safe_load` builds, and the
+generated store keeps the codec's shape inside (dicts, `PyScalar`, `Map`s). The shim converts at
+every crossing, both ways, checked: `_fact_in` / `_fact_out` through `factcodec.held_meta` /
+`native_value`, `_pool_in` / `_pool_out` (a pool's lists are shared, its `df` / `segs` read as
+read-only Maps). The modules not generated yet are untouched: `component`, `native`, `skills`,
+`dream`, `hookadapter`, `mcpserver` and the hand-written hot and cold indexes call the same names
+as before. `pick_hits` / `pooled_ranking` run the generated ranking over each layer's Python store
+(a `_Resolver` per layer: `resolve` is the layer's own, the hit is that same `Fact` object) and the
+Python scorer (`_Scorer` asks `scorer.column(Columns, vecs)`, so `queries_ref.py`'s hook on
+`QueryScorer.column` still sees every column). The HotIndex <-> store cycle is the adapter's late
+import (J89-4a), plus `HotIndex._of` for a caller that hands a store its own index
+(`storage_ref.py`). A JS `TypeError` the generated store throws reaches a Python caller as the bare
+`TypeError` the reference raised (`frontmatter scalar: links is an int` was the one case that
+showed it).
+
+The shim keeps these private names, each the generated method of the same job: `_facts`,
+`_read_fact`, `_fact_paths`, `_listing`, `_fact_path`, `_index_line`, `_fact_text`, `_write_fact`,
+`_rebuild_index`, `_check_index_budget`, `_after_write`, `_ensure_dirs`, `_present`, `_unwritable`,
+`_reachable`, `_unreadable`, `_index_text`, `_indexed`, `_indexed_fact`, `_fact_named`,
+`_probe_facts`, `_pool_indexed`, `_cold_synced`, `_use`, and the attributes `index_budget`, `k`,
+`_today`, `_now`, `_index`, `_snapshot` (read through to the generated store, which reads them at
+call time). **Retired: `_eviction_key` and `_staleness_key`** (store.ts ranks inside `compact`,
+`byEviction`). One test reached one: `test_memory.py::test_the_eviction_rank_never_raises_on_a_hand_edited_type`
+is rewritten against `compact` itself (five hand-edited types, `[1, 2]`, `{a: 1}`, `2026`, `null`,
+`!!binary`, beside one `user` fact and room for one line: every weird one is archived and the `user`
+fact kept). `test_archive_cli_…` / `test_restore_cli_prints_one_sentence_for_a_permission_error_at_the_move`
+now refuse the move at `os.replace` (the `pyReplace` adapter; `Path.replace` is `os.replace`), not at
+`Path.replace`. No other test changed.
+
+**2. The PyYAML fallback stays** (#315's owner ruling). The `parseFrontmatter` / `formatFact` adapters
+are `factcodec.held_frontmatter` (`load_frontmatter` — the compiled codec, then PyYAML where it
+refuses — converted to the codec's shape; a PyYAML refusal is a JS Error carrying PyYAML's `str(e)`,
+which `readFact`'s catch turns into `malformed fact file <name>: <that>`, the reference's sentence;
+a non-mapping is `frontmatter is not a mapping`) and `factcodec.held_fact_text` (`fact_text` over the
+Python values the fact stands for, so a write is the bytes the reference wrote). A value the codec's
+shape cannot hold as Python holds it is carried OPAQUE (`factcodec._Opaque`, a `PyScalar` whose
+`text` is `str()` of the value and whose `<` names its Python type): a set, bytes, a tuple, a
+collection met twice (written back as PyYAML's anchor and alias), a dict with a non-text key, and a
+list or dict where the store prints the value (`name`, `description`, `type`, the stamps, the
+lifecycle fields, a `links` item, a `metadata` value), so the index line still prints Python's
+`['a', 'b']` and not JS's `a,b`. The #120 rulings and the malformed-message rulings are unchanged
+(`--suite store`: none STALE).
+
+**3. `snapshot()` stays Python-only**, hand-written in the shim on the generated `candidates` /
+`indexed` (the row in *Where the two runtimes deliberately differ*). Its callers
+(`component.Memory.batch`, `test_memory.py`, `test_memory_queries.py`, `queries_ref.py`) are unchanged.
+
+**Python-side behaviour changes, all toward Node.** The two `G3 as Node` store-root rows (a NUL, a
+lone U+D800) are closed: the generated store's file calls take the G2 path policy (`_store_path`),
+so Python saves a lone-surrogate root at U+FFFD and answers a NUL root with the store's own
+could-not-be-created sentence, as Node does (*Where the two runtimes deliberately differ*, the two
+struck rows; `--suite store` 428 cases, 11 ruled, 0 failures: the two `ruling:` cases went STALE as
+designed and nothing else did). A store root holding a surrogateescape code point (U+DC80) stays
+ruled (G2 target-specific, permanent).
+
+**TypeScript changes, each with Node's answers unchanged** (`npm test` 2460 pass / 0 fail, every
+suite above green):
+
+| Was | Is | Why |
+|---|---|---|
+| `e.message` of a `PyOSError` (the `skipped` reason); `error.strerror` in `unwritable` / `unreadable` | `pyfs.pyOSErrorText(e)` / `pyfs.pyOSErrorStrerror(e)` (new; Node: `e.message` / `e.strerror`) | a compiled read of a Python exception's `message` / `strerror` stays refused (a Node fs error spells both differently); these two are adapters onto CPython's `str(e)` / `e.strerror` |
+| `tokens`: `text.toLowerCase().match(/[a-z0-9]+/g)` | the `[A-Za-z0-9]+` runs, each lowered; a text holding U+0130 or U+212A lowered with every other non-ASCII code point read as a space | `.toLowerCase()` of arbitrary text is refused by ts2py (55 code points CPython's tables and Node's map apart; the suite's fuzz met one). Swept: every code point 0..0x10FFFF in six contexts against the old body in Node (0 differences) and the generated function against the reference's `re.findall(r"[a-z0-9]+", text.lower())` in Python (7,998,784 inputs, 0 differences, 0 refusals). Node speed, interleaved medians of 31 rounds over the live store's 91 names and descriptions: 21.25 against 21.40 ms (-0.7%); the first spelling (one `replace` pass) measured +15.6% and was dropped |
+| `if (!(OUTCOME_TYPES as …).includes(type))`, the same in `lint` | the test named in a `const`, then `if (!…)` | the proven `includes` lowers to `in`, and `not x in y` is the E713 ruff refuses; Node within 0.1% (25 rounds) |
+
+**Writes stay safe** (property 4). The atomic write is the `pyWriteTextAtomic` adapter (store.py's
+`_write_text_atomic`, statement for statement); `--suite store`'s EFBIG cases (`j65-6: #161 …`, `J89-1F
+a fact write cut short by EFBIG`, `J89-1F a save whose index.md write is cut short`) pass on the generated
+store. ENOSPC, measured in a 1 MiB Docker tmpfs (CPython 3.13 `j88rf-py3.13`, Node 22 `node:22-slim`):
+60 saves, the filesystem filled to two free pages, a 61st save. Python generated, Python at `b3e570be`
+and Node answer the same: `OSError [Errno 28] No space left on device` from the `index.md` write,
+`index.md` byte for byte the 11,390 bytes it was, no temp left, the new fact file landed (61 files).
+Concurrency: 4 Python and 4 Node processes saving 30 distinct facts each into one store and each
+rewriting one shared name after every save: 240 + 1 fact files, none lost, none duplicated, no temp
+left, every file parses, `index.md` 241 unique lines and equal to `index_text()`.
+
+**Cost, measured (J89-4b, macOS arm64, CPython 3.12.13; n = 9 interleaved rounds, medians; before =
+`b3e570be`, after = this tree; the store a copy of this repository's 91-fact `.bantamkit/memory`, HOME
+a scratch directory).** Over 20% is flagged with its cause.
+
+| Path | Before | After | |
+|---|---|---|---|
+| #204 bar: 5,000-fact recall p50 of 20 (bar 15 ms) | 6.31 ms | 8.14 ms | **+29.0%**, under the bar: `poolIndexed`'s stride-5 segment loop runs the general lowering (`_js_mul` / `_js_add` per run; J89-3's proven copy covers stride-1 loops only) |
+| first recall over 5,000 facts (builds the index) | 909.8 ms | 914.9 ms | +0.6% |
+| `_facts()` over 5,000 facts | 378.4 ms | 537.0 ms | **+41.9%**: `readFact` is general JS-semantics code, plus the codec-shape conversion each way (`held_meta`, `_fact_out`) |
+| cold `import bantamkit.memory.store` | 126.9 ms | 126.7 ms | -0.2% |
+| cold `import bantamkit.eventlog` (now imports the compiled store) | 121.0 ms | 123.4 ms | +2.0% |
+| `recall` in a fresh process | 124.7 ms | 127.8 ms | +2.5% |
+| `--hook` UserPromptSubmit, a process | 383.5 ms | 388.0 ms | +1.2% |
+| `Memory.recall` (`memory_recall`), warm | 3.80 ms | 4.50 ms | +18.3% |
+| `Memory.save_outcome` (`memory_save`) | 31.5 ms | 36.4 ms | +15.5% |
+| `MemoryStore.recall`, warm, unstamped | 284 us | 639 us | **+124.9%**: `poolIndexed` (above) and the hit's `readFact` |
+| `MemoryStore.recall`, warm, stamped | 1,048 us | 1,781 us | **+70.0%**: the same, under the ledger write |
+| `lookup`, warm | 22.3 us | 29.7 us | **+33.6%**: the generated `indexed()` / `names()` path |
+| `_facts()` / `list_facts()` / `index_text()`, 91 facts | 2.50 / 2.50 / 2.48 ms | 5.48 / 5.48 / 5.37 ms | **+119%**: `readFact` and the conversions, as at 5,000 |
+
+Every process-level path (what a hook, a CLI call or a server start pays) is within 3%; the warm
+per-call paths that read facts are not. The remedy is ts2py work (a counted-loop proof with a constant
+stride, and typed fact fields), not a shim change.
+
+**Gates.** `--suite store` 428 cases, 0 failures, 11 ruled (13 before); `--all` 23,133 cases, 0
+failures, 193 ruled; the F4 byte comparison and the sha256 header each red once on a scratch copy
+(`ts2py/committed/store.py`; `test_generated_module_names_the_typescript_on_disk[store.py]`).
 
 ## Concurrency
 

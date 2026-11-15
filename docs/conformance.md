@@ -133,7 +133,11 @@ literal each and the agreeing companion `J89-4 candidates_done(older_than_days=0
 in node** (D1, ruled: python is right; `ordinal` counts the day as `parseTs` does): the case is the
 agreeing `J89-4a candidates_done(older_than_days=0): created in the years 0001-0099`, the node
 literal now ages all three (`LITERAL: J89-4a node ages a fact created in 0001, 0050 and 0099`), red
-against the old `Date.UTC` ordinal on a scratch copy (2 failures); `store` 427 cases, 13 ruled.
+against the old `Date.UTC` ordinal on a scratch copy (2 failures); `store` 427 cases, 13 ruled. **J89-4b generated the store** (#316 G3 U2:
+`runtime-py`'s `memory/store` is compiled from `store.ts`): the two `ruling: G3 as Node` store-root
+cases (a NUL, a lone U+D800) went STALE as designed and are agreeing cases with a literal per side
+(`J89-4b a store root holding … — both answer as node (was ruled G3 as Node)`); the U+DC80 row stays
+ruled (G2 target-specific, permanent); `store` 428 cases, 11 ruled, 0 failures.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

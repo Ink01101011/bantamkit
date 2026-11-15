@@ -420,10 +420,30 @@ def test_the_eviction_rank_never_raises_on_a_hand_edited_type(tmp_path):
     that field. The rank compares with `==` against a TUPLE and never hashes the value: a
     membership test against a `set` would raise `TypeError: unhashable type: 'list'` and
     take `compact` — the operator's only way back under budget — with it."""
-    store = MemoryStore(tmp_path / "mem", today=lambda: "2026-08-21")
-    for weird in ([1, 2], {"a": 1}, 2026, None, b"user"):
-        fact = type("F", (), {"type": weird, "last_recalled": None, "created": "", "name": "x"})()
-        assert store._eviction_key(fact)[0] == 0
+    # J89-4b (#316 G3 U2): the private `_eviction_key` is retired with the hand-written store; the
+    # generated one ranks inside `compact` (store.ts `byEviction`), so the property is asked of
+    # `compact` itself. Each weird type ranks with the decaying class: with one durable `user` fact
+    # beside them and room for one line, every weird one is archived and the `user` fact is kept.
+    root = tmp_path / "mem"
+    (root / "facts").mkdir(parents=True)
+    weird = ["[1, 2]", "{a: 1}", "2026", "null", "!!binary dXNlcg=="]
+    for i, spelled in enumerate(weird):
+        (root / "facts" / f"w{i}.md").write_text(
+            f"---\nname: w{i}\ndescription: weird {i}\ntype: {spelled}\n"
+            "created: '2026-08-21'\nlast_recalled: null\nlinks: []\n---\n\nb\n",
+            encoding="utf-8",
+        )
+    (root / "facts" / "a-user.md").write_text(
+        "---\nname: a-user\ndescription: durable\ntype: user\n"
+        "created: '2026-01-01'\nlast_recalled: null\nlinks: []\n---\n\nb\n",
+        encoding="utf-8",
+    )
+    store = MemoryStore(root, today=lambda: "2026-08-21")
+    keep = len(store._index_line(store.lookup("a-user", stamp=False)).encode())
+    store.index_budget = keep
+    result = store.compact(reserve=0)
+    assert sorted(result.names) == [f"w{i}" for i in range(len(weird))]
+    assert [f.name for f in store.list_facts()] == ["a-user"]
 
 
 @pytest.mark.parametrize("budget", [512, 1024, 2048, 4096])
@@ -2641,7 +2661,7 @@ def test_restore_rolls_back_when_index_md_is_a_directory(tmp_path):
 
 
 def _deny_replace(monkeypatch, path):
-    """Make `Path.replace` fail for exactly one destination, on every platform.
+    """Make the move (`os.replace`) fail for exactly one destination, on every platform.
 
     Portable stand-in for the destination directory sitting at a mode that refuses the
     write -- `chmod(0o555)` is a no-op on Windows and for a uid that bypasses it, same
@@ -2651,14 +2671,16 @@ def _deny_replace(monkeypatch, path):
     `mkdir(exist_ok=True)` no-op'd on the directory already there, and `Path.replace`
     raised `PermissionError: [Errno 13]`.
     """
-    real_replace = Path.replace
+    # J89-4b: the generated store moves a fact through the `pyReplace` adapter, which is
+    # `os.replace` itself (what `Path.replace` calls), so `os.replace` is where the refusal goes.
+    real_replace = os.replace
 
-    def denied(self, target):
+    def denied(source, target):
         if Path(target) == Path(path):
             raise PermissionError(13, "Permission denied")
-        return real_replace(self, target)
+        return real_replace(source, target)
 
-    monkeypatch.setattr(Path, "replace", denied)
+    monkeypatch.setattr(os, "replace", denied)
 
 
 def test_archive_cli_prints_one_sentence_for_a_permission_error_at_the_move(

@@ -106,7 +106,8 @@ const COMMITTED = 'runtime-py/src/bantamkit/_generated';
 const CODEC_SOURCES = ['runtime-ts/src/memory/pyyaml.ts', 'runtime-ts/src/memory/factfile.ts'];
 /**
  * #316 G1 (J87-3): pricing and jobbudget; G2 (J88-2): the log segment, the event log and the token
- * ledger; G3 U1 (J89-2): the usage ledger; G3 (J89-3): retrieval. One ts2py call into the same package,
+ * ledger; G3 U1 (J89-2): the usage ledger; G3 (J89-3): retrieval; G3 U2 (J89-4b): the store. One ts2py
+ * call into the same package,
  * because the token ledger imports pricing and the event log and the usage ledger import the log
  * segment, and an import between compiled modules resolves only inside one call.
  */
@@ -118,6 +119,7 @@ const G1_SOURCES = [
   'runtime-ts/src/tokenledger.ts',
   'runtime-ts/src/memory/usage.ts',
   'runtime-ts/src/memory/retrieval.ts',
+  'runtime-ts/src/memory/store.ts',
 ];
 const CARGO_RUN = 'cargo run --release --manifest-path tools/ts2py/Cargo.toml --';
 const REGENERATE =

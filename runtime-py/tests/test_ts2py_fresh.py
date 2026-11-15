@@ -43,6 +43,8 @@ MODULES = {
     "usage.py": TS / "memory" / "usage.ts",
     # #316 G3 (J89-3), the same call.
     "retrieval.py": TS / "memory" / "retrieval.ts",
+    # #316 G3 U2 (J89-4b), the same call.
+    "store.py": TS / "memory" / "store.ts",
 }
 # The two support modules ts2py writes from copies it embeds; and the hand-written package file.
 SUPPORT = {"_ts2py_runtime.py", "_ts2py_adapters.py"}
@@ -58,6 +60,7 @@ REGENERATE = (
     f"  {_CARGO} runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts "
     "runtime-ts/src/storage/logsegment.ts runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts "
     "runtime-ts/src/memory/usage.ts runtime-ts/src/memory/retrieval.ts "
+    "runtime-ts/src/memory/store.ts "
     "--out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime\n"
     f"  {_CARGO} --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py\n"
     f"  {_CARGO} --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py\n"

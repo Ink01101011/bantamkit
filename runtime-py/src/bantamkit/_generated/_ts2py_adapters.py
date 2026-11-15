@@ -88,6 +88,8 @@ __all__ = [
     "py_mtime_date",
     "py_name",
     "py_nfkc_lower",
+    "py_os_error_strerror",
+    "py_os_error_text",
     "py_parent",
     "py_parents",
     "py_pow",
@@ -980,9 +982,10 @@ PyOSError = OSError
 
 
 def bantamkit_dir_for(path):
-    """`bantamkitDirFor` (runtime-ts/src/memory/store.ts):
-    `bantamkit.memory.store.bantamkit_dir_for`, the hand-written Python it ports (#316 G3 is not
-    generated yet), as a string or `null`."""
+    """`bantamkitDirFor` (runtime-ts/src/memory/store.ts), for a call that compiles its importer
+    without store.ts (ts2py's G2 tests; since J89-4b the committed event log imports the compiled
+    store): `bantamkit.memory.store.bantamkit_dir_for`, the shim over the generated function, as a
+    string or `null`."""
     from ..memory.store import bantamkit_dir_for as _for
 
     found = _for(_pathlib.Path(path))
@@ -990,8 +993,8 @@ def bantamkit_dir_for(path):
 
 
 def ensure_bantamkit_gitignore(directory, created, *_):
-    """`ensureBantamkitGitignore` (runtime-ts/src/memory/store.ts): the hand-written Python it
-    ports (`bantamkit.memory.store.ensure_bantamkit_gitignore`, #316 G3 not generated yet)."""
+    """`ensureBantamkitGitignore` (runtime-ts/src/memory/store.ts), for a call that compiles its
+    importer without store.ts (see `bantamkit_dir_for`): the shim over the generated function."""
     from ..memory.store import ensure_bantamkit_gitignore as _ensure
 
     _ensure(_pathlib.Path(directory), created=bool(created))
@@ -1326,7 +1329,18 @@ class HotIndex(_JsObject):
 
         if index_dir is _JS_UNDEFINED:
             index_dir = None
+        if isinstance(source, str):
+            # J89-4b: the store's root as the store's file calls hand it to the OS (`_store_path`).
+            source = _os_text(source)
         object.__setattr__(self, "_js_hot", _Hot(source, kind, home, index_dir=index_dir))
+
+    @classmethod
+    def _of(cls, hot):
+        """J89-4b: this adapter over a hand-written `HotIndex` already built (a caller that hands a
+        store its own index, as `tools/conformance/ref/storage_ref.py` does)."""
+        adapter = cls.__new__(cls)
+        object.__setattr__(adapter, "_js_hot", hot)
+        return adapter
 
     def _call(self, method, *args):
         from ..client import BantamError as _Native
@@ -1427,10 +1441,17 @@ class ColdIndex(_JsObject):
         return _JS_UNDEFINED
 
 
-def _factfile(name):
-    from . import factfile as _ff
+_FACTFILE = []
 
-    return getattr(_ff, name)
+
+def _factfile(name):
+    # The compiled codec, imported on first use and held (J89-4b: the store reads every fact through
+    # these, and an import statement per call was a measurable share of a listing).
+    if not _FACTFILE:
+        from . import factfile as _ff
+
+        _FACTFILE.append(_ff)
+    return getattr(_FACTFILE[0], name)
 
 
 def extra_of(meta, *_):
@@ -1438,9 +1459,26 @@ def extra_of(meta, *_):
     return _factfile("extra_of")(meta)
 
 
+def _factcodec():
+    # J89-4b: inside the bantamkit package the store reads and writes through
+    # `bantamkit.memory.factcodec` (#315's owner ruling: generated + PyYAML fallback); outside it
+    # (ts2py's own tests) the compiled codec alone. Imported late: factcodec imports the store.
+    try:
+        from ..memory import factcodec as codec
+    except ImportError:
+        return None
+    return codec
+
+
 def format_fact(fact, *_):
-    """`formatFact` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
-    return _factfile("format_fact")(fact)
+    """`formatFact` (factfile.ts): in bantamkit, `factcodec.held_fact_text` -- the compiled
+    `format_fact`, then `yaml.safe_dump` where it refuses, over the Python values the fact stands
+    for (an opaque value's own object), so the bytes are `fact_text`'s (J89-4b); elsewhere
+    `_generated/factfile.py`'s, compiled from it."""
+    codec = _factcodec()
+    if codec is None:
+        return _factfile("format_fact")(fact)
+    return codec.held_fact_text(fact)
 
 
 def lifecycle_of(meta, *_):
@@ -1449,8 +1487,14 @@ def lifecycle_of(meta, *_):
 
 
 def parse_frontmatter(front, *_):
-    """`parseFrontmatter` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
-    return _factfile("parse_frontmatter")(front)
+    """`parseFrontmatter` (factfile.ts): in bantamkit, `factcodec.held_frontmatter` -- what
+    `load_frontmatter` reads (the compiled codec, then PyYAML where it refuses), in the codec's
+    shape, a PyYAML refusal a JS Error with PyYAML's text (J89-4b); elsewhere
+    `_generated/factfile.py`'s, compiled from it."""
+    codec = _factcodec()
+    if codec is None:
+        return _factfile("parse_frontmatter")(front)
+    return codec.held_frontmatter(front)
 
 
 def py_list(value, *_):
@@ -1491,21 +1535,83 @@ def matches_md(name, *_):
     return _fnmatch.fnmatch(name, "*.md")
 
 
+def _js_inspect_str(text):
+    # `util.inspect` of a string, as Node's ERR_INVALID_ARG_VALUE message quotes the path: single
+    # quotes, double when the text holds a `'` and no `"`, a backtick when it holds both and no
+    # backtick; the quote, the backslash and C0 controls / DEL escaped (`\n`, `\x00`).
+    quote = "'"
+    if "'" in text:
+        if '"' not in text:
+            quote = '"'
+        elif "`" not in text and "${" not in text:
+            quote = "`"
+    named = {"\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r", "\\": "\\\\"}
+    out = []
+    for c in text:
+        if c == quote:
+            out.append("\\" + c)
+        elif c in named:
+            out.append(named[c])
+        elif ord(c) < 0x20 or ord(c) == 0x7F:
+            out.append(f"\\x{ord(c):02X}")
+        else:
+            out.append(c)
+    return quote + "".join(out) + quote
+
+
+def _js_received(value):
+    # Node's `ERR_INVALID_ARG_VALUE` (lib/internal/errors.js): the inspected value, cut to its
+    # first 128 UTF-16 code units and `...` when it is longer.
+    inspected = _js_inspect_str(value)
+    units = inspected.encode("utf-16-le", "surrogatepass")
+    if len(units) > 256:
+        return units[:256].decode("utf-16-le", "surrogatepass") + "..."
+    return inspected
+
+
+def _store_path(path, what):
+    """J89-4b: a path as `pyfs.ts` hands it to Node's fs, for the store's file calls. The G2 path
+    policy (`_node_path`): a lone surrogate CPython cannot encode is the U+FFFD Node's UTF-8
+    encoding writes, and a POSIX surrogateescape code point is the real byte it stands for. A NUL
+    is what `asPyOSError` makes of Node's `ERR_INVALID_ARG_VALUE` TypeError: an `OSError` with
+    errno 0 and strerror `ERR_INVALID_ARG_VALUE: <Node's message>` (its `code` reads as
+    undefined, which no store decision tests for), naming the path."""
+    if not isinstance(path, str):
+        raise TypeError(f"ts2py: {what} of anything but a string path is outside the subset")
+    if "\0" in path:
+        raise OSError(
+            0,
+            "ERR_INVALID_ARG_VALUE: The argument 'path' must be a string, Uint8Array, or URL "
+            "without null bytes. Received " + _js_received(path),
+            path,
+        )
+    return _os_text(path)
+
+
+def _lexists_path(path):
+    # `pyLexists` swallows every failure (`lstatSync` in a bare try), a NUL included.
+    if not isinstance(path, str):
+        raise TypeError("ts2py: pyLexists of anything but a string path is outside the subset")
+    return None if "\0" in path else _os_text(path)
+
+
 def py_lexists(path, *_):
-    """`pyLexists` (pyfs.ts): `os.path.lexists`, which it ports."""
-    return _os.path.lexists(path)
+    """`pyLexists` (pyfs.ts): `os.path.lexists`, which it ports, of the path as Node's fs receives
+    it (`_store_path`); a NUL answers false, as the port's bare catch does."""
+    path = _lexists_path(path)
+    return False if path is None else _os.path.lexists(path)
 
 
 def py_mkdir_parents(path, *_):
-    """`pyMkdirParents` (pyfs.ts): `Path.mkdir(parents=True, exist_ok=True)`."""
-    _pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+    """`pyMkdirParents` (pyfs.ts): `Path.mkdir(parents=True, exist_ok=True)` (`_store_path`)."""
+    _pathlib.Path(_store_path(path, "pyMkdirParents")).mkdir(parents=True, exist_ok=True)
     return _JS_UNDEFINED
 
 
 def py_mtime_date(path, *_):
     """`pyMtimeDate` (pyfs.ts): `date.fromtimestamp(Path(path).stat().st_mtime).isoformat()`."""
     # Local time, as the reference's `date.fromtimestamp` (and `date.today()`) is.
-    mtime = _pathlib.Path(path).stat().st_mtime
+    mtime = _pathlib.Path(_store_path(path, "pyMtimeDate")).stat().st_mtime
     return _datetime.date.fromtimestamp(mtime).isoformat()  # noqa: DTZ012
 
 
@@ -1526,26 +1632,26 @@ def py_read_text(path, *_):
     """`pyReadText` (pyfs.ts): `Path.read_text(encoding='utf-8')`, which it ports; a decode failure
     is `PyUnicodeDecodeError` with CPython's message."""
     try:
-        return _pathlib.Path(path).read_text(encoding="utf-8")
+        return _pathlib.Path(_store_path(path, "pyReadText")).read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise PyUnicodeDecodeError(str(error)) from None
 
 
 def py_replace(source, target, *_):
     """`pyReplace` (pyfs.ts): `os.replace`, which it ports."""
-    _os.replace(source, target)
+    _os.replace(_store_path(source, "pyReplace"), _store_path(target, "pyReplace"))
     return _JS_UNDEFINED
 
 
 def py_scandir_names(directory, *_):
     """`pyScandirNames` (pyfs.ts): `os.scandir(directory)` reduced to names, in its order."""
-    with _os.scandir(directory) as entries:
+    with _os.scandir(_store_path(directory, "pyScandirNames")) as entries:
         return [entry.name for entry in entries]
 
 
 def py_scandir_probe(directory, *_):
     """`pyScandirProbe` (pyfs.ts): `with os.scandir(directory): pass`."""
-    with _os.scandir(directory):
+    with _os.scandir(_store_path(directory, "pyScandirProbe")):
         pass
     return _JS_UNDEFINED
 
@@ -1557,13 +1663,13 @@ def py_suffix(path, *_):
 
 def py_unlink(path, *_):
     """`pyUnlink` (pyfs.ts): `Path.unlink()`."""
-    _pathlib.Path(path).unlink()
+    _pathlib.Path(_store_path(path, "pyUnlink")).unlink()
     return _JS_UNDEFINED
 
 
 def py_write_text(path, text, *_):
     """`pyWriteText` (pyfs.ts): `Path.write_text(text, encoding='utf-8')`."""
-    _pathlib.Path(path).write_text(text, encoding="utf-8")
+    _pathlib.Path(_store_path(path, "pyWriteText")).write_text(text, encoding="utf-8")
     return _JS_UNDEFINED
 
 
@@ -1572,6 +1678,7 @@ def py_write_text_atomic(path, text, *_):
     here statement for statement: `<path>.<pid>.<8 hex>.tmp` opened `x`, the buffered writer writes
     every byte, `os.replace` onto `path`; on any failure the temp is unlinked and the error goes on
     up, so `path` holds the old bytes or the new ones, never a prefix."""
+    path = _store_path(path, "pyWriteTextAtomic")
     tmp = _pathlib.Path(f"{path}.{_os.getpid()}.{_secrets.token_hex(4)}.tmp")
     try:
         with tmp.open("x", encoding="utf-8") as fh:
@@ -1584,6 +1691,22 @@ def py_write_text_atomic(path, text, *_):
             pass
         raise
     return _JS_UNDEFINED
+
+
+def py_os_error_text(error, *_):
+    """`pyOSErrorText` (pyfs.ts, J89-4b): `str(e)` of the CPython `OSError`, which `PyOSError` ports
+    and whose `message` the port's constructor builds as `OSError.__str__` does."""
+    if not isinstance(error, OSError):
+        raise TypeError("ts2py: pyOSErrorText of anything but an OSError is outside the subset")
+    return str(error)
+
+
+def py_os_error_strerror(error, *_):
+    """`pyOSErrorStrerror` (pyfs.ts, J89-4b): the CPython `OSError`'s `strerror`, as the reference's
+    f-string prints it (an `OSError` built without one prints `None`; a port's always has one)."""
+    if not isinstance(error, OSError):
+        raise TypeError("ts2py: pyOSErrorStrerror of anything but an OSError is outside the subset")
+    return str(error.strerror)
 
 
 def sorted_path_names(names, *_):

@@ -252,6 +252,21 @@ export class PyOSError extends Error {
 }
 
 /**
+ * `str(e)` of the CPython `OSError` that `e` ports: `OSError.__str__`, which the constructor above
+ * builds as the message (#316 G3 U2, J89-4b). A function and not `e.message` so that ts2py can
+ * hand the compiled store CPython's own text: in Python every `PyOSError` IS CPython's `OSError`,
+ * whose `message` a compiled read cannot ask for (Node's fs errors spell it differently).
+ */
+export function pyOSErrorText(e: PyOSError): string {
+  return e.message;
+}
+
+/** `e.strerror` of the CPython `OSError` that `e` ports (J89-4b; see `pyOSErrorText`). */
+export function pyOSErrorStrerror(e: PyOSError): string {
+  return e.strerror;
+}
+
+/**
  * The number CPython would print, which is NOT the number libuv hands over.
  *
  * `err.errno` is a libuv status, and on POSIX libuv reuses the platform's own errno so the

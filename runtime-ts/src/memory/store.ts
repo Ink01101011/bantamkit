@@ -86,6 +86,8 @@ import {
   pyMkdirParents,
   pyMtimeDate,
   pyName,
+  pyOSErrorStrerror,
+  pyOSErrorText,
   pyParent,
   pyParents,
   pyReadText,
@@ -219,7 +221,10 @@ function validateOutcomeStatus(type: string, outcome: string | null, status: str
     if (!(VALID_OUTCOMES as readonly string[]).includes(outcome)) {
       throw new MemoryValidationError(`invalid outcome '${outcome}'; must be one of ${pyListText(VALID_OUTCOMES)}`);
     }
-    if (!(OUTCOME_TYPES as readonly string[]).includes(type)) {
+    // Named, not negated in place: ts2py lowers a proven `includes` to `in`, and `!` of that is
+    // the `not x in y` ruff refuses (J89-4b).
+    const lessonType = (OUTCOME_TYPES as readonly string[]).includes(type);
+    if (!lessonType) {
       throw new MemoryValidationError(
         `invalid outcome '${outcome}' for type '${type}'; outcome is only for feedback and project facts`,
       );
@@ -875,8 +880,25 @@ export function utcNow(): string {
  * it stops being a division by zero.
  */
 export function tokens(text: string): Set<string> {
-  return new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  // J89-4b: the ASCII letter-and-digit runs are taken first and each one lowered, which is the same
+  // set as lowering the whole text first, and lowers nothing but ASCII -- except for the two code
+  // points whose lowercase holds an ASCII letter (U+0130 -> `i` + U+0307, U+212A -> `k`), where the
+  // text is lowered with every other non-ASCII code point read as a space (each one only ENDS a
+  // run). Swept against the old body over every code point in six contexts in Node (no difference)
+  // and against the reference's `re.findall(r"[a-z0-9]+", text.lower())` likewise in Python; ts2py
+  // can compile it, where `.toLowerCase()` of arbitrary text is refused (55 code points CPython's
+  // tables and Node's map apart). Node's speed is the old body's (interleaved medians,
+  // docs/porting.md).
+  if (text.includes('\u0130') || text.includes('\u212a')) {
+    return new Set(text.replace(NOT_TOKEN_SOURCE, ' ').toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  }
+  const out = new Set<string>();
+  for (const run of text.match(/[A-Za-z0-9]+/g) ?? []) out.add(run.toLowerCase());
+  return out;
 }
+
+/** Every code point but ASCII, U+0130 and U+212A: the ones whose lowercase holds no `[a-z0-9]`. */
+const NOT_TOKEN_SOURCE = /[^\x00-\x7f\u0130\u212a]/g;
 
 /**
  * `len(a & b) / len(a | b)`, except that an empty side is 0.0 and never a division.
@@ -1232,7 +1254,7 @@ export class MemoryStore {
   /** `_unwritable`: one sentence for a store that exists and refused a write (#141). */
   private unwritable(error: PyOSError): MemoryValidationError {
     return new MemoryValidationError(
-      `memory store is not writable: ${this.root}: ${error.strerror}; the directory` +
+      `memory store is not writable: ${this.root}: ${pyOSErrorStrerror(error)}; the directory` +
         ' exists but cannot be written to, so nothing was written',
     );
   }
@@ -1941,7 +1963,8 @@ export class MemoryStore {
   lint(): void {
     const findings: string[] = [];
     for (const fact of this.facts(findings)) {
-      if (!(VALID_TYPES as readonly string[]).includes(pyText(fact.type))) {
+      const valid = (VALID_TYPES as readonly string[]).includes(pyText(fact.type)); // see validateOutcomeStatus
+      if (!valid) {
         throw new MemoryValidationError(
           `fact '${pyText(fact.name)}' has invalid type '${pyText(fact.type)}'`,
         );
@@ -2516,7 +2539,7 @@ export class MemoryStore {
     consequence: string,
     detail = '',
   ): MemoryValidationError {
-    const because = `${error.strerror}${detail ? ` (${detail})` : ''}`;
+    const because = `${pyOSErrorStrerror(error)}${detail ? ` (${detail})` : ''}`;
     return new MemoryValidationError(
       `memory store is unreadable: ${directory}: ${because}; ${consequence}`,
     );
@@ -2579,7 +2602,7 @@ export class MemoryStore {
         out.push(this.readFact(path, findings));
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError)) throw e;
-        skipped.push({ file: basename(path), reason: e.message });
+        skipped.push({ file: basename(path), reason: e instanceof PyOSError ? pyOSErrorText(e) : e.message });
       }
     }
     return out;

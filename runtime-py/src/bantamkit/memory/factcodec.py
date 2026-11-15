@@ -306,3 +306,181 @@ def _plain_spelling(value: Any) -> str:
     if kind is date:
         return value.isoformat()
     raise _Unheld(f"cannot hold a {kind.__name__}")
+
+
+# ------------------------------------------------------------- the generated store's seam (J89-4b)
+#
+# #316 G3 U2: `memory/store` is generated from `store.ts`, which reads a frontmatter with
+# `parseFrontmatter` and writes a fact with `formatFact`. In Python both reach the store through the
+# two functions below (the `parse_frontmatter` / `format_fact` adapters), so the generated store
+# reads and writes through THIS codec -- generated first, PyYAML where it refuses (#315, the owner's
+# ruling "generated + PyYAML fallback") -- and reads exactly what `load_frontmatter` reads and
+# writes exactly the bytes `fact_text` writes. The store holds the codec's shape (`PyScalar`, plain
+# lists and dicts); a value that shape cannot hold the way Python holds it is carried OPAQUELY
+# (`_Opaque`): a set, bytes, a tuple, a collection met twice (PyYAML writes it back as an anchor and
+# an alias), a dict with a non-text key, a scalar that does not re-emit as PyYAML writes it, and a
+# list or dict where the store interpolates the value as text (`name`, `description`, `type`, the
+# stamps, the lifecycle fields, a `links` item, a `metadata` value), so `str()` of it is still
+# Python's. An opaque value prints, compares (never equal, `<` a TypeError naming its type) and
+# tests truthy as Python's value does, and the write hands the original object back to `fact_text`.
+
+_TEXT_FIELDS = frozenset(
+    {"name", "description", "type", "created", "last_recalled", "outcome", "status"}
+)
+
+
+class _Opaque(_genyaml.PyScalar):
+    """A value the codec's shape cannot hold, carried for the write (`native`)."""
+
+    def __init__(self, native: Any) -> None:
+        object.__setattr__(self, "_bk_native", native)
+        super().__init__(
+            "tag:bantamkit:opaque",
+            type(native).__name__,
+            str(native),
+            None,
+            bool(native),
+            {"kind": "opaque"},
+        )
+
+
+def _shared_ids(value: Any) -> set[int]:
+    """Ids of the collections (and date objects) met more than once under `value`."""
+    seen: set[int] = set()
+    twice: set[int] = set()
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, (list, dict, date)):
+            if id(v) in seen:
+                twice.add(id(v))
+                continue
+            seen.add(id(v))
+            if isinstance(v, list):
+                stack.extend(v)
+            elif isinstance(v, dict):
+                stack.extend(v.keys())
+                stack.extend(v.values())
+    return twice
+
+
+def _held(value: Any, shared: set[int], text: bool = False) -> Any:
+    """`value` in the codec's shape, or `_Unheld`. `text`: a list or dict here is opaque."""
+    if value is None or type(value) is str:
+        return value
+    kind = type(value)
+    if kind is list or kind is dict:
+        if text or id(value) in shared:
+            raise _Unheld("a collection where text is read, or met twice")
+        if kind is list:
+            return [_held(v, shared) for v in value]
+        if not all(type(k) is str for k in value):
+            raise _Unheld("a non-text key")
+        return {k: _held(v, shared) for k, v in value.items()}
+    if kind in (bool, int, float, date, datetime):
+        if kind in (date, datetime) and id(value) in shared:
+            raise _Unheld("a date object met twice")
+        spelling = _plain_spelling(value)
+        held = _genyaml.construct_plain(spelling)
+        if not isinstance(held, _genyaml.PyScalar) or held.yaml != spelling:
+            raise _Unheld(f"{spelling!r} does not re-emit as PyYAML writes it")
+        back = _native(held)
+        if type(back) is not kind or str(back) != str(value):
+            raise _Unheld(f"{spelling!r} does not read back as the same value")
+        return held
+    raise _Unheld(f"cannot hold a {kind.__name__}")
+
+
+def _held_or_opaque(value: Any, shared: set[int], text: bool = False) -> Any:
+    try:
+        return _held(value, shared, text)
+    except _Unheld:
+        return _Opaque(value)
+
+
+def held_meta(meta: dict, read: bool = True) -> dict:
+    """A frontmatter, or a fact's fields, in the codec's shape (see above). A key that is not text
+    is left out: the store reads its keys by name and carries text keys only (`extraOf`).
+
+    `read`: the frontmatter `safe_load` built, so `links` is a NEW list of its items (the reference
+    reads it as `list(meta["links"])`, which never aliases another value). Otherwise these are a
+    `Fact`'s own fields on their way to a write, and a `links` list another value shares is carried
+    opaque, so PyYAML still writes the anchor and the alias (`fact_text`)."""
+    shared = _shared_ids(meta)
+    out: dict = {}
+    for key, value in meta.items():
+        if type(key) is not str:
+            continue
+        if key == "links" and type(value) is list and (read or id(value) not in shared):
+            out[key] = [_held_or_opaque(v, shared, text=True) for v in value]
+        elif key == "metadata" and type(value) is dict and id(value) not in shared and all(
+            type(k) is str for k in value
+        ):
+            out[key] = {k: _held_or_opaque(v, shared, text=True) for k, v in value.items()}
+        else:
+            out[key] = _held_or_opaque(value, shared, text=key in _TEXT_FIELDS)
+    return out
+
+
+def held_values(values: list) -> list:
+    """Several values in the codec's shape, a collection two of them share opaque; a list or dict
+    is opaque too (each is a value the store reads as text: a name)."""
+    shared = _shared_ids(values)
+    return [_held_or_opaque(v, shared, text=True) for v in values]
+
+
+def native_value(value: Any) -> Any:
+    """The Python value the codec's `value` stands for (an opaque value's original object)."""
+    if value is None or type(value) is str:
+        return value
+    if isinstance(value, _Opaque):
+        return value._bk_native
+    if isinstance(value, list):
+        return [native_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: native_value(v) for k, v in value.items()}
+    return _native(value)
+
+
+def held_frontmatter(text: str) -> Any:
+    """THE `parseFrontmatter` ADAPTER: `load_frontmatter(text)` in the codec's shape. A refusal is a
+    JS Error carrying the reference's `str(e)`, as `_read_fact`'s `except` printed it; an answer
+    that is not a mapping is `frontmatter is not a mapping`, the reference's own sentence."""
+    from bantamkit._generated._ts2py_runtime import _JsError
+
+    try:
+        meta = load_frontmatter(text)
+    except (ValueError, KeyError, yaml.YAMLError) as e:
+        raise _JsError(str(e)) from None
+    if not isinstance(meta, dict):
+        raise _JsError("frontmatter is not a mapping")
+    return held_meta(meta)
+
+
+def held_fact_text(fact: Any) -> str:
+    """THE `formatFact` ADAPTER: `fact_text` of the fact the generated store holds (`fact` is a
+    dict in the codec's shape), so the bytes are the ones `fact_text` writes for the same values."""
+    from types import SimpleNamespace
+
+    from bantamkit._generated._ts2py_runtime import _JS_UNDEFINED
+
+    def get(key: str, default: Any = None) -> Any:
+        value = fact.get(key, default)
+        return default if value is _JS_UNDEFINED else value
+
+    extra = get("extra") or []
+    return fact_text(
+        SimpleNamespace(
+            name=native_value(get("name")),
+            description=native_value(get("description")),
+            type=native_value(get("type")),
+            body=get("body", ""),
+            links=native_value(get("links", [])),
+            last_recalled=native_value(get("last_recalled")),
+            created=native_value(get("created")),
+            outcome=native_value(get("outcome")),
+            status=native_value(get("status")),
+            keywords=list(get("keywords") or []),
+            extra={k: native_value(v) for k, v in extra},
+        )
+    )

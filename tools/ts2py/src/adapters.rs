@@ -390,14 +390,14 @@ pub const ADAPTERS: &[Adapter] = &[
         name: "bantamkitDirFor",
         py_name: "bantamkit_dir_for",
         kind: AdapterKind::Function,
-        why: "Python is the reference: store.ts ports `bantamkit.memory.store.bantamkit_dir_for` (#316 G3, not generated yet; `--suite store` compares them), called on `Path(p)` and answered as a string or null.",
+        why: "Reached only by a call that compiles a module importing it WITHOUT store.ts (since J89-4b the committed event log imports the compiled store; ts2py's own G2 tests compile the event log alone): `bantamkit.memory.store.bantamkit_dir_for`, the shim over the generated function, called on `Path(p)` and answered as a string or null.",
     },
     Adapter {
         module: Some("runtime-ts/src/memory/store.ts"),
         name: "ensureBantamkitGitignore",
         py_name: "ensure_bantamkit_gitignore",
         kind: AdapterKind::Function,
-        why: "Python is the reference: store.ts ports `bantamkit.memory.store.ensure_bantamkit_gitignore` (#316 G3, not generated yet; `--suite store` compares them).",
+        why: "Reached only by a call that compiles a module importing it WITHOUT store.ts (see `bantamkitDirFor`): `bantamkit.memory.store.ensure_bantamkit_gitignore`, the shim over the generated function.",
     },
     Adapter {
         module: Some("runtime-ts/src/storage/lock.ts"),
@@ -643,6 +643,20 @@ pub const ADAPTERS: &[Adapter] = &[
         py_name: "py_lexists",
         kind: AdapterKind::Function,
         why: "Python is the reference: `pyLexists` is `os.path.lexists` (its doc comment).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyOSErrorText",
+        py_name: "py_os_error_text",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyOSErrorText` is `str(e)` of the CPython `OSError` a `PyOSError` ports (J89-4b); in Python every `PyOSError` is that `OSError`, whose text a compiled `.message` read may not ask for.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyOSErrorStrerror",
+        py_name: "py_os_error_strerror",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyOSErrorStrerror` is the CPython `OSError`'s `strerror` (J89-4b), as the reference's f-string prints it.",
     },
     Adapter {
         module: Some("runtime-ts/src/memory/pyfs.ts"),

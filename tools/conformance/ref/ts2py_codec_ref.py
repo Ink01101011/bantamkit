@@ -128,7 +128,10 @@ def _py_key(k):
 
 def py_rt(path: Path):
     try:
-        return MemoryStore._fact_text(None, MemoryStore._read_fact(None, path, None))  # type: ignore[arg-type]
+        # J89-4b: `_read_fact` is the generated store's `readFact`, a method of an instance (the
+        # hand-written one never read `self`); a reader that never creates anything.
+        reader = MemoryStore(path.parent, create=False)
+        return reader._fact_text(reader._read_fact(path, None))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -219,13 +222,18 @@ def pyyaml_only():
     runtime-py answered before the switch, and the suite can hold the switch to the user's
     ruling: nothing moved but the two classes it names.
     """
+    # J89-4b: the generated store reaches the codec through `factcodec.held_frontmatter` /
+    # `held_fact_text`, which call factcodec's own `load_frontmatter` / `fact_text`; both modules'
+    # names are pointed at the fallbacks.
     saved = store_module.load_frontmatter, store_module.fact_text
-    store_module.load_frontmatter = factcodec._pyyaml_load
-    store_module.fact_text = factcodec._pyyaml_fact_text
+    saved_codec = factcodec.load_frontmatter, factcodec.fact_text
+    store_module.load_frontmatter = factcodec.load_frontmatter = factcodec._pyyaml_load
+    store_module.fact_text = factcodec.fact_text = factcodec._pyyaml_fact_text
     try:
         yield
     finally:
         store_module.load_frontmatter, store_module.fact_text = saved
+        factcodec.load_frontmatter, factcodec.fact_text = saved_codec
 
 
 def py_arm(files, facts):

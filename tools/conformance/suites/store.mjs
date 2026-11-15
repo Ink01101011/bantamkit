@@ -2466,19 +2466,20 @@ async function runIn(ctx, home) {
     }
 
     // D3-D5. A store ROOT the OS cannot be handed as the caller spelled it, RULED by J89-1F
-    // (docs/porting.md, the `G3 as Node` rows and the G2 target-specific I/O row).
-    // - A NUL: both refuse and write nothing; python with CPython's `ValueError` from `mkdir`,
-    //   node with the store's not-writable sentence. RULED AS NODE (the store's own
-    //   `MemoryValidationError`); python moves to it when `store.ts` is generated (#316 G3 U2).
-    // - A lone U+D800, which no encoding takes: python raises `UnicodeEncodeError`; node's fs
-    //   writes U+FFFD and saves there. RULED AS NODE (the G2 lone-surrogate policy: U+FFFD);
-    //   python moves at generation. The refusal bits differ (one side raises), so no side-to-side
-    //   bit can be green: node's answer is pinned per side instead.
+    // (docs/porting.md, the `G3 as Node` rows and the G2 target-specific I/O row). The two `G3 as
+    // Node` rulings went STALE by design when store.ts was generated (#316 G3 U2, J89-4b: the
+    // store's file calls take the G2 path policy, `_store_path` in tools/ts2py/src/adapters.py),
+    // and are now agreeing cases with a literal for each side:
+    // - A NUL: both refuse and write nothing, with the store's could-not-be-created sentence
+    //   (`MemoryValidationError`): python's mkdir raises the OSError `asPyOSError` makes of Node's
+    //   ERR_INVALID_ARG_VALUE, where CPython's `ValueError` escaped before generation.
+    // - A lone U+D800, which no encoding takes: both save at U+FFFD (the G2 lone-surrogate policy),
+    //   where python raised `UnicodeEncodeError` before generation.
     // - U+DC80, a POSIX surrogateescape code point (the undecodable byte 0x80 of a real name):
-    //   TARGET-SPECIFIC, the G2 policy itself. Python hands the OS the real byte (APFS refuses it:
-    //   MemoryValidationError; ext4 creates it); node, which has no such string from its own fs,
-    //   writes U+FFFD. Permanent. The companion: neither raises anything but the store's own
-    //   refusal, and neither creates any directory but the one each hands the OS.
+    //   TARGET-SPECIFIC, the G2 policy itself, still ruled. Python hands the OS the real byte (APFS
+    //   refuses it: MemoryValidationError; ext4 creates it); node, which has no such string from
+    //   its own fs, writes U+FFFD. Permanent. The companion: neither raises anything but the
+    //   store's own refusal, and neither creates any directory but the one each hands the OS.
     // Each answer is `[what the caller is told, the base directory's entry names as bytes]`.
     const rootAnswer = (base, suffix) => {
       const py = ctx.runPython(g3ref, { op: 'store_root', roots: [`${base.py}/${suffix}`] }).out[0];
@@ -2496,34 +2497,38 @@ async function runIn(ctx, home) {
       return { py: [clean(py, base.py), pyList], nd: [clean(nd, base.node), ndList] };
     };
     const NODE_SAVES_FFFD = [{ ok: ['saved', 1] }, ['73efbfbd78']];
-    for (const [label, suffix, ruling] of [
-      ['a NUL', 'a\u0000b', 'G3 as Node (J89-1F, docs/porting.md): both refuse and write nothing; python raises ValueError (`mkdir: embedded null character in path`), node the store\'s MemoryValidationError (`memory store could not be created: ...`). Python moves to the node sentence when store.ts is generated'],
-      ['U+DC80 (a surrogateescape byte)', 's\udc80x', 'G2 target-specific I/O (docs/porting.md, J88-RF F4b; applied to a store root by J89-1F): python hands the OS the byte 0x80 (APFS refuses it: MemoryValidationError; ext4 creates it); node saves into `s\\uFFFDx`. Permanent'],
-      ['a lone U+D800', 's\ud800x', 'G3 as Node (J89-1F, docs/porting.md): a lone surrogate no encoding takes is the U+FFFD node\'s fs writes (the G2 policy); python raises UnicodeEncodeError (`surrogates not allowed`) today and moves to node\'s answer when store.ts is generated'],
-    ]) {
+    for (const [label, suffix] of [['a NUL', 'a\u0000b'], ['a lone U+D800', 's\ud800x']]) {
       const b = bed();
       const base = { py: join(b, 'py'), node: join(b, 'node') };
       for (const side of ['py', 'node']) mkdirSync(base[side], { recursive: true });
       const a = rootAnswer(base, suffix);
-      const ruled = suffix.includes('\udc80') ? 'G2 target-specific' : 'G3 as Node';
-      cases.push({ name: `ruling: ${ruled} — a store root holding ${label}`, kind: 'json', expected: a.py, actual: a.nd, ruling });
-      if (suffix.includes('\u0000')) {
-        // Both refuse, and nothing is written: compared unruled.
-        cases.push({ name: `J89-1 a store root holding ${label} — both refuse and write nothing`, kind: 'json', expected: [Boolean(a.py[0].err), a.py[1]], actual: [Boolean(a.nd[0].err), a.nd[1]] });
-        cases.push({ name: `LITERAL: J89-1F G3 ruled as Node — node's answer for a store root holding ${label}`, kind: 'json', expected: { err: 'MemoryValidationError', wrote: [] }, actual: { err: a.nd[0].err?.[0], wrote: a.nd[1] } });
-      } else if (suffix.includes('\ud800')) {
-        cases.push({ name: `LITERAL: J89-1F G3 ruled as Node — node's answer for a store root holding ${label}`, kind: 'json', expected: NODE_SAVES_FFFD, actual: a.nd });
-      } else {
-        // The companion: what both agree on. A store's own refusal or a save, never a raw
-        // encoding error; and at most the ONE directory each side handed the OS (python's
-        // byte 0x80 or nothing, node's U+FFFD), never a third name.
-        const shape = ([answer, list]) => [
-          answer.ok !== undefined || answer.err?.[0] === 'MemoryValidationError',
-          list.every((n) => n === '738078' || n === '73efbfbd78') && list.length <= 1,
-        ];
-        cases.push({ name: `J89-1F a store root holding ${label} — a store answer, and only the directory each side names`, kind: 'json', expected: shape(a.py), actual: shape(a.nd) });
-        cases.push({ name: `LITERAL: J89-1F node's answer for a store root holding ${label}`, kind: 'json', expected: NODE_SAVES_FFFD, actual: a.nd });
+      cases.push({ name: `J89-4b a store root holding ${label} — both answer as node (was ruled G3 as Node)`, kind: 'json', expected: a.py, actual: a.nd });
+      for (const [side, got] of [['python', a.py], ['node', a.nd]]) {
+        if (suffix.includes('\u0000')) {
+          cases.push({ name: `LITERAL: J89-4b ${side}'s answer for a store root holding ${label}`, kind: 'json', expected: { err: 'MemoryValidationError', wrote: [] }, actual: { err: got[0].err?.[0], wrote: got[1] } });
+        } else {
+          cases.push({ name: `LITERAL: J89-4b ${side}'s answer for a store root holding ${label}`, kind: 'json', expected: NODE_SAVES_FFFD, actual: got });
+        }
       }
+    }
+    {
+      const label = 'U+DC80 (a surrogateescape byte)';
+      const suffix = 's\udc80x';
+      const ruling = 'G2 target-specific I/O (docs/porting.md, J88-RF F4b; applied to a store root by J89-1F): python hands the OS the byte 0x80 (APFS refuses it: MemoryValidationError; ext4 creates it); node saves into `s\\uFFFDx`. Permanent';
+      const b = bed();
+      const base = { py: join(b, 'py'), node: join(b, 'node') };
+      for (const side of ['py', 'node']) mkdirSync(base[side], { recursive: true });
+      const a = rootAnswer(base, suffix);
+      cases.push({ name: `ruling: G2 target-specific — a store root holding ${label}`, kind: 'json', expected: a.py, actual: a.nd, ruling });
+      // The companion: what both agree on. A store's own refusal or a save, never a raw
+      // encoding error; and at most the ONE directory each side handed the OS (python's
+      // byte 0x80 or nothing, node's U+FFFD), never a third name.
+      const shape = ([answer, list]) => [
+        answer.ok !== undefined || answer.err?.[0] === 'MemoryValidationError',
+        list.every((n) => n === '738078' || n === '73efbfbd78') && list.length <= 1,
+      ];
+      cases.push({ name: `J89-1F a store root holding ${label} — a store answer, and only the directory each side names`, kind: 'json', expected: shape(a.py), actual: shape(a.nd) });
+      cases.push({ name: `LITERAL: J89-1F node's answer for a store root holding ${label}`, kind: 'json', expected: NODE_SAVES_FFFD, actual: a.nd });
     }
   }
 
