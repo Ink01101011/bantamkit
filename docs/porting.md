@@ -1148,7 +1148,11 @@ other cause is outside the ruling and red: with one fuzz input added whose key i
 1,024-character simple-key limit, the J86-5 classifier passed it as `pyyaml-refuses` (`PASS: 227
 cases`) and this one fails it (`fuzz/py=before/outside-the-315-ruling`, `FAIL: 228 cases, 1
 failures`). The classifier is pinned on six probes (`ruled-class/classifier-probes`), two of them
-third shapes that must stay outside.
+third shapes that must stay outside. The marker counterfactual also admits a double-quoted
+scalar continued by a column-0 marker (`k: "x\n--- y"`: Node reads `x --- y`, PyYAML refuses): the
+same scanner cause as the single-quoted shape the ruling names, so it is read under that ruling. An
+input refused for two ruled causes at once (say a raw BEL and a U+0085) falls in neither class and
+turns the suite red; no current input has that shape, and the red is a false alarm, never a mask.
 
 Every other answer is unchanged, and the suite holds that: `py=before/outside-the-315-ruling`
 (every input whose parse or store round trip moved and is in neither class) is `[]` on the fuzz
