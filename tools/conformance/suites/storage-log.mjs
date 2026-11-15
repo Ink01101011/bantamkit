@@ -41,7 +41,7 @@
  * WINDOWS. The lock and temp-then-rename are exercised on macOS only; the Windows run is
  * Task 8's manual step in `docs/superpowers/plans/2026-10-15-storage-layer.md`.
  */
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -348,6 +348,25 @@ function scenarios() {
       ],
     },
     {
+      label: 'J88-1 the permission bits of a rewritten log, a segment and a write_over target',
+      divergent:
+        "write_over / _replace / _mark open their file with os.open(..., O_CREAT|O_EXCL|O_WRONLY), whose default mode is 0o777, so under " +
+        "umask 022 a folded log, a .gz segment and a write_over target are 0o755 on Python; Node's openSync(tmp, 'wx') defaults to 0o666 " +
+        '(0o644). An appended-only log is 0o644 on both (the companion)',
+      agree: [0, 1],
+      ops: [
+        append({ ts: '0' }),
+        { op: 'mode', name: 'x.jsonl' },
+        append({ ts: '9' }),
+        { op: 'fold', older_than: '5', reducer: 'sum_n' },
+        { op: 'mode', name: 'x.jsonl' },
+        { op: 'rotate', max_bytes: 0 },
+        { op: 'mode', name: 'x.jsonl.1.gz' },
+        { op: 'write_over', name: 'w.bin', b64: b64(enc('x')) },
+        { op: 'mode', name: 'w.bin' },
+      ],
+    },
+    {
       label: 'J88-1 a folded row holding an integer past 2**53',
       divergent:
         'a reducer row is re-serialised: Python keeps 18446744073709551616 exact, a JS number holds 18446744073709552000 ' +
@@ -484,6 +503,16 @@ function nodeOp(storage, eventlog, seg, op, out) {
       case 'segments':
         out.push(seg.segments().map((p) => basename(p)));
         break;
+      case 'mode': {
+        let m = null;
+        try {
+          m = statSync(join(dirname(seg.path), op.name)).mode & 0o777;
+        } catch {
+          /* no file */
+        }
+        out.push(m);
+        break;
+      }
       case 'mkdir':
         mkdirSync(join(dirname(seg.path), op.name));
         out.push(null);
@@ -612,6 +641,20 @@ export async function run(ctx) {
         raises: [{ raised: true }, { raised: true }],
         missing: { errno: 'ENOENT' },
       }),
+    );
+  }
+
+  {
+    // J88-1: each side's permission bits, as a literal per side. The umask is read off a fresh
+    // directory (mkdir's default mode is 0o777 on both runtimes), so the literal holds on any host.
+    const probe = join(ctx.scratch, 'storage-log-umask-probe');
+    mkdirSync(probe, { recursive: true });
+    const dirMode = statSync(probe).mode & 0o777;
+    const m = all.findIndex((s) => s.label.startsWith('J88-1 the permission bits'));
+    const modes = (side) => all[m].ops.map((op, k) => (op.op === 'mode' ? (side === 'py' ? py : nd).beds[m][k] : undefined)).filter((v) => v !== undefined);
+    cases.push(
+      ...literalCases(modes('py'), [dirMode & 0o666, dirMode, dirMode, dirMode], 'LITERAL: J88-1 Python: appended 0o666 & ~umask, rewritten 0o777 & ~umask', [dirMode & 0o666, dirMode, dirMode, dirMode]).slice(0, 1),
+      ...literalCases([0, 0, 0, 0].map(() => dirMode & 0o666), modes('node'), 'LITERAL: J88-1 Node: every file 0o666 & ~umask', [0, 0, 0, 0].map(() => dirMode & 0o666)).slice(1),
     );
   }
 

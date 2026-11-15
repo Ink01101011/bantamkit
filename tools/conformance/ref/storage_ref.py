@@ -37,6 +37,7 @@ J88-1 (#316 G2) added, after every op above so none of them moves:
     {"op": "append_nonfinite"}                 -> [bool, bool, bool]  (NaN, Infinity, -Infinity)
     {"op": "segments"}                         -> [basename, ...]
     {"op": "mkdir", "name"}                    -> null    (a directory beside the log)
+    {"op": "mode", "name"}                     -> int | null  (permission bits of a file beside the log)
     {"op": "write_over", "name", "b64"}        -> null | {"errno": code name}  (beside the log)
     {"op": "rewrite_held", "build"}            -> bool | {"errno": code name}  (build: none|upper|empty)
     {"op": "fold_raises", "reducer"}           -> {"raised": bool}  (reducer: throws|nonjson)
@@ -260,6 +261,11 @@ def _log_op(seg: LogSegment, op: dict, out: list) -> None:
         out.append([seg.append({"x": v}) for v in (float("nan"), float("inf"), float("-inf"))])
     elif kind == "segments":
         out.append([p.name for p in seg.segments()])
+    elif kind == "mode":
+        try:
+            out.append(os.stat(seg.path.parent / op["name"]).st_mode & 0o777)
+        except OSError:
+            out.append(None)
     elif kind == "mkdir":
         (seg.path.parent / op["name"]).mkdir()
         out.append(None)
