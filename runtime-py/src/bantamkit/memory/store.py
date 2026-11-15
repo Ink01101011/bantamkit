@@ -19,6 +19,10 @@ import yaml
 
 from bantamkit.client import BantamError
 
+# The fact-file codec (#315): the generated one, compiled from `runtime-ts/src/memory/factfile.ts`,
+# with real PyYAML where it refuses (`factcodec`). `load_frontmatter` stays importable from here,
+# where the hot index, the tests and the conformance refs have always imported it.
+from .factcodec import fact_text, load_frontmatter  # noqa: F401
 from .retrieval import (
     BM25F,
     FIELD_BOOST,
@@ -37,28 +41,6 @@ from .usage import UsageLedger, seed_ts
 
 if TYPE_CHECKING:
     from bantamkit.storage.hotindex import HotIndex
-
-# libyaml when it is there (#204): J69-2 measured 0.9 s of a 1.50 s hot-index build at 5,000
-# facts in the pure-Python `SafeLoader`. Both loaders resolve scalars with the same
-# `SafeConstructor`; only the scanner differs, and its ERROR TEXT differs -- so any refusal
-# from the C loader is re-parsed by the pure one, and the sentence a model reads is the one
-# it always was (`load_frontmatter`).
-_CSafeLoader = getattr(yaml, "CSafeLoader", None)
-
-
-def load_frontmatter(text: str) -> Any:
-    """`yaml.safe_load(text)`, through libyaml when present; a refusal is the pure loader's.
-
-    Any exception out of the C loader -- not only `YAMLError` -- sends the same text to
-    `yaml.safe_load`, which then answers or raises exactly as it did before this existed.
-    """
-    if _CSafeLoader is not None:
-        try:
-            return well_formed_frontmatter(text, yaml.load(text, Loader=_CSafeLoader))  # noqa: S506 -- SAFE
-        except Exception:  # noqa: BLE001 -- the pure loader decides what a refusal says
-            pass
-    return well_formed_frontmatter(text, yaml.safe_load(text))
-
 
 VALID_TYPES = {"user", "feedback", "project", "reference"}
 VALID_OUTCOMES = ("error", "success")
@@ -2566,34 +2548,11 @@ class MemoryStore:
         cannot drift apart. `dream()` is the caller — it reports the byte size of a
         consolidated store before it has written one, and a private renderer of its own
         would be a second frontmatter format to keep equal to this one.
+
+        THROUGH THE GENERATED CODEC (#315): `factcodec.fact_text` is `format_fact` from
+        `runtime-ts/src/memory/factfile.ts`, with `yaml.safe_dump` for what it refuses.
         """
-        meta = {
-            "name": fact.name,
-            "description": fact.description,
-            "type": fact.type,
-            "created": fact.created,
-            "last_recalled": fact.last_recalled,
-            "links": fact.links,
-        }
-        # Only when non-empty (#199): a fact that never had keywords keeps its bytes.
-        if fact.keywords:
-            meta["keywords"] = fact.keywords
-        # #219 / #221 (0.36.2): after `keywords`, before the hand-written keys.
-        if fact.outcome is not None:
-            meta["outcome"] = fact.outcome
-        if fact.status is not None and fact.status != "active":
-            meta["status"] = fact.status
-        # After the owned keys, in the order the file had them (#199 Task 6).
-        for key, value in fact.extra.items():
-            if key not in OWNED_KEYS:
-                meta[key] = value
-        return (
-            "---\n"
-            + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
-            + "---\n\n"
-            + fact.body.strip()
-            + "\n"
-        )
+        return fact_text(fact)
 
     def _write_fact(self, fact: Fact) -> None:
         """Write via a PER-WRITER temp file and `os.replace`, so a reader never sees a

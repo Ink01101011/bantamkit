@@ -6,8 +6,12 @@
  *   node     `runtime-ts/dist/memory/factfile.js` (run `npm run build` if stale): `decodeFactBytes`,
  *            `parseFactText`, `formatFact`; and for the store-level round trip, the store's own
  *            `readFact` followed by `formatFact`, which is what a recall stamp writes.
- *   py       runtime-py as it ships, real PyYAML: `load_frontmatter` for a parse, `_fact_text`
- *            for a format, `_fact_text(_read_fact(path))` for a round trip (`ref/ts2py_codec_ref.py`).
+ *   py       runtime-py as it ships: `load_frontmatter` for a parse, `_fact_text` for a format,
+ *            `_fact_text(_read_fact(path))` for a round trip (`ref/ts2py_codec_ref.py`). Since #315
+ *            (J86-3) those read and write through the COMMITTED generated codec first and real
+ *            PyYAML where it refuses (`runtime-py/src/bantamkit/memory/factcodec.py`).
+ *   before   the same calls with the store pointed at those PyYAML fallbacks alone: runtime-py as
+ *            it was before the switch. It is the arm the user's ruling is held against.
  *   gen      the modules `tools/ts2py` writes into this run's scratch, COMPILED FRESH every run
  *            (as `--suite ts2py` does), so the suite cannot pass on a stale generated file;
  *            `generated/<module>/source-sha256` checks each header names the bytes on disk.
@@ -25,11 +29,14 @@
  *                generated module is compiled from node's source; any difference is a ts2py bug.
  *   py = node    the existing two-runtime contract. A refusal is compared as a bit (the two
  *                refusal TEXTS differ by the registered #120 ruling in `factfile.ts`). Every
- *                disagreement must fall in one of the four classes in `KNOWN` below, which this
- *                suite FOUND on its first run and which are pre-existing, not deliberate: on the
+ *                disagreement must fall in one of the two classes in `KNOWN` below: on the
  *                fuzz each class is a `ruling:` case that must keep occurring, on the real stores
  *                each is counted in a note, and a disagreement outside them is red everywhere.
  *                The previous-release files show none at all.
+ *   py = before  the switch moved only what the user's #315 ruling (2026-11-15) names: the two
+ *                classes in `RULED_315`, where `before` disagreed with node and `py` now reads as
+ *                node does. Any other input whose parse, round trip or format moved is red; on the
+ *                fuzz each ruled class must still be exercised, so the cases cannot go vacuous.
  *   three-way    where py and node agree, gen agrees — implied by the two above, and counted in
  *                the notes, together with every input where they do not.
  *
@@ -180,13 +187,22 @@ function nodeArms(ff, yaml, store) {
  */
 const KNOWN = {
   'node-refuses':
-    "node refuses a frontmatter PyYAML reads (#120's registered ruling: outside the language `parseFrontmatter` claims, node raises rather than guesses): a quoted key such as `'True':`, which BOTH emitters write for a Fact.extra key YAML would not read as text, and a block sequence inside a nested `metadata:` mapping, which Claude Code native memory files carry",
+    "node refuses a frontmatter PyYAML reads (#120's registered ruling: outside the language `parseFrontmatter` claims, node raises rather than guesses): a quoted key such as `'True':`, which BOTH emitters write for a Fact.extra key YAML would not read as text, and a block sequence inside a nested `metadata:` mapping, which Claude Code native memory files carry. Since #315 (J86-3) runtime-py reads these through its PyYAML fallback, exactly as `before` did (`py=before` below)",
   'non-text-key':
-    'a key YAML resolves to a non-string (`on:` is True, `null:` is None, `True:`): PyYAML keys the mapping by that value, node by the text; both stores drop such a key (`isTextKey` in factfile.ts, `isinstance(k, str)` in `_read_fact`), so it never reaches a Fact or a write',
+    'a key YAML resolves to a non-string (`on:` is True, `null:` is None, `True:`): PyYAML keys the mapping by that value, node by the text; both stores drop such a key (`isTextKey` in factfile.ts, `isinstance(k, str)` in `_read_fact`), so it never reaches a Fact or a write: the store round trip is compared unruled (`non-text-key/rt-store`)',
+};
+
+/**
+ * The two classes J86-2 found that the user's #315 ruling (2026-11-15, option A) RESOLVED towards
+ * node: runtime-py reads through the generated codec first, so on these it now answers as node
+ * does. Each is found by comparing `before` (runtime-py's PyYAML read) with node, and on each
+ * input of the class `py` must equal node. `docs/porting.md` (Generated modules) has before/after.
+ */
+const RULED_315 = {
   'yaml11-breaks':
-    "U+0085, U+2028 or U+2029 inside a quoted or plain scalar: PyYAML reads each as a YAML 1.1 line break and folds it (so runtime-py does not read back what its own `safe_dump` wrote), node keeps the character; both write the same bytes",
+    'U+0085, U+2028 or U+2029 inside a quoted or plain scalar: WAS folded as a YAML 1.1 line break by PyYAML (runtime-py did not read back what its own `safe_dump` wrote); NOW kept, as node keeps it',
   'pyyaml-refuses':
-    'PyYAML refuses a hand-written frontmatter node reads: a raw non-printable character (`unacceptable character #x0001`) or a multi-line single-quoted scalar whose continuation sits at column 0 (`ScannerError`)',
+    'a hand-written frontmatter PyYAML refused and node reads (a raw non-printable character, a multi-line single-quoted scalar continued at column 0): WAS `malformed fact file`; NOW read, as node reads it',
 };
 
 const refused = (x) => x !== null && typeof x === 'object' && 'error' in x;
@@ -210,7 +226,10 @@ function where(a, b) {
   return a.body === b.body ? 'identical' : 'body differs';
 }
 
-/** Which KNOWN class explains a py/node parse disagreement, or null when none does. */
+/**
+ * Which class explains a py/node parse disagreement, or null when none does. The four J86-2
+ * found; `py` today may only fall in the two `KNOWN` ones, `before` in all four.
+ */
 function parseClass(text, py, node, isTextKey) {
   if (refused(node) && !refused(py)) return 'node-refuses';
   if (refused(py) && !refused(node)) return 'pyyaml-refuses';
@@ -227,11 +246,42 @@ function parseClass(text, py, node, isTextKey) {
   return null;
 }
 
+/**
+ * The #315 class an input was in BEFORE the switch (`before` against node), or null. Read off the
+ * values and the body only, so a non-text key (`on:`, keyed True by PyYAML) does not mask it.
+ */
+function ruledClass(text, before, node) {
+  if (refused(before) && !refused(node)) return 'pyyaml-refuses';
+  if (refused(before) || refused(node)) return null;
+  const values = (p) => ({ v: p.meta.map(([, v]) => v), body: p.body });
+  if (!same(values(before), values(node)) && /[\x85\u2028\u2029]/.test(text)) return 'yaml11-breaks';
+  return null;
+}
+
+/** Two parses alike up to `non-text-key`: the same text keys, values and body, in order. */
+function readAlike(py, node, isTextKey) {
+  const pk = py.meta.filter(([k]) => typeof k === 'string');
+  const nk = node.meta.filter(([k]) => isTextKey(k));
+  return same(pk, nk) && same(py.meta.map(([, v]) => v), node.meta.map(([, v]) => v)) && py.body === node.body;
+}
+
 function threeWay(inputs, ans, isTextKey) {
-  const out = { parseGen: [], rtGen: [], unclassified: [], known: {}, readAlike: 0, refusedAlike: 0, codecRtAgree: 0, storeLayer: 0, nested: 0, nestedWritten: 0 };
+  const out = { parseGen: [], rtGen: [], unclassified: [], known: {}, readAlike: 0, refusedAlike: 0, codecRtAgree: 0, storeLayer: 0, nested: 0, nestedWritten: 0, moved: [], ruled: {}, nonTextRt: [] };
   for (const k of Object.keys(KNOWN)) out.known[k] = [];
+  for (const k of Object.keys(RULED_315)) out.ruled[k] = { inputs: 0, asNode: 0, misread: [] };
   inputs.forEach((input, i) => {
-    const { node, py, gen } = ans[i];
+    const { node, py, gen, before } = ans[i];
+    // #315 (J86-3): what the switch moved. `before` is runtime-py's PyYAML-only read; an input
+    // in one of the two ruled classes must now read as node; any other input must not move.
+    const beforeCls = ruledClass(input.text, before.parse, node.parse);
+    if (beforeCls !== null) {
+      const r = out.ruled[beforeCls];
+      r.inputs += 1;
+      if (refused(py.parse) === refused(node.parse) && (refused(py.parse) || readAlike(py.parse, node.parse, isTextKey))) r.asNode += 1;
+      else r.misread.push(input.id);
+    } else if (!same(py.parse, before.parse) || !same(py.rt, before.rt)) {
+      out.moved.push({ id: input.id, parse: same(py.parse, before.parse) ? 'same' : where(before.parse, py.parse), rt: same(py.rt, before.rt) ? 'same' : where(before.rt, py.rt) });
+    }
     if (!same(gen.parse, node.parse)) out.parseGen.push({ id: input.id, at: where(gen.parse, node.parse) });
     if (!same(gen.rt, node.rt)) out.rtGen.push({ id: input.id, at: where(gen.rt, node.rt) });
 
@@ -241,6 +291,7 @@ function threeWay(inputs, ans, isTextKey) {
     // object for key metadata` where runtime-py wrote the block mapping): node now writes it,
     // byte for byte, so a store round trip that differs is unclassified and red.
     const cls = parseAgrees ? null : parseClass(input.text, py.parse, node.parse, isTextKey);
+    if (cls === 'non-text-key' && !rtAgrees) out.nonTextRt.push({ id: input.id, rtStore: where(py.rt, node.rtStore) });
     if (!parseAgrees || !rtAgrees) {
       if (cls === null) {
         out.unclassified.push({ id: input.id, parse: parseAgrees ? 'agrees' : where(py.parse, node.parse), rtStore: rtAgrees ? 'agrees' : where(py.rt, node.rtStore) });
@@ -279,6 +330,17 @@ function aggregateCases(prefix, r, label, { rulings }) {
       expected: rulings ? { written: r.nested, exercised: true } : { written: r.nested },
       actual: rulings ? { written: r.nestedWritten, exercised: r.nested > 0 } : { written: r.nestedWritten },
     },
+    { name: `${prefix}/py=before/outside-the-315-ruling`, kind: 'json', expected: [], actual: show(r.moved) },
+    { name: `${prefix}/non-text-key/rt-store/py=node`, kind: 'json', expected: [], actual: show(r.nonTextRt) },
+    ...Object.entries(r.ruled).map(([cls, x]) => ({
+      name: `${prefix}/315-ruled:${cls}/py=node`,
+      kind: 'json',
+      // On the fuzz the class must also be exercised; a store without one (CI) holds none.
+      expected: rulings ? { readAsNode: x.inputs, misread: [], exercised: true } : { readAsNode: x.inputs, misread: [] },
+      actual: rulings
+        ? { readAsNode: x.asNode, misread: show(x.misread), exercised: x.inputs > 0 }
+        : { readAsNode: x.asNode, misread: show(x.misread) },
+    })),
     {
       name: `${prefix}/not-vacuous`,
       kind: 'string',
@@ -293,7 +355,7 @@ function aggregateCases(prefix, r, label, { rulings }) {
         kind: 'json',
         expected: { [cls]: 0 },
         actual: { [cls]: r.known[cls].length },
-        ruling: `pre-existing py/node finding (J86-2), not a deliberate divergence: ${why}`,
+        ruling: `pre-existing py/node finding (J86-2), registered in docs/porting.md (#120 / #315 rows): ${why}`,
       });
     }
   }
@@ -308,7 +370,9 @@ function summarise(label, n, r) {
   return (
     `${label}: ${n} inputs; read alike by all three ${r.readAlike}, refused by all three ${r.refusedAlike}; ` +
     `gen!=node parse ${r.parseGen.length} rt ${r.rtGen.length}; py!=node by known class: ${known || 'none'}; ` +
-    `unclassified ${r.unclassified.length}; holding a nested mapping ${r.nested}, of which node's store round trip ` +
+    `unclassified ${r.unclassified.length}; moved by the #315 switch: ${Object.entries(r.ruled)
+      .map(([k, x]) => `${k} ${x.asNode}/${x.inputs} now read as node`)
+      .join(', ')}, outside the ruling ${r.moved.length}; holding a nested mapping ${r.nested}, of which node's store round trip ` +
     `writes runtime-py's bytes ${r.nestedWritten}; round trip where runtime-py's stamp = node's codec = gen ${r.codecRtAgree}, ` +
     `where the stamp differs from the codec-only round trip but py = node at the store ${r.storeLayer} ` +
     `(the store's read: created from mtime, an unquoted timestamp as text, a description made one line)`
@@ -528,13 +592,17 @@ export async function run(ctx) {
   const formatted = ctx.runPython(REF, { generated: join(bed, 'gen'), package: PACKAGE, files: [], facts });
   const fmtGen = [];
   const fmtPy = [];
+  const fmtMoved = [];
   const fuzzFiles = [];
   facts.forEach((fact, i) => {
     const id = `fuzz/fact/${i}`;
     const n = node.format(fact);
     const g = formatted.gen.facts[i];
     const p = formatted.py.facts[i];
+    const b = formatted.before.facts[i];
     if (!same(g, n)) fmtGen.push({ id, node: n, gen: g });
+    // #315: the switch changes no write. Refusals included, message and all.
+    if (!same(p, b)) fmtMoved.push({ id, before: b, py: p });
     if (!same(asBit(p), asBit(n))) fmtPy.push({ id, py: p, node: n, fact });
     const text = typeof p === 'string' ? p : typeof n === 'string' ? n : null;
     if (text !== null) fuzzFiles.push({ id, text });
@@ -542,6 +610,7 @@ export async function run(ctx) {
   cases.push(
     { name: 'fuzz/format/gen=node', kind: 'json', expected: [], actual: fmtGen.slice(0, 20) },
     { name: 'fuzz/format/py=node', kind: 'json', expected: [], actual: fmtPy.slice(0, 20) },
+    { name: 'fuzz/format/py=before', kind: 'json', expected: [], actual: fmtMoved.slice(0, 20) },
   );
   const fmtRefused = facts.filter((_, i) => refused(formatted.py.facts[i]) && refused(node.format(facts[i]))).length;
 
@@ -583,6 +652,7 @@ export async function run(ctx) {
     return {
       node: { parse: node.parse(bytes), rt: node.rt(bytes), rtStore: node.rtStore(x.path) },
       py: py.py.files[i],
+      before: py.before.files[i],
       gen: py.gen.files[i],
     };
   });

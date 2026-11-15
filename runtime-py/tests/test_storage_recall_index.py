@@ -161,8 +161,18 @@ def _outcome(loader, text):
 
 @pytest.mark.skipif(not hasattr(yaml, "CSafeLoader"), reason="no libyaml in this interpreter")
 def test_a_refusal_is_the_pure_loaders_sentence_never_libyamls():
+    # Since #315 libyaml is inside the PyYAML FALLBACK (`factcodec._pyyaml_load`), which answers
+    # every frontmatter the generated codec refuses; the property is held there.
+    from bantamkit.memory.factcodec import _pyyaml_load
+
     for text in MALFORMED:
+        assert _outcome(_pyyaml_load, text) == _outcome(yaml.safe_load, text), text
+    # The generated codec refuses all but the last, so the store gives PyYAML's sentence for
+    # each; the raw BEL is the `pyyaml-refuses` shape the #315 ruling (2026-11-15) lets
+    # runtime-py read as Node reads it (`docs/porting.md`, Generated modules).
+    for text in MALFORMED[:-1]:
         assert _outcome(load_frontmatter, text) == _outcome(yaml.safe_load, text), text
+    assert _outcome(load_frontmatter, MALFORMED[-1]) == ("ok", {"a": "\x07"})
     # and the fallback is load-bearing: libyaml words these differently
     def c_only(s):
         return yaml.load(s, Loader=yaml.CSafeLoader)  # noqa: S506 -- a SAFE loader

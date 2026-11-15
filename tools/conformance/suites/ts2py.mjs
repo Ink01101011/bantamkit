@@ -21,10 +21,11 @@
  * `$TS2PY_CARGO`, or `cargo` on PATH) rebuilds the compiler from `tools/ts2py` and recompiles the
  * source on every run, and `generated/source-sha256` checks the module's header names the bytes
  * on disk. No Rust toolchain means this suite is red, with the reason, rather than skipped.
- * `committed/workplan.py` and `committed/_ts2py_runtime.py` then compile again with the flags the
- * committed files were made with (`--runtime-module ._ts2py_runtime`, `--emit-runtime`) and
- * compare every byte with `runtime-py/src/bantamkit/_generated/`, so a hand-edited body or a
- * compiler change that was never regenerated is red, with the regenerate command (J85-R F4).
+ * `committed/<file>` then compiles EVERY generated file under `runtime-py/src/bantamkit/_generated/`
+ * again with the flags it was made with (`workplan.py`; since #315 the codec's `pyyaml.py` and
+ * `factfile.py`; `--emit-runtime`, `--emit-adapters`) and compares every byte, so a hand-edited body
+ * or a compiler change that was never regenerated is red, with the regenerate command (J85-R F4);
+ * `committed/coverage` lists the directory, so a generated file outside the gate is red too.
  *
  * WHY THE PYTHON ARMS READ THE FIXTURE THEMSELVES. `ref/ts2py_ref.py` opens the file with
  * `json.load`; the cases are not sent as a payload, because the payload goes through
@@ -47,7 +48,7 @@
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -99,32 +100,58 @@ function compile(out) {
  * and compares every byte; a mismatch is red and its message is the command that regenerates.
  */
 const COMMITTED = 'runtime-py/src/bantamkit/_generated';
+/** The fact-file codec (#315, J86-3): one ts2py call compiles both into one package. */
+const CODEC_SOURCES = ['runtime-ts/src/memory/pyyaml.ts', 'runtime-ts/src/memory/factfile.ts'];
+const CARGO_RUN = 'cargo run --release --manifest-path tools/ts2py/Cargo.toml --';
 const REGENERATE =
   'regenerate from the repository root:\n' +
-  `  cargo run --release --manifest-path tools/ts2py/Cargo.toml -- ${SOURCE} -o ${COMMITTED}/workplan.py --runtime-module ._ts2py_runtime\n` +
-  `  cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --emit-runtime ${COMMITTED}/_ts2py_runtime.py`;
+  `  ${CARGO_RUN} ${SOURCE} -o ${COMMITTED}/workplan.py --runtime-module ._ts2py_runtime\n` +
+  `  ${CARGO_RUN} ${CODEC_SOURCES.join(' ')} --out-dir ${COMMITTED} --runtime-module ._ts2py_runtime\n` +
+  `  ${CARGO_RUN} --emit-runtime ${COMMITTED}/_ts2py_runtime.py\n` +
+  `  ${CARGO_RUN} --emit-adapters ${COMMITTED}/_ts2py_adapters.py`;
 
+/**
+ * Every `.py` under `_generated/` but `__init__.py` (hand-written, one docstring), compiled again
+ * with the flags it was made with and compared byte for byte. The committed set is LISTED, not
+ * named: a generated file committed without a fresh counterpart here is red, so a module added
+ * later cannot ship outside this gate.
+ */
 function committedCases(bed) {
-  const module = join(bed, 'committed_workplan.py');
-  const runtime = join(bed, 'committed_ts2py_runtime.py');
-  ts2py([SOURCE, '-o', module, '--runtime-module', '._ts2py_runtime'], module);
-  ts2py(['--emit-runtime', runtime], runtime);
-  return [
-    ['workplan.py', module],
-    ['_ts2py_runtime.py', runtime],
-  ].map(([file, fresh]) => {
+  const fresh = join(bed, 'committed');
+  mkdirSync(fresh, { recursive: true });
+  ts2py([SOURCE, '-o', join(fresh, 'workplan.py'), '--runtime-module', '._ts2py_runtime'], join(fresh, 'workplan.py'));
+  ts2py([...CODEC_SOURCES, '--out-dir', fresh, '--runtime-module', '._ts2py_runtime'], join(fresh, 'factfile.py'));
+  ts2py(['--emit-runtime', join(fresh, '_ts2py_runtime.py')], join(fresh, '_ts2py_runtime.py'));
+  ts2py(['--emit-adapters', join(fresh, '_ts2py_adapters.py')], join(fresh, '_ts2py_adapters.py'));
+  const made = readdirSync(fresh).filter((f) => f.endsWith('.py')).sort();
+  const committedFiles = readdirSync(join(repoRoot, COMMITTED))
+    .filter((f) => f.endsWith('.py') && f !== '__init__.py')
+    .sort();
+  const cases = [
+    {
+      name: 'committed/coverage',
+      kind: 'json',
+      expected: { committedWithoutAFreshCompile: [], freshButNotCommitted: [] },
+      actual: {
+        committedWithoutAFreshCompile: committedFiles.filter((f) => !made.includes(f)),
+        freshButNotCommitted: made.filter((f) => !committedFiles.includes(f)),
+      },
+    },
+  ];
+  for (const file of made) {
     const committed = join(repoRoot, COMMITTED, file);
-    const want = readFileSync(fresh);
+    const want = readFileSync(join(fresh, file));
     const have = existsSync(committed) ? readFileSync(committed) : Buffer.alloc(0);
-    return {
+    cases.push({
       name: `committed/${file}`,
       kind: 'string',
       expected: `${COMMITTED}/${file} is byte-identical to ts2py's output`,
       actual: want.equals(have)
         ? `${COMMITTED}/${file} is byte-identical to ts2py's output`
         : `${COMMITTED}/${file} differs from what ts2py writes now (${have.length} bytes committed, ${want.length} fresh); ${REGENERATE}`,
-    };
-  });
+    });
+  }
+  return cases;
 }
 
 export async function run(ctx) {

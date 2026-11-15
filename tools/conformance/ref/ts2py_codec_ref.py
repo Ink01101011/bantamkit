@@ -1,9 +1,15 @@
-"""Python arms of the ts2py-codec suite: runtime-py's PyYAML codec and the GENERATED codec.
+"""Python arms of the ts2py-codec suite: runtime-py as it ships, as it was, and the GENERATED codec.
 
     {"generated": <dir holding the package>, "package": <name>,
      "files": [path, ...], "facts": [fact, ...]}
-      -> {"py":  {"files": [{"parse": ..., "rt": ...}], "facts": [format]},
-          "gen": {"files": [{"parse": ..., "rt": ...}], "facts": [format]}}
+      -> {"py":     {"files": [{"parse": ..., "rt": ...}], "facts": [format]},
+          "before": {"files": [{"parse": ..., "rt": ...}], "facts": [format]},
+          "gen":    {"files": [{"parse": ..., "rt": ...}], "facts": [format]}}
+
+`py` is runtime-py as it ships: since #315 (J86-3) the store reads and writes through the
+generated codec first and PyYAML where it refuses (`memory/factcodec.py`). `before` is the same
+store with both names pointed at the PyYAML fallbacks (`pyyaml_only`), which is runtime-py as it
+was before the switch.
 
 THE RUNTIME-PY ARM CALLS THE STORE, IT DOES NOT COPY IT. `load_frontmatter` is the function
 `MemoryStore._read_fact` parses a frontmatter with, `_read_fact` is the read a recall stamp
@@ -42,13 +48,16 @@ import datetime
 import importlib
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
-from bantamkit.memory.store import Fact, MemoryStore, load_frontmatter
+from bantamkit.memory import factcodec
+from bantamkit.memory import store as store_module
+from bantamkit.memory.store import Fact, MemoryStore
 
 
 def _err(exc: BaseException) -> dict:
@@ -105,7 +114,7 @@ def py_parse(path: Path) -> dict:
     try:
         text = path.read_text(encoding="utf-8")
         _, front, body = text.split("---\n", 2)
-        meta = load_frontmatter(front)
+        meta = store_module.load_frontmatter(front)
         if not isinstance(meta, dict):
             return {"error": "frontmatter is not a mapping"}
         return {"meta": [[_py_key(k), canon_py(v)] for k, v in meta.items()], "body": body.strip()}
@@ -197,15 +206,44 @@ def gen_arms(gen_dir: str, package: str):
     return parse, rt, fmt
 
 
+# ------------------------------------------------------------------- runtime-py before #315
+
+
+@contextmanager
+def pyyaml_only():
+    """runtime-py as it was before #315 (J86-3): every fact file read and written by PyYAML.
+
+    The store reads through `store.load_frontmatter` and writes through `store.fact_text`, both
+    from `memory/factcodec.py`, whose PyYAML fallbacks ARE the pre-#315 code. Pointing the two
+    names at the fallbacks gives the old store exactly, so the `before` arm answers what
+    runtime-py answered before the switch, and the suite can hold the switch to the user's
+    ruling: nothing moved but the two classes it names.
+    """
+    saved = store_module.load_frontmatter, store_module.fact_text
+    store_module.load_frontmatter = factcodec._pyyaml_load
+    store_module.fact_text = factcodec._pyyaml_fact_text
+    try:
+        yield
+    finally:
+        store_module.load_frontmatter, store_module.fact_text = saved
+
+
+def py_arm(files, facts):
+    return {
+        "files": [{"parse": py_parse(p), "rt": py_rt(p)} for p in files],
+        "facts": [py_format(f) for f in facts],
+    }
+
+
 def main() -> None:
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     gen_parse, gen_rt, gen_format = gen_arms(request["generated"], request["package"])
     files = [Path(p) for p in request["files"]]
+    with pyyaml_only():
+        before = py_arm(files, request["facts"])
     out = {
-        "py": {
-            "files": [{"parse": py_parse(p), "rt": py_rt(p)} for p in files],
-            "facts": [py_format(f) for f in request["facts"]],
-        },
+        "py": py_arm(files, request["facts"]),
+        "before": before,
         "gen": {
             "files": [
                 {"parse": gen_parse(p.read_bytes()), "rt": gen_rt(p.read_bytes())} for p in files

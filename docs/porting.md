@@ -346,8 +346,8 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 |---|---|
 | `build_id` | hashes the executing tree; two runtimes, two trees. `assets_digest` **is** identical (read it off `build_identity` on either server, or `_assets_fingerprint()`; this row no longer quotes a digest, because each of the three it carried — `sha256:b03141bf…` at #75, `d47dcf4b…` over 87 files, `9e66e89a…` over 93 — went stale by the same route: the pack changed and the row did not; job67 J67-9) and that is the one that matters — but only because both walks now EXCLUDE `__pycache__`. That is a precondition, not a given: the pack ships eleven `.py` fixtures, `pip install` byte-compiles them, and on the published 0.27.0 artifacts the wheel answered `sha256:fa8372f6…` over 98 files against npm's `sha256:d47dcf4b…` over 87 while this row already claimed they were identical. Gated per side by `build_identity: a __pycache__ does not move assets_digest` in `tools/conformance/suites/wire.mjs` — per side, because pointed at one polluted pack both runtimes moved together and the cross-runtime comparison stayed green. |
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
-| the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone. **#120 adds 8:** an anchor, `!!str`, a flow mapping, an empty flow mapping, a nested flow sequence, a flow-sequence pair, a flow sequence over two lines and an anchored sequence item are READ by PyYAML and REFUSED by the port with a named `FactParseError` — reading them means porting the scanner, anchors and the composer. A refusal names the file and writes nothing, which is the point: the plain-text guess it replaced was stamped back to disk. Ruled in `tools/conformance/suites/codec.mjs` as `ruling: #120 node refuses where python reads: …`, with the refusal-bit companions as per-side literals (`#120 per side: the ruled inputs — python reads every one` / `— node refuses every one, with a named FactParseError`), because the two bits DIFFER and a side-to-side bit could never be green. Teeth: forcing the ruled answers equal reddened all 8 as `STALE RULING`; dropping `&` from the refused set left every ruling green and reddened the node literal (1 failure). **job67 (J67-3), user ruling 2026-10-15 on #120's remainder: these eight are the FINAL answer** — the PyYAML scanner is not ported, and the refusal is by name. What the ruling changed is what a refusal COSTS: a `memory_save` on Node no longer refuses the whole store because one fact file is one of these shapes. Both runtimes' `save` now skip any fact file they cannot read, name it (`SaveResult.skipped`, and a closing paragraph on the reply: `N fact file(s) could not be read and was/were skipped; the duplicate check read every other fact:` + `[project] <the store's sentence>`), and land; the one file a save never skips is the one it would WRITE (`<sentence>; saving '<name>' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`). So over a store holding an anchored fact the save lands on both sides, Python reads the fact and Node names it skipped, and the `index.md` each rebuilds differs by that one line — ruled in `tools/conformance/suites/store.mjs` as `ruling: #120 save past a file only python reads — the answers`, with the refusal bit (`— the save lands on both sides`) and the written fact's bytes compared unruled and each side's skip pinned as a literal. Blank lines, lines of spaces and comment lines inside a block sequence — and `links: ` / `links: # c` before one — were NOT a ruled shape to keep: they are READ now, as PyYAML reads them, compared in `codec.mjs` as read-alike cases and a second 1500-frontmatter seeded corpus where node must neither guess nor refuse. |
-| the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. |
+| the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone. **#120 adds 8:** an anchor, `!!str`, a flow mapping, an empty flow mapping, a nested flow sequence, a flow-sequence pair, a flow sequence over two lines and an anchored sequence item are READ by PyYAML and REFUSED by the port with a named `FactParseError` — reading them means porting the scanner, anchors and the composer. A refusal names the file and writes nothing, which is the point: the plain-text guess it replaced was stamped back to disk. Ruled in `tools/conformance/suites/codec.mjs` as `ruling: #120 node refuses where python reads: …`, with the refusal-bit companions as per-side literals (`#120 per side: the ruled inputs — python reads every one` / `— node refuses every one, with a named FactParseError`), because the two bits DIFFER and a side-to-side bit could never be green. Teeth: forcing the ruled answers equal reddened all 8 as `STALE RULING`; dropping `&` from the refused set left every ruling green and reddened the node literal (1 failure). **job67 (J67-3), user ruling 2026-10-15 on #120's remainder: these eight are the FINAL answer** — the PyYAML scanner is not ported, and the refusal is by name. What the ruling changed is what a refusal COSTS: a `memory_save` on Node no longer refuses the whole store because one fact file is one of these shapes. Both runtimes' `save` now skip any fact file they cannot read, name it (`SaveResult.skipped`, and a closing paragraph on the reply: `N fact file(s) could not be read and was/were skipped; the duplicate check read every other fact:` + `[project] <the store's sentence>`), and land; the one file a save never skips is the one it would WRITE (`<sentence>; saving '<name>' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`). So over a store holding an anchored fact the save lands on both sides, Python reads the fact and Node names it skipped, and the `index.md` each rebuilds differs by that one line — ruled in `tools/conformance/suites/store.mjs` as `ruling: #120 save past a file only python reads — the answers`, with the refusal bit (`— the save lands on both sides`) and the written fact's bytes compared unruled and each side's skip pinned as a literal. Blank lines, lines of spaces and comment lines inside a block sequence — and `links: ` / `links: # c` before one — were NOT a ruled shape to keep: they are READ now, as PyYAML reads them, compared in `codec.mjs` as read-alike cases and a second 1500-frontmatter seeded corpus where node must neither guess nor refuse. **Since #315 (J86-3) runtime-py's store reads through the code compiled from the port's own `factfile.ts` first** (*Generated modules*), and that code refuses these eight shapes by the same names; `memory/factcodec.py` then reads the file with `yaml.safe_load`, exactly as before, so python still reads every one and this row's answers are unchanged (`ts2py-codec`'s `node-refuses` class: runtime-py reads each, `py=before` holds it equal to the pre-#315 read). |
+| the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. **#315 (J86-3) leaves the mirror on `yaml.safe_load`:** the store now reads generated-first with a PyYAML fallback (*Generated modules*), and over these shapes the fallback answers, so the store and the mirror on the reference both read them as before; the mirror itself was not routed through the generated codec, because generated-first would also move the two classes #315's ruling licenses for the store (`yaml11-breaks`, `pyyaml-refuses`) into the mirror's outcomes, which this row pins. |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
 | on Windows, CRLF | **no longer a difference.** N11 reversed it: the emitter builds LF text, the WRITER translates, and the budget still counts the LF text — which is what CPython does. See [conformance.md](conformance.md). |
@@ -971,7 +971,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan` is compiled from TypeScript (#314)
+## Generated modules: `workplan` and the fact-file codec are compiled from TypeScript (#314, #315)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -981,30 +981,46 @@ names (`plan`, `touches_refusal`). The hand-written 311-line planner is gone;
 `tools/conformance/ref/workplan_ref.py` still imports `bantamkit.workplan` and so now runs the
 generated code.
 
-**Both files are committed**, so `pip install`, `python -m build` and the wheel need no Rust.
-After any edit to `workplan.ts`, regenerate from the repository root:
+**Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
+Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts` or `tools/ts2py`,
+regenerate from the repository root (all four; each is deterministic, so an unchanged input
+rewrites the same bytes):
 
 ```
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- runtime-ts/src/workplan.ts \
   -o runtime-py/src/bantamkit/_generated/workplan.py --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+  runtime-ts/src/memory/pyyaml.ts runtime-ts/src/memory/factfile.ts \
+  --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+  --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py
 ```
 
 (`~/.cargo/bin/cargo` when cargo is not on PATH.) Output is deterministic, so an unchanged
 source regenerates byte-identical files.
 
-**Two gates.** `runtime-py/tests/test_ts2py_fresh.py` fails when line 2 of the committed module,
-`# source-sha256: <hex>`, no longer equals sha256 of `runtime-ts/src/workplan.ts`, or when the
-committed runtime differs from `tools/ts2py/src/runtime.py`. Both failure messages print the
-commands above. It needs no Rust. `node tools/conformance/run.mjs --suite ts2py` recompiles the
+**Two gates.** `runtime-py/tests/test_ts2py_fresh.py` fails when line 2 of a committed module,
+`# source-sha256: <hex>`, no longer equals sha256 of its TypeScript (`workplan.py` ↔
+`workplan.ts`, and since #315 `pyyaml.py` ↔ `memory/pyyaml.ts`, `factfile.py` ↔
+`memory/factfile.ts`), when the committed runtime differs from `tools/ts2py/src/runtime.py`, when
+the committed adapters differ from `tools/ts2py/src/adapters.py` with its runtime import filled
+in, or when `_generated/` holds a `.py` the test does not name. Every failure message prints the
+commands above. It needs no Rust. (J86-3 proved each red once: one byte appended to `factfile.ts`,
+a line appended to the committed adapters, a stray `_generated/stray.py`; 3 failed, 6 passed.) `node tools/conformance/run.mjs --suite ts2py` recompiles the
 TypeScript fresh on every run and compares Node, the fresh module and `bantamkit.workplan`
 against the 148 expected answers in `tools/conformance/fixtures/workplan-cases.json`, with no
 rulings. `runtime-py/tests/test_workplan.py` reads the same file. Since J85-5 the same suite also
 compiles with the committed flags (`--runtime-module ._ts2py_runtime`, `--emit-runtime`) and
-byte-compares the output with both committed files (`committed/workplan.py`,
-`committed/_ts2py_runtime.py`), so a hand-edited body, or a change to `tools/ts2py` that was never
-regenerated, is red with the regenerate command; the sha256 header alone could not see either.
+byte-compares the output with the committed files, so a hand-edited body, or a change to
+`tools/ts2py` that was never regenerated, is red with the regenerate command; the sha256 header
+alone could not see either. Since #315 (J86-3) that covers EVERY generated file: `workplan.py`,
+`pyyaml.py`, `factfile.py`, `_ts2py_runtime.py` and `_ts2py_adapters.py`, each compiled with the
+flags above, and `committed/coverage` lists `_generated/` so a committed file without a fresh
+compile (or the reverse) is red. Proved red once: a line appended to the committed `pyyaml.py`
+and a stray `_generated/stray.py` failed `committed/pyyaml.py` and `committed/coverage` (2 of
+452 cases).
 
 **Python-side behaviour changes, all toward Node.** The hand-written planner disagreed with the
 TypeScript on 8 fixture cases, which J85-2 carried as `ruling:` cases (`KNOWN_LEGACY_FINDINGS`,
@@ -1062,6 +1078,80 @@ no caller can produce any of them. The three callers, `shiftwork.py:768`, `shift
 the `work_plan` MCP tool (`mcpserver.py:1817`), all pass a `list` of `dict`s that came from JSON
 (`json.loads` of a checkpoint or ticket file, or the MCP request), and JSON has no tuples or
 generators.
+
+### The fact-file codec (#315)
+
+Since #315 (J86-3) runtime-py reads and writes fact files through code compiled from
+`runtime-ts/src/memory/factfile.ts` and `pyyaml.ts`, the codec the Node server uses:
+`_generated/factfile.py` (643 lines) and `_generated/pyyaml.py` (750 lines), which import each
+other, the shared `_ts2py_runtime.py` and `_ts2py_adapters.py` (60 lines). The seam is one
+hand-written module, `runtime-py/src/bantamkit/memory/factcodec.py`:
+
+- `load_frontmatter(text)` (re-exported from `memory/store.py`, where the hot index, the tests and
+  the conformance refs import it) is the generated `parse_frontmatter`, its values converted to
+  the ones `yaml.safe_load` builds; `MemoryStore._read_fact` and the hot index read through it.
+- `fact_text(fact)` is the generated `format_fact`; `MemoryStore._fact_text` is now that call, so
+  `_write_fact`, `dream`'s size estimate and `merge` all write through it.
+- The hand-written frontmatter assembly and the `yaml.safe_dump` call that were `_fact_text`, and
+  the libyaml / pure-loader pair that was `load_frontmatter`, now exist ONLY as the two fallbacks
+  `_pyyaml_fact_text` and `_pyyaml_load`, in that file.
+
+**Generated first, PyYAML where it refuses (user ruling 2026-11-15, #315 option A).** Where the
+generated codec refuses a frontmatter (the eight #120 shapes, a mapping two levels down, a quoted
+key, any other named refusal) or a fact (a collection appearing twice, which PyYAML writes as an
+anchor and alias; an array-index key in a nested map), the file is read by `yaml.safe_load` plus
+`well_formed_frontmatter`, or written by `yaml.safe_dump`, exactly as before #315. An EMPTY
+generated read also goes to PyYAML: `''` and a comment-only frontmatter read as `{}` there and as
+`None` in PyYAML, and the store's sentence for that file is `frontmatter is not a mapping`.
+
+**The adapters, and why each is faithful.** The generated code holds a `PyScalar` where PyYAML
+holds an `int`, `bool`, `float`, `date` or `datetime`. `factcodec._native` builds the Python value
+from the scalar's type and `str()` text (`int(text)`, `float(text)` of a `repr`,
+`date.fromisoformat`, `datetime.fromisoformat` of `isoformat(' ')`, `text == "True"`) and CHECKS it:
+the value must print as the scalar's `text`, or the read goes to PyYAML. A key the codec keys by
+its text but YAML resolves to a non-string (`on:`, `null:`) is keyed by its PyYAML value, so the
+mapping `load_frontmatter` returns is the one `safe_load` returned. Writing, `factcodec._scalar`
+spells each Python scalar as `SafeRepresenter` does (`true`, `str(int)`, `represent_float`, `isoformat`)
+and hands that to the generated `construct_plain`; the scalar must come back with exactly that
+spelling as its `yaml`, or the write goes to PyYAML. A set, bytes, a tuple, a non-text key in a
+nested map, a shared collection, or a `date`/`datetime` OBJECT met twice (PyYAML anchors those too:
+`ignore_aliases` exempts only `None`, `()`, `str`, `bytes`, `bool`, `int`, `float`) is refused
+before the codec sees it, so PyYAML writes its `&id001` exactly as before. The four ts2py adapters
+(`pyFloatRepr` = `repr(float)`, `pyStrip` = `str.strip()`, `TextDecoder`, `Date`) are J86-1's, in
+`tools/ts2py/RULES.md` (*Adapters*); the store does not call `decode_fact_bytes` or `today_local`.
+
+**What moved, and only this (both toward Node; `before` is runtime-py at `c9a21a12`):**
+
+| Class (`--suite ts2py-codec`) | runtime-py before | runtime-py now = Node |
+|---|---|---|
+| `yaml11-breaks`: U+0085, U+2028 or U+2029 in a quoted or plain scalar | read as a YAML 1.1 line break: the spaces around it folded (`"x \u2028 y"` read `x\u2028y`), a plain scalar holding one refused (`ScannerError`); 71 fuzz inputs | kept, with the spaces around it; all 71 read as Node reads them. One consequence, Node's since #120 and now runtime-py's: PyYAML writes `x\u2028y` in a hand-written key's value, `links` or `keywords` as `'x\u2028  y'` (its continuation indent), which now reads back `x\u2028  y` — two spaces gained on the first rewrite, stable after (pinned in `test_factcodec.py`). A `description` cannot be saved with one (#155), and a hand-edited one is read with the character as one space either way |
+| `pyyaml-refuses`: a raw non-printable character (`a: \x07`), a multi-line single-quoted scalar continued at column 0 | `malformed fact file <name>: unacceptable character #x0007 ...` / `ScannerError`; 27 fuzz inputs | read; all 27 as Node reads them |
+
+Every other answer is unchanged, and the suite holds that: `py=before/outside-the-315-ruling`
+(every input whose parse or store round trip moved and is in neither class) is `[]` on the fuzz
+(2,700 inputs), the 40 previous-release files and the 802 real-store files on this machine, and
+`fuzz/format/py=before` (the 1,200 fuzz facts written by both) is `[]`: no write changed. On
+scratch copies of the 802 real files, 6 reads and 0 writes took the PyYAML fallback. The two
+classes that stay `KNOWN` (ruled) between runtime-py and Node: `node-refuses` (python reads it
+through the fallback, unchanged) and `non-text-key` (no observable effect: both stores drop the
+key, and `non-text-key/rt-store/py=node` compares the store round trip unruled, `[]`).
+`test_storage_recall_index.py` now holds libyaml's sentence property on `_pyyaml_load` and pins
+`a: \x07` as read.
+
+**Not routed through the generated codec (J86-3):** `hookadapter._parse_native_fact` (the native
+mirror, #228), `skillfile.parse_skill` and `memory/divergence.parse_fact` keep `yaml.safe_load`.
+Each is pinned by its own ruling (`--suite hooks`, `--suite skill-file`); generated-first would
+move the two `RULED_315` classes for them too, which is not byte-neutral. **PyYAML stays a
+dependency** (`pyyaml>=6.0`): the fact codec's fallback, those three readers, and `contract`,
+`profile`, `critique`, `evalrun`, `criticreplay` and `memory/layers` (`config.yaml`) all use it.
+
+**Cost, measured (J86-3, macOS arm64, CPython 3.12.13, PyYAML 6.0.3 with libyaml).** Over the
+684 frontmatters of the real stores on this machine, best of 3: generated-first
+`load_frontmatter` 830 µs each, the generated `parse_frontmatter` alone 741 µs, the pre-#315 path
+(libyaml) 21 µs, pure `yaml.safe_load` 181 µs. `MemoryStore._facts()` over a scratch copy of the
+repo store (91 facts): 82 ms against 4.6 ms with the fallback forced. The JS-semantics runtime
+(`_js_get`, `_js_strict_eq`, UTF-16 helpers) is the cost; ts2py was out of scope for this unit,
+and the number is #316's to budget (`docs/roadmap-1.0.0.md`, #315).
 
 ## Concurrency
 
