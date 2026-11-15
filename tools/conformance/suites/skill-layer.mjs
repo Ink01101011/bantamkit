@@ -36,7 +36,8 @@
  * green, so the header line, the layer order and the promoted exclusion are also pinned per
  * side against literals.
  */
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -459,6 +460,54 @@ export async function run(ctx) {
     });
   }
   cases.push(...(await runLateMcp(ctx)).cases);
+  {
+    // #316 G3 (J89-1F): `skill_roots`'s same-directory test (`skills._same` / `same`), settled
+    // as `storeId` was. Red at 64a69df8 on two inputs: a home holding a lone U+D800 made
+    // python's `os.path.realpath` raise UnicodeEncodeError out of the root listing (node
+    // answered); and a project whose `.bantamkit` sits under a DANGLING symlink to the home was
+    // one root to python (realpath follows the link) and two to node (`realpathSync.native`
+    // threw, and the parent fallback kept the link's name). Now python hands the path over as
+    // node's fs does (`usage.os_realpath`, the G2 policy) and node resolves with
+    // `pyfs.pyRealpath`, the port of `os.path.realpath`. U+DC80 agreed before and after.
+    const { skillRoots } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'skills.js')).href);
+    const bed = join(ctx.scratch, 'j891f-same');
+    mkdirSync(bed, { recursive: true });
+    symlinkSync(join(bed, 'nowhere'), join(bed, 'dang'));
+    const inputs = [
+      ['a home holding a lone U+D800', join(bed, 'p', '.bantamkit', 'memory'), join(bed, 'h\ud800')],
+      ['a home holding U+DC80', join(bed, 'p', '.bantamkit', 'memory'), join(bed, 'h\udc80')],
+      ['a project under a dangling symlink to the home', join(bed, 'dang', '.bantamkit', 'memory'), join(bed, 'nowhere')],
+    ];
+    const code = [
+      'import json, sys',
+      'sys.path.insert(0, sys.argv[1])',
+      'from bantamkit.memory.skills import skill_roots',
+      'out = []',
+      'for store, home in json.loads(sys.stdin.read()):',
+      '    try:',
+      '        out.append({"ok": [str(r) for r in skill_roots(store, home)]})',
+      '    except Exception as e:',
+      '        out.append({"err": type(e).__name__})',
+      'print(json.dumps(out))',
+    ].join('\n');
+    const r = spawnSync(ctx.python, ['-c', code, join(ctx.repoRoot, 'runtime-py', 'src')], { input: JSON.stringify(inputs.map(([, s, h]) => [s, h])), encoding: 'utf8' });
+    const py = JSON.parse(r.stdout);
+    inputs.forEach(([label, store, home], i) => {
+      let nd;
+      try {
+        nd = { ok: skillRoots(store, home) };
+      } catch (e) {
+        nd = { err: e?.name ?? 'Error' };
+      }
+      cases.push({ name: `J89-1F skill_roots: ${label}`, kind: 'json', expected: py[i], actual: nd });
+      if (i === 2) {
+        // Per side: ONE root, the project's (the home's is the same directory through the link).
+        for (const [side, got] of [['python', py[i]], ['node', nd]]) {
+          cases.push({ name: `LITERAL: J89-1F ${side} skill_roots: ${label} is one root`, kind: 'json', expected: { ok: [join(bed, 'dang', '.bantamkit', 'skills')] }, actual: got });
+        }
+      }
+    });
+  }
   // #316 G3 (J89-1): memory/skills's constants and pure functions, compared directly.
   const g3 = await g3Cases(ctx, 'skills');
   cases.push(...g3.cases);

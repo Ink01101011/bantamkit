@@ -11,7 +11,7 @@ import { cmpCodepoint, pyStrip } from '../pysem.js';
 import { parseSkill, readState, SKILL_FILE, SkillFileError, skillsRoot, validate } from '../skillfile.js';
 import { DUPLICATE } from '../storage/hotindex.js';
 import type { Fact } from './factfile.js';
-import { asPyOSError, pyDecodeUtf8, pyHome, pyIsFile, pyJoin, pyName, pyParent } from './pyfs.js';
+import { asPyOSError, pyDecodeUtf8, pyHome, pyIsFile, pyJoin, pyName, pyParent, pyRealpath } from './pyfs.js';
 import { oneLine, poolOf, type Pool, type SkippedFact } from './store.js';
 
 /** The label the layer's hits carry: `[skill] [name] (skill) description`. */
@@ -50,19 +50,9 @@ export function skillRoots(projectStore: string, home: string): string[] {
   return roots;
 }
 
+/** `os.path.realpath(a) == os.path.realpath(b)`: `pyRealpath`, the reference's own (J89-1F). */
 function same(a: string, b: string): boolean {
-  return realpath(a) === realpath(b);
-}
-
-/** `os.path.realpath`: the resolved path, or the longest existing prefix resolved. */
-function realpath(p: string): string {
-  try {
-    return fs.realpathSync.native(p);
-  } catch {
-    const parent = pyParent(p);
-    if (parent === p) return p;
-    return pyJoin(realpath(parent), pyName(p));
-  }
+  return pyRealpath(a) === pyRealpath(b);
 }
 
 /**

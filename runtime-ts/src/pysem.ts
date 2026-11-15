@@ -66,6 +66,44 @@ export function pyStrip(s: string): string {
   return s.replace(PY_STRIP, '');
 }
 
+/**
+ * CPython's `\w` for a `str` pattern (`isalnum() or '_'`), as a class for a regex compiled with
+ * the `u` flag and WITHOUT `i` (#316 G3, J89-1F). Under `i`, a JS class matches every code point
+ * whose simple case fold is in it, and U+0345 COMBINING GREEK YPOGEGRAMMENI (category Mn, not
+ * `\w` to CPython) folds to iota, a letter: `(?<![\p{L}\p{N}_])` under `iu` was no word boundary
+ * before or after it, where CPython's `\b` is. CPython's `\w` is never case-folded (an
+ * `IGNORECASE` pattern tests the category of the character itself), so a regex that needs a
+ * boundary is compiled without `i` and spells its words with `pyCaseless`. Swept over every
+ * code point 0..0x10FFFF against CPython 3.12 (UCD 15.0): no disagreement on a code point
+ * CPython has assigned; the residue is code points the newer UCD of Node's ICU assigns
+ * (`tools/conformance` `store`, `J89-1F the word class over every code point`).
+ */
+export const PY_WORD_CLASS = '[\\p{L}\\p{N}_]';
+
+/**
+ * Every code point JS's `iu` matches for an ASCII letter beyond its two cases, so dropping the
+ * flag changes nothing but the word class: U+212A KELVIN SIGN is `k`, U+017F LATIN SMALL LETTER
+ * LONG S is `s`. Swept over every code point for all 26 letters (J89-1F). CPython's
+ * `re.IGNORECASE` matches the same sets EXCEPT for `i`, where it also takes U+0130 and U+0131:
+ * a difference this table keeps as it was under `iu` (open, reported in J89-1F; not ruled here).
+ */
+const PY_FOLD_EXTRA: Readonly<Record<string, string>> = { k: 'K', s: 'ſ' };
+
+/**
+ * `alternatives` (ASCII letters, `|`, `?` and nothing else) as a pattern that matches what the
+ * same text matched under `iu`, for a regex compiled WITHOUT `i`: each letter becomes the class
+ * of its case partners (`PY_FOLD_EXTRA`). See `PY_WORD_CLASS` for why the flag cannot be used.
+ */
+export function pyCaseless(alternatives: string): string {
+  if (!/^[A-Za-z|?]*$/.test(alternatives)) {
+    throw new Error(`pyCaseless: only ASCII letters, "|" and "?" are supported: ${JSON.stringify(alternatives)}`);
+  }
+  return alternatives.replace(/[A-Za-z]/g, (c) => {
+    const lower = c.toLowerCase();
+    return `[${lower}${lower.toUpperCase()}${PY_FOLD_EXTRA[lower] ?? ''}]`;
+  });
+}
+
 const PY_LSTRIP = new RegExp(`^${PY_WS_CLASS}+`);
 
 /** `str.lstrip()` with no argument. */

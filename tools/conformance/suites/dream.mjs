@@ -1053,18 +1053,17 @@ export async function run(ctx) {
       actual: ndBoundary[i],
     });
   });
-  // #316 G3 (J89-1): UNRULED DIVERGENCE. A relative-date term next to U+0345 COMBINING GREEK
-  // YPOGEGRAMMENI. Node spells CPython's `\b` as `(?<![\p{L}\p{N}_])` / `(?![\p{L}\p{N}_])`
-  // under the `giu` flags, and under `i` U+0345 folds to iota, a letter, so the boundary is
-  // gone; CPython's `\w` does not hold U+0345 (category Mn), so the term is a whole word there.
-  // Python annotates the date (or reports it unresolved), node leaves the body alone. NOT ruled
-  // and NOT fixed: the orchestrator decides. The same text without U+0345 is the companion.
+  // #316 G3 (J89-1, fixed J89-1F). A relative-date term next to U+0345 COMBINING GREEK
+  // YPOGEGRAMMENI. WAS a difference, FIXED IN NODE: Node spelled CPython's `\b` as
+  // `(?<![\p{L}\p{N}_])` / `(?![\p{L}\p{N}_])` under the `giu` flags, and under `i` U+0345
+  // folds to iota, a letter, so the boundary was gone where CPython's `\w` (U+0345 is Mn) keeps
+  // it. Both patterns are now compiled without `i` (`pysem.PY_WORD_CLASS`, `pyCaseless`), so
+  // node annotates (or reports) the term as python does. The text without U+0345 stays beside it.
   {
-    const UNRULED = 'UNRULED DIVERGENCE (J89-1): not ruled in docs/porting.md and not fixed; ';
     const ypo = [
-      ['a resolved term followed by U+0345', 'It landed yesterdayͅ, they said.', 'python writes `yesterday (<basis - 1>)` and reports the hit; node writes nothing and reports none'],
-      ['a resolved term preceded by U+0345', 'Note ͅtoday we ship.', 'python writes `today (<basis>)`; node writes nothing'],
-      ['an unresolved term followed by U+0345', 'It shipped recentlyͅ.', 'python reports `recently` unresolved; node reports nothing'],
+      ['a resolved term followed by U+0345', 'It landed yesterdayͅ, they said.', 'was: python wrote `yesterday (<basis - 1>)` and reported the hit; node wrote nothing'],
+      ['a resolved term preceded by U+0345', 'Note ͅtoday we ship.', 'was: python wrote `today (<basis>)`; node wrote nothing'],
+      ['an unresolved term followed by U+0345', 'It shipped recentlyͅ.', 'was: python reported `recently` unresolved; node reported nothing'],
     ];
     const rows = ypo.flatMap(([, body]) => [body, body.replace(/ͅ/g, '')]).map((body) => [b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']);
     const pyRows = ctx.runPython(REF, { op: 'absolutise', cases: rows }).out;
@@ -1073,8 +1072,12 @@ export async function run(ctx) {
       const hit = (h) => ({ name: b64(store.pyText(h.name)), layer: b64(h.layer), term: b64(h.term), resolved: b64(h.resolved), basis: b64(h.basis) });
       return { body: b64(text), hits: hits.map(hit), unresolved: unresolved.map(hit) };
     });
-    ypo.forEach(([label, , why], i) => {
-      cases.push({ name: `ruling: UNRULED DIVERGENCE absolutise: ${label}`, kind: 'json', expected: pyRows[2 * i], actual: ndRows[2 * i], ruling: UNRULED + why });
+    ypo.forEach(([label], i) => {
+      cases.push({ name: `J89-1F absolutise: ${label}`, kind: 'json', expected: pyRows[2 * i], actual: ndRows[2 * i] });
+      // Per side, the term is found: a hit or an unresolved report (a symmetric miss would agree).
+      for (const [side, row] of [['python', pyRows[2 * i]], ['node', ndRows[2 * i]]]) {
+        cases.push({ name: `LITERAL: J89-1F ${side} finds the term in absolutise: ${label}`, kind: 'json', expected: 1, actual: row.hits.length + row.unresolved.length });
+      }
       cases.push({ name: `J89-1 absolutise: ${label.replace('U+0345', 'nothing')}`, kind: 'json', expected: pyRows[2 * i + 1], actual: ndRows[2 * i + 1] });
     });
   }

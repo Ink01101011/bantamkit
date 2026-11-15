@@ -353,7 +353,11 @@ export function pySplit(text: string, sep: string, maxsplit: number): string[] {
  * `runtime-py/tests` pins those strings. Owner: whichever unit takes `_facts`.
  */
 export function parseFrontmatter(front: string): FactMeta {
-  const meta: FactMeta = {};
+  // The entries in file order, made an object ONCE by `Object.fromEntries` (#316 G3, J89-1F):
+  // each key an own data property, so a `__proto__:` line is a key as it is to PyYAML, never
+  // the object's prototype (`meta[key] =` dropped it, and a save over the fact lost the line).
+  // A repeated key keeps its first place and its last value, as assignment did.
+  const entries: Array<[string, FactValue | FactValue[]]> = [];
   let pos = 0;
   while (pos < front.length) {
     // A blank line, or a line holding only a comment, is not an entry to PyYAML's scanner
@@ -401,8 +405,9 @@ export function parseFrontmatter(front: string): FactMeta {
     } else {
       throw new FactParseError(`expected " " or end of line after "${key[1]}:"`);
     }
-    meta[key[1]!] = value;
+    entries.push([key[1]!, value]);
   }
+  const meta: FactMeta = Object.fromEntries(entries);
   // #212: only a `\u`/`\U` escape can put a surrogate into a strict-UTF-8 file's frontmatter,
   // so without one there is nothing to normalise and the walk is skipped (the reference's
   // `store.well_formed_frontmatter` makes the same test).
@@ -430,11 +435,14 @@ export function wellFormed(text: string): string {
  * Keys are plain YAML words here (`[A-Za-z_]…`), so only values can hold one.
  */
 function wellFormedMeta(meta: FactMeta): FactMeta {
+  // Rebuilt by `Object.fromEntries`, not assigned key by key, so a `__proto__` key stays a key.
+  const out: Array<[string, FactValue | FactValue[]]> = [];
   for (const [k, v] of Object.entries(meta)) {
-    if (typeof v === 'string') meta[k] = wellFormed(v);
-    else if (Array.isArray(v)) meta[k] = v.map((x) => (typeof x === 'string' ? wellFormed(x) : x));
+    if (typeof v === 'string') out.push([k, wellFormed(v)]);
+    else if (Array.isArray(v)) out.push([k, v.map((x) => (typeof x === 'string' ? wellFormed(x) : x))]);
+    else out.push([k, v]);
   }
-  return meta;
+  return Object.fromEntries(out);
 }
 
 /**
@@ -443,7 +451,8 @@ function wellFormedMeta(meta: FactMeta): FactMeta {
  * and the caller's next-line check refuses it as it always did.
  */
 function scanNestedMapping(front: string, start: number): [Record<string, FactValue | FactValue[]>, number] | null {
-  const out: Record<string, FactValue | FactValue[]> = {};
+  // Own keys by `Object.fromEntries`, as in `parseFrontmatter`: `  __proto__: x` is a key (J89-1F).
+  const out: Array<[string, FactValue | FactValue[]]> = [];
   let pos = start;
   let indent = -1;
   let any = false;
@@ -459,11 +468,11 @@ function scanNestedMapping(front: string, start: number): [Record<string, FactVa
     if (tail < text.length) {
       throw new FactParseError(`trailing content after the value of "${m[2]}": ${line(text, tail)}`);
     }
-    out[m[2]!] = value;
+    out.push([m[2]!, value]);
     any = true;
     pos = eol === -1 ? front.length : eol + 1;
   }
-  return any ? [out, pos] : null;
+  return any ? [Object.fromEntries(out), pos] : null;
 }
 
 function line(text: string, pos: number): string {
@@ -790,9 +799,13 @@ function scanPlain(front: string, pos: number): [FactValue, number] {
     // Python reads is the point.
     const hash = raw.indexOf(' #');
     const cut = hash === -1 ? raw : raw.slice(0, hash);
-    // A tab is not whitespace to PyYAML's plain-scalar scanner (`scan_plain_spaces` takes
-    // spaces only), and a tab cannot start a token, so `x\t` and `a\tb` are a ScannerError
-    // there. Trimming it here answered a value Python refuses (#120, measured).
+    // A tab is not whitespace to PyYAML's PURE-PYTHON plain-scalar scanner
+    // (`scan_plain_spaces` takes spaces only), and a tab cannot start a token, so `x\t` and
+    // `a\tb` are a ScannerError to `yaml.SafeLoader` (#120, measured). libyaml does NOT reject
+    // them: `CSafeLoader` reads `a\tb` as `'a\tb'` and `x\t` as `'x'` (measured J89-1F,
+    // PyYAML 6.0.3), and runtime-py's read falls back to libyaml when it is installed
+    // (`factcodec._pyyaml_load`), so there the reference READS what this codec refuses. The
+    // sentence below says "too" of the pure scanner only (J89-1F; open, reported, not ruled).
     if (cut.includes('\t')) {
       throw new FactParseError(`a tab inside a plain scalar is not readable YAML — PyYAML rejects it too: ${line(front, i)}`);
     }

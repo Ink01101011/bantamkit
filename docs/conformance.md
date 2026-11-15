@@ -98,16 +98,19 @@ constants and pure functions directly, through one shared helper (`lib/g3pure.mj
 `store` (`memory/store`), `recall-strings` (`memory/layers`, `memory/native`), `recall-queries`
 (`memory/queries`), `dream` (`memory/dream`) and `skill-layer` (`memory/skills`). Each module
 gets one constants case (54 names across the eight modules) and one case per pure function
-over 400 seeded generated inputs (24 functions). The generator's alphabet leaves out one
-code point on purpose, U+0345, the only one on which a JS `[\p{L}\p{N}_]` under the `iu` flags
-and CPython's `\w` disagree; every input holding it is pinned instead. **Inputs on which the
-hand-written runtimes disagree today are pinned as `UNRULED DIVERGENCE` cases carrying
-`ruling:`, NOT ruled in `docs/porting.md` and NOT fixed:** in `store`, a `__proto__` key in a
-fact's frontmatter dropped by Node on rewrite (the tree), `candidates_done` on `done` before
-U+0345, a store root holding a NUL, U+DC80 or a lone U+D800, and the sentence an EFBIG fact
-write raises; in `dream`, three `absolutise` terms next to U+0345; in `recall-usage`, `storeId`
-of a dangling symlink, a path below one, a lone surrogate and a surrogateescape code point.
-Each has an agreeing companion beside it.
+over 400 seeded generated inputs (24 functions). J89-1 pinned 13 inputs on which the
+hand-written runtimes disagreed as `UNRULED DIVERGENCE` cases; **J89-1F settled every one**
+(`docs/porting.md`, the J89-1F rows): FIXED and now agreeing, each with a per-side literal —
+the `__proto__` frontmatter keys (Node), `candidates_done` and three `absolutise` terms next to
+U+0345 (Node: the regexes are compiled without `i`, and `store`'s `J89-1F the word class over
+every code point CPython assigns` sweeps 0..0x10FFFF against CPython's `\w`; U+0345 is back in
+the fuzz alphabet), the EFBIG sentence (Node), `storeId` of a dangling symlink and a path below
+one (Node, `pyfs.pyRealpath`), `storeId` of a lone surrogate (Python); RULED — a store root
+holding a NUL or a lone U+D800 (`ruling: G3 as Node — …`, Python moves at generation) and a
+store root or `storeId` holding U+DC80 (`ruling: G2 target-specific …` / `ruling: storeId — …`),
+each with a companion or a per-side literal. J89-1F also added `skill-layer`'s three
+`J89-1F skill_roots: …` cases and `store`'s two cut-short cases (`index.md` and the budget
+rollback written through a temp and a rename on both sides, red at 64a69df8).
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

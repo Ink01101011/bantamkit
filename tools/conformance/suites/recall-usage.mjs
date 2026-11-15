@@ -393,34 +393,69 @@ export async function run(ctx) {
     });
   });
 
-  // #316 G3 (J89-1): UNRULED DIVERGENCES in storeId, the key of the usage ledger (and of the
-  // hot index's directory). NOT ruled in docs/porting.md and NOT fixed; the orchestrator
-  // decides. Python's `os.path.realpath` FOLLOWS a dangling symlink to its target text; the
-  // port's `realpath` (`fs.realpathSync.native`, falling back to the parent) cannot resolve it
-  // and keeps the link's own name, so one store gets two ledgers. A lone surrogate: python's
-  // `.encode("utf-8")` raises UnicodeEncodeError, node hashes the U+FFFD its encoder writes.
-  // The live-symlink and non-ASCII paths above are the agreeing companions.
+  // #316 G3 (J89-1, settled J89-1F): `storeId`, the key of the usage ledger (and of the hot
+  // index's directory), over four paths J89-1 found the runtimes disagreeing on.
+  // - A dangling symlink, and a path below one: WAS a difference, FIXED IN NODE. Python's
+  //   `os.path.realpath` follows the link to its target text; the port's parent fallback over
+  //   `realpathSync.native` kept the link's own name, so one store got two ledgers. Node now
+  //   resolves with `pyfs.pyRealpath`, the port of `os.path.realpath`.
+  // - A lone surrogate (U+D800): WAS a difference, FIXED IN PYTHON. `.encode("utf-8")` raised
+  //   UnicodeEncodeError; `usage.os_realpath` now hands the path over as Node's fs does (the G2
+  //   path policy, `_os_char`), so both hash U+FFFD.
+  // - A POSIX surrogateescape code point (U+DC80): RULED, target-specific (the G2 policy row,
+  //   docs/porting.md). Python hashes the real byte 0x80 it stands for; Node, which has no such
+  //   string from its own fs, hashes U+FFFD. The companion compares what both still agree on:
+  //   both answer, neither raises. Python's literal shows U+D800 and U+DC80 no longer collide.
   {
     const g3ref = join(ctx.repoRoot, 'tools', 'conformance', 'ref', 'g3_ref.py');
-    const UNRULED = 'UNRULED DIVERGENCE (J89-1): not ruled in docs/porting.md and not fixed; ';
     const dangling = join(ctx.scratch, 'usage-store', 'dangling');
     symlinkSync(join(ctx.scratch, 'usage-store', 'no-such-target'), dangling, 'dir');
+    const lone = join(ctx.scratch, 'usage-store', 's\ud800x');
+    const escaped = join(ctx.scratch, 'usage-store', 's\udc80x');
     const odd = [
-      [dangling, 'a dangling symlink', 'python hashes the link TARGET (os.path.realpath follows it); node hashes the link path'],
-      [join(dangling, 'below'), 'a path below a dangling symlink', 'python hashes <target>/below; node hashes <link>/below'],
-      [join(ctx.scratch, 'usage-store', 's\ud800x'), 'a lone surrogate', 'python raises UnicodeEncodeError; node hashes U+FFFD'],
-      [join(ctx.scratch, 'usage-store', 's\udc80x'), 'a surrogateescape code point', 'python raises UnicodeEncodeError (realpath keeps the str, .encode is strict); node hashes U+FFFD'],
+      [dangling, 'a dangling symlink'],
+      [join(dangling, 'below'), 'a path below a dangling symlink'],
+      [lone, 'a lone surrogate'],
+      [escaped, 'a surrogateescape code point'],
     ];
-    const pyIds = ctx.runPython(g3ref, { op: 'store_id', paths: odd.map(([p]) => p) }).out;
-    odd.forEach(([p, label, why], i) => {
-      let nd;
+    const pyIds = ctx.runPython(g3ref, { op: 'store_id', paths: [...odd.map(([p]) => p), join(ctx.scratch, 'usage-store', 'no-such-target'), join(ctx.scratch, 'usage-store', 'no-such-target', 'below')] }).out;
+    const nodeId = (p) => {
       try {
-        nd = { ok: usage.storeId(p) };
+        return { ok: usage.storeId(p) };
       } catch (e) {
-        nd = { err: e?.name ?? 'Error' };
+        return { err: e?.name ?? 'Error' };
       }
-      cases.push({ name: `ruling: UNRULED DIVERGENCE storeId — ${label}`, kind: 'json', expected: pyIds[i], actual: nd, ruling: UNRULED + why });
+    };
+    const ndIds = odd.map(([p]) => nodeId(p));
+    odd.forEach(([, label], i) => {
+      if (label === 'a surrogateescape code point' && process.platform !== 'win32') {
+        cases.push({
+          name: `ruling: storeId — ${label} (U+DC80) hashes as the real byte on POSIX python, U+FFFD on node`,
+          kind: 'json',
+          expected: pyIds[i],
+          actual: ndIds[i],
+          ruling: 'G2 target-specific I/O (docs/porting.md, J88-RF F4b; applied to storeId by J89-1F): a POSIX python str holding U+DC80..U+DCFF names the undecodable byte of a real name, and python hashes that byte; node has no such string from its own fs and hashes the U+FFFD its UTF-8 encoder writes',
+        });
+        cases.push({ name: `J89-1F storeId — ${label}: both answer, neither raises`, kind: 'json', expected: Object.keys(pyIds[i]), actual: Object.keys(ndIds[i]) });
+      } else {
+        cases.push({ name: `J89-1F storeId — ${label}`, kind: 'json', expected: pyIds[i], actual: ndIds[i] });
+      }
     });
+    // Per side: a dangling link hashes as its target (the link's own name would be a second
+    // ledger), and the path below it as the target's child. Each side against its own target id.
+    cases.push({ name: 'LITERAL: J89-1F python storeId of a dangling symlink and a path below it are its target\'s', kind: 'json', expected: [pyIds[4], pyIds[5]], actual: [pyIds[0], pyIds[1]] });
+    cases.push({
+      name: 'LITERAL: J89-1F node storeId of a dangling symlink and a path below it are its target\'s',
+      kind: 'json',
+      expected: [nodeId(join(ctx.scratch, 'usage-store', 'no-such-target')), nodeId(join(ctx.scratch, 'usage-store', 'no-such-target', 'below'))],
+      actual: [ndIds[0], ndIds[1]],
+    });
+    // Python, on POSIX: U+D800 (no encoding takes it: U+FFFD) and U+DC80 (the byte 0x80) are two
+    // directories and two ledgers; both used to raise. Node's two strings name ONE directory
+    // (its fs writes U+FFFD for both), so one id there is the right answer, not a collision.
+    if (process.platform !== 'win32') {
+      cases.push({ name: 'LITERAL: J89-1F python storeId of U+D800 and U+DC80 — both answer and differ', kind: 'json', expected: [true, true, true], actual: [Boolean(pyIds[2].ok), Boolean(pyIds[3].ok), pyIds[2].ok !== pyIds[3].ok] });
+    }
   }
 
   all.forEach((s, i) => {

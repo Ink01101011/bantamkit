@@ -13,6 +13,7 @@ module's cases from there.
     {"op": "candidates_done", "root": path}        -> {"out": [[name, why], ...]}
     {"op": "listing", "base": path}                -> {"out": [hex name, ...]}
     {"op": "store_id", "paths": [path, ...]}       -> {"out": [{"ok": id} | {"err": type}]}
+    {"op": "word_class"}                           -> {"out": {"w": ranges, "cn": ranges, "ucd": v}}
 
 Strings travel as JSON: `json.loads` reads a `\\udXXX` escape as the lone surrogate Node sent,
 and `json.dumps` (ASCII) escapes one back, so no base64 is needed. Every store bed is under the
@@ -165,6 +166,31 @@ def store_ids(paths: list) -> list:
     return out
 
 
+def _ranges(pred) -> list:
+    """[[lo, hi], ...] inclusive, of every code point 0..0x10FFFF for which `pred` holds."""
+    out: list = []
+    for cp in range(0x110000):
+        if pred(cp):
+            if out and out[-1][1] == cp - 1:
+                out[-1][1] = cp
+            else:
+                out.append([cp, cp])
+    return out
+
+
+def word_class() -> dict:
+    """J89-1F: CPython's `\\w` over every code point, and the code points its UCD leaves unassigned."""
+    import re
+    import unicodedata
+
+    w = re.compile(r"\w")
+    return {
+        "w": _ranges(lambda cp: w.match(chr(cp)) is not None),
+        "cn": _ranges(lambda cp: unicodedata.category(chr(cp)) == "Cn"),
+        "ucd": unicodedata.unidata_version,
+    }
+
+
 def main() -> None:
     req = json.load(sys.stdin)
     op = req["op"]
@@ -180,6 +206,8 @@ def main() -> None:
         out = listing(req["base"])
     elif op == "store_id":
         out = store_ids(req["paths"])
+    elif op == "word_class":
+        out = word_class()
     else:
         raise ValueError(f"unknown op {op!r}")
     sys.stdout.write(json.dumps({"out": out}, ensure_ascii=True))

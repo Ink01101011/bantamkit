@@ -44,6 +44,7 @@ from bantamkit.skillinstall import TRIGGERS_ENV, TRIGGERS_KEY
 from bantamkit.skillmine import TRIGGERS_TOP
 
 from .store import _NOT_ONE_LINE, Fact, Pool, pool_of
+from .usage import os_realpath
 
 #: The label the layer's hits carry: `[skill] [name] (skill) description`.
 SKILL_LAYER = "skill"
@@ -80,8 +81,10 @@ def skill_roots(project_store: Path | str, home: Path | str) -> list[Path]:
 
 
 def _same(a: Path, b: Path) -> bool:
+    # `os_realpath` (J89-1F): a lone surrogate in a root is the U+FFFD Node's fs writes, not a
+    # `UnicodeEncodeError` out of the layer's root listing.
     try:
-        return os.path.realpath(a) == os.path.realpath(b)
+        return os_realpath(a) == os_realpath(b)
     except OSError:
         return a.absolute() == b.absolute()
 

@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { LogSegment, ROTATE_BYTES, type Row } from '../storage/logsegment.js';
+import { pyRealpath } from './pyfs.js';
 
 export const USAGE_HALF_LIFE_DAYS = 14.0;
 export const LEDGER_FOLD_LINES = 5000;
@@ -79,21 +80,18 @@ interface UsageEvent {
   weight?: unknown;
 }
 
-/** `os.path.realpath`: symlinks resolved as far as the path exists, the rest kept. */
-function realpath(p: string): string {
-  const abs = path.resolve(p);
-  try {
-    return fs.realpathSync.native(abs);
-  } catch {
-    const parent = path.dirname(abs);
-    if (parent === abs) return abs;
-    return path.join(realpath(parent), path.basename(abs));
-  }
-}
-
-/** The first 16 hex characters of sha256 over the store's realpath, as UTF-8. */
+/**
+ * The first 16 hex characters of sha256 over the store's realpath, as UTF-8.
+ *
+ * `pyRealpath` IS `os.path.realpath` (#316 G3, J89-1F): a dangling symlink, and a path below
+ * one, hash as the link's TARGET, as on the reference. The parent fallback over
+ * `realpathSync.native` this replaced kept the link's own name, so one store had two ledgers.
+ * The bytes hashed are the string's UTF-8 with a lone surrogate as U+FFFD (the G2 path policy:
+ * what Node's fs would hand the OS); the reference hashes a POSIX surrogateescape code point as
+ * its real byte, the one target-specific difference (docs/porting.md).
+ */
 export function storeId(storeRoot: string): string {
-  return createHash('sha256').update(realpath(storeRoot), 'utf8').digest('hex').slice(0, 16);
+  return createHash('sha256').update(pyRealpath(storeRoot), 'utf8').digest('hex').slice(0, 16);
 }
 
 /** Milliseconds since the epoch for a `YYYY-MM-DDTHH:MM:SSZ` stamp, read as UTC, or NaN. */

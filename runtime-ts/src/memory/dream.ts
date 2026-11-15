@@ -53,7 +53,7 @@
  * are Unicode 16.0 assignments CPython 3.12 has no mapping for. The final-sigma context
  * rule fires identically on both (`ΟΔΟΣ` -> `οδος`). `toLowerCase()` is used as-is.
  */
-import { cmpCodepoint, PY_WS, PY_WS_CLASS, pyStrip } from '../pysem.js';
+import { cmpCodepoint, pyCaseless, PY_WORD_CLASS, PY_WS, PY_WS_CLASS, pyStrip } from '../pysem.js';
 import type { Fact, FactValue } from './factfile.js';
 import { formatFact } from './factfile.js';
 import {
@@ -93,8 +93,13 @@ export const SUPERSEDED_HEADING = '## superseded by a dream merge';
 
 // -------------------------------------------------------------- CPython's character classes
 
-/** `\w` for a `str` pattern: `isalnum() or '_'`. See note 3 in the header. */
-const WORD = '[\\p{L}\\p{N}_]';
+/**
+ * `\w` for a `str` pattern: `isalnum() or '_'`. See note 3 in the header. The two patterns below
+ * are compiled WITHOUT `i` and spell their words with `pyCaseless` (#316 G3, J89-1F): under `i`
+ * this class also matched U+0345, which folds to iota, so `yesterday\u0345` had no boundary on
+ * Node where CPython's `\b` holds (`PY_WORD_CLASS`).
+ */
+const WORD = PY_WORD_CLASS;
 /** `\b` where the neighbouring token character is a word character — which is every one below. */
 const NB = `(?<!${WORD})`;
 const NA = `(?!${WORD})`;
@@ -113,11 +118,12 @@ const DOT = '[^\\n]';
  * rewritten, because substituting a day for them would invent a precision the writer did
  * not have.
  */
+const ci = pyCaseless;
 const RELATIVE = new RegExp(
-  `${NB}(?<simple>today|tonight|yesterday|tomorrow)${NA}` +
-    `|${NB}(?<now>right${WS}+now|just${WS}+now)${NA}` +
-    `|${NB}(?<count>${ND}+)${WS}+(?<unit>days?|weeks?)${WS}+ago${NA}`,
-  'giu',
+  `${NB}(?<simple>${ci('today|tonight|yesterday|tomorrow')})${NA}` +
+    `|${NB}(?<now>${ci('right')}${WS}+${ci('now')}|${ci('just')}${WS}+${ci('now')})${NA}` +
+    `|${NB}(?<count>${ND}+)${WS}+(?<unit>${ci('days?|weeks?')})${WS}+${ci('ago')}${NA}`,
+  'gu',
 );
 
 /**
@@ -126,10 +132,10 @@ const RELATIVE = new RegExp(
  * the writer left it.
  */
 const UNRESOLVED = new RegExp(
-  `${NB}recently${NA}` +
-    `|${NB}(?:last|this|next)${WS}+(?:week|month|year|quarter|night|session|time)${NA}` +
-    `|${NB}${ND}+${WS}+(?:months?|years?)${WS}+ago${NA}`,
-  'giu',
+  `${NB}${ci('recently')}${NA}` +
+    `|${NB}(?:${ci('last|this|next')})${WS}+(?:${ci('week|month|year|quarter|night|session|time')})${NA}` +
+    `|${NB}${ND}+${WS}+(?:${ci('months?|years?')})${WS}+${ci('ago')}${NA}`,
+  'gu',
 );
 
 /**

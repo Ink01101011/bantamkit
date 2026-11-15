@@ -38,12 +38,12 @@
  * handed — the two branches Python takes when `_snapshot` is pinned have no reachable
  * caller here. Everything else about both functions is the reference's.
  */
-import { randomBytes } from 'node:crypto';
-import { statSync, writeFileSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename } from 'node:path';
 
 import { BantamError } from '../errors.js';
+import { pyCaseless, PY_WORD_CLASS } from '../pysem.js';
 import { ColdIndex, ColdIndexError } from '../storage/coldindex.js';
 import { HotIndex, INDEX_DIR_ENV, type IndexDoc } from '../storage/hotindex.js';
 import type { Fact, FactValue } from './factfile.js';
@@ -86,7 +86,6 @@ import {
   pyMkdirParents,
   pyMtimeDate,
   pyName,
-  pyNewlineOut,
   pyParent,
   pyParents,
   pyReadText,
@@ -96,6 +95,7 @@ import {
   pySuffix,
   pyUnlink,
   pyWriteText,
+  pyWriteTextAtomic,
   PyOSError,
   PyUnicodeDecodeError,
   sortedPathNames,
@@ -205,7 +205,9 @@ export const OUTCOME_TYPES = ['feedback', 'project'] as const;
 /** `candidates` done-words (#221): whole-word, case-insensitive, `type: project` only. */
 export const DONE_WORDS = ['done', 'shipped', 'completed', 'closed', 'released', 'merged'] as const;
 /** Python's `\b(...)\b`: a boundary is a change of `\w` (Unicode letters, digits, `_`). */
-const DONE_WORD_RE = new RegExp(`(?<![\\p{L}\\p{N}_])(${DONE_WORDS.join('|')})(?![\\p{L}\\p{N}_])`, 'iu');
+// CPython's `\b(done|...)\b` under `IGNORECASE`, compiled WITHOUT `i` (#316 G3, J89-1F): under `i`
+// the word class also matched U+0345 (it folds to iota), so `done\u0345` was no boundary here.
+const DONE_WORD_RE = new RegExp(`(?<!${PY_WORD_CLASS})(${pyCaseless(DONE_WORDS.join('|'))})(?!${PY_WORD_CLASS})`, 'u');
 
 /** `list(VALID_OUTCOMES)` as Python prints it: `['error', 'success']`. */
 const pyListText = (items: readonly string[]): string => `[${items.map((t) => `'${t}'`).join(', ')}]`;
@@ -1351,7 +1353,7 @@ export class MemoryStore {
     } catch (e) {
       if (!(e instanceof MemoryBudgetExceeded)) throw e;
       if (existed === null) pyUnlink(path);
-      else pyWriteText(path, existed);
+      else pyWriteTextAtomic(path, existed); // a temp and a rename, as the write it undoes (J89-1F)
       this.rebuildIndex(true);
       throw e;
     }
@@ -2689,23 +2691,11 @@ export class MemoryStore {
    * never see it.
    */
   private writeFact(fact: Fact): void {
-    const path = this.factPath(fact.name);
-    const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-    try {
-      try {
-        writeFileSync(tmp, pyNewlineOut(formatFact(fact)), { encoding: 'utf8', flag: 'wx' });
-      } catch (e) {
-        throw asPyOSError(e, tmp, undefined, 'crt');
-      }
-      pyReplace(tmp, path);
-    } catch (e) {
-      try {
-        pyUnlink(tmp);
-      } catch (cleanup) {
-        if (!(cleanup instanceof PyOSError)) throw cleanup;
-      }
-      throw e;
-    }
+    // `pyWriteTextAtomic` IS this shape, written once (J89-1F): open `wx`, a loop until every
+    // byte is written, close, rename, unlink on failure. A failed write names no file, as
+    // CPython's buffered `write` raises it (`[Errno 27] File too large`); before, libuv's text
+    // and the temp's path came through `writeFileSync`.
+    pyWriteTextAtomic(this.factPath(fact.name), formatFact(fact));
   }
 
   /**
@@ -2716,7 +2706,8 @@ export class MemoryStore {
    * lied to. The read was wrong and the read is where it is fixed.
    */
   private rebuildIndex(tolerant = false): void {
-    pyWriteText(pyJoin(this.root, 'index.md'), this.indexTextOf(tolerant));
+    // Through a temp and a rename (J89-1F): a write cut short leaves the old `index.md` whole.
+    pyWriteTextAtomic(pyJoin(this.root, 'index.md'), this.indexTextOf(tolerant));
     // Every writer of a fact file ends here (save, its rollback, compact, archive, restore),
     // so this is where the hot index follows the files (#204).
     this.afterWrite();

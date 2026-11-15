@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, contextmanager
@@ -41,7 +40,7 @@ from bantamkit.memory.store import (
     pool_of,
     utc_now,
 )
-from bantamkit.memory.usage import UsageLedger
+from bantamkit.memory.usage import UsageLedger, os_realpath
 from bantamkit.storage.tiers import current_cwd
 from bantamkit.touch import context as _touch_context_mod
 from bantamkit.touch import recallfile as _recall_file_mod
@@ -251,8 +250,10 @@ def _same_directory(a: Path, b: Path) -> bool:
     (`tools/hooks/bantamkit-hook.mjs`). When the resolution itself fails, an absolute-path
     comparison is the honest fallback: it can only under-report a match, never invent one.
     """
+    # `os_realpath` (J89-1F): the path as the OS receives it, so a lone surrogate compares as
+    # Node's U+FFFD rather than raising `UnicodeEncodeError`.
     try:
-        return os.path.realpath(a) == os.path.realpath(b)
+        return os_realpath(a) == os_realpath(b)
     except OSError:
         return a.absolute() == b.absolute()
 

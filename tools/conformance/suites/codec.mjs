@@ -523,7 +523,8 @@ export async function run(ctx) {
       ['block sequence after "links:" and a comment', fm("name: linked\ndescription: d\ntype: project\ncreated: '2026-10-13'\nlast_recalled: null\nlinks: # c\n- a\n")],
       ['a plain value, then a line of spaces, then the next key', fm("name: n\ndescription: d\n  \ntype: project\nlinks: []\n")],
     ];
-    // 2. BOTH REFUSE.
+    // 2. BOTH REFUSE. (The two tab rows: the PURE PyYAML scanner refuses them; libyaml reads
+    // them, and so does runtime-py's store when libyaml is installed — docs/porting.md, J89-1F.)
     const bothRefuse = [
       ['block scalar, a letter in the header', desc('|x\n  a')],
       ['block scalar, indentation indicator 0', desc('|0\n  a')],

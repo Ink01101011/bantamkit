@@ -889,6 +889,28 @@ def bantamkit_dir_for(path: Path) -> Path | None:
     return None
 
 
+def _write_text_atomic(path: Path, text: str) -> None:
+    """`text` to `path` THROUGH A PER-WRITER TEMP and `os.replace` (#316 G3, J89-1F).
+
+    The fact write's shape (job65/#161, `MemoryStore._write_fact`), written once and now also
+    `index.md`'s and the budget rollback's, which `write_text` rewrote IN PLACE: a write cut
+    short (ENOSPC, EFBIG) truncated `index.md` first and then failed. `<path>.<pid>.<8 hex>.tmp`
+    is opened with `x` (O_EXCL), the buffered writer writes every byte (it loops over short
+    writes), the temp is renamed onto `path`, and on ANY failure it is unlinked before the error
+    goes on up, so `path` holds the old bytes or the new ones, never a prefix. Node's twin is
+    `pyfs.pyWriteTextAtomic`.
+    """
+    tmp = Path(f"{path}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        with tmp.open("x", encoding="utf-8") as fh:
+            fh.write(text)
+        tmp.replace(path)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink()
+        raise
+
+
 class MemoryStore:
     def __init__(
         self,
@@ -1356,7 +1378,7 @@ class MemoryStore:
             if existed is None:
                 path.unlink()
             else:
-                path.write_text(existed, encoding="utf-8")
+                _write_text_atomic(path, existed)  # a temp and a rename, as the write it undoes
             self._rebuild_index(tolerant=True)
             raise
         self._rebuild_index(tolerant=True)
@@ -2571,17 +2593,7 @@ class MemoryStore:
         what "concurrent saves of one name all succeed" means. A SIGKILL between the open and
         the unlink still leaves a temp; nothing in-process can promise otherwise.
         """
-        text = self._fact_text(fact)
-        path = self._fact_path(fact.name)
-        tmp = Path(f"{path}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-        try:
-            with tmp.open("x", encoding="utf-8") as fh:
-                fh.write(text)
-            tmp.replace(path)
-        except BaseException:
-            with suppress(OSError):
-                tmp.unlink()
-            raise
+        _write_text_atomic(self._fact_path(fact.name), self._fact_text(fact))
 
     def _rebuild_index(self, tolerant: bool = False) -> None:
         """Write `index.md` from the facts on disk. THE OP THE ORIGINAL DEFECT DESTROYED.
@@ -2595,7 +2607,8 @@ class MemoryStore:
         `compact()`, and it would leave `recall`, `lint` and `archived` still being lied
         to. The read is what was wrong and the read is where it is fixed.
         """
-        (self.root / "index.md").write_text(self._index_text(tolerant), encoding="utf-8")
+        # Through a temp and a rename (J89-1F): a write cut short leaves the old index whole.
+        _write_text_atomic(self.root / "index.md", self._index_text(tolerant))
         # Every writer of a fact file ends here (save, its rollback, compact, archive,
         # restore), so this is where the hot index follows the files (#204).
         self._after_write()

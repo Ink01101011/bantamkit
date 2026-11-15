@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .._generated._ts2py_adapters import _os_char
 from ..storage import logsegment as _logsegment
 from ..storage.logsegment import LogSegment
 
@@ -84,10 +85,31 @@ def status_line(path: str | Path, lines: int, skipped: int) -> str:
     return f"usage ledger: {path} ({lines} lines, {skipped} skipped{tail})"
 
 
-def store_id(store_root: Path) -> str:
-    """The first 16 hex characters of sha256 over the store's realpath, as UTF-8."""
-    real = os.path.realpath(store_root)
-    return hashlib.sha256(real.encode("utf-8")).hexdigest()[:16]
+def os_realpath(path: Path | str) -> str:
+    """`os.path.realpath` of `path` as the OS receives it (#316 G3, J89-1F).
+
+    The G2 path policy (`_ts2py_adapters._os_char`, docs/porting.md "G2 target-specific I/O"):
+    a POSIX surrogateescape code point (U+DC80..U+DCFF) is kept, because `os` hands it to the
+    OS as the real byte it stands for; a lone surrogate no encoding takes is the U+FFFD Node's
+    fs writes for it. Before, such a code point made `os.path.realpath` (or the encode after
+    it) raise `UnicodeEncodeError`, out of `store_id` and out of `skills._same`.
+    """
+    text = os.fspath(path)
+    if not text.isascii():
+        text = "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
+    return os.path.realpath(text)
+
+
+def store_id(store_root: Path | str) -> str:
+    """The first 16 hex characters of sha256 over the store's realpath, as the OS spells it.
+
+    `os_realpath` (J89-1F): a lone surrogate hashes as U+FFFD, as on Node, and a POSIX
+    surrogateescape code point as its real byte (`surrogateescape`), so `s<U+D800>x` and
+    `s<U+DC80>x` -- two different directories -- no longer share a ledger. The byte is the one
+    target-specific difference from Node, which has no such string (docs/porting.md).
+    """
+    real = os_realpath(store_root)
+    return hashlib.sha256(real.encode("utf-8", "surrogateescape")).hexdigest()[:16]
 
 
 def _parse(ts: str) -> float:

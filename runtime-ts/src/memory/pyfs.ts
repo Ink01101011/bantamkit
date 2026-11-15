@@ -53,10 +53,13 @@
  * Also registered, in `store.ts` rather than here: the `ValueError` arms `_facts` catches
  * and this port reaches by a different route. Owner: whichever unit consolidates `pyfs`.
  */
+import { randomBytes } from 'node:crypto';
 import {
   appendFileSync,
+  closeSync,
   lstatSync,
   mkdirSync,
+  openSync,
   opendirSync,
   readdirSync,
   readFileSync,
@@ -66,6 +69,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { constants as osConstants, homedir, userInfo } from 'node:os';
 
@@ -96,6 +100,7 @@ const STRERROR: Record<string, string> = {
   EBADF: 'Bad file descriptor',
   EEXIST: 'File exists',
   EFAULT: 'Bad address',
+  EFBIG: 'File too large',
   EINVAL: 'Invalid argument',
   EIO: 'Input/output error',
   EISDIR: 'Is a directory',
@@ -707,6 +712,68 @@ export function pyWriteText(path: string, text: string): void {
 }
 
 /**
+ * `text` written to `path` THROUGH A PER-WRITER TEMP and `os.replace` (#316 G3, J89-1F): the
+ * fact write's shape (job65/#161), now also `index.md`'s and the budget rollback's, which were
+ * rewritten IN PLACE on both sides, so a write cut short (ENOSPC, EFBIG) left a truncated
+ * `index.md`. `<path>.<pid>.<8 hex>.tmp` is created with `wx` (O_EXCL), every byte is written
+ * by a loop (`write(2)` may write fewer than asked: G2's `writeAll`), the temp is renamed onto
+ * `path`, and on any failure it is unlinked before the error goes on up, so `path` is either
+ * the old bytes or the new ones, never a prefix.
+ *
+ * The error is CPython's for the same three steps of `open(tmp, "x")`, `write`, `close` and
+ * `os.replace`: the open names the temp, a failed write or close names NO file
+ * (`[Errno 27] File too large`, as the buffered writer raises it), the replace names both.
+ */
+export function pyWriteTextAtomic(path: string, text: string): void {
+  const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  const data = Buffer.from(pyNewlineOut(text), 'utf8');
+  try {
+    let fd: number;
+    try {
+      fd = openSync(tmp, 'wx');
+    } catch (e) {
+      throw asPyOSError(e, tmp, undefined, 'crt');
+    }
+    try {
+      let done = 0;
+      while (done < data.length) {
+        const n = writeSync(fd, data, done, data.length - done);
+        // write(2) answers 0 only for an empty buffer; never spin on one that answers 0 anyway
+        if (n <= 0) throw Object.assign(new Error('EIO: i/o error, write'), { code: 'EIO', errno: -osConstants.errno.EIO });
+        done += n;
+      }
+    } catch (e) {
+      try {
+        closeSync(fd);
+      } catch {
+        // the write's error is the one CPython raises
+      }
+      throw asPyOSError(stripPath(e), undefined, undefined, 'crt');
+    }
+    try {
+      closeSync(fd);
+    } catch (e) {
+      throw asPyOSError(stripPath(e), undefined, undefined, 'crt');
+    }
+    pyReplace(tmp, path);
+  } catch (e) {
+    try {
+      pyUnlink(tmp);
+    } catch (cleanup) {
+      if (!(cleanup instanceof PyOSError)) throw cleanup;
+    }
+    throw e;
+  }
+}
+
+/** A Node fs error without its `path`: CPython's `write` and `close` raise with no filename. */
+function stripPath(e: unknown): unknown {
+  if (e === null || typeof e !== 'object') return e;
+  const { code, errno, message } = e as NodeFsError;
+  return Object.assign(new Error(message), { code, errno });
+}
+
+/**
  * `path.open("a", encoding="utf-8").write(text)` — the accounting log's append.
  *
  * Same newline translation as `pyWriteText`, for the same reason. One `appendFileSync` is
@@ -1310,6 +1377,35 @@ export function pyResolve(path: string): string {
     }
   }
   return absolute;
+}
+
+/**
+ * `os.path.realpath(path)` with `strict=False` (#316 G3, J89-1F): symlinks resolved as far as
+ * the path exists, the rest kept, a DANGLING symlink followed to its target text, `..` applied
+ * after the link before it, and no raise for a loop (that is `pyResolve`'s `Path.resolve`
+ * check, which `os.path.realpath` does not make). POSIX is `posixpath.realpath` itself,
+ * `abspath(_joinrealpath('', path))`; Windows is the `ntpath` arm `pyResolve` already uses,
+ * without the ELOOP stat.
+ *
+ * WHY NOT `fs.realpathSync.native` WITH A PARENT FALLBACK, which `usage.storeId`,
+ * `skills.same` and `component.sameDirectory` used: it is strict, so a dangling symlink
+ * failed and the fallback kept the LINK's own name where CPython follows it to the target
+ * text (`storeId` of one store gave two usage ledgers); and macOS's `realpath(3)` answers a
+ * case-folded name in the filesystem's spelling, where CPython keeps the caller's. The
+ * emulation is written once, here, so it can be the `realpathSync.native` adapter's contract
+ * when these modules are generated. A path string reaches the OS as Node's fs hands it over
+ * (a lone surrogate as U+FFFD), which is the G2 target-specific path policy (docs/porting.md).
+ */
+export function pyRealpath(path: string): string {
+  if (process.platform === 'win32') {
+    const absolute = ntIsAbs(path) ? path : ntJoin(process.cwd(), path);
+    try {
+      return realpathSync.native(absolute);
+    } catch {
+      return getFinalPathNameNonStrict(absolute);
+    }
+  }
+  return posixAbspath(joinRealpath('', path, new Map<string, string | null>())[0]);
 }
 
 /** `posixpath._joinrealpath`, ported statement for statement including the `seen` protocol. */

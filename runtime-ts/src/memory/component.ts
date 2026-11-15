@@ -25,7 +25,6 @@
  * lines carry a `[project] ` tag that the `--store` form never emits. A port validated
  * against only one of them ships a string the deployment never produces.
  */
-import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { BantamError } from '../errors.js';
@@ -39,7 +38,7 @@ import {
   resolveProjectStore,
   type StoreBinding,
 } from './layers.js';
-import { pyHome, pyIsDir, pyJoin, pyName, pyParent, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
+import { pyHome, pyIsDir, pyJoin, pyName, pyParent, pyRealpath, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
 import { homedir } from 'node:os';
 import { NATIVE_LAYER, NativeStore } from './native.js';
 import { type Offer, SKILL_LAYER, SkillStore, skillRoots, triggersEnabled } from './skills.js';
@@ -191,8 +190,14 @@ export function profileStore(): string {
  * and that cannot be the same directory as one that does.
  */
 function sameDirectory(a: string, b: string): boolean {
+  // AMENDED 2026-11-15 (#316 G3, J89-1F): `pyRealpath`, the port of `os.path.realpath` itself,
+  // in place of `realpathSync.native`. It pops `..` in the kernel's order too (it IS
+  // `posixpath._joinrealpath`), and it follows a DANGLING symlink to its target text and keeps
+  // the caller's spelling of a case-folded name, as the reference does, where the native call
+  // threw on the first and answered the filesystem's spelling on the second. The fallback stays
+  // the reference's `except OSError`; on POSIX `pyRealpath` raises only if the cwd is gone.
   try {
-    return realpathSync.native(a) === realpathSync.native(b);
+    return pyRealpath(a) === pyRealpath(b);
   } catch {
     return resolve(a) === resolve(b);
   }

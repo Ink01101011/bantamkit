@@ -15,10 +15,9 @@
  * sides read the same strings; the alphabet is biased to the inputs these helpers branch on
  * (CPython's 29 `\s` code points, U+0085, U+2028, NUL, lone surrogates, combining marks, Thai,
  * CJK, astral, the Kelvin sign and long s that fold under IGNORECASE, the relative-date and
- * done words). ONE code point is left out on purpose: U+0345 COMBINING GREEK YPOGEGRAMMENI,
- * the only character on which a JS `[\p{L}\p{N}_]` under the `iu` flags (it case-folds to
- * iota) and CPython's `\w` disagree. Every input holding it is a known divergence, pinned as
- * an `UNRULED DIVERGENCE` case by `dream.mjs` and `store.mjs` instead of hidden in a fuzz.
+ * done words), and U+0345 COMBINING GREEK YPOGEGRAMMENI. J89-1 left U+0345 out, because a JS
+ * `[\p{L}\p{N}_]` under the `iu` flags (it case-folds to iota) and CPython's `\w` disagreed on
+ * it; J89-1F compiled those patterns without `i` (`pysem.PY_WORD_CLASS`), so it is back in.
  *
  * `parseTs` is compared through its contract on each side: Node answers milliseconds or NaN,
  * Python's `_parse` answers seconds or raises; the reference reports `seconds * 1000` or null.
@@ -45,7 +44,7 @@ const ALPHABET = [
   '\t', '\n', '\r', '\x0b', '\x0c', '\x1c', '\x1d', '\x1e', '\x1f', '\x85', '\xa0', ' ', ' ',
   ' ', ' ', '　', '​', '﻿', '\x00', 'ก', 'ไ', '่', 'ั', '中', '文', '日', '本',
   '한', 'é', 'é', 'ß', 'İ', 'ı', 'ǅ', 'Ⅻ', '²', '①', '٣', '𝟙', '😀', '👍🏽', '\ud800', '\udc00',
-  'ｚ', 'Ａ', 'µ', 'ſ', 'K', 'Å', 'ﬁ', 'ǰ', 'today', 'yesterday', 'tomorrow', 'tonight',
+  'ｚ', 'Ａ', 'µ', 'ſ', 'K', 'Å', 'ﬁ', 'ǰ', '\u0345', 'today', 'yesterday', 'tomorrow', 'tonight',
   'just now', '3 days ago', '2 weeks ago', 'recently', 'last month', '2026-08-01', '2026-13-45',
   'Decision:', 'Rule:', 'Owner:', '- ', '* ', '## ', '\n\n', '---', 'note', 'stale', 'superseded',
   'replaced', 'deprecated', 'obsolete', 'outdated', 'old', 'was', 'done', 'DONE', 'shipped', 'fixed',
@@ -233,7 +232,7 @@ export async function g3Cases(ctx, module, { perFn = 400, seed = 0x316 } = {}) {
       cases.push({ name: `G3 pure: memory/${module} ${fn} over ${list.length} generated inputs`, kind: 'json', expected: py.slice(k, k + list.length), actual: nd });
       k += list.length;
     }
-    notes.push(`G3 (J89-1): memory/${module}: ${byFn.size} pure functions x ${perFn} seeded inputs compared, U+0345 left out of the alphabet (pinned separately)`);
+    notes.push(`G3 (J89-1): memory/${module}: ${byFn.size} pure functions x ${perFn} seeded inputs compared, U+0345 in the alphabet`);
   }
   return { cases, notes };
 }
