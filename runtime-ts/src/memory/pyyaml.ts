@@ -17,8 +17,10 @@
  * the same string — the store would just silently stop being diffable against Python's.
  *
  * So this is not a YAML emitter. It is PyYAML's emitter for one document shape: a
- * root-level block mapping whose values are strings, `null`, or lists of strings.
- * Everything outside that shape throws rather than guessing.
+ * root-level block mapping whose values are strings, `null`, `PyScalar`s, and lists and
+ * plain-object mappings of those, to any depth (#315, J86-4: Claude Code's native memory
+ * files carry a nested `metadata:` mapping, and this used to throw on it). Everything
+ * outside that shape throws rather than guessing.
  *
  * COLUMNS ARE CODEPOINTS. PyYAML does `self.column += len(data)` on a `str`, which counts
  * codepoints. `String.length` in JS counts UTF-16 units and charges 2 for an astral
@@ -46,8 +48,16 @@ const YAML_TAG = 'tag:yaml.org,2002:yaml';
  * `created: 2026-08-23` has to go back through `safe_dump` unchanged. See the constructor
  * half at the bottom of this file.
  */
-export type YamlValue = YamlScalar | ReadonlyArray<YamlScalar>;
+export type YamlValue = YamlScalar | ReadonlyArray<YamlValue> | YamlMapping;
 export type YamlScalar = string | null | PyScalar;
+/**
+ * A nested block mapping (#315, J86-4): a plain object, emitted in `Object.entries` order. That
+ * is insertion order for every key that is not an array index, and an array-index key is
+ * refused (see `emitNode`), so the order emitted is the order the mapping was built in.
+ */
+export interface YamlMapping {
+  readonly [key: string]: YamlValue;
+}
 
 export class YamlEmitError extends Error {}
 
@@ -346,7 +356,7 @@ class Emitter {
     const implicit = resolveImplicitTag(value) === tag;
     const split = !simpleKeyContext;
     // `choose_scalar_style`, with `flow_level` fixed at 0: this document shape puts no
-    // scalar inside a flow collection (the only flow collection it emits is `[]`).
+    // scalar inside a flow collection (the only flow collections it emits are the empty `[]` and `{}`).
     let style = '"';
     if (implicit && !(simpleKeyContext && (analysis.empty || analysis.multiline)) && analysis.allowBlockPlain) {
       style = '';
@@ -520,60 +530,138 @@ class Emitter {
  * `entries` is an ordered array rather than an object because the ORDER is the contract —
  * `sort_keys=False` means the emitted order is the insertion order of `_write_fact`'s
  * dict literal, and an object here would invite someone to reorder it without noticing.
+ *
+ * A value may nest (#315, J86-4): lists and plain-object mappings of the scalars below, to any
+ * depth, emitted by the same states PyYAML's `Emitter` walks — `expect_block_mapping_key`,
+ * `expect_block_sequence_item`, and the flow path for an EMPTY collection only (`[]`, `{}`).
+ * WAS: anything but a scalar or a list of scalars threw `cannot emit object for key metadata`,
+ * so a recall stamp on a Claude Code native memory file (478 of 495 on the machine J86-2
+ * measured) failed in Node where runtime-py wrote it. Refused, by name, rather than guessed:
+ * a value of any other type, a non-string key, an array-index key (JS orders those first, so
+ * the object no longer holds the order it was built in), and a list or mapping that appears
+ * twice in one document (PyYAML writes the second as an `&id001` / `*id001` alias).
  */
 export function safeDumpMapping(entries: ReadonlyArray<readonly [string, YamlValue]>): string {
   const e = new Emitter();
+  const seen: object[] = [];
   e.increaseIndent(false, false); // expect_block_mapping: indent None -> 0
   for (const [key, value] of entries) {
-    e.writeIndent();
-    e.writeScalar(key, STR_TAG, true);
-    e.writeIndicator(':', false);
-    if (value === null) {
-      // `represent_none` emits the scalar `null` under the null tag, which resolves back
-      // to null and is therefore written plain.
-      e.increaseIndent(false, false);
-      e.writeScalar('null', NULL_TAG, false);
-      e.popIndent();
-    } else if (Array.isArray(value)) {
-      if (value.length === 0) {
-        // `check_empty_sequence()` sends an empty sequence down the FLOW path even under
-        // `default_flow_style=False`, which is why this one collection is `[]`.
-        e.writeIndicator('[', true, true);
-        e.writeIndicator(']', false);
-      } else {
-        // `expect_block_sequence`: `indentless = mapping_context and not indention`, and
-        // writing the `:` cleared `indention`, so the dashes sit at column 0.
-        e.increaseIndent(false, !e.atIndention);
-        for (const item of value) {
-          e.writeIndent();
-          e.writeIndicator('-', true, false, true);
-          e.increaseIndent(false, false);
-          // `links:\n- ~` puts a `None` in the list, and `represent_none` writes `null`.
-          if (item === null) e.writeScalar('null', NULL_TAG, false);
-          else if (item instanceof PyScalar) e.writeScalar(item.yaml, item.tag, false);
-          else e.writeScalar(item, STR_TAG, false);
-          e.popIndent();
-        }
-        e.popIndent();
-      }
-    } else if (typeof value === 'string') {
-      e.increaseIndent(false, false);
-      e.writeScalar(value, STR_TAG, false);
-      e.popIndent();
-    } else if (value instanceof PyScalar) {
-      // The node carries its own tag, so `choose_scalar_style` finds the implicit spelling
-      // and writes it PLAIN — `2026-08-23`, `true`, `31`, `.inf` — exactly as PyYAML does
-      // for the object `safe_load` handed back.
-      e.increaseIndent(false, false);
-      e.writeScalar(value.yaml, value.tag, false);
-      e.popIndent();
-    } else {
-      throw new YamlEmitError(`cannot emit ${typeof value} for key ${key}`);
-    }
+    emitMappingEntry(e, key, value, key, seen);
   }
   e.popIndent(); // the MappingEndEvent pop, before expect_document_end's write_indent
   e.writeIndent();
   return e.toString();
+}
+
+/**
+ * `check_simple_key` for a `str` key. The length it measures is the prepared tag (`!!str`, 5)
+ * plus the scalar's codepoints, so a key of 123 codepoints or more is not simple, nor is an
+ * empty or multi-line one; PyYAML writes those as `? key` / `: value`.
+ */
+function isSimpleKey(key: string): boolean {
+  const chars = [...key];
+  const analysis = analyzeScalar(chars);
+  return 5 + chars.length < 128 && !analysis.empty && !analysis.multiline;
+}
+
+/** `expect_block_mapping_key` and the value state after it, for one entry. */
+function emitMappingEntry(e: Emitter, key: string, value: YamlValue, path: string, seen: object[]): void {
+  e.writeIndent();
+  if (isSimpleKey(key)) {
+    e.writeScalar(key, STR_TAG, true);
+    e.writeIndicator(':', false); // expect_block_mapping_simple_value
+  } else {
+    e.writeIndicator('?', true, false, true);
+    e.increaseIndent(false, false); // expect_scalar's increase_indent(flow=True)
+    e.writeScalar(key, STR_TAG, false);
+    e.popIndent();
+    e.writeIndent(); // expect_block_mapping_value
+    e.writeIndicator(':', true, false, true);
+  }
+  emitNode(e, value, true, path, seen);
+}
+
+/** `represent_data`'s alias check: a list or mapping seen before is an alias PyYAML would write. */
+function claim(value: object, path: string, seen: object[]): void {
+  if (seen.some((s) => s === value)) {
+    throw new YamlEmitError(
+      `cannot emit ${path}: the same collection appears twice in one document, which PyYAML writes as an anchor and an alias`,
+    );
+  }
+  seen.push(value);
+}
+
+/** An array index in JS's own-key order (`0` .. `2**32 - 2`), which `Object.entries` lists first. */
+function isArrayIndexKey(key: string): boolean {
+  return /^(?:0|[1-9][0-9]{0,9})$/.test(key) && Number(key) < 4294967295;
+}
+
+/** `expect_node` for one value, `mappingContext` true when it is a mapping value. */
+function emitNode(e: Emitter, value: YamlValue, mappingContext: boolean, path: string, seen: object[]): void {
+  if (value === null) {
+    // `represent_none` emits the scalar `null` under the null tag, which resolves back
+    // to null and is therefore written plain.
+    e.increaseIndent(false, false);
+    e.writeScalar('null', NULL_TAG, false);
+    e.popIndent();
+  } else if (typeof value === 'string') {
+    e.increaseIndent(false, false);
+    e.writeScalar(value, STR_TAG, false);
+    e.popIndent();
+  } else if (value instanceof PyScalar) {
+    // The node carries its own tag, so `choose_scalar_style` finds the implicit spelling
+    // and writes it PLAIN — `2026-08-23`, `true`, `31`, `.inf` — exactly as PyYAML does
+    // for the object `safe_load` handed back.
+    e.increaseIndent(false, false);
+    e.writeScalar(value.yaml, value.tag, false);
+    e.popIndent();
+  } else if (Array.isArray(value)) {
+    claim(value, path, seen);
+    const items = value as ReadonlyArray<YamlValue>;
+    if (items.length === 0) {
+      // `check_empty_sequence()` sends an empty sequence down the FLOW path even under
+      // `default_flow_style=False`, which is why an empty list is `[]`.
+      e.writeIndicator('[', true, true);
+      e.writeIndicator(']', false);
+    } else {
+      // `expect_block_sequence`: `indentless = mapping_context and not indention`. Under a
+      // `key:` the `:` cleared `indention`, so the dashes sit at the key's column; under a
+      // `- ` or a `? ` it did not, so a nested list steps in two.
+      e.increaseIndent(false, mappingContext && !e.atIndention);
+      let i = 0;
+      for (const item of items) {
+        e.writeIndent();
+        e.writeIndicator('-', true, false, true);
+        emitNode(e, item, false, `${path}[${i}]`, seen);
+        i += 1;
+      }
+      e.popIndent();
+    }
+  } else if (typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    claim(value, path, seen);
+    const entries = Object.entries(value as YamlMapping);
+    if (entries.length === 0) {
+      // `check_empty_mapping()`: the flow path again, so an empty mapping is `{}`.
+      e.writeIndicator('{', true, true);
+      e.writeIndicator('}', false);
+    } else {
+      e.increaseIndent(false, false); // expect_block_mapping
+      for (const [key, item] of entries) {
+        if (typeof key !== 'string') {
+          throw new YamlEmitError(`cannot emit ${typeof key} key under ${path}`);
+        }
+        if (isArrayIndexKey(key)) {
+          throw new YamlEmitError(
+            `cannot emit key ${key} under ${path}: an array-index key is listed first by Object.entries, so the mapping no longer holds its own order`,
+          );
+        }
+        emitMappingEntry(e, key, item, `${path}.${key}`, seen);
+      }
+      e.popIndent();
+    }
+  } else {
+    throw new YamlEmitError(`cannot emit ${typeof value} for key ${path}`);
+  }
 }
 
 // ------------------------------------------------------------------- the constructor half

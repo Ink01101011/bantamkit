@@ -159,7 +159,9 @@ from codec import factfile as ff
 text = "---\r\nname: synthetic-fact\r\ndescription: a description long enough that PyYAML wraps it at the eightieth column, with é and 😀 inside\r\ntype: project\r\ncreated: 2026-08-23\r\nlast_recalled: '2026-11-15'\r\nlinks:\r\n- other-fact\r\n- 12\r\nkeywords: [alpha, 'beta gamma']\r\npriority: \"high\\u00e9 \\ud83d\\ude00 \\ud800\"\r\nnote: |\r\n  line one\r\n  line two\r\n---\r\n\r\n  Body text.\x85\r\n"
 parsed = ff.parse_fact_text(ff.decode_fact_bytes(text.encode("utf-8")))
 print(json.dumps(ff.format_fact(parsed), ensure_ascii=False))
-for bad in ["---\nname: [a, [b]]\n---\n", "no frontmatter", "---\nname: x\ndescription: \"\\q\"\n---\n", "---\nname: n\ndescription: d\ntype: t\nmetadata:\n  loop: success\n---\n"]:
+# J86-4: a nested `metadata:` mapping is written, as PyYAML writes it (it used to refuse).
+print(json.dumps(ff.format_fact(ff.parse_fact_text("---\nname: n\ndescription: d\ntype: t\nmetadata:\n  loop: success\n---\n")), ensure_ascii=False))
+for bad in ["---\nname: [a, [b]]\n---\n", "no frontmatter", "---\nname: x\ndescription: \"\\q\"\n---\n"]:
     try:
         ff.format_fact(ff.parse_fact_text(bad))
         print("ok")
@@ -172,13 +174,13 @@ for bad in ["---\nname: [a, [b]]\n---\n", "no frontmatter", "---\nname: x\ndescr
     let expected = concat!(
         r#""---\nname: synthetic-fact\ndescription: a description long enough that PyYAML wraps it at the eightieth column,\n  with é and 😀 inside\ntype: project\ncreated: 2026-08-23\nlast_recalled: '2026-11-15'\nlinks:\n- other-fact\n- 12\nkeywords:\n- alpha\n- beta gamma\npriority: highé 😀 �\nnote: 'line one\n\n  line two\n\n  '\n---\n\nBody text.\n""#,
         "\n",
+        r#""---\nname: n\ndescription: d\ntype: t\ncreated: null\nlast_recalled: null\nlinks: []\noutcome: success\nmetadata:\n  loop: success\n---\n\n\n""#,
+        "\n",
         r#""Error|a flow sequence holding a nested collection is outside this codec's language: \"[a, [b]]\"""#,
         "\n",
         r#""Error|expected 3 parts from split('---\\n', 2), got 1""#,
         "\n",
         r#""Error|unknown escape \\q""#,
-        "\n",
-        r#""Error|cannot emit object for key metadata""#,
         "\n",
     );
     assert_eq!(out, expected);

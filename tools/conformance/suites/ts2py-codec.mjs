@@ -25,7 +25,7 @@
  *                generated module is compiled from node's source; any difference is a ts2py bug.
  *   py = node    the existing two-runtime contract. A refusal is compared as a bit (the two
  *                refusal TEXTS differ by the registered #120 ruling in `factfile.ts`). Every
- *                disagreement must fall in one of the five classes in `KNOWN` below, which this
+ *                disagreement must fall in one of the four classes in `KNOWN` below, which this
  *                suite FOUND on its first run and which are pre-existing, not deliberate: on the
  *                fuzz each class is a `ruling:` case that must keep occurring, on the real stores
  *                each is counted in a note, and a disagreement outside them is red everywhere.
@@ -171,6 +171,7 @@ function nodeArms(ff, yaml, store) {
 
 /**
  * The py/node disagreements this suite found on its first run (J86-2, 2026-11-15), by class.
+ * There were five; `nested-map-rewrite` was fixed in node by J86-4 (see `safeDumpMapping`).
  * NONE IS A DELIBERATE DIVERGENCE: none has a row in `docs/porting.md`. They are pre-existing
  * findings in the two-runtime contract, registered here so this suite can hold the generated
  * codec to Node without going red on them, and so each one is still SEEN: on the fuzz every
@@ -182,8 +183,6 @@ const KNOWN = {
     "node refuses a frontmatter PyYAML reads (#120's registered ruling: outside the language `parseFrontmatter` claims, node raises rather than guesses): a quoted key such as `'True':`, which BOTH emitters write for a Fact.extra key YAML would not read as text, and a block sequence inside a nested `metadata:` mapping, which Claude Code native memory files carry",
   'non-text-key':
     'a key YAML resolves to a non-string (`on:` is True, `null:` is None, `True:`): PyYAML keys the mapping by that value, node by the text; both stores drop such a key (`isTextKey` in factfile.ts, `isinstance(k, str)` in `_read_fact`), so it never reaches a Fact or a write',
-  'nested-map-rewrite':
-    "a nested mapping value (`metadata:` blocks, as Claude Code's native memory files carry) is read alike by both, but the store's read-then-write differs: runtime-py's `_fact_text` dumps it back as a block mapping, node's `formatFact` throws `cannot emit object for key metadata` (`safeDumpMapping` emits scalars and lists only)",
   'yaml11-breaks':
     "U+0085, U+2028 or U+2029 inside a quoted or plain scalar: PyYAML reads each as a YAML 1.1 line break and folds it (so runtime-py does not read back what its own `safe_dump` wrote), node keeps the character; both write the same bytes",
   'pyyaml-refuses':
@@ -229,7 +228,7 @@ function parseClass(text, py, node, isTextKey) {
 }
 
 function threeWay(inputs, ans, isTextKey) {
-  const out = { parseGen: [], rtGen: [], unclassified: [], known: {}, readAlike: 0, refusedAlike: 0, codecRtAgree: 0, storeLayer: 0 };
+  const out = { parseGen: [], rtGen: [], unclassified: [], known: {}, readAlike: 0, refusedAlike: 0, codecRtAgree: 0, storeLayer: 0, nested: 0, nestedWritten: 0 };
   for (const k of Object.keys(KNOWN)) out.known[k] = [];
   inputs.forEach((input, i) => {
     const { node, py, gen } = ans[i];
@@ -238,11 +237,10 @@ function threeWay(inputs, ans, isTextKey) {
 
     const parseAgrees = same(asBit(py.parse), asBit(node.parse));
     const rtAgrees = same(asBit(py.rt), asBit(node.rtStore));
-    let cls = null;
-    if (!parseAgrees) cls = parseClass(input.text, py.parse, node.parse, isTextKey);
-    else if (!rtAgrees && !refused(py.rt) && refused(node.rtStore) && /cannot emit object for key/.test(node.rtStore.error)) {
-      cls = 'nested-map-rewrite';
-    }
+    // J86-4 removed a fifth class, `nested-map-rewrite` (node's `formatFact` threw `cannot emit
+    // object for key metadata` where runtime-py wrote the block mapping): node now writes it,
+    // byte for byte, so a store round trip that differs is unclassified and red.
+    const cls = parseAgrees ? null : parseClass(input.text, py.parse, node.parse, isTextKey);
     if (!parseAgrees || !rtAgrees) {
       if (cls === null) {
         out.unclassified.push({ id: input.id, parse: parseAgrees ? 'agrees' : where(py.parse, node.parse), rtStore: rtAgrees ? 'agrees' : where(py.rt, node.rtStore) });
@@ -251,6 +249,14 @@ function threeWay(inputs, ans, isTextKey) {
       }
     }
     if (!refused(py.parse) && same(py.parse, node.parse)) out.readAlike += 1;
+    // J86-4: a fact holding a nested mapping, and whether node's store round trip now writes
+    // runtime-py's bytes for it (it threw before).
+    // Counted where both READ the file alike (a parse disagreement is one of the classes above)
+    // and runtime-py writes it at all (a fact missing `type` is refused by both).
+    if (!refused(node.parse) && same(py.parse, node.parse) && !refused(py.rt) && node.parse.meta.some(([, v]) => v !== null && typeof v === 'object' && !Array.isArray(v) && 'map' in v)) {
+      out.nested += 1;
+      if (py.rt === node.rtStore) out.nestedWritten += 1;
+    }
     if (refused(py.parse) && refused(node.parse)) out.refusedAlike += 1;
     // The three-way: where runtime-py's stamp and node's codec write the same bytes, gen does too
     // (it equals node's codec, checked above); where they differ it is the store layer's read.
@@ -266,6 +272,13 @@ function aggregateCases(prefix, r, label, { rulings }) {
     { name: `${prefix}/parse/gen=node`, kind: 'json', expected: [], actual: show(r.parseGen) },
     { name: `${prefix}/rt/gen=node`, kind: 'json', expected: [], actual: show(r.rtGen) },
     { name: `${prefix}/py=node/unclassified`, kind: 'json', expected: [], actual: show(r.unclassified) },
+    {
+      name: `${prefix}/nested-map/py=node`,
+      kind: 'json',
+      // On the fuzz the class must also be exercised; a store without one (CI) holds none.
+      expected: rulings ? { written: r.nested, exercised: true } : { written: r.nested },
+      actual: rulings ? { written: r.nestedWritten, exercised: r.nested > 0 } : { written: r.nestedWritten },
+    },
     {
       name: `${prefix}/not-vacuous`,
       kind: 'string',
@@ -295,7 +308,8 @@ function summarise(label, n, r) {
   return (
     `${label}: ${n} inputs; read alike by all three ${r.readAlike}, refused by all three ${r.refusedAlike}; ` +
     `gen!=node parse ${r.parseGen.length} rt ${r.rtGen.length}; py!=node by known class: ${known || 'none'}; ` +
-    `unclassified ${r.unclassified.length}; round trip where runtime-py's stamp = node's codec = gen ${r.codecRtAgree}, ` +
+    `unclassified ${r.unclassified.length}; holding a nested mapping ${r.nested}, of which node's store round trip ` +
+    `writes runtime-py's bytes ${r.nestedWritten}; round trip where runtime-py's stamp = node's codec = gen ${r.codecRtAgree}, ` +
     `where the stamp differs from the codec-only round trip but py = node at the store ${r.storeLayer} ` +
     `(the store's read: created from mtime, an unquoted timestamp as text, a description made one line)`
   );

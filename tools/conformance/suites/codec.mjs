@@ -841,5 +841,104 @@ export async function run(ctx) {
   }
 
 
+  // ------------------------------------------- #315 (J86-4): nested values in Fact.extra
+  //
+  // THE PROPERTY. A hand-written key's value may nest — Claude Code's native memory files carry
+  // `metadata:\n  type: user` — and the bytes node writes for it are PyYAML's, byte for byte:
+  // indentation at every depth, `- ` items under a nested key (at the key's column, as PyYAML's
+  // `indentless` puts them), `{}` and `[]` for empty containers, the scalar quoting and the
+  // 80-column wrap at depth, key order, and a key PyYAML cannot write simple (123 codepoints or
+  // more, or empty) as `? key` / `: value`. WAS: `formatFact` threw `cannot emit object for key
+  // metadata`, so a recall stamp on 478 of the 495 native files J86-2 measured failed in node.
+  {
+    const ruler = Array(30).fill('wrap').join(' ');
+    const n = (label, extra) => ({
+      name: `nested-${label}`,
+      description: 'd',
+      type: 'project',
+      body: 'body',
+      links: [],
+      last_recalled: null,
+      created: '2026-11-15',
+      extra,
+      __case: `nested/${label}`,
+    });
+    const nested = [
+      n('two-levels', [['metadata', { node_type: 'memory', type: 'user' }]]),
+      n('three-levels', [['metadata', { origin: { tool: { name: 'claude', version: '2' } }, type: 'project' }]]),
+      n('list-under-nested-key', [['metadata', { tags: ['alpha', 'beta gamma'], type: 'user' }]]),
+      n('list-of-lists-and-maps', [['history', [{ at: '2026-01-02', by: 'me' }, ['a', ['b']], [], {}]]]),
+      n('empty-containers', [['metadata', { none: {}, nothing: [], deep: { none: {} } }], ['top', {}]]),
+      n('quoting-at-depth', [
+        ['metadata', { date: '2026-08-23', bool: 'yes', int: '12', empty: '', colon: 'a: b', lead: ' x', trail: 'x ', nul: null }],
+      ]),
+      n('multiline-and-control-at-depth', [['metadata', { nl: 'a\nb', two: 'a\n\nb', ctl: 'a\x01b', tab: 'a\tb' }]]),
+      n('wrap-at-depth', [['metadata', { one: ruler, deeper: { two: ruler }, list: [ruler] }]]),
+      n('quoted-keys-at-depth', [['metadata', { yes: 'v', 'a b': 'v', '-x': 'v', "it's": 'v', '#c': 'v' }]]),
+      n('complex-keys', [['metadata', { ['k'.repeat(123)]: 'v', '': 'empty key', 'a\nb': 'multiline key', ['k'.repeat(122)]: 'simple' }]]),
+      n('complex-root-key', [['r'.repeat(123), { a: 'b' }], ['s'.repeat(130), 'plain']]),
+      n('unicode-at-depth', [['metadata', { thai: 'ภาษาไทย', emoji: '🐔 and 👨‍👩‍👧‍👦', ['ключ']: 'значение' }]]),
+    ];
+    const pyNested = ctx.runPython(REF, { op: 'emit', facts: nested }).emitted_b64.map(unb64);
+    nested.forEach((f, i) => {
+      let out;
+      try {
+        out = factfile.formatFact(f);
+      } catch (e) {
+        out = `${e.name}: ${e.message}`;
+      }
+      cases.push({ name: `emit ${f.__case}`, kind: 'bytes', expected: pyNested[i], actual: out });
+    });
+
+    // Two shapes PyYAML writes and node REFUSES, by name, rather than write different bytes:
+    // a collection that appears twice (PyYAML: an `&id001` anchor and a `*id001` alias) and an
+    // array-index key in a nested mapping (JS's `Object.entries` lists it first, so the object
+    // no longer holds the order PyYAML would write). Node's own reader yields neither — it
+    // reads no alias and no key that starts with a digit — so no store file reaches them.
+    const edges = ctx.runPython(REF, { op: 'nested_edges' });
+    const shared = ['x'];
+    const refusal = (extra) => {
+      try {
+        return { wrote: factfile.formatFact(n('edge', extra)) };
+      } catch (e) {
+        return { refused: `${e.name}: ${e.message}` };
+      }
+    };
+    const edgeCases = [
+      ['a collection that appears twice', edges.shared, [['a', shared], ['b', shared]]],
+      ['an array-index key in a nested mapping', edges.index_key, [['m', { b: 'y', 1: 'x' }]]],
+    ];
+    for (const [label, pyBytes, extra] of edgeCases) {
+      const node = refusal(extra);
+      cases.push({
+        name: `ruling: #315 node refuses where python writes: ${label}`,
+        kind: 'json',
+        expected: { wrote: `python: ${pyBytes}` },
+        actual: node,
+        ruling:
+          'J86-4 (docs/porting.md, nested frontmatter values): node refuses by name a shape PyYAML writes but this emitter cannot reproduce from a JS value; its own reader never yields one',
+      });
+      cases.push({
+        name: `#315 per side: node refuses ${label}, by name`,
+        kind: 'json',
+        expected: true,
+        actual: 'refused' in node && /^Error: cannot emit /.test(node.refused),
+      });
+    }
+    cases.push({
+      name: '#315 per side: python writes an alias for a collection that appears twice',
+      kind: 'string',
+      expected: 'a: &id001\n- x\nb: *id001\n',
+      actual: edges.shared,
+    });
+    cases.push({
+      name: '#315 per side: python writes an integer-like nested key quoted, in insertion order',
+      kind: 'string',
+      expected: "m:\n  b: y\n  '1': x\n",
+      actual: edges.index_key,
+    });
+    notes.push(`#315 nested values: ${nested.length} facts emitted by both; 2 shapes node refuses by name`);
+  }
+
   return { cases, notes };
 }

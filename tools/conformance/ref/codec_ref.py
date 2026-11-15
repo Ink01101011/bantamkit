@@ -29,6 +29,9 @@ survive byte-exactly travel as base64, because the point of the exercise is byte
 
     {"op": "native_write", "facts": [...]}       # Path.write_text with the default newline,
       -> {"written_b64": [...]}                  # i.e. what THIS platform actually writes
+
+    {"op": "nested_edges"}                       # the two nested shapes node refuses (J86-4):
+      -> {"shared": "...", "index_key": "..."}   # what safe_dump writes for each
 """
 
 from __future__ import annotations
@@ -53,6 +56,11 @@ def write_fact(fact: dict) -> str:
         "last_recalled": fact.get("last_recalled"),
         "links": list(fact.get("links") or []),
     }
+    # `_fact_text`'s hand-written keys, after the owned ones, in order (#199 Task 6). A value
+    # may nest (#315, J86-4): JSON objects arrive as dicts in key order, lists as lists.
+    for key, value in fact.get("extra") or []:
+        if key not in meta:
+            meta[key] = value
     return (
         "---\n"
         + yaml.safe_dump(meta, sort_keys=False, allow_unicode=True)
@@ -148,6 +156,18 @@ def main() -> None:
     elif op == "parse":
         texts = [base64.b64decode(b).decode("utf-8") for b in request["texts_b64"]]
         json.dump({"parsed": [parse_text(t) for t in texts]}, sys.stdout)
+    elif op == "nested_edges":
+        # A list that appears twice (an alias, after `safe_load` of `&a` / `*a`), and an
+        # integer-like key in a nested mapping (`1: x`, which `safe_load` keys by the int).
+        shared = ["x"]
+        dump = lambda d: yaml.safe_dump(d, sort_keys=False, allow_unicode=True)  # noqa: E731
+        json.dump(
+            {
+                "shared": dump({"a": shared, "b": shared}),
+                "index_key": dump({"m": {"b": "y", "1": "x"}}),
+            },
+            sys.stdout,
+        )
     elif op == "reemit":
         texts = [base64.b64decode(b).decode("utf-8") for b in request["texts_b64"]]
         json.dump({"reemitted": [reemit_text(t) for t in texts]}, sys.stdout)
