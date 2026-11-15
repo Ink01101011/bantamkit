@@ -78,19 +78,16 @@ public surface the hand-written one had:
 - A top-level `tuple` handed to `validate_price_table` or as `price_tokens`'s usage is handed over
   as a `list`, so it is refused with the sentence it was refused with before (JS has no tuple; the
   generated code would refuse it as outside the subset). Nested values are passed through.
-- PENDING A RULING (J87-3, `docs/porting.md`): a `model` that is not a key of the table's `rates`
-  but is a name JavaScript finds on `Object.prototype` (`toString`, `constructor`, `__proto__`,
-  ...). Node's `table.rates?.[model]` finds the inherited function and prices it at $0.00 with an
-  empty rate, against property 3 below; the generated lookup refuses it as outside the subset; the
-  hand-written module answered "no rate recorded". This module keeps that last answer, produced by
-  the generated code itself with the lookup answered "absent" (`_inherited_lookup`), until the
-  TypeScript is fixed in both runtimes.
+- A `model` that is no key of the table's `rates` but a name JavaScript finds on `Object.prototype`
+  (`toString`, `constructor`, `__proto__`, ...) answers "no rate recorded", as any unknown model
+  does, and a table may name a model `__proto__` like any other: `pricing.ts` looks a model up and
+  builds the rates by own key only (#316 G1, J87-3F), so the generated code answers this itself.
 """
 
 from __future__ import annotations
 
 from bantamkit._generated import pricing as _generated
-from bantamkit._generated._ts2py_runtime import _JS_OBJECT_PROTO_NAMES, _JS_UNDEFINED, _js_py_value
+from bantamkit._generated._ts2py_runtime import _JS_UNDEFINED, _js_py_value
 from bantamkit._generated.pricing import (
     CURRENCY,
     MAX_SAFE_INT,
@@ -139,21 +136,7 @@ def validate_price_table(raw: object) -> dict:
     return _js_py_value(_generated.validate_price_table(raw))
 
 
-def _inherited_lookup(table: object, model: object) -> bool:
-    """`model` is no key of `table["rates"]` but a name `Object.prototype` gives every JS object."""
-    rates = table.get("rates") if isinstance(table, dict) else None
-    return (
-        isinstance(model, str)
-        and isinstance(rates, dict)
-        and model not in rates
-        and model in _JS_OBJECT_PROTO_NAMES
-    )
-
-
 def price_tokens(table: dict, model: str, usage: dict) -> dict:
     """The cost of one `usage` block under one model's rate, or `{"unavailable": <reason>}`."""
-    if _inherited_lookup(table, model):
-        # Pending a ruling (module docstring): the generated code answers, the rate absent.
-        table = {"rates": None}
     usage = list(usage) if isinstance(usage, tuple) else usage
     return _js_py_value(_generated.price_tokens(table, model, usage))

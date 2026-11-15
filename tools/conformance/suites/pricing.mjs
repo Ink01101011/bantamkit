@@ -59,6 +59,20 @@ const RATE = {
   cache_creation_input_tokens: 3750000,
 };
 
+/**
+ * #316 G1 (J87-3F): a table whose `rates` names a model `__proto__`, as raw JSON TEXT. Before
+ * J87-3F Node's `built[model] =` set the prototype and the rate vanished from the table.
+ */
+const PROTO_TABLE = `{"schema_version": 1, "currency": "USD", "unit": "micro_usd_per_million_tokens", "rates": {"__proto__": ${JSON.stringify(RATE)}}}`;
+const PROTO_AND_M_TABLE = `{"schema_version": 1, "currency": "USD", "unit": "micro_usd_per_million_tokens", "rates": {"m": ${JSON.stringify(RATE)}, "__proto__": ${JSON.stringify(RATE)}}}`;
+
+/**
+ * #316 G1 (J87-3F): names `Object.prototype` gives every JS object. None is a model in the
+ * one-rate table, so each must answer exactly as an unknown model does. Before J87-3F Node read
+ * the inherited member and priced an all-zero usage at $0.00 with `rate: {}`.
+ */
+const PROTO_NAMES = ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf'];
+
 const usage = (o) => JSON.stringify({
   input_tokens: 0,
   cache_creation_input_tokens: 0,
@@ -129,6 +143,11 @@ const TABLES = [
   ['astral unknown top keys', table({ ...HEAD, '\u{1F414}': 1, '！': 1, rates: {} })],
   ['a quote in a model name', table({ ...HEAD, rates: { "it's": { recorded: '2026-09-11', source: 's' } } })],
   ['a newline in a model name', table({ ...HEAD, rates: { 'a\nb': { recorded: '2026-09-11', source: 's' } } })],
+
+  // #316 G1 (J87-3F): a model literally named `__proto__` is an own entry like any other. Raw
+  // text, because a JS literal `{ __proto__: RATE }` would set a prototype rather than spell a key.
+  ['a __proto__ model', PROTO_TABLE],
+  ['a __proto__ model beside another', PROTO_AND_M_TABLE],
 ];
 
 /**
@@ -163,6 +182,20 @@ const PRICE_CASES = [
   // The overflow ceiling: 2**53-1 tokens at 2**53-1 micro-USD per million is far above what
   // either side may return, and both must refuse rather than one answering wrong.
   ['a cost above 2**53', 'm', usage({ input_tokens: 9007199254740991 })],
+
+  // #316 G1 (J87-3F): an Object.prototype name is no model, with zero tokens and with some.
+  ...PROTO_NAMES.flatMap((name) => [
+    [`${name} is no model (zero usage)`, name, usage({})],
+    [`${name} is no model (tokens spent)`, name, usage({ input_tokens: 1000 })],
+  ]),
+];
+
+/** #316 G1 (J87-3F): the `__proto__`-model table, priced like any other model. */
+const PROTO_CASES = [
+  ['__proto__ is priced', '__proto__', usage({ input_tokens: 1234 })],
+  ['__proto__ is priced, every class zero', '__proto__', usage({})],
+  ['m is priced beside it', 'm', usage({ input_tokens: 1234 })],
+  ['toString is still no model', 'toString', usage({})],
 ];
 
 /** The partial-rate table, whose whole point is the class-with-tokens-but-no-rate refusal. */
@@ -254,6 +287,7 @@ export async function run(ctx) {
   for (const [bed, text, list] of [
     ['full rate', table({ ...HEAD, rates: { m: RATE } }), PRICE_CASES],
     ['partial rate', PARTIAL, PARTIAL_CASES],
+    ['__proto__ table', PROTO_AND_M_TABLE, PROTO_CASES],
     ['half-up bed', HALF, [
       ['exactly half a micro-USD', 'm', usage({ input_tokens: 1 })],
       ['exactly one and a half', 'm', usage({ input_tokens: 3 })],
@@ -318,7 +352,8 @@ export async function run(ctx) {
     Buffer.from('", "rates": {}}'),
   ]));
   const bom = write('bom.json', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(table({ ...HEAD, rates: {} }))]));
-  const PATHS = [good, broken, infinity, missing, directory, latin1, bom, SHIPPED];
+  const proto = write('proto.json', PROTO_TABLE);
+  const PATHS = [good, broken, infinity, missing, directory, latin1, bom, proto, SHIPPED];
   const pyLoad = ctx.runPython(REF, { op: 'load', paths: PATHS }).out;
   PATHS.forEach((p, i) => {
     let actual;
@@ -379,6 +414,41 @@ export async function run(ctx) {
     cases: [1, 3, 5].map((n) => ({ model: b64('m'), usage: b64(usage({ input_tokens: n })) })),
   }).out.map((r) => r.micros);
   cases.push(...literalCases(pyHalf, halfNode, 'a half rounds up, not to even', [1, 2, 3]));
+
+  // #316 G1 (J87-3F), per side: an own-key lookup is the property, and a fix applied to the
+  // shared TypeScript would move both sides at once, which the differential above cannot see.
+  const oneRate = pricing.validatePriceTable(pricing.decodePriceJson(table({ ...HEAD, rates: { m: RATE } })));
+  const noRate = (m) => b64(
+    `no rate recorded for model '${m}' -- add one with its date and source, or point ` +
+      'BANTAMKIT_PRICES at a table that has it',
+  );
+  const pyProtoNames = ctx.runPython(REF, {
+    op: 'price',
+    table: b64(table({ ...HEAD, rates: { m: RATE } })),
+    cases: PROTO_NAMES.map((n) => ({ model: b64(n), usage: b64(usage({})) })),
+  }).out;
+  const ndProtoNames = PROTO_NAMES.map((n) => nodeResultView(pricing.priceTokens(oneRate, n, pricing.decodePriceJson(usage({})))));
+  cases.push(...literalCases(
+    pyProtoNames,
+    ndProtoNames,
+    'an Object.prototype name answers "no rate recorded"',
+    PROTO_NAMES.map((n) => ({ unavailable: noRate(n) })),
+  ));
+  const protoTable = pricing.validatePriceTable(pricing.decodePriceJson(PROTO_TABLE));
+  const ndProto = {
+    models: Object.keys(protoTable.rates),
+    micros: pricing.priceTokens(protoTable, '__proto__', pricing.decodePriceJson(usage({ input_tokens: 1234 }))).micros,
+  };
+  const pyProtoTable = ctx.runPython(REF, { op: 'validate', tables: [b64(PROTO_TABLE)] }).out[0];
+  const pyProto = {
+    models: pyProtoTable.table.find((row) => row[0] === 'rates')[1].map((row) => row[0]),
+    micros: ctx.runPython(REF, {
+      op: 'price',
+      table: b64(PROTO_TABLE),
+      cases: [{ model: b64('__proto__'), usage: b64(usage({ input_tokens: 1234 })) }],
+    }).out[0].micros,
+  };
+  cases.push(...literalCases(pyProto, ndProto, 'a __proto__ model is listed and priced', { models: ['__proto__'], micros: 3702 }));
 
   notes.push(
     'the shipped price table carries no rates: the refusal is the DEFAULT answer, which is ' +

@@ -338,16 +338,19 @@ def test_a_top_level_tuple_is_refused_with_the_sentence_it_had():
     assert str(exc.value) == "price table must be a JSON object"
 
 
-@pytest.mark.parametrize("model", ["toString", "constructor", "__proto__", "valueOf"])
+@pytest.mark.parametrize(
+    "model", ["toString", "constructor", "__proto__", "hasOwnProperty", "valueOf"]
+)
 def test_a_model_named_like_an_object_prototype_member_is_not_priced(model):
-    """PENDING A RULING (J87-3, docs/porting.md): Node prices these at $0.00 with an empty rate;
-    the shim keeps the answer the hand-written module gave. Its own key is still found."""
+    """#316 G1 (J87-3F): an own-key lookup in `pricing.ts`, so such a name is an unknown model on
+    both sides (Node priced it at $0.00 before). Its own key is still found, `__proto__` too."""
     assert price_tokens(table({"m": RATE}), model, usage(input_tokens=1)) == {
         "unavailable": f"no rate recorded for model {model!r} -- add one with its date and "
         "source, or point BANTAMKIT_PRICES at a table that has it"
     }
     # The usage is still checked first.
     assert "usage is missing" in price_tokens(table({"m": RATE}), model, {})["unavailable"]
-    if model != "__proto__":
-        own = price_tokens(table({model: RATE}), model, usage(input_tokens=1_000_000))
-        assert own["micros"] == 3_000_000
+    own_table = table({model: RATE})
+    assert list(own_table["rates"]) == [model]
+    own = price_tokens(own_table, model, usage(input_tokens=1_000_000))
+    assert own["micros"] == 3_000_000

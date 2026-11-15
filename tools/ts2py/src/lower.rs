@@ -319,6 +319,16 @@ const STATIC_CALLS: &[(&str, &str, &str, usize, usize, Ret)] = &[
         Ret::Bool,
     ),
     ("Math", "trunc", "_js_trunc", 1, 1, Ret::Num),
+    // J87-3F (#316 G1: own-key price lookups).
+    ("Object", "hasOwn", "_js_object_has_own", 2, 2, Ret::Bool),
+    (
+        "Object",
+        "fromEntries",
+        "_js_object_from_entries",
+        1,
+        1,
+        Ret::Any,
+    ),
 ];
 
 /// Global functions (J86): name, helper, min args, max args, returns.

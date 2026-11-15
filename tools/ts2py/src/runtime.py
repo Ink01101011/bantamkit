@@ -1842,6 +1842,54 @@ def _js_object_entries(value):
     return [[key, _js_get(value, key)] for key in _js_own_property_names(value)]
 
 
+def _js_is_primitive_key(key):
+    """A property key ToPropertyKey spells as `String(key)`: a primitive, never an object."""
+    return isinstance(key, (bool, int, float, _JsBigInt)) or key is None or key is _JS_UNDEFINED
+
+
+def _js_object_has_own(obj, key):
+    """`Object.hasOwn(obj, key)`: an OWN property only, never what `Object.prototype` gives; so a
+    plain object answers for its own keys, `__proto__` included, an array or a string for an index
+    in range and `length`, and a number, boolean or BigInt has none (J87-3F)."""
+    if obj is None or obj is _JS_UNDEFINED:
+        raise _JsTypeError("Cannot convert undefined or null to object")
+    if not isinstance(key, str):
+        if not _js_is_primitive_key(key):
+            raise TypeError("ts2py: Object.hasOwn of a non-primitive key is outside the subset")
+        key = _js_str(key)
+    if isinstance(obj, dict):
+        return key in obj
+    if isinstance(obj, (list, str)) and not isinstance(obj, _JsMatchArray):
+        # A match array also owns `index` and `input`; it is refused below rather than modelled.
+        if key == "length":
+            return True
+        index = _js_index_key(key)
+        return index is not None and index < _js_len(obj)
+    if isinstance(obj, (bool, int, float, _JsBigInt)):
+        return False
+    raise TypeError(f"ts2py: Object.hasOwn on {type(obj).__name__} is outside the subset")
+
+
+def _js_object_from_entries(entries):
+    """`Object.fromEntries(entries)` over an array of `[key, value]` arrays: each key an OWN data
+    property (CreateDataProperty, so `__proto__` is a key, not the prototype), a repeated key
+    keeping its first position and its last value, a missing value `undefined` (J87-3F). Any
+    other iterable or entry, whose JS answer the subset does not model, raises."""
+    if not isinstance(entries, list):
+        raise TypeError("ts2py: Object.fromEntries of anything but an array is outside the subset")
+    out = {}
+    for entry in entries:
+        if not isinstance(entry, list):
+            raise TypeError("ts2py: an Object.fromEntries entry not an array is outside the subset")
+        key = _js_get(entry, 0)
+        if not isinstance(key, str):
+            if not _js_is_primitive_key(key):
+                raise TypeError("ts2py: Object.fromEntries of an object key is outside the subset")
+            key = _js_str(key)
+        out[key] = _js_get(entry, 1)
+    return out
+
+
 def _js_spread(value):
     """`{...value}`: the own enumerable properties; `null`, `undefined` and primitives give none."""
     if value is None or value is _JS_UNDEFINED or isinstance(value, (bool, int, float, _JsBigInt)):

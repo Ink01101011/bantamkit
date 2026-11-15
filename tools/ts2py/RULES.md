@@ -204,6 +204,7 @@ only Node builtins: it reads an import of an uncompiled `src` module as user cod
 | G1-15 | `node:` specifiers looked up in the adapter table | extended (J86 rule 2) | `g1.rs` (fs errors, real modules) |
 | G1-16 | `process.env[k]` / `process.env.K`, a read -> the `process_env` adapter | new | `g1.rs` real modules; `refusals.rs` (`process.argv`) |
 | G1-17 | a call proves what its body's returns prove; the J85 `: boolean` annotation rule (`bool_fns`) dropped | extended (J85 rule 36) | `types.rs` (`a_boolean_return_annotation_is_not_proof`) |
+| G1-18 | `Object.hasOwn(o, k)` -> `_js_object_has_own`, `Object.fromEntries(entries)` -> `_js_object_from_entries` (J87-3F: `pricing.ts`'s own-key model lookup and rates build) | new | `g1.rs` (`own_key_builtins_answer_like_node`: `__proto__` own, five inherited names not, arrays / strings / a number, `null` thrown, a repeated key, an integer-like key, a missing value) |
 
 Every other construct the two modules use was lowered by an earlier rule unchanged (template
 literals with and without substitutions, BigInt arithmetic and `BigInt()`, `in`, object spread,

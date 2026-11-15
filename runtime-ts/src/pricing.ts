@@ -241,10 +241,13 @@ export function validatePriceTable(raw: unknown): PriceTable {
   if (!isPlainObject(rates)) {
     throw new PriceTableError('price table rates must be a JSON object');
   }
-  const built: Record<string, Rate> = {};
-  for (const model of sortedByCodePoint(Object.keys(rates))) {
-    built[model] = validateRate(model, rates[model]);
-  }
+  // `Object.fromEntries` defines every model as an OWN data property (#316 G1, J87-3F): a
+  // `built[model] = ...` write with the model `__proto__` set the prototype instead and the rate
+  // vanished from the table. The entries are built in code-point order, so the first faulty rate
+  // named is the same one the loop named.
+  const built: Record<string, Rate> = Object.fromEntries(
+    sortedByCodePoint(Object.keys(rates)).map((model) => [model, validateRate(model, rates[model])]),
+  );
   // Assigned in the reference's own key order -- `note`, when present, sits between `unit`
   // and `rates` -- because insertion order is what `JSON.stringify` emits and the suite
   // compares the serialised table.
@@ -364,7 +367,11 @@ export function priceTokens(table: PriceTable, model: string, usage: unknown): P
     }
   }
 
-  const rate = table.rates?.[model];
+  // An OWN-key lookup (#316 G1, J87-3F): `rates[model]` alone reads what `Object.prototype` gives
+  // every object, so a model named `toString` or `__proto__` found an inherited member and was
+  // priced at $0.00 with an empty rate, against property 3. Such a name is now an unknown model.
+  const rates = table.rates;
+  const rate = rates !== undefined && rates !== null && Object.hasOwn(rates, model) ? rates[model] : undefined;
   if (rate === undefined) {
     return unavailable(
       `no rate recorded for model ${pyRepr(model)} -- add one with its date and source, or ` +

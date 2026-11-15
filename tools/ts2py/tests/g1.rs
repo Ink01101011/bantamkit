@@ -250,3 +250,44 @@ print(node_json(rt, out))
         r###"[{"limit":{"tokens":20,"units":3},"spent":{"tokens":100000000000000000000,"units":2,"wallclock_ms":0},"in_flight":1,"remaining":{"tokens":-100000000000000000000,"units":0},"per_unit":5,"affordable":0},"budget tokens spent: 100000000000000000000 of 20; raise job.budget or stop the job","budget units spent: 1 of 1; raise job.budget or stop the job",{"schema_version":1,"currency":"USD","unit":"micro_usd_per_million_tokens","rates":{"m":{"recorded":"2026-09-11","source":"s","input_tokens":3000000,"output_tokens":15000000}}},{"model":"m","currency":"USD","micros":3807,"amount":"0.003807","breakdown":{"input_tokens":3702,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":105},"rate":{"recorded":"2026-09-11","source":"s","input_tokens":3000000,"output_tokens":15000000}},{"unavailable":"rate for model 'm' does not price 'cache_creation_input_tokens', and 2 such tokens were used -- a missing rate is not a zero"},"PriceTableError: price table rate '\uff01' has a 'recorded' that is not a YYYY-MM-DD date","PriceTableError: price table must be a JSON object","PriceTableError: price table has unknown key 'alpha'","1.234567","9007199254.740991","PriceTableError: price table not found: /nonexistent/prices.json"]"###
     );
 }
+
+/// J87-3F: `Object.hasOwn` and `Object.fromEntries`, the own-key primitives `pricing.ts` looks a
+/// model up and builds its rates with. A `__proto__` key is own and inherited names are not.
+const OWN_KEYS: &str = r#"export function probe(input: unknown): unknown[] {
+  const proto = JSON.parse('{"__proto__":{"x":1},"a":2}') as Record<string, unknown>;
+  const owns = ['__proto__', 'a', 'x', 'toString', 'constructor', 'hasOwnProperty', 'valueOf'].map((k) => Object.hasOwn(proto, k));
+  const arr = [Object.hasOwn([5, 6], '0'), Object.hasOwn([5, 6], '2'), Object.hasOwn([5, 6], 'length'), Object.hasOwn([5, 6], 'map'), Object.hasOwn('ab', '1'), Object.hasOwn('ab', 'length'), Object.hasOwn(7 as any, 'toFixed'), Object.hasOwn(JSON.parse('{"1":"x"}'), 1 as any)];
+  let thrown = 'none';
+  try {
+    Object.hasOwn(null as any, 'a');
+  } catch {
+    thrown = 'thrown';
+  }
+  const built = Object.fromEntries([['b', 1], ['__proto__', 2], ['10', 3], ['b', 4], ['c']] as unknown[][]);
+  const made = [JSON.stringify(built), Object.keys(built).join(','), Object.hasOwn(built, '__proto__'), Object.getPrototypeOf(built) === Object.prototype, built['c'] === undefined, Object.hasOwn(built, 'c')];
+  return [owns, arr, thrown, made, JSON.stringify(Object.fromEntries([]))];
+}
+"#;
+
+#[test]
+fn own_key_builtins_answer_like_node() {
+    let module = ts2py::compile(OWN_KEYS, "own_keys.ts", &ts2py::Options::default())
+        .unwrap_or_else(|lines| panic!("probe refused:\n{}", lines.join("\n")));
+    assert!(module.contains("_js_object_has_own(proto, k)"), "{module}");
+    assert!(module.contains("_js_object_from_entries("), "{module}");
+    let dir = scratch("j87-own-keys");
+    let path = dir.join("probe.py");
+    std::fs::write(&path, module).unwrap();
+    let out = run_python(
+        &format!(
+            "{PRINT}\nimport importlib.util, sys\nspec = importlib.util.spec_from_file_location('p', sys.argv[1])\nm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\nprint(node_json(m, m.probe(None)))\n"
+        ),
+        &[&path],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    // What Node v26 printed for the same TypeScript.
+    assert_eq!(
+        out.trim_end(),
+        r###"[[true,true,false,false,false,false,false],[true,false,true,false,true,true,false,true],"thrown",["{\"10\":3,\"b\":4,\"__proto__\":2}","10,b,__proto__,c",true,true,true,true],"{}"]"###
+    );
+}
