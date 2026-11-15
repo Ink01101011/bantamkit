@@ -113,6 +113,7 @@ pub fn compile_modules(
             lower::ModuleExports {
                 py_module: stem,
                 names,
+                generators: lower::generator_names(program),
             },
         );
     }

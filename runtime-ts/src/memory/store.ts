@@ -43,7 +43,7 @@ import { homedir } from 'node:os';
 import { basename } from 'node:path';
 
 import { BantamError } from '../errors.js';
-import { pyCaseless, PY_WORD_CLASS } from '../pysem.js';
+import { pySearchWord } from '../pysem.js';
 import { ColdIndex, ColdIndexError } from '../storage/coldindex.js';
 import { HotIndex, INDEX_DIR_ENV, type IndexDoc } from '../storage/hotindex.js';
 import type { Fact, FactValue } from './factfile.js';
@@ -74,7 +74,7 @@ import {
   tokenizeV2,
   weightOf,
 } from './retrieval.js';
-import { seedTs, storeId, UsageLedger } from './usage.js';
+import { parseTs, seedTs, storeId, UsageLedger } from './usage.js';
 import {
   asPyOSError,
   cmpCodepoint,
@@ -204,10 +204,11 @@ export const VALID_STATUSES = ['active', 'done'] as const;
 export const OUTCOME_TYPES = ['feedback', 'project'] as const;
 /** `candidates` done-words (#221): whole-word, case-insensitive, `type: project` only. */
 export const DONE_WORDS = ['done', 'shipped', 'completed', 'closed', 'released', 'merged'] as const;
-/** Python's `\b(...)\b`: a boundary is a change of `\w` (Unicode letters, digits, `_`). */
-// CPython's `\b(done|...)\b` under `IGNORECASE`, compiled WITHOUT `i` (#316 G3, J89-1F): under `i`
-// the word class also matched U+0345 (it folds to iota), so `done\u0345` was no boundary here.
-const DONE_WORD_RE = new RegExp(`(?<!${PY_WORD_CLASS})(${pyCaseless(DONE_WORDS.join('|'))})(?!${PY_WORD_CLASS})`, 'u');
+/**
+ * The reference's `\b(done|...)\b` under `IGNORECASE`, searched with `pySearchWord` (pysem.ts holds
+ * the regex since #316 G3, J89-4a; J89-1F compiled it WITHOUT `i`, see `PY_WORD_CLASS`).
+ */
+const DONE_WORD_ALTERNATIVES = DONE_WORDS.join('|');
 
 /** `list(VALID_OUTCOMES)` as Python prints it: `['error', 'success']`. */
 const pyListText = (items: readonly string[]): string => `[${items.map((t) => `'${t}'`).join(', ')}]`;
@@ -296,10 +297,15 @@ export function oneLine(text: string): string {
   return text.replace(NOT_ONE_LINE, ' ');
 }
 
+/**
+ * The first code unit `NOT_ONE_LINE` matches. Not that `g` regex with its `lastIndex` reset around
+ * an `exec` (#316 G3, J89-4a: ts2py models no `lastIndex`): the run's first unit is the one
+ * `codepoint` reads either way.
+ */
+const NOT_ONE_LINE_UNIT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
 function notOneLine(text: string): string | null {
-  NOT_ONE_LINE.lastIndex = 0;
-  const found = NOT_ONE_LINE.exec(text);
-  NOT_ONE_LINE.lastIndex = 0;
+  const found = NOT_ONE_LINE_UNIT.exec(text);
   return found === null ? null : codepoint(found[0]);
 }
 
@@ -825,7 +831,10 @@ export function pickHits(
   rows: RowsOf | null = null,
 ): Array<[number, Fact]> {
   let memo: ReadonlyMap<string, number> | null = null;
-  const weights = (): ReadonlyMap<string, number> => (memo ??= usage());
+  const weights = (): ReadonlyMap<string, number> => {
+    if (memo === null) memo = usage();
+    return memo;
+  };
   const live = [...pools];
   for (;;) {
     const out: Array<[number, Fact]> = [];
@@ -1397,7 +1406,7 @@ export class MemoryStore {
     if (!(minRatio >= 0 && minRatio <= 1)) throw new MemoryValidationError(MIN_RATIO_RANGE);
     const limit = k ?? this.k;
     const q = queryTerms(query);
-    const ledger = this.usage();
+    const ledger = this.usageLedger();
     // The outcome filter (#219) runs BEFORE scoring, so `k` and the ratio gate apply to the
     // filtered pool; the hot index carries no outcome, so a filtered recall pools the files.
     const factsPool = (): Pool => {
@@ -1423,7 +1432,7 @@ export class MemoryStore {
    * side only so the published `.d.ts` names no `UsageLedger` (its `reduceUsage` types reach
    * `Buffer`, which a consumer without `@types/node` cannot resolve, job66/#144).
    */
-  private usage(): UsageLedger {
+  private usageLedger(): UsageLedger {
     return new UsageLedger(homedir(), this.root);
   }
 
@@ -1565,13 +1574,13 @@ export class MemoryStore {
   candidatesDone(olderThanDays: number | null = null, today?: string): Array<[Fact, string]> {
     const todayS = today || this.today();
     const out: Array<[Fact, string]> = [];
+    // `date.fromisoformat(iso).toordinal()`, shifted: a real `YYYY-MM-DD` of the years 1..9999
+    // as days since 1970-01-01, else `null`. `parseTs` counts the day by `daysFromCivil`; until
+    // #316 G3 (J89-4a, D1) this used `Date.UTC`, which reads a year below 100 as 19xx, so a fact
+    // created in 0001-0099 was never aged.
     const ordinal = (iso: string): number | null => {
-      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-      if (m === null) return null;
-      const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-      const t = new Date(Date.UTC(y, mo - 1, d));
-      if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return null;
-      return Math.round(t.getTime() / 86_400_000);
+      const t = parseTs(`${iso}T00:00:00Z`);
+      return Number.isNaN(t) ? null : t / 86_400_000;
     };
     const sorted = [...this.facts()].sort((a, b) => cmpCodepoint(pyText(a.name), pyText(b.name)));
     for (const fact of sorted) {
@@ -1580,9 +1589,9 @@ export class MemoryStore {
         continue;
       }
       if (fact.type === 'project') {
-        const m = DONE_WORD_RE.exec(pyText(fact.description));
-        if (m !== null) {
-          out.push([fact, `done-word '${m[1]!.toLowerCase()}' in description`]);
+        const word = pySearchWord(DONE_WORD_ALTERNATIVES, pyText(fact.description));
+        if (word !== null) {
+          out.push([fact, `done-word '${word.toLowerCase()}' in description`]);
           continue;
         }
       }
@@ -1710,13 +1719,13 @@ export class MemoryStore {
       if (!idx.names().has(name)) return null;
       const hit = this.indexedFact(idx, name);
       if (hit !== null) {
-        if (stamp) this.use(this.usage(), [hit], 'body_read');
+        if (stamp) this.use(this.usageLedger(), [hit], 'body_read');
         return hit;
       }
     }
     for (const fact of this.candidates(skipped)) {
       if (typeof fact.name === 'string' && fact.name === name) {
-        if (stamp) this.use(this.usage(), [fact], 'body_read');
+        if (stamp) this.use(this.usageLedger(), [fact], 'body_read');
         return fact;
       }
     }
@@ -2066,7 +2075,7 @@ export class MemoryStore {
     let size = all.reduce((total, bytes) => total + bytes, 0);
     const before = size;
     const archived: ArchivedFact[] = [];
-    for (const fact of this.byEviction(facts, this.usage().lastUsedMap())) {
+    for (const fact of this.byEviction(facts, this.usageLedger().lastUsedMap())) {
       if (size <= target) break;
       // THE FILE THE FACT WAS READ FROM, not `facts/<name>.md` (#122). The two are the same
       // path for every fact this store wrote; they part on a hand-edited file whose
@@ -2481,7 +2490,7 @@ export class MemoryStore {
    */
   private listing(directory: string, consequence: string): string[] {
     try {
-      return pyScandirNames(directory).filter(matchesMd);
+      return pyScandirNames(directory).filter((name) => matchesMd(name));
     } catch (e) {
       const error = e instanceof PyOSError ? e : asPyOSError(e, directory);
       if (error.code === 'ENOENT') {

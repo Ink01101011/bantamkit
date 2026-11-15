@@ -3,11 +3,15 @@
 # RULES.md (Adapters) records how each was measured. Nothing else may be imported this way.
 import datetime as _datetime
 import errno as _errno
+import fnmatch as _fnmatch
 import gzip as _gzip
 import hashlib as _hashlib
+import json as _json
 import math as _math
 import os as _os
 import pathlib as _pathlib
+import re as _re
+import secrets as _secrets
 import stat as _stat
 import unicodedata as _unicodedata
 import zlib as _zlib
@@ -16,24 +20,34 @@ from __RUNTIME__ import (
     _JS_UNDEFINED,
     _js_num,
     _js_truthy,
+    _JsBigInt,
     _JsError,
+    _JsMap,
     _JsObject,
     _JsTypeError,
 )
 
-# `BantamError` (and J88-2's `LOCK_*_MS`) are provided lazily by `__getattr__` below and are not
-# listed, so a star import does not build them (and import `bantamkit.client` / `storage.lock`).
+# `BantamError` (and J88-2's `LOCK_*_MS`; J89-4a's `PyScalar`, `VALID_OUTCOMES`, `INDEX_DIR_ENV`)
+# are provided lazily by `__getattr__` below and are not listed, so a star import does not build
+# them (and import `bantamkit.client` / `storage.lock` / the codec / the hot index).
 __all__ = [
+    "ColdIndex",
+    "ColdIndexError",
+    "BigIntStats",
     "CountsView",
     "Date",
     "Hash",
+    "HotIndex",
     "PyOSError",
+    "PyUnicodeDecodeError",
     "Stats",
     "TextDecoder",
     "append_file_sync",
+    "as_py_os_error",
     "assets_root",
     "bantamkit_dir_for",
     "buffer_alloc",
+    "buffer_byte_length",
     "buffer_concat",
     "buffer_from",
     "close_sync",
@@ -42,14 +56,20 @@ __all__ = [
     "ensure_bantamkit_gitignore",
     "exclusive",
     "exists_sync",
+    "extra_of",
+    "format_fact",
     "fstat_sync",
     "gunzip_sync",
     "gzip_sync",
+    "homedir",
+    "lifecycle_of",
     "link_sync",
     "lstat_sync",
+    "matches_md",
     "mkdir_sync",
     "open_sync",
     "os_error_class_name",
+    "parse_frontmatter",
     "path_basename",
     "path_dirname",
     "path_join",
@@ -60,17 +80,33 @@ __all__ = [
     "py_float_repr",
     "py_is_dir",
     "py_join",
+    "py_lexists",
+    "py_list",
     "py_log",
     "py_log1p",
+    "py_mkdir_parents",
+    "py_mtime_date",
     "py_name",
     "py_nfkc_lower",
     "py_parent",
+    "py_parents",
     "py_pow",
+    "py_read_text",
     "py_realpath",
+    "py_replace",
     "py_repr",
     "py_round_float9",
+    "py_scandir_names",
+    "py_scandir_probe",
+    "py_search_word",
+    "py_split",
     "py_strip",
+    "py_suffix",
+    "py_truthy",
+    "py_unlink",
     "py_wordchar",
+    "py_write_text",
+    "py_write_text_atomic",
     "random_bytes",
     "read_file_bytes",
     "read_file_sync",
@@ -78,7 +114,9 @@ __all__ = [
     "readdir_sync",
     "rename_sync",
     "rm_sync",
+    "sorted_path_names",
     "stat_sync",
+    "today_local",
     "write_sync",
 ]
 
@@ -489,11 +527,32 @@ class Stats(_JsObject):
         )
 
 
+class BigIntStats(Stats):
+    """`fs.Stats` from `statSync(path, {bigint: true})` (J89-4a): `size`, `mtimeMs` and `mtimeNs`
+    as BigInts (`mtimeNs` is libuv's `sec * 1e9 + nsec` exactly, which `st_mtime_ns` is;
+    `mtimeMs` that floored to milliseconds), and the same type tests."""
+
+    _js_name = "BigIntStats"
+    _js_own = frozenset({"size", "mtimeMs", "mtimeNs", "isDirectory", "isFile", "isSymbolicLink"})
+
+    def __init__(self, st, *_):
+        object.__setattr__(self, "_js_st", st)
+        self.size = _JsBigInt(st.st_size)
+        self.mtimeNs = _JsBigInt(st.st_mtime_ns)
+        self.mtimeMs = _JsBigInt(st.st_mtime_ns // 1_000_000)
+
+
 def stat_sync(path, *rest):
-    """`fs.statSync(path)`: `os.stat` (symlinks followed); a failure is CPython's OSError."""
+    """`fs.statSync(path)`: `os.stat` (symlinks followed); a failure is CPython's OSError. J89-4a:
+    `{bigint: true}` (or `false`) as the one option, the BigInt fields (`BigIntStats`)."""
+    bigint = False
     if rest:
-        raise TypeError("ts2py: fs.statSync options are outside the subset")
-    return Stats(_os.stat(_node_path(path, "fs.statSync")))
+        options = rest[0]
+        if len(rest) > 1 or not isinstance(options, dict) or set(options) != {"bigint"}:
+            raise TypeError("ts2py: fs.statSync options other than bigint are outside the subset")
+        bigint = _js_truthy(options["bigint"])
+    st = _os.stat(_node_path(path, "fs.statSync"))
+    return BigIntStats(st) if bigint else Stats(st)
 
 
 def lstat_sync(path, *rest):
@@ -1102,6 +1161,18 @@ def __getattr__(name):
         cls = _lazy_bantam_error()
         globals()["BantamError"] = cls
         return cls
+    # J89-4a: the compiled codec's class and constant, and the hot index's constant.
+    if name == "PyScalar":
+        from .pyyaml import PyScalar as value
+    elif name == "VALID_OUTCOMES":
+        from .factfile import VALID_OUTCOMES as value
+    elif name == "INDEX_DIR_ENV":
+        from ..storage.hotindex import INDEX_DIR_ENV as value
+    else:
+        value = None
+    if value is not None:
+        globals()[name] = value
+        return value
     # J88-2: `storage/lock.ts`'s constants, read from the hand-written lock on first import.
     if name in ("LOCK_POLL_MS", "LOCK_STALE_MS", "LOCK_WAIT_MS"):
         value = _lock_constant(name)
@@ -1124,3 +1195,398 @@ class CountsView(_JsObject):
 
     def scan(self, *_):  # pragma: no cover - never constructed
         raise TypeError("ts2py: a CountsView is never built in Python")
+
+
+# ---------------------------------------------------------------- J89-4a (#316 G3 U2): store
+
+
+def homedir(*_):
+    """`os.homedir()` where store.ts calls it: `str(Path.home())`, what store.py passes in each of
+    those places (the hot index, the cold index, the usage ledger)."""
+    return str(_pathlib.Path.home())
+
+
+_WORD_SEARCH = {}
+
+
+def py_search_word(alternatives, text, *_):
+    """`pySearchWord` (runtime-ts/src/pysem.ts): group 1 of
+    `re.compile(r'\\b(' + alternatives + r')\\b', re.IGNORECASE).search(text)`, or `null`, which it
+    ports (store.py's `_DONE_WORD_RE`). `alternatives` is what `pyCaseless` accepts."""
+    pattern = _WORD_SEARCH.get(alternatives)
+    if pattern is None:
+        if not isinstance(alternatives, str) or not _re.fullmatch(r"[A-Za-z|?]*", alternatives):
+            raise _JsError(
+                'pyCaseless: only ASCII letters, "|" and "?" are supported: '
+                + _json.dumps(alternatives, ensure_ascii=False)
+            )
+        pattern = _re.compile(r"\b(" + alternatives + r")\b", _re.IGNORECASE)
+        _WORD_SEARCH[alternatives] = pattern
+    if not isinstance(text, str):
+        raise TypeError("ts2py: pySearchWord of anything but a string is outside the subset")
+    m = pattern.search(text)
+    return None if m is None else m.group(1)
+
+
+def buffer_byte_length(value, encoding=_JS_UNDEFINED, *_):
+    """`Buffer.byteLength(string, 'utf8')`: the length `Buffer.from(string, 'utf8')` has, a lone
+    surrogate counted as U+FFFD's three bytes (as `surrogatepass` counts it too)."""
+    if not isinstance(value, str) or encoding not in (_JS_UNDEFINED, "utf8", "utf-8"):
+        raise TypeError(
+            "ts2py: Buffer.byteLength of anything but a string as utf8 is outside the subset"
+        )
+    if value.isascii():
+        return len(value)
+    return len(value.encode("utf-8", "surrogatepass"))
+
+
+class _JsReadMap(_JsMap):
+    """A read-only `Map` over a Python dict with string keys, without copying it: what the index
+    adapters answer where the TypeScript answers a Map the index holds (`names()`, `segments()`,
+    `skipped`). Writing to it is outside the subset."""
+
+    __slots__ = ()
+
+    def __init__(self, data):
+        object.__setattr__(self, "_entries", _DictEntries(data))
+
+    def set(self, key, value):
+        raise TypeError("ts2py: writing a Map an index adapter answered is outside the subset")
+
+
+class _DictEntries:
+    # `_JsMap._entries`' face over a dict: a string key is its own `_js_key`; any other key (a
+    # number, a bool) can equal none of the dict's string keys, as in a JS Map of string keys.
+    __slots__ = ("_data",)
+
+    def __init__(self, data):
+        self._data = data
+
+    def __contains__(self, tag):
+        return isinstance(tag, str) and tag in self._data
+
+    def get(self, tag, default=None):
+        if isinstance(tag, str) and tag in self._data:
+            return (tag, self._data[tag])
+        return default
+
+    def values(self):
+        return [(key, value) for key, value in self._data.items()]
+
+    def __len__(self):
+        return len(self._data)
+
+
+def _native_bantam_error(error):
+    """A `bantamkit.client.BantamError` the hand-written index raised, as the adapter's
+    `BantamError` (a JS Error a compiled `catch` holds) with the same message."""
+    cls = __getattr__("BantamError")
+    if isinstance(error, cls):
+        return error
+    return cls(str(error))
+
+
+class HotIndex(_JsObject):
+    """`HotIndex` (runtime-ts/src/storage/hotindex.ts): `bantamkit.storage.hotindex.HotIndex`,
+    which it ports (#204), with the TypeScript spelling of the methods store.ts calls. Imported
+    when the first one is built (late-bound: the hand-written index imports the store lazily)."""
+
+    _js_name = "HotIndex"
+    _js_own = frozenset(
+        {
+            "cols",
+            "exists",
+            "fileOf",
+            "invalidate",
+            "lensTotal",
+            "loose",
+            "names",
+            "parseFile",
+            "refresh",
+            "segments",
+            "skipped",
+        }
+    )
+    _js_own_methods = frozenset(
+        {
+            "cols",
+            "exists",
+            "fileOf",
+            "invalidate",
+            "lensTotal",
+            "names",
+            "parseFile",
+            "refresh",
+            "segments",
+        }
+    )
+
+    def __init__(self, source, kind, home, index_dir=None, *_):
+        from ..storage.hotindex import HotIndex as _Hot
+
+        if index_dir is _JS_UNDEFINED:
+            index_dir = None
+        object.__setattr__(self, "_js_hot", _Hot(source, kind, home, index_dir=index_dir))
+
+    def _call(self, method, *args):
+        from ..client import BantamError as _Native
+
+        try:
+            return getattr(self._js_hot, method)(*args)
+        except _Native as error:
+            raise _native_bantam_error(error) from None
+
+    def cols(self, *_):
+        return self._call("cols")
+
+    def exists(self, *_):
+        return self._call("exists")
+
+    def fileOf(self, name, *_):
+        return self._call("file_of", name)
+
+    def invalidate(self, *_):
+        self._call("invalidate")
+        return _JS_UNDEFINED
+
+    def lensTotal(self, *_):
+        return self._call("lens_total")
+
+    def names(self, *_):
+        # `Map<name, doc id>`: the dict `names()` is the key view of.
+        self._call("names")
+        return _JsReadMap(self._js_hot._ids())
+
+    def parseFile(self, path, mtime_ns, size, *_):
+        doc, reason = self._call("parse_file", path, mtime_ns, size)
+        return reason if doc is None else doc
+
+    def refresh(self, mode="fast", *_):
+        return self._call("refresh", "fast" if mode is _JS_UNDEFINED else mode)
+
+    def segments(self, terms, *_):
+        return _JsReadMap(self._call("segments", list(terms)))
+
+    @property
+    def skipped(self):
+        return _JsReadMap(self._call("__getattribute__", "skipped"))
+
+    @property
+    def loose(self):
+        return self._call("__getattribute__", "loose")
+
+
+class ColdIndexError(_JsError):
+    """`ColdIndexError` (runtime-ts/src/storage/coldindex.ts): the Python
+    `bantamkit.storage.coldindex.ColdIndexError`'s message as a JS Error."""
+
+    _js_name = "ColdIndexError"
+    name = "ColdIndexError"
+
+
+class ColdIndex(_JsObject):
+    """`ColdIndex` (runtime-ts/src/storage/coldindex.ts): `bantamkit.storage.coldindex.ColdIndex`,
+    which it ports (#204), with the TypeScript spelling of the methods store.ts calls; a Python
+    `ColdIndexError` is the adapter's `ColdIndexError`."""
+
+    _js_name = "ColdIndex"
+    _js_own = frozenset({"add", "allDocs", "doc", "query", "reset"})
+    _js_own_methods = frozenset({"add", "allDocs", "doc", "query", "reset"})
+
+    def __init__(self, name, home, cold_dir=None, *_):
+        from ..storage.coldindex import ColdIndex as _Cold
+
+        if cold_dir is _JS_UNDEFINED:
+            cold_dir = None
+        object.__setattr__(self, "_js_cold", _Cold(name, home, cold_dir))
+
+    def _call(self, method, *args):
+        from ..storage.coldindex import ColdIndexError as _Native
+
+        try:
+            return getattr(self._js_cold, method)(*args)
+        except _Native as error:
+            raise ColdIndexError(str(error)) from None
+
+    def add(self, docs, *_):
+        if not isinstance(docs, _JsMap):
+            raise TypeError("ts2py: ColdIndex.add of anything but a Map is outside the subset")
+        return self._call("add", {key: value for key, value in docs})
+
+    def allDocs(self, *_):
+        return self._call("all_docs")
+
+    def doc(self, name, *_):
+        return self._call("doc", name)
+
+    def query(self, terms, *_):
+        return [list(row) for row in self._call("query", list(terms))]
+
+    def reset(self, *_):
+        self._call("reset")
+        return _JS_UNDEFINED
+
+
+def _factfile(name):
+    from . import factfile as _ff
+
+    return getattr(_ff, name)
+
+
+def extra_of(meta, *_):
+    """`extraOf` (memory/factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("extra_of")(meta)
+
+
+def format_fact(fact, *_):
+    """`formatFact` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("format_fact")(fact)
+
+
+def lifecycle_of(meta, *_):
+    """`lifecycleOf` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("lifecycle_of")(meta)
+
+
+def parse_frontmatter(front, *_):
+    """`parseFrontmatter` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("parse_frontmatter")(front)
+
+
+def py_list(value, *_):
+    """`pyList` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("py_list")(value)
+
+
+def py_split(text, sep, maxsplit, *_):
+    """`pySplit` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("py_split")(text, sep, maxsplit)
+
+
+def py_truthy(value=_JS_UNDEFINED, *_):
+    """`pyTruthy` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("py_truthy")(value)
+
+
+def today_local(*args):
+    """`todayLocal` (factfile.ts): `_generated/factfile.py`'s, compiled from it."""
+    return _factfile("today_local")(*args[:1])
+
+
+def as_py_os_error(error, fallback_path=_JS_UNDEFINED, fallback_dest=_JS_UNDEFINED, *_):
+    """`asPyOSError` (runtime-ts/src/memory/pyfs.ts): what CPython would have raised. Every fs
+    adapter raises CPython's own `OSError`, which is answered as it is (a `filename` it lacks taken
+    from the fallback, as the port takes it); anything else is re-raised."""
+    if not isinstance(error, OSError):
+        raise error
+    if error.filename is None and isinstance(fallback_path, str):
+        error.filename = fallback_path
+        if error.filename2 is None and isinstance(fallback_dest, str):
+            error.filename2 = fallback_dest
+    return error
+
+
+def matches_md(name, *_):
+    """`matchesMd` (pyfs.ts): `fnmatch.fnmatch(name, '*.md')`, which it ports."""
+    return _fnmatch.fnmatch(name, "*.md")
+
+
+def py_lexists(path, *_):
+    """`pyLexists` (pyfs.ts): `os.path.lexists`, which it ports."""
+    return _os.path.lexists(path)
+
+
+def py_mkdir_parents(path, *_):
+    """`pyMkdirParents` (pyfs.ts): `Path.mkdir(parents=True, exist_ok=True)`."""
+    _pathlib.Path(path).mkdir(parents=True, exist_ok=True)
+    return _JS_UNDEFINED
+
+
+def py_mtime_date(path, *_):
+    """`pyMtimeDate` (pyfs.ts): `date.fromtimestamp(Path(path).stat().st_mtime).isoformat()`."""
+    # Local time, as the reference's `date.fromtimestamp` (and `date.today()`) is.
+    mtime = _pathlib.Path(path).stat().st_mtime
+    return _datetime.date.fromtimestamp(mtime).isoformat()  # noqa: DTZ012
+
+
+def py_parents(path, *_):
+    """`pyParents` (pyfs.ts): `PurePath.parents`, as strings."""
+    return [str(p) for p in _pathlib.PurePath(path).parents]
+
+
+class PyUnicodeDecodeError(_JsError):
+    """`PyUnicodeDecodeError` (pyfs.ts): CPython's `UnicodeDecodeError` as a JS Error, its message
+    `str()` of the one CPython raised."""
+
+    _js_name = "PyUnicodeDecodeError"
+    name = "UnicodeDecodeError"
+
+
+def py_read_text(path, *_):
+    """`pyReadText` (pyfs.ts): `Path.read_text(encoding='utf-8')`, which it ports; a decode failure
+    is `PyUnicodeDecodeError` with CPython's message."""
+    try:
+        return _pathlib.Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise PyUnicodeDecodeError(str(error)) from None
+
+
+def py_replace(source, target, *_):
+    """`pyReplace` (pyfs.ts): `os.replace`, which it ports."""
+    _os.replace(source, target)
+    return _JS_UNDEFINED
+
+
+def py_scandir_names(directory, *_):
+    """`pyScandirNames` (pyfs.ts): `os.scandir(directory)` reduced to names, in its order."""
+    with _os.scandir(directory) as entries:
+        return [entry.name for entry in entries]
+
+
+def py_scandir_probe(directory, *_):
+    """`pyScandirProbe` (pyfs.ts): `with os.scandir(directory): pass`."""
+    with _os.scandir(directory):
+        pass
+    return _JS_UNDEFINED
+
+
+def py_suffix(path, *_):
+    """`pySuffix` (pyfs.ts): `PurePath.suffix`."""
+    return _pathlib.PurePath(path).suffix
+
+
+def py_unlink(path, *_):
+    """`pyUnlink` (pyfs.ts): `Path.unlink()`."""
+    _pathlib.Path(path).unlink()
+    return _JS_UNDEFINED
+
+
+def py_write_text(path, text, *_):
+    """`pyWriteText` (pyfs.ts): `Path.write_text(text, encoding='utf-8')`."""
+    _pathlib.Path(path).write_text(text, encoding="utf-8")
+    return _JS_UNDEFINED
+
+
+def py_write_text_atomic(path, text, *_):
+    """`pyWriteTextAtomic` (pyfs.ts), the port of store.py's `_write_text_atomic` (J89-1F), carried
+    here statement for statement: `<path>.<pid>.<8 hex>.tmp` opened `x`, the buffered writer writes
+    every byte, `os.replace` onto `path`; on any failure the temp is unlinked and the error goes on
+    up, so `path` holds the old bytes or the new ones, never a prefix."""
+    tmp = _pathlib.Path(f"{path}.{_os.getpid()}.{_secrets.token_hex(4)}.tmp")
+    try:
+        with tmp.open("x", encoding="utf-8") as fh:
+            fh.write(text)
+        tmp.replace(path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return _JS_UNDEFINED
+
+
+def sorted_path_names(names, *_):
+    """`sortedPathNames` (pyfs.ts): `sorted(directory / name for name in names)` reduced to the
+    names: stable, by `os.path.normcase` of each, by code point."""
+    return sorted(names, key=_os.path.normcase)

@@ -106,6 +106,26 @@ export function pyCaseless(alternatives: string): string {
   });
 }
 
+/** `pySearchWord`'s compiled patterns, by `alternatives` (callers pass module constants). */
+const PY_WORD_SEARCH = new Map<string, RegExp>();
+
+/**
+ * CPython's `re.compile(r'\b(' + alternatives + r')\b', re.IGNORECASE).search(text)`: group 1 of
+ * the first match, or `null`. `alternatives` is what `pyCaseless` takes (ASCII letters, `|`, `?`),
+ * the boundary `PY_WORD_CLASS` (#316 G3: J89-1F built this regex in store.ts as `DONE_WORD_RE`;
+ * J89-4a moved it here unchanged, because ts2py compiles a pattern only when it is known at
+ * compile time, and this one is assembled from `PY_WORD_CLASS` and `pyCaseless` at run time).
+ */
+export function pySearchWord(alternatives: string, text: string): string | null {
+  let re = PY_WORD_SEARCH.get(alternatives);
+  if (re === undefined) {
+    re = new RegExp(`(?<!${PY_WORD_CLASS})(${pyCaseless(alternatives)})(?!${PY_WORD_CLASS})`, 'u');
+    PY_WORD_SEARCH.set(alternatives, re);
+  }
+  const m = re.exec(text);
+  return m === null ? null : m[1]!;
+}
+
 const PY_LSTRIP = new RegExp(`^${PY_WS_CLASS}+`);
 
 /** `str.lstrip()` with no argument. */

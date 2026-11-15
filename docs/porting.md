@@ -1697,6 +1697,52 @@ Warm calls (us, two runs each; the user paths above are what they cost a recall)
 names; `W_TYPE` writes reach the generated Map; `GATE_FLOOR` is read at call time; the two moved
 `rank_columns` answers. (`test_memory_usage.py`): the far-future line weighs Infinity. None retired.
 
+### The store's constructs (#316 G3 U2, J89-4a): ts2py compiles `memory/store.ts`; generating it is J89-4b's
+
+J89-4 counted 86 refusals compiling `runtime-ts/src/memory/store.ts` with the G1/G2/G3 call; J89-4a
+leaves none (`tools/ts2py/tests/g3_store.rs` `j89_4a_store_compiles_with_the_committed_modules`;
+the rules and the 34 adapter rows are in `tools/ts2py/RULES.md`, J89-4a). `store.py` is still the
+hand-written module: no committed generated file changed (`workplan`, the codec, G1, G2, usage and
+retrieval recompile byte for byte), only the runtime and adapter support modules ts2py writes.
+
+**D1, fixed in Node (the orchestrator's ruling: python is right).** `candidatesDone`'s `ordinal` built
+the day with `Date.UTC(y, mo - 1, d)`, which reads a year 0-99 as 1900-1999, so the year read back
+differed and a fact `created` in 0001-0099 was never aged, where store.py's
+`date.fromisoformat(...)` ages it. The day is now `parseTs(`${iso}T00:00:00Z`) / 86_400_000`
+(`usage.ts`'s `daysFromCivil`, already held equal to `Date.UTC` on every day of years 1..9999); year
+0000 and every impossible day stay refused on both sides. `--suite store`'s UNRULED case went STALE
+by design and is the agreeing case `J89-4a candidates_done(older_than_days=0): created in the years
+0001-0099` with a literal for each side (red against the old ordinal on a scratch copy: 2 failures).
+30,000 seeded strings: the new ordinal agrees with `date.fromisoformat` (behind `_ISO_DAY_RE`) and
+with the generated `usage.parse_ts` on every one; the old one disagreed on 3,908.
+
+**TypeScript changes, each with Node's answers unchanged** (`npm test` and `--suite store` green):
+
+| Was | Is | Why |
+|---|---|---|
+| `DONE_WORD_RE = new RegExp(`(?<!${PY_WORD_CLASS})(${pyCaseless(...)})(?!...)`, 'u')` and `.exec` | `pysem.pySearchWord(DONE_WORD_ALTERNATIVES, text)` (the same regex, built once per alternatives string) | ts2py compiles a pattern only when it is known at compile time; the adapter is store.py's `_DONE_WORD_RE`, which J89-1F and J89-2 swept the Node regex against |
+| `private usage()` | `private usageLedger()` | `tokenledger.ts`'s `message.usage` (a plain object's property) is refused while any compiled class declares a method `usage`: a receiver's type is never a proven fact in ts2py, so the clash cannot be resolved by type (the orchestrator's first choice), and the private method was renamed |
+| `(memo ??= usage())` | `{ if (memo === null) memo = usage(); return memo; }` | an assignment inside an expression is refused |
+| `.filter(matchesMd)` | `.filter((name) => matchesMd(name))` | an adapter function as a callback would be called with the index and array too |
+| `NOT_ONE_LINE.lastIndex = 0; NOT_ONE_LINE.exec(text); NOT_ONE_LINE.lastIndex = 0` (a `g` regex) | `NOT_ONE_LINE_UNIT.exec(text)` (the same class, no `g`, no `+`) | the subset models no `lastIndex`; the run's first unit is what `codepoint` reads either way. Found by running the compiled store (ts2py accepted the write and the runtime refused it); the write is now refused at compile time |
+| the `Date.UTC` ordinal | `parseTs` (D1 above) | |
+
+Node, medians of 11 per process over a 2,000-fact store, three processes each interleaved against
+the build of `9e44aa5c` (old / new, the median of the three): `candidatesDone(30)` 35.74 / 35.05 ms
+(-1.9%), `recall` 0.582 / 0.574 ms (-1.3%), `listFacts()` 34.09 / 34.45 ms (+1.1%), a refused
+`save` (`notOneLine`) 10.9 / 10.8 us (-0.9%): every one within 5%.
+
+**Ahead of J89-4b, found and not decided here.** The adapter rows make store.ts compile and a
+scratch compile answer as Node does on saves, recall, lookup, `candidatesDone` and archived recall
+over one store (identical trees and index file lists); J89-4b's suites will be the real test. Three
+things it will meet: (1) store.ts reads `e.message` of a `PyOSError` (`skipped` reasons), and the
+runtime refuses `message` on a Python exception (a Node fs error's message is not CPython's), so the
+generated store needs the `OSError`'s CPython text there; (2) `parseFrontmatter` / `formatFact` are
+the compiled codec's functions here, and the PyYAML fallback (#315's owner ruling) is J89-4b's to
+route; (3) the pyfs adapters call CPython with the path as given (not the G2 `_os_char` policy), so a
+lone-surrogate store root takes CPython's answers (`os.scandir` raises `UnicodeEncodeError`,
+`Path.exists` answers false), not the Node answers `--suite store`'s `G3 as Node` rulings pin.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

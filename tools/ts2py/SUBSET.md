@@ -153,14 +153,16 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `while (c)` | `while c:` | condition through ToBoolean |
 | `for (;;)` (J86) | `while True:` | |
 | `for (let i = a; test; i++) body` (J89-2: `i++`, `++i`, `i--`, `--i`, `i` a local) | as below, the update `i = _js_inc(i)` / `_js_dec(i)` (`_js_num(i + 1)` when `i` is proven a number) | ToNumeric then plus or minus one: a string `"1"` becomes 2, never `"11"`; an update of anything but a local name is refused |
-| `for (let i = a; test; i -= 1) body` (J87-3) | `i = a`, `while test:`, the body, then the update as the body's last statement | the init must be a `let` declaration (or absent), the update an assignment (or absent); a `continue` that would continue this loop is refused (in JS it runs the update, in Python it would skip it); closures in the body are refused as in any loop |
+| `for (let i = a; test; i -= 1) body` (J87-3) | `i = a`, `while test:`, the body, then the update as the body's last statement | the init must be a `let` declaration (or absent), the update an assignment (or absent); closures in the body are refused as in any loop |
+| the same loop whose body `continue`s it (J89-4a) | `i = a`, `_js_firstN = True`, `while True:`, `if _js_firstN: _js_firstN = False` / `else:` the update, `if not (test): break`, the body | JS's order: a `continue` runs the update, then the test (a Python `continue` reaches the update at the top of the next iteration); the first iteration runs no update |
 | `try { ... } finally { ... }`, `try { ... } catch { ... } finally { ... }` (J88-2) | `try:` holding the try (and its catch, as below) / `finally:` the finalizer | Python's `finally` runs where JS's does: a normal end, a `return`, a `break` and a throw; a `return` inside the finalizer replaces the completion in both |
 | `try { ... } catch (e?) { ... }` (J87-3) | `_js_caughtN = None` / `try:` / `except Exception as _js_errorN: _js_caughtN = _js_catch(_js_errorN)` / `if _js_caughtN is not None:` the handler | a `catch` sees only what JS could have thrown (`_js_catch`): a JS Error (`_JsError`), an `OSError` an fs adapter raised where Node throws an fs Error, or the runtime's JS-worded `TypeError` (`Cannot read properties of null ...`); a subset refusal (`ts2py: ...`), a `RecursionError` and any other Python exception propagate. The handler runs after the `try` statement, so nothing it raises is chained to what was caught (a JS throw carries no implicit cause). `throw e` is `raise` of the caught object, unchanged; J88-2: `e` may be read as a value (passed on, `e.code`, `typeof e`), and the runtime answers only what JS would read of it: a Python exception's `code` is the errno name of an `OSError` (libuv's spelling) or `undefined`, and any other property of a Python exception (`message`, `errno`, ...) is outside the subset at run time |
 | `switch (x) { case a: ... }` (J86) | `x` once into `_js_switchN`, then `if _js_strict_eq(...) / elif / else` | `===` per case, in order; empty cases group (`case a: case b:`); each case group must end in `return` / `throw` or a trailing `break` (dropped); fallthrough, a `break` elsewhere in a case, and a `default` that is not last are refused |
 | `throw e` (J86) | `raise e` for `new <class or Error>(...)`, else `raise _js_throw(e)`; J87-3: `throw e` of a `catch` binding is `raise` of what was caught | throwing a value that is not an Error raises a TypeError instead |
 | `for (const x of xs)` | `for x in xs:` | iterates a list, a `Map` (as `[key, value]` pairs), a `Set`, a string |
 | `for (const [i, x] of xs.entries())` | `for i, x in _js_m_entries(xs):` | pairs are exact, so a plain unpack |
-| `for (const [a, b] of xs)` (other iterables) | `for _js_itemN in xs:` + `a = _js_get(_js_itemN, 0)` ... | a short element reads `undefined`, not an unpack error |
+| `for (const [a, b] of xs)` (other iterables) | `for _js_itemN in xs:` + `a = _js_get(_js_itemN, 0)` ... | a short element reads `undefined`, not an unpack error; J89-4a: a hole (`[, b]`) binds nothing |
+| `function* g(...) { ... yield v; ... }` (module level, J89-4a) | a Python generator function: `yield v` as a statement, `return;` as `return`; a body with no `yield` ends `yield` (still a generator) | lazy, as a JS generator: the body runs as the consumer pulls. Its call is allowed only as a for-of's iterable or an array spread's argument (in its own module and in any module of the call that imports it), so the object is never held: a JS `break` closes the generator, a Python `break` leaves it open, and no compiled code can iterate it again. A `yield` inside a `try` (JS closes at the `break`, Python at collection, with a GeneratorExit at the `yield`), a `yield` whose value is read, `yield*`, `return v`, a generator method or arrow, and a typed body are refused |
 | `break` / `continue` (unlabelled) | `break` / `continue` | |
 | `return e` / `return` | `return e` / `return _JS_UNDEFINED` | a bare return yields `undefined`; J86: a body that can run off its end gets a final `return _JS_UNDEFINED` (Python would return `None`, which is `null`) |
 | parameter default `p = d` (J86) | `p=_JS_UNDEFINED`, then `if p is _JS_UNDEFINED: p = d` | applied when the argument is missing or `undefined`, evaluated at call time |
@@ -188,7 +190,9 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `C.m(...)` (J88-2) | `C.m(...)`, a `@staticmethod` the class declares | a static method's body has no `this` |
 | `x.constructor` (J88-2, read for its `name`) | `_js_constructor_of(x)`, an object whose `name` is the JS constructor's name (`Object`, `Array`, a compiled class's, `TypeError`), or a Python exception's class name | the function itself is never handed out |
 | `process.pid`, `process.env` as a value (J88-2) | `process_pid()`, `process_env_all()` (a snapshot of the environment, only ever read) | each runtime its own process |
-| `a << b` (J88-2) | folded for two small non-negative integer literals (`1 << 20` is `1048576`), else `_js_shl(a, b)` | ToInt32 of the left, the count mod 32, the result wrapped to Int32; `>>` and `>>>` stay refused |
+| `a << b` (J88-2) | folded for two small non-negative integer literals (`1 << 20` is `1048576`), else `_js_shl(a, b)` | ToInt32 of the left, the count mod 32, the result wrapped to Int32; `>>>` stays refused |
+| `a >> b` (J89-4a) | `_js_sar(a, b)` | ToInt32 of the left, the count's low five bits, the sign-propagating shift (Python's `>>` of an Int32 int); a BigInt operand is outside the subset at run time |
+| `new Date().toISOString()` (J89-4a) | `_js_date_to_iso(_js_now())` | `new Date(Date.now())`'s spelling, as `new Date(ms).toISOString()` (J88-2) |
 | `new C(...)` (J86) | `C(...)` for a compiled class; `_JsError(...)` / `_JsTypeError(...)` / `_JsRangeError(...)` (J88-2) for `Error` / `TypeError` / `RangeError`; an adapter class (`new TextDecoder(...)`, `new Date()`) from the adapter module | extra arguments ignored, as JS ignores them |
 | `new RegExp(`...${n}...`)` (J86) | `_js_regexp_dynamic("<pattern>", n, ...)` | the template is checked against the whitelist grammar at compile time with each substitution as a whole `{n}` repeat count, and `n` must be an integer in 0..65535 at run time; a substitution anywhere else is refused |
 | `x instanceof C` (J86) | `isinstance(x, C)` | `C` a compiled class or `Error` / `TypeError`; a primitive is never an instance |
@@ -237,6 +241,10 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `s.toLowerCase()`, `s.toUpperCase()` (J86) | `_js_m_toLowerCase`, `_js_m_toUpperCase` | ASCII exactly; a non-ASCII string raises (CPython and V8 follow different Unicode versions); J88-2: `toLowerCase` of a non-ASCII string is `str.lower()` unless it holds one of the 55 code points whose mapping the two tables differ on, or U+03A3 (final sigma is contextual), which raise |
 | `s.trim()`, `s.endsWith(x)` (J88-2) | `_js_m_trim`, `_js_m_endsWith` | JS's WhiteSpace and LineTerminator (U+FEFF trimmed, U+001C-U+001F and U+0085 not: not `str.strip()`); by UTF-16 unit |
 | `m.values()` (J88-2) | `_js_m_values` | a Map's values, a Set's items or an array's elements, as a fresh list (only spread or iterated at once) |
+| `m.keys()` (J89-4a) | `_js_m_keys` | a Map's keys, a Set's items or an array's indexes, as a fresh list (the same snapshot as `values`) |
+| `a.forEach(cb)` (J89-4a) | `_js_m_forEach` | an array: `cb(item, index, a)` for each index below the length read at the start that is still present when reached (a pushed element is not visited, a popped one is skipped); answers `undefined`; a `thisArg` is refused (arity) and a Map's or Set's `forEach` raises at run time |
+| `a.copyWithin(t, s, e?)` (J89-4a) | `_js_m_copyWithin` | an array: each bound ToIntegerOrInfinity, a negative one from the end, clamped; the count the smaller of the source's and the target's room; an overlap copied as through a temporary; answers the array |
+| `a.splice(i, n, ...xs)` (J89-4a) | `_js_m_splice(a, i, n, *xs)` | a spread argument proven a list (a string, a Map or anything unproven is refused) |
 | `new Date(ms).toISOString()` (J88-2) | `_js_date_to_iso(ms)` | TimeClip then toward zero; `+YYYYYY` / `-YYYYYY` outside years 0-9999; a value past 8.64e15 or not finite is the RangeError `Invalid time value`; a string is outside the subset |
 | `Date.now()` (J88-2) | `_js_now()` | whole milliseconds, `time.time_ns() // 1_000_000` |
 | `Object.assign(target, ...sources)` (J88-2) | `_js_object_assign` | each source's own enumerable keys [[Set]] on a plain object or an instance (an Error given a `code`); a source that is not a plain object is outside the subset |
@@ -484,6 +492,12 @@ array proven a list.
 - An import with no compiled module and no row is a compile error naming it:
   `<path>:<line>:<col>: unsupported import of pyRepr from ./pyfs.js: no compiled module and no declared adapter: pyRepr`.
 - Renamed imports and exports, default and namespace imports, and side-effect imports are refused.
+- J89-4a: an `ImportedClass` row (`HotIndex`, `ColdIndex`) is a class whose methods dispatch
+  (`_js_invoke`, or `_js_dispatch` where a builtin shares the name) only in a module that imports
+  it, so its method names do not turn every `Set.add` of the call into a dispatch; naming one of
+  them as a value is not refused at compile time (`pool.names` of a plain object reads the
+  field), and on an instance the runtime refuses it (`_js_object_get`). `Buffer.byteLength(s,
+  'utf8')` is a global row; `statSync(p, {bigint: true})` answers `BigIntStats`.
 
 ## Names
 
@@ -522,7 +536,9 @@ array proven a list.
 
 ## Refused (not exhaustive: anything unlisted above is refused)
 
-Generator functions and `yield`, `async` functions and `await`, `this` outside a class body,
+Generator methods and arrows, `yield*`, a `yield` used as a value or inside a `try`, a generator
+call anywhere but a for-of's iterable or an array spread (J89-4a lowers the rest), `async`
+functions and `await`, `this` outside a class body,
 labelled statements / `break label` / `continue label`, any builtin or method not in the tables
 above (`Object.create`, `Math.round`, `Math.log`, `Math.pow`, `s.trimEnd()`, `s.normalize()`,
 `String.fromCharCode()`, ...; J89-2: `Math.log`, `Math.log1p` and `Math.pow` stay refused because
@@ -533,17 +549,18 @@ inline arrow nor a module function or adapter named directly,
 destructuring with defaults, rest elements, nesting or computed keys, rest parameters, optional
 chaining other than one member read (J87-3), loose equality `==` other than against
 `null`/`undefined`, `**` other than of two integer literals with an exact result (J87-3), the
-bitwise operators but `<<` (J88-2), `void`, `delete`, unary `+`, `++`/`--` anywhere but a C-style
+bitwise operators but `<<` (J88-2) and `>>` (J89-4a), `void`, `delete`, unary `+`, `++`/`--` anywhere but a C-style
 `for` update on a local name (J89-2), typed arrays (`Float64Array`, `DataView`), compound assignment
 other than `+=` `-=` `*=` on a local, `this.x` or a property of a local (J88-2), assignment inside an expression (other than a chain of `=`
 between locals), assignment to a module-level name other than a module `let` from a module
 function (J89-2), a module-level `let` without an initializer, the comma operator, `switch` fallthrough between non-empty cases, a
 `break` that does not end its case, a `default` that is not the last case, `do-while`, a C-style
-`for` whose init is not a `let` declaration, whose update is not an assignment or whose body
-`continue`s it (J87-3), `for-in`, `for await`,
+`for` whose init is not a `let` declaration or whose update is not an assignment (J87-3; J89-4a
+lowers a `continue`), `for-in`, `for await`, a write to a regex's `lastIndex` (J89-4a: the subset
+models none),
 computed or integer-like object keys, getters/setters and methods in object literals, tagged
 templates, non-finite number literals, regex flags other than `g`, regex syntax whose meaning
-differs between the engines (`\s`, `\B`, named groups, backreferences, a lookbehind holding
+differs between the engines (`\s` inside a class (J89-4a spells it out elsewhere), `\B`, named groups, backreferences, a lookbehind holding
 anything but single-unit atoms, Annex B leniencies such as a bare `{`, `}` or `]` or an `\x`
 / `\u` without its digits, a quantified lookaround, a class escape as a range endpoint), regexes
 JS itself rejects (a range out of order in UTF-16 code units such as `[😀-😂]`, `{3,2}`, a

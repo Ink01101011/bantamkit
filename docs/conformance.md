@@ -129,7 +129,11 @@ case, not ruled and not fixed: `store`'s `candidates_done(older_than_days=0)` ov
 the years 0001-0099 (python ages it through `date.fromisoformat`; node's `ordinal` builds the day
 with `Date.UTC`, which reads a year below 100 as 19xx, so it never ages it), with a per-side
 literal each and the agreeing companion `J89-4 candidates_done(older_than_days=0): created in
-0000, 0100, 1999 and 2026`; red against a node `ordinal` that sets the full year.
+0000, 0100, 1999 and 2026`; red against a node `ordinal` that sets the full year. **J89-4a fixed it
+in node** (D1, ruled: python is right; `ordinal` counts the day as `parseTs` does): the case is the
+agreeing `J89-4a candidates_done(older_than_days=0): created in the years 0001-0099`, the node
+literal now ages all three (`LITERAL: J89-4a node ages a fact created in 0001, 0050 and 0099`), red
+against the old `Date.UTC` ordinal on a scratch copy (2 failures); `store` 427 cases, 13 ruled.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

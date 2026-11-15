@@ -256,6 +256,10 @@ const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
     ("toFixed", 0, 1, None, Ret::Str),
     ("match", 1, 1, None, Ret::Any),
     ("charCodeAt", 0, 1, None, Ret::Num),
+    // J89-4a (#316 G3 U2: memory/store).
+    ("forEach", 1, 1, Some(0), Ret::Any),
+    ("keys", 0, 0, None, Ret::List),
+    ("copyWithin", 2, 3, None, Ret::List),
 ];
 
 /// J86-R finding 3: every method a builtin prototype the subset can reach carries (String, Array,
@@ -388,6 +392,8 @@ pub struct ModuleExports {
     pub py_module: String,
     /// Source name -> (Python name, is a class).
     pub names: HashMap<String, (String, bool)>,
+    /// J89-4a: the module's generator functions (`function*`), by source name.
+    pub generators: HashSet<String>,
 }
 
 /// Everything about the other modules of a multi-module compile a module needs (J86).
@@ -481,6 +487,22 @@ pub struct Lowerer<'s> {
     declared: HashMap<(u32, String), BTreeSet<String>>,
     /// J87: the call being lowered is a whole expression statement.
     statement_call: bool,
+    /// J89-4a: a spread argument must be an array PROVEN a list (`a.splice(i, n, ...xs)`).
+    spread_list: bool,
+    /// J89-4a: lowering the body of a `function*` (a module generator function): a `yield`
+    /// statement is allowed and a `return` takes no value.
+    in_generator: bool,
+    /// J89-4a: the `yield` statements lowered in the current generator body.
+    yields: usize,
+    /// J89-4a: how many `try` statements enclose the statement being lowered.
+    try_depth: usize,
+    /// J89-4a: the methods of the `ImportedClass` adapters this module imports.
+    imported_methods: HashSet<String>,
+    /// J89-4a: the generator functions this module declares or imports, by source name.
+    generator_fns: HashSet<String>,
+    /// J89-4a: the call being lowered is a for-of's iterable or an array spread's argument, the
+    /// two places a generator function may be called.
+    generator_call_ok: bool,
     /// J87: frozen module constants bound to an object literal (read by member only).
     frozen_objects: HashSet<String>,
     /// J87: `const` bindings (never reassigned), which a guard may narrow.
@@ -625,6 +647,13 @@ impl<'s> Lowerer<'s> {
             types: TypeDecls::default(),
             declared: HashMap::new(),
             statement_call: false,
+            spread_list: false,
+            in_generator: false,
+            yields: 0,
+            try_depth: 0,
+            imported_methods: HashSet::new(),
+            generator_fns: HashSet::new(),
+            generator_call_ok: false,
             frozen_objects: HashSet::new(),
             consts: HashSet::new(),
             narrow: Vec::new(),
@@ -1024,6 +1053,14 @@ impl<'s> Lowerer<'s> {
                         self.declare_global(id.name.as_str(), exported, id.span);
                         let public = exported || listed.contains(id.name.as_str());
                         self.add_sig(id.name.as_str(), public, &f.params, id.span);
+                        // J89-4a: a generator has one body, untyped (a guarded entry would have
+                        // to `yield from` its typed twin), and its call answers a generator.
+                        if f.generator
+                            && let Some(sig) = self.sigs.get_mut(id.name.as_str())
+                        {
+                            sig.params.iter_mut().for_each(|p| *p = None);
+                            self.generator_fns.insert(id.name.to_string());
+                        }
                     }
                 }
                 Declaration::VariableDeclaration(v) => {
@@ -1311,9 +1348,7 @@ impl<'s> Lowerer<'s> {
     ) {
         let (params, owner, statements) = match source {
             FnSource::Decl(f) => {
-                if f.generator {
-                    self.refuse(f.span, "generator function");
-                }
+                // J89-4a: a module `function*` lowers to a Python generator function.
                 if f.r#async {
                     self.refuse(f.span, "async function");
                 }
@@ -1336,6 +1371,14 @@ impl<'s> Lowerer<'s> {
         if let Some(statements) = statements {
             let mut stack = vec![locals.clone()];
             self.collect_block(statements, &mut stack, &mut locals);
+        }
+        let generator = matches!(source, FnSource::Decl(f) if f.generator);
+        let saved_generator = std::mem::replace(&mut self.in_generator, generator);
+        let saved_yields = std::mem::replace(&mut self.yields, 0);
+        let saved_try = std::mem::replace(&mut self.try_depth, 0);
+        if generator {
+            // Its call answers a generator object, of which nothing is proven.
+            self.observed.observe(ret.clone(), Fact::default());
         }
         self.push_scope(locals, owner);
         self.rets.push(Some(ret.clone()));
@@ -1361,9 +1404,17 @@ impl<'s> Lowerer<'s> {
         match (source, statements) {
             (_, Some(statements)) => {
                 self.block(statements, 1, out);
-                // J86: a body that can run off its end returns `undefined`, as JS does (Python:
-                // `None`).
-                if !ends_in_exit(statements) {
+                if generator {
+                    // J89-4a: a body with no `yield` is still a generator, as `function*` is.
+                    if self.yields == 0 {
+                        if !ends_in_exit(statements) {
+                            out.push("    return".to_string());
+                        }
+                        out.push("    yield  # a function* is a generator".to_string());
+                    }
+                } else if !ends_in_exit(statements) {
+                    // J86: a body that can run off its end returns `undefined`, as JS does
+                    // (Python: `None`).
                     out.push("    return _JS_UNDEFINED".to_string());
                 }
                 if types::completes(statements) {
@@ -1388,6 +1439,9 @@ impl<'s> Lowerer<'s> {
         }
         self.rets.pop();
         self.pop_scope();
+        self.in_generator = saved_generator;
+        self.yields = saved_yields;
+        self.try_depth = saved_try;
     }
 
     /// J87: bind each parameter to what the body may assume of it: its annotation's fact in the
@@ -1790,6 +1844,22 @@ impl<'s> Lowerer<'s> {
         match s {
             Statement::ExpressionStatement(e) => match &e.expression {
                 Expression::AssignmentExpression(a) => self.assignment(a, indent, out),
+                // J89-4a: `yield <value>;` in a module generator: Python's `yield`, whose value
+                // (what a `next(v)` would send) is discarded as the statement discards it.
+                // Not inside a `try`: a `break` out of a JS `for-of` closes the generator at once
+                // (its `finally` runs, no `catch` sees it), where Python closes it when it is
+                // collected, with a GeneratorExit raised at the `yield`.
+                Expression::YieldExpression(y)
+                    if self.in_generator
+                        && !y.delegate
+                        && y.argument.is_some()
+                        && self.try_depth == 0 =>
+                {
+                    let arg = y.argument.as_ref().expect("checked above");
+                    let value = self.expr(arg);
+                    self.yields += 1;
+                    out.push(format!("{p}yield {}", value.code));
+                }
                 Expression::UpdateExpression(u) => {
                     self.refuse(u.span, "update expression (++/--)");
                 }
@@ -1801,6 +1871,15 @@ impl<'s> Lowerer<'s> {
                 }
             },
             Statement::VariableDeclaration(v) => self.var_decl(v, indent, out),
+            // J89-4a: in a generator, `return;` ends it; a value it would return is refused (no
+            // compiled consumer reads it).
+            Statement::ReturnStatement(r) if self.in_generator => {
+                if r.argument.is_some() {
+                    self.refuse(r.span, "return with a value in a generator function");
+                } else {
+                    out.push(format!("{p}return"));
+                }
+            }
             Statement::ReturnStatement(r) => match &r.argument {
                 Some(arg) => {
                     let value = self.expr(arg);
@@ -1998,25 +2077,14 @@ impl<'s> Lowerer<'s> {
         }
         // J89-2: `i++` / `++i` / `i--` / `--i` as the update (its value unused): `i` becomes
         // ToNumeric(i) + 1 (- 1), never a string concatenation (`_js_inc`).
-        if let Some(Expression::UpdateExpression(u)) = &f.update {
-            if continues_out(&f.body) {
-                self.refuse(f.span, "continue in a C-style for loop");
-                return;
-            }
-            let test = match &f.test {
-                Some(test) => self.condition(test),
-                None => "True".to_string(),
-            };
-            out.push(format!("{p}while {test}:"));
-            self.breaks.push(BreakTarget::Loop);
-            self.body(&f.body, indent + 1, out);
-            self.breaks.pop();
-            self.update_stmt(u, indent + 1, out);
-            return;
+        enum Update<'b, 'a> {
+            Inc(&'b UpdateExpression<'a>),
+            Assign(&'b AssignmentExpression<'a>),
         }
         let update = match &f.update {
             None => None,
-            Some(Expression::AssignmentExpression(a)) => Some(a),
+            Some(Expression::UpdateExpression(u)) => Some(Update::Inc(u)),
+            Some(Expression::AssignmentExpression(a)) => Some(Update::Assign(a)),
             Some(other) => {
                 self.refuse(
                     other.span(),
@@ -2025,21 +2093,53 @@ impl<'s> Lowerer<'s> {
                 return;
             }
         };
-        if continues_out(&f.body) {
-            self.refuse(f.span, "continue in a C-style for loop");
-            return;
-        }
         let test = match &f.test {
             Some(test) => self.condition(test),
             None => "True".to_string(),
         };
-        out.push(format!("{p}while {test}:"));
-        self.breaks.push(BreakTarget::Loop);
-        self.body(&f.body, indent + 1, out);
-        self.breaks.pop();
-        if let Some(a) = update {
-            self.assignment(a, indent + 1, out);
+        if !continues_out(&f.body) {
+            out.push(format!("{p}while {test}:"));
+            self.breaks.push(BreakTarget::Loop);
+            self.body(&f.body, indent + 1, out);
+            self.breaks.pop();
+            match update {
+                Some(Update::Inc(u)) => self.update_stmt(u, indent + 1, out),
+                Some(Update::Assign(a)) => self.assignment(a, indent + 1, out),
+                None => {}
+            }
+            return;
         }
+        // J89-4a: a `continue` that leaves the body runs the update and then the test, as JS's
+        // `for` does. The update moves to the top of every iteration but the first, so a Python
+        // `continue` reaches it: `first = True` / `while True:` / `if first: first = False` /
+        // `else: <update>` / `if not (<test>): break` / the body.
+        let first = format!("_js_first{}", self.tmp);
+        self.tmp += 1;
+        let (inner, deep) = (pad(indent + 1), pad(indent + 2));
+        let mut body = Vec::new();
+        self.breaks.push(BreakTarget::Loop);
+        self.body(&f.body, indent + 1, &mut body);
+        self.breaks.pop();
+        let mut step = Vec::new();
+        match update {
+            Some(Update::Inc(u)) => self.update_stmt(u, indent + 2, &mut step),
+            Some(Update::Assign(a)) => self.assignment(a, indent + 2, &mut step),
+            None => {}
+        }
+        if step.is_empty() {
+            step.push(format!("{deep}pass"));
+        }
+        out.push(format!("{p}{first} = True"));
+        out.push(format!("{p}while True:"));
+        out.push(format!("{inner}if {first}:"));
+        out.push(format!("{deep}{first} = False"));
+        out.push(format!("{inner}else:"));
+        out.extend(step);
+        if test != "True" {
+            out.push(format!("{inner}if not ({test}):"));
+            out.push(format!("{deep}break"));
+        }
+        out.extend(body);
     }
 
     /// J89-3: `for (let i = a; i < b; i += 1) body` (or `i++` / `++i`) whose body can be proven
@@ -2520,6 +2620,12 @@ impl<'s> Lowerer<'s> {
     /// the `try` statement, outside the `except`, so nothing it raises is chained to what was
     /// caught: a JS throw carries no implicit cause. `finally` is refused.
     fn try_stmt(&mut self, t: &TryStatement<'_>, indent: usize, out: &mut Vec<String>) {
+        self.try_depth += 1;
+        self.try_stmt_inner(t, indent, out);
+        self.try_depth -= 1;
+    }
+
+    fn try_stmt_inner(&mut self, t: &TryStatement<'_>, indent: usize, out: &mut Vec<String>) {
         // J88-2: `finally` is Python's own: the try (and its catch) inside `try:`, the finalizer
         // under `finally:`. Both run it on a normal end, a return, a break and a throw, and a
         // `return` inside the finalizer replaces the completion in both.
@@ -2766,6 +2872,12 @@ impl<'s> Lowerer<'s> {
                 let value = self.assigned_value(op, target.clone(), &a.right);
                 out.push(format!("{p}{} = {}", target.code, value.code));
             }
+            // J89-4a: `re.lastIndex = n` (a `g` regex's position): the subset models no
+            // `lastIndex` (`.test` / `.exec` on a `g` regex raise at run time), so the write that
+            // would set one is refused where it is written.
+            AssignmentTarget::StaticMemberExpression(m) if m.property.name == "lastIndex" => {
+                self.refuse(a.span, "assignment to lastIndex");
+            }
             AssignmentTarget::StaticMemberExpression(m) => {
                 if op.is_some() {
                     // J88-2: `o.k op= v` on a local object: read, combine, put back.
@@ -2915,7 +3027,12 @@ impl<'s> Lowerer<'s> {
         };
         let right = match frozen {
             Some(id) => self.global_read(id.name.as_str(), id.span, false),
-            None => self.expr(&f.right),
+            None => {
+                self.generator_call_ok = matches!(strip(&f.right), Expression::CallExpression(_));
+                let value = self.expr(&f.right);
+                self.generator_call_ok = false;
+                value
+            }
         };
         // J87: what each element is: a string iterates by code point (each a `str`).
         let element = if right.top {
@@ -2938,6 +3055,9 @@ impl<'s> Lowerer<'s> {
                         Some(BindingPattern::BindingIdentifier(id)) => {
                             names.push(py_name(id.name.as_str(), false, false))
                         }
+                        // J89-4a: a hole (`[, p]`) binds nothing (each named element is read by
+                        // its index, as before).
+                        None => names.push("_js_hole".to_string()),
                         _ => {
                             self.refuse(a.span, "destructuring pattern");
                             return;
@@ -2978,7 +3098,9 @@ impl<'s> Lowerer<'s> {
                     self.tmp += 1;
                     out.push(format!("{p}for {item} in {}:", right.code));
                     for (i, name) in names.iter().enumerate() {
-                        out.push(format!("{}{name} = _js_get({item}, {i})", pad(indent + 1)));
+                        if name != "_js_hole" {
+                            out.push(format!("{}{name} = _js_get({item}, {i})", pad(indent + 1)));
+                        }
                     }
                 }
             }
@@ -3526,7 +3648,10 @@ impl<'s> Lowerer<'s> {
         for element in &a.elements {
             match element {
                 ArrayExpressionElement::SpreadElement(s) => {
+                    self.generator_call_ok =
+                        matches!(strip(&s.argument), Expression::CallExpression(_));
                     let value = self.expr(&s.argument);
+                    self.generator_call_ok = false;
                     items.push(format!("*{}", value.at(ATOM)));
                     spread = true;
                 }
@@ -3695,6 +3820,13 @@ impl<'s> Lowerer<'s> {
                 let left = self.expr(&b.left);
                 let right = self.expr(&b.right);
                 returned(Ret::Num, format!("_js_shl({}, {})", left.code, right.code))
+            }
+            // J89-4a: `a >> b`, the sign-propagating shift (`_js_sar`: ToInt32 of the left, the
+            // count mod 32; a Python `>>` of an int in Int32 range is the same arithmetic shift).
+            Op::ShiftRight => {
+                let left = self.expr(&b.left);
+                let right = self.expr(&b.right);
+                returned(Ret::Num, format!("_js_sar({}, {})", left.code, right.code))
             }
             // J86: `key in obj`, own keys plus what Object.prototype supplies.
             Op::In => {
@@ -3887,6 +4019,7 @@ impl<'s> Lowerer<'s> {
         callback: Option<usize>,
         spread_ok: bool,
     ) -> Option<Vec<Py>> {
+        let spread_list = std::mem::take(&mut self.spread_list);
         let mut out = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             let Some(e) = arg.as_expression() else {
@@ -3895,6 +4028,10 @@ impl<'s> Lowerer<'s> {
                 {
                     // J86: `a.push(...xs)` spreads any iterable, as a Python `*xs` does.
                     let value = self.expr(&spread.argument);
+                    if spread_list && !value.is_list {
+                        self.refuse(spread.span, "spread of a value not proven an array");
+                        return None;
+                    }
                     out.push(Py::atom(format!("*{}", value.at(ATOM))));
                     continue;
                 }
@@ -3909,7 +4046,8 @@ impl<'s> Lowerer<'s> {
                     // them (the rest JS passes are ignored by a function that declares none).
                     Expression::Identifier(id)
                         if !self.is_scoped(id.name.as_str())
-                            && self.sigs.contains_key(id.name.as_str()) =>
+                            && self.sigs.contains_key(id.name.as_str())
+                            && !self.generator_fns.contains(id.name.as_str()) =>
                     {
                         let n = self.sigs[id.name.as_str()].params.len();
                         let callee = self.resolve(id.name.as_str(), id.span);
@@ -4194,12 +4332,21 @@ impl<'s> Lowerer<'s> {
     fn call(&mut self, c: &CallExpression<'_>) -> Py {
         // J87: the call is a whole expression statement (its value is discarded).
         let as_statement = std::mem::take(&mut self.statement_call);
+        let generator_ok = std::mem::take(&mut self.generator_call_ok);
         if c.optional {
             return self.refuse(c.span, "optional call");
         }
         match strip(&c.callee) {
             Expression::Identifier(id) => {
                 let name = id.name.as_str();
+                // J89-4a: a generator's object is iterated where it is made, so it is never held
+                // (a JS `break` closes it; a Python one leaves it open to be iterated again).
+                if !generator_ok && !self.is_scoped(name) && self.generator_fns.contains(name) {
+                    return self.refuse(
+                        c.span,
+                        "generator function called anywhere but as a for-of's iterable or an array spread",
+                    );
+                }
                 if !self.is_local(name)
                     && let Some(&(_, helper, min, max, ret)) =
                         GLOBAL_CALLS.iter().find(|(n, ..)| *n == name)
@@ -4297,6 +4444,16 @@ impl<'s> Lowerer<'s> {
                     && let Expression::NewExpression(n) = strip(&m.object)
                     && matches!(strip(&n.callee), Expression::Identifier(d) if d.name == "Date")
                     && !self.is_local("Date")
+                    && n.arguments.is_empty()
+                {
+                    // J89-4a: `new Date().toISOString()` is the clock now: `new Date(Date.now())`.
+                    return returned(Ret::Str, "_js_date_to_iso(_js_now())".to_string());
+                }
+                if method == "toISOString"
+                    && c.arguments.is_empty()
+                    && let Expression::NewExpression(n) = strip(&m.object)
+                    && matches!(strip(&n.callee), Expression::Identifier(d) if d.name == "Date")
+                    && !self.is_local("Date")
                     && n.arguments.len() == 1
                 {
                     let Some(args) = self.args(&n.arguments, None, false) else {
@@ -4321,7 +4478,8 @@ impl<'s> Lowerer<'s> {
                     return Py::atom(format!("{py}.{method}({})", args.join(", ")));
                 }
                 let builtin = METHODS.iter().find(|(name, ..)| *name == method);
-                let class_method = self.ctx.class_methods.contains(method);
+                let class_method = self.ctx.class_methods.contains(method)
+                    || self.imported_methods.contains(method);
                 let Some(&(_, min, max, callback, ret)) = builtin else {
                     if class_method {
                         // J86: a method a compiled class (or an adapter class) declares.
@@ -4365,9 +4523,18 @@ impl<'s> Lowerer<'s> {
                     None
                 };
                 let receiver = self.expr(&m.object);
-                let Some(args) = self.args_py(&c.arguments, callback, method == "push") else {
+                // J89-4a: `a.splice(start, count, ...xs)`, `xs` proven a list.
+                let splice_spread = method == "splice";
+                self.spread_list = splice_spread;
+                let lowered =
+                    self.args_py(&c.arguments, callback, method == "push" || splice_spread);
+                let Some(args) = lowered else {
                     return Py::atom("None");
                 };
+                let spread = c
+                    .arguments
+                    .iter()
+                    .any(|a| matches!(a, Argument::SpreadElement(_)));
                 if let Some((keys, descending)) = by_key {
                     let code = format!(
                         "_js_sort_by_f64({}, {}, {}, {})",
@@ -4385,6 +4552,7 @@ impl<'s> Lowerer<'s> {
                 }
                 let optimistic = receiver.top || args.iter().any(|a| a.top);
                 if !optimistic
+                    && !spread
                     && (class_method || (args.len() >= min && args.len() <= max))
                     && let Some(fast) =
                         self.fast_method(method, &receiver, &args, as_statement, c, &m.object)
@@ -4753,6 +4921,9 @@ impl<'s> Lowerer<'s> {
                     .or_default()
                     .insert(py.clone());
                 self.globals.insert(local.to_string(), py.clone());
+                if module.generators.contains(local) {
+                    self.generator_fns.insert(local.to_string());
+                }
                 if is_class {
                     self.classes.insert(local.to_string(), py);
                 }
@@ -4783,6 +4954,12 @@ impl<'s> Lowerer<'s> {
                             self.adapter_fns.insert(local.to_string());
                         }
                         AdapterKind::Constant => {}
+                        // J89-4a: its methods dispatch in this module only.
+                        AdapterKind::ImportedClass(methods) => {
+                            self.classes.insert(local.to_string(), py);
+                            self.imported_methods
+                                .extend(methods.iter().map(|m| m.to_string()));
+                        }
                     }
                 }
                 None => {
@@ -5230,6 +5407,7 @@ impl<'s> Lowerer<'s> {
         self.bind_params(&a.params, &[]);
         self.defs.push((self.scopes.len() - 1, BTreeSet::new()));
         let saved_breaks = std::mem::take(&mut self.breaks);
+        let saved_generator = std::mem::replace(&mut self.in_generator, false);
         let mut body_out = Vec::new();
         self.param_defaults(&a.params, indent + 1, &mut body_out);
         self.hoist_params(&a.params, indent + 1, &mut body_out);
@@ -5249,6 +5427,7 @@ impl<'s> Lowerer<'s> {
             }
         }
         self.breaks = saved_breaks;
+        self.in_generator = saved_generator;
         let (_, nonlocals) = self.defs.pop().expect("pushed above");
         self.rets.pop();
         self.pop_scope();
@@ -5627,6 +5806,24 @@ pub fn resolve_specifier(importer: &str, spec: &str) -> Option<String> {
 
 /// What one module exports (source name -> (Python name, is a class)) and the method names its
 /// classes declare, read off the AST before anything is lowered, so another module can import it.
+/// J89-4a: the names of a module's top-level generator functions (`function*`), exported or not.
+pub fn generator_names(program: &Program<'_>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for stmt in &program.body {
+        let decl = match stmt {
+            Statement::ExportDeclaration(e) => Some(&e.declaration),
+            _ => stmt.as_declaration(),
+        };
+        if let Some(Declaration::FunctionDeclaration(f)) = decl
+            && f.generator
+            && let Some(id) = &f.id
+        {
+            out.insert(id.name.to_string());
+        }
+    }
+    out
+}
+
 pub fn scan_module(program: &Program<'_>) -> (HashMap<String, (String, bool)>, HashSet<String>) {
     let mut exports = HashMap::new();
     let mut methods = HashSet::new();
@@ -6017,6 +6214,10 @@ fn statement_kind(s: &Statement<'_>) -> &'static str {
 
 /// Why a regex is refused: the text after `unsupported ` in the diagnostic.
 const REGEX_SYNTAX: &str = "regex syntax";
+/// J89-4a: JS's `\s`, every code unit `/\s/` matches (pinned against Node in `tests/g3.rs`).
+const JS_SPACE_CLASS: &str = "[\\t\\n\\u000b\\u000c\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]";
+/// J89-4a: JS's `\S`, the complement of `JS_SPACE_CLASS`.
+const JS_NON_SPACE_CLASS: &str = "[^\\t\\n\\u000b\\u000c\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]";
 
 /// Deepest group nesting accepted: Python's `re` parser recurses per group, so a deep enough
 /// nesting is a `RecursionError` at import rather than a pattern.
@@ -6084,6 +6285,10 @@ pub fn translate_regex(pattern: &str) -> Result<String, String> {
                     'w' => out.push_str("[A-Za-z0-9_]"),
                     'D' => out.push_str("[^0-9]"),
                     'W' => out.push_str("[^A-Za-z0-9_]"),
+                    // J89-4a: JS's `\s` (WhiteSpace and LineTerminator), spelled out: Python's
+                    // `\s` adds U+001C-U+001F and U+0085 and leaves out U+FEFF.
+                    's' => out.push_str(JS_SPACE_CLASS),
+                    'S' => out.push_str(JS_NON_SPACE_CLASS),
                     'b' => {
                         out.push_str("\\b");
                         quantifiable = false;
@@ -6381,7 +6586,12 @@ mod tests {
         assert_eq!(translate_regex("^[A-Za-z]:").unwrap(), "^[A-Za-z]:");
         assert_eq!(translate_regex("a$").unwrap(), "a\\Z");
         assert_eq!(translate_regex("\\d+").unwrap(), "[0-9]+");
-        assert!(translate_regex("\\s").is_err());
+        // J89-4a: `\s` is JS's set spelled out; inside a class it stays refused.
+        assert_eq!(
+            translate_regex("\\s").unwrap(),
+            "[\\t\\n\\u000b\\u000c\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]"
+        );
+        assert!(translate_regex("[\\s]").is_err());
         assert!(translate_regex("(?<n>a)").is_err());
         // J85-R F3: an astral literal is its two UTF-16 code units, in and out of a class.
         assert_eq!(

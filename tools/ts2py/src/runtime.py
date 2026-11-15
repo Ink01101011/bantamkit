@@ -2348,6 +2348,57 @@ def _js_m_values(receiver):
     raise _js_outside("values", receiver)
 
 
+def _js_m_keys(receiver):
+    """`m.keys()` iterated or spread at once (J89-4a): a Map's keys, a Set's items or an array's
+    indexes, in order, as a fresh list (a snapshot, as `values` is)."""
+    if isinstance(receiver, _JsMap):
+        return [key for key, _ in receiver]
+    if isinstance(receiver, _JsSet):
+        return list(receiver)
+    if isinstance(receiver, list):
+        return list(range(len(receiver)))
+    raise _js_outside("keys", receiver)
+
+
+def _js_m_forEach(receiver, callback):
+    """`a.forEach(cb)` (J89-4a), an array only: `cb(item, index, a)` for each index below the
+    length read once at the start that is still present when reached (one the callback removed is
+    skipped, as JS skips a missing index); answers `undefined`."""
+    items = _js_array("forEach", receiver)
+    for index in range(len(items)):
+        if index < len(items):
+            callback(items[index], index, items)
+    return _JS_UNDEFINED
+
+
+def _js_m_copyWithin(receiver, target, start, end=_JS_UNDEFINED):
+    """`a.copyWithin(target, start, end?)` (J89-4a), an array only: ECMA-262's steps (each bound
+    ToIntegerOrInfinity, a negative one from the end, clamped to the length; the count the smaller
+    of what is left of the source and of the target), copying in place as if through a temporary,
+    which is what JS's direction-aware loop amounts to on an array without holes. Answers the
+    array."""
+    items = _js_array("copyWithin", receiver)
+    length = len(items)
+
+    def bound(value, default):
+        if value is _JS_UNDEFINED:
+            return default
+        n = _js_to_integer(value)
+        if n == -_js_math.inf:
+            return 0
+        if n < 0:
+            return max(length + int(n), 0)
+        return length if n == _js_math.inf else min(int(n), length)
+
+    to = bound(target, 0)
+    begin = bound(start, 0)
+    finish = bound(end, length)
+    count = min(finish - begin, length - to)
+    if count > 0:
+        items[to : to + count] = items[begin : begin + count]
+    return items
+
+
 def _js_to_int32(value):
     number = _js_to_number(_js_to_primitive(value))
     if number != number or number in (_js_math.inf, -_js_math.inf):
@@ -2362,6 +2413,15 @@ def _js_shl(left, right):
         raise TypeError("ts2py: << on a BigInt is outside the subset")
     n = (_js_to_int32(left) << (_js_to_int32(right) & 31)) & 0xFFFFFFFF
     return n - 0x100000000 if n >= 0x80000000 else n
+
+
+def _js_sar(left, right):
+    """`left >> right` (J89-4a): ToInt32 of the left, ToUint32 of the count mod 32 (the low five
+    bits, which ToInt32's carry too), and the sign-propagating shift: a Python `>>` of an int in
+    Int32 range is that arithmetic shift."""
+    if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
+        raise TypeError("ts2py: >> on a BigInt is outside the subset")
+    return _js_to_int32(left) >> (_js_to_int32(right) & 31)
 
 
 def _js_now():

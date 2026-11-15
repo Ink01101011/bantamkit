@@ -2434,15 +2434,15 @@ async function runIn(ctx, home) {
       cases.push({ name: `J89-2 candidates_done: "shipped" spelled with ${label}`, kind: 'json', expected: dotless.py, actual: dotless.nd });
       cases.push({ name: `LITERAL: J89-2 node lists "shipped" spelled with ${label} as a done-word`, kind: 'json', expected: [['d-fact', `done-word '${word}' in description`]], actual: dotless.nd });
     }
-    // J89-4 found, NOT ruled and NOT fixed (#316 G3 U2): `candidates_done(older_than_days)`
-    // over a `created` in the years 0001-0099. The reference ages it (`date.fromisoformat`);
-    // node's `ordinal` builds the day with `Date.UTC(y, ...)`, which reads a year 0-99 as
-    // 1900-1999, so the year read back differs and the fact is never aged. Year 0000 is
-    // refused by both (CPython ValueError; node 1900 != 0), and every year from 0100 agrees.
-    // Generating store.ts would move the reference to node's answer, so it is pinned here for
-    // the orchestrator before generation; the per-side literals keep each answer red-able.
+    // J89-4 found (#316 G3 U2) and J89-4a FIXED IN NODE (D1, the orchestrator's ruling: python is
+    // right): `candidates_done(older_than_days)` over a `created` in the years 0001-0099. The
+    // reference ages it (`date.fromisoformat`); node's `ordinal` built the day with
+    // `Date.UTC(y, ...)`, which reads a year 0-99 as 1900-1999, so the year read back differed and
+    // the fact was never aged. It now counts the day as `parseTs` does (`daysFromCivil`), so both
+    // age it; year 0000 is refused by both (CPython ValueError; `parseTs` NaN), and every year
+    // from 0100 agrees. The per-side literals keep each answer red-able (a symmetric regression to
+    // "never aged" would leave the agreeing case green).
     {
-      const UNRULED = 'UNRULED DIVERGENCE (J89-4): not ruled in docs/porting.md and not fixed; ';
       const aged = (years) => {
         const b = bed();
         const roots = { py: join(b, 'py'), node: join(b, 'node') };
@@ -2457,9 +2457,10 @@ async function runIn(ctx, home) {
         return { py, nd };
       };
       const early = aged(['0001', '0050', '0099']);
-      cases.push({ name: 'ruling: UNRULED DIVERGENCE candidates_done(older_than_days=0): created in the years 0001-0099', kind: 'json', expected: early.py, actual: early.nd, ruling: UNRULED + "python ages each (date.fromisoformat); node's Date.UTC reads a year below 100 as 19xx and never ages it" });
-      cases.push({ name: 'LITERAL: J89-4 python ages a fact created in 0001, 0050 and 0099', kind: 'json', expected: ['y0001', 'y0050', 'y0099'].map((n) => [n, `older than 0d (created ${n.slice(1)}-03-01)`]), actual: early.py });
-      cases.push({ name: 'LITERAL: J89-4 node ages none of the facts created in 0001, 0050 and 0099', kind: 'json', expected: [], actual: early.nd });
+      const ages = ['y0001', 'y0050', 'y0099'].map((n) => [n, `older than 0d (created ${n.slice(1)}-03-01)`]);
+      cases.push({ name: 'J89-4a candidates_done(older_than_days=0): created in the years 0001-0099', kind: 'json', expected: early.py, actual: early.nd });
+      cases.push({ name: 'LITERAL: J89-4 python ages a fact created in 0001, 0050 and 0099', kind: 'json', expected: ages, actual: early.py });
+      cases.push({ name: 'LITERAL: J89-4a node ages a fact created in 0001, 0050 and 0099', kind: 'json', expected: ages, actual: early.nd });
       const late = aged(['0000', '0100', '1999', '2026']);
       cases.push({ name: 'J89-4 candidates_done(older_than_days=0): created in 0000, 0100, 1999 and 2026', kind: 'json', expected: late.py, actual: late.nd });
     }

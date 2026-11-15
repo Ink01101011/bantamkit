@@ -354,6 +354,57 @@ compiled module's) is CPython's `list.sort`, which on an INCONSISTENT comparator
 from V8 (561 of 30,000 seeded sorts with NaN keys). Every comparator the compiled modules pass today
 is consistent on the values they sort; `_js_v8_sort` (G3-16) is the drop-in fix if one is wanted.
 
+## J89-4a rules (#316 G3 U2: the constructs `memory/store.ts` needs)
+
+J89-4 (9e44aa5c) ran ts2py over `memory/store.ts` with the G1/G2/G3 call and counted **86
+refusals**: 34 imports with no adapter, 51 constructs, and one clash in `tokenledger.ts`
+(`message.usage` refused because `MemoryStore` declared a method `usage`). J89-4a leaves **0**:
+`tests/g3_store.rs` `j89_4a_store_compiles_with_the_committed_modules` compiles store.ts with the
+seven modules of that call (generating it is J89-4b's). Of the 51 constructs, 18 are lowered by the
+rules below; 25 were adapter calls the new rows resolve (16 `HotIndex` / `ColdIndex` method calls,
+the two `new`s, 5 `instanceof`, 2 `Buffer.byteLength`); 8 went with a TypeScript change whose Node
+answers are unchanged (docs/porting.md, *The store's constructs*): `Date.UTC`, three `getUTC*` and
+`Math.round` with D1's fix (the day is `parseTs`'s), the run-time `new RegExp(..., 'u')` moved to
+`pysem.pySearchWord` (an adapter), `memo ??= usage()` written as an `if`, `.filter(matchesMd)` as
+`.filter((name) => matchesMd(name))`. The clash went with store.ts's private `usage()` renamed
+`usageLedger()`: a receiver's type is never a proven fact (types.rs), so ts2py cannot tell
+`message.usage` (a plain object's property) from the method, and the refusal stays
+(`j89_4a_a_method_name_still_refuses_a_property_read_of_that_name`). One more construct the census
+could not see was found by running the compiled store: `NOT_ONE_LINE.lastIndex = 0` around an
+`exec` on a `g` regex (accepted, then refused at run time); store.ts now uses a non-`g` twin, and
+the write is refused at compile time (G3-26). **10 new rules (one a refusal), 2 extended; 4 runtime names; 34
+adapter rows (a new kind, `ImportedClass`), 1 adapter extended.**
+
+| # | Rule | Status | Pinned by (`tests/`) |
+|---|---|---|---|
+| G3-17 | `a >> b` -> `_js_sar` (ToInt32 of the left, the count's low five bits, Python's arithmetic `>>`) | new | `g3_store.rs` probe (`shifts`: 29 left values incl. ±0, Int32 edges, 1e21, 2**53+1, NaN, ±Infinity, strings, booleans, null, undefined × 13 counts incl. 32, 33, -1, 1.9, NaN, `'3'`, 2**32+1; the bisect `(lo + hi) >> 1`) and the fuzz below |
+| G3-18 | `a.forEach(cb)` (an array) -> `_js_m_forEach`: `cb(item, index, a)` for each index below the length read at the start that is still present; answers `undefined` | new | probe (`eaches`: a callback that pushes, one that pops, the third argument) |
+| G3-19 | `m.keys()` -> `_js_m_keys`: a Map's keys, a Set's items, an array's indexes, as a fresh list (the Map snapshot of SUBSET.md's known limits, as `values`) | new | probe (`keyed`: Map, Set, array, spread, empty) |
+| G3-20 | `a.copyWithin(t, s, e?)` -> `_js_m_copyWithin`: ECMA-262's bounds (ToIntegerOrInfinity, negative from the end, clamped), the overlap copied as through a temporary | new | probe (`copies`: 20 argument lists incl. negatives, NaN, ±Infinity, fractions, strings, overlap both ways; `binarysort`'s shift) |
+| G3-21 | `continue` in a C-style `for` (with any update): `first = True` / `while True:` / `if first: first = False` / `else: <update>` / `if not (<test>): break` / the body, so a Python `continue` reaches the update, then the test, as JS's does | extended (G1's refusal) | probe (`continues`: `+=` and `--` updates, nested loops with `continue` and `break`, a test with a side effect counted, store.ts's `old < start + count`) |
+| G3-22 | a module `function*` -> a Python generator function: `yield <v>;` as a statement (not inside a `try`: a JS `break` closes the generator at once, Python when it is collected), `return;` only; one body, untyped; a body with no `yield` still a generator. Its call is allowed only as a for-of's iterable or an array spread's argument (also across modules, `ModuleExports::generators`), so its object is never held and iterated again after a `break` | new | probe (`generators`: early `return`, a consumer that breaks, a second call after one was abandoned, `[...g()]`, a generator with no `yield`); `j89_4a_refusals` (held in a const, passed as a callback, `yield*`, a read `yield`, `return 2`, a `yield` in a `try`, a generator method) |
+| G3-23 | a hole in a for-of array pattern (`for (const [, p] of xs)`) binds nothing | new | probe (`holes`) |
+| G3-24 | a spread argument to `.splice` (`a.splice(i, n, ...xs)`), `xs` proven a list | extended (J86 `.push(...xs)`) | probe (`splices`); `j89_4a_refusals` (a string spread) |
+| G3-25 | `\s` / `\S` outside a class -> JS's set spelled out (U+0009-U+000D, U+0020, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF; Python's `\s` differs on U+001C-U+001F, U+0085, U+FEFF); inside a class still refused | new | probe (`spaces`: every code unit 0..0xFFFF `/\s/` matches, Node's list; store.ts's `/:(\s|$)/` on 11 heads; `\S`); `lower.rs` `regex_translation` |
+| G3-26 | `re.lastIndex = n` refused at compile time (the subset models no `lastIndex`) | new (refusal) | `j89_4a_refusals` |
+| G3-27 | `new Date().toISOString()` -> `_js_date_to_iso(_js_now())` | new | probe (`clock`: the shape and length) |
+| G3-28 | an `ImportedClass` adapter (below): `new C(...)`, `instanceof C`, and its methods dispatched (`_js_invoke` / `_js_dispatch`) in a module that imports it and nowhere else; a property of one of those names on anything else reads (`pool.names`), and on an instance the runtime refuses it as a value | new | `j89_4a_imported_class_methods_stay_in_their_module` |
+
+**The fuzz** (`g3_store.rs`, the probe's `fuzz(20000)`): 20,000 seeded `a >> b` (Park-Miller) over
+Int32 edges, fractions and magnitudes past 2**32 with counts -5..64, folded into one number: Node
+printed 302436588 and the compiled Python prints it. Two runtime mutants turn it red (the count
+taken mod 32 with a negative count as 0: 795140807; the left truncated without ToInt32's wrap:
+-547775272).
+
+**The day** (D1, `candidatesDone`'s `ordinal`): 30,000 seeded strings (16,744 of them real days of
+the years 1..9999, the rest out-of-range months and days, year 0000, Feb 29 of every kind of year,
+mutated characters, trailing text): Node's new ordinal agrees with CPython's `date.fromisoformat`
+behind store.py's `_ISO_DAY_RE`, and with the generated `usage.parse_ts` the compiled store calls,
+on all 30,000; the old `Date.UTC` ordinal disagreed on 3,908.
+
+Runtime names added (4): `_js_sar`, `_js_m_forEach`, `_js_m_keys`, `_js_m_copyWithin`. G1, G2, G3
+U1 and the codec recompile byte for byte.
+
 ## Adapters (J86)
 
 Declared in `src/adapters.rs`, written in `src/adapters.py`. Measured against Node's own
@@ -446,4 +497,25 @@ v26.13.0 on macOS arm64.
 | `pyNfkcLower` | `unicodedata.normalize('NFKC', s).lower()` | Python is the reference: retrieval.py's tokenizer | `--suite recall-retrieval`, `recall-strings` |
 | `pyWordchar` (and `WORDCHAR`, moved to `pysem.ts`) | `unicodedata.category(ch)[0] in 'LNM'` | Python is the reference: retrieval.py's `_wordchar` | `--suite recall-retrieval` (`stale`, the tokenizer) |
 | `CountsView` (`memory/queries.ts`, class, `scan` only) | a class no Python code builds | declared for `bm25Rows`'s `row.scan(...)`; Python's rows are Maps, and `'scan' in` a Map is false | `--suite recall-queries` |
+
+
+### Adapters (J89-4a, #316 G3 U2)
+
+Every import of `memory/store.ts` that is not compiled. `ImportedClass` (new): a class whose
+methods dispatch only in a module that imports it (`adapters.rs`), so `HotIndex.names` and
+`ColdIndex.add` do not turn every `Set.add` of the call into a dispatch, and `pool.names` (a plain
+object's field) still reads. Exercised end to end by running the compiled store (a scratch compile,
+J89-4b's to ship) and Node's over the same saves, recall, lookup, `candidatesDone` and archived
+recall: identical answers, identical store trees and index file lists.
+
+| TypeScript | Python | Why it is the same function |
+|---|---|---|
+| `homedir` (`node:os`) | `str(Path.home())` | Python is the reference: store.py passes `Path.home()` in each place store.ts calls `homedir()`; the two differ only for a set but empty `HOME` |
+| `pySearchWord` (`pysem.ts`, new: store.ts's `DONE_WORD_RE` moved there) | group 1 of `re.compile(r'\b(' + alternatives + r')\b', re.IGNORECASE).search(text)` | Python is the reference: store.py's `_DONE_WORD_RE`; J89-1F and J89-2 swept the Node regex against it (`--suite store`) |
+| `HotIndex`, `INDEX_DIR_ENV` (`storage/hotindex.ts`) | `bantamkit.storage.hotindex`, imported when the first index is built; `names()` / `segments()` / `skipped` as read-only Maps over its dicts (`_JsReadMap`), `parseFile` answering the doc or the reason, a native `BantamError` restated as the adapter's | Python is the reference: hotindex.ts ports it (#316 G4 later) |
+| `ColdIndex`, `ColdIndexError` (`storage/coldindex.ts`) | `bantamkit.storage.coldindex`, `add` taking a Map, `query` answering lists; its `ColdIndexError` restated as a JS Error | Python is the reference: coldindex.ts ports it |
+| `PyScalar` (`memory/pyyaml.ts`); `extraOf`, `formatFact`, `lifecycleOf`, `parseFrontmatter`, `pyList`, `pySplit`, `pyTruthy`, `todayLocal`, `VALID_OUTCOMES` (`memory/factfile.ts`); `pyStrip` (re-exported from `pysem.ts`) | the class, functions and constant ts2py compiled from the same TypeScript (`_generated/pyyaml.py`, `_generated/factfile.py`, the #315 call kept apart), imported lazily | the same TypeScript, compiled; J89-4b decides `parseFrontmatter` / `formatFact`'s Python boundary (factcodec's PyYAML fallback, #315's owner ruling) |
+| `asPyOSError`, `matchesMd`, `pyLexists`, `pyMkdirParents`, `pyMtimeDate`, `pyParents`, `pyReadText`, `pyReplace`, `pyScandirNames`, `pyScandirProbe`, `pySuffix`, `pyUnlink`, `pyWriteText`, `pyWriteTextAtomic`, `sortedPathNames`, `PyUnicodeDecodeError` (`memory/pyfs.ts`) | the CPython call each ports (its doc comment): `OSError` passed through, `fnmatch(name, '*.md')`, `os.path.lexists`, `Path.mkdir(parents=True, exist_ok=True)`, `date.fromtimestamp(st_mtime)`, `PurePath.parents`, `Path.read_text` (a `UnicodeDecodeError` as `PyUnicodeDecodeError`, a JS Error with CPython's message), `os.replace`, `os.scandir` names / probe, `PurePath.suffix`, `Path.unlink`, `Path.write_text`, store.py's `_write_text_atomic` carried statement for statement, a stable sort by `os.path.normcase` | Python is the reference: pyfs.ts is the CPython OS seam |
+| `Buffer.byteLength(s, 'utf8')` (Node global) | `len(s.encode('utf-8', 'surrogatepass'))` | a lone surrogate is three bytes either way (U+FFFD's, as `Buffer.from` writes it); `g3_store.rs` holds it to `len(buffer_from(s))` over 20,000 seeded strings and the probe to Node over 9 |
+| `statSync(p, {bigint: true})` (extended) | `BigIntStats`: `size`, `mtimeNs` (`st_mtime_ns`, exact) and `mtimeMs` as BigInts | libuv's `sec * 1e9 + nsec`, which `st_mtime_ns` is |
 

@@ -18,6 +18,12 @@ pub enum AdapterKind {
     ErrorClass,
     /// J88-2: a constant, read by name (`LOCK_STALE_MS`).
     Constant,
+    /// J89-4a: a class with these methods whose calls dispatch (`_js_invoke` / `_js_dispatch`)
+    /// only in a module that imports it, so its method names do not reach every module of the
+    /// call (a `Set`'s `.add` elsewhere stays `_js_m_add`). Naming one of them as a value is not
+    /// refused at compile time: on an instance the runtime refuses it (`_js_object_get`), and on
+    /// anything else it is a property read (`pool.names` of a plain object), as in JS.
+    ImportedClass(&'static [&'static str]),
 }
 
 pub struct Adapter {
@@ -487,6 +493,255 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Class(&["scan"]),
         why: "Declared for its `scan` method only (#316 G3 U3 generates queries.ts later): retrieval's `bm25Rows` calls `row.scan(...)` on a row that has one (`'scan' in row`). No Python code builds one: `queries.layer_terms` answers dicts, which the retrieval shim hands over as Maps, and `'scan' in` a Map is false.",
     },
+    // J89-4a (#316 G3 U2: memory/store). Every import of store.ts that is not compiled.
+    Adapter {
+        module: Some("node:os"),
+        name: "homedir",
+        py_name: "homedir",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: every `homedir()` in store.ts stands where store.py passes `Path.home()` (the hot index, the cold index and the usage ledger), so the adapter is `str(Path.home())`. Node's `os.homedir()` reads the same `HOME` (`USERPROFILE` on Windows); the two differ only for a set but empty `HOME` (Node answers '', `Path.home()` '/'), where the reference's answer is taken.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pysem.ts"),
+        name: "pySearchWord",
+        py_name: "py_search_word",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pySearchWord(alternatives, text)` is `re.compile(r'\\b(' + alternatives + r')\\b', re.IGNORECASE).search(text)`'s group 1 (its doc comment; store.py's `_DONE_WORD_RE`), the regex J89-1F swept against CPython over every code point and J89-2 over every letter's case-fold set (`--suite store`). Moved out of store.ts because its pattern is assembled at run time.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/storage/hotindex.ts"),
+        name: "HotIndex",
+        py_name: "HotIndex",
+        kind: AdapterKind::ImportedClass(&[
+            "cols",
+            "exists",
+            "fileOf",
+            "invalidate",
+            "lensTotal",
+            "names",
+            "parseFile",
+            "refresh",
+            "segments",
+        ]),
+        why: "Python is the reference: hotindex.ts is the port of `bantamkit.storage.hotindex.HotIndex` (#204; #316 G4 generates it later; `--suite store` and `recall-index` compare the two over the same index files). The adapter is that class with the TypeScript spelling: `names()` / `segments()` / `skipped` as read-only Maps over the dicts it holds, `lensTotal()` / `fileOf()` / `parseFile()` (a doc, or the reason string where Python answers `(None, reason)`) by the same functions, and a native `BantamError` restated as the adapter's so a compiled `catch` sees it.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/storage/hotindex.ts"),
+        name: "INDEX_DIR_ENV",
+        py_name: "INDEX_DIR_ENV",
+        kind: AdapterKind::Constant,
+        why: "Python is the reference: `bantamkit.storage.hotindex.INDEX_DIR_ENV`, the same `BANTAMKIT_INDEX_DIR` the port declares.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/storage/coldindex.ts"),
+        name: "ColdIndex",
+        py_name: "ColdIndex",
+        kind: AdapterKind::ImportedClass(&["add", "allDocs", "doc", "query", "reset"]),
+        why: "Python is the reference: coldindex.ts is the port of `bantamkit.storage.coldindex.ColdIndex` (#204; #316 G4 generates it later; `--suite store` `include_archived` cases compare the two). The adapter is that class with the TypeScript spelling; `add` takes a Map, `query` answers `[name, segment, tf]` lists, and a Python `ColdIndexError` is restated as the adapter's (below).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/storage/coldindex.ts"),
+        name: "ColdIndexError",
+        py_name: "ColdIndexError",
+        kind: AdapterKind::ErrorClass,
+        why: "Python is the reference: `bantamkit.storage.coldindex.ColdIndexError`, raised by the `ColdIndex` adapter with that error's message as a JS Error (`name` 'ColdIndexError') so a compiled `catch` and `instanceof` see it as Node's.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyyaml.ts"),
+        name: "PyScalar",
+        py_name: "PyScalar",
+        kind: AdapterKind::Class(&[]),
+        why: "The class ts2py compiled from this same TypeScript (`_generated/pyyaml.py`, the #315 codec call), so `instanceof PyScalar` is `isinstance` of the class the codec builds; imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "extraOf",
+        py_name: "extra_of",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "formatFact",
+        py_name: "format_fact",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily. J89-4b decides the Python-side boundary (factcodec's PyYAML fallback, #315's owner ruling) when the store is generated.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "lifecycleOf",
+        py_name: "lifecycle_of",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "parseFrontmatter",
+        py_name: "parse_frontmatter",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily. J89-4b decides the Python-side boundary (factcodec's PyYAML fallback, #315's owner ruling) when the store is generated.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "pyList",
+        py_name: "py_list",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "pySplit",
+        py_name: "py_split",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "pyTruthy",
+        py_name: "py_truthy",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "todayLocal",
+        py_name: "today_local",
+        kind: AdapterKind::Function,
+        why: "The function ts2py compiled from this same TypeScript (`_generated/factfile.py`, the #315 codec call, which stays a call of its own), imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "pyStrip",
+        py_name: "py_strip",
+        kind: AdapterKind::Function,
+        why: "factfile.ts re-exports pysem.ts's `pyStrip` (the row above: Python's `str.strip()`).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/factfile.ts"),
+        name: "VALID_OUTCOMES",
+        py_name: "VALID_OUTCOMES",
+        kind: AdapterKind::Constant,
+        why: "The constant ts2py compiled from this same TypeScript (`_generated/factfile.py`'s `VALID_OUTCOMES`, `['error', 'success']`), imported lazily.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "asPyOSError",
+        py_name: "as_py_os_error",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `asPyOSError` restates a Node fs rejection as the `OSError` CPython raises; every fs adapter already raises CPython's own `OSError`, so the adapter answers an `OSError` unchanged (a missing `filename` filled from the fallback paths, as the port fills it) and re-raises anything else, which no CPython call would have raised.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "matchesMd",
+        py_name: "matches_md",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `matchesMd` is `fnmatch.fnmatch(name, '*.md')` (its doc comment), which the adapter calls.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyLexists",
+        py_name: "py_lexists",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyLexists` is `os.path.lexists` (its doc comment).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyMkdirParents",
+        py_name: "py_mkdir_parents",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyMkdirParents` is `Path.mkdir(parents=True, exist_ok=True)` (its doc comment).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyMtimeDate",
+        py_name: "py_mtime_date",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyMtimeDate` is `date.fromtimestamp(path.stat().st_mtime).isoformat()` (its doc comment), local time.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyParents",
+        py_name: "py_parents",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyParents` is `PurePath.parents` (its doc comment), as strings.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyReadText",
+        py_name: "py_read_text",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyReadText` is `Path.read_text(encoding='utf-8')` (its doc comment: strict UTF-8 and universal newlines); a decode failure is the `PyUnicodeDecodeError` below with CPython's message.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyReplace",
+        py_name: "py_replace",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyReplace` is `os.replace` (its doc comment, `Path.replace`).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyScandirNames",
+        py_name: "py_scandir_names",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyScandirNames` is `os.scandir(directory)` reduced to names (its doc comment), in the directory's order.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyScandirProbe",
+        py_name: "py_scandir_probe",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyScandirProbe` is `with os.scandir(directory): pass` (its doc comment).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pySuffix",
+        py_name: "py_suffix",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pySuffix` is `PurePath.suffix` (its doc comment).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyUnlink",
+        py_name: "py_unlink",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyUnlink` is `Path.unlink()` (its doc comment).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyWriteText",
+        py_name: "py_write_text",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyWriteText` is `Path.write_text(text, encoding='utf-8')` (its doc comment, newline translation included).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyWriteTextAtomic",
+        py_name: "py_write_text_atomic",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyWriteTextAtomic` is J89-1F's port of store.py's `_write_text_atomic` (a `<path>.<pid>.<8 hex>.tmp` opened `x`, written by the buffered writer, `os.replace`d onto `path`, unlinked on any failure), which the adapter carries statement for statement so it outlives store.py's logic (#316 G3 U2).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "sortedPathNames",
+        py_name: "sorted_path_names",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `sortedPathNames` is `sorted(directory / name for name in names)` reduced to names (its doc comment): a stable sort by `os.path.normcase` of each name, by code point.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "PyUnicodeDecodeError",
+        py_name: "PyUnicodeDecodeError",
+        kind: AdapterKind::ErrorClass,
+        why: "Python is the reference: `PyUnicodeDecodeError` is the port of CPython's `UnicodeDecodeError` (its doc comment); the `pyReadText` adapter raises it with `str()` of the one CPython raised as its message and `name` 'UnicodeDecodeError', so a compiled `catch` sees it (a `ValueError` is not something a JS `catch` could hold).",
+    },
+    Adapter {
+        module: None,
+        name: "Buffer.byteLength",
+        py_name: "buffer_byte_length",
+        kind: AdapterKind::Function,
+        why: "Node global, `(string, 'utf8')` only: the length of the string's UTF-8, a lone surrogate counted as U+FFFD's three bytes, as `Buffer.from` writes it (tests/g3.rs).",
+    },
 ];
 
 /// The adapter for `name` imported from `module` (a normalised `.ts` path), if one is declared.
@@ -503,12 +758,13 @@ pub fn global(name: &str) -> Option<&'static Adapter> {
         .find(|a| a.module.is_none() && a.name == name)
 }
 
-/// Method names the adapter classes declare.
+/// Method names the adapter classes declare (not an `ImportedClass`'s: see there).
 pub fn class_methods() -> impl Iterator<Item = &'static str> {
     ADAPTERS.iter().flat_map(|a| match a.kind {
         AdapterKind::Class(methods) => methods.iter().copied(),
-        AdapterKind::Function | AdapterKind::ErrorClass | AdapterKind::Constant => {
-            [].iter().copied()
-        }
+        AdapterKind::Function
+        | AdapterKind::ErrorClass
+        | AdapterKind::Constant
+        | AdapterKind::ImportedClass(_) => [].iter().copied(),
     })
 }
