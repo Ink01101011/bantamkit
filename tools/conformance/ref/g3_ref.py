@@ -10,7 +10,7 @@ module's cases from there.
     {"op": "constants", "module": m}               -> {"out": {NAME: json, ...}}
     {"op": "pure", "cases": [[fn, [args]], ...]}   -> {"out": [{"ok": v} | {"err": "Type: msg"}]}
     {"op": "store_root", "roots": [path, ...]}     -> {"out": [answer, ...]}
-    {"op": "candidates_done", "root": path}        -> {"out": [[name, why], ...]}
+    {"op": "candidates_done", "root": path, "older_than"?: n}  -> {"out": [[name, why], ...]}
     {"op": "listing", "base": path}                -> {"out": [hex name, ...]}
     {"op": "store_id", "paths": [path, ...]}       -> {"out": [{"ok": id} | {"err": type}]}
     {"op": "word_class"}                           -> {"out": {"w": ranges, "cn": ranges, "ucd": v}}
@@ -146,9 +146,9 @@ def store_root(roots: list) -> list:
     return out
 
 
-def candidates_done(root: str) -> list:
+def candidates_done(root: str, older_than: int | None = None) -> list:
     s = store.MemoryStore(root, today=lambda: "2026-08-23", create=False)
-    return [[str(f.name), why] for f, why in s.candidates_done()]
+    return [[str(f.name), why] for f, why in s.candidates_done(older_than_days=older_than)]
 
 
 def listing(base: str) -> list:
@@ -201,7 +201,7 @@ def main() -> None:
     elif op == "store_root":
         out = store_root(req["roots"])
     elif op == "candidates_done":
-        out = candidates_done(req["root"])
+        out = candidates_done(req["root"], req.get("older_than"))
     elif op == "listing":
         out = listing(req["base"])
     elif op == "store_id":

@@ -124,7 +124,12 @@ Infinity as node does (red before the `pyPow` adapter changed), with a per-side 
 `recall-retrieval`'s `J89-3 rankColumns on raw columns …` (125 runs with NaN, infinite, signed-zero
 scores and weights) and two per-side literals (a NaN weight's V8 order, nothing admitted past an
 infinite score at ratio 0), red against the hand-written module; `ts2py` recompiles `retrieval.py`
-in the same call.
+in the same call. **J89-4 (#316 G3 U2, before any generation)**: one new `UNRULED DIVERGENCE`
+case, not ruled and not fixed: `store`'s `candidates_done(older_than_days=0)` over a `created` in
+the years 0001-0099 (python ages it through `date.fromisoformat`; node's `ordinal` builds the day
+with `Date.UTC`, which reads a year below 100 as 19xx, so it never ages it), with a per-side
+literal each and the agreeing companion `J89-4 candidates_done(older_than_days=0): created in
+0000, 0100, 1999 and 2026`; red against a node `ordinal` that sets the full year.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

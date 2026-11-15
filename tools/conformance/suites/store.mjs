@@ -2434,6 +2434,35 @@ async function runIn(ctx, home) {
       cases.push({ name: `J89-2 candidates_done: "shipped" spelled with ${label}`, kind: 'json', expected: dotless.py, actual: dotless.nd });
       cases.push({ name: `LITERAL: J89-2 node lists "shipped" spelled with ${label} as a done-word`, kind: 'json', expected: [['d-fact', `done-word '${word}' in description`]], actual: dotless.nd });
     }
+    // J89-4 found, NOT ruled and NOT fixed (#316 G3 U2): `candidates_done(older_than_days)`
+    // over a `created` in the years 0001-0099. The reference ages it (`date.fromisoformat`);
+    // node's `ordinal` builds the day with `Date.UTC(y, ...)`, which reads a year 0-99 as
+    // 1900-1999, so the year read back differs and the fact is never aged. Year 0000 is
+    // refused by both (CPython ValueError; node 1900 != 0), and every year from 0100 agrees.
+    // Generating store.ts would move the reference to node's answer, so it is pinned here for
+    // the orchestrator before generation; the per-side literals keep each answer red-able.
+    {
+      const UNRULED = 'UNRULED DIVERGENCE (J89-4): not ruled in docs/porting.md and not fixed; ';
+      const aged = (years) => {
+        const b = bed();
+        const roots = { py: join(b, 'py'), node: join(b, 'node') };
+        const files = { 'index.md': '' };
+        for (const y of years) {
+          files[`facts/y${y}.md`] = `---\nname: y${y}\ndescription: fact ${y}\ntype: user\ncreated: '${y}-03-01'\nlast_recalled: null\nlinks: []\n---\n\nb\n`;
+        }
+        for (const side of ['py', 'node']) materialise(roots[side], { dirs: ['facts', 'archive'], files });
+        const py = ctx.runPython(g3ref, { op: 'candidates_done', root: roots.py, older_than: 0 }).out;
+        const s = new store.MemoryStore(roots.node, { today: () => TODAY, create: false });
+        const nd = s.candidatesDone(0).map(([f, why]) => [store.pyText(f.name), why]);
+        return { py, nd };
+      };
+      const early = aged(['0001', '0050', '0099']);
+      cases.push({ name: 'ruling: UNRULED DIVERGENCE candidates_done(older_than_days=0): created in the years 0001-0099', kind: 'json', expected: early.py, actual: early.nd, ruling: UNRULED + "python ages each (date.fromisoformat); node's Date.UTC reads a year below 100 as 19xx and never ages it" });
+      cases.push({ name: 'LITERAL: J89-4 python ages a fact created in 0001, 0050 and 0099', kind: 'json', expected: ['y0001', 'y0050', 'y0099'].map((n) => [n, `older than 0d (created ${n.slice(1)}-03-01)`]), actual: early.py });
+      cases.push({ name: 'LITERAL: J89-4 node ages none of the facts created in 0001, 0050 and 0099', kind: 'json', expected: [], actual: early.nd });
+      const late = aged(['0000', '0100', '1999', '2026']);
+      cases.push({ name: 'J89-4 candidates_done(older_than_days=0): created in 0000, 0100, 1999 and 2026', kind: 'json', expected: late.py, actual: late.nd });
+    }
 
     // D3-D5. A store ROOT the OS cannot be handed as the caller spelled it, RULED by J89-1F
     // (docs/porting.md, the `G3 as Node` rows and the G2 target-specific I/O row).
