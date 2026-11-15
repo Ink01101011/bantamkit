@@ -334,6 +334,18 @@ renamed imports and exports, a block binding that shadows an enclosing one, a lo
 shadows a module-level name, and any global identifier other than `undefined`, `Infinity`,
 `NaN` and the builtins in the tables above.
 
+**A method read as a value (J86-R finding 3).** A member whose target is callable may only be
+the callee of a direct call: `const f = a.get`, `a.get === a.get`, `[xs.push]`, `g(s.trim)`,
+`xs['map']` and `this.m` are refused, `a.get(k)` and `this.m()` are not. In JS such a read is a
+function (`this` lost on a later call, the same function on every read); in Python it was a fresh
+bound method or `undefined`. ts2py has no type checker, so on any receiver but `this` the NAME
+decides: a method of String, Array, Map, Set, RegExp, Number, Function or `Object.prototype`
+(`JS_METHOD_NAMES` in `src/lower.rs`, the whole prototype, not only the methods the call table
+lowers), or a method any compiled or adapter class declares. So a data property that shares such
+a name (`input.big`, `o.link`) is refused too, because the receiver's type is not known to the
+compiler; on `this` the class's own method list decides exactly. A computed key the compiler
+cannot see is checked at run time (below).
+
 Some operations are checked at run time instead, because only the value can tell: each raises
 a `TypeError` naming the subset rather than answering differently from JS. `.toLowerCase()` /
 `.toUpperCase()` on a non-ASCII string; `.replace` with a `$` in the replacement or a function;
@@ -342,7 +354,9 @@ a `TypeError` naming the subset rather than answering differently from JS. `.toL
 object or instance does not own (JS answers with an inherited function); assigning
 `__proto__`; `Object.freeze` of anything but a class instance; `throw` of a value that is not an
 Error; a method on a receiver of the wrong type (`ts2py: .<method>() on <type> is outside the
-subset`).
+subset`); a computed key that names a method of the receiver's JS type (`xs[k]` with `k` equal
+to `'push'`, a class method on an instance: `ts2py: reading the method '<k>' as a value is outside
+the subset`).
 
 ## Known limits (documented, not refused)
 

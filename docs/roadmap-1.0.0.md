@@ -329,7 +329,10 @@ with this harness rather than budgeted from either number here.
 
 ### Estimate for #316, by dependency group
 
-**Method (rerunnable).** A census walked every `runtime-ts/src/*.ts` module with the TypeScript
+**Method (rerunnable: `node tools/ts2py/census.mjs`, after `cd runtime-ts && npm ci`; one JSON
+row per group below, then the totals row. Committed by J86-6 and rerun 2026-11-15 under Node
+v26.13.0 at `ac433783` and at `76751838`, where this table was first written: every row below
+reproduced, both times).** A census walked every `runtime-ts/src/*.ts` module with the TypeScript
 5.9.3 compiler API (`ts.createSourceFile`, no type checker). It counted (a) executable syntax kinds,
 with type-only syntax and trivia skipped, and (b) builtin call names: a global (`JSON.parse`,
 `Buffer.from`, `new Promise()`), a method name that exists on a JS builtin prototype (`.forEach`,

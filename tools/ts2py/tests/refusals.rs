@@ -245,3 +245,74 @@ fn regex_python_cannot_compile() {
         );
     }
 }
+
+/// J86-R finding 3: a method read as a value. `const f = a.get; f()` throws in Node (`this` is
+/// lost) and returned a value in Python; `a.get === a.get` is true in Node and false in Python (a
+/// fresh bound method per read). So a member whose target is callable may be named only as the
+/// callee of a direct call. ts2py has no type checker, so "callable" is decided by the NAME: a
+/// builtin method of String, Array, Map, Set, RegExp, Number, Function or Object.prototype, or a
+/// method any compiled or adapter class declares. Any other name reads as data, as before.
+#[test]
+fn method_read_as_a_value() {
+    for (source, expected) in [
+        (
+            "export function f(a: Map<string, number>): unknown {\n  const g = a.get;\n  return g;\n}\n",
+            "t.ts:2:13: unsupported method .get read as a value (a method may only be called directly): a.get",
+        ),
+        (
+            "export function f(a: Map<string, number>): boolean {\n  return a.get === a.get;\n}\n",
+            "t.ts:2:10: unsupported method .get read as a value (a method may only be called directly): a.get",
+        ),
+        (
+            "export function f(s: string): unknown {\n  return s.slice;\n}\n",
+            "t.ts:2:10: unsupported method .slice read as a value (a method may only be called directly): s.slice",
+        ),
+        (
+            "export function f(xs: number[]): unknown {\n  return [xs.push];\n}\n",
+            "t.ts:2:11: unsupported method .push read as a value (a method may only be called directly): xs.push",
+        ),
+        // Not in the subset's call table, still a builtin method: refused, not read as undefined.
+        (
+            "export function f(s: string): unknown {\n  return s.trim;\n}\n",
+            "t.ts:2:10: unsupported method .trim read as a value (a method may only be called directly): s.trim",
+        ),
+        (
+            "export function f(xs: number[]): unknown {\n  return xs['map'];\n}\n",
+            "t.ts:2:10: unsupported method .map read as a value (a method may only be called directly): xs['map']",
+        ),
+        // A class method, on another receiver and on `this`.
+        (
+            "export class A {\n  m(): number {\n    return 1;\n  }\n}\nexport function f(a: A): unknown {\n  return a.m;\n}\n",
+            "t.ts:7:10: unsupported method .m read as a value (a method may only be called directly): a.m",
+        ),
+        (
+            "export class A {\n  m(): number {\n    return 1;\n  }\n  n(): unknown {\n    return this.m;\n  }\n}\n",
+            "t.ts:6:12: unsupported method .m read as a value (a method may only be called directly): this.m",
+        ),
+        // Passing one along is reading it as a value too.
+        (
+            "function g(x: unknown): unknown {\n  return x;\n}\nexport function f(s: string): unknown {\n  return g(s.startsWith);\n}\n",
+            "t.ts:5:12: unsupported method .startsWith read as a value (a method may only be called directly): s.startsWith",
+        ),
+    ] {
+        assert_refused(source, expected);
+    }
+}
+
+/// The other side of the same rule: calling a method, and reading data, still compile.
+#[test]
+fn method_called_directly_still_compiles() {
+    for source in [
+        "export function f(a: Map<string, number>): unknown {\n  return a.get('k');\n}\n",
+        "export function f(s: string): number {\n  return s.slice(1).length;\n}\n",
+        "export class A {\n  x = 1;\n  m(): number {\n    return this.x;\n  }\n  n(): number {\n    return this.m();\n  }\n}\n",
+        "export function f(o: { name: string }): string {\n  return o.name;\n}\n",
+    ] {
+        if let Err(lines) = ts2py::compile(source, "t.ts", &ts2py::Options::default()) {
+            panic!(
+                "expected a module for\n{source}\ngot\n  {}",
+                lines.join("\n  ")
+            );
+        }
+    }
+}

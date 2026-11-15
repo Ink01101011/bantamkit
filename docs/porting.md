@@ -1103,6 +1103,15 @@ anchor and alias; an array-index key in a nested map), the file is read by `yaml
 `well_formed_frontmatter`, or written by `yaml.safe_dump`, exactly as before #315. An EMPTY
 generated read also goes to PyYAML: `''` and a comment-only frontmatter read as `{}` there and as
 `None` in PyYAML, and the store's sentence for that file is `frontmatter is not a mapping`.
+Two more triggers since J86-6 (the J86-R review), each a case where the generated answer cannot be
+turned into exactly what `safe_load` builds, so it is not guessed: a frontmatter holding any `\r`
+(the generated codec reads `name: on\r` as the text `'on\r'`, PyYAML breaks the line and reads
+`True`; the store reads with universal newlines, the seam's other callers need not), and a mapping,
+at any depth, in which two raw keys become one native key (`k:\n  yes: 1\n  on: 2\n  yes: 3\n` is
+`{True: 3}` to PyYAML, which assigns in file order, and the codec's text-keyed answer had already
+merged the two `yes` entries, so folding it gave `{True: 2}`). The read cache keeps only generated
+answers and is bounded by 4,096 entries AND 4 MiB of key text (`sys.getsizeof`), emptied when
+either is reached; a text over 32 KiB is never kept.
 
 **The adapters, and why each is faithful.** The generated code holds a `PyScalar` where PyYAML
 holds an `int`, `bool`, `float`, `date` or `datetime`. `factcodec._native` builds the Python value
@@ -1124,8 +1133,22 @@ before the codec sees it, so PyYAML writes its `&id001` exactly as before. The f
 
 | Class (`--suite ts2py-codec`) | runtime-py before | runtime-py now = Node |
 |---|---|---|
-| `yaml11-breaks`: U+0085, U+2028 or U+2029 in a quoted or plain scalar | read as a YAML 1.1 line break: the spaces around it folded (`"x \u2028 y"` read `x\u2028y`), a plain scalar holding one refused (`ScannerError`); 71 fuzz inputs | kept, with the spaces around it; all 71 read as Node reads them. One consequence, Node's since #120 and now runtime-py's: PyYAML writes `x\u2028y` in a hand-written key's value, `links` or `keywords` as `'x\u2028  y'` (its continuation indent), which now reads back `x\u2028  y` — two spaces gained on the first rewrite, stable after (pinned in `test_factcodec.py`). A `description` cannot be saved with one (#155), and a hand-edited one is read with the character as one space either way |
-| `pyyaml-refuses`: a raw non-printable character (`a: \x07`), a multi-line single-quoted scalar continued at column 0 | `malformed fact file <name>: unacceptable character #x0007 ...` / `ScannerError`; 27 fuzz inputs | read; all 27 as Node reads them |
+| `yaml11-breaks`: U+0085, U+2028 or U+2029 in a quoted or plain scalar | read as a YAML 1.1 line break: the spaces around it folded (`"x \u2028 y"` read `x\u2028y`), a plain scalar holding one refused (`ScannerError`); 75 fuzz inputs | kept, with the spaces around it; all 75 read as Node reads them. One consequence, Node's since #120 and now runtime-py's: PyYAML writes `x\u2028y` in a hand-written key's value, `links` or `keywords` as `'x\u2028  y'` (its continuation indent), which now reads back `x\u2028  y` — two spaces gained on the first rewrite, stable after (pinned in `test_factcodec.py`). A `description` cannot be saved with one (#155), and a hand-edited one is read with the character as one space either way |
+| `pyyaml-refuses`: a raw non-printable character (`a: \x07`), a multi-line single-quoted scalar continued at column 0 by a `---` or `...` marker line (PyYAML: `found unexpected document separator`) | `malformed fact file <name>: unacceptable character #x0007 ...` / `ScannerError`; 23 fuzz inputs, all non-printable (the marker shape is pinned by a classifier probe) | read; all 23 as Node reads them |
+
+**Each class is decided by counterfactual (J86-6, the J86-R review's finding 4).** An input is in a
+class only when undoing that class's one cause makes `before` and Node read it alike: every
+non-printable character replaced (`pyyaml-refuses`), every column-0 marker line inside the
+frontmatter indented one space, which Node must read exactly as before (`pyyaml-refuses`), every
+U+0085, U+2028 and U+2029 replaced (`yaml11-breaks`). Until J86-6 any PyYAML refusal Node read was
+`pyyaml-refuses` and any value difference in a text holding one of the three characters was
+`yaml11-breaks`; the counts moved from 71/27 to 75/23 because four plain scalars that PyYAML
+refused only because of a U+0085 or U+2028 are now filed under the cause. A difference with any
+other cause is outside the ruling and red: with one fuzz input added whose key is past PyYAML's
+1,024-character simple-key limit, the J86-5 classifier passed it as `pyyaml-refuses` (`PASS: 227
+cases`) and this one fails it (`fuzz/py=before/outside-the-315-ruling`, `FAIL: 228 cases, 1
+failures`). The classifier is pinned on six probes (`ruled-class/classifier-probes`), two of them
+third shapes that must stay outside.
 
 Every other answer is unchanged, and the suite holds that: `py=before/outside-the-315-ruling`
 (every input whose parse or store round trip moved and is in neither class) is `[]` on the fuzz

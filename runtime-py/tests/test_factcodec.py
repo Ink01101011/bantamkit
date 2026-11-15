@@ -206,3 +206,60 @@ def test_only_the_generated_answers_are_kept_and_the_cache_is_bounded(monkeypatc
     for i in range(7):
         assert factcodec.load_frontmatter(f"name: n{i}\n") == {"name": f"n{i}"}
         assert len(factcodec._READ) <= 3
+
+
+# ------------------------------------------------------------------- J86-6: the review's fixes
+
+
+@pytest.mark.parametrize("front", [
+    # J86-R finding 1: PyYAML assigns `True` three times in file order and the LAST wins; the
+    # generated codec keys by text (`yes` keeps its first place and its last value), so folding
+    # its answer gives `{True: 2}`. Any two raw keys that become one native key go to PyYAML.
+    "k:\n  yes: 1\n  on: 2\n  yes: 3\n",
+    "name: n\nyes: first\non: second\nyes: third\n",
+    "k:\n  null: 1\n  Null: 2\n  null: 3\n",
+    "k:\n  off: 1\n  false: 2\n  off: 3\n",
+])
+def test_raw_keys_that_fold_to_one_native_key_are_read_by_pyyaml(front, monkeypatch):
+    monkeypatch.setattr(factcodec, "_READ", {})
+    assert _same(factcodec.load_frontmatter(front), yaml.safe_load(front)), front
+    assert factcodec._READ == {}, "a folded mapping must not be answered by the generated codec"
+
+
+def test_duplicate_folding_keys_read_through_the_store_as_pyyaml_reads_them(tmp_path):
+    # The reviewer's dupkey.py shape, on a scratch store.
+    (tmp_path / "facts").mkdir()
+    front = (
+        "name: f\ndescription: d\ntype: user\ncreated: '2026-01-01'\nlast_recalled: null\n"
+        "links: []\nyes: first\non: second\nyes: third\nnested:\n  yes: a\n  on: b\n  yes: c\n"
+    )
+    (tmp_path / "facts" / "f.md").write_text(f"---\n{front}---\n\nbody\n", encoding="utf-8")
+    fact = MemoryStore(tmp_path)._facts()[0]
+    assert fact.extra["nested"] == yaml.safe_load(front)["nested"] == {True: "c"}
+
+
+@pytest.mark.parametrize("front", ["name: on\r\n", "name: n\r\nlinks:\r\n- a\r\n", "a: 'x\ry'\n"])
+def test_a_carriage_return_is_read_by_pyyaml(front, monkeypatch):
+    # J86-R finding 2: the generated codec reads `\r` as text (`'on\r'`), where PyYAML breaks the
+    # line there. The seam promises `safe_load` values to every caller, not only to the ones that
+    # read with universal newlines.
+    monkeypatch.setattr(factcodec, "_READ", {})
+    assert _same(factcodec.load_frontmatter(front), yaml.safe_load(front)), repr(front)
+    assert factcodec._READ == {}
+
+
+def test_the_cache_is_bounded_by_total_size_as_well_as_count(monkeypatch):
+    # J86-R finding 5a: 4096 entries of up to 32 KiB each was a 128 MiB key bound; the size bound
+    # (`_READ_BYTES`, 4 MiB of key text as `sys.getsizeof` measures it) holds whatever the count.
+    import sys
+
+    assert factcodec._READ_BYTES == 4 << 20
+    monkeypatch.setattr(factcodec, "_READ", {})
+    monkeypatch.setattr(factcodec, "_READ_SIZE", 0)
+    monkeypatch.setattr(factcodec, "_READ_BYTES", 64 << 10)
+    for i in range(40):
+        front = f"name: n{i}\ndescription: " + "d" * 8000 + "\n"
+        assert factcodec.load_frontmatter(front) == yaml.safe_load(front)
+        held = sum(sys.getsizeof(text) for text in factcodec._READ)
+        assert held == factcodec._READ_SIZE <= 64 << 10
+    assert factcodec._READ, "nothing was kept"

@@ -127,6 +127,39 @@ const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
     ("toString", 0, 1, None, Ret::Str),
 ];
 
+/// J86-R finding 3: every method a builtin prototype the subset can reach carries (String, Array,
+/// Map, Set, RegExp, Number, Function, Object.prototype), whether or not `METHODS` can call it. A
+/// member with one of these names, or a name a compiled or adapter class declares as a method, is
+/// CALLABLE, and may only be named as the callee of a direct call: read as a value it is a function
+/// in JS (`this` unbound on a later call, identical on every read) and something else in Python (a
+/// fresh bound method, or `undefined`). ts2py has no type checker, so the name decides, on every
+/// receiver: a refusal is the side that cannot be wrong. `length` and `size` are data, not here.
+#[rustfmt::skip]
+const JS_METHOD_NAMES: &[&str] = &[
+    // String.prototype (Annex B's HTML methods included: they are functions in Node too).
+    "anchor", "at", "big", "blink", "bold", "charAt", "charCodeAt", "codePointAt", "concat",
+    "endsWith", "fixed", "fontcolor", "fontsize", "includes", "indexOf", "isWellFormed",
+    "italics", "lastIndexOf", "link", "localeCompare", "match", "matchAll", "normalize", "padEnd",
+    "padStart", "repeat", "replace", "replaceAll", "search", "slice", "small", "split",
+    "startsWith", "strike", "sub", "substr", "substring", "sup", "toLocaleLowerCase",
+    "toLocaleUpperCase", "toLowerCase", "toUpperCase", "toWellFormed", "trim", "trimEnd",
+    "trimLeft", "trimRight", "trimStart",
+    // Array.prototype.
+    "copyWithin", "entries", "every", "fill", "filter", "find", "findIndex", "findLast",
+    "findLastIndex", "flat", "flatMap", "forEach", "join", "keys", "map", "pop", "push", "reduce",
+    "reduceRight", "reverse", "shift", "some", "sort", "splice", "toReversed", "toSorted",
+    "toSpliced", "unshift", "values", "with",
+    // Map.prototype and Set.prototype.
+    "add", "clear", "delete", "difference", "get", "has", "intersection", "isDisjointFrom",
+    "isSubsetOf", "isSupersetOf", "set", "symmetricDifference", "union",
+    // RegExp.prototype, Number.prototype, Function.prototype.
+    "compile", "exec", "test", "toExponential", "toFixed", "toPrecision", "apply", "bind", "call",
+    // Object.prototype.
+    "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__", "constructor",
+    "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString", "toString",
+    "valueOf",
+];
+
 /// Static calls on a builtin namespace: object, method, helper, min args, max args, returns.
 const STATIC_CALLS: &[(&str, &str, &str, usize, usize, Ret)] = &[
     ("Array", "isArray", "_js_is_array", 1, 1, Ret::Bool),
@@ -1126,6 +1159,12 @@ impl<'s> Lowerer<'s> {
                 if m.optional {
                     return self.refuse(m.span, "optional chaining");
                 }
+                // J86-R finding 3: this arm is never a call's callee (`call` takes that member
+                // itself), so a callable name here is a method read as a value.
+                if self.is_method_name(&m.object, m.property.name.as_str()) {
+                    let construct = method_as_value(m.property.name.as_str());
+                    return self.refuse(m.span, construct);
+                }
                 // J86: `this.x` is the attribute itself; `Object.prototype` a stand-in compared by
                 // identity (`Object.getPrototypeOf(o) === Object.prototype`).
                 if let Expression::ThisExpression(_) = strip(&m.object) {
@@ -1159,6 +1198,15 @@ impl<'s> Lowerer<'s> {
             Expression::ComputedMemberExpression(m) => {
                 if m.optional {
                     return self.refuse(m.span, "optional chaining");
+                }
+                // A literal key is a name (`xs['map']`); a computed one is checked at run time
+                // (`_js_get` raises on a method name the receiver's JS type carries).
+                if let Expression::StringLiteral(key) = strip(&m.expression)
+                    && let Some(name) = key.value.as_str()
+                    && self.is_method_name(&m.object, name)
+                {
+                    let construct = method_as_value(name);
+                    return self.refuse(m.span, construct);
                 }
                 let object = self.expr(&m.object);
                 let key = self.expr(&m.expression);
@@ -2225,6 +2273,20 @@ impl<'s> Lowerer<'s> {
     }
 
     /// `this.<name>` inside a class: the attribute, which the class (or Error) must declare.
+    /// Whether `object.name` names a method (J86-R finding 3). On `this` the class decides
+    /// exactly; on any other receiver the name does (`JS_METHOD_NAMES`, `METHODS`, every class).
+    fn is_method_name(&self, object: &Expression<'_>, name: &str) -> bool {
+        if let Expression::ThisExpression(_) = strip(object) {
+            return self
+                .class_ctx
+                .as_ref()
+                .is_some_and(|class| class.methods.contains(name));
+        }
+        JS_METHOD_NAMES.contains(&name)
+            || METHODS.iter().any(|(m, ..)| *m == name)
+            || self.ctx.class_methods.contains(name)
+    }
+
     fn this_member(&mut self, name: &str, span: Span) -> Py {
         let declared = self
             .class_ctx
@@ -2705,6 +2767,10 @@ pub fn scan_module(program: &Program<'_>) -> (HashMap<String, (String, bool)>, H
 }
 
 // -------------------------------------------------------------------- helpers
+
+fn method_as_value(name: &str) -> String {
+    format!("method .{name} read as a value (a method may only be called directly)")
+}
 
 fn pad(indent: usize) -> String {
     "    ".repeat(indent)

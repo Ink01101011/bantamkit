@@ -403,6 +403,8 @@ def _js_get(obj, key):
             return _js_len(obj)
         index = _js_index_key(key)
         if index is None:
+            if key in _JS_STRING_METHODS:
+                raise _js_method_value(key)
             return _JS_UNDEFINED
         # J86: a string is indexed by UTF-16 code unit, so an astral character reads as its lead
         # or trail surrogate, as in JS.
@@ -416,6 +418,8 @@ def _js_get(obj, key):
             return obj[index]
         if key in ("index", "input") and isinstance(obj, _JsMatchArray):
             return getattr(obj, key)
+        if key in _JS_ARRAY_METHODS:
+            raise _js_method_value(key)
         return _JS_UNDEFINED
     if obj is None or obj is _JS_UNDEFINED:
         raise TypeError(f"Cannot read properties of {_js_str(obj)} (reading '{_js_str(key)}')")
@@ -423,6 +427,8 @@ def _js_get(obj, key):
         return len(obj)
     if isinstance(obj, _JsObject):
         return _js_object_get(obj, key if isinstance(key, str) else _js_str(key))
+    if isinstance(key, str) and key in _js_methods_of(obj):
+        raise _js_method_value(key)
     return _JS_UNDEFINED
 
 
@@ -1443,6 +1449,50 @@ _JS_OBJECT_PROTO_NAMES = frozenset(
 )
 
 
+# J86-R finding 3: the method names each builtin prototype carries, for a COMPUTED key the compiler
+# could not see (`xs[k]` with `k === 'push'`). JS answers with the function; ts2py refuses at
+# compile time every method read as a value it can name, and here every one it could not.
+_JS_STRING_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+    "anchor at big blink bold charAt charCodeAt codePointAt concat endsWith fixed fontcolor "
+    "fontsize includes indexOf isWellFormed italics lastIndexOf link localeCompare match matchAll "
+    "normalize padEnd padStart repeat replace replaceAll search slice small split startsWith "
+    "strike sub substr substring sup toLocaleLowerCase toLocaleUpperCase toLowerCase toUpperCase "
+    "toWellFormed trim trimEnd trimLeft trimRight trimStart".split()
+)
+_JS_ARRAY_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+    "at concat copyWithin entries every fill filter find findIndex findLast findLastIndex flat "
+    "flatMap forEach includes indexOf join keys lastIndexOf map pop push reduce reduceRight "
+    "reverse shift slice some sort splice toReversed toSorted toSpliced unshift values with".split()
+)
+_JS_MAP_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+    "clear delete entries forEach get has keys set values".split()
+)
+_JS_SET_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+    "add clear delete difference entries forEach has intersection isDisjointFrom isSubsetOf "
+    "isSupersetOf keys symmetricDifference union values".split()
+)
+_JS_NUMBER_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+    "toExponential toFixed toPrecision".split()
+)
+_JS_REGEXP_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset("compile exec test".split())
+
+
+def _js_methods_of(obj):
+    if isinstance(obj, _JsMap):
+        return _JS_MAP_METHODS
+    if isinstance(obj, _JsSet):
+        return _JS_SET_METHODS
+    if isinstance(obj, (int, float)) and not isinstance(obj, bool):
+        return _JS_NUMBER_METHODS
+    if isinstance(obj, _js_re.Pattern):
+        return _JS_REGEXP_METHODS
+    return _JS_OBJECT_PROTO_NAMES
+
+
+def _js_method_value(key):
+    return TypeError(f"ts2py: reading the method {key!r} as a value is outside the subset")
+
+
 def _js_inherited(key):
     """A read that would reach `Object.prototype` in JS (`o.constructor`, `o["toString"]`): JS
     answers with an inherited function, which the subset does not model, so it raises instead."""
@@ -1481,6 +1531,8 @@ def _js_object_get(obj, key):
     own = obj.__dict__
     if key in own and not key.startswith("_"):
         return own[key]
+    if key in _js_class_names(type(obj), "_js_own_methods"):
+        raise _js_method_value(key)
     if key in _js_class_names(type(obj), "_js_own"):
         return getattr(obj, key)
     if key in _JS_OBJECT_PROTO_NAMES:

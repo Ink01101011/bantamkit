@@ -247,16 +247,97 @@ function parseClass(text, py, node, isTextKey) {
 }
 
 /**
- * The #315 class an input was in BEFORE the switch (`before` against node), or null. Read off the
- * values and the body only, so a non-text key (`on:`, keyed True by PyYAML) does not mask it.
+ * The #315 class an input was in BEFORE the switch (`before` against node), or null. NARROW BY
+ * COUNTERFACTUAL (J86-R finding 4): an input is in a class only when undoing that class's one
+ * cause makes `before` and node agree, so a difference with any other cause is outside the
+ * ruling and red (`py=before/outside-the-315-ruling`). `cf` holds, per cause present in the text,
+ * both answers on the text with that cause undone (`counterfactuals` below):
+ *   np  every character PyYAML's Reader rejects (`NON_PRINTABLE`) replaced by `Z`;
+ *   sq  every column-0 `---` / `...` marker line inside the frontmatter indented one space, which
+ *       changes nothing to node (a quoted scalar's continuation drops its indent) and is what
+ *       PyYAML refuses in a multi-line single-quoted scalar (`found unexpected document
+ *       separator`); node must read the counterfactual exactly as it read the input;
+ *   br  every U+0085, U+2028 and U+2029 replaced by `Z`.
+ * `pyyaml-refuses` is np or sq where `before` refused and node read; `yaml11-breaks` is br. Agree
+ * means both read, with the same values and body (keys aside, so `on:`, keyed True by PyYAML,
+ * does not mask a class).
  */
-function ruledClass(text, before, node) {
-  if (refused(before) && !refused(node)) return 'pyyaml-refuses';
-  if (refused(before) || refused(node)) return null;
-  const values = (p) => ({ v: p.meta.map(([, v]) => v), body: p.body });
-  if (!same(values(before), values(node)) && /[\x85\u2028\u2029]/.test(text)) return 'yaml11-breaks';
+function ruledClass(before, node, cf) {
+  if (refused(node)) return null;
+  const values = (x) => ({ v: x.meta.map(([, v]) => v), body: x.body });
+  const agree = (c) => c !== undefined && !refused(c.before) && !refused(c.node) && same(values(c.before), values(c.node));
+  if (!refused(before) && same(values(before), values(node))) return null;
+  if (refused(before)) {
+    if (agree(cf.np)) return 'pyyaml-refuses';
+    if (agree(cf.sq) && same(cf.sq.node, node)) return 'pyyaml-refuses';
+  }
+  if (agree(cf.br)) return 'yaml11-breaks';
   return null;
 }
+
+/** PyYAML 6.0.3's `Reader.NON_PRINTABLE`: what its reader refuses with `unacceptable character`. */
+const NON_PRINTABLE = /[^\t\n\r\x20-\x7e\x85\xa0-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]/gu;
+const YAML11_BREAKS = /[\x85\u2028\u2029]/g;
+
+/** The counterfactual texts for `text`, one per cause present in it (see `ruledClass`). */
+function counterfactualTexts(text) {
+  const out = {};
+  if (NON_PRINTABLE.test(text)) out.np = text.replace(NON_PRINTABLE, 'Z');
+  NON_PRINTABLE.lastIndex = 0;
+  if (YAML11_BREAKS.test(text)) out.br = text.replace(YAML11_BREAKS, 'Z');
+  YAML11_BREAKS.lastIndex = 0;
+  // The frontmatter is between the opening fence and the first line that is `---` alone.
+  const close = /\n---(?:\r?\n|$)/.exec(text.slice(3));
+  if (text.startsWith('---') && close !== null) {
+    const end = 3 + close.index;
+    const front = text.slice(0, end);
+    const moved = front.replace(/(?<=\n)(?=(?:---|\.\.\.)(?:[ \t\r\n]|$))/g, ' ');
+    if (moved !== front) out.sq = moved + text.slice(end);
+  }
+  return out;
+}
+
+/**
+ * Both answers on every counterfactual text of every input where `before` and node disagree: one
+ * more runtime-py run over the counterfactual files, node in process. Returns, per input, `{}` or
+ * `{np?, sq?, br?}` of `{before, node}` parses.
+ */
+function counterfactuals(ctx, bed, sub, node, inputs, answers) {
+  const dir = join(bed, sub);
+  mkdirSync(dir, { recursive: true });
+  const files = [];
+  const cf = inputs.map((input, i) => {
+    const { before, node: n } = answers[i];
+    if (same(before.parse, n.parse)) return {};
+    const out = {};
+    for (const [cause, text] of Object.entries(counterfactualTexts(input.text))) {
+      const path = join(dir, `${files.length}.md`);
+      writeFileSync(path, text, 'utf8');
+      utimesSync(path, PINNED_MTIME, PINNED_MTIME);
+      out[cause] = { at: files.length, node: node.parse(readFileSync(path)) };
+      files.push(path);
+    }
+    return out;
+  });
+  if (files.length === 0) return cf;
+  const ran = ctx.runPython(REF, { generated: join(bed, 'gen'), package: PACKAGE, files, facts: [] });
+  for (const c of cf) for (const x of Object.values(c)) x.before = ran.before.files[x.at].parse;
+  return cf;
+}
+
+/**
+ * The classifier pinned on one input of each ruled shape and two of a third (J86-R finding 4):
+ * a key past PyYAML's 1024-character simple-key limit and a tab-indented continuation, which
+ * PyYAML refuses and node reads, for neither of the ruled reasons. Each must land where named.
+ */
+const CLASSIFIER_PROBES = [
+  ['pyyaml-refuses', 'non-printable', '---\nname: n\ndescription: a\x07b\n---\n\nbody\n'],
+  ['pyyaml-refuses', 'single-quoted, column-0 marker', "---\nname: n\ndescription: 'x\n--- y'\n---\n\nbody\n"],
+  ['yaml11-breaks', 'U+2028 in a double-quoted scalar', '---\nname: n\ndescription: "x \u2028 y"\n---\n\nbody\n'],
+  ['yaml11-breaks', 'U+0085 in a plain scalar (PyYAML refused)', '---\nname: n\ndescription: a\x85b\n---\n\nbody\n'],
+  [null, 'a key past 1024 characters', `---\nname: n\n${'k'.repeat(1100)}: x\n---\n\nbody\n`],
+  [null, 'a key past 1024 characters, with a raw BEL elsewhere', `---\nname: n\nd: \x07\n${'k'.repeat(1100)}: x\n---\n\nbody\n`],
+];
 
 /** Two parses alike up to `non-text-key`: the same text keys, values and body, in order. */
 function readAlike(py, node, isTextKey) {
@@ -265,7 +346,7 @@ function readAlike(py, node, isTextKey) {
   return same(pk, nk) && same(py.meta.map(([, v]) => v), node.meta.map(([, v]) => v)) && py.body === node.body;
 }
 
-function threeWay(inputs, ans, isTextKey) {
+function threeWay(inputs, ans, isTextKey, cfs) {
   const out = { parseGen: [], rtGen: [], unclassified: [], known: {}, readAlike: 0, refusedAlike: 0, codecRtAgree: 0, storeLayer: 0, nested: 0, nestedWritten: 0, moved: [], ruled: {}, nonTextRt: [] };
   for (const k of Object.keys(KNOWN)) out.known[k] = [];
   for (const k of Object.keys(RULED_315)) out.ruled[k] = { inputs: 0, asNode: 0, misread: [] };
@@ -273,7 +354,7 @@ function threeWay(inputs, ans, isTextKey) {
     const { node, py, gen, before } = ans[i];
     // #315 (J86-3): what the switch moved. `before` is runtime-py's PyYAML-only read; an input
     // in one of the two ruled classes must now read as node; any other input must not move.
-    const beforeCls = ruledClass(input.text, before.parse, node.parse);
+    const beforeCls = ruledClass(before.parse, node.parse, cfs[i]);
     if (beforeCls !== null) {
       const r = out.ruled[beforeCls];
       r.inputs += 1;
@@ -663,7 +744,27 @@ export async function run(ctx) {
     writeFileSync(ctx.options.dump, all.map((x, i) => JSON.stringify({ id: x.id, ...answers[i] })).join('\n'));
   }
 
-  const fuzz = threeWay(fuzzInputs, slice(0, fuzzInputs.length), ff.isTextKey);
+  // J86-R finding 4: the ruled classes are decided by counterfactual, and the classifier itself is
+  // pinned on CLASSIFIER_PROBES, so a widened class is red here and not only on a lucky fuzz.
+  const probes = CLASSIFIER_PROBES.map(([, label, text], i) => {
+    const path = join(bed, `probe-${i}.md`);
+    writeFileSync(path, text, 'utf8');
+    utimesSync(path, PINNED_MTIME, PINNED_MTIME);
+    return { id: `probe/${label}`, path, text };
+  });
+  const probeRun = ctx.runPython(REF, { generated: join(bed, 'gen'), package: PACKAGE, files: probes.map((x) => x.path), facts: [] });
+  const probeAns = probes.map((x, i) => ({ before: probeRun.before.files[i], node: { parse: node.parse(readFileSync(x.path)) } }));
+  const probeCf = counterfactuals(ctx, bed, 'counterfactual-probes', node, probes, probeAns);
+  cases.push({
+    name: 'ruled-class/classifier-probes',
+    kind: 'json',
+    expected: CLASSIFIER_PROBES.map(([cls, label]) => [label, cls]),
+    actual: CLASSIFIER_PROBES.map(([, label], i) => [label, ruledClass(probeAns[i].before.parse, probeAns[i].node.parse, probeCf[i])]),
+  });
+
+  const cfs = counterfactuals(ctx, bed, 'counterfactual', node, all, answers);
+  const cfSlice = (from, n) => cfs.slice(from, from + n);
+  const fuzz = threeWay(fuzzInputs, slice(0, fuzzInputs.length), ff.isTextKey, cfSlice(0, fuzzInputs.length));
   cases.push(...aggregateCases('fuzz', fuzz, 'fuzz', { rulings: true }));
   notes.push(
     `fuzz (seed ${FUZZ_SEED}): ${facts.length} facts formatted by all three, gen!=node ${fmtGen.length}, ` +
@@ -691,7 +792,7 @@ export async function run(ctx) {
       },
     );
   });
-  const rel = threeWay(releaseInputs, relAns, ff.isTextKey);
+  const rel = threeWay(releaseInputs, relAns, ff.isTextKey, cfSlice(fuzzInputs.length, releaseInputs.length));
   notes.push(summarise('previous releases', releaseInputs.length, rel));
   if (ctx.options['write-expected'] === 'factfile-cases') {
     const fresh = {};
@@ -708,7 +809,8 @@ export async function run(ctx) {
         `holds a fact file on this machine (${real.looked} directories looked at); class (a) runs only where they exist`,
     );
   } else {
-    const r = threeWay(real.inputs, slice(fuzzInputs.length + releaseInputs.length, real.inputs.length), ff.isTextKey);
+    const at = fuzzInputs.length + releaseInputs.length;
+    const r = threeWay(real.inputs, slice(at, real.inputs.length), ff.isTextKey, cfSlice(at, real.inputs.length));
     // No rulings here: the stores change under the suite, so a class may come and go; it is
     // counted in the note, and anything outside the known classes is still red.
     cases.push(...aggregateCases('real', r, 'real stores', { rulings: false }));

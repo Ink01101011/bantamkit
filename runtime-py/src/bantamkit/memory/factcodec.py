@@ -25,11 +25,18 @@ trusted: a value read must print (`str()`) as the generated scalar's `text`, and
 written must come back from `construct_plain` with PyYAML's own plain spelling as its `yaml`.
 Anything that fails a check -- or that the generated codec cannot hold at all (a set, bytes,
 a non-text key in a nested map, a collection appearing twice) -- goes the PyYAML way.
+
+A READ IS NEVER GUESSED (J86-R). Where the generated structure cannot be turned into exactly
+what `safe_load` builds, the read is PyYAML's: a text holding any `\r` (PyYAML breaks a line
+there, the codec keeps it as text), and a mapping, at any depth, in which two raw keys become
+one native key (`yes:` and `on:` are both `True`; PyYAML's last-in-file-order winner is not
+recoverable from the codec's text-keyed answer).
 """
 
 from __future__ import annotations
 
 import math
+import sys
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -69,6 +76,11 @@ def load_frontmatter(text: str) -> Any:
     """
     from .store import well_formed_frontmatter
 
+    if "\r" in text:
+        # J86-R finding 2: the generated codec reads a CR as text (`name: on\r` is `'on\r'`)
+        # where PyYAML breaks the line there (`True`). The store reads with universal newlines,
+        # but the promise of `safe_load` values is to every caller, so any CR is PyYAML's.
+        return _pyyaml_load(text)
     held = _READ.get(text)
     if held is not None:
         return _fresh(held)
@@ -93,17 +105,26 @@ def load_frontmatter(text: str) -> Any:
 # Every hit is a fresh copy of the lists and dicts (scalars are immutable), so no caller can change
 # what the next one reads. Only the generated codec's answers are kept; a PyYAML fallback is read
 # again each time, exactly as before. Bounded: emptied when full, and a long text is never kept.
+# Full is EITHER bound (J86-R finding 5a): 4096 entries, or 4 MiB of key text as `sys.getsizeof`
+# counts it -- the count alone allowed 4096 x 32 KiB = 128 MiB of keys. The value a key holds is
+# built from that text, so the text's size is the measure of the entry.
 _READ: dict[str, Any] = {}
 _READ_ENTRIES = 4096
 _READ_LONGEST = 1 << 15
+_READ_BYTES = 4 << 20
+_READ_SIZE = 0  # `sys.getsizeof` of every key in `_READ`, summed
 
 
 def _remember(text: str, value: Any) -> None:
+    global _READ_SIZE
     if len(text) > _READ_LONGEST:
         return
-    if len(_READ) >= _READ_ENTRIES:
+    size = sys.getsizeof(text)
+    if len(_READ) >= _READ_ENTRIES or _READ_SIZE + size > _READ_BYTES:
         _READ.clear()
+        _READ_SIZE = 0
     _READ[text] = _fresh(value)
+    _READ_SIZE += size
 
 
 def _fresh(value: Any) -> Any:
@@ -131,9 +152,14 @@ def _native_mapping(meta: dict) -> dict:
     out: dict = {}
     for key, value in meta.items():
         # A key YAML resolves to a non-string (`on:` is True, `null:` is None) is keyed by that
-        # value, as PyYAML keys it; the codec keys it by its text. Assigning into one dict
-        # collapses `on:` and `yes:` onto one `True` the way PyYAML's constructor does.
+        # value, as PyYAML keys it; the codec keys it by its text.
         native_key = key if _gen.is_text_key(key) else _native(_genyaml.construct_plain(key))
+        if native_key in out:
+            # J86-R finding 1: two raw keys of one mapping that become ONE native key (`yes:` and
+            # `on:` are both `True`). PyYAML assigns them in file order and the last wins; the
+            # codec already merged each text's repeats (first place, last value), so the order
+            # PyYAML needs is gone and folding here could only guess. Not a guess: PyYAML's read.
+            raise _Unheld(f"keys {key!r} and an earlier one are the same {native_key!r}")
         out[native_key] = _native(value)
     return out
 
