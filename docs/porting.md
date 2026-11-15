@@ -1257,6 +1257,8 @@ catches only what JS could have thrown (`_js_catch`): a subset refusal (`ts2py: 
 | `format_micros(-1)`, `format_micros('5')`, `format_micros(1.5)` | `-1.999999`, `TypeError`, `ValueError` | `0.0000-1`, `0.000005`, `RangeError` (a `ValueError`): the function is documented for non-negative ints only |
 | `budget(...)` with a float limit or `in_flight`, a refusal over a float view | `affordable` `19.0`, `"spent: 4.0 of 5.0"` | `19`, `"spent: 4 of 5"` (a figure is a double; the J87-1F / J87-1G rows above) |
 | `refusal(view)` whose `remaining` lacks a declared dimension | raised `KeyError` | `None` (JS reads `undefined`, which is not short) |
+| `load_price_table(<an unreadable file>)` (EACCES, found by J87-R) | raised `PermissionError` | `PriceTableError: price table is not valid JSON: <path>` (the read throws inside the `try`, as for a directory); still refused at `mcpserver` either way |
+| hand-built tables outside the contract (`price_tokens` with `rates: {'m': None}`, a rate of `2.5`, `rates: None` / `[]`; `validate_price_table` with a tuple `rates`; `decode_price_json('-0')`), found by J87-R | `no rate recorded` / `AttributeError` / `PriceTableError` / `0` | Node's answer: a JS `TypeError` / `RangeError`, `no rate recorded`, a subset refusal, `-0.0`; a decode error is a `ValueError` but no longer a `json.JSONDecodeError`. The only caller (`tokenledger.py`) passes a validated table, so none is reachable from the product surface |
 
 **Model names `Object.prototype` gives every object: fixed in both runtimes by J87-3F** (found
 by J87-3; see the divergence-table row for `pricing` and `Object.prototype` model names).
