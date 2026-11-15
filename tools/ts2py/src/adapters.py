@@ -417,7 +417,7 @@ def _os_char(c):
     encode it (`os.fsencode`), else the U+FFFD Node's UTF-8 encoding writes for it. Windows has
     no surrogateescape names (its `fsencode` passes every lone surrogate through), so there every
     lone surrogate is Node's U+FFFD, and the lone-surrogate beds agree on NTFS too."""
-    if _os.name == "nt":
+    if _os.name == "nt" and 0xD800 <= ord(c) <= 0xDFFF:
         return "�"
     try:
         _os.fsencode(c)
