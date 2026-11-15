@@ -402,7 +402,16 @@ export async function run(ctx) {
       { setup: [], log: { path: 'sur.jsonl' }, calls: [['record', 'memory_save', 'saved', 'lone_surrogate']] },
       'Python raises UnicodeEncodeError out of record() (the payload is encoded before the OSError guard) and writes nothing; Node writes the line with the surrogate escaped'],
   ];
-  const allBeds = [...BEDS, ...DIVERGENT_BEDS].map(([, b], i) => {
+  // J88-RR R1: a surrogateescape code point (U+DC80..U+DCFF) is the undecodable byte of a real POSIX
+  // name to Python (os.fsencode: 0xff on Linux, refused by APFS), and U+FFFD to Node. Target-specific
+  // I/O by orchestrator decision (docs/porting.md, J88-RF F4b). Windows maps it to U+FFFD on both
+  // sides, so the ruling exists only where the two differ.
+  const ESCAPE_BEDS = process.platform === 'win32' ? [] : [
+    ['a surrogateescape code point in the directory (U+DCFF)',
+      { setup: [], log: { path: 'esc\udcff/ev.jsonl' }, calls: [['record', 'memory_save', 'saved', 'tokens']] },
+      "Python hands U+DCFF to the OS as the byte 0xff (os.fsencode, surrogateescape): Linux writes the real byte name, APFS refuses it (write_failed true); Node writes a U+FFFD directory (target-specific I/O, docs/porting.md J88-RF F4b)"],
+  ];
+  const allBeds = [...BEDS, ...DIVERGENT_BEDS, ...ESCAPE_BEDS].map(([, b], i) => {
     const root = join(bedRoot, `bed-${String(i + 1).padStart(2, '0')}`);
     const fix = (o) => JSON.parse(JSON.stringify(o).replaceAll('<root>', root.replaceAll('\\', '\\\\')));
     return { py: { ...fix(b), root: join(root, 'py') }, nd: { ...fix(b), root: join(root, 'node') } };
@@ -460,6 +469,14 @@ export async function run(ctx) {
   const slash = BEDS.length;
   cases.push({ name: 'bed: a literal path ending in / — both stay enabled and neither raises', kind: 'json',
     expected: { enabled: pyBeds[slash].enabled, calls: pyBeds[slash].calls }, actual: { enabled: ndBeds[slash].enabled, calls: ndBeds[slash].calls } });
+
+  ESCAPE_BEDS.forEach(([label, , reason], j) => {
+    const i = BEDS.length + DIVERGENT_BEDS.length + j;
+    cases.push({ name: `ruling: bed: ${label}`, kind: 'json', expected: pyBeds[i], actual: ndBeds[i], ruling: reason });
+    // The companion: both stay enabled and neither raises out of record().
+    cases.push({ name: `bed: ${label} — both stay enabled and neither raises`, kind: 'json',
+      expected: { enabled: pyBeds[i].enabled, calls: pyBeds[i].calls }, actual: { enabled: ndBeds[i].enabled, calls: ndBeds[i].calls } });
+  });
 
   notes.push(
     `${TIMESTAMPS.length} timestamps, ${agreeing} records, ${agreeingRaws} switch spellings and ${BEDS.length} beds agree; ` +
