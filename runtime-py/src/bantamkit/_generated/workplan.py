@@ -88,8 +88,8 @@ def _read_nodes__typed(nodes):
         if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
             return _refuse("nodes[" + _js_str(index) + "] must be an object")
         node = raw
-        id = _js_get(node, "id")
-        if _js_typeof(id) != "string":
+        id_ = _js_get(node, "id")
+        if _js_typeof(id_) != "string":
             return _refuse("nodes[" + _js_str(index) + "].id must be a string")
         depends_on = _js_get(node, "depends_on")
         if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_m_every(depends_on, lambda dep, *_: _js_typeof(dep) == "string")):
@@ -98,10 +98,10 @@ def _read_nodes__typed(nodes):
         if not _js_is_nullish(priority) and not _is_integer(priority):
             return _refuse("nodes[" + _js_str(index) + "].priority must be an integer")
         touches = _js_get(node, "touches")
-        touches_fault = _touches_refusal__typed(id, touches)
+        touches_fault = _touches_refusal__typed(id_, touches)
         if touches_fault is not None:
             return _refuse(touches_fault)
-        read.append({"id": id, "depends_on": [] if _js_is_nullish(depends_on) else depends_on, "priority": 0 if _js_is_nullish(priority) else priority, "touches": None if _js_is_nullish(touches) else touches})
+        read.append({"id": id_, "depends_on": [] if _js_is_nullish(depends_on) else depends_on, "priority": 0 if _js_is_nullish(priority) else priority, "touches": None if _js_is_nullish(touches) else touches})
     return read
 
 
@@ -113,8 +113,8 @@ def _read_nodes(nodes):
         if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
             return _refuse("nodes[" + _js_str(index) + "] must be an object")
         node = raw
-        id = _js_get(node, "id")
-        if _js_typeof(id) != "string":
+        id_ = _js_get(node, "id")
+        if _js_typeof(id_) != "string":
             return _refuse("nodes[" + _js_str(index) + "].id must be a string")
         depends_on = _js_get(node, "depends_on")
         if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_m_every(depends_on, lambda dep, *_: _js_typeof(dep) == "string")):
@@ -123,10 +123,10 @@ def _read_nodes(nodes):
         if not _js_is_nullish(priority) and not _is_integer(priority):
             return _refuse("nodes[" + _js_str(index) + "].priority must be an integer")
         touches = _js_get(node, "touches")
-        touches_fault = _touches_refusal__typed(id, touches)
+        touches_fault = _touches_refusal__typed(id_, touches)
         if touches_fault is not None:
             return _refuse(touches_fault)
-        read.append({"id": id, "depends_on": [] if _js_is_nullish(depends_on) else depends_on, "priority": 0 if _js_is_nullish(priority) else priority, "touches": None if _js_is_nullish(touches) else touches})
+        read.append({"id": id_, "depends_on": [] if _js_is_nullish(depends_on) else depends_on, "priority": 0 if _js_is_nullish(priority) else priority, "touches": None if _js_is_nullish(touches) else touches})
     return read
 
 
@@ -205,9 +205,9 @@ def _plan__typed(input):
                 if not _js_m_has(owner, path):
                     _js_m_set(owner, path, _js_get(entry, "id"))
         batches.append(batch)
-        for id in batch:
-            _js_m_add(emitted, id)
-            sequence.append(id)
+        for id_ in batch:
+            _js_m_add(emitted, id_)
+            sequence.append(id_)
         if len(batch) > width:
             width = len(batch)
     answer = {"batches": batches, "sequence": sequence, "width": width}
@@ -259,9 +259,9 @@ def plan(input):
                 if not _js_m_has(owner, path):
                     _js_m_set(owner, path, _js_get(entry, "id"))
         batches.append(batch)
-        for id in batch:
-            _js_m_add(emitted, id)
-            sequence.append(id)
+        for id_ in batch:
+            _js_m_add(emitted, id_)
+            sequence.append(id_)
         if len(batch) > width:
             width = len(batch)
     answer = {"batches": batches, "sequence": sequence, "width": width}

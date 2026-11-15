@@ -18,12 +18,16 @@
  *
  * The ledger is an enhancement: no `fs` error leaves this module. A write that cannot
  * happen returns `false`; a read that cannot happen reads as no usage.
+ *
+ * #316 G3 (J89-2): ts2py compiles this file into `runtime-py/src/bantamkit/_generated/usage.py`,
+ * which `bantamkit.memory.usage` serves; CPython's `**` is `pysem.pyPow` (read the note there).
  */
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { LogSegment, ROTATE_BYTES, type Row } from '../storage/logsegment.js';
+import { pyPow } from '../pysem.js';
 import { pyRealpath } from './pyfs.js';
 
 export const USAGE_HALF_LIFE_DAYS = 14.0;
@@ -94,18 +98,52 @@ export function storeId(storeRoot: string): string {
   return createHash('sha256').update(pyRealpath(storeRoot), 'utf8').digest('hex').slice(0, 16);
 }
 
+/**
+ * `parseTs`'s answers, by stamp: a read parses every event's `ts` twice (`valid`, then the
+ * weights), and the generated Python pays for each parse (#316 G3, J89-2). A pure function's
+ * memo; emptied when it holds `PARSED_MAX` stamps, so it stays bounded in a long-lived server.
+ */
+let PARSED = new Map<string, number>();
+const PARSED_MAX = 8192;
+
 /** Milliseconds since the epoch for a `YYYY-MM-DDTHH:MM:SSZ` stamp, read as UTC, or NaN. */
 export function parseTs(ts: string): number {
+  const held = PARSED.get(ts);
+  if (held !== undefined) return held;
+  const t = parseStamp(ts);
+  if (PARSED.size >= PARSED_MAX) PARSED = new Map<string, number>();
+  PARSED.set(ts, t);
+  return t;
+}
+
+function parseStamp(ts: string): number {
   const m = TS.exec(ts);
   if (!m) return NaN;
-  const [y, mo, d, h, mi, s] = m.slice(1).map(Number) as [number, number, number, number, number, number];
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const h = Number(m[4]);
+  const mi = Number(m[5]);
+  const s = Number(m[6]);
   const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
   if (y < 1 || days === undefined || d < 1 || d > days || h > 23 || mi > 59 || s > 59) return NaN;
-  const date = new Date(0);
-  date.setUTCFullYear(y, mo - 1, d);
-  date.setUTCHours(h, mi, s, 0);
-  return date.getTime();
+  return (((daysFromCivil(y, mo, d) * 24 + h) * 60 + mi) * 60 + s) * 1000;
+}
+
+/**
+ * Days from 1970-01-01 to the proleptic Gregorian `y-mo-d` (Hinnant's `days_from_civil`), the
+ * day `Date.UTC` counts: every intermediate is an integer far below 2**53, so it is exact. It
+ * replaced `new Date(0)` + `setUTCFullYear` + `setUTCHours` (#316 G3, J89-2: ts2py has no
+ * `Date` arithmetic); `test/usage.test.mjs` holds the two equal on every day of years 1..9999.
+ */
+function daysFromCivil(y: number, mo: number, d: number): number {
+  const yy = mo <= 2 ? y - 1 : y;
+  const era = Math.floor(yy / 400);
+  const yoe = yy - era * 400;
+  const doy = Math.floor((153 * (mo > 2 ? mo - 3 : mo + 9) + 2) / 5) + d - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
 }
 
 const STAMP_DAY = /^(\d{4})-(\d{2})-(\d{2})/;
@@ -132,8 +170,9 @@ function mustParse(ts: string): number {
 function valid(e: unknown): e is UsageEvent {
   if (typeof e !== 'object' || e === null || Array.isArray(e)) return false;
   const o = e as Record<string, unknown>;
-  if (typeof o.fact !== 'string' || typeof o.ts !== 'string') return false;
-  if (Number.isNaN(parseTs(o.ts))) return false;
+  const ts = o.ts;
+  if (typeof o.fact !== 'string' || typeof ts !== 'string') return false;
+  if (Number.isNaN(parseTs(ts))) return false;
   if (o.kind === 'folded') return typeof o.weight === 'number' && Number.isFinite(o.weight);
   return true;
 }
@@ -142,21 +181,28 @@ function weightsOf(events: UsageEvent[], now: string): Map<string, number> {
   const tNow = mustParse(now);
   const w = new Map<string, number>();
   for (const e of events) {
-    if (e.kind === 'folded') {
+    // Each field read once (#316 G3, J89-2: every read is a call in the generated Python).
+    const kind = e.kind;
+    const fact = e.fact;
+    if (kind === 'folded') {
       const age = (tNow - parseTs(e.ts)) / 1000 / 86400.0;
-      w.set(e.fact, (w.get(e.fact) ?? 0.0) + clamp(e.weight as number) * Math.pow(0.5, age / USAGE_HALF_LIFE_DAYS));
-    } else if (USE.includes(e.kind)) {
+      w.set(fact, (w.get(fact) ?? 0.0) + clamp(e.weight as number) * pyPow(0.5, age / USAGE_HALF_LIFE_DAYS));
+    } else if (USE.includes(kind)) {
       const age = Math.max(0.0, (tNow - parseTs(e.ts)) / 1000 / 86400.0);
-      w.set(e.fact, (w.get(e.fact) ?? 0.0) + Math.pow(0.5, age / USAGE_HALF_LIFE_DAYS));
+      w.set(fact, (w.get(fact) ?? 0.0) + pyPow(0.5, age / USAGE_HALF_LIFE_DAYS));
     }
   }
   return w;
 }
 
+/**
+ * The `\n` bytes in `b`: one `latin1` character a byte, split on `\n` (#316 G3, J89-2). It was an
+ * `indexOf(10)` loop, one generated-Python call a line (a 3,000-line ledger cost 3 ms an append
+ * there); the split is a C-speed `str.split` in Python and measured faster in Node too (72 µs
+ * against 91 µs over a 5,000-line, 454 KB ledger).
+ */
 function countNewlines(b: Buffer): number {
-  let n = 0;
-  for (let i = b.indexOf(10); i !== -1; i = b.indexOf(10, i + 1)) n += 1;
-  return n;
+  return b.toString('latin1').split('\n').length - 1;
 }
 
 /**
@@ -296,15 +342,19 @@ export class UsageLedger {
 
   /** `LogSegment.foldLines` over the whole live file, with this ledger's reducer. */
   private foldInto(seg: LogSegment, now: string): void {
-    seg.foldLines(null, (pairs) => reduce(pairs, now));
+    seg.foldLines(null, (pairs) => reduceUsage(pairs, now));
   }
 }
 
 /**
  * The fold's reducer: one folded line per used fact, then its latest save line kept AS READ
  * (a re-encode would respell numbers), in first-appearance order. Invalid events are dropped.
+ *
+ * Exported for a ledger known only by its path: Retention (#204, J69-6) folds every
+ * `~/.bantamkit/usage/*.jsonl` at its 30-day cutoff. The reference's `reduce_usage`. (Declared
+ * under that name since #316 G3, J89-2; it was `reduce`, exported as `reduceUsage`.)
  */
-function reduce(pairs: Array<[Row, string]>, now: string): string[] {
+export function reduceUsage(pairs: Array<[Row, string]>, now: string): string[] {
   const read = pairs.filter((p): p is [Row & UsageEvent, string] => valid(p[0]));
   const w = weightsOf(
     read.map(([e]) => e),
@@ -336,10 +386,3 @@ function reduce(pairs: Array<[Row, string]>, now: string): string[] {
   }
   return out;
 }
-
-/**
- * The fold's reducer as a function of `(pairs, now)`, for a ledger known only by its path:
- * Retention (#204, J69-6) folds every `~/.bantamkit/usage/*.jsonl` at its 30-day cutoff. The
- * reference's `reduce_usage`.
- */
-export { reduce as reduceUsage };

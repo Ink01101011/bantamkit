@@ -2423,6 +2423,17 @@ async function runIn(ctx, home) {
     }
     const plain = done('work done today');
     cases.push({ name: 'J89-1 candidates_done: "done" followed by a space', kind: 'json', expected: plain.py, actual: plain.nd });
+    // J89-2 (#316 G3, the orchestrator's ruling on J89-1F's open dotless-i report): CPython's
+    // `re.IGNORECASE` matches U+0130 and U+0131 for an `i` (JS `iu` does not), so `shıpped` and
+    // `shİpped` are done-words to the reference. FIXED IN NODE: `pysem.pyCaseless` spells `i` as
+    // `[iIİı]` (swept: every other ASCII letter's case-fold set already agreed). Was: node listed
+    // nothing for either. The per-side literal keeps a symmetric regression red.
+    // The reason names the word lowercased, as `str.lower()` spells it: U+0130 is `i` + U+0307.
+    for (const [label, desc, word] of [['U+0131 (dotless i)', 'work shıpped today', 'shıpped'], ['U+0130 (dotted capital I)', 'work shİpped today', 'shi\u0307pped']]) {
+      const dotless = done(desc);
+      cases.push({ name: `J89-2 candidates_done: "shipped" spelled with ${label}`, kind: 'json', expected: dotless.py, actual: dotless.nd });
+      cases.push({ name: `LITERAL: J89-2 node lists "shipped" spelled with ${label} as a done-word`, kind: 'json', expected: [['d-fact', `done-word '${word}' in description`]], actual: dotless.nd });
+    }
 
     // D3-D5. A store ROOT the OS cannot be handed as the caller spelled it, RULED by J89-1F
     // (docs/porting.md, the `G3 as Node` rows and the G2 target-specific I/O row).

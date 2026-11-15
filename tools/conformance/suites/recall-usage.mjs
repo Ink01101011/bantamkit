@@ -237,6 +237,35 @@ function scenarios() {
         { op: 'weights', now: NOW },
       ],
     },
+    // J89-2 (#316 G3): a folded weight on a TIE at the tenth decimal. A use exactly 140 days
+    // (ten half-lives) before the fold weighs 0.5 ** 10 = 0.0009765625, whose binary value IS
+    // that decimal, so nine places is a tie: `toFixed(9)` takes the larger (0.000976563), where
+    // the hand-written reference's `f"{w:.9f}"` rounded half to even (0.000976562). The ledger
+    // is shared on disk, so one fold wrote bytes the other runtime's fold would not. Python
+    // moved to node's answer when the ledger was generated (docs/porting.md, moved answers).
+    {
+      label: 'tie: a folded weight with a five at the tenth decimal',
+      fold_lines: null,
+      ops: [
+        append('t', 'recall_hit', '2026-05-28T00:00:00Z'),
+        { op: 'fold', now: '2026-10-15T00:00:00Z' },
+        { op: 'bytes' },
+      ],
+    },
+    // J89-2 found, NOT ruled and NOT fixed: a folded line dated far past `now` (a hand edit, a
+    // clock that ran ahead) decays by `0.5 ** (age / 14)` with a huge NEGATIVE age. CPython's
+    // float `**` raises OverflowError, so the reference's `weights` (and the recall that reads
+    // it) raises; node's `Math.pow` answers Infinity and the fact weighs Infinity. Unchanged by
+    // generation: `pysem.pyPow` IS CPython's `**`, so python still raises. Pinned for the
+    // orchestrator as an UNRULED DIVERGENCE, with each side's answer as a literal below.
+    {
+      label: 'future: a folded line dated far past now',
+      fold_lines: null,
+      ops: [
+        { op: 'raw', b64: rawB64('{"ts":"9999-12-31T00:00:00Z","fact":"f","kind":"folded","weight":1.0}\n') },
+        { op: 'weights_or_error', now: '2026-10-01T00:00:00Z' },
+      ],
+    },
     // #204 Task 4 (J69-4): the ledger is a LogSegment. Past `rotate_bytes` the live file is
     // gzipped into `<id>.jsonl.<n>.gz`, every read spans the segments, and a fold folds the
     // live file only. ROTATE_SCRIPT crosses 200 B more than once.
@@ -287,6 +316,13 @@ function runNode(usage, bed) {
         break;
       case 'weights':
         out.push([...led.weights(op.now)].map(([k, v]) => [k, v.toFixed(9)]));
+        break;
+      case 'weights_or_error':
+        try {
+          out.push({ weights: [...led.weights(op.now)].map(([k, v]) => [k, v.toFixed(9)]) });
+        } catch (e) {
+          out.push({ error: e.name });
+        }
         break;
       case 'last_used':
         out.push(led.lastUsed(op.fact));
@@ -462,11 +498,15 @@ export async function run(ctx) {
     s.ops.forEach((op, j) => {
       const what = op.op === 'append' ? `append ${op.kind} ${op.fact}` : `${op.op}${op.n ? ` ${op.n} (decompressed)` : ''}${op.fact ? ` ${op.fact}` : ''}${op.now ? ` @${op.now}` : ''}`;
       const isBytes = op.op === 'bytes' || op.op === 'gz';
+      const unruled = s.label.startsWith('future:') && op.op === 'weights_or_error';
       cases.push({
-        name: `${s.label} — #${String(j).padStart(2, '0')} ${what}`,
+        name: `${unruled ? 'ruling: UNRULED DIVERGENCE ' : ''}${s.label} — #${String(j).padStart(2, '0')} ${what}`,
         kind: isBytes ? 'bytes' : 'json',
         expected: isBytes ? decodeOrMarker(py.beds[i][j]) : py.beds[i][j],
         actual: isBytes ? decodeOrMarker(nd.beds[i][j]) : nd.beds[i][j],
+        ...(unruled
+          ? { ruling: 'UNRULED DIVERGENCE (J89-2): not ruled in docs/porting.md and not fixed; python raises OverflowError from 0.5 ** (a huge negative age / 14), node weighs the fact Infinity' }
+          : {}),
       });
     });
   });
@@ -480,6 +520,20 @@ export async function run(ctx) {
       ['a', '1.500000000'],
     ]),
   );
+  // J89-2: the tie's spelling, per side (a symmetric respelling would leave the bed green).
+  const tieAt = all.findIndex((s) => s.label.startsWith('tie:'));
+  const tieLine = (side) => {
+    const b64 = (side === 'py' ? py : nd).beds[tieAt].at(-1);
+    return b64 === null ? null : Buffer.from(b64, 'base64').toString('utf8');
+  };
+  cases.push(
+    ...literalCases(tieLine('py'), tieLine('node'), 'LITERAL: J89-2 a folded weight of 0.5 ** 10 is written 0.000976563', '{"ts":"2026-10-15T00:00:00Z","fact":"t","kind":"folded","last":"2026-05-28T00:00:00Z","weight":0.000976563}\n'),
+  );
+  // J89-2: the future-dated folded line, each side's own answer (the ruling above only says they
+  // differ).
+  const futureAt = all.findIndex((s) => s.label.startsWith('future:'));
+  cases.push({ name: 'LITERAL: J89-2 python raises OverflowError for a folded line dated far past now', kind: 'json', expected: { error: 'OverflowError' }, actual: py.beds[futureAt].at(-1) });
+  cases.push({ name: 'LITERAL: J89-2 node weighs a folded line dated far past now Infinity', kind: 'json', expected: { weights: [['f', 'Infinity']] }, actual: nd.beds[futureAt].at(-1) });
   // J68-5: `last_used` across two folds, per side — a fold that went back to reading its own
   // `ts` on BOTH sides leaves every differential green and reddens this.
   const lastAt = all.findIndex((s) => s.label.startsWith('last:'));

@@ -693,7 +693,7 @@ class PyScalar(_JsObject):
     _js_own = frozenset({"ord", "pyType", "tag", "text", "toString", "truthy", "yaml"})
     _js_own_methods = frozenset({"toString"})
 
-    def __init__(self, tag, py_type, text, yaml, truthy, ord, *_):
+    def __init__(self, tag, py_type, text, yaml, truthy, ord_, *_):
         self.tag = _JS_UNDEFINED
         self.pyType = _JS_UNDEFINED
         self.text = _JS_UNDEFINED
@@ -705,7 +705,7 @@ class PyScalar(_JsObject):
         self.text = text
         self.yaml = yaml
         self.truthy = truthy
-        self.ord = ord
+        self.ord = ord_
         _js_freeze(self)
 
     def toString(self):
@@ -900,8 +900,8 @@ def _construct_timestamp__typed(raw):
         if _js_abs(total) >= 86400:
             raise YamlConstructError("offset must be a timedelta strictly between -timedelta(hours=24) and " + ("timedelta(hours=24), not " + _repr_timedelta(total) + "."))
         sign = "-" if total < 0 else "+"
-        abs = _js_abs(total)
-        offset = _js_cat(sign, _pad(_js_floor(_js_div(abs, 3600)), 2)) + ":" + _pad(_js_mod(_js_floor(_js_div(abs, 60)), 60), 2)
+        abs_ = _js_abs(total)
+        offset = _js_cat(sign, _pad(_js_floor(_js_div(abs_, 3600)), 2)) + ":" + _pad(_js_mod(_js_floor(_js_div(abs_, 60)), 60), 2)
         offset_seconds = total
         aware = True
     elif tz is not _JS_UNDEFINED:
@@ -950,8 +950,8 @@ def _construct_timestamp(raw):
         if _js_abs(total) >= 86400:
             raise YamlConstructError("offset must be a timedelta strictly between -timedelta(hours=24) and " + ("timedelta(hours=24), not " + _repr_timedelta(total) + "."))
         sign = "-" if total < 0 else "+"
-        abs = _js_abs(total)
-        offset = _js_cat(sign, _pad(_js_floor(_js_div(abs, 3600)), 2)) + ":" + _pad(_js_mod(_js_floor(_js_div(abs, 60)), 60), 2)
+        abs_ = _js_abs(total)
+        offset = _js_cat(sign, _pad(_js_floor(_js_div(abs_, 3600)), 2)) + ":" + _pad(_js_mod(_js_floor(_js_div(abs_, 60)), 60), 2)
         offset_seconds = total
         aware = True
     elif tz is not _JS_UNDEFINED:

@@ -482,11 +482,12 @@ fn a_method_name_without_a_declared_data_field_stays_refused() {
 /// A function with a typed body is lowered twice; each offence is still reported once.
 #[test]
 fn a_refusal_in_a_typed_function_is_reported_once() {
-    let source = "export function f(s: string): number {\n  return s.charCodeAt(0);\n}\n";
+    // J89-2 lowered `.charCodeAt`; `.trimEnd()` is still refused.
+    let source = "export function f(s: string): string {\n  return s.trimEnd();\n}\n";
     let lines = ts2py::compile(source, "once.ts", &ts2py::Options::default()).unwrap_err();
     assert_eq!(
         lines,
-        vec!["once.ts:2:10: unsupported builtin method .charCodeAt: s.charCodeAt(0)".to_string()]
+        vec!["once.ts:2:10: unsupported builtin method .trimEnd: s.trimEnd()".to_string()]
     );
 }
 

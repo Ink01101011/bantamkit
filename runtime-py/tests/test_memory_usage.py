@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -289,3 +290,55 @@ def test_a_read_only_usage_directory_costs_no_lock_wait(tmp_path):
         assert time.monotonic() - t0 < 0.5
     finally:
         d.chmod(0o755)
+
+
+# ------------------------------------------------- #316 G3 U1 (J89-2): the generated ledger
+
+
+def test_the_ledger_is_the_generated_module():
+    from bantamkit._generated import usage as generated
+    from bantamkit.memory import usage
+
+    led = UsageLedger(Path("/h"), Path("/s"))
+    assert isinstance(led._ledger, generated.UsageLedger)
+    assert usage.store_id("/s") == generated.store_id("/s")
+
+
+def test_lock_constants_set_here_reach_the_generated_module(monkeypatch):
+    # The generated ledger reads LOCK_STALE_MS / LOCK_POLL_MS from its own module at call time;
+    # setting the shim's (as a test or a caller does) sets those too, and restoring restores them.
+    from bantamkit._generated import usage as generated
+    from bantamkit.memory import usage
+
+    before = generated.LOCK_STALE_MS
+    monkeypatch.setattr(usage, "LOCK_STALE_MS", 123)
+    assert generated.LOCK_STALE_MS == 123
+    monkeypatch.undo()
+    assert generated.LOCK_STALE_MS == before == usage.LOCK_STALE_MS
+
+
+def test_a_folded_tie_is_written_as_to_fixed_writes_it(tmp_path):
+    # Moved to node's answer by generation: 0.5 ** 10 is exactly 0.0009765625, a tie at nine
+    # places; `toFixed(9)` takes the larger (`f"{w:.9f}"` wrote 0.000976562).
+    led = UsageLedger(tmp_path, tmp_path / "store")
+    led.append("t", "recall_hit", "2026-05-28T00:00:00Z")
+    led.fold("2026-10-15T00:00:00Z")
+    assert '"weight":0.000976563}' in led.path.read_text(encoding="utf-8")
+
+
+def test_an_auto_fold_over_a_bad_ts_answers_false(tmp_path):
+    # Moved to node's answer: the event is written, the fold it triggers cannot parse `ts`, and
+    # `append` answers False (it raised ValueError).
+    led = UsageLedger(tmp_path, tmp_path / "store", fold_lines=1)
+    assert led.append("a", "recall_hit", "2026-10-01T00:00:00Z") is True
+    assert led.append("a", "recall_hit", "not a stamp") is False
+    assert b"not a stamp" in led.path.read_bytes()
+
+
+def test_the_ledger_path_is_joined_as_node_joins_it(tmp_path):
+    # `path.join` normalises the home it is given (`..`, `.`, doubled separators), where
+    # `Path(home) / ...` kept them; both name the same file.
+    home = tmp_path / "a"
+    home.mkdir()
+    led = UsageLedger(f"{home}/../a/./", tmp_path / "store")
+    assert led.path == home / ".bantamkit" / "usage" / f"{store_id(tmp_path / 'store')}.jsonl"

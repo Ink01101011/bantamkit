@@ -130,6 +130,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `class C { ... }` / `class E extends Error {}` (J86) | `class C(_JsObject)` / `class E(_JsError)` | Classes below |
 | `const f = (...) => ...` (module level) | `def _f(...):` (`return <expr>` for an expression body) | same as a function |
 | `const X = <expr>` (module level) | `X = <expr>` | evaluated once, in source order |
+| `let X = <expr>` / `export let X = <expr>` (module level, J89-2) | `X = <expr>`, a module global; a module function that assigns it declares `global X` | every function reads it when it runs, as JS reads the live binding; it holds no type facts; a closure may read it but not assign it, it needs an initializer, and another compiled module may not import it (`from .m import X` would copy the binding once: refused as a name the module does not export) |
 | `interface`, `type` alias, `import type`, `export type` | erased | type-only |
 
 ### Statements (inside a function)
@@ -146,10 +147,12 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `o.k += e`, `o[k] -= e` (J88-2; `o` a local, `k` a local or a literal) | `_js_put(o, "k", <_js_get(o, "k") + e>)` | the property read before `e` is evaluated, then written back; anything else as the object (`o.a.k += 1`) is refused, since it would be evaluated twice |
 | `[a, b] = e` (J86) | `a, b = _js_destructure(e, 2)` | as the declaration |
 | `o.k = e`, `o[k] = e` (statement) | `_js_put(o, "k", e)` | sets a key on a plain object (`__proto__` is refused at run time: JS would set the prototype); on a class instance (J86) the attribute, a TypeError on a frozen one |
+| `xs[i] = e` on an array (J89-2) | `_js_put(xs, i, e)` | an index inside the array, or exactly its length (an append); a write past the end (a hole) or a non-index key on an array is outside the subset at run time |
 | `this.x = e` (J86) | `self.x = e` | a declared member; a TypeError once `Object.freeze(this)` ran |
 | `if / else if / else` | `if / elif / else` | condition through ToBoolean (below) |
 | `while (c)` | `while c:` | condition through ToBoolean |
 | `for (;;)` (J86) | `while True:` | |
+| `for (let i = a; test; i++) body` (J89-2: `i++`, `++i`, `i--`, `--i`, `i` a local) | as below, the update `i = _js_inc(i)` / `_js_dec(i)` (`_js_num(i + 1)` when `i` is proven a number) | ToNumeric then plus or minus one: a string `"1"` becomes 2, never `"11"`; an update of anything but a local name is refused |
 | `for (let i = a; test; i -= 1) body` (J87-3) | `i = a`, `while test:`, the body, then the update as the body's last statement | the init must be a `let` declaration (or absent), the update an assignment (or absent); a `continue` that would continue this loop is refused (in JS it runs the update, in Python it would skip it); closures in the body are refused as in any loop |
 | `try { ... } finally { ... }`, `try { ... } catch { ... } finally { ... }` (J88-2) | `try:` holding the try (and its catch, as below) / `finally:` the finalizer | Python's `finally` runs where JS's does: a normal end, a `return`, a `break` and a throw; a `return` inside the finalizer replaces the completion in both |
 | `try { ... } catch (e?) { ... }` (J87-3) | `_js_caughtN = None` / `try:` / `except Exception as _js_errorN: _js_caughtN = _js_catch(_js_errorN)` / `if _js_caughtN is not None:` the handler | a `catch` sees only what JS could have thrown (`_js_catch`): a JS Error (`_JsError`), an `OSError` an fs adapter raised where Node throws an fs Error, or the runtime's JS-worded `TypeError` (`Cannot read properties of null ...`); a subset refusal (`ts2py: ...`), a `RecursionError` and any other Python exception propagate. The handler runs after the `try` statement, so nothing it raises is chained to what was caught (a JS throw carries no implicit cause). `throw e` is `raise` of the caught object, unchanged; J88-2: `e` may be read as a value (passed on, `e.code`, `typeof e`), and the runtime answers only what JS would read of it: a Python exception's `code` is the errno name of an `OSError` (libuv's spelling) or `undefined`, and any other property of a Python exception (`message`, `errno`, ...) is outside the subset at run time |
@@ -239,6 +242,11 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `Object.assign(target, ...sources)` (J88-2) | `_js_object_assign` | each source's own enumerable keys [[Set]] on a plain object or an instance (an Error given a `code`); a source that is not a plain object is outside the subset |
 | `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)` (J88-2) | `_js_sleep_ms(ms)` | the one spelling of a synchronous sleep (nothing can notify a fresh buffer); a wait that never ends is outside the subset; any other `Atomics.wait` is refused |
 | Buffers (J88-2) | `bytes` / `bytearray` (`Buffer.alloc`) / `memoryview` (`subarray`, sharing the bytes as Node's does) | `buf.length`, `buf[i]` (`undefined` out of range), `buf.toString('utf8' / 'hex')`; `Buffer.from(s, 'utf8')`, `Buffer.concat`, `Buffer.alloc` through the adapter seam |
+| `s.charCodeAt(i)` (J89-2) | `_js_m_charCodeAt` | the UTF-16 code unit at `i` (half of an astral pair), NaN outside the string; `i` ToIntegerOrInfinity (missing or NaN is 0) |
+| `s.match(re)` (J89-2, a regex literal) | `_js_m_match` | with `g`: every match's text over UTF-16 code units, an empty match stepping one unit, `null` when none; without `g`: what `re.exec(s)` answers |
+| `x.toFixed(f)` (J89-2) | `_js_m_toFixed` | Number.prototype.toFixed: the integer nearest `x * 10**f` on x's EXACT binary value, the larger on a tie (so a tie rounds away from zero: `(0.0009765625).toFixed(9)` is `0.000976563`, where Python's `format` rounds half to even); `-0` is `0`; NaN, the infinities and `|x| >= 1e21` are the number's `String()`; `f` outside 0..100 is RangeError; a receiver that is not a number is TypeError |
+| `buf.indexOf(byte, offset?)` (J89-2, a Buffer, `byte` a number) | `_js_m_indexOf` | `byte >>> 0` truncated to eight bits; the offset ToNumber (NaN or missing is 0), negative from the end, truncated toward zero |
+| `k in m` (J89-2, `m` a Map or Set) | `_js_in` | false for every key but what `Map.prototype` / `Set.prototype` / `Object.prototype` hold (`'get' in m`, `'size' in m`), as JS's prototype chain answers |
 | `s.replace(p, r)` (J86) | `_js_m_replace` | a string `p` replaces its first occurrence, a regex its first match, a `g` regex every match (empty matches as JS steps over them); `r` must be a string without `$` (JS's substitution patterns are outside the subset) |
 | `re.exec(s)` (J86) | `_js_m_exec` | `null` on no match; else an array of the match and groups (`undefined` for a group that did not take part) with `index` and `input` |
 | `x.toString(radix?)` (J86) | `_js_m_toString` | an instance's own `toString`; `Error.prototype.toString` (`name: message`); a number or BigInt in radix 2..36 (a fraction only in radix 10) |
@@ -426,8 +434,11 @@ array proven a list.
   members keep their JS spelling (`self.bestWidth`, `def writeIndent(self)`), because a
   reflective read looks them up by that spelling.
 - A local or parameter is `snake_case(name)`: `nodeId` -> `node_id`.
-- A Python keyword gets a trailing `_` (`lambda` -> `lambda_`); so does a module-level name
-  that would shadow a builtin the runtime support calls (`len` -> `len_`).
+- A Python keyword gets a trailing `_` (`lambda` -> `lambda_`); so does any name (J89-2: a
+  local or parameter too, not only a module-level name) that would shadow a builtin the runtime
+  support or a generated body calls (`len` -> `len_`, `type` -> `type_`): since J87 a function
+  body itself spells `type(x) is str` in its guarded entry, so a parameter named `type` made the
+  guard call the string.
 - Two different source names that fold to one Python name are refused (`name collision`).
 - Identifiers starting `_js`, `_Js` or `_JS` are reserved for the runtime support and refused.
 
@@ -452,16 +463,20 @@ array proven a list.
 
 Generator functions and `yield`, `async` functions and `await`, `this` outside a class body,
 labelled statements / `break label` / `continue label`, any builtin or method not in the tables
-above (`Object.create`, `Math.round`, `s.trimEnd()`, `s.charCodeAt()`, `String.fromCharCode()`,
-...), `var`, nested `function` declarations, function expressions, an arrow inside a loop, an
+above (`Object.create`, `Math.round`, `Math.log`, `Math.pow`, `s.trimEnd()`, `s.normalize()`,
+`String.fromCharCode()`, ...; J89-2: `Math.log`, `Math.log1p` and `Math.pow` stay refused because
+V8's last bit is not a function of the input across platforms, so a port of CPython's arithmetic
+calls `pysem`'s adapters instead), `var`, nested `function` declarations, function expressions, an arrow inside a loop, an
 arrow inside a callback lambda (J88-2 accepts one anywhere else), a callback that is neither an
 inline arrow nor a module function or adapter named directly,
 destructuring with defaults, rest elements, nesting or computed keys, rest parameters, optional
 chaining other than one member read (J87-3), loose equality `==` other than against
 `null`/`undefined`, `**` other than of two integer literals with an exact result (J87-3), the
-bitwise operators but `<<` (J88-2), `void`, `delete`, unary `+`, `++`/`--`, compound assignment
+bitwise operators but `<<` (J88-2), `void`, `delete`, unary `+`, `++`/`--` anywhere but a C-style
+`for` update on a local name (J89-2), typed arrays (`Float64Array`, `DataView`), compound assignment
 other than `+=` `-=` `*=` on a local, `this.x` or a property of a local (J88-2), assignment inside an expression (other than a chain of `=`
-between locals), assignment to a module-level name, the comma operator, `switch` fallthrough between non-empty cases, a
+between locals), assignment to a module-level name other than a module `let` from a module
+function (J89-2), a module-level `let` without an initializer, the comma operator, `switch` fallthrough between non-empty cases, a
 `break` that does not end its case, a `default` that is not the last case, `do-while`, a C-style
 `for` whose init is not a `let` declaration, whose update is not an assignment or whose body
 `continue`s it (J87-3), `for-in`, `for await`,

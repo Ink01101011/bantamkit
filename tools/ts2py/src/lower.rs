@@ -241,6 +241,10 @@ const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
     ("trim", 0, 0, None, Ret::Str),
     ("values", 0, 0, None, Ret::List),
     ("subarray", 0, 2, None, Ret::Any),
+    // J89-2 (#316 G3: memory/usage, memory/retrieval).
+    ("toFixed", 0, 1, None, Ret::Str),
+    ("match", 1, 1, None, Ret::Any),
+    ("charCodeAt", 0, 1, None, Ret::Num),
 ];
 
 /// J86-R finding 3: every method a builtin prototype the subset can reach carries (String, Array,
@@ -454,6 +458,10 @@ pub struct Lowerer<'s> {
     sigs: HashMap<String, Sig>,
     /// J87: module-level `const` bindings of a value (not an arrow).
     module_consts: HashSet<String>,
+    /// J89-2: module-level `let` bindings (Python module globals a function may assign).
+    module_lets: HashSet<String>,
+    /// J89-2: per function being lowered, the module `let`s it assigns (`global` declarations).
+    global_writes: Vec<BTreeSet<String>>,
     /// J87: non-exported module `const`s bound to an array literal: frozen unless a use escapes.
     frozen: HashSet<String>,
     /// J87: the module's interfaces and type aliases.
@@ -541,6 +549,8 @@ impl<'s> Lowerer<'s> {
             rets: Vec::new(),
             sigs: HashMap::new(),
             module_consts: HashSet::new(),
+            module_lets: HashSet::new(),
+            global_writes: Vec::new(),
             frozen: HashSet::new(),
             types: TypeDecls::default(),
             declared: HashMap::new(),
@@ -942,6 +952,9 @@ impl<'s> Lowerer<'s> {
                                     self.add_sig(id.name.as_str(), public, &a.params, id.span);
                                 }
                                 init => {
+                                    if v.kind == VariableDeclarationKind::Let {
+                                        self.module_lets.insert(id.name.to_string());
+                                    }
                                     if v.kind == VariableDeclarationKind::Const {
                                         self.module_consts.insert(id.name.to_string());
                                         if !public
@@ -1045,6 +1058,29 @@ impl<'s> Lowerer<'s> {
                 }
             }
             Declaration::VariableDeclaration(v) => {
+                // J89-2: a module-level `let` is a Python module global. Every function reads it
+                // at call time (as JS reads the live binding); a function that assigns it declares
+                // it `global` (`local_target`). It holds no facts: anything may be assigned to it.
+                if v.kind == VariableDeclarationKind::Let {
+                    for d in &v.declarations {
+                        let BindingPattern::BindingIdentifier(id) = &d.id else {
+                            self.refuse(d.span, "destructuring declaration");
+                            continue;
+                        };
+                        let name = self.globals[id.name.as_str()].clone();
+                        let Some(init) = &d.init else {
+                            self.refuse(d.span, "module-level let without initializer");
+                            continue;
+                        };
+                        if matches!(init, Expression::ArrowFunctionExpression(_)) {
+                            self.refuse(d.span, "module-level let bound to a function");
+                            continue;
+                        }
+                        let value = self.expr(init);
+                        out.push(format!("{name} = {}", value.code));
+                    }
+                    return;
+                }
                 if v.kind != VariableDeclarationKind::Const {
                     self.refuse(v.span, "module-level let/var");
                     return;
@@ -1220,6 +1256,8 @@ impl<'s> Lowerer<'s> {
         self.rets.push(Some(ret.clone()));
         self.bind_params(params, facts);
         out.push(format!("def {name}({}):", join_params(&names)));
+        let def_at = out.len();
+        self.global_writes.push(BTreeSet::new());
         if let Some((typed, admitted)) = guard {
             let bare: Vec<&str> = names
                 .iter()
@@ -1257,6 +1295,11 @@ impl<'s> Lowerer<'s> {
                 self.observed.observe(ret, value.fact());
             }
             (FnSource::Decl(_), None) => {}
+        }
+        let writes = self.global_writes.pop().unwrap_or_default();
+        if !writes.is_empty() {
+            let names: Vec<String> = writes.iter().map(|n| self.globals[n].clone()).collect();
+            out.insert(def_at, format!("    global {}", names.join(", ")));
         }
         self.rets.pop();
         self.pop_scope();
@@ -1765,6 +1808,32 @@ impl<'s> Lowerer<'s> {
         }
     }
 
+    /// J89-2: `x++`, `++x`, `x--` or `--x` whose value is unused, `x` a local name: `x` becomes
+    /// `_js_inc(x)` / `_js_dec(x)` (ToNumeric, then plus or minus one: a string `"1"` becomes 2,
+    /// where `x += 1` would concatenate), or `_js_num(x + 1)` when `x` is proven a number.
+    fn update_stmt(&mut self, u: &UpdateExpression<'_>, indent: usize, out: &mut Vec<String>) {
+        let SimpleAssignmentTarget::AssignmentTargetIdentifier(id) = &u.argument else {
+            self.refuse(u.span, "update of anything but a local name");
+            return;
+        };
+        let target = self.local_target(id.name.as_str(), id.span);
+        let plus = u.operator == UpdateOperator::Increment;
+        let code = if target.is_num {
+            format!(
+                "_js_num({} {} 1)",
+                target.code,
+                if plus { "+" } else { "-" }
+            )
+        } else {
+            format!(
+                "{}({})",
+                if plus { "_js_inc" } else { "_js_dec" },
+                target.code
+            )
+        };
+        out.push(format!("{}{} = {code}", pad(indent), target.code));
+    }
+
     /// J87-3: `for (let i = a; test; i -= 1) body` -> `i = a` / `while test:` / body / update. The
     /// init must be a `let` declaration (or absent), the update an assignment (or absent). A
     /// `continue` that would leave the body is refused: in JS it runs the update, and a Python
@@ -1792,6 +1861,24 @@ impl<'s> Lowerer<'s> {
                 );
                 return;
             }
+        }
+        // J89-2: `i++` / `++i` / `i--` / `--i` as the update (its value unused): `i` becomes
+        // ToNumeric(i) + 1 (- 1), never a string concatenation (`_js_inc`).
+        if let Some(Expression::UpdateExpression(u)) = &f.update {
+            if continues_out(&f.body) {
+                self.refuse(f.span, "continue in a C-style for loop");
+                return;
+            }
+            let test = match &f.test {
+                Some(test) => self.condition(test),
+                None => "True".to_string(),
+            };
+            out.push(format!("{p}while {test}:"));
+            self.breaks.push(BreakTarget::Loop);
+            self.body(&f.body, indent + 1, out);
+            self.breaks.pop();
+            self.update_stmt(u, indent + 1, out);
+            return;
         }
         let update = match &f.update {
             None => None,
@@ -4339,6 +4426,16 @@ impl<'s> Lowerer<'s> {
     /// noted for `nonlocal`.
     fn local_target(&mut self, name: &str, span: Span) -> Py {
         let Some(index) = self.scopes.iter().rposition(|s| s.contains(name)) else {
+            // J89-2: a module-level `let`, assigned from a module function: declared `global`
+            // there. From a nested function it is refused (it would need `global` in a closure,
+            // which is not worth a rule while no source does it).
+            if self.module_lets.contains(name)
+                && self.defs.is_empty()
+                && let Some(writes) = self.global_writes.last_mut()
+            {
+                writes.insert(name.to_string());
+                return Py::atom(self.globals[name].clone());
+            }
             return self.refuse(span, "assignment to a module-level name");
         };
         if let Some((start, nonlocals)) = self.defs.last_mut()
@@ -4709,6 +4806,12 @@ pub fn scan_module(program: &Program<'_>) -> (HashMap<String, (String, bool)>, H
                 }
             }
             Declaration::VariableDeclaration(v) => {
+                // J89-2: a module-level `let` is a live binding another compiled module would
+                // import as a snapshot (`from .m import X` copies the value once), so it is not
+                // offered to them: such an import is refused as one the module does not export.
+                if v.kind != VariableDeclarationKind::Const {
+                    continue;
+                }
                 for d in &v.declarations {
                     if let BindingPattern::BindingIdentifier(id) = &d.id {
                         bind(

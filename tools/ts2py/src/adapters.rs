@@ -414,6 +414,36 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Constant,
         why: "Python is the reference: `bantamkit.storage.lock.LOCK_POLL_MS`, the same 5 the port declares (`--suite storage-lock`).",
     },
+    // J89-2 (#316 G3 U1: memory/usage). `pyPow` is "Python is the reference": the TypeScript
+    // function is a port of the CPython operator named, so CPython is the definition.
+    Adapter {
+        module: Some("runtime-ts/src/pysem.ts"),
+        name: "pyPow",
+        py_name: "py_pow",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyPow` is CPython's `float ** float` (usage.py's `0.5 ** (age / half)`), raising where it raises (OverflowError); a negative base is refused (Python answers a complex). Node's `Math.pow(0.5, y)` agreed with it on 30,000 of 30,000 doubles (J89-2, arm64); ts2py refuses `Math.pow` itself (pysem.ts says why).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyRealpath",
+        py_name: "py_realpath",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyRealpath` is the port of `os.path.realpath(strict=False)` (J89-1F, its doc comment), so the adapter is `os.path.realpath` of the path as the OS receives it (the G2 path policy, `_os_char`: a lone surrogate os cannot encode is U+FFFD), the hand-written `usage.os_realpath`. `--suite recall-usage` and `--suite skill-layer` pin J89-1F's dangling-symlink and surrogate cases.",
+    },
+    Adapter {
+        module: Some("node:crypto"),
+        name: "createHash",
+        py_name: "create_hash",
+        kind: AdapterKind::Function,
+        why: "Node builtin, `'sha256'` only: a `Hash` (below) over `hashlib.sha256`.",
+    },
+    Adapter {
+        module: Some("node:crypto"),
+        name: "Hash",
+        py_name: "Hash",
+        kind: AdapterKind::Class(&["update", "digest"]),
+        why: "Node builtin: `hash.update(string, 'utf8')` hashes the string's UTF-8, a lone surrogate as U+FFFD (EF BF BD), as Node's encoder writes it; under the G2 path policy (its only caller hashes a path, `storeId`) a POSIX surrogateescape code point U+DC80..U+DCFF is the real byte it stands for (the ruled target-specific difference, docs/porting.md). `digest('hex')` is `hexdigest()`; a finished hash is refused, as Node throws ERR_CRYPTO_HASH_FINALIZED.",
+    },
 ];
 
 /// The adapter for `name` imported from `module` (a normalised `.ts` path), if one is declared.

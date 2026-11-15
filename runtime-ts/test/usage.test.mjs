@@ -31,6 +31,7 @@ import {
   UsageLedger,
   WEIGHT_MAX,
   missedWrites,
+  parseTs,
   statusLine,
   storeId,
 } from '../dist/memory/usage.js';
@@ -320,4 +321,31 @@ test('a read-only usage directory costs no lock wait (208 item 7)', { skip: proc
   } finally {
     chmodSync(dir, 0o755);
   }
+});
+
+// #316 G3 (J89-2): `parseTs` counts days with `daysFromCivil` where it set a `Date`'s UTC fields;
+// the two answers are held equal on every day of years 1..9999, at two times of day.
+test('parseTs equals the Date it replaced on every day of years 1..9999', () => {
+  const viaDate = (y, mo, d, h, mi, s) => {
+    const date = new Date(0);
+    date.setUTCFullYear(y, mo - 1, d);
+    date.setUTCHours(h, mi, s, 0);
+    return date.getTime();
+  };
+  const pad = (n, w) => String(n).padStart(w, '0');
+  let checked = 0;
+  for (let y = 1; y <= 9999; y += 1) {
+    const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+    const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for (let mo = 1; mo <= 12; mo += 1) {
+      for (let d = 1; d <= days[mo - 1]; d += 1) {
+        const [h, mi, s] = checked % 2 === 0 ? [0, 0, 0] : [23, 59, 59];
+        const ts = `${pad(y, 4)}-${pad(mo, 2)}-${pad(d, 2)}T${pad(h, 2)}:${pad(mi, 2)}:${pad(s, 2)}Z`;
+        const got = parseTs(ts);
+        if (got !== viaDate(y, mo, d, h, mi, s)) assert.fail(`${ts}: ${got} != ${viaDate(y, mo, d, h, mi, s)}`);
+        checked += 1;
+      }
+    }
+  }
+  assert.equal(checked, 3652059);
 });

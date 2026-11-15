@@ -805,9 +805,13 @@ function scanPlain(front: string, pos: number): [FactValue, number] {
     // them: `CSafeLoader` reads `a\tb` as `'a\tb'` and `x\t` as `'x'` (measured J89-1F,
     // PyYAML 6.0.3), and runtime-py's read falls back to libyaml when it is installed
     // (`factcodec._pyyaml_load`), so there the reference READS what this codec refuses. The
-    // sentence below says "too" of the pure scanner only (J89-1F; open, reported, not ruled).
+    // sentence below names the pure scanner, the PyYAML that does reject it (J89-1F reported it
+    // said `PyYAML rejects it too`, false wherever libyaml is installed; corrected by J89-2 on the
+    // orchestrator's ruling: the refusal itself is unchanged, the `node-refuses` class).
     if (cut.includes('\t')) {
-      throw new FactParseError(`a tab inside a plain scalar is not readable YAML — PyYAML rejects it too: ${line(front, i)}`);
+      throw new FactParseError(
+        `a tab inside a plain scalar is not readable YAML — PyYAML's pure-Python scanner rejects it too: ${line(front, i)}`,
+      );
     }
     const piece = cut.replace(/[ \t]+$/, '').replace(/^[ \t]+/, '');
     if (pieces.length > 0 && piece === '') {

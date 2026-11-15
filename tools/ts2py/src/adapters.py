@@ -4,6 +4,7 @@
 import datetime as _datetime
 import errno as _errno
 import gzip as _gzip
+import hashlib as _hashlib
 import os as _os
 import pathlib as _pathlib
 import stat as _stat
@@ -22,6 +23,7 @@ from __RUNTIME__ import (
 # listed, so a star import does not build them (and import `bantamkit.client` / `storage.lock`).
 __all__ = [
     "Date",
+    "Hash",
     "PyOSError",
     "Stats",
     "TextDecoder",
@@ -33,6 +35,7 @@ __all__ = [
     "buffer_from",
     "close_sync",
     "cmp_codepoint",
+    "create_hash",
     "ensure_bantamkit_gitignore",
     "exclusive",
     "exists_sync",
@@ -56,6 +59,8 @@ __all__ = [
     "py_join",
     "py_name",
     "py_parent",
+    "py_pow",
+    "py_realpath",
     "py_repr",
     "py_strip",
     "random_bytes",
@@ -952,6 +957,73 @@ def exclusive(target, body, options=_JS_UNDEFINED, *_):
     # J88-RF F4a: the lock file is named from the path every fs adapter hands the OS.
     with _exclusive(_node_path(target, "exclusive"), **kwargs) as held:
         return body(held)
+
+
+# ---------------------------------------------------------------- J89-2 (#316 G3 U1): usage
+
+
+def py_pow(x, y, *_):
+    """`pyPow` (pysem.ts): CPython's `float ** float`, which it ports (an OverflowError where it
+    raises one). A negative base is refused: Python's answer there is a complex number."""
+    base = float(_js_num(x))
+    if base < 0:
+        raise TypeError("ts2py: pyPow of a negative base is outside the subset")
+    return base ** float(_js_num(y))
+
+
+def _os_text(text):
+    """`text` with each lone surrogate as the OS receives it (`_os_char`)."""
+    if text.isascii():
+        return text
+    return "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
+
+
+def py_realpath(path, *_):
+    """`pyRealpath` (runtime-ts/src/memory/pyfs.ts): `os.path.realpath(path)` (strict=False), which
+    it ports (J89-1F), of the path as the OS receives it (the G2 path policy, `_os_char`)."""
+    if not isinstance(path, str):
+        raise TypeError("ts2py: pyRealpath of anything but a string path is outside the subset")
+    return _os.path.realpath(_os_text(path))
+
+
+class Hash(_JsObject):
+    """`crypto.createHash('sha256')`: `update(string, 'utf8')`, then `digest('hex')` once."""
+
+    _js_name = "Hash"
+    _js_own = frozenset({"update", "digest"})
+    _js_own_methods = frozenset({"update", "digest"})
+
+    def __init__(self, algorithm, *_):
+        if algorithm != "sha256":
+            raise TypeError("ts2py: createHash of anything but 'sha256' is outside the subset")
+        object.__setattr__(self, "_js_hash", _hashlib.sha256())
+
+    def _live(self):
+        if self._js_hash is None:
+            raise TypeError("ts2py: a Hash used after digest() is outside the subset")
+        return self._js_hash
+
+    def update(self, data, encoding=_JS_UNDEFINED, *_):
+        if not isinstance(data, str) or encoding not in ("utf8", "utf-8"):
+            raise TypeError(
+                "ts2py: hash.update of anything but a 'utf8' string is outside the subset"
+            )
+        # Node's UTF-8, a lone surrogate as U+FFFD, under the G2 path policy (`_os_char`): a POSIX
+        # surrogateescape code point is the real byte it stands for.
+        self._live().update(_os_text(data).encode("utf-8", "surrogateescape"))
+        return self
+
+    def digest(self, encoding=_JS_UNDEFINED, *_):
+        if encoding != "hex":
+            raise TypeError("ts2py: hash.digest of anything but 'hex' is outside the subset")
+        out = self._live().hexdigest()
+        object.__setattr__(self, "_js_hash", None)
+        return out
+
+
+def create_hash(algorithm, *_):
+    """`crypto.createHash(algorithm)`: a `Hash`, `'sha256'` only."""
+    return Hash(algorithm)
 
 
 def _lazy_bantam_error():

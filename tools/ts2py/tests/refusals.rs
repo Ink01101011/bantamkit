@@ -397,3 +397,22 @@ fn g2_refusals() {
         "t.ts:2:10: unsupported operator >>: a >> 1",
     );
 }
+
+#[test]
+fn g3_refusals() {
+    // J89-2: a module-level `let` needs an initializer, and only a module function may assign it
+    // (a closure would need `global` inside a nested def).
+    assert_refused(
+        "export let n: number;\nexport function f(): number {\n  return 1;\n}\n",
+        "t.ts:1:12: unsupported module-level let without initializer: n: number",
+    );
+    assert_refused(
+        "export let n = 0;\nexport function f(): void {\n  const g = (): void => {\n    n = 1;\n  };\n  g();\n}\n",
+        "t.ts:4:5: unsupported assignment to a module-level name: n",
+    );
+    // `x++` as a loop update is lowered for a local name only.
+    assert_refused(
+        "export function f(o: { n: number }): void {\n  for (; o.n < 3; o.n++) {}\n}\n",
+        "t.ts:2:19: unsupported update of anything but a local name: o.n++",
+    );
+}

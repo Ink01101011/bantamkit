@@ -1064,6 +1064,10 @@ export async function run(ctx) {
       ['a resolved term followed by U+0345', 'It landed yesterdayͅ, they said.', 'was: python wrote `yesterday (<basis - 1>)` and reported the hit; node wrote nothing'],
       ['a resolved term preceded by U+0345', 'Note ͅtoday we ship.', 'was: python wrote `today (<basis>)`; node wrote nothing'],
       ['an unresolved term followed by U+0345', 'It shipped recentlyͅ.', 'was: python reported `recently` unresolved; node reported nothing'],
+      // J89-2: CPython's IGNORECASE matches U+0131 / U+0130 for `i`; node's `pyCaseless` now
+      // does too (was: node wrote and reported nothing). The `ͅ`-stripped twin is the same text.
+      ['a resolved term spelled with U+0131 (dotless i)', 'We ship rıght now.', 'was: python wrote `rıght now (<basis>)`; node wrote nothing'],
+      ['an unresolved term spelled with U+0130 (dotted capital I)', 'Planned for next tİme.', 'was: python reported `next tİme` unresolved; node reported nothing'],
     ];
     const rows = ypo.flatMap(([, body]) => [body, body.replace(/ͅ/g, '')]).map((body) => [b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']);
     const pyRows = ctx.runPython(REF, { op: 'absolutise', cases: rows }).out;
@@ -1073,13 +1077,32 @@ export async function run(ctx) {
       return { body: b64(text), hits: hits.map(hit), unresolved: unresolved.map(hit) };
     });
     ypo.forEach(([label], i) => {
-      cases.push({ name: `J89-1F absolutise: ${label}`, kind: 'json', expected: pyRows[2 * i], actual: ndRows[2 * i] });
+      const tag = label.includes('U+013') ? 'J89-2' : 'J89-1F';
+      cases.push({ name: `${tag} absolutise: ${label}`, kind: 'json', expected: pyRows[2 * i], actual: ndRows[2 * i] });
       // Per side, the term is found: a hit or an unresolved report (a symmetric miss would agree).
       for (const [side, row] of [['python', pyRows[2 * i]], ['node', ndRows[2 * i]]]) {
-        cases.push({ name: `LITERAL: J89-1F ${side} finds the term in absolutise: ${label}`, kind: 'json', expected: 1, actual: row.hits.length + row.unresolved.length });
+        cases.push({ name: `LITERAL: ${tag} ${side} finds the term in absolutise: ${label}`, kind: 'json', expected: 1, actual: row.hits.length + row.unresolved.length });
       }
-      cases.push({ name: `J89-1 absolutise: ${label.replace('U+0345', 'nothing')}`, kind: 'json', expected: pyRows[2 * i + 1], actual: ndRows[2 * i + 1] });
+      if (tag === 'J89-1F') cases.push({ name: `J89-1 absolutise: ${label.replace('U+0345', 'nothing')}`, kind: 'json', expected: pyRows[2 * i + 1], actual: ndRows[2 * i + 1] });
     });
+    // J89-2 found, NOT ruled and NOT fixed: `tonight` spelled with U+0131 or U+0130. Both
+    // runtimes now MATCH it (CPython's IGNORECASE; node's `pyCaseless`), but the reference then
+    // looks the lowercased term up in its day table (`_resolve`), `'tonıght'` is not a key, and
+    // the dream RAISES KeyError; node's lookup answers undefined, `addDays` refuses it, and the
+    // term is REPORTED unresolved. Before J89-2 node did not match it at all (python raised
+    // then too). Pinned here for the orchestrator; the reported refusal bits differ, so the
+    // python side's raise is pinned as a per-side literal.
+    {
+      const UNRULED = 'UNRULED DIVERGENCE (J89-2): not ruled in docs/porting.md and not fixed; ';
+      const body = 'We merged it tonıght.';
+      const row = [[b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']];
+      const py = ctx.runPython(REF, { op: 'absolutise', cases: row }).out[0];
+      const [text, hits, unresolved] = dreamer.absolutise(body, BOUNDARY_BASIS, 'ypo', 'project');
+      const nd = { body: b64(text), hits: hits.length, unresolved: unresolved.map((h) => b64(h.term)) };
+      cases.push({ name: 'ruling: UNRULED DIVERGENCE absolutise: `tonight` spelled with U+0131 (dotless i)', kind: 'json', expected: py, actual: nd, ruling: UNRULED + 'python raises KeyError from its day table; node reports the term unresolved and leaves the body' });
+      cases.push({ name: 'LITERAL: J89-2 python raises KeyError on `tonight` spelled with U+0131', kind: 'json', expected: 'KeyError', actual: py.error ? py.error.type : null });
+      cases.push({ name: 'LITERAL: J89-2 node reports `tonight` spelled with U+0131 unresolved', kind: 'json', expected: { body: b64(body), hits: 0, unresolved: [b64('tonıght')] }, actual: nd });
+    }
   }
 
   const sentence = (row) => {

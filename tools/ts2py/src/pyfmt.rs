@@ -9,8 +9,10 @@ const KEYWORDS: &[&str] = &[
 ];
 
 /// Builtins the runtime support module calls. A MODULE-LEVEL name that spells one would shadow it
-/// for the inlined helpers, so it gets a trailing `_` too. Locals may keep these names: a function
-/// local never reaches the helpers' globals.
+/// for the inlined helpers, so it gets a trailing `_` too. J89-2: so does a LOCAL (a parameter
+/// above all): since J87 a function body itself spells `type(x) is str`, `len(xs)` and
+/// `isinstance(...)` in its guarded entry and fast paths, so `weightOf(type: string, ...)` made
+/// the guard call the string (`'str' object is not callable`).
 const RUNTIME_BUILTINS: &[&str] = &[
     "BaseException",
     "Exception",
@@ -94,9 +96,8 @@ pub fn py_name(name: &str, module_level: bool, private: bool) -> String {
     if private && !out.starts_with('_') {
         out.insert(0, '_');
     }
-    if KEYWORDS.contains(&out.as_str())
-        || (module_level && RUNTIME_BUILTINS.contains(&out.as_str()))
-    {
+    let _ = module_level;
+    if KEYWORDS.contains(&out.as_str()) || RUNTIME_BUILTINS.contains(&out.as_str()) {
         out.push('_');
     }
     out
@@ -173,7 +174,10 @@ mod tests {
         assert_eq!(py_name("isInteger", true, true), "_is_integer");
         assert_eq!(py_name("lambda", false, false), "lambda_");
         assert_eq!(py_name("len", true, false), "len_");
-        assert_eq!(py_name("id", false, false), "id");
+        // J89-2: a local is guarded too (a generated body calls `type(...)` itself).
+        assert_eq!(py_name("id", false, false), "id_");
+        assert_eq!(py_name("type", false, false), "type_");
+        assert_eq!(py_name("node", false, false), "node");
     }
 
     #[test]

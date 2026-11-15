@@ -265,6 +265,53 @@ byte for byte unchanged but for the `# ruff: noqa` header, which gains E741 (a T
 `l` is kept as spelled). Generated: `logsegment.py` 554 lines, `eventlog.py` 225, `tokenledger.py`
 468 (1,247, against the census's 1,208 TypeScript lines: typed bodies write 19 functions twice).
 
+## J89-2 rules (#316 G3 U1: `memory/usage`; `memory/retrieval` lowered, then kept hand-written)
+
+Census (J89-1, `node tools/ts2py/census.mjs` over the two modules): retrieval 5 new kinds and 13
+calls, usage 5 calls, among them `>>`, postfix `++`/`--`, `.charCodeAt`, `.match`, `.normalize`,
+`Math.round`, `Math.log1p`, `Object.is`, `Float64Array`, `DataView`. Actual: **8 new rules, 3
+extended, 1 compiler defect fixed, 6 exact runtime fast paths; 5 new adapter rows** (usage's).
+
+**`memory/retrieval.ts` compiled and answered every conformance case, and is NOT shipped
+generated** (docs/porting.md, *The usage ledger*, has the numbers): its BM25 and ranking loops are
+per-element arithmetic over arrays and Map values, which the fact system cannot prove numeric, so
+each `+`, `/` and index is a JS-semantics call; a 5,000-fact recall went from 6.1 ms to 78 ms
+against `test_storage_bar.py`'s declared 15 ms bar, and `bm25_segments`, `rank_columns` and
+`weight_of` ran 23x, 23x and 40x slower. What it needs is recorded there. The rules below that
+only retrieval used (G3-3, G3-4, G3-7) are kept and pinned by the probe for that later unit.
+Refactors made for it were reverted with it; those kept for usage are pure: `new Date` +
+`setUTC*` became Hinnant's `days_from_civil` (`usage.test.mjs` holds the two equal on every day of
+years 1..9999), `export { reduce as reduceUsage }` the function's own name, `Math.pow` the
+`pysem.pyPow` adapter, the newline count a `latin1` split.
+
+What is still refused, and why: `Math.log`, `Math.log1p` and `Math.pow`. V8's transcendental bits
+are not one function of the input across platforms (a straight Python port of its fdlibm `log`
+differs from Node on 86 of 40,021 doubles on arm64, where the C compiler fuses multiply-adds), so
+no runtime helper reproduces "Node's" answer; a TypeScript port of CPython arithmetic calls a
+`pysem.ts` function whose adapter is the CPython operator it ports (`pyPow`).
+
+| # | Rule | Status | Pinned by (`tests/`) |
+|---|---|---|---|
+| G3-1 | a module-level `let` (a module global; a module function assigning it declares `global`); no initializer, an assignment from a closure, and an import by another compiled module refused | new | `g3.rs` probe (`bump`, `readCounter`), `g3_a_module_let_is_not_importable`; `refusals.rs` `g3_refusals`; usage's `PARSED` memo |
+| G3-2 | `i++` / `++i` / `i--` / `--i` as a C-style `for` update on a local -> `_js_inc` / `_js_dec` (ToNumeric, then plus or minus one), `_js_num(i + 1)` when proven a number | new | `g3.rs` probe (`loops`); `refusals.rs` (`o.n++`) |
+| G3-3 | `s.charCodeAt(i)` -> `_js_m_charCodeAt` | new | `g3.rs` probe (`codes`: ASCII, BMP, both halves of a pair, a lone surrogate, -1, the length, NaN, 1.9, Infinity, no argument) |
+| G3-4 | `s.match(re)` -> `_js_m_match` (a `g` literal: every match over code units, `null` for none; else `exec`) | new | `g3.rs` probe (`matches`: words, none, empty matches, astral text, a non-`g` group match) |
+| G3-5 | `x.toFixed(f)` -> `_js_m_toFixed` (exact decimal of the double, ties to the larger) | new | `g3.rs` probe (`fixed`: ties, `-0`, 1e21 and past, NaN, the infinities, 5e-324, 20 and 100 digits; `errors`: 101 and -1 are RangeError); `g3_to_fixed_fuzz_like_node` (40,000 seeded doubles x 0..20 digits against Node's digest) |
+| G3-6 | `xs[i] = e` on an array (`_js_put`): an index in range, or the length (an append) | new | `g3.rs` probe (`writes`) |
+| G3-7 | `k in m` for a Map or Set (`_js_in`): the prototype's names | new | `g3.rs` probe (`membership`) |
+| G3-8 | `buf.indexOf(byte, offset)` on a Buffer (`_js_m_indexOf`), `buf.toString('latin1')` | extended (J86 `indexOf`, G2-24) | `g3.rs` probe (`buffers`: offsets 2, -1, 1.9, 100, NaN; bytes 266 and 99; a non-ASCII latin1 text and its split) |
+| G3-9 | a method a declared adapter class names (`Hash.update` / `digest`) | extended (J86 `_js_invoke`) | `g3.rs` probe (`hashes`); `g3_modules_compile_together` |
+| G3-10 | the builtin guard for EVERY name, not only module-level ones (`type` -> `type_`): a guarded entry's own `type(x) is str` called the string | defect fixed | `g3.rs` probe (`named(type, len)`); `pyfmt.rs` `names`; it renamed locals in `workplan.py` (`id`), `pyyaml.py` (`ord`, `abs`) and `eventlog.py` (`sorted`) with no change of behaviour |
+| G3-11 | exact fast paths at the top of `_js_add`, `_js_mul`, `_js_div`, `_js_mod`, `_js_floor`, `_js_number`, `_js_max` / `_js_min` (two operands), `_js_typeof`, `_js_double_out`, `_js_m_split` (no surrogate: no per-part pass) | new | `g3_numeric_fast_paths_answer_as_the_general_path`: 40,000 random operand pairs, each helper against its own general path (an operand of a `float` / `int` / `str` / `dict` subclass takes it), 373,369 calls, 0 differences |
+
+Runtime names added (12): `_js_inc`, `_js_dec`, `_js_m_charCodeAt`, `_js_m_match`, `_js_m_toFixed`,
+`_JS_EXACT` (a 1,200-digit `decimal` context), `_js_buffer_index_of`, `_JS_MAP_PROTO_NAMES`,
+`_JS_SET_PROTO_NAMES`, `_js_number_pair`, and the `decimal` import. Changed: `_js_put` (an array
+element), `_js_in` (a Map or Set), `_js_m_indexOf` (a Buffer), `_js_buffer_to_string` (`latin1`),
+and the fast paths of G3-11. Generated: `usage.py` 495 lines (against 388 TypeScript lines: typed
+bodies write most functions twice). G1 and G2's modules recompile byte for byte but for G3-10's
+renames.
+
 ## Adapters (J86)
 
 Declared in `src/adapters.rs`, written in `src/adapters.py`. Measured against Node's own
@@ -333,3 +380,13 @@ Python's own `os` functions encode it (`os.fsencode`): a POSIX surrogateescape c
 encoding takes becomes the U+FFFD Node writes. The lock is named from the same path as the data
 (it raised `UnicodeEncodeError` on a lone surrogate before). The target-specific row is in
 `docs/porting.md`.
+
+### Adapters (J89-2, #316 G3 U1)
+
+Measured against Node v26.13.0 on macOS arm64, 2026-11-15.
+
+| TypeScript | Python | Why it is the same function | Measurement |
+|---|---|---|---|
+| `pyPow` (`pysem.ts`) | `float ** float` (a negative base refused: Python answers a complex) | Python is the reference: usage.py's `0.5 ** (age / half)`, an OverflowError where it raises one | Node's `Math.pow(0.5, y)` and CPython agree on 30,000 of 30,000 doubles (`Math.pow(x, 0.37)` differs on 131); `--suite recall-usage` |
+| `pyRealpath` (`memory/pyfs.ts`) | `os.path.realpath(_os_text(p))` | Python is the reference: J89-1F's port of `os.path.realpath(strict=False)`, under the G2 path policy (`_os_char`) | `--suite recall-usage` (`storeId` of a dangling symlink, a path below one, a lone surrogate, the ruled U+DC80) and `--suite skill-layer` |
+| `createHash`, `Hash` (`node:crypto`) | `hashlib.sha256` over the string's UTF-8, a lone surrogate as U+FFFD, a POSIX U+DC80..U+DCFF as its real byte (the G2 path policy: the one caller hashes a path) | Node's UTF-8 encoder writes EF BF BD for a lone surrogate | `g3.rs` probe (`hashes`: empty, `héllo`, an astral character, a lone U+D800); `--suite recall-usage` `storeId` cases |

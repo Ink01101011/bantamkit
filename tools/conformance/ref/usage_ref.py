@@ -10,6 +10,7 @@ port's `UsageLedger` with an interpreter written to the same table:
     {"op": "append", "fact", "kind", "ts", "keywords"?}  -> bool
     {"op": "raw", "b64"}                                 -> null   (bytes appended verbatim)
     {"op": "weights", "now"}                             -> [[fact, "%.9f"], ...] in map order
+    {"op": "weights_or_error", "now"}                    -> {"weights": [...]} | {"error": type}
     {"op": "last_used", "fact"}                          -> str | null
     {"op": "keywords_copy", "fact"}                      -> [str] | null
     {"op": "skipped"}                                    -> int    (after the previous read)
@@ -63,6 +64,14 @@ def run_bed(bed: dict) -> list:
             out.append(None)
         elif kind == "weights":
             out.append([[k, f"{v:.9f}"] for k, v in led.weights(op["now"]).items()])
+        elif kind == "weights_or_error":
+            # J89-2: a read that may raise answers what it raised instead of ending the bed.
+            try:
+                got = led.weights(op["now"])
+            except Exception as e:  # noqa: BLE001 -- a raise is an answer
+                out.append({"error": type(e).__name__})
+            else:
+                out.append({"weights": [[k, f"{v:.9f}"] for k, v in got.items()]})
         elif kind == "last_used":
             out.append(led.last_used(op["fact"]))
         elif kind == "keywords_copy":

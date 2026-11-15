@@ -305,7 +305,10 @@ which is what "PyYAML rejects it too" in the codec's sentence means; **libyaml d
 it** (`CSafeLoader` reads `a\tb` as `'a\tb'` and a trailing tab as nothing, PyYAML 6.0.3), and
 runtime-py's fact read falls back to libyaml when it is installed (`factcodec._pyyaml_load`), so
 there a fact holding one is READ by the reference and refused by the port. Measured J89-1F on
-this machine (libyaml present); open, reported to the orchestrator, not ruled here.
+this machine (libyaml present). **J89-2 (the orchestrator's ruling): the refusal is the owner-ruled
+`node-refuses` class and stays; only the false clause of its sentence changed**, to `… PyYAML's
+pure-Python scanner rejects it too: <line>` (`factfile.ts`, `_generated/factfile.py` regenerated;
+no case pinned the old words).
 
 Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float regex needs a
 `.` before the exponent. So are `00:00` and `y`.
@@ -414,7 +417,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | G2 target-specific I/O: a Python `str` path holding U+DC80..U+DCFF (J88-RF F4b, #316 G2) | **the Python side hands a path to the OS as Python's own `os` functions encode it; ruled (J88-RR R1): `--suite eventlog` `ruling: bed: a surrogateescape code point in the directory (U+DCFF)` pins the difference on POSIX, and its companion `... — both stay enabled and neither raises` compares what both still agree on. On macOS APFS refuses the byte, so the Python record is lost (write_failed true) where Node writes a U+FFFD directory.** A POSIX Python caller meets these code points in a path as the surrogateescape stand-ins for the undecodable bytes of a real name (`os.getcwd`, `os.listdir`, `os.fsdecode`): `/x/\udcff` IS the directory `b"/x/\xff"`. The generated log segment and event log reach the OS through `_ts2py_adapters._node_path`, which keeps every code point `os.fsencode` accepts and turns only the rest (a lone surrogate no encoding takes: U+D800..U+DC7F, U+DD00..U+DFFF on POSIX) into the U+FFFD Node's UTF-8 encoding writes. So the log, its `.lock` (the `exclusive` adapter maps its target the same way since J88-RF F4a) and the hand-written store all land in the one real directory, as on main; at `eb929048` the data went to a new U+FFFD directory while the lock stayed in the real one. Node has no such string from its own fs (its names decode to U+FFFD), so a Node caller handing `\udcff` writes a `\ufffd` name where a Python caller writes the byte `0xff`. Windows has no surrogateescape names (`os.fsencode` there takes every lone surrogate, UTF-16 `surrogatepass`), so on Windows `_os_char` maps every lone surrogate to Node's U+FFFD and the two sides agree; measured on POSIX only (no Windows run). Pinned by `test_storage_log.py::test_a_surrogateescape_directory_holds_the_log_and_its_lock` (Linux; APFS refuses the name and the test skips) and, for the lone surrogates both sides map to U+FFFD, `--suite eventlog`'s two `a lone surrogate in the ... is written under U+FFFD` beds. **Applied by J89-1F (#316 G3) to two more surfaces, the same policy and not a second one:** a STORE ROOT holding U+DC80 (Python hands the OS byte 0x80 — APFS refuses it, `MemoryValidationError`, ext4 creates it — where Node saves into `s\ufffdx`; `--suite store` `ruling: G2 target-specific — a store root holding U+DC80 (a surrogateescape byte)`, with the unruled companion `… — a store answer, and only the directory each side names` and Node's answer as a per-side literal), and `storeId` of such a path (Python hashes the real byte, `usage.os_realpath` + `surrogateescape`; Node hashes U+FFFD; `--suite recall-usage` `ruling: storeId — a surrogateescape code point (U+DC80) …` with the companion `… both answer, neither raises`). On POSIX Python's `storeId` of `s\ud800x` and `s\udc80x` now differ (two directories, two ledgers; both raised before) — `LITERAL: J89-1F python storeId of U+D800 and U+DC80 — both answer and differ`. |
 | G2 adapters: two hand-crafted `.gz` segments (J88-RF F5, #316 G2) | **pre-existing, and neither runtime writes such a file; documented, not changed.** `gunzipSync` and the `gunzip_sync` adapter (`gzip.decompress` with Node's refusals) agree on the nine shapes `RULES.md` lists, but not on two: a member followed by zero bytes and then a non-zero byte (`m + b"\0\x01"`) is read by Node as that one member (Node's gunzip ends the input at a zero byte after a member) and refused by Python (`skipped` 1: `gzip.decompress` skips the zero padding and refuses the byte after it as a header), and a member, a zero byte, a second member (`m + b"\0" + m`) is ONE member to Node and both to Python. The hand-written module at main used `gzip.decompress` too, so this is not a G2 change. Rotation writes one `gzip` member and nothing after it on both sides. Measured by the J88-R reviewer's `gz.py` over 13 shapes, 11 equal. |
 | `factfile` — a `__proto__` key in a fact's frontmatter, top-level or nested (J87-R F1, J89-1 D1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: `parseFrontmatter` assigned `meta[key] = value` and `scanNestedMapping` built its mapping the same way, so on Node a top-level `__proto__: polluted` was a [[Set]] of the prototype (a string is ignored, the key vanished) and a nested `  __proto__: inner` vanished too; CPython's dict keeps both as keys. A save that UPDATES the fact writes `Fact.extra` back, so Node dropped both lines from a hand-edited file — data loss. After: both mappings (and `wellFormedMeta`'s rebuild) are made by `Object.fromEntries` over the entries in file order (own data properties; a repeated key keeps its first place and last value, as assignment did), which ts2py lowers as `_js_object_from_entries`, so the generated Python (`_generated/factfile.py`, regenerated) answers as before. Pinned by `--suite store`: `J89-1F a save over a fact with __proto__ keys — the tree` and the per-side `LITERAL: J89-1F <side>'s updated fact keeps the top-level and the nested __proto__ lines`; red at 64a69df8 (the J89-1 case was ruled-different there). |
-| `candidates_done` and dream's `absolutise` — a word next to U+0345 COMBINING GREEK YPOGEGRAMMENI (J89-1 D2; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node spelled CPython's `\b` as `(?<![\p{L}\p{N}_])` / `(?![\p{L}\p{N}_])` in regexes compiled with `iu`; under `i` a class matches every code point whose simple case fold is in it, and U+0345 folds to iota, so `doneͅ` and `yesterdayͅ` had no boundary on Node (no done-word, no annotation) where CPython's `\w` (never case-folded; U+0345 is Mn) keeps it. After: both patterns (`store.ts` `DONE_WORD_RE`, `dream.ts` `RELATIVE` and `UNRESOLVED`) are compiled with `u` and WITHOUT `i`; the word class is `pysem.PY_WORD_CLASS` and the words are spelled by `pysem.pyCaseless`, which reproduces exactly what `iu` matched for each letter (swept: U+212A for `k`, U+017F for `s`). Swept over 0..0x10FFFF against CPython 3.12 (UCD 15.0): the class disagrees with `\w` on no code point CPython assigns (it did on one, U+0345); the 9,661 left are code points UCD 15.0 leaves unassigned and Node's ICU assigns. **Found while sweeping, open and NOT changed here:** CPython's `re.IGNORECASE` also matches U+0130 and U+0131 for `i` (JS `iu` does not), so `shıpped` is a done-word to Python only; `pyCaseless` keeps Node's old answer and the difference is reported, not ruled. Pinned by `--suite store` (`J89-1F candidates_done: "done" followed by U+0345`, its node literal, and `J89-1F the word class over every code point CPython assigns`) and `--suite dream` (three `J89-1F absolutise: …` and six per-side `LITERAL: J89-1F <side> finds the term …`); U+0345 is back in `g3pure.mjs`'s fuzz alphabet. |
+| `candidates_done` and dream's `absolutise` — a word next to U+0345 COMBINING GREEK YPOGEGRAMMENI (J89-1 D2; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node spelled CPython's `\b` as `(?<![\p{L}\p{N}_])` / `(?![\p{L}\p{N}_])` in regexes compiled with `iu`; under `i` a class matches every code point whose simple case fold is in it, and U+0345 folds to iota, so `doneͅ` and `yesterdayͅ` had no boundary on Node (no done-word, no annotation) where CPython's `\w` (never case-folded; U+0345 is Mn) keeps it. After: both patterns (`store.ts` `DONE_WORD_RE`, `dream.ts` `RELATIVE` and `UNRESOLVED`) are compiled with `u` and WITHOUT `i`; the word class is `pysem.PY_WORD_CLASS` and the words are spelled by `pysem.pyCaseless`, which reproduces exactly what `iu` matched for each letter (swept: U+212A for `k`, U+017F for `s`). Swept over 0..0x10FFFF against CPython 3.12 (UCD 15.0): the class disagrees with `\w` on no code point CPython assigns (it did on one, U+0345); the 9,661 left are code points UCD 15.0 leaves unassigned and Node's ICU assigns. **Found while sweeping, then FIXED IN NODE by J89-2 (the orchestrator's ruling: Python is the reference for its own regex semantics):** CPython's `re.IGNORECASE` also matches U+0130 and U+0131 for `i` (JS `iu` does not), so `shıpped` was a done-word to Python only; `pysem.pyCaseless` now spells `i` as `[iIİı]` (swept: every code point 0..0x10FFFF for all 26 letters against CPython 3.12, no other letter has a partner JS's `iu` lacks). Pinned by `--suite store` `J89-2 candidates_done: "shipped" spelled with U+0131 / U+0130` and their node literals, and `--suite dream` `J89-2 absolutise: …` (`rıght now`, `next tİme`); red at b3e570be. **It exposed one more difference, pinned UNRULED (J89-2):** `tonight` spelled with U+0131 or U+0130 is now matched by both, and the reference then raises `KeyError` from its day table (`'tonıght'` is not a key), where node reports the term unresolved (`--suite dream` `ruling: UNRULED DIVERGENCE absolutise: \`tonight\` spelled with U+0131 (dotless i)` and two per-side literals); python raised there before J89-2 as well. Pinned by `--suite store` (`J89-1F candidates_done: "done" followed by U+0345`, its node literal, and `J89-1F the word class over every code point CPython assigns`) and `--suite dream` (three `J89-1F absolutise: …` and six per-side `LITERAL: J89-1F <side> finds the term …`); U+0345 is back in `g3pure.mjs`'s fuzz alphabet. |
 | a fact write cut short (EFBIG, ENOSPC) — the sentence raised (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node wrote the temp with one `writeFileSync`, and `asPyOSError` over its error kept libuv's text (EFBIG was not in the strerror table) and the temp's path: `[Errno 27] EFBIG: EFBIG: file too large, write: '<temp>'`. CPython's buffered `write` raises with no filename: `[Errno 27] File too large`. After: `pyfs.pyWriteTextAtomic` opens (`wx`), writes and closes as three steps, as CPython does; only the open's error names the temp, and EFBIG is in the table (`File too large`, the same on the UCRT). An `index.md` write cut short by ENOSPC said `[Errno 28] No space left on device: '<root>/index.md'` on Node and no filename on Python; it now says the latter on both (tmpfs probe below). Pinned by `--suite store` `J89-1F a fact write cut short by EFBIG — the sentence raised` and `LITERAL: J89-1F node raises a fact write cut short by EFBIG as CPython does`. |
 | `index.md` and `save`'s budget rollback rewritten in place (J89-1 shared weakness; J89-1F, #316 G3) | **WAS the same weakness on both sides — fixed in both; agreeing before and after.** Before: `_rebuild_index` / `rebuildIndex` wrote `index.md` with `write_text` / `pyWriteText`, and `save`'s rollback after `MemoryBudgetExceeded` rewrote the fact the same way: truncate, then write. A write cut short left a PREFIX: measured at 64a69df8 under `ulimit -f 4`, `index.md` went from 3,800 bytes to the first 4,096 of the new index and the 6,000-byte fact the rollback was restoring to its first 4,096 bytes, on both sides. After: both go through a per-writer temp and a rename, exactly as the fact write does (`<path>.<pid>.<8 hex>.tmp`, `O_EXCL`, every byte written — Node loops over `writeSync`, G2's `writeAll` lesson; CPython's buffered writer loops itself — unlink on any failure): Python `store._write_text_atomic`, Node `pyfs.pyWriteTextAtomic`, and `_write_fact` / `writeFact` now call the same helper. A failed `index.md` write leaves the old file byte for byte; a failed rollback leaves the whole updated fact (never a prefix) and raises the write's `OSError`. Measured under ENOSPC too, in a 1 MiB tmpfs (Docker, CPython 3.13 and Node 22): at 64a69df8 `index.md` 3,800 -> 4,096 bytes on both; now unchanged on both, no temp left. Pinned by `--suite store`: `J89-1F a save whose index.md write is cut short — answer and tree`, `J89-1F a budget rollback whose fact write is cut short — answer and tree`, and four per-side `LITERAL: J89-1F <side>: …`. **Residual, not measured:** on Windows a rename onto a file another process holds open without `FILE_SHARE_DELETE` fails, so `index.md` now shares the fact write's exposure there (no Windows run). |
 | `storeId`, `skills._same`, `component._same_directory` — a dangling symlink, and a path below one (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node resolved with `fs.realpathSync.native` and, on a throw, the parent resolved plus the name (`usage.ts`, `skills.ts`), or a lexical `path.resolve` (`component.ts`); the native call is strict, so a dangling symlink kept the LINK's own name where `os.path.realpath` follows it to the target text: one store had two usage ledgers, and a project under a dangling link to the home was two skill roots on Node, one on Python. After: all three call `pyfs.pyRealpath`, the port of `os.path.realpath(strict=False)` written once (`posixpath._joinrealpath` + `abspath` on POSIX; the `ntpath` non-strict arm `pyResolve` already used on Windows, unmeasured there), meant to be the `realpathSync.native` adapter's contract when these modules are generated. It also keeps the caller's spelling of a case-folded macOS name, as CPython does, where `realpath(3)` answered the filesystem's. Pinned by `--suite recall-usage` (`J89-1F storeId — a dangling symlink`, `— a path below a dangling symlink`, and per-side literals against each side's own target id) and `--suite skill-layer` (`J89-1F skill_roots: a project under a dangling symlink to the home` and its per-side literals). |
@@ -1004,7 +1007,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger and the log segment are compiled from TypeScript (#314, #315, #316 G1, G2)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment and the usage ledger are compiled from TypeScript (#314, #315, #316 G1, G2, G3 U1)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1026,7 +1029,8 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/memory/pyyaml.ts runtime-ts/src/memory/factfile.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
-  runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts \
+  runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
+  runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -1490,6 +1494,111 @@ generated `JSON.stringify` / `JSON.parse`, the UTF-16 split), as #315 and G1 fou
 (a hook process, a server's event-log write, a module import) is within 2%. `token_ledger` over a
 large real corpus is the one surface that pays the multiple (≈3.2x on the read); it is an
 on-demand report, not a per-call path.
+
+### The usage ledger (#316 G3 U1, J89-2); retrieval stays hand-written
+
+Since J89-2 `bantamkit.memory.usage` runs code compiled from `runtime-ts/src/memory/usage.ts`:
+`_generated/usage.py` (495 lines), from the same ts2py call as G1 and G2 (the ledger imports the
+compiled log segment; G1 and G2's output is unchanged but for G3-10's local renames,
+`tools/ts2py/RULES.md`). The hand-written module (364 lines) is retired; `memory/usage.py` is a
+shim (203 lines). `pyfs.pyRealpath`, `pysem.pyPow` and `node:crypto`'s hash reach Python through
+the adapter seam (RULES.md, *Adapters (J89-2)*): `pyRealpath` and `pyPow` onto the CPython function
+each ports (`usage.os_realpath`'s `os.path.realpath` under the G2 path policy; `float ** float`),
+`createHash('sha256').update(s, 'utf8')` onto `hashlib` over Node's UTF-8 with the G2 path policy
+for a surrogateescape code point, so J89-1F's `storeId` cases (dangling symlink, a path below one,
+a lone surrogate) and the ruled U+DC80 case are answered by the adapters unchanged.
+
+**What the shim keeps (Python-only conveniences).**
+
+- *Paths are `Path`s*: `UsageLedger(home, store_root, fold_lines=None, rotate_bytes=None)`,
+  `store_id`, `os_realpath`, `missed_writes` and `status_line` take a `Path` or a string;
+  `UsageLedger.path` is a `Path`.
+- *Python shapes*: `weights` and `last_used_map` answer `dict`s (weights as `float`), `census` a
+  tuple, `last_used` / `keywords_copy` `None` for nothing; `reduce_usage` takes `(row, line)`
+  tuples (`storage/retention.py`).
+- *Call-time constants*: `LEDGER_FOLD_LINES`, `LOCK_WAIT_MS` (this module) and
+  `logsegment.ROTATE_BYTES` are read each time a ledger is used, as the hand-written ledger read
+  them; `LOCK_STALE_MS`, `LOCK_POLL_MS`, `USAGE_HALF_LIFE_DAYS` and `WEIGHT_MAX` assigned on the
+  shim (or by `monkeypatch`) are assigned on the generated module, which reads them at call time.
+  `USAGE_HALF_LIFE_DAYS` and `WEIGHT_MAX` stay floats.
+- *`_parse(ts)` answers seconds or raises `ValueError(f"not a ledger timestamp: {ts!r}")`* (it is
+  `touch/*`'s and `skillmine`'s timestamp reader), and `weights` / `fold` raise that same
+  `ValueError` for a bad `now`, as before (the generated ledger would raise node's `Error`).
+
+**TypeScript refactors, each pure (Node's answers unchanged; `npm test` and `--suite recall-usage`
+green):** `parseTs` counts days with Hinnant's `days_from_civil` instead of `new Date(0)` +
+`setUTCFullYear` + `setUTCHours` (`usage.test.mjs` holds the two equal on all 3,652,059 days of years
+1..9999) and keeps its answers in a bounded memo (a read parses each `ts` twice); `export { reduce as
+reduceUsage }` became the function's own name; `Math.pow` became `pysem.pyPow`; the newline count is
+a `latin1` split (Node measured faster: 72 µs against 91 µs over a 5,000-line ledger); `weightsOf`
+and `valid` read each field once.
+
+**Python-side behaviour changes, all toward Node** (`before` is the hand-written module at
+`b3e570be`):
+
+| Input | Python before | Python now = Node |
+|---|---|---|
+| a folded weight on a tie at the tenth decimal (a use 140 days before the fold: `0.5 ** 10` = 0.0009765625) | `"weight":0.000976562` (`f"{w:.9f}"`, half to even) | `"weight":0.000976563` (`toFixed(9)`, the larger) — a different ledger byte on disk; `--suite recall-usage` `tie: …` and `LITERAL: J89-2 a folded weight of 0.5 ** 10 is written 0.000976563` (red at b3e570be) |
+| `append` past the fold threshold with a `ts` the fold cannot parse | the event written, then `ValueError` out of `append` | the event written, `False` |
+| `UsageLedger(home, ...)` with `..`, `.` or a doubled separator in `home` | `.path` kept them (`Path(home) / ...`) | `path.join` normalises them (the same file); `missed_writes` / `status_line` key on that spelling |
+
+**Found by J89-2, pinned UNRULED, not changed** (for the orchestrator): a folded line dated far past
+`now` (`9999-12-31`) decays by `0.5 ** (age / 14)` with a huge negative age; CPython's `**` raises
+`OverflowError`, so the reference's `weights` and the recall that reads them raise, where node's
+`Math.pow` answers Infinity and the fact weighs Infinity. Generation keeps Python's answer (`pyPow`
+IS CPython's `**`). `--suite recall-usage` `ruling: UNRULED DIVERGENCE future: …` and two per-side
+literals. (The dotless-i `tonight` difference is in the D2 row above.)
+
+**No `ruling: G3 as Node` case closed.** The two `G3 as Node` rows (a store root holding a NUL or a
+lone U+D800) belong to `store.ts` (U2); `--suite store` still has its 13 ruled cases, none stale,
+and the ruled U+DC80 `storeId` case stays (`--suite recall-usage`, 2 ruled: it and the new unruled
+one).
+
+**`memory/retrieval.ts` compiled, answered every case, and was NOT shipped generated.** J89-2
+lowered everything it needs (G3-1 to G3-7 in RULES.md; `pysem` adapters for `round(x, 9)`,
+`math.log`, `math.log1p`, NFKC + `lower` and the word-character test; `Float64Array` as arrays of
+doubles) and `--suite recall-retrieval` (156), `recall-strings`, `recall-queries` and `recall-gate`
+were green against it. Then `runtime-py/tests/test_storage_bar.py`, the #204 bar declared before any
+number existed (a 5,000-fact recall at most 15 ms at p50), went red: **78.15 ms** against 6.1 ms for
+the hand-written module (same machine, `before` tree). Warm calls, n = 9 medians (µs):
+`bm25_segments` over 5,000 docs and 4 terms 1,366 -> 31,901 (+2,236%), `rank_columns` over 5,000
+1,132 -> 26,662 (+2,256%), 5,000 `weight_of` 421 -> 17,065 (+3,956%), 5,000 `stale` 1,134 -> 6,548
+(+478%), `tokenize_v2` of mixed-script text 37 -> 47 (+25%), `bm25_scores` over 200 docs +5.5%.
+The cause is structural, not a missing helper: the hot loops do arithmetic on array elements and
+Map values, which the fact system (SUBSET.md, *Types*) cannot prove numeric, so every `+`, `/`,
+index read and write is a JS-semantics call, and `rank_columns`'s comparator sort calls Python once
+per comparison where the hand-written module sorted by key at C speed. What generating it needs:
+typed arrays whose elements are proven doubles (`Float64Array` as `array('d')`), number facts that
+flow from such arrays and from a `typeof x === 'number'` narrowing, and a comparator-to-key lowering
+for `(a, b) => f[b] - f[a] || a - b`. Until then `bantamkit.memory.retrieval` stays the hand-written
+reference, `retrieval.ts` stays as it was, and the J89-2 rules it would use are pinned by
+`tools/ts2py/tests/g3.rs`'s probe.
+
+**Cost, measured (J89-2, macOS arm64, CPython 3.12.13; n = 9, medians; before = `b3e570be`, after =
+this tree).** Over 20% is flagged. The user paths run over a 307-fact store whose usage ledger holds
+3,000 recall events at distinct second-resolution times (a heavy user), rebuilt fresh for each run.
+
+| Path | Before | After | |
+|---|---|---|---|
+| cold `import bantamkit.memory.usage` (fresh process) | 88.5 ms | 89.6 ms | +1.2% |
+| cold `import bantamkit.memory.store` | 89.6 ms | 89.5 ms | -0.1% |
+| `UsageLedger.weights` over 200 events (warm) | 654 µs | 755 µs | +15.4% |
+| `UsageLedger.append` (warm, 200-line ledger) | 122 µs | 124 µs | +1.4% |
+| `store_id` (warm) | 14.9 µs | 16.7 µs | +12.2% |
+| `UsageLedger.fold` of 300 events (warm) | 782 µs | 1,177 µs | **+50.6% (over)** |
+| `recall` over the store, warm, unstamped | 10.04 / 10.16 ms | 11.55 / 11.55 ms | +14.4% |
+| `recall` over the store, warm, stamped (`memory_recall`) | 10.73 / 11.07 ms | 12.44 / 12.27 ms | +13.3% |
+| `recall` in a fresh process (import included) | 102.7 / 102.8 ms | 116.3 / 118.4 ms | +14.2% |
+| `--hook` UserPromptSubmit over the store, a process | 367.8 / 368.7 ms | 378.5 / 377.5 ms | +2.6% |
+| `test_storage_bar` 5,000-fact recall p50 (usage generated, retrieval hand-written) | 6.1 ms | passes (<= 15 ms) | |
+
+The fold is the one path over the bar; it runs once per 5,000 appended lines (and at Retention), not
+per recall. Before J89-2's runtime fast paths (RULES.md G3-11), the memo and the `latin1` count, the
+same tree measured `weights` +1,023%, `append` +198%, warm recall +1,040% and the hook +28%: the
+JS-semantics runtime's per-operation cost, which G2 met in warm loops too.
+
+**Tests.** Added (`test_memory_usage.py`): the ledger is the generated class; lock constants set on
+the shim reach the generated module; the tie; the bad-`ts` auto-fold; the joined path. None retired.
 
 ## Concurrency
 

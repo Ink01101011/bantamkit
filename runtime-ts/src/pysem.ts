@@ -81,18 +81,20 @@ export function pyStrip(s: string): string {
 export const PY_WORD_CLASS = '[\\p{L}\\p{N}_]';
 
 /**
- * Every code point JS's `iu` matches for an ASCII letter beyond its two cases, so dropping the
- * flag changes nothing but the word class: U+212A KELVIN SIGN is `k`, U+017F LATIN SMALL LETTER
- * LONG S is `s`. Swept over every code point for all 26 letters (J89-1F). CPython's
- * `re.IGNORECASE` matches the same sets EXCEPT for `i`, where it also takes U+0130 and U+0131:
- * a difference this table keeps as it was under `iu` (open, reported in J89-1F; not ruled here).
+ * Every code point CPython's `re.IGNORECASE` matches for an ASCII letter beyond its two cases:
+ * U+212A KELVIN SIGN is `k`, U+017F LATIN SMALL LETTER LONG S is `s` (JS's `iu` matches these
+ * two as well), and U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE and U+0131 LATIN SMALL LETTER
+ * DOTLESS I are `i`, which JS's `iu` does NOT match (#316 G3, J89-2: the orchestrator's ruling
+ * on J89-1F's open report; Python is the reference for its own regex semantics). Swept over every
+ * code point 0..0x10FFFF for all 26 letters against CPython 3.12: no other letter has a partner.
  */
-const PY_FOLD_EXTRA: Readonly<Record<string, string>> = { k: 'K', s: 'ſ' };
+const PY_FOLD_EXTRA: Readonly<Record<string, string>> = { i: 'İı', k: 'K', s: 'ſ' };
 
 /**
  * `alternatives` (ASCII letters, `|`, `?` and nothing else) as a pattern that matches what the
- * same text matched under `iu`, for a regex compiled WITHOUT `i`: each letter becomes the class
- * of its case partners (`PY_FOLD_EXTRA`). See `PY_WORD_CLASS` for why the flag cannot be used.
+ * same text matches under CPython's `re.IGNORECASE`, for a regex compiled WITHOUT `i`: each
+ * letter becomes the class of its case partners (`PY_FOLD_EXTRA`). See `PY_WORD_CLASS` for why
+ * the flag cannot be used.
  */
 export function pyCaseless(alternatives: string): string {
   if (!/^[A-Za-z|?]*$/.test(alternatives)) {
@@ -193,4 +195,21 @@ export function pyRepr(s: string): string {
     } else out += ch;
   }
   return out + quote;
+}
+
+// ---------------------------------------------------------- the usage ledger's float semantics
+
+/**
+ * CPython's `float ** float` (`x ** y` on two floats): `memory/usage.ts` is a port of
+ * `bantamkit/memory/usage.py`, whose decay is `0.5 ** (age / half)`. Node's spelling is
+ * `Math.pow`, and ts2py's adapter seam maps this function onto CPython's `**` (#316 G3, J89-2).
+ * ts2py refuses `Math.pow` itself: V8's transcendental results are not one function of the input
+ * across platforms (J89-2 measured, macOS arm64, Node 26.13 against CPython 3.12, 30,000 doubles:
+ * `Math.pow(x, 0.37)` differs from CPython in the last bit on 131, `Math.log` on 549; a straight
+ * Python port of V8's fdlibm `log` still differs from Node on 86 of 40,021, because the C compiler
+ * fuses multiply-adds on arm64), so no Python helper can reproduce "Node's" bits.
+ * `Math.pow(0.5, y)` and CPython agreed on all 30,000.
+ */
+export function pyPow(x: number, y: number): number {
+  return Math.pow(x, y);
 }

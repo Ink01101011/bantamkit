@@ -110,7 +110,15 @@ holding a NUL or a lone U+D800 (`ruling: G3 as Node — …`, Python moves at ge
 store root or `storeId` holding U+DC80 (`ruling: G2 target-specific …` / `ruling: storeId — …`),
 each with a companion or a per-side literal. J89-1F also added `skill-layer`'s three
 `J89-1F skill_roots: …` cases and `store`'s two cut-short cases (`index.md` and the budget
-rollback written through a temp and a rename on both sides, red at 64a69df8).
+rollback written through a temp and a rename on both sides, red at 64a69df8). **J89-2 (#316 G3
+U1)**: `store`'s `J89-2 candidates_done: "shipped" spelled with U+0131 / U+0130` and `dream`'s two
+`J89-2 absolutise: …` cases (Node's `pyCaseless` now matches CPython's IGNORECASE for `i`), each
+with node literals, red at b3e570be; `recall-usage`'s `tie:` bed (a folded weight of `0.5 ** 10`,
+`toFixed(9)`'s `0.000976563`, red against the hand-written ledger) and its per-side literal; and two
+new `UNRULED DIVERGENCE` cases, not ruled and not fixed: `dream`'s `tonight` spelled with U+0131
+(python raises `KeyError`, node reports it unresolved) and `recall-usage`'s `future:` bed (a folded
+line dated far past `now`: python raises `OverflowError`, node weighs it Infinity), each with
+per-side literals. `ts2py` now recompiles `usage.py` in the G1/G2 call.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

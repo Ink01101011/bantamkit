@@ -1,6 +1,7 @@
 # ts2py runtime support: the JavaScript semantics the generated code leans on.
 # Pure standard library. Every name starts with `_js_`, `_Js` or `_JS_`, and ts2py refuses a
 # TypeScript identifier with one of those prefixes, so nothing here can be shadowed by source.
+import decimal as _js_decimal
 import errno as _js_errno
 import functools as _js_functools
 import json as _js_jsonlib
@@ -31,6 +32,12 @@ def _js_is_nullish(value):
 
 def _js_typeof(value):
     """`typeof value`. A Python bool is `boolean`, never `number`."""
+    # J89-2: the exact types first (a `str` and a `dict` are what JSON rows hold).
+    kind = type(value)
+    if kind is str:
+        return "string"
+    if kind is dict or kind is list:
+        return "object"
     if value is _JS_UNDEFINED:
         return "undefined"
     if value is None:
@@ -237,6 +244,9 @@ def _js_add(left, right):
         and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
     ):
         return _js_num(left + right)
+    # J89-2: two floats are two doubles; their IEEE sum is the general path's `_js_num(l + r)`.
+    if type(left) is float and type(right) is float:
+        return left + right
     if isinstance(left, str) or isinstance(right, str):
         return _js_cat(_js_str(left), _js_str(right))
     if _js_is_number(left) and _js_is_number(right):
@@ -458,7 +468,24 @@ def _js_get(obj, key):
 
 
 def _js_put(obj, key, value):
-    """`obj.key = value` on a plain object."""
+    """`obj.key = value` on a plain object. J89-2: `xs[i] = value` on an array, `i` an index
+    within it or exactly its length (an append); one past the end would leave a hole, and any
+    other key on an array is a property, both outside the subset."""
+    if type(obj) is list:
+        if type(key) is int and 0 <= key < len(obj):
+            obj[key] = value
+            return
+        index = _js_index_key(key)
+        canonical = index is not None and _js_str(index) == _js_str(key)
+        if canonical and -1 < index < 2**32 - 1:
+            if index < len(obj):
+                obj[index] = value
+                return
+            if index == len(obj):
+                obj.append(value)
+                return
+            raise TypeError("ts2py: an array write past its end (a hole) is outside the subset")
+        raise TypeError("ts2py: a property write on an array is outside the subset")
     key = key if isinstance(key, str) else _js_str(key)
     if isinstance(obj, _JsObject):
         if key.startswith("_") or key in _JS_OBJECT_PROTO_NAMES:
@@ -770,7 +797,12 @@ def _js_m_split(receiver, separator):
         units = _js_code_units(receiver)
         if separator == "":
             return list(units)
-        return [_js_from_units(part) for part in units.split(_js_code_units(separator))]
+        parts = units.split(_js_code_units(separator))
+        # J89-2: with no surrogate anywhere in the units, every part is already canonical
+        # (`_js_from_units` would return it unchanged), so the per-part pass is skipped.
+        if _JS_SURROGATE.search(units) is None:
+            return parts
+        return [_js_from_units(part) for part in parts]
     raise _js_outside("split", receiver)
 
 
@@ -1079,7 +1111,10 @@ def _js_string_receiver(method, receiver):
 
 
 def _js_m_indexOf(receiver, search, position=_JS_UNDEFINED):
-    """`s.indexOf(search, position)` in UTF-16 code units (strings only)."""
+    """`s.indexOf(search, position)` in UTF-16 code units (strings only). J89-2: also
+    `buf.indexOf(byte, offset)` on a Buffer, `byte` a number."""
+    if isinstance(receiver, _JS_BYTES):
+        return _js_buffer_index_of(receiver, search, position)
     units = _js_code_units(_js_string_receiver("indexOf", receiver))
     needle = _js_code_units(_js_str(search))
     start = min(max(_js_to_integer(position), 0), len(units))
@@ -1272,6 +1307,14 @@ _JS_NAN = _js_math.nan
 def _js_double_out(value):
     """A float result back in the int-when-exact spelling: an integral finite value within 2^53
     becomes an `int`, except -0, which only a float can hold."""
+    # J89-2: the common case first, the same test in a cheaper order (a non-integral float, NaN
+    # and the infinities are not `is_integer()`).
+    if type(value) is float:
+        if not value.is_integer() or not -9007199254740992.0 <= value <= 9007199254740992.0:
+            return value
+        if value == 0 and _js_math.copysign(1.0, value) < 0:
+            return value
+        return int(value)
     if (
         isinstance(value, float)
         and value == value
@@ -1309,6 +1352,19 @@ def _js_float_pair(left, right):
 
 def _js_mul(left, right):
     """`left * right`: numbers as doubles (the sign of a zero kept), two BigInts exactly."""
+    # J89-2: the general path's answer for two floats, or two non-zero ints in the exact range.
+    kind = type(left)
+    if kind is float and type(right) is float:
+        return _js_double_out(left * right)
+    if (
+        kind is int
+        and type(right) is int
+        and left
+        and right
+        and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX
+        and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX
+    ):
+        return _js_num(left * right)
     left, right = _js_to_numeric(left), _js_to_numeric(right)
     if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
         a, b = _js_bigint_operands(left, right)
@@ -1323,6 +1379,15 @@ def _js_mul(left, right):
 def _js_div(left, right):
     """`left / right`: IEEE division of the two doubles, so `1 / 0` is Infinity and `0 / 0` NaN;
     two BigInts divide truncating toward zero and a BigInt zero divisor is a RangeError."""
+    # J89-2: the general path's answer for two numbers that are floats or ints in the exact range,
+    # the divisor not zero.
+    kind, other = type(left), type(right)
+    if (
+        (kind is float or (kind is int and _JS_SAFE_MIN <= left <= _JS_SAFE_MAX))
+        and (other is float or (other is int and _JS_SAFE_MIN <= right <= _JS_SAFE_MAX))
+        and right != 0
+    ):
+        return _js_double_out(float(left) / float(right))
     left, right = _js_to_numeric(left), _js_to_numeric(right)
     if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
         a, b = _js_bigint_operands(left, right)
@@ -1342,6 +1407,15 @@ def _js_div(left, right):
 def _js_mod(left, right):
     """`left % right`: the remainder takes the sign of the dividend (a zero result keeps it, so
     `-4 % 2` is -0); a zero divisor or an infinite dividend is NaN. BigInts exactly."""
+    # J89-2: a non-negative int over a positive one, both in the exact range: Python's `%` is the
+    # remainder the general path's `fmod` computes exactly.
+    if (
+        type(left) is int
+        and type(right) is int
+        and 0 <= left <= _JS_SAFE_MAX
+        and 0 < right <= _JS_SAFE_MAX
+    ):
+        return left % right
     left, right = _js_to_numeric(left), _js_to_numeric(right)
     if isinstance(left, _JsBigInt) or isinstance(right, _JsBigInt):
         a, b = _js_bigint_operands(left, right)
@@ -1374,6 +1448,15 @@ def _js_math_arg(value):
 
 def _js_floor(value):
     """`Math.floor`: NaN, the infinities and -0 come back unchanged."""
+    # J89-2: an int in the exact range is its own floor (`_js_math_arg` returns it unchanged), and
+    # a float is its own ToNumber, so the general path's answer is read straight off it.
+    kind = type(value)
+    if kind is int and _JS_SAFE_MIN <= value <= _JS_SAFE_MAX:
+        return value
+    if kind is float:
+        if value != value or value in (_js_math.inf, -_js_math.inf) or value == 0:
+            return value
+        return _js_math.floor(value)
     value = _js_math_arg(value)
     if type(value) is int or value != value or value in (_js_math.inf, -_js_math.inf) or value == 0:
         return value
@@ -1401,18 +1484,43 @@ def _js_extreme(values, pick_max):
     return best
 
 
+def _js_number_pair(values):
+    """J89-2: True for exactly two operands that are floats or ints in the exact range (each its
+    own ToNumber), neither NaN and not both zero (where the sign of a zero decides)."""
+    if len(values) != 2:
+        return False
+    a, b = values
+    for v in (a, b):
+        kind = type(v)
+        if kind is float:
+            if v != v:
+                return False
+        elif not (kind is int and _JS_SAFE_MIN <= v <= _JS_SAFE_MAX):
+            return False
+    return not (a == 0 and b == 0)
+
+
 def _js_max(*values):
     """`Math.max`: any NaN is NaN, +0 beats -0, no argument is -Infinity."""
+    # J89-2: `_js_extreme` keeps the first of two equal values, as Python's `max` does.
+    if _js_number_pair(values):
+        return max(values)
     return _js_extreme(values, True)
 
 
 def _js_min(*values):
     """`Math.min`: any NaN is NaN, -0 beats +0, no argument is Infinity."""
+    if _js_number_pair(values):
+        return min(values)
     return _js_extreme(values, False)
 
 
 def _js_number(value=0):
     """`Number(value)`: ToNumeric, and a BigInt converts to the nearest double."""
+    # J89-2: a string of at most 15 ASCII digits is the int it spells (StringToNumber reads it as
+    # that double exactly, and `_js_double_out` answers the int).
+    if type(value) is str and 0 < len(value) <= 15 and value.isascii() and value.isdigit():
+        return int(value)
     value = _js_to_numeric(value)
     if isinstance(value, _JsBigInt):
         return _js_num(value.value)
@@ -1958,7 +2066,23 @@ def _js_in(key, obj):
         if key == "length":
             return True
         raise TypeError(f"ts2py: {key!r} in an array is outside the subset")
+    if isinstance(obj, (_JsMap, _JsSet)):
+        # J89-2: a Map or Set has no own string keys; `in` sees what its prototype chain holds.
+        names = _JS_MAP_PROTO_NAMES if isinstance(obj, _JsMap) else _JS_SET_PROTO_NAMES
+        return key in names or key in _JS_OBJECT_PROTO_NAMES
     raise _JsTypeError(f"Cannot use 'in' operator to search for '{key}' in {_js_str(obj)}")
+
+
+# J89-2: the string-keyed members of Map.prototype and Set.prototype (Node 26.13).
+_JS_MAP_PROTO_NAMES = frozenset(
+    ("clear", "constructor", "delete", "entries", "forEach", "get", "getOrInsert",
+     "getOrInsertComputed", "has", "keys", "set", "size", "values")
+)
+_JS_SET_PROTO_NAMES = frozenset(
+    ("add", "clear", "constructor", "delete", "difference", "entries", "forEach", "has",
+     "intersection", "isDisjointFrom", "isSubsetOf", "isSupersetOf", "keys", "size",
+     "symmetricDifference", "union", "values")
+)
 
 
 def _js_destructure(value, count):
@@ -2170,9 +2294,12 @@ _JS_BYTES = (bytes, bytearray, memoryview)
 def _js_buffer_to_string(buffer, encoding=_JS_UNDEFINED):
     """`buf.toString(encoding?)`: `utf8` (the default) decodes as Node's does, one U+FFFD per
     maximal invalid subpart and a BOM kept, which `bytes.decode('utf-8', 'replace')` is (J86's
-    measurement, the TextDecoder row); `hex` is two lowercase digits a byte."""
+    measurement, the TextDecoder row); `hex` is two lowercase digits a byte; J89-2: `latin1` is one
+    character U+0000..U+00FF a byte, as Node's `latin1` (alias `binary`) decoder writes it."""
     if encoding is _JS_UNDEFINED or encoding in ("utf8", "utf-8"):
         return bytes(buffer).decode("utf-8", "replace")
+    if encoding in ("latin1", "binary"):
+        return bytes(buffer).decode("latin-1")
     if encoding == "hex":
         return bytes(buffer).hex()
     raise TypeError(f"ts2py: Buffer.toString({encoding!r}) is outside the subset")
@@ -2526,3 +2653,106 @@ def _js_json_parse_deep(text):
                 value = container
                 continue
             fail(i)
+
+
+# ---------------------------------------------------------------- J89-2 (#316 G3): usage, retrieval
+
+
+def _js_inc(value):
+    """`x++` / `++x` as a statement: ToNumeric(x) + 1 (a string `"1"` becomes 2, never `"11"`)."""
+    if isinstance(value, _JsBigInt):
+        raise TypeError("ts2py: ++ on a BigInt is outside the subset")
+    return _js_num(_js_to_number(_js_to_primitive(value)) + 1)
+
+
+def _js_dec(value):
+    """`x--` / `--x` as a statement: ToNumeric(x) - 1."""
+    if isinstance(value, _JsBigInt):
+        raise TypeError("ts2py: -- on a BigInt is outside the subset")
+    return _js_num(_js_to_number(_js_to_primitive(value)) - 1)
+
+
+def _js_m_charCodeAt(receiver, position=_JS_UNDEFINED):
+    """`s.charCodeAt(i)`: the UTF-16 code unit at `i` (half of an astral character's pair), NaN
+    outside the string; `i` is ToIntegerOrInfinity (missing or NaN is 0)."""
+    text = _js_string_receiver("charCodeAt", receiver)
+    if type(position) is int:
+        index = position
+    else:
+        index = _js_to_integer(position)
+    units = text if text.isascii() else _js_code_units(text)
+    if 0 <= index < len(units):
+        return ord(units[int(index)])
+    return _js_math.nan
+
+
+def _js_m_match(receiver, pattern):
+    """`s.match(re)` for a regex literal: with `g`, every match's text over the UTF-16 code units
+    (an empty match advances one unit, as `RegExpBuiltinExec` and Python's `finditer` both do),
+    or `null` when there is none; without `g`, what `re.exec(s)` answers."""
+    text = _js_string_receiver("match", receiver)
+    if isinstance(pattern, _JsGlobalRegExp):
+        units = _js_code_units(text)
+        found = [_js_from_units(m.group(0)) for m in pattern.pattern.finditer(units)]
+        return found if found else None
+    if isinstance(pattern, _js_re.Pattern):
+        return _js_m_exec(pattern, text)
+    raise TypeError("ts2py: .match() of anything but a regex literal is outside the subset")
+
+
+# Wide enough for every double times 10**100 exactly (a double's decimal expansion has at most 767
+# significant digits), so `scaleb` rounds nothing.
+_JS_EXACT = _js_decimal.Context(prec=1200, Emax=2000, Emin=-2000)
+
+
+def _js_m_toFixed(receiver, digits=_JS_UNDEFINED):
+    """`x.toFixed(f)` (Number.prototype.toFixed): the integer `n` nearest to `x * 10**f` on the
+    EXACT binary value of `x`, the LARGER of two on a tie (so a tie rounds away from zero, where
+    Python's `format(x, '.9f')` rounds it to even), written with `f` fraction digits; `-0` is
+    `"0"`, NaN and the infinities are their `String()`, and from 1e21 the number's `String()`."""
+    if isinstance(receiver, bool) or not isinstance(receiver, (int, float)):
+        raise _JsTypeError("Number.prototype.toFixed requires that 'this' be a Number")
+    f = _js_to_integer(digits)
+    if f in (_js_math.inf, -_js_math.inf) or not 0 <= f <= 100:
+        raise _JsRangeError("toFixed() digits argument must be between 0 and 100")
+    x = _js_num(receiver)
+    if x != x or x in (_js_math.inf, -_js_math.inf):
+        return _js_str(x)
+    sign = ""
+    if x < 0:
+        sign, x = "-", -x
+    if x >= 1e21:
+        return sign + _js_str(x)
+    exact = _js_decimal.Decimal(x).scaleb(int(f), _JS_EXACT)
+    n = int(exact.to_integral_value(_js_decimal.ROUND_HALF_UP, _JS_EXACT))
+    m = str(n)
+    if f != 0:
+        k = len(m)
+        if k <= f:
+            m = "0" * (int(f) + 1 - k) + m
+            k = int(f) + 1
+        m = m[: k - int(f)] + "." + m[k - int(f) :]
+    return sign + m
+
+
+def _js_buffer_index_of(buffer, search, offset):
+    """`buf.indexOf(value, byteOffset)` for a number `value` (lib/buffer.js `bidirectionalIndexOf`
+    and node_buffer.cc `IndexOfNumber`): the byte `value >>> 0` truncated to eight bits; the
+    offset is ToNumber, NaN (or missing) is 0, a negative one counts from the end (clamped to 0),
+    and a fraction truncates toward zero."""
+    if isinstance(search, bool) or not isinstance(search, (int, float)):
+        raise TypeError("ts2py: Buffer.indexOf of anything but a byte number is outside the subset")
+    number = _js_to_number(_js_to_primitive(search))
+    byte = 0 if number != number or number in (_js_math.inf, -_js_math.inf) else int(number) % 256
+    length = len(buffer)
+    start = _js_to_number(_js_to_primitive(offset)) if offset is not _JS_UNDEFINED else 0
+    if start != start:
+        start = 0
+    start = _js_to_integer(start)
+    if start < 0:
+        start = max(length + start, 0)
+    if start >= length:
+        return -1
+    if isinstance(buffer, (bytes, bytearray)):
+        return buffer.find(byte, int(start))
+    return bytes(buffer).find(byte, int(start))
