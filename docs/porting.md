@@ -1153,6 +1153,17 @@ repo store (91 facts): 82 ms against 4.6 ms with the fallback forced. The JS-sem
 (`_js_get`, `_js_strict_eq`, UTF-16 helpers) is the cost; ts2py was out of scope for this unit,
 and the number is #316's to budget (`docs/roadmap-1.0.0.md`, #315).
 
+**Superseded by J86-5 (f849c664).** Most of that cost was one quadratic: every `s[i]` and
+`s.length` on a non-ASCII string rebuilt the string's UTF-16 view. With exact runtime fast paths
+(each checks its own operand types and falls back to the general path otherwise) and a text-keyed
+read cache in `factcodec`, a first frontmatter parse costs **145 µs** (517 files, against 21 µs on
+libyaml). Every hook, the memory CLI, `memory_recall`, and `memory_save` on a long-running server
+are within 20% of pre-#315 at the median (n=7). Three first-read-of-a-store paths are still over,
+paid once per process: the first `memory_save` in a process (+16 ms), and the hot and cold index
+builds from nothing (+17 ms and +10 ms). Accepted for #315. The remedy is type-directed lowering in
+ts2py, carried into #316, with the perf gate re-measured at #317. The full table is in
+`docs/roadmap-1.0.0.md`, #315.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**
