@@ -30,17 +30,21 @@
  *      of per-side literal views: `differential-is-blind-to-symmetric-regression` — a fallback
  *      moved to 50000 in BOTH runtimes, or an upper median in both, compares equal forever.
  *
- * WHAT THE GENERATOR LEAVES OUT, AND WHY. The input classes in `DIVERGENT` below are ones on
- * which the two runtimes measurably DISAGREE today (J87-1, reported to the orchestrator, NOT
- * ruled and NOT fixed: CLAUDE.md says a fix that changes observable behaviour is the
- * orchestrator's call). Each is pinned by its exact input as a case carrying `ruling:`, so the
- * suite stays green AND goes red the day one of them starts agreeing (a stale ruling fails).
- * The generator draws its unit ids from strings and its figures from finite numbers below
- * 2**53 and never spells `-0.0`, so it explores the domain the two are claimed to share and
- * does not re-find the pinned classes a thousand times.
+ *   5. A hand-edited ledger (`HAND_EDITED`): the inputs J87-1 found the runtimes disagreeing on
+ *      and J87-1F fixed in both — non-finite figures, `-0`, strict unit identity, `__proto__`.
+ *   6. A non-finite limit, at the surface that refuses it (`CHECKPOINT_LIMITS`, `shiftwork_plan`).
+ *
+ * WHAT THE GENERATOR LEAVES OUT, AND WHY. The input classes in `RULED` below are ones on which
+ * the two runtimes still DIFFER by ruling (docs/porting.md: a figure is a double, as Node holds
+ * it; J87-3's generated Python inherits it). Each is pinned by its exact input as a case
+ * carrying `ruling:`, so the suite stays green AND goes red the day one of them starts agreeing
+ * (a stale ruling fails). The generator draws its unit ids from strings and its figures from
+ * finite numbers below 2**53, so it explores the domain the two are claimed to share and does
+ * not re-find the pinned classes a thousand times.
  *
  * NOTHING REAL IS READ. Every ledger is text spelled in this file.
  */
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -141,44 +145,101 @@ const HAND = [
 ];
 
 /**
- * Inputs on which the two runtimes DISAGREE today, each with its exact input. NOT ruled: each
- * carries a `ruling:` marker so the suite is green over a known, reported divergence and red the
- * day the divergence closes (a stale ruling fails). The orchestrator decides which side is right.
- * `reason` is what was MEASURED by this suite on 2026-11-15 (J87-1).
+ * A HAND-EDITED LEDGER (J87-1F, #316). J87-1 measured the runtimes disagreeing on every input
+ * below; the orchestrator ruled each one FIXED IN BOTH, so each is now an ordinary agreeing case
+ * and goes red the day either side moves:
+ *   - a non-finite figure (`Infinity`, `-Infinity`, `NaN`, and `1e400`, which both decoders read
+ *     as inf) is a figure that is not a non-negative number, so it counts 0 — the rule `_number`
+ *     and `figure` already applied to a string or a boolean. Python raised OverflowError or
+ *     ValueError; Node booked Infinity, answered NaN, or refused naming `Infinity`.
+ *   - `-0` (`-0.0`) is reported `0` in every view field. Node answered `per_unit -0.0`.
+ *   - unit identity in `uncommitted` matching is STRICT (`===`): a missing unit is not `null`,
+ *     `true` is not `1`, `"1"` is not `1`, and two object or list units are never the same unit.
+ *     Python's `==` annulled all of these; it now compares strictly too (docs/porting.md).
+ *   - a `__proto__` key is an own key, as `json.loads` makes it. Node's `toJs` set the prototype,
+ *     so `'tokens' in line` and `line['event']` read through it.
  */
-const DIVERGENT = [
-  ['a bare Infinity token figure', ['{"unit": "U1", "tokens": Infinity}'], ALL, 0,
-    'python raises OverflowError (int(inf)); node answers a view with spent.tokens Infinity, remaining.tokens NaN, affordable NaN, and no refusal'],
-  ['a bare NaN token figure', ['{"unit": "U1", "tokens": NaN}'], ALL, 0,
-    'python raises ValueError (int(nan)); node counts NaN as a 0 figure (per_unit 0) and answers a view'],
-  ['1e400 as a token figure', ['{"unit": "U1", "tokens": 1e400}'], ALL, 0,
-    'python decodes inf and raises OverflowError; node answers the Infinity view of the bare-Infinity case'],
-  ['a bare Infinity duration', ['{"unit": "U1", "tokens": 5, "duration_ms": Infinity}'], ALL, 0,
-    'python raises OverflowError; node refuses with "budget wallclock_ms spent: Infinity of 10000000; ..."'],
-  ['1e20 as a token figure', ['{"unit": "U1", "tokens": 1e20}'], ALL, 0,
-    'python int(1e20) prints 100000000000000000000; node prints the float 1e+20'],
-  ['a token figure above 2**53', ['{"unit": "U1", "tokens": 9007199254740993}'], ALL, 0,
-    'python keeps 9007199254740993; node toJs rounds it to 2**53, which fromJs then spells 9007199254740992.0, and the refusal names 9007199254740992'],
-  ['a token limit above 2**53', [acct('U1', { tokens: 1 })], '{"tokens": 9007199254740993}', 0,
-    'python keeps 9007199254740993 (remaining 9007199254740992); node limit 9007199254740992.0, remaining and affordable one lower'],
-  ['-0.0 as the only token figure', ['{"unit": "U1", "tokens": -0.0}'], ALL, 0,
-    'python per_unit is int 0; node Math.trunc(-0) is -0 and fromJs spells it -0.0'],
-  ['an uncommitted with no unit annuls a line whose unit is null',
-    ['{"unit": null, "tokens": 5}', '{"event": "uncommitted"}'], ALL, 0,
-    'python None == None annuls the line; node undefined !== null keeps it'],
-  ['an uncommitted with unit null annuls a line with no unit',
-    ['{"tokens": 5}', '{"event": "uncommitted", "unit": null}'], ALL, 0,
-    'python annuls (both None); node null !== undefined keeps it'],
-  ['an uncommitted unit 1 annuls a line whose unit is true',
-    ['{"unit": true, "tokens": 5}', '{"event": "uncommitted", "unit": 1}'], ALL, 0,
-    'python True == 1 annuls; node true !== 1 keeps it'],
-  ['an object unit id compares by value',
-    ['{"unit": {"id": "U1"}, "tokens": 5}', '{"event": "uncommitted", "unit": {"id": "U1"}}'], ALL, 0,
-    'python dict equality annuls; node object identity keeps it'],
+const HAND_EDITED = [
+  ['a bare Infinity token figure counts 0', ['{"unit": "U1", "tokens": Infinity}'], ALL, 0],
+  ['a bare -Infinity token figure counts 0', ['{"unit": "U1", "tokens": -Infinity}'], ALL, 0],
+  ['a bare NaN token figure counts 0', ['{"unit": "U1", "tokens": NaN}'], ALL, 0],
+  ['1e400 as a token figure counts 0', ['{"unit": "U1", "tokens": 1e400}'], ALL, 0],
+  ['-1e400 as a token figure counts 0', ['{"unit": "U1", "tokens": -1e400}'], ALL, 0],
+  ['an Infinity token figure among finite ones', ['{"unit": "U1", "tokens": Infinity}', acct('U2', { tokens: 40 }), acct('U3', { tokens: 50 })], ALL, 1],
+  ['a bare Infinity duration counts 0', ['{"unit": "U1", "tokens": 5, "duration_ms": Infinity}'], ALL, 0],
+  ['a bare NaN duration counts 0', ['{"unit": "U1", "tokens": 5, "duration_ms": NaN}'], ALL, 0],
+  ['1e400 as a duration counts 0', ['{"unit": "U1", "tokens": 5, "duration_ms": 1e400}'], { wallclock_ms: 100 }, 0],
+  ['an Infinity duration does not price wallclock', ['{"unit": "U1", "duration_ms": Infinity}', acct('U2', { duration_ms: 30 })], { wallclock_ms: 100 }, 0],
+  ['every figure non-finite, all three dimensions', ['{"unit": "U1", "tokens": NaN, "duration_ms": -Infinity}', '{"unit": "U2", "tokens": 1e999, "duration_ms": NaN}'], ALL, 2],
+  ['-0.0 as the only token figure', ['{"unit": "U1", "tokens": -0.0}'], ALL, 0],
+  ['-0.0 as the only duration', ['{"unit": "U1", "duration_ms": -0.0}'], ALL, 0],
+  ['-0.0 in flight reserves 0', ['{"unit": "U1", "tokens": -0.0, "duration_ms": -0.0}'], { tokens: 10, units: 9, wallclock_ms: 5 }, 3],
+  ['-0.0 as the lower median of several', ['{"unit": "U1", "tokens": -0.0}', '{"unit": "U2", "tokens": -0.0}', acct('U3', { tokens: 9 })], ALL, 0],
+  ['-0.0e5 and -0.4 truncate to 0', ['{"unit": "U1", "tokens": -0.0e5, "duration_ms": 0.4}', acct('U2', { tokens: 1 })], ALL, 0],
+  ['an uncommitted with no unit keeps a line whose unit is null',
+    ['{"unit": null, "tokens": 5}', '{"event": "uncommitted"}'], ALL, 0],
+  ['an uncommitted with unit null keeps a line with no unit',
+    ['{"tokens": 5}', '{"event": "uncommitted", "unit": null}'], ALL, 0],
+  ['an uncommitted with no unit annuls a line with no unit',
+    ['{"tokens": 5}', '{"tokens": 6}', '{"event": "uncommitted"}'], ALL, 0],
+  ['an uncommitted with unit null annuls a line whose unit is null',
+    ['{"unit": null, "tokens": 5}', '{"event": "uncommitted", "unit": null}'], ALL, 0],
+  ['an uncommitted unit 1 keeps a line whose unit is true',
+    ['{"unit": true, "tokens": 5}', '{"event": "uncommitted", "unit": 1}'], ALL, 0],
+  ['an uncommitted unit false keeps a line whose unit is 0',
+    ['{"unit": 0, "tokens": 5}', '{"event": "uncommitted", "unit": false}'], ALL, 0],
+  ['an uncommitted unit true annuls a line whose unit is true',
+    ['{"unit": true, "tokens": 5}', '{"event": "uncommitted", "unit": true}'], ALL, 0],
+  ['an uncommitted unit "1" keeps a line whose unit is 1',
+    ['{"unit": 1, "tokens": 5}', '{"event": "uncommitted", "unit": "1"}'], ALL, 0],
+  ['an object unit id is never the same unit',
+    ['{"unit": {"id": "U1"}, "tokens": 5}', '{"event": "uncommitted", "unit": {"id": "U1"}}'], ALL, 0],
+  ['a list unit id is never the same unit',
+    ['{"unit": ["U1"], "tokens": 5}', '{"event": "uncommitted", "unit": ["U1"]}'], ALL, 0],
+  ['strict matching skips past an unequal unit to the equal one above it',
+    ['{"unit": "U1", "tokens": 5}', '{"unit": null, "tokens": 6}', '{"event": "uncommitted", "unit": "U1"}'], ALL, 0],
   ['a __proto__ key carrying tokens',
-    ['{"unit": "U1", "__proto__": {"tokens": 777}}'], ALL, 0,
-    'python sees no tokens key; node toJs assigns out.__proto__, the prototype carries tokens and `in` finds it'],
+    ['{"unit": "U1", "__proto__": {"tokens": 777}}'], ALL, 0],
+  ['a __proto__ key carrying an event',
+    ['{"unit": "U1", "tokens": 5, "__proto__": {"event": "brief"}}'], ALL, 0],
+  ['a __proto__ key carrying a duration beside real tokens',
+    ['{"unit": "U1", "tokens": 8, "__proto__": {"duration_ms": 50}}'], { wallclock_ms: 100, tokens: 100 }, 0],
+  ['a __proto__ key that is not an object',
+    ['{"unit": "U1", "tokens": 8, "__proto__": 5}', '{"__proto__": null}'], ALL, 0],
+  ['a __proto__ unit annuls by its own key',
+    ['{"unit": "U1", "tokens": 3, "__proto__": {"unit": "U2"}}', '{"event": "uncommitted", "unit": "U2"}'], ALL, 0],
+  ['a __proto__ limit key is not a dimension', [acct('U1', { tokens: 1 })], '{"tokens": 10, "__proto__": {"units": 1}}', 0],
 ];
+
+/**
+ * RULED AS NODE (J87-1F, docs/porting.md divergence table): a figure is a double. An integer
+ * token count beyond 2**53, or one spelled `1e20`, is what Node's number holds — rounded to the
+ * nearest double and printed as one — and that is the behaviour ts2py will generate. No real
+ * ledger holds such a count. Until J87-3 switches Python to the generated module the hand-written
+ * Python keeps the exact integer, so these stay `ruling:` cases, and a stale ruling (the two
+ * starting to agree) fails loudly; J87-3 turns them into ordinary agreeing cases.
+ */
+const RULED = [
+  ['1e20 as a token figure', ['{"unit": "U1", "tokens": 1e20}'], ALL, 0,
+    'python int(1e20) prints 100000000000000000000; node prints the double 1e+20; the refusal sentences agree'],
+  ['a token figure above 2**53', ['{"unit": "U1", "tokens": 9007199254740993}'], ALL, 0,
+    'python keeps 9007199254740993; node holds the double 2**53, which fromJs spells 9007199254740992.0, and the refusal names 9007199254740992'],
+  ['a token limit above 2**53', [acct('U1', { tokens: 1 })], '{"tokens": 9007199254740993}', 0,
+    'python keeps 9007199254740993 (remaining 9007199254740992); node limit is the double 9007199254740992.0, remaining and affordable one lower'],
+];
+
+/**
+ * A NON-FINITE LIMIT never reaches `budget`: `job.budget`'s schema types each dimension
+ * `integer` (minimum 1), and both runtimes refuse a checkpoint whose limit is not one before any
+ * view is built — the same refusal, sentence for sentence, that a string or a boolean limit gets.
+ * So the rule for a non-finite limit is the rule for an invalid one, and it is held here at the
+ * surface that applies it: `shiftwork_plan` (`plan_batches` / `planBatches`) over a checkpoint
+ * whose `job.budget` holds the value as spelled. [label, dimension, value text]
+ */
+const LIMIT_VALUES = ['Infinity', '-Infinity', 'NaN', '1e400', '-1e400', '"5"', 'true', 'null', '5.5', '0'];
+const CHECKPOINT_LIMITS = ['tokens', 'units', 'wallclock_ms'].flatMap((dim) =>
+  LIMIT_VALUES.map((v) => [`job.budget.${dim} = ${v}`, dim, v]),
+);
 
 /** `refusal` alone, over views written by hand: [label, view]. */
 const VIEWS = [
@@ -341,20 +402,60 @@ export async function run(ctx) {
       cases.push({ name: `${group}: ${label} — view`, kind: 'string', expected: vp, actual: vn, ...(ruling && vp !== vn ? { ruling } : {}) });
       cases.push({ name: `${group}: ${label} — refusal`, kind: 'string', expected: rp, actual: rn, ...(ruling && rp !== rn ? { ruling } : {}) });
       if (ruling && vp === vn && rp === rn) {
-        // A DIVERGENT input that agrees on both answers is a stale entry: fail loudly.
+        // A RULED input that agrees on both answers is a stale entry: fail loudly.
         cases.push({ name: `${group}: ${label} — listed as divergent but agrees`, kind: 'string', expected: 'differs', actual: 'agrees' });
       }
     });
     return { py, node };
   };
 
+  /** A per-side literal: `differential-is-blind-to-symmetric-regression`. */
+  const literal = (label, kind, expected, pySide, nodeSide) => {
+    cases.push({ name: `${label} — python`, kind, expected, actual: pySide });
+    cases.push({ name: `${label} — node`, kind, expected, actual: nodeSide });
+  };
+
   // ------------------------------------------------------------------ 1. hand-picked
   const hand = compare('budget', HAND);
 
-  // ------------------------------------------------------------------ the known divergences
-  compare('UNRULED DIVERGENCE', DIVERGENT, (input) =>
-    `UNRULED DIVERGENCE (J87-1, reported to the orchestrator, not ruled, not fixed): ${input[4]}`,
+  // ------------------------------------------------------------------ 5. a hand-edited ledger
+  const edited = compare('hand-edited', HAND_EDITED);
+
+  // ------------------------------------------------------------------ ruled: a figure is a double
+  compare('ruled', RULED, (input) =>
+    `ruling: a figure is a double, as Node holds it (docs/porting.md, J87-1F; J87-3's generated Python inherits it): ${input[4]}`,
   );
+
+  // ------------------------------------------------------------------ 6. a non-finite limit
+  const { planBatches } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'shiftwork.js')).href);
+  const baseCheckpoint = readFileSync(join(ctx.repoRoot, 'tools', 'shiftwork', 'example-codefix-checkpoint.json'), 'utf8');
+  const withLimit = (dim, value) => {
+    const out = baseCheckpoint.replace('"job": {', `"job": {"budget": {${JSON.stringify(dim)}: ${value}},`);
+    if (out === baseCheckpoint) throw new Error('jobbudget: the example checkpoint has no "job": { to extend');
+    return out;
+  };
+  const limitDir = mkdtempSync(join(ctx.scratch, 'jobbudget-limit-'));
+  const nodePlans = CHECKPOINT_LIMITS.map(([, dim, value], i) => {
+    const file = join(limitDir, `node-${i}.json`);
+    writeFileSync(file, withLimit(dim, value));
+    try {
+      return dumpJson(planBatches(file));
+    } catch (e) {
+      return `raises ${e?.constructor?.name}`;
+    }
+  });
+  const pyPlans = ctx.runPython(REF, {
+    op: 'plan',
+    dir: limitDir,
+    checkpoints: CHECKPOINT_LIMITS.map(([, dim, value]) => b64(withLimit(dim, value))),
+  }).out.map((r) => ('raises' in r ? `raises ${r.raises}` : unb64(r.plan)));
+  CHECKPOINT_LIMITS.forEach(([label], i) => {
+    cases.push({ name: `checkpoint limit: ${label}`, kind: 'string', expected: pyPlans[i], actual: nodePlans[i] });
+    // The refusal BIT, per side and pinned: a symmetric regression (both sides accepting a
+    // non-finite limit and building a view over it) would still compare equal above.
+    const refused = (s) => (s.startsWith('{"result": "error", "reason": "checkpoint invalid: ') ? 'refused' : s);
+    literal(`checkpoint limit refused: ${label}`, 'string', 'refused', refused(pyPlans[i]), refused(nodePlans[i]));
+  });
 
   // ------------------------------------------------------------------ 2. refusal alone
   const pyViews = ctx.runPython(REF, { op: 'refusal', views: VIEWS.map(([, v]) => b64(JSON.stringify(v))) }).out;
@@ -388,10 +489,6 @@ export async function run(ctx) {
     __all__: Object.keys(jb).sort(),
   };
   cases.push({ name: 'the exports agree', kind: 'json', expected: pyConst, actual: ndConst });
-  const literal = (label, kind, expected, pySide, nodeSide) => {
-    cases.push({ name: `${label} — python`, kind, expected, actual: pySide });
-    cases.push({ name: `${label} — node`, kind, expected, actual: nodeSide });
-  };
   literal('the exports are what they are', 'json',
     { DIMENSIONS: ['tokens', 'units', 'wallclock_ms'], FALLBACK_TOKENS_PER_UNIT: 60000, __all__: ['DIMENSIONS', 'FALLBACK_TOKENS_PER_UNIT', 'budget', 'refusal'] },
     pyConst, ndConst);
@@ -418,9 +515,26 @@ export async function run(ctx) {
   pin('tokens: in flight takes the last estimate', 'refusal',
     'budget tokens spent: 2000 of 2999; raise job.budget or stop the job');
 
+  // The hand-edited fixes, pinned per side so the pair cannot drift together.
+  const pinEdited = (label, field, expected) => {
+    const i = HAND_EDITED.findIndex(([l]) => l === label);
+    const pick = (r) => (field === 'view' ? viewOf(r) : refusalOf(r));
+    literal(`literal: ${label} (${field})`, 'string', expected, pick(edited.py[i]), pick(edited.node[i]));
+  };
+  pinEdited('a bare Infinity token figure counts 0', 'view',
+    '{"limit": {"tokens": 1000000, "units": 20, "wallclock_ms": 10000000}, "spent": {"tokens": 0, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": 1000000, "units": 19, "wallclock_ms": 10000000}, "per_unit": 0, "affordable": 19}');
+  pinEdited('a bare Infinity duration counts 0', 'refusal', 'None');
+  pinEdited('-0.0 as the only token figure', 'view',
+    '{"limit": {"tokens": 1000000, "units": 20, "wallclock_ms": 10000000}, "spent": {"tokens": 0, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": 1000000, "units": 19, "wallclock_ms": 10000000}, "per_unit": 0, "affordable": 19}');
+  pinEdited('an uncommitted unit 1 keeps a line whose unit is true', 'view',
+    '{"limit": {"tokens": 1000000, "units": 20, "wallclock_ms": 10000000}, "spent": {"tokens": 5, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": 999995, "units": 19, "wallclock_ms": 10000000}, "per_unit": 5, "affordable": 19}');
+  pinEdited('a __proto__ key carrying tokens', 'view',
+    '{"limit": {"tokens": 1000000, "units": 20, "wallclock_ms": 10000000}, "spent": {"tokens": 0, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": 1000000, "units": 19, "wallclock_ms": 10000000}, "per_unit": 60000, "affordable": 16}');
+
   notes.push(
-    `${DIVERGENT.length} inputs on which the runtimes disagree today are pinned as UNRULED ` +
-      'DIVERGENCE cases (reported by J87-1, not ruled, not fixed)',
+    `${HAND_EDITED.length} hand-edited ledger inputs agree (J87-1F fixed them in both runtimes); ` +
+      `${RULED.length} stay ruled (a figure is a double, docs/porting.md); ` +
+      `${CHECKPOINT_LIMITS.length} non-finite or invalid limits are refused by the checkpoint schema on both sides`,
   );
   return { cases, notes };
 }

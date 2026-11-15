@@ -700,6 +700,22 @@ export async function run(ctx) {
     { env: { ...baseEnv, BANTAMKIT_INDEX_DIR: join(home, 'index') } },
   );
 
+  // J87-1F (#316): a `__proto__` KEY in a request is an own key, as `json.loads` makes it.
+  // `pyjson.toJs` once assigned it, which set the prototype instead, so `work_plan` (whose
+  // nodes reach the planner through `toJs`) read `depends_on`/`id` THROUGH it: id 2 planned
+  // `a` after `b` (python: one batch), id 3 planned a node with no id of its own (python:
+  // `Error executing tool work_plan: 'id'`). The request lines are spelled by hand because
+  // `JSON.stringify` of an object literal would not carry a `__proto__` key at all.
+  const protoPlan = (id, nodes) =>
+    `{"jsonrpc":"2.0","id":${id},"method":"tools/call","params":{"name":"work_plan","arguments":{"nodes":${nodes}}}}`;
+  add('pyjson-proto-key', [
+    INIT(),
+    INITIALIZED,
+    protoPlan(2, '[{"id": "a", "__proto__": {"depends_on": ["b"]}}, {"id": "b"}]'),
+    protoPlan(3, '[{"__proto__": {"id": "ghost"}}]'),
+    protoPlan(4, '[{"id": "a", "__proto__": 5}, {"id": "__proto__"}]'),
+  ]);
+
   // PRODUCTION SHAPE: no `--store`, so `Memory.layered` runs and recall lines carry `[project] `.
   sessions.push({
     name: 'memory-layered',

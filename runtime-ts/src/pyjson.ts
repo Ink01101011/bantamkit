@@ -107,8 +107,17 @@ export function toJs(value: PyValue): unknown {
     case 'list':
       return value.v.map(toJs);
     case 'dict': {
+      // An OWN data property per key, `__proto__` included, as `json.loads` makes it (J87-1F):
+      // `out[k] = …` with k `__proto__` would set the prototype instead, so `in` and a read of
+      // any key the object did not hold would see through to the decoded value.
       const out: Record<string, unknown> = {};
-      for (const [k, v] of value.v) out[k] = toJs(v);
+      for (const [k, v] of value.v) {
+        if (k === '__proto__') {
+          Object.defineProperty(out, k, { value: toJs(v), writable: true, enumerable: true, configurable: true });
+        } else {
+          out[k] = toJs(v);
+        }
+      }
       return out;
     }
   }

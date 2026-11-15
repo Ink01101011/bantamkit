@@ -25,6 +25,12 @@ Protocol: one JSON request on stdin, one JSON response on stdout.
       -> {"out": [{"refusal": <b64 | null>} | {"raises": <name>}, ...]}
 
     {"op": "constants"} -> {"DIMENSIONS": [...], "FALLBACK_TOKENS_PER_UNIT": n, "__all__": [...]}
+
+    {"op": "plan", "dir": <scratch dir>, "checkpoints": [<b64 checkpoint text>, ...]}
+      -> {"out": [{"plan": <b64 json.dumps(shiftwork.plan_batches(path))>} | {"raises": <name>}, ...]}
+
+`plan` is `shiftwork_plan` over a checkpoint written as spelled (J87-1F): it is where a
+non-finite `job.budget` limit is answered, since the schema refuses it before any view exists.
 """
 
 from __future__ import annotations
@@ -36,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
-from bantamkit import jobbudget
+from bantamkit import jobbudget, shiftwork
 
 
 def b64(text: str) -> str:
@@ -94,6 +100,18 @@ def run_constants() -> dict:
     }
 
 
+def run_plan(request: dict) -> dict:
+    out = []
+    for index, encoded in enumerate(request["checkpoints"]):
+        path = Path(request["dir"]) / f"py-{index}.json"
+        path.write_text(unb64(encoded), encoding="utf-8")
+        try:
+            out.append({"plan": b64(json.dumps(shiftwork.plan_batches(str(path))))})
+        except Exception as exc:  # noqa: BLE001
+            out.append({"raises": type(exc).__name__})
+    return {"out": out}
+
+
 def main() -> None:
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     op = request["op"]
@@ -103,6 +121,8 @@ def main() -> None:
         out = run_refusal(request)
     elif op == "constants":
         out = run_constants()
+    elif op == "plan":
+        out = run_plan(request)
     else:
         raise SystemExit(f"unknown op {op!r}")
     json.dump(out, sys.stdout)

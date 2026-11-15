@@ -19,6 +19,7 @@ failed and its retry writes the line again, so counting both would book the unit
 — `accounting: null` — is a unit spent at no recorded token cost.
 """
 
+import math
 from typing import Any
 
 __all__ = ["DIMENSIONS", "FALLBACK_TOKENS_PER_UNIT", "budget", "refusal"]
@@ -32,6 +33,28 @@ DIMENSIONS = ("tokens", "units", "wallclock_ms")
 BRIEF_EVENT = "brief"
 UNCOMMITTED_EVENT = "uncommitted"
 
+#: A unit key that is absent, distinct from one that is `null` (J87-1F, `_same_unit`).
+_MISSING = object()
+
+
+def _same_unit(a: Any, b: Any) -> bool:
+    """Unit identity in `uncommitted` matching, STRICT as Node's `===` (J87-1F, #316).
+
+    A missing unit is not `None`, `True` is not `1`, `"1"` is not `1`, and two dict or list
+    units are never one unit (two decoded lines never share an object). `1` and `1.0` are one
+    number, as they are to JS. `==` coerced every one of those, so the two runtimes annulled
+    different lines of the same hand-edited ledger (docs/porting.md).
+    """
+    if a is _MISSING or b is _MISSING:
+        return a is b
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return False
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a == b
+    return type(a) is type(b) and a == b
+
 
 def _counted(lines: list[Any]) -> list[dict[str, Any]]:
     """The accounting lines that count, in ledger order (see the module docstring)."""
@@ -43,9 +66,9 @@ def _counted(lines: list[Any]) -> list[dict[str, Any]]:
         if event == BRIEF_EVENT:
             continue
         if event == UNCOMMITTED_EVENT:
-            unit = line.get("unit")
+            unit = line.get("unit", _MISSING)
             for index in range(len(counted) - 1, -1, -1):
-                if counted[index].get("unit") == unit:
+                if _same_unit(counted[index].get("unit", _MISSING), unit):
                     del counted[index]
                     break
             continue
@@ -55,8 +78,17 @@ def _counted(lines: list[Any]) -> list[dict[str, Any]]:
 
 
 def _number(value: Any) -> int:
-    """A recorded figure as an int; anything that is not a non-negative number counts 0."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+    """A recorded figure as an int; anything that is not a finite, non-negative number counts 0.
+
+    J87-1F: a non-finite figure (`Infinity`, `NaN`, `1e400` decoded as inf) is one more value
+    that is not a figure — `int()` of it raised OverflowError or ValueError out of every tool
+    that reads the ledger. `int(-0.0)` is already `0`.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
+    if value < 0:
         return 0
     return int(value)
 

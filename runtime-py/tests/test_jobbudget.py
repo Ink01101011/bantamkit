@@ -98,6 +98,46 @@ def test_the_refusal_names_the_first_dimension_short(lines, limit, in_flight, se
     assert jobbudget.refusal(jobbudget.budget(lines, limit, in_flight)) == sentence
 
 
+# --- J87-1F: a hand-edited ledger --------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["Infinity", "-Infinity", "NaN", "1e400"])
+def test_a_non_finite_figure_counts_zero(text):
+    lines = [json.loads(f'{{"unit": "a", "tokens": {text}, "duration_ms": {text}}}')]
+    view = jobbudget.budget(lines, {"tokens": 100, "units": 5, "wallclock_ms": 10}, 0)
+    assert view["spent"] == {"tokens": 0, "units": 1, "wallclock_ms": 0}
+    assert view["per_unit"] == 0
+    assert view["affordable"] == 4
+    assert jobbudget.refusal(view) is None
+
+
+def test_minus_zero_is_reported_zero():
+    view = jobbudget.budget([json.loads('{"unit": "a", "tokens": -0.0}')], {"tokens": 5}, 1)
+    assert json.dumps(view) == (
+        '{"limit": {"tokens": 5}, "spent": {"tokens": 0, "units": 1, "wallclock_ms": 0}, '
+        '"in_flight": 1, "remaining": {"tokens": 5}, "per_unit": 0, "affordable": null}'
+    )
+
+
+@pytest.mark.parametrize(
+    "line, annul, annulled",
+    [
+        ({"unit": None, "tokens": 5}, {"event": "uncommitted"}, False),
+        ({"tokens": 5}, {"event": "uncommitted", "unit": None}, False),
+        ({"tokens": 5}, {"event": "uncommitted"}, True),
+        ({"unit": None, "tokens": 5}, {"event": "uncommitted", "unit": None}, True),
+        ({"unit": True, "tokens": 5}, {"event": "uncommitted", "unit": 1}, False),
+        ({"unit": 1, "tokens": 5}, {"event": "uncommitted", "unit": "1"}, False),
+        ({"unit": 1, "tokens": 5}, {"event": "uncommitted", "unit": 1.0}, True),
+        ({"unit": {"id": "a"}, "tokens": 5}, {"event": "uncommitted", "unit": {"id": "a"}}, False),
+        ({"unit": ["a"], "tokens": 5}, {"event": "uncommitted", "unit": ["a"]}, False),
+    ],
+)
+def test_uncommitted_matches_its_unit_strictly(line, annul, annulled):
+    view = jobbudget.budget([line, annul], {"units": 5}, 0)
+    assert view["spent"]["units"] == (0 if annulled else 1)
+
+
 def test_a_budget_with_room_does_not_refuse():
     assert jobbudget.refusal(jobbudget.budget([], {"tokens": 60000, "units": 1}, 0)) is None
 

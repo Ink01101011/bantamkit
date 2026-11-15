@@ -74,6 +74,54 @@ test('a budget with room does not refuse', () => {
   assert.equal(refusal(budget([], { tokens: 60000, units: 1 }, 0)), null);
 });
 
+// --------------------------------------------------------------------------- J87-1F
+
+const { parseJson, fromJs, dumpJson } = await import(new URL('pyjson.js', dist));
+const decoded = (text) => toJs(parseJson(text));
+
+for (const text of ['Infinity', '-Infinity', 'NaN', '1e400']) {
+  test(`a non-finite figure counts 0: ${text}`, () => {
+    const view = budget([decoded(`{"unit": "a", "tokens": ${text}, "duration_ms": ${text}}`)], { tokens: 100, units: 5, wallclock_ms: 10 }, 0);
+    assert.deepEqual(view.spent, { tokens: 0, units: 1, wallclock_ms: 0 });
+    assert.equal(view.per_unit, 0);
+    assert.equal(view.affordable, 4);
+    assert.equal(refusal(view), null);
+  });
+}
+
+test('-0 is reported 0', () => {
+  const view = budget([decoded('{"unit": "a", "tokens": -0.0}')], { tokens: 5 }, 1);
+  assert.equal(
+    dumpJson(fromJs(view)),
+    '{"limit": {"tokens": 5}, "spent": {"tokens": 0, "units": 1, "wallclock_ms": 0}, "in_flight": 1, "remaining": {"tokens": 5}, "per_unit": 0, "affordable": null}',
+  );
+});
+
+for (const [line, annul, annulled] of [
+  ['{"unit": null, "tokens": 5}', '{"event": "uncommitted"}', false],
+  ['{"tokens": 5}', '{"event": "uncommitted", "unit": null}', false],
+  ['{"tokens": 5}', '{"event": "uncommitted"}', true],
+  ['{"unit": null, "tokens": 5}', '{"event": "uncommitted", "unit": null}', true],
+  ['{"unit": true, "tokens": 5}', '{"event": "uncommitted", "unit": 1}', false],
+  ['{"unit": 1, "tokens": 5}', '{"event": "uncommitted", "unit": "1"}', false],
+  ['{"unit": 1, "tokens": 5}', '{"event": "uncommitted", "unit": 1.0}', true],
+  ['{"unit": {"id": "a"}, "tokens": 5}', '{"event": "uncommitted", "unit": {"id": "a"}}', false],
+]) {
+  test(`uncommitted matches its unit strictly: ${line} / ${annul}`, () => {
+    assert.equal(budget([decoded(line), decoded(annul)], { units: 5 }, 0).spent.units, annulled ? 0 : 1);
+  });
+}
+
+test('toJs makes __proto__ an own key and never sets the prototype', () => {
+  const line = decoded('{"unit": "a", "__proto__": {"tokens": 777, "event": "brief"}}');
+  assert.equal(Object.getPrototypeOf(line), Object.prototype);
+  assert.ok(Object.hasOwn(line, '__proto__'));
+  assert.deepEqual(Object.keys(line), ['unit', '__proto__']);
+  assert.equal('tokens' in line, false);
+  assert.equal(budget([line], { tokens: 100000 }, 0).per_unit, FALLBACK_TOKENS_PER_UNIT);
+  assert.equal(dumpJson(fromJs(line)), '{"unit": "a", "__proto__": {"tokens": 777, "event": "brief"}}');
+});
+
 // --------------------------------------------------------------------------- the adapter
 
 const checkpoint = (units, limit) => ({

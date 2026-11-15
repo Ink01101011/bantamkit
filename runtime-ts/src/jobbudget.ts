@@ -38,6 +38,8 @@ function counted(lines: readonly unknown[]): Line[] {
     const event = line['event'];
     if (event === 'brief') continue;
     if (event === 'uncommitted') {
+      // Unit identity is STRICT (J87-1F): a missing unit is not `null`, `true` is not `1`, and
+      // two object units are never one unit. `jobbudget.py` matches the same way.
       for (let i = kept.length - 1; i >= 0; i -= 1) {
         if (kept[i]!['unit'] === line['unit']) {
           kept.splice(i, 1);
@@ -51,9 +53,16 @@ function counted(lines: readonly unknown[]): Line[] {
   return kept;
 }
 
-/** A recorded figure as an integer; anything that is not a non-negative number counts 0. */
+/**
+ * A recorded figure as an integer; anything that is not a finite, non-negative number counts 0.
+ * J87-1F: a non-finite figure (`Infinity`, `NaN`, `1e400` read as inf) is one more value that is
+ * not a figure, so a hand-edited ledger cannot book Infinity or answer NaN; and `-0` is `0`, so
+ * no view field is ever spelled `-0.0`.
+ */
 function figure(value: unknown): number {
-  return typeof value === 'number' && value >= 0 ? Math.trunc(value) : 0;
+  if (typeof value !== 'number' || !Number.isFinite(value) || !(value >= 0)) return 0;
+  const whole = Math.trunc(value);
+  return whole === 0 ? 0 : whole;
 }
 
 function lowerMedian(values: readonly number[]): number {
