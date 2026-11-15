@@ -388,9 +388,9 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | `client` — Node's OpenAI-compatible client (job73 C2, #206) | **a subset, and one library's words.** `runtime-ts/src/client.ts` ports only what the #206 drafter calls: `OpenAICompatible(baseUrl, model, {apiKey, timeoutMs, maxRetries, seed})` and `chat(messages, {responseFormat})`. Not ported, because no #206 surface reaches them on either runtime: tool definitions and `tool_calls` parsing, the declared `context_window` and its `VOID` verdict (with no window Python answers `UNREPORTED`/`UNCHECKED`, and so does the port), and `close()`/the context manager. Everything else is shared and compared unruled by `tools/conformance/suites/llm-client.mjs`: the request bytes, the retry count and waits, the `response_format` drop, and every sentence, including the four Python lets escape `chat` (`JSONDecodeError`, `TypeError`, `AttributeError`, `UnicodeEncodeError`) and a read timeout's `timed out`. **The one ruling:** the text after `chat failed after N attempts: ` when the failure is the HTTP library's own — refused (`[Errno 61] Connection refused` vs `connect ECONNREFUSED <addr>`; httpx's errno is the platform's) and a peer hanging up (`Server disconnected without sending a response.` vs `socket hang up`). Two `ruling:` cases pin that they differ; two unruled companions compare that both refuse with `TransportError`, the same prefix and the same number of requests. |
 | `skillfile` — a `SKILL.md` metadata value nested below one level (job73 C1, #206) | **the same reader boundary as `hooks/native-mirror-ruled`, met by a new file.** `skillfile.parse_skill` reads a skill's frontmatter with the memory store's reader on each side (`yaml.safe_load` + `well_formed_frontmatter`; the port's `parseFrontmatter`). A `metadata:` value that is itself a block mapping or an indented block sequence is read by PyYAML, so `validate` answers `metadata <key> must be a string`; the port's reader refuses every shape it does not implement (#120's standing ruling, the same one that skips such a native file in the mirror), so `parseSkill` refuses the file with `SKILL.md frontmatter is not a readable mapping`. Both sides REFUSE the skill; only the sentence differs. Every shape bantamkit itself writes (`render`: one level of double-quoted strings) and every one-level non-string value (int, bool, null, date, flow list) is compared unruled. Extending the port's reader was tried in C1 and reverted: it changed `hooks/native-mirror-ruled`, which the user ruled. Gated by `tools/conformance/suites/skill-file.mjs`: two `ruling:` cases, a refusal-bit twin for each (`not a valid skill` on both sides) and a per-side literal for each answer. **Not part of this ruling (job73 C8): the shapes the port's reader refuses wherever they stand** — a flow mapping (`metadata: {}`, `{k: 1}`, one under a key or inside a flow sequence), an anchor, an alias, a tag, a directive. PyYAML read them, so a draft holding `metadata: {}` passed the gate in Python and failed it in Node. `parse_skill` now refuses each from the scanner's own tokens with the port's sentence, so both sides give the same verdict and the `skill-file` cases compare it unruled. **Inherited, not re-ruled (job73 C14):** the `[skill]` recall layer reads every `SKILL.md` through `parse_skill`, so a skill holding a nested `metadata` value is skipped on BOTH sides and named in `skipped` with each side's own sentence above; the `skill-layer` fixture leaves that shape out, and the drafter's gate refuses such a draft on both sides before anything installs it. |
 | fact-file frontmatter: a nested value in a hand-written key (#315, J86-4) | **WAS a difference — node threw where python wrote; now byte-identical, with two edges node refuses by name.** A hand-written key rides in `Fact.extra` and is written back on every rewrite (#199 Task 6). runtime-py's `_fact_text` (`yaml.safe_dump(sort_keys=False, allow_unicode=True)`) writes a nested `metadata:` mapping; node's `formatFact` threw `cannot emit object for key metadata`, so a recall stamp failed on 478 of the 495 Claude Code native memory files J86-2 measured (`nested-map-rewrite` in `tools/conformance/suites/ts2py-codec.mjs`, no row here). NOW `safeDumpMapping` (`runtime-ts/src/memory/pyyaml.ts`) walks PyYAML 6.0.3's own emitter states for lists and plain-object mappings at any depth: indentation, `- ` items at a nested key's column (`indentless`), `{}` and `[]`, scalar quoting and the 80-column wrap at depth, key order, and — at the root too — a key PyYAML cannot write simple (123 codepoints or more, empty, or multi-line) as `? key` / `: value`, where node used to write such a ROOT key as a simple key PyYAML never writes. **Still refused on node, by name (`cannot emit ...`), where PyYAML writes:** a list or mapping that appears twice in one document (PyYAML writes an `&id001` anchor and a `*id001` alias) and an array-index key in a nested mapping (JS's `Object.entries` lists it first, so the object no longer holds the order PyYAML writes). Reason: neither can be reproduced from a JS value, and node's own reader yields neither (no alias, no key starting with a digit), so no file the node store reads reaches them; python reaches them only through a PyYAML read, which is the fallback J86-3 owns. **A round-trip asymmetry, registered, not widened:** node now WRITES shapes its reader still refuses under #120's standing ruling — a mapping or a block sequence below one level of nesting, a mapping inside a list, a flow `{}`, a `? ` key (each refused by name, none misread) — so a file carrying one is written alike by both and read back only by python. Gated by `tools/conformance/suites/codec.mjs` (`emit nested/*`: 12 shapes byte for byte; for each refused edge a `ruling:` case, a per-side node-refuses case and a per-side python literal) and by `ts2py-codec`'s `nested-map/py=node` on the fuzz and the real stores. |
-| `jobbudget` — a token figure or limit beyond 2^53, or spelled `1e20` (J87-1F, #316) | **RULED AS NODE: a figure is a double.** Before: Python keeps the exact integer (`9007199254740993`; `int(1e20)` prints `100000000000000000000`), Node holds the nearest double (`9007199254740992`, spelled `9007199254740992.0` by `fromJs`; `1e+20`), so `spent`/`remaining`/`affordable` and the refusal's count differ by the rounding. After: the double is the behaviour, because ts2py generates Python from `jobbudget.ts` (J87-3) and the generated module inherits it; the hand-written Python keeps the exact integer until that switch. No real ledger holds a count near 2^53 (a unit costs ~52-78k tokens), and the refusal sentences agree on `1e20`. Pinned by the three `ruled:` cases of `node tools/conformance/run.mjs --suite jobbudget`, each with a `ruling:` marker that goes stale (and fails) the day the two agree; J87-3 turns them into ordinary agreeing cases. |
-| `jobbudget` / `shiftwork_plan` — a `job.budget` limit spelled `5.0` (J87-1G, #316) | **RULED AS NODE: a figure is a double.** Before: the checkpoint schema types each dimension `integer`, which accepts an integral float on both sides, so `5.0` reaches the view; Python keeps the float it decoded and answers `"limit": {"tokens": 5.0}`, `"remaining": {"tokens": 4.0}`, `"affordable": 4.0` (one booked token), while Node's `toJs` holds the number `5` and `budgetView`'s `fromJs` gives it back as the int `5` (`remaining` `4`, `affordable` `4`). The same `toJs` → `fromJs` loss as the 2^53 row above, the other way round. After: Node's spelling is the behaviour, because ts2py generates Python from `jobbudget.ts` (J87-3) and the generated module answers like Node; the hand-written Python keeps `5.0` until that switch. The value is the same number on both sides, so no refusal and no decision differs, only the spelling. Pinned by `ruled: a token limit written 5.0` and `ruled checkpoint limit: job.budget.<dim> = 5.0` (tokens, units, wallclock_ms) in `node tools/conformance/run.mjs --suite jobbudget`, each with a `ruling:` marker that goes stale (and fails) the day the two agree, plus per-side `ruled checkpoint limit spelled:` cases holding each side to its spelling and to accepting the limit; J87-3 turns them into ordinary agreeing cases. |
-| `jobbudget` — a hand-edited ledger: non-finite figures, `-0`, strict unit identity, `__proto__` (J87-1F, #316) | **WAS a difference — fixed in both runtimes; now agreeing, so no ruling.** Before (J87-1 measured): a `tokens`/`duration_ms` of `Infinity`, `-Infinity`, `NaN` or `1e400` made Python raise `OverflowError`/`ValueError` out of every tool that reads the ledger, while Node booked `Infinity`, answered `NaN` in `remaining`/`affordable`, or refused with `budget wallclock_ms spent: Infinity of …`; `-0.0` made Node answer `per_unit -0.0`; Python matched an `uncommitted` event to its unit with `==`, so `null` matched a missing unit, `true` matched `1` and two equal object units matched, where Node's `===` did not; and a `__proto__` key set the prototype in Node's `pyjson.toJs`, so `'tokens' in line` read through it. After: a non-finite figure is one more value that is not a non-negative number and counts 0 (`_number` / `figure`, the rule a string or a boolean already had); `-0` is `0` in every view field; **Python changed to strict matching** (`jobbudget._same_unit`: a missing unit is not `None`, `bool` is not `int`, `str` is not `int`, a dict or list unit never matches, `1 == 1.0` still does); `toJs` makes `__proto__` an own key. A non-finite LIMIT needed no change: the checkpoint schema types each `job.budget` dimension `integer`, and both runtimes refuse `Infinity`/`NaN`/`1e400` there with the sentence a string limit gets (`checkpoint invalid: … inf is not of type 'integer'`), pinned per side. Pinned by `--suite jobbudget` (`hand-edited:`, `checkpoint limit:` and their per-side literals) and, for `toJs`, `--suite wire` (`pyjson-proto-key`). |
+| `jobbudget` — a token figure or limit beyond 2^53, or spelled `1e20` (J87-1F, #316) | **WAS RULED AS NODE (a figure is a double) — CLOSED by #316 G1 (J87-3); now agreeing, so no ruling.** Before: the hand-written Python kept the exact integer (`9007199254740993`; `int(1e20)` prints `100000000000000000000`), Node held the nearest double (`9007199254740992`, spelled `9007199254740992.0` by `fromJs`; `1e+20`), so `spent`/`remaining`/`affordable` and the refusal's count differed by the rounding. After: Python runs `_generated/jobbudget.py`, compiled from `jobbudget.ts`, and `bantamkit.jobbudget` lifts its answer as `fromJs` does (`_js_py_value`: a safe integer is an `int`, any other number a `float`), so both answer the double, byte for byte. Pinned by the four `double:` cases of `node tools/conformance/run.mjs --suite jobbudget` and their per-side `literal: double:` views; until J87-3 they were `ruled:` cases, which went stale (10 failures) the moment Python switched. |
+| `jobbudget` / `shiftwork_plan` — a `job.budget` limit spelled `5.0` (J87-1G, #316) | **WAS RULED AS NODE (a figure is a double) — CLOSED by #316 G1 (J87-3); now agreeing, so no ruling.** Before: the checkpoint schema types each dimension `integer`, which accepts an integral float on both sides, so `5.0` reached the view; the hand-written Python kept the float it decoded (`"limit": {"tokens": 5.0}`, `"remaining": {"tokens": 4.0}`, `"affordable": 4.0`), while Node's `toJs` held the number `5` and `fromJs` gave it back as the int `5`. After: the generated module's view, lifted as `fromJs` lifts Node's, answers `5` / `4` / `4` too. Pinned by `double: a token limit written 5.0` and `checkpoint limit 5.0: job.budget.<dim> = 5.0` (tokens, units, wallclock_ms) in `--suite jobbudget`, plus per-side `checkpoint limit 5.0 spelled:` literals holding each side to `5` and to accepting the limit. |
+| `jobbudget` — a hand-edited ledger: non-finite figures, `-0`, strict unit identity, `__proto__` (J87-1F, #316) | **WAS a difference — fixed in both runtimes; now agreeing, so no ruling.** Before (J87-1 measured): a `tokens`/`duration_ms` of `Infinity`, `-Infinity`, `NaN` or `1e400` made Python raise `OverflowError`/`ValueError` out of every tool that reads the ledger, while Node booked `Infinity`, answered `NaN` in `remaining`/`affordable`, or refused with `budget wallclock_ms spent: Infinity of …`; `-0.0` made Node answer `per_unit -0.0`; Python matched an `uncommitted` event to its unit with `==`, so `null` matched a missing unit, `true` matched `1` and two equal object units matched, where Node's `===` did not; and a `__proto__` key set the prototype in Node's `pyjson.toJs`, so `'tokens' in line` read through it. After: a non-finite figure is one more value that is not a non-negative number and counts 0 (`_number` / `figure`, the rule a string or a boolean already had); `-0` is `0` in every view field; **Python changed to strict matching** (J87-1F's `jobbudget._same_unit`: a missing unit is not `None`, `bool` is not `int`, `str` is not `int`, a dict or list unit never matches, `1 == 1.0` still does; since #316 G1 (J87-3) the generated module's `===` is that rule); `toJs` makes `__proto__` an own key. A non-finite LIMIT needed no change: the checkpoint schema types each `job.budget` dimension `integer`, and both runtimes refuse `Infinity`/`NaN`/`1e400` there with the sentence a string limit gets (`checkpoint invalid: … inf is not of type 'integer'`), pinned per side. Pinned by `--suite jobbudget` (`hand-edited:`, `checkpoint limit:` and their per-side literals) and, for `toJs`, `--suite wire` (`pyjson-proto-key`). |
 
 **#200 (job70, the touch graph) adds no row to the table above.** Every touch surface is
 compared by `touch-log`, `touch-refs`, `touch-turn`, `touch-graph`, `touch-context`, `touch-bound`,
@@ -974,7 +974,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan` and the fact-file codec are compiled from TypeScript (#314, #315)
+## Generated modules: `workplan`, the fact-file codec, `pricing` and `jobbudget` are compiled from TypeScript (#314, #315, #316 G1)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -985,15 +985,18 @@ names (`plan`, `touches_refusal`). The hand-written 311-line planner is gone;
 generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
-Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts` or `tools/ts2py`,
-regenerate from the repository root (all four; each is deterministic, so an unchanged input
-rewrites the same bytes):
+Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
+`jobbudget.ts` or `tools/ts2py`, regenerate from the repository root (all five; each is
+deterministic, so an unchanged input rewrites the same bytes):
 
 ```
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- runtime-ts/src/workplan.ts \
   -o runtime-py/src/bantamkit/_generated/workplan.py --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/memory/pyyaml.ts runtime-ts/src/memory/factfile.ts \
+  --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+  runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -1007,7 +1010,8 @@ source regenerates byte-identical files.
 **Two gates.** `runtime-py/tests/test_ts2py_fresh.py` fails when line 2 of a committed module,
 `# source-sha256: <hex>`, no longer equals sha256 of its TypeScript (`workplan.py` ↔
 `workplan.ts`, and since #315 `pyyaml.py` ↔ `memory/pyyaml.ts`, `factfile.py` ↔
-`memory/factfile.ts`), when the committed runtime differs from `tools/ts2py/src/runtime.py`, when
+`memory/factfile.ts`, and since #316 G1 `pricing.py` ↔ `pricing.ts`, `jobbudget.py` ↔
+`jobbudget.ts`), when the committed runtime differs from `tools/ts2py/src/runtime.py`, when
 the committed adapters differ from `tools/ts2py/src/adapters.py` with its runtime import filled
 in, or when `_generated/` holds a `.py` the test does not name. Every failure message prints the
 commands above. It needs no Rust. (J86-3 proved each red once: one byte appended to `factfile.ts`,
@@ -1193,6 +1197,119 @@ paid once per process: the first `memory_save` in a process (+16 ms), and the ho
 builds from nothing (+17 ms and +10 ms). Accepted for #315. The remedy is type-directed lowering in
 ts2py, carried into #316, with the perf gate re-measured at #317. The full table is in
 `docs/roadmap-1.0.0.md`, #315.
+
+### Pricing and the job budget (#316 G1, J87-3)
+
+Since J87-3 `bantamkit.pricing` and `bantamkit.jobbudget` run code compiled from
+`runtime-ts/src/pricing.ts` and `jobbudget.ts`: `_generated/pricing.py` (340 lines) and
+`_generated/jobbudget.py` (179), from one ts2py call. The hand-written `pricing.py` (411 lines)
+and `jobbudget.py` (167) are retired; what is left under those names is a shim (pricing 159
+lines, most of it the module's rationale docstring, which `pricing.ts` points readers to;
+jobbudget 61). `tools/conformance/ref/pricing_ref.py` and `jobbudget_ref.py` import those shims,
+so `--suite pricing` (84 cases) and `--suite jobbudget` (1,149) now compare the generated code
+with Node.
+
+**What the shims keep (Python-only conveniences).** `TOKEN_CLASSES` and `DIMENSIONS` stay tuples
+(the generated modules hold lists, as the TypeScript does). `load_price_table(path=None)` maps
+`None` to the default path and anything else to `str(path)`, so a `pathlib.Path` works.
+`validate_price_table`, `price_tokens` and `budget` lift what the generated function returns into
+the values a Python caller had, the way Node's `fromJs` lifts the TypeScript's for `dumpJson`
+(`_js_py_value` in the runtime: a safe integer is an `int`, any other number a `float`), so
+`json.dumps` of an answer is the bytes Node writes. A top-level `tuple` handed to
+`validate_price_table` or as `price_tokens`'s usage becomes a `list`, as `workplan`'s shim does,
+so it is refused with the sentence it was refused with before. `PriceTableError` is the generated
+class itself: it extends the `BantamError` adapter, which is `bantamkit.client.BantamError` with
+JS's Error face, so `except BantamError` still catches it and `str(exc)` is the sentence. The
+hand-written `jobbudget.BRIEF_EVENT` / `UNCOMMITTED_EVENT` are gone (nothing imported them).
+
+**The adapters (`tools/ts2py/src/adapters.rs`, measured in `tools/ts2py/RULES.md`, Adapters).**
+Four where Python is the reference: `pyRepr` (`repr(str)`), `cmpCodepoint` (code-point order, what
+`sorted()` does), `assetsRoot` (`bantamkit.assets.assets_root()`, which `assets.ts` mirrors) and
+`BantamError` (`bantamkit.client.BantamError`, imported lazily so a module that does not use it
+does not import `bantamkit.client`). Four Node builtins, each measured against Node 26.13:
+`fs.existsSync` (`os.path.exists`; 18 path shapes equal), `fs.readFileSync(p, 'utf8')` (the
+bytes decoded with one U+FFFD per maximal invalid subpart; 30,000 random byte strings and 2,000
+files equal), `path.join` (Node's `lib/path.js` ported statement for statement; 60,000 random
+joins equal on posix, 41,055 on win32 with the 18,945 its colon and device-name rules make refused)
+and `process.env` (each runtime reads its own environment).
+
+**The error shape across the fs seam (the #315 unknown).** `readFileSync`'s adapter raises the
+`OSError` CPython's `open()` raises for the path, class, `errno`, `strerror`, `filename` and text
+alike; a generated `catch` sees it as Node's fs Error, and where the TypeScript rethrows it or does
+not catch it the Python caller gets that very exception (`tools/ts2py/tests/g1.rs`,
+`fs_errors_reach_python_as_cpython_raises_them`, a missing file and a directory). A `catch`
+catches only what JS could have thrown (`_js_catch`): a subset refusal (`ts2py: ...`), a
+`RecursionError` or any other Python exception propagates.
+
+**Python-side behaviour changes, all toward Node** (`before` is the hand-written module at
+`e6655be7`; each is what `pricing.ts` / `jobbudget.ts` answer, and the first three are new
+`--suite pricing` cases, red against the hand-written module):
+
+| Input | Python before | Python now = Node |
+|---|---|---|
+| `load_price_table(<a directory>)` (`load: a-directory.json`) | raised `IsADirectoryError` | `PriceTableError: price table is not valid JSON: <path>` (the read throws inside the `try`) |
+| a table holding an invalid UTF-8 byte inside a string (`load: latin1.json`) | `price table is not valid JSON` (`read_text` is strict) | loads; the byte reads as U+FFFD, as `readFileSync(p, 'utf8')` decodes it |
+| a table starting with a BOM (`load: bom.json`) | `price table is not valid JSON` | unchanged (both keep the BOM, both parsers refuse it) |
+| `load_price_table('')` | raised `IsADirectoryError` (`Path('')` is `.`) | `price table not found: ` (`existsSync('')` is false) |
+| `decode_price_json('3000000.0')` / `('9007199254740993')` | `3000000.0` / `9007199254740993` | `3000000` / `9007199254740992`: `JSON.parse`'s numbers; a malformed text is still a `ValueError` with CPython's decoder message, a `bytes` argument is now outside the subset |
+| `validate_price_table({..., 5: 1})` (a non-text key) | `unknown key 5` | `unknown key '5'` (a JS key is a string) |
+| `format_micros(-1)`, `format_micros('5')`, `format_micros(1.5)` | `-1.999999`, `TypeError`, `ValueError` | `0.0000-1`, `0.000005`, `RangeError` (a `ValueError`): the function is documented for non-negative ints only |
+| `budget(...)` with a float limit or `in_flight`, a refusal over a float view | `affordable` `19.0`, `"spent: 4.0 of 5.0"` | `19`, `"spent: 4 of 5"` (a figure is a double; the J87-1F / J87-1G rows above) |
+| `refusal(view)` whose `remaining` lacks a declared dimension | raised `KeyError` | `None` (JS reads `undefined`, which is not short) |
+
+**Pending a ruling: model names `Object.prototype` gives every object** (found by J87-3, not
+fixed here). `table.rates?.[model]` in `pricing.ts` reads an inherited property, so for a model
+that is no key of `rates` but is `toString`, `constructor`, `__proto__`, `valueOf`, ... Node finds
+the inherited function and prices the usage at $0.00 with `rate: {}` when every count is zero (a
+refusal naming the first class otherwise), against the module's property 3. The hand-written
+Python answered `no rate recorded for model '<name>'`; the generated lookup refuses the read as
+outside the subset. The shim keeps the hand-written answer, produced by the generated code with
+the lookup answered "absent" (`pricing._inherited_lookup`, pinned by
+`test_a_model_named_like_an_object_prototype_member_is_not_priced`), so no Python answer moved.
+A model literally named `__proto__` IN a price table is the same root: Node's `built[model] =`
+sets the prototype and drops the rate; the hand-written Python kept it; the generated
+`validate_price_table` refuses the write as outside the subset, which the shim does not paper over
+(only an operator's own file can hold it). The fix belongs in `pricing.ts` (an own-key lookup and
+an own-key write) and changes Node's answer, so it needs its own unit with a conformance case; no
+case pins either input yet.
+
+**Tests retired (#316: a duplicate goes once a conformance case covers it).** Each of these
+`runtime-py/tests/test_pricing.py` tests had exactly the input of a `--suite pricing` case, and
+Node's value for it stays pinned by the same-named test in `runtime-ts/test/pricing.test.mjs`:
+
+| Deleted | Covered by |
+|---|---|
+| `test_the_units_are_what_they_say` | `the constants are what they are — python` (a literal) |
+| `test_the_shipped_table_prices_nothing` | `the shipped table prices nothing — python` (a literal), `load: the shipped table` |
+| `test_a_rate_without_a_date_is_refused_at_load` | `table: a rate with no recorded` |
+| `test_a_rate_without_a_source_is_refused_at_load` | `table: a rate with no source` |
+| `test_a_class_with_no_rate_and_no_tokens_is_not_a_refusal` | `partial rate: an unpriced class with zero tokens` |
+| `test_a_usage_with_an_extra_key_refuses_rather_than_ignoring_it` | `full rate: an unknown class` |
+| `test_a_half_micro_usd_rounds_up_and_not_to_even` | `a half rounds up, not to even — python` (a literal) |
+| `test_format_micros_is_built_from_integers` (8 cases) | `format_micros(0)` ... `format_micros(9007199254740991)`, the same 8 values |
+| `test_a_sub_cent_cost_survives_which_is_why_this_is_not_cents` | `full rate: a plain input cost` |
+| `test_a_cost_above_two_to_the_53_refuses_rather_than_answering_wrong` | `full rate: a cost above 2**53` |
+| `test_true_is_not_the_rate_one` | `table: true as a rate` |
+| `test_the_offender_named_is_the_code_point_least_one` | `table: two unknown top keys` |
+| `test_a_missing_table_names_the_path_it_looked_at` | `load: nope.json` |
+| `test_an_undecodable_table_does_not_quote_the_decoder` | `load: broken.json` |
+| `test_a_bare_infinity_is_not_valid_json_here_either` | `load: infinity.json` |
+
+Kept: the Python-only inputs (a Python float count or rate, which the suite never sends because
+it decodes JSON text; the env-var route; tuples), `TOKEN_CLASSES` as a tuple, and every test whose
+input the suite does not spell. `test_jobbudget.py` keeps all its tests: none has exactly a
+`--suite jobbudget` input (their limits and ledgers differ), and they are the per-side pins of the
+J87-1F fixes. Four shim tests were added (`BantamError`, a `Path`, tuples, the pending names).
+
+**Cost, measured (J87-3, macOS arm64, CPython 3.12.13; n = 9, medians; before = `e6655be7`,
+after = this tree).** A first `import bantamkit` is unchanged (88.2 ms → 88.3 ms; it already
+loads the runtime for the codec). The modules' own imports (with `bantamkit` loaded): pricing
+0.096 → 0.188 ms, jobbudget 0.078 → 0.127 ms. Warm calls: `price_tokens` 1.5 → 22.3 µs,
+`validate_price_table(decode_price_json(...))` of an 8-rate table 21.0 → 155.9 µs,
+`refusal(budget(...))` over a 42-line ledger 11.1 → 113.4 µs. Every one is over 20% and every one is
+the JS-semantics runtime (`_js_get`, `_js_in`, `_js_put`, the generated BigInt arithmetic), as
+#315 found for the codec. What a user meets: `shiftwork.plan_batches` with a budget and a 42-line
+ledger 12.49 → 12.76 ms (+2.1%), `load_price_table` + `price_tokens` 0.023 → 0.075 ms.
 
 ## Concurrency
 

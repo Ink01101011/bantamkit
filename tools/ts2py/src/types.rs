@@ -713,6 +713,13 @@ fn breaks_out(s: &Statement<'_>) -> bool {
             breaks_out(&i.consequent) || i.alternate.as_ref().is_some_and(breaks_out)
         }
         Statement::LabeledStatement(_) => true,
+        // J87-3.
+        Statement::TryStatement(t) => {
+            t.block.body.iter().any(breaks_out)
+                || t.handler
+                    .as_ref()
+                    .is_some_and(|h| h.body.body.iter().any(breaks_out))
+        }
         Statement::SwitchStatement(sw) => sw.cases.iter().any(|case| {
             let body = match case.consequent.last() {
                 Some(Statement::BreakStatement(b)) if b.label.is_none() => {

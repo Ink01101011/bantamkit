@@ -233,6 +233,9 @@ const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
     ("pop", 0, 0, None, Ret::Any),
     ("filter", 1, 1, Some(0), Ret::List),
     ("toString", 0, 1, None, Ret::Str),
+    // J87-3 (#316 G1: jobbudget).
+    ("splice", 1, usize::MAX, None, Ret::List),
+    ("reduce", 1, 2, Some(0), Ret::Any),
 ];
 
 /// J86-R finding 3: every method a builtin prototype the subset can reach carries (String, Array,
@@ -305,6 +308,17 @@ const STATIC_CALLS: &[(&str, &str, &str, usize, usize, Ret)] = &[
         usize::MAX,
         Ret::Str,
     ),
+    // J87-3 (#316 G1: pricing, jobbudget).
+    ("JSON", "parse", "_js_json_parse", 1, 1, Ret::Any),
+    (
+        "Number",
+        "isFinite",
+        "_js_number_is_finite",
+        1,
+        1,
+        Ret::Bool,
+    ),
+    ("Math", "trunc", "_js_trunc", 1, 1, Ret::Num),
 ];
 
 /// Global functions (J86): name, helper, min args, max args, returns.
@@ -373,8 +387,14 @@ pub struct Lowerer<'s> {
     regexes: Vec<(String, bool)>,
     /// Module-level source name -> Python name.
     globals: HashMap<String, String>,
-    /// Module-level functions annotated `: boolean`.
-    bool_fns: HashSet<String>,
+    /// J87-3: source names of the Error classes visible here (an adapter `ErrorClass`, or a class
+    /// declared here that extends one or `Error`), which a compiled class may extend.
+    error_classes: HashSet<String>,
+    /// J87-3: source names of adapter functions, which may be passed as a `.sort` comparator.
+    adapter_fns: HashSet<String>,
+    /// J87-3: the enclosing `catch (e)` bindings, innermost last: (source name, the temporary
+    /// holding what was caught). The only use accepted is rethrowing it (`throw e`).
+    catch_params: Vec<(String, String)>,
     /// Python names of exported bindings.
     pub exports: Vec<String>,
     /// Local scopes, innermost last: a function's locals, then each enclosing lambda's params.
@@ -468,7 +488,9 @@ impl<'s> Lowerer<'s> {
             refusals: Vec::new(),
             regexes: Vec::new(),
             globals: HashMap::new(),
-            bool_fns: HashSet::new(),
+            error_classes: HashSet::new(),
+            adapter_fns: HashSet::new(),
+            catch_params: Vec::new(),
             exports: Vec::new(),
             scopes: Vec::new(),
             owners: HashMap::new(),
@@ -869,9 +891,6 @@ impl<'s> Lowerer<'s> {
                 Declaration::FunctionDeclaration(f) => {
                     if let Some(id) = &f.id {
                         self.declare_global(id.name.as_str(), exported, id.span);
-                        if returns_boolean(f.return_type.as_deref()) {
-                            self.bool_fns.insert(id.name.to_string());
-                        }
                         let public = exported || listed.contains(id.name.as_str());
                         self.add_sig(id.name.as_str(), public, &f.params, id.span);
                     }
@@ -883,9 +902,6 @@ impl<'s> Lowerer<'s> {
                             let public = exported || listed.contains(id.name.as_str());
                             match &d.init {
                                 Some(Expression::ArrowFunctionExpression(a)) => {
-                                    if returns_boolean(a.return_type.as_deref()) {
-                                        self.bool_fns.insert(id.name.to_string());
-                                    }
                                     self.add_sig(id.name.as_str(), public, &a.params, id.span);
                                 }
                                 init => {
@@ -1333,7 +1349,25 @@ impl<'s> Lowerer<'s> {
                 }
             }
             Statement::WhileStatement(w) => self.collect_nested(&w.body, stack, all),
-            Statement::ForStatement(f) => self.collect_nested(&f.body, stack, all),
+            Statement::ForStatement(f) => {
+                stack.push(HashSet::new());
+                if let Some(ForStatementInit::VariableDeclaration(v)) = &f.init {
+                    for d in &v.declarations {
+                        self.declare_pattern(&d.id, stack, all);
+                    }
+                }
+                self.collect_nested(&f.body, stack, all);
+                stack.pop();
+            }
+            Statement::TryStatement(t) => {
+                self.collect_block(&t.block.body, stack, all);
+                if let Some(handler) = &t.handler {
+                    self.collect_block(&handler.body.body, stack, all);
+                }
+                if let Some(finalizer) = &t.finalizer {
+                    self.collect_block(&finalizer.body, stack, all);
+                }
+            }
             // A switch body is one block scope, whatever case a declaration sits under.
             Statement::SwitchStatement(sw) => {
                 stack.push(HashSet::new());
@@ -1401,6 +1435,11 @@ impl<'s> Lowerer<'s> {
 
     fn resolve(&mut self, name: &str, span: Span) -> Py {
         let peeked = std::mem::take(&mut self.peek_read);
+        // J87-3: what a `catch` binding holds may be a Python exception (an adapter's OSError),
+        // whose properties JS would read differently; only rethrowing it is accepted.
+        if self.catch_params.iter().any(|(n, _)| n == name) {
+            return self.refuse(span, "use of a catch binding other than rethrowing it");
+        }
         if self.scopes.iter().rev().any(|scope| scope.contains(name)) {
             // J87: a `const` read anywhere its value can escape keeps no array contents.
             if !peeked
@@ -1550,72 +1589,7 @@ impl<'s> Lowerer<'s> {
                     out.push(format!("{p}{}", value.code));
                 }
             },
-            Statement::VariableDeclaration(v) => {
-                if v.kind == VariableDeclarationKind::Var {
-                    self.refuse(v.span, "var declaration");
-                } else if !matches!(
-                    v.kind,
-                    VariableDeclarationKind::Let | VariableDeclarationKind::Const
-                ) {
-                    self.refuse(v.span, "using declaration");
-                }
-                for d in &v.declarations {
-                    let id = match &d.id {
-                        BindingPattern::BindingIdentifier(id) => id,
-                        BindingPattern::ArrayPattern(a) => {
-                            self.array_pattern_decl(a, d.init.as_ref(), d.span, indent, out);
-                            continue;
-                        }
-                        BindingPattern::ObjectPattern(o) => {
-                            self.object_pattern_decl(o, d.init.as_ref(), d.span, indent, out);
-                            continue;
-                        }
-                        _ => {
-                            self.refuse(d.span, "destructuring declaration");
-                            continue;
-                        }
-                    };
-                    let name = py_name(id.name.as_str(), false, false);
-                    self.declare_annotation(id.name.as_str(), d.type_annotation.as_deref());
-                    if v.kind == VariableDeclarationKind::Const
-                        && let Some(key) = self.var_key(id.name.as_str())
-                    {
-                        self.consts.insert(key);
-                    }
-                    // J86: `const f = (...) => ...` inside a function is a nested `def` (a closure).
-                    if let (
-                        Some(Expression::ArrowFunctionExpression(a)),
-                        VariableDeclarationKind::Const,
-                    ) = (&d.init, v.kind)
-                    {
-                        self.bind(id.name.as_str(), Fact::default());
-                        self.nested_def(&name, a, indent, out);
-                        continue;
-                    }
-                    let (value, fact) = match &d.init {
-                        Some(init) => {
-                            let value = self.expr(init);
-                            let fact = value.fact();
-                            (value.code, fact)
-                        }
-                        None => ("_JS_UNDEFINED".to_string(), Fact::default()),
-                    };
-                    // J87: a `const` none of whose reads can let its value escape keeps the
-                    // contents of a fresh array it was bound to (`peek`).
-                    let held = v.kind == VariableDeclarationKind::Const
-                        && self
-                            .var_key(id.name.as_str())
-                            .is_some_and(|key| !self.assume.escaped_locals.contains(&key));
-                    if held && let Some(key) = self.var_key(id.name.as_str()) {
-                        self.observed.declared.insert(key.clone());
-                        self.observed.observe(key, fact);
-                    } else {
-                        self.bind_decl(id.name.as_str(), fact);
-                    }
-                    out.push(format!("{p}{name} = {value}"));
-                    self.hoist_line(id.name.as_str(), indent, out);
-                }
-            }
+            Statement::VariableDeclaration(v) => self.var_decl(v, indent, out),
             Statement::ReturnStatement(r) => match &r.argument {
                 Some(arg) => {
                     let value = self.expr(arg);
@@ -1674,7 +1648,27 @@ impl<'s> Lowerer<'s> {
                 self.body(&f.body, indent + 1, out);
                 self.breaks.pop();
             }
+            // J87-3: a C-style loop with a `let` init, a test and an assignment update.
+            Statement::ForStatement(f) => self.c_for(f, indent, out),
+            Statement::TryStatement(t) => self.try_stmt(t, indent, out),
             Statement::SwitchStatement(sw) => self.switch(sw, indent, out),
+            // J87-3: `throw e` inside `catch (e)` rethrows what was caught, as it is.
+            Statement::ThrowStatement(t)
+                if matches!(strip(&t.argument), Expression::Identifier(id)
+                    if self.catch_params.iter().any(|(name, _)| name == id.name.as_str())) =>
+            {
+                let Expression::Identifier(id) = strip(&t.argument) else {
+                    unreachable!("matched above")
+                };
+                let caught = self
+                    .catch_params
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name == id.name.as_str())
+                    .map(|(_, tmp)| tmp.clone())
+                    .expect("matched above");
+                out.push(format!("{p}raise {caught}"));
+            }
             Statement::ThrowStatement(t) => {
                 let value = self.expr(&t.argument);
                 if self.is_error_construction(&t.argument) {
@@ -1714,6 +1708,185 @@ impl<'s> Lowerer<'s> {
             other => {
                 self.refuse(other.span(), statement_kind(other));
             }
+        }
+    }
+
+    /// J87-3: `for (let i = a; test; i -= 1) body` -> `i = a` / `while test:` / body / update. The
+    /// init must be a `let` declaration (or absent), the update an assignment (or absent). A
+    /// `continue` that would leave the body is refused: in JS it runs the update, and a Python
+    /// `continue` would skip it. Closures in the body are refused as in any loop.
+    fn c_for(&mut self, f: &ForStatement<'_>, indent: usize, out: &mut Vec<String>) {
+        let p = pad(indent);
+        if f.init.is_none() && f.test.is_none() && f.update.is_none() {
+            out.push(format!("{p}while True:"));
+            self.breaks.push(BreakTarget::Loop);
+            self.body(&f.body, indent + 1, out);
+            self.breaks.pop();
+            return;
+        }
+        match &f.init {
+            None => {}
+            Some(ForStatementInit::VariableDeclaration(v))
+                if v.kind == VariableDeclarationKind::Let =>
+            {
+                self.var_decl(v, indent, out);
+            }
+            Some(other) => {
+                self.refuse(
+                    other.span(),
+                    "C-style for loop init other than a let declaration",
+                );
+                return;
+            }
+        }
+        let update = match &f.update {
+            None => None,
+            Some(Expression::AssignmentExpression(a)) => Some(a),
+            Some(other) => {
+                self.refuse(
+                    other.span(),
+                    "C-style for loop update other than an assignment",
+                );
+                return;
+            }
+        };
+        if continues_out(&f.body) {
+            self.refuse(f.span, "continue in a C-style for loop");
+            return;
+        }
+        let test = match &f.test {
+            Some(test) => self.condition(test),
+            None => "True".to_string(),
+        };
+        out.push(format!("{p}while {test}:"));
+        self.breaks.push(BreakTarget::Loop);
+        self.body(&f.body, indent + 1, out);
+        self.breaks.pop();
+        if let Some(a) = update {
+            self.assignment(a, indent + 1, out);
+        }
+    }
+
+    /// J87-3: `try { ... } catch (e?) { ... }`. Python's `except` sees every exception; only what a
+    /// JS `catch` could see is caught (`_js_catch`: a JS Error, an adapter's OSError, the runtime's
+    /// JS-worded TypeError), anything else (a subset refusal) propagates. The handler runs after
+    /// the `try` statement, outside the `except`, so nothing it raises is chained to what was
+    /// caught: a JS throw carries no implicit cause. `finally` is refused.
+    fn try_stmt(&mut self, t: &TryStatement<'_>, indent: usize, out: &mut Vec<String>) {
+        let p = pad(indent);
+        if let Some(finalizer) = &t.finalizer {
+            self.refuse(finalizer.span, "finally");
+            return;
+        }
+        let Some(handler) = &t.handler else {
+            self.refuse(t.span, "try without catch");
+            return;
+        };
+        let n = self.tmp;
+        self.tmp += 1;
+        let caught = format!("_js_caught{n}");
+        let error = format!("_js_error{n}");
+        out.push(format!("{p}{caught} = None"));
+        out.push(format!("{p}try:"));
+        let start = out.len();
+        self.block(&t.block.body, indent + 1, out);
+        if out.len() == start {
+            out.push(format!("{p}    pass"));
+        }
+        out.push(format!("{p}except Exception as {error}:"));
+        out.push(format!("{p}    {caught} = _js_catch({error})"));
+        out.push(format!("{p}if {caught} is not None:"));
+        let mut bound = false;
+        if let Some(param) = &handler.param {
+            match &param.pattern {
+                BindingPattern::BindingIdentifier(id) => {
+                    if self.is_local(id.name.as_str()) {
+                        self.refuse(id.span, "catch binding that shadows a binding");
+                    } else {
+                        self.catch_params
+                            .push((id.name.to_string(), caught.clone()));
+                        bound = true;
+                    }
+                }
+                other => {
+                    self.refuse(other.span(), "destructuring catch binding");
+                }
+            }
+        }
+        let start = out.len();
+        self.block(&handler.body.body, indent + 1, out);
+        if out.len() == start {
+            out.push(format!("{p}    pass"));
+        }
+        if bound {
+            self.catch_params.pop();
+        }
+    }
+
+    /// `const` / `let` declarations (a statement, or the init of a C-style `for`, J87-3).
+    fn var_decl(&mut self, v: &VariableDeclaration<'_>, indent: usize, out: &mut Vec<String>) {
+        let p = pad(indent);
+        if v.kind == VariableDeclarationKind::Var {
+            self.refuse(v.span, "var declaration");
+        } else if !matches!(
+            v.kind,
+            VariableDeclarationKind::Let | VariableDeclarationKind::Const
+        ) {
+            self.refuse(v.span, "using declaration");
+        }
+        for d in &v.declarations {
+            let id = match &d.id {
+                BindingPattern::BindingIdentifier(id) => id,
+                BindingPattern::ArrayPattern(a) => {
+                    self.array_pattern_decl(a, d.init.as_ref(), d.span, indent, out);
+                    continue;
+                }
+                BindingPattern::ObjectPattern(o) => {
+                    self.object_pattern_decl(o, d.init.as_ref(), d.span, indent, out);
+                    continue;
+                }
+                _ => {
+                    self.refuse(d.span, "destructuring declaration");
+                    continue;
+                }
+            };
+            let name = py_name(id.name.as_str(), false, false);
+            self.declare_annotation(id.name.as_str(), d.type_annotation.as_deref());
+            if v.kind == VariableDeclarationKind::Const
+                && let Some(key) = self.var_key(id.name.as_str())
+            {
+                self.consts.insert(key);
+            }
+            // J86: `const f = (...) => ...` inside a function is a nested `def` (a closure).
+            if let (Some(Expression::ArrowFunctionExpression(a)), VariableDeclarationKind::Const) =
+                (&d.init, v.kind)
+            {
+                self.bind(id.name.as_str(), Fact::default());
+                self.nested_def(&name, a, indent, out);
+                continue;
+            }
+            let (value, fact) = match &d.init {
+                Some(init) => {
+                    let value = self.expr(init);
+                    let fact = value.fact();
+                    (value.code, fact)
+                }
+                None => ("_JS_UNDEFINED".to_string(), Fact::default()),
+            };
+            // J87: a `const` none of whose reads can let its value escape keeps the
+            // contents of a fresh array it was bound to (`peek`).
+            let held = v.kind == VariableDeclarationKind::Const
+                && self
+                    .var_key(id.name.as_str())
+                    .is_some_and(|key| !self.assume.escaped_locals.contains(&key));
+            if held && let Some(key) = self.var_key(id.name.as_str()) {
+                self.observed.declared.insert(key.clone());
+                self.observed.observe(key, fact);
+            } else {
+                self.bind_decl(id.name.as_str(), fact);
+            }
+            out.push(format!("{p}{name} = {value}"));
+            self.hoist_line(id.name.as_str(), indent, out);
         }
     }
 
@@ -1981,6 +2154,23 @@ impl<'s> Lowerer<'s> {
                 if m.optional {
                     return self.refuse(m.span, "optional chaining");
                 }
+                // J87-3: `Number.MAX_SAFE_INTEGER`, the constant; `process.env.NAME`, the adapter.
+                if let Expression::Identifier(id) = strip(&m.object)
+                    && id.name == "Number"
+                    && m.property.name == "MAX_SAFE_INTEGER"
+                    && !self.is_local("Number")
+                {
+                    return Py {
+                        is_num: true,
+                        is_double: true,
+                        pure: true,
+                        ..Py::atom("9007199254740991")
+                    };
+                }
+                if self.is_process_env(&m.object) {
+                    let key = py_str(m.property.name.as_str());
+                    return self.process_env_read(key);
+                }
                 // J86-R finding 3: this arm is never a call's callee (`call` takes that member
                 // itself), so a callable name here is a method read as a value.
                 // J87: unless the receiver's declared type makes the member a data field.
@@ -2039,6 +2229,11 @@ impl<'s> Lowerer<'s> {
             Expression::ComputedMemberExpression(m) => {
                 if m.optional {
                     return self.refuse(m.span, "optional chaining");
+                }
+                // J87-3: `process.env[name]`, through the adapter.
+                if self.is_process_env(&m.object) {
+                    let key = self.expr(&m.expression);
+                    return self.process_env_read(key.code);
                 }
                 // A literal key is a name (`xs['map']`); a computed one is checked at run time
                 // (`_js_get` raises on a method name the receiver's JS type carries).
@@ -2160,7 +2355,7 @@ impl<'s> Lowerer<'s> {
                 self.refuse(a.span, "assignment inside an expression")
             }
             Expression::UpdateExpression(u) => self.refuse(u.span, "update expression (++/--)"),
-            Expression::ChainExpression(c) => self.refuse(c.span, "optional chaining"),
+            Expression::ChainExpression(c) => self.chain(c),
             Expression::SequenceExpression(s) => self.refuse(s.span, "comma operator"),
             Expression::TaggedTemplateExpression(t) => self.refuse(t.span, "tagged template"),
             // J86: a BigInt is `_JsBigInt` (exact, never equal to a number).
@@ -2170,6 +2365,106 @@ impl<'s> Lowerer<'s> {
             },
             other => self.refuse(other.span(), "expression"),
         }
+    }
+
+    /// J87-3: `o?.k` / `o?.[k]`, one optional member read whose object holds no other optional link
+    /// (`_js_opt_get`: `undefined` when `o` is null or undefined, else the read). An optional call,
+    /// a link after the optional one (`o?.k.j`) and a chain of them stay refused.
+    fn chain(&mut self, c: &ChainExpression<'_>) -> Py {
+        fn has_optional(e: &Expression<'_>) -> bool {
+            match strip(e) {
+                Expression::StaticMemberExpression(m) => m.optional || has_optional(&m.object),
+                Expression::ComputedMemberExpression(m) => m.optional || has_optional(&m.object),
+                Expression::CallExpression(call) => call.optional || has_optional(&call.callee),
+                _ => false,
+            }
+        }
+        let (object, key, optional, span) = match &c.expression {
+            ChainElement::StaticMemberExpression(m) => {
+                let name = m.property.name.as_str();
+                if self.is_method_name(&m.object, name) && !self.declared_data(&m.object, name) {
+                    let construct = method_as_value(name);
+                    return self.refuse(m.span, construct);
+                }
+                (&m.object, None, m.optional, m.span)
+            }
+            ChainElement::ComputedMemberExpression(m) => {
+                if let Expression::StringLiteral(key) = strip(&m.expression)
+                    && let Some(name) = key.value.as_str()
+                    && self.is_method_name(&m.object, name)
+                    && !self.declared_data(&m.object, name)
+                {
+                    let construct = method_as_value(name);
+                    return self.refuse(m.span, construct);
+                }
+                (&m.object, Some(&m.expression), m.optional, m.span)
+            }
+            _ => return self.refuse(c.span, "optional chaining other than one member read"),
+        };
+        if !optional || has_optional(object) {
+            return self.refuse(span, "optional chaining other than one member read");
+        }
+        let object = self.member_object(object);
+        let key = match (key, &c.expression) {
+            (Some(e), _) => self.expr(e).code,
+            (None, ChainElement::StaticMemberExpression(m)) => py_str(m.property.name.as_str()),
+            (None, _) => unreachable!("a static member read"),
+        };
+        Py::atom(format!("_js_opt_get({}, {key})", object.code))
+    }
+
+    /// J87-3: `e` is `process.env`, with `process` the Node global (not a binding).
+    fn is_process_env(&self, e: &Expression<'_>) -> bool {
+        matches!(strip(e), Expression::StaticMemberExpression(env)
+            if env.property.name == "env"
+                && !env.optional
+                && matches!(strip(&env.object), Expression::Identifier(p)
+                    if p.name == "process" && !self.is_local("process")))
+    }
+
+    /// J87-3: a read of the process environment (`adapters.rs`, `process.env`): a string, or
+    /// `undefined` when the variable is unset.
+    fn process_env_read(&mut self, key: String) -> Py {
+        let adapter = adapters::global("process.env").expect("declared in adapters.rs");
+        self.imports
+            .entry(self.ctx.adapter_module.clone())
+            .or_default()
+            .insert(adapter.py_name.to_string());
+        Py {
+            no_null: true,
+            ..Py::atom(format!("{}({key})", adapter.py_name))
+        }
+    }
+
+    /// J87-3: `a ** b` of two non-negative integer literals whose power is an integer a double
+    /// holds exactly (at most 2^53), folded to that integer: the one exponentiation whose JS
+    /// value is beyond doubt. Every other `**` is refused (V8's `**` and CPython's `pow` part in
+    /// the last bit for some operands, and a negative base or a fraction has JS-only rules).
+    fn exponent(&mut self, b: &BinaryExpression<'_>) -> Py {
+        let literal = |e: &Expression<'_>| match strip(e) {
+            Expression::NumericLiteral(n)
+                if n.value >= 0.0 && n.value.fract() == 0.0 && n.value <= 1e15 =>
+            {
+                Some(n.value as u128)
+            }
+            _ => None,
+        };
+        if let (Some(base), Some(power)) = (literal(&b.left), literal(&b.right))
+            && let Ok(power) = u32::try_from(power)
+            && let Some(value) = base.checked_pow(power)
+            && value <= 1u128 << 53
+        {
+            return Py {
+                is_num: true,
+                is_double: true,
+                pure: true,
+                ..Py::atom(value.to_string())
+            };
+        }
+        self.refuse(
+            b.span,
+            "operator ** other than of two integer literals with an exact result",
+        )
     }
 
     fn template(&mut self, t: &TemplateLiteral<'_>) -> Py {
@@ -2387,6 +2682,7 @@ impl<'s> Lowerer<'s> {
                 arith(b.operator, left, right)
             }
 
+            Op::Exponential => self.exponent(b),
             // J86: `key in obj`, own keys plus what Object.prototype supplies.
             Op::In => {
                 let key = self.expr(&b.left);
@@ -2724,12 +3020,9 @@ impl<'s> Lowerer<'s> {
             };
             (sig.py.clone(), fact)
         };
-        let is_bool = self.bool_fns.contains(name);
-        Py {
-            is_bool,
-            ..Py::atom(format!("{callee}({})", codes.join(", ")))
-        }
-        .with_fact(fact.as_ref())
+        // J87-3: what the call proves is what every return of the body proved (the fixpoint's
+        // return facts); the `: boolean` annotation the J85 rule trusted is not proof.
+        Py::atom(format!("{callee}({})", codes.join(", "))).with_fact(fact.as_ref())
     }
 
     /// J87: a builtin method on a receiver PROVEN to be a list, a string or a regex, lowered to the
@@ -2890,12 +3183,7 @@ impl<'s> Lowerer<'s> {
                 let Some(args) = self.args(&c.arguments, None, false) else {
                     return Py::atom("None");
                 };
-                let is_bool =
-                    !self.scopes.iter().any(|s| s.contains(name)) && self.bool_fns.contains(name);
-                Py {
-                    is_bool,
-                    ..Py::atom(format!("{}({})", callee.code, args.join(", ")))
-                }
+                Py::atom(format!("{}({})", callee.code, args.join(", ")))
             }
             Expression::StaticMemberExpression(m) => {
                 if m.optional {
@@ -2945,6 +3233,18 @@ impl<'s> Lowerer<'s> {
                     let construct = format!("argument count for .{method}");
                     return self.refuse(c.span, construct);
                 }
+                // J87-3: an adapter function may be `.sort`'s comparator (`xs.sort(cmpCodepoint)`):
+                // `_js_m_sort` calls it with exactly the two values JS passes.
+                let callback = match c.arguments.first().and_then(Argument::as_expression) {
+                    Some(Expression::Identifier(id))
+                        if method == "sort"
+                            && self.adapter_fns.contains(id.name.as_str())
+                            && !self.is_scoped(id.name.as_str()) =>
+                    {
+                        None
+                    }
+                    _ => callback,
+                };
                 let receiver = self.expr(&m.object);
                 let Some(args) = self.args_py(&c.arguments, callback, method == "push") else {
                     return Py::atom("None");
@@ -2989,6 +3289,28 @@ impl<'s> Lowerer<'s> {
         if c.arguments.len() < min || c.arguments.len() > max {
             let construct = format!("argument count for {object}.{method}");
             return self.refuse(c.span, construct);
+        }
+        // J87-3: `Math.max(...xs)` / `Math.min(...xs)` spread an array PROVEN to be a list (a
+        // Python `*` over anything else, a dict's keys say, is not JS's iterator).
+        if object == "Math" && (method == "max" || method == "min") {
+            let mut codes = Vec::new();
+            for arg in &c.arguments {
+                match arg {
+                    Argument::SpreadElement(spread) => {
+                        let value = self.expr(&spread.argument);
+                        if !value.is_list {
+                            return self
+                                .refuse(spread.span, "spread of a value not proven an array");
+                        }
+                        codes.push(format!("*{}", value.at(ATOM)));
+                    }
+                    other => {
+                        let e = other.as_expression().expect("not a spread");
+                        codes.push(self.expr(e).code);
+                    }
+                }
+            }
+            return returned(ret, format!("{helper}({})", codes.join(", ")));
         }
         let Some(args) = self.args(&c.arguments, None, false) else {
             return Py::atom("None");
@@ -3184,8 +3506,18 @@ impl<'s> Lowerer<'s> {
                         .or_default()
                         .insert(py.clone());
                     self.globals.insert(local.to_string(), py.clone());
-                    if matches!(adapter.kind, AdapterKind::Class(_)) {
-                        self.classes.insert(local.to_string(), py);
+                    match adapter.kind {
+                        AdapterKind::Class(_) => {
+                            self.classes.insert(local.to_string(), py);
+                        }
+                        // J87-3: an adapter Error class a compiled class may extend.
+                        AdapterKind::ErrorClass => {
+                            self.classes.insert(local.to_string(), py);
+                            self.error_classes.insert(local.to_string());
+                        }
+                        AdapterKind::Function => {
+                            self.adapter_fns.insert(local.to_string());
+                        }
                     }
                 }
                 None => {
@@ -3240,19 +3572,31 @@ impl<'s> Lowerer<'s> {
         if c.r#abstract {
             self.refuse(c.span, "abstract class");
         }
-        let is_error = match &c.heritage {
-            None => false,
+        // J87-3: `extends` an Error class visible here (an adapter `ErrorClass` such as
+        // `BantamError`, or one declared above) as well as `Error` itself.
+        let error_base: Option<String> = match &c.heritage {
+            None => None,
             Some(h) => match strip(&h.expression) {
                 Expression::Identifier(base) if base.name == "Error" && !self.is_local("Error") => {
-                    true
+                    Some("_JsError".to_string())
+                }
+                Expression::Identifier(base)
+                    if self.error_classes.contains(base.name.as_str())
+                        && !self.is_scoped(base.name.as_str()) =>
+                {
+                    Some(self.classes[base.name.as_str()].clone())
                 }
                 other => {
-                    self.refuse(other.span(), "extends anything but Error");
+                    self.refuse(other.span(), "extends anything but an Error class");
                     return;
                 }
             },
         };
-        let base = if is_error { "_JsError" } else { "_JsObject" };
+        let is_error = error_base.is_some();
+        if is_error {
+            self.error_classes.insert(id.name.to_string());
+        }
+        let base = error_base.as_deref().unwrap_or("_JsObject");
 
         let mut fields: Vec<&PropertyDefinition<'_>> = Vec::new();
         let mut methods: Vec<&MethodDefinition<'_>> = Vec::new();
@@ -3367,7 +3711,7 @@ impl<'s> Lowerer<'s> {
             signature.push("*_".to_string());
             if is_error && constructor.is_none() {
                 out.push("    def __init__(self, *args):".to_string());
-                out.push("        _JsError.__init__(self, *args)".to_string());
+                out.push(format!("        {base}.__init__(self, *args)"));
             } else {
                 out.push(format!("    def __init__({}):", signature.join(", ")));
             }
@@ -3897,6 +4241,10 @@ fn property_key_name(key: &PropertyKey<'_>) -> Option<String> {
 /// A relative import specifier resolved against the importing module's path, `.js` read as the
 /// `.ts` it is compiled from (`runtime-ts/src/memory/pyyaml.ts`). None for a bare specifier.
 pub fn resolve_specifier(importer: &str, spec: &str) -> Option<String> {
+    // J87-3: a Node builtin (`node:fs`) is its own key in the adapter table.
+    if spec.starts_with("node:") {
+        return Some(spec.to_string());
+    }
     if !(spec.starts_with("./") || spec.starts_with("../")) {
         return None;
     }
@@ -4106,8 +4454,43 @@ fn exits(s: &Statement<'_>) -> bool {
     match s {
         Statement::ReturnStatement(_) | Statement::ThrowStatement(_) => true,
         Statement::BlockStatement(b) => ends_in_exit(&b.body),
+        // J87-3: both the block and the handler exit (a `finally` is refused).
+        Statement::TryStatement(t) => {
+            t.finalizer.is_none()
+                && ends_in_exit(&t.block.body)
+                && t.handler
+                    .as_ref()
+                    .is_some_and(|h| ends_in_exit(&h.body.body))
+        }
         Statement::IfStatement(i) => {
             exits(&i.consequent) && i.alternate.as_ref().is_some_and(exits)
+        }
+        _ => false,
+    }
+}
+
+/// J87-3: a `continue` in `s` that continues the loop `s` is the body of (not one inside a nested
+/// loop, whose own `continue` it is).
+fn continues_out(s: &Statement<'_>) -> bool {
+    match s {
+        Statement::ContinueStatement(_) => true,
+        Statement::BlockStatement(b) => b.body.iter().any(continues_out),
+        Statement::IfStatement(i) => {
+            continues_out(&i.consequent) || i.alternate.as_ref().is_some_and(continues_out)
+        }
+        Statement::LabeledStatement(l) => continues_out(&l.body),
+        Statement::SwitchStatement(sw) => sw
+            .cases
+            .iter()
+            .any(|case| case.consequent.iter().any(continues_out)),
+        Statement::TryStatement(t) => {
+            t.block.body.iter().any(continues_out)
+                || t.handler
+                    .as_ref()
+                    .is_some_and(|h| h.body.body.iter().any(continues_out))
+                || t.finalizer
+                    .as_ref()
+                    .is_some_and(|f| f.body.iter().any(continues_out))
         }
         _ => false,
     }
@@ -4179,13 +4562,6 @@ fn is_entries_call(e: &Expression<'_>) -> bool {
     matches!(strip(e), Expression::CallExpression(c)
         if c.arguments.is_empty()
             && matches!(strip(&c.callee), Expression::StaticMemberExpression(m) if m.property.name == "entries"))
-}
-
-fn returns_boolean(annotation: Option<&TSTypeAnnotation<'_>>) -> bool {
-    matches!(
-        annotation.map(|a| &a.type_annotation),
-        Some(TSType::TSBooleanKeyword(_))
-    )
 }
 
 fn is_array_index(key: &str) -> bool {

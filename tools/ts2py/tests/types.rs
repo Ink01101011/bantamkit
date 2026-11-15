@@ -569,3 +569,46 @@ for name, fast, general, gen in pairs:
             if diffs < 20: print("DIFF", name, a, x, y)
 print("calls", n, "diffs", diffs)
 "###;
+
+const BOOL_ANNOTATION: &str = r###"// J87-3 (item 6): a `: boolean` return annotation is not proof. `isIt` hands back whatever it is
+// given, so a call of it is tested with JS truthiness, never Python's (`[]` is truthy, NaN falsy).
+function isIt(x: any): boolean {
+  return x;
+}
+// Every return proven a bool: the call is a known bool, from the body, not the annotation.
+function isX(s: string): boolean {
+  return s === 'x';
+}
+export function probe(input: unknown): unknown[] {
+  const empty: unknown[] = [];
+  return [
+    isIt(empty) ? 'yes' : 'no',
+    isIt(NaN) ? 'yes' : 'no',
+    !isIt(empty),
+    isIt(empty) && 'and',
+    isIt(0) || 'or',
+    isX('x') && isX('y'),
+    isX(String(input)) ? 1 : 2,
+  ];
+}
+"###;
+
+#[test]
+fn a_boolean_return_annotation_is_not_proof() {
+    let module = compile(BOOL_ANNOTATION, "boolann.ts");
+    let probe = def_of(&module, "probe");
+    // The J85 rule (`bool_fns`) lowered these with Python truthiness, `[]` falsy and NaN truthy.
+    has(probe, "\"yes\" if _js_truthy(_is_it(empty)) else \"no\"");
+    has(probe, "\"yes\" if _js_truthy(_is_it(_JS_NAN)) else \"no\"");
+    has(probe, "not _js_truthy(_is_it(empty))");
+    has(probe, "_js_and_value(_is_it(empty), \"and\")");
+    has(probe, "_js_or_value(_is_it(0), \"or\")");
+    // Proven from the body: every return of `isX` is a comparison.
+    has(probe, "_is_x(\"x\") and _is_x(\"y\")");
+    has(probe, "1 if _is_x(_js_str(input)) else 2");
+    // Node v26.13.0 prints this for the same source.
+    assert_eq!(
+        run(&module, r#""x""#),
+        r###"["yes","no",false,"and","or",false,1]"###
+    );
+}

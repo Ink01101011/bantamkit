@@ -304,7 +304,21 @@ export async function run(ctx) {
   const broken = write('broken.json', '{"schema_version": 1,');
   const infinity = write('infinity.json', '{"schema_version": 1, "currency": "USD", "unit": "micro_usd_per_million_tokens", "rates": {"m": {"recorded": "2026-09-11", "source": "s", "input_tokens": Infinity}}}');
   const missing = join(bedDir, 'nope.json');
-  const PATHS = [good, broken, infinity, missing, SHIPPED];
+  // #316 G1 (J87-3): what the read itself can do, now that Python runs the generated module. A
+  // directory exists but cannot be read: Node's `readFileSync` throws EISDIR inside the `try`, and
+  // so does CPython's `open()` through the adapter, so both answer "not valid JSON" (the
+  // hand-written Python raised IsADirectoryError instead). An invalid UTF-8 byte inside a string
+  // decodes to U+FFFD on both, so the table loads (hand-written Python refused it as not JSON). A
+  // BOM is kept by both decoders and refused by both parsers.
+  const directory = join(bedDir, 'a-directory.json');
+  mkdirSync(directory, { recursive: true });
+  const latin1 = write('latin1.json', Buffer.concat([
+    Buffer.from('{"schema_version": 1, "currency": "USD", "unit": "micro_usd_per_million_tokens", "note": "caf'),
+    Buffer.from([0xe9]),
+    Buffer.from('", "rates": {}}'),
+  ]));
+  const bom = write('bom.json', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(table({ ...HEAD, rates: {} }))]));
+  const PATHS = [good, broken, infinity, missing, directory, latin1, bom, SHIPPED];
   const pyLoad = ctx.runPython(REF, { op: 'load', paths: PATHS }).out;
   PATHS.forEach((p, i) => {
     let actual;

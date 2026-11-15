@@ -176,7 +176,7 @@ def py_truthy(value):
 
 
 def py_list(value):
-    if not py_truthy(value):
+    if not _js_truthy(py_truthy(value)):
         return []
     if _js_is_array(value):
         return [*value]

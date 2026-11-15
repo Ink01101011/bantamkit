@@ -28,7 +28,7 @@ fn class() {
     );
     assert_refused(
         "export class A extends Map<string, number> {}\n",
-        "t.ts:1:24: unsupported extends anything but Error: Map",
+        "t.ts:1:24: unsupported extends anything but an Error class: Map",
     );
     assert_refused(
         "export class A { set v(x: number) {} }\n",
@@ -123,12 +123,31 @@ fn other_refusals() {
         "t.ts:2:10: unsupported loose equality other than == null: a == 1",
     );
     assert_refused(
-        "export function f(a: any): unknown {\n  return a?.b;\n}\n",
-        "t.ts:2:10: unsupported optional chaining: a?.b",
+        // J87-3: one optional member read is accepted (`a?.b`); a link after it, an optional call
+        // and two optional links are not.
+        "export function f(a: any): unknown {\n  return a?.b.c;\n}\n",
+        "t.ts:2:10: unsupported optional chaining other than one member read: a?.b.c",
+    );
+    assert_refused(
+        "export function f(a: any): unknown {\n  return a?.b?.c;\n}\n",
+        "t.ts:2:10: unsupported optional chaining other than one member read: a?.b?.c",
+    );
+    assert_refused(
+        "export function f(a: any): unknown {\n  return a?.();\n}\n",
+        "t.ts:2:10: unsupported optional chaining other than one member read: a?.()",
     );
     assert_refused(
         "export function f(a: number): number {\n  return a ** 2;\n}\n",
-        "t.ts:2:10: unsupported operator **: a ** 2",
+        "t.ts:2:10: unsupported operator ** other than of two integer literals with an exact result: a ** 2",
+    );
+    // J87-3: `2 ** 53` folds to its exact value; one past 2^53 or a fraction does not.
+    assert_refused(
+        "export const X = 2 ** 54;\n",
+        "t.ts:1:18: unsupported operator ** other than of two integer literals with an exact result: 2 ** 54",
+    );
+    assert_refused(
+        "export const X = 4 ** 0.5;\n",
+        "t.ts:1:18: unsupported operator ** other than of two integer literals with an exact result: 4 ** 0.5",
     );
     assert_refused(
         "export function f(xs: number[]): unknown {\n  const g = (x: number) => x;\n  return xs.map(g);\n}\n",
@@ -315,4 +334,40 @@ fn method_called_directly_still_compiles() {
             );
         }
     }
+}
+
+/// J87-3 (#316 G1): what the G1 constructs still refuse, each where JS and Python would part.
+#[test]
+fn g1_refusals() {
+    assert_refused(
+        "export function f(): number {\n  try {\n    return 1;\n  } finally {\n    g();\n  }\n}\nfunction g(): void {}\n",
+        "t.ts:4:13: unsupported finally: { ...",
+    );
+    // A catch binding may hold a Python exception (an adapter's OSError): only rethrowing it.
+    assert_refused(
+        "export function f(): string {\n  try {\n    return g();\n  } catch (e) {\n    return String(e);\n  }\n}\nfunction g(): string {\n  return 'x';\n}\n",
+        "t.ts:5:19: unsupported use of a catch binding other than rethrowing it: e",
+    );
+    // A `continue` in a C-style loop would skip the update in Python.
+    assert_refused(
+        "export function f(n: number): number {\n  let s = 0;\n  for (let i = 0; i < n; i += 1) {\n    if (i === 2) continue;\n    s += i;\n  }\n  return s;\n}\n",
+        "t.ts:3:3: unsupported continue in a C-style for loop: for (let i = 0; i < n; i += 1) { ...",
+    );
+    assert_refused(
+        "export function f(n: number): number {\n  let i = 0;\n  for (i = 1; i < n; i += 1) {}\n  return i;\n}\n",
+        "t.ts:3:8: unsupported C-style for loop init other than a let declaration: i = 1",
+    );
+    // `Math.max(...x)` over anything not proven an array (a Python `*` of a dict is its keys).
+    assert_refused(
+        "export function f(x: any): number {\n  return Math.max(...x);\n}\n",
+        "t.ts:2:19: unsupported spread of a value not proven an array: ...x",
+    );
+    assert_refused(
+        "export class A {}\nexport class B extends A {}\n",
+        "t.ts:2:24: unsupported extends anything but an Error class: A",
+    );
+    assert_refused(
+        "export function f(): unknown {\n  return process.argv;\n}\n",
+        "t.ts:2:10: unsupported global process: process",
+    );
 }

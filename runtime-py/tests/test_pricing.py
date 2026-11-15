@@ -4,10 +4,16 @@ The port half is `runtime-ts/test/pricing.test.mjs` and the live differential be
 is `tools/conformance/suites/pricing.mjs`. This file is the in-runtime half, so a mutation
 that survives the pins is visible without a Node on PATH.
 
-WHAT IS ASSERTED HERE AND NOT THERE: the shipped asset's emptiness, which is a claim about
-this repository rather than about agreement, and every number below is a TYPED literal rather
-than the other runtime's answer -- a differential between two implementations that were both
-changed is green (`feedback/differential-is-blind-to-symmetric-regression`).
+WHAT IS ASSERTED HERE AND NOT THERE: every number below is a TYPED literal rather than the other
+runtime's answer -- a differential between two implementations that were both changed is green
+(`feedback/differential-is-blind-to-symmetric-regression`).
+
+#316 G1 (J87-3): `bantamkit.pricing` now runs the module ts2py generates from `pricing.ts`, and
+the tests whose exact input a `--suite pricing` case already compares (with Node's value pinned
+by the same-named test in `runtime-ts/test/pricing.test.mjs`) were retired; `docs/porting.md`
+(*Generated modules*) lists each with the case that covers it. What stays is what the suite does
+not reach: the Python-only inputs (a float count, a Python `True`, an env-var route, tuples), the
+shim's surface (`TOKEN_CLASSES` is a tuple), and inputs the suite does not spell.
 """
 
 from __future__ import annotations
@@ -18,16 +24,12 @@ import pytest
 
 from bantamkit.assets import assets_root
 from bantamkit.pricing import (
-    CURRENCY,
     MAX_SAFE_INT,
     MICROS_PER_UNIT,
-    PRICE_SCHEMA_VERSION,
     PRICES_ENV,
     RATE_UNIT,
     TOKEN_CLASSES,
-    TOKENS_PER_RATE_UNIT,
     PriceTableError,
-    format_micros,
     load_price_table,
     price_table_path,
     price_tokens,
@@ -75,32 +77,7 @@ def test_the_four_token_classes_are_the_hosts_own_usage_fields():
     )
 
 
-def test_the_units_are_what_they_say():
-    assert PRICES_ENV == "BANTAMKIT_PRICES"
-    assert PRICE_SCHEMA_VERSION == 1
-    assert CURRENCY == "USD"
-    assert RATE_UNIT == "micro_usd_per_million_tokens"
-    assert TOKENS_PER_RATE_UNIT == 1_000_000
-    assert MICROS_PER_UNIT == 1_000_000
-    assert MAX_SAFE_INT == 9_007_199_254_740_991
-
-
 # ------------------------------------------------------------- the shipped table is empty
-
-
-def test_the_shipped_table_prices_nothing():
-    """The claim this unit is built on, asserted rather than described.
-
-    `assets/pricing/default.json` ships with no rates because nothing in this repository or
-    on the machine it was built on carries a published price, and a rate recalled by a
-    language model is the unfalsifiable figure this program refuses. This test is what makes
-    pasting one in a deliberate, visible act rather than a quiet one.
-    """
-    shipped = load_price_table(str(assets_root() / "pricing" / "default.json"))
-    assert shipped["rates"] == {}
-    assert shipped["schema_version"] == 1
-    assert shipped["currency"] == "USD"
-    assert shipped["unit"] == "micro_usd_per_million_tokens"
 
 
 def test_the_refusal_is_the_default_answer_with_the_shipped_table():
@@ -174,22 +151,6 @@ def test_cache_read_is_cheaper_than_fresh_input_at_the_same_count():
 # ------------------------------------------------------ property 2: a rate has a date
 
 
-def test_a_rate_without_a_date_is_refused_at_load():
-    with pytest.raises(PriceTableError) as exc:
-        table({"m": {"source": "s", "input_tokens": 1}})
-    assert str(exc.value) == (
-        "price table rate 'm' is missing 'recorded' -- a rate with no date is not a fact"
-    )
-
-
-def test_a_rate_without_a_source_is_refused_at_load():
-    with pytest.raises(PriceTableError) as exc:
-        table({"m": {"recorded": "2026-09-11", "input_tokens": 1}})
-    assert str(exc.value) == (
-        "price table rate 'm' is missing 'source' -- a rate with no source cannot be re-derived"
-    )
-
-
 @pytest.mark.parametrize(
     "recorded",
     ["11-09-2026", "2026-9-11", "2026-13-01", "2026-09-00", "2026-09-1x", "", "20260911"],
@@ -237,30 +198,12 @@ def test_a_class_with_tokens_and_no_rate_refuses():
     }
 
 
-def test_a_class_with_no_rate_and_no_tokens_is_not_a_refusal():
-    """The one arm that answers zero, and it invents nothing: zero tokens cost zero under
-    any rate whatsoever, so nothing has been substituted for a missing fact."""
-    partial = table({"m": {"recorded": "2026-09-11", "source": "s", "input_tokens": 3_000_000}})
-    answer = price_tokens(partial, "m", usage(input_tokens=1_000_000))
-    assert answer["micros"] == 3_000_000
-    assert answer["breakdown"]["cache_read_input_tokens"] == 0
-
-
 def test_a_usage_missing_a_class_refuses_rather_than_defaulting_it():
     answer = price_tokens(table({"m": RATE}), "m", {"input_tokens": 1})
     assert answer == {
         "unavailable": "usage is missing token class 'cache_creation_input_tokens' -- all "
         "four of input_tokens, cache_creation_input_tokens, cache_read_input_tokens, "
         "output_tokens must be given, because a missing count is not a zero"
-    }
-
-
-def test_a_usage_with_an_extra_key_refuses_rather_than_ignoring_it():
-    answer = price_tokens(table({"m": RATE}), "m", {**usage(input_tokens=1), "service_tier": 0})
-    assert answer == {
-        "unavailable": "usage has unknown token class 'service_tier' -- the price table "
-        "prices exactly input_tokens, cache_creation_input_tokens, "
-        "cache_read_input_tokens, output_tokens"
     }
 
 
@@ -271,51 +214,6 @@ def test_the_usage_is_checked_before_the_model_is_looked_up():
 
 
 # ------------------------------------------------------------------ the money arithmetic
-
-
-def test_a_half_micro_usd_rounds_up_and_not_to_even():
-    """`round()` is banker's rounding here and half-toward-+inf in the port.
-
-    At one micro-USD per two tokens, an odd count lands on an exact half. `round` would
-    answer 0, 2, 2 for these three; half-up answers 1, 2, 3, and so does the port.
-    """
-    half = table({"m": {"recorded": "2026-09-11", "source": "s", "input_tokens": 500_000}})
-    got = [price_tokens(half, "m", usage(input_tokens=n))["micros"] for n in (1, 3, 5)]
-    assert got == [1, 2, 3]
-    assert got != [round(0.5), round(1.5), round(2.5)]
-
-
-@pytest.mark.parametrize(
-    "micros,text",
-    [
-        (0, "0.000000"),
-        (1, "0.000001"),
-        (999_999, "0.999999"),
-        (1_000_000, "1.000000"),
-        (1_000_001, "1.000001"),
-        (3_702, "0.003702"),
-        (1_234_567_890, "1234.567890"),
-        (MAX_SAFE_INT, "9007199254.740991"),
-    ],
-)
-def test_format_micros_is_built_from_integers(micros, text):
-    assert format_micros(micros) == text
-
-
-def test_a_sub_cent_cost_survives_which_is_why_this_is_not_cents():
-    # 1,234 tokens at $3.00/M is $0.003702 -- zero cents. A cents representation loses the
-    # entire figure, which is the reason for micro-USD.
-    answer = price_tokens(table({"m": RATE}), "m", usage(input_tokens=1_234))
-    assert answer["micros"] == 3_702
-    assert answer["amount"] == "0.003702"
-
-
-def test_a_cost_above_two_to_the_53_refuses_rather_than_answering_wrong():
-    answer = price_tokens(table({"m": RATE}), "m", usage(input_tokens=MAX_SAFE_INT))
-    assert answer == {
-        "unavailable": "cost for model 'm' exceeds 2**53-1 micro-USD, which is the largest "
-        "integer both runtimes represent exactly"
-    }
 
 
 @pytest.mark.parametrize("bad", [-1, 1.5, True, MAX_SAFE_INT + 1, "1", None])
@@ -335,14 +233,6 @@ def test_an_integral_float_count_is_a_count():
 # ------------------------------------------------------------------ the table validator
 
 
-def test_true_is_not_the_rate_one():
-    # `isinstance(True, int)` is true and `True == 1`; the port has no such hole, so without
-    # the explicit exclusion the two runtimes disagree about this one document.
-    with pytest.raises(PriceTableError) as exc:
-        table({"m": {"recorded": "2026-09-11", "source": "s", "input_tokens": True}})
-    assert "is not a non-negative integer below 2**53" in str(exc.value)
-
-
 def test_the_normalised_table_narrows_an_integral_float_rate():
     got = table({"m": {"recorded": "2026-09-11", "source": "s", "input_tokens": 3_000_000.0}})
     assert got["rates"]["m"]["input_tokens"] == 3_000_000
@@ -356,12 +246,6 @@ def test_the_normalised_table_has_a_fixed_key_order():
     assert list(got) == ["schema_version", "currency", "unit", "rates"]
     with_note = validate_price_table({**HEAD, "note": "hello", "rates": {}})
     assert list(with_note) == ["schema_version", "currency", "unit", "note", "rates"]
-
-
-def test_the_offender_named_is_the_code_point_least_one():
-    with pytest.raises(PriceTableError) as exc:
-        validate_price_table({**HEAD, "zeta": 1, "alpha": 1, "rates": {}})
-    assert str(exc.value) == "price table has unknown key 'alpha'"
 
 
 @pytest.mark.parametrize(
@@ -413,44 +297,6 @@ def test_every_table_fault_has_its_own_sentence(raw, message):
 # ------------------------------------------------------------------------------- loading
 
 
-def test_a_missing_table_names_the_path_it_looked_at(tmp_path):
-    missing = tmp_path / "nope.json"
-    with pytest.raises(PriceTableError) as exc:
-        load_price_table(str(missing))
-    assert str(exc.value) == f"price table not found: {missing}"
-
-
-def test_an_undecodable_table_does_not_quote_the_decoder(tmp_path):
-    """The sentence names the file and stops there.
-
-    The two runtimes' JSON decoders phrase their own faults differently -- `validate.mjs`
-    covers that separately -- so quoting one would make every malformed table a divergence
-    over bytes that name the same fault.
-    """
-    broken = tmp_path / "broken.json"
-    broken.write_text('{"schema_version": 1,', encoding="utf-8")
-    with pytest.raises(PriceTableError) as exc:
-        load_price_table(str(broken))
-    assert str(exc.value) == f"price table is not valid JSON: {broken}"
-
-
-def test_a_bare_infinity_is_not_valid_json_here_either(tmp_path):
-    """CPython's `json.loads` accepts `Infinity`; `JSON.parse` does not, and the module
-    closes the hole with `parse_constant` so both answer the same sentence."""
-    weird = tmp_path / "inf.json"
-    weird.write_text(
-        '{"schema_version": 1, "currency": "USD", "unit": "micro_usd_per_million_tokens", '
-        '"rates": {"m": {"recorded": "2026-09-11", "source": "s", "input_tokens": Infinity}}}',
-        encoding="utf-8",
-    )
-    with pytest.raises(PriceTableError) as exc:
-        load_price_table(str(weird))
-    assert str(exc.value) == f"price table is not valid JSON: {weird}"
-    # And the hole is real: the stock decoder takes it.
-    stock = json.loads(weird.read_text(encoding="utf-8"))
-    assert stock["rates"]["m"]["input_tokens"] == float("inf")
-
-
 def test_an_operator_supplied_table_is_read_through_the_env_var(tmp_path, monkeypatch):
     """The whole route by which a rate is allowed to enter the system: the operator's file,
     the operator's date, the operator's source."""
@@ -460,3 +306,48 @@ def test_an_operator_supplied_table_is_read_through_the_env_var(tmp_path, monkey
     got = load_price_table()
     assert got["rates"]["m"]["recorded"] == "2026-09-11"
     assert price_tokens(got, "m", usage(input_tokens=1_000_000))["amount"] == "3.000000"
+
+
+# ------------------------------------------------- the shim over the generated module (#316 G1)
+
+
+def test_the_table_error_is_still_a_bantam_error_and_reads_as_its_sentence():
+    from bantamkit.client import BantamError
+
+    with pytest.raises(BantamError) as exc:
+        validate_price_table([])
+    assert type(exc.value) is PriceTableError
+    assert str(exc.value) == "price table must be a JSON object"
+    assert exc.value.args == ("price table must be a JSON object",)
+
+
+def test_a_path_object_and_none_are_still_accepted(tmp_path, monkeypatch):
+    mine = tmp_path / "mine.json"
+    mine.write_text(json.dumps({**HEAD, "rates": {}}), encoding="utf-8")
+    assert load_price_table(mine)["rates"] == {}
+    monkeypatch.setenv(PRICES_ENV, str(mine))
+    assert load_price_table(None)["rates"] == {}
+
+
+def test_a_top_level_tuple_is_refused_with_the_sentence_it_had():
+    assert price_tokens(table({"m": RATE}), "m", tuple(usage())) == {
+        "unavailable": "usage must be a mapping of token class to count"
+    }
+    with pytest.raises(PriceTableError) as exc:
+        validate_price_table(("a",))
+    assert str(exc.value) == "price table must be a JSON object"
+
+
+@pytest.mark.parametrize("model", ["toString", "constructor", "__proto__", "valueOf"])
+def test_a_model_named_like_an_object_prototype_member_is_not_priced(model):
+    """PENDING A RULING (J87-3, docs/porting.md): Node prices these at $0.00 with an empty rate;
+    the shim keeps the answer the hand-written module gave. Its own key is still found."""
+    assert price_tokens(table({"m": RATE}), model, usage(input_tokens=1)) == {
+        "unavailable": f"no rate recorded for model {model!r} -- add one with its date and "
+        "source, or point BANTAMKIT_PRICES at a table that has it"
+    }
+    # The usage is still checked first.
+    assert "usage is missing" in price_tokens(table({"m": RATE}), model, {})["unavailable"]
+    if model != "__proto__":
+        own = price_tokens(table({model: RATE}), model, usage(input_tokens=1_000_000))
+        assert own["micros"] == 3_000_000

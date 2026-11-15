@@ -34,13 +34,15 @@
  *      and J87-1F fixed in both — non-finite figures, `-0`, strict unit identity, `__proto__`.
  *   6. A non-finite limit, at the surface that refuses it (`CHECKPOINT_LIMITS`, `shiftwork_plan`).
  *
- * WHAT THE GENERATOR LEAVES OUT, AND WHY. The input classes in `RULED` below are ones on which
- * the two runtimes still DIFFER by ruling (docs/porting.md: a figure is a double, as Node holds
- * it; J87-3's generated Python inherits it). Each is pinned by its exact input as a case
- * carrying `ruling:`, so the suite stays green AND goes red the day one of them starts agreeing
- * (a stale ruling fails). The generator draws its unit ids from strings and its figures from
- * finite numbers below 2**53, so it explores the domain the two are claimed to share and does
- * not re-find the pinned classes a thousand times.
+ *   7. A figure is a double (`DOUBLES`, `LIMITS_5_0`): the inputs J87-1F / J87-1G carried as
+ *      `ruling:` cases while Python was hand-written (a token figure past 2**53 or spelled
+ *      `1e20`, a limit past 2**53 or spelled `5.0`). Since #316 G1 (J87-3) Python runs the
+ *      module generated from `jobbudget.ts`, its answer lifted as Node's `fromJs` lifts it, so
+ *      they agree and are ordinary cases, each also pinned per side as a literal.
+ *
+ * WHAT THE GENERATOR LEAVES OUT, AND WHY. The generator draws its unit ids from strings and its
+ * figures from finite numbers below 2**53, so it explores the comfortable domain; the doubles of
+ * (7) are pinned by their exact inputs instead of being re-found a thousand times.
  *
  * NOTHING REAL IS READ. Every ledger is text spelled in this file.
  */
@@ -212,37 +214,41 @@ const HAND_EDITED = [
 ];
 
 /**
- * RULED AS NODE (J87-1F, docs/porting.md divergence table): a figure is a double. An integer
- * token count beyond 2**53, or one spelled `1e20`, is what Node's number holds — rounded to the
- * nearest double and printed as one — and that is the behaviour ts2py will generate. No real
- * ledger holds such a count. Until J87-3 switches Python to the generated module the hand-written
- * Python keeps the exact integer, so these stay `ruling:` cases, and a stale ruling (the two
- * starting to agree) fails loudly; J87-3 turns them into ordinary agreeing cases.
+ * A FIGURE IS A DOUBLE (J87-1F's divergence table, closed by #316 G1 / J87-3). An integer token
+ * count beyond 2**53, or one spelled `1e20`, is what Node's number holds — rounded to the nearest
+ * double and printed as one — and since J87-3 Python runs the module ts2py generates from
+ * `jobbudget.ts`, so it holds the same. Until then the hand-written Python kept the exact integer
+ * and these four were `ruling:` cases; each is now an ordinary agreeing case, and `DOUBLE_VIEWS`
+ * pins every view per side, so the pair cannot drift back together. [label, lines, limit, in flight]
  */
-const RULED = [
-  ['1e20 as a token figure', ['{"unit": "U1", "tokens": 1e20}'], ALL, 0,
-    'python int(1e20) prints 100000000000000000000; node prints the double 1e+20; the refusal sentences agree'],
-  ['a token figure above 2**53', ['{"unit": "U1", "tokens": 9007199254740993}'], ALL, 0,
-    'python keeps 9007199254740993; node holds the double 2**53, which fromJs spells 9007199254740992.0, and the refusal names 9007199254740992'],
-  ['a token limit above 2**53', [acct('U1', { tokens: 1 })], '{"tokens": 9007199254740993}', 0,
-    'python keeps 9007199254740993 (remaining 9007199254740992); node limit is the double 9007199254740992.0, remaining and affordable one lower'],
-  // J87-1G: the same toJs -> fromJs loss, the other way. A limit spelled 5.0 is an integral
-  // number to Node, so the view gives it back as 5; Python keeps the float it decoded.
-  ['a token limit written 5.0', [acct('U1', { tokens: 1 })], '{"tokens": 5.0}', 0,
-    'python keeps the float 5.0 (limit 5.0, remaining 4.0, affordable 4.0); node holds the number 5, which fromJs spells 5 (remaining 4, affordable 4)'],
+const DOUBLES = [
+  ['1e20 as a token figure', ['{"unit": "U1", "tokens": 1e20}'], ALL, 0],
+  ['a token figure above 2**53', ['{"unit": "U1", "tokens": 9007199254740993}'], ALL, 0],
+  ['a token limit above 2**53', [acct('U1', { tokens: 1 })], '{"tokens": 9007199254740993}', 0],
+  // J87-1G: the same toJs -> fromJs lift, the other way. A limit spelled 5.0 is an integral
+  // number to Node, so the view gives it back as 5; the hand-written Python kept the float.
+  ['a token limit written 5.0', [acct('U1', { tokens: 1 })], '{"tokens": 5.0}', 0],
 ];
 
+/** What each of `DOUBLES` answers, typed out (Node v26.13.0 and the generated Python alike). */
+const DOUBLE_VIEWS = {
+  '1e20 as a token figure':
+    '{"limit": {"tokens": 1000000, "units": 20, "wallclock_ms": 10000000}, "spent": {"tokens": 1e+20, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": -9.9999999999999e+19, "units": 19, "wallclock_ms": 10000000}, "per_unit": 1e+20, "affordable": 0}',
+  'a token figure above 2**53':
+    '{"limit": {"tokens": 1000000, "units": 20, "wallclock_ms": 10000000}, "spent": {"tokens": 9007199254740992.0, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": -9007199253740992, "units": 19, "wallclock_ms": 10000000}, "per_unit": 9007199254740992.0, "affordable": 0}',
+  'a token limit above 2**53':
+    '{"limit": {"tokens": 9007199254740992.0}, "spent": {"tokens": 1, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": 9007199254740991}, "per_unit": 1, "affordable": 9007199254740991}',
+  'a token limit written 5.0':
+    '{"limit": {"tokens": 5}, "spent": {"tokens": 1, "units": 1, "wallclock_ms": 0}, "in_flight": 0, "remaining": {"tokens": 4}, "per_unit": 1, "affordable": 4}',
+};
+
 /**
- * RULED AS NODE (J87-1G): a `job.budget` limit spelled `5.0` passes the checkpoint schema
- * (`integer` accepts an integral float on both sides), so `shiftwork_plan` builds its budget
- * view over it: Python answers `"limit": {"tokens": 5.0}` and Node `5`, `remaining` the same
- * way, the toJs -> fromJs round trip of RULED above. J87-3's generated Python answers like Node.
- * [label, dimension, value text, why]
+ * A `job.budget` limit spelled `5.0` (J87-1G, closed by J87-3) passes the checkpoint schema
+ * (`integer` accepts an integral float on both sides), so `shiftwork_plan` builds its budget view
+ * over it, and both now answer `"limit": {"<dim>": 5}`, `remaining` the same way. Until J87-3 the
+ * hand-written Python answered `5.0` and these were `ruling:` cases. [label, dimension, value text]
  */
-const RULED_LIMITS = ['tokens', 'units', 'wallclock_ms'].map((dim) => [
-  `job.budget.${dim} = 5.0`, dim, '5.0',
-  `python keeps the float 5.0 in limit and remaining (and affordable); node holds the number 5 and fromJs spells it 5`,
-]);
+const LIMITS_5_0 = ['tokens', 'units', 'wallclock_ms'].map((dim) => [`job.budget.${dim} = 5.0`, dim, '5.0']);
 
 /**
  * A NON-FINITE LIMIT never reaches `budget`: `job.budget`'s schema types each dimension
@@ -437,10 +443,11 @@ export async function run(ctx) {
   // ------------------------------------------------------------------ 5. a hand-edited ledger
   const edited = compare('hand-edited', HAND_EDITED);
 
-  // ------------------------------------------------------------------ ruled: a figure is a double
-  compare('ruled', RULED, (input) =>
-    `ruling: a figure is a double, as Node holds it (docs/porting.md, J87-1F; J87-3's generated Python inherits it): ${input[4]}`,
-  );
+  // ------------------------------------------------------------------ 7. a figure is a double
+  const doubles = compare('double', DOUBLES);
+  DOUBLES.forEach(([label], i) => {
+    literal(`literal: double: ${label} (view)`, 'string', DOUBLE_VIEWS[label], viewOf(doubles.py[i]), viewOf(doubles.node[i]));
+  });
 
   // ------------------------------------------------------------------ 6. a non-finite limit
   const { planBatches } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'shiftwork.js')).href);
@@ -473,9 +480,9 @@ export async function run(ctx) {
     literal(`checkpoint limit refused: ${label}`, 'string', 'refused', refused(pyPlans[i]), refused(nodePlans[i]));
   });
 
-  // ------------------------------------------------------------------ ruled: a 5.0 limit (J87-1G)
-  const ruledDir = mkdtempSync(join(ctx.scratch, 'jobbudget-ruled-limit-'));
-  const nodeRuled = RULED_LIMITS.map(([, dim, value], i) => {
+  // ------------------------------------------------------------------ 7. a 5.0 limit (J87-1G)
+  const ruledDir = mkdtempSync(join(ctx.scratch, 'jobbudget-limit-5.0-'));
+  const nodeRuled = LIMITS_5_0.map(([, dim, value], i) => {
     const file = join(ruledDir, `node-${i}.json`);
     writeFileSync(file, withLimit(dim, value));
     try {
@@ -487,20 +494,15 @@ export async function run(ctx) {
   const pyRuled = ctx.runPython(REF, {
     op: 'plan',
     dir: ruledDir,
-    checkpoints: RULED_LIMITS.map(([, dim, value]) => b64(withLimit(dim, value))),
+    checkpoints: LIMITS_5_0.map(([, dim, value]) => b64(withLimit(dim, value))),
   }).out.map((r) => ('raises' in r ? `raises ${r.raises}` : unb64(r.plan)));
-  RULED_LIMITS.forEach(([label, dim, , why], i) => {
+  LIMITS_5_0.forEach(([label, dim], i) => {
     const [vp, vn] = [pyRuled[i], nodeRuled[i]];
-    const ruling = `ruling: a figure is a double, as Node holds it (docs/porting.md, J87-1G; J87-3's generated Python inherits it): ${why}`;
-    cases.push({ name: `ruled checkpoint limit: ${label}`, kind: 'string', expected: vp, actual: vn, ...(vp !== vn ? { ruling } : {}) });
-    if (vp === vn) {
-      cases.push({ name: `ruled checkpoint limit: ${label} — listed as divergent but agrees`, kind: 'string', expected: 'differs', actual: 'agrees' });
-    }
-    // Per side, not ruled: the limit is ACCEPTED (a plan is answered, not a schema refusal), and
-    // each side spells it the way the ruling says — a drift of either side alone goes red here.
-    const spelled = (s, want) => (s.includes(`"limit": {"${dim}": ${want}}`) ? `limit ${want}` : s);
-    cases.push({ name: `ruled checkpoint limit spelled: ${label} — python`, kind: 'string', expected: 'limit 5.0', actual: spelled(vp, '5.0') });
-    cases.push({ name: `ruled checkpoint limit spelled: ${label} — node`, kind: 'string', expected: 'limit 5', actual: spelled(vn, '5') });
+    cases.push({ name: `checkpoint limit 5.0: ${label}`, kind: 'string', expected: vp, actual: vn });
+    // Per side: the limit is ACCEPTED (a plan is answered, not a schema refusal), and each side
+    // spells it 5 — a drift of either side alone goes red here.
+    const spelled = (s) => (s.includes(`"limit": {"${dim}": 5}`) ? 'limit 5' : s);
+    literal(`checkpoint limit 5.0 spelled: ${label}`, 'string', 'limit 5', spelled(vp), spelled(vn));
   });
 
   // ------------------------------------------------------------------ 2. refusal alone
@@ -579,8 +581,8 @@ export async function run(ctx) {
 
   notes.push(
     `${HAND_EDITED.length} hand-edited ledger inputs agree (J87-1F fixed them in both runtimes); ` +
-      `${RULED.length} stay ruled (a figure is a double, docs/porting.md); ` +
-      `${RULED_LIMITS.length} checkpoint limits spelled 5.0 stay ruled the same way; ` +
+      `${DOUBLES.length} figures past 2**53 or spelled 1e20 / 5.0 and ${LIMITS_5_0.length} checkpoint limits spelled 5.0 ` +
+      'agree since #316 G1 (J87-3: Python runs the generated module; ruled before); ' +
       `${CHECKPOINT_LIMITS.length} non-finite or invalid limits are refused by the checkpoint schema on both sides`,
   );
   return { cases, notes };

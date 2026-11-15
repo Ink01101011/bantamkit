@@ -7,6 +7,8 @@ count, the input to #315's "new versus reused compiler rules" and to the rollout
 - **J85**: the #314 pilot, input `runtime-ts/src/workplan.ts`.
 - **J86**: #315, input the fact-file codec (`runtime-ts/src/memory/pyyaml.ts` and
   `runtime-ts/src/memory/factfile.ts`).
+- **J87-3**: #316 G1, input `runtime-ts/src/pricing.ts` and `runtime-ts/src/jobbudget.ts` (J87 rules
+  below).
 
 Status: **reused** (J86 compiled the codec with the J85 rule as it was), **extended** (J86 changed
 or widened it; the J86 column says how), **new** (J86 added it).
@@ -175,6 +177,44 @@ helper changed.
 | J87-12 | a data field named like a method is read as data where the declared type says so (J86-R finding 3 carried) | `declared_data`, `types::TypeDecls` |
 | J87-13 | a refusal in a function lowered twice (typed and untyped) is reported once | `lib.rs` |
 
+## J87-3 rules (#316 G1: `pricing`, `jobbudget`)
+
+Census estimate for G1 (`node tools/ts2py/census.mjs`, `docs/roadmap-1.0.0.md`, #315): 5 new
+syntax kinds, 5 new builtin calls, 3 Node adapters, 9-11 rules. Rerun on the sources J87-3
+compiled (`jobbudget.ts` grew in J87-1F): 560 lines, 5 kinds, 6 calls, 3 adapters, 10-12 rules.
+Actual: **11 new rules, 6 extended, the rest reused unchanged; 9 adapter rows** (the census counts
+only Node builtins: it reads an import of an uncompiled `src` module as user code, and four were).
+
+| # | Rule | Status | Pinned by (`tests/`) |
+|---|---|---|---|
+| G1-1 | `a ** b` of two non-negative integer literals with an exact result at most 2^53, folded; any other `**` refused | new | `g1.rs` probe; `refusals.rs` (`a ** 2`, `2 ** 54`, `4 ** 0.5`) |
+| G1-2 | `Number.MAX_SAFE_INTEGER` -> `9007199254740991` | new | `g1.rs` probe |
+| G1-3 | `o?.k` / `o?.[k]`, one optional member read -> `_js_opt_get` | new | `g1.rs` probe; `refusals.rs` (`a?.b.c`, `a?.b?.c`, `a?.()`) |
+| G1-4 | `try` / `catch` -> `except Exception` + `_js_catch` (what JS could throw only), handler after the statement | new | `g1.rs` probe and fs-error test; `refusals.rs` (`finally`) |
+| G1-5 | a `catch` binding: rethrow only (`throw e` -> `raise` of the caught object) | new | `g1.rs` (`caught`); `refusals.rs` (`String(e)`) |
+| G1-6 | C-style `for (let ...; test; assignment)` -> init / `while` / body / update; `continue` refused | extended (J86 rule 20, `for (;;)`) | `g1.rs` probe (`countDown`); `refusals.rs` (`continue`, a non-`let` init) |
+| G1-7 | `JSON.parse(text)` -> `_js_json_parse` | new | `g1.rs` probe (numbers, a repeated key, `__proto__`, seven malformed texts) |
+| G1-8 | `Number.isFinite` -> `_js_number_is_finite` | new | `g1.rs` probe |
+| G1-9 | `Math.trunc` -> `_js_trunc` | new | `g1.rs` probe (`-0`, NaN, a string) |
+| G1-10 | `.splice` -> `_js_m_splice` | new | `g1.rs` probe (four shapes) |
+| G1-11 | `.reduce` -> `_js_m_reduce` | new | `g1.rs` probe (with and without an initial value; the empty TypeError caught) |
+| G1-12 | `Math.max` / `Math.min` with a spread argument proven a list | extended (J86 rule 34) | `g1.rs` probe; `refusals.rs` (`...x` of `any`) |
+| G1-13 | `.sort(<adapter function>)` | extended (J85 rule 52) | `g1.rs` real modules (`sortedByCodePoint`, the astral offender) |
+| G1-14 | `class E extends <adapter Error class>` (and a class declared above extending one) | extended (J86 rule 10) | `g1.rs` real modules (`PriceTableError`); `refusals.rs` (`extends A`) |
+| G1-15 | `node:` specifiers looked up in the adapter table | extended (J86 rule 2) | `g1.rs` (fs errors, real modules) |
+| G1-16 | `process.env[k]` / `process.env.K`, a read -> the `process_env` adapter | new | `g1.rs` real modules; `refusals.rs` (`process.argv`) |
+| G1-17 | a call proves what its body's returns prove; the J85 `: boolean` annotation rule (`bool_fns`) dropped | extended (J85 rule 36) | `types.rs` (`a_boolean_return_annotation_is_not_proof`) |
+
+Every other construct the two modules use was lowered by an earlier rule unchanged (template
+literals with and without substitutions, BigInt arithmetic and `BigInt()`, `in`, object spread,
+`Object.keys`, `.filter` / `.map` / `.some` / `.includes` / `.padStart` / `.slice` / `.join`,
+`throw` of a compiled Error class, typed bodies and guarded entries). Runtime names added (11):
+`_js_number_is_finite`, `_js_trunc`, `_js_m_splice`, `_js_m_reduce`, `_js_opt_get`,
+`_js_json_number`, `_JsJsonParseError`, `_js_json_reject_constant`, `_js_json_parse`, `_js_catch`,
+`_js_py_value` (the last is for shims, not generated code: Node's `fromJs` lift). No existing
+helper changed. Generated: `pricing.py` 340 lines, `jobbudget.py` 179 (519, against the census's
+320-386: J87-2's typed bodies and guarded entries write five functions twice).
+
 ## Adapters (J86)
 
 Declared in `src/adapters.rs`, written in `src/adapters.py`. Measured against Node's own
@@ -188,3 +228,22 @@ implementation (runtime-ts `dist/`) on 2026-11-15:
 | `Date` (Node global) | `new Date()` (no argument) with `getFullYear` / `getMonth` / `getDate` from `datetime.datetime.now()` | Python is the reference: the one use, `todayLocal`, is defined by its doc comment as `date.today().isoformat()` (local) | not measured (time-dependent); a `Date` with an argument raises |
 
 `pysem.ts` is therefore not compiled: the codec reaches only `pyStrip` from it.
+
+### Adapters (J87-3, #316 G1)
+
+Measured against Node v26.13.0 (`runtime-ts` `dist/` and Node's own builtins) on 2026-11-15:
+
+| TypeScript | Python | Why it is the same function | Measurement |
+|---|---|---|---|
+| `pyRepr` (`pysem.ts`) | `py_repr(s)` = `repr(s)` | Python is the reference: the TypeScript ports `repr(str)` | the hand-written pricing module used `!r`; `--suite pricing` (astral, quote and newline model names) |
+| `cmpCodepoint` (`pysem.ts`) | `cmp_codepoint(a, b)` | Python is the reference: it exists to order as `sorted()` does, by code point; same return values (-1, 1, the length difference) | `--suite pricing` (`astral model names`, `astral unknown top keys`) |
+| `assetsRoot` (`assets.ts`) | `assets_root()` = `str(bantamkit.assets.assets_root())` | Python is the reference: `assets.ts` mirrors it arm for arm; each runtime resolves its own pack | `--suite pricing` (`load: the shipped table`) |
+| `BantamError` (`errors.ts`) | `BantamError`: `bantamkit.client.BantamError` with `_JsError`'s face; own `name` = the constructing class's JS name | Python is the reference: `errors.ts` says it is the Python base; built lazily (PEP 562) so a module that never uses it does not import `bantamkit.client` | `g1.rs` (`PriceTableError: ...` by `name` and message); `test_pricing.py` (`except BantamError`) |
+| `existsSync` (`node:fs`) | `exists_sync(p)` = `os.path.exists(p)`; a non-string argument is false | stat succeeds (symlinks followed), false on any error, as Node | 18 paths (a file, a directory, each with a trailing slash, missing, a dangling symlink, a symlink loop, a symlink to a file, `''`, `.`, `/`, a mode-000 directory, with a trailing slash, and a file inside it, `x//f`, `x/./f`, `x/d/../f`, a missing non-ASCII name): 0 disagreements |
+| `readFileSync(p, 'utf8')` (`node:fs`) | `read_file_sync`: `open(p, 'rb').read().decode('utf-8', 'replace')` | Node's UTF-8 decode replaces each maximal invalid subpart with one U+FFFD and keeps a BOM; so does CPython's `replace` handler. A failure is CPython's `OSError` from `open()` | 30,000 random byte strings biased to UTF-8 edge bytes (10% with a BOM) against `Buffer#toString('utf8')`, and 2,000 of them written to files and read back with `readFileSync`: 0 disagreements |
+| `join` (`node:path`) | `path_join(*parts)`: `lib/path.js`'s `posix.join` + `normalizeString` (from `path.posix.join.toString()` of Node 26.13), `win32.join` on Windows | the same statements over the same UTF-16-free inputs; on win32, a colon other than a drive's and a path whose last character dropped leaves a reserved device name are refused (Node's newer reserved-name rules there are not ported) | 60,000 random joins of 1-4 parts over separators, dots, drive and UNC prefixes, device names and non-ASCII: 0 disagreements with `path.posix.join`; 41,055 with `path.win32.join` (18,945 refused): 0 disagreements |
+| `process.env` (Node global) | `process_env(k)` = `os.environ.get(k, undefined)` | each runtime reads its own process environment; the hand-written module read `os.environ` | `test_pricing.py` (`BANTAMKIT_PRICES`) |
+
+A path holding a NUL or a lone surrogate is refused by both fs adapters (Node throws its own
+TypeError for a NUL and writes a lone surrogate as U+FFFD; CPython raises `ValueError` and maps some
+lone surrogates to bytes).

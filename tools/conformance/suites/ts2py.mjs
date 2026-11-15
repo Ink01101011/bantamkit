@@ -23,8 +23,9 @@
  * on disk. No Rust toolchain means this suite is red, with the reason, rather than skipped.
  * `committed/<file>` then compiles EVERY generated file under `runtime-py/src/bantamkit/_generated/`
  * again with the flags it was made with (`workplan.py`; since #315 the codec's `pyyaml.py` and
- * `factfile.py`; `--emit-runtime`, `--emit-adapters`) and compares every byte, so a hand-edited body
- * or a compiler change that was never regenerated is red, with the regenerate command (J85-R F4);
+ * `factfile.py`; since #316 G1 `pricing.py` and `jobbudget.py`; `--emit-runtime`,
+ * `--emit-adapters`) and compares every byte, so a hand-edited body or a compiler change that was
+ * never regenerated is red, with the regenerate command (J85-R F4);
  * `committed/coverage` lists the directory, so a generated file outside the gate is red too.
  *
  * WHY THE PYTHON ARMS READ THE FIXTURE THEMSELVES. `ref/ts2py_ref.py` opens the file with
@@ -102,11 +103,14 @@ function compile(out) {
 const COMMITTED = 'runtime-py/src/bantamkit/_generated';
 /** The fact-file codec (#315, J86-3): one ts2py call compiles both into one package. */
 const CODEC_SOURCES = ['runtime-ts/src/memory/pyyaml.ts', 'runtime-ts/src/memory/factfile.ts'];
+/** #316 G1 (J87-3): pricing and jobbudget, one ts2py call into the same package. */
+const G1_SOURCES = ['runtime-ts/src/pricing.ts', 'runtime-ts/src/jobbudget.ts'];
 const CARGO_RUN = 'cargo run --release --manifest-path tools/ts2py/Cargo.toml --';
 const REGENERATE =
   'regenerate from the repository root:\n' +
   `  ${CARGO_RUN} ${SOURCE} -o ${COMMITTED}/workplan.py --runtime-module ._ts2py_runtime\n` +
   `  ${CARGO_RUN} ${CODEC_SOURCES.join(' ')} --out-dir ${COMMITTED} --runtime-module ._ts2py_runtime\n` +
+  `  ${CARGO_RUN} ${G1_SOURCES.join(' ')} --out-dir ${COMMITTED} --runtime-module ._ts2py_runtime\n` +
   `  ${CARGO_RUN} --emit-runtime ${COMMITTED}/_ts2py_runtime.py\n` +
   `  ${CARGO_RUN} --emit-adapters ${COMMITTED}/_ts2py_adapters.py`;
 
@@ -121,6 +125,7 @@ function committedCases(bed) {
   mkdirSync(fresh, { recursive: true });
   ts2py([SOURCE, '-o', join(fresh, 'workplan.py'), '--runtime-module', '._ts2py_runtime'], join(fresh, 'workplan.py'));
   ts2py([...CODEC_SOURCES, '--out-dir', fresh, '--runtime-module', '._ts2py_runtime'], join(fresh, 'factfile.py'));
+  ts2py([...G1_SOURCES, '--out-dir', fresh, '--runtime-module', '._ts2py_runtime'], join(fresh, 'pricing.py'));
   ts2py(['--emit-runtime', join(fresh, '_ts2py_runtime.py')], join(fresh, '_ts2py_runtime.py'));
   ts2py(['--emit-adapters', join(fresh, '_ts2py_adapters.py')], join(fresh, '_ts2py_adapters.py'));
   const made = readdirSync(fresh).filter((f) => f.endsWith('.py')).sort();

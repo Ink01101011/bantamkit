@@ -1,4 +1,4 @@
-"""The committed generated modules are the ones `runtime-ts/src` compiles to (#314, #315).
+"""The committed generated modules are the ones `runtime-ts/src` compiles to (#314, #315, #316).
 
 `bantamkit/_generated/` is committed so that building or installing the package never needs
 Rust. The price is that it can go stale: someone edits the TypeScript and the Python keeps
@@ -32,6 +32,9 @@ MODULES = {
     "workplan.py": TS / "workplan.ts",
     "pyyaml.py": TS / "memory" / "pyyaml.ts",
     "factfile.py": TS / "memory" / "factfile.ts",
+    # #316 G1 (J87-3).
+    "pricing.py": TS / "pricing.ts",
+    "jobbudget.py": TS / "jobbudget.ts",
 }
 # The two support modules ts2py writes from copies it embeds; and the hand-written package file.
 SUPPORT = {"_ts2py_runtime.py", "_ts2py_adapters.py"}
@@ -43,6 +46,8 @@ REGENERATE = (
     f"  {_CARGO} runtime-ts/src/workplan.ts -o runtime-py/src/bantamkit/_generated/workplan.py "
     "--runtime-module ._ts2py_runtime\n"
     f"  {_CARGO} runtime-ts/src/memory/pyyaml.ts runtime-ts/src/memory/factfile.ts "
+    "--out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime\n"
+    f"  {_CARGO} runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts "
     "--out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime\n"
     f"  {_CARGO} --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py\n"
     f"  {_CARGO} --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py\n"
