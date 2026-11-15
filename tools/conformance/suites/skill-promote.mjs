@@ -173,6 +173,20 @@ function opList() {
   add('approve c-a-one over a file at .claude/skills: installed, not promoted, refusal recorded', {
     op: 'approve', home: f, cwd: 'h8cwd', target: 'c-a-one', now: NOW,
   });
+
+  // h9: a top-level `__proto__` key in skills-state.json (J87-1G). Python's `state.clear();
+  // state.update(fresh)` keeps it as a key; Node's step must too, not hand it to the prototype
+  // of `state` (Object.assign's [[Set]]), which drops the key and lets `state` read through it.
+  const q = 'h9';
+  add('h9: ~/.claude exists', { op: 'mkdir', home: q, rel: '.claude' });
+  add('h9: skills-state.json with a top-level __proto__ key', {
+    op: 'write', home: q, rel: '.bantamkit/skills-state.json',
+    text: '{\n  "__proto__": {\n    "planted": true,\n    "skills": {}\n  },\n  "skills": {},\n  "version": 1\n}\n',
+  });
+  add('h9: install q-one beside the __proto__ key', { op: 'install', home: q, name: 'q-one', level: 'user', now: NOW });
+  add('promote_step over a __proto__ key: the key stays a key of the returned state', {
+    op: 'promote_step', auto: 'on', home: q, uses: { 'q-one': 3 }, now: NOW, budget: 8192,
+  });
   return { ops, label };
 }
 
@@ -565,6 +579,16 @@ export async function run(ctx) {
       kind: 'json',
       expected: [['promoted skill s-three'], [], ['promoted skill s-zbig']],
       actual: [iFirstStep, iSame, iNext].map((i) => got[i].events ?? got[i]),
+    });
+    // J87-1G: a differential stays green if both sides lose the key alike, so each side is
+    // held to keeping it: an own `__proto__` key, its value whole, after the step's replace.
+    const iProto = find('promote_step over a __proto__ key: the key stays a key of the returned state');
+    const st = got[iProto].returned_state;
+    cases.push({
+      name: `LITERAL: a top-level __proto__ key survives promote_step as a key [events, value] — ${side}`,
+      kind: 'json',
+      expected: [['promoted skill q-one'], '{"planted":true,"skills":{}}'],
+      actual: [got[iProto].events ?? got[iProto], st && Object.hasOwn(st, '__proto__') ? JSON.stringify(st['__proto__']) : null],
     });
   }
   return { cases, notes: [] };

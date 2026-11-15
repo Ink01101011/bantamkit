@@ -14,6 +14,7 @@ an answer is masked back to `<bed>`.
     {"op": "undo", "home", "name"}                            -> {"said"} | {"error"}, plus "tree"
     {"op": "edit", "home", "rel", "find", "replace"}          -> {"tree"}
     {"op": "mkdir", "home", "rel"}                            -> {}
+    {"op": "write", "home", "rel", "text"}                    -> {"tree"}
     {"op": "constants"}                                       -> [AUTO_PER_DAY, AUTO_LIVE_MAX, PROBATION_DAYS, KEYWORDS_MAX, EVIDENCE_PROJECT_CHARS, EVIDENCE_USER_CHARS, AUTO_ENV]
 
 Every op may carry `"env"`: the value of `BANTAMKIT_SKILL_AUTO` for that op (absent or null:
@@ -105,6 +106,11 @@ def run(bed: Path, op: dict):
         if kind == "mkdir":
             (home / op["rel"]).mkdir(parents=True, exist_ok=True)
             return {}
+        if kind == "write":
+            p = home / op["rel"]
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(op["text"].encode())
+            return {"tree": mask(tree(home, b), b)}
         if kind == "edit":
             p = home / op["rel"]
             p.write_bytes(p.read_bytes().replace(op["find"].encode(), op["replace"].encode()))

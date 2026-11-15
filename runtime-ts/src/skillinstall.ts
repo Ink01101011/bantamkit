@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { assignOwn } from './pyjson.js';
 import { cmpCodepoint, pyRepr } from './pysem.js';
 import {
   HASH_KEY,
@@ -388,9 +389,11 @@ export function liveAuto(state: Rec): string[] {
     .sort(cmpCodepoint);
 }
 
+// Python's `state.clear(); state.update(fresh)`: assignOwn, not Object.assign, so a top-level
+// `__proto__` key in skills-state.json stays a key (J87-1G).
 function replaceState(state: Rec, fresh: Rec): void {
   for (const k of Object.keys(state)) delete state[k];
-  Object.assign(state, fresh);
+  assignOwn(state, fresh);
 }
 
 export function autoStep(proposals: Rec, state: Rec, home: string, now: string): string[] {

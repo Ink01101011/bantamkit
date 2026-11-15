@@ -234,6 +234,19 @@ function opList() {
   };
   add('#301 triggers_step backfills the unedited install only (auto unset)', { op: 'triggers', home: t, now: at(1), doc: trigDoc });
   add('#301 triggers_step the next day: nothing left to fill', { op: 'triggers', home: t, now: at(2), doc: trigDoc });
+
+  // J87-1G: a top-level `__proto__` key in skills-state.json. Python's `state.clear();
+  // state.update(...)` keeps it as a key; each Node step's replace must too, not hand it to
+  // the prototype of `state` (Object.assign's [[Set]]), which drops the key.
+  const q = 'proto';
+  add('J87-1G skills-state.json with a top-level __proto__ key', {
+    op: 'write',
+    home: q,
+    rel: '.bantamkit/skills-state.json',
+    text: '{\n  "__proto__": {\n    "planted": true,\n    "skills": {}\n  },\n  "skills": {},\n  "version": 1\n}\n',
+  });
+  add('J87-1G auto over a __proto__ key: installed, the key stays a key of the state', { op: 'auto', env: 'on', home: q, now: NOW, proposals: { clusters: [record('proto-a')] } });
+  add('J87-1G probation over a __proto__ key: the key stays a key of the state', { op: 'probation', home: q, uses: { 'proto-a': 1 }, now: at(1) });
   return { ops, label };
 }
 
@@ -305,6 +318,12 @@ async function runNode(ctx, bed, ops) {
       if (op.op === 'mkdir') {
         fs.mkdirSync(join(home, op.rel), { recursive: true });
         results.push({});
+        continue;
+      }
+      if (op.op === 'write') {
+        fs.mkdirSync(dirname(join(home, op.rel)), { recursive: true });
+        fs.writeFileSync(join(home, op.rel), op.text);
+        results.push({ tree: mask(tree(home, bed), bed) });
         continue;
       }
       if (op.op === 'edit') {
@@ -484,6 +503,20 @@ export async function run(ctx) {
           got[iTrigFill].tree['.bantamkit/skills/edited-t/SKILL.md'] === got[iTrigEdit].tree['.bantamkit/skills/edited-t/SKILL.md'] &&
           trigLine(got[iTrigFill].tree, 'edited-t').length === 0,
       },
+    });
+    // J87-1G: a differential stays green if both sides lose the key alike, so each side is
+    // held to keeping it: an own `__proto__` key, its value whole, after each step's replace.
+    const protoOf = (i) => {
+      const st = got[i].state;
+      return st && Object.hasOwn(st, '__proto__') ? JSON.stringify(st['__proto__']) : null;
+    };
+    const iProtoAuto = find('J87-1G auto over a __proto__ key: installed, the key stays a key of the state');
+    const iProtoProb = find('J87-1G probation over a __proto__ key: the key stays a key of the state');
+    cases.push({
+      name: `LITERAL: a top-level __proto__ key survives auto_step and probation_step as a key [events, auto, probation] — ${side}`,
+      kind: 'json',
+      expected: [['installed skill proto-a'], '{"planted":true,"skills":{}}', '{"planted":true,"skills":{}}'],
+      actual: [got[iProtoAuto].events ?? got[iProtoAuto], protoOf(iProtoAuto), protoOf(iProtoProb)],
     });
     const evU = got[iEvU].text;
     const evP = got[iEvP].text;

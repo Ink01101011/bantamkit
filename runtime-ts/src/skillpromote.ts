@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { assignOwn } from './pyjson.js';
 import { cmpCodepoint, pyRepr } from './pysem.js';
 import { auditRoots } from './skillaudit.js';
 import { readState, rewriteDirAtomic, SKILL_FILE, SkillFileError, updateState, writeDirAtomic } from './skillfile.js';
@@ -411,6 +412,6 @@ export function promoteStep(
   }
   const fresh = readState(home);
   for (const k of Object.keys(state)) delete state[k];
-  Object.assign(state, fresh);
+  assignOwn(state, fresh); // not Object.assign: a `__proto__` key stays a key (J87-1G)
   return events;
 }

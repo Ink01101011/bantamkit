@@ -226,7 +226,23 @@ const RULED = [
     'python keeps 9007199254740993; node holds the double 2**53, which fromJs spells 9007199254740992.0, and the refusal names 9007199254740992'],
   ['a token limit above 2**53', [acct('U1', { tokens: 1 })], '{"tokens": 9007199254740993}', 0,
     'python keeps 9007199254740993 (remaining 9007199254740992); node limit is the double 9007199254740992.0, remaining and affordable one lower'],
+  // J87-1G: the same toJs -> fromJs loss, the other way. A limit spelled 5.0 is an integral
+  // number to Node, so the view gives it back as 5; Python keeps the float it decoded.
+  ['a token limit written 5.0', [acct('U1', { tokens: 1 })], '{"tokens": 5.0}', 0,
+    'python keeps the float 5.0 (limit 5.0, remaining 4.0, affordable 4.0); node holds the number 5, which fromJs spells 5 (remaining 4, affordable 4)'],
 ];
+
+/**
+ * RULED AS NODE (J87-1G): a `job.budget` limit spelled `5.0` passes the checkpoint schema
+ * (`integer` accepts an integral float on both sides), so `shiftwork_plan` builds its budget
+ * view over it: Python answers `"limit": {"tokens": 5.0}` and Node `5`, `remaining` the same
+ * way, the toJs -> fromJs round trip of RULED above. J87-3's generated Python answers like Node.
+ * [label, dimension, value text, why]
+ */
+const RULED_LIMITS = ['tokens', 'units', 'wallclock_ms'].map((dim) => [
+  `job.budget.${dim} = 5.0`, dim, '5.0',
+  `python keeps the float 5.0 in limit and remaining (and affordable); node holds the number 5 and fromJs spells it 5`,
+]);
 
 /**
  * A NON-FINITE LIMIT never reaches `budget`: `job.budget`'s schema types each dimension
@@ -457,6 +473,36 @@ export async function run(ctx) {
     literal(`checkpoint limit refused: ${label}`, 'string', 'refused', refused(pyPlans[i]), refused(nodePlans[i]));
   });
 
+  // ------------------------------------------------------------------ ruled: a 5.0 limit (J87-1G)
+  const ruledDir = mkdtempSync(join(ctx.scratch, 'jobbudget-ruled-limit-'));
+  const nodeRuled = RULED_LIMITS.map(([, dim, value], i) => {
+    const file = join(ruledDir, `node-${i}.json`);
+    writeFileSync(file, withLimit(dim, value));
+    try {
+      return dumpJson(planBatches(file));
+    } catch (e) {
+      return `raises ${e?.constructor?.name}`;
+    }
+  });
+  const pyRuled = ctx.runPython(REF, {
+    op: 'plan',
+    dir: ruledDir,
+    checkpoints: RULED_LIMITS.map(([, dim, value]) => b64(withLimit(dim, value))),
+  }).out.map((r) => ('raises' in r ? `raises ${r.raises}` : unb64(r.plan)));
+  RULED_LIMITS.forEach(([label, dim, , why], i) => {
+    const [vp, vn] = [pyRuled[i], nodeRuled[i]];
+    const ruling = `ruling: a figure is a double, as Node holds it (docs/porting.md, J87-1G; J87-3's generated Python inherits it): ${why}`;
+    cases.push({ name: `ruled checkpoint limit: ${label}`, kind: 'string', expected: vp, actual: vn, ...(vp !== vn ? { ruling } : {}) });
+    if (vp === vn) {
+      cases.push({ name: `ruled checkpoint limit: ${label} — listed as divergent but agrees`, kind: 'string', expected: 'differs', actual: 'agrees' });
+    }
+    // Per side, not ruled: the limit is ACCEPTED (a plan is answered, not a schema refusal), and
+    // each side spells it the way the ruling says — a drift of either side alone goes red here.
+    const spelled = (s, want) => (s.includes(`"limit": {"${dim}": ${want}}`) ? `limit ${want}` : s);
+    cases.push({ name: `ruled checkpoint limit spelled: ${label} — python`, kind: 'string', expected: 'limit 5.0', actual: spelled(vp, '5.0') });
+    cases.push({ name: `ruled checkpoint limit spelled: ${label} — node`, kind: 'string', expected: 'limit 5', actual: spelled(vn, '5') });
+  });
+
   // ------------------------------------------------------------------ 2. refusal alone
   const pyViews = ctx.runPython(REF, { op: 'refusal', views: VIEWS.map(([, v]) => b64(JSON.stringify(v))) }).out;
   VIEWS.forEach(([label, v], i) => {
@@ -534,6 +580,7 @@ export async function run(ctx) {
   notes.push(
     `${HAND_EDITED.length} hand-edited ledger inputs agree (J87-1F fixed them in both runtimes); ` +
       `${RULED.length} stay ruled (a figure is a double, docs/porting.md); ` +
+      `${RULED_LIMITS.length} checkpoint limits spelled 5.0 stay ruled the same way; ` +
       `${CHECKPOINT_LIMITS.length} non-finite or invalid limits are refused by the checkpoint schema on both sides`,
   );
   return { cases, notes };
