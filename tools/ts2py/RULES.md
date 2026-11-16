@@ -246,7 +246,7 @@ a value model (Buffers) or a statement form (`finally`, an arrow as a value) beh
 | G2-17 | `new Date(ms).toISOString()` -> `_js_date_to_iso` | new | `g2.rs` probe (`dates`: toward zero, year 0, -1, 10000, both TimeClip ends, three RangeErrors) |
 | G2-18 | `Date.now()` -> `_js_now` | new | `--suite eventlog` beds |
 | G2-19 | `.trim()`, `.endsWith()` | new | `g2.rs` probe (`strings`: U+FEFF trimmed, U+001C / U+0085 kept, a lone trail surrogate suffix) |
-| G2-20 | `.toLowerCase()` of a non-ASCII string, outside 55 code points and U+03A3 | extended (J86) | `g2.rs` probe (`ÀÉÎ İ ẞ`); J88-2: the 1,462 non-ASCII code points with a lowercase, 55 differ (all assigned after Unicode 15.0) |
+| G2-20 | `.toLowerCase()` of a non-ASCII string, outside 55 code points and U+03A3 | extended (J86) | `g2.rs` probe (`ÀÉÎ İ ẞ`); J88-2: the 1,462 non-ASCII code points with a lowercase, 55 differ (all assigned after Unicode 15.0); J89-7: the 55 mapped to Node's answer, U+03A3 refused only next to a `Cn` code point or U+0295 / U+1171E (0 wrong against Node 26.13 over every code point alone and in five sigma contexts, on CPython 3.11-3.14) |
 | G2-21 | `m.values()` | new | `g2.rs` probe (`[...m.values()]`) |
 | G2-22 | `Object.assign(target, ...sources)` | new | `g2.rs` probe (`Object.assign(new Error, {code})`) |
 | G2-23 | `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)` -> `_js_sleep_ms`; any other `Atomics.wait` refused | new | `refusals.rs`; `--suite storage-log` (the #208 drain) |
@@ -759,7 +759,8 @@ unchanged, and every module the call already compiled recompiles byte for byte.
   `usage()` is `ledger()`: its name made tokenledger.ts's `message.usage` read as a method value
   (the 82nd refusal).
 - `.toLowerCase()` of a name (`normalizeName`): not refused at compile time, but ts2py's lowering
-  refuses U+03A3 and the 55 code points CPython's and ICU's tables map apart at run time, and
+  refused U+03A3 and the 55 code points CPython's and ICU's tables map apart at run time (J89-7
+  narrowed that to a U+03A3 next to a code point the tables classify apart), and
   `ΣΟΦΟΣ` is a case the store suite pins. pysem.ts's `pyLower` (Node: `toLowerCase()`), an adapter
   onto `str.lower()`, the call `normalize_name` made.
 

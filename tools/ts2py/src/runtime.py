@@ -8,6 +8,7 @@ import json as _js_jsonlib
 import math as _js_math
 import re as _js_re
 import time as _js_time
+import unicodedata as _js_unicodedata
 
 
 class _JsUndefined:
@@ -1202,28 +1203,64 @@ def _js_m_repeat(receiver, count=_JS_UNDEFINED):
     return _js_from_units(text * int(times))
 
 
-# J88-2: the code points whose lowercase CPython 3.12 (Unicode 15.0) and Node 26.13 (ICU) spell
-# differently, measured over every code point but the surrogates: 55, each assigned after 15.0.
-_JS_LOWER_DIFFERS = _js_re.compile(
-    "[\u1c89\ua7cb\ua7cc\ua7ce\ua7d2\ua7d4\ua7da\ua7dc\U00010d50-\U00010d65\U00016ea0-\U00016eb8\u03a3]"
-)
+# J88-2 / J89-7: the code points whose lowercase CPython and Node 26.13 (ICU, Unicode 17.0) spell
+# differently, measured over every code point but the surrogates: 55 on CPython 3.11, 3.12 and
+# 3.13 (28 on 3.14), every one unassigned (`Cn`) in CPython's table and every one a single code
+# point to a single code point. The table is Node's answer for all 55, so `str.lower()` after it
+# is Node's answer whatever CPython's Unicode version is.
+_JS_LOWER_NODE = {
+    0x1C89: 0x1C8A, 0xA7CB: 0x0264, 0xA7CC: 0xA7CD, 0xA7CE: 0xA7CF, 0xA7D2: 0xA7D3,
+    0xA7D4: 0xA7D5, 0xA7DA: 0xA7DB, 0xA7DC: 0x019B,
+    **{cp: cp + 0x20 for cp in range(0x10D50, 0x10D66)},
+    **{cp: cp + 0x1B for cp in range(0x16EA0, 0x16EB9)},
+}
+# J89-7: U+03A3 lowers to U+03C2 or U+03C3 by its Final_Sigma context: walk out from it over
+# Case_Ignorable code points to the first that is not, and ask whether that one is Cased. The two
+# tables classify a code point apart only when CPython has it as `Cn`, or for these two (J89-R's
+# sweep of every code point in five contexts against Node 26.13: 307 differences on 3.11, 196 on
+# 3.12 and 3.13, 100 on 3.14, every one `Cn` but U+0295 and U+1171E).
+_JS_SIGMA_UNSURE = frozenset("\u0295\U0001171e")
+
+
+@_js_functools.lru_cache(maxsize=4096)
+def _js_case_ignorable(ch):
+    """CPython's own Case_Ignorable for `ch`, read back off `str.lower()`: a code point the
+    sigma walk skips leaves U+03A3 final both after a cased letter and before nothing."""
+    return ("A" + ch + "\u03a3").lower()[-1] == "\u03c2" and ("A\u03a3" + ch).lower()[1] == "\u03c2"
+
+
+def _js_sigma_unsure(text):
+    """True when some U+03A3's context walk reaches a code point the two tables may classify
+    apart, so `str.lower()` and `toLowerCase()` could pick different sigmas for it."""
+    at = text.find("\u03a3")
+    while at != -1:
+        for step in (-1, 1):
+            j = at + step
+            while 0 <= j < len(text):
+                ch = text[j]
+                if ch in _JS_SIGMA_UNSURE or _js_unicodedata.category(ch) == "Cn":
+                    return True
+                if not _js_case_ignorable(ch):
+                    break
+                j += step
+        at = text.find("\u03a3", at + 1)
+    return False
 
 
 def _js_m_toLowerCase(receiver):
-    """`s.toLowerCase()`: full Unicode lowercase mapping, which `str.lower()` is for every code
-    point but the 55 whose mapping CPython's Unicode tables do not yet have (J88-2 measured the
-    1,462 non-ASCII code points with a lowercase against Node 26.13). A string holding one of those,
-    or U+03A3 (whose final-sigma context depends on neighbours the two tables may classify
-    apart), raises rather than risk a different answer."""
+    """`s.toLowerCase()`: full Unicode lowercase mapping, Final_Sigma included. `str.lower()` is
+    that for every code point but the 55 `_JS_LOWER_NODE` maps first; a U+03A3 whose context
+    reaches a code point the two tables may classify apart raises rather than risk a different
+    sigma (J89-7: ordinary Greek, ǅ and U+1C89 answer as Node does on CPython 3.11 to 3.14)."""
     text = _js_string_receiver("toLowerCase", receiver)
     if text.isascii():
         return text.lower()
-    if _JS_LOWER_DIFFERS.search(text):
+    if _js_sigma_unsure(text):
         raise TypeError(
-            "ts2py: .toLowerCase() of a code point the two Unicode tables map apart"
-            " is outside the subset"
+            "ts2py: .toLowerCase() of U+03A3 next to a code point the two Unicode tables"
+            " classify apart is outside the subset"
         )
-    return text.lower()
+    return text.translate(_JS_LOWER_NODE).lower()
 
 
 def _js_m_toUpperCase(receiver):

@@ -1,6 +1,7 @@
 """Python arms of the ts2py conformance suite: the GENERATED planner and `bantamkit.workplan`.
 
     {"fixture": str, "generated": str} -> {"generated": [answer], "legacy": [answer]}
+    {"lower": {"runtime": str, "inputs": [str]}} -> {"lower": [answer]}   (J89-7)
 
 `fixture` is `tools/conformance/fixtures/workplan-cases.json`, read HERE with `json.load` and
 never handed over as a payload: the payload travels through `JSON.stringify`, which would turn
@@ -14,6 +15,9 @@ raises answers `RAISED <type>: <message>` instead, so a crash is one red case th
 
 The legacy arm imports `bantamkit.workplan` from this checkout's `runtime-py/src`, whatever
 serves that name: the hand-written planner today, the generated one once #314 switches.
+
+`lower` (J89-7) imports the ts2py runtime at `runtime` by path and answers `_js_m_toLowerCase` of
+each input, or `RAISED <type>: <message>` where it refuses.
 """
 
 from __future__ import annotations
@@ -46,8 +50,21 @@ def _answer(module, nodes) -> str:
     return json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
 
+def _lower(runtime, text: str) -> str:
+    try:
+        return runtime._js_m_toLowerCase(text)
+    except Exception as exc:  # noqa: BLE001 - the refusal IS the answer under test
+        return f"RAISED {type(exc).__name__}: {exc}"
+
+
 def main() -> None:
     request = json.load(sys.stdin)
+    if "lower" in request:
+        runtime = _load(request["lower"]["runtime"])
+        sys.stdout.write(
+            json.dumps({"lower": [_lower(runtime, t) for t in request["lower"]["inputs"]]})
+        )
+        return
     with open(request["fixture"], encoding="utf-8") as handle:
         cases = json.load(handle)
     generated = _load(request["generated"])

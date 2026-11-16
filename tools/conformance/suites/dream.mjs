@@ -1018,6 +1018,71 @@ export async function run(ctx) {
     }
   }
 
+  // ------------------------------- J89-7 (J89-R F1): `blockKey` / `claimSlot` lowercase Greek text
+  // A fact in both layers whose description, body and claim-slot value hold U+03A3 used to make
+  // the generated dream.py raise TypeError out of `_js_m_toLowerCase` (Python exit 1, the Stop
+  // hook's dream child re-spawned every Stop) while Node merged. Each arm writes the same fact
+  // to both layers with a block that differs ONLY in case, so the merge is right only if the
+  // two keys are the same string `toLowerCase()` gives: final sigma (`ΛΟΓΟΣ.` keys as
+  // `λογος.`, so `σοφος λογος.` is the same block and `σοφοσ λογοσ.`, spelled with a medial
+  // sigma at the word ends, is a different one a sigma-blind lowercase would drop), U+1C89 (Node 26.13 lowers it to U+1C8A, which CPython <= 3.13 has no mapping
+  // for) and U+01C5 (titlecase ǅ to ǆ); the two descriptions differ only in case too, and
+  // `mergeDescriptions` keys them the same way. Plan and both trees side by side, then each
+  // side's survivor against a literal: the project's description alone, one copy of the
+  // case-only block, both claim values kept
+  // apart (the contradiction rule: the newer project claim kept, the profile's moved under
+  // `superseded`), nothing raised.
+  {
+    // [label, [project, profile] descriptions, project body, profile body, the survivor's
+    // description line and body each side must write]
+    const superseded = (claim) => `\n\n## superseded by a dream merge\n\n- from profile (2026-08-27): ${claim}\n`;
+    const arms = [
+      ['final sigma', ['Η ΟΔΟΣ ΤΟΥ ΣΟΦΟΥ ΣΑΣ', 'η οδος του σοφου σας'],
+        'ΣΟΦΟΣ ΛΟΓΟΣ.\n\nDeploys: ΟΔΟΣ ΑΣ', 'σοφος λογος.\n\nDeploys: ΟΔΟΣ ΒΣ\n\nΑΛΛΟΣ ΛΟΓΟΣ.\n\nσοφοσ λογοσ.',
+        `description: Η ΟΔΟΣ ΤΟΥ ΣΟΦΟΥ ΣΑΣ\nΣΟΦΟΣ ΛΟΓΟΣ.\n\nDeploys: ΟΔΟΣ ΑΣ\n\nΑΛΛΟΣ ΛΟΓΟΣ.\n\nσοφοσ λογοσ.${superseded('Deploys: ΟΔΟΣ ΒΣ')}`],
+      ['U+1C89', ['\u1c89 tje', '\u1c8a tje'],
+        '\u1c89 tje block.\n\nDeploys: \u1c89 one', '\u1c8a tje block.\n\nDeploys: \u1c89 two',
+        `description: \u1c89 tje\n\u1c89 tje block.\n\nDeploys: \u1c89 one${superseded('Deploys: \u1c89 two')}`],
+      ['U+01C5', ['\u01c5emal ΣΑΣ', '\u01c6emal σας'],
+        '\u01c5emal block.\n\nDeploys: \u01c5 one', '\u01c6emal block.\n\nDeploys: \u01c5 two',
+        `description: \u01c5emal ΣΑΣ\n\u01c5emal block.\n\nDeploys: \u01c5 one${superseded('Deploys: \u01c5 two')}`],
+    ];
+    arms.forEach(([armLabel, [projectDescription, profileDescription], projectBody, profileBody, expected], i) => {
+      const label = `J89-7 dream lowercases ${armLabel} like toLowerCase()`;
+      const bed = join(ctx.scratch, `j89-7-${i}`);
+      const roots = {};
+      for (const side of ['py', 'node']) {
+        roots[side] = { project: join(bed, side, 'project'), profile: join(bed, side, 'profile') };
+        materialise(roots[side].project, {
+          files: { 'facts/greek.md': factFile('greek', { description: projectDescription, body: projectBody }) },
+          mtimes: { 'facts/greek.md': '2026-08-28' },
+        });
+        materialise(roots[side].profile, {
+          files: { 'facts/greek.md': factFile('greek', { description: profileDescription, body: profileBody }) },
+          mtimes: { 'facts/greek.md': '2026-08-27' },
+        });
+      }
+      const request = (side) => ({
+        op: 'run', project: roots[side].project, profile: roots[side].profile, dry_run: false,
+        index_budget: null, profile_index_budget: null, create: true, passes: 1,
+      });
+      const py = ctx.runPython(REF, request('py'));
+      const nd = runNode(store, dreamer, request('node'));
+      cases.push({ name: `${label} — plan`, kind: 'json', expected: py.results, actual: nd.results });
+      cases.push({ name: `${label} — project tree`, kind: 'bytes', expected: manifest(roots.py.project), actual: manifest(roots.node.project) });
+      cases.push({ name: `${label} — profile tree`, kind: 'bytes', expected: manifest(roots.py.profile), actual: manifest(roots.node.profile) });
+      const survivor = (side, results) => {
+        if (results[0]?.error) return `RAISED ${results[0].error.type}: ${Buffer.from(results[0].error.message, 'base64').toString('utf8')}`;
+        const text = readFileSync(join(roots[side].project, 'facts', 'greek.md'), 'utf8').replace(/\r\n/g, '\n');
+        const description = text.slice(text.indexOf('description:'), text.indexOf('\n', text.indexOf('description:')) + 1);
+        return description + text.slice(text.indexOf('\n---\n\n') + 6);
+      };
+      for (const [who, side, results] of [['python', 'py', py.results], ['node', 'node', nd.results]]) {
+        cases.push({ name: `${label} — PINNED PER SIDE: ${who}'s survivor description and body`, kind: 'string', expected, actual: survivor(side, results) });
+      }
+    });
+  }
+
   // ------------------------------------------------------ the pure boundary, side by side
   const boundaryCases = BOUNDARY_TERMS.map(([, term]) => [
     b64(`It landed ${term}, they said.`),
@@ -1156,10 +1221,43 @@ export async function run(ctx) {
       });
       // The sweep: every codepoint CPython's `int()` accepts as a digit, alone, through node's
       // `pyIntDigits` against the value `int()` gives it (the reference lists them).
-      const digits = ctx.runPython(REF, { op: 'int_digits' }).digits;
+      const { digits, unidata_version: ucd } = ctx.runPython(REF, { op: 'int_digits' });
       const wrong = digits.filter(([cp, v]) => dreamre.pyIntDigits(String.fromCodePoint(cp)) !== v);
       cases.push({ name: 'J89-5d pyIntDigits: every codepoint CPython\'s int() accepts as a digit reads its int() value', kind: 'json', expected: [], actual: wrong.map(([cp]) => cp.toString(16)) });
-      cases.push({ name: 'LITERAL: J89-5d the digits CPython 3.12\'s int() accepts (UCD 15.0)', kind: 'json', expected: 680, actual: digits.length });
+      // J89-7 (J89-R F2): the count is a fact about the INTERPRETER's Unicode table, so the
+      // literal is keyed on the version the reference reports, each count measured by running
+      // `int(chr(cp))` over every codepoint on that CPython (2026-11-16: 3.11.15, 3.12.13,
+      // 3.13.18, 3.14.10). A version with no count written here is red, never skipped.
+      const DIGITS_BY_UCD = { '14.0.0': 660, '15.0.0': 680, '15.1.0': 680, '16.0.0': 760 };
+      cases.push({
+        name: `LITERAL: J89-5d the digits CPython's int() accepts on this interpreter (UCD ${ucd})`,
+        kind: 'json',
+        expected: DIGITS_BY_UCD[ucd] ?? `a count written for UCD ${ucd}`,
+        actual: digits.length,
+      });
+      // ...and what that costs a user on 3.11 (docs/porting.md, "Relative dates and the
+      // interpreter's Unicode table"): a count spelled in a Unicode 15.0 digit (U+11F53, KAWI
+      // DIGIT THREE) is a `\d` to node's pinned 15.0 table and to CPython from 3.12, and not to
+      // 3.11's 14.0 one, so 3.11 leaves the term unresolved where node dates it. RULED on UCD
+      // 14.0 and agreeing from 15.0, each side pinned to its own literal either way.
+      {
+        const body = 'It landed \u{11f53} days ago.';
+        const pyRow = ctx.runPython(REF, { op: 'absolutise', cases: [[b64(body), BOUNDARY_BASIS, b64('kawi'), 'project']] }).out[0];
+        const py = pyRow.error ? { error: pyRow.error.type } : { body: pyRow.body, hits: pyRow.hits.length };
+        const [text, hits] = dreamer.absolutise(body, BOUNDARY_BASIS, 'kawi', 'project');
+        const nd = { body: b64(text), hits: hits.length };
+        const resolved = { body: b64('It landed \u{11f53} days ago (2026-09-03).'), hits: 1 };
+        const before15 = ucd === '14.0.0';
+        cases.push({
+          name: `J89-7 absolutise: a count in a Unicode 15.0 digit, python against node (UCD ${ucd})`,
+          kind: 'json',
+          expected: py,
+          actual: nd,
+          ...(before15 ? { ruling: 'CPython 3.11 (UCD 14.0) has no U+11F53 in `\\d`; node reads 3.12\'s 15.0 table. docs/porting.md, Relative dates and the interpreter\'s Unicode table' } : {}),
+        });
+        cases.push({ name: `LITERAL: J89-7 python on a Unicode 15.0 digit (UCD ${ucd})`, kind: 'json', expected: before15 ? { body: b64(body), hits: 0 } : resolved, actual: py });
+        cases.push({ name: 'LITERAL: J89-7 node on a Unicode 15.0 digit', kind: 'json', expected: resolved, actual: nd });
+      }
     }
   }
 

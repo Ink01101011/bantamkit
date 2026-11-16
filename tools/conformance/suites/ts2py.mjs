@@ -28,6 +28,8 @@
  * `--emit-adapters`) and compares every byte, so a hand-edited body or a compiler change that was
  * never regenerated is red, with the regenerate command (J85-R F4);
  * `committed/coverage` lists the directory, so a generated file outside the gate is red too.
+ * `runtime/toLowerCase …` (J89-7) calls the runtime ts2py emitted this run on Greek, ǅ and the
+ * 55 code points CPython's table lacks, against Node's `toLowerCase()`, and pins the sigma refusals.
  *
  * WHY THE PYTHON ARMS READ THE FIXTURE THEMSELVES. `ref/ts2py_ref.py` opens the file with
  * `json.load`; the cases are not sent as a payload, because the payload goes through
@@ -227,5 +229,36 @@ export async function run(ctx) {
   notes.push(
     `compiled ${SOURCE} with ts2py this run (sha256 ${sha.slice(0, 12)}); ${fixture.length} cases x 3 arms against fixtures/workplan-cases.json`,
   );
+
+  // J89-7 (J89-R F1): the runtime's `.toLowerCase()`, from the runtime ts2py emitted this run.
+  // AGREE: each answer is Node's `toLowerCase()` of the same string, on every CPython 3.11-3.14:
+  // final sigma in ordinary Greek, a U+03A3 whose context walk stops before an unassigned code
+  // point (U+0378, `Cn` everywhere) or passes a soft hyphen, ǅ, İ, and the 55 code points
+  // CPython's table has no mapping for (Node 26.13 lowers each; the old helper raised on all of
+  // these). REFUSE: a U+03A3 whose walk reaches a code point the two tables classify apart (a
+  // `Cn` one, U+0295, U+1171E) still raises the subset's TypeError, pinned as a literal per
+  // input, because a helper that answered there would answer CPython's sigma, not Node's.
+  {
+    const lowerNode = (cp) => String.fromCodePoint(cp);
+    const fiftyFive = [0x1c89, 0xa7cb, 0xa7cc, 0xa7ce, 0xa7d2, 0xa7d4, 0xa7da, 0xa7dc]
+      .concat(Array.from({ length: 22 }, (_, i) => 0x10d50 + i), Array.from({ length: 25 }, (_, i) => 0x16ea0 + i))
+      .map(lowerNode);
+    const agree = [
+      'ΣΟΦΟΣ ΛΟΓΟΣ.', 'ΑΣ', 'Σ', 'AΣB', 'Η ΟΔΟΣ ΤΟΥ ΣΟΦΟΥ ΣΑΣ', 'Α\u00adΣ', 'ΑΣ\u00ad', 'ΟΔΟΣ \u0378',
+      '\u0378 ΣΑ', 'ǅemal ΣΑΣ', 'İstanbul', '\u1c89 tje', fiftyFive.join(' '), `ΑΣ ${fiftyFive.join('')}`,
+    ];
+    const refuse = ['Α\u0378Σ', 'ΑΣ\u0378', 'ΑΣ\u00ad\u0378', '\u0295Σ', 'ΑΣ\u0295', 'ΑΣ\u{1171e}'];
+    const runtime = join(bed, 'committed', '_ts2py_runtime.py');
+    const got = ctx.runPython(REF, { lower: { runtime, inputs: [...agree, ...refuse] } }).lower;
+    cases.push({ name: 'runtime/toLowerCase: 55 code points in the Node table', kind: 'json', expected: 55, actual: fiftyFive.length });
+    agree.forEach((text, i) => {
+      cases.push({ name: `runtime/toLowerCase agrees with node: ${JSON.stringify(text).slice(0, 60)}`, kind: 'string', expected: text.toLowerCase(), actual: got[i] });
+    });
+    const REFUSAL = 'RAISED TypeError: ts2py: .toLowerCase() of U+03A3 next to a code point the two Unicode tables classify apart is outside the subset';
+    refuse.forEach((text, i) => {
+      cases.push({ name: `runtime/toLowerCase LITERAL refuses: ${JSON.stringify(text)}`, kind: 'string', expected: REFUSAL, actual: got[agree.length + i] });
+    });
+    notes.push(`runtime toLowerCase: ${agree.length} inputs against node, ${refuse.length} refusals pinned`);
+  }
   return { cases, notes };
 }
