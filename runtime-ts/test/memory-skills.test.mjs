@@ -251,7 +251,9 @@ test('recall writes nothing into the skills dir and counts one hit', () =>
     mem.recall('windows decode failures');
     assert.deepEqual(tree(proj), before);
     assert.equal(mem.repaired, 0);
-    const ledger = readFileSync(mem.usage().path, 'utf8');
+    // The private `ledger()` (J89-6: `usage()` before; the name made tokenledger.ts's `message.usage`
+    // read as a method value to ts2py).
+    const ledger = readFileSync(mem.ledger().path, 'utf8');
     assert.deepEqual(
       ledger.trim().split('\n').map((l) => JSON.parse(l)).map((e) => [e.fact, e.kind]),
       [['fixing-windows-encoding', 'recall_hit']],

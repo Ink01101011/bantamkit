@@ -639,7 +639,9 @@ def test_layered_reads_every_layer_and_ranks_them_as_one(
     _seed(profile_store, "prof", "y", description="fact from profile")
 
     mem = Memory.layered(start=project, k=4)
-    profile_layer_store = mem._layers[-1][1]  # Get the profile store
+    # The profile store's core: the generated component pools the cores it holds (#316 G3 U4,
+    # J89-6), so the spy sits on the method it calls, not on the Python shim's.
+    profile_layer_store = mem._layers[-1][1]._core
     original_pool = profile_layer_store.pool
     pool_called = []
 

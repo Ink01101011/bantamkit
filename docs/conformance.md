@@ -151,6 +151,13 @@ side, joined by U+0130 and `yeſterday` (U+017F); red against 053569d5's hand-wr
 failures: KeyError). Two counts `int()` and node's `pyIntDigits` read differently are pinned
 `ruling: UNRULED DIVERGENCE absolutise: …` with per-side literals (a U+1D7D8 digit; a 4,301-digit
 count). `dream` 148 cases, 2 ruled, 0 failures; `ts2py` recompiles `dream.py` in the G1/G2/G3 call.
+**J89-6 generated the component** (#316 G3 U4): every suite that drives `Memory` (`store`, `dream`,
+`recall-usage`, `recall-strings`, `recall-queries`, `recall-gate`, `skill-layer`, `hooks`, `wire`,
+`memorycli`, `storage-tiers`, `storage-index`, `storage-cold`, `touch-context`) now runs the generated
+component on the Python side, with no case added, moved or ruled and no ruling gone STALE.
+`recall-queries`' ref hooks the generated `QueryScorer.column` and `layer_terms` (the trace and
+`force_off` read what the generated walk does). `ts2py` recompiles `component.py` in the G1/G2/G3
+call.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

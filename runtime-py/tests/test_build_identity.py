@@ -378,9 +378,11 @@ def test_two_builds_under_one_version_string_are_told_apart_over_the_protocol(
     here and fail this.
     """
     tree = _tree(tmp_path, "kfloor-reverted")
-    component = tree / "runtime-py" / "src" / "bantamkit" / "memory" / "component.py"
+    # The floor is the generated component's since #316 G3 U4 (J89-6): `recallOutcome`'s line,
+    # the first of the two spellings in `_generated/component.py`.
+    component = tree / "runtime-py" / "src" / "bantamkit" / "_generated" / "component.py"
     source = component.read_text(encoding="utf-8")
-    floored = "budget = self.k if k is None else max(k, self.k)"
+    floored = "budget = self.k if k is None else _js_max(k, self.k)"
     assert floored in source, "the RB-P1 k-floor moved; this mutation no longer means CAL-2"
     component.write_text(
         source.replace(floored, "budget = self.k if k is None else k", 1), encoding="utf-8"

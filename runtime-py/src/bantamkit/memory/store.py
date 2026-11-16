@@ -632,12 +632,24 @@ def _ledger_in(ledger: Any) -> Any:
 
 class _Core(_g.MemoryStore):
     """The generated store, with the two answers `snapshot()` pins (`candidates`, `indexed`) and
-    the usage ledger the Python surface configures (`MemoryStore.usage`)."""
+    the usage ledger the Python surface configures (`MemoryStore.usage`).
 
-    def __init__(self, shim: MemoryStore, root: str, options: dict[str, Any]) -> None:
+    J89-6: also the `MemoryStore` the generated component constructs (`new MemoryStore(root,
+    options)`, its module's name bound to this class by the component shim). Built that way it has
+    no shim yet, and makes its own: a `MemoryStore` over this core, so every layer a `Memory` holds
+    is one a Python caller can be handed (`Memory.store`, `Memory._layers`)."""
+
+    def __init__(self, shim: Any, root: Any = _JS_UNDEFINED, options: Any = _JS_UNDEFINED) -> None:
+        built_here = not isinstance(shim, MemoryStore)
+        if built_here:
+            root, options = shim, root
+            shim = MemoryStore.__new__(MemoryStore)
+            shim._core = self
         object.__setattr__(self, "_bk_shim", shim)
         object.__setattr__(self, "_bk_snapshot", None)
         super().__init__(root, options)
+        if built_here:
+            shim.root = Path(self.root)
 
     def candidates(self, skipped: Any = _JS_UNDEFINED) -> Any:
         if self._bk_snapshot is not None:

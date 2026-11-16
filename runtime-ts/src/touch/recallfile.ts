@@ -8,10 +8,14 @@
  * Slices and comparisons are by CODE POINT, as Python's are: `ts[:10]`, `sha[:7]`, the
  * ambiguous names' sort and the weak edges' name tie-break.
  */
+import { pyHome } from '../memory/pyfs.js';
+import { utcNow } from '../memory/store.js';
 import { USAGE_HALF_LIFE_DAYS, parseTs } from '../memory/usage.js';
 import { cmpCodepoint, pyStrip } from '../pysem.js';
+import { type GraphLayer, TouchGraph } from './graph.js';
+import { TouchLog } from './log.js';
 import { FileSet, shortestSuffix } from './refs.js';
-import { git, type Repo } from './repo.js';
+import { findRepo, git, lsFiles, type Repo } from './repo.js';
 
 export const RECALL_NEEDS_QUERY_OR_FILE = 'memory_recall needs a query or a file.';
 export const FILE_NOT_IN_REPO =
@@ -100,4 +104,41 @@ export function linkedNames(graph: LinkGraph, p: string, now: string): string[] 
   weak.sort((a, b) => b[0] - a[0] || cmpCodepoint(a[1], b[1]));
   for (const [, f] of weak) out.push(f);
   return out;
+}
+
+/**
+ * What `Memory.recallFile` reads off the repository for one `file`: `said` when the call ends in
+ * one of this module's sentences (no repository, no tracked match, several), else `null` with the
+ * history line, the linked fact names in order, and `none`, the reply when no layer holds any of
+ * them. Moved out of `component.ts` statement for statement (#316 G3 U4, J89-6) so the compiled
+ * component reaches the working directory, the repository, the touch graph, the touch log and git
+ * through one adapter row: the touch modules are not compiled, and the Python adapter makes the
+ * same calls on the reference's functions (`Memory.recall_file`'s), in the same order.
+ */
+export function fileLinks(
+  file: string,
+  layers: readonly GraphLayer[],
+): { said: string | null; history: string; names: string[]; none: string } {
+  const ended = (said: string) => ({ said, history: '', names: [], none: '' });
+  let cwd: string | null;
+  try {
+    cwd = process.cwd();
+  } catch {
+    cwd = null;
+  }
+  const repo = cwd === null ? null : findRepo(cwd);
+  if (repo === null) return ended(FILE_NOT_IN_REPO);
+  const home = pyHome();
+  const loaded = new TouchGraph(home, repo).load(layers);
+  const graph = loaded ?? { files: lsFiles(repo) ?? [], strong: {}, weak: {} };
+  const fs = new FileSet(graph.files.filter((f): f is string => typeof f === 'string'));
+  const want = normalizeFile(file);
+  const found = fs.matches(want);
+  if (found.length === 0) return ended(fill(FILE_UNKNOWN, { file: want }));
+  if (found.length > 1) return ended(ambiguous(want, found, fs));
+  const p = found[0]!;
+  const suffix = shortestSuffix(p, fs);
+  const history = historyLine(repo, p, new TouchLog(home, repo.id).read(), suffix);
+  const names = linkedNames(graph, p, utcNow());
+  return { said: null, history, names, none: `${history}\n\n${fill(FILE_NO_FACTS, { suffix })}` };
 }

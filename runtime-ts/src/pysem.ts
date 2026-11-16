@@ -67,6 +67,18 @@ export function pyStrip(s: string): string {
 }
 
 /**
+ * `str.lower()`, where a port calls it: `component.ts`'s `normalizeName` (#316 G3 U4, J89-6). On
+ * this side it IS `toLowerCase()`, final sigma included (`ΑΣ` -> `ας` in both runtimes, measured
+ * by the `normalize_name` case in `--suite store`). It is named so that the compiled component
+ * reaches CPython's `str.lower()` through an adapter row: ts2py's own `.toLowerCase()` refuses
+ * U+03A3 and the 55 code points the two Unicode tables map apart, and a refusal there would turn a
+ * save the reference answers into a crash.
+ */
+export function pyLower(s: string): string {
+  return s.toLowerCase();
+}
+
+/**
  * CPython's `\w` for a `str` pattern (`isalnum() or '_'`), as a class for a regex compiled with
  * the `u` flag and WITHOUT `i` (#316 G3, J89-1F). Under `i`, a JS class matches every code point
  * whose simple case fold is in it, and U+0345 COMBINING GREEK YPOGEGRAMMENI (category Mn, not

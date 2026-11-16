@@ -41,19 +41,26 @@ import {
 import { pyHome, pyIsDir, pyJoin, pyName, pyParent, pyRealpath, pyResolve, PyOSError, PyUnicodeDecodeError } from './pyfs.js';
 import { homedir } from 'node:os';
 import { NATIVE_LAYER, NativeStore } from './native.js';
-import { type Offer, SKILL_LAYER, SkillStore, skillRoots, triggersEnabled } from './skills.js';
-import { frame } from '../replynative.js';
-import { tokenizeLabel } from '../skilllabel.js';
+import { fireOn, isSkillStore, type Offer, SKILL_LAYER, SkillStore, skillRoots, triggersEnabled } from './skills.js';
 import { BM25F, QueryScorer, queryTerms, type Scorer, stale, weightOf } from './retrieval.js';
-import * as queriesMod from './queries.js';
+// Named, not `* as queriesMod` (#316 G3 U4, J89-6): ts2py compiles named imports only.
+import {
+  BODY_EXCERPT,
+  checkQueries,
+  factSha,
+  layerTerms,
+  LIST_LIMIT,
+  readSidecar,
+  type Row,
+  SidecarWriteError,
+  sidecarPath,
+  WRITE_FAILED,
+  writeEntries,
+} from './queries.js';
 import { loadSkill } from '../assets.js';
-import { cmpCodepoint } from '../pysem.js';
+import { cmpCodepoint, pyLower } from '../pysem.js';
 import { type TouchContext, viaEnabled, viaLabel, viaPick } from '../touch/context.js';
-import { TouchGraph } from '../touch/graph.js';
-import { TouchLog } from '../touch/log.js';
-import * as recallFileMod from '../touch/recallfile.js';
-import { FileSet, shortestSuffix } from '../touch/refs.js';
-import { findRepo, lsFiles } from '../touch/repo.js';
+import { fileLinks, QUERY_IGNORED, RECALL_NEEDS_QUERY_OR_FILE } from '../touch/recallfile.js';
 import {
   allNames,
   DEFAULT_INDEX_BUDGET,
@@ -68,10 +75,10 @@ import {
   pyText,
   RECALL_MIN_SCORE_RATIO,
   type SkippedFact,
-  utcNow,
 } from './store.js';
 import { UsageLedger } from './usage.js';
-import { dream as runDream, formatFixed3, SUPERSEDED_HEADING } from './dream.js';
+import { dream, SUPERSEDED_HEADING } from './dream.js';
+import { formatFixed3 } from './dreamre.js';
 import type { DreamResult } from './dream.js';
 
 // THE NAME SHAPE (job64, J64-4), spelled once here and once in the reference: a recall query,
@@ -95,12 +102,25 @@ type SkippedInLayer = { layer: string; file: string; reason: string };
 /** `memory_queries`' refusal: the shape `work_plan` refuses with (the reference's `_refused`). */
 const refused = (reason: string): Record<string, unknown> => ({ result: 'error', reason });
 
+/** `PROJECT_STORE`, copied by `map` so ts2py can prove it an array (it spreads it into `pyJoin`). */
+const STORE_PARTS: readonly string[] = PROJECT_STORE.map((part) => part);
+
+/** The KIND of a layer label: `extra:<name>` -> `extra`; `label.split(':', 1)[0]`. */
+const layerKind = (label: string): string => label.split(':')[0]!;
+
+/** A touch context's weights (`TouchContext.weights`), read off a destructure: `weights` is also
+ * `UsageLedger`'s method name, and ts2py reads a property by that name only so (J89-6). */
+function contextWeights(context: TouchContext): ReadonlyMap<string, number> {
+  const { weights } = context;
+  return weights;
+}
+
 /** A failure the save's best-effort sidecar write absorbs: the reference's `(BantamError, OSError, UnicodeError)`. */
 const sidecarFailure = (e: unknown): boolean =>
   e instanceof BantamError ||
   e instanceof PyOSError ||
   e instanceof PyUnicodeDecodeError ||
-  e instanceof queriesMod.SidecarWriteError;
+  e instanceof SidecarWriteError;
 
 /**
  * The closing paragraph of a recall that left fact files out (job65/#119), or `''`: the
@@ -134,7 +154,7 @@ export function normalizeName<T>(name: T): T {
   // lowercases to `ας` in both runtimes and a per-codepoint fold would have been the thing
   // that differed. MEASURED — the case `normalize_name over the strip and lowercase
   // boundary` compares thirteen spellings, `ΣΟΦΟΣ` among them.
-  return pyStrip(name).toLowerCase().replace(/_/g, '-').replace(/ /g, '-') as unknown as T;
+  return pyLower(pyStrip(name)).replace(/_/g, '-').replace(/ /g, '-') as unknown as T;
 }
 
 /**
@@ -145,7 +165,7 @@ export function normalizeName<T>(name: T): T {
  * was recommending is also the machine-wide layer.
  */
 export function profileStore(): string {
-  return pyJoin(pyHome(), ...PROJECT_STORE);
+  return pyJoin(pyHome(), ...STORE_PARTS);
 }
 
 /**
@@ -236,7 +256,7 @@ type LayerStore = MemoryStore | ReadOnlyStore;
 type Layer = [label: string, store: LayerStore, writable: boolean];
 
 function isReadOnly(store: LayerStore): store is ReadOnlyStore {
-  return store instanceof NativeStore || store instanceof SkillStore;
+  return store instanceof NativeStore || isSkillStore(store);
 }
 
 /**
@@ -247,7 +267,7 @@ function isReadOnly(store: LayerStore): store is ReadOnlyStore {
  * skill dropped from the pool never fires either.
  */
 function lendsShadow(store: LayerStore): boolean {
-  return !isReadOnly(store) || store instanceof SkillStore;
+  return !isReadOnly(store) || isSkillStore(store);
 }
 
 /** A layer's fact count: `facts/*.md` for a bantamkit store, the listing for a read-only one. */
@@ -510,7 +530,7 @@ export class Memory {
    */
   private bindPendingSkills(): void {
     if (this.pendingSkills.some((r) => pyIsDir(r))) {
-      const native = this.layers.findIndex(([label]) => label === NATIVE_LAYER);
+      const native = this.layerAt(NATIVE_LAYER);
       this.layers.splice(native < 0 ? this.layers.length : native, 0, [SKILL_LAYER, new SkillStore(this.pendingSkills), false]);
       this.pendingSkills = [];
     }
@@ -523,7 +543,13 @@ export class Memory {
 
   /** The labels, in order. `_layers` is private in the reference too; this is for the tests. */
   layerLabels(): string[] {
-    return this.layers.map(([label]) => label);
+    return this.layers.map((layer) => layer[0]);
+  }
+
+  /** The index of the first layer labelled `label`, or -1 (`findIndex` on the label). */
+  private layerAt(label: string): number {
+    for (let i = 0; i < this.layers.length; i += 1) if (this.layers[i]![0] === label) return i;
+    return -1;
   }
 
   /** The reply the model reads. Unchanged, and still the tool's advertised return. */
@@ -570,7 +596,7 @@ export class Memory {
     const normalizedLinks = (links ?? []).map((link) => normalizeName(link));
     let result;
     try {
-      if (queries !== null) queriesMod.checkQueries(queries);
+      if (queries !== null) checkQueries(queries);
       // A SPELLING IS NOT A NAME (job65/#156): a name that had to be bent never lands ON
       // ANOTHER FACT. "Deploy Command" used to replace `deploy-command` silently; now, when
       // the bent name is a fact already, the answer is the duplicate nudge naming it and
@@ -622,18 +648,19 @@ export class Memory {
     }
     // The `save` event carries the keywords (#199 D5): read-repair restores them from it when a
     // 0.35.x runtime rewrites the file without the field. Best-effort (#123).
-    this.usage().append(result.name as string, 'save', this.store.now(), [...(keywords ?? [])]);
+    const { now } = this.store;
+    this.ledger().append(result.name as string, 'save', now(), [...(keywords ?? [])]);
     let tail = '';
     if (queries !== null) {
       try {
         const saved = result.name as string;
         const fact = this.store.lookup(saved, false, []);
-        const sha = queriesMod.factSha(fact !== null ? fact.source : null);
-        const side = queriesMod.sidecarPath(pyHome(), this.store.root);
-        queriesMod.writeEntries(side, new Map([[saved, queries.length > 0 ? [[...queries], sha] as const : null]]));
+        const sha = factSha(fact !== null ? fact.source : null);
+        const side = sidecarPath(pyHome(), this.store.root);
+        writeEntries(side, new Map([[saved, queries.length > 0 ? [[...queries], sha] as const : null]]));
       } catch (e) {
         if (!sidecarFailure(e)) throw e;
-        tail = ` (queries not written: ${queriesMod.WRITE_FAILED})`;
+        tail = ` (queries not written: ${WRITE_FAILED})`;
       }
     }
     return { reply: `saved '${result.name}'${note}${tail}`, status: 'saved' };
@@ -657,7 +684,7 @@ export class Memory {
   ): string {
     // `file` (#200): the server handler's three branches, in its order (the reference's `recall`).
     if (file !== null) return this.recallFile(file, k, query).reply;
-    if (query === null) throw new MemoryValidationError(recallFileMod.RECALL_NEEDS_QUERY_OR_FILE);
+    if (query === null) throw new MemoryValidationError(RECALL_NEEDS_QUERY_OR_FILE);
     return this.recallOutcome(query, k, minRatio, true, includeArchived === true, null, null, outcome).reply;
   }
 
@@ -787,7 +814,7 @@ export class Memory {
     return {
       reply: lead + shown.map(([label, fact, old, tail]) => `${this.header(label, fact, old)}${tail}\n${fact.body}`).join('\n\n') + note,
       status: 'answered',
-      source: shown[0]![0].split(':', 1)[0]!,
+      source: layerKind(shown[0]![0]),
       headers: shown.map(([label, fact, old, tail]) => this.header(label, fact, old) + tail),
       via: via === null ? null : via[3],
       fired: fired === null ? null : (fired[1].name as string),
@@ -810,10 +837,10 @@ export class Memory {
    * layer could not be read leaves no offer, and nothing fires.
    */
   private fire(query: string, shown: ReadonlySet<string>): [string, Fact] | null {
-    const at = this.layers.findIndex(([label]) => label === SKILL_LAYER);
+    const at = this.layerAt(SKILL_LAYER);
     if (at < 0 || this.offer === null || !triggersEnabled()) return null;
     const label = this.layers[at]![0];
-    const fact = SkillStore.fire(tokenizeLabel(frame(query)), shown, this.offer);
+    const fact = fireOn(query, shown, this.offer);
     return fact === null ? null : [label, fact];
   }
 
@@ -831,35 +858,19 @@ export class Memory {
    */
   recallFile(file: string, k: number | null = null, query: string | null = null): RecallOutcome {
     this.bindPendingSkills();
-    const rf = recallFileMod;
     const budget = k === null ? this.k : Math.max(k, this.k);
-    const ignored = query === null ? '' : `\n${rf.QUERY_IGNORED}`;
+    const ignored = query === null ? '' : `\n${QUERY_IGNORED}`;
     const base = { budget, layers: this.layers.length, reached: 0, returned: 0, candidates: 0 };
     const said = (text: string): RecallOutcome => {
       const at = text.indexOf('\n');
       const reply = at < 0 ? text + ignored : text.slice(0, at) + ignored + text.slice(at);
       return { reply, status: 'none', source: null, unreadable: 0, lookup: null, skipped: [], headers: [], via: null, ...base };
     };
-    let cwd: string | null;
-    try {
-      cwd = process.cwd();
-    } catch {
-      cwd = null;
-    }
-    const repo = cwd === null ? null : findRepo(cwd);
-    if (repo === null) return said(rf.FILE_NOT_IN_REPO);
-    const home = pyHome();
-    const loaded = new TouchGraph(home, repo).load(this.layerStores());
-    const graph = loaded ?? { files: lsFiles(repo) ?? [], strong: {}, weak: {} };
-    const fs = new FileSet(graph.files.filter((f): f is string => typeof f === 'string'));
-    const want = rf.normalizeFile(file);
-    const found = fs.matches(want);
-    if (found.length === 0) return said(rf.fill(rf.FILE_UNKNOWN, { file: want }));
-    if (found.length > 1) return said(rf.ambiguous(want, found, fs));
-    const p = found[0]!;
-    const suffix = shortestSuffix(p, fs);
-    const history = rf.historyLine(repo, p, new TouchLog(home, repo.id).read(), suffix);
-    const names = rf.linkedNames(graph, p, utcNow());
+    // The repository, the touch graph and git: `fileLinks` (touch/recallfile.ts), moved there
+    // statement for statement (#316 G3 U4, J89-6).
+    const links = fileLinks(file, this.layerStores());
+    if (links.said !== null) return said(links.said);
+    const { history, names } = links;
     const shown: Array<[string, Fact]> = [];
     for (const n of names) {
       if (shown.length >= budget) break;
@@ -879,12 +890,12 @@ export class Memory {
     }
     base.reached = this.layers.length;
     base.candidates = names.length;
-    if (shown.length === 0) return said(`${history}\n\n${rf.fill(rf.FILE_NO_FACTS, { suffix })}`);
+    if (shown.length === 0) return said(links.none);
     base.returned = shown.length;
     return {
       reply: history + ignored + '\n\n' + shown.map(([label, fact]) => this.format(label, fact)).join('\n\n'),
       status: 'answered',
-      source: shown[0]![0].split(':', 1)[0]!,
+      source: layerKind(shown[0]![0]),
       unreadable: 0,
       lookup: null,
       skipped: [],
@@ -960,7 +971,7 @@ export class Memory {
     // Each layer's queries as tokenized rows (J72-30): from the derived cache beside the hot
     // index when it is the sidecar's, else from the sidecar itself.
     const home = pyHome();
-    const sides = this.layers.map(([, store]) => queriesMod.layerTerms(home, store.root));
+    const sides = this.layers.map((layer) => layerTerms(home, layer[1].root));
     const everyRow = sides.some((side) => side.size > 0);
     const q = queryTerms(head === null ? query : head);
     const stores: LayerStore[] = [];
@@ -997,7 +1008,7 @@ export class Memory {
           pools.push(pool);
         }
         // the walk just read every SKILL.md: `fire` reuses it (#302)
-        if (store instanceof SkillStore) this.offer = store.offer();
+        if (isSkillStore(store)) this.offer = store.offer();
       } catch (e) {
         if (!readable(e)) throw e;
         if (writable) throw e; // the project layer failing is a real error, as in v1
@@ -1024,14 +1035,16 @@ export class Memory {
         return emptyPool();
       }
     };
-    const ledger = this.usage();
-    const now = this.store.now();
+    const ledger = this.ledger();
+    const { now: clock } = this.store;
+    const now = clock();
     let scorer: Scorer = BM25F;
-    let rows: ((i: number, p: Pool) => Array<queriesMod.Row | null>) | null = null;
+    let rows: ((i: number, p: Pool) => Array<Row | null>) | null = null;
     if (everyRow) {
       scorer = new QueryScorer(query);
       rows = (i, p) => p.names.map((n) => sides[i]!.get(n) ?? null);
     }
+    const weights = context === null ? null : contextWeights(context);
     const hits = pickHits(
       stores,
       pools,
@@ -1041,14 +1054,15 @@ export class Memory {
       () => ledger.weights(now),
       repool,
       true,
-      context?.weights ?? null,
+      weights,
       scorer,
       rows,
     );
     const skipped: SkippedInLayer[] = [];
-    this.layers.forEach(([label], i) => {
+    for (let i = 0; i < this.layers.length; i += 1) {
+      const label = this.layers[i]![0];
       for (const s of left[i]!) skipped.push({ layer: label, ...s });
-    });
+    }
     const picked = hits.map(([i, fact]): [string, Fact] => [this.layers[i]![0], fact]);
     return { picked, reached, unreadable, candidates, skipped };
   }
@@ -1059,14 +1073,15 @@ export class Memory {
    * layer. The reference's `usage`; private here so the published `.d.ts` names no
    * `UsageLedger` (job66/#144: its types reach `Buffer`).
    */
-  private usage(): UsageLedger {
+  private ledger(): UsageLedger {
     return new UsageLedger(homedir(), this.layers[0]![1].root);
   }
 
   /** One `kind` event per fact, best-effort (#123). */
   private use(facts: readonly Fact[], kind: 'recall_hit' | 'body_read'): void {
-    const ledger = this.usage();
-    const now = this.store.now();
+    const ledger = this.ledger();
+    const { now: clock } = this.store;
+    const now = clock();
     for (const fact of facts) if (typeof fact.name === 'string') ledger.append(fact.name, kind, now);
   }
 
@@ -1078,9 +1093,10 @@ export class Memory {
   private repair(picked: ReadonlyArray<readonly [string, Fact]>): void {
     const writable = new Map<string, MemoryStore>();
     for (const [label, store, w] of this.layers) if (w && store instanceof MemoryStore) writable.set(label, store);
-    if (!picked.some(([label]) => writable.has(label))) return;
-    const ledger = this.usage();
-    const now = this.store.now();
+    if (!picked.some((pick) => writable.has(pick[0]))) return;
+    const ledger = this.ledger();
+    const { now: clock } = this.store;
+    const now = clock();
     for (const [label, fact] of picked) {
       const store = writable.get(label);
       try {
@@ -1093,7 +1109,7 @@ export class Memory {
 
   /** `[path, lines, skipped]` of this memory's usage ledger, for `bantamkit_status`. */
   usageCensus(): [path: string, lines: number, skipped: number] {
-    const ledger = this.usage();
+    const ledger = this.ledger();
     const [lines, skipped] = ledger.census();
     return [ledger.path, lines, skipped];
   }
@@ -1142,7 +1158,8 @@ export class Memory {
   private namedFacts(): Array<[number, string, LayerStore, string[]]> {
     const out: Array<[number, string, LayerStore, string[]]> = [];
     const seen = new Set<string>();
-    this.layers.forEach(([label, store, writable], i) => {
+    for (let i = 0; i < this.layers.length; i += 1) {
+      const [label, store, writable] = this.layers[i]!;
       let names: string[];
       try {
         const pool = isReadOnly(store) ? store.pool([], [], new Set(seen)) : store.pool([], []);
@@ -1150,11 +1167,11 @@ export class Memory {
       } catch (e) {
         if (!(e instanceof BantamError || e instanceof PyOSError || e instanceof PyUnicodeDecodeError)) throw e;
         if (writable) throw e;
-        return;
+        continue;
       }
       for (const n of names) seen.add(n);
       out.push([i, label, store, names]);
-    });
+    }
     return out;
   }
 
@@ -1163,7 +1180,7 @@ export class Memory {
     const home = pyHome();
     const out: Array<[number, string]> = [];
     for (const [i, , store, names] of walk) {
-      const side = queriesMod.readSidecar(queriesMod.sidecarPath(home, store.root));
+      const side = readSidecar(sidecarPath(home, store.root));
       for (const n of names) if (!side.has(n)) out.push([i, n]);
     }
     return out;
@@ -1186,7 +1203,7 @@ export class Memory {
    * writing theirs. A name whose fact cannot be read is passed over and is not counted in
    * `remaining`. The reference's `queries_missing`.
    */
-  queriesMissing(limit: number = queriesMod.LIST_LIMIT): Record<string, unknown> {
+  queriesMissing(limit: number = LIST_LIMIT): Record<string, unknown> {
     this.bindPendingSkills();
     const missing = this.missingOf(this.namedFacts());
     let remaining = missing.length;
@@ -1203,7 +1220,7 @@ export class Memory {
         layer: label,
         name,
         description: pyText(fact.description),
-        body: Array.from(pyText(fact.body)).slice(0, queriesMod.BODY_EXCERPT).join(''),
+        body: [...pyText(fact.body)].slice(0, BODY_EXCERPT).join(''),
       });
     }
     return { result: 'missing', facts, remaining, instructions: loadSkill('memory-queries') };
@@ -1264,21 +1281,21 @@ export class Memory {
       }
       let queries: string[];
       try {
-        queries = queriesMod.checkQueries(obj['queries']);
+        queries = checkQueries(obj['queries']);
       } catch (e) {
         if (e instanceof MemoryValidationError) return refused(`facts[${i}]: ${e.message}`);
         throw e;
       }
       if (!plan.has(at)) plan.set(at, new Map());
-      plan.get(at)!.set(name, queries.length > 0 ? [[...queries], queriesMod.factSha(fact.source)] : null);
+      plan.get(at)!.set(name, queries.length > 0 ? [[...queries], factSha(fact.source)] : null);
     }
     const home = pyHome();
     for (const [at, entries] of plan) {
       try {
-        queriesMod.writeEntries(queriesMod.sidecarPath(home, this.layers[at]![1].root), entries);
+        writeEntries(sidecarPath(home, this.layers[at]![1].root), entries);
       } catch (e) {
-        if (!(e instanceof queriesMod.SidecarWriteError || e instanceof PyOSError)) throw e;
-        return refused(queriesMod.WRITE_FAILED);
+        if (!(e instanceof SidecarWriteError || e instanceof PyOSError)) throw e;
+        return refused(WRITE_FAILED);
       }
     }
     const remaining = this.missingOf(this.namedFacts()).length;
@@ -1352,7 +1369,7 @@ export class Memory {
         return {
           reply: this.format(label, fact) + skippedNote(skipped),
           status: 'answered',
-          source: label.split(':', 1)[0]!,
+          source: layerKind(label),
           budget,
           layers: this.layers.length,
           reached,
@@ -1393,20 +1410,23 @@ export class Memory {
    */
   compactOutcome(reserve: number | null = null): CompactOutcome {
     const result = this.store.compact(reserve);
+    // Read into a local: `archived` is also `MemoryStore`'s method name, and ts2py reads a
+    // property by that name only off a destructure (#316 G3 U4, J89-6).
+    const { archived } = result;
     let reply: string;
     let status: string;
-    if (result.archived.length === 0) {
+    if (archived.length === 0) {
       reply =
         `nothing archived: the index is ${result.indexAfter} bytes against a ` +
         `${result.budget}-byte budget, already at or under the ` +
         `${result.target}-byte compaction target.`;
       status = 'nothing-archived';
     } else {
-      const lost = result.archived
+      const lost = archived
         .map((fact) => `- ${fact.name} (${fact.type}) — ${fact.description}`)
         .join('\n');
       reply =
-        `archived ${result.archived.length} memories; the index went from ` +
+        `archived ${archived.length} memories; the index went from ` +
         `${result.indexBefore} to ${result.indexAfter} bytes against a ` +
         `${result.budget}-byte budget, leaving ${result.headroom} bytes of headroom. ` +
         `These moved to ${result.archiveDir} and are NOT deleted — they can be ` +
@@ -1416,7 +1436,7 @@ export class Memory {
     return {
       reply,
       status,
-      archived: result.archived.length,
+      archived: archived.length,
       indexBefore: result.indexBefore,
       indexAfter: result.indexAfter,
       budget: result.budget,
@@ -1466,7 +1486,7 @@ export class Memory {
         result: null,
       };
     }
-    const result = runDream(this.store, profile as MemoryStore, dryRun);
+    const result = dream(this.store, profile as MemoryStore, dryRun);
     let status: string;
     if (result.overBudget) status = 'refused-budget';
     else if (result.changes === 0) status = 'nothing-to-consolidate';
@@ -1724,7 +1744,7 @@ export class Memory {
   private walkAscended(): boolean {
     const binding = this.binding;
     if (binding === null || binding.searchedFrom === null) return false;
-    return binding.path !== pyJoin(binding.searchedFrom, ...PROJECT_STORE);
+    return binding.path !== pyJoin(binding.searchedFrom, ...STORE_PARTS);
   }
 
   /**

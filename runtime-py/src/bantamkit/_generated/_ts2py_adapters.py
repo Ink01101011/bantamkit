@@ -144,6 +144,19 @@ __all__ = [
     "py_slot_groups",
     "py_sub_spaces",
     "py_unresolved_terms",
+    "SkillStore",
+    "file_links",
+    "fire_on",
+    "is_skill_store",
+    "load_skill",
+    "path_resolve",
+    "py_home",
+    "py_lower",
+    "skill_roots",
+    "triggers_enabled",
+    "via_enabled",
+    "via_label",
+    "via_pick",
 ]
 
 
@@ -1225,6 +1238,13 @@ def __getattr__(name):
     elif name == "DUPLICATE":
         # J89-5: the native layer's duplicate-name sentence head.
         from ..storage.hotindex import DUPLICATE as value
+    elif name == "SKILL_LAYER":
+        # J89-6: the skill layer's label, and the two recall-file sentences component.ts says.
+        from ..memory.skills import SKILL_LAYER as value
+    elif name in ("QUERY_IGNORED", "RECALL_NEEDS_QUERY_OR_FILE"):
+        from ..touch import recallfile as _recallfile
+
+        value = getattr(_recallfile, name)
     else:
         value = None
     if value is not None:
@@ -2280,3 +2300,242 @@ def format_fixed3(value, *_):
     if text.startswith("-") and not text.strip("-0."):
         text = text[1:]
     return text
+
+
+# ---------------------------------------------------------------- J89-6 (#316 G3 U4): component
+
+
+def _posix_resolve(paths):
+    """`path.posix.resolve` (lib/path.js), statement for statement."""
+    resolved = ""
+    absolute = False
+    i = len(paths) - 1
+    while i >= -1 and not absolute:
+        path = paths[i] if i >= 0 else _os.getcwd()
+        i -= 1
+        if not path:
+            continue
+        resolved = f"{path}/{resolved}"
+        absolute = path[0] == "/"
+    resolved = _normalize_string(resolved, not absolute, "/", lambda c: c == "/")
+    if absolute:
+        return "/" + resolved
+    return resolved if resolved else "."
+
+
+def path_resolve(*paths):
+    """`path.resolve(...paths)` (Node's `lib/path.js`): `path.posix.resolve`, ported statement for
+    statement; on Windows, a drive-absolute last path normalised without its trailing separator, and
+    anything else outside the subset."""
+    for path in paths:
+        if not isinstance(path, str):
+            raise TypeError("ts2py: path.resolve of anything but strings is outside the subset")
+    if _os.name != "nt":
+        return _posix_resolve(list(paths))
+    last = paths[-1] if paths else ""
+    if len(last) < 3 or last[1] != ":" or not _win32_separator(last[2]):
+        raise TypeError(
+            "ts2py: path.resolve on win32 of a path not drive-absolute is outside the subset"
+        )
+    out = _win32_normalize(last)
+    return out[:-1] if len(out) > 3 and _win32_separator(out[-1]) else out
+
+
+def py_home(*_):
+    """`pyHome` (pyfs.ts): `Path.home()`, as a string."""
+    return str(_pathlib.Path.home())
+
+
+def py_lower(text, *_):
+    """`pyLower` (pysem.ts): `str.lower()`."""
+    if not isinstance(text, str):
+        raise TypeError("ts2py: pyLower of anything but a string is outside the subset")
+    return text.lower()
+
+
+def _store_shim():
+    # The store shim's conversions (a `Fact` / `Pool` as the generated store holds one), imported
+    # on first use: the shim imports this module.
+    from ..memory import store as shim
+
+    return shim
+
+
+def _python_set(values):
+    """A compiled `Set` (or any iterable of names) as the Python set the reference takes."""
+    return frozenset() if values is _JS_UNDEFINED or values is None else frozenset(values)
+
+
+def _skipped_list(skipped):
+    return None if skipped is _JS_UNDEFINED else skipped
+
+
+class SkillStore(_JsObject):
+    """`SkillStore` (runtime-ts/src/memory/skills.ts): `bantamkit.memory.skills.SkillStore`, which
+    it ports (#206 X8), with the TypeScript spelling of the methods component.ts calls; facts and
+    pools as the generated store's shapes, `root` as a string."""
+
+    _js_name = "SkillStore"
+    _js_own = frozenset(
+        {"archivedRecall", "candidates", "count", "lookup", "offer", "pool", "resolve", "root"}
+    )
+    _js_own_methods = frozenset(
+        {"archivedRecall", "candidates", "count", "lookup", "offer", "pool", "resolve"}
+    )
+
+    def __init__(self, roots, home=None, *_):
+        from ..memory.skills import SkillStore as _Skills
+
+        if home is _JS_UNDEFINED:
+            home = None
+        self._bind(_Skills(list(roots), home))
+
+    def _bind(self, skills):
+        object.__setattr__(self, "_js_skill", skills)
+        object.__setattr__(self, "root", str(skills.root))
+
+    @classmethod
+    def _of(cls, skills):
+        """This adapter over a hand-written `SkillStore` already built (a caller's own layer)."""
+        adapter = cls.__new__(cls)
+        adapter._bind(skills)
+        return adapter
+
+    def _call(self, method, *args):
+        from ..client import BantamError as _Native
+
+        try:
+            return getattr(self._js_skill, method)(*args)
+        except _Native as error:
+            raise _native_bantam_error(error) from None
+
+    def candidates(self, skipped=_JS_UNDEFINED, shadow=_JS_UNDEFINED, *_):
+        got = self._call("candidates", _skipped_list(skipped), _python_set(shadow))
+        fact_in = _store_shim()._fact_in
+        return [fact_in(f) for f in got]
+
+    def offer(self, *_):
+        # Opaque to the compiled component, which only hands it back to `fireOn`.
+        return self._call("offer")
+
+    def count(self, *_):
+        return self._call("count")
+
+    def pool(self, q, skipped=_JS_UNDEFINED, shadow=_JS_UNDEFINED, every_row=False, *_):
+        if every_row is _JS_UNDEFINED:
+            every_row = False
+        got = self._call(
+            "pool", list(q), _skipped_list(skipped), _python_set(shadow), bool(every_row)
+        )
+        return _store_shim()._pool_in(got)
+
+    def resolve(self, pool, row, *_):
+        return pool["facts"][row]
+
+    def lookup(self, name, stamp=False, skipped=_JS_UNDEFINED, *_):
+        if stamp is _JS_UNDEFINED:
+            stamp = False
+        got = self._call("lookup", name, stamp, _skipped_list(skipped))
+        return None if got is None else _store_shim()._fact_in(got)
+
+    def archivedRecall(self, query, k, exclude=_JS_UNDEFINED, *_):
+        got = self._call("archived_recall", query, k, [] if exclude is _JS_UNDEFINED else exclude)
+        fact_in = _store_shim()._fact_in
+        return [fact_in(f) for f in got]
+
+
+def is_skill_store(store, *_):
+    """`isSkillStore` (skills.ts): `store instanceof SkillStore`, of the adapter class above."""
+    return isinstance(store, SkillStore)
+
+
+def skill_roots(project_store, home, *_):
+    """`skillRoots` (skills.ts): `skills.skill_roots`, its paths as strings."""
+    from ..memory.skills import skill_roots as _roots
+
+    return [str(p) for p in _roots(project_store, home)]
+
+
+def triggers_enabled(*_):
+    """`triggersEnabled` (skills.ts): `skills.triggers_enabled`, read every call."""
+    from ..memory.skills import triggers_enabled as _enabled
+
+    return _enabled()
+
+
+def fire_on(query, shown, offer, *_):
+    """`fireOn` (skills.ts): `SkillStore.fire(tokenize_label(frame(query)), shown, offer)`, the
+    fired fact as the generated store's shape."""
+    from ..memory.skills import SkillStore as _Skills
+    from ..replynative import frame
+    from ..skillmine import tokenize_label
+
+    fact = _Skills.fire(tokenize_label(frame(query)), set(shown), offer)
+    return None if fact is None else _store_shim()._fact_in(fact)
+
+
+def load_skill(name, *_):
+    """`loadSkill` (assets.ts): `bantamkit.assets.load_skill`."""
+    from ..assets import load_skill as _load
+
+    return _load(name)
+
+
+def via_enabled(*_):
+    """`viaEnabled` (touch/context.ts): `touch.context.via_enabled`, read every call."""
+    from ..touch import context as _context
+
+    return _context.via_enabled()
+
+
+def via_pick(graph, paths, exclude, weigh, *_):
+    """`viaPick` (touch/context.ts): `touch.context.via_pick`; `(fact, path)` as an array."""
+    from ..touch import context as _context
+
+    got = _context.via_pick(graph, list(paths), set(exclude), weigh)
+    return None if got is None else [got[0], got[1]]
+
+
+def via_label(path, graph, *_):
+    """`viaLabel` (touch/context.ts): `touch.context.via_label`."""
+    from ..touch import context as _context
+
+    return _context.via_label(path, graph)
+
+
+def file_links(file, layers, *_):
+    """`fileLinks` (touch/recallfile.ts): the repository half of the reference's `recall_file`,
+    its calls in its order, on the hand-written touch modules; the layers as the Python layers."""
+    from ..memory.component import _python_layers
+    from ..memory.store import utc_now
+    from ..storage.tiers import current_cwd
+    from ..touch import recallfile as rf
+    from ..touch.graph import TouchGraph
+    from ..touch.log import TouchLog
+    from ..touch.refs import FileSet, shortest_suffix
+    from ..touch.repo import find_repo, ls_files
+
+    def ended(said):
+        return {"said": said, "history": "", "names": [], "none": ""}
+
+    cwd = current_cwd()
+    repo = None if cwd is None else find_repo(cwd)
+    if repo is None:
+        return ended(rf.FILE_NOT_IN_REPO)
+    home = _pathlib.Path.home()
+    graph = TouchGraph(home, repo).load(_python_layers(layers))
+    if graph is None:
+        graph = {"files": ls_files(repo) or [], "strong": {}, "weak": {}}
+    fs = FileSet([f for f in graph["files"] if isinstance(f, str)])
+    want = rf.normalize_file(file)
+    found = fs.matches(want)
+    if not found:
+        return ended(rf.FILE_UNKNOWN.format(file=want))
+    if len(found) > 1:
+        return ended(rf.ambiguous(want, found, fs))
+    path = found[0]
+    suffix = shortest_suffix(path, fs)
+    history = rf.history_line(repo, path, TouchLog(home, repo.id).read(), suffix)
+    names = rf.linked_names(graph, path, utc_now())
+    none = f"{history}\n\n{rf.FILE_NO_FACTS.format(suffix=suffix)}"
+    return {"said": None, "history": history, "names": list(names), "none": none}

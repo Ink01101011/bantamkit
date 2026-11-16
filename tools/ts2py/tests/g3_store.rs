@@ -809,3 +809,102 @@ fn j89_5c_split_with_a_limit_is_refused() {
         "t.ts:2:10: unsupported argument count for .split: s.split(/,/, 2)",
     );
 }
+
+/// J89-6 (#316 G3 U4, `memory/component.ts`): the component compiles together with every module
+/// of the G1/G2/G3 call, with no refusal (J89-6's census counted 82), and reaches the hand-written
+/// modules it calls only through adapter rows.
+#[test]
+fn j89_6_component_compiles_with_the_g3_call() {
+    let root = repo_root();
+    let paths = [
+        "runtime-ts/src/pricing.ts",
+        "runtime-ts/src/jobbudget.ts",
+        "runtime-ts/src/storage/logsegment.ts",
+        "runtime-ts/src/eventlog.ts",
+        "runtime-ts/src/tokenledger.ts",
+        "runtime-ts/src/memory/usage.ts",
+        "runtime-ts/src/memory/retrieval.ts",
+        "runtime-ts/src/memory/store.ts",
+        "runtime-ts/src/memory/native.ts",
+        "runtime-ts/src/memory/queries.ts",
+        "runtime-ts/src/memory/layers.ts",
+        "runtime-ts/src/memory/dream.ts",
+        "runtime-ts/src/memory/component.ts",
+    ];
+    let sources: Vec<String> = paths
+        .iter()
+        .map(|p| std::fs::read_to_string(root.join(p)).unwrap())
+        .collect();
+    let pairs: Vec<(&str, &str)> = paths
+        .iter()
+        .zip(&sources)
+        .map(|(p, s)| (*p, s.as_str()))
+        .collect();
+    let modules = compile_package(&pairs);
+    let component = &modules
+        .iter()
+        .find(|m| m.py_module == "component")
+        .unwrap()
+        .code;
+    assert!(
+        component.contains("class Memory(_JsObject):"),
+        "{component}"
+    );
+    for adapter in [
+        "file_links",
+        "fire_on",
+        "is_skill_store",
+        "SkillStore",
+        "py_lower",
+        "path_resolve",
+    ] {
+        assert!(
+            component.contains(adapter),
+            "{adapter} missing in:\n{component}"
+        );
+    }
+}
+
+/// J89-6: the two adapter rows that reproduce something Node answers rather than a reference call.
+/// `path_resolve` is `path.posix.resolve`: every expected value is what Node v26.13.0 printed for
+/// `path.resolve(...args)` with its working directory written `<C>` (the bed's 20,000-path fuzz,
+/// RULES.md, is the wider proof). `py_lower` is `str.lower()`, which component.ts's `pyLower` is
+/// on Node: Final_Sigma included (`toLowerCase()` printed the same five strings).
+#[test]
+fn j89_6_component_adapters_answer_like_node() {
+    let dir = scratch("j89-6-adapters");
+    package(&dir, &[]);
+    let got = run_python(
+        r###"import os, sys
+sys.path.insert(0, sys.argv[1])
+from pkg import _ts2py_runtime as rt, _ts2py_adapters as A
+os.chdir(os.path.realpath(sys.argv[1]))
+cwd = os.getcwd()
+P = [["/a/b"], ["/a/b/"], ["/a//b/./c/.."], ["a/b"], [""], ["."], ["/"], ["//"], ["//a"], ["///a/b"], ["/a", "b"], ["/a", "/b"], ["/a/b/../../.."], ["/.bantamkit/memory"], ["/x/./"], ["/a/b", "", ""], ["/a/..b/c"], ["/a/...", "d"], ["/é/\U0001F600/.."]]
+out = rt._js_json_stringify([A.path_resolve(*args).replace(cwd, "<C>") for args in P])
+print("".join(c if ord(c) < 0x7F else "\\u%04x" % ord(c) for c in rt._js_code_units(out)))
+out = rt._js_json_stringify([A.py_lower(s) for s in ["ΣΟΦΟΣ", "ΑΣ", "Σ", "AΣB", "İ"]])
+print("".join(c if ord(c) < 0x7F else "\\u%04x" % ord(c) for c in rt._js_code_units(out)))
+refused = []
+for call in (lambda: A.path_resolve("/a", 7), lambda: A.py_lower(None)):
+    try:
+        call()
+        refused.append("answered")
+    except TypeError as e:
+        refused.append(str(e).startswith("ts2py: ") and "outside the subset" in str(e))
+print(refused)
+"###,
+        &[&dir],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let mut lines = got.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        r###"["/a/b","/a/b","/a/b","<C>/a/b","<C>","<C>","/","/","/a","/a/b","/a/b","/b","/","/.bantamkit/memory","/x","/a/b","/a/..b/c","/a/.../d","/\u00e9"]"###
+    );
+    assert_eq!(
+        lines.next().unwrap(),
+        r###"["\u03c3\u03bf\u03c6\u03bf\u03c2","\u03b1\u03c2","\u03c3","a\u03c3b","i\u0307"]"###
+    );
+    assert_eq!(lines.next().unwrap(), "[True, True]");
+}

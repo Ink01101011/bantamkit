@@ -360,6 +360,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | the queries sidecar nested between Python's fixed limit of 512 and Node's stack (J89-5d, J89-5e) | **Node reads its well-formed entries; Python reads it as malformed.** `readSidecar` / `read_sidecar` (the `memory_queries` coverage, its missing list and write, `bantamkit_status`, recall's term rows) read through `parseJson`, the port of `json.loads`. Node's is a recursive descent whose limit is its stack: measured on macOS arm64, Node v26.13.0, past 1,562 nested lists cold and past 6,902 once V8 has optimised `parseJson` (binary searches over 40 warm-up rounds; it moves with tiering). CPython's `json.loads` has no one limit either (J89-5e, measured in Docker, `python:3.1x-slim`, default recursion limit 1,000): 3.11's C scanner is bounded by `sys.getrecursionlimit()` less the caller's frames (991 at the top level, 978-979 inside `parse_json` on the real MCP path, `memory_queries` / `memory_recall` / `bantamkit_status` in the AnyIO worker thread, 981 on the hook path), 3.12 reads to 9,997 (9,993 on the MCP path), 3.13 to 9,998 (9,994), and 3.14 has no fixed limit (20,000, the probe's ceiling). So J89-5d's answer, ruled at 8,500 on 3.12, was `[]` on 3.11 (the ruling went stale) and the band ran the other way between ~980 and 1,562. The orchestrator's rulings: Node's limit is an implementation limit, not a contract (J89-5d); a crash is a bug (J89-5d); Python's answer must not depend on the CPython version or its recursion limit (J89-5e). So the `parse_json` adapter reads at most **512** deep, a depth of its own below every supported CPython's on every user path, counted as `JSON.parse` nests (each array or object one level, the outermost included), and past it throws the RangeError `Maximum call stack size exceeded` Node throws past its stack, which the compiled `catch` sees (the depth is found by a non-recursive scan, `_json_too_deep`: the 513th opener counts only when the text before it is a well-formed prefix wanting a value there, so a text malformed earlier keeps `json.loads`'s own refusal; `RecursionError` stays mapped the same way as the backstop; the recursion limit is not raised). Between 512 and Node's cold limit the sides differ by ruling: Node reads and Python does not. From Node's stack on, both answer as no sidecar. Pinned in `--suite recall-queries`: `ruling: sidecar/nested — read of a sidecar nested 513 deep (between python's limit of 512 and node's stack)` (lists and objects) with a per-side literal each; the agreeing `sidecar/nested: J89-5e … nested 512 deep in lists|objects (python's limit)` cases, both reading, with per-side literals; and the agreeing `sidecar/nested: J89-5d …` cases at 8,500, 20,000 and 100,000 deep (read; coverage, the missing list and a write over a project sidecar 20,000 deep), each with per-side literals. The suite passes with a 3.11, a 3.12 and a 3.13 reference interpreter (`--python`). |
 | the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. **#315 (J86-3) leaves the mirror on `yaml.safe_load`:** the store now reads generated-first with a PyYAML fallback (*Generated modules*), and over these shapes the fallback answers, so the store and the mirror on the reference both read them as before; the mirror itself was not routed through the generated codec, because generated-first would also move the two classes #315's ruling licenses for the store (`yaml11-breaks`, `pyyaml-refuses`) into the mirror's outcomes, which this row pins. |
 | `MemoryStore.snapshot()` (Python only; J89-4b, #316 G3 U2) | **a Python-only API, kept by the shim, not a difference in any answer.** The pinned read set exists for ONE caller, `component.Memory.batch`, which `agent.py`'s loop (the Python eval agent, an unported module: no Node counterpart) enters around each assistant turn (RB-P1: a speculative save between two reads of one turn). `store.ts` deliberately omits it: the Node MCP server has no turn to pin. Since store.ts is generated it is hand-written in the shim (`bantamkit.memory.store`), built on the generated store: the pin is the generated `facts()` at entry, and while it holds the generated `candidates` answers it and `indexed` answers `null` (so `recall`, `lookup` and `pool` read the pin and `save` stays live), the same three moments `test_memory.py`'s snapshot cases pin. No `ruling:` case: no MCP tool, CLI or hook reaches it, so there is no Node answer to compare. |
+| `Memory.setup()` and `Memory.batch()` (Python only; J89-6, #316 G3 U4) | **a Python-only API, kept by the shim, not a difference in any answer.** They are the only two consumers of `agent.py` (Layer 1, a Python-only library by the owner's ruling "keep it as Python"): `setup` registers `memory_save` / `memory_recall` / `memory_compact` on an `Agent`, adds `batch` as its batch scope and the `memory` skill as a system block; `batch` pins every WRITABLE layer's store with `snapshot()` (row above) for one assistant turn. `component.ts` deliberately omits both (its header says so: no MCP tool, CLI or hook reaches them), so since component.ts is generated they are hand-written in the shim (`bantamkit.memory.component`), on the generated facade: `batch` walks `_layers`, which are the shims of the very cores the generated component reads, so a pinned store pins what `recall` reads. Their callers (`agent.py`, `test_memory_component.py`'s agent cases, `tools/eval`) are unchanged. No `ruling:` case: there is no Node answer to compare. |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
 | on Windows, CRLF | **no longer a difference.** N11 reversed it: the emitter builds LF text, the WRITER translates, and the budget still counts the LF text — which is what CPython does. See [conformance.md](conformance.md). |
@@ -1010,7 +1011,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar, the layers and the dream are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar, the layers, the dream and the component are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1022,7 +1023,7 @@ generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
 Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
-`jobbudget.ts`, a G2/G3 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts`, `memory/layers.ts` and `memory/dream.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
+`jobbudget.ts`, a G2/G3 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts`, `memory/layers.ts`, `memory/dream.ts` and `memory/component.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
@@ -1036,6 +1037,7 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
   runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts runtime-ts/src/memory/dream.ts \
+  runtime-ts/src/memory/component.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -2306,6 +2308,122 @@ sidecar's bare `catch` cannot see it, but `j89_5a_queries_adapters_answer_like_n
 `TS2PY_PYTHON` set to 3.13. PyYAML's depth for the grants config does not move with the version
 (492 nested flow sequences at the top level on 3.11, 3.12 and 3.13), but it does move with the
 caller's stack.
+
+### The component (#316 G3 U4, J89-6): generated, behind its shim
+
+Since J89-6 `bantamkit.memory.component` runs `_generated/component.py`, compiled from
+`runtime-ts/src/memory/component.ts` in the G1/G2/G3 call (it imports the compiled store, native
+layer, queries sidecar, layers, dream, retrieval and usage ledger). The hand-written 1,745-line
+module is retired; `memory/component.py` is the shim. G3 is generated end to end: usage,
+retrieval, store, native, queries, layers, dream and component.
+
+**The shim** keeps every name its callers use (grep over runtime-py, its tests and tools/, then the
+suites): `Memory` with `layered`, `layered_for_eval`, `save` / `save_outcome` (and the old `_save`
+/ `_recall` aliases), `recall` / `recall_outcome` / `recall_file`, `layer_stores`, `inject_candidates`,
+`rank_all`, `usage`, `usage_census`, `queries_coverage` / `queries_missing` / `queries_write`,
+`index_accounting`, `compact` / `compact_outcome`, `dream` / `dream_outcome`, `store`, `k`,
+`repaired`, and the privates callers reach (`_layers`, `_show_layers`, `_binding`, `_pooled`,
+`_fact_count` for `mcpserver`'s status line, `_unreadable_layers`, `_searchable_facts`,
+`_walk_ascended`, `_binding_diagnosis`, `_is_profile_store`); the frozen `SaveOutcome`,
+`RecallOutcome`, `CompactOutcome`, `DreamOutcome` (its `result` the dream shim's `DreamResult`);
+and `normalize_name`, `_profile_store`, `_same_directory`, `_layer_label`. The boundary follows
+J89-4b ruling 1: Python callers keep the dataclasses and plain values, facts cross as `Fact`s (the
+store shim's `_fact_out`), a `TouchContext` as the object component.ts reads, a `StoreBinding` as
+the layers module's shape, and a JS `TypeError` as the bare `TypeError`.
+
+The layers are the stores a Python caller holds. The generated component constructs its stores
+with `new MemoryStore(...)`; the shim binds that name in the generated module to the store shim's
+core (`_Core`, which now also takes `(root, options)` and makes its own `MemoryStore` shim), so
+every layer, the project store included, is a core with a Python face: `Memory.store` and
+`_layers` hand back the same `MemoryStore` objects whose `snapshot()` pins what the generated
+component reads. A native layer's face is made once, on first read; the skill layer is the
+`SkillStore` adapter over the hand-written `SkillStore`. `_layers` is a list a caller may append
+to or insert into (the eval harness, the dream and queries tests do): the layer is bound into the
+generated component's own list. The usage ledger the component builds is the usage shim's (its
+fold and rotate thresholds read at call time). `RECALL_MIN_SCORE_RATIO` and `_profile_store`,
+which `tools/eval/recall/tune.py` and `test_memory_compact_tool.py` rebind on this module, are
+forwarded to the generated module, as `retrieval`'s weights are. `setup()` and `batch()` stay
+Python-only (ruling 1; *Where the two runtimes deliberately differ*).
+
+**What is not compiled, and how it is reached** (`tools/ts2py/RULES.md`, *J89-6 rules*). The skill
+layer, the touch modules, the asset pack, the reply-language frame and CPython's `str.lower()`
+are reached through 15 adapter rows onto the hand-written modules component.ts's imports port.
+Two moves made that possible without changing Node: `recallFile`'s repository half
+(`process.cwd()`, `findRepo`, the touch graph over the layers, `lsFiles`, `FileSet`, the history
+line, the linked names) moved statement for statement into `touch/recallfile.ts`'s `fileLinks`,
+and `fire`'s three calls into `skills.ts`'s `fireOn`; the adapters make the reference's calls in
+the reference's order. The census counted 82 refusals; the TS refactors that cleared the rest
+(named imports for two namespaces, counted loops for `findIndex` and destructured `forEach`
+parameters, `layerKind` for `split(':', 1)[0]`, `[...text]` for `Array.from(text)`, a `map` copy
+of `PROJECT_STORE`, destructures for three property reads ts2py takes for method values, the
+private `usage()` renamed `ledger()`) leave Node's answers unchanged: 25a9fadc's `dist` against this
+tree's over a 41,166-record seeded corpus of component calls and store trees, 0 differences (three
+wall-clock fields masked that differ between two runs of one dist too); `npm test` green.
+
+**Python's answers are unchanged.** One Python-only harness answer differs from Node's and is kept
+at the boundary rather than chosen: `layered_for_eval` with an engine other than `v2` raises
+`ValueError("unknown engine: 'v1'")` as the reference did, where component.ts throws an `Error`
+with the engine JSON-quoted (`unknown engine: "v1"`); no MCP tool, CLI or hook reaches it, and no
+ruling covers it (reported to the orchestrator). `normalize_name` reaches `str.lower()` through
+`pyLower`, where ts2py's `.toLowerCase()` would refuse `Σ` (a case `--suite store` pins). Three
+tests that reached the hand-written internals follow the generated ones:
+`test_layered_reads_every_layer_and_ranks_them_as_one` spies on the profile store's core (the
+method the component calls), and `queries_ref.py` hooks the generated `QueryScorer.column` and the
+generated `layer_terms` beside the Python ones it already hooked (the trace and `force_off` read
+what the generated walk does).
+
+Parity beyond the suites: a seeded plan of 33,105 calls (20,000 `normalizeName`; 1,000 scenarios
+over `layered`, `layeredForEval` and a budgeted store, with and without a skill, a native directory,
+a profile collision and the trigger switch: save, recall, recall by name, `includeArchived`, the
+outcome filter, queries listing, writing and coverage, compact, dream dry and applied, inject, rank,
+accounting and the binding diagnosis) run by Node and by the generated Python and serialized by
+`JSON.stringify` / its port: identical.
+
+**Writes (J89-6 probe, both sides).** One bed under umask 022: 16 saves across the project store,
+the profile store and a budgeted store (a duplicate nudge for a bent name, a validation refusal,
+four budget refusals, a 0640 fact rewritten), a queries write, a stamped recall (ledger line and
+read-repair), a dream applied across a diverged name collision with mtimes set, and two compactions
+(three facts archived), through 25a9fadc's Python, this tree's Python and Node: the three trees
+(28 entries) are identical byte for byte and mode for mode, and all 21 replies are identical. Concurrency: 4 Python and 4 Node processes saving 30 distinct facts
+each through `Memory.save` into one store, each rewriting one shared name after every save (480
+saves): 241 fact files, none lost, none duplicated, every one parses, no temp left, `index.md` 241
+unique lines and equal to `index_text()`.
+
+**Cost (J89-6, macOS arm64, CPython 3.12.13, Node v26.13.0; n = 9 interleaved rounds, medians;
+before = `25a9fadc`, after = this tree; the project store a copy of this repository's
+`.bantamkit/memory`, the profile a copy of `~/.bantamkit/memory`, 314 files, HOME scratch; each MCP
+tool called through `build_server` over an in-process `mcp` client, median of three warm calls).**
+
+| Path | Before | After | |
+|---|---|---|---|
+| cold `import bantamkit.memory.component` (a process) | 118.28 ms | 118.71 ms | +0.4% |
+| `memory_recall` | 2.46 ms | 2.80 ms | +13.6% |
+| `memory_recall`, a name-shaped query | 1.44 ms | 1.44 ms | +0.5% |
+| `memory_save` | 32.02 ms | 31.93 ms | -0.3% |
+| `memory_queries` (the missing list) | 1.58 ms | 2.18 ms | **+38.1%**: the body excerpt (`[...body].slice(0, 600).join('')`) spreads each body into one-character strings and joins them through the general `join` lowering (a nullish test and `_js_str` per character), in place of a slice |
+| `memory_compact` | 12.51 ms | 12.59 ms | +0.6% |
+| `memory_dream` (dry run) | 343.33 ms | 341.15 ms | -0.6% |
+| `bantamkit_status` | 12.64 ms | 12.08 ms | -4.4% |
+| `--hook` UserPromptSubmit, a process | 366.73 ms | 363.49 ms | -0.9% |
+| #204 bar: 5,000-fact recall p50 of 20, a new `MemoryStore` each (bar 15 ms) | 8.03 ms | 7.99 ms | -0.5% |
+| the same through a new `Memory` each | 10.96 ms | 11.99 ms | +9.3% |
+| Node import / `recallOutcome` / `saveOutcome` / `queriesMissing` / `dreamOutcome` | 18.51 / 1.029 / 25.78 / 0.769 / 45.94 ms | 18.22 / 1.013 / 25.86 / 0.755 / 45.58 ms | -1.5% / -1.5% / +0.3% / -1.9% / -0.8% |
+
+Every process-level path is within 1%; the one flag is a per-call 0.6 ms on the queries listing,
+whose remedy is ts2py work (a join of a list proven to hold strings), not a shim change.
+
+**Gates.** The F4 byte comparison (`ts2py/committed/component.py`, 60,037 bytes committed against
+60,035 fresh) and the sha256 header (`test_generated_module_names_the_typescript_on_disk[component.py]`)
+each red once on a scratch edit, then green. `--all` 23,299 cases, 0 failures, 241 ruled (no
+ruling moved, none STALE). ts2py `cargo test` 90 passed (`j89_6_component_compiles_with_the_g3_call`,
+`j89_6_component_adapters_answer_like_node` added); clippy (`-D warnings`) and fmt clean. `npm test`
+2,460 passed, 0 failed, 47 skipped (`memory-skills.test.mjs` reads the ledger path through the
+renamed private `ledger()`). Full pytest 5,337 passed and one failed, `test_build_identity`'s
+k-floor mutation, which edited the hand-written line; it now edits the generated one, and the file
+passes (12). The touched pytest files under `python:3.11` in Docker, `test_storage_bar.py` among
+them: 604 passed. ruff is clean. A 20,000-query fuzz of the exact-name walk (the name-shape regex
+and its strip, against a store holding three hyphenated names): 0 differences against Node (2,974
+hits, 517 misses, 16,509 outside the shape).
 
 ## Concurrency
 

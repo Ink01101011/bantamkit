@@ -50,6 +50,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
 from bantamkit import hookadapter
+from bantamkit._generated import component as _g_component
+from bantamkit._generated import retrieval as _g_retrieval
+from bantamkit._generated._ts2py_runtime import _JsMap
 from bantamkit.memory import component as component_mod
 from bantamkit.memory import queries as Q
 from bantamkit.memory import retrieval
@@ -98,10 +101,44 @@ def _traced(self, cols, vecs):  # the ref hook on `QueryScorer.column` (cases 1-
 
 retrieval.QueryScorer.column = _traced
 
+# #316 G3 U4 (J89-6): `Memory` is the generated component, which scores with the generated
+# `QueryScorer` and reads each layer's rows through the generated `layer_terms`; the same hook sits
+# on that class, its columns and rows (store.ts's shapes: Maps, `[weights, dl]` arrays) read as the
+# Python ones above.
+_g_column = _g_retrieval.QueryScorer.column
+
+
+def _g_row(v):
+    if v is None:
+        return None
+    weights, dl = v  # a Map (its `[key, value]` pairs) or the sidecar's `CountsView`
+    if isinstance(weights, _JsMap):
+        pairs = [(t, w) for t, w in weights]
+    else:
+        pairs = [(t, weights.get(t)) for t in weights.keys()]
+    return [bits(dl), [[b64(t), bits(w)] for t, w in sorted(pairs)]]
+
+
+def _g_traced(self, cols, vecs):
+    col = _g_column(self, cols, vecs)
+    if vecs is not None and col is not None:
+        df = {t: n for t, n in cols["df"]}
+        segs = {t: s for t, s in cols["segs"]}
+        a = bm25_segments(cols["q"], cols["n"], cols["total"], df, cols["lengths"], segs)
+        TRACE.append(
+            {"vecs": [_g_row(v) for v in vecs], "a": [bits(x) for x in a], "col": [bits(x) for x in col]}
+        )
+    return col
+
+
+_g_retrieval.QueryScorer.column = _g_traced
+
 
 def run_rank(request: dict) -> dict:
     if request.get("force_off"):
         component_mod._queries.layer_terms = lambda home, root: {}
+        # The generated component reads the rows itself (J89-6): no layer holds any.
+        _g_component.layer_terms = lambda home, root, *_: _JsMap()
     mem = _memory(request)
     out = []
     for call in request["calls"]:

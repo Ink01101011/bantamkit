@@ -721,3 +721,81 @@ same corpus (`absolutise`, `claimSlot`, `collapse`, `blockKey`, `splitBlocks`, `
 2,460 pass, 0 fail, 47 skipped.
 
 Runtime names added (1): `_js_split_regex`. G1, G2 and every G3 module recompile byte for byte.
+
+## J89-6 rules (#316 G3 U4: `memory/component.ts` generated)
+
+`component.ts` joins the G1/G2/G3 call and is shipped as `_generated/component.py` (the shim is
+`bantamkit.memory.component`). The census (this unit's first compile) counted **82 refusals**, 81
+in component.ts and one in tokenledger.ts that component.ts caused; J89-6 leaves **0**. No lowering
+was added or changed: every refusal went to an adapter row or a TS refactor whose Node answers are
+unchanged, and every module the call already compiled recompiles byte for byte.
+
+**The 82 refusals, and where each went.**
+- 26 imports of modules the call does not compile. `pyHome` (pyfs), `SKILL_LAYER`, `SkillStore`,
+  `skillRoots`, `triggersEnabled` (skills), `loadSkill` (assets), `viaEnabled`, `viaLabel`,
+  `viaPick` (touch/context), `resolve` (node:path): adapter rows onto the hand-written module each
+  ports (below). `frame` (replynative) and `tokenizeLabel` (skilllabel): their one caller, `fire`,
+  now calls skills.ts's `fireOn`, which makes the same three calls; one adapter row. `TouchGraph`,
+  `TouchLog`, `FileSet`, `shortestSuffix`, `findRepo`, `lsFiles` and the `* as recallFileMod`
+  namespace (its 9 member calls and `process.cwd()`): the repository half of `recallFile` moved
+  statement for statement into recallfile.ts's `fileLinks`, which is not compiled; one adapter row,
+  and two constant rows for the sentences component.ts still says (`QUERY_IGNORED`,
+  `RECALL_NEEDS_QUERY_OR_FILE`). The `* as queriesMod` namespace (12 member reads): named imports
+  of the compiled queries module. `dream as runDream`: the plain import (a module function and a
+  method of one name do not meet in Python). `formatFixed3` from dream.js (a re-export ts2py does
+  not follow): imported from dreamre.ts, its existing adapter row.
+- `instanceof SkillStore` (3) and `isReadOnly`'s: skills.ts's `isSkillStore`, one adapter row
+  (`isinstance` of the `SkillStore` adapter). `instanceof queriesMod.SidecarWriteError` (2): the
+  compiled class, named.
+- `...PROJECT_STORE` (2, an imported array ts2py cannot prove one): `STORE_PARTS`, its copy by
+  `map`.
+- `.findIndex` (2): a private `layerAt` loop. `.split(':', 1)[0]` (3): `layerKind`, `split(':')[0]`
+  (the first piece is the same with or without a limit). Destructured arrow parameters in
+  `forEach` (2, `[label]`, `[label, store, writable]`): counted loops.
+- `Array.from(text)` (1): `[...text]` (both iterate code points).
+- A property read of a name a compiled class declares as a method: `this.store.now()` (4,
+  `now` is a field), `result.archived` (4, `MemoryStore.archived()`), `context?.weights` (1,
+  `UsageLedger.weights()`): each read off a destructure, as J89-5c read `internals()`. The private
+  `usage()` is `ledger()`: its name made tokenledger.ts's `message.usage` read as a method value
+  (the 82nd refusal).
+- `.toLowerCase()` of a name (`normalizeName`): not refused at compile time, but ts2py's lowering
+  refuses U+03A3 and the 55 code points CPython's and ICU's tables map apart at run time, and
+  `ΣΟΦΟΣ` is a case the store suite pins. pysem.ts's `pyLower` (Node: `toLowerCase()`), an adapter
+  onto `str.lower()`, the call `normalize_name` made.
+
+### Adapters (J89-6, #316 G3 U4: the component)
+
+| TypeScript | Python | Why it is the same function |
+|---|---|---|
+| `path.resolve` (node:path) | `path.posix.resolve` ported over `_normalize_string` (path_join's port); win32 only a drive-absolute path | Node builtin, reproduced; `sameDirectory`'s fallback is its one caller |
+| `pyHome` (pyfs.ts) | `str(Path.home())` | its doc comment |
+| `pyLower` (pysem.ts) | `str.lower()` | `normalize_name`'s call |
+| `SKILL_LAYER`, `SkillStore`, `skillRoots`, `triggersEnabled` (skills.ts) | `bantamkit.memory.skills`' own, `SkillStore` with the TypeScript spelling of the seven methods called (`pool`, `candidates`, `lookup`, `count`, `archivedRecall`, `offer`, `resolve`) and `root`; facts and pools as the generated store's shapes | skills.ts is the port (`--suite skill-layer`) |
+| `isSkillStore` (skills.ts) | `isinstance(store, SkillStore)` (the adapter) | `instanceof SkillStore` |
+| `fireOn` (skills.ts) | `SkillStore.fire(tokenize_label(frame(query)), shown, offer)` | the three calls `_fire` made |
+| `loadSkill` (assets.ts) | `bantamkit.assets.load_skill` | assets.ts mirrors it |
+| `viaEnabled`, `viaPick`, `viaLabel` (touch/context.ts) | `touch.context`'s three, a `Set` as a set, `(fact, path)` as an array | context.ts is the port |
+| `fileLinks` (touch/recallfile.ts) | `current_cwd`, `find_repo`, `TouchGraph.load` over the Python layers, `ls_files`, `FileSet`, `recallfile`'s sentences, `shortest_suffix`, `history_line`, `linked_names`, in `recall_file`'s order | the repository half of `recall_file`, moved out of component.ts statement for statement |
+| `QUERY_IGNORED`, `RECALL_NEEDS_QUERY_OR_FILE` (touch/recallfile.ts) | `touch.recallfile`'s | the same sentences |
+
+**Measured against Node v26.13.0 on CPython 3.12.13, 2026-11-16.** `path_resolve` over 20,000
+seeded argument lists (one to three paths of `a`, `b`, `.`, `..`, `...`, `.x`, `é`, an astral
+character, a space, joined by `/`, `//` or nothing, half absolute) from one working directory:
+**0 differences**. `normalize_name` (generated, through `pyLower`) over 20,000 seeded names from a
+case-folding alphabet (`Σ`, `σ`, `ς` in every context, `İ`, `ß`, `ẞ`, `ǅ`, `Ǆ`, `K`, `Å`, `ﬃ`, a
+Deseret capital, CPython's whitespace, a lone surrogate): **0 differences**; UCD-skew code points
+were left out of the alphabet and keep the `docs/porting.md` class. `g3_store.rs`
+`j89_6_component_adapters_answer_like_node` pins 19 `path.resolve` answers and five lowercases to
+what Node printed, and the refusal of each on a non-string; `j89_6_component_compiles_with_the_g3_call`
+the zero-refusal compile.
+
+TS refactors (Node's answers unchanged): Node's `component.js` of 25a9fadc and of this tree over the
+same seeded corpus (20,000 `normalizeName`, 200 `layerLabel`, 1,500 scenarios of 5 to 19 calls each
+over `layered` / `layeredForEval` with and without a skill, a native directory and the trigger
+switch — save, recall, recall-by-name, `includeArchived`, the outcome filter, queries, compact,
+dream, inject, rank, accounting — and the store tree after each, then `recallFile` over a git bed
+and a via admission; 41,166 records): **0 differences** once the three wall-clock fields that also
+differ between two runs of one dist are masked (the hot index's meta file, a `layeredForEval`
+ledger, a commit sha).
+
+Runtime names added: 0. Adapter names added: 15.

@@ -53,6 +53,8 @@ MODULES = {
     "layers.py": TS / "memory" / "layers.ts",
     # #316 G3 U3 (J89-5c), the same call.
     "dream.py": TS / "memory" / "dream.ts",
+    # #316 G3 U4 (J89-6), the same call.
+    "component.py": TS / "memory" / "component.ts",
 }
 # The two support modules ts2py writes from copies it embeds; and the hand-written package file.
 SUPPORT = {"_ts2py_runtime.py", "_ts2py_adapters.py"}
@@ -70,7 +72,7 @@ REGENERATE = (
     "runtime-ts/src/memory/usage.ts runtime-ts/src/memory/retrieval.ts "
     "runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts "
     "runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts "
-    "runtime-ts/src/memory/dream.ts "
+    "runtime-ts/src/memory/dream.ts runtime-ts/src/memory/component.ts "
     "--out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime\n"
     f"  {_CARGO} --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py\n"
     f"  {_CARGO} --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py\n"
