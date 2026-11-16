@@ -25,6 +25,7 @@ export {
   type RefreshMode,
   type RefreshResult,
 } from './hotindex.js';
-export { COLD_VERSION, ColdIndex, ColdIndexError, coldFs, type ColdManifest, type ColdRow, type ColdSegment } from './coldindex.js';
+export { COLD_VERSION, ColdIndex, ColdIndexError, type ColdManifest, type ColdRow, type ColdSegment } from './coldindex.js';
+export { coldFs } from './coldfs.js';
 export { RETENTION_ENV, runRetention, type RetentionReport } from './retention.js';
 export { currentCwd, hookTier, hostDataTier, statusLines, tiers, type Tiers } from './tiers.js';

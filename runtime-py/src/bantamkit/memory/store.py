@@ -7,8 +7,8 @@ modules*; do not edit it, regenerate it), so the two runtimes run one source and
 `pyfs.ts`'s adapters (CPython's own calls), a frontmatter through `factcodec` (the generated codec,
 then PyYAML where it refuses: #315's owner ruling); the hot index is generated too
 (`_generated/hotindex.py`, #316 G4: the two import each other, and `index()` answers it through the
-`storage.hotindex` shim), and the cold index is the hand-written `storage.coldindex`, late-bound
-through its adapter.
+`storage.hotindex` shim), and so is the cold index (`_generated/coldindex.py`, #316 G4 J90-3;
+`cold()` answers it through the `storage.coldindex` shim).
 
 This module is the SHIM: the Python surface the hand-written store had, unchanged, converted at
 every crossing (`docs/porting.md`, *The store's shim*):
@@ -780,11 +780,15 @@ class MemoryStore:
         self._core.afterWrite()
 
     def cold(self) -> Any:
-        """This store's cold index of `archive/` (#204)."""
-        return self._core.cold()._js_cold
+        """This store's cold index of `archive/` (#204), through the `storage.coldindex` shim."""
+        from bantamkit.storage.coldindex import ColdIndex
+
+        return ColdIndex._of(self._core.cold())
 
     def _cold_synced(self) -> Any:
-        return self._core.coldSynced()._js_cold
+        from bantamkit.storage.coldindex import ColdIndex
+
+        return ColdIndex._of(self._core.coldSynced())
 
     def archived_recall(self, query: str, k: int, exclude: Any = ()) -> list[Fact]:
         """`include_archived` (#204): up to `k` `archive/` facts matching `query`, best first."""

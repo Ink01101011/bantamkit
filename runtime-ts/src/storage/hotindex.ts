@@ -292,7 +292,7 @@ function isoNow(nowMs: number): string {
 const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
 
 /** Days from 1970-01-01 to `y-m-d` in the proleptic Gregorian calendar (`y` at least 1). */
-function daysFromCivil(y: number, m: number, d: number): number {
+export function daysFromCivil(y: number, m: number, d: number): number {
   const yy = m <= 2 ? y - 1 : y;
   const era = Math.floor(yy / 400);
   const yoe = yy - era * 400;

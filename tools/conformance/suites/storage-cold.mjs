@@ -153,7 +153,7 @@ function runNode(storage, memory, component, bed) {
     for (const o of bed.ops) {
       switch (o.op) {
         case 'add':
-          out.push(cold.add(new Map(Object.entries(o.docs))));
+          out.push(cold.addDocs(new Map(Object.entries(o.docs))));
           break;
         case 'query':
           try {

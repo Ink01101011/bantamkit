@@ -46,7 +46,8 @@ Check the install:
 Part of the Python package is compiled from the TypeScript in `runtime-ts/src` by `tools/ts2py`,
 a Rust compiler: everything in `runtime-py/src/bantamkit/_generated/` (the memory store, recall,
 layers, dream and component, the fact-file codec, the event log, the token ledger, pricing, the
-job budget, the log segment and the work planner). The generated files are committed, so
+job budget, the log segment, the storage lock, the hot and cold indexes, retention, the capability
+tiers and the work planner). The generated files are committed, so
 installing, testing and building the wheel need no Rust. You need `cargo` only to regenerate.
 
 To change one of these modules, edit the TypeScript, never `_generated/`, and regenerate from the
@@ -63,7 +64,9 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
   runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts runtime-ts/src/memory/dream.ts \
-  runtime-ts/src/memory/component.ts \
+  runtime-ts/src/memory/component.ts runtime-ts/src/storage/lock.ts runtime-ts/src/storage/hotindex.ts \
+  runtime-ts/src/storage/coldindex.ts runtime-ts/src/storage/retention.ts \
+  runtime-ts/src/storage/tiers.ts runtime-ts/src/storage/index.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py

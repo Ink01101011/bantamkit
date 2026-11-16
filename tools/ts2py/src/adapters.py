@@ -38,8 +38,6 @@ from __RUNTIME__ import (
 # are provided lazily by `__getattr__` below and are not listed, so a star import does not build
 # them (and import `bantamkit.client` / `storage.lock` / the codec / the hot index).
 __all__ = [
-    "ColdIndex",
-    "ColdIndexError",
     "BigIntStats",
     "CountsView",
     "Date",
@@ -57,6 +55,8 @@ __all__ = [
     "buffer_concat",
     "buffer_from",
     "close_sync",
+    "coldFs",
+    "cold_error_text",
     "dump_js_value",
     "dump_json",
     "encode_basestring_ascii",
@@ -131,6 +131,16 @@ __all__ = [
     "readdir_sync",
     "rename_sync",
     "rm_sync",
+    "rmdir_sync",
+    "retentionFs",
+    "spawn_retention_child",
+    "touch_reducer",
+    "native_memory_dir",
+    "has_bantamkit_hooks",
+    "process_cwd",
+    "unlink_sync",
+    "path_relative",
+    "PATH_SEP",
     "sorted_path_names",
     "stat_sync",
     "today_local",
@@ -503,6 +513,15 @@ def path_join(*parts):
     on POSIX, `path.win32` on Windows (where it raises outside the colon and device-name subset)."""
     for part in parts:
         if not isinstance(part, str):
+            if part is _JS_UNDEFINED or part is None:
+                # J90-3: Node's `validateString` refusal, a TypeError a compiled `catch` sees
+                # (`retention.ts` joins a cold-index doc's `file`, which may be missing).
+                error = _JsTypeError(
+                    'The "path" argument must be of type string. Received '
+                    + ("undefined" if part is _JS_UNDEFINED else "null")
+                )
+                error.code = "ERR_INVALID_ARG_TYPE"
+                raise error
             raise TypeError("ts2py: path.join of anything but strings is outside the subset")
     if _os.name == "nt":
         return _win32_join(list(parts))
@@ -606,10 +625,16 @@ def stat_sync(path, *rest):
 
 
 def lstat_sync(path, *rest):
-    """`fs.lstatSync(path)`: `os.lstat`; a failure is CPython's OSError."""
+    """`fs.lstatSync(path)`: `os.lstat`; a failure is CPython's OSError. J90-3: `{bigint: true}`
+    (or `false`) as the one option, the BigInt fields (`BigIntStats`), as `statSync` takes it."""
+    bigint = False
     if rest:
-        raise TypeError("ts2py: fs.lstatSync options are outside the subset")
-    return Stats(_os.lstat(_node_path(path, "fs.lstatSync")))
+        options = rest[0]
+        if len(rest) > 1 or not isinstance(options, dict) or set(options) != {"bigint"}:
+            raise TypeError("ts2py: fs.lstatSync options other than bigint are outside the subset")
+        bigint = _js_truthy(options["bigint"])
+    st = _os.lstat(_node_path(path, "fs.lstatSync"))
+    return BigIntStats(st) if bigint else Stats(st)
 
 
 def fstat_sync(fd, *rest):
@@ -1407,57 +1432,6 @@ def parse_native(path, *_):
         "body": stored.body,
         "meta": meta,
     }
-
-
-class ColdIndexError(_JsError):
-    """`ColdIndexError` (runtime-ts/src/storage/coldindex.ts): the Python
-    `bantamkit.storage.coldindex.ColdIndexError`'s message as a JS Error."""
-
-    _js_name = "ColdIndexError"
-    name = "ColdIndexError"
-
-
-class ColdIndex(_JsObject):
-    """`ColdIndex` (runtime-ts/src/storage/coldindex.ts): `bantamkit.storage.coldindex.ColdIndex`,
-    which it ports (#204), with the TypeScript spelling of the methods store.ts calls; a Python
-    `ColdIndexError` is the adapter's `ColdIndexError`."""
-
-    _js_name = "ColdIndex"
-    _js_own = frozenset({"add", "allDocs", "doc", "query", "reset"})
-    _js_own_methods = frozenset({"add", "allDocs", "doc", "query", "reset"})
-
-    def __init__(self, name, home, cold_dir=None, *_):
-        from ..storage.coldindex import ColdIndex as _Cold
-
-        if cold_dir is _JS_UNDEFINED:
-            cold_dir = None
-        object.__setattr__(self, "_js_cold", _Cold(name, home, cold_dir))
-
-    def _call(self, method, *args):
-        from ..storage.coldindex import ColdIndexError as _Native
-
-        try:
-            return getattr(self._js_cold, method)(*args)
-        except _Native as error:
-            raise ColdIndexError(str(error)) from None
-
-    def add(self, docs, *_):
-        if not isinstance(docs, _JsMap):
-            raise TypeError("ts2py: ColdIndex.add of anything but a Map is outside the subset")
-        return self._call("add", {key: value for key, value in docs})
-
-    def allDocs(self, *_):
-        return self._call("all_docs")
-
-    def doc(self, name, *_):
-        return self._call("doc", name)
-
-    def query(self, terms, *_):
-        return [list(row) for row in self._call("query", list(terms))]
-
-    def reset(self, *_):
-        self._call("reset")
-        return _JS_UNDEFINED
 
 
 _FACTFILE = []
@@ -2466,13 +2440,81 @@ def performance_now(*_):
     return _time.monotonic() * 1000
 
 
+def _libc_realpath():
+    """libc's `realpath(3)` through ctypes (POSIX); None where ctypes or the symbol is missing."""
+    global _LIBC_REALPATH
+    if _LIBC_REALPATH is None:
+        found = False
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL(None, use_errno=True)
+            realpath = libc.realpath
+            realpath.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+            realpath.restype = ctypes.c_void_p
+            free = libc.free
+            free.argtypes = [ctypes.c_void_p]
+            free.restype = None
+            found = (ctypes, realpath, free)
+        except (ImportError, OSError, AttributeError):
+            found = False
+        _LIBC_REALPATH = found
+    return _LIBC_REALPATH or None
+
+
+_LIBC_REALPATH = None
+
+
+def _realpath_native(abs_path):
+    """`fs.realpathSync.native(abs_path)`: libuv's `uv_fs_realpath`, which is `realpath(3)` on
+    POSIX (the path encoded as `_node_path` hands it to the OS, the answer decoded as Node decodes
+    a name, one U+FFFD per invalid subpart) and `GetFinalPathNameByHandleW` on Windows (CPython's
+    strict `ntpath.realpath` calls the same); any failure an OSError."""
+    if _os.name == "nt":
+        return _os.path.realpath(abs_path, strict=True)
+    native = _libc_realpath()
+    raw = _os.fsencode(abs_path)
+    if native is None:
+        resolved = _os.path.realpath(raw, strict=True)
+    else:
+        ctypes, realpath, free = native
+        if b"\0" in raw:
+            raise OSError(_errno.EINVAL, "realpath")
+        out = realpath(raw, None)
+        if not out:
+            err = ctypes.get_errno()
+            raise OSError(err, _os.strerror(err))
+        try:
+            resolved = ctypes.string_at(out)
+        finally:
+            free(out)
+    return resolved.decode("utf-8", "replace")
+
+
 def node_realpath(path, *_):
-    """`nodeRealpath` (runtime-ts/src/storage/realpath.ts): the reference's `os.path.realpath`
-    (`hotindex.sha16`, `HotIndex.real`) of the path as the OS receives it (`_os_text`). Differs
-    from Node's through a dangling symlink (adapters.rs says how; J90-2 left it to a ruling)."""
+    """`nodeRealpath` (runtime-ts/src/storage/realpath.ts), statement for statement: `path.resolve`
+    (`path_resolve`), then `fs.realpathSync.native` (`_realpath_native`), and where that throws the
+    parent resolved the same way joined with the name as spelled. J90-3 (#316 G4, the
+    orchestrator's ruling on J90-2's divergence): Node's answer, so a path through a DANGLING
+    symlink keeps the link as spelled (it was `os.path.realpath`, which follows it to its missing
+    target), and a name the filesystem folds is spelled as the filesystem spells it."""
     if not isinstance(path, str):
         raise TypeError("ts2py: nodeRealpath of anything but a string path is outside the subset")
-    return _os.path.realpath(_os_text(path))
+    if _os.name == "nt":
+        absolute = _os.path.abspath(_os_text(path))
+    else:
+        absolute = path_resolve(_os_text(path))
+    return _node_realpath_abs(absolute)
+
+
+def _node_realpath_abs(absolute):
+    try:
+        return _realpath_native(absolute)
+    except (OSError, ValueError):
+        parent = path_dirname(absolute)
+        if parent == absolute:
+            return absolute
+        return path_join(_node_realpath_abs(parent), path_basename(absolute))
 
 
 _SAFE_INT = 2**53 - 1
@@ -2561,3 +2603,232 @@ def fact_refs(description, keywords, body, *_):
     from ..touch.refs import fact_refs as reference
 
     return reference(description, list(keywords), body)
+
+
+# ---------------------------------------------------------------- J90-3 (#316 G4): coldindex,
+# retention, tiers
+
+
+def unlink_sync(path, *_):
+    """`fs.unlinkSync(path)`: unlink(2), which `os.unlink` calls (a directory refused by the OS:
+    EPERM on macOS, EISDIR on Linux, as Node's binding gets it); a failure is CPython's OSError."""
+    _os.unlink(_node_path(path, "fs.unlinkSync"))
+    return _JS_UNDEFINED
+
+
+def rmdir_sync(path, *rest):
+    """`fs.rmdirSync(path)`: rmdir(2), which `os.rmdir` calls (ENOTEMPTY / ENOTDIR / ENOENT as the
+    OS answers); options (`recursive`) are outside the subset."""
+    if rest:
+        raise TypeError("ts2py: fs.rmdirSync options are outside the subset")
+    _os.rmdir(_node_path(path, "fs.rmdirSync"))
+    return _JS_UNDEFINED
+
+
+# `path.sep`: the platform's separator, as `path` is `path.posix` or `path.win32`.
+PATH_SEP = "\\" if _os.name == "nt" else "/"
+
+
+def _posix_relative(source, target):
+    """`path.posix.relative` (lib/path.js), statement for statement."""
+    if source == target:
+        return ""
+    source = _posix_resolve([source])
+    target = _posix_resolve([target])
+    if source == target:
+        return ""
+    from_start = 1
+    from_end = len(source)
+    from_len = from_end - from_start
+    to_start = 1
+    to_len = len(target) - to_start
+    length = from_len if from_len < to_len else to_len
+    last_common_sep = -1
+    i = 0
+    while i < length:
+        from_code = source[from_start + i]
+        if from_code != target[to_start + i]:
+            break
+        if from_code == "/":
+            last_common_sep = i
+        i += 1
+    if i == length:
+        if to_len > length:
+            if target[to_start + i] == "/":
+                return target[to_start + i + 1 :]
+            if i == 0:
+                return target[to_start + i :]
+        elif from_len > length:
+            if source[from_start + i] == "/":
+                last_common_sep = i
+            elif i == 0:
+                last_common_sep = 0
+    out = ""
+    i = from_start + last_common_sep + 1
+    while i <= from_end:
+        if i == from_end or source[i] == "/":
+            out += ".." if len(out) == 0 else "/.."
+        i += 1
+    return f"{out}{target[to_start + last_common_sep :]}"
+
+
+def path_relative(source, target, *_):
+    """`path.relative(from, to)`: `path.posix.relative` ported statement for statement (code points
+    for UTF-16 units: only `/` is compared by position, and a pair differing in either unit differs
+    as a code point, so every cut lands on the same character); on Windows CPython's
+    `ntpath.relpath`, which answers `path.win32.relative`'s path for a `to` under `from` (the one
+    shape compiled code passes, `retention.ts`'s `rel`; unmeasured on Windows)."""
+    if not isinstance(source, str) or not isinstance(target, str):
+        raise TypeError("ts2py: path.relative of anything but strings is outside the subset")
+    if _os.name == "nt":
+        return _os.path.relpath(target, source)
+    return _posix_relative(source, target)
+
+
+class _ColdFs(_JsObject):
+    """`coldFs` (runtime-ts/src/storage/coldfs.ts): the reads `coldindex.ts` makes, one object a
+    test swaps a method on. `readFileSync(p)` is the builtin `open(p, encoding="utf-8")` read
+    whole, the reference's `_read_json` (`bantamkit.storage.coldindex` on 743b54b9), which
+    `pyReadText` ports (strict UTF-8, universal newlines, `_store_path`'s path policy); `open` is
+    looked up when called, so the Python test's `builtins.open` spy still sees every read."""
+
+    _js_name = "Object"
+    _js_own = frozenset({"readFileSync"})
+    _js_own_methods = frozenset({"readFileSync"})
+
+    def readFileSync(self, path, *_):
+        try:
+            with open(_store_path(path, "pyReadText"), encoding="utf-8") as handle:
+                return handle.read()
+        except UnicodeDecodeError as error:
+            raise PyUnicodeDecodeError(str(error)) from None
+
+
+coldFs = _ColdFs()
+
+
+def cold_error_text(error, *_):
+    """`coldErrorText` (runtime-ts/src/storage/coldfs.ts): the text a `ColdIndexError` quotes,
+    `str(e)` as the reference quoted it (`f"... unreadable: {e}"`): an OSError CPython's `str(e)`
+    (which a `PyOSError`'s message is in Node), a `PyUnicodeDecodeError` CPython's decoder message
+    (both runtimes), a JSON syntax error CPython's `json` wording where Node's is V8's (pinned per
+    side, `--suite storage-cold`)."""
+    return str(error)
+
+
+def _fsync_dir(directory):
+    """`retentionfs.ts`'s `fsyncDir`: the reference's `_fsync_dir`. POSIX only."""
+    if _os.name == "nt":
+        return
+    try:
+        fd = _os.open(directory, _os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        _os.fsync(fd)
+        retentionFs.syncs += 1
+    except OSError:
+        pass
+    finally:
+        _os.close(fd)
+
+
+class _RetentionFs(_JsObject):
+    """`retentionFs` (runtime-ts/src/storage/retentionfs.ts): the archive's one write, temp then
+    rename, fsynced (the file, then its directory on POSIX), the reference's `_write_archive`
+    statement for statement (J69-8); the gzip is `gzip_sync`'s (the `gzipSync` row: the compressed
+    bytes are RULED, the data they hold the same). `syncs` counts the syncs made. `os.fsync`,
+    `os.replace` and `os.unlink` are looked up when called, so a test that patches `os` sees
+    them; a test swaps `writeArchive` to make the write fail, as Node's test does."""
+
+    _js_name = "Object"
+    _js_own = frozenset({"syncs", "writeArchive"})
+    _js_own_methods = frozenset({"writeArchive"})
+
+    def __init__(self):
+        self.syncs = 0
+
+    def writeArchive(self, target, data, *_):
+        target = _node_path(target, "retentionFs.writeArchive")
+        directory = _os.path.dirname(target)
+        _pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
+        tmp = _os.path.join(directory, f"{_os.path.basename(target)}.{_os.getpid()}.tmp")
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(gzip_sync(data))
+                handle.flush()
+                _os.fsync(handle.fileno())
+                self.syncs += 1
+            _os.replace(tmp, target)
+            _fsync_dir(directory)
+        except OSError:
+            try:
+                _os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return _JS_UNDEFINED
+
+
+retentionFs = _RetentionFs()
+
+
+def spawn_retention_child(cwd, home, *_):
+    """`spawnRetentionChild` (runtime-ts/src/storage/retentionspawn.ts): the reference's spawn
+    (`maybe_spawn`): `python -m bantamkit.storage.retention <cwd> <home>`, detached and silent
+    (stdin, stdout, stderr to the null device; a new session on POSIX, a detached process group on
+    Windows), never waited for. True once started; False when the spawn fails in any way (the
+    reference answered `failed` for any exception, as `maybeSpawn` answers for a missing child
+    script or a spawn that throws)."""
+    import subprocess
+    import sys
+
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if _os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "bantamkit.storage.retention", cwd, home], **kwargs
+        )
+    except Exception:  # noqa: BLE001 - a spawn this cannot make is never a failed session
+        return False
+    return True
+
+
+def touch_reducer(rows, *_):
+    """`touchReducer` (runtime-ts/src/touch/log.ts): `bantamkit.touch.log.touch_reducer`, which it
+    ports (#200; `--suite touch-log` compares the two); the reference's retention folded with it."""
+    from ..touch.log import touch_reducer as _reducer
+
+    return _reducer(rows)
+
+
+def native_memory_dir(home, *_):
+    """`nativeMemoryDir` (runtime-ts/src/hookadapter.ts): `bantamkit.hookadapter.native_memory_dir`,
+    which it ports (RULING Q1.2 without the transcript branch, J69-7)."""
+    from ..hookadapter import native_memory_dir as _resolve
+
+    return _resolve(home)
+
+
+def has_bantamkit_hooks(path, *_):
+    """`hasBantamkitHooks` (runtime-ts/src/hostinstall.ts): `bantamkit.hostinstall.
+    has_bantamkit_hooks` of the path, which it ports (#204, S2)."""
+    from ..hostinstall import has_bantamkit_hooks as _probe
+
+    return bool(_probe(_pathlib.Path(path)))
+
+
+def process_cwd(*_):
+    """`process.cwd()`: `os.getcwd()`, the reference's `current_cwd`; a deleted directory raises
+    CPython's FileNotFoundError, which a compiled `catch` sees as Node's ENOENT."""
+    return _os.getcwd()

@@ -1896,7 +1896,7 @@ export class MemoryStore {
     }
     if (fresh.size > 0) {
       try {
-        cold.add(fresh);
+        cold.addDocs(fresh);
       } catch (e) {
         if (!(e instanceof ColdIndexError)) throw e;
         cold.reset();

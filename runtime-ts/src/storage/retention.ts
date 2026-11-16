@@ -18,27 +18,27 @@
  *    index, dropping names whose file is gone.
  *
  * Facts are never archived by age. The event log is not folded (see the reference).
- * `maybeSpawn` starts `retention-child.js <cwd> <home>` detached, at most once per 24 h;
+ * `maybeSpawn` starts `retention-child.js <cwd> <home>` detached (`retentionspawn.ts`), at most
+ * once per 24 h;
  * `BANTAMKIT_RETENTION=off` makes the sweep a no-op. The same child also runs the daily skill
  * audit (#205), which has its own switch, `BANTAMKIT_SKILL_AUDIT=off` (Amendment A3), so the
  * child is spawned unless BOTH are off.
  */
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 
 import { pyReadText } from '../memory/pyfs.js';
 import { tokenizeV2 } from '../memory/retrieval.js';
 import { reduceUsage, storeId } from '../memory/usage.js';
 import { cmpCodepoint } from '../pysem.js';
-import { daily as dailySkillAudit } from '../skillreport.js';
 import { ColdIndex, ColdIndexError } from './coldindex.js';
-import { INDEX_DIR_ENV, dumpIndex, type IndexDoc } from './hotindex.js';
+import { INDEX_DIR_ENV, daysFromCivil, dumpIndex, type IndexDoc } from './hotindex.js';
 import { exclusive } from './lock.js';
 import { LogSegment, type Row } from './logsegment.js';
+import { retentionFs } from './retentionfs.js';
+import { spawnRetentionChild } from './retentionspawn.js';
 import { touchReducer } from '../touch/log.js';
 
 export const RETENTION_ENV = 'BANTAMKIT_RETENTION';
@@ -53,13 +53,25 @@ export const SEARCH_MAX = 50;
 
 const OFF = new Set(['off', '0', 'false', 'no']);
 const NOW = /^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{3}))?Z$/;
-const LEDGER = /^ledger-[\s\S]*\.json$/;
-const CHECKPOINT = /^checkpoint(?:-([\s\S]+))?\.json$/;
-const TOP_CHECKPOINT = /^\.shiftwork\/checkpoint(?:-[\s\S]+)?\.json$/;
 const CLOSED = new Set(['done', 'dropped']);
 const DAY_NS = 86_400n * 1_000_000_000n;
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CHILD = path.join(HERE, 'retention-child.js');
+
+// The three name patterns, spelled with `startsWith` / `endsWith` (#316 G4, J90-3: `[\s\S]`,
+// any code unit, is outside ts2py's regex subset). Each answers exactly what the regex did:
+// `/^ledger-[\s\S]*\.json$/`, `/^checkpoint(?:-([\s\S]+))?\.json$/` (the job, its group 1,
+// or `checkpoint`) and `/^\.shiftwork\/checkpoint(?:-[\s\S]+)?\.json$/`.
+const isLedger = (name: string): boolean => name.length >= 12 && name.startsWith('ledger-') && name.endsWith('.json');
+
+function checkpointJob(name: string): string | null {
+  if (name === 'checkpoint.json') return 'checkpoint';
+  if (name.length >= 17 && name.startsWith('checkpoint-') && name.endsWith('.json')) return name.slice(11, -5);
+  return null;
+}
+
+const isTopCheckpoint = (r: string): boolean =>
+  r === '.shiftwork/checkpoint.json' || (r.length >= 28 && r.startsWith('.shiftwork/checkpoint-') && r.endsWith('.json'));
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 export interface Refusal {
   path: string;
@@ -90,23 +102,21 @@ export function auditEnabled(): boolean {
 export function parseNow(now: unknown): number {
   const m = typeof now === 'string' ? NOW.exec(now) : null;
   if (m === null) throw new Error(`not a retention timestamp: ${JSON.stringify(now)}`);
-  const [y, mo, d, h, mi, s] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
-  // `setUTCFullYear`, not `Date.UTC`: the latter reads years 0..99 as 1900..1999.
-  const back = new Date(0);
-  back.setUTCFullYear(y, mo - 1, d);
-  back.setUTCHours(h, mi, s, 0);
-  const t = back.getTime();
-  if (
-    y < 1 ||
-    back.getUTCFullYear() !== y ||
-    back.getUTCMonth() !== mo - 1 ||
-    back.getUTCDate() !== d ||
-    back.getUTCHours() !== h ||
-    back.getUTCMinutes() !== mi ||
-    back.getUTCSeconds() !== s
-  ) {
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const h = Number(m[4]);
+  const mi = Number(m[5]);
+  const s = Number(m[6]);
+  // Each field in range, a day that its month has, and a year from 1: spelled as arithmetic
+  // (#316 G4, J90-3), which `tools/ts2py` lowers. The old `setUTCFullYear` / `setUTCHours` and
+  // `getUTC*` round trip answered exactly this, every value of every field (see porting.md).
+  const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+  const days = mo === 2 && leap ? 29 : mo >= 1 && mo <= 12 ? DAYS_IN_MONTH[mo - 1]! : 0;
+  if (y < 1 || mo < 1 || mo > 12 || d < 1 || d > days || h > 23 || mi > 59 || s > 59) {
     throw new Error(`not a retention timestamp: ${JSON.stringify(now)}`);
   }
+  const t = daysFromCivil(y, mo, d) * 86_400_000 + h * 3_600_000 + mi * 60_000 + s * 1000;
   return t + Number(m[7] ?? '0');
 }
 
@@ -165,7 +175,7 @@ function pruneLedgers(home: string, nowNs: bigint, report: RetentionReport): voi
   const hooks = path.join(home, '.bantamkit', 'hooks');
   const cutoff = nowNs - BigInt(LEDGER_DAYS) * DAY_NS;
   for (const name of listdir(hooks)) {
-    if (!LEDGER.test(name)) continue;
+    if (!isLedger(name)) continue;
     const p = path.join(hooks, name);
     const st = regular(p);
     if (st === null || st.mtimeNs >= cutoff) continue;
@@ -190,7 +200,10 @@ export function hookLogReducer(rows: Row[]): Row[] {
     const ts = row['ts'];
     const day = typeof ts === 'string' ? [...ts].slice(0, 10).join('') : '?';
     let c = days.get(day);
-    if (c === undefined) days.set(day, (c = new Map()));
+    if (c === undefined) {
+      c = new Map();
+      days.set(day, c);
+    }
     const counts = row['counts'];
     if (row['event'] === 'Folded' && isObj(counts)) {
       for (const [k, v] of Object.entries(counts)) if (Number.isInteger(v)) bump(c, k, v as number);
@@ -250,34 +263,41 @@ function oldTouch(p: string, cutoff: string): boolean {
   return false;
 }
 
+/** A usage ledger folded through J68-4's reducer at the cutoff (outside the loop, J90-3). */
+function foldUsage(seg: LogSegment, cutoff: string): void {
+  seg.foldLines(cutoff, (pairs) => reduceUsage(pairs, cutoff));
+}
+
 function foldLogs(home: string, nowMs: number, report: RetentionReport): void {
   const base = path.join(home, '.bantamkit');
   const cutoffMs = nowMs - LOG_DAYS * 86_400_000;
   const idleNs = BigInt(cutoffMs) * 1_000_000n;
-  const logs: Array<[string, (seg: LogSegment) => void]> = [];
+  // Each log with how it folds: `hook`, `usage`, `touch`, or `none` (#316 G4, J90-3: a word, not
+  // a callback made in the loop, so ts2py compiles it; each word runs the call its callback ran).
+  const logs: Array<[string, string]> = [];
   const hookCutoff = isoMs(cutoffMs);
-  logs.push([path.join(base, 'hooks', 'hook-log.jsonl'), (seg) => seg.fold(hookCutoff, hookLogReducer)]);
+  logs.push([path.join(base, 'hooks', 'hook-log.jsonl'), 'hook']);
   const usageCutoff = isoS(cutoffMs);
   for (const name of listdir(path.join(base, 'usage'))) {
     const p = path.join(base, 'usage', name);
-    if (name.endsWith('.jsonl') && oldUse(p, usageCutoff)) {
-      logs.push([p, (seg) => seg.foldLines(usageCutoff, (pairs) => reduceUsage(pairs, usageCutoff))]);
-    }
+    if (name.endsWith('.jsonl') && oldUse(p, usageCutoff)) logs.push([p, 'usage']);
   }
   // #200: every touch log, folded at the usage cutoff into one row per path when a live line
   // is old, and rotated once idle.
   for (const name of listdir(path.join(base, 'touch'))) {
     if (!name.endsWith('.jsonl')) continue;
     const p = path.join(base, 'touch', name);
-    logs.push([p, oldTouch(p, usageCutoff) ? (seg) => seg.fold(usageCutoff, touchReducer) : () => undefined]);
+    logs.push([p, oldTouch(p, usageCutoff) ? 'touch' : 'none']);
   }
-  for (const [p, fold] of logs) {
+  for (const [p, how] of logs) {
     const st = regular(p);
     if (st === null) continue;
     const idle = st.mtimeNs < idleNs;
     const seg = new LogSegment(p);
     const before = bytesOf(p);
-    fold(seg);
+    if (how === 'hook') seg.fold(hookCutoff, hookLogReducer);
+    else if (how === 'usage') foldUsage(seg, usageCutoff);
+    else if (how === 'touch') seg.fold(usageCutoff, touchReducer);
     const after = bytesOf(p);
     if (!(before === null ? after === null : after !== null && before.equals(after))) report.folded.push(p);
     if (idle && seg.rotate(0)) report.rotated.push(p);
@@ -349,53 +369,8 @@ function gunzip(p: string): Buffer | null {
   }
 }
 
-/**
- * The archive's one write, temp then rename, flushed to the disk; a test swaps it to make the
- * write fail. The originals are deleted only after the archive is read back, and a read-back is
- * served from the page cache: without `fsync` a power cut after the unlinks could leave neither
- * the archive nor the files it held (J69-8). `syncs` counts the file and directory syncs made.
- */
-export const retentionFs = {
-  syncs: 0,
-  writeArchive(target: string, data: Buffer): void {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const tmp = path.join(path.dirname(target), `${path.basename(target)}.${process.pid}.tmp`);
-    try {
-      const fd = fs.openSync(tmp, 'w');
-      try {
-        fs.writeSync(fd, zlib.gzipSync(data));
-        fs.fsyncSync(fd);
-        retentionFs.syncs += 1;
-      } finally {
-        fs.closeSync(fd);
-      }
-      fs.renameSync(tmp, target);
-      fsyncDir(path.dirname(target));
-    } catch (e) {
-      fs.rmSync(tmp, { force: true });
-      throw e;
-    }
-  },
-};
-
-/** Make a rename durable. POSIX only: Windows cannot open a directory for fsync. */
-function fsyncDir(d: string): void {
-  if (process.platform === 'win32') return;
-  let fd: number;
-  try {
-    fd = fs.openSync(d, 'r');
-  } catch {
-    return;
-  }
-  try {
-    fs.fsyncSync(fd);
-    retentionFs.syncs += 1;
-  } catch {
-    /* best effort */
-  } finally {
-    fs.closeSync(fd);
-  }
-}
+// `retentionFs` (the archive's one write, fsynced; a test's seam) lives in `retentionfs.ts`, an
+// adapter (#316 G4, J90-3).
 
 const sha = (data: Uint8Array): string => createHash('sha256').update(data).digest('hex');
 
@@ -427,7 +402,7 @@ export function jobDoc(job: string, relArchive: string, data: Uint8Array, bundle
   }
   for (const r of keys) {
     const value = bundle.get(r);
-    if (typeof value !== 'string' || !TOP_CHECKPOINT.test(r)) continue;
+    if (typeof value !== 'string' || !isTopCheckpoint(r)) continue;
     let doc: unknown;
     try {
       doc = loadJson(Buffer.from(value, 'utf8'));
@@ -461,9 +436,8 @@ function archiveJobs(root: string, nowNs: bigint, report: RetentionReport): Map<
   }
   const cutoff = nowNs - BigInt(JOB_DAYS) * DAY_NS;
   for (const name of listdir(sw)) {
-    const m = CHECKPOINT.exec(name);
-    if (m === null || regular(path.join(sw, name)) === null) continue;
-    const job = m[1] ?? 'checkpoint';
+    const job = checkpointJob(name);
+    if (job === null || regular(path.join(sw, name)) === null) continue;
     let data: unknown;
     try {
       data = loadJson(fs.readFileSync(path.join(sw, name)));
@@ -586,7 +560,7 @@ export function syncJobs(home: string, root: string): ColdIndex {
     const job = name.slice(0, -'.json.gz'.length);
     adds.set(job, jobDoc(job, r, data, new Map(Object.entries(bundle))));
   }
-  if (adds.size > 0) cold.add(adds);
+  if (adds.size > 0) cold.addDocs(adds);
   return cold;
 }
 
@@ -608,19 +582,31 @@ const isDir = (p: string): boolean => {
   }
 };
 
+/**
+ * Each cold index's `keep`: a job archive is kept while `<root>/<file>` is a file, an archived fact
+ * while `<store>/archive/<file>` is. Held as the directory (and `archive`, for a fact) the doc's
+ * `file` is joined to, not a callback made in the loop (#316 G4, J90-3); `keepUnder` makes the
+ * callback each held entry stood for, joining the same parts.
+ */
+function keepUnder(dir: string, sub: string | null): (d: IndexDoc) => boolean {
+  if (sub === null) return (d) => isFile(path.join(dir, d.file));
+  return (d) => isFile(path.join(dir, sub, d.file));
+}
+
 function compactCold(home: string, roots: string[], report: RetentionReport): void {
-  const keeps = new Map<string, (d: IndexDoc) => boolean>();
-  for (const root of roots) keeps.set(`shiftwork-${storeId(root)}`, (d) => isFile(path.join(root, d.file)));
+  const keeps = new Map<string, [string, string | null]>();
+  for (const root of roots) keeps.set(`shiftwork-${storeId(root)}`, [root, null]);
   const stores = [path.join(home, '.bantamkit', 'memory'), ...roots.map((r) => path.join(r, '.bantamkit', 'memory'))];
   for (const store of stores) {
-    if (isDir(store)) keeps.set(`facts-archive-${storeId(store)}`, (d) => isFile(path.join(store, 'archive', d.file)));
+    if (isDir(store)) keeps.set(`facts-archive-${storeId(store)}`, [store, 'archive']);
   }
   const base = coldBase(home);
   for (const name of listdir(base)) {
     if (!isFile(path.join(base, name, 'manifest.json'))) continue;
     const cold = new ColdIndex(name, home, base);
+    const held = keeps.get(name);
     try {
-      if (cold.compact(keeps.get(name) ?? null) !== null) report.compacted.push(name);
+      if (cold.compact(held === undefined ? null : keepUnder(held[0], held[1])) !== null) report.compacted.push(name);
     } catch (e) {
       if (e instanceof ColdIndexError) cold.reset(); // derived: the next search re-adds its sources
     }
@@ -697,11 +683,8 @@ export function maybeSpawn(home: string, cwd: string, options: { server?: boolea
     const now = nowStamp();
     if (options.server === true && hooked(home, now)) return 'hooked';
     if (!due(home, now)) return 'fresh';
-    if (!fs.existsSync(CHILD)) return 'failed';
     // THE HOME GOES ON THE COMMAND LINE: the child acts on the home this judged the TTL on.
-    const child = spawn(process.execPath, [CHILD, cwd, home], { detached: true, stdio: 'ignore' });
-    child.on('error', () => undefined);
-    child.unref();
+    if (!spawnRetentionChild(cwd, home)) return 'failed';
     return 'spawned';
   } catch {
     return 'failed';
@@ -716,27 +699,22 @@ function writeState(home: string, obj: unknown): void {
 }
 
 /**
- * The detached child, `<cwd> <home>`: claim the day under the lock, run, record. Silent.
+ * The sweep half of the detached child, `<cwd> <home>`: claim the day under the lock, run, record.
+ * Silent. The stamp when the daily skill audit is to run after it (the audit switch is on and the
+ * day was claimed), else `null`; `childMain` (`retentionmain.ts`, not compiled: the miner after the
+ * audit is async) runs the audit and the miner (#316 G4, J90-3: split out of `childMain`, which ran
+ * both halves inside one `try`; a throw in this half skipped the audit, as `null` does).
  *
- * #205 Amendment A3: it wakes when the sweep OR the skill audit is on and claims the day either
- * way. The sweep runs only when `BANTAMKIT_RETENTION` is not off; with it off the child deletes,
- * moves or rewrites NOTHING but `retention.json`'s claim and `skill-audit.json` (`skill-host`'s
- * `child` snapshot case). The audit runs after the sweep, under the same stamp, only when
- * `BANTAMKIT_SKILL_AUDIT` is not off; it never throws.
- *
- * #206 Task 8: the experience miner (`skillmine.daily`) runs after the audit, under the same
- * switch and stamp; it may draft through an endpoint, so this is async. With the sweep off the
- * only files the child may then change are the claim, `skill-audit.json`,
- * `skill-proposals.json`, `skill-miner-cache.json`, `skills-state.json`, `skill-drafts.jsonl`,
- * and paths under `~/.bantamkit/skills`, `~/.bantamkit/skill-backups` and
- * `<project>/.bantamkit/skills` (`skill-miner`'s snapshot case).
+ * #205 Amendment A3: the child wakes when the sweep OR the skill audit is on and claims the day
+ * either way. The sweep runs only when `BANTAMKIT_RETENTION` is not off; with it off this deletes,
+ * moves or rewrites NOTHING but `retention.json`'s claim.
  */
-export async function childMain(argv: readonly string[], now: string | null = null): Promise<number> {
+export function childSweep(argv: readonly string[], now: string | null = null): string | null {
   const sweep = enabled();
   const audit = auditEnabled();
-  if (!(sweep || audit) || argv.length < 2) return 0;
+  if (!(sweep || audit) || argv.length < 2) return null;
   const home = argv[1]!;
-  if (!isDir(path.join(home, '.bantamkit'))) return 0;
+  if (!isDir(path.join(home, '.bantamkit'))) return null;
   const stamp = now ?? nowStamp();
   try {
     const claimed = exclusive(statePath(home), (held) => {
@@ -744,7 +722,7 @@ export async function childMain(argv: readonly string[], now: string | null = nu
       writeState(home, { ran_at: stamp });
       return true;
     });
-    if (!claimed) return 0;
+    if (!claimed) return null;
     if (sweep) {
       try {
         const report = runRetention(home, argv.slice(0, 1), stamp);
@@ -753,17 +731,10 @@ export async function childMain(argv: readonly string[], now: string | null = nu
         writeState(home, { ran_at: stamp, error: e instanceof Error ? e.constructor.name : 'Error' });
       }
     }
-    if (audit) {
-      dailySkillAudit(home, argv[0]!, stamp);
-      // #206 Task 8: the experience miner after the audit, under the same claimed day. Imported
-      // here, not at the top, so a hook that only imports this module never loads the miner.
-      const { daily: dailyMiner } = await import('../skillmine.js');
-      await dailyMiner(home, argv[0]!, stamp);
-    }
   } catch {
-    /* silent: retried at the next day's TTL */
+    return null; // silent: retried at the next day's TTL
   }
-  return 0;
+  return audit ? stamp : null;
 }
 
 // ------------------------------------------------------------------------------- search

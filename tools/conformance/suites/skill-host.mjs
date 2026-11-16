@@ -488,7 +488,11 @@ export async function run(ctx) {
   const { parseNow } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href);
   const R = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillreport.js')).href);
   const { scanRoots } = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillaudit.js')).href);
-  const RT = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href);
+  // J90-3: `childMain` lives in `retentionmain.js` (the async half retention.ts cannot hold, #316 G4).
+  const RT = {
+    ...(await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href)),
+    ...(await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retentionmain.js')).href)),
+  };
   const withEnv = (env, fn) => {
     const saved = Object.fromEntries(Object.keys(env ?? {}).map((k) => [k, process.env[k]]));
     try {

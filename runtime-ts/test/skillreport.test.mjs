@@ -156,7 +156,8 @@ test('runLive over a home with no .claude is the null report', () => {
 
 // ------------------------------------------------------------- Task 4: the daily run
 
-const retention = await import('../dist/storage/retention.js');
+// J90-3: `childMain` lives in `retentionmain.js` (#316 G4).
+const retention = { ...(await import('../dist/storage/retention.js')), ...(await import('../dist/storage/retentionmain.js')) };
 
 function homeWithClaude() {
   const dir = tmp();

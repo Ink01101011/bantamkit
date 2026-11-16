@@ -513,7 +513,7 @@ recall: identical answers, identical store trees and index file lists.
 | `homedir` (`node:os`) | `str(Path.home())` | Python is the reference: store.py passes `Path.home()` in each place store.ts calls `homedir()`; the two differ only for a set but empty `HOME` |
 | `pySearchWord` (`pysem.ts`, new: store.ts's `DONE_WORD_RE` moved there) | group 1 of `re.compile(r'\b(' + alternatives + r')\b', re.IGNORECASE).search(text)` | Python is the reference: store.py's `_DONE_WORD_RE`; J89-1F and J89-2 swept the Node regex against it (`--suite store`) |
 | `HotIndex`, `INDEX_DIR_ENV` (`storage/hotindex.ts`) | **RETIRED by J90-2 (#316 G4):** compiled, `_generated/hotindex.py` (the store imports it at its end: an import cycle); was `bantamkit.storage.hotindex`, imported when the first index was built, with Map faces over its dicts (`_JsReadMap`) | the same TypeScript, compiled |
-| `ColdIndex`, `ColdIndexError` (`storage/coldindex.ts`) | `bantamkit.storage.coldindex`, `add` taking a Map, `query` answering lists; its `ColdIndexError` restated as a JS Error | Python is the reference: coldindex.ts ports it |
+| `ColdIndex`, `ColdIndexError` (`storage/coldindex.ts`) | **RETIRED by J90-3 (#316 G4):** compiled, `_generated/coldindex.py` (`from .coldindex import ColdIndex, ColdIndexError`, at the end of the store: an import cycle through the hot index); was `bantamkit.storage.coldindex`, `add` taking a Map, `query` answering lists, its `ColdIndexError` restated as a JS Error | the same TypeScript, compiled |
 | `PyScalar` (`memory/pyyaml.ts`); `extraOf`, `formatFact`, `lifecycleOf`, `parseFrontmatter`, `pyList`, `pySplit`, `pyTruthy`, `todayLocal`, `VALID_OUTCOMES` (`memory/factfile.ts`); `pyStrip` (re-exported from `pysem.ts`) | the class, functions and constant ts2py compiled from the same TypeScript (`_generated/pyyaml.py`, `_generated/factfile.py`, the #315 call kept apart), imported lazily | the same TypeScript, compiled; J89-4b decides `parseFrontmatter` / `formatFact`'s Python boundary (factcodec's PyYAML fallback, #315's owner ruling) |
 | `asPyOSError`, `matchesMd`, `pyLexists`, `pyMkdirParents`, `pyMtimeDate`, `pyParents`, `pyReadText`, `pyReplace`, `pyScandirNames`, `pyScandirProbe`, `pySuffix`, `pyUnlink`, `pyWriteText`, `pyWriteTextAtomic`, `sortedPathNames`, `PyUnicodeDecodeError` (`memory/pyfs.ts`) | the CPython call each ports (its doc comment): `OSError` passed through, `fnmatch(name, '*.md')`, `os.path.lexists`, `Path.mkdir(parents=True, exist_ok=True)`, `date.fromtimestamp(st_mtime)`, `PurePath.parents`, `Path.read_text` (a `UnicodeDecodeError` as `PyUnicodeDecodeError`, a JS Error with CPython's message), `os.replace`, `os.scandir` names / probe, `PurePath.suffix`, `Path.unlink`, `Path.write_text`, store.py's `_write_text_atomic` carried statement for statement, a stable sort by `os.path.normcase` | Python is the reference: pyfs.ts is the CPython OS seam |
 | `Buffer.byteLength(s, 'utf8')` (Node global) | `len(s.encode('utf-8', 'surrogatepass'))` | a lone surrogate is three bytes either way (U+FFFD's, as `Buffer.from` writes it); `g3_store.rs` holds it to `len(buffer_from(s))` over 20,000 seeded strings and the probe to Node over 9 |
@@ -823,7 +823,7 @@ still refused wherever a property of that name is read: the clashes are typed or
 | TypeScript | Python | Why it is the same function |
 |---|---|---|
 | `performance.now()` (Node global) | `time.monotonic() * 1000` (`performance_now`) | a monotonic millisecond clock read only as the difference of two readings (lock.ts's deadline, J90-1F); the reference's lock read `time.monotonic()` |
-| `nodeRealpath` (`storage/realpath.ts`, new: hotindex.ts's `realpath` moved out unchanged) | `os.path.realpath` of the path as the OS receives it (`_os_text`) | Python is the reference: the reference's `sha16` and `HotIndex.real`, as the retired `HotIndex` / `sha16` rows called them. **NOT the same function through a dangling symlink**: `os.path.realpath` follows it to its missing target, `realpathSync` refuses it and `nodeRealpath` keeps the link as spelled, so the two runtimes name such a source's index differently. J90-2 found it (it predates generation and generation does not change it) and left it to the orchestrator (`docs/porting.md`) |
+| `nodeRealpath` (`storage/realpath.ts`, new: hotindex.ts's `realpath` moved out unchanged) | **since J90-3 (the orchestrator's ruling: Node's answer):** `nodeRealpath` statement for statement: `path.resolve` (`path_resolve`), then `realpath(3)` through ctypes (libuv's `uv_fs_realpath`; `os.path.realpath(strict=True)` where ctypes is missing, and on Windows, where both are `GetFinalPathNameByHandleW`), the answer decoded as Node decodes a name; where it throws, the parent resolved the same way joined with the name as spelled. J90-2 had `os.path.realpath`, which followed a DANGLING symlink to its missing target (J90-2 found it, `docs/porting.md`) and kept a case-folded macOS name as spelled where `realpath(3)` answers the filesystem's spelling | Node's function, ported; `g4b.rs` `j90_3_builtins_answer_like_node` (a dangling link, a path below one, a live link, `..` through a link, a missing tail: Node's answers; red with `os.path.realpath`); `--suite storage-index` (`J90-3 a source through a dangling symlink`, `below`, `spelled in another case`, each with a literal per side; the six red on 743b54b9's adapter) |
 | `dumpJsValue` (`pyjson.ts`, new: hotindex.ts's `toPy` + `dumpJson` moved there unchanged) | `dump_js_value`: `json.dumps` of the value as `fromJs` reads it (`_lifted`): a number that is `Number.isSafeInteger` and not -0 an int, any other a float; a Map or a plain object a dict keyed by `String(key)` in `Object.entries` order; an array a list; null and undefined None; a BigInt an int; anything else refused; `floatKey` of a top-level plain object holding a number written as a float | `dumpJson` is `json.dumps` (its row above); the adapter skips building the tagged tree. `g4.rs` holds it to Node over the probe's 37 values two ways and a 20,000-value seeded fuzz (nested lists, plain objects with integer-like keys, Maps with number keys, -0, 2**53, 1e21, NaN, astral and lone-surrogate strings): Node's digest `896189796`; `--suite storage-index` compares every index file byte for byte |
 | `extractRefs`, `factRefs` (`touch/refs.ts`) | `bantamkit.touch.refs.extract_refs` / `fact_refs` | Python is the reference: refs.ts is the port (#200; `--suite touch-refs`), the functions the reference's index called |
 | `parseNative`'s `meta` (the row above, widened) | `hotindex._secondary`'s read of the native frontmatter (`load_frontmatter`, `{}` where it refuses or reads no mapping), each mapping a dict of its text keys, each list a list, each string or null itself and any other scalar opaque (`factcodec._Opaque`: not a string to `strList`, its `str()` to `pyText`); `{}` when the frontmatter names no `tags` / `links` line (the TypeScript reads `meta` only then) | what the reference's index read a native file's `links` and `tags` with, so `[str(x) for x in links]` and `_str_list(tags)` are what the compiled `fl.map(pyText)` and `strList` read; `--suite storage-index` (`native: read-only, the native shape and its refusals`, links and tags nested under `metadata:`), and the #228 ruling stays green |
@@ -855,3 +855,73 @@ Runtime names added: 3 (`_js_m_delete`, `_js_every_integer`, `_js_every_string`)
 constants of the fast paths. Adapter names added: 5 (`performance_now`,
 `node_realpath`, `dump_js_value`, `extract_refs`, `fact_refs`); retired: 3 (`exclusive`, `HotIndex`,
 `sha16`) and the lazy constants `LOCK_*`, `INDEX_DIR_ENV`, `DUPLICATE`.
+
+
+## J90-3 rules (#316 G4: `storage/coldindex.ts`, `storage/retention.ts`, `storage/tiers.ts`, `storage/index.ts` generated)
+
+The four modules join the G1/G2/G3/G4 call and ship as `_generated/coldindex.py`,
+`_generated/retention.py`, `_generated/tiers.py` and `_generated/index.py` (the shims are
+`bantamkit.storage.coldindex`, `.retention`, `.tiers`; the package file `bantamkit/storage/__init__.py`
+stays hand-written over the shims, and `_generated/index.py` is the re-export table compiled, held by
+the F4 compare). `storage/retention-child.ts` is NOT generated: it is the Node child's entry script
+(a hyphenated module name and a top-level `await`), and its Python counterpart is the shim's
+`python -m bantamkit.storage.retention` entry. The `ColdIndex` / `ColdIndexError` adapter rows are
+retired (above); no "#316 G4 not generated" row remains.
+
+| Construct | Lowering | Why it is the same | Measurement |
+|---|---|---|---|
+| a RE-EXPORT, `export { a, type T } from './m.js'` | each value name imported as `import { a }` would be (a compiled module of the call, late in a cycle, or an adapter row) and exported; a type dropped; a renamed re-export, `export *` and an unknown name refused | an ES re-export binds the same live binding an import does; the Python name is the one the import would bind | `g4b.rs` `j90_3_a_re_export_binds_what_an_import_would` (red when the names are not exported), `j90_3_re_export_and_namespace_refusals` |
+| `path.sep` (a namespace member that is an adapter `Constant` row) | the row's Python name | the platform's separator, as `os.name` says which `path` Node's is | `g4b.rs` (`/` on POSIX) |
+| `buf.equals(other)` | `_js_m_equals`: `bytes(a) == bytes(b)`; anything but two Buffers refused | Buffer.prototype.equals compares the bytes | `g4b.rs` probe (three pairs; red when it answers true always) |
+| `buf.toString('base64')` | `base64.b64encode` | RFC 4648 with padding is Node's `base64` | `g4b.rs` probe (four strings incl. an astral one and a NUL; red without padding) |
+| `_js_code_units` (runtime: a fast path) | a string longer than `_JS_UNITS_LONGEST` (65,536) is held by identity, the last one only, as `(text, units)` replaced whole | a str is immutable, so the same object has the same units; nothing else changes. Before it, a loop over one long text that is not ASCII (`charCodeAt` / `slice` at every index: the tokenizer over an archived job's text) rescanned the whole text at every call: quadratic, shared with 743b54b9 (a 640 KB real job did not finish in 120 s there; 0.93 s here) | `g4b.rs` `longScan(200000)`: every unit of a 200,000-character non-ASCII string through `charCodeAt` and `slice`, Node's digest `282233859`; without the fast path the test ran past 150 s and was killed |
+
+| TypeScript | Python | Why it is the same function |
+|---|---|---|
+| `unlinkSync`, `rmdirSync` (`node:fs`) | `os.unlink` / `os.rmdir` of the path as `_node_path` hands it over | the syscalls Node's binding makes (`g4b.rs`: ENOENT, ENOTEMPTY, ENOTDIR, a removal; red when either is changed) |
+| `lstatSync(p, {bigint: true})` (widened) | `BigIntStats` of `os.lstat`, as `statSync`'s row | (`g4b.rs`: `typeof mtimeNs` `bigint`, a link's type; red with the option ignored) |
+| `path.relative` (`node:path`) | `path.posix.relative` ported statement for statement over `_posix_resolve`; on Windows `ntpath.relpath` (the same path for a `to` under `from`, the one shape compiled code passes; unmeasured on Windows) | `g4b.rs` `relFuzz(20000)`: seeded absolute paths over `..`, `.`, empty, non-ASCII and astral parts, Node's digest `499719387`; red with `os.path.relpath` |
+| `path.join` of `undefined` / `null` (widened) | Node's `validateString` TypeError (`code` ERR_INVALID_ARG_TYPE, `The "path" argument must be of type string. Received undefined`), which a compiled `catch` sees; any other non-string stays a subset refusal | retention.ts joins a cold-index doc's `file`, which a doc may lack (J90-1F #13/#14: `runRetention` goes on, `searchArchived` raises) — `g4b.rs` (both messages); `--suite storage-retention` (`a doc with no file`) |
+| `coldFs` (`storage/coldfs.ts`, new: coldindex.ts's object moved out unchanged) | one object whose `readFileSync(p)` is the builtin `open(p, encoding="utf-8").read()` (`_store_path`; a decode failure `PyUnicodeDecodeError`) | Python is the reference: its `_read_json` read, which `pyReadText` ports; `open` is looked up when called, so `test_storage_coldindex.py`'s `builtins.open` spy still counts every shard read (unchanged test). `ImportedClass(["readFileSync"])`: the method dispatches in coldindex.ts only |
+| `coldErrorText` (`storage/coldfs.ts`, new: coldindex.ts's `errMessage`) | `str(e)` | Python is the reference (`f"... unreadable: {e}"`); an OSError and a strict-UTF-8 refusal are worded alike on both sides (pinned, `--suite storage-cold`). **NOT the same function on a JSON syntax error**: V8's wording on Node, CPython's `json` here (the runtime refuses a compiled read of that message). It predates generation; pinned `ruling: UNRULED DIVERGENCE (J90-3)` with a literal per side, left to the orchestrator |
+| `retentionFs` (`storage/retentionfs.ts`, new: retention.ts's object and `fsyncDir` moved out unchanged) | one object: `writeArchive(target, data)` is the reference's `_write_archive` (temp, write `gzip_sync(data)`, `os.fsync`, `os.replace`, the directory fsynced on POSIX, the temp removed on a failure); `syncs` counts | Python is the reference; `os.*` looked up when called (`test_the_archive_reaches_the_disk_before_any_original_is_deleted` patches `os.fsync` / `os.unlink`, unchanged). Three Python tests that swapped `_write_archive` swap `retention_fs.writeArchive`, as Node's tests swap `retentionFs.writeArchive` |
+| `spawnRetentionChild` (`storage/retentionspawn.ts`, new: maybeSpawn's spawn, `import.meta` and `CHILD` moved out unchanged) | `subprocess.Popen([sys.executable, "-m", "bantamkit.storage.retention", cwd, home])`, stdio to the null device, a new session (POSIX) or a detached process group (Windows); False on any failure | Python is the reference: each runtime starts its own child, which claims the day and runs the same sweep (`test_the_spawned_child_runs_detached_against_the_given_home` and its Node twin) |
+| `touchReducer` (`touch/log.ts`) | `touch.log.touch_reducer` | Python is the reference (#200; `--suite touch-log`) |
+| `nativeMemoryDir` (`hookadapter.ts`), `hasBantamkitHooks` (`hostinstall.ts`) | `hookadapter.native_memory_dir`, `hostinstall.has_bantamkit_hooks(Path(p))` | Python is the reference: the probes the reference's tiers called (`--suite storage-tiers`, `hooks`, `install`) |
+| `process.cwd()` (Node global) | `os.getcwd()` (a deleted directory FileNotFoundError, which a compiled `catch` sees) | the reference's `current_cwd` |
+
+**The child's async half stays in Node.** `childMain` awaited the experience miner (`skillmine`'s
+`daily` may draft through an endpoint) after a dynamic `import()`. retention.ts keeps the sweep half,
+`childSweep(argv, now)` (claim the day under the lock, run, record; the stamp when the audit is to run,
+else `null`), which is compiled; `storage/retentionmain.ts` (new, NOT compiled) holds the async
+`childMain`: `childSweep`, then `skillreport.daily` and the miner, inside the `try` the old function
+had (a throw in the sweep half skipped the audit, as `null` does). `retention-child.ts` imports it.
+The Python shim's `child_main` is the same two halves, the second synchronous (`skillreport.daily`,
+`skillmine.daily`, `except OSError` as the reference had). No `async` / `await` / `import()` is
+lowered.
+
+TS refactors (Node's answers unchanged; `npm test` and every Node side of the suites unchanged):
+- coldindex.ts: `ColdIndex.add` renamed `addDocs` (J89-4a's clash rule: an exported compiled class's
+  `add` would make every `Set.add` of the call a run-time dispatch; it removed four the J89-4a
+  adapter row had caused in the store); reads of `segments` / `docs` / `id` / `terms` through a typed
+  `JsonTop` binding (J89-5); the manifest-entry test as `isSegment`; `Object.values(terms).every(isRows)`
+  as `Object.keys(terms).every((k) => isRows(terms[k]))` (an own data property either way);
+  `Array.from({length})` and assignment-in-an-expression spelled out; `e instanceof Error && e.code ===
+  'ENOENT'` as `e.code === 'ENOENT'` (only a failed read carries a `code`; a compiled catch holds
+  CPython's OSError, no JS `Error`). The Python surface keeps `add` (`bantamkit.storage.coldindex`).
+- retention.ts: `parseNow` as arithmetic (`daysFromCivil`, exported from hotindex.ts unchanged; the
+  old `setUTCFullYear` / `getUTC*` round trip answered exactly the range test: 1,246,410 inputs
+  through 743b54b9's `dist` and this tree's, 0 differences, value or refusal sentence: over 41
+  years (0000, 0001, 0002, 0099, 0100, 1600, 1700, 1900, 1969, 1970, 1999, 2000, 2001, 2004, 2023,
+  2024, 2026, 2100, 2400, 9999 and 21 seeded), every month x day `00`..`99` at two times, every hour
+  x minute `00`..`99`, every second `00`..`99` with four fractions, and ten malformed values); the three `[\s\S]` regexes as
+  `startsWith` / `endsWith` / length tests (`isLedger`, `checkpointJob`, `isTopCheckpoint`; the
+  regex and the function gave the same answer on 300,000 seeded names built from the patterns'
+  own pieces, line terminators and astral characters); the fold callbacks made in a loop as a word per log (`hook`,
+  `usage`, `touch`, `none`) and `foldUsage`; `compactCold`'s per-index callbacks as `[dir, sub]` held
+  in the loop and `keepUnder(dir, sub)` (the same `path.join` arguments); `.map(Number)` and the
+  `childMain` split above.
+- tiers.ts: `import fs from` / `import path from` as namespace imports; one nested destructuring
+  spelled out.
+- index.ts: `coldFs` re-exported from `coldfs.ts`.
+

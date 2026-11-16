@@ -265,6 +265,8 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `JSON.stringify(x, replacer, space)` (J88-2) | `_js_json_stringify_with(x, replacer, space)` | SerializeJSONProperty in ECMA-262 order: a function replacer called `(key, value)` on every value, the root under `""`, before the type is read; `space` a count (at most 10) or a string (its first 10 units); `"key": value` and one value per line when indented, `[]` / `{}` when empty; a cycle is JS's TypeError; an array-of-keys replacer and nesting past the recursion limit are outside the subset |
 | `JSON.stringify(x)` (one argument) | `_js_json_stringify(x)` | byte for byte: compact, non-ASCII unescaped, lone surrogates and control characters `\u00xx`, integral floats as `3`, `1e21` as `1e+21`, an int beyond 2^53 as the double it rounds to, non-finite as `null`, `undefined` members skipped (`null` in arrays), object keys in JS own-property order (array-index keys ascending first, then insertion order) |
 | `m.has(k)`, `m.get(k)`, `m.set(k, v)` | `_js_m_has` / `_js_m_get` / `_js_m_set` | `Map`; `get` of a missing key is `undefined`; `set` keeps the original position |
+| `buf.equals(other)` (J90-3) | `_js_m_equals` | two Buffers (`bytes`, `bytearray`, a `memoryview`): whether they hold the same bytes; a second argument that is not one is outside the subset; `equals` joins `JS_METHOD_NAMES` (read as a value it is refused) |
+| `buf.toString('base64')` (J90-3) | `_js_buffer_to_string` | RFC 4648 with `=` padding, Node's `base64` encoder; `utf8`, `latin1` and `hex` as before |
 | `m.delete(k)` (J90-2) | `_js_m_delete` | a `Map` or a `Set`: whether the key was there; a later `set` of it appends at the end; anything else raises at run time (`.delete() on <type> is outside the subset`). An iteration of the same Map or Set skips an entry deleted before it is reached (Known limits) |
 | `s.has(x)`, `s.add(x)` | `_js_m_has` / `_js_m_add` | `Set` |
 | `a.every(cb)`, `a.some(cb)` | `_js_m_every` / `_js_m_some` | callback result through ToBoolean |
@@ -490,6 +492,15 @@ array proven a list.
   every side of the cycle, so Python can import the cycle from either side with no name unbound. A
   name of the cycle may not be read while a module is executed (a module-level `const` / `let`
   initializer): refused, `module-level use of <name>, imported in an import cycle`.
+- J90-3: a RE-EXPORT, `export { a, type T } from './m.js'` (`storage/index.ts`), binds each value
+  name as `import { a } from './m.js'` would (a compiled module of the run, at the end of the module
+  when it is in a cycle, or an adapter row) and exports it; a type is dropped. A renamed re-export,
+  `export *`, and a name neither a compiled module nor an adapter row provides are refused. Another
+  compiled module cannot import a name THROUGH the re-export (the re-exporting module's export table
+  lists only what it declares): such an import is refused as one the module does not export.
+- J90-3: a CONSTANT of a namespace-imported Node module (`path.sep` under `import * as path from
+  'node:path'`) is its adapter row of kind `Constant`, read by name; any other member read of the
+  namespace stays refused.
 - Any other import resolves only through the table in `src/adapters.rs`: a row names the
   TypeScript module (or a Node global such as `TextDecoder`), the name, the Python name in
   `src/adapters.py` (`--emit-adapters <file>` writes it, importing the runtime from

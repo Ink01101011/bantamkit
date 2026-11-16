@@ -8,7 +8,7 @@
  *
  * A raise is the answer `{ raised: <class>, msg: <sentence> }` on both sides.
  */
-import { mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
@@ -130,7 +130,15 @@ async function index(runtimeTs, d) {
     const real = new h.HotIndex(p, 'facts', join(d, 'links-home')).real;
     return [real.slice(real.lastIndexOf('/') + 1), h.sha16(p) === h.sha16(join(d, 'links', target))];
   };
-  out.symlinks = { dangle: named('dangle', 'missing-target'), live: named('live', 'real') };
+  // J90-3: a path BELOW the dangling link, and the live directory spelled in another case (a
+  // case-insensitive filesystem resolves it to the spelling on disk; a case-sensitive one has none).
+  out.symlinks = {
+    dangle: named('dangle', 'missing-target'),
+    live: named('live', 'real'),
+    below: named('dangle/sub', 'missing-target/sub'),
+    cased: named('REAL', 'real'),
+    folds: existsSync(join(d, 'links', 'REAL')),
+  };
   return out;
 }
 
@@ -143,8 +151,8 @@ async function cold(runtimeTs, d) {
   });
   const fresh = (name) => {
     const ci = new c.ColdIndex('t', join(d, name));
-    ci.add(new Map([['alpha', doc('alpha', 'word one')], ['beta', doc('beta', 'word two')]]));
-    ci.add(new Map([['alpha', doc('alpha', 'word newer')]]));
+    ci.addDocs(new Map([['alpha', doc('alpha', 'word one')], ['beta', doc('beta', 'word two')]]));
+    ci.addDocs(new Map([['alpha', doc('alpha', 'word newer')]]));
     return ci;
   };
   let ci = fresh('reads');
@@ -187,6 +195,18 @@ async function cold(runtimeTs, d) {
   out.seg_invalid_utf8 = run('seg_invalid_utf8', (x) =>
     sub(x.segmentPath('000001'), '"word two"', Buffer.concat([Buffer.from('"word tw'), Buffer.from([0xff]), Buffer.from('"')])),
   );
+  // J90-3: the sentence a ColdIndexError quotes for a read that failed (`coldErrorText`): a
+  // manifest that is not JSON, a segment that is not UTF-8, a segment that is gone.
+  ci = fresh('msg_syntax');
+  writeFileSync(ci.manifestPath, '{not json');
+  const syntax = attempt(() => ci.manifest());
+  ci = fresh('msg_utf8');
+  sub(ci.segmentPath('000001'), '"word two"', Buffer.concat([Buffer.from('"word tw'), Buffer.from([0xff]), Buffer.from('"')]));
+  const utf8 = attempt(() => ci.segment('000001'));
+  ci = fresh('msg_gone');
+  unlinkSync(ci.segmentPath('000001'));
+  const gone = attempt(() => ci.segment('000001'));
+  out.messages = { syntax, utf8, gone };
   return out;
 }
 
@@ -215,8 +235,8 @@ async function retention(runtimeTs, d) {
     [home, root] = bed('no_file');
     const ci = r.shiftworkCold(home, root);
     const doc = { name: 'j', description: '', type: 'shiftwork', keywords: ['x'], links: [], tags: [], refs: [], mtime_ns: '0', size: 1 };
-    ci.add(new Map([['j', doc]]));
-    ci.add(new Map([['k', { ...doc, name: 'k', file: '.shiftwork/archive/k.json.gz' }]]));
+    ci.addDocs(new Map([['j', doc]]));
+    ci.addDocs(new Map([['k', { ...doc, name: 'k', file: '.shiftwork/archive/k.json.gz' }]]));
     out.no_file_run = attempt(() => r.runRetention(home, [root], now));
     out.no_file_search = attempt(() => r.searchArchived(join(root, '.shiftwork', 'checkpoint.json'), 'x', home));
     // J90-1F: an OSError in searchArchived's RETRY, as the reference builds it.
@@ -246,6 +266,22 @@ async function retention(runtimeTs, d) {
     ].map((s) => attempt(() => r.parseNow(s)));
     out.parse_now_nonstr = attempt(() => r.parseNow(5));
     out.constants = [r.RETENTION_ENV, r.SKILL_AUDIT_ENV, r.TTL_S, r.LEDGER_DAYS, r.LOG_DAYS, r.JOB_DAYS, r.STATE_NAME, r.SEARCH_MAX];
+    // J90-3: the opt-out switch read through JS `trim` (generation settles 743b54b9's Python
+    // `strip`, which also strips U+001C..U+001F and U+0085 and keeps U+FEFF).
+    out.env_switch = ['off\u001c', '\u0085off', '\ufeffoff', ' OFF\t', 'off\u3000'].map((v) => {
+      process.env[r.RETENTION_ENV] = v;
+      return r.enabled();
+    });
+    process.env[r.RETENTION_ENV] = 'on';
+    // J90-3: the error a failed sweep records names the JS class (743b54b9's Python: `ValueError`).
+    const m = await import(pathToFileURL(join(runtimeTs, 'dist', 'storage', 'retentionmain.js')).href);
+    const audit = process.env[r.SKILL_AUDIT_ENV];
+    process.env[r.SKILL_AUDIT_ENV] = 'off';
+    [home, root] = bed('child_error');
+    const code = await m.childMain([root, home], '2026-10-16T00:00:00.000Zx');
+    out.child_error = [code, JSON.parse(readFileSync(r.statePath(home), 'utf8')).error ?? null];
+    if (audit === undefined) delete process.env[r.SKILL_AUDIT_ENV];
+    else process.env[r.SKILL_AUDIT_ENV] = audit;
   } finally {
     keys.forEach((k, i) => {
       if (saved[i] === undefined) delete process.env[k];
@@ -329,10 +365,10 @@ const RULING_228_HOT =
   '`divergence.parse_fact` (`yaml.safe_load`), and skipped by the port, whose codec refuses the shape by name ' +
   "(#120). Each side's hot index holds what that side's native mirror and recall read for the same file.";
 
-const UNRULED_J90_2 =
-  'UNRULED DIVERGENCE (J90-2): not ruled in docs/porting.md and not fixed; found while generating the hot index ' +
-  '(#316 G4) and left as it stood on 9c6bc181 for the orchestrator: os.path.realpath follows a dangling symlink, ' +
-  "Node's realpathSync refuses it and the port keeps the link as spelled.";
+const UNRULED_J90_3 =
+  'UNRULED DIVERGENCE (J90-3): not ruled in docs/porting.md and not fixed; found while generating the cold index ' +
+  "(#316 G4) and left as it stood on 743b54b9 for the orchestrator: a ColdIndexError quotes the JSON parser's own " +
+  "message, CPython's json on the reference and V8's on the port.";
 
 /** Per-side literals: a change made on both sides leaves the differential green, these do not. */
 const LITERALS = {
@@ -395,21 +431,18 @@ export function j90Cases(section, { py, nd, dirs }) {
     cases.push({ name: 'LITERAL: J90-1F #228 per side: the hot index over a native flow mapping — python indexes it', kind: 'json', expected: { docs: ['flow', 'plain'], skipped: [] }, actual: py.native_flow });
     cases.push({ name: 'LITERAL: J90-1F #228 per side: the hot index over a native flow mapping — node skips it by file', kind: 'json', expected: { docs: ['plain'], skipped: ['flow.md'] }, actual: nd.native_flow });
     same('#228 the native fact beside it (block-mapping metadata) is indexed on both sides', py.native_flow.docs.includes('plain'), nd.native_flow.docs.includes('plain'));
-    // J90-2: found while generating the index, NOT ruled and NOT fixed (left to the orchestrator):
-    // through a dangling symlink the reference's `os.path.realpath` follows the link to its
-    // missing target, Node's `realpathSync` refuses it and `nodeRealpath` keeps the link as
-    // spelled, so the two name the source's index (`sha16`) and its head's `source` differently.
-    // The generated Python keeps the reference's answer (the `nodeRealpath` adapter), so this is
-    // the divergence as it stood on 9c6bc181. A live symlink is resolved alike, compared.
-    cases.push({
-      name: 'ruling: UNRULED DIVERGENCE (J90-2) the hot index of a source through a dangling symlink — realpath and sha16',
-      kind: 'json',
-      expected: py.symlinks.dangle,
-      actual: nd.symlinks.dangle,
-      ruling: UNRULED_J90_2,
-    });
-    cases.push({ name: 'LITERAL: J90-2 a source through a dangling symlink — python follows the link', kind: 'json', expected: ['missing-target', true], actual: py.symlinks.dangle });
-    cases.push({ name: 'LITERAL: J90-2 a source through a dangling symlink — node keeps the link', kind: 'json', expected: ['dangle', false], actual: nd.symlinks.dangle });
+    // J90-2 found, J90-3 settled (the orchestrator's ruling: Node's answer): through a dangling
+    // symlink the reference's `os.path.realpath` followed the link to its missing target where
+    // `nodeRealpath` keeps the link as spelled. The `nodeRealpath` adapter is now Node's function
+    // (`realpath(3)`, the parent on a throw), so both name the source's index (`sha16`) and its
+    // head's `source` by the link; was `ruling: UNRULED DIVERGENCE (J90-2)` with python
+    // `['missing-target', true]`.
+    same('J90-3 a source through a dangling symlink keeps the link as spelled (realpath and sha16)', py.symlinks.dangle, nd.symlinks.dangle);
+    lit('J90-3 a source through a dangling symlink keeps the link as spelled', ['dangle', false], py.symlinks.dangle, nd.symlinks.dangle);
+    same('J90-3 a source below a dangling symlink keeps the path as spelled', py.symlinks.below, nd.symlinks.below);
+    lit('J90-3 a source below a dangling symlink', ['sub', false], py.symlinks.below, nd.symlinks.below);
+    same('J90-3 a source spelled in another case is named as the filesystem spells it', py.symlinks.cased, nd.symlinks.cased);
+    lit('J90-3 a source spelled in another case', nd.symlinks.folds ? ['real', true] : ['REAL', false], py.symlinks.cased, nd.symlinks.cased);
     same('J90-2 a source through a live symlink is named by its target on both sides', py.symlinks.live, nd.symlinks.live);
     lit('a source through a live symlink', ['real', true], py.symlinks.live, nd.symlinks.live);
   } else if (section === 'cold') {
@@ -430,12 +463,46 @@ export function j90Cases(section, { py, nd, dirs }) {
       same(w, py[k], nd[k]);
       lit(w, want, py[k], nd[k]);
     }
+    // J90-3: the sentence a ColdIndexError quotes for a failed read (`coldErrorText`, an adapter).
+    // A gone segment and a segment that is not UTF-8 are worded alike (CPython's OSError and
+    // decoder wording, a PyOSError / PyUnicodeDecodeError on node); the class is compared too.
+    const M = py.messages;
+    const N = nd.messages;
+    const cls = (v) => (bit(v) ? v.raised.replace(/^_/, '') : null);
+    same('J90-3 a ColdIndexError for a failed read — the class, per failure', [cls(M.syntax), cls(M.utf8), cls(M.gone)], [cls(N.syntax), cls(N.utf8), cls(N.gone)]);
+    same('J90-3 a ColdIndexError for a segment that is gone — the sentence', unpath(msgOf(M.gone), dirs.py), unpath(msgOf(N.gone), dirs.nd));
+    lit('J90-3 a ColdIndexError for a segment that is gone', "cold index segment 000001 unreadable: [Errno 2] No such file or directory: '<dir>/msg_gone/.bantamkit/cold/t/seg-000001.json'", unpath(msgOf(M.gone), dirs.py), unpath(msgOf(N.gone), dirs.nd));
+    same('J90-3 a ColdIndexError for a segment that is not UTF-8 — the sentence', msgOf(M.utf8), msgOf(N.utf8));
+    lit('J90-3 a ColdIndexError for a segment that is not UTF-8', "cold index segment 000001 unreadable: 'utf-8' codec can't decode byte 0xff in position 197: invalid start byte", msgOf(M.utf8), msgOf(N.utf8));
+    // J90-3 found, NOT ruled and NOT fixed (left to the orchestrator): a manifest that is not JSON
+    // is refused on both sides (the bit is compared above), but the sentence quotes each runtime's
+    // own JSON parser (CPython's `json` on the reference, V8 on the port). It predates generation:
+    // the generated cold index reads the message through the `coldErrorText` adapter, which keeps
+    // each side's own wording, as 743b54b9 had it.
+    cases.push({
+      name: 'ruling: UNRULED DIVERGENCE (J90-3) a ColdIndexError for a manifest that is not JSON — the sentence',
+      kind: 'json',
+      expected: msgOf(M.syntax),
+      actual: msgOf(N.syntax),
+      ruling: UNRULED_J90_3,
+    });
+    cases.push({ name: 'LITERAL: J90-3 a manifest that is not JSON — python quotes CPython json', kind: 'json', expected: 'cold index manifest unreadable: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)', actual: msgOf(M.syntax) });
+    cases.push({ name: 'LITERAL: J90-3 a manifest that is not JSON — node quotes V8', kind: 'json', expected: "cold index manifest unreadable: Expected property name or '}' in JSON at position 1 (line 1 column 2)", actual: msgOf(N.syntax) });
   } else if (section === 'retention') {
     const L = LITERALS.retention;
     same('retention constants', py.constants, nd.constants);
     lit('retention constants', L.constants, py.constants, nd.constants);
     same('parseNow — the value or the refusal bit, per input', py.parse_now.map((v) => (bit(v) ? 'refused' : v)), nd.parse_now.map((v) => (bit(v) ? 'refused' : v)));
     lit('parseNow values', L.parse_now_values, py.parse_now.slice(0, 4), nd.parse_now.slice(0, 4));
+    // J90-3: found while generating retention (a difference 743b54b9 had, NOT in any case before):
+    // the hand-written Python read the opt-out switch with `str.strip()`, which strips U+001C..U+001F
+    // and U+0085 and keeps U+FEFF, where Node's `trim()` keeps the first five and strips U+FEFF.
+    // Generation runs Node's `trim` on both sides; these pin that answer per side (743b54b9's
+    // Python answered [false, false, true, false, false]).
+    same('J90-3 a failed sweep records the error by its JS class', py.child_error, nd.child_error);
+    lit('J90-3 a failed sweep records the error by its JS class', [0, 'Error'], py.child_error, nd.child_error);
+    same('J90-3 the BANTAMKIT_RETENTION switch is read through JS trim', py.env_switch, nd.env_switch);
+    lit('J90-3 the BANTAMKIT_RETENTION switch is read through JS trim', [true, true, false, false, false], py.env_switch, nd.env_switch);
     same('parseNow refuses a number (the sentence)', msgOf(py.parse_now_nonstr), msgOf(nd.parse_now_nonstr));
     // #11 #12 #13 #14 settled to node's answer, #15 to python's; the retry OSError (J90-1F) to node's.
     const q = (x) => `not a retention timestamp: ${JSON.stringify(x)}`;

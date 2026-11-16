@@ -937,7 +937,13 @@ def _j90_index(d: Path) -> dict:
         real = h.HotIndex(p, "facts", d / "links-home").real
         return [real.rsplit("/", 1)[-1], h.sha16(p) == h.sha16(d / "links" / target)]
 
-    out["symlinks"] = {"dangle": named("dangle", "missing-target"), "live": named("live", "real")}
+    out["symlinks"] = {
+        "dangle": named("dangle", "missing-target"),
+        "live": named("live", "real"),
+        "below": named("dangle/sub", "missing-target/sub"),
+        "cased": named("REAL", "real"),
+        "folds": (d / "links" / "REAL").exists(),
+    }
     return out
 
 
@@ -997,6 +1003,17 @@ def _j90_cold(d: Path) -> dict:
     out["version_true"] = run("version_true", lambda ci: sub(ci.manifest_path, b'"version":1', b'"version":true'))
     out["id_newline"] = run("id_newline", lambda ci: sub(ci.manifest_path, b'"id":"000002"', b'"id":"000002\\n"'))
     out["seg_invalid_utf8"] = run("seg_invalid_utf8", lambda ci: sub(ci.segment_path("000001"), b'"word two"', b'"word tw\xff"'))
+    # J90-3: the sentence a ColdIndexError quotes for a read that failed (lib/storage_j90.mjs).
+    ci = fresh("msg_syntax")
+    ci.manifest_path.write_bytes(b"{not json")
+    syntax = _j90_try(ci.manifest)
+    ci = fresh("msg_utf8")
+    sub(ci.segment_path("000001"), b'"word two"', b'"word tw\xff"')
+    utf8 = _j90_try(lambda: ci.segment("000001"))
+    ci = fresh("msg_gone")
+    ci.segment_path("000001").unlink()
+    gone = _j90_try(lambda: ci.segment("000001"))
+    out["messages"] = {"syntax": syntax, "utf8": utf8, "gone": gone}
     return out
 
 
@@ -1071,6 +1088,22 @@ def _j90_retention(d: Path) -> dict:
         out["parse_now_nonstr"] = _j90_try(lambda: r.parse_now(5))
         out["constants"] = [r.RETENTION_ENV, r.SKILL_AUDIT_ENV, r.TTL_S, r.LEDGER_DAYS, r.LOG_DAYS,
                             r.JOB_DAYS, r.STATE_NAME, r.SEARCH_MAX]
+        # J90-3: the opt-out switch read through JS `trim` (lib/storage_j90.mjs).
+        out["env_switch"] = []
+        for v in ("off\u001c", "\u0085off", "\ufeffoff", " OFF\t", "off\u3000"):
+            os.environ[r.RETENTION_ENV] = v
+            out["env_switch"].append(r.enabled())
+        os.environ[r.RETENTION_ENV] = "on"
+        # J90-3: the error a failed sweep records (lib/storage_j90.mjs).
+        audit = os.environ.get(r.SKILL_AUDIT_ENV)
+        os.environ[r.SKILL_AUDIT_ENV] = "off"
+        home, root = bed("child_error")
+        code = r.child_main([str(root), str(home)], now="2026-10-16T00:00:00.000Zx")
+        out["child_error"] = [code, json.loads(r.state_path(home).read_text(encoding="utf-8")).get("error")]
+        if audit is None:
+            os.environ.pop(r.SKILL_AUDIT_ENV, None)
+        else:
+            os.environ[r.SKILL_AUDIT_ENV] = audit
     finally:
         for k, v in saved.items():
             if v is None:

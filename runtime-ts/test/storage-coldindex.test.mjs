@@ -44,7 +44,7 @@ function countingOpens(t) {
 
 test('layout is under home', () => {
   const t = tmp();
-  coldOf(t).add(docs(doc('a', 'release tag')));
+  coldOf(t).addDocs(docs(doc('a', 'release tag')));
   const names = fs.readdirSync(path.join(t, 'home', '.bantamkit', 'cold', 't')).sort();
   assert.deepEqual(names, [
     'manifest.json',
@@ -56,8 +56,8 @@ test('layout is under home', () => {
 test('query reads only the shards its terms hash to', (t) => {
   const d = tmp();
   const cold = coldOf(d);
-  assert.equal(cold.add(docs(doc('a', 'release tag'), doc('b', 'tag only'))), '000001');
-  assert.equal(cold.add(docs(doc('c', 'release notes', ['ปล่อย']))), '000002');
+  assert.equal(cold.addDocs(docs(doc('a', 'release tag'), doc('b', 'tag only'))), '000001');
+  assert.equal(cold.addDocs(docs(doc('c', 'release notes', ['ปล่อย']))), '000002');
   const terms = ['release', 'tag', 'notes', 'missing'];
   const shards = countingOpens(t);
   const got = cold.query(terms);
@@ -73,9 +73,9 @@ test('query reads only the shards its terms hash to', (t) => {
 
 test('compact keeps query results', () => {
   const cold = coldOf(tmp());
-  cold.add(docs(doc('a', 'release tag'), doc('b', 'tag only')));
-  cold.add(docs(doc('c', 'release notes')));
-  cold.add(docs(doc('a', 'renamed words')));
+  cold.addDocs(docs(doc('a', 'release tag'), doc('b', 'tag only')));
+  cold.addDocs(docs(doc('c', 'release notes')));
+  cold.addDocs(docs(doc('a', 'renamed words')));
   const terms = ['release', 'tag', 'renamed', 'notes'];
   const before = cold.query(terms).map(([n, , tf]) => [n, tf]);
   assert.deepEqual(before[0], ['c', 2]);
@@ -100,24 +100,24 @@ test('compact keeps query results', () => {
 
 test('a row the manifest does not vouch for is never read', () => {
   const cold = coldOf(tmp());
-  cold.add(docs(doc('a', 'release')));
+  cold.addDocs(docs(doc('a', 'release')));
   const p = cold.shardPath(shardOf('release'));
   const data = JSON.parse(fs.readFileSync(p, 'utf8'));
   data.terms.release.push(['ghost', '000009', 'description', 5]);
   fs.writeFileSync(p, JSON.stringify(data), 'utf8');
   assert.deepEqual(cold.query(['release']), [['a', '000001', 1]]);
-  cold.add(docs(doc('b', 'other')));
+  cold.addDocs(docs(doc('b', 'other')));
   assert.ok(!fs.readFileSync(p, 'utf8').includes('ghost'));
 });
 
 test('a corrupt manifest throws and reset starts over', () => {
   const cold = coldOf(tmp());
-  cold.add(docs(doc('a', 'release')));
+  cold.addDocs(docs(doc('a', 'release')));
   fs.writeFileSync(cold.manifestPath, '{not json', 'utf8');
   assert.throws(() => cold.query(['release']), ColdIndexError);
   cold.reset();
   assert.deepEqual(cold.query(['release']), []);
-  assert.equal(cold.add(docs(doc('b', 'release'))), '000001');
+  assert.equal(cold.addDocs(docs(doc('b', 'release'))), '000001');
   assert.deepEqual(cold.query(['release']), [['b', '000001', 1]]);
 });
 

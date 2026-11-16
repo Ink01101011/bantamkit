@@ -2,12 +2,11 @@
  * The realpath the hot index names its files by (`sha16`) and records as a head's `source`.
  *
  * Moved out of `hotindex.ts` unchanged (#316 G4, J90-2) so that module can be compiled by
- * `tools/ts2py` while this one stays an ADAPTER: the reference's `hotindex.sha16` and
- * `HotIndex.real` are `os.path.realpath`, which this does NOT reproduce for a path through a
- * dangling symlink (`os.path.realpath` follows the link to its missing target; `realpathSync`
- * refuses the link and this keeps it as spelled). J90-2 found that difference and left it as it
- * stands on both sides for the orchestrator to rule on: the generated Python keeps
- * `os.path.realpath` through the adapter, Node keeps this.
+ * `tools/ts2py` while this one stays an ADAPTER. J90-2 found the reference's `os.path.realpath`
+ * answering differently for a path through a dangling symlink (it follows the link to its missing
+ * target; `realpathSync.native` refuses the link and this keeps it as spelled); the orchestrator
+ * ruled for this function's answer, so since J90-3 the Python adapter (`node_realpath`) is this
+ * function ported: `path.resolve`, `realpath(3)`, and the parent where it throws.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';

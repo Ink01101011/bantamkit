@@ -19,21 +19,16 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { pyReadText } from '../memory/pyfs.js';
 import { FIELD_BOOST, tokenizeV2 } from '../memory/retrieval.js';
 import { cmpCodepoint } from '../pysem.js';
+import { coldErrorText, coldFs } from './coldfs.js';
 import { dumpIndex, SHARDS, shardOf, type IndexDoc } from './hotindex.js';
 import { exclusive } from './lock.js';
 
 export const COLD_VERSION = 1;
 const ID = /^[0-9]{6}$/;
 
-/**
- * The reads this module makes; a test swaps `readFileSync` to count them. Strict UTF-8, as the
- * reference's `open(path, encoding="utf-8")`: a segment holding a byte that is not UTF-8 is
- * refused (`ColdIndexError`), not served with U+FFFD in a doc (J90-1F #10).
- */
-export const coldFs = { readFileSync: (p: string): string => pyReadText(p) };
+// `coldFs` (the reads, a test's seam) lives in `coldfs.ts`, an adapter (#316 G4, J90-3).
 
 /** A manifest, segment or shard that is not what this module wrote: `reset()` and re-add. */
 export class ColdIndexError extends Error {
@@ -51,10 +46,34 @@ export interface ColdManifest {
   segments: ColdSegment[];
 }
 
+/** A parsed file's top level, read by field: `segments` and `docs` are data here (J89-5's rule). */
+type JsonValue = string | number | boolean | null | readonly unknown[] | Record<string, unknown>;
+interface JsonTop {
+  readonly version?: JsonValue;
+  readonly segments?: JsonValue;
+  readonly docs?: JsonValue;
+  readonly id?: JsonValue;
+  readonly terms?: JsonValue;
+  readonly created?: JsonValue;
+}
+
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 function readJson(p: string): unknown {
   return JSON.parse(coldFs.readFileSync(p));
+}
+
+/** One manifest entry's shape: a six-digit `id`, a list of string `docs`, a string `created`. */
+function isSegment(s: JsonTop): boolean {
+  const id = s.id;
+  const docs = s.docs;
+  return (
+    typeof id === 'string' &&
+    ID.test(id) &&
+    Array.isArray(docs) &&
+    docs.every((n) => typeof n === 'string') &&
+    typeof s.created === 'string'
+  );
 }
 
 const isRows = (v: unknown): v is ColdRow[] =>
@@ -73,7 +92,9 @@ function isoNow(nowMs: number): string {
   return new Date(Math.floor(nowMs / 1000) * 1000).toISOString().replace('.000Z', 'Z');
 }
 
-const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+// The failed read's own message (`coldfs.ts`, an adapter: a JSON syntax error is worded by each
+// runtime's parser).
+const errMessage = (e: unknown): string => coldErrorText(e);
 
 export class ColdIndex {
   readonly name: string;
@@ -106,25 +127,20 @@ export class ColdIndex {
     try {
       data = readJson(this.manifestPath);
     } catch (e) {
-      if (e instanceof Error && (e as NodeJS.ErrnoException).code === 'ENOENT') {
+      // `code` alone (#316 G4, J90-3): a compiled catch of a failed read holds CPython's OSError,
+      // which is no JS `Error` but reads `code` as Node's; only a failed read carries one.
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
         return { version: COLD_VERSION, segments: [] };
       }
       throw new ColdIndexError(`cold index manifest unreadable: ${errMessage(e)}`);
     }
-    const segs = isObj(data) ? data['segments'] : undefined;
+    const top: JsonTop = data as JsonTop;
+    const segs = isObj(data) ? top.segments : undefined;
     if (
       !isObj(data) ||
-      data['version'] !== COLD_VERSION ||
+      top.version !== COLD_VERSION ||
       !Array.isArray(segs) ||
-      !segs.every(
-        (s) =>
-          isObj(s) &&
-          typeof s['id'] === 'string' &&
-          ID.test(s['id']) &&
-          Array.isArray(s['docs']) &&
-          s['docs'].every((n) => typeof n === 'string') &&
-          typeof s['created'] === 'string',
-      )
+      !segs.every((s) => isObj(s) && isSegment(s as JsonTop))
     ) {
       throw new ColdIndexError("cold index manifest is not this version's shape");
     }
@@ -134,7 +150,11 @@ export class ColdIndex {
   /** Each name -> the newest segment that lists it. */
   owners(): Map<string, string> {
     const out = new Map<string, string>();
-    for (const seg of this.manifest().segments) for (const n of seg.docs) out.set(n, seg.id);
+    const m: ColdManifest = this.manifest();
+    for (const seg of m.segments) {
+      const s: ColdSegment = seg;
+      for (const n of s.docs) out.set(n, s.id);
+    }
     return out;
   }
 
@@ -146,8 +166,9 @@ export class ColdIndex {
     } catch (e) {
       throw new ColdIndexError(`cold index segment ${id} unreadable: ${errMessage(e)}`);
     }
-    const docs = isObj(data) ? data['docs'] : undefined;
-    if (!isObj(docs) || !isObj(data) || data['id'] !== id) {
+    const top: JsonTop = data as JsonTop;
+    const docs = isObj(data) ? top.docs : undefined;
+    if (!isObj(docs) || !isObj(data) || top.id !== id) {
       throw new ColdIndexError(`cold index segment ${id} is not this version's shape`);
     }
     return new Map(Object.entries(docs) as Array<[string, IndexDoc]>);
@@ -163,14 +184,16 @@ export class ColdIndex {
   /** Every doc of every segment, shadowed ones included, oldest segment first. */
   allDocs(): IndexDoc[] {
     const out: IndexDoc[] = [];
-    for (const seg of this.manifest().segments) out.push(...this.segment(seg.id).values());
+    const m: ColdManifest = this.manifest();
+    for (const seg of m.segments) out.push(...this.segment(seg.id).values());
     return out;
   }
 
   /** `{name: doc}`, each name's newest version. */
   docs(): Map<string, IndexDoc> {
     const out = new Map<string, IndexDoc>();
-    for (const seg of this.manifest().segments) for (const [n, d] of this.segment(seg.id)) out.set(n, d);
+    const m: ColdManifest = this.manifest();
+    for (const seg of m.segments) for (const [n, d] of this.segment(seg.id)) out.set(n, d);
     return out;
   }
 
@@ -181,8 +204,9 @@ export class ColdIndex {
     } catch (e) {
       throw new ColdIndexError(`cold index shard ${String(i).padStart(2, '0')} unreadable: ${errMessage(e)}`);
     }
-    const terms = isObj(data) ? data['terms'] : undefined;
-    if (!isObj(terms) || !Object.values(terms).every(isRows)) {
+    const top: JsonTop = data as JsonTop;
+    const terms = isObj(data) ? top.terms : undefined;
+    if (!isObj(terms) || !Object.keys(terms).every((k) => isRows(terms[k]))) {
       throw new ColdIndexError(`cold index shard ${String(i).padStart(2, '0')} is not this version's shape`);
     }
     return new Map(Object.entries(terms) as Array<[string, ColdRow[]]>);
@@ -196,7 +220,10 @@ export class ColdIndex {
     for (const t of [...new Set(terms)].sort(cmpCodepoint)) {
       const i = shardOf(t);
       let list = byShard.get(i);
-      if (list === undefined) byShard.set(i, (list = []));
+      if (list === undefined) {
+        list = [];
+        byShard.set(i, list);
+      }
       list.push(t);
     }
     const sums = new Map<string, number>();
@@ -216,10 +243,15 @@ export class ColdIndex {
 
   // ----------------------------------------------------------------- writes
 
-  /** A new immutable segment holding `docs`; its terms merged into the shards. Its id. */
-  add(docs: Map<string, IndexDoc>): string {
+  /**
+   * A new immutable segment holding `docs`; its terms merged into the shards. Its id. Named
+   * `addDocs`, not `add` (#316 G4, J90-3): an exported compiled class's method name is a method of
+   * every module of the ts2py call (J89-4a), and `add` would make every `Set.add` there a run-time
+   * dispatch. The Python surface keeps `add` (`bantamkit.storage.coldindex`).
+   */
+  addDocs(docs: Map<string, IndexDoc>): string {
     return exclusive(this.lockPath(), () => {
-      const manifest = this.manifest();
+      const manifest: ColdManifest = this.manifest();
       const id = nextId(manifest);
       this.publish(manifest, id, docs, false);
       return id;
@@ -233,8 +265,8 @@ export class ColdIndex {
    */
   compact(keep: ((doc: IndexDoc) => boolean) | null = null): string | null {
     return exclusive(this.lockPath(), () => {
-      const manifest = this.manifest();
-      const old = manifest.segments.map((s) => s.id);
+      const manifest: ColdManifest = this.manifest();
+      const old = manifest.segments.map((s: ColdSegment) => s.id);
       if (old.length === 0 || (old.length === 1 && keep === null)) return null;
       let merged = new Map<string, IndexDoc>();
       for (const seg of old) for (const [n, d] of this.segment(seg)) merged.set(n, d);
@@ -285,7 +317,8 @@ export class ColdIndex {
     const names = [...docs.keys()].sort(cmpCodepoint);
     const sorted = new Map(names.map((n) => [n, docs.get(n)!]));
     write(this.segmentPath(id), dumpIndex({ id, docs: sorted }));
-    const fresh = Array.from({ length: SHARDS }, () => new Map<string, ColdRow[]>());
+    const fresh: Array<Map<string, ColdRow[]>> = [];
+    for (let i = 0; i < SHARDS; i += 1) fresh.push(new Map<string, ColdRow[]>());
     for (const name of names) {
       const d = docs.get(name)!;
       const text: Record<string, string> = { name: d.name, description: d.description, keywords: d.keywords.join(' ') };
@@ -295,14 +328,17 @@ export class ColdIndex {
         for (const [term, tf] of counts) {
           const table = fresh[shardOf(term)]!;
           let list = table.get(term);
-          if (list === undefined) table.set(term, (list = []));
+          if (list === undefined) {
+            list = [];
+            table.set(term, list);
+          }
           list.push([name, id, field, tf]);
         }
       }
     }
-    const live = new Set(manifest.segments.map((s) => s.id));
+    const live = new Set(manifest.segments.map((s: ColdSegment) => s.id));
     this.writeShards(this.tables(), live, fresh);
-    const segments = replace ? [] : [...manifest.segments];
+    const segments: ColdSegment[] = replace ? [] : [...manifest.segments];
     segments.push({ id, docs: names, created: isoNow(Date.now()) });
     write(this.manifestPath, dumpIndex({ version: COLD_VERSION, segments }));
     if (replace) this.writeShards(this.tables(), new Set([id]), null);
@@ -346,7 +382,7 @@ export class ColdIndex {
 }
 
 function nextId(manifest: ColdManifest): string {
-  const last = manifest.segments.reduce((m, s) => Math.max(m, Number(s.id)), 0);
+  const last = manifest.segments.reduce((m: number, s: ColdSegment) => Math.max(m, Number(s.id)), 0);
   return String(last + 1).padStart(6, '0');
 }
 

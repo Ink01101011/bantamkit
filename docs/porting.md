@@ -1014,7 +1014,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar, the layers, the dream, the component, the storage lock and the hot index are compiled from TypeScript (#314, #315, #316 G1, G2, G3, G4)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar, the layers, the dream, the component, the storage lock, the hot index, the cold index, retention and the capability tiers are compiled from TypeScript (#314, #315, #316 G1, G2, G3, G4)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1026,7 +1026,7 @@ generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
 Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
-`jobbudget.ts`, a G2/G3/G4 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts`, `memory/layers.ts`, `memory/dream.ts`, `memory/component.ts`, `storage/lock.ts` and `storage/hotindex.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
+`jobbudget.ts`, a G2/G3/G4 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts`, `memory/layers.ts`, `memory/dream.ts`, `memory/component.ts`, `storage/lock.ts`, `storage/hotindex.ts`, `storage/coldindex.ts`, `storage/retention.ts`, `storage/tiers.ts` and `storage/index.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
@@ -1041,6 +1041,8 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
   runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts runtime-ts/src/memory/dream.ts \
   runtime-ts/src/memory/component.ts runtime-ts/src/storage/lock.ts runtime-ts/src/storage/hotindex.ts \
+  runtime-ts/src/storage/coldindex.ts runtime-ts/src/storage/retention.ts \
+  runtime-ts/src/storage/tiers.ts runtime-ts/src/storage/index.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -2518,8 +2520,8 @@ under J89-4a's clash ruling: every Map's `.size` is a read of that name). `head_
 `shard_of`, `decode` (a `malformed postings` refusal still a `ValueError`), `encode` and the
 constants are the generated ones; `dumps` stays the hand-written `json.dumps(..., sort_keys=True,
 ensure_ascii=False, separators=(",", ":"))` because the UNGENERATED modules write with it
-(`coldindex`, `retention`, `touch.graph`, `skillreport`, the refs), and `_loads` / `_iso` stay for the
-hand-written cold index until G4 generates it. `no_gc` is Python-only (the table above). One test
+(`touch.graph`, `skillreport`, the refs; `coldindex` and `retention` until J90-3 generated them), and
+`_loads` / `_iso` stayed for the hand-written cold index until J90-3 generated it (retired then). `no_gc` is Python-only (the table above). One test
 reached a private: `test_touch_graph.py` reads `idx._loaded()["shards"]`, which the shim keeps as the
 generated head's `shards` (no test was rewritten).
 
@@ -2530,7 +2532,11 @@ PyYAML); since the generated index reads a native file's `links` and `tags` from
 is named by stays `os.path.realpath` (`nodeRealpath`, below); `extractRefs` / `factRefs` are
 `touch.refs`; the serialisation is `dumpJsValue` (`json.dumps` of the value as `fromJs` reads it).
 
-**Found, not fixed, not ruled (J90-2): a source through a dangling symlink.** The reference names an
+**Found by J90-2, settled by J90-3 to Node's answer (the orchestrator's ruling): a source through a
+dangling symlink.** The rest of this paragraph is J90-2's account as it stood; since J90-3 the
+`nodeRealpath` adapter is Node's function (`realpath(3)`, the parent resolved and the name joined
+as spelled where it throws), so both runtimes name the index by the link, and the case is agreeing
+(the subsection below). The reference names an
 index by `sha16(os.path.realpath(source))`, and `os.path.realpath` follows a dangling symlink to its
 missing target; Node's `realpathSync` refuses it and the port keeps the link as spelled. So the two
 runtimes name such a source's index (and its head's `source`) differently, and each rebuilds the
@@ -2617,6 +2623,118 @@ undetected); clippy (`-D warnings`) and fmt clean. `npm test` 2,460 passed, 0 fa
 The touched pytest files under CPython 3.11.15: 537 passed; `storage-lock`, `storage-index`,
 `storage-log`, `storage-cold`, `storage-tiers`, `storage-retention` and `store` green with a 3.11
 reference (`--python`). ruff is clean.
+
+### The cold index, retention and the tiers (#316 G4, J90-3): generated, behind their shims
+
+Since J90-3 `bantamkit.storage.coldindex`, `bantamkit.storage.retention` and
+`bantamkit.storage.tiers` run `_generated/coldindex.py`, `_generated/retention.py` and
+`_generated/tiers.py`, compiled from the TypeScript in the one G1/G2/G3/G4 ts2py call, and
+`storage/index.ts` (the re-export table) is compiled too, as `_generated/index.py` (held by the F4
+compare; `bantamkit/storage/__init__.py` stays the hand-written package file over the shims). The
+hand-written cold index (322 lines), retention (859) and tiers (249) are retired; no "#316 G4 not
+generated" adapter row remains (the `ColdIndex` / `ColdIndexError` rows are retired:
+`tools/ts2py/RULES.md`, *J90-3 rules*). `storage/retention-child.ts`, Node's child entry script (a
+top-level `await`), is not generated: its Python counterpart is `python -m bantamkit.storage.retention`.
+
+**The Python surface is unchanged.** `ColdIndex(name, home, cold_dir=None)` keeps its snake_case
+methods, `Path` attributes, dicts where the generated class answers Maps, `query()`'s tuples, `add`
+taking a dict (the TypeScript's `addDocs`: an exported compiled class's `add` would make every
+`Set.add` of the call a run-time dispatch, J89-4a's rule) and `ValueError` for a bad name; the store
+shim's `cold()` answers the generated index through it (`ColdIndex._of`). Retention keeps every
+public name (`run_retention`, `parse_now` with its `ValueError`, `due`, `maybe_spawn(home, cwd, *,
+server=False)`, `child_main(argv, now=None)`, `search_archived(checkpoint, search, home=None)`,
+`sync_jobs` / `shiftwork_cold` answering the shim, `hook_log_reducer`, `bundle_bytes`, `job_doc`,
+the constants); the tiers every function, `settings_paths` as `Path`s and a `Memory` handed over as
+the generated one it wraps. The retired `hotindex._loads` / `_iso` went with the hand-written cold
+index.
+
+**Three seams stay CPython.** The archive's fsynced write (`retentionFs`, moved to
+`storage/retentionfs.ts`; the reference's `_write_archive`), the detached spawn (`storage/
+retentionspawn.ts`; `subprocess.Popen` of `python -m bantamkit.storage.retention`), and the child's
+async half: `childMain` awaited the experience miner after a dynamic `import()`, so retention.ts
+keeps the compiled sweep half (`childSweep`: claim the day, run, record) and `storage/
+retentionmain.ts` (Node only) runs the skill audit and the miner after it; the shim's `child_main`
+does the same two halves, the second synchronous. No `async`, `await` or `import()` is lowered.
+
+**Tests that reached a retired private.** Three Python tests swapped `retention._write_archive`;
+they swap `retention.retention_fs.writeArchive`, as Node's tests swap `retentionFs.writeArchive`
+(the same strength: the one write retention makes). The cold index's `builtins.open` spy is
+unchanged: the `coldFs` adapter reads through the builtin `open`, so it still counts every shard a
+query opens. Node's tests and the conformance suites import `retentionFs` and `childMain` from their
+new modules.
+
+**Settled: a source through a dangling symlink (J90-2's divergence, the orchestrator's ruling:
+Node's answer).** The `nodeRealpath` adapter is Node's function, `realpath(3)` and the parent where
+it throws, so both runtimes name the hot index of such a source by the link; a path below the link
+and a directory name spelled in another case on a case-insensitive filesystem (where `realpath(3)`
+answers the filesystem's spelling and `os.path.realpath` kept the caller's) agree too. The
+`ruling: UNRULED DIVERGENCE (J90-2)` case is an agreeing case with a literal per side, six cases red
+on 743b54b9's adapter. No other `realpath` caller is in the J90-3 modules (retention names a root's
+job index by `storeId`, the `pyRealpath` adapter, agreeing since J89-1F).
+
+**Found, not fixed, not ruled (J90-3): the sentence of a cold manifest that is not JSON.** A
+`ColdIndexError` for an unreadable file quotes the read's own message. A missing file and a file
+that is not UTF-8 are worded alike (CPython's wording on both sides), but a JSON syntax error is
+worded by each runtime's parser: `Expecting property name enclosed in double quotes: line 1 column 2
+(char 1)` (CPython's `json`) on the reference, `Expected property name or '}' in JSON at position 1
+(line 1 column 2)` (V8) on the port. It predates generation (743b54b9 answers the same); the
+generated index keeps each side's wording through the `coldErrorText` adapter, since the runtime
+refuses a compiled read of a JSON.parse message. Both sides REFUSE (the bit is compared); pinned in
+`--suite storage-cold` as `ruling: UNRULED DIVERGENCE (J90-3) a ColdIndexError for a manifest that is
+not JSON — the sentence` with a literal per side. Left to the orchestrator.
+
+**Python answers that moved to Node's.** Where the hand-written module differed from the TypeScript
+on an input no suite held, generation makes Python answer Node's, each now pinned: the
+`BANTAMKIT_RETENTION` / `BANTAMKIT_SKILL_AUDIT` switch read through JS `trim` (743b54b9's `strip()`
+also stripped U+001C..U+001F and U+0085 and kept U+FEFF: `off\u001c` was off on the reference and
+on on the port; `--suite storage-retention`, `J90-3 the BANTAMKIT_RETENTION switch is read through JS
+trim`); a sweep's `error` record naming the JS class (`Error`) where the reference named Python's;
+a `child_main` claim or sweep that raises anything (the reference let all but an `OSError` out); and
+a cold-index JSON integer read as `JSON.parse` reads it (`-0`, 16 digits or more).
+
+**Fixed in Node (J90-3): a short archive write.** `retentionFs.writeArchive` wrote the archive with
+ONE `writeSync` and did not read its count, so under a file-size limit (`ulimit -f`: write(2) answers
+a short count, then EFBIG) a truncated archive was renamed into place; it failed to verify (nothing
+was deleted) but stayed, and every later run refused the job as `archive exists and differs`. The
+reference's `fh.write` writes all or raises (`archive write failed`, nothing left). The write now
+loops as `logsegment.ts`'s `writeAll` does. `test_a_short_archive_write_renames_nothing_into_place_
+and_is_refused` and its Node twin (red on 743b54b9's Node: `archive did not verify`).
+
+**Measured (J90-3; this tree's Python and Node against 743b54b9's Python, macOS arm64).**
+- *Real data* (copies of this machine's `~/.bantamkit` hooks, usage, touch logs and memory, this
+  repository's `.bantamkit/memory` and `.shiftwork`; a fixed clock `2026-11-16T12:00:00.000Z`): two
+  retention runs (the second a no-op), the status lines before and after, five archived-job
+  searches, the job cold index, and a facts cold index per memory store built 100 docs a segment,
+  queried, compacted, compacted with a `keep`. Over the whole tree (46 jobs, 40 archived, 394
+  ledgers deleted, 2,529 logs folded, 90 rotated) Python equals Node in every answer and in all
+  21,858 files (each `.gz` compared decompressed, a cold manifest's `created` masked); the status
+  lines differ only in the bytes a rotated `.gz` holds (the ruled `gzipSync` row). Against
+  743b54b9's Python the same over the tree without jobs 63..99 (21,675 files, 23 archived): equal,
+  status lines included. 743b54b9 cannot run the rest: its tokenizer is quadratic on a long text
+  that is not ASCII (job 63, 640 KB: over 120 s, killed), which this unit fixed in the runtime
+  (`_js_code_units`, `tools/ts2py/RULES.md`, *J90-3 rules*; 0.93 s).
+- *Write safety* (an 8 MB HFS+ volume and `ulimit -f`; 17 steps, three sides): a cold `add` into
+  20 KB of free space (ENOSPC), a compaction on a full volume, an `add` under `ulimit -f 16`
+  (EFBIG), each then with space back; retention archiving onto a full volume (the job that does not
+  fit refused `archive write failed`, the others archived), the hook log folded and rotated on a
+  full volume (left as it was, then folded and rotated), and retention under `ulimit -f 16`. Every
+  answer and every file (a `.gz` decompressed) is the same on the three sides once the Node short
+  write above is fixed; no `.tmp` is left and nothing is lost. A cold index whose sync failed
+  mid-write keeps a segment and some shards with no manifest: rows no reader trusts, as designed.
+- *A SIGKILLed child* (eight real jobs; the child killed after 1, 3 and 5 archives, nine kills on
+  three sides): nothing lost (every original either still there or in an archive that verifies),
+  and the next day's run completes, the tree then equal to an uninterrupted run's but for
+  `retention.json` and, when the kill landed during an archive's write, that write's orphan
+  `<archive>.<pid>.tmp` (eight of nine), never removed by a later run, on all three sides: found,
+  not fixed.
+- *Speed* (n = 9 interleaved fresh processes, medians, this tree against 743b54b9): cold build
+  (two 300-doc segments) 153.9 ms against 114.6 (+34%), 20 cold queries 165.9 against 35.7 (+364%),
+  a compaction with `keep` 114.2 against 64.7 (+76%), a retention run over eight real jobs 1,408
+  against 1,287 (+9%), the tier lines x5 1,792 against 1,767 (+1%), the first `memory_save` 55.7
+  against 55.9 (0%); the #204 bar (limit 15 ms) 13.40 against 13.37 ms p50 over 15 rounds (the
+  ranges overlap; the only changed code on that path, `_js_code_units`'s identity test, runs 59
+  times a recall, about 3 us). The cold index is read only for `include_archived` and retention
+  runs detached: carried with J90-2's index paths to #317.
 
 ## Concurrency
 

@@ -16,7 +16,12 @@ import { test } from 'node:test';
 import * as sf from '../dist/skillfile.js';
 import * as si from '../dist/skillinstall.js';
 import * as sm from '../dist/skillmine.js';
-import * as retention from '../dist/storage/retention.js';
+// J90-3 (#316 G4): retention.ts is compiled by ts2py; its archive write (`retentionFs`) and the
+// child's async half (`childMain`) moved to two modules it cannot hold, re-gathered here.
+import * as retentionCore from '../dist/storage/retention.js';
+import { retentionFs } from '../dist/storage/retentionfs.js';
+import { childMain } from '../dist/storage/retentionmain.js';
+const retention = { ...retentionCore, retentionFs, childMain };
 
 const NOW = '2026-10-27T00:00:00.000Z';
 const DAY_S = 86_400;

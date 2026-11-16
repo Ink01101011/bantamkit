@@ -262,6 +262,8 @@ const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
     ("copyWithin", 2, 3, None, Ret::List),
     // J90-2 (#316 G4: storage/hotindex).
     ("delete", 1, 1, None, Ret::Bool),
+    // J90-3 (#316 G4: storage/retention): `Buffer.prototype.equals`.
+    ("equals", 1, 1, None, Ret::Bool),
 ];
 
 /// J86-R finding 3: every method a builtin prototype the subset can reach carries (String, Array,
@@ -295,6 +297,8 @@ const JS_METHOD_NAMES: &[&str] = &[
     "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__", "constructor",
     "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString", "toString",
     "valueOf",
+    // J90-3: Buffer.prototype's `equals` (a Uint8Array method the subset now calls).
+    "equals",
 ];
 
 /// Static calls on a builtin namespace: object, method, helper, min args, max args, returns.
@@ -1181,7 +1185,7 @@ impl<'s> Lowerer<'s> {
             }
             Statement::ExportFromDeclaration(e) => {
                 if !e.export_kind.is_type() {
-                    self.refuse(e.span, "re-export");
+                    self.re_export(e);
                 }
             }
             // Resolved in pass 1 (`import`), through a compiled module or the adapter seam.
@@ -3234,6 +3238,23 @@ impl<'s> Lowerer<'s> {
                     let key = py_str(m.property.name.as_str());
                     return self.process_env_read(key);
                 }
+                // J90-3: a constant of a namespace-imported Node module (`path.sep`): its adapter
+                // row, read by name. Anything else of the namespace stays refused below.
+                if let Expression::Identifier(id) = strip(&m.object)
+                    && !self.is_scoped(id.name.as_str())
+                    && let Some(module) = self.namespaces.get(id.name.as_str()).cloned()
+                    && let Some(adapter) = adapters::import(&module, m.property.name.as_str())
+                    && adapter.kind == AdapterKind::Constant
+                {
+                    self.imports
+                        .entry(self.ctx.adapter_module.clone())
+                        .or_default()
+                        .insert(adapter.py_name.to_string());
+                    return Py {
+                        pure: true,
+                        ..Py::atom(adapter.py_name.to_string())
+                    };
+                }
                 // J89-3: a Float64Array's `.length` (fixed when it is made); nothing else of it.
                 if let Some(name) = self.typed_array(&m.object) {
                     if m.property.name != "length" {
@@ -5130,6 +5151,81 @@ impl<'s> Lowerer<'s> {
     }
 
     /// `export { a, b }`: each a module-level name (declared or imported), exported as itself.
+    /// J90-3: `export { a, type T } from './m.js'` (storage/index.ts): each value name imported
+    /// as `import { a } from './m.js'` would import it (a compiled module of the call, or an
+    /// adapter row), then exported. A renamed re-export, `export *`, and a name already bound here
+    /// are refused. Another compiled module cannot import a name through the re-export (the
+    /// re-exporting module's export table lists only what it declares): such an import is refused
+    /// as one the module does not export.
+    fn re_export(&mut self, e: &ExportFromDeclaration<'_>) {
+        if e.with_clause.is_some() {
+            self.refuse(e.span, "re-export with an import attribute");
+            return;
+        }
+        let Some(spec) = e.source.value.as_str() else {
+            self.refuse(e.span, "re-export specifier with a lone surrogate");
+            return;
+        };
+        let resolved = resolve_specifier(&self.ctx.path, spec);
+        for specifier in &e.specifiers {
+            if specifier.export_kind.is_type() {
+                continue;
+            }
+            let local = specifier.local.name();
+            if specifier.exported.name() != local {
+                self.refuse(specifier.span, "renamed re-export");
+                continue;
+            }
+            let local = local.as_str();
+            let compiled = resolved
+                .as_ref()
+                .and_then(|path| self.ctx.modules.get(path))
+                .cloned();
+            let py = if let Some(module) = compiled {
+                let Some((py, _)) = module.names.get(local).cloned() else {
+                    let construct = format!(
+                        "re-export of {local} from {spec}, which that module does not export"
+                    );
+                    self.refuse(specifier.span, construct);
+                    continue;
+                };
+                let cyclic = resolved
+                    .as_ref()
+                    .is_some_and(|path| self.ctx.cyclic_imports.contains(path));
+                let into = if cyclic {
+                    self.cyclic_py.insert(py.clone());
+                    &mut self.late_imports
+                } else {
+                    &mut self.imports
+                };
+                into.entry(format!(".{}", module.py_module))
+                    .or_default()
+                    .insert(py.clone());
+                py
+            } else if let Some(adapter) = resolved
+                .as_deref()
+                .and_then(|path| adapters::import(path, local))
+            {
+                let py = adapter.py_name.to_string();
+                self.imports
+                    .entry(self.ctx.adapter_module.clone())
+                    .or_default()
+                    .insert(py.clone());
+                py
+            } else {
+                let construct = format!(
+                    "re-export of {local} from {spec}: no compiled module and no declared adapter"
+                );
+                self.refuse(specifier.span, construct);
+                continue;
+            };
+            self.claim(local, &py, specifier.span);
+            if !self.exports.contains(&py) {
+                self.exports.push(py);
+            }
+        }
+    }
+
     fn export_list(&mut self, e: &ExportNamedDeclaration<'_>) {
         for specifier in &e.specifiers {
             if specifier.export_kind.is_type() {
@@ -5941,6 +6037,19 @@ pub fn compiled_imports(
 ) -> HashSet<String> {
     let mut out = HashSet::new();
     for stmt in &program.body {
+        // J90-3: a value re-export binds what an import of the same names would.
+        if let Statement::ExportFromDeclaration(e) = stmt
+            && !e.export_kind.is_type()
+            && e.specifiers.iter().any(|s| !s.export_kind.is_type())
+        {
+            if let Some(spec) = e.source.value.as_str()
+                && let Some(target) = resolve_specifier(path, spec)
+                && modules.contains_key(&target)
+            {
+                out.insert(target);
+            }
+            continue;
+        }
         let Statement::ImportDeclaration(i) = stmt else {
             continue;
         };

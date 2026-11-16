@@ -1,6 +1,7 @@
 # ts2py runtime support: the JavaScript semantics the generated code leans on.
 # Pure standard library. Every name starts with `_js_`, `_Js` or `_JS_`, and ts2py refuses a
 # TypeScript identifier with one of those prefixes, so nothing here can be shadowed by source.
+import base64 as _js_base64
 import decimal as _js_decimal
 import errno as _js_errno
 import functools as _js_functools
@@ -890,6 +891,14 @@ _JS_UNITS_LONGEST = 1 << 16
 def _js_code_units(text):
     """`text` with every astral character split into its two surrogates: the string as a JS regex
     without the `u` flag sees it, one UTF-16 code unit per Python character."""
+    # J90-3: a string longer than `_JS_UNITS_LONGEST` is held by IDENTITY, the last one only: a
+    # loop over one long text that is not ASCII (`charCodeAt` / `slice` at every index, the
+    # tokenizer over an archived job's text) rescanned it at every call, quadratic (a 640 KB job
+    # did not finish in 40 s). A str is immutable, so the same object has the same units; the pair
+    # is replaced whole.
+    held = _JS_UNITS_LAST[0]
+    if text is held[0]:
+        return held[1]
     if text.isascii():
         return text
     units = _JS_UNITS.get(text)
@@ -899,7 +908,12 @@ def _js_code_units(text):
             if len(_JS_UNITS) >= _JS_UNITS_ENTRIES:
                 _JS_UNITS.clear()
             _JS_UNITS[text] = units
+        else:
+            _JS_UNITS_LAST[0] = (text, units)
     return units
+
+
+_JS_UNITS_LAST = [(None, "")]
 
 
 def _js_code_units_of(text):
@@ -2507,7 +2521,21 @@ def _js_buffer_to_string(buffer, encoding=_JS_UNDEFINED):
         return bytes(buffer).decode("latin-1")
     if encoding == "hex":
         return bytes(buffer).hex()
+    if encoding == "base64":
+        # J90-3: RFC 4648 base64 with `=` padding, Node's `base64` encoder (`retention.ts`'s
+        # `entry` of a file that is not UTF-8).
+        return _js_base64.b64encode(bytes(buffer)).decode("ascii")
     raise TypeError(f"ts2py: Buffer.toString({encoding!r}) is outside the subset")
+
+
+def _js_m_equals(receiver, other):
+    """`buf.equals(other)` (J90-3): whether two Buffers hold the same bytes; anything but two
+    Buffers is outside the subset (Node throws ERR_INVALID_ARG_TYPE for a second not a Buffer)."""
+    if not isinstance(receiver, _JS_BYTES):
+        raise _js_outside("equals", receiver)
+    if not isinstance(other, _JS_BYTES):
+        raise TypeError("ts2py: Buffer.equals of anything but a Buffer is outside the subset")
+    return bytes(receiver) == bytes(other)
 
 
 def _js_m_subarray(receiver, start=_JS_UNDEFINED, end=_JS_UNDEFINED):
@@ -2965,6 +2993,8 @@ def _js_m_charCodeAt(receiver, position=_JS_UNDEFINED):
     if 0 <= index < len(units):
         return ord(units[int(index)])
     return _js_math.nan
+
+
 
 
 def _js_m_match(receiver, pattern):

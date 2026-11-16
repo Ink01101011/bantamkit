@@ -1395,7 +1395,11 @@ const maskAll = (v) => (Array.isArray(v) ? v.map(maskAll) : v !== null && typeof
 async function dailyCases(ctx, base) {
   const sm = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillmine.js')).href);
   const si = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'skillinstall.js')).href);
-  const RT = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href);
+  // J90-3: `childMain` lives in `retentionmain.js` (the async half retention.ts cannot hold, #316 G4).
+  const RT = {
+    ...(await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retention.js')).href)),
+    ...(await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'storage', 'retentionmain.js')).href)),
+  };
   const root = join(base, 'daily');
   const stub = await startDailyStub(ctx.scratch);
   const B = (name) => join(root, name);

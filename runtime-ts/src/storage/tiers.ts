@@ -14,8 +14,8 @@
  * `touch/*`) summing its files, because a long-lived home holds thousands of usage ledgers and
  * one line each buried the report. `bantamkit_status` with `detail: true` lists every ledger.
  */
-import fs from 'node:fs';
-import path from 'node:path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import { nativeMemoryDir } from '../hookadapter.js';
 import { hasBantamkitHooks } from '../hostinstall.js';
@@ -174,9 +174,10 @@ export function logLines(home: string, detail = false): string[] {
     family[2] += segments.length;
     family[3] += seg.skipped;
   }
-  for (const [family, [n, held, rotated, skipped]] of families) {
+  for (const [family, sums] of families) {
+    const n = sums[0];
     if (n === 0) continue;
-    out.push(`logs: ${family}/* ${plural(n, 'file')} ${held} (${rotated} rotated, ${skipped} skipped)`);
+    out.push(`logs: ${family}/* ${plural(n, 'file')} ${sums[1]} (${sums[2]} rotated, ${sums[3]} skipped)`);
   }
   return out.length > 0 ? out : ['logs: none'];
 }

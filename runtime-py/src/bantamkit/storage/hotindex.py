@@ -12,11 +12,11 @@ are the generated ones under their Python names; `no_gc` is Python-only (`docs/p
 The generated store builds its own `HotIndex` (the generated class) and `MemoryStore.index()`
 answers it through this shim (`HotIndex._of`), so a Python caller and the store read one index.
 
-`dumps`, `_loads` and `_iso` stay hand-written here: `dumps` is the shared serialisation the
-UNGENERATED modules write with (`coldindex`, `retention`, `touch.graph`, `skillreport`, the
-conformance refs) -- `json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",", ":"))`,
-which the generated `dump_index` reproduces over the index's own data -- and `_loads` / `_iso` are
-what the hand-written cold index reads and stamps with until #316 G4 generates it.
+`dumps` stays hand-written here: it is the shared serialisation the UNGENERATED modules write with
+(`touch.graph`, `skillreport`, the conformance refs) -- `json.dumps(..., ensure_ascii=False,
+sort_keys=True, separators=(",", ":"))`, which the generated `dump_index` reproduces over the
+index's own data. (J90-3 retired `_loads` / `_iso`, the hand-written cold index's reader and stamp:
+the cold index is generated now.)
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -47,9 +46,6 @@ DUPLICATE = _g.DUPLICATE
 
 Kind = Literal["facts", "native"]
 Result = Literal["fresh", "rebuilt", "patched"]
-
-_ISO = "%Y-%m-%dT%H:%M:%SZ"
-_SAFE = 2**53 - 1
 
 
 def sha16(path: Path | str) -> str:
@@ -83,22 +79,6 @@ def decode(names: list[str], seg: Any) -> list[list[Any]]:
 def encode(rows: list[tuple[int, int, int, int]]) -> list[int]:
     """`(id, tf_name, tf_description, tf_keywords)` rows, ids ascending, as segments."""
     return _g.encode_segments([list(r) for r in rows])
-
-
-def _iso(t: float) -> str:
-    """The hand-written cold index's stamp (`coldindex.py`, not generated yet)."""
-    return datetime.fromtimestamp(int(t), tz=UTC).strftime(_ISO)
-
-
-def _js_number(text: str) -> float | int:
-    """A JSON float token as `JSON.parse` reads it (J90-1F #1, #4): the cold index's reader."""
-    f = float(text)
-    return int(f) if f.is_integer() and abs(f) <= _SAFE else f
-
-
-def _loads(text: str | bytes) -> Any:
-    """The hand-written cold index's JSON reader (`coldindex.py`, not generated yet)."""
-    return json.loads(text, parse_float=_js_number)
 
 
 @contextmanager

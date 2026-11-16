@@ -349,7 +349,7 @@ function runNode(mods, bed) {
             mtime_ns: '0',
             size: 1,
           };
-          cold.add(new Map([['ghost', doc]]));
+          cold.addDocs(new Map([['ghost', doc]]));
           out.push(null);
           break;
         }
@@ -395,7 +395,8 @@ function mask(value, base) {
 export async function run(ctx) {
   const dist = (p) => pathToFileURL(join(ctx.runtimeTs, 'dist', ...p.split('/'))).href;
   const mods = {
-    retention: await import(dist('storage/retention.js')),
+    // J90-3: `childMain` lives in `retentionmain.js` (the async half retention.ts cannot hold, #316 G4).
+    retention: { ...(await import(dist('storage/retention.js'))), ...(await import(dist('storage/retentionmain.js'))) },
     shiftwork: await import(dist('shiftwork.js')),
     toJs: (await import(dist('pyjson.js'))).toJs,
   };
