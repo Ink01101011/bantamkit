@@ -1049,14 +1049,14 @@ pub const ADAPTERS: &[Adapter] = &[
         name: "coldErrorText",
         py_name: "cold_error_text",
         kind: AdapterKind::Function,
-        why: "Python is the reference: the message a `ColdIndexError` quotes for a failed read, `f\"... unreadable: {e}\"` on the reference, so `str(e)`: an OSError as CPython words it (a `PyOSError`'s message on Node, the same), a strict-UTF-8 refusal as CPython's decoder words it (`PyUnicodeDecodeError`, both sides). NOT the same function on one input: a JSON syntax error, worded by V8 on Node and by CPython's `json` here (the runtime refuses a compiled read of that message); the difference predates generation and is pinned per side (`--suite storage-cold`, J90-3) for the orchestrator.",
+        why: "Python is the reference: the message a `ColdIndexError` quotes for a failed read, `f\"... unreadable: {e}\"` on the reference, so `str(e)`: an OSError as CPython words it (a `PyOSError`'s message on Node, the same), a strict-UTF-8 refusal as CPython's decoder words it (`PyUnicodeDecodeError`, both sides). A JSON syntax error never reaches it since J90-3F: coldindex.ts throws its own `COLD_NOT_JSON` sentence, one on both sides (it was V8's wording on Node and CPython's `json` here, pinned `UNRULED DIVERGENCE (J90-3)`; `--suite storage-cold`).",
     },
     Adapter {
         module: Some("runtime-ts/src/storage/retentionfs.ts"),
         name: "retentionFs",
         py_name: "retentionFs",
         kind: AdapterKind::ImportedClass(&["writeArchive"]),
-        why: "Python is the reference: retentionfs.ts is the archive's one write (moved out of retention.ts unchanged, J90-3), the reference's `_write_archive` and `_fsync_dir`: temp, write, `os.fsync`, `os.replace`, the directory fsynced on POSIX, the temp removed on a failure; the gzip is `gzip_sync`'s (the `gzipSync` row: RULED bytes, the same data). `syncs` counts the syncs. A test swaps `writeArchive`. `--suite storage-retention` compares the trees and reports.",
+        why: "Python is the reference: retentionfs.ts is the archive's one write (moved out of retention.ts unchanged, J90-3), the reference's `_write_archive` and `_fsync_dir`: the gzip made before the temp is opened (J90-3F, as Node's), temp, write, `os.fsync`, `os.replace`, the directory fsynced on POSIX, the temp removed on a failure; the gzip is `gzip_sync`'s (the `gzipSync` row: RULED bytes, the same data). `syncs` counts the syncs. A test swaps `writeArchive`. `--suite storage-retention` compares the trees and reports.",
     },
     Adapter {
         module: Some("runtime-ts/src/storage/retentionspawn.ts"),

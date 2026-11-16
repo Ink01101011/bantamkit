@@ -23,7 +23,7 @@ import zlib from 'node:zlib';
 // child's async half (`childMain`) moved to two modules it cannot hold, re-gathered here.
 import * as retentionCore from '../dist/storage/retention.js';
 import { retentionFs } from '../dist/storage/retentionfs.js';
-import { childMain } from '../dist/storage/retentionmain.js';
+import { childAudit, childMain } from '../dist/storage/retentionmain.js';
 const retention = { ...retentionCore, retentionFs, childMain };
 import { ColdIndex } from '../dist/storage/index.js';
 import * as shiftwork from '../dist/shiftwork.js';
@@ -460,4 +460,55 @@ test('the child is spawned when either switch is on', (t) => {
     }
     assert.equal(retention.maybeSpawn(home, home), word, `${sweep} ${audit}`);
   }
+});
+
+test('an audit that throws anything costs neither the exit nor the sweep (J90-3F)', async (t) => {
+  // the twin of the Python shim's test: its `child_main` let all but an OSError out (red there on 2cca2564)
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'retention-audit-')));
+  fs.mkdirSync(path.join(base, 'home', '.bantamkit'), { recursive: true });
+  fs.mkdirSync(path.join(base, 'root'));
+  const saved = [process.env.BANTAMKIT_RETENTION, process.env.BANTAMKIT_SKILL_AUDIT, childAudit.daily];
+  process.env.BANTAMKIT_RETENTION = 'on';
+  process.env.BANTAMKIT_SKILL_AUDIT = 'on';
+  childAudit.daily = () => {
+    throw new TypeError('audit broke');
+  };
+  t.after(() => {
+    const put = (k, v) => (v === undefined ? delete process.env[k] : (process.env[k] = v));
+    put('BANTAMKIT_RETENTION', saved[0]);
+    put('BANTAMKIT_SKILL_AUDIT', saved[1]);
+    childAudit.daily = saved[2];
+  });
+  assert.equal(await retention.childMain([path.join(base, 'root'), path.join(base, 'home')], NOW), 0);
+  const state = JSON.parse(fs.readFileSync(path.join(base, 'home/.bantamkit/retention.json'), 'utf8'));
+  assert.ok(state.ran_at === NOW && 'report' in state && !('error' in state));
+});
+
+test('a run removes the stale temps a killed run left and nothing else (J90-3F)', (t) => {
+  // a writer killed between a temp's write and its rename left `<file>.<pid>.tmp` forever (red on 2cca2564)
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'retention-tmp-')));
+  const home = path.join(base, 'home');
+  const root = path.join(base, 'root');
+  const arch = path.join(root, '.shiftwork', 'archive');
+  fs.mkdirSync(arch, { recursive: true });
+  fs.mkdirSync(path.join(home, '.bantamkit'), { recursive: true });
+  const saved = process.env.BANTAMKIT_RETENTION;
+  process.env.BANTAMKIT_RETENTION = 'on';
+  t.after(() => (saved === undefined ? delete process.env.BANTAMKIT_RETENTION : (process.env.BANTAMKIT_RETENTION = saved)));
+  const old = Date.now() / 1000 - 3600;
+  for (const [d, name, stale] of [
+    [arch, 'a.json.gz.4242.tmp', true],
+    [arch, 'b.json.gz.4243.tmp', false],
+    [arch, 'notes.md.4242.tmp', true],
+    [arch, 'c.json.gz.tmp', true],
+    [path.join(home, '.bantamkit'), 'retention.json.77.tmp', true],
+    [path.join(home, '.bantamkit'), 'retention.json.78.tmp', false],
+  ]) {
+    fs.writeFileSync(path.join(d, name), 'partial');
+    if (stale) fs.utimesSync(path.join(d, name), old, old);
+  }
+  const report = retention.runRetention(home, [root], NOW);
+  assert.deepEqual(report.deleted, [path.join(home, '.bantamkit', 'retention.json.77.tmp'), path.join(arch, 'a.json.gz.4242.tmp')]);
+  assert.deepEqual(fs.readdirSync(arch).sort(), ['b.json.gz.4243.tmp', 'c.json.gz.tmp', 'notes.md.4242.tmp']);
+  assert.deepEqual(fs.readdirSync(path.join(home, '.bantamkit')).sort(), ['retention.json.78.tmp']);
 });

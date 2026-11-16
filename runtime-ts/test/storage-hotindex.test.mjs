@@ -352,3 +352,23 @@ test('native refs read the description, then the body (#200)', () => {
   hi.refresh('full');
   assert.deepEqual(hi.docs().get('n').refs, ['src/a.ts', 'b.py#f']);
 });
+
+test('a persist removes its own stale temps and no other index\'s (J90-3F)', () => {
+  // a writer killed between a temp's write and its rename left `<file>.<pid>.tmp` forever (red on
+  // 2cca2564); the next persist removes this index's own once older than the lock's window
+  const t = tmp();
+  fact(path.join(t, 's'), 'a', 'x');
+  const hi = hiOf(t);
+  const d = path.dirname(hi.path);
+  const head = path.basename(hi.path);
+  const sha = head.slice(0, -5);
+  const old = fs.statSync(hi.path).mtimeMs / 1000 - 3600;
+  const plant = { [`${head}.31.tmp`]: true, [`${sha}.postings-00.json.32.tmp`]: true, [`${head}.33.tmp`]: false, '0000000000000000.json.34.tmp': true };
+  for (const [name, stale] of Object.entries(plant)) {
+    fs.writeFileSync(path.join(d, name), 'partial');
+    if (stale) fs.utimesSync(path.join(d, name), old, old);
+  }
+  fact(path.join(t, 's'), 'b', 'y');
+  assert.ok(['patched', 'rebuilt'].includes(hi.refresh('full')) && hi.docs().has('b'));
+  assert.deepEqual(fs.readdirSync(d).filter((n) => n.endsWith('.tmp')).sort(), ['0000000000000000.json.34.tmp', `${head}.33.tmp`]);
+});

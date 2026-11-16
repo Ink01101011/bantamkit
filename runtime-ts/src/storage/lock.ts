@@ -10,6 +10,9 @@
  * there) gives up at once, unheld, as the reference does (#208 item 7).
  */
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+
+import { cmpCodepoint } from '../pysem.js';
 
 export const LOCK_WAIT_MS = 2000;
 export const LOCK_STALE_MS = 10_000;
@@ -86,4 +89,56 @@ export function exclusive<T>(target: string, body: (held: boolean) => T, options
   } finally {
     releaseLock(lock, held);
   }
+}
+
+/**
+ * The base of a writer's temp file, `<base>.<pid>.tmp` (every G4 writer names its temp so:
+ * the cold index's `write`, the hot index's persist, retention's archive and state), or `null`
+ * for any other name. Spelled without a regex, as retention's name tests are (#316 G4, J90-3).
+ */
+export function tempBase(name: string): string | null {
+  if (!name.endsWith('.tmp')) return null;
+  const stem = name.slice(0, -4);
+  const dot = stem.lastIndexOf('.');
+  if (dot <= 0 || dot === stem.length - 1) return null;
+  for (const c of stem.slice(dot + 1)) {
+    if (c < '0' || c > '9') return null;
+  }
+  return stem.slice(0, dot);
+}
+
+/**
+ * Delete each `<base>.<pid>.tmp` in `dir` whose `base` the caller `owns` and whose mtime is older
+ * than `staleMs`; the names deleted, in code-point order (#316 G4, J90-3F).
+ *
+ * A writer killed between its temp write and its rename (SIGKILL, a power cut) leaves the temp
+ * behind, and no later write of the same file ever reused the name (the pid differs), so before
+ * this every such orphan stayed forever, on both runtimes. THE RULE is the lock's: a temp older
+ * than the lock's stale window is abandoned, as a lock that old is. A live writer never holds one
+ * that old: each temp is written in one call (the archive's compressed before its temp is
+ * opened) and renamed at once, and every write moves the mtime. Only a regular file is removed
+ * (never a directory or what a symlink points at); one that vanishes or refuses is left.
+ */
+export function removeStaleTemps(dir: string, owns: (base: string) => boolean, staleMs: number = LOCK_STALE_MS): string[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const name of [...names].sort(cmpCodepoint)) {
+    const base = tempBase(name);
+    if (base === null || !owns(base)) continue;
+    const p = path.join(dir, name);
+    try {
+      const st = fs.lstatSync(p);
+      if (!st.isFile() || !(Date.now() - st.mtimeMs > staleMs)) continue;
+      fs.unlinkSync(p);
+      removed.push(name);
+    } catch {
+      /* gone already, or the directory refuses: left as it is */
+    }
+  }
+  return removed;
 }

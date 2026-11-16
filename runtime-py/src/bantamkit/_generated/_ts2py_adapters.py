@@ -2711,8 +2711,9 @@ def cold_error_text(error, *_):
     """`coldErrorText` (runtime-ts/src/storage/coldfs.ts): the text a `ColdIndexError` quotes,
     `str(e)` as the reference quoted it (`f"... unreadable: {e}"`): an OSError CPython's `str(e)`
     (which a `PyOSError`'s message is in Node), a `PyUnicodeDecodeError` CPython's decoder message
-    (both runtimes), a JSON syntax error CPython's `json` wording where Node's is V8's (pinned per
-    side, `--suite storage-cold`)."""
+    (both runtimes). A text that is not JSON never reaches it since J90-3F: `coldindex.ts` throws
+    its own `COLD_NOT_JSON` sentence, so neither parser's wording is quoted
+    (`--suite storage-cold`)."""
     return str(error)
 
 
@@ -2753,9 +2754,12 @@ class _RetentionFs(_JsObject):
         directory = _os.path.dirname(target)
         _pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
         tmp = _os.path.join(directory, f"{_os.path.basename(target)}.{_os.getpid()}.tmp")
+        # compressed before the temp is opened (J90-3F), as Node's: a live writer's temp is never
+        # idle, so the stale-temp sweep (`removeStaleTemps`) never meets one
+        gz = gzip_sync(data)
         try:
             with open(tmp, "wb") as handle:
-                handle.write(gzip_sync(data))
+                handle.write(gz)
                 handle.flush()
                 _os.fsync(handle.fileno())
                 self.syncs += 1

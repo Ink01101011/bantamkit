@@ -558,3 +558,53 @@ def test_the_child_is_spawned_when_either_switch_is_on(tmp_path, monkeypatch):
             else:
                 monkeypatch.setenv(env, value)
         assert retention.maybe_spawn(tmp_path, str(tmp_path)) == word, (sweep, audit)
+
+
+def test_an_audit_that_raises_anything_costs_neither_the_exit_nor_the_sweep(tmp_path, monkeypatch):
+    """J90-3F: the shim's `child_main` caught only OSError from the audit, so a TypeError there
+    left the child with a traceback where Node's `catch` answers 0 (red on 2cca2564)."""
+    from bantamkit import skillreport
+
+    monkeypatch.setenv(retention.RETENTION_ENV, "on")
+    monkeypatch.setenv(retention.SKILL_AUDIT_ENV, "on")
+    (tmp_path / "home" / ".bantamkit").mkdir(parents=True)
+    (tmp_path / "root").mkdir()
+
+    def broke(*_a, **_k):
+        raise TypeError("audit broke")
+
+    monkeypatch.setattr(skillreport, "daily", broke)
+    assert retention.child_main([str(tmp_path / "root"), str(tmp_path / "home")], now=NOW) == 0
+    state = json.loads((tmp_path / "home/.bantamkit/retention.json").read_text(encoding="utf-8"))
+    assert state["ran_at"] == NOW and "report" in state and "error" not in state
+
+
+def test_a_run_removes_the_stale_temps_a_killed_run_left_and_nothing_else(tmp_path, monkeypatch):
+    """J90-3F: a writer killed between a temp's write and its rename left `<file>.<pid>.tmp` forever
+    (red on 2cca2564). A run removes the archive and state temps it owns once older than the
+    lock's stale window; a fresh temp (a live writer's), a name it does not write and a name with
+    no pid are kept."""
+    monkeypatch.setenv(retention.RETENTION_ENV, "on")
+    home, root = tmp_path / "home", tmp_path / "root"
+    arch = root / ".shiftwork" / "archive"
+    arch.mkdir(parents=True)
+    (home / ".bantamkit").mkdir(parents=True)
+    old = time.time() - 3600
+    for d, name, stale in (
+        (arch, "a.json.gz.4242.tmp", True),
+        (arch, "b.json.gz.4243.tmp", False),
+        (arch, "notes.md.4242.tmp", True),
+        (arch, "c.json.gz.tmp", True),
+        (home / ".bantamkit", "retention.json.77.tmp", True),
+        (home / ".bantamkit", "retention.json.78.tmp", False),
+    ):
+        (d / name).write_bytes(b"partial")
+        if stale:
+            os.utime(d / name, (old, old))
+    report = retention.run_retention(home, [root], NOW)
+    assert report["deleted"] == [
+        str(home / ".bantamkit" / "retention.json.77.tmp"),
+        str(arch / "a.json.gz.4242.tmp"),
+    ]
+    assert sorted(os.listdir(arch)) == ["b.json.gz.4243.tmp", "c.json.gz.tmp", "notes.md.4242.tmp"]
+    assert sorted(os.listdir(home / ".bantamkit")) == ["retention.json.78.tmp"]

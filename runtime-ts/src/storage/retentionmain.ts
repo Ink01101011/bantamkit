@@ -12,7 +12,8 @@
  * way. The sweep runs only when `BANTAMKIT_RETENTION` is not off; with it off the child deletes,
  * moves or rewrites NOTHING but `retention.json`'s claim and `skill-audit.json` (`skill-host`'s
  * `child` snapshot case). The audit runs after the sweep, under the same stamp, only when
- * `BANTAMKIT_SKILL_AUDIT` is not off; it never throws.
+ * `BANTAMKIT_SKILL_AUDIT` is not off; anything it or the miner throws is swallowed (the Python
+ * shim's `child_main` catches every `Exception` alike since J90-3F; it caught only `OSError`).
  *
  * #206 Task 8: the experience miner (`skillmine.daily`) runs after the audit, under the same
  * switch and stamp. With the sweep off the only files the child may then change are the claim,
@@ -23,11 +24,18 @@
 import { daily as dailySkillAudit } from '../skillreport.js';
 import { childSweep } from './retention.js';
 
+/**
+ * The audit the child runs, through one object a test swaps `daily` on (J90-3F: to show that an
+ * audit that throws anything costs neither the sweep nor the child's exit, the Python shim's
+ * `child_main` patched through `bantamkit.skillreport.daily`).
+ */
+export const childAudit = { daily: dailySkillAudit };
+
 export async function childMain(argv: readonly string[], now: string | null = null): Promise<number> {
   const stamp = childSweep(argv, now);
   if (stamp === null) return 0;
   try {
-    dailySkillAudit(argv[1]!, argv[0]!, stamp);
+    childAudit.daily(argv[1]!, argv[0]!, stamp);
     // #206 Task 8: the experience miner after the audit, under the same claimed day. Imported
     // here, not at the top, so a hook that only imports this module never loads the miner.
     const { daily: dailyMiner } = await import('../skillmine.js');

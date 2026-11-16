@@ -160,7 +160,7 @@ def child_main(argv: list[str], now: str | None = None) -> int:
         daily(home, argv[0], stamp)
         # #206 Task 8: the experience miner after the audit, under the same claimed day.
         skillmine.daily(home, argv[0], stamp)
-    except OSError:
+    except Exception:  # noqa: BLE001 - silent, as Node's `catch` (J90-3F; was `OSError` only)
         pass
     return 0
 

@@ -831,6 +831,25 @@ def _j90_pin(d: Path) -> None:
     os.utime(d, (_J90_T, _J90_T))
 
 
+def _j90_plant_temps(d: Path, entries: list) -> None:
+    """J90-3F: `[name, "old" | "fresh" | "olddir"]` planted in `d`; an old one dated `_J90_T`."""
+    for name, age in entries:
+        p = d / name
+        if age == "olddir":
+            p.mkdir()
+        else:
+            p.write_bytes(b"partial")
+        if age != "fresh":
+            os.utime(p, (_J90_T, _J90_T))
+
+
+_J90_COLD_TEMPS = [
+    ["shard-03.json.4242.tmp", "old"], ["seg-000009.json.17.tmp", "old"], ["manifest.json.4243.tmp", "fresh"],
+    ["notes.txt.4242.tmp", "old"], ["shard-03.json.x1.tmp", "old"], ["shard-03.json.tmp", "old"],
+    ["manifest.json.99.tmp", "olddir"],
+]
+
+
 def _j90_mangle(raw: bytes, mode: str) -> bytes:
     import re
 
@@ -927,6 +946,23 @@ def _j90_index(d: Path) -> dict:
     hi = h.HotIndex(root, "native", home)
     hi.refresh("fast")
     out["native_flow"] = {"docs": sorted(hi.docs()), "skipped": sorted(hi.skipped)}
+    # J90-3F: a persist removes its own index's stale temps and no other index's (lib/storage_j90.mjs).
+    root, home = bed("temps", "facts", facts[:2])
+    hi = h.HotIndex(root, "facts", home)
+    hi.refresh("fast")
+    tdir, head = hi.path.parent, hi.path.name
+    sha = head[:-5]
+    _j90_plant_temps(tdir, [
+        [f"{head}.31.tmp", "old"], [f"{sha}.postings-00.json.32.tmp", "old"], [f"{head}.33.tmp", "fresh"],
+        ["0000000000000000.json.34.tmp", "old"], [f"{sha}.txt.35.tmp", "old"],
+    ])
+    (root / "facts" / "gamma.md").write_text(_J90_FACT.format(n="gamma", d="gamma word"), encoding="utf-8", newline="\n")
+    again = h.HotIndex(root, "facts", home)
+    again.refresh("full")
+    out["temps"] = {
+        "left": sorted(n.replace(sha, "<sha>") for n in os.listdir(tdir) if n.endswith(".tmp")),
+        "names": list(again.names()),
+    }
     # J90-2: a source through a dangling symlink and one through a live symlink (lib/storage_j90.mjs).
     (d / "links" / "real").mkdir(parents=True)
     os.symlink("missing-target", d / "links" / "dangle")
@@ -1013,7 +1049,30 @@ def _j90_cold(d: Path) -> dict:
     ci = fresh("msg_gone")
     ci.segment_path("000001").unlink()
     gone = _j90_try(lambda: ci.segment("000001"))
-    out["messages"] = {"syntax": syntax, "utf8": utf8, "gone": gone}
+    # J90-3F: a segment and a shard that are not JSON (lib/storage_j90.mjs).
+    ci = fresh("msg_seg_syntax")
+    ci.segment_path("000001").write_bytes(b"{not json")
+    seg_syntax = _j90_try(lambda: ci.segment("000001"))
+    ci = fresh("msg_shard_syntax")
+    for i in range(16):
+        ci.shard_path(i).write_bytes(b"[1,")
+    shard_syntax = _j90_try(lambda: ci.query(["word"]))
+    out["messages"] = {"syntax": syntax, "utf8": utf8, "gone": gone, "seg_syntax": seg_syntax,
+                       "shard_syntax": shard_syntax}
+    # J90-3F: the temps a killed writer left (lib/storage_j90.mjs).
+    ci = fresh("temps")
+
+    def temps() -> list:
+        return sorted(n for n in os.listdir(ci.dir) if n.endswith(".tmp"))
+
+    _j90_plant_temps(ci.dir, _J90_COLD_TEMPS)
+    before = temps()
+    ci.add({"gamma": doc("gamma", "word three")})
+    add = temps()
+    _j90_plant_temps(ci.dir, [["seg-000001.json.18.tmp", "old"]])
+    compacted = ci.compact()
+    out["temps"] = {"before": before, "add": add, "compact": temps(), "compacted": compacted,
+                    "query": [list(r) for r in ci.query(["word"])]}
     return out
 
 
@@ -1088,6 +1147,24 @@ def _j90_retention(d: Path) -> dict:
         out["parse_now_nonstr"] = _j90_try(lambda: r.parse_now(5))
         out["constants"] = [r.RETENTION_ENV, r.SKILL_AUDIT_ENV, r.TTL_S, r.LEDGER_DAYS, r.LOG_DAYS,
                             r.JOB_DAYS, r.STATE_NAME, r.SEARCH_MAX]
+        # J90-3F: a run removes the archive and state temps a killed run left (lib/storage_j90.mjs).
+        home, root = bed("temps")
+        _j90_plant_temps(root / ".shiftwork" / "archive", [
+            ["old.json.gz.4242.tmp", "old"], ["new.json.gz.4243.tmp", "fresh"], ["notes.md.4242.tmp", "old"],
+            ["x.json.gz.12a.tmp", "old"],
+        ])
+        _j90_plant_temps(home / ".bantamkit", [
+            ["retention.json.77.tmp", "old"], ["retention.json.78.tmp", "fresh"], ["other.json.79.tmp", "old"],
+        ])
+
+        def tmps_in(x: Path) -> list:
+            return sorted(n for n in os.listdir(x) if n.endswith(".tmp"))
+
+        out["temps"] = {
+            "run": _j90_try(lambda: r.run_retention(home, [root], now)),
+            "archive": tmps_in(root / ".shiftwork" / "archive"),
+            "state": tmps_in(home / ".bantamkit"),
+        }
         # J90-3: the opt-out switch read through JS `trim` (lib/storage_j90.mjs).
         out["env_switch"] = []
         for v in ("off\u001c", "\u0085off", "\ufeffoff", " OFF\t", "off\u3000"):
@@ -1100,6 +1177,24 @@ def _j90_retention(d: Path) -> dict:
         home, root = bed("child_error")
         code = r.child_main([str(root), str(home)], now="2026-10-16T00:00:00.000Zx")
         out["child_error"] = [code, json.loads(r.state_path(home).read_text(encoding="utf-8")).get("error")]
+        # J90-3F: an audit that raises something that is not an OSError (lib/storage_j90.mjs).
+        from bantamkit import skillreport
+
+        os.environ[r.SKILL_AUDIT_ENV] = "on"
+        home, root = bed("child_audit")
+        real_daily = skillreport.daily
+
+        def broke(*_a, **_k):
+            raise TypeError("audit broke")
+
+        skillreport.daily = broke
+        try:
+            audited = _j90_try(lambda: r.child_main([str(root), str(home)], now=now))
+        finally:
+            skillreport.daily = real_daily
+        st = json.loads(r.state_path(home).read_text(encoding="utf-8"))
+        out["child_audit"] = [audited, "report" in st, st.get("error")]
+        os.environ[r.SKILL_AUDIT_ENV] = "off"
         if audit is None:
             os.environ.pop(r.SKILL_AUDIT_ENV, None)
         else:

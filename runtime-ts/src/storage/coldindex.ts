@@ -23,7 +23,7 @@ import { FIELD_BOOST, tokenizeV2 } from '../memory/retrieval.js';
 import { cmpCodepoint } from '../pysem.js';
 import { coldErrorText, coldFs } from './coldfs.js';
 import { dumpIndex, SHARDS, shardOf, type IndexDoc } from './hotindex.js';
-import { exclusive } from './lock.js';
+import { exclusive, removeStaleTemps } from './lock.js';
 
 export const COLD_VERSION = 1;
 const ID = /^[0-9]{6}$/;
@@ -59,8 +59,20 @@ interface JsonTop {
 
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/**
+ * The sentence a `ColdIndexError` quotes for a file that is read but is not JSON: ONE sentence on
+ * both runtimes, with no parser's wording in it (#316 G4, J90-3F: it quoted the parser's own
+ * message, CPython's `json` on the reference and V8's here, pinned `UNRULED DIVERGENCE (J90-3)`).
+ */
+export const COLD_NOT_JSON = 'the file is not JSON';
+
 function readJson(p: string): unknown {
-  return JSON.parse(coldFs.readFileSync(p));
+  const text = coldFs.readFileSync(p);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ColdIndexError(COLD_NOT_JSON);
+  }
 }
 
 /** One manifest entry's shape: a six-digit `id`, a list of string `docs`, a string `created`. */
@@ -92,8 +104,8 @@ function isoNow(nowMs: number): string {
   return new Date(Math.floor(nowMs / 1000) * 1000).toISOString().replace('.000Z', 'Z');
 }
 
-// The failed read's own message (`coldfs.ts`, an adapter: a JSON syntax error is worded by each
-// runtime's parser).
+// The failed read's own message (`coldfs.ts`, an adapter: an OSError and a byte that is not UTF-8
+// worded as CPython words them, on both sides); a text that is not JSON is `COLD_NOT_JSON`.
 const errMessage = (e: unknown): string => coldErrorText(e);
 
 export class ColdIndex {
@@ -251,6 +263,7 @@ export class ColdIndex {
    */
   addDocs(docs: Map<string, IndexDoc>): string {
     return exclusive(this.lockPath(), () => {
+      this.sweepTemps();
       const manifest: ColdManifest = this.manifest();
       const id = nextId(manifest);
       this.publish(manifest, id, docs, false);
@@ -265,6 +278,7 @@ export class ColdIndex {
    */
   compact(keep: ((doc: IndexDoc) => boolean) | null = null): string | null {
     return exclusive(this.lockPath(), () => {
+      this.sweepTemps();
       const manifest: ColdManifest = this.manifest();
       const old = manifest.segments.map((s: ColdSegment) => s.id);
       if (old.length === 0 || (old.length === 1 && keep === null)) return null;
@@ -297,7 +311,7 @@ export class ColdIndex {
       return;
     }
     for (const n of names) {
-      if (n === 'manifest.json' || /^(seg-.*|shard-[0-9]{2})\.json$/.test(n)) {
+      if (ownsName(n)) {
         try {
           fs.unlinkSync(path.join(this.dir, n));
         } catch {
@@ -305,6 +319,15 @@ export class ColdIndex {
         }
       }
     }
+  }
+
+  /**
+   * The temps of this index's own files a killed writer left (`<file>.<pid>.tmp`), once older than
+   * the lock's stale window (`removeStaleTemps`; #316 G4, J90-3F). Run under the lock, by every
+   * write (`addDocs`, `compact`, so a retention run's compaction too).
+   */
+  private sweepTemps(): void {
+    removeStaleTemps(this.dir, ownsName);
   }
 
   private lockPath(): string {
@@ -379,6 +402,11 @@ export class ColdIndex {
       write(this.shardPath(i), dumpIndex({ terms }));
     }
   }
+}
+
+/** A file this module writes: the manifest, a segment, a shard. */
+function ownsName(n: string): boolean {
+  return n === 'manifest.json' || /^(seg-.*|shard-[0-9]{2})\.json$/.test(n);
 }
 
 function nextId(manifest: ColdManifest): string {

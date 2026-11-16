@@ -180,6 +180,16 @@ manifest that is not JSON pinned `ruling: UNRULED DIVERGENCE (J90-3)` with a lit
 opt-out switch read through JS `trim`, and a failed sweep's `error` record naming `Error`. The
 `childMain` the suites call is `dist/storage/retentionmain.js`'s (the async half retention.ts
 cannot hold). `ts2py` recompiles the four new modules in the G1/G2/G3/G4 call.
+**J90-3F settled J90-3's leftovers.** `storage-cold`: the `UNRULED DIVERGENCE (J90-3)` pin is an
+agreeing case — a manifest, a segment and a shard that are not JSON all answer `cold index <file>
+unreadable: the file is not JSON`, compared and pinned per side (red on 2cca2564 on both sides) — and
+a cold write's stale-temp sweep is compared and pinned. `storage-index`: a hot index persist removes
+its own stale temps and no other index's. `storage-retention`: a run removes the archive and
+`retention.json` temps a killed run left (reported `deleted`) and nothing else, and an audit that
+throws a `TypeError` costs neither the child's exit nor the sweep's record (red on 2cca2564's Python).
+The temp cases plant one temp older than the lock's stale window, one fresh, one of a name the writer
+does not write, one with no pid and a directory, so a sweep that removes too much fails as surely as
+one that removes nothing.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

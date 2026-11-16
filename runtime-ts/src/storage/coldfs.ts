@@ -15,10 +15,11 @@ export const coldFs = { readFileSync: (p: string): string => pyReadText(p) };
 
 /**
  * The text a `ColdIndexError` quotes for a read that failed: the error's own message (#316 G4,
- * J90-3: moved here from coldindex.ts's `errMessage`, unchanged). An ADAPTER, because a JSON
- * syntax error's message is the parser's own wording: V8's here, CPython's `json` on the
- * reference, which the Python counterpart keeps (`str(e)`; an `OSError` as CPython's `str(e)`,
- * which `PyOSError.message` already is here). Pinned per side in `--suite storage-cold`.
+ * J90-3: moved here from coldindex.ts's `errMessage`, unchanged). An ADAPTER: the Python
+ * counterpart is `str(e)` (an `OSError` as CPython's `str(e)`, which `PyOSError.message` already is
+ * here; a byte that is not UTF-8 as CPython's decoder words it, on both sides). A text that is not
+ * JSON never reaches it since J90-3F: `coldindex.ts` throws its own `COLD_NOT_JSON`, so no parser's
+ * wording is quoted on either side. Pinned in `--suite storage-cold`.
  */
 export function coldErrorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

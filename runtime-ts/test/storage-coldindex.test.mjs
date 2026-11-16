@@ -121,6 +121,41 @@ test('a corrupt manifest throws and reset starts over', () => {
   assert.deepEqual(cold.query(['release']), [['b', '000001', 1]]);
 });
 
+test('a file that is not JSON is refused in one sentence with no parser wording (J90-3F)', () => {
+  // the sentence quoted V8's parser here and CPython's json on the reference (red on 2cca2564)
+  const cold = coldOf(tmp());
+  cold.addDocs(docs(doc('a', 'release')));
+  fs.writeFileSync(cold.manifestPath, '{not json', 'utf8');
+  assert.throws(() => cold.manifest(), { name: 'ColdIndexError', message: 'cold index manifest unreadable: the file is not JSON' });
+  cold.reset();
+  cold.addDocs(docs(doc('a', 'release')));
+  fs.writeFileSync(cold.segmentPath('000001'), '[1,', 'utf8');
+  assert.throws(() => cold.segment('000001'), { name: 'ColdIndexError', message: 'cold index segment 000001 unreadable: the file is not JSON' });
+});
+
+test('a write removes its own stale temps and nothing else (J90-3F)', () => {
+  // a writer killed between a temp's write and its rename left `<file>.<pid>.tmp` forever (red on
+  // 2cca2564); the next add or compact removes this index's own once older than the lock's window
+  const cold = coldOf(tmp());
+  cold.addDocs(docs(doc('a', 'release')));
+  const old = fs.statSync(cold.manifestPath).mtimeMs / 1000 - 3600;
+  const plant = { 'shard-03.json.4242.tmp': true, 'seg-000009.json.17.tmp': true, 'manifest.json.4243.tmp': false, 'notes.txt.4242.tmp': true, 'shard-03.json.tmp': true };
+  for (const [name, stale] of Object.entries(plant)) {
+    fs.writeFileSync(path.join(cold.dir, name), 'partial');
+    if (stale) fs.utimesSync(path.join(cold.dir, name), old, old);
+  }
+  fs.mkdirSync(path.join(cold.dir, 'manifest.json.99.tmp'));
+  fs.utimesSync(path.join(cold.dir, 'manifest.json.99.tmp'), old, old);
+  cold.addDocs(docs(doc('b', 'release')));
+  const left = fs.readdirSync(cold.dir).filter((n) => n.endsWith('.tmp')).sort();
+  assert.deepEqual(left, ['manifest.json.4243.tmp', 'manifest.json.99.tmp', 'notes.txt.4242.tmp', 'shard-03.json.tmp']);
+  fs.writeFileSync(path.join(cold.dir, 'seg-000001.json.18.tmp'), 'partial');
+  fs.utimesSync(path.join(cold.dir, 'seg-000001.json.18.tmp'), old, old);
+  assert.equal(cold.compact(), '000003');
+  assert.equal(fs.existsSync(path.join(cold.dir, 'seg-000001.json.18.tmp')), false);
+  assert.deepEqual(cold.query(['release']), [['a', '000003', 1], ['b', '000003', 1]]);
+});
+
 test('a bad name is refused', () => {
   for (const bad of ['', '.', '..', 'a/b', 'a\\b']) assert.throws(() => new ColdIndex(bad, tmp()));
 });

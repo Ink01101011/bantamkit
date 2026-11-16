@@ -9,7 +9,7 @@
  * A raise is the answer `{ raised: <class>, msg: <sentence> }` on both sides.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
@@ -31,6 +31,21 @@ const pin = (d) => {
   for (const n of readdirSync(d)) utimesSync(join(d, n), T, T);
   utimesSync(d, T, T);
 };
+
+/** J90-3F: `[name, 'old' | 'fresh' | 'olddir']` planted in `dir`; an old one dated `T` (2023). */
+function plantTemps(dir, list) {
+  for (const [n, age] of list) {
+    const p = join(dir, n);
+    if (age === 'olddir') mkdirSync(p);
+    else writeFileSync(p, 'partial');
+    if (age !== 'fresh') utimesSync(p, T, T);
+  }
+}
+const COLD_TEMPS = [
+  ['shard-03.json.4242.tmp', 'old'], ['seg-000009.json.17.tmp', 'old'], ['manifest.json.4243.tmp', 'fresh'],
+  ['notes.txt.4242.tmp', 'old'], ['shard-03.json.x1.tmp', 'old'], ['shard-03.json.tmp', 'old'],
+  ['manifest.json.99.tmp', 'olddir'],
+];
 
 function mangle(raw, mode) {
   const s = raw.toString('latin1');
@@ -119,6 +134,27 @@ async function index(runtimeTs, d) {
   hi = new h.HotIndex(root, 'native', home);
   hi.refresh('fast');
   out.native_flow = { docs: [...hi.docs().keys()].sort(), skipped: [...hi.skipped.keys()].sort() };
+  // J90-3F: a persist removes its own index's temps a killed writer left, once stale, and no other
+  // index's (named `<sha>` here: the hash is of each side's own path).
+  [root, home] = bed('temps', 'facts', facts.slice(0, 2));
+  hi = new h.HotIndex(root, 'facts', home);
+  hi.refresh('fast');
+  {
+    const dir = dirname(hi.path);
+    const head = basename(hi.path);
+    const sha = head.slice(0, -5);
+    plantTemps(dir, [
+      [`${head}.31.tmp`, 'old'], [`${sha}.postings-00.json.32.tmp`, 'old'], [`${head}.33.tmp`, 'fresh'],
+      ['0000000000000000.json.34.tmp', 'old'], [`${sha}.txt.35.tmp`, 'old'],
+    ]);
+    writeFileSync(join(root, 'facts', 'gamma.md'), FACT('gamma', 'gamma word'), 'utf8');
+    const again = new h.HotIndex(root, 'facts', home);
+    again.refresh('full');
+    out.temps = {
+      left: readdirSync(dir).filter((n) => n.endsWith('.tmp')).map((n) => n.split(sha).join('<sha>')).sort(),
+      names: [...again.names().keys()],
+    };
+  }
   // J90-2: a source through a symlink whose target is missing (`dangle`), and one through a live
   // symlink (`live` -> `real`). What the index names it by: its realpath's last part, and whether
   // `sha16` hashes the target's path.
@@ -206,7 +242,25 @@ async function cold(runtimeTs, d) {
   ci = fresh('msg_gone');
   unlinkSync(ci.segmentPath('000001'));
   const gone = attempt(() => ci.segment('000001'));
-  out.messages = { syntax, utf8, gone };
+  // J90-3F: a segment and a shard that are not JSON (one sentence, no parser's wording).
+  ci = fresh('msg_seg_syntax');
+  writeFileSync(ci.segmentPath('000001'), '{not json');
+  const segSyntax = attempt(() => ci.segment('000001'));
+  ci = fresh('msg_shard_syntax');
+  for (let i = 0; i < 16; i += 1) writeFileSync(ci.shardPath(i), '[1,');
+  const shardSyntax = attempt(() => ci.query(['word']));
+  out.messages = { syntax, utf8, gone, seg_syntax: segSyntax, shard_syntax: shardSyntax };
+  // J90-3F: the temps a killed writer left (`<file>.<pid>.tmp`): a write removes its own once older
+  // than the lock's stale window, and nothing else (a fresh one, another file's, no pid, a dir).
+  ci = fresh('temps');
+  const temps = () => readdirSync(ci.dir).filter((n) => n.endsWith('.tmp')).sort();
+  plantTemps(ci.dir, COLD_TEMPS);
+  const before = temps();
+  ci.addDocs(new Map([['gamma', doc('gamma', 'word three')]]));
+  const add = temps();
+  plantTemps(ci.dir, [['seg-000001.json.18.tmp', 'old']]);
+  const compacted = ci.compact();
+  out.temps = { before, add, compact: temps(), compacted, query: ci.query(['word']) };
   return out;
 }
 
@@ -266,6 +320,21 @@ async function retention(runtimeTs, d) {
     ].map((s) => attempt(() => r.parseNow(s)));
     out.parse_now_nonstr = attempt(() => r.parseNow(5));
     out.constants = [r.RETENTION_ENV, r.SKILL_AUDIT_ENV, r.TTL_S, r.LEDGER_DAYS, r.LOG_DAYS, r.JOB_DAYS, r.STATE_NAME, r.SEARCH_MAX];
+    // J90-3F: a run removes the archive and state temps a killed run left, once stale, and
+    // nothing else (a fresh one, a name it does not write, no pid).
+    [home, root] = bed('temps');
+    plantTemps(join(root, '.shiftwork', 'archive'), [
+      ['old.json.gz.4242.tmp', 'old'], ['new.json.gz.4243.tmp', 'fresh'], ['notes.md.4242.tmp', 'old'], ['x.json.gz.12a.tmp', 'old'],
+    ]);
+    plantTemps(join(home, '.bantamkit'), [
+      ['retention.json.77.tmp', 'old'], ['retention.json.78.tmp', 'fresh'], ['other.json.79.tmp', 'old'],
+    ]);
+    const tmpsIn = (x) => readdirSync(x).filter((n) => n.endsWith('.tmp')).sort();
+    out.temps = {
+      run: attempt(() => r.runRetention(home, [root], now)),
+      archive: tmpsIn(join(root, '.shiftwork', 'archive')),
+      state: tmpsIn(join(home, '.bantamkit')),
+    };
     // J90-3: the opt-out switch read through JS `trim` (generation settles 743b54b9's Python
     // `strip`, which also strips U+001C..U+001F and U+0085 and keeps U+FEFF).
     out.env_switch = ['off\u001c', '\u0085off', '\ufeffoff', ' OFF\t', 'off\u3000'].map((v) => {
@@ -280,6 +349,25 @@ async function retention(runtimeTs, d) {
     [home, root] = bed('child_error');
     const code = await m.childMain([root, home], '2026-10-16T00:00:00.000Zx');
     out.child_error = [code, JSON.parse(readFileSync(r.statePath(home), 'utf8')).error ?? null];
+    // J90-3F: an audit that throws something that is not an fs error: the child still exits 0 and
+    // the sweep before it is recorded (the shim's `child_main` let all but an OSError out).
+    process.env[r.SKILL_AUDIT_ENV] = 'on';
+    [home, root] = bed('child_audit');
+    const realDaily = m.childAudit.daily;
+    m.childAudit.daily = () => {
+      throw new TypeError('audit broke');
+    };
+    let audited;
+    try {
+      audited = await m.childMain([root, home], now);
+    } catch (e) {
+      audited = { raised: e?.constructor?.name ?? 'Error', msg: String(e?.message ?? e) };
+    } finally {
+      m.childAudit.daily = realDaily;
+    }
+    const st = JSON.parse(readFileSync(r.statePath(home), 'utf8'));
+    out.child_audit = [audited, 'report' in st, st.error ?? null];
+    process.env[r.SKILL_AUDIT_ENV] = 'off';
     if (audit === undefined) delete process.env[r.SKILL_AUDIT_ENV];
     else process.env[r.SKILL_AUDIT_ENV] = audit;
   } finally {
@@ -365,10 +453,15 @@ const RULING_228_HOT =
   '`divergence.parse_fact` (`yaml.safe_load`), and skipped by the port, whose codec refuses the shape by name ' +
   "(#120). Each side's hot index holds what that side's native mirror and recall read for the same file.";
 
-const UNRULED_J90_3 =
-  'UNRULED DIVERGENCE (J90-3): not ruled in docs/porting.md and not fixed; found while generating the cold index ' +
-  "(#316 G4) and left as it stood on 743b54b9 for the orchestrator: a ColdIndexError quotes the JSON parser's own " +
-  "message, CPython's json on the reference and V8's on the port.";
+/** J90-3F: the shard `word` hashes to, and the cold `temps` probe's answer. */
+const COLD_WORD_SHARD = '14';
+const COLD_TEMPS_AFTER = {
+  before: ['manifest.json.4243.tmp', 'manifest.json.99.tmp', 'notes.txt.4242.tmp', 'seg-000009.json.17.tmp', 'shard-03.json.4242.tmp', 'shard-03.json.tmp', 'shard-03.json.x1.tmp'],
+  add: ['manifest.json.4243.tmp', 'manifest.json.99.tmp', 'notes.txt.4242.tmp', 'shard-03.json.tmp', 'shard-03.json.x1.tmp'],
+  compact: ['manifest.json.4243.tmp', 'manifest.json.99.tmp', 'notes.txt.4242.tmp', 'shard-03.json.tmp', 'shard-03.json.x1.tmp'],
+  compacted: '000004',
+  query: [['alpha', '000004', 1], ['beta', '000004', 1], ['gamma', '000004', 1]],
+};
 
 /** Per-side literals: a change made on both sides leaves the differential green, these do not. */
 const LITERALS = {
@@ -443,6 +536,11 @@ export function j90Cases(section, { py, nd, dirs }) {
     lit('J90-3 a source below a dangling symlink', ['sub', false], py.symlinks.below, nd.symlinks.below);
     same('J90-3 a source spelled in another case is named as the filesystem spells it', py.symlinks.cased, nd.symlinks.cased);
     lit('J90-3 a source spelled in another case', nd.symlinks.folds ? ['real', true] : ['REAL', false], py.symlinks.cased, nd.symlinks.cased);
+    // J90-3F: a persist removes its own index's stale temps, no other index's (red on 2cca2564).
+    same('J90-3F a hot index persist removes its own stale temps and nothing else', py.temps, nd.temps);
+    lit('J90-3F a hot index persist removes its own stale temps and nothing else', {
+      left: ['0000000000000000.json.34.tmp', '<sha>.json.33.tmp', '<sha>.txt.35.tmp'], names: ['alpha', 'beta', 'gamma'],
+    }, py.temps, nd.temps);
     same('J90-2 a source through a live symlink is named by its target on both sides', py.symlinks.live, nd.symlinks.live);
     lit('a source through a live symlink', ['real', true], py.symlinks.live, nd.symlinks.live);
   } else if (section === 'cold') {
@@ -474,20 +572,23 @@ export function j90Cases(section, { py, nd, dirs }) {
     lit('J90-3 a ColdIndexError for a segment that is gone', "cold index segment 000001 unreadable: [Errno 2] No such file or directory: '<dir>/msg_gone/.bantamkit/cold/t/seg-000001.json'", unpath(msgOf(M.gone), dirs.py), unpath(msgOf(N.gone), dirs.nd));
     same('J90-3 a ColdIndexError for a segment that is not UTF-8 — the sentence', msgOf(M.utf8), msgOf(N.utf8));
     lit('J90-3 a ColdIndexError for a segment that is not UTF-8', "cold index segment 000001 unreadable: 'utf-8' codec can't decode byte 0xff in position 197: invalid start byte", msgOf(M.utf8), msgOf(N.utf8));
-    // J90-3 found, NOT ruled and NOT fixed (left to the orchestrator): a manifest that is not JSON
-    // is refused on both sides (the bit is compared above), but the sentence quotes each runtime's
-    // own JSON parser (CPython's `json` on the reference, V8 on the port). It predates generation:
-    // the generated cold index reads the message through the `coldErrorText` adapter, which keeps
-    // each side's own wording, as 743b54b9 had it.
-    cases.push({
-      name: 'ruling: UNRULED DIVERGENCE (J90-3) a ColdIndexError for a manifest that is not JSON — the sentence',
-      kind: 'json',
-      expected: msgOf(M.syntax),
-      actual: msgOf(N.syntax),
-      ruling: UNRULED_J90_3,
-    });
-    cases.push({ name: 'LITERAL: J90-3 a manifest that is not JSON — python quotes CPython json', kind: 'json', expected: 'cold index manifest unreadable: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)', actual: msgOf(M.syntax) });
-    cases.push({ name: 'LITERAL: J90-3 a manifest that is not JSON — node quotes V8', kind: 'json', expected: "cold index manifest unreadable: Expected property name or '}' in JSON at position 1 (line 1 column 2)", actual: msgOf(N.syntax) });
+    // J90-3 found, J90-3F settled (the orchestrator: one shared sentence, no parser's wording): a
+    // manifest, segment or shard that is not JSON quoted each runtime's own JSON parser (CPython's
+    // `json` on the reference, V8 on the port), pinned `ruling: UNRULED DIVERGENCE (J90-3)` with
+    // python `... unreadable: Expecting property name enclosed in double quotes: line 1 column 2
+    // (char 1)` and node `... unreadable: Expected property name or '}' in JSON at position 1 (line 1
+    // column 2)`. `coldindex.ts` now throws its own `COLD_NOT_JSON`.
+    const notJson = (what) => `cold index ${what} unreadable: the file is not JSON`;
+    const syn = (X) => [X.syntax, X.seg_syntax, X.shard_syntax].map((v) => [cls(v), msgOf(v)]);
+    same('J90-3F a ColdIndexError for a manifest, segment or shard that is not JSON — one sentence, no parser wording', syn(M), syn(N));
+    lit('J90-3F a ColdIndexError for a manifest, segment or shard that is not JSON', [
+      ['ColdIndexError', notJson('manifest')], ['ColdIndexError', notJson('segment 000001')], ['ColdIndexError', notJson(`shard ${COLD_WORD_SHARD}`)],
+    ], syn(M), syn(N));
+    // J90-3F: a killed writer's `<file>.<pid>.tmp` is removed by the next write once older than the
+    // lock's stale window; a fresh temp, another file's, one with no pid and a directory are kept
+    // (both runtimes kept every one before: red on 2cca2564 on both sides).
+    same('J90-3F a cold write removes its own stale temps and nothing else', py.temps, nd.temps);
+    lit('J90-3F a cold write removes its own stale temps and nothing else', COLD_TEMPS_AFTER, py.temps, nd.temps);
   } else if (section === 'retention') {
     const L = LITERALS.retention;
     same('retention constants', py.constants, nd.constants);
@@ -499,6 +600,18 @@ export function j90Cases(section, { py, nd, dirs }) {
     // and U+0085 and keeps U+FEFF, where Node's `trim()` keeps the first five and strips U+FEFF.
     // Generation runs Node's `trim` on both sides; these pin that answer per side (743b54b9's
     // Python answered [false, false, true, false, false]).
+    // J90-3F: retention removes the archive and `retention.json` temps a killed run left, once
+    // stale, and reports them deleted (red on 2cca2564 on both sides: every temp stayed).
+    same('J90-3F a run removes the stale archive and state temps it owns, and nothing else', P(py.temps), N(nd.temps));
+    lit('J90-3F a run removes the stale archive and state temps it owns, and nothing else', {
+      run: { ...EMPTY_REPORT, deleted: ['<dir>/temps/home/.bantamkit/retention.json.77.tmp', '<dir>/temps/root/.shiftwork/archive/old.json.gz.4242.tmp'] },
+      archive: ['new.json.gz.4243.tmp', 'notes.md.4242.tmp', 'x.json.gz.12a.tmp'],
+      state: ['other.json.79.tmp', 'retention.json.78.tmp'],
+    }, P(py.temps), N(nd.temps));
+    // J90-3F: an audit that raises what is not an OSError costs neither the child's exit nor the
+    // sweep's record (the shim's `child_main` caught only OSError: red on 2cca2564's Python).
+    same('J90-3F an audit that throws a TypeError: the child exits 0 and the sweep is recorded', py.child_audit, nd.child_audit);
+    lit('J90-3F an audit that throws a TypeError', [0, true, null], py.child_audit, nd.child_audit);
     same('J90-3 a failed sweep records the error by its JS class', py.child_error, nd.child_error);
     lit('J90-3 a failed sweep records the error by its JS class', [0, 'Error'], py.child_error, nd.child_error);
     same('J90-3 the BANTAMKIT_RETENTION switch is read through JS trim', py.env_switch, nd.env_switch);

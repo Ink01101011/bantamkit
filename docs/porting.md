@@ -2672,16 +2672,62 @@ answers the filesystem's spelling and `os.path.realpath` kept the caller's) agre
 on 743b54b9's adapter. No other `realpath` caller is in the J90-3 modules (retention names a root's
 job index by `storeId`, the `pyRealpath` adapter, agreeing since J89-1F).
 
-**Found, not fixed, not ruled (J90-3): the sentence of a cold manifest that is not JSON.** A
-`ColdIndexError` for an unreadable file quotes the read's own message. A missing file and a file
-that is not UTF-8 are worded alike (CPython's wording on both sides), but a JSON syntax error is
-worded by each runtime's parser: `Expecting property name enclosed in double quotes: line 1 column 2
-(char 1)` (CPython's `json`) on the reference, `Expected property name or '}' in JSON at position 1
-(line 1 column 2)` (V8) on the port. It predates generation (743b54b9 answers the same); the
-generated index keeps each side's wording through the `coldErrorText` adapter, since the runtime
-refuses a compiled read of a JSON.parse message. Both sides REFUSE (the bit is compared); pinned in
-`--suite storage-cold` as `ruling: UNRULED DIVERGENCE (J90-3) a ColdIndexError for a manifest that is
-not JSON — the sentence` with a literal per side. Left to the orchestrator.
+**Settled (J90-3F, the orchestrator: one shared sentence): a cold file that is not JSON.** J90-3
+found a `ColdIndexError` for a manifest that is not JSON quoting each runtime's own parser:
+`Expecting property name enclosed in double quotes: line 1 column 2 (char 1)` (CPython's `json`) on
+the reference, `Expected property name or '}' in JSON at position 1 (line 1 column 2)` (V8) on the
+port, pinned `ruling: UNRULED DIVERGENCE (J90-3)`. It predated generation (743b54b9 answered the
+same). Both runtimes now answer ONE sentence with no parser's wording in it, for the manifest, a
+segment and a shard alike: `cold index manifest unreadable: the file is not JSON` (`cold index segment
+<id> …`, `cold index shard <NN> …`); `coldindex.ts`'s `readJson` throws its own `COLD_NOT_JSON` when
+`JSON.parse` refuses, so the `coldErrorText` adapter only ever words a failed read (CPython's
+`OSError` and decoder wording, on both sides, as before). The pin is an agreeing case in
+`--suite storage-cold` with a literal per side (red on 2cca2564 on both sides). No other error
+sentence in the G1–G4 generated modules quotes a JSON parser's message: `layers.ts` quotes PyYAML's
+(ruled), `store.ts` / `native.ts` / `component.ts` quote the codec's own `BantamError`s, and the two
+`parseJson` readers (`queries.ts`, `tiers.ts`) answer no sentence at all; a compiled read of a
+`JSON.parse` SyntaxError's `message` still raises (`_JsJsonParseError`), so a new one cannot slip in.
+
+**Fixed (J90-3F): the temps a killed writer left.** Every G4 writer writes `<file>.<pid>.tmp` and
+renames it over `<file>`: the cold index's segments, shards and manifest, the hot index's head and
+shards, retention's archives and `retention.json`. A SIGKILL (or a power cut) between the write and
+the rename left the temp, and since the next write's pid differs, nothing ever removed it (J90-3
+measured eight of nine killed children leaving `<archive>.<pid>.tmp`, on all three sides). Now each
+writer removes ITS OWN stale temps, by one rule on both runtimes (`lock.ts`'s `removeStaleTemps`,
+generated): a regular file named `<base>.<digits>.tmp` whose `base` the writer writes and whose
+mtime is older than the lock's stale window (`LOCK_STALE_MS`, 10 s) — the window after which the
+lock already treats its holder as dead. A pid-liveness test was not chosen: CPython's `os.kill(pid,
+0)` on Windows sends CTRL_C rather than testing the pid, and a pid says nothing across pid
+namespaces or hosts sharing a home. A live writer never holds a temp that old: each temp is written
+in one call and renamed at once (the archive is now compressed BEFORE its temp is opened, on both
+sides, so the temp is never idle while gzip runs), and every write moves its mtime. The cold index
+sweeps under its lock on every `addDocs` / `compact` (so on every retention run, which compacts
+every cold index); the hot index on every persist, under its lock, only names of its own index
+(`<sha16>.json`, `<sha16>.*.json`), never another index's in the same directory; retention at the
+start of each run (`retention.json`'s temps) and of each root's archive pass (`*.json.gz`'s),
+reporting each removed path in `deleted`. `writeState` also removes its own temp when the write
+fails, as every other G4 writer already did. A directory, a symlink, a fresh temp, a name with no
+pid and a name the writer does not write are left. Pinned in `--suite storage-cold`,
+`storage-index` and `storage-retention`, and by a test per writer on each side (red on 2cca2564).
+
+**Settled (J90-3F): the audit half of the child.** The shim's `child_main` ran the skill audit and
+the miner inside `except OSError`, so anything else they raised (an `ImportError` of the miner, a
+`TypeError`) left the child with a traceback, where Node's `retentionmain.ts` swallows every throw
+in its `catch`. Both are silent, and neither costs the sweep (which runs and is recorded before the
+audit): the shim now catches `Exception`, Node's answer. Node's audit is reached through
+`childAudit.daily` so its test can swap it, as the Python test patches `bantamkit.skillreport.daily`.
+`--suite storage-retention`, `J90-3F an audit that throws a TypeError` (red on 2cca2564's Python).
+
+**Accepted as is (the orchestrator, J90-3F), and why each side's answer is the one kept.**
+- *The short archive write* (below): NODE's answer moved, to the reference's: Python's `fh.write`
+  already wrote all or raised, so Python's answer did not move. Kept because a truncated archive
+  renamed into place refused that job forever (`archive exists and differs`).
+- *The opt-out switch read through JS `trim`*: Python's answer moved (743b54b9's `str.strip()` also
+  stripped U+001C..U+001F and U+0085 and kept U+FEFF). Kept because the switch is one string read
+  by both runtimes from the same environment: one reading, and the generated one is JS's.
+- *A failed sweep's `error` record naming `Error`*: Python's answer moved (743b54b9 wrote the Python
+  class, e.g. `ValueError`). Kept because `retention.json` is shared on disk, and the record is
+  written by the compiled `childSweep`, whose `e.constructor.name` is the JS class on both sides.
 
 **Python answers that moved to Node's.** Where the hand-written module differed from the TypeScript
 on an input no suite held, generation makes Python answer Node's, each now pinned: the
@@ -2726,7 +2772,7 @@ and_is_refused` and its Node twin (red on 743b54b9's Node: `archive did not veri
   and the next day's run completes, the tree then equal to an uninterrupted run's but for
   `retention.json` and, when the kill landed during an archive's write, that write's orphan
   `<archive>.<pid>.tmp` (eight of nine), never removed by a later run, on all three sides: found,
-  not fixed.
+  not fixed by J90-3; fixed by J90-3F (above: a later run removes it once stale).
 - *Speed* (n = 9 interleaved fresh processes, medians, this tree against 743b54b9): cold build
   (two 300-doc segments) 153.9 ms against 114.6 (+34%), 20 cold queries 165.9 against 35.7 (+364%),
   a compaction with `keep` 114.2 against 64.7 (+76%), a retention run over eight real jobs 1,408

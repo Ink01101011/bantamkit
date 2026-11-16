@@ -44,7 +44,7 @@ import { MemoryStore, pyText, tokens } from '../memory/store.js';
 import { cmpCodepoint } from '../pysem.js';
 import { dumpJsValue } from '../pyjson.js';
 import { extractRefs, factRefs } from '../touch/refs.js';
-import { exclusive } from './lock.js';
+import { exclusive, removeStaleTemps } from './lock.js';
 import { parseNative } from './nativefact.js';
 import { nodeRealpath } from './realpath.js';
 
@@ -604,6 +604,12 @@ export class HotIndex {
     this.shards = new Map();
   }
 
+  /** A file this index writes: its head (`<sha16>.json`) or one of its shards (`<sha16>.<shard>.json`). */
+  private writesName(name: string): boolean {
+    const head = path.basename(this.path);
+    return name === head || (name.startsWith(`${head.slice(0, -5)}.`) && name.endsWith('.json'));
+  }
+
   shardPath(family: Family, i: number): string {
     // `this.path` is always `<sha16>.json`: its basename less the five units of `.json`.
     const base = path.basename(this.path).slice(0, -5);
@@ -885,6 +891,8 @@ export class HotIndex {
     try {
       fs.mkdirSync(path.dirname(this.path), { recursive: true });
       exclusive(this.path, () => {
+        // A killed writer's temps of this index's own files, once stale (#316 G4, J90-3F).
+        removeStaleTemps(path.dirname(this.path), (b) => this.writesName(b));
         for (const [p, text] of texts) {
           const tmp = path.join(path.dirname(p), `${path.basename(p)}.${process.pid}.tmp`);
           try {

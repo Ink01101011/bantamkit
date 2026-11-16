@@ -110,6 +110,57 @@ def test_a_corrupt_manifest_raises_and_reset_starts_over(tmp_path):
     assert cold.query(["release"]) == [("b", "000001", 1)]
 
 
+def test_a_file_that_is_not_json_is_refused_in_one_sentence_with_no_parser_wording(tmp_path):
+    """J90-3F: the sentence quoted CPython's `json` here and V8's on Node (red on 2cca2564)."""
+    cold = _cold(tmp_path)
+    cold.add({"a": _doc("a", "release")})
+    cold.manifest_path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ColdIndexError) as e:
+        cold.manifest()
+    assert str(e.value) == "cold index manifest unreadable: the file is not JSON"
+    cold.reset()
+    cold.add({"a": _doc("a", "release")})
+    cold.segment_path("000001").write_text("[1,", encoding="utf-8")
+    with pytest.raises(ColdIndexError) as e:
+        cold.segment("000001")
+    assert str(e.value) == "cold index segment 000001 unreadable: the file is not JSON"
+
+
+def test_a_write_removes_its_own_stale_temps_and_nothing_else(tmp_path):
+    """J90-3F: a writer killed between a temp's write and its rename left `<file>.<pid>.tmp`
+    forever (red on 2cca2564). The next add or compact removes this index's own once older than
+    the lock's stale window; a fresh one, another file's, one with no pid and a directory stay."""
+    cold = _cold(tmp_path)
+    cold.add({"a": _doc("a", "release")})
+    old = os.stat(cold.manifest_path).st_mtime - 3600
+    plant = {
+        "shard-03.json.4242.tmp": True,
+        "seg-000009.json.17.tmp": True,
+        "manifest.json.4243.tmp": False,
+        "notes.txt.4242.tmp": True,
+        "shard-03.json.tmp": True,
+    }
+    for name, stale in plant.items():
+        (cold.dir / name).write_bytes(b"partial")
+        if stale:
+            os.utime(cold.dir / name, (old, old))
+    (cold.dir / "manifest.json.99.tmp").mkdir()
+    os.utime(cold.dir / "manifest.json.99.tmp", (old, old))
+    cold.add({"b": _doc("b", "release")})
+    left = sorted(n for n in os.listdir(cold.dir) if n.endswith(".tmp"))
+    assert left == [
+        "manifest.json.4243.tmp",
+        "manifest.json.99.tmp",
+        "notes.txt.4242.tmp",
+        "shard-03.json.tmp",
+    ]
+    (cold.dir / "seg-000001.json.18.tmp").write_bytes(b"partial")
+    os.utime(cold.dir / "seg-000001.json.18.tmp", (old, old))
+    assert cold.compact() == "000003"
+    assert not (cold.dir / "seg-000001.json.18.tmp").exists()
+    assert cold.query(["release"]) == [("a", "000003", 1), ("b", "000003", 1)]
+
+
 def test_a_bad_name_is_refused(tmp_path):
     for bad in ("", ".", "..", "a/b", "a\\b"):
         with pytest.raises(ValueError):

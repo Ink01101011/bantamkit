@@ -35,7 +35,7 @@ import { reduceUsage, storeId } from '../memory/usage.js';
 import { cmpCodepoint } from '../pysem.js';
 import { ColdIndex, ColdIndexError } from './coldindex.js';
 import { INDEX_DIR_ENV, daysFromCivil, dumpIndex, type IndexDoc } from './hotindex.js';
-import { exclusive } from './lock.js';
+import { exclusive, removeStaleTemps } from './lock.js';
 import { LogSegment, type Row } from './logsegment.js';
 import { retentionFs } from './retentionfs.js';
 import { spawnRetentionChild } from './retentionspawn.js';
@@ -434,6 +434,9 @@ function archiveJobs(root: string, nowNs: bigint, report: RetentionReport): Map<
   } catch {
     return added;
   }
+  // An archive's temp a killed run left (`<job>.json.gz.<pid>.tmp`), once stale (#316 G4, J90-3F).
+  const archDir = path.join(sw, 'archive');
+  for (const n of removeStaleTemps(archDir, (b) => b.endsWith('.json.gz'))) report.deleted.push(path.join(archDir, n));
   const cutoff = nowNs - BigInt(JOB_DAYS) * DAY_NS;
   for (const name of listdir(sw)) {
     const job = checkpointJob(name);
@@ -621,6 +624,9 @@ export function runRetention(home: string, roots: string[], now: string): Retent
   if (!enabled()) return report;
   const nowMs = parseNow(now);
   const nowNs = BigInt(nowMs) * 1_000_000n;
+  // `retention.json`'s temp a killed child left, once stale (#316 G4, J90-3F).
+  const stateDir = path.dirname(statePath(home));
+  for (const n of removeStaleTemps(stateDir, (b) => b === STATE_NAME)) report.deleted.push(path.join(stateDir, n));
   pruneLedgers(home, nowNs, report);
   foldLogs(home, nowMs, report);
   const rootPaths = roots.map((r) => path.join(r));
@@ -694,8 +700,18 @@ export function maybeSpawn(home: string, cwd: string, options: { server?: boolea
 function writeState(home: string, obj: unknown): void {
   const p = statePath(home);
   const tmp = `${p}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${dumpIndex(obj)}\n`, 'utf8');
-  fs.renameSync(tmp, p);
+  try {
+    fs.writeFileSync(tmp, `${dumpIndex(obj)}\n`, 'utf8');
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    // as every other G4 writer: a failed write leaves no temp behind (#316 G4, J90-3F)
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      /* nothing to clean */
+    }
+    throw e;
+  }
 }
 
 /**

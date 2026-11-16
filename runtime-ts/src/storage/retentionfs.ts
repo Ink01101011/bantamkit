@@ -20,10 +20,14 @@ export const retentionFs = {
   writeArchive(target: string, data: Buffer): void {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const tmp = path.join(path.dirname(target), `${path.basename(target)}.${process.pid}.tmp`);
+    // Compressed BEFORE the temp is opened (J90-3F): a temp is never left idle while this writer
+    // lives, so a later run's stale-temp sweep (`removeStaleTemps`, the lock's window) never
+    // meets a live one.
+    const gz = zlib.gzipSync(data);
     try {
       const fd = fs.openSync(tmp, 'w');
       try {
-        writeAll(fd, zlib.gzipSync(data));
+        writeAll(fd, gz);
         fs.fsyncSync(fd);
         retentionFs.syncs += 1;
       } finally {
