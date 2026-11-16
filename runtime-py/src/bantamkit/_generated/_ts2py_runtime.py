@@ -8,7 +8,6 @@ import json as _js_jsonlib
 import math as _js_math
 import re as _js_re
 import time as _js_time
-import unicodedata as _js_unicodedata
 
 
 class _JsUndefined:
@@ -1214,53 +1213,96 @@ _JS_LOWER_NODE = {
     **{cp: cp + 0x20 for cp in range(0x10D50, 0x10D66)},
     **{cp: cp + 0x1B for cp in range(0x16EA0, 0x16EB9)},
 }
-# J89-7: U+03A3 lowers to U+03C2 or U+03C3 by its Final_Sigma context: walk out from it over
-# Case_Ignorable code points to the first that is not, and ask whether that one is Cased. The two
-# tables classify a code point apart only when CPython has it as `Cn`, or for these two (J89-R's
-# sweep of every code point in five contexts against Node 26.13: 307 differences on 3.11, 196 on
-# 3.12 and 3.13, 100 on 3.14, every one `Cn` but U+0295 and U+1171E).
-_JS_SIGMA_UNSURE = frozenset("\u0295\U0001171e")
+# J89-7b: those 55 as a precompiled class of ranges (a class of 55 single astral code points is
+# slower to search than `str.translate`), so a string without one never pays for `translate`.
+_JS_LOWER_NODE_FIND = _js_re.compile(
+    "[\u1c89\ua7cb\ua7cc\ua7ce\ua7d2\ua7d4\ua7da\ua7dc\U00010d50-\U00010d65\U00016ea0-\U00016eb8]"
+).search
+# J89-7 / J89-7b: U+03A3 lowers to U+03C2 or U+03C3 by its Final_Sigma context: walk out from it
+# over Case_Ignorable code points to the first that is not, and ask whether that one is Cased. The
+# two tables classify a code point apart in 307 places on CPython 3.11, 196 on 3.12 and 3.13 and
+# 100 on 3.14 (each a subset of 3.11's; J89-7b's sweep of every code point, Node 26.13 against each
+# interpreter, probing both walk directions: symmetric on every side). Those 307 carry Node's class
+# here, as code point ranges: 1 Case_Ignorable, 2 Cased (and not Case_Ignorable); U+0295 and
+# U+1171E are neither to Node. Every other code point is classed by CPython's own `str.lower()`.
+_JS_SIGMA_NODE = {}
+for _js_first, _js_last, _js_class in (
+    (0x0897, 0x0897, 1), (0x0ECE, 0x0ECE, 1), (0x1ACF, 0x1ADD, 1), (0x1AE0, 0x1AEB, 1),
+    (0xA7F1, 0xA7F1, 1), (0x10D4E, 0x10D4E, 1), (0x10D69, 0x10D6D, 1), (0x10D6F, 0x10D6F, 1),
+    (0x10EC5, 0x10EC5, 1), (0x10EFA, 0x10EFF, 1), (0x11241, 0x11241, 1), (0x113BB, 0x113C0, 1),
+    (0x113CE, 0x113CE, 1), (0x113D0, 0x113D0, 1), (0x113D2, 0x113D2, 1), (0x113E1, 0x113E2, 1),
+    (0x11B60, 0x11B60, 1), (0x11B62, 0x11B64, 1), (0x11B66, 0x11B66, 1), (0x11DD9, 0x11DD9, 1),
+    (0x11F00, 0x11F01, 1), (0x11F36, 0x11F3A, 1), (0x11F40, 0x11F40, 1), (0x11F42, 0x11F42, 1),
+    (0x11F5A, 0x11F5A, 1), (0x13439, 0x13440, 1), (0x13447, 0x13455, 1), (0x1611E, 0x16129, 1),
+    (0x1612D, 0x1612F, 1), (0x16D40, 0x16D42, 1), (0x16D6B, 0x16D6C, 1), (0x16FF2, 0x16FF3, 1),
+    (0x1E030, 0x1E06D, 1), (0x1E08F, 0x1E08F, 1), (0x1E4EB, 0x1E4EF, 1), (0x1E5EE, 0x1E5EF, 1),
+    (0x1E6E3, 0x1E6E3, 1), (0x1E6E6, 0x1E6E6, 1), (0x1E6EE, 0x1E6EF, 1), (0x1E6F5, 0x1E6F5, 1),
+    (0x1E6FF, 0x1E6FF, 1),
+    (0x1C89, 0x1C8A, 2), (0xA7CB, 0xA7CF, 2), (0xA7D2, 0xA7D2, 2), (0xA7D4, 0xA7D4, 2),
+    (0xA7DA, 0xA7DC, 2), (0x10D50, 0x10D65, 2), (0x10D70, 0x10D85, 2), (0x16EA0, 0x16EB8, 2),
+    (0x16EBB, 0x16ED3, 2), (0x1DF25, 0x1DF2A, 2),
+    (0x0295, 0x0295, 0), (0x1171E, 0x1171E, 0),
+):
+    for _js_cp in range(_js_first, _js_last + 1):
+        _JS_SIGMA_NODE[chr(_js_cp)] = _js_class
+del _js_first, _js_last, _js_class, _js_cp
 
 
 @_js_functools.lru_cache(maxsize=4096)
-def _js_case_ignorable(ch):
-    """CPython's own Case_Ignorable for `ch`, read back off `str.lower()`: a code point the
-    sigma walk skips leaves U+03A3 final both after a cased letter and before nothing."""
-    return ("A" + ch + "\u03a3").lower()[-1] == "\u03c2" and ("A\u03a3" + ch).lower()[1] == "\u03c2"
+def _js_sigma_class(ch):
+    """Node's class of `ch` for the Final_Sigma walk: 1 Case_Ignorable, 2 Cased, 0 neither. Off
+    the table, CPython's own, read back off `str.lower()`: skipped when U+03A3 after it is final
+    behind a cased letter and not behind a space, Cased when it alone makes U+03A3 final."""
+    known = _JS_SIGMA_NODE.get(ch)
+    if known is not None:
+        return known
+    behind_cased = ("A" + ch + "\u03a3").lower()[-1] == "\u03c2"
+    behind_space = (" " + ch + "\u03a3").lower()[-1] == "\u03c2"
+    if behind_cased and not behind_space:
+        return 1
+    return 2 if behind_space else 0
 
 
-def _js_sigma_unsure(text):
-    """True when some U+03A3's context walk reaches a code point the two tables may classify
-    apart, so `str.lower()` and `toLowerCase()` could pick different sigmas for it."""
-    at = text.find("\u03a3")
-    while at != -1:
-        for step in (-1, 1):
-            j = at + step
-            while 0 <= j < len(text):
-                ch = text[j]
-                if ch in _JS_SIGMA_UNSURE or _js_unicodedata.category(ch) == "Cn":
-                    return True
-                if not _js_case_ignorable(ch):
-                    break
-                j += step
-        at = text.find("\u03a3", at + 1)
-    return False
+def _js_final_sigma(text, at):
+    """Unicode's Final_Sigma for the U+03A3 at `at`: a Cased code point before it, past any
+    Case_Ignorable ones, and none after it, past the same."""
+    j = at - 1
+    while j >= 0 and _js_sigma_class(text[j]) == 1:
+        j -= 1
+    if j < 0 or _js_sigma_class(text[j]) != 2:
+        return False
+    j = at + 1
+    while j < len(text) and _js_sigma_class(text[j]) == 1:
+        j += 1
+    return j == len(text) or _js_sigma_class(text[j]) != 2
+
+
+def _js_lower_no_sigma(text):
+    """`toLowerCase()` of text holding no U+03A3: context-free on both sides, so the 55 first."""
+    if _JS_LOWER_NODE_FIND(text) is not None:
+        text = text.translate(_JS_LOWER_NODE)
+    return text.lower()
 
 
 def _js_m_toLowerCase(receiver):
-    """`s.toLowerCase()`: full Unicode lowercase mapping, Final_Sigma included. `str.lower()` is
-    that for every code point but the 55 `_JS_LOWER_NODE` maps first; a U+03A3 whose context
-    reaches a code point the two tables may classify apart raises rather than risk a different
-    sigma (J89-7: ordinary Greek, ǅ and U+1C89 answer as Node does on CPython 3.11 to 3.14)."""
+    """`s.toLowerCase()`: full Unicode lowercase mapping, Final_Sigma included. Outside U+03A3
+    both sides lower one code point at a time, and `str.lower()` is Node's answer for every one
+    but the 55 `_JS_LOWER_NODE` maps first. Each U+03A3 is lowered here, by the Final_Sigma walk
+    over Node's classes (J89-7b: never refused; 0 answers apart from Node 26.13 over every code
+    point alone and in eleven sigma contexts, on CPython 3.11 to 3.14)."""
     text = _js_string_receiver("toLowerCase", receiver)
     if text.isascii():
         return text.lower()
-    if _js_sigma_unsure(text):
-        raise TypeError(
-            "ts2py: .toLowerCase() of U+03A3 next to a code point the two Unicode tables"
-            " classify apart is outside the subset"
-        )
-    return text.translate(_JS_LOWER_NODE).lower()
+    if "\u03a3" not in text:
+        return _js_lower_no_sigma(text)
+    parts = text.split("\u03a3")
+    out = [_js_lower_no_sigma(parts[0])]
+    at = len(parts[0])
+    for part in parts[1:]:
+        out.append("\u03c2" if _js_final_sigma(text, at) else "\u03c3")
+        out.append(_js_lower_no_sigma(part))
+        at += 1 + len(part)
+    return "".join(out)
 
 
 def _js_m_toUpperCase(receiver):

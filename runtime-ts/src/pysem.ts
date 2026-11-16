@@ -69,10 +69,10 @@ export function pyStrip(s: string): string {
 /**
  * `str.lower()`, where a port calls it: `component.ts`'s `normalizeName` (#316 G3 U4, J89-6). On
  * this side it IS `toLowerCase()`, final sigma included (`ΑΣ` -> `ας` in both runtimes, measured
- * by the `normalize_name` case in `--suite store`). It is named so that the compiled component
- * reaches CPython's `str.lower()` through an adapter row: ts2py's own `.toLowerCase()` refuses
- * U+03A3 and the 55 code points the two Unicode tables map apart, and a refusal there would turn a
- * save the reference answers into a crash.
+ * by the `normalize_name` case in `--suite store`). The compiled component reaches it through an
+ * adapter row, which since J89-7b is ts2py's runtime `toLowerCase()`: CPython 3.11 to 3.13's own
+ * `str.lower()` keeps U+1C89 (and 54 more code points its table predates) where this lowers it,
+ * so the adapter answers as this does.
  */
 export function pyLower(s: string): string {
   return s.toLowerCase();

@@ -28,8 +28,9 @@
  * `--emit-adapters`) and compares every byte, so a hand-edited body or a compiler change that was
  * never regenerated is red, with the regenerate command (J85-R F4);
  * `committed/coverage` lists the directory, so a generated file outside the gate is red too.
- * `runtime/toLowerCase …` (J89-7) calls the runtime ts2py emitted this run on Greek, ǅ and the
- * 55 code points CPython's table lacks, against Node's `toLowerCase()`, and pins the sigma refusals.
+ * `runtime/toLowerCase …` (J89-7, J89-7b) calls the runtime ts2py emitted this run on Greek, ǅ,
+ * the 55 code points CPython's table lacks and the 307 it classifies apart for final sigma,
+ * against Node's `toLowerCase()`, and pins the answers J89-7 used to refuse as literals.
  *
  * WHY THE PYTHON ARMS READ THE FIXTURE THEMSELVES. `ref/ts2py_ref.py` opens the file with
  * `json.load`; the cases are not sent as a payload, because the payload goes through
@@ -230,35 +231,58 @@ export async function run(ctx) {
     `compiled ${SOURCE} with ts2py this run (sha256 ${sha.slice(0, 12)}); ${fixture.length} cases x 3 arms against fixtures/workplan-cases.json`,
   );
 
-  // J89-7 (J89-R F1): the runtime's `.toLowerCase()`, from the runtime ts2py emitted this run.
-  // AGREE: each answer is Node's `toLowerCase()` of the same string, on every CPython 3.11-3.14:
-  // final sigma in ordinary Greek, a U+03A3 whose context walk stops before an unassigned code
-  // point (U+0378, `Cn` everywhere) or passes a soft hyphen, ǅ, İ, and the 55 code points
-  // CPython's table has no mapping for (Node 26.13 lowers each; the old helper raised on all of
-  // these). REFUSE: a U+03A3 whose walk reaches a code point the two tables classify apart (a
-  // `Cn` one, U+0295, U+1171E) still raises the subset's TypeError, pinned as a literal per
-  // input, because a helper that answered there would answer CPython's sigma, not Node's.
+  // J89-7 / J89-7b (J89-R F1, J89-R2 F1): the runtime's `.toLowerCase()`, from the runtime ts2py
+  // emitted this run. Each answer is Node's `toLowerCase()` of the same string, on every CPython
+  // 3.11-3.14: final sigma in ordinary Greek, ǅ, İ, the 55 code points CPython's table has no
+  // mapping for, and (J89-7b) every U+03A3 J89-7 refused: one whose walk reaches a code point the
+  // two tables classify apart (a `Cn` one to CPython, U+0295, U+1171E), now answered from Node's
+  // class for those 307. `table` puts each of the 307 on both sides of a U+03A3 behind a cased
+  // letter, one word apiece, so a wrong class in the runtime's table is a wrong sigma here. The
+  // inputs J89-7 pinned as refusals no longer refuse, and nothing does, so each is now pinned
+  // against Node's answer typed into this file as well (`LITERAL answers`).
   {
     const lowerNode = (cp) => String.fromCodePoint(cp);
     const fiftyFive = [0x1c89, 0xa7cb, 0xa7cc, 0xa7ce, 0xa7d2, 0xa7d4, 0xa7da, 0xa7dc]
       .concat(Array.from({ length: 22 }, (_, i) => 0x10d50 + i), Array.from({ length: 25 }, (_, i) => 0x16ea0 + i))
       .map(lowerNode);
+    const span = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+    const table = [
+      0x0295, 0x0897, 0x0ece, ...span(0x1acf, 0x1add), ...span(0x1ae0, 0x1aeb), ...span(0x1c89, 0x1c8a),
+      ...span(0xa7cb, 0xa7cf), 0xa7d2, 0xa7d4, ...span(0xa7da, 0xa7dc), 0xa7f1, 0x10d4e, ...span(0x10d50, 0x10d65),
+      ...span(0x10d69, 0x10d6d), ...span(0x10d6f, 0x10d85), 0x10ec5, ...span(0x10efa, 0x10eff), 0x11241,
+      ...span(0x113bb, 0x113c0), 0x113ce, 0x113d0, 0x113d2, ...span(0x113e1, 0x113e2), 0x1171e, 0x11b60,
+      ...span(0x11b62, 0x11b64), 0x11b66, 0x11dd9, ...span(0x11f00, 0x11f01), ...span(0x11f36, 0x11f3a), 0x11f40,
+      0x11f42, 0x11f5a, ...span(0x13439, 0x13440), ...span(0x13447, 0x13455), ...span(0x1611e, 0x16129),
+      ...span(0x1612d, 0x1612f), ...span(0x16d40, 0x16d42), ...span(0x16d6b, 0x16d6c), ...span(0x16ea0, 0x16eb8),
+      ...span(0x16ebb, 0x16ed3), ...span(0x16ff2, 0x16ff3), ...span(0x1df25, 0x1df2a), ...span(0x1e030, 0x1e06d),
+      0x1e08f, ...span(0x1e4eb, 0x1e4ef), ...span(0x1e5ee, 0x1e5ef), 0x1e6e3, 0x1e6e6, ...span(0x1e6ee, 0x1e6ef),
+      0x1e6f5, 0x1e6ff,
+    ].map(lowerNode);
     const agree = [
-      'ΣΟΦΟΣ ΛΟΓΟΣ.', 'ΑΣ', 'Σ', 'AΣB', 'Η ΟΔΟΣ ΤΟΥ ΣΟΦΟΥ ΣΑΣ', 'Α\u00adΣ', 'ΑΣ\u00ad', 'ΟΔΟΣ \u0378',
-      '\u0378 ΣΑ', 'ǅemal ΣΑΣ', 'İstanbul', '\u1c89 tje', fiftyFive.join(' '), `ΑΣ ${fiftyFive.join('')}`,
+      'ΣΟΦΟΣ ΛΟΓΟΣ.', 'ΑΣ', 'Σ', 'AΣB', 'Η ΟΔΟΣ ΤΟΥ ΣΟΦΟΥ ΣΑΣ', 'Α­Σ', 'ΑΣ­', 'ΟΔΟΣ ͸',
+      '͸ ΣΑ', 'ǅemal ΣΑΣ', 'İstanbul', 'Ᲊ tje', fiftyFive.join(' '), `ΑΣ ${fiftyFive.join('')}`,
+      table.map((x) => `A${x}Σ`).join(' '), table.map((x) => `AΣ${x}`).join(' '),
+      table.map((x) => `${x}Σ`).join(' '), table.map((x) => `Á${x}́Σ́${x}`).join(' '),
     ];
-    const refuse = ['Α\u0378Σ', 'ΑΣ\u0378', 'ΑΣ\u00ad\u0378', '\u0295Σ', 'ΑΣ\u0295', 'ΑΣ\u{1171e}'];
+    // J89-7's six refusals and J89-R2's two, with Node 26.13's answer typed in.
+    const answered = [
+      ['Α͸Σ', 'α͸σ'], ['ΑΣ͸', 'ας͸'], ['ΑΣ­͸', 'ας­͸'],
+      ['ʕΣ', 'ʕσ'], ['ΑΣʕ', 'αςʕ'], ['ΑΣ\u{1171e}', 'ας\u{1171e}'],
+      ['ΑΣ\u{1FAE9}', 'ας\u{1FAE9}'], ['\u{16ea0}Σ', '\u{16ebb}ς'],
+      ['ΓΕΙΑ ΣΑΣ\u{1FAE9} ΚΑΙ ΕΣΥ.', 'γεια σας\u{1FAE9} και εσυ.'], ['ΟΔΟΣ\u{1FAE8}', 'οδος\u{1FAE8}'],
+    ];
     const runtime = join(bed, 'committed', '_ts2py_runtime.py');
-    const got = ctx.runPython(REF, { lower: { runtime, inputs: [...agree, ...refuse] } }).lower;
+    const inputs = [...agree, ...answered.map(([text]) => text)];
+    const got = ctx.runPython(REF, { lower: { runtime, inputs } }).lower;
     cases.push({ name: 'runtime/toLowerCase: 55 code points in the Node table', kind: 'json', expected: 55, actual: fiftyFive.length });
-    agree.forEach((text, i) => {
+    cases.push({ name: 'runtime/toLowerCase: 307 code points in the sigma table', kind: 'json', expected: 307, actual: table.length });
+    inputs.forEach((text, i) => {
       cases.push({ name: `runtime/toLowerCase agrees with node: ${JSON.stringify(text).slice(0, 60)}`, kind: 'string', expected: text.toLowerCase(), actual: got[i] });
     });
-    const REFUSAL = 'RAISED TypeError: ts2py: .toLowerCase() of U+03A3 next to a code point the two Unicode tables classify apart is outside the subset';
-    refuse.forEach((text, i) => {
-      cases.push({ name: `runtime/toLowerCase LITERAL refuses: ${JSON.stringify(text)}`, kind: 'string', expected: REFUSAL, actual: got[agree.length + i] });
+    answered.forEach(([text, lowered], i) => {
+      cases.push({ name: `runtime/toLowerCase LITERAL answers: ${JSON.stringify(text)}`, kind: 'string', expected: lowered, actual: got[agree.length + i] });
     });
-    notes.push(`runtime toLowerCase: ${agree.length} inputs against node, ${refuse.length} refusals pinned`);
+    notes.push(`runtime toLowerCase: ${inputs.length} inputs against node, ${answered.length} pinned as literals`);
   }
   return { cases, notes };
 }

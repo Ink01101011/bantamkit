@@ -433,6 +433,18 @@ function scenarios() {
         save('project', 'Bad Name!', 'd', 'b'),
         save('project', 'x', '   \n', 'b'),
       ]],
+    // J89-7b (J89-R2 F2): the name is lowercased before it is checked, so a refusal echoes the
+    // lowercased name. CPython 3.11-3.13's `str.lower()` keeps U+1C89 where Node lowers it, and
+    // the sentence differed by that one character until `pyLower`'s adapter became the runtime's
+    // `toLowerCase()`.
+    ['--store: a save refused for a name holding U+1C89 or a sigma beside a newer code point',
+      storeSpec('direct'),
+      { registration: 'store', root: 'direct' },
+      [
+        save('project', '\u1c89x', 'd', 'b'),
+        save('project', 'Ᲊ_Fact', 'd', 'b'),
+        save('project', 'ΑΣ\u{1FAE9}', 'd', 'b'),
+      ]],
     ['--store: a budget refusal names a remedy the model has',
       storeSpec('direct'),
       { registration: 'store', root: 'direct', index_budget: 10 },
@@ -1206,6 +1218,34 @@ export async function run(ctx) {
     expected: ctx.runPython(REF, { op: 'normalize', names: names.map(b64) }, probeEnv)
       .names.map((x) => (x === null ? null : unb64(x))),
     actual: names.map((x) => mod.normalizeName(x)),
+  });
+
+  // J89-7b (J89-R2 F2): U+1C89 and its kin, which CPython 3.11-3.13's `str.lower()` keeps, and a
+  // sigma whose context reaches a code point those tables classify apart from Node's. Compared
+  // side to side, and each side pinned against Node's answer typed here, because a differential
+  // is blind to both sides moving together.
+  const newerNames = ['\u1c89x', 'Ᲊ_Fact Name', 'ΑΣ\u{1FAE9}', '\u{16EA0}Σ', '\ua7cb\u03a3 \u{1171E}'];
+  const newerLowered = ['\u1c8ax', '\u1c8a-fact-name', 'ας\u{1FAE9}', '\u{16EBB}ς', '\u0264ς-\u{1171E}'];
+  const newerPy = ctx.runPython(REF, { op: 'normalize', names: newerNames.map(b64) }, probeEnv)
+    .names.map((x) => (x === null ? null : unb64(x)));
+  const newerNode = newerNames.map((x) => mod.normalizeName(x));
+  cases.push({
+    name: 'normalize_name over U+1C89 and a sigma beside a code point the tables classify apart (J89-7b)',
+    kind: 'json',
+    expected: newerPy,
+    actual: newerNode,
+  });
+  cases.push({
+    name: 'LITERAL: J89-7b python: normalize_name over U+1C89 and the newer sigma contexts',
+    kind: 'json',
+    expected: newerLowered,
+    actual: newerPy,
+  });
+  cases.push({
+    name: 'LITERAL: J89-7b node: normalize_name over U+1C89 and the newer sigma contexts',
+    kind: 'json',
+    expected: newerLowered,
+    actual: newerNode,
   });
 
   const labelRoots = ['/a/b/.bantamkit/memory', '/a/b/memory', '/memory', '/a/.bantamkit/memory/',

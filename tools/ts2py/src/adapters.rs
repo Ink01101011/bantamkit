@@ -944,7 +944,7 @@ pub const ADAPTERS: &[Adapter] = &[
         name: "pyLower",
         py_name: "py_lower",
         kind: AdapterKind::Function,
-        why: "Python is the reference: `pyLower` is `str.lower()` (its doc comment), the call component.py's `normalize_name` makes, so the adapter is that call. ts2py's own `.toLowerCase()` answers as Node does (J89-7: Node's mapping for the 55 code points CPython's table lacks, and a refusal for a U+03A3 whose context reaches a code point the two tables classify apart); the reference is `str.lower()` itself.",
+        why: "`pyLower` stood for `str.lower()`, the call component.py's `normalize_name` made; on CPython 3.11 to 3.13 that is not Node's `toLowerCase()` for the 55 code points CPython's table has no lowercase for (U+1C89) or a final sigma beside a code point the two tables classify apart, so the adapter is the runtime's `_js_m_toLowerCase` (J89-7b), which answers as Node does on every code point and never refuses.",
     },
     Adapter {
         module: Some("runtime-ts/src/memory/skills.ts"),

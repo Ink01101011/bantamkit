@@ -2323,20 +2323,45 @@ answers as Node 26.13 does, measured over every code point on CPython 3.11, 3.12
 - **The 55 code points.** CPython 3.11 to 3.13 have no lowercase for any of them (`Cn` there; 28 on
   3.14). Each maps one code point to one code point in Node. The helper maps them to Node's answer
   first, then calls `str.lower()`. Every single code point matches Node, with 0 refused.
-- **Final sigma.** U+03A3 is still lowered by `str.lower()`. The helper walks out from it over
-  Case_Ignorable code points (CPython's own, read back off `str.lower()`). It raises only if that
-  walk reaches a code point the two tables may classify apart: one CPython has as `Cn`, or U+0295,
-  or U+1171E. J89-R's sweep: every code point in five sigma contexts. Agreeing everywhere else,
-  with 0 refusals on any assigned code point outside those two.
+- **Final sigma.** J89-7 still lowered U+03A3 with `str.lower()` and raised when the walk out
+  from it reached a code point CPython has as `Cn`, or U+0295, or U+1171E. J89-R2 found that
+  refused far more than it had to: `ΓΕΙΑ ΣΑΣ🫩` (U+1FAE9, Unicode 16) in both layers made Python's
+  dream raise on 3.11 to 3.13 (`🩷`, U+1FA77, on 3.11), where Node merged and both would pick `ς`.
+  Since J89-7b the helper lowers each U+03A3 itself, by Unicode's Final_Sigma walk, and never
+  refuses. The walk skips Case_Ignorable code points and asks whether the first other one is
+  Cased. For the code points the two tables classify apart, it uses Node's class, embedded as
+  ranges (`_JS_SIGMA_NODE`). Everywhere else it uses CPython's own, read back off `str.lower()`.
+  J89-7b's sweep probed every code point in both walk directions, against Node 26.13. The two
+  tables classify 307 apart on 3.11, 196 on 3.12 and 3.13, and 100 on 3.14, each set inside
+  3.11's. Every one is `Cn` to CPython but U+0295 and U+1171E. Both sides walk symmetrically
+  everywhere. Embedding Node's class answers all inputs; keying a refusal on
+  `unicodedata.unidata_version` would still refuse those 307 (or 196, or 100).
 
-So `ΣΟΦΟΣ`, `ΟΔΟΣ 🫨` (3.12 on), ǅ and U+1C89 answer as Node does. `ΑΣ` followed directly by
-U+0378 still refuses. There is no ruling: the two runtimes agree, and the refusal stays where they
-cannot. `--suite dream` has three arms (`J89-7 dream lowercases …`), each with a block that differs
-only in case: Greek with a medial-sigma twin, U+1C89 against U+1C8A, ǅ against ǆ. Each arm compares
-the plan and both trees, plus a per-side literal survivor. They were red on c4fc46d9 on 3.11, 3.12
-and 3.13. A plain `str.lower()` reddens the U+1C89 arm, and a sigma-blind lowercase reddens the
-Greek arm. `--suite ts2py` pins 14 inputs against Node's `toLowerCase()` and 6 refusals as
-literals (`runtime/toLowerCase …`). The refusals go red when the walk is removed.
+So `ΣΟΦΟΣ`, `ΟΔΟΣ 🫨` and `ΟΔΟΣ🫨`, `ΑΣ` directly before U+0378, ǅ and U+1C89 answer as Node does on
+every supported CPython. Nothing refuses. The measure, the eleven contexts of J89-R2 over every code
+point (12,255,232 strings), its 402,145 fuzzed strings, and every pair of the 307 in four contexts
+(407,044), on CPython 3.11.15, 3.12.13, 3.13.18 and 3.14.10:
+
+| CPython | J89-7 (8165f9a7): ok / refused | J89-7b: ok / refused | wrong, before and after |
+|---|---|---|---|
+| 3.11 | 3,956,872 / 8,298,360 · fuzz 366,129 / 36,016 · pairs 4,108 / 402,936 | all ok, 0 refused | 0 |
+| 3.12 | 4,001,762 / 8,253,470 · fuzz 372,918 / 29,227 · pairs 63,316 / 343,728 | all ok, 0 refused | 0 |
+| 3.13 | 4,008,032 / 8,247,200 · fuzz 372,918 / 29,227 · pairs 63,316 / 343,728 | all ok, 0 refused | 0 |
+| 3.14 | 4,059,882 / 8,195,350 · fuzz 382,628 / 19,517 · pairs 201,616 / 205,428 | all ok, 0 refused | 0 |
+
+There is no ruling, because the two runtimes agree. A string without U+03A3 is `str.lower()`. The 55
+are translated first only when a precompiled class of ranges finds one. J89-R2 measured the
+`translate` on every non-ASCII string as 2.01 → 12.85 µs. J89-7b measured a 63-character Thai and
+Latin string without U+03A3 on 3.12 at 2.68 µs on 8165f9a7 and 0.55 µs now (`str.lower()` alone:
+0.17 µs). `--suite dream` has four arms (`J89-7 dream lowercases …`), each with a block that differs
+only in case: Greek with a medial-sigma twin, U+1C89 against U+1C8A, ǅ against ǆ, and (J89-7b)
+`ΣΑΣ🫩` and `ΣΑΣ🩷` with a `σασ🫩` twin. Each arm compares the plan and both trees, plus a per-side
+literal survivor. The first three were red on c4fc46d9 on 3.11, 3.12 and 3.13. The fourth was red
+on 8165f9a7 on the same three. `--suite ts2py` compares 28 inputs against Node's `toLowerCase()`
+(`runtime/toLowerCase …`). Four of them put each of the 307 on both sides of a U+03A3. The 10
+inputs J89-7 and J89-R2 found refused, which now answer, are pinned against Node's answer typed into
+the suite. Flipping one range's class in the table (cased to neither, ignorable to neither) reddens
+those cases.
 
 **Relative dates and the interpreter's Unicode table (F2, documented).** Node's `pyRelativeScan` and
 `pyIntDigits` reproduce CPython 3.12's `\d` (UCD 15.0, 680 digits). CPython 3.11's `int()` and `\d`
@@ -2406,7 +2431,8 @@ at the boundary rather than chosen: `layered_for_eval` with an engine other than
 `ValueError("unknown engine: 'v1'")` as the reference did, where component.ts throws an `Error`
 with the engine JSON-quoted (`unknown engine: "v1"`); no MCP tool, CLI or hook reaches it, and no
 ruling covers it (reported to the orchestrator). `normalize_name` reaches `str.lower()` through
-`pyLower`, where ts2py's `.toLowerCase()` would refuse `Σ` (a case `--suite store` pins). Three
+`pyLower`, where ts2py's `.toLowerCase()` would refuse `Σ` (a case `--suite store` pins); since
+J89-7b that adapter is the runtime's `toLowerCase()` (see *Lowercase and digits*). Three
 tests that reached the hand-written internals follow the generated ones:
 `test_layered_reads_every_layer_and_ranks_them_as_one` spies on the profile store's core (the
 method the component calls), and `queries_ref.py` hooks the generated `QueryScorer.column` and the

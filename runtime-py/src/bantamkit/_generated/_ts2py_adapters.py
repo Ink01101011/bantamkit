@@ -19,6 +19,7 @@ import zlib as _zlib
 
 from ._ts2py_runtime import (
     _JS_UNDEFINED,
+    _js_m_toLowerCase,
     _js_num,
     _js_truthy,
     _JsBigInt,
@@ -2347,10 +2348,14 @@ def py_home(*_):
 
 
 def py_lower(text, *_):
-    """`pyLower` (pysem.ts): `str.lower()`."""
+    """`pyLower` (pysem.ts): `toLowerCase()`, the runtime's own (J89-7b). `str.lower()` was the
+    reference's call, but CPython 3.11 to 3.13 have no lowercase for the 55 code points the
+    runtime maps first (`'\u1c89x'.lower()` keeps U+1C89; Node lowers it to U+1C8A), and a final
+    sigma beside a code point their table classifies apart from Node's; the runtime answers as
+    Node does on every one, so `normalize_name` does too."""
     if not isinstance(text, str):
         raise TypeError("ts2py: pyLower of anything but a string is outside the subset")
-    return text.lower()
+    return _js_m_toLowerCase(text)
 
 
 def _store_shim():

@@ -238,7 +238,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `s.codePointAt(i)` (J86) | `_js_m_codePointAt` | UTF-16 position; a lead surrogate followed by a trail gives the astral code point, otherwise the unit; out of range is `undefined` |
 | `s.indexOf(x, from?)`, `s.lastIndexOf(x, from?)` (J86) | `_js_m_indexOf`, `_js_m_lastIndexOf` | UTF-16 positions, `from` clamped as JS clamps it (a NaN `from` of lastIndexOf is +Infinity); strings only |
 | `s.padStart(n, f?)`, `s.padEnd(n, f?)`, `s.repeat(n)` (J86) | `_js_m_padStart`, `_js_m_padEnd`, `_js_m_repeat` | length in UTF-16 units; the filler cut to fit; a negative or infinite count is RangeError |
-| `s.toLowerCase()`, `s.toUpperCase()` (J86) | `_js_m_toLowerCase`, `_js_m_toUpperCase` | ASCII exactly; a non-ASCII string raises (CPython and V8 follow different Unicode versions); J88-2: `toLowerCase` of a non-ASCII string is `str.lower()` unless it holds one of the 55 code points whose mapping the two tables differ on, or U+03A3 (final sigma is contextual), which raise; J89-7: the 55 are mapped to Node 26.13's answer before `str.lower()`, and a U+03A3 raises only when its Final_Sigma walk (over CPython's Case_Ignorable) reaches a code point CPython has as `Cn`, or U+0295 / U+1171E, the only places the two tables classify a sigma context apart |
+| `s.toLowerCase()`, `s.toUpperCase()` (J86) | `_js_m_toLowerCase`, `_js_m_toUpperCase` | ASCII exactly; a non-ASCII string raises (CPython and V8 follow different Unicode versions); J88-2: `toLowerCase` of a non-ASCII string is `str.lower()` unless it holds one of the 55 code points whose mapping the two tables differ on, or U+03A3 (final sigma is contextual), which raise; J89-7: the 55 are mapped to Node 26.13's answer before `str.lower()`, and a U+03A3 raises only when its Final_Sigma walk (over CPython's Case_Ignorable) reaches a code point CPython has as `Cn`, or U+0295 / U+1171E, the only places the two tables classify a sigma context apart; J89-7b: nothing raises: a U+03A3 is lowered by the Final_Sigma walk itself, over Node's Case_Ignorable / Cased for the 307 code points CPython 3.11's table classifies apart (fewer on later versions) and CPython's own elsewhere, and the 55 are translated only when a precompiled class finds one |
 | `s.trim()`, `s.endsWith(x)` (J88-2) | `_js_m_trim`, `_js_m_endsWith` | JS's WhiteSpace and LineTerminator (U+FEFF trimmed, U+001C-U+001F and U+0085 not: not `str.strip()`); by UTF-16 unit |
 | `m.values()` (J88-2) | `_js_m_values` | a Map's values, a Set's items or an array's elements, as a fresh list (only spread or iterated at once) |
 | `m.keys()` (J89-4a) | `_js_m_keys` | a Map's keys, a Set's items or an array's indexes, as a fresh list (the same snapshot as `values`) |
@@ -612,10 +612,9 @@ class's method names still reach every module (`tests/g3_store.rs`,
 `j89_5a_a_private_class_keeps_its_method_names_in_its_module`, pinned to Node).
 
 Some operations are checked at run time instead, because only the value can tell: each raises
-a `TypeError` naming the subset rather than answering differently from JS. `.toLowerCase()` of a
-U+03A3 whose context reaches a code point the two Unicode tables classify apart (J89-7);
-`.toUpperCase()` on a non-ASCII string; `.replace` with a `$` in the replacement or a function;
-`.test` / `.exec` on a `g` regex; a `new RegExp` repeat count that is not an integer in
+a `TypeError` naming the subset rather than answering differently from JS. `.toUpperCase()` on a
+non-ASCII string; `.replace` with a `$` in the replacement or a function; `.test` / `.exec` on a
+`g` regex; a `new RegExp` repeat count that is not an integer in
 0..65535; reading an `Object.prototype` name (`constructor`, `toString`, ...) that a plain
 object or instance does not own (JS answers with an inherited function); assigning
 `__proto__`; `Object.freeze` of anything but a class instance; `throw` of a value that is not an

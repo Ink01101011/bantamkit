@@ -1046,6 +1046,13 @@ export async function run(ctx) {
       ['U+01C5', ['\u01c5emal ΣΑΣ', '\u01c6emal σας'],
         '\u01c5emal block.\n\nDeploys: \u01c5 one', '\u01c6emal block.\n\nDeploys: \u01c5 two',
         `description: \u01c5emal ΣΑΣ\n\u01c5emal block.\n\nDeploys: \u01c5 one${superseded('Deploys: \u01c5 two')}`],
+      // J89-7b (J89-R2 F1): a U+03A3 whose context reaches U+1FAE9 (Unicode 16) or U+1FA77
+      // (Unicode 15), `Cn` to CPython 3.11-3.13 / 3.11. J89-7's helper refused there, so Python's
+      // dream raised where Node merged; both pick the final sigma, and `σασ🫩` is a different block.
+      ['a sigma beside a Unicode 15 and 16 emoji (J89-7b)', ['ΓΕΙΑ ΣΑΣ\u{1FAE9} ΚΑΙ ΕΣΥ', 'γεια σας\u{1FAE9} και εσυ'],
+        'ΓΕΙΑ ΣΑΣ\u{1FAE9} ΚΑΙ ΕΣΥ.\n\nDeploys: ΣΑΣ\u{1FA77} Α',
+        'γεια σας\u{1FAE9} και εσυ.\n\nDeploys: ΣΑΣ\u{1FA77} Β\n\nΑΛΛΟΣ ΣΑΣ\u{1FA77}.\n\nγεια σασ\u{1FAE9} και εσυ.',
+        `description: ΓΕΙΑ ΣΑΣ\u{1FAE9} ΚΑΙ ΕΣΥ\nΓΕΙΑ ΣΑΣ\u{1FAE9} ΚΑΙ ΕΣΥ.\n\nDeploys: ΣΑΣ\u{1FA77} Α\n\nΑΛΛΟΣ ΣΑΣ\u{1FA77}.\n\nγεια σασ\u{1FAE9} και εσυ.${superseded('Deploys: ΣΑΣ\u{1FA77} Β')}`],
     ];
     arms.forEach(([armLabel, [projectDescription, profileDescription], projectBody, profileBody, expected], i) => {
       const label = `J89-7 dream lowercases ${armLabel} like toLowerCase()`;
