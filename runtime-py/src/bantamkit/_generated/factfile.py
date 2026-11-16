@@ -12,6 +12,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_coalesce_value,
     _js_code_units,
     _js_destructure,
+    _js_every_string,
     _js_from_code_point,
     _js_ge,
     _js_get,
@@ -28,7 +29,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_list_at,
     _js_list_join,
     _js_lt,
-    _js_m_every,
     _js_m_exec,
     _js_m_filter,
     _js_m_get,
@@ -162,7 +162,7 @@ def _fact_of_parsed(parsed):
             raise FactParseError("formatFact: the frontmatter has no '" + key + "' key, and a fact must carry name, description and type")
     def one(key):
         return _js_get(meta, key)
-    return {"name": one("name"), "description": one("description"), "type": _js_get(alias, "type"), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "created": None if _js_get(meta, "created") is _JS_UNDEFINED else one("created"), "last_recalled": None if _js_get(meta, "last_recalled") is _JS_UNDEFINED else one("last_recalled"), "links": py_list(_js_get(meta, "links")), **_js_spread({"keywords": [*_js_get(meta, "keywords")]} if _js_is_array(_js_get(meta, "keywords")) and _js_m_every(_js_get(meta, "keywords"), lambda k, *_: _js_typeof(k) == "string") else {}), **_js_spread({"extra": extra_of(meta)} if len(extra_of(meta)) > 0 else {}), "body": body}
+    return {"name": one("name"), "description": one("description"), "type": _js_get(alias, "type"), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "created": None if _js_get(meta, "created") is _JS_UNDEFINED else one("created"), "last_recalled": None if _js_get(meta, "last_recalled") is _JS_UNDEFINED else one("last_recalled"), "links": py_list(_js_get(meta, "links")), **_js_spread({"keywords": [*_js_get(meta, "keywords")]} if _js_is_array(_js_get(meta, "keywords")) and _js_every_string(_js_get(meta, "keywords")) else {}), **_js_spread({"extra": extra_of(meta)} if len(extra_of(meta)) > 0 else {}), "body": body}
 
 
 def py_truthy(value):

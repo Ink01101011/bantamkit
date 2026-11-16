@@ -55,6 +55,9 @@ MODULES = {
     "dream.py": TS / "memory" / "dream.ts",
     # #316 G3 U4 (J89-6), the same call.
     "component.py": TS / "memory" / "component.ts",
+    # #316 G4 (J90-2), the same call: the lock and the hot index.
+    "lock.py": TS / "storage" / "lock.ts",
+    "hotindex.py": TS / "storage" / "hotindex.ts",
 }
 # The two support modules ts2py writes from copies it embeds; and the hand-written package file.
 SUPPORT = {"_ts2py_runtime.py", "_ts2py_adapters.py"}
@@ -73,6 +76,7 @@ REGENERATE = (
     "runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts "
     "runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts "
     "runtime-ts/src/memory/dream.ts runtime-ts/src/memory/component.ts "
+    "runtime-ts/src/storage/lock.ts runtime-ts/src/storage/hotindex.ts "
     "--out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime\n"
     f"  {_CARGO} --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py\n"
     f"  {_CARGO} --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py\n"

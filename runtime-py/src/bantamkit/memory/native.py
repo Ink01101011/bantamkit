@@ -3,7 +3,7 @@
 **Generated, not hand-written (#316 G3 U3, J89-5).** Every rule is `bantamkit/_generated/native.py`,
 compiled from `runtime-ts/src/memory/native.ts` by `tools/ts2py` (`docs/porting.md`, *Generated
 modules*). This module is the SHIM: `NativeStore` keeps the Python surface it had (a `Path` root,
-`Fact` / `Pool` dataclasses, `index()` answering the hand-written `HotIndex`, the Python-only
+`Fact` / `Pool` dataclasses, `index()` answering the `HotIndex` shim, the Python-only
 `snapshot()`), converted at every crossing with the store shim's `_fact_out` / `_pool_out`. A file
 is read by `divergence.parse_fact` through the `parseNative` adapter, exactly as before.
 
@@ -46,7 +46,7 @@ from typing import Any
 from bantamkit._generated import native as _g
 from bantamkit._generated._ts2py_runtime import _JsSet
 
-from .store import Fact, Pool, _bare_methods, _fact_out, _pool_out, _undefined
+from .store import Fact, Pool, _bare_methods, _fact_out, _hot, _pool_out, _undefined
 
 #: The label the layer's hits carry: `[native] [name] (type) description`.
 NATIVE_LAYER = _g.NATIVE_LAYER
@@ -68,12 +68,11 @@ class NativeStore:
 
     def index(self) -> Any:
         """The native hot index, under `INDEX_DIR_ENV` or `~/.bantamkit/index/`; never here."""
-        return self._core.index()._js_hot
+        return _hot(self._core.index())
 
     def _indexed(self) -> Any:
         """The index, refreshed; `None` when the directory is not there (a layer of nothing)."""
-        got = self._core.indexed()
-        return None if got is None else got._js_hot
+        return _hot(self._core.indexed())
 
     def _listing(self) -> list[Path]:
         """The host's fact files in code-point order, `MEMORY.md` excepted: the index's listing."""

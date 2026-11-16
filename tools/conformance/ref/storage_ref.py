@@ -927,6 +927,17 @@ def _j90_index(d: Path) -> dict:
     hi = h.HotIndex(root, "native", home)
     hi.refresh("fast")
     out["native_flow"] = {"docs": sorted(hi.docs()), "skipped": sorted(hi.skipped)}
+    # J90-2: a source through a dangling symlink and one through a live symlink (lib/storage_j90.mjs).
+    (d / "links" / "real").mkdir(parents=True)
+    os.symlink("missing-target", d / "links" / "dangle")
+    os.symlink("real", d / "links" / "live")
+
+    def named(link: str, target: str) -> list:
+        p = d / "links" / link
+        real = h.HotIndex(p, "facts", d / "links-home").real
+        return [real.rsplit("/", 1)[-1], h.sha16(p) == h.sha16(d / "links" / target)]
+
+    out["symlinks"] = {"dangle": named("dangle", "missing-target"), "live": named("live", "real")}
     return out
 
 

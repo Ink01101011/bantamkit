@@ -127,10 +127,47 @@ pub fn compile_modules(
         return Err(errors);
     }
 
+    // J90-2: the import graph between the compiled modules of this call, and each module's
+    // imports that lead back to it (a cycle): those are written after its body.
+    let mut edges: HashMap<String, HashSet<String>> = HashMap::new();
+    for ((display_path, _), program) in sources.iter().zip(&programs) {
+        edges.insert(
+            display_path.to_string(),
+            lower::compiled_imports(program, display_path, &ctx.modules),
+        );
+    }
+    let reaches = |from: &str, to: &str| -> bool {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut stack = vec![from];
+        while let Some(at) = stack.pop() {
+            if at == to {
+                return true;
+            }
+            if !seen.insert(at) {
+                continue;
+            }
+            if let Some(next) = edges.get(at) {
+                stack.extend(next.iter().map(String::as_str));
+            }
+        }
+        false
+    };
+
     let mut out = Vec::new();
     for (((display_path, source), program), stem) in sources.iter().zip(&programs).zip(stems) {
+        let cyclic_imports: HashSet<String> = edges
+            .get(*display_path)
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter(|t| reaches(t, display_path))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut module_ctx = lower::ModuleCtx {
             path: display_path.to_string(),
+            cyclic_imports,
             ..ctx.clone()
         };
         if let Some(private) = private_methods.get(*display_path) {
@@ -247,6 +284,21 @@ fn emit(
     );
     out.push_str("]\n\n\n");
     out.push_str(body);
+    // J90-2: the imports of an import cycle, after every name of this module is bound (so the
+    // cycle imports in either order); the body reads them only when a function runs.
+    if !lowerer.late_imports.is_empty() {
+        out.push_str(
+            "\n\n# Imported last: these modules import this one back (an import cycle).\n",
+        );
+        for (module, names) in &lowerer.late_imports {
+            let mut names: Vec<&str> = names.iter().map(String::as_str).collect();
+            names.sort_by_key(|n| (n.to_uppercase() != *n, n.to_lowercase(), n.to_string()));
+            out.push_str(&format!(
+                "from {module} import {}  # noqa: E402\n",
+                names.join(", ")
+            ));
+        }
+    }
     out
 }
 

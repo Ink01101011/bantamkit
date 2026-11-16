@@ -45,7 +45,8 @@ from ._ts2py_runtime import (  # noqa: F401
     _JsObject,
     _JsRangeError,
 )
-from ._ts2py_adapters import LOCK_POLL_MS, LOCK_STALE_MS, append_file_sync, buffer_alloc, buffer_concat, buffer_from, close_sync, exclusive, exists_sync, fstat_sync, gunzip_sync, gzip_sync, link_sync, mkdir_sync, open_sync, path_basename, path_dirname, path_join, process_pid, random_bytes, read_file_sync, read_sync, readdir_sync, rename_sync, rm_sync, stat_sync, write_sync
+from ._ts2py_adapters import append_file_sync, buffer_alloc, buffer_concat, buffer_from, close_sync, exists_sync, fstat_sync, gunzip_sync, gzip_sync, link_sync, mkdir_sync, open_sync, path_basename, path_dirname, path_join, process_pid, random_bytes, read_file_sync, read_sync, readdir_sync, rename_sync, rm_sync, stat_sync, write_sync
+from .lock import LOCK_POLL_MS, LOCK_STALE_MS, exclusive
 
 __all__ = ["LogSegment", "ROTATE_BYTES", "dumps_line", "rewrite_held", "write_over"]
 

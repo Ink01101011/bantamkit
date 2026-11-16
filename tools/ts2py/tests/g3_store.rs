@@ -226,7 +226,9 @@ fn j89_4a_a_method_name_still_refuses_a_property_read_of_that_name() {
 /// property of the same name on anything else still reads.
 #[test]
 fn j89_4a_imported_class_methods_stay_in_their_module() {
-    let importer = "import { ColdIndex } from './storage/coldindex.js';\nimport { HotIndex } from './storage/hotindex.js';\nexport function f(c: ColdIndex, h: HotIndex, seen: Set<string>, pool: { names: string[] }): unknown {\n  seen.add('x');\n  c.add(new Map());\n  return [pool.names, h.names()];\n}\n";
+    // J90-2: `HotIndex` is compiled since #316 G4, so the second adapter class here is ColdIndex's
+    // own `doc` (was `HotIndex.names`).
+    let importer = "import { ColdIndex } from './storage/coldindex.js';\nexport function f(c: ColdIndex, seen: Set<string>, pool: { names: string[] }): unknown {\n  seen.add('x');\n  c.add(new Map());\n  return [pool.names, c.doc('x')];\n}\n";
     let other = "export function g(seen: Set<string>): unknown {\n  return seen.add('x');\n}\n";
     let modules = compile_package(&[
         ("runtime-ts/src/importer.ts", importer),
@@ -240,7 +242,7 @@ fn j89_4a_imported_class_methods_stay_in_their_module() {
     );
     assert!(
         code("importer").contains("_js_get(pool, \"names\")")
-            && code("importer").contains("_js_invoke(h, \"names\")"),
+            && code("importer").contains("_js_invoke(c, \"doc\", \"x\")"),
         "{}",
         code("importer")
     );
@@ -265,6 +267,9 @@ fn j89_4a_store_compiles_with_the_committed_modules() {
         "runtime-ts/src/memory/usage.ts",
         "runtime-ts/src/memory/retrieval.ts",
         "runtime-ts/src/memory/store.ts",
+        // J90-2 (#316 G4): the store imports the compiled lock and hot index.
+        "runtime-ts/src/storage/lock.ts",
+        "runtime-ts/src/storage/hotindex.ts",
     ];
     let sources: Vec<String> = paths
         .iter()
@@ -830,6 +835,8 @@ fn j89_6_component_compiles_with_the_g3_call() {
         "runtime-ts/src/memory/layers.ts",
         "runtime-ts/src/memory/dream.ts",
         "runtime-ts/src/memory/component.ts",
+        "runtime-ts/src/storage/lock.ts",
+        "runtime-ts/src/storage/hotindex.ts",
     ];
     let sources: Vec<String> = paths
         .iter()

@@ -8,7 +8,7 @@
  *
  * A raise is the answer `{ raised: <class>, msg: <sentence> }` on both sides.
  */
-import { mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
@@ -77,7 +77,7 @@ async function index(runtimeTs, d) {
     file_of: ['alpha', 'gamma', 'nope'].map((n) => hi.fileOf(n)),
     lens: ['alpha', 'beta', 'nope'].map((n) => hi.lens(n)),
     lens_total: hi.lensTotal(),
-    size: hi.size(),
+    size: hi.docCount(),
     exists: hi.exists(),
     head_print: JSON.parse(hi.headPrint()).shards,
     unchecked: [...hi.docsUnchecked().keys()].sort(),
@@ -86,7 +86,7 @@ async function index(runtimeTs, d) {
     parse_file_gone: pf('gone.md'),
   };
   hi.invalidate();
-  out.reads.after_invalidate = [hi.exists(), hi.size()];
+  out.reads.after_invalidate = [hi.exists(), hi.docCount()];
   const all = [...h.HEAD_KEYS, ...h.TAIL_KEYS];
   out.units = {
     decode: h.decodeSegments(['a', 'b', 'c'], [0, 2, 1, 0, 3, 2, 1, 0, 0, 1]),
@@ -119,6 +119,18 @@ async function index(runtimeTs, d) {
   hi = new h.HotIndex(root, 'native', home);
   hi.refresh('fast');
   out.native_flow = { docs: [...hi.docs().keys()].sort(), skipped: [...hi.skipped.keys()].sort() };
+  // J90-2: a source through a symlink whose target is missing (`dangle`), and one through a live
+  // symlink (`live` -> `real`). What the index names it by: its realpath's last part, and whether
+  // `sha16` hashes the target's path.
+  mkdirSync(join(d, 'links', 'real'), { recursive: true });
+  symlinkSync('missing-target', join(d, 'links', 'dangle'));
+  symlinkSync('real', join(d, 'links', 'live'));
+  const named = (link, target) => {
+    const p = join(d, 'links', link);
+    const real = new h.HotIndex(p, 'facts', join(d, 'links-home')).real;
+    return [real.slice(real.lastIndexOf('/') + 1), h.sha16(p) === h.sha16(join(d, 'links', target))];
+  };
+  out.symlinks = { dangle: named('dangle', 'missing-target'), live: named('live', 'real') };
   return out;
 }
 
@@ -317,6 +329,11 @@ const RULING_228_HOT =
   '`divergence.parse_fact` (`yaml.safe_load`), and skipped by the port, whose codec refuses the shape by name ' +
   "(#120). Each side's hot index holds what that side's native mirror and recall read for the same file.";
 
+const UNRULED_J90_2 =
+  'UNRULED DIVERGENCE (J90-2): not ruled in docs/porting.md and not fixed; found while generating the hot index ' +
+  '(#316 G4) and left as it stood on 9c6bc181 for the orchestrator: os.path.realpath follows a dangling symlink, ' +
+  "Node's realpathSync refuses it and the port keeps the link as spelled.";
+
 /** Per-side literals: a change made on both sides leaves the differential green, these do not. */
 const LITERALS = {
   index: {
@@ -378,6 +395,23 @@ export function j90Cases(section, { py, nd, dirs }) {
     cases.push({ name: 'LITERAL: J90-1F #228 per side: the hot index over a native flow mapping — python indexes it', kind: 'json', expected: { docs: ['flow', 'plain'], skipped: [] }, actual: py.native_flow });
     cases.push({ name: 'LITERAL: J90-1F #228 per side: the hot index over a native flow mapping — node skips it by file', kind: 'json', expected: { docs: ['plain'], skipped: ['flow.md'] }, actual: nd.native_flow });
     same('#228 the native fact beside it (block-mapping metadata) is indexed on both sides', py.native_flow.docs.includes('plain'), nd.native_flow.docs.includes('plain'));
+    // J90-2: found while generating the index, NOT ruled and NOT fixed (left to the orchestrator):
+    // through a dangling symlink the reference's `os.path.realpath` follows the link to its
+    // missing target, Node's `realpathSync` refuses it and `nodeRealpath` keeps the link as
+    // spelled, so the two name the source's index (`sha16`) and its head's `source` differently.
+    // The generated Python keeps the reference's answer (the `nodeRealpath` adapter), so this is
+    // the divergence as it stood on 9c6bc181. A live symlink is resolved alike, compared.
+    cases.push({
+      name: 'ruling: UNRULED DIVERGENCE (J90-2) the hot index of a source through a dangling symlink — realpath and sha16',
+      kind: 'json',
+      expected: py.symlinks.dangle,
+      actual: nd.symlinks.dangle,
+      ruling: UNRULED_J90_2,
+    });
+    cases.push({ name: 'LITERAL: J90-2 a source through a dangling symlink — python follows the link', kind: 'json', expected: ['missing-target', true], actual: py.symlinks.dangle });
+    cases.push({ name: 'LITERAL: J90-2 a source through a dangling symlink — node keeps the link', kind: 'json', expected: ['dangle', false], actual: nd.symlinks.dangle });
+    same('J90-2 a source through a live symlink is named by its target on both sides', py.symlinks.live, nd.symlinks.live);
+    lit('a source through a live symlink', ['real', true], py.symlinks.live, nd.symlinks.live);
   } else if (section === 'cold') {
     same('ColdIndex public reads (owners, allDocs, docs, doc, manifest)', py.reads, nd.reads);
     lit('ColdIndex owners / allDocs', [LITERALS.cold.owners, LITERALS.cold.all_docs], [py.reads.owners, py.reads.all_docs], [nd.reads.owners, nd.reads.all_docs]);

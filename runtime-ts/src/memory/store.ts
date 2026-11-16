@@ -759,7 +759,9 @@ export function* pooledRanking(
   const segs = new Map<string, number[]>(q.map((t) => [t, []]));
   const lengths: number[] = [];
   const starts: number[] = [];
-  for (const [, p] of live) {
+  for (const [, held] of live) {
+    // Typed, so `p.df` is the Pool's field: `HotIndex` (compiled since #316 G4) has a method `df`.
+    const p: Pool = held;
     n += p.n;
     total += p.total;
     const offset = lengths.length;
@@ -802,7 +804,9 @@ export type RowsOf = (layer: number, pool: Pool) => ReadonlyArray<unknown> | nul
 function rowVectors(live: ReadonlyArray<[number, Pool]>, rows: RowsOf | null): unknown[] | null {
   if (rows === null) return null;
   const out: unknown[] = [];
-  for (const [i, p] of live) {
+  for (const [i, held] of live) {
+    // Typed, so `p.names` is the Pool's field: `HotIndex` has a method `names` (#316 G4).
+    const p: Pool = held;
     const got = rows(i, p);
     if (got === null || got.length !== p.names.length) return null;
     for (const v of got) out.push(v);
@@ -2527,7 +2531,7 @@ export class MemoryStore {
   }
 
   /** Every `facts/*.md`, listed so that "I could not read it" is never "it is empty". */
-  private factPaths(): string[] {
+  factPaths(): string[] {
     const facts = pyJoin(this.root, 'facts');
     return sortedPathNames(this.listing(facts, FACTS_UNREADABLE)).map((n) => pyJoin(facts, n));
   }
@@ -2609,7 +2613,7 @@ export class MemoryStore {
   }
 
   /** One fact file, parsed, or the `malformed fact file` sentence for it (see `facts`). */
-  private readFact(path: string, findings?: string[]): Fact {
+  readFact(path: string, findings?: string[]): Fact {
     const timestampText = (value: FactValue | FactValue[] | undefined): FactValue | FactValue[] | undefined =>
       value instanceof PyScalar && (value.ord.kind === 'date' || value.ord.kind === 'datetime')
         ? value.text

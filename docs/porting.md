@@ -362,6 +362,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. **#315 (J86-3) leaves the mirror on `yaml.safe_load`:** the store now reads generated-first with a PyYAML fallback (*Generated modules*), and over these shapes the fallback answers, so the store and the mirror on the reference both read them as before; the mirror itself was not routed through the generated codec, because generated-first would also move the two classes #315's ruling licenses for the store (`yaml11-breaks`, `pyyaml-refuses`) into the mirror's outcomes, which this row pins. |
 | the hot index over a native fact only PyYAML reads (#228, J90-1F) | **the reference indexes the file; the port skips it** (`HotIndex.skipped`, keyed by the file). The hot index's `"native"` kind reads a Claude Code auto-memory file with each runtime's own reader: `divergence.parse_fact` (`yaml.safe_load`) on the reference, `parseNative` (the codec's `parseFrontmatter`) on the port. Over the shapes #120 and the native-mirror row above leave to PyYAML (J90-1 pinned a flow mapping, `metadata: {type: user}`), the reference indexes the fact and the port names it skipped. This row extends the mirror row's licence to the index, for the reason the mirror row gives and one of its own: each side's hot index then holds exactly what that side's native mirror and recall read for the same file, so a user finds the fact on the runtime whose mirror read it and on neither runtime meets a fact the index promises and the reader cannot open. Agreeing would mean porting PyYAML's scanner (declined by #120's ruling of 2026-10-15) or making the reference index less than its own mirror reads. Ruled in `tools/conformance/suites/storage-index.mjs` (`lib/storage_j90.mjs`) as `ruling: #228 the hot index over a native fact only PyYAML reads (flow mapping) — docs and skips`; each side's outcome is pinned as a literal (`LITERAL: J90-1F #228 per side: … — python indexes it` / `— node skips it by file`), because the two bits DIFFER and a side-to-side bit could never be green; the half the ruling does not license — the block-mapping native fact beside it, indexed on both sides — is compared. Teeth: forcing node's answer to python's reddened the ruling (STALE) and the node literal; the reverse reddened the ruling and the python literal. Recall over native files on the reference already reads this way: the G3-generated native layer (`_generated/native.py`) reads each file through the `parse_native` adapter onto `divergence.parse_fact` and indexes through the hand-written `HotIndex`. **For #316 G4:** a generated `hotindex` must keep `parseNative` that same adapter, not the generated codec, or this row's python answer flips to the port's and the reference's index stops holding what its own mirror and recall read. |
 | `MemoryStore.snapshot()` (Python only; J89-4b, #316 G3 U2) | **a Python-only API, kept by the shim, not a difference in any answer.** The pinned read set exists for ONE caller, `component.Memory.batch`, which `agent.py`'s loop (the Python eval agent, an unported module: no Node counterpart) enters around each assistant turn (RB-P1: a speculative save between two reads of one turn). `store.ts` deliberately omits it: the Node MCP server has no turn to pin. Since store.ts is generated it is hand-written in the shim (`bantamkit.memory.store`), built on the generated store: the pin is the generated `facts()` at entry, and while it holds the generated `candidates` answers it and `indexed` answers `null` (so `recall`, `lookup` and `pool` read the pin and `save` stays live), the same three moments `test_memory.py`'s snapshot cases pin. No `ruling:` case: no MCP tool, CLI or hook reaches it, so there is no Node answer to compare. |
+| `storage.hotindex.no_gc()` (Python only; J90-2, #316 G4) | **a Python-only API, kept by the shim, not a difference in any answer.** A context manager that turns CPython's cyclic collector off for a block that only allocates (J68-5: a 5,000-fact head parsed, a scoring pass); `memory.store`, `memory.native` and the hot index's own reads used it. It tunes CPython's collector, which Node does not have, so `hotindex.ts` has no counterpart; since hotindex.ts is generated it is hand-written in the shim (`bantamkit.storage.hotindex`), and its callers (the store and native shims' `pool`) are unchanged. The generated index does not call it (the TypeScript cannot), so the parses it wrapped on main run with the collector on. No `ruling:` case: nothing it changes is an answer. |
 | `Memory.setup()` and `Memory.batch()` (Python only; J89-6, #316 G3 U4) | **a Python-only API, kept by the shim, not a difference in any answer.** They are the only two consumers of `agent.py` (Layer 1, a Python-only library by the owner's ruling "keep it as Python"): `setup` registers `memory_save` / `memory_recall` / `memory_compact` on an `Agent`, adds `batch` as its batch scope and the `memory` skill as a system block; `batch` pins every WRITABLE layer's store with `snapshot()` (row above) for one assistant turn. `component.ts` deliberately omits both (its header says so: no MCP tool, CLI or hook reaches them), so since component.ts is generated they are hand-written in the shim (`bantamkit.memory.component`), on the generated facade: `batch` walks `_layers`, which are the shims of the very cores the generated component reads, so a pinned store pins what `recall` reads. Their callers (`agent.py`, `test_memory_component.py`'s agent cases, `tools/eval`) are unchanged. No `ruling:` case: there is no Node answer to compare. |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
 | accounting via `fromJs` | an integral float; the `parseJson` route is byte-identical |
@@ -1013,7 +1014,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar, the layers, the dream and the component are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar, the layers, the dream, the component, the storage lock and the hot index are compiled from TypeScript (#314, #315, #316 G1, G2, G3, G4)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1025,7 +1026,7 @@ generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
 Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
-`jobbudget.ts`, a G2/G3 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts`, `memory/layers.ts`, `memory/dream.ts` and `memory/component.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
+`jobbudget.ts`, a G2/G3/G4 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts`, `memory/layers.ts`, `memory/dream.ts`, `memory/component.ts`, `storage/lock.ts` and `storage/hotindex.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
@@ -1039,7 +1040,7 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
   runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts runtime-ts/src/memory/dream.ts \
-  runtime-ts/src/memory/component.ts \
+  runtime-ts/src/memory/component.ts runtime-ts/src/storage/lock.ts runtime-ts/src/storage/hotindex.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -2492,6 +2493,130 @@ passes (12). The touched pytest files under `python:3.11` in Docker, `test_stora
 them: 604 passed. ruff is clean. A 20,000-query fuzz of the exact-name walk (the name-shape regex
 and its strip, against a store holding three hyphenated names): 0 differences against Node (2,974
 hits, 517 misses, 16,509 outside the shape).
+
+### The lock and the hot index (#316 G4, J90-2): generated, behind their shims
+
+Since J90-2 `bantamkit.storage.lock` and `bantamkit.storage.hotindex` run `_generated/lock.py` and
+`_generated/hotindex.py`, compiled from `runtime-ts/src/storage/lock.ts` and
+`runtime-ts/src/storage/hotindex.ts` in the one G1/G2/G3/G4 ts2py call. The hand-written index
+(1,034 lines) and lock (77) are retired; the modules are shims. The generated store builds the
+generated `HotIndex` itself (the two import each other: ts2py writes an import cycle's imports at
+the end of each module, `tools/ts2py/RULES.md`, *J90-2 rules*), and `MemoryStore.index()` /
+`NativeStore.index()` answer it through the shim (`HotIndex._of`, one shim per index), so a Python
+caller and the store read one index.
+
+**The Python surface is unchanged.** `exclusive(path, wait_ms=, stale_ms=, poll_ms=)` stays the
+context manager its seven callers enter, over the generated `acquireLock` / `releaseLock` (lock.ts's
+`exclusive` split in two, Node's answers unchanged); `LOCK_WAIT_MS` / `LOCK_STALE_MS` /
+`LOCK_POLL_MS` are the generated values. `HotIndex(source, kind, home, index_dir=None)` keeps its
+snake_case methods, `Path` attributes (`source`, `home`, `path`, `dir`; `real` a string), dicts
+where the generated class answers Maps (`docs()`, `names()` as a keys view, `postings()`, `query()`,
+`segments()`, `query_words()`, `df()`, `skipped`), `avgdl()` a float, `parse_file()`'s
+`(doc, reason)` pair and `ValueError` for an unknown kind or refresh mode (the reference's
+sentences; the generated class raises Node's). `size()` is the TypeScript's `docCount()` (renamed
+under J89-4a's clash ruling: every Map's `.size` is a read of that name). `head_text`, `sha16`,
+`shard_of`, `decode` (a `malformed postings` refusal still a `ValueError`), `encode` and the
+constants are the generated ones; `dumps` stays the hand-written `json.dumps(..., sort_keys=True,
+ensure_ascii=False, separators=(",", ":"))` because the UNGENERATED modules write with it
+(`coldindex`, `retention`, `touch.graph`, `skillreport`, the refs), and `_loads` / `_iso` stay for the
+hand-written cold index until G4 generates it. `no_gc` is Python-only (the table above). One test
+reached a private: `test_touch_graph.py` reads `idx._loaded()["shards"]`, which the shim keeps as the
+generated head's `shards` (no test was rewritten).
+
+**What the generated index reads through an adapter.** `parseNative` stays the adapter onto
+`divergence.parse_fact` (the #228 row above: the reference's index keeps reading a native file with
+PyYAML); since the generated index reads a native file's `links` and `tags` from `parseNative`'s
+`meta`, the adapter now carries it, as the reference's `_secondary` read it. The realpath an index
+is named by stays `os.path.realpath` (`nodeRealpath`, below); `extractRefs` / `factRefs` are
+`touch.refs`; the serialisation is `dumpJsValue` (`json.dumps` of the value as `fromJs` reads it).
+
+**Found, not fixed, not ruled (J90-2): a source through a dangling symlink.** The reference names an
+index by `sha16(os.path.realpath(source))`, and `os.path.realpath` follows a dangling symlink to its
+missing target; Node's `realpathSync` refuses it and the port keeps the link as spelled. So the two
+runtimes name such a source's index (and its head's `source`) differently, and each rebuilds the
+other's. It predates generation (9c6bc181 answers the same on both sides) and generation keeps it:
+the generated Python reaches `os.path.realpath` through the `nodeRealpath` adapter. Pinned in
+`--suite storage-index` as `ruling: UNRULED DIVERGENCE (J90-2) the hot index of a source through a
+dangling symlink — realpath and sha16` with a literal per side; a live symlink is compared and pinned.
+Left to the orchestrator.
+
+**Python answers that moved to Node's (inputs no user path is known to reach).** Generation makes
+the Python side answer what the TypeScript answers where the hand-written module differed from it
+on an input no suite held: an `exclusive` path holding a NUL (main raised CPython's `ValueError`;
+now Node's: the open fails, the wait runs out and the block runs unlocked); a source whose realpath
+holds a POSIX surrogateescape byte (main raised `UnicodeEncodeError` out of `sha16`; now hashed as
+Node's UTF-8 writes it); a frontmatter whose `tags:` / `links:` line follows a `\r`, U+2028 or
+U+2029 (JS's `^` under `m`; main's `re.MULTILINE` saw only `\n`); a `KeyError` out of the native
+`metadata:` read (main raised; now `{}` as for any other refusal); `HotIndex.path` built with
+`path.join` (a `..` in `home` is collapsed); an index file's JSON integer of 16 or more digits or
+`-0` read as `JSON.parse` reads it (main read the exact Python int, J90-1F having moved only floats).
+
+**Write and lock safety (J90-2 probe; this tree's Python and Node against 9c6bc181's).** On a 2 MB
+HFS+ volume (`hdiutil`) and under `ulimit -f 64`, over a copy of this repository's `.bantamkit/memory`
+(92 facts; the facts on a normal disk, the index on the volume): a rebuild into 48 KB of free space
+(ENOSPC mid-shards), the same with space back, a build then one new fact patched onto a FULL volume,
+the same with space back, the lock taken on a full volume, and a rebuild under `ulimit -f 64`
+(EFBIG, a short write) then without it. All eight steps answer identically on the four sides,
+byte for byte on every index file (`full_at` masked): the refusals leave `persisted` false, no
+`.tmp` file and no head, the patch onto a full volume answers `patched` from memory with the old
+head on disk, and the next reader with space rebuilds or patches to the same bytes; the lock on a
+full volume is not held after its 200 ms wait, and no lock file is left. Lock: a free lock, a stale
+one (20 s old) taken over at once, a fresh one waited out (200 ms), a wall clock stepped +5 s and -1 s
+mid-wait (still ~200 ms: the wait is on a monotonic clock), stepped +100 s (the lock then looks stale
+and is taken), and a directory that refuses the lock file (given up at once): identical on all four
+sides. Concurrency: 3 Python, 3 Node and one 9c6bc181 Python process, 400 locked read-increment-
+rename rounds each through `exclusive` on one counter, four runs: 2,800 every time, no body run
+unlocked, no lock or temp file left.
+
+**Real data (J90-1's `run_idx.mjs` over copies of the user's stores, 14 sources: 12 native
+directories, this repository's and the home store; 674 docs).** This tree's Python against
+9c6bc181's Python: 14 of 14 sources identical (docs, skipped, loose, the head's bytes but `full_at`,
+every shard's bytes); this tree's Node against 9c6bc181's Node: 14 of 14. Python against Node: 11 of
+14 on both trees alike — the three others differ only in a `skipped` sentence for two native files
+PyYAML and the codec refuse in their own words (a `mapping values are not allowed here` against the
+port's named refusal): a difference 9c6bc181 answers the same way, not one J90-2 moved.
+
+**Cost (J90-2, macOS arm64, CPython 3.12.13, Node v26.13.0; n = 9 interleaved rounds, medians,
+one fresh process per side per round; before = 9c6bc181, after = this tree; the real-data copy above,
+14 sources, 674 docs; the first save into a copy of this repository's store whose index exists; the
+#204 bar store of 5,000 synthetic facts).**
+
+| Path | Python before | Python after | | Node before | Node after | |
+|---|---|---|---|---|---|---|
+| cold import (`hotindex` + `store`) | 95.11 ms | 95.69 ms | +0.6% | 7.81 ms | 8.00 ms | +2.4% |
+| cold build, 14 sources | 409.12 ms | 620.27 ms | **+51.6%** | 266.95 ms | 264.69 ms | -0.8% |
+| a new index per source: fast refresh, `segments`, `cols` | 4.73 ms | 11.60 ms | **+145.0%** | 4.83 ms | 5.08 ms | +5.2% |
+| held indexes: fast refresh + `query`, x20 | 5.10 ms | 25.66 ms | **+403.0%** | 4.06 ms | 3.95 ms | -2.7% |
+| a full refresh of every source (nothing moved) | 14.89 ms | 36.68 ms | **+146.4%** | 31.17 ms | 31.17 ms | +0.0% |
+| the first `memory_save` (`MemoryStore.save`, index patched) | 33.12 ms | 55.12 ms | **+66.4%** | 29.01 ms | 27.54 ms | -5.1% |
+| #204 bar: 5,000-fact recall p50 of 20, a new `MemoryStore` each (bar 15 ms) | 8.39 ms | 13.84 ms | **+64.9%** | 2.89 ms | 2.70 ms | -6.7% |
+
+Every Python path that touches the index is slower: the generated index runs each read through the
+runtime's general helpers (`_js_get`, `_js_lt`, a callback per element) where the hand-written one
+used C-speed set and `min`/`max` checks over a column and `json.loads` with native integers, and the
+generated stat and hash calls go through adapter objects (`BigIntStats`, `Hash`). Before J90-2's runtime
+fast paths (JSON integers, `new Map(entries)`, `Object.keys`/`entries`, the two `every` tests) the bar
+was **20.89 ms, over its 15 ms**; with them it is 13.28-13.84 ms, under the bar with 1.2-1.7 ms to spare.
+Carried to #317 (ts2py performance), not fixed here: a typed column check that reads a proven-int
+list at C speed, a stat adapter that does not build an object per call, `shardOf` without the `Hash`
+adapter, and the decode loop's per-element dispatch. Node moves within ±7% on every path (the
+TypeScript changed only in spelling); the one move past 5%, +5.2% on the new-index path, is
+0.25 ms on 5 ms, and the paths beside it moved the other way.
+
+**Gates.** The F4 byte comparison (`ts2py/committed/hotindex.py`, `ts2py/committed/lock.py`) red on a
+scratch hand edit of each committed module, then green (507 cases); the sha256 header
+(`test_generated_module_names_the_typescript_on_disk[hotindex.py]` / `[lock.py]`) red on a one-byte
+change to each TypeScript source, then green. The `ruling: UNRULED DIVERGENCE (J90-2)` pin goes
+STALE (and its python literal red) when the realpath adapter keeps a dangling link as Node does.
+`--all` 23,462 cases, 0 failures, 243 ruled (no ruling moved; the #228 hot-index ruling holds).
+ts2py `cargo test` 94 passed (`tests/g4.rs` added: four tests, each red under its mutation: a
+`delete` that always answers true, an `every` fast path that takes a bool, a JSON fast path that
+never falls back, an iteration that visits deleted entries, `2**53` lifted as an int, the cycle
+undetected); clippy (`-D warnings`) and fmt clean. `npm test` 2,460 passed, 0 failed. Full pytest
+5,344 passed, 0 failed (before the runtime fast paths `test_storage_bar.py` failed at 20.91 ms).
+The touched pytest files under CPython 3.11.15: 537 passed; `storage-lock`, `storage-index`,
+`storage-log`, `storage-cold`, `storage-tiers`, `storage-retention` and `store` green with a 3.11
+reference (`--python`). ruff is clean.
 
 ## Concurrency
 

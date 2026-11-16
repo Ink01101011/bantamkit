@@ -399,27 +399,6 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Function,
         why: "Reached only by a call that compiles a module importing it WITHOUT store.ts (see `bantamkitDirFor`): `bantamkit.memory.store.ensure_bantamkit_gitignore`, the shim over the generated function.",
     },
-    Adapter {
-        module: Some("runtime-ts/src/storage/lock.ts"),
-        name: "exclusive",
-        py_name: "exclusive",
-        kind: AdapterKind::Function,
-        why: "Python is the reference: lock.ts is the port of `bantamkit.storage.lock.exclusive` (#316 G4, not generated yet; `--suite storage-lock` compares the two), entered as a context manager around `body(held)`, `waitMs`/`staleMs`/`pollMs` passed as its keyword arguments.",
-    },
-    Adapter {
-        module: Some("runtime-ts/src/storage/lock.ts"),
-        name: "LOCK_STALE_MS",
-        py_name: "LOCK_STALE_MS",
-        kind: AdapterKind::Constant,
-        why: "Python is the reference: `bantamkit.storage.lock.LOCK_STALE_MS`, the same 10,000 the port declares (`--suite storage-lock`).",
-    },
-    Adapter {
-        module: Some("runtime-ts/src/storage/lock.ts"),
-        name: "LOCK_POLL_MS",
-        py_name: "LOCK_POLL_MS",
-        kind: AdapterKind::Constant,
-        why: "Python is the reference: `bantamkit.storage.lock.LOCK_POLL_MS`, the same 5 the port declares (`--suite storage-lock`).",
-    },
     // J89-2 (#316 G3: memory/usage, memory/retrieval). `pysem.ts` rows first: each TypeScript
     // function is a port of the CPython function named, so CPython is the definition (pysem.ts,
     // "the memory modules' float and text semantics", has the measurement).
@@ -508,44 +487,13 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Function,
         why: "Python is the reference: `pySearchWord(alternatives, text)` is `re.compile(r'\\b(' + alternatives + r')\\b', re.IGNORECASE).search(text)`'s group 1 (its doc comment; store.py's `_DONE_WORD_RE`), the regex J89-1F swept against CPython over every code point and J89-2 over every letter's case-fold set (`--suite store`). Moved out of store.ts because its pattern is assembled at run time.",
     },
-    Adapter {
-        module: Some("runtime-ts/src/storage/hotindex.ts"),
-        name: "HotIndex",
-        py_name: "HotIndex",
-        kind: AdapterKind::ImportedClass(&[
-            "cols",
-            "exists",
-            "fileOf",
-            "invalidate",
-            "lensTotal",
-            "names",
-            "parseFile",
-            "refresh",
-            "segments",
-        ]),
-        why: "Python is the reference: hotindex.ts is the port of `bantamkit.storage.hotindex.HotIndex` (#204; #316 G4 generates it later; `--suite store` and `recall-index` compare the two over the same index files). The adapter is that class with the TypeScript spelling: `names()` / `segments()` / `skipped` as read-only Maps over the dicts it holds, `lensTotal()` / `fileOf()` / `parseFile()` (a doc, or the reason string where Python answers `(None, reason)`) by the same functions, and a native `BantamError` restated as the adapter's so a compiled `catch` sees it.",
-    },
-    Adapter {
-        module: Some("runtime-ts/src/storage/hotindex.ts"),
-        name: "INDEX_DIR_ENV",
-        py_name: "INDEX_DIR_ENV",
-        kind: AdapterKind::Constant,
-        why: "Python is the reference: `bantamkit.storage.hotindex.INDEX_DIR_ENV`, the same `BANTAMKIT_INDEX_DIR` the port declares.",
-    },
     // J89-5 (#316 G3 U3: memory/native).
     Adapter {
-        module: Some("runtime-ts/src/storage/hotindex.ts"),
-        name: "DUPLICATE",
-        py_name: "DUPLICATE",
-        kind: AdapterKind::Constant,
-        why: "Python is the reference: `bantamkit.storage.hotindex.DUPLICATE`, the same `duplicate name` sentence head the port declares (the native index and the native layer report a second file claiming a name with it).",
-    },
-    Adapter {
-        module: Some("runtime-ts/src/storage/hotindex.ts"),
+        module: Some("runtime-ts/src/storage/nativefact.ts"),
         name: "parseNative",
         py_name: "parse_native",
         kind: AdapterKind::Function,
-        why: "Python is the reference: `parseNative` is `divergence.parse_fact` for the native shape (its doc comment), so the adapter is that function, answering the name, description, type and body it read as the object the TypeScript returns (`meta`, which no compiled caller reads, is not carried), and its `MemoryValidationError` restated as the adapter's `BantamError` with the same message, so a compiled `catch` sees it (`--suite store`, `skill-layer` and `hooks` compare the native layer over the same files).",
+        why: "Python is the reference, by ruling (#228, docs/porting.md: the hot index over a native fact only PyYAML reads): `parseNative` is `divergence.parse_fact` for the native shape (its doc comment), so the adapter is that function, answering the name, description, type and body it read as the object the TypeScript returns, and its `MemoryValidationError` restated as the adapter's `BantamError` with the same message, so a compiled `catch` sees it. J90-2 (#316 G4): moved with the function to `storage/nativefact.ts`, and `meta` is now carried, because the generated hot index reads a native file's `links` / `tags` from it: it is what the reference's index read them with (`_secondary`: `load_frontmatter` of the same frontmatter, `{}` where that refuses), each mapping a dict, each list a list, each string or null itself and any other scalar opaque (`factcodec._Opaque`: not a string to `strList`, its `str()` to `pyText`), so `links` / `tags` read as the reference's `[str(x) for x in links]` / `_str_list` read them. `--suite storage-index` (the #228 ruling and the agreeing block-mapping fact), `recall-strings`, `skill-layer` and `hooks` compare the reads.",
     },
     Adapter {
         module: Some("runtime-ts/src/storage/coldindex.ts"),
@@ -794,13 +742,6 @@ pub const ADAPTERS: &[Adapter] = &[
         why: "Python is the reference: `encodeBasestringAscii` is CPython's `py_encode_basestring_ascii` (its doc comment); the adapter is `json.encoder.encode_basestring_ascii`, the same function (a lone surrogate and each half of an astral character as a lowercase `\\uXXXX`). The term cache's bytes are compared by `--suite recall-queries`.",
     },
     Adapter {
-        module: Some("runtime-ts/src/storage/hotindex.ts"),
-        name: "sha16",
-        py_name: "sha16",
-        kind: AdapterKind::Function,
-        why: "Python is the reference: `sha16` is the port of `bantamkit.storage.hotindex.sha16` (#204), the function the hand-written queries module keyed the sidecar and the term cache with; the adapter is that function.",
-    },
-    Adapter {
         module: Some("runtime-ts/src/memory/pyfs.ts"),
         name: "pyDecodeUtf8",
         py_name: "py_decode_utf8",
@@ -1044,6 +985,42 @@ pub const ADAPTERS: &[Adapter] = &[
         py_name: "RECALL_NEEDS_QUERY_OR_FILE",
         kind: AdapterKind::Constant,
         why: "Python is the reference: `touch.recallfile.RECALL_NEEDS_QUERY_OR_FILE`, the same sentence the port declares.",
+    },
+    // J90-2 (#316 G4: storage/lock, storage/hotindex generated).
+    Adapter {
+        module: None,
+        name: "performance.now",
+        py_name: "performance_now",
+        kind: AdapterKind::Function,
+        why: "Node global: a monotonic clock in milliseconds, read only as the difference of two readings (lock.ts's deadline, J90-1F). `time.monotonic() * 1000`, the clock the reference's lock read (`time.monotonic()`); the origins differ and no compiled code reads one.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/storage/realpath.ts"),
+        name: "nodeRealpath",
+        py_name: "node_realpath",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: the hot index names its files by `sha16` and records `HotIndex.real`, both `os.path.realpath` on the reference (`hotindex.sha16`, `HotIndex.__init__`), so the adapter is `os.path.realpath` of the path as the OS receives it (the G2 path policy, `_os_text`), as the `HotIndex` and `sha16` adapters it replaces called it. NOT the same function on one input: a path through a DANGLING symlink, which `os.path.realpath` follows to its missing target and `nodeRealpath` keeps as spelled (J90-2 found it, pinned per side in `--suite storage-index`, and left it to the orchestrator: an unruled divergence that predates generation, unchanged by it).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pyjson.ts"),
+        name: "dumpJsValue",
+        py_name: "dump_js_value",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `dumpJsValue(v, options, floatKey)` is `dumpJson(fromJs(v), options)` with `floatKey` of a top-level plain object written as a float, and `dumpJson` is `json.dumps` (the `dumpJson` row). The adapter is `json.dumps` of the value as `fromJs` reads it: a number that is a safe integer and not -0 an int, any other a float; a Map or a plain object a dict keyed by `String(key)`; an array a list; null and undefined None; a BigInt an int (`dump_js_value`). The reference's `hotindex.dumps` is that call over the same data (`--suite storage-index` compares every index file byte for byte; `g4.rs` holds the conversion to Node's output).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/touch/refs.ts"),
+        name: "extractRefs",
+        py_name: "extract_refs",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: touch/refs.ts is the port of `bantamkit.touch.refs` (#200; `REF_RE` is the same source text), so the adapter is `touch.refs.extract_refs`, the function the reference's hot index called; `--suite touch-refs` compares the two.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/touch/refs.ts"),
+        name: "factRefs",
+        py_name: "fact_refs",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `touch.refs.fact_refs`, the function the reference's hot index called (`--suite touch-refs`); the keywords arrive as a list of strings.",
     },
 ];
 

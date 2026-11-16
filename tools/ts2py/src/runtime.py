@@ -679,8 +679,16 @@ class _JsMap:
     def __init__(self, entries=None):
         self._entries = {}
         if entries is not None:
+            held = self._entries
             for entry in entries:
-                self.set(_js_get(entry, 0), _js_get(entry, 1))
+                # J90-2: a `[key, value]` list with a string key, the common entry, set inline (a
+                # string is its own `_js_key`); anything else through `set`, as before.
+                if type(entry) is list and len(entry) >= 2 and type(entry[0]) is str:
+                    key = entry[0]
+                    existing = held.get(key)
+                    held[key] = (key if existing is None else existing[0], entry[1])
+                else:
+                    self.set(_js_get(entry, 0), _js_get(entry, 1))
 
     def has(self, key):
         return _js_key(key) in self._entries
@@ -695,11 +703,22 @@ class _JsMap:
         self._entries[tag] = (key if existing is None else existing[0], value)
         return self
 
+    def delete(self, key):
+        # J90-2: `Map.prototype.delete`: whether the key was there. A later `set` of it appends.
+        return self._entries.pop(_js_key(key), None) is not None
+
     def __len__(self):
         return len(self._entries)
 
     def __iter__(self):
-        return iter([[key, value] for key, value in list(self._entries.values())])
+        # J90-2: an entry deleted before the loop reaches it is not visited, and one whose value
+        # was set meanwhile is visited with that value, as a JS Map iterator does (entries added
+        # during the loop are still not visited: Known limits in SUBSET.md).
+        entries = self._entries
+        for tag in list(entries):
+            entry = entries.get(tag)
+            if entry is not None:
+                yield [entry[0], entry[1]]
 
 
 class _JsSet:
@@ -720,11 +739,23 @@ class _JsSet:
         self._items.setdefault(_js_key(item), item)
         return self
 
+    def delete(self, item):
+        # J90-2: `Set.prototype.delete`: whether the item was there.
+        tag = _js_key(item)
+        if tag in self._items:
+            del self._items[tag]
+            return True
+        return False
+
     def __len__(self):
         return len(self._items)
 
     def __iter__(self):
-        return iter(list(self._items.values()))
+        # J90-2: an item deleted before the loop reaches it is not visited, as in JS.
+        items = self._items
+        for tag in list(items):
+            if tag in items:
+                yield items[tag]
 
 
 def _js_outside(method, receiver):
@@ -735,6 +766,13 @@ def _js_m_has(receiver, key):
     if isinstance(receiver, (_JsMap, _JsSet)):
         return receiver.has(key)
     raise _js_outside("has", receiver)
+
+
+def _js_m_delete(receiver, key):
+    """J90-2: `m.delete(k)` on a Map or a Set."""
+    if isinstance(receiver, (_JsMap, _JsSet)):
+        return receiver.delete(key)
+    raise _js_outside("delete", receiver)
 
 
 def _js_m_get(receiver, key):
@@ -897,6 +935,29 @@ def _js_m_every(receiver, callback):
     return all(_js_truthy(callback(item, index, items)) for index, item in enumerate(items))
 
 
+def _js_every_integer(receiver):
+    """J90-2: `xs.every((x) => Number.isInteger(x))`. A list of Python ints only (no bool: its
+    type is `bool`) is answered at once, every int being an integral JS number; any other list
+    runs `Number.isInteger` on each element, as `_js_m_every` would with that callback."""
+    items = _js_array("every", receiver)
+    if set(map(type, items)) <= _JS_INT_ONLY:
+        return True
+    return all(_js_number_is_integer(item) for item in items)
+
+
+def _js_every_string(receiver):
+    """J90-2: `xs.every((x) => typeof x === 'string')`: a list of Python `str` only is answered at
+    once; any other list runs `typeof` on each element, as `_js_m_every` would."""
+    items = _js_array("every", receiver)
+    if set(map(type, items)) <= _JS_STR_ONLY:
+        return True
+    return all(_js_typeof(item) == "string" for item in items)
+
+
+_JS_INT_ONLY = frozenset({int})
+_JS_STR_ONLY = frozenset({str})
+
+
 def _js_m_some(receiver, callback):
     items = _js_array("some", receiver)
     return any(_js_truthy(callback(item, index, items)) for index, item in enumerate(items))
@@ -1026,9 +1087,21 @@ def _js_json_quote(text):
 
 def _js_own_keys(obj):
     """OrdinaryOwnPropertyKeys: array-index keys ascending, then the rest in insertion order."""
-    keys = [key if isinstance(key, str) else _js_str(key) for key in obj]
+    keys = list(obj)
+    if not set(map(type, keys)) <= _JS_STR_ONLY:
+        keys = [key if isinstance(key, str) else _js_str(key) for key in keys]
+    # J90-2: an array index is a canonical decimal, so only a key that starts with an ASCII digit
+    # can be one; none, and the insertion order stands, decided at C speed.
+    if not any(map(_JS_DIGIT_START, keys)):
+        return keys
+    # `_js_index_key`'s test of a string, inline (a call per key cost a 5,000-term shard 3 ms).
     indices = sorted(
-        (key for key in keys if _js_index_key(key) is not None and int(key) < 2**32 - 1),
+        (
+            key
+            for key in filter(_JS_DIGIT_START, keys)
+            if key.isdigit() and key.isascii() and (key[0] != "0" or key == "0")
+            and int(key) < 2**32 - 1
+        ),
         key=int,
     )
     chosen = set(indices)
@@ -2111,6 +2184,10 @@ def _js_object_keys(value):
 
 def _js_object_entries(value):
     """`Object.entries(value)`: `[key, value]` pairs in `Object.keys` order."""
+    if type(value) is dict and set(map(type, value)) <= _JS_STR_ONLY:
+        # J90-2: a plain object's own string keys read straight from the dict (each is there:
+        # `_js_get` would answer the same value), in `_js_own_keys`' order.
+        return [[key, value[key]] for key in _js_own_keys(value)]
     return [[key, _js_get(value, key)] for key in _js_own_property_names(value)]
 
 
@@ -2339,10 +2416,15 @@ def _js_json_parse(text):
     (`_js_json_parse_deep`, J88-2), as V8 reads it."""
     if not isinstance(text, str):
         raise TypeError("ts2py: JSON.parse of anything but a string is outside the subset")
+    # J90-2: an integer token is read by CPython's own `int` unless one might not be exact as a
+    # JS number: `-0` (JS's negative zero) or 16 digits or more (2^53 has 16). Below that every
+    # integer is exact, so `int(text)` IS `_js_json_number(text)`; the test is on the raw text, so
+    # a string that only looks like such a token takes the per-token hook, never the reverse.
+    ints = _js_json_number if _js_json_inexact(text) else int
     try:
         return _js_jsonlib.loads(
             text,
-            parse_int=_js_json_number,
+            parse_int=ints,
             parse_float=_js_json_number,
             parse_constant=_js_json_reject_constant,
         )
@@ -2743,7 +2825,23 @@ def _js_json_stringify_with(value, replacer=_JS_UNDEFINED, space=_JS_UNDEFINED):
 
 
 _JS_JSON_WS = _js_re.compile(r"[ \t\n\r]*")
+_JS_DIGIT_START = _js_re.compile("[0-9]").match
 _JS_JSON_NUMBER = _js_re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?")
+# J90-2: a JSON integer token `int()` would not read as `JSON.parse` does: `-0`, or 16 digits or
+# more (`_js_json_parse`). It may also match inside a string; that only costs the per-token hook.
+def _js_json_inexact(text):
+    """J90-2: whether `text` may hold an integer token `int()` would not read as `JSON.parse` does
+    (`_js_json_parse`). Two C-speed tests first (no `-0` and no run of 16 digits anywhere: no such
+    token), then the token-shaped search."""
+    if "-0" not in text and _JS_SIXTEEN_ZEROS not in text.translate(_JS_DIGITS_TO_ZERO):
+        return False
+    return bool(_JS_JSON_INEXACT_INT.search(text) or _JS_JSON_INEXACT_FIRST.match(text))
+
+
+_JS_DIGITS_TO_ZERO = str.maketrans("123456789", "000000000")
+_JS_SIXTEEN_ZEROS = "0" * 16
+_JS_JSON_INEXACT_INT = _js_re.compile(r"[\[,:][ \t\n\r]*(?:-0(?![.eE0-9])|-?[1-9][0-9]{15})")
+_JS_JSON_INEXACT_FIRST = _js_re.compile(r"[ \t\n\r]*(?:-0(?![.eE0-9])|-?[1-9][0-9]{15})")
 
 
 def _js_json_parse_deep(text):

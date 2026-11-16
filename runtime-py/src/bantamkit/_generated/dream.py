@@ -13,6 +13,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_destructure,
     _js_dispatch,
     _js_div,
+    _js_every_string,
     _js_floor,
     _js_ge,
     _js_get,
@@ -131,7 +132,7 @@ def _py_re_text(value):
 
 
 def _sorted_names__typed(values):
-    if _js_m_every(values, lambda v, *_: _js_typeof(v) == "string"):
+    if _js_every_string(values):
         return _js_m_sort([*values], lambda a, b, *_: cmp_codepoint(a, b))
     def lt(x, y):
         return False if _js_truthy(py_equal_value(x, y)) else py_compare_lt(x, y)
@@ -171,7 +172,7 @@ def _sorted_names__typed(values):
 def sorted_names(values):
     if type(values) is list:
         return _sorted_names__typed(values)
-    if _js_m_every(values, lambda v, *_: _js_typeof(v) == "string"):
+    if _js_every_string(values):
         return _js_m_sort([*values], lambda a, b, *_: cmp_codepoint(a, b))
     def lt(x, y):
         return False if _js_truthy(py_equal_value(x, y)) else py_compare_lt(x, y)

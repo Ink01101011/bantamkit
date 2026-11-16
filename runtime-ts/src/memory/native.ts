@@ -19,7 +19,8 @@ import * as fs from 'node:fs';
 import { homedir } from 'node:os';
 
 import { BantamError } from '../errors.js';
-import { DUPLICATE, HotIndex, INDEX_DIR_ENV, parseNative } from '../storage/hotindex.js';
+import { DUPLICATE, HotIndex, INDEX_DIR_ENV } from '../storage/hotindex.js';
+import { parseNative } from '../storage/nativefact.js';
 import { cmpCodepoint } from '../pysem.js';
 import type { Fact } from './factfile.js';
 import { asPyOSError, pyJoin, PyOSError } from './pyfs.js';

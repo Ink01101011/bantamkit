@@ -1042,7 +1042,7 @@ export class Memory {
     let rows: ((i: number, p: Pool) => Array<Row | null>) | null = null;
     if (everyRow) {
       scorer = new QueryScorer(query);
-      rows = (i, p) => p.names.map((n) => sides[i]!.get(n) ?? null);
+      rows = (i: number, p: Pool) => p.names.map((n) => sides[i]!.get(n) ?? null);
     }
     const weights = context === null ? null : contextWeights(context);
     const hits = pickHits(

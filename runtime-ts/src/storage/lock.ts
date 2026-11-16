@@ -33,11 +33,13 @@ export interface ExclusiveOptions {
   pollMs?: number;
 }
 
-export function exclusive<T>(target: string, body: (held: boolean) => T, options: ExclusiveOptions = {}): T {
-  const waitMs = options.waitMs ?? LOCK_WAIT_MS;
-  const staleMs = options.staleMs ?? LOCK_STALE_MS;
-  const pollMs = options.pollMs ?? LOCK_POLL_MS;
-  const lock = `${target}.lock`;
+/**
+ * Take `lock` (`<target>.lock`): poll every `pollMs` for at most `waitMs`, deleting a lock older
+ * than `staleMs`; whether it is held. The first half of `exclusive`, apart so a caller that
+ * cannot hand over a callback (the generated Python's context manager, #316 G4) runs the same
+ * loop.
+ */
+export function acquireLock(lock: string, waitMs: number, staleMs: number, pollMs: number): boolean {
   // The wait is measured on a monotonic clock, as the reference's `time.monotonic()`: a wall
   // clock stepped back would hold a waiter far past `waitMs`, one stepped forward would give up
   // at once (J90-1F). Staleness stays on the wall clock: it is compared with a file's mtime.
@@ -57,15 +59,31 @@ export function exclusive<T>(target: string, body: (held: boolean) => T, options
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pollMs);
     }
   }
+  return held;
+}
+
+/** The second half of `exclusive`: delete `lock` when `acquireLock` answered it held. */
+export function releaseLock(lock: string, held: boolean): void {
+  if (held) {
+    try {
+      fs.rmSync(lock, { force: true });
+    } catch {
+      /* nothing to do: a lock left behind goes stale */
+    }
+  }
+}
+
+export function exclusive<T>(target: string, body: (held: boolean) => T, options: ExclusiveOptions = {}): T {
+  const lock = `${target}.lock`;
+  const held = acquireLock(
+    lock,
+    options.waitMs ?? LOCK_WAIT_MS,
+    options.staleMs ?? LOCK_STALE_MS,
+    options.pollMs ?? LOCK_POLL_MS,
+  );
   try {
     return body(held);
   } finally {
-    if (held) {
-      try {
-        fs.rmSync(lock, { force: true });
-      } catch {
-        /* nothing to do: a lock left behind goes stale */
-      }
-    }
+    releaseLock(lock, held);
   }
 }

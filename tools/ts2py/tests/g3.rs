@@ -173,6 +173,9 @@ fn g3_modules_compile_together() {
         "runtime-ts/src/memory/usage.ts",
         "runtime-ts/src/memory/retrieval.ts",
         "runtime-ts/src/memory/store.ts",
+        // J90-2 (#316 G4): the store imports the compiled lock and hot index.
+        "runtime-ts/src/storage/lock.ts",
+        "runtime-ts/src/storage/hotindex.ts",
     ];
     let sources: Vec<String> = paths
         .iter()

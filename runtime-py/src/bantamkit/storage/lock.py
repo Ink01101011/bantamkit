@@ -1,45 +1,33 @@
 """The one O_EXCL lock every storage writer takes (#204; was hookadapter's, #167).
 
-`<path>.lock` created with `O_CREAT | O_EXCL`: the one primitive both platforms and both
-runtimes share without a dependency. A writer polls for it every `poll_ms` for at most
-`wait_ms`, deletes a lock older than `stale_ms` (its holder died), and when the wait runs
-out it goes ahead UNLOCKED: losing an event is better than failing the caller. The context
-manager yields whether the lock was actually held.
+**Generated, not hand-written (#316 G4, J90-2).** Every rule is `bantamkit/_generated/lock.py`,
+compiled from `runtime-ts/src/storage/lock.ts` by `tools/ts2py` (`docs/porting.md`, *Generated
+modules*). This module is the SHIM: `exclusive` stays the context manager its seven callers enter
+(`with exclusive(path) as held:`), over the generated `acquireLock` / `releaseLock` (the two
+halves of the TypeScript's `exclusive`, which takes a callback instead), and the three values
+stay importable from here.
 
-A directory that refuses the lock file (`EACCES`, `EPERM`, `EROFS` while no lock file is
-there: a read-only usage or touch directory) gives up AT ONCE, unheld, instead of waiting out
-`wait_ms` on every call (#208 item 7). The "no lock file" test keeps a Windows delete-pending
-lock (its holder just unlinked it; Windows answers access denied) in the ordinary wait.
-
-`runtime-ts/src/storage/lock.ts` is the port, with the same three values.
+`<path>.lock` created with `O_CREAT | O_EXCL` (Node's `'wx'`, mode 0o666): the one primitive
+both platforms and both runtimes share without a dependency. A writer polls for it every
+`poll_ms` for at most `wait_ms` (on a monotonic clock), deletes a lock older than `stale_ms`
+(its holder died), and when the wait runs out it goes ahead UNLOCKED: losing an event is better
+than failing the caller. The context manager yields whether the lock was actually held. A
+directory that refuses the lock file (`EACCES`, `EPERM`, `EROFS` while no lock file is there)
+gives up AT ONCE, unheld (#208 item 7).
 """
 
 from __future__ import annotations
 
-import errno
 import os
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-LOCK_WAIT_MS = 2000
-LOCK_STALE_MS = 10_000
-LOCK_POLL_MS = 5
-_REFUSED = {errno.EACCES, errno.EPERM, errno.EROFS}
+from bantamkit._generated import lock as _g
 
-
-def _refused(lock: str, e: OSError) -> bool:
-    """Did the directory refuse to create `lock`, rather than another writer hold it?"""
-    if e.errno not in _REFUSED:
-        return False
-    try:
-        os.stat(lock)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    return False
+LOCK_WAIT_MS = _g.LOCK_WAIT_MS
+LOCK_STALE_MS = _g.LOCK_STALE_MS
+LOCK_POLL_MS = _g.LOCK_POLL_MS
 
 
 @contextmanager
@@ -49,29 +37,10 @@ def exclusive(
     stale_ms: int = LOCK_STALE_MS,
     poll_ms: int = LOCK_POLL_MS,
 ) -> Iterator[bool]:
-    lock = f"{path}.lock"
-    deadline = time.monotonic() + wait_ms / 1000
-    held = False
-    while not held and time.monotonic() < deadline:
-        try:
-            # 0o666, as Node's `'wx'` opens it: `os.open` would default to 0o777, an executable
-            # lock file (0o755 under umask 022) (J90-1F #16).
-            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666))
-            held = True
-        except OSError as e:
-            if _refused(lock, e):
-                break
-            try:
-                if time.time() - os.stat(lock).st_mtime > stale_ms / 1000:
-                    os.unlink(lock)
-            except OSError:
-                pass  # the holder released it between the open and the stat: go round again
-            time.sleep(poll_ms / 1000)
+    """Hold `<path>.lock` for the block (`lock.ts` `exclusive`); yields whether it is held."""
+    lock = f"{os.fspath(path)}.lock"
+    held = _g.acquire_lock(lock, wait_ms, stale_ms, poll_ms)
     try:
-        yield held
+        yield bool(held)
     finally:
-        if held:
-            try:
-                os.unlink(lock)
-            except OSError:
-                pass
+        _g.release_lock(lock, held)

@@ -265,6 +265,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `JSON.stringify(x, replacer, space)` (J88-2) | `_js_json_stringify_with(x, replacer, space)` | SerializeJSONProperty in ECMA-262 order: a function replacer called `(key, value)` on every value, the root under `""`, before the type is read; `space` a count (at most 10) or a string (its first 10 units); `"key": value` and one value per line when indented, `[]` / `{}` when empty; a cycle is JS's TypeError; an array-of-keys replacer and nesting past the recursion limit are outside the subset |
 | `JSON.stringify(x)` (one argument) | `_js_json_stringify(x)` | byte for byte: compact, non-ASCII unescaped, lone surrogates and control characters `\u00xx`, integral floats as `3`, `1e21` as `1e+21`, an int beyond 2^53 as the double it rounds to, non-finite as `null`, `undefined` members skipped (`null` in arrays), object keys in JS own-property order (array-index keys ascending first, then insertion order) |
 | `m.has(k)`, `m.get(k)`, `m.set(k, v)` | `_js_m_has` / `_js_m_get` / `_js_m_set` | `Map`; `get` of a missing key is `undefined`; `set` keeps the original position |
+| `m.delete(k)` (J90-2) | `_js_m_delete` | a `Map` or a `Set`: whether the key was there; a later `set` of it appends at the end; anything else raises at run time (`.delete() on <type> is outside the subset`). An iteration of the same Map or Set skips an entry deleted before it is reached (Known limits) |
 | `s.has(x)`, `s.add(x)` | `_js_m_has` / `_js_m_add` | `Set` |
 | `a.every(cb)`, `a.some(cb)` | `_js_m_every` / `_js_m_some` | callback result through ToBoolean |
 | `a.find(cb)` | `_js_m_find` | no match is `undefined`, never `None` |
@@ -483,6 +484,12 @@ array proven a list.
   `runtime-ts/src/memory/m.ts`; if that is one of the inputs, the import is
   `from .m import <a's Python name>` (classes keep their name). The modules form a package, so
   `--runtime-module` (and the adapter module) must be importable from it.
+- J90-2: two (or more) modules of one run may import each other (an import cycle: `hotindex.ts`
+  and `memory/store.ts`). An import whose module imports this one back, directly or not (value
+  imports only), is written at the END of the Python module (`from .m import a  # noqa: E402`), on
+  every side of the cycle, so Python can import the cycle from either side with no name unbound. A
+  name of the cycle may not be read while a module is executed (a module-level `const` / `let`
+  initializer): refused, `module-level use of <name>, imported in an import cycle`.
 - Any other import resolves only through the table in `src/adapters.rs`: a row names the
   TypeScript module (or a Node global such as `TextDecoder`), the name, the Python name in
   `src/adapters.py` (`--emit-adapters <file>` writes it, importing the runtime from
@@ -627,7 +634,10 @@ the subset`).
 
 - J86 removed the J85 limit that strings were indexed and split by code point: every position is
   now a UTF-16 code unit (Strings above).
-- Iterating a `Map` or `Set` sees a snapshot: entries added during the loop are not visited.
+- Iterating a `Map` or `Set` sees a snapshot: entries added during the loop are not visited. (J90-2:
+  an entry DELETED before the loop reaches it is skipped, and a value set meanwhile is the one
+  visited, as JS's iterator does; a key deleted and set again during the loop is visited at its old
+  place, where JS visits it at the end.)
 - J89-3: the general `.sort(compare)` (`_js_m_sort`) is CPython's `list.sort`, which orders an
   INCONSISTENT comparator (one a NaN makes so) differently from V8 (561 of 30,000 seeded sorts); the
   key sort above uses V8's own algorithm (`_js_v8_sort`) for that case.

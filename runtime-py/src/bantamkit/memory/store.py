@@ -5,8 +5,10 @@ compiled from `runtime-ts/src/memory/store.ts` by `tools/ts2py` (`docs/porting.m
 modules*; do not edit it, regenerate it), so the two runtimes run one source and
 `tools/conformance/suites/store.mjs` compares them. The files reach the generated store through
 `pyfs.ts`'s adapters (CPython's own calls), a frontmatter through `factcodec` (the generated codec,
-then PyYAML where it refuses: #315's owner ruling), and the hot and cold indexes are the
-hand-written `storage.hotindex` / `storage.coldindex`, late-bound through their adapters.
+then PyYAML where it refuses: #315's owner ruling); the hot index is generated too
+(`_generated/hotindex.py`, #316 G4: the two import each other, and `index()` answers it through the
+`storage.hotindex` shim), and the cold index is the hand-written `storage.coldindex`, late-bound
+through its adapter.
 
 This module is the SHIM: the Python surface the hand-written store had, unchanged, converted at
 every crossing (`docs/porting.md`, *The store's shim*):
@@ -602,8 +604,18 @@ def _bare_methods(cls: type) -> type:
     return cls
 
 
-def _hot(adapter: Any) -> Any:
-    return None if adapter is None else adapter._js_hot
+def _hot(core: Any) -> Any:
+    """The generated store's `HotIndex` (generated too, #316 G4) as the Python shim over it."""
+    if core is None:
+        return None
+    from bantamkit.storage.hotindex import HotIndex
+
+    return HotIndex._of(core)
+
+
+def _hot_in(shim: Any) -> Any:
+    """A Python caller's `HotIndex` shim as the generated index the generated store reads."""
+    return shim._js
 
 
 class _Ledger(_JsObject):
@@ -664,7 +676,7 @@ class _Core(_g.MemoryStore):
         override = self._bk_shim.__dict__.get("_indexed")
         if override is not None:
             got = override()
-            return None if got is None else _adapters.HotIndex._of(got)
+            return None if got is None else _hot_in(got)
         return super().indexed()
 
     def generated_indexed(self) -> Any:
@@ -735,7 +747,7 @@ class MemoryStore:
 
     @_index.setter
     def _index(self, value: HotIndex | None) -> None:
-        self._core.hot = None if value is None else _adapters.HotIndex._of(value)
+        self._core.hot = None if value is None else _hot_in(value)
 
     @property
     def _snapshot(self) -> list[Fact] | None:
@@ -746,7 +758,7 @@ class MemoryStore:
 
     def index(self) -> HotIndex:
         """This store's hot index (#204), built lazily: `~/.bantamkit/index/` or `INDEX_DIR_ENV`
-        (the hand-written `storage.hotindex.HotIndex` the generated store holds an adapter over)."""
+        (the `storage.hotindex.HotIndex` shim over the index the generated store holds)."""
         return _hot(self._core.index())
 
     def _indexed(self) -> HotIndex | None:
@@ -757,7 +769,7 @@ class MemoryStore:
         return bool(self._core.probeFacts())
 
     def _indexed_fact(self, idx: HotIndex, name: str) -> Fact | None:
-        got = self._core.indexedFact(_adapters.HotIndex._of(idx), name)
+        got = self._core.indexedFact(_hot_in(idx), name)
         return None if got is None else _fact_out(got)
 
     def _fact_named(self, file: str, name: str) -> Fact | None:
@@ -887,7 +899,7 @@ class MemoryStore:
 
     @staticmethod
     def _pool_indexed(idx: HotIndex, q: list[str]) -> Pool | None:
-        got = _g.MemoryStore.poolIndexed(_adapters.HotIndex._of(idx), list(q))
+        got = _g.MemoryStore.poolIndexed(_hot_in(idx), list(q))
         return None if got is None else _pool_out(got)
 
     def resolve(self, pool: Pool, row: int) -> Fact | None:

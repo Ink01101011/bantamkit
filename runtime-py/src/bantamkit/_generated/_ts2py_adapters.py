@@ -14,6 +14,7 @@ import pathlib as _pathlib
 import re as _re
 import secrets as _secrets
 import stat as _stat
+import time as _time
 import unicodedata as _unicodedata
 import zlib as _zlib
 
@@ -21,6 +22,8 @@ from ._ts2py_runtime import (
     _JS_UNDEFINED,
     _js_m_toLowerCase,
     _js_num,
+    _js_own_keys,
+    _js_str,
     _js_truthy,
     _JsBigInt,
     _JsError,
@@ -30,8 +33,8 @@ from ._ts2py_runtime import (
     _JsTypeError,
 )
 
-# `BantamError` (and J88-2's `LOCK_*_MS`; J89-4a's `PyScalar`, `VALID_OUTCOMES`, `INDEX_DIR_ENV`;
-# J89-5's `DUPLICATE`)
+# `BantamError` (and J89-4a's `PyScalar`, `VALID_OUTCOMES`; J90-2 retired the lock's and the hot
+# index's constants, now compiled)
 # are provided lazily by `__getattr__` below and are not listed, so a star import does not build
 # them (and import `bantamkit.client` / `storage.lock` / the codec / the hot index).
 __all__ = [
@@ -41,7 +44,6 @@ __all__ = [
     "CountsView",
     "Date",
     "Hash",
-    "HotIndex",
     "PyOSError",
     "PyUnicodeDecodeError",
     "Stats",
@@ -55,14 +57,16 @@ __all__ = [
     "buffer_concat",
     "buffer_from",
     "close_sync",
+    "dump_js_value",
     "dump_json",
     "encode_basestring_ascii",
+    "extract_refs",
     "cmp_codepoint",
     "create_hash",
     "ensure_bantamkit_gitignore",
-    "exclusive",
     "exists_sync",
     "extra_of",
+    "fact_refs",
     "format_fact",
     "fstat_sync",
     "gunzip_sync",
@@ -72,6 +76,7 @@ __all__ = [
     "link_sync",
     "lstat_sync",
     "matches_md",
+    "node_realpath",
     "mkdir_sync",
     "open_sync",
     "os_error_class_name",
@@ -81,6 +86,7 @@ __all__ = [
     "path_basename",
     "path_dirname",
     "path_join",
+    "performance_now",
     "process_env",
     "process_env_all",
     "process_pid",
@@ -125,7 +131,6 @@ __all__ = [
     "readdir_sync",
     "rename_sync",
     "rm_sync",
-    "sha16",
     "sorted_path_names",
     "stat_sync",
     "today_local",
@@ -1055,34 +1060,6 @@ def ensure_bantamkit_gitignore(directory, created, *_):
     return _JS_UNDEFINED
 
 
-def _lock_constant(name):
-    from ..storage import lock as _lock
-
-    return getattr(_lock, name)
-
-
-def exclusive(target, body, options=_JS_UNDEFINED, *_):
-    """`exclusive(target, body, options)` (runtime-ts/src/storage/lock.ts): the hand-written Python
-    lock it ports (`bantamkit.storage.lock.exclusive`, #316 G4 not generated yet; `--suite
-    storage-lock` compares the two), with `body(held)` run inside it and its answer returned. An
-    option left out takes the lock's default, as `?? LOCK_*_MS` does."""
-    from ..storage.lock import exclusive as _exclusive
-
-    kwargs = {}
-    if options is not _JS_UNDEFINED and options is not None:
-        if not isinstance(options, dict) or set(options) - {"waitMs", "staleMs", "pollMs"}:
-            raise TypeError(
-                "ts2py: lock options other than waitMs/staleMs/pollMs are outside the subset"
-            )
-        for js, py in (("waitMs", "wait_ms"), ("staleMs", "stale_ms"), ("pollMs", "poll_ms")):
-            value = options.get(js, _JS_UNDEFINED)
-            if value is not _JS_UNDEFINED and value is not None:
-                kwargs[py] = value
-    # J88-RF F4a: the lock file is named from the path every fs adapter hands the OS.
-    with _exclusive(_node_path(target, "exclusive"), **kwargs) as held:
-        return body(held)
-
-
 # ---------------------------------------------------------------- J89-2 (#316 G3): usage, retrieval
 
 
@@ -1234,11 +1211,6 @@ def __getattr__(name):
         from .pyyaml import PyScalar as value
     elif name == "VALID_OUTCOMES":
         from .factfile import VALID_OUTCOMES as value
-    elif name == "INDEX_DIR_ENV":
-        from ..storage.hotindex import INDEX_DIR_ENV as value
-    elif name == "DUPLICATE":
-        # J89-5: the native layer's duplicate-name sentence head.
-        from ..storage.hotindex import DUPLICATE as value
     elif name == "SKILL_LAYER":
         # J89-6: the skill layer's label, and the two recall-file sentences component.ts says.
         from ..memory.skills import SKILL_LAYER as value
@@ -1249,11 +1221,6 @@ def __getattr__(name):
     else:
         value = None
     if value is not None:
-        globals()[name] = value
-        return value
-    # J88-2: `storage/lock.ts`'s constants, read from the hand-written lock on first import.
-    if name in ("LOCK_POLL_MS", "LOCK_STALE_MS", "LOCK_WAIT_MS"):
-        value = _lock_constant(name)
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -1331,6 +1298,9 @@ class _JsReadMap(_JsMap):
     def set(self, key, value):
         raise TypeError("ts2py: writing a Map an index adapter answered is outside the subset")
 
+    def delete(self, key):
+        raise TypeError("ts2py: writing a Map an index adapter answered is outside the subset")
+
 
 class _DictEntries:
     # `_JsMap._entries`' face over a dict: a string key is its own `_js_key`; any other key (a
@@ -1351,6 +1321,10 @@ class _DictEntries:
     def values(self):
         return [(key, value) for key, value in self._data.items()]
 
+    def __iter__(self):
+        # J90-2: the tags, which `_JsMap.__iter__` walks (a string key is its own tag).
+        return iter(list(self._data))
+
     def __len__(self):
         return len(self._data)
 
@@ -1367,112 +1341,48 @@ def _native_bantam_error(error):
     return cls(str(error))
 
 
-class HotIndex(_JsObject):
-    """`HotIndex` (runtime-ts/src/storage/hotindex.ts): `bantamkit.storage.hotindex.HotIndex`,
-    which it ports (#204), with the TypeScript spelling of the methods store.ts calls. Imported
-    when the first one is built (late-bound: the hand-written index imports the store lazily)."""
+def _native_meta(front):
+    """J90-2: the reference's `hotindex._secondary` read of a native frontmatter
+    (`load_frontmatter`, `{}` where it refuses or reads no mapping), as values the compiled index
+    reads the way the reference read the Python ones: a mapping a dict (its text keys), a list a
+    list, a string or None itself, and any other scalar opaque (`factcodec._Opaque`: not a
+    string to `strList`, its `str()` to `pyText`, as `[str(x) for x in links]` and `_str_list`
+    read them)."""
+    import yaml
 
-    _js_name = "HotIndex"
-    _js_own = frozenset(
-        {
-            "cols",
-            "exists",
-            "fileOf",
-            "invalidate",
-            "lensTotal",
-            "loose",
-            "names",
-            "parseFile",
-            "refresh",
-            "segments",
-            "skipped",
-        }
-    )
-    _js_own_methods = frozenset(
-        {
-            "cols",
-            "exists",
-            "fileOf",
-            "invalidate",
-            "lensTotal",
-            "names",
-            "parseFile",
-            "refresh",
-            "segments",
-        }
-    )
+    from ..memory.factcodec import _Opaque, load_frontmatter
 
-    def __init__(self, source, kind, home, index_dir=None, *_):
-        from ..storage.hotindex import HotIndex as _Hot
+    def held(value):
+        if value is None or type(value) is str:
+            return value
+        if type(value) is list:
+            return [held(item) for item in value]
+        if type(value) is dict:
+            return {key: held(item) for key, item in value.items() if type(key) is str}
+        return _Opaque(value)
 
-        if index_dir is _JS_UNDEFINED:
-            index_dir = None
-        if isinstance(source, str):
-            # J89-4b: the store's root as the store's file calls hand it to the OS (`_store_path`).
-            source = _os_text(source)
-        object.__setattr__(self, "_js_hot", _Hot(source, kind, home, index_dir=index_dir))
+    try:
+        meta = load_frontmatter(front)
+    except (ValueError, yaml.YAMLError):
+        return {}
+    return held(meta) if isinstance(meta, dict) else {}
 
-    @classmethod
-    def _of(cls, hot):
-        """J89-4b: this adapter over a hand-written `HotIndex` already built (a caller that hands a
-        store its own index, as `tools/conformance/ref/storage_ref.py` does)."""
-        adapter = cls.__new__(cls)
-        object.__setattr__(adapter, "_js_hot", hot)
-        return adapter
 
-    def _call(self, method, *args):
-        from ..client import BantamError as _Native
-
-        try:
-            return getattr(self._js_hot, method)(*args)
-        except _Native as error:
-            raise _native_bantam_error(error) from None
-
-    def cols(self, *_):
-        return self._call("cols")
-
-    def exists(self, *_):
-        return self._call("exists")
-
-    def fileOf(self, name, *_):
-        return self._call("file_of", name)
-
-    def invalidate(self, *_):
-        self._call("invalidate")
-        return _JS_UNDEFINED
-
-    def lensTotal(self, *_):
-        return self._call("lens_total")
-
-    def names(self, *_):
-        # `Map<name, doc id>`: the dict `names()` is the key view of.
-        self._call("names")
-        return _JsReadMap(self._js_hot._ids())
-
-    def parseFile(self, path, mtime_ns, size, *_):
-        doc, reason = self._call("parse_file", path, mtime_ns, size)
-        return reason if doc is None else doc
-
-    def refresh(self, mode="fast", *_):
-        return self._call("refresh", "fast" if mode is _JS_UNDEFINED else mode)
-
-    def segments(self, terms, *_):
-        return _JsReadMap(self._call("segments", list(terms)))
-
-    @property
-    def skipped(self):
-        return _JsReadMap(self._call("__getattribute__", "skipped"))
-
-    @property
-    def loose(self):
-        return self._call("__getattribute__", "loose")
+# J90-2: `hotindex.ts`'s NATIVE_EXTRA_LINE, the `m` flag spelled out (JS's four line terminators).
+_NATIVE_EXTRA_LINE = _re.compile("(?:^|[\n\r\u2028\u2029])[ \t]*(?:tags|links):")
 
 
 def parse_native(path, *_):
-    """`parseNative` (runtime-ts/src/storage/hotindex.ts): `divergence.parse_fact`, which it ports
-    for the native shape (J89-5). The name, description, type and body it read, as the object the
-    TypeScript returns; its `MemoryValidationError` (a `bantamkit.client.BantamError`) restated as
-    the adapter's `BantamError` with the same message."""
+    """`parseNative` (runtime-ts/src/storage/nativefact.ts): `divergence.parse_fact`, which it ports
+    for the native shape (J89-5; kept by the #228 ruling). The name, description, type and body it
+    read, as the object the TypeScript returns; its `MemoryValidationError` (a
+    `bantamkit.client.BantamError`) restated as the adapter's `BantamError` with the same message.
+
+    J90-2: and `meta`, which the generated hot index reads a native file's `links` / `tags` from
+    when the frontmatter names one of them (`NATIVE_EXTRA_LINE`): what the reference's index read
+    them with (`hotindex._secondary`: `load_frontmatter` of the same frontmatter, `_native_meta`),
+    `{}` where that refuses. A frontmatter naming neither key is not read twice: its `meta` is
+    `{}`, which nothing reads."""
     from ..client import BantamError as _Native
     from ..memory.divergence import parse_fact
 
@@ -1482,11 +1392,20 @@ def parse_native(path, *_):
         stored = parse_fact(path)
     except _Native as error:
         raise _native_bantam_error(error) from None
+    meta = {}
+    try:
+        parts = _pathlib.Path(path).read_text(encoding="utf-8").split("---\n", 2)
+    except (OSError, ValueError):
+        parts = []
+    front = parts[1] if len(parts) == 3 else ""
+    if _NATIVE_EXTRA_LINE.search(front):
+        meta = _native_meta(front)
     return {
         "name": stored.name,
         "description": stored.description,
         "type": stored.type,
         "body": stored.body,
+        "meta": meta,
     }
 
 
@@ -1816,14 +1735,6 @@ def sorted_path_names(names, *_):
 
 
 # ---------------------------------------------------------------- J89-5a (#316 G3 U3): queries
-
-
-def sha16(path, *_):
-    """`sha16` (runtime-ts/src/storage/hotindex.ts): `bantamkit.storage.hotindex.sha16`, which it
-    ports: the first 16 hex characters of sha256 over the realpath's UTF-8."""
-    from ..storage.hotindex import sha16 as reference
-
-    return reference(path)
 
 
 class PyJSONDecodeError(_JsError):
@@ -2544,3 +2455,109 @@ def file_links(file, layers, *_):
     names = rf.linked_names(graph, path, utc_now())
     none = f"{history}\n\n{rf.FILE_NO_FACTS.format(suffix=suffix)}"
     return {"said": None, "history": history, "names": list(names), "none": none}
+
+
+# ---------------------------------------------------------------- J90-2 (#316 G4): lock, hotindex
+
+
+def performance_now(*_):
+    """`performance.now()`: a monotonic clock in milliseconds, `time.monotonic()` (the clock the
+    reference's lock read), only ever compared with another reading of itself."""
+    return _time.monotonic() * 1000
+
+
+def node_realpath(path, *_):
+    """`nodeRealpath` (runtime-ts/src/storage/realpath.ts): the reference's `os.path.realpath`
+    (`hotindex.sha16`, `HotIndex.real`) of the path as the OS receives it (`_os_text`). Differs
+    from Node's through a dangling symlink (adapters.rs says how; J90-2 left it to a ruling)."""
+    if not isinstance(path, str):
+        raise TypeError("ts2py: nodeRealpath of anything but a string path is outside the subset")
+    return _os.path.realpath(_os_text(path))
+
+
+_SAFE_INT = 2**53 - 1
+# Values `fromJs` keeps as they are, and a list or a dict of nothing else is handed over as it is.
+_LIFT_SAME = frozenset({str, bool, type(None)})
+
+
+def _lifted(value):
+    """`value` as `fromJs` reads it (runtime-ts/src/pyjson.ts), as the Python value `json.dumps`
+    is handed: a number that is a safe integer (`Number.isSafeInteger`) and not -0 is an int, any
+    other a float; a Map or a plain object a dict keyed by
+    `String(key)` in `Object.entries` order; an array a list; null and undefined None; a BigInt an
+    int. A list or a dict holding only strings, booleans and nulls is the same object."""
+    kind = type(value)
+    if kind in _LIFT_SAME:
+        return value
+    if kind is int:
+        return value if -_SAFE_INT <= value <= _SAFE_INT else float(value)
+    if kind is float:
+        # `Number.isSafeInteger(v) && !Object.is(v, -0)`: 2**53 itself is not safe (a float).
+        if value.is_integer() and -_SAFE_INT <= value <= _SAFE_INT and not (
+            value == 0 and _math.copysign(1.0, value) < 0
+        ):
+            return int(value)
+        return value
+    if kind is list:
+        if set(map(type, value)) <= _LIFT_SAME:
+            return value
+        return [_lifted(item) for item in value]
+    if kind is dict:
+        keys = _js_own_keys(value)
+        if set(map(type, value.values())) <= _LIFT_SAME and keys == list(value):
+            return value
+        return {key: _lifted(value[key]) for key in keys}
+    if value is _JS_UNDEFINED:
+        return None
+    if isinstance(value, _JsMap):
+        return {_js_str(key): _lifted(item) for key, item in value}
+    if kind is _JsBigInt:
+        return value.value
+    raise TypeError(f"ts2py: dumpJsValue of a {kind.__name__} is outside the subset")
+
+
+def dump_js_value(value, options=_JS_UNDEFINED, float_key=_JS_UNDEFINED, *_):
+    """`dumpJsValue` (runtime-ts/src/pyjson.ts): `dump_json` of `fromJs(value)` (`_lifted`), with
+    `float_key` of a top-level plain object holding a number written as a float (`4.0`)."""
+    if options is _JS_UNDEFINED:
+        options = {}
+    if not isinstance(options, dict) or not set(options) <= _DUMP_OPTIONS:
+        raise TypeError("ts2py: dumpJsValue with those options is outside the subset")
+
+    def opt(name, default):
+        got = options.get(name, _JS_UNDEFINED)
+        return default if got is _JS_UNDEFINED or got is None else got
+
+    lifted = _lifted(value)
+    if (
+        float_key is not _JS_UNDEFINED
+        and type(value) is dict
+        and float_key in value
+        and type(value[float_key]) in (int, float)
+    ):
+        lifted = dict(lifted)
+        lifted[float_key] = float(value[float_key])
+    separators = opt("separators", None)
+    return _json.dumps(
+        lifted,
+        indent=opt("indent", None),
+        sort_keys=opt("sortKeys", False) is True,
+        ensure_ascii=opt("ensureAscii", True) is not False,
+        separators=None if separators is None else (separators[0], separators[1]),
+    )
+
+
+def extract_refs(text, *_):
+    """`extractRefs` (runtime-ts/src/touch/refs.ts): `bantamkit.touch.refs.extract_refs`, which it
+    ports (#200)."""
+    from ..touch.refs import extract_refs as reference
+
+    return reference(text)
+
+
+def fact_refs(description, keywords, body, *_):
+    """`factRefs` (runtime-ts/src/touch/refs.ts): `bantamkit.touch.refs.fact_refs`, which it ports
+    (#200), the keywords as a list."""
+    from ..touch.refs import fact_refs as reference
+
+    return reference(description, list(keywords), body)

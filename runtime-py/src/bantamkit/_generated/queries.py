@@ -14,6 +14,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_code_units,
     _js_destructure,
     _js_dispatch,
+    _js_every_string,
     _js_ge,
     _js_get,
     _js_gt,
@@ -55,7 +56,9 @@ from ._ts2py_runtime import (  # noqa: F401
     _JsObject,
     _JsSet,
 )
-from ._ts2py_adapters import INDEX_DIR_ENV, as_py_os_error, cmp_codepoint, create_hash, dump_json, encode_basestring_ascii, exclusive, mkdir_sync, parse_json, path_basename, path_dirname, path_join, process_env, process_pid, py_decode_utf8, py_os_error_text, PyOSError, read_file_sync, rename_sync, rm_sync, sha16, write_file_sync
+from ._ts2py_adapters import as_py_os_error, cmp_codepoint, create_hash, dump_json, encode_basestring_ascii, mkdir_sync, parse_json, path_basename, path_dirname, path_join, process_env, process_pid, py_decode_utf8, py_os_error_text, PyOSError, read_file_sync, rename_sync, rm_sync, write_file_sync
+from .hotindex import INDEX_DIR_ENV, sha16
+from .lock import exclusive
 from .retrieval import strip_nospace, tokenize_v2
 from .store import lone_surrogate, MemoryValidationError
 
@@ -412,7 +415,7 @@ def _sidecar_entries(raw):
                 if not _is_object(entry) or not _js_object_has_own(entry, "queries"):
                     continue
                 qs = _js_get(entry, "queries")
-                if _js_is_array(qs) and _js_gt(_js_len(qs), 0) and _js_m_every(qs, lambda x, *_: _js_typeof(x) == "string"):
+                if _js_is_array(qs) and _js_gt(_js_len(qs), 0) and _js_every_string(qs):
                     _js_m_set(out, name, qs)
             return out
     return _entries_of(_doc_of_bytes(raw))
@@ -596,7 +599,7 @@ def _cps(s):
 
 
 def check_queries(queries):
-    if not _js_is_array(queries) or not _js_m_every(queries, lambda x, *_: _js_typeof(x) == "string"):
+    if not _js_is_array(queries) or not _js_every_string(queries):
         raise MemoryValidationError("queries must be a list of strings")
     if _js_gt(_js_len(queries), MAX_QUERIES):
         raise MemoryValidationError("queries: at most " + _js_str(MAX_QUERIES) + " per fact, got " + _js_str(_js_len(queries)))

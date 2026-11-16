@@ -110,7 +110,9 @@ const CODEC_SOURCES = ['runtime-ts/src/memory/pyyaml.ts', 'runtime-ts/src/memory
 /**
  * #316 G1 (J87-3): pricing and jobbudget; G2 (J88-2): the log segment, the event log and the token
  * ledger; G3 U1 (J89-2): the usage ledger; G3 (J89-3): retrieval; G3 U2 (J89-4b): the store; G3 U3
- * (J89-5): the native layer; (J89-5a) the queries sidecar; (J89-5b) the layers; (J89-5c) the dream; G3 U4 (J89-6) the component. One ts2py call into the same package,
+ * (J89-5): the native layer; (J89-5a) the queries sidecar; (J89-5b) the layers; (J89-5c) the dream; G3 U4 (J89-6) the component;
+ * G4 (J90-2) the lock and the hot index (which the store imports and which imports the store back:
+ * an import cycle, written at the end of each module). One ts2py call into the same package,
  * because the token ledger imports pricing and the event log and the usage ledger import the log
  * segment, and an import between compiled modules resolves only inside one call.
  */
@@ -128,6 +130,8 @@ const G1_SOURCES = [
   'runtime-ts/src/memory/layers.ts',
   'runtime-ts/src/memory/dream.ts',
   'runtime-ts/src/memory/component.ts',
+  'runtime-ts/src/storage/lock.ts',
+  'runtime-ts/src/storage/hotindex.ts',
 ];
 const CARGO_RUN = 'cargo run --release --manifest-path tools/ts2py/Cargo.toml --';
 const REGENERATE =

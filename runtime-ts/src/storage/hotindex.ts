@@ -38,13 +38,15 @@ import * as path from 'node:path';
 
 import { BantamError } from '../errors.js';
 import { parseFrontmatter, pySplit, pyStrip } from '../memory/factfile.js';
-import { PyOSError, PyUnicodeDecodeError, pyDecodeUtf8, pyJoin, pyReadText } from '../memory/pyfs.js';
+import { PyOSError, pyDecodeUtf8, pyJoin, pyOSErrorText, pyReadText } from '../memory/pyfs.js';
 import { FIELD_BOOST, pyRound9, stale, tokenizeV2 } from '../memory/retrieval.js';
 import { MemoryStore, pyText, tokens } from '../memory/store.js';
 import { cmpCodepoint } from '../pysem.js';
-import { dumpJson, fromJs, type PyValue } from '../pyjson.js';
+import { dumpJsValue } from '../pyjson.js';
 import { extractRefs, factRefs } from '../touch/refs.js';
 import { exclusive } from './lock.js';
+import { parseNative } from './nativefact.js';
+import { nodeRealpath } from './realpath.js';
 
 // 2: the head + 16-shard layout. A version-1 single file is rebuilt, never read as a head.
 /**
@@ -120,19 +122,52 @@ interface IndexData {
   skipped: Map<string, string>;
   loose: string[];
   df: Map<string, number>;
-  avgdl: number;
   /**
-   * Per doc, the token count of each FIELD_BOOST field; validated one by one when read. A plain
-   * object as parsed, never copied into a Map: that copy cost 1.9 ms of a 5,000-fact recall.
+   * `df` as read from disk, the parsed object, until `df()` asks for the Map (1.4 ms at 5,000
+   * facts); `null` once converted, or when `df` was derived. (Held apart from `df`, not in its
+   * place, since #316 G4: a field that is one of two types is tested with `instanceof Map`.)
    */
-  lens: Map<string, unknown> | Record<string, unknown>;
+  dfRaw: Record<string, unknown> | null;
+  avgdl: number;
+  /** Per doc, the token count of each FIELD_BOOST field, as derived; validated one by one when read. */
+  lens: Map<string, unknown>;
+  /**
+   * `lens` as read from disk, the parsed object, never copied into a Map: that copy cost 1.9 ms
+   * of a 5,000-fact recall. `null` when `lens` was derived.
+   */
+  lensRaw: Record<string, unknown> | null;
   lensTotal: [number, number, number];
   boost: number[];
   cols: IndexCols;
   fingerprint: string;
   shards: Shards;
   /** The second line, unparsed, until something asks for `files`/`docs`/`df`/`lens`. */
-  tail: Buffer | Record<string, unknown> | null;
+  tailBytes: Buffer | null;
+  /** The second line of a head read whole, parsed, until it is merged in. */
+  tailObj: Record<string, unknown> | null;
+}
+
+/**
+ * A parsed head's two keys that a HotIndex method also names, typed so `tools/ts2py` reads them
+ * as data (`load`; J89-4a: the declared type decides). `cols` is checked by `isCols` when read.
+ */
+interface HeadParts {
+  cols: Record<string, unknown>;
+  avgdl: number;
+}
+
+/** A parsed head's `shards` (checked by `isFps`), read by family: `postings` is also a method. */
+interface ShardPrints {
+  postings: string[];
+  words: string[];
+}
+
+/** A parsed second line (each value checked by `isObj`), read as data (`completeTail`). */
+interface TailParts {
+  files: Record<string, unknown>;
+  docs: Record<string, unknown>;
+  df: Record<string, unknown>;
+  lens: Record<string, unknown>;
 }
 
 /** FIELD_BOOST as the whole numbers `cols.length` is summed from. */
@@ -147,13 +182,20 @@ const isIntList = (v: unknown): v is number[] => Array.isArray(v) && v.every((x)
 /** `cols` as `derive` writes it: the reference's `_is_cols`. */
 function isCols(v: unknown): v is IndexCols {
   if (!isObj(v)) return false;
-  const { name, file, length, type, types, stale } = v as Record<string, unknown>;
+  const { name, file, length, type, types, stale: staleIds } = v as Record<string, unknown>;
   if (!isStrList(name) || !isStrList(file) || !isStrList(types)) return false;
-  if (!isIntList(length) || !isIntList(type) || !isIntList(stale)) return false;
+  if (!isIntList(length) || !isIntList(type) || !isIntList(staleIds)) return false;
   const n = name.length;
   if (file.length !== n || length.length !== n || type.length !== n) return false;
-  if (length.some((x) => x < 0) || type.some((x) => x < 0 || x >= types.length)) return false;
-  return stale.every((x) => x >= 0 && x < n);
+  // One counted loop, not three callbacks (#316 G4: 5,000 calls each per recall in the generated
+  // Python); the same answer, every element an integer already.
+  for (let i = 0; i < n; i += 1) {
+    const len = length[i]!;
+    const t = type[i]!;
+    if (len < 0 || t < 0 || t >= types.length) return false;
+  }
+  for (const x of staleIds) if (x < 0 || x >= n) return false;
+  return true;
 }
 
 /** A term's segments as `[name, field, tf]` rows, name order then field order. */
@@ -168,10 +210,10 @@ export function decodeSegments(names: readonly string[], seg: unknown): Posting[
     const count = seg[j + 1] as number;
     if (count < 1 || start < 0 || start + count > names.length) throw new Error('malformed postings');
     for (let i = start; i < start + count; i += 1) {
-      fields.forEach((f, k) => {
+      for (let k = 0; k < fields.length; k += 1) {
         const tf = seg[j + 2 + k] as number;
-        if (tf) out.push([names[i]!, f, tf]);
-      });
+        if (tf) out.push([names[i]!, fields[k]!, tf]);
+      }
     }
   }
   return out;
@@ -183,7 +225,7 @@ export function encodeSegments(rows: ReadonlyArray<readonly [number, number, num
   for (const [i, a, b, c] of rows) {
     const m = out.length;
     if (m > 0 && out[m - 5]! + out[m - 4]! === i && out[m - 3] === a && out[m - 2] === b && out[m - 1] === c) {
-      out[m - 4]! += 1;
+      out[m - 4] = out[m - 4]! + 1;
     } else {
       out.push(i, 1, a, b, c);
     }
@@ -202,28 +244,21 @@ export function headText(d: Record<string, unknown>): string {
 const isLens = (v: unknown): v is [number, number, number] =>
   Array.isArray(v) && v.length === 3 && v.every((x) => Number.isInteger(x) && (x as number) >= 0);
 
-const WIKI = /\[\[([^[\]\n]+)\]\]/gu;
-const TAGS_LINE = /^tags:/m;
+// The whole `[[x]]`; `wikiLinks` takes the two brackets off each side. (Was `/\[\[(…)\]\]/gu`
+// with `matchAll`: no match can be empty or hold a bracket or a newline, so each match and its
+// group are the same text without `u`, and `match` with `g` lists exactly the matches.)
+const WIKI = /\[\[[^[\]\n]+\]\]/g;
+// `^…` under `m`, spelled without the flag: a start of input or any of JS's four line terminators
+// before it (#316 G4, J90-2; the same `test` answer on every string).
+const TAGS_LINE = /(?:^|[\n\r\u2028\u2029])tags:/;
 // Claude Code nests `links` under `metadata:`, so the native read looks at indented keys too.
-const NATIVE_EXTRA_LINE = /^[ \t]*(?:tags|links):/m;
+const NATIVE_EXTRA_LINE = /(?:^|[\n\r\u2028\u2029])[ \t]*(?:tags|links):/;
 const ISO = /^(\d{4})-(\d{1,2})-(\d{1,2})T(\d{1,2}):(\d{1,2}):(\d{1,2})Z$/;
 export const DUPLICATE = 'duplicate name';
 
-/** `os.path.realpath`, which resolves what exists and keeps the rest (as `usage.ts` does). */
-function realpath(p: string): string {
-  const abs = path.resolve(p);
-  try {
-    return fs.realpathSync.native(abs);
-  } catch {
-    const parent = path.dirname(abs);
-    if (parent === abs) return abs;
-    return path.join(realpath(parent), path.basename(abs));
-  }
-}
-
 /** The first 16 hex characters of sha256 over the realpath, as UTF-8 (`usage.storeId`). */
 export function sha16(p: string): string {
-  return createHash('sha256').update(realpath(p), 'utf8').digest('hex').slice(0, 16);
+  return createHash('sha256').update(nodeRealpath(p), 'utf8').digest('hex').slice(0, 16);
 }
 
 /**
@@ -242,52 +277,59 @@ function fingerprint(value: unknown): string {
 const isFps = (v: unknown): v is string[] =>
   Array.isArray(v) && v.length === SHARDS && v.every((x) => typeof x === 'string');
 
-/** The index's one serialisation; the reference's `hotindex.dumps`. */
+/**
+ * The index's one serialisation; the reference's `hotindex.dumps`. `avgdl` is a float even when
+ * it is integral: Python writes `4.0`, where `fromJs` would write 4 (`dumpJsValue`'s float key).
+ */
 export function dumpIndex(value: unknown): string {
-  return dumpJson(toPy(value), { sortKeys: true, ensureAscii: false, separators: [',', ':'] });
-}
-
-function toPy(value: unknown): PyValue {
-  // `avgdl` is a float even when it is integral: Python writes `4.0`, `fromJs` would write 4.
-  if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Map)) {
-    const obj = value as Record<string, unknown>;
-    if ('avgdl' in obj && typeof obj['avgdl'] === 'number') {
-      const out = fromJs(obj);
-      if (out.t === 'dict') out.v.set('avgdl', { t: 'float', v: obj['avgdl'] });
-      return out;
-    }
-  }
-  return fromJs(value);
+  return dumpJsValue(value, { sortKeys: true, ensureAscii: false, separators: [',', ':'] }, 'avgdl');
 }
 
 function isoNow(nowMs: number): string {
   return new Date(Math.floor(nowMs / 1000) * 1000).toISOString().replace('.000Z', 'Z');
 }
 
-/** Seconds since `full_at`; an unreadable stamp is infinitely old. */
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+
+/** Days from 1970-01-01 to `y-m-d` in the proleptic Gregorian calendar (`y` at least 1). */
+function daysFromCivil(y: number, m: number, d: number): number {
+  const yy = m <= 2 ? y - 1 : y;
+  const era = Math.floor(yy / 400);
+  const yoe = yy - era * 400;
+  const doy = Math.floor((153 * ((m + 9) % 12) + 2) / 5) + d - 1;
+  return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy - 719468;
+}
+
+/**
+ * Seconds since `full_at`; an unreadable stamp is infinitely old.
+ *
+ * A stamp reads as itself only when each field is in range and the year is 100 or later:
+ * `Date.UTC` takes a year 0..99 as 1900..1999, so such a stamp never round-tripped and was
+ * unreadable. Spelled as arithmetic (#316 G4, J90-2), which `tools/ts2py` lowers: the old
+ * `Date.UTC` and `getUTC*` round trip answered exactly this on 760,087 stamps (every year
+ * 0000..9999 at the edge months and days, every time edge, 200,000 seeded) at five clocks.
+ */
 function ageS(fullAt: string, nowMs: number): number {
   const m = ISO.exec(fullAt);
   if (!m) return Infinity;
-  const [y, mo, d, h, mi, s] = m.slice(1).map(Number) as [number, number, number, number, number, number];
-  const t = Date.UTC(y, mo - 1, d, h, mi, s);
-  const back = new Date(t);
-  if (
-    back.getUTCFullYear() !== y ||
-    back.getUTCMonth() !== mo - 1 ||
-    back.getUTCDate() !== d ||
-    back.getUTCHours() !== h ||
-    back.getUTCMinutes() !== mi ||
-    back.getUTCSeconds() !== s
-  ) {
-    return Infinity;
-  }
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const h = Number(m[4]);
+  const mi = Number(m[5]);
+  const s = Number(m[6]);
+  if (y < 100 || mo < 1 || mo > 12 || h > 23 || mi > 59 || s > 59 || d < 1) return Infinity;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const last = mo === 2 && leap ? 29 : MONTH_DAYS[mo - 1]!;
+  if (d > last) return Infinity;
+  const t = daysFromCivil(y, mo, d) * 86_400_000 + h * 3_600_000 + mi * 60_000 + s * 1000;
   return nowMs / 1000 - t / 1000;
 }
 
 function wikiLinks(body: string): string[] {
   const out: string[] = [];
-  for (const m of body.matchAll(WIKI)) {
-    const s = pyStrip(m[1]!);
+  for (const m of body.match(WIKI) ?? []) {
+    const s = pyStrip(m.slice(2, -2));
     if (s) out.push(s);
   }
   return out;
@@ -305,126 +347,12 @@ function frontOf(text: string): string {
   return parts.length === 3 ? parts[1]! : '';
 }
 
-/**
- * `key:\n  - a\n  - b` is the same list to PyYAML as `key:\n- a\n- b`, and the codec reads only
- * the second: an INDENTED block sequence directly under an empty `key:` is moved to column 0.
- * Only the items of that run move, so a block scalar holding `  - x` is left alone.
- */
-function outdentSequences(lines: string[]): string[] {
-  const out: string[] = [];
-  let inRun = false;
-  let runIndent = '';
-  for (const line of lines) {
-    const item = /^([ \t]+)- /.exec(line) ?? /^([ \t]+)-$/.exec(line);
-    const prev = out.length ? out[out.length - 1]! : '';
-    if (item && (inRun ? item[1] === runIndent : /^[A-Za-z_][A-Za-z0-9_-]*:[ \t]*$/.test(prev))) {
-      inRun = true;
-      runIndent = item[1]!;
-      out.push(line.slice(runIndent.length));
-      continue;
-    }
-    inRun = false;
-    out.push(line);
-  }
-  return out;
-}
-
-/**
- * The native frontmatter: PyYAML reads `metadata:` as a nested mapping and the store's codec
- * reads only a flat one, so the indented block under `metadata:` is cut out and read on its
- * own, dedented. Anything deeper is outside the codec and raises.
- */
-function parseNativeFront(front: string): Record<string, unknown> {
-  const lines = outdentSequences(front.split('\n'));
-  const top: string[] = [];
-  let metadata: Record<string, unknown> | undefined;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]!;
-    if (/^metadata:[ \t]*(?:#.*)?$/.test(line)) {
-      const block: string[] = [];
-      let j = i + 1;
-      while (j < lines.length && (/^[ \t]/.test(lines[j]!) || lines[j] === '')) {
-        block.push(lines[j]!);
-        j += 1;
-      }
-      while (block.length > 0 && block[block.length - 1] === '') block.pop();
-      const indent = block.find((l) => l !== '')?.match(/^[ \t]*/)?.[0].length ?? 0;
-      metadata =
-        block.length === 0
-          ? undefined
-          : (parseFrontmatter(`${outdentSequences(block.map((l) => l.slice(indent))).join('\n')}\n`) as Record<
-              string,
-              unknown
-            >);
-      i = j - 1;
-      continue;
-    }
-    top.push(line);
-  }
-  const meta = parseFrontmatter(top.join('\n')) as Record<string, unknown>;
-  if (metadata !== undefined) meta['metadata'] = metadata;
-  else if (front.match(/^metadata:/m)) meta['metadata'] = null;
-  return meta;
-}
-
-/** `divergence.parse_fact` for the native shape: name, description, type and body. */
-export function parseNative(p: string): { name: string; description: string; type: string; body: string; meta: Record<string, unknown> } {
-  let text: string;
-  try {
-    text = pyReadText(p);
-  } catch (e) {
-    if (e instanceof PyOSError || e instanceof PyUnicodeDecodeError) {
-      throw new BantamError(`unreadable fact file ${p}: ${e.message}`);
-    }
-    throw e;
-  }
-  const parts = pySplit(text, '---\n', 2);
-  if (parts.length !== 3) throw new BantamError(`malformed fact file ${p}: no frontmatter fences`);
-  const [head, front, body] = parts as [string, string, string];
-  if (pyStrip(head)) {
-    throw new BantamError(`malformed fact file ${p}: frontmatter is not at the top of the file`);
-  }
-  let meta: Record<string, unknown>;
-  try {
-    meta = parseNativeFront(front);
-  } catch (e) {
-    throw new BantamError(`malformed fact file ${p}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  // PyYAML reads a frontmatter of nothing but blanks and comments as `None`.
-  if (Object.keys(meta).length === 0) {
-    throw new BantamError(`malformed fact file ${p}: frontmatter is not a mapping`);
-  }
-  const name = meta['name'];
-  if (typeof name !== 'string' || !pyStrip(name)) {
-    throw new BantamError(`malformed fact file ${p}: no usable 'name'`);
-  }
-  const md = meta['metadata'];
-  const metadata = md !== null && typeof md === 'object' && !Array.isArray(md) ? (md as Record<string, unknown>) : {};
-  let type: string;
-  if (typeof meta['type'] === 'string') type = meta['type'];
-  else if (typeof metadata['type'] === 'string') type = metadata['type'];
-  else {
-    throw new BantamError(
-      `malformed fact file ${p}: no 'type' at the top level and none under ` +
-        `'metadata:' — this file matches neither store's shape`,
-    );
-  }
-  const description = meta['description'];
-  return {
-    name: pyStrip(name),
-    description: typeof description === 'string' ? description : '',
-    type,
-    body: pyStrip(body),
-    meta,
-  };
-}
-
 /** The frontmatter as a mapping, read only when it holds a key `pattern` names. */
-function secondary(p: string, pattern: RegExp, native: boolean): Record<string, unknown> {
+function secondary(p: string, pattern: RegExp): Record<string, unknown> {
   try {
     const front = frontOf(pyReadText(p));
     if (!pattern.test(front)) return {};
-    return (native ? parseNativeFront(front) : parseFrontmatter(front)) as Record<string, unknown>;
+    return parseFrontmatter(front) as Record<string, unknown>;
   } catch {
     return {};
   }
@@ -464,6 +392,25 @@ function allDocs(docs: Map<string, IndexDoc>): boolean {
   return true;
 }
 
+/** What `parse` reads off one file: a doc without its stat, and whether its `name` is not text. */
+type Parsed = Omit<IndexDoc, 'mtime_ns' | 'size'> & { loose: boolean };
+
+/** `parsed` stamped `(mtimeNs, size)`, its keys in the order the reference's doc holds them. */
+function stamped(parsed: Parsed, mtimeNs: string, size: number): IndexDoc {
+  return {
+    file: parsed.file,
+    name: parsed.name,
+    description: parsed.description,
+    type: parsed.type,
+    keywords: parsed.keywords,
+    links: parsed.links,
+    tags: parsed.tags,
+    refs: parsed.refs,
+    mtime_ns: mtimeNs,
+    size,
+  };
+}
+
 /** An object's OWN entries: `JSON.parse` makes `__proto__` an own key, and a Map keeps it one. */
 const entries = (v: Record<string, unknown>): Array<[string, unknown]> => Object.entries(v);
 
@@ -479,7 +426,7 @@ export class HotIndex {
   /** The head's (mtime_ns, size, ino) when `data` was read or written: an unchanged head is not re-read. */
   private headStat: string | null = null;
   /** `family:shard` -> [fingerprint, terms]; valid only while the head names that print. */
-  private readonly shards = new Map<string, [string, Map<string, unknown>]>();
+  private shards = new Map<string, [string, Map<string, unknown>]>();
   /**
    * Whether every doc of `data` has been shape-checked. A head read from disk is checked when
    * something reads ALL its docs (`docs()`, a patch), not on the hook's fresh path, which reads
@@ -495,7 +442,7 @@ export class HotIndex {
     this.source = pyJoin(source);
     this.kind = kind;
     this.home = home;
-    this.real = realpath(this.source);
+    this.real = nodeRealpath(this.source);
     const where = indexDir ?? path.join(home, '.bantamkit', 'index');
     this.path = path.join(where, `${sha16(this.source)}.json`);
     this.dir = kind === 'facts' ? pyJoin(this.source, 'facts') : this.source;
@@ -504,12 +451,13 @@ export class HotIndex {
   // ------------------------------------------------------------------------- reads
 
   docs(): Map<string, IndexDoc> {
-    const data = this.whole();
+    const data: IndexData = this.whole();
     if (!this.checked) {
       if (allDocs(data.docs)) this.checked = true;
       else this.rebuild(Date.now()); // a doc of the wrong shape is a corrupt index, not a crash
     }
-    return this.data!.docs;
+    const held: IndexData = this.data!;
+    return held.docs;
   }
 
   /** The doc names, from the head's first line: a membership test that reads no doc. */
@@ -519,18 +467,21 @@ export class HotIndex {
 
   /** The docs as read, shapes NOT checked: a caller reads only what it checks itself. */
   docsUnchecked(): Map<string, IndexDoc> {
-    return this.whole().docs;
+    const data: IndexData = this.whole();
+    return data.docs;
   }
 
   /** One doc by name, shape-checked on its own; `null` when absent or malformed. */
   doc(name: string): IndexDoc | null {
-    const got = this.whole().docs.get(name);
+    const data: IndexData = this.whole();
+    const got = data.docs.get(name);
     return got !== undefined && isDoc(got) ? got : null;
   }
 
   /** The head's per-doc columns, in name order (doc id = position). */
   cols(): IndexCols {
-    return this.loaded().cols;
+    const data: IndexData = this.loaded();
+    return data.cols;
   }
 
   /** The file the index holds `name` in, from the first line; `null` when absent. */
@@ -543,7 +494,8 @@ export class HotIndex {
   private ids(): Map<string, number> {
     // Keyed on the names column itself: a patch mutates the head in place but always writes a
     // new column (`columns`).
-    const names = this.loaded().cols.name;
+    const data: IndexData = this.loaded();
+    const names = data.cols.name;
     if (this.idOf === null || this.idOf[0] !== names) this.idOf = [names, new Map(names.map((n, i) => [n, i]))];
     return this.idOf[1];
   }
@@ -577,32 +529,41 @@ export class HotIndex {
   }
 
   df(): Map<string, number> {
-    const data = this.whole();
+    const data: IndexData = this.whole();
     // Read from disk the table stays the parsed object until someone asks (1.4 ms at 5,000 facts).
-    if (!(data.df instanceof Map)) data.df = new Map(entries(data.df as Record<string, unknown>)) as Map<string, number>;
+    if (data.dfRaw !== null) {
+      data.df = new Map(entries(data.dfRaw)) as Map<string, number>;
+      data.dfRaw = null;
+    }
     return data.df;
   }
 
   avgdl(): number {
-    return this.loaded().avgdl;
+    const data: IndexData = this.loaded();
+    return data.avgdl;
   }
 
-  /** How many docs the index holds: BM25's `n` for this source. */
-  size(): number {
+  /**
+   * How many docs the index holds: BM25's `n` for this source. (Was `size()`, renamed in #316 G4
+   * as J89-4a renamed the store's `usage()`: a compiled class's method name is refused wherever a
+   * property of that name is read, and every Map's `size` is one. The Python shim keeps `size()`.)
+   */
+  docCount(): number {
     return this.cols().name.length;
   }
 
   /** `name`'s token counts per FIELD_BOOST field; `null` when absent or malformed. */
   lens(name: string): [number, number, number] | null {
-    const held = this.whole().lens;
-    const got =
-      held instanceof Map ? held.get(name) : Object.hasOwn(held, name) ? (held as Record<string, unknown>)[name] : undefined;
+    const data: IndexData = this.whole();
+    const raw = data.lensRaw;
+    const got = raw === null ? data.lens.get(name) : Object.hasOwn(raw, name) ? raw[name] : undefined;
     return isLens(got) ? got : null;
   }
 
   /** The sum of every doc's `lens`, field by field: BM25's collection length, uncounted. */
   lensTotal(): [number, number, number] {
-    return this.loaded().lensTotal;
+    const data: IndexData = this.loaded();
+    return data.lensTotal;
   }
 
   get skipped(): Map<string, string> {
@@ -640,11 +601,12 @@ export class HotIndex {
     this.data = null;
     this.headStat = null;
     this.idOf = null;
-    this.shards.clear();
+    this.shards = new Map();
   }
 
   shardPath(family: Family, i: number): string {
-    const base = path.basename(this.path, '.json');
+    // `this.path` is always `<sha16>.json`: its basename less the five units of `.json`.
+    const base = path.basename(this.path).slice(0, -5);
     return path.join(path.dirname(this.path), `${base}.${family}-${String(i).padStart(2, '0')}.json`);
   }
 
@@ -666,7 +628,10 @@ export class HotIndex {
     for (const t of want) {
       const i = shardOf(t);
       let list = byShard.get(i);
-      if (list === undefined) byShard.set(i, (list = []));
+      if (list === undefined) {
+        list = [];
+        byShard.set(i, list);
+      }
       list.push(t);
     }
     const out = new Map<string, unknown>();
@@ -798,7 +763,8 @@ export class HotIndex {
       return null;
     }
     let top: Record<string, unknown> | null = null;
-    let tail: Buffer | Record<string, unknown> | null = null;
+    let tailBytes: Buffer | null = null;
+    let tailObj: Record<string, unknown> | null = null;
     const cut = raw.indexOf(0x0a);
     if (cut > 0 && raw[cut - 1] === 0x2c) {
       try {
@@ -806,7 +772,7 @@ export class HotIndex {
         const got: unknown = JSON.parse(`${pyDecodeUtf8(raw.subarray(0, cut - 1))}}`);
         if (isObj(got) && sameKeys(got, HEAD_KEYS)) {
           top = got;
-          tail = raw.subarray(cut + 1);
+          tailBytes = raw.subarray(cut + 1);
         }
       } catch {
         top = null;
@@ -820,8 +786,9 @@ export class HotIndex {
         return null;
       }
       if (!isObj(whole) || !sameKeys(whole, [...HEAD_KEYS, ...TAIL_KEYS])) return null;
-      top = whole;
-      tail = Object.fromEntries(TAIL_KEYS.map((k) => [k, whole[k]]));
+      const parsed = whole;
+      top = parsed;
+      tailObj = Object.fromEntries(TAIL_KEYS.map((k) => [k, parsed[k]]));
     }
     // Python's `!= 4`: `4` and `4.0` pass (JSON.parse already folds 4.0 into 4).
     if (top['version'] !== INDEX_VERSION) return null;
@@ -834,8 +801,11 @@ export class HotIndex {
     const boost = top['boost'];
     const want = boostInts();
     if (!(Array.isArray(boost) && boost.length === want.length && boost.every((b, i) => b === want[i]))) return null;
-    if (!isCols(top['cols'])) return null;
+    // Typed, so the reads below are data: `cols` and `avgdl` are also HotIndex methods (J89-4a).
+    const parts: HeadParts = top as unknown as HeadParts;
+    if (!isCols(parts.cols)) return null;
     const sh = top['shards'] as Record<string, unknown>;
+    const prints: ShardPrints = sh as unknown as ShardPrints;
     const fams = Object.keys(sh).sort(cmpCodepoint);
     if (fams.length !== FAMILIES.length || fams.some((f, i) => f !== FAMILIES[i])) return null;
     if (!FAMILIES.every((f) => isFps(sh[f]))) return null;
@@ -855,18 +825,21 @@ export class HotIndex {
       skipped,
       loose: [...(top['loose'] as string[])],
       df: new Map(),
-      avgdl: top['avgdl'] as number,
+      dfRaw: null,
+      avgdl: parts.avgdl,
       lens: new Map(),
+      lensRaw: null,
       lensTotal: [...(top['lens_total'] as [number, number, number])],
       boost: want,
-      cols: top['cols'] as IndexCols,
+      cols: parts.cols as IndexCols,
       fingerprint: top['fingerprint'],
-      shards: { postings: [...(sh['postings'] as string[])], words: [...(sh['words'] as string[])] },
-      tail,
+      shards: { postings: [...prints.postings], words: [...prints.words] },
+      tailBytes,
+      tailObj,
     };
     // A head read whole has its second line parsed already: check it now, as a head always was.
     // Only `headText`'s two lines defer it.
-    if (tail !== null && !Buffer.isBuffer(tail) && !completeTail(data)) return null;
+    if (tailObj !== null && !completeTail(data)) return null;
     return data;
   }
 
@@ -876,7 +849,7 @@ export class HotIndex {
    * head while a shard was replaced finds a print it was not promised, and rebuilds.
    */
   private write(before: Shards | null): void {
-    const d = this.data!;
+    const d: IndexData = this.data!;
     const texts: Array<[string, string]> = [];
     for (const family of FAMILIES) {
       for (let i = 0; i < SHARDS; i += 1) {
@@ -899,9 +872,9 @@ export class HotIndex {
         docs: d.docs,
         skipped: d.skipped,
         loose: d.loose,
-        df: d.df,
+        df: d.dfRaw ?? d.df,
         avgdl: d.avgdl,
-        lens: d.lens,
+        lens: d.lensRaw ?? d.lens,
         lens_total: d.lensTotal,
         boost: d.boost,
         cols: d.cols,
@@ -928,7 +901,11 @@ export class HotIndex {
         }
       });
     } catch (e) {
-      if (e instanceof Error && 'code' in e) {
+      // An fs call's error (or Node's argument TypeError): the ones that carry a string `code`.
+      // (Was `e instanceof Error && 'code' in e`, the same test on everything this block throws;
+      // spelled by the code alone since #316 G4, as the generated Python's fs errors are
+      // CPython's `OSError`, whose `code` it reads as Node's.)
+      if (typeof (e as NodeJS.ErrnoException).code === 'string') {
         this.persisted = false;
         this.headStat = null;
         return;
@@ -941,7 +918,7 @@ export class HotIndex {
 
   private store(): MemoryStore {
     // The store's own reader, `create: false`: an index never makes a store exist.
-    this.reader ??= new MemoryStore(this.source, { create: false });
+    if (this.reader === null) this.reader = new MemoryStore(this.source, { create: false });
     return this.reader;
   }
 
@@ -955,12 +932,12 @@ export class HotIndex {
 
   /** The files this source holds, in the order the source's own reader lists them. */
   private listing(): string[] {
-    if (this.kind === 'facts') return this.store()['factPaths']();
+    if (this.kind === 'facts') return this.store().factPaths();
     let names: string[];
     try {
       names = fs.readdirSync(this.dir);
     } catch (e) {
-      if (e instanceof Error && (e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw e;
     }
     return names
@@ -997,16 +974,19 @@ export class HotIndex {
       skipped: new Map(),
       loose: [],
       df: new Map(),
+      dfRaw: null,
       avgdl: 0,
       lens: new Map(),
+      lensRaw: null,
       lensTotal: [0, 0, 0],
       boost: boostInts(),
       cols: { name: [], file: [], length: [], type: [], types: [], stale: [] },
       fingerprint: '',
       shards: { postings: [], words: [] },
-      tail: null,
+      tailBytes: null,
+      tailObj: null,
     };
-    this.shards.clear();
+    this.shards = new Map();
     this.patch(data, this.statListing(), true);
     return data;
   }
@@ -1028,9 +1008,9 @@ export class HotIndex {
     const order = new Map<string, number>(stats.map(([n], i) => [n, i]));
     const nowFiles = new Map<string, [string, number]>(stats.map(([n, m, s]) => [n, [m, s]]));
     const redo = new Set<string>();
-    for (const [name, [m, s]] of nowFiles) {
+    for (const [name, now] of nowFiles) {
       const was = files.get(name);
-      if (was === undefined || was[0] !== m || was[1] !== s) redo.add(name);
+      if (was === undefined || was[0] !== now[0] || was[1] !== now[1]) redo.add(name);
     }
     const gone = new Set([...files.keys()].filter((n) => !nowFiles.has(n)));
     if (redo.size === 0 && gone.size === 0 && !force) return false;
@@ -1051,9 +1031,8 @@ export class HotIndex {
         skipped.set(file, parsed);
         continue;
       }
-      const { loose: isLoose, ...rest } = parsed;
-      if (isLoose) loose.add(file);
-      const doc: IndexDoc = { ...rest, mtime_ns: mtimeNs, size };
+      if (parsed.loose) loose.add(file);
+      const doc = stamped(parsed, mtimeNs, size);
       const held = docs.get(doc.name);
       if (held === undefined) {
         docs.set(doc.name, doc);
@@ -1067,7 +1046,7 @@ export class HotIndex {
     data.files = nowFiles;
     data.loose = [...loose].sort(cmpCodepoint);
     if (force || derivedKey(docs) !== derivedFrom) this.derive(data);
-    data.cols = columns(docs, data.lens);
+    data.cols = columns(docs, data);
     data.boost = boostInts();
     return true;
   }
@@ -1080,32 +1059,32 @@ export class HotIndex {
   parseFile(p: string, mtimeNs: string, size: number): IndexDoc | string {
     const got = this.parse(p);
     if (typeof got === 'string') return got;
-    const { loose, ...doc } = got;
-    if (loose) return 'name is not a string';
-    return { ...doc, mtime_ns: mtimeNs, size };
+    if (got.loose) return 'name is not a string';
+    return stamped(got, mtimeNs, size);
   }
 
   /** One file as a doc without its stat, or the sentence it was skipped with. */
-  private parse(p: string): (Omit<IndexDoc, 'mtime_ns' | 'size'> & { loose: boolean }) | string {
+  private parse(p: string): Parsed | string {
     const file = path.basename(p);
     if (this.kind === 'facts') {
       let fact;
       try {
-        fact = this.store()['readFact'](p);
+        fact = this.store().readFact(p);
       } catch (e) {
-        if (e instanceof BantamError || e instanceof PyOSError) return e.message;
+        if (e instanceof PyOSError) return pyOSErrorText(e);
+        if (e instanceof BantamError) return e.message;
         throw e;
       }
-      const extra = secondary(p, TAGS_LINE, false);
+      const extra = secondary(p, TAGS_LINE);
       return {
         file,
         name: pyText(fact.name),
         description: pyText(fact.description),
         type: pyText(fact.type),
         keywords: [...(fact.keywords ?? [])],
-        links: dedupe([...fact.links.map(pyText), ...wikiLinks(fact.body)]),
+        links: dedupe([...fact.links.map((x) => pyText(x)), ...wikiLinks(fact.body)]),
         tags: strList(extra['tags']),
-        refs: factRefs(pyText(fact.description), [...(fact.keywords ?? [])].map(pyText), pyText(fact.body)),
+        refs: factRefs(pyText(fact.description), [...(fact.keywords ?? [])].map((x) => pyText(x)), pyText(fact.body)),
         loose: typeof fact.name !== 'string',
       };
     }
@@ -1121,7 +1100,7 @@ export class HotIndex {
     const nested = md !== null && typeof md === 'object' && !Array.isArray(md) ? (md as Record<string, unknown>) : {};
     // A top-level key wins, as a top-level `type` does in `parse_fact`.
     const fl = 'links' in extra ? extra['links'] : nested['links'];
-    const frontLinks = Array.isArray(fl) ? fl.map(pyText) : [];
+    const frontLinks = Array.isArray(fl) ? fl.map((x) => pyText(x)) : [];
     const tags = 'tags' in extra ? extra['tags'] : nested['tags'];
     return {
       file,
@@ -1142,13 +1121,20 @@ export class HotIndex {
    * table's fingerprint and `write` writes the tables whose print moved.
    */
   private derive(data: IndexData): void {
-    const rows = Array.from({ length: SHARDS }, () => new Map<string, Array<[number, number, number, number]>>());
-    const words = Array.from({ length: SHARDS }, () => new Map<string, string[]>());
+    const rows: Array<Map<string, Array<[number, number, number, number]>>> = [];
+    const words: Array<Map<string, string[]>> = [];
+    for (let i = 0; i < SHARDS; i += 1) {
+      rows.push(new Map());
+      words.push(new Map());
+    }
     const df = new Map<string, number>();
     const at = new Map<string, number>();
     const shardAt = (t: string): number => {
       let i = at.get(t);
-      if (i === undefined) at.set(t, (i = shardOf(t)));
+      if (i === undefined) {
+        i = shardOf(t);
+        at.set(t, i);
+      }
       return i;
     };
     let total = 0;
@@ -1162,34 +1148,47 @@ export class HotIndex {
       const tfs = new Map<string, [number, number, number]>();
       const flens: [number, number, number] = [0, 0, 0];
       lens.set(name, flens);
-      for (const [fi, [field, boost]] of FIELD_BOOST.entries()) {
+      for (let fi = 0; fi < FIELD_BOOST.length; fi += 1) {
+        const field = FIELD_BOOST[fi]![0];
+        const boost = FIELD_BOOST[fi]![1];
         const toks = tokenizeV2(text[field as Field]);
         total += boost * toks.length;
         flens[fi] = toks.length;
-        lensTotal[fi]! += toks.length;
+        lensTotal[fi] = lensTotal[fi]! + toks.length;
         for (const t of toks) {
           let c = tfs.get(t);
-          if (c === undefined) tfs.set(t, (c = [0, 0, 0]));
-          c[fi]! += 1;
+          if (c === undefined) {
+            c = [0, 0, 0];
+            tfs.set(t, c);
+          }
+          c[fi] = c[fi]! + 1;
         }
       }
-      for (const [term, [a, b, c]] of tfs) {
+      for (const [term, counts] of tfs) {
         const table = rows[shardAt(term)]!;
         let list = table.get(term);
-        if (list === undefined) table.set(term, (list = []));
-        list.push([docId, a, b, c]);
+        if (list === undefined) {
+          list = [];
+          table.set(term, list);
+        }
+        list.push([docId, counts[0], counts[1], counts[2]]);
         df.set(term, (df.get(term) ?? 0) + 1);
       }
       for (const w of tokens(`${d.name} ${d.description}`)) {
         const table = words[shardAt(w)]!;
         let list = table.get(w);
-        if (list === undefined) table.set(w, (list = []));
+        if (list === undefined) {
+          list = [];
+          table.set(w, list);
+        }
         list.push(name);
       }
     });
     const postings = rows.map((table) => new Map([...table].map(([t, r]) => [t, encodeSegments(r)])));
     data.df = df;
+    data.dfRaw = null;
     data.lens = lens;
+    data.lensRaw = null;
     data.lensTotal = lensTotal;
     data.avgdl = names.length ? pyRound9(total / names.length) : 0;
     const prints: Shards = { postings: [], words: [] };
@@ -1197,11 +1196,11 @@ export class HotIndex {
       ['postings', postings],
       ['words', words],
     ] as Array<[Family, Array<Map<string, unknown>>]>) {
-      tables.forEach((table, i) => {
-        const fp = fingerprint(table);
+      for (let i = 0; i < tables.length; i += 1) {
+        const fp = fingerprint(tables[i]!);
         prints[family].push(fp);
-        this.shards.set(`${family}:${i}`, [fp, table]);
-      });
+        this.shards.set(`${family}:${i}`, [fp, tables[i]!]);
+      }
     }
     data.shards = prints;
     data.fingerprint = fingerprint(prints);
@@ -1209,7 +1208,8 @@ export class HotIndex {
 }
 
 /** The head's per-doc columns, in name order: the reference's `_columns`. */
-function columns(docs: Map<string, IndexDoc>, lens: Map<string, unknown> | Record<string, unknown>): IndexCols {
+function columns(docs: Map<string, IndexDoc>, data: IndexData): IndexCols {
+  const raw = data.lensRaw;
   const boost = boostInts();
   const names = [...docs.keys()].sort(cmpCodepoint);
   const types = [...new Set(names.map((n) => docs.get(n)!.type))].sort(cmpCodepoint);
@@ -1217,7 +1217,7 @@ function columns(docs: Map<string, IndexDoc>, lens: Map<string, unknown> | Recor
   const cols: IndexCols = { name: names, file: [], length: [], type: [], types, stale: [] };
   names.forEach((name, i) => {
     const d = docs.get(name)!;
-    const l = (lens instanceof Map ? lens.get(name) : (lens as Record<string, unknown>)[name]) as number[];
+    const l = (raw === null ? data.lens.get(name) : raw[name]) as number[];
     cols.file.push(d.file === `${name}.md` ? '' : d.file);
     cols.type.push(code.get(d.type)!);
     cols.length.push(boost[0]! * l[0]! + boost[1]! * l[1]! + boost[2]! * l[2]!);
@@ -1228,29 +1228,32 @@ function columns(docs: Map<string, IndexDoc>, lens: Map<string, unknown> | Recor
 
 /** The parsed second line of `data`'s head, merged in once; false when it is not the shape written. */
 function completeTail(data: IndexData): boolean {
-  const tail = data.tail;
-  if (tail === null) return true;
-  data.tail = null;
-  let got: unknown = tail;
-  if (Buffer.isBuffer(tail)) {
+  const bytes = data.tailBytes;
+  let got: unknown = data.tailObj;
+  if (bytes === null && got === null) return true;
+  data.tailBytes = null;
+  data.tailObj = null;
+  if (bytes !== null) {
     try {
-      got = JSON.parse(`{${pyDecodeUtf8(tail)}`);
+      got = JSON.parse(`{${pyDecodeUtf8(bytes)}`);
     } catch {
       return false;
     }
   }
   if (!isObj(got) || !sameKeys(got, TAIL_KEYS)) return false;
   for (const key of TAIL_KEYS) if (!isObj(got[key])) return false;
+  // Typed, so the reads below are data: `docs`, `df` and `lens` are also HotIndex methods.
+  const tail: TailParts = got as unknown as TailParts;
   const files = new Map<string, [string, number]>();
-  for (const [k, v] of entries(got['files'] as Record<string, unknown>)) {
+  for (const [k, v] of entries(tail.files)) {
     if (!(Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && Number.isInteger(v[1]))) return false;
     files.set(k, [v[0], v[1]]);
   }
   data.files = files;
   // Unchecked here: `docs()` and a patch check them all, `doc()` checks the one it reads.
-  data.docs = new Map(entries(got['docs'] as Record<string, unknown>)) as Map<string, IndexDoc>;
-  data.df = got['df'] as unknown as Map<string, number>; // converted by `df()` when asked
-  data.lens = got['lens'] as Record<string, unknown>; // read lazily by `lens()`
+  data.docs = new Map(entries(tail.docs)) as Map<string, IndexDoc>;
+  data.dfRaw = tail.df; // converted by `df()` when asked
+  data.lensRaw = tail.lens; // read lazily by `lens()`
   return true;
 }
 

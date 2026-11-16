@@ -260,6 +260,8 @@ const METHODS: &[(&str, usize, usize, Option<usize>, Ret)] = &[
     ("forEach", 1, 1, Some(0), Ret::Any),
     ("keys", 0, 0, None, Ret::List),
     ("copyWithin", 2, 3, None, Ret::List),
+    // J90-2 (#316 G4: storage/hotindex).
+    ("delete", 1, 1, None, Ret::Bool),
 ];
 
 /// J86-R finding 3: every method a builtin prototype the subset can reach carries (String, Array,
@@ -411,6 +413,10 @@ pub struct ModuleCtx {
     pub class_methods: HashSet<String>,
     /// Where the hand-written adapters are imported from (`._ts2py_adapters`).
     pub adapter_module: String,
+    /// J90-2: the compiled modules this one imports that import it back, directly or not (an
+    /// import cycle, as `hotindex.ts` and `memory/store.ts` are). Their names are imported at
+    /// the END of the Python module (`late_imports`), when every name of this one is bound.
+    pub cyclic_imports: HashSet<String>,
 }
 
 /// A class being lowered: its members as JS spells them.
@@ -458,6 +464,12 @@ pub struct Lowerer<'s> {
     classes: HashMap<String, String>,
     /// J86: `from <module> import <names>` lines this module needs, by module.
     pub imports: BTreeMap<String, BTreeSet<String>>,
+    /// J90-2: the same, from a module of an import cycle (`ModuleCtx::cyclic_imports`): written
+    /// after the body, so the cycle imports whichever module comes first without a name unbound.
+    pub late_imports: BTreeMap<String, BTreeSet<String>>,
+    /// J90-2: the Python names `late_imports` binds; none may be read while the module itself is
+    /// being executed (a module-level initializer, an `extends`), when it may not be bound yet.
+    cyclic_py: HashSet<String>,
     /// J86: the class whose body is being lowered.
     class_ctx: Option<ClassCtx>,
     /// J86: index into `scopes` where each enclosing `def` starts, innermost last, with the names
@@ -635,6 +647,8 @@ impl<'s> Lowerer<'s> {
             ctx,
             classes: HashMap::new(),
             imports: BTreeMap::new(),
+            late_imports: BTreeMap::new(),
+            cyclic_py: HashSet::new(),
             class_ctx: None,
             defs: Vec::new(),
             breaks: Vec::new(),
@@ -1133,6 +1147,21 @@ impl<'s> Lowerer<'s> {
         body
     }
 
+    /// J90-2: refuse a module-level initializer whose Python reads a name imported in a cycle:
+    /// it runs while the module is executed, and the cycle may not have bound that name yet.
+    fn module_eval_use(&mut self, code: &str, span: Span) {
+        let mut hit: Vec<&String> = self
+            .cyclic_py
+            .iter()
+            .filter(|py| uses_ident(code, py))
+            .collect();
+        hit.sort();
+        if let Some(py) = hit.first() {
+            let construct = format!("module-level use of {py}, imported in an import cycle");
+            self.refuse(span, construct);
+        }
+    }
+
     fn declare_global(&mut self, name: &str, exported: bool, span: Span) {
         let py = py_name(name, true, !exported);
         self.claim(name, &py, span);
@@ -1202,6 +1231,7 @@ impl<'s> Lowerer<'s> {
                             continue;
                         }
                         let value = self.expr(init);
+                        self.module_eval_use(&value.code, d.span);
                         out.push(format!("{name} = {}", value.code));
                     }
                     return;
@@ -1222,6 +1252,7 @@ impl<'s> Lowerer<'s> {
                         }
                         Some(init) => {
                             let value = self.expr(init);
+                            self.module_eval_use(&value.code, d.span);
                             out.push(format!("{name} = {}", value.code));
                             // J87: a frozen array keeps what its elements are; any other const
                             // keeps the flags of its value (the binding never changes).
@@ -4533,6 +4564,26 @@ impl<'s> Lowerer<'s> {
                 } else {
                     None
                 };
+                // J90-2: `xs.every((x) => Number.isInteger(x))` / `xs.every((x) => typeof x ===
+                // 'string')`, the hot index's shape checks over 5,000-element columns: one helper
+                // per test, which answers at C speed for a list of exactly that Python type and
+                // runs the same per-element test as the general lowering otherwise.
+                if method == "every"
+                    && !class_method
+                    && c.arguments.len() == 1
+                    && let Some(test) = c.arguments[0]
+                        .as_expression()
+                        .and_then(|e| self.every_test(e))
+                {
+                    let receiver = self.expr(&m.object);
+                    let result =
+                        returned(Ret::Bool, format!("_js_every_{test}({})", receiver.code));
+                    return if receiver.top {
+                        result.with_fact(None)
+                    } else {
+                        result
+                    };
+                }
                 let receiver = self.expr(&m.object);
                 // J89-4a: `a.splice(start, count, ...xs)`, `xs` proven a list.
                 let splice_spread = method == "splice";
@@ -4588,6 +4639,54 @@ impl<'s> Lowerer<'s> {
                 result
             }
             other => self.refuse(other.span(), "call of a computed callee"),
+        }
+    }
+
+    /// J90-2: `(x) => Number.isInteger(x)` is `"integer"`, `(x) => typeof x === 'string'` (or `==`)
+    /// is `"string"`: a one-parameter arrow whose body is exactly that test of its parameter, with
+    /// `Number` the global. Any other callback is the general `every`.
+    fn every_test(&self, e: &Expression<'_>) -> Option<&'static str> {
+        let Expression::ArrowFunctionExpression(arrow) = strip(e) else {
+            return None;
+        };
+        if arrow.r#async || arrow.params.items.len() != 1 || arrow.params.rest.is_some() {
+            return None;
+        }
+        let BindingPattern::BindingIdentifier(param) = &arrow.params.items[0].pattern else {
+            return None;
+        };
+        let is_param = |e: &Expression<'_>| matches!(strip(e), Expression::Identifier(id) if id.name == param.name);
+        let body = arrow.body.as_expression()?;
+        match strip(body) {
+            Expression::CallExpression(call)
+                if call.arguments.len() == 1
+                    && !call.optional
+                    && call.arguments[0].as_expression().is_some_and(is_param) =>
+            {
+                let Expression::StaticMemberExpression(m) = strip(&call.callee) else {
+                    return None;
+                };
+                let number =
+                    matches!(strip(&m.object), Expression::Identifier(id) if id.name == "Number");
+                (number && m.property.name == "isInteger" && !self.is_local("Number"))
+                    .then_some("integer")
+            }
+            Expression::BinaryExpression(b)
+                if matches!(
+                    b.operator,
+                    BinaryOperator::StrictEquality | BinaryOperator::Equality
+                ) =>
+            {
+                let typeof_param = |e: &Expression<'_>| {
+                    matches!(strip(e), Expression::UnaryExpression(u)
+                        if u.operator == UnaryOperator::Typeof && is_param(&u.argument))
+                };
+                let string = |e: &Expression<'_>| matches!(strip(e), Expression::StringLiteral(s) if s.value == "string");
+                ((typeof_param(&b.left) && string(&b.right))
+                    || (string(&b.left) && typeof_param(&b.right)))
+                .then_some("string")
+            }
+            _ => None,
         }
     }
 
@@ -4928,8 +5027,16 @@ impl<'s> Lowerer<'s> {
                     continue;
                 };
                 self.claim(local, &py, s.span);
-                self.imports
-                    .entry(format!(".{}", module.py_module))
+                let cyclic = resolved
+                    .as_ref()
+                    .is_some_and(|path| self.ctx.cyclic_imports.contains(path));
+                let into = if cyclic {
+                    self.cyclic_py.insert(py.clone());
+                    &mut self.late_imports
+                } else {
+                    &mut self.imports
+                };
+                into.entry(format!(".{}", module.py_module))
                     .or_default()
                     .insert(py.clone());
                 self.globals.insert(local.to_string(), py.clone());
@@ -5825,6 +5932,40 @@ fn property_key_name(key: &PropertyKey<'_>) -> Option<String> {
 
 /// A relative import specifier resolved against the importing module's path, `.js` read as the
 /// `.ts` it is compiled from (`runtime-ts/src/memory/pyyaml.ts`). None for a bare specifier.
+/// J90-2: the compiled modules of the call `program` imports a value from (a type-only import
+/// binds nothing at run time and is no edge of an import cycle).
+pub fn compiled_imports(
+    program: &Program<'_>,
+    path: &str,
+    modules: &HashMap<String, ModuleExports>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for stmt in &program.body {
+        let Statement::ImportDeclaration(i) = stmt else {
+            continue;
+        };
+        if i.import_kind.is_type() {
+            continue;
+        }
+        let values = i.specifiers.as_ref().is_some_and(|specifiers| {
+            specifiers.iter().any(|s| match s {
+                ImportDeclarationSpecifier::ImportSpecifier(s) => !s.import_kind.is_type(),
+                _ => true,
+            })
+        });
+        if !values {
+            continue;
+        }
+        if let Some(spec) = i.source.value.as_str()
+            && let Some(target) = resolve_specifier(path, spec)
+            && modules.contains_key(&target)
+        {
+            out.insert(target);
+        }
+    }
+    out
+}
+
 pub fn resolve_specifier(importer: &str, spec: &str) -> Option<String> {
     // J87-3: a Node builtin (`node:fs`) is its own key in the adapter table.
     if spec.starts_with("node:") {
@@ -5980,6 +6121,16 @@ pub fn scan_module(program: &Program<'_>) -> ModuleScan {
 /// start `_js_`, `_Js` or `_JS_`, nor a source one, which may not start `_js`).
 fn units_name(name: &str) -> String {
     format!("_jsu_{}", py_name(name, false, false))
+}
+
+/// J90-2: `name` appears in `code` as a whole Python identifier (as `lib.rs`'s `uses`).
+fn uses_ident(code: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    code.match_indices(name).any(|(at, _)| {
+        let before = code[..at].chars().next_back();
+        let after = code[at + name.len()..].chars().next();
+        !before.is_some_and(ident) && !after.is_some_and(ident)
+    })
 }
 
 fn method_as_value(name: &str) -> String {

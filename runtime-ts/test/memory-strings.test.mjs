@@ -17,7 +17,7 @@ import { MemoryStore, MemoryValidationError, NAME_MAX_CHARS } from '../dist/memo
 import { loneSurrogateArgument } from '../dist/mcp/pyargs.js';
 import { fromJs } from '../dist/pyjson.js';
 import { wellFormed } from '../dist/memory/factfile.js';
-import { parseNative } from '../dist/storage/hotindex.js';
+import { parseNative } from '../dist/storage/nativefact.js';
 
 const fresh = () => mkdtempSync(join(tmpdir(), 'j659-'));
 const files = (root) => (existsSync(join(root, 'facts')) ? readdirSync(join(root, 'facts')).sort() : []);

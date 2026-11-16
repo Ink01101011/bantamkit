@@ -269,7 +269,7 @@ test('postings are run-length segments over doc ids', () => {
     ['c', 'keywords', 1],
   ]);
   assert.deepEqual(hi.cols().length, [4, 3, 6, 3]);
-  assert.equal(hi.size(), 4);
+  assert.equal(hi.docCount(), 4);
 });
 
 test("a recall reads the head's first line only", async () => {

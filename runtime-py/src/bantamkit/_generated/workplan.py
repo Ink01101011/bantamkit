@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_coalesce_value,
+    _js_every_string,
     _js_get,
     _js_is_array,
     _js_is_nullish,
@@ -92,7 +93,7 @@ def _read_nodes__typed(nodes):
         if _js_typeof(id_) != "string":
             return _refuse("nodes[" + _js_str(index) + "].id must be a string")
         depends_on = _js_get(node, "depends_on")
-        if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_m_every(depends_on, lambda dep, *_: _js_typeof(dep) == "string")):
+        if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_every_string(depends_on)):
             return _refuse("nodes[" + _js_str(index) + "].depends_on must be a list of strings")
         priority = _js_get(node, "priority")
         if not _js_is_nullish(priority) and not _is_integer(priority):
@@ -117,7 +118,7 @@ def _read_nodes(nodes):
         if _js_typeof(id_) != "string":
             return _refuse("nodes[" + _js_str(index) + "].id must be a string")
         depends_on = _js_get(node, "depends_on")
-        if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_m_every(depends_on, lambda dep, *_: _js_typeof(dep) == "string")):
+        if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_every_string(depends_on)):
             return _refuse("nodes[" + _js_str(index) + "].depends_on must be a list of strings")
         priority = _js_get(node, "priority")
         if not _js_is_nullish(priority) and not _is_integer(priority):

@@ -253,6 +253,32 @@ function encodeFloat(x: number): string {
   return pyFloatRepr(x);
 }
 
+/**
+ * `dumpJson(fromJs(value), options)`, where `floatKey`, when `value` is a plain object holding a
+ * number under it, is written as a float even when it is integral (Python's `4.0`, which
+ * `fromJs` would write as `4`). The hot index's one serialisation (`hotindex.dumpIndex`, its
+ * `avgdl`), moved here from hotindex.ts unchanged (#316 G4, J90-2) so the generated Python
+ * dumps through one adapter (`json.dumps` of the value as `fromJs` reads it) and never builds
+ * the tagged tree.
+ */
+export function dumpJsValue(value: unknown, options: DumpOptions = {}, floatKey?: string): string {
+  if (
+    floatKey !== undefined &&
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    !(value instanceof Map)
+  ) {
+    const obj = value as Record<string, unknown>;
+    if (floatKey in obj && typeof obj[floatKey] === 'number') {
+      const out = fromJs(obj);
+      if (out.t === 'dict') out.v.set(floatKey, { t: 'float', v: obj[floatKey] });
+      return dumpJson(out, options);
+    }
+  }
+  return dumpJson(fromJs(value), options);
+}
+
 export function dumpJson(value: PyValue, options: DumpOptions = {}): string {
   const indent = options.indent ?? null;
   const sortKeys = options.sortKeys ?? false;

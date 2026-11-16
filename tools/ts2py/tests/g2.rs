@@ -231,6 +231,8 @@ fn g2_modules_compile_together() {
         "runtime-ts/src/storage/logsegment.ts",
         "runtime-ts/src/eventlog.ts",
         "runtime-ts/src/tokenledger.ts",
+        // J90-2 (#316 G4): the lock is compiled now, not an adapter.
+        "runtime-ts/src/storage/lock.ts",
     ];
     let sources: Vec<String> = paths
         .iter()
@@ -246,5 +248,8 @@ fn g2_modules_compile_together() {
     assert!(code("eventlog").contains("from .logsegment import LogSegment\n"));
     assert!(code("tokenledger").contains("from .pricing import "));
     assert!(code("logsegment").contains("exclusive(self.path, _js_fn"));
+    assert!(
+        code("logsegment").contains("from .lock import LOCK_POLL_MS, LOCK_STALE_MS, exclusive\n")
+    );
     assert!(code("tokenledger").contains("class TokenLedgerError(BantamError):\n"));
 }
