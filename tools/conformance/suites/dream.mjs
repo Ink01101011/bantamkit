@@ -1085,23 +1085,70 @@ export async function run(ctx) {
       }
       if (tag === 'J89-1F') cases.push({ name: `J89-1 absolutise: ${label.replace('U+0345', 'nothing')}`, kind: 'json', expected: pyRows[2 * i + 1], actual: ndRows[2 * i + 1] });
     });
-    // J89-2 found, NOT ruled and NOT fixed: `tonight` spelled with U+0131 or U+0130. Both
-    // runtimes now MATCH it (CPython's IGNORECASE; node's `pyCaseless`), but the reference then
-    // looks the lowercased term up in its day table (`_resolve`), `'tonıght'` is not a key, and
-    // the dream RAISES KeyError; node's lookup answers undefined, `addDays` refuses it, and the
-    // term is REPORTED unresolved. Before J89-2 node did not match it at all (python raised
-    // then too). Pinned here for the orchestrator; the reported refusal bits differ, so the
-    // python side's raise is pinned as a per-side literal.
+    // J89-2 found `tonight` spelled with U+0131 or U+0130: both runtimes MATCH it (CPython's
+    // IGNORECASE; node's `pyCaseless`), but the hand-written reference then looked the lowercased
+    // term up in its day table (`_resolve`), `'tonıght'` was not a key, and the dream RAISED
+    // KeyError, where node's lookup answers undefined, `addDays` refuses it, and the term is
+    // REPORTED unresolved. RULED by the orchestrator on J89-5: node is right (a crash on a user's
+    // note is a bug). FIXED BY GENERATION (J89-5c): python runs dream.ts's lookup, so this is an
+    // agreeing case now (red against 053569d5's hand-written python: KeyError), with the answer
+    // pinned per side. `yeſterday` (U+017F LONG S, which IGNORECASE folds to `s`) is the same
+    // lookup, never pinned before J89-5c: KeyError there too, and node's answer now on both sides.
     {
-      const UNRULED = 'UNRULED DIVERGENCE (J89-2): not ruled in docs/porting.md and not fixed; ';
-      const body = 'We merged it tonıght.';
-      const row = [[b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']];
-      const py = ctx.runPython(REF, { op: 'absolutise', cases: row }).out[0];
-      const [text, hits, unresolved] = dreamer.absolutise(body, BOUNDARY_BASIS, 'ypo', 'project');
-      const nd = { body: b64(text), hits: hits.length, unresolved: unresolved.map((h) => b64(h.term)) };
-      cases.push({ name: 'ruling: UNRULED DIVERGENCE absolutise: `tonight` spelled with U+0131 (dotless i)', kind: 'json', expected: py, actual: nd, ruling: UNRULED + 'python raises KeyError from its day table; node reports the term unresolved and leaves the body' });
-      cases.push({ name: 'LITERAL: J89-2 python raises KeyError on `tonight` spelled with U+0131', kind: 'json', expected: 'KeyError', actual: py.error ? py.error.type : null });
-      cases.push({ name: 'LITERAL: J89-2 node reports `tonight` spelled with U+0131 unresolved', kind: 'json', expected: { body: b64(body), hits: 0, unresolved: [b64('tonıght')] }, actual: nd });
+      const spellings = [
+        ['`tonight` spelled with U+0131 (dotless i)', 'We merged it tonıght.', 'tonıght'],
+        ['`tonight` spelled with U+0130 (dotted capital I)', 'We merged it TONİGHT.', 'TONİGHT'],
+        ['`yesterday` spelled with U+017F (long s)', 'It landed yeſterday.', 'yeſterday'],
+      ];
+      const rows = spellings.map(([, body]) => [b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']);
+      const pyRows = ctx.runPython(REF, { op: 'absolutise', cases: rows }).out;
+      const shape = (row) =>
+        row.error ? { error: row.error.type } : { body: row.body, hits: row.hits.length, unresolved: row.unresolved.map((h) => h.term) };
+      spellings.forEach(([label, body, term], i) => {
+        const [text, hits, unresolved] = dreamer.absolutise(body, BOUNDARY_BASIS, 'ypo', 'project');
+        const nd = { body: b64(text), hits: hits.length, unresolved: unresolved.map((h) => b64(h.term)) };
+        const py = shape(pyRows[i]);
+        cases.push({ name: `J89-5c absolutise: ${label} is reported unresolved, not a KeyError (ruled J89-5: node is right)`, kind: 'json', expected: py, actual: nd });
+        const expected = { body: b64(body), hits: 0, unresolved: [b64(term)] };
+        cases.push({ name: `LITERAL: J89-5c python reports ${label} unresolved`, kind: 'json', expected, actual: py });
+        cases.push({ name: `LITERAL: J89-5c node reports ${label} unresolved`, kind: 'json', expected, actual: nd });
+      });
+    }
+
+    // J89-5c found, NOT ruled and NOT fixed (unchanged by generation: the compiled dream reaches
+    // CPython's `int()` through the `pyIntDigits` adapter, as `_resolve` called it). Two counts
+    // `int()` and node's `pyIntDigits` read differently:
+    //  - a digit of U+1D7CE..U+1D7FF (MATHEMATICAL BOLD/DOUBLE-STRUCK/SANS-SERIF/MONOSPACE DIGIT):
+    //    five ten-digit Nd blocks back to back, so node's walk back to the block's zero stops nine
+    //    codepoints down and reads every one but the first block's as 9; `int()` reads 0..9.
+    //  - a count of more than 4300 digits: `int()` raises ValueError (CPython's
+    //    `sys.get_int_max_str_digits()`), out of `dream()`; node's sum is Infinity, past
+    //    `addDays`'s cap, and the term is reported unresolved.
+    {
+      const UNRULED = 'UNRULED DIVERGENCE (J89-5c): not ruled in docs/porting.md and not fixed; ';
+      const long = `${'9'.repeat(4301)} days ago`;
+      const counts = [
+        ['a count spelled U+1D7D8 (double-struck zero)', 'It landed 𝟘 days ago.',
+          { body: b64('It landed 𝟘 days ago (2026-09-06).'), hits: 1, unresolved: [] },
+          { body: b64('It landed 𝟘 days ago (2026-08-28).'), hits: 1, unresolved: [] },
+          'python reads it as int() does, 0 days; node\'s pyIntDigits reads 9'],
+        ['a count of 4301 digits', `It landed ${long}.`,
+          { error: 'ValueError' },
+          { body: b64(`It landed ${long}.`), hits: 0, unresolved: [b64(long)] },
+          'python raises ValueError from int() past 4300 digits; node reports the term unresolved'],
+      ];
+      const rows = counts.map(([, body]) => [b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']);
+      const pyRows = ctx.runPython(REF, { op: 'absolutise', cases: rows }).out;
+      const shape = (row) =>
+        row.error ? { error: row.error.type } : { body: row.body, hits: row.hits.length, unresolved: row.unresolved.map((h) => h.term) };
+      counts.forEach(([label, body, pyExpected, ndExpected, why], i) => {
+        const [text, hits, unresolved] = dreamer.absolutise(body, BOUNDARY_BASIS, 'ypo', 'project');
+        const nd = { body: b64(text), hits: hits.length, unresolved: unresolved.map((h) => b64(h.term)) };
+        const py = shape(pyRows[i]);
+        cases.push({ name: `ruling: UNRULED DIVERGENCE absolutise: ${label}`, kind: 'json', expected: py, actual: nd, ruling: UNRULED + why });
+        cases.push({ name: `LITERAL: J89-5c python on ${label}`, kind: 'json', expected: pyExpected, actual: py });
+        cases.push({ name: `LITERAL: J89-5c node on ${label}`, kind: 'json', expected: ndExpected, actual: nd });
+      });
     }
   }
 

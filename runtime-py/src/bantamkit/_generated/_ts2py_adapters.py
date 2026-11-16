@@ -137,6 +137,12 @@ __all__ = [
     "py_is_file",
     "py_resolve",
     "py_stat_is_dir",
+    "format_fixed3",
+    "py_int_digits",
+    "py_relative_scan",
+    "py_slot_groups",
+    "py_sub_spaces",
+    "py_unresolved_terms",
 ]
 
 
@@ -2087,3 +2093,97 @@ def py_expanduser(path, *_):
 def py_is_absolute(path, *_):
     """`pyIsAbsolute` (pyfs.ts): `PurePath(path).is_absolute()`."""
     return _pathlib.PurePath(path).is_absolute()
+
+
+# J89-5c (#316 G3 U3: memory/dream). `dreamre.ts`'s patterns are ports of `dream.py`'s, so these are
+# `dream.py`'s own CPython patterns, unchanged.
+_DREAM_RELATIVE = _re.compile(
+    r"\b(?P<simple>today|tonight|yesterday|tomorrow)\b"
+    r"|\b(?P<now>right\s+now|just\s+now)\b"
+    r"|\b(?P<count>\d+)\s+(?P<unit>days?|weeks?)\s+ago\b",
+    _re.IGNORECASE,
+)
+_DREAM_UNRESOLVED = _re.compile(
+    r"\brecently\b"
+    r"|\b(?:last|this|next)\s+(?:week|month|year|quarter|night|session|time)\b"
+    r"|\b\d+\s+(?:months?|years?)\s+ago\b",
+    _re.IGNORECASE,
+)
+_DREAM_STAMPED = _re.compile(r"\s*\(\d{4}-\d{2}-\d{2}\)")
+_DREAM_BULLET = _re.compile(r"^(?:[-*+]\s+|#+\s+)")
+_DREAM_SLOT = _re.compile(r"^(?P<subject>[^:\n]{1,60}?)\s*:\s*(?P<value>\S.*)$")
+_DREAM_SPACES = _re.compile(r"\s+")
+
+
+def _dream_text(name, text):
+    if not isinstance(text, str):
+        raise TypeError(f"ts2py: {name} of anything but a string is outside the subset")
+    return text
+
+
+def py_relative_scan(body, *_):
+    """`pyRelativeScan` (dreamre.ts): `_RELATIVE.finditer(body)`, each match with the body from the
+    previous match's end to its own (`lead`), whether `_STAMPED.match(body[end:])` holds, and its
+    groups; the body after the last match is `tail`."""
+    body = _dream_text("pyRelativeScan", body)
+    matches = []
+    position = 0
+    for m in _DREAM_RELATIVE.finditer(body):
+        end = m.end()
+        matches.append(
+            {
+                "lead": body[position:end],
+                "term": m.group(0),
+                "stamped": _DREAM_STAMPED.match(body, end) is not None,
+                "simple": m.group("simple"),
+                "now": m.group("now") is not None,
+                "digits": m.group("count"),
+                "unit": m.group("unit"),
+            }
+        )
+        position = end
+    return {"matches": matches, "tail": body[position:]}
+
+
+def py_unresolved_terms(body, *_):
+    """`pyUnresolvedTerms` (dreamre.ts): every `_UNRESOLVED` match's text, in order."""
+    body = _dream_text("pyUnresolvedTerms", body)
+    return [m.group(0) for m in _DREAM_UNRESOLVED.finditer(body)]
+
+
+def py_slot_groups(text, *_):
+    """`pySlotGroups` (dreamre.ts): `_SLOT.match(_BULLET.sub('', text))` as `[subject, value]`, or
+    `null`."""
+    text = _dream_text("pySlotGroups", text)
+    m = _DREAM_SLOT.match(_DREAM_BULLET.sub("", text))
+    return None if m is None else [m.group("subject"), m.group("value")]
+
+
+def py_sub_spaces(text, *_):
+    """`pySubSpaces` (dreamre.ts): `re.sub(r"\\s+", " ", text)`."""
+    return _DREAM_SPACES.sub(" ", _dream_text("pySubSpaces", text))
+
+
+def py_int_digits(text, *_):
+    """`pyIntDigits` (dreamre.ts): CPython's `int(text)` (its `ValueError` included), as a double;
+    past the largest double, infinity."""
+    n = int(_dream_text("pyIntDigits", text))
+    try:
+        return float(n)
+    except OverflowError:
+        return _math.inf
+
+
+def format_fixed3(value, *_):
+    """`formatFixed3` (dreamre.ts): `f"{value:.3f}"`, no sign on a value that rounds to zero."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError("ts2py: formatFixed3 of anything but a number is outside the subset")
+    x = float(value)
+    if x != x:
+        return "nan"
+    if x in (_math.inf, -_math.inf):
+        return "inf" if x > 0 else "-inf"
+    text = format(x, ".3f")
+    if text.startswith("-") and not text.strip("-0."):
+        text = text[1:]
+    return text

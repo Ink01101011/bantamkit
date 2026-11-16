@@ -647,3 +647,77 @@ TS refactors (Node's answers unchanged, `npm test` green):
   `entries` is a data field (J87-12), not `Map.prototype.entries`;
 - `e.strerror` (twice) is `pyOSErrorStrerror(e)` and the read failure's `e.message` is
   `pyOSErrorText(e)` for a `PyOSError` (J89-4b): CPython's `strerror` and `str(e)` on both sides.
+
+## J89-5c rules (#316 G3 U3: `memory/dream.ts` generated)
+
+`dream.ts` joins the G1/G2/G3 call and is shipped as `_generated/dream.py` (the shim is
+`bantamkit.memory.dream`). J89-5's census counted **25 refusals**; J89-5c leaves **0**: one runtime
+extension (G3-29, a construct the compiler accepted and the runtime refused, found by running the
+compiled dream), six adapter rows, and TS refactors whose Node answers are unchanged.
+
+| # | Rule | Status | Pinned by (`tests/`) |
+|---|---|---|---|
+| G3-29 | `s.split(re)` -> `_js_split_regex`: ECMA-262's `RegExp.prototype[@@split]` with no limit over UTF-16 code units (an empty match where the last piece ended moves on one unit; a match starting at the end is not taken; captures join the result, `undefined` when they took no part; `''` is `[]` when the splitter matches it; a `g` flag changes nothing). A limit stays refused at compile time; a receiver that is not a string is refused at run time | extended (the string-separator row) | `g3_store.rs` `j89_5c_split_by_a_regex_answers_like_node` (`tests/fixtures/j89_5c_probe.ts`: 13 splitters incl. an empty-matching one, captures, `^`, `$`, a lookbehind, `\b`, lone surrogate halves, a `g` regex, x 18 subjects incl. `''`, astral and lone halves; and `fuzz(20000)`, 20,000 seeded strings, digest 545608662 as Node printed it); `j89_5c_split_with_a_limit_is_refused`. Four runtime mutants each turn it red (an empty match moving two units, captures dropped, a match at the end taken, `''` always `['']`) |
+
+**The 25 refusals, and where each went.**
+- The 4 `pysem` imports (`pyCaseless`, `PY_WORD_CLASS`, `PY_WS`, `PY_WS_CLASS`), the 6 `new RegExp(..., 'u'|'gu')`,
+  `matchAll` (2), `match.index`, and `groups['count']` (the name clash with `NativeStore.count()`):
+  every pattern dream.ts built at run time from CPython's classes moved, byte for byte, into
+  `runtime-ts/src/memory/dreamre.ts`, which is not in the call (as `pySearchWord` moved to pysem in
+  J89-4a and the config reader to `grantconfig.ts` in J89-5b). dream.ts imports four scans from it,
+  each a port of a `dream.py` pattern, so each is an adapter onto that CPython pattern (below). The
+  relative scan hands back each match's `lead` (the body from the previous match's end to its own)
+  and a `tail`, so no string position crosses the seam (a UTF-16 unit in Node, a code point in
+  CPython), and the count group is a field named `digits`: the clash is gone without a rename.
+- `/\p{Nd}/u` (`pyIntDigits`) and the 8 constructs of `formatFixed3` (`Object.is(x, -0)`,
+  `DataView`, `setFloat64`, `getBigUint64`, BigInt `&` x2, `|`, `<<=`): both functions moved to
+  `dreamre.ts` and are adapters; dream.ts re-exports them (`import` + `export { ... }`), so Node's
+  public surface (`index.ts`, `dream.test.mjs`) is unchanged. The compiled dream never calls
+  `formatFixed3` (component.ts prints with it).
+- `/^[A-Za-z][A-Za-z0-9 ._'()\[\]-]*$/u` (`SUBJECT_OK`): the `u` flag dropped. Every atom is one ASCII
+  character and nothing reads a surrogate, so the flag changed nothing; it now lowers as any literal.
+- `.flatMap` (`superseded`): a loop pushing each merge's records. `consumed.map(pyHashKey)`: an
+  inline arrow.
+
+**Found by running the compiled dream, not by the census.** `store.internals()` answers an object
+of arrow functions; `projectInner.facts()` lowered to `_js_invoke` (a compiled class declares
+`facts`, `factPath`, `indexLine`, `writeFact`, `rebuildIndex`, `afterWrite`), which refuses a dict
+at run time. dream.ts now destructures `internals()` into locals and calls each as a function (arrow
+functions have no `this`, so Node's answers are unchanged). And `normalised.split(BLOCK_SPLIT)`
+compiled and was refused at run time (G3-29 above).
+
+### Adapters (J89-5c, #316 G3 U3: the dream)
+
+| TypeScript (`memory/dreamre.ts`) | Python | Why it is the same function |
+|---|---|---|
+| `pyRelativeScan` | `dream.py`'s `_RELATIVE.finditer(body)` (`re.IGNORECASE`), with `_STAMPED.match(body, end)` per match; `{lead, term, stamped, simple, now, digits, unit}` per match and the rest as `tail` | Python is the reference: the TypeScript is a port of those two patterns (dream.ts's header measured `\s`, `\d`, `\b`, `.` and the case folding) |
+| `pyUnresolvedTerms` | `[m.group(0) for m in _UNRESOLVED.finditer(body)]` | the port of `_UNRESOLVED` |
+| `pySlotGroups` | `_SLOT.match(_BULLET.sub('', text))` as `[subject, value]` or `null` | the port of `_SLOT` and `_BULLET` |
+| `pySubSpaces` | `re.sub(r'\s+', ' ', text)` | the call `collapse` made |
+| `pyIntDigits` | `int(text)` as a double (infinity past the largest), its `ValueError` past 4,300 digits raised | the call `_resolve` made |
+| `formatFixed3` | `format(x, '.3f')`, no sign on a value that rounds to zero; `inf`, `-inf`, `nan` | `f"{x:.3f}"`, round half to even on the exact binary value |
+
+The patterns are `dream.py`'s own: compared with the hand-written module's compiled `_RELATIVE`,
+`_UNRESOLVED`, `_STAMPED`, `_BULLET` and `_SLOT`, `pattern` and `flags` equal on all five.
+
+**Measured against Node v26.13.0 (Unicode 17.0) on CPython 3.12.13 (UCD 15.0.0), 2026-11-16.** A seeded
+corpus (the dream suite's alphabet: the relative-date words, CPython's 29 `\s` codepoints and U+FEFF,
+`ı`, `İ`, `ſ`, `K`, U+0345, astral and lone-surrogate characters, Nd digits of seven scripts incl.
+the mathematical digits, stamps): 20,000 bodies through `pyRelativeScan`, `pyUnresolvedTerms` and
+`pySubSpaces`, 20,000 lines through `pySlotGroups`, 20,000 Nd runs through `pyIntDigits`, 20,014
+doubles through `formatFixed3` (random bit patterns, sixteenths, short decimals, ±0, subnormal,
+±1e300, ±Infinity, NaN): **0 differences** on every scan and on `formatFixed3`; `pyIntDigits` 13,384
+of 20,000, every one a run holding a digit of U+1D7D8..U+1D7FF and none without (node's walk back to
+a block's zero reads those as 9: pinned `ruling: UNRULED DIVERGENCE` in `--suite dream`, unchanged by
+generation). The same corpus with three Unicode 16 assignments added (U+10D40, U+10D49, U+1C89):
+87 scan and 12 unresolved differences, every one in a body holding one of them (UCD skew, the
+`docs/porting.md` class), 0 otherwise. The compiled functions over the Unicode 15 corpus
+(`absolutise`, `collapse`, `blockKey`, `splitBlocks`, `mergeBodies`, `mergeDescriptions`,
+`claimSlot`, 20,000 each, against Node): 0 differences.
+
+TS refactors (Node's answers unchanged): Node's `dream.js` of 053569d5 and of this tree over the
+same corpus (`absolutise`, `claimSlot`, `collapse`, `blockKey`, `splitBlocks`, `mergeBodies`,
+`mergeDescriptions`, `pyIntDigits`, `formatFixed3`; 180,014 calls): 0 differences; `npm test`
+2,460 pass, 0 fail, 47 skipped.
+
+Runtime names added (1): `_js_split_regex`. G1, G2 and every G3 module recompile byte for byte.

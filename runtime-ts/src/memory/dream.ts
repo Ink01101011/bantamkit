@@ -53,7 +53,15 @@
  * are Unicode 16.0 assignments CPython 3.12 has no mapping for. The final-sigma context
  * rule fires identically on both (`ΟΔΟΣ` -> `οδος`). `toLowerCase()` is used as-is.
  */
-import { cmpCodepoint, pyCaseless, PY_WORD_CLASS, PY_WS, PY_WS_CLASS, pyStrip } from '../pysem.js';
+import { cmpCodepoint, pyStrip } from '../pysem.js';
+import {
+  formatFixed3,
+  pyIntDigits,
+  pyRelativeScan,
+  pySlotGroups,
+  pySubSpaces,
+  pyUnresolvedTerms,
+} from './dreamre.js';
 import type { Fact, FactValue } from './factfile.js';
 import { formatFact } from './factfile.js';
 import {
@@ -91,60 +99,19 @@ export const PROFILE_LAYER = 'profile';
  */
 export const SUPERSEDED_HEADING = '## superseded by a dream merge';
 
-// -------------------------------------------------------------- CPython's character classes
+// ------------------------------------------------------------- CPython's patterns, elsewhere
 
 /**
- * `\w` for a `str` pattern: `isalnum() or '_'`. See note 3 in the header. The two patterns below
- * are compiled WITHOUT `i` and spell their words with `pyCaseless` (#316 G3, J89-1F): under `i`
- * this class also matched U+0345, which folds to iota, so `yesterday\u0345` had no boundary on
- * Node where CPython's `\b` holds (`PY_WORD_CLASS`).
+ * The patterns built from CPython's character classes (`_RELATIVE`, `_UNRESOLVED`, `_STAMPED`,
+ * `_BULLET`, `_SLOT`, `\s+`) live in `dreamre.ts` (#316 G3 U3, J89-5c): they are assembled at run
+ * time under the `u` flag, so the generated Python reaches CPython's own patterns through ts2py
+ * adapters instead of a translation. `pyIntDigits` and `formatFixed3` moved with them and are
+ * exported from here as before.
  */
-const WORD = PY_WORD_CLASS;
-/** `\b` where the neighbouring token character is a word character — which is every one below. */
-const NB = `(?<!${WORD})`;
-const NA = `(?!${WORD})`;
-/** `\s`, CPython's. See note 1. */
-const WS = PY_WS_CLASS;
-/** `\S`, CPython's — the same 29 codepoints, negated. */
-const NOT_WS = `[^${PY_WS.replace(/[\]\\^-]/g, '\\$&')}]`;
-/** `\d`, CPython's. See note 2. */
-const ND = '\\p{Nd}';
-/** `.` without `DOTALL`, CPython's. See note 4. */
-const DOT = '[^\\n]';
+export { formatFixed3, pyIntDigits };
 
-/**
- * Relative terms whose resolution is EXACT DAY ARITHMETIC against a date. Nothing vaguer is
- * in here: `recently` and `last month` are in `UNRESOLVED` and are reported rather than
- * rewritten, because substituting a day for them would invent a precision the writer did
- * not have.
- */
-const ci = pyCaseless;
-const RELATIVE = new RegExp(
-  `${NB}(?<simple>${ci('today|tonight|yesterday|tomorrow')})${NA}` +
-    `|${NB}(?<now>${ci('right')}${WS}+${ci('now')}|${ci('just')}${WS}+${ci('now')})${NA}` +
-    `|${NB}(?<count>${ND}+)${WS}+(?<unit>${ci('days?|weeks?')})${WS}+${ci('ago')}${NA}`,
-  'gu',
-);
-
-/**
- * Relative terms this pass REFUSES to resolve. They are reported in `DreamResult.unresolved`
- * so a reader knows the body still carries an undated claim, and the text is left exactly as
- * the writer left it.
- */
-const UNRESOLVED = new RegExp(
-  `${NB}${ci('recently')}${NA}` +
-    `|${NB}(?:${ci('last|this|next')})${WS}+(?:${ci('week|month|year|quarter|night|session|time')})${NA}` +
-    `|${NB}${ND}+${WS}+(?:${ci('months?|years?')})${WS}+${ci('ago')}${NA}`,
-  'gu',
-);
-
-/**
- * A date this pass has already stamped. Skipping a match that carries one is what makes
- * absolutisation IDEMPOTENT: a second dream over the same body writes nothing.
- *
- * Anchored with `^` and applied to the text AFTER the match, which is `re.match`'s semantics.
- */
-const STAMPED = new RegExp(`^${WS}*\\(${ND}{4}-${ND}{2}-${ND}{2}\\)`, 'u');
+/** `dream.py`'s `_resolve` day table: the offset of each `simple` term, by its lowercased spelling. */
+const DAY_OFFSET: Readonly<Record<string, number>> = { today: 0, tonight: 0, yesterday: -1, tomorrow: 1 };
 
 /**
  * Blocks are paragraphs: runs of text separated by a blank line. Line endings are normalised
@@ -154,23 +121,12 @@ const STAMPED = new RegExp(`^${WS}*\\(${ND}{4}-${ND}{2}-${ND}{2}\\)`, 'u');
  */
 const BLOCK_SPLIT = /\n[ \t]*\n+/;
 
-/** A leading markdown bullet or heading marker, stripped before a block is read as a claim. */
-const BULLET = new RegExp(`^(?:[-*+]${WS}+|#+${WS}+)`, 'u');
-
 /**
- * `Subject: value` on ONE line — the only shape this pass will read as a claim slot, and
- * deliberately narrow. `subject` may not contain a colon (the split would be ambiguous),
- * must start with a letter, and is capped at 60 characters; a value beginning `//` is
- * refused, which is what stops `https://a/x` colliding with `https://b/y` on the subject
- * `https`. The narrowness is the point: a contradiction rule that fired on ordinary prose
- * would supersede claims nobody contradicted, and this pass may never drop what a person
- * wrote.
+ * The subject a claim slot accepts: ASCII only, so the `u` flag the reference port carried changed
+ * nothing and is not spelled (J89-5c: every atom is one ASCII character, and no `.` or class
+ * escape reads a surrogate).
  */
-const SLOT = new RegExp(
-  `^(?<subject>[^:\\n]{1,60}?)${WS}*:${WS}*(?<value>${NOT_WS}${DOT}*)$`,
-  'u',
-);
-const SUBJECT_OK = /^[A-Za-z][A-Za-z0-9 ._'()\[\]-]*$/u;
+const SUBJECT_OK = /^[A-Za-z][A-Za-z0-9 ._'()\[\]-]*$/;
 
 // ------------------------------------------------------------------------- the result shapes
 
@@ -307,65 +263,6 @@ function pyReText(value: FactValue): string {
     );
   }
   return value;
-}
-
-/**
- * `int(text)` for a run of `\p{Nd}` digits, which is what CPython's `int()` accepts.
- *
- * A decimal-digit block is exactly ten consecutive codepoints, so the value of a digit is
- * its distance from the block's zero and the block's zero is found by walking back while the
- * previous codepoint is still `Nd` — no table, and correct for every script including the
- * ones assigned after this file was written.
- */
-export function pyIntDigits(text: string): number {
-  const nd = /\p{Nd}/u;
-  let out = 0;
-  for (const ch of text) {
-    const cp = ch.codePointAt(0)!;
-    let zero = cp;
-    while (zero > 0 && cp - zero < 9 && nd.test(String.fromCodePoint(zero - 1))) zero -= 1;
-    out = out * 10 + (cp - zero);
-  }
-  return out;
-}
-
-/**
- * `f"{value:.3f}"` — round HALF TO EVEN on the exact binary value of the double.
- *
- * NOT `toFixed(3)`, which rounds ties AWAY from zero. The reachable ties are exactly the
- * odd sixteenths (a tie at three places needs the exact value to be `k/10000` with `k`
- * ending in 5, and only `j/16` is both that and a double), and four of the eight disagree:
- * CPython prints `0.062`, `0.312`, `0.562`, `0.812` where `toFixed` prints `0.063`, `0.313`,
- * `0.563`, `0.813`. A Jaccard of `1/16` is one shared token in a sixteen-token union, which
- * is an ordinary pair and not a contrived one.
- *
- * The arithmetic is exact: the double is decomposed to `mantissa * 2**exponent` over
- * `BigInt`, so nothing here rounds twice.
- */
-export function formatFixed3(value: number): string {
-  if (!Number.isFinite(value)) return value > 0 ? 'inf' : Number.isNaN(value) ? 'nan' : '-inf';
-  const negative = value < 0 || Object.is(value, -0);
-  const x = Math.abs(value);
-  const view = new DataView(new ArrayBuffer(8));
-  view.setFloat64(0, x);
-  const bits = view.getBigUint64(0);
-  const rawExponent = Number((bits >> 52n) & 0x7ffn);
-  const rawMantissa = bits & 0xfffffffffffffn;
-  // Subnormals carry no implicit leading bit and sit one exponent higher than the field says.
-  const mantissa = rawExponent === 0 ? rawMantissa : rawMantissa | (1n << 52n);
-  const exponent = (rawExponent === 0 ? 1 : rawExponent) - 1075;
-  // value = mantissa * 2**exponent, exactly. Want round-half-even of value * 1000.
-  let numerator = mantissa * 1000n;
-  let denominator = 1n;
-  if (exponent >= 0) numerator <<= BigInt(exponent);
-  else denominator = 1n << BigInt(-exponent);
-  let quotient = numerator / denominator;
-  const remainder = numerator % denominator;
-  const twice = remainder * 2n;
-  if (twice > denominator || (twice === denominator && quotient % 2n === 1n)) quotient += 1n;
-  const digits = quotient.toString().padStart(4, '0');
-  const whole = digits.slice(0, -3);
-  return `${negative && quotient !== 0n ? '-' : ''}${whole}.${digits.slice(-3)}`;
 }
 
 /**
@@ -513,7 +410,7 @@ function addDays(ordinal: number, delta: number): string | null {
 
 /** One line, single-spaced. The basis of every comparison key in this module. */
 export function collapse(text: string): string {
-  return pyStrip(text.replace(new RegExp(`${WS}+`, 'gu'), ' '));
+  return pyStrip(pySubSpaces(text));
 }
 
 /**
@@ -553,10 +450,11 @@ export function splitBlocks(text: string): string[] {
  */
 export function claimSlot(block: string): [string, string] | null {
   if (block.includes('\n')) return null;
-  const match = SLOT.exec(pyStrip(block).replace(BULLET, ''));
-  if (match === null) return null;
-  const subject = pyStrip(pyStrip(match.groups!['subject']!).replace(/^\*+|\*+$/g, ''));
-  const value = pyStrip(match.groups!['value']!);
+  const groups = pySlotGroups(pyStrip(block));
+  if (groups === null) return null;
+  const [rawSubject, rawValue] = groups;
+  const subject = pyStrip(pyStrip(rawSubject).replace(/^\*+|\*+$/g, ''));
+  const value = pyStrip(rawValue);
   if (subject === '' || !SUBJECT_OK.test(subject) || value.startsWith('//')) return null;
   return [collapse(subject).toLowerCase(), collapse(value).toLowerCase()];
 }
@@ -599,38 +497,37 @@ export function absolutise(
   const pieces: string[] = [];
   const hits: DateHit[] = [];
   const outOfRange: DateHit[] = [];
-  let position = 0;
+  // The body since the last term this pass stamped: the leads of the matches it skipped.
+  let pending = '';
   const ordinal = ordinalFromIso(basis);
-  for (const match of body.matchAll(RELATIVE)) {
-    const end = match.index + match[0].length;
-    if (STAMPED.test(body.slice(end))) continue;
+  const scan = pyRelativeScan(body);
+  for (const match of scan.matches) {
+    pending += match.lead;
+    if (match.stamped) continue;
     if (ordinal === null) continue; // `_resolve` answers None and the reference skips it
-    const groups = match.groups!;
     let delta: number;
-    if (groups['simple'] !== undefined) {
-      delta = { today: 0, tonight: 0, yesterday: -1, tomorrow: 1 }[
-        groups['simple'].toLowerCase()
-      ] as number;
-    } else if (groups['now'] !== undefined) {
+    if (match.simple !== null) {
+      delta = DAY_OFFSET[match.simple.toLowerCase()] as number;
+    } else if (match.now) {
       delta = 0;
     } else {
-      const count = pyIntDigits(groups['count']!);
-      delta = -count * (groups['unit']!.toLowerCase().startsWith('week') ? 7 : 1);
+      const count = pyIntDigits(match.digits!);
+      delta = -count * (match.unit!.toLowerCase().startsWith('week') ? 7 : 1);
     }
     const resolved = addDays(ordinal, delta);
     if (resolved === null) {
-      outOfRange.push({ name, layer, term: match[0], resolved: '', basis });
+      outOfRange.push({ name, layer, term: match.term, resolved: '', basis });
       continue;
     }
-    pieces.push(body.slice(position, end));
+    pieces.push(pending);
     pieces.push(` (${resolved})`);
-    position = end;
-    hits.push({ name, layer, term: match[0], resolved, basis });
+    pending = '';
+    hits.push({ name, layer, term: match.term, resolved, basis });
   }
-  pieces.push(body.slice(position));
+  pieces.push(pending + scan.tail);
   const unresolved: DateHit[] = [...outOfRange];
-  for (const match of body.matchAll(UNRESOLVED)) {
-    unresolved.push({ name, layer, term: match[0], resolved: '', basis });
+  for (const term of pyUnresolvedTerms(body)) {
+    unresolved.push({ name, layer, term, resolved: '', basis });
   }
   return [pieces.join(''), hits, unresolved];
 }
@@ -808,7 +705,9 @@ export function mergeBodies(
  * is THERE, and rebuilding through it is the behaviour `save` already has.
  */
 function rebuildIfPresent(store: MemoryStore): void {
-  if (pyLexists(pyJoin(store.root, 'index.md'))) store.internals().rebuildIndex();
+  if (!pyLexists(pyJoin(store.root, 'index.md'))) return;
+  const { rebuildIndex } = store.internals();
+  rebuildIndex();
 }
 
 /**
@@ -826,7 +725,8 @@ function rebuildIfPresent(store: MemoryStore): void {
 function consume(store: MemoryStore, name: FactValue): void {
   const destination = pyJoin(store.root, 'archive', `${pyText(name)}.md`);
   pyMkdirParents(pyParent(destination));
-  pyReplace(store.internals().factPath(name), destination);
+  const { factPath } = store.internals();
+  pyReplace(factPath(name), destination);
 }
 
 function fileSize(path: string): number {
@@ -858,10 +758,24 @@ function fileSize(path: string): number {
  * would leave a window in which the profile copy is archived and the union has not landed.
  */
 export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true): DreamResult {
-  const projectInner = project.internals();
-  const profileInner = profile.internals();
-  const projectFacts = projectInner.facts();
-  const profileFacts = profileInner.facts();
+  // `internals()` is read into locals and each called as a function, never as a property of
+  // the object: ts2py dispatches a property call whose name a compiled class declares as a
+  // method (`facts`, `factPath`, ...), and these are the store's own (#316 G3 U3, J89-5c).
+  const {
+    facts: projectFactsOf,
+    factPath: projectPath,
+    indexLine: projectLine,
+    writeFact: writeProjectFact,
+    afterWrite: afterProjectWrite,
+  } = project.internals();
+  const {
+    facts: profileFactsOf,
+    factPath: profilePath,
+    indexLine: profileLine,
+    afterWrite: afterProfileWrite,
+  } = profile.internals();
+  const projectFacts = projectFactsOf();
+  const profileFacts = profileFactsOf();
 
   // `{fact.name: fact}` — the key is Python's HASH key, so a fact named `7` and one named
   // `'7'` are two names and `7`/`7.0`/`True` are one, exactly as the reference's dict is.
@@ -891,8 +805,8 @@ export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true)
       ]);
       continue;
     }
-    const hereDate = pyMtimeDate(projectInner.factPath(name));
-    const thereDate = pyMtimeDate(profileInner.factPath(name));
+    const hereDate = pyMtimeDate(projectPath(name));
+    const thereDate = pyMtimeDate(profilePath(name));
     // `and` short-circuits in the reference, so a non-`str` description is only reached
     // when the bodies already matched. The order is load-bearing for which error escapes.
     const identical =
@@ -989,7 +903,7 @@ export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true)
   for (const name of sortedNames(projectOnly.map((key) => byProject.get(key)!.name))) {
     const key = pyHashKey(name);
     const fact = byProject.get(key)!;
-    const basis = pyMtimeDate(projectInner.factPath(name));
+    const basis = pyMtimeDate(projectPath(name));
     const [body, resolvedHits, unresolvedHits] = absolutise(fact.body, basis, name, PROJECT_LAYER);
     hits.push(...resolvedHits);
     unresolved.push(...unresolvedHits);
@@ -1019,26 +933,26 @@ export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true)
   );
 
   const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
-  const indexBefore = bytes(projectFacts.map((f) => projectInner.indexLine(f)).join(''));
+  const indexBefore = bytes(projectFacts.map((f) => projectLine(f)).join(''));
   const indexAfter = bytes(
-    projectFacts.map((f) => projectInner.indexLine(planned.get(pyHashKey(f.name)) ?? f)).join(''),
+    projectFacts.map((f) => projectLine(planned.get(pyHashKey(f.name)) ?? f)).join(''),
   );
-  const profileIndexBefore = bytes(profileFacts.map((f) => profileInner.indexLine(f)).join(''));
-  const consumedKeys = new Set(consumed.map(pyHashKey));
+  const profileIndexBefore = bytes(profileFacts.map((f) => profileLine(f)).join(''));
+  const consumedKeys = new Set(consumed.map((n) => pyHashKey(n)));
   const profileIndexAfter = bytes(
     profileFacts
       .filter((f) => !consumedKeys.has(pyHashKey(f.name)))
-      .map((f) => profileInner.indexLine(f))
+      .map((f) => profileLine(f))
       .join(''),
   );
 
   const projectSizes = new Map<string, number>();
   for (const fact of projectFacts) {
-    projectSizes.set(pyHashKey(fact.name), fileSize(projectInner.factPath(fact.name)));
+    projectSizes.set(pyHashKey(fact.name), fileSize(projectPath(fact.name)));
   }
   const profileSizes = new Map<string, number>();
   for (const fact of profileFacts) {
-    profileSizes.set(pyHashKey(fact.name), fileSize(profileInner.factPath(fact.name)));
+    profileSizes.set(pyHashKey(fact.name), fileSize(profilePath(fact.name)));
   }
   const sum = (values: Iterable<number>): number => {
     let total = 0;
@@ -1052,6 +966,8 @@ export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true)
   }
 
   const rewritten = sortedNames([...planned.values()].map((fact) => fact.name));
+  const allSuperseded: Superseded[] = [];
+  for (const merge of merged) allSuperseded.push(...merge.superseded);
   const result: DreamResult = {
     applied: false,
     dryRun,
@@ -1074,18 +990,18 @@ export function dream(project: MemoryStore, profile: MemoryStore, dryRun = true)
     profileRoot: profile.root,
     overBudget: indexAfter > project.indexBudget,
     changes: merged.length + rewritten.length,
-    superseded: merged.flatMap((merge) => [...merge.superseded]),
+    superseded: allSuperseded,
   };
   if (dryRun || result.overBudget || result.changes === 0) return result;
 
-  for (const fact of planned.values()) projectInner.writeFact(fact);
+  for (const fact of planned.values()) writeProjectFact(fact);
   for (const name of consumed) consume(profile, name);
   rebuildIfPresent(project);
   rebuildIfPresent(profile);
   // The hot index follows the files (#204): `rebuildIfPresent` reaches it only where an
   // `index.md` exists, and the profile store never has one.
-  projectInner.afterWrite();
-  profileInner.afterWrite();
+  afterProjectWrite();
+  afterProfileWrite();
   return { ...result, applied: true };
 }
 

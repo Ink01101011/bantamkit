@@ -144,7 +144,13 @@ or a `ruling: UNRULED DIVERGENCE (J89-5b) load_grants — …` case (7: CPython 
 `load_grants` never caught), a non-ruled `J89-5b outcome bit per side: …` companion each, and the
 two per-side literals `LITERAL: J89-5b python|node: load_grants over the config family, every
 answer`; `recall-strings` 261 cases, 50 ruled, 0 failures. `ts2py` recompiles `layers.py` in the
-G1/G2/G3 call.
+G1/G2/G3 call. **J89-5c generated the dream** (#316 G3 U3): the
+J89-2 `ruling: UNRULED DIVERGENCE absolutise: \`tonight\` spelled with U+0131` went STALE by design
+(ruled on J89-5: node is right) and is an agreeing `J89-5c absolutise: …` case with a literal per
+side, joined by U+0130 and `yeſterday` (U+017F); red against 053569d5's hand-written python (6
+failures: KeyError). Two counts `int()` and node's `pyIntDigits` read differently are pinned
+`ruling: UNRULED DIVERGENCE absolutise: …` with per-side literals (a U+1D7D8 digit; a 4,301-digit
+count). `dream` 148 cases, 2 ruled, 0 failures; `ts2py` recompiles `dream.py` in the G1/G2/G3 call.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

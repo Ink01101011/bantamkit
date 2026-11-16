@@ -643,7 +643,10 @@ def test_the_map_over_this_repositorys_python_package_finds_its_own_modules():
     assert result.nodes > 20
     assert result.edges > 0
     listed = [e.path for e in result.ranked]
-    assert "memory/store.py" in listed[:3], listed[:5]
+    # Since J89-5c `memory/dream.py` is the shim over `_generated/dream.py`: it imports the codec's
+    # converters and the store, and the generated modules they reach rank with them.
+    assert "memory/factcodec.py" in listed[:3], listed[:6]
+    assert "memory/store.py" in listed[:6], listed[:6]
     assert "memory/dream.py" not in listed
     assert result.listing_bytes <= DEFAULT_BUDGET
     assert result.damping > 0.0 and result.iterations == ITERATIONS

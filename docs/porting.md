@@ -419,7 +419,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | G2 target-specific I/O: a Python `str` path holding U+DC80..U+DCFF (J88-RF F4b, #316 G2) | **the Python side hands a path to the OS as Python's own `os` functions encode it; ruled (J88-RR R1): `--suite eventlog` `ruling: bed: a surrogateescape code point in the directory (U+DCFF)` pins the difference on POSIX, and its companion `... — both stay enabled and neither raises` compares what both still agree on. On macOS APFS refuses the byte, so the Python record is lost (write_failed true) where Node writes a U+FFFD directory.** A POSIX Python caller meets these code points in a path as the surrogateescape stand-ins for the undecodable bytes of a real name (`os.getcwd`, `os.listdir`, `os.fsdecode`): `/x/\udcff` IS the directory `b"/x/\xff"`. The generated log segment and event log reach the OS through `_ts2py_adapters._node_path`, which keeps every code point `os.fsencode` accepts and turns only the rest (a lone surrogate no encoding takes: U+D800..U+DC7F, U+DD00..U+DFFF on POSIX) into the U+FFFD Node's UTF-8 encoding writes. So the log, its `.lock` (the `exclusive` adapter maps its target the same way since J88-RF F4a) and the hand-written store all land in the one real directory, as on main; at `eb929048` the data went to a new U+FFFD directory while the lock stayed in the real one. Node has no such string from its own fs (its names decode to U+FFFD), so a Node caller handing `\udcff` writes a `\ufffd` name where a Python caller writes the byte `0xff`. Windows has no surrogateescape names (`os.fsencode` there takes every lone surrogate, UTF-16 `surrogatepass`), so on Windows `_os_char` maps every lone surrogate to Node's U+FFFD and the two sides agree; measured on POSIX only (no Windows run). Pinned by `test_storage_log.py::test_a_surrogateescape_directory_holds_the_log_and_its_lock` (Linux; APFS refuses the name and the test skips) and, for the lone surrogates both sides map to U+FFFD, `--suite eventlog`'s two `a lone surrogate in the ... is written under U+FFFD` beds. **Applied by J89-1F (#316 G3) to two more surfaces, the same policy and not a second one:** a STORE ROOT holding U+DC80 (Python hands the OS byte 0x80 — APFS refuses it, `MemoryValidationError`, ext4 creates it — where Node saves into `s\ufffdx`; `--suite store` `ruling: G2 target-specific — a store root holding U+DC80 (a surrogateescape byte)`, with the unruled companion `… — a store answer, and only the directory each side names` and Node's answer as a per-side literal), and `storeId` of such a path (Python hashes the real byte, `usage.os_realpath` + `surrogateescape`; Node hashes U+FFFD; `--suite recall-usage` `ruling: storeId — a surrogateescape code point (U+DC80) …` with the companion `… both answer, neither raises`). On POSIX Python's `storeId` of `s\ud800x` and `s\udc80x` now differ (two directories, two ledgers; both raised before) — `LITERAL: J89-1F python storeId of U+D800 and U+DC80 — both answer and differ`. |
 | G2 adapters: two hand-crafted `.gz` segments (J88-RF F5, #316 G2) | **pre-existing, and neither runtime writes such a file; documented, not changed.** `gunzipSync` and the `gunzip_sync` adapter (`gzip.decompress` with Node's refusals) agree on the nine shapes `RULES.md` lists, but not on two: a member followed by zero bytes and then a non-zero byte (`m + b"\0\x01"`) is read by Node as that one member (Node's gunzip ends the input at a zero byte after a member) and refused by Python (`skipped` 1: `gzip.decompress` skips the zero padding and refuses the byte after it as a header), and a member, a zero byte, a second member (`m + b"\0" + m`) is ONE member to Node and both to Python. The hand-written module at main used `gzip.decompress` too, so this is not a G2 change. Rotation writes one `gzip` member and nothing after it on both sides. Measured by the J88-R reviewer's `gz.py` over 13 shapes, 11 equal. |
 | `factfile` — a `__proto__` key in a fact's frontmatter, top-level or nested (J87-R F1, J89-1 D1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: `parseFrontmatter` assigned `meta[key] = value` and `scanNestedMapping` built its mapping the same way, so on Node a top-level `__proto__: polluted` was a [[Set]] of the prototype (a string is ignored, the key vanished) and a nested `  __proto__: inner` vanished too; CPython's dict keeps both as keys. A save that UPDATES the fact writes `Fact.extra` back, so Node dropped both lines from a hand-edited file — data loss. After: both mappings (and `wellFormedMeta`'s rebuild) are made by `Object.fromEntries` over the entries in file order (own data properties; a repeated key keeps its first place and last value, as assignment did), which ts2py lowers as `_js_object_from_entries`, so the generated Python (`_generated/factfile.py`, regenerated) answers as before. Pinned by `--suite store`: `J89-1F a save over a fact with __proto__ keys — the tree` and the per-side `LITERAL: J89-1F <side>'s updated fact keeps the top-level and the nested __proto__ lines`; red at 64a69df8 (the J89-1 case was ruled-different there). |
-| `candidates_done` and dream's `absolutise` — a word next to U+0345 COMBINING GREEK YPOGEGRAMMENI (J89-1 D2; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node spelled CPython's `\b` as `(?<![\p{L}\p{N}_])` / `(?![\p{L}\p{N}_])` in regexes compiled with `iu`; under `i` a class matches every code point whose simple case fold is in it, and U+0345 folds to iota, so `doneͅ` and `yesterdayͅ` had no boundary on Node (no done-word, no annotation) where CPython's `\w` (never case-folded; U+0345 is Mn) keeps it. After: both patterns (`store.ts` `DONE_WORD_RE`, `dream.ts` `RELATIVE` and `UNRESOLVED`) are compiled with `u` and WITHOUT `i`; the word class is `pysem.PY_WORD_CLASS` and the words are spelled by `pysem.pyCaseless`, which reproduces exactly what `iu` matched for each letter (swept: U+212A for `k`, U+017F for `s`). Swept over 0..0x10FFFF against CPython 3.12 (UCD 15.0): the class disagrees with `\w` on no code point CPython assigns (it did on one, U+0345); the 9,661 left are code points UCD 15.0 leaves unassigned and Node's ICU assigns. **Found while sweeping, then FIXED IN NODE by J89-2 (the orchestrator's ruling: Python is the reference for its own regex semantics):** CPython's `re.IGNORECASE` also matches U+0130 and U+0131 for `i` (JS `iu` does not), so `shıpped` was a done-word to Python only; `pysem.pyCaseless` now spells `i` as `[iIİı]` (swept: every code point 0..0x10FFFF for all 26 letters against CPython 3.12, no other letter has a partner JS's `iu` lacks). Pinned by `--suite store` `J89-2 candidates_done: "shipped" spelled with U+0131 / U+0130` and their node literals, and `--suite dream` `J89-2 absolutise: …` (`rıght now`, `next tİme`); red at b3e570be. **It exposed one more difference, pinned UNRULED (J89-2):** `tonight` spelled with U+0131 or U+0130 is now matched by both, and the reference then raises `KeyError` from its day table (`'tonıght'` is not a key), where node reports the term unresolved (`--suite dream` `ruling: UNRULED DIVERGENCE absolutise: \`tonight\` spelled with U+0131 (dotless i)` and two per-side literals); python raised there before J89-2 as well. Pinned by `--suite store` (`J89-1F candidates_done: "done" followed by U+0345`, its node literal, and `J89-1F the word class over every code point CPython assigns`) and `--suite dream` (three `J89-1F absolutise: …` and six per-side `LITERAL: J89-1F <side> finds the term …`); U+0345 is back in `g3pure.mjs`'s fuzz alphabet. |
+| `candidates_done` and dream's `absolutise` — a word next to U+0345 COMBINING GREEK YPOGEGRAMMENI (J89-1 D2; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node spelled CPython's `\b` as `(?<![\p{L}\p{N}_])` / `(?![\p{L}\p{N}_])` in regexes compiled with `iu`; under `i` a class matches every code point whose simple case fold is in it, and U+0345 folds to iota, so `doneͅ` and `yesterdayͅ` had no boundary on Node (no done-word, no annotation) where CPython's `\w` (never case-folded; U+0345 is Mn) keeps it. After: both patterns (`store.ts` `DONE_WORD_RE`, `dream.ts` `RELATIVE` and `UNRESOLVED`) are compiled with `u` and WITHOUT `i`; the word class is `pysem.PY_WORD_CLASS` and the words are spelled by `pysem.pyCaseless`, which reproduces exactly what `iu` matched for each letter (swept: U+212A for `k`, U+017F for `s`). Swept over 0..0x10FFFF against CPython 3.12 (UCD 15.0): the class disagrees with `\w` on no code point CPython assigns (it did on one, U+0345); the 9,661 left are code points UCD 15.0 leaves unassigned and Node's ICU assigns. **Found while sweeping, then FIXED IN NODE by J89-2 (the orchestrator's ruling: Python is the reference for its own regex semantics):** CPython's `re.IGNORECASE` also matches U+0130 and U+0131 for `i` (JS `iu` does not), so `shıpped` was a done-word to Python only; `pysem.pyCaseless` now spells `i` as `[iIİı]` (swept: every code point 0..0x10FFFF for all 26 letters against CPython 3.12, no other letter has a partner JS's `iu` lacks). Pinned by `--suite store` `J89-2 candidates_done: "shipped" spelled with U+0131 / U+0130` and their node literals, and `--suite dream` `J89-2 absolutise: …` (`rıght now`, `next tİme`); red at b3e570be. **It exposed one more difference, pinned UNRULED (J89-2):** `tonight` spelled with U+0131 or U+0130 is now matched by both, and the reference then raises `KeyError` from its day table (`'tonıght'` is not a key), where node reports the term unresolved (`--suite dream` `ruling: UNRULED DIVERGENCE absolutise: \`tonight\` spelled with U+0131 (dotless i)` and two per-side literals); python raised there before J89-2 as well. **RULED on J89-5 (node is right) and FIXED BY GENERATION in J89-5c:** the generated dream runs dream.ts's lookup, so python reports the term unresolved too; the case is an agreeing `J89-5c absolutise: …` case with per-side literals, joined by U+0130 and by `yeſterday` (U+017F, the same lookup, never pinned before). Pinned by `--suite store` (`J89-1F candidates_done: "done" followed by U+0345`, its node literal, and `J89-1F the word class over every code point CPython assigns`) and `--suite dream` (three `J89-1F absolutise: …` and six per-side `LITERAL: J89-1F <side> finds the term …`); U+0345 is back in `g3pure.mjs`'s fuzz alphabet. |
 | a fact write cut short (EFBIG, ENOSPC) — the sentence raised (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node wrote the temp with one `writeFileSync`, and `asPyOSError` over its error kept libuv's text (EFBIG was not in the strerror table) and the temp's path: `[Errno 27] EFBIG: EFBIG: file too large, write: '<temp>'`. CPython's buffered `write` raises with no filename: `[Errno 27] File too large`. After: `pyfs.pyWriteTextAtomic` opens (`wx`), writes and closes as three steps, as CPython does; only the open's error names the temp, and EFBIG is in the table (`File too large`, the same on the UCRT). An `index.md` write cut short by ENOSPC said `[Errno 28] No space left on device: '<root>/index.md'` on Node and no filename on Python; it now says the latter on both (tmpfs probe below). Pinned by `--suite store` `J89-1F a fact write cut short by EFBIG — the sentence raised` and `LITERAL: J89-1F node raises a fact write cut short by EFBIG as CPython does`. |
 | `index.md` and `save`'s budget rollback rewritten in place (J89-1 shared weakness; J89-1F, #316 G3) | **WAS the same weakness on both sides — fixed in both; agreeing before and after.** Before: `_rebuild_index` / `rebuildIndex` wrote `index.md` with `write_text` / `pyWriteText`, and `save`'s rollback after `MemoryBudgetExceeded` rewrote the fact the same way: truncate, then write. A write cut short left a PREFIX: measured at 64a69df8 under `ulimit -f 4`, `index.md` went from 3,800 bytes to the first 4,096 of the new index and the 6,000-byte fact the rollback was restoring to its first 4,096 bytes, on both sides. After: both go through a per-writer temp and a rename, exactly as the fact write does (`<path>.<pid>.<8 hex>.tmp`, `O_EXCL`, every byte written — Node loops over `writeSync`, G2's `writeAll` lesson; CPython's buffered writer loops itself — unlink on any failure): Python `store._write_text_atomic`, Node `pyfs.pyWriteTextAtomic`, and `_write_fact` / `writeFact` now call the same helper. A failed `index.md` write leaves the old file byte for byte; a failed rollback leaves the whole updated fact (never a prefix) and raises the write's `OSError`. Measured under ENOSPC too, in a 1 MiB tmpfs (Docker, CPython 3.13 and Node 22): at 64a69df8 `index.md` 3,800 -> 4,096 bytes on both; now unchanged on both, no temp left. Pinned by `--suite store`: `J89-1F a save whose index.md write is cut short — answer and tree`, `J89-1F a budget rollback whose fact write is cut short — answer and tree`, and four per-side `LITERAL: J89-1F <side>: …`. **Residual, not measured:** on Windows a rename onto a file another process holds open without `FILE_SHARE_DELETE` fails, so `index.md` now shares the fact write's exposure there (no Windows run). |
 | `storeId`, `skills._same`, `component._same_directory` — a dangling symlink, and a path below one (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node resolved with `fs.realpathSync.native` and, on a throw, the parent resolved plus the name (`usage.ts`, `skills.ts`), or a lexical `path.resolve` (`component.ts`); the native call is strict, so a dangling symlink kept the LINK's own name where `os.path.realpath` follows it to the target text: one store had two usage ledgers, and a project under a dangling link to the home was two skill roots on Node, one on Python. After: all three call `pyfs.pyRealpath`, the port of `os.path.realpath(strict=False)` written once (`posixpath._joinrealpath` + `abspath` on POSIX; the `ntpath` non-strict arm `pyResolve` already used on Windows, unmeasured there), meant to be the `realpathSync.native` adapter's contract when these modules are generated. It also keeps the caller's spelling of a case-folded macOS name, as CPython does, where `realpath(3)` answered the filesystem's. Pinned by `--suite recall-usage` (`J89-1F storeId — a dangling symlink`, `— a path below a dangling symlink`, and per-side literals against each side's own target id) and `--suite skill-layer` (`J89-1F skill_roots: a project under a dangling symlink to the home` and its per-side literals). |
@@ -1009,7 +1009,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar and the layers are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar, the layers and the dream are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1021,7 +1021,7 @@ generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
 Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
-`jobbudget.ts`, a G2/G3 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts` and `memory/layers.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
+`jobbudget.ts`, a G2/G3 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts`, `memory/layers.ts` and `memory/dream.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
@@ -1034,7 +1034,7 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
-  runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts \
+  runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts runtime-ts/src/memory/dream.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -2060,10 +2060,86 @@ treats a module's `__all__` strings as names, not env reads (`_generated/store.p
 the F4 byte comparison (`ts2py/committed/layers.py`) and the sha256 header
 (`test_generated_module_names_the_typescript_on_disk[layers.py]`) each red once on a scratch edit.
 
-### Not generated in J89-5: `dream`
+### The dream (#316 G3 U3, J89-5c): generated, behind its shim
 
-`dream.ts` needs the constructs listed in the J89-5 hand-off. `queries.ts` was generated by J89-5a
-and `layers.ts` by J89-5b (above).
+Since J89-5c `bantamkit.memory.dream` runs `_generated/dream.py`, compiled from
+`runtime-ts/src/memory/dream.ts` in the G1/G2/G3 call (it imports the compiled store). The
+hand-written module is retired; `memory/dream.py` is the shim and keeps every name its callers use
+(`component`, `memory/__init__`, `test_memory_dream.py`, `dream_ref.py`): `PROJECT_LAYER`,
+`PROFILE_LAYER`, `SUPERSEDED_HEADING`, the frozen dataclasses `DateHit`, `Superseded`, `DreamMerge`,
+`SimilarPair` and `DreamResult` (with `over_budget`, `changes`, `superseded`) holding Python values,
+and `collapse`, `block_key`, `split_blocks`, `claim_slot`, `union_keywords`, `absolutise`,
+`merge_descriptions`, `merge_links`, `merge_bodies`, `dream`. Values cross through the codec
+(`held_values` / `native_value`), the stores as the generated store each `MemoryStore` wraps, and a
+JS `TypeError` / `AttributeError` the generated pass throws reaches a caller as the bare Python
+exception the reference raised, with its text. The private helpers (`_resolve`, `_consume`,
+`_size`, `_rebuild_if_present`, the compiled patterns) had no caller outside the module and are gone.
+
+**The patterns are CPython's own.** Every pattern dream.ts built at run time from `pysem`'s CPython
+classes under the `u` flag (`RELATIVE`, `UNRESOLVED`, `STAMPED`, `BULLET`, `SLOT`, `\s+`) moved byte
+for byte into `runtime-ts/src/memory/dreamre.ts`, which is not compiled, with `pyIntDigits` and
+`formatFixed3`; each is a port of a `dream.py` pattern or call, so ts2py reaches it through an
+adapter that runs that CPython pattern or call (`tools/ts2py/RULES.md`, *J89-5c rules*). Every other
+rule of dream.ts is generated. TS refactors, Node's answers unchanged (180,014 calls of dream.js's
+exported functions over a seeded corpus, 053569d5's `dist` against this tree's: 0 differences;
+`npm test` green): the move (the relative scan hands back each match's `lead` and a `tail`, so no
+string position crosses the seam, and its count group is `digits`); `SUBJECT_OK` without its no-op
+`u`; `flatMap` a loop; `pyHashKey` in an inline arrow; `store.internals()` destructured into locals
+(a property call of a name a compiled class declares is dispatched, and refused on a plain object).
+One runtime extension: `s.split(re)` (G3-29), which `splitBlocks` needs.
+
+**Python's answers are unchanged but for the ruling.** The day-table lookup is dream.ts's, so a
+matched spelling that is not a key (`tonıght`, `TONİGHT`, `yeſterday`) is reported unresolved where
+the hand-written `_resolve` raised `KeyError`: the orchestrator's ruling on J89-5 (node is right).
+The J89-2 UNRULED case went STALE by design and is an agreeing case with per-side literals, joined by
+U+0130 and `yeſterday` (U+017F, the same lookup, never pinned before); red against 053569d5's python
+(6 failures). The write probe below and every `--suite dream` scenario (plan and both trees) are
+otherwise byte-identical to the hand-written module.
+
+**Found, not ruled, not changed (reported to the orchestrator).** Two counts `int()` and node's
+`pyIntDigits` read differently, the same before and after generation (the compiled dream reaches
+`int()` through the adapter): a digit of U+1D7D8..U+1D7FF (four ten-digit Nd blocks that follow the
+bold digits; node's walk back to the block's zero stops nine codepoints down and reads every one as
+9: `𝟘 days ago` is 2026-08-28 on node and 2026-09-06 on python), and a count of more than 4,300
+digits (`int()` raises `ValueError` out of `dream()`; node reports the term unresolved). Each is
+pinned `ruling: UNRULED DIVERGENCE absolutise: …` with a literal per side in `--suite dream`; no
+ruling chooses a side. UCD skew (a Unicode 16 assignment such as U+10D40, an Nd digit and a word
+character to Node's ICU and unassigned to CPython 3.12) moves `\b`, `\d` and `lower()` as the
+`candidates_done` row above describes; it is unchanged by generation.
+
+**Writes (J89-5c probe, both sides).** One bed (an identical pair, a diverged pair with a slot
+contradiction, mtimes and modes 0640 / 0600 / 0604, keywords and an extra key, a project-only fact
+with relative dates, a profile-only fact, a project `index.md` and none in the profile) applied
+with `dry_run=False` under umask 022 by 053569d5's python, this tree's python and Node: the three
+trees are identical file for file, byte for byte and mode for mode (the profile copies moved to
+`archive/` keeping 0604 and 0600, the survivors rewritten 0644 through the atomic write, the
+profile store still without an `index.md`).
+
+**Cost (J89-5c, macOS arm64, CPython 3.12.13, Node v26.13.0; n = 9 interleaved rounds, medians;
+before = `053569d5`, after = this tree; the project store a copy of the repository's
+`.bantamkit/memory`, the profile a copy of `~/.bantamkit/memory`, 313 files, HOME scratch).**
+
+| Path | Before | After | |
+|---|---|---|---|
+| cold `import bantamkit.memory.dream` | 91.4 ms | 92.2 ms | +0.9% |
+| `absolutise` (a 9-term body) | 38.7 us | 165.9 us | **+329%**: dream.ts's day arithmetic (`isoFromOrdinal` walks the years of a 400-year cycle) compiled, in place of CPython's C `date + timedelta`; ~14 us a term |
+| `merge_bodies` | 77.3 us | 120.4 us | **+56%**: the compiled `splitBlocks` / `claimSlot` / `blockKey` through the runtime's UTF-16 helpers and the adapter's dicts, in place of three `re` calls |
+| `claim_slot` | 1.41 us | 2.60 us | **+85%**: the same |
+| `dream` dry run (the two stores) | 398.9 ms | 334.7 ms | -16.1% |
+| `memory_dream` (`Memory.layered(...).dream_outcome(True)`) | 398.5 ms | 332.8 ms | -16.5% |
+| `--hook` UserPromptSubmit, a process | 377.6 ms | 372.8 ms | -1.3% (output identical) |
+| Node `absolutise` / `dream` dry run / import | 5.37 us / 45.1 ms / 9.68 ms | 5.37 us / 45.2 ms / 9.71 ms | +0.0% / +0.3% / +0.3% |
+| Node `mergeBodies` / `claimSlot` | 36.5 us / 0.633 us | 30.6 us / 0.409 us | -16.3% / -35.4% (faster; cause not isolated: the `u`-less `SUBJECT_OK` alone measured equal) |
+
+The user path is faster: the pass is dominated by the generated store's reads, and the per-call
+regressions above are microseconds a fact.
+
+**Gates.** The F4 byte comparison (`ts2py/committed/dream.py`) and the sha256 header
+(`test_generated_module_names_the_typescript_on_disk[dream.py]`) each red once on a scratch edit.
+`--all` 23,263 cases, 0 failures, 242 ruled (`--suite dream` 148, 2 ruled). The repo map's own
+test over this package (`test_repomap.py`, `repomap.test.mjs`) focused `memory/dream.py` and
+expected `memory/store.py` in its top three; the shim imports the codec's converters too, so
+`memory/factcodec.py` ranks first and `memory/store.py` sixth, and both tests say so.
 
 ## Concurrency
 

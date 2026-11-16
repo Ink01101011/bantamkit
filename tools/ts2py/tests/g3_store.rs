@@ -682,3 +682,57 @@ print(refused)
     );
     assert_eq!(lines.next().unwrap(), "[True, True]");
 }
+
+/// J89-5c (#316 G3 U3, `memory/dream.ts`): `s.split(re)`, ECMA-262's `RegExp.prototype[@@split]`
+/// with no limit over UTF-16 code units (`_js_split_regex`): an empty match where the last piece
+/// ended moves on one unit, capture groups join the result (`undefined` when they took no part),
+/// `''` is `[]` when the splitter matches it, a `g` flag changes nothing. Every expected value is
+/// what Node v26.13.0 printed for `tests/fixtures/j89_5c_probe.ts` (imported by Node, which strips
+/// the types): `JSON.stringify(probe())` with every code unit at or above 0x7F written `\uXXXX`,
+/// and `fuzz(20000)` (20,000 seeded strings over 13 characters incl. an astral one and both lone
+/// halves, split by the 13 splitters).
+const NODE_SPLIT_PROBE: &str = r###"[[[""],["a"],["abc"],["a","b","c"],["",""],["x-y+z"],["axbxxc"],["bcbc"],["a\ud83d\ude00b"],["\ud83d\ude00\ud83d\ude00"],["aa"],["cab"],["a,b,,c,"],[","],["b"],["ab"],["word boundary"],["\ud800x\udc00"]],[[],["a"],["a","b","c"],["a","\n","\n","b","\n"," ","\n","\n","c"],["\n","\n"],["","-","y","+","z"],["a","b","c"],["b","c","b","c"],["a","\ud83d","\ude00","b"],["\ud83d","\ude00","\ud83d","\ude00"],["a","a"],["c","a","b"],["a",",","b",",",",","c",","],[","],["b"],["a","b"],["w","o","r","d"," ","b","o","u","n","d","a","r","y"],["\ud800","\udc00"]],[[""],["a"],["abc"],["a\n\nb\n \n\nc"],["\n\n"],["x","-",null,"y",null,"+","z"],["axbxxc"],["bcbc"],["a\ud83d\ude00b"],["\ud83d\ude00\ud83d\ude00"],["aa"],["cab"],["a,b,,c,"],[","],["b"],["ab"],["word boundary"],["\ud800x\udc00"]],[[""],["",""],["","bc"],["","\n\nb\n \n\nc"],["\n\n"],["x-y+z"],["","xbxxc"],["bcbc"],["","\ud83d\ude00b"],["\ud83d\ude00\ud83d\ude00"],["","a"],["cab"],["",",b,,c,"],[","],["b"],["","b"],["word boundary"],["\ud800x\udc00"]],[[""],["",""],["abc"],["a\n\nb\n \n\nc"],["\n\n"],["x-y+z"],["axbxxc"],["bcbc"],["a\ud83d\ude00b"],["\ud83d\ude00\ud83d\ude00"],["a",""],["cab"],["a,b,,c,"],[","],["b"],["ab"],["word boundary"],["\ud800x\udc00"]],[[""],["a"],["ab",""],["a\n\nb\n \n\nc"],["\n\n"],["x-y+z"],["axbxxc"],["b","b",""],["a\ud83d\ude00b"],["\ud83d\ude00\ud83d\ude00"],["aa"],["cab"],["a,b,,c,"],[","],["b"],["ab"],["word boundary"],["\ud800x\udc00"]],[[""],["a"],["abc"],["a","\n\n","b","\n \n\n","c"],["\n\n"],["x","-","y","+","z"],["axbxxc"],["bcbc"],["a","\ud83d\ude00","b"],["\ud83d\ude00\ud83d\ude00"],["aa"],["cab"],["a",",","b",",,","c",","],[","],["b"],["ab"],["word"," ","boundary"],["\ud800","x","\udc00"]],[[""],["a"],["abc"],["a\n\nb\n \n\nc"],["\n\n"],["x-y+z"],["axbxxc"],["bcbc"],["a\ud83d\ude00b"],["\ud83d\ude00\ud83d\ude00"],["aa"],["cab"],["a","b","","c",""],["",""],["b"],["ab"],["word boundary"],["\ud800x\udc00"]],[[""],["a"],["abc"],["a\n\nb\n \n\nc"],["\n\n"],["x-y+z"],["axbxxc"],["bcbc"],["a","\ude00b"],["","\ude00","\ude00"],["aa"],["cab"],["a,b,,c,"],[","],["b"],["ab"],["word boundary"],["","x\udc00"]],[[""],["a"],["abc"],["a\n\nb\n \n\nc"],["\n\n"],["x-y+z"],["axbxxc"],["bcbc"],["a\ud83d","b"],["\ud83d","\ud83d",""],["aa"],["cab"],["a,b,,c,"],[","],["b"],["ab"],["word boundary"],["\ud800x\udc00"]],[[],["a"],["a","b","c"],["a","\n","\n","b","\n"," ","\n","\n","c"],["\n","\n"],["x","-","y","+","z"],["a","x","b","x","x","c"],["b","c","b","c"],["a","\ud83d","\ude00","b"],["\ud83d","\ude00","\ud83d","\ude00"],["a","a"],["c","a","b"],["a",",","b",",",",","c",","],[","],["b"],["a","b"],["w","o","r","d"," ","b","o","u","n","d","a","r","y"],["\ud800","x","\udc00"]],[[""],["a"],["","a","c"],["a\n\n",null,"\n \n\nc"],["\n\n"],["x-y+z"],["ax",null,"xxc"],["",null,"c",null,"c"],["a\ud83d\ude00",null,""],["\ud83d\ude00\ud83d\ude00"],["aa"],["c","a",""],["a,",null,",,c,"],[","],["",null,""],["","a",""],["word ",null,"oundary"],["\ud800x\udc00"]],[[""],["a"],["abc"],["a","b","c"],["",""],["x-y+z"],["axbxxc"],["bcbc"],["a\ud83d\ude00b"],["\ud83d\ude00\ud83d\ude00"],["aa"],["cab"],["a,b,,c,"],[","],["b"],["ab"],["word boundary"],["\ud800x\udc00"]]]"###;
+const NODE_SPLIT_FUZZ: &str = "545608662";
+
+#[test]
+fn j89_5c_split_by_a_regex_answers_like_node() {
+    let source = include_str!("fixtures/j89_5c_probe.ts");
+    let modules = compile_package(&[("j89_5c_probe.ts", source)]);
+    assert!(
+        modules[0].code.contains("_js_m_split("),
+        "{}",
+        modules[0].code
+    );
+    let dir = scratch("j89-5c-split");
+    package(&dir, &modules);
+    let out = run_python(
+        r#"import sys
+sys.path.insert(0, sys.argv[1])
+from pkg import _ts2py_runtime as rt, j89_5c_probe as m
+out = rt._js_json_stringify(m.probe())
+print("".join(c if ord(c) < 0x7F else "\\u%04x" % ord(c) for c in rt._js_code_units(out)))
+print(m.fuzz(20000))
+try:
+    rt._js_m_split(7, rt._js_re.compile("x"))
+    print("answered")
+except TypeError as e:
+    print(str(e).startswith("ts2py: ") and "outside the subset" in str(e))
+"#,
+        &[&dir],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let mut lines = out.lines();
+    assert_eq!(lines.next().unwrap(), NODE_SPLIT_PROBE);
+    assert_eq!(lines.next().unwrap(), NODE_SPLIT_FUZZ);
+    // A receiver that is not a string is refused at run time, not split.
+    assert_eq!(lines.next().unwrap(), "True");
+}
+
+/// J89-5c: a limit is still refused at compile time (`.split` takes one argument in the subset).
+#[test]
+fn j89_5c_split_with_a_limit_is_refused() {
+    assert_refused(
+        "export function f(s: string): string[] {\n  return s.split(/,/, 2);\n}\n",
+        "t.ts:2:10: unsupported argument count for .split: s.split(/,/, 2)",
+    );
+}

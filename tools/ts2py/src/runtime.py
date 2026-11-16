@@ -789,6 +789,8 @@ def _js_m_startsWith(receiver, prefix):
 
 
 def _js_m_split(receiver, separator):
+    if isinstance(receiver, str) and isinstance(separator, (_js_re.Pattern, _JsGlobalRegExp)):
+        return _js_split_regex(receiver, separator)
     if isinstance(receiver, str) and isinstance(separator, str):
         if receiver.isascii() and separator.isascii():
             return list(receiver) if separator == "" else receiver.split(separator)
@@ -804,6 +806,38 @@ def _js_m_split(receiver, separator):
             return parts
         return [_js_from_units(part) for part in parts]
     raise _js_outside("split", receiver)
+
+
+def _js_split_regex(text, separator):
+    """`s.split(re)` (J89-5c): ECMA-262's `RegExp.prototype[@@split]` with no limit, over UTF-16
+    code units. The splitter is tried at each position `q` from the end of the last piece (Python's
+    `search(units, q)` finds the first `q` it matches at, the same match a sticky `exec` there
+    finds); a match ending where the last piece ended (an empty one there) moves on one unit, and
+    one starting at the end of the string is never taken. Each capture group joins the result
+    after its piece (`undefined` for one that did not take part). An empty string is `[]` when the
+    splitter matches it, else `[""]`. A `g` flag changes nothing (JS builds its own sticky
+    splitter)."""
+    pattern = separator.pattern if isinstance(separator, _JsGlobalRegExp) else separator
+    units = _js_code_units(text)
+    size = len(units)
+    if size == 0:
+        return [] if pattern.match(units, 0) is not None else [text]
+    out = []
+    p = q = 0
+    while q < size:
+        m = pattern.search(units, q)
+        if m is None or m.start() >= size:
+            break
+        q = m.start()
+        e = min(m.end(), size)
+        if e == p:
+            q += 1
+            continue
+        out.append(_js_from_units(units[p:q]))
+        out.extend(_JS_UNDEFINED if g is None else _js_from_units(g) for g in m.groups())
+        p = q = e
+    out.append(_js_from_units(units[p:]))
+    return out
 
 
 # J86-5: `_js_code_units` of a non-ASCII string, remembered. The answer is a function of the

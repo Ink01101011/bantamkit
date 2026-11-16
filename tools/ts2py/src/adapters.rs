@@ -878,6 +878,50 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Function,
         why: "Python is the reference: `pyIsAbsolute` is `PurePath.is_absolute()` (its doc comment).",
     },
+    // J89-5c (#316 G3 U3: memory/dream). dreamre.ts holds the patterns dream.ts built at run time
+    // from pysem's CPython classes under the `u` flag; each is a port of a dream.py pattern.
+    Adapter {
+        module: Some("runtime-ts/src/memory/dreamre.ts"),
+        name: "pyRelativeScan",
+        py_name: "py_relative_scan",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyRelativeScan` is `dream.py`'s `_RELATIVE.finditer(body)` with `_STAMPED.match` applied after each match (its doc comment; the pattern is a port of `_RELATIVE`, `\\b(?P<simple>today|tonight|yesterday|tomorrow)\\b|...` under `re.IGNORECASE`, whose `\\s`, `\\d`, `\\b` and case folding dream.ts's header measured). The adapter runs those two CPython patterns, unchanged from the hand-written dream.py, and answers each match as `{lead, term, stamped, simple, now, digits, unit}` and the rest of the body as `tail` (no string position crosses the seam: a position is a UTF-16 unit in Node and a code point here).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/dreamre.ts"),
+        name: "pyUnresolvedTerms",
+        py_name: "py_unresolved_terms",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyUnresolvedTerms` is `[m.group(0) for m in _UNRESOLVED.finditer(body)]`, the port of `dream.py`'s `_UNRESOLVED` (its doc comment). The adapter runs that CPython pattern, unchanged.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/dreamre.ts"),
+        name: "pySlotGroups",
+        py_name: "py_slot_groups",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pySlotGroups` is `_SLOT.match(_BULLET.sub('', text))`'s `subject` and `value` groups, the port of `dream.py`'s two patterns (its doc comment; `{1,60}` counts code points under `u`, as `re` does). The adapter runs those CPython patterns, unchanged, and answers `[subject, value]` or null.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/dreamre.ts"),
+        name: "pySubSpaces",
+        py_name: "py_sub_spaces",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pySubSpaces` is `re.sub(r'\\s+', ' ', text)` with CPython's 29-codepoint `\\s` (`pysem.PY_WS_CLASS`), the call `dream.py`'s `collapse` makes. The adapter is that call.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/dreamre.ts"),
+        name: "pyIntDigits",
+        py_name: "py_int_digits",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyIntDigits` is CPython's `int(text)` of a `\\d+` run (its doc comment), the call `dream.py`'s `_resolve` makes. The adapter is `int(text)`, its `ValueError` past `sys.get_int_max_str_digits()` digits included, answered as the double a JS number is (a value past the largest double is infinity, which Node's sum overflows to; every count past 999,999,999 meets `addDays`'s cap either way). Two inputs where Node's walk-back differs from `int()` are pinned UNRULED in `--suite dream`, unchanged by generation.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/dreamre.ts"),
+        name: "formatFixed3",
+        py_name: "format_fixed3",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `formatFixed3` is `f\"{value:.3f}\"`, round half to even on the exact binary value (its doc comment), which CPython's `format` is; the one spelling it adds is no sign on a value that rounds to zero (`-0.0` is `0.000`), and `inf` / `-inf` / `nan`. dream.ts only re-exports it (component.ts prints the two similarity figures with it); the compiled dream never calls it. J89-5c fuzzed it against Node (RULES.md, Adapters).",
+    },
 ];
 
 /// The adapter for `name` imported from `module` (a normalised `.ts` path), if one is declared.

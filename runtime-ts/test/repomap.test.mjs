@@ -831,7 +831,10 @@ test("the map over this repository's python package finds its own modules", () =
   assert.ok(result.nodes > 20);
   assert.ok(result.edges > 0);
   const listed = result.ranked.map((e) => e.path);
-  assert.ok(listed.slice(0, 3).includes('memory/store.py'), JSON.stringify(listed.slice(0, 5)));
+  // Since J89-5c `memory/dream.py` is the shim over `_generated/dream.py`: it imports the codec's
+  // converters and the store, and the generated modules they reach rank with them.
+  assert.ok(listed.slice(0, 3).includes('memory/factcodec.py'), JSON.stringify(listed.slice(0, 6)));
+  assert.ok(listed.slice(0, 6).includes('memory/store.py'), JSON.stringify(listed.slice(0, 6)));
   assert.ok(!listed.includes('memory/dream.py'));
   assert.ok(result.listingBytes <= DEFAULT_BUDGET);
   assert.ok(result.damping > 0.0 && result.iterations === ITERATIONS);

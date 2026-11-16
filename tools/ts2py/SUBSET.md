@@ -277,6 +277,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `s.includes(x)`, `a.includes(x)` | `_js_m_includes` | substring (J86: by UTF-16 unit); array membership by SameValueZero |
 | `s.startsWith(p)` | `_js_m_startsWith` | J86: by UTF-16 unit |
 | `s.split(sep)` (string separator) | `_js_m_split` | J86: by UTF-16 unit, so `""` splits into code units |
+| `s.split(re)` (a regex, J89-5c) | `_js_m_split` -> `_js_split_regex` | ECMA-262's `RegExp.prototype[@@split]` with no limit, over UTF-16 code units: the splitter tried at each position from the end of the last piece; an empty match where the last piece ended moves on one unit, a match starting at the end is never taken; each capture group joins the result after its piece (`undefined` when it took no part); `''` is `[]` when the splitter matches it, else `['']`; a `g` flag changes nothing. A limit (a second argument) is refused at compile time |
 | `re.test(s)` | `_js_m_test` | `re.search` on `String(s)` with each astral character split into its surrogates, so the pattern sees UTF-16 code units |
 
 A method above called on a receiver of the wrong runtime type raises
