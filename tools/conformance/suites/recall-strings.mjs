@@ -1357,12 +1357,11 @@ export async function run(ctx) {
   // still differ, never that each still grants or refuses), and the per-side answer literals
   // after the loop. `G` is a granted directory beside the config (`.bantamkit/g`).
   //
-  // The `unruled` rows are NOT this family and are not ruled: CPython's `yaml.safe_load`
-  // raises an exception that `load_grants` never caught (a `ValueError` from an implicit
-  // timestamp or int PyYAML cannot construct, from `resolve` of a decoded NUL, a
-  // `RecursionError` from a deep flow sequence), so Python's `load_grants` raises it raw
-  // where Node grants or refuses by name. Generation keeps Python's answer exactly; they are
-  // pinned as UNRULED DIVERGENCE (J89-5b) for the orchestrator, per side.
+  // J89-5b pinned seven rows UNRULED: CPython's `yaml.safe_load` raised an exception that
+  // `load_grants` never caught (a `ValueError` from an implicit timestamp or int PyYAML cannot
+  // construct, from `resolve` of a decoded NUL, a `RecursionError` from a deep flow sequence).
+  // J89-5d ruled them (a crash is a bug) and python now refuses each by name: they joined the
+  // family, each with its three pins.
   {
     const G = '<ROOT>/.bantamkit/g';
     const CFG = '<ROOT>/.bantamkit/config.yaml';
@@ -1417,14 +1416,20 @@ export async function run(ctx) {
       ['a nested flow sequence', 'extra_stores: [[g]]\n', NOT_A_LIST, INVALID('a nested sequence is outside this reader'), 'ruled'],
       ['a nested block sequence', 'extra_stores:\n- - g\n', NOT_A_LIST, MISSING('- g'), 'ruled'],
       ['a NUL character', 'extra_stores: [g\u0000]\n', INVALID('unacceptable character #x0000: special characters are not allowed'), "OSError: [Errno 0] ERR_INVALID_ARG_VALUE: The argument 'path' must be a string, Uint8Array, or URL without null bytes.", 'ruled'],
-      // NOT this family: python raises what `load_grants` never caught (UNRULED, above).
-      ['an impossible date under another key', 'k: 2001-02-30\nextra_stores: [g]\n', 'ValueError: day is out of range for month', GRANT, 'unruled'],
-      ['an impossible date as a key', '2001-02-30: x\nextra_stores: [g]\n', 'ValueError: day is out of range for month', GRANT, 'unruled'],
-      ['an impossible hour', 'k: 2001-02-03 25:00:00\nextra_stores: [g]\n', 'ValueError: hour must be in 0..23', GRANT, 'unruled'],
-      ['an int of 5000 digits', `k: ${'9'.repeat(5000)}\nextra_stores: [g]\n`, 'ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit', GRANT, 'unruled'],
-      ['an impossible date as a grant', 'extra_stores:\n- 2001-02-30\n', 'ValueError: day is out of range for month', NOT_A_LIST, 'unruled'],
-      ['a decoded NUL in a grant', 'extra_stores: ["a\\0b"]\n', 'ValueError: lstat: embedded null character in path', MISSING('a0b'), 'unruled'],
-      ['a flow sequence 1000 deep', `extra_stores: ${'['.repeat(1000)}${']'.repeat(1000)}\n`, 'RecursionError: maximum recursion depth exceeded', INVALID('a nested sequence is outside this reader'), 'unruled'],
+      // J89-5d (ruled: a crash is a bug): seven documents where CPython raised out of `load_grants`
+      // what it never caught. Python now refuses each by name, `invalid memory config <path>:
+      // <reason>`: a value PyYAML resolves but cannot construct with CPython's own reason, nesting
+      // past CPython's limit with a fixed one, and a decoded NUL as a list that is not of paths.
+      // Where node grants, python refuses a document PyYAML cannot construct: this family. Where
+      // node also refuses (the timestamp item, the NUL, the deep sequence) the outcome bit agrees
+      // and the sentences differ: this family's wording. Red against 053569d5's python (raised).
+      ['an impossible date under another key', 'k: 2001-02-30\nextra_stores: [g]\n', INVALID('day is out of range for month'), GRANT, 'ruled'],
+      ['an impossible date as a key', '2001-02-30: x\nextra_stores: [g]\n', INVALID('day is out of range for month'), GRANT, 'ruled'],
+      ['an impossible hour', 'k: 2001-02-03 25:00:00\nextra_stores: [g]\n', INVALID('hour must be in 0..23'), GRANT, 'ruled'],
+      ['an int of 5000 digits', `k: ${'9'.repeat(5000)}\nextra_stores: [g]\n`, INVALID('Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit'), GRANT, 'ruled'],
+      ['an impossible date as a grant', 'extra_stores:\n- 2001-02-30\n', INVALID('day is out of range for month'), NOT_A_LIST, 'ruled'],
+      ['a decoded NUL in a grant', 'extra_stores: ["a\\0b"]\n', NOT_A_LIST, MISSING('a0b'), 'ruled'],
+      ['a flow sequence 1000 deep', `extra_stores: ${'['.repeat(1000)}${']'.repeat(1000)}\n`, INVALID('the document is nested too deeply to read'), INVALID('a nested sequence is outside this reader'), 'ruled'],
     ];
     const bitOf = (text) => (text.startsWith('grants:') ? 'grants' : text.startsWith('MemoryValidationError: ') ? 'refuses' : `raises ${text.split(':')[0]}`);
     // A literal compares the first line (PyYAML's diagnostics carry a rendered snippet below it),
@@ -1444,7 +1449,7 @@ export async function run(ctx) {
       stores: beds.py.map((bed) => b64(join(bed, '.bantamkit', 'memory'))),
     }, { HOME: join(scratch, 'probe-home'), BANTAMKIT_MEMORY_DIR: '' }).grants;
     const rendered = { py: [], node: [] };
-    FAMILY.forEach(([label, , , , family], k) => {
+    FAMILY.forEach(([label], k) => {
       const py = scrub(Array.isArray(pyAll[k]) ? `grants: ${pyAll[k].map(unb64).join(' | ')}` : answer(pyAll[k]), beds.py[k]);
       let nd;
       try {
@@ -1456,24 +1461,21 @@ export async function run(ctx) {
       rendered.py.push(head(py));
       rendered.node.push(head(nd));
       cases.push({
-        name: family === 'ruled'
-          ? `RULED: config outside the reader's language — ${label}`
-          : `ruling: UNRULED DIVERGENCE (J89-5b) load_grants — ${label}`,
+        name: `RULED: config outside the reader's language — ${label}`,
         kind: 'string',
         expected: py,
         actual: nd,
-        ruling: family === 'ruled'
-          ? 'J89-5b, the orchestrator\'s ruling on J89-5\'s stop (option b): Python keeps PyYAML ' +
-            'for the grants config, as #315 kept it for fact files, and Node keeps its own reader ' +
-            '(grantconfig.ts), which implements no tag, anchor, alias, merge key, directive, ' +
-            'second document, flow mapping, escape, block scalar or multi-line flow and refuses ' +
-            'or reads literally what it does not implement. A document outside that language may ' +
-            'be granted on one side and refused on the other; matching would mean porting ' +
-            'PyYAML\'s scanner and composer into the package. docs/porting.md, divergence table.'
-          : 'UNRULED DIVERGENCE (J89-5b): not ruled in docs/porting.md and not fixed; CPython\'s ' +
-            'yaml.safe_load (or Path.resolve) raises an exception load_grants never caught, so ' +
-            'python raises it raw where node grants or refuses by name. Generation keeps ' +
-            'python\'s answer; reported to the orchestrator.',
+        ruling:
+          'J89-5b, the orchestrator\'s ruling on J89-5\'s stop (option b): Python keeps PyYAML ' +
+          'for the grants config, as #315 kept it for fact files, and Node keeps its own reader ' +
+          '(grantconfig.ts), which implements no tag, anchor, alias, merge key, directive, ' +
+          'second document, flow mapping, escape, block scalar or multi-line flow and refuses ' +
+          'or reads literally what it does not implement. A document outside that language may ' +
+          'be granted on one side and refused on the other; matching would mean porting ' +
+          'PyYAML\'s scanner and composer into the package. J89-5d added the documents PyYAML ' +
+          'resolves but CPython cannot construct (an impossible timestamp, an int past the ' +
+          '4,300-digit limit), nesting past CPython\'s limit and a decoded NUL, which python ' +
+          'refuses by name where it used to raise. docs/porting.md, divergence table.',
       });
     });
     FAMILY.forEach(([label, , pyWant, nodeWant], k) => {
@@ -1492,7 +1494,7 @@ export async function run(ctx) {
         actual: FAMILY.map((row, k) => [row[0], rendered[side][k]]),
       });
     }
-    notes.push(`J89-5b: ${FAMILY.length} config documents outside the reader's language, each ruled (or UNRULED) with an outcome-bit companion; per-side literals`);
+    notes.push(`J89-5b: ${FAMILY.length} config documents outside the reader's language, each ruled with an outcome-bit companion; per-side literals`);
   }
 
   {

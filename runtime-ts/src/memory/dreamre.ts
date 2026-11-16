@@ -145,10 +145,15 @@ export function pySubSpaces(text: string): string {
 /**
  * `int(text)` for a run of `\p{Nd}` digits, which is what CPython's `int()` accepts.
  *
- * A decimal-digit block is exactly ten consecutive codepoints, so the value of a digit is
- * its distance from the block's zero and the block's zero is found by walking back while the
- * previous codepoint is still `Nd` — no table, and correct for every script including the
- * ones assigned after this file was written.
+ * A decimal-digit block is exactly ten consecutive codepoints, zero to nine, and blocks can sit
+ * back to back: U+1D7CE..U+1D7FF is five of them (the mathematical bold, double-struck,
+ * sans-serif, sans-serif bold and monospace digits). So the run of consecutive `Nd` codepoints a
+ * digit sits in is a whole number of blocks, and its value is its distance from the run's first
+ * codepoint, modulo ten — no table, and correct for every script including the ones assigned
+ * after this file was written. (Walking back at most nine codepoints, as this did until J89-5d,
+ * read every digit of the four blocks after the first in that run as 9: `𝟘 days ago` was nine
+ * days ago here and today on the reference.) Measured against CPython 3.12's `int()` over every
+ * codepoint it accepts as a digit: 0 differences (`--suite dream`).
  */
 export function pyIntDigits(text: string): number {
   const nd = /\p{Nd}/u;
@@ -156,8 +161,8 @@ export function pyIntDigits(text: string): number {
   for (const ch of text) {
     const cp = ch.codePointAt(0)!;
     let zero = cp;
-    while (zero > 0 && cp - zero < 9 && nd.test(String.fromCodePoint(zero - 1))) zero -= 1;
-    out = out * 10 + (cp - zero);
+    while (zero > 0 && nd.test(String.fromCodePoint(zero - 1))) zero -= 1;
+    out = out * 10 + ((cp - zero) % 10);
   }
   return out;
 }

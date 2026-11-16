@@ -611,8 +611,11 @@ print(refused)
 /// (Python keeps PyYAML for the config): the tab positions are held to what Node v26.13.0's
 /// `firstTokenTab` printed for job65's #158 battery (the two agree there; `--suite store` pins the
 /// sentences), the document shapes to what the compiled validator reads, a YAMLError to `str(e)`,
-/// and an error `load_grants` never caught (`ValueError` from an impossible implicit timestamp)
-/// raised out of `firstTokenTab`, outside the compiled `try`. The pyfs rows are held to Node's
+/// and (J89-5d, ruled: a crash is a bug) an error `load_grants` never caught (`ValueError` from an
+/// impossible implicit timestamp, `RecursionError` from nesting) held by `firstTokenTab` and
+/// refused by `parseConfigDocument` as a JS Error, so the compiled `catch` names it, and a decoded
+/// NUL item `other` (it names no path). Until J89-5d the first was raised out of `firstTokenTab`,
+/// outside the compiled `try`. The pyfs rows are held to Node's
 /// `pyfs.ts` over the same bed (`HOME` the bed; `link` -> `real`).
 #[test]
 fn j89_5b_layers_adapters_answer_like_the_reference() {
@@ -642,11 +645,14 @@ def shape(text):
     return {"kind": "mapping", "entries": [[k, v] for k, v in doc["entries"]]}
 texts = ["", "# only\n", "- a\n", "just a scalar\n", "a: 1\n", "extra_stores: [a, 3, null, [b], 'c']\n", "extra_stores: x\n", "extra_stores:\n", "1: [a]\nnull: [b]\nextra_stores: &x [g]\nalias: *x\n", "extra_stores: [unclosed\n", "a: 1\na: 2\n"]
 print(rt._js_json_stringify([shape(t) for t in texts]))
-try:
-    A.first_token_tab("k: 2001-02-30\n")
-    print("answered")
-except ValueError as e:
-    print("ValueError:", e)
+held = []
+for text in ("k: 2001-02-30\n", "extra_stores: " + "[" * 1000 + "]" * 1000 + "\n", 'extra_stores: ["a\\0b", g]\n'):
+    try:
+        held.append(A.first_token_tab(text))
+        held.append(shape(text))
+    except BaseException as e:
+        held.append(type(e).__name__)
+print(rt._js_json_stringify(held))
 print(rt._js_json_stringify([A.py_is_absolute("/a"), A.py_is_absolute("a"), A.py_is_absolute(""), A.py_expanduser("~/x") == bed + "/x", A.py_expanduser("a//b/"), A.py_resolve(bed + "/link/sub/..").replace(bed, "<B>"), A.py_resolve(bed + "/nope/x").replace(bed, "<B>"), A.py_stat_is_dir(bed + "/real"), A.py_stat_is_dir(bed + "/afile"), A.py_is_file(bed + "/afile"), A.py_is_file(bed + "/real"), A.py_is_file(bed + "/missing"), A.py_cwd() == os.getcwd()]))
 refused = []
 for call in (lambda: A.first_token_tab(b"a: 1"), lambda: A.parse_config_document(None)):
@@ -672,7 +678,7 @@ print(refused)
     );
     assert_eq!(
         lines.next().unwrap(),
-        "ValueError: day is out of range for month"
+        r###"[null,["error","day is out of range for month"],null,["error","the document is nested too deeply to read"],null,{"kind":"mapping","entries":[["extra_stores",{"kind":"seq","items":[{"kind":"other","value":null},{"kind":"str","value":"g"}]}]]}]"###
     );
     // Node's pyfs.ts over the same bed: `[true,false,false,"<HOME>/x","a/b","<B>/real",
     // "<B>/nope/x",true,false,true,false,false]` (the last, `pyCwd`, is `process.cwd()`).

@@ -356,7 +356,8 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | `build_id` | hashes the executing tree; two runtimes, two trees. `assets_digest` **is** identical (read it off `build_identity` on either server, or `_assets_fingerprint()`; this row no longer quotes a digest, because each of the three it carried — `sha256:b03141bf…` at #75, `d47dcf4b…` over 87 files, `9e66e89a…` over 93 — went stale by the same route: the pack changed and the row did not; job67 J67-9) and that is the one that matters — but only because both walks now EXCLUDE `__pycache__`. That is a precondition, not a given: the pack ships eleven `.py` fixtures, `pip install` byte-compiles them, and on the published 0.27.0 artifacts the wheel answered `sha256:fa8372f6…` over 98 files against npm's `sha256:d47dcf4b…` over 87 while this row already claimed they were identical. Gated per side by `build_identity: a __pycache__ does not move assets_digest` in `tools/conformance/suites/wire.mjs` — per side, because pointed at one polluted pack both runtimes moved together and the cross-runtime comparison stayed green. |
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone. **#120 adds 8:** an anchor, `!!str`, a flow mapping, an empty flow mapping, a nested flow sequence, a flow-sequence pair, a flow sequence over two lines and an anchored sequence item are READ by PyYAML and REFUSED by the port with a named `FactParseError` — reading them means porting the scanner, anchors and the composer. A refusal names the file and writes nothing, which is the point: the plain-text guess it replaced was stamped back to disk. Ruled in `tools/conformance/suites/codec.mjs` as `ruling: #120 node refuses where python reads: …`, with the refusal-bit companions as per-side literals (`#120 per side: the ruled inputs — python reads every one` / `— node refuses every one, with a named FactParseError`), because the two bits DIFFER and a side-to-side bit could never be green. Teeth: forcing the ruled answers equal reddened all 8 as `STALE RULING`; dropping `&` from the refused set left every ruling green and reddened the node literal (1 failure). **job67 (J67-3), user ruling 2026-10-15 on #120's remainder: these eight are the FINAL answer** — the PyYAML scanner is not ported, and the refusal is by name. What the ruling changed is what a refusal COSTS: a `memory_save` on Node no longer refuses the whole store because one fact file is one of these shapes. Both runtimes' `save` now skip any fact file they cannot read, name it (`SaveResult.skipped`, and a closing paragraph on the reply: `N fact file(s) could not be read and was/were skipped; the duplicate check read every other fact:` + `[project] <the store's sentence>`), and land; the one file a save never skips is the one it would WRITE (`<sentence>; saving '<name>' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`). So over a store holding an anchored fact the save lands on both sides, Python reads the fact and Node names it skipped, and the `index.md` each rebuilds differs by that one line — ruled in `tools/conformance/suites/store.mjs` as `ruling: #120 save past a file only python reads — the answers`, with the refusal bit (`— the save lands on both sides`) and the written fact's bytes compared unruled and each side's skip pinned as a literal. Blank lines, lines of spaces and comment lines inside a block sequence — and `links: ` / `links: # c` before one — were NOT a ruled shape to keep: they are READ now, as PyYAML reads them, compared in `codec.mjs` as read-alike cases and a second 1500-frontmatter seeded corpus where node must neither guess nor refuse. **Since #315 (J86-3) runtime-py's store reads through the code compiled from the port's own `factfile.ts` first** (*Generated modules*), and that code refuses these eight shapes by the same names; `memory/factcodec.py` then reads the file with `yaml.safe_load`, exactly as before, so python still reads every one and this row's answers are unchanged (`ts2py-codec`'s `node-refuses` class: runtime-py reads each, `py=before` holds it equal to the pre-#315 read). |
-| the grants config (`config.yaml`) over a document outside the port reader's language (J89-5b) | **Python reads it with PyYAML; Node with its own reduced reader, and the two may grant and refuse differently.** The orchestrator's ruling on J89-5's stop (option b), after the owner's #315 ruling for fact files: `memory/layers` is generated, and the config read stays on `yaml.safe_load` on the Python side (the `firstTokenTab` / `parseConfigDocument` adapters; Node's reader is `runtime-ts/src/memory/grantconfig.ts`). That reader implements no tag, anchor, alias, merge key, directive, second document, document end, flow mapping, escape, block scalar or flow sequence over lines, and refuses (or reads literally) what it does not implement; matching would mean porting PyYAML's scanner and composer. J89-5 found the first: `extra_stores: &a [g]` is a grant on Python and `extra_stores must be a list of paths` on Node. J89-5b's scan found 41 in the family (28 where Python grants and Node refuses, 13 where both refuse in different sentences). Each: a `RULED: config outside the reader's language — <document>` case in `tools/conformance/suites/recall-strings.mjs`, a non-ruled `J89-5b outcome bit per side: <document>` companion (the grant/refuse bit of each side against a literal, since a ruling only proves the two still differ) and the per-side literals `LITERAL: J89-5b python|node: load_grants over the config family, every answer`. The older `RULED: a config outside the reader's language, and PyYAML's scanner diagnostics` (the wording after the identical prefix) stands. NOT in this family, and not ruled: seven documents where CPython raises out of `load_grants` (an impossible implicit timestamp, a 5,000-digit int, a decoded NUL, nesting 1,000 deep), pinned `UNRULED DIVERGENCE (J89-5b)`; see *The layers* under *Generated modules*. |
+| the grants config (`config.yaml`) over a document outside the port reader's language (J89-5b) | **Python reads it with PyYAML; Node with its own reduced reader, and the two may grant and refuse differently.** The orchestrator's ruling on J89-5's stop (option b), after the owner's #315 ruling for fact files: `memory/layers` is generated, and the config read stays on `yaml.safe_load` on the Python side (the `firstTokenTab` / `parseConfigDocument` adapters; Node's reader is `runtime-ts/src/memory/grantconfig.ts`). That reader implements no tag, anchor, alias, merge key, directive, second document, document end, flow mapping, escape, block scalar or flow sequence over lines, and refuses (or reads literally) what it does not implement; matching would mean porting PyYAML's scanner and composer. J89-5 found the first: `extra_stores: &a [g]` is a grant on Python and `extra_stores must be a list of paths` on Node. J89-5b's scan found 41 in the family (28 where Python grants and Node refuses, 13 where both refuse in different sentences). Each: a `RULED: config outside the reader's language — <document>` case in `tools/conformance/suites/recall-strings.mjs`, a non-ruled `J89-5b outcome bit per side: <document>` companion (the grant/refuse bit of each side against a literal, since a ruling only proves the two still differ) and the per-side literals `LITERAL: J89-5b python|node: load_grants over the config family, every answer`. The older `RULED: a config outside the reader's language, and PyYAML's scanner diagnostics` (the wording after the identical prefix) stands. **J89-5d added seven** (the orchestrator: a crash is a bug), documents where CPython raised out of `load_grants` what it never caught: an impossible implicit timestamp as a value, a key or a grant (`2001-02-30`, `25:00:00`), a 5,000-digit int, a decoded NUL in a grant and a flow sequence 1,000 deep. Python now refuses each with `invalid memory config <path>: <reason>`: CPython's own `str(e)` for a scalar PyYAML resolves but cannot construct, `the document is nested too deeply to read` past CPython's limit, and `extra_stores must be a list of paths` for a NUL (it names no path). Where Node grants (four) the outcome differs; where Node also refuses (the timestamp grant, the NUL, the deep sequence) the outcome bit agrees and the sentence differs. All seven carry the family's three pins (48 documents); see *The layers* and *J89-5d* under *Generated modules*. |
+| the queries sidecar nested between Node's stack and CPython's recursion limit (J89-5d) | **Node reads it as malformed; Python reads its well-formed entries.** `readSidecar` / `read_sidecar` (the `memory_queries` coverage, its missing list and write, `bantamkit_status`) read through `parseJson`, the port of `json.loads`, and Node's is a recursive descent whose limit is its stack: measured on macOS arm64, Node v26.13.0, a sidecar whose entry nests past 1,562 lists overflows cold and past 6,902 once V8 has optimised `parseJson` (binary searches over 40 warm-up rounds; it moves with tiering), where CPython 3.12's `json.loads` reads to 9,994. The orchestrator's ruling (J89-5d): Node's limit is an implementation limit, not a contract, so between the two the sides differ by ruling, and Python is not made to mimic a stack-size-dependent threshold. Past CPython's limit a crash is a bug: Python raised `RecursionError` out of the coverage, the write and status, and now answers Node's (the `parse_json` adapter is the RangeError Node throws, which the compiled `catch` sees), so those depths agree. Pinned in `--suite recall-queries`: `ruling: sidecar/nested — read of a sidecar nested 8500 deep (between node's stack and CPython's limit)` (8,500: past Node's optimised limit, inside CPython's, so both answers are deterministic) with a per-side literal each, and the agreeing `sidecar/nested: J89-5d …` cases at 20,000 and 100,000 deep (read, coverage and the missing list against the bed with no project sidecar, a write that replaces it), each with per-side literals. |
 | the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. **#315 (J86-3) leaves the mirror on `yaml.safe_load`:** the store now reads generated-first with a PyYAML fallback (*Generated modules*), and over these shapes the fallback answers, so the store and the mirror on the reference both read them as before; the mirror itself was not routed through the generated codec, because generated-first would also move the two classes #315's ruling licenses for the store (`yaml11-breaks`, `pyyaml-refuses`) into the mirror's outcomes, which this row pins. |
 | `MemoryStore.snapshot()` (Python only; J89-4b, #316 G3 U2) | **a Python-only API, kept by the shim, not a difference in any answer.** The pinned read set exists for ONE caller, `component.Memory.batch`, which `agent.py`'s loop (the Python eval agent, an unported module: no Node counterpart) enters around each assistant turn (RB-P1: a speculative save between two reads of one turn). `store.ts` deliberately omits it: the Node MCP server has no turn to pin. Since store.ts is generated it is hand-written in the shim (`bantamkit.memory.store`), built on the generated store: the pin is the generated `facts()` at entry, and while it holds the generated `candidates` answers it and `indexed` answers `null` (so `recall`, `lookup` and `pool` read the pin and `save` stays live), the same three moments `test_memory.py`'s snapshot cases pin. No `ruling:` case: no MCP tool, CLI or hook reaches it, so there is no Node answer to compare. |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
@@ -1952,7 +1953,8 @@ of `json.loads`, and the two disagree on a deep sidecar. Nested 3,000 deep, Node
 `json.loads` reads it (`{'a': ['ok']}`); nested 20,000 deep, Node answers `[]` and Python raises
 `RecursionError`. Python at `2737c34e` and Python generated answer the same at every depth
 (the adapter is `json.loads`), so generation neither made nor moved this difference; no case pins
-it and no ruling chooses a side.
+it and no ruling chooses a side. **Ruled and closed by J89-5d** (below): past CPython's limit Python
+takes Node's answer; between the two limits the difference is a ruled divergence.
 
 **Cost (J89-5a, macOS arm64, CPython 3.12.13; n = 9 interleaved rounds, medians; before =
 `2737c34e`, after = this tree; the store a copy of the project's 172-file `.bantamkit/memory` and
@@ -2030,7 +2032,8 @@ NUL in a grant (`"a\0b"`: `ValueError` from `Path.resolve`; Node reads `a0b` and
 flow sequence 1,000 deep (`RecursionError`; Node refuses). Generation keeps Python's answer (the
 `firstTokenTab` adapter raises such an exception outside the compiled `try`, as it left
 `load_grants`). Each is pinned `ruling: UNRULED DIVERGENCE (J89-5b) load_grants — <document>` with
-its outcome-bit companion and the per-side literals; no ruling chooses a side.
+its outcome-bit companion and the per-side literals; no ruling chooses a side. **Ruled and closed by
+J89-5d** (below): Python refuses each by name, and all seven joined the family.
 
 **Cost (J89-5b, macOS arm64, CPython 3.12.13; n = 9 interleaved rounds, medians; before =
 `32831cff`, after = this tree; the project store a copy of the 91-fact `.bantamkit/memory`, granted
@@ -2103,7 +2106,8 @@ bold digits; node's walk back to the block's zero stops nine codepoints down and
 9: `𝟘 days ago` is 2026-08-28 on node and 2026-09-06 on python), and a count of more than 4,300
 digits (`int()` raises `ValueError` out of `dream()`; node reports the term unresolved). Each is
 pinned `ruling: UNRULED DIVERGENCE absolutise: …` with a literal per side in `--suite dream`; no
-ruling chooses a side. UCD skew (a Unicode 16 assignment such as U+10D40, an Nd digit and a word
+ruling chooses a side. **Ruled and closed by J89-5d** (below): Node's digit fixed, Python's limit
+case answers Node's. UCD skew (a Unicode 16 assignment such as U+10D40, an Nd digit and a word
 character to Node's ICU and unassigned to CPython 3.12) moves `\b`, `\d` and `lower()` as the
 `candidates_done` row above describes; it is unchanged by generation.
 
@@ -2140,6 +2144,83 @@ regressions above are microseconds a fact.
 test over this package (`test_repomap.py`, `repomap.test.mjs`) focused `memory/dream.py` and
 expected `memory/store.py` in its top three; the shim imports the codec's converters too, so
 `memory/factcodec.py` ranks first and `memory/store.py` sixth, and both tests say so.
+
+### Three crashes ruled, and a digit fixed (#316 G3, J89-5d)
+
+The orchestrator ruled the three findings J89-5a, J89-5b and J89-5c left unruled. The rule for all
+three: **a crash is a bug**, so where CPython raised out of a user path, Python takes Node's answer.
+Generation is not involved, and the generated modules are unchanged. Every Python change is an
+adapter in `tools/ts2py/src/adapters.py`, written out as `_generated/_ts2py_adapters.py`.
+
+**The queries sidecar, nested.** `parse_json` (the `parseJson` adapter, which reads the sidecar
+for `readSidecar` and for the merge in `writeEntries`) now answers `json.loads`'s `RecursionError`
+with the RangeError `Maximum call stack size exceeded`, which is what Node's recursive `parseJson`
+throws. The compiled `catch` sees that error, so the sidecar is malformed on both sides.
+- Python's coverage, missing list, write and status no longer raise on a sidecar nested 20,000 or
+  100,000 deep. They answer as the bed with no project sidecar, and a write replaces the sidecar.
+- Between the two limits, the two sides differ by ruling. Node's limit is 1,562 cold and 6,902
+  optimised; CPython's is 9,994. See the divergence row above, pinned at 8,500.
+
+**The scan for the same shape (rule 3)** was a probe of both sides at 3,000, 8,500 and 100,000 deep:
+- **The term cache** (`cached`, `JSON.parse`) agreed on a deep entry, a deep row and a deep extra
+  key: same rows, same cache bytes after.
+- **The usage ledger** (`LogSegment._load`, `JSON.parse`) agreed with deep values in `keywords`,
+  `weight`, `last`, `ts`, a stray key and a whole line. `weights`, `last_used_map`, `census`,
+  `keywords_copy` and the fold were identical; the fold keeps a deep save line as it was read.
+- **The pricing table** (`decodePriceJson`) agreed on a deep `note` and on a deep token-class rate:
+  same `PriceTableError`. Its validation looks only one level down.
+- **The event log** and **the store** have no JSON read in their generated modules. The event log
+  writes `number | boolean | string` details. The store stringifies `[file, mtime_ns, size]`.
+- **The token ledger and the log segment** are pinned at 100,000 deep by J88-2.
+
+Each `JSON.parse` lowering, `_js_json_parse`, reads any depth without recursing, as V8 does (J88-2).
+`parseJson` was the only recursive JSON read on a user path. Nothing found fits neither rule.
+
+**The grants config: seven crashes are now refusals.** `yaml.safe_load` raised a `ValueError` for a
+scalar PyYAML resolves but cannot construct, and a `RecursionError` past CPython's limit. The
+`firstTokenTab` adapter now holds that error instead of raising it out of `loadGrants`.
+`parseConfigDocument` then throws it as a JS Error, which the compiled `catch` turns into
+`invalid memory config <path>: <reason>`. The reasons:
+- CPython's own `str(e)` for a scalar that cannot be constructed, for example
+  `day is out of range for month`;
+- `the document is nested too deeply to read` past CPython's limit;
+- `extra_stores must be a list of paths` for a NUL that PyYAML decoded into a grant. A path holding
+  NUL names nothing, so the item is not a path. Before, `Path.resolve` raised `ValueError`.
+
+The seven rows of `--suite recall-strings` are now in the family (48 documents) with its three
+pins. Against 053569d5's Python, each of the seven outcome-bit companions and the Python literal
+went red: 8 failures. A raw NUL in the YAML text is unchanged: it is still the both-refuse row.
+
+**The dream's counts.**
+- **Node's `pyIntDigits` was wrong.** It walked back at most nine code points to a block's zero.
+  U+1D7CE..U+1D7FF is five ten-digit blocks back to back, so every digit of the last four blocks
+  read as 9 (36 of 40 wrongly). It now reads a digit's distance from the start of its run of `Nd`
+  code points, modulo ten. Swept over every code point CPython 3.12's `int()` accepts (680): 0
+  differences. The sweep is a case in `--suite dream`; against a4321fdf's Node, it named the 36.
+- **Python raised on long counts.** A count of more than 4,300 digits raised `ValueError` out of
+  `dream()`. The `pyIntDigits` adapter now reads such a run as Node does: leading zeros dropped,
+  and infinity past 400 digits. CPython's limit is left where it is.
+  - So 4,301 nines is unresolved on both sides.
+  - A zero-padded 4,301-digit `…03 days ago` resolves to three days on both sides.
+
+The two UNRULED cases are now agreeing `J89-5d absolutise: …` cases, with a per-side literal each,
+and a second mathematical spelling and the padded count are added. Against a4321fdf, nine cases
+went red, on Node and on Python.
+
+**Red once, each, in a scratch worktree with this change's suites.**
+- `--suite recall-queries` against 32831cff's `runtime-py/src` stopped on the reference's
+  `RecursionError` (exit 2).
+- `--suite recall-strings` against 053569d5's: 8 failures.
+- `--suite dream` against a4321fdf's `runtime-py/src` and `dreamre.ts`: 9 failures.
+
+**Gates.** `--all` 23,289 cases, 0 failures, 241 ruled (242 before: the two dream rulings became agreeing
+cases, and the nested-sidecar ruling was added). By suite: `--suite recall-queries` 482 (1 ruled),
+`--suite recall-strings` 261 (50 ruled), `--suite dream` 156 (0 ruled), `--suite ts2py` 464,
+`--suite store` 428, `--suite recall-usage` 256, `--suite eventlog` 131 and `--suite wire` 712, each
+with 0 failures. ts2py `cargo test`: 87 passed (`j89_5b_layers_adapters_answer_like_the_reference`
+now holds the held error, the two refusals and the NUL item); clippy (`-D warnings`) and fmt are
+clean. `npm test`: 2,460 passed, 0 failed, 47 skipped. Full pytest: 5,335 passed, 0 failed. ruff is
+clean.
 
 ## Concurrency
 

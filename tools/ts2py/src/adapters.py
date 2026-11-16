@@ -25,6 +25,7 @@ from __RUNTIME__ import (
     _JsError,
     _JsMap,
     _JsObject,
+    _JsRangeError,
     _JsTypeError,
 )
 
@@ -1862,11 +1863,19 @@ def _tagged(value):
 def parse_json(text, *_):
     """`parseJson` (runtime-ts/src/pyjson.ts): `json.loads(text)`, which it ports, answered as the
     tagged `PyValue` the TypeScript returns; a malformed text is `PyJSONDecodeError` with CPython's
-    message, so a compiled `catch` sees it."""
+    message, so a compiled `catch` sees it.
+
+    A text nested past CPython's limit (`json.loads` raises `RecursionError`) is the RangeError
+    `Maximum call stack size exceeded`, which is what `parseJson`, a recursive descent, throws for
+    it: a compiled `catch` sees it as it sees Node's (J89-5d, ruled: a crash is a bug). Between the
+    two limits (Node's stack, which moves with V8's tiering, and CPython's ~10,000) the two still
+    differ, by ruling: docs/porting.md, the J89-5d row."""
     if not isinstance(text, str):
         raise TypeError("ts2py: parseJson of anything but a string is outside the subset")
     try:
         value = _json.loads(text)
+    except RecursionError:
+        raise _JsRangeError("Maximum call stack size exceeded") from None
     except ValueError as error:
         raise PyJSONDecodeError(str(error)) from None
     return _tagged(value)
@@ -1997,6 +2006,14 @@ _TAB_PROBLEM = "found character '\\t' that cannot start any token"
 # and then `parseConfigDocument` of the same text, and the reference loads it once.
 _GRANT_CONFIG = []
 
+#: J89-5d: the reason `load_grants` gives for a config nested past CPython's recursion limit.
+_GRANT_TOO_DEEP = "the document is nested too deeply to read"
+
+
+class _GrantConfigUnreadable(Exception):
+    """A config `yaml.safe_load` raised on with something other than a `yaml.YAMLError` (J89-5d):
+    refused through the same `invalid memory config <path>: <reason>` sentence."""
+
 
 def _grant_config_load(text):
     if _GRANT_CONFIG and _GRANT_CONFIG[0][0] == text:
@@ -2008,6 +2025,15 @@ def _grant_config_load(text):
         value = yaml.safe_load(text)
     except yaml.YAMLError as e:
         error = e
+    except RecursionError:
+        # J89-5d (ruled: a crash is a bug): a document nested past CPython's limit is refused by
+        # name, as every other config refusal is, instead of leaving `load_grants` raw.
+        error = _GrantConfigUnreadable(_GRANT_TOO_DEEP)
+    except ValueError as e:
+        # J89-5d: a scalar PyYAML resolves but cannot construct (an implicit timestamp such as
+        # `2001-02-30` or `25:00:00`, an int past CPython's 4,300-digit limit) is refused with
+        # CPython's own reason, as a `yaml.YAMLError` is.
+        error = _GrantConfigUnreadable(str(e))
     _GRANT_CONFIG[:] = [(text, value, error)]
     return value, error
 
@@ -2035,7 +2061,10 @@ def first_token_tab(text, *_):
 
 
 def _config_item(item):
-    if isinstance(item, str):
+    # J89-5d: a string holding NUL (PyYAML decodes `"\0"`) names no path, so it is not one: the
+    # validator refuses the list (`extra_stores must be a list of paths`) where `Path.resolve`
+    # raised a raw `ValueError` out of `load_grants`.
+    if isinstance(item, str) and "\0" not in item:
         return {"kind": "str", "value": item}
     return {"kind": "other", "value": None}
 
@@ -2165,9 +2194,21 @@ def py_sub_spaces(text, *_):
 
 
 def py_int_digits(text, *_):
-    """`pyIntDigits` (dreamre.ts): CPython's `int(text)` (its `ValueError` included), as a double;
-    past the largest double, infinity."""
-    n = int(_dream_text("pyIntDigits", text))
+    """`pyIntDigits` (dreamre.ts): CPython's `int(text)` (its `ValueError` included, but for a run
+    of digits past the int-string limit), as a double; past the largest double, infinity."""
+    text = _dream_text("pyIntDigits", text)
+    try:
+        n = int(text)
+    except ValueError:
+        # J89-5d (ruled: a crash is a bug): a run of digits past CPython's int-string limit
+        # (`sys.get_int_max_str_digits()`, 4,300) is read as `pyIntDigits` reads it, the limit
+        # left where it is: its leading zeros dropped, its value past the largest double infinity.
+        if not text.isdecimal():
+            raise
+        digits = "".join(str(_unicodedata.decimal(ch)) for ch in text).lstrip("0")
+        if len(digits) > 400:
+            return _math.inf
+        n = int(digits or "0")
     try:
         return float(n)
     except OverflowError:

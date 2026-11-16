@@ -926,6 +926,7 @@ function literalCases(pySide, nodeSide, label, expected) {
 export async function run(ctx) {
   const store = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'store.js')).href);
   const dreamer = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'dream.js')).href);
+  const dreamre = await import(pathToFileURL(join(ctx.runtimeTs, 'dist', 'memory', 'dreamre.js')).href);
   const cases = [];
   const notes = [];
 
@@ -1115,40 +1116,50 @@ export async function run(ctx) {
       });
     }
 
-    // J89-5c found, NOT ruled and NOT fixed (unchanged by generation: the compiled dream reaches
-    // CPython's `int()` through the `pyIntDigits` adapter, as `_resolve` called it). Two counts
-    // `int()` and node's `pyIntDigits` read differently:
-    //  - a digit of U+1D7CE..U+1D7FF (MATHEMATICAL BOLD/DOUBLE-STRUCK/SANS-SERIF/MONOSPACE DIGIT):
-    //    five ten-digit Nd blocks back to back, so node's walk back to the block's zero stops nine
-    //    codepoints down and reads every one but the first block's as 9; `int()` reads 0..9.
-    //  - a count of more than 4300 digits: `int()` raises ValueError (CPython's
-    //    `sys.get_int_max_str_digits()`), out of `dream()`; node's sum is Infinity, past
-    //    `addDays`'s cap, and the term is reported unresolved.
+    // J89-5c found two counts `int()` and node's `pyIntDigits` read differently; RULED by the
+    // orchestrator on J89-5d and fixed, so these are agreeing cases with the answer pinned per side:
+    //  - a digit of U+1D7D8..U+1D7FF: U+1D7CE..U+1D7FF is five ten-digit Nd blocks back to back,
+    //    and node's walk back to the block's zero stopped nine codepoints down, reading every digit
+    //    of the last four as 9. Node was wrong: it now reads the digit's distance from its run's
+    //    first codepoint modulo ten, CPython's value (swept over every codepoint `int()` accepts:
+    //    0 differences, the J89-5d sweep case below). Red against a4321fdf's node.
+    //  - a count of more than 4300 digits: `int()` raised ValueError (CPython's
+    //    `sys.get_int_max_str_digits()`) out of `dream()`, where node's sum is Infinity, past
+    //    `addDays`'s cap, and the term is reported unresolved. A crash is a bug, so python takes
+    //    node's answer: the adapter reads such a run as `pyIntDigits` does (leading zeros dropped,
+    //    past the largest double infinity), CPython's limit left where it is. Red against
+    //    a4321fdf's python. A zero-padded count of 4301 digits is 3 days on both.
     {
-      const UNRULED = 'UNRULED DIVERGENCE (J89-5c): not ruled in docs/porting.md and not fixed; ';
       const long = `${'9'.repeat(4301)} days ago`;
+      const padded = `${'0'.repeat(4300)}3 days ago`;
       const counts = [
         ['a count spelled U+1D7D8 (double-struck zero)', 'It landed 𝟘 days ago.',
-          { body: b64('It landed 𝟘 days ago (2026-09-06).'), hits: 1, unresolved: [] },
-          { body: b64('It landed 𝟘 days ago (2026-08-28).'), hits: 1, unresolved: [] },
-          'python reads it as int() does, 0 days; node\'s pyIntDigits reads 9'],
+          { body: b64('It landed 𝟘 days ago (2026-09-06).'), hits: 1, unresolved: [] }],
+        ['a count spelled U+1D7FF U+1D7E2 (monospace nine, sans-serif zero)', 'It landed 𝟿𝟢 days ago.',
+          { body: b64('It landed 𝟿𝟢 days ago (2026-06-08).'), hits: 1, unresolved: [] }],
         ['a count of 4301 digits', `It landed ${long}.`,
-          { error: 'ValueError' },
-          { body: b64(`It landed ${long}.`), hits: 0, unresolved: [b64(long)] },
-          'python raises ValueError from int() past 4300 digits; node reports the term unresolved'],
+          { body: b64(`It landed ${long}.`), hits: 0, unresolved: [b64(long)] }],
+        ['a zero-padded count of 4301 digits', `It landed ${padded}.`,
+          { body: b64(`It landed ${padded} (2026-09-03).`), hits: 1, unresolved: [] }],
       ];
       const rows = counts.map(([, body]) => [b64(body), BOUNDARY_BASIS, b64('ypo'), 'project']);
       const pyRows = ctx.runPython(REF, { op: 'absolutise', cases: rows }).out;
       const shape = (row) =>
         row.error ? { error: row.error.type } : { body: row.body, hits: row.hits.length, unresolved: row.unresolved.map((h) => h.term) };
-      counts.forEach(([label, body, pyExpected, ndExpected, why], i) => {
+      counts.forEach(([label, body, expected], i) => {
         const [text, hits, unresolved] = dreamer.absolutise(body, BOUNDARY_BASIS, 'ypo', 'project');
         const nd = { body: b64(text), hits: hits.length, unresolved: unresolved.map((h) => b64(h.term)) };
         const py = shape(pyRows[i]);
-        cases.push({ name: `ruling: UNRULED DIVERGENCE absolutise: ${label}`, kind: 'json', expected: py, actual: nd, ruling: UNRULED + why });
-        cases.push({ name: `LITERAL: J89-5c python on ${label}`, kind: 'json', expected: pyExpected, actual: py });
-        cases.push({ name: `LITERAL: J89-5c node on ${label}`, kind: 'json', expected: ndExpected, actual: nd });
+        cases.push({ name: `J89-5d absolutise: ${label} — python against node`, kind: 'json', expected: py, actual: nd });
+        cases.push({ name: `LITERAL: J89-5d python on ${label}`, kind: 'json', expected, actual: py });
+        cases.push({ name: `LITERAL: J89-5d node on ${label}`, kind: 'json', expected, actual: nd });
       });
+      // The sweep: every codepoint CPython's `int()` accepts as a digit, alone, through node's
+      // `pyIntDigits` against the value `int()` gives it (the reference lists them).
+      const digits = ctx.runPython(REF, { op: 'int_digits' }).digits;
+      const wrong = digits.filter(([cp, v]) => dreamre.pyIntDigits(String.fromCodePoint(cp)) !== v);
+      cases.push({ name: 'J89-5d pyIntDigits: every codepoint CPython\'s int() accepts as a digit reads its int() value', kind: 'json', expected: [], actual: wrong.map(([cp]) => cp.toString(16)) });
+      cases.push({ name: 'LITERAL: J89-5d the digits CPython 3.12\'s int() accepts (UCD 15.0)', kind: 'json', expected: 680, actual: digits.length });
     }
   }
 
