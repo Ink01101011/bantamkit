@@ -41,10 +41,15 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   long session that saved nothing ([docs/hooks.md](docs/hooks.md)).
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
-  [the fifteen tools](#-what-it-serves).
+  [the sixteen tools](#-what-it-serves).
 - **Two runtimes, one store.** Pure Node on npm and Python on PyPI read and write the same
   files, and every surface is compared between both runtimes by a conformance suite
-  (`node tools/conformance/run.mjs --all`).
+  (`node tools/conformance/run.mjs --all`). The core logic is written once, in TypeScript: the
+  Python modules in `bantamkit/_generated/` (the memory store, recall, layers and dream, the
+  fact-file codec, the event log, the token ledger and the work planner among them) are compiled
+  from it by `tools/ts2py`, a Rust compiler, and committed, so installing from PyPI or npm needs
+  no Rust. The public Python API is unchanged, and where the two runtimes still deliberately
+  differ is listed in [docs/porting.md](docs/porting.md).
 - **A Python library for small models, too.** `pip install bantamkit` lifts small-model agents
   (~1B–8B, any OpenAI-compatible endpoint): malformed output, unreviewed answers, forgotten
   context and runaway loops are absorbed by code, and a bundled eval suite measures the uplift.
@@ -66,7 +71,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
 | [Update](#-update) | `--update`, then restart the server |
 | [Troubleshooting](#-troubleshooting) | Timeouts, Connection closed, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 15 tools, three prompts, two resource templates |
+| [What it serves](#-what-it-serves) | 16 tools, three prompts, two resource templates |
 | [Use it as a Python library](#-use-it-as-a-python-library) | `pip install bantamkit` and a minimal agent |
 | [Recommended defaults](#-recommended-defaults) | Which components to attach, measured on four models |
 | [Documentation](#-documentation) | Every page under `docs/` |
@@ -321,6 +326,7 @@ the ones it installed, and approves, rejects, undoes, promotes or demotes one; i
 | `shiftwork_status` | read-only progress summary of a checkpoint |
 | `shiftwork_plan` | read-only: which units of a checkpoint its `depends_on` graph permits to run at once. Never moves the cursor |
 | `work_plan` | turn any `{id, depends_on, priority}` graph into the batches that may run in parallel, plus the widest fan-out |
+| `shiftwork_draft` | turn settled tickets into a new job: a schema-valid checkpoint plus one brief file per ticket, before the first clock-in |
 | `token_ledger` | what a session cost, read off the host's transcripts |
 | `bantamkit_status` | is bantamkit working, and which build: version, `build_id`, store health against its budget |
 | `build_identity` | report the fingerprint of the source on disk, not the executing code — useful when a machine carries two installs under one name |
@@ -408,7 +414,7 @@ Measured on the bundled 22-task suite across four models, 528 runs each. Numbers
 | `runtime-ts/` | The pure-Node MCP server (`bantamkit-mcp` on npm) |
 | `assets/` | Language-agnostic asset pack: skills, rubrics, tool schemas, eval tasks |
 | `examples/` | Runnable starter scripts (quickstart, structured output, layered memory) |
-| `tools/` | Repo tools that ship outside the wheel (e.g. the shift-work driver) |
+| `tools/` | Repo tools that ship outside the wheel (e.g. the shift-work driver, and `tools/ts2py`, the Rust compiler that generates `runtime-py`'s `_generated/` modules from `runtime-ts`) |
 | `docs/` | This runbook |
 
 Design notes live in `docs/superpowers/specs/`.

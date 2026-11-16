@@ -339,7 +339,8 @@ The gate, and the mutation that proves it:
 holds it for both `saved` and `duplicate`, using a second wording that deliberately drops
 every phrase a classifier would key on.
 
-This cuts across the layer boundary — the decision lives in `memory/component.py`, the
+This cuts across the layer boundary — the decision lives in `memory/component.ts` (runtime-py
+runs it compiled, as `_generated/component.py`), the
 record is written from the server layer — and it is resolved by **surfacing the decision
 structurally, not by parsing**. `Memory.save_outcome()` and `Memory.recall_outcome()`
 return `SaveOutcome` / `RecallOutcome`; `Memory.save()` and `Memory.recall()` are
@@ -439,7 +440,8 @@ derived field is a second thing to keep true.
 ## Metadata only
 
 Never a tool argument's value, never a memory body, never a validated output, never a
-query string. Seven of the sixteen tools take unbounded free text and seven take absolute
+query string. Ten of the sixteen tools take an unbounded string (a `string` parameter with no
+`enum` or `maxLength`, counted over `assets/tools/`) and seven take absolute
 paths (the five shift-work tools' `checkpoint`, `skill_audit`'s `root`, and
 `token_ledger`'s `root` and `prices`); each record carries counts and tokens from a closed
 set, never the path, never a skill id, never a session id, never a model name

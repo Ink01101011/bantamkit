@@ -52,6 +52,22 @@ The rule exists because it was broken: `--assets-root` shipped in `runtime-ts` w
 no Python counterpart, so a byte-identical `-h` would have had to leave a working
 flag undocumented. Nothing failed, because nothing compared the two CLIs at all.
 
+## Generated Python modules — edit the TypeScript, then regenerate
+
+Every `.py` in `runtime-py/src/bantamkit/_generated/` is compiled from `runtime-ts/src` by
+`tools/ts2py` (Rust) and committed. For one of those modules, edit the TypeScript, never
+`_generated/`, then regenerate with the five commands in `docs/porting.md` (*Generated
+modules*, also in `docs/install.md`; cargo is needed only for this). A stale or hand-edited
+file is refused by the F4 byte-compare in `node tools/conformance/run.mjs --suite ts2py` and
+by `runtime-py/tests/test_ts2py_fresh.py`. The public Python name stays a hand-written shim
+beside it (`bantamkit/memory/store.py` over `_generated/store.py`); an import ts2py does not
+compile reaches Python only through a measured row in `tools/ts2py/src/adapters.rs`.
+
+For a generated module, the "lands in both runtimes" rule above is met by regenerating — one
+TypeScript change is both halves — plus a conformance case that compares the two answers, as
+for any other feature. A shim or adapter change is still Python-side work and must keep the
+two answers identical.
+
 ## Shift-work orchestration policy
 
 Any multi-unit orchestration — ≥2 planned units, or any

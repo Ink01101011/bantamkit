@@ -11,10 +11,10 @@ what the package *is*, see [`runtime-ts/README.md`](../runtime-ts/README.md).
 
 ```
 name      bantamkit-mcp
-version   0.25.0
+version   0.40.0          (runtime-ts/package.json at #333)
 type      module            (ESM)
 license   MIT               LICENSE vendored from the repository root at prepack
-engines   node >= 18        measured on 18.20.8, not assumed
+engines   node >= 20        raised from 18 by 856bc128: 18 is a floor the conformance suite cannot keep
 bin       bantamkit-mcp     -> dist/cli.js        the MCP server, what a host launches
           bantamkit-memory  -> dist/memory/cli.js the memory lifecycle CLI
 files     dist, assets      plus README.md, LICENSE and package.json, which npm packs

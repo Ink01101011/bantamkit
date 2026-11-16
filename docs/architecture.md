@@ -18,7 +18,7 @@ transferred fine. The layer split makes that seam physical
 
 | layer | owns | lives in |
 |---|---|---|
-| **1 — Core** | deterministic mechanics, proven cross-model: agent loop, gate control flow, memory store, filegraph ledger/cache, token accounting, dependency-graph batching | `agent.py`, `memory/`, `filegraph.py`, gate mechanics in `critique.py` / `structured.py`, `textutil.py`, `workplan.py` / `workplan.ts` (the Kahn batcher: pure computation over the nodes it is handed — `workplan.py`'s only import is `typing.Any` and `workplan.ts` imports nothing, read off the two files rather than asserted by a gate; see the note below) |
+| **1 — Core** | deterministic mechanics, proven cross-model: agent loop, gate control flow, memory store, filegraph ledger/cache, token accounting, dependency-graph batching | `agent.py`, `memory/` (most of it compiled from TypeScript into `_generated/`: [Generated modules](#generated-modules-where-they-sit)), `filegraph.py`, gate mechanics in `critique.py` / `structured.py`, `textutil.py`, `workplan.ts` (the Kahn batcher: pure computation over the nodes it is handed — `workplan.ts` imports nothing, and the Python compiled from it, `_generated/workplan.py`, imports only `_ts2py_runtime`; the shim `workplan.py` adds `typing.Any`. Read off the files rather than asserted by a gate; see the note below) |
 | **2 — Contract** | everything the model reads or writes: instruction/feedback/evidence wording (data) + outbound parsing (code) | `contract.py` + `assets/contracts/`; rubrics, skills, tool schemas in `assets/` |
 | **3 — Transport** | wire protocol, retries, timeouts, (future) server capability detection | `client.py` |
 | **4 — Policy/Profile** | tunables as named data: turn budgets, retry caps, evidence budgets | `profile.py` + `assets/profiles/` |
@@ -31,6 +31,41 @@ docs is the regression test that contract hasn't leaked into core, and
 byte-identity for every contract string, core-purity scan, import
 direction, profile-value guard). New primitives must measure uplift on
 more than one model before promotion.
+
+## Generated modules: where they sit
+
+Part of runtime-py is not hand-written. The TypeScript in `runtime-ts/src` is the one source
+for these modules, and `tools/ts2py` (a Rust compiler built on oxc; its subset is
+`tools/ts2py/SUBSET.md`, its rules `tools/ts2py/RULES.md`) compiles them into
+`runtime-py/src/bantamkit/_generated/`, where they are committed:
+
+| generated module | TypeScript source | layer | Python shim (the public name) |
+|---|---|---|---|
+| `workplan.py` | `workplan.ts` | 1 — Core | `bantamkit/workplan.py` |
+| `pyyaml.py`, `factfile.py` | `memory/pyyaml.ts`, `memory/factfile.ts` | 1 — Core | `bantamkit/memory/factcodec.py` |
+| `store.py`, `native.py`, `retrieval.py`, `usage.py`, `queries.py`, `layers.py`, `dream.py`, `component.py` | `memory/*.ts`, same names | 1 — Core | `bantamkit/memory/<name>.py` |
+| `pricing.py`, `tokenledger.py`, `jobbudget.py` | `pricing.ts`, `tokenledger.ts`, `jobbudget.ts` | 1 — Core (token accounting) | `bantamkit/<name>.py` |
+| `logsegment.py` | `storage/logsegment.ts` | 1 — Core | `bantamkit/storage/logsegment.py` |
+| `eventlog.py` | `eventlog.ts` | 5 — Composition | `bantamkit/eventlog.py` |
+| `_ts2py_runtime.py`, `_ts2py_adapters.py` | `tools/ts2py/src/runtime.py`, `adapters.py` | support, no layer | — |
+
+A generated module stays in the layer its TypeScript source is in; generation moves no
+boundary. Two seams keep it there:
+
+- **The shim.** Every generated module is reached through a hand-written module under the old
+  name, which keeps the public Python API (snake_case names, dataclasses, `Path` arguments,
+  Python exceptions) and converts values at the crossing. A caller imports the shim, never
+  `_generated/`.
+- **The adapters.** An import the compiler does not compile (a hand-written Python module, a
+  Node builtin such as `node:fs`) resolves only through a row in `tools/ts2py/src/adapters.rs`,
+  written in `tools/ts2py/src/adapters.py`; each row names why the Python is the same function
+  and the measurement that pins it. An import with no compiled module and no row is a compile
+  error. JS semantics the subset needs (`===`, UTF-16 strings, `sort`) are in
+  `_ts2py_runtime.py`.
+
+To change one of these modules, edit the TypeScript and regenerate
+([Install → Working on a generated module](install.md#working-on-a-generated-module));
+`docs/porting.md` (*Generated modules*) has the full history and every ruling.
 
 ## How the layers interact
 
@@ -84,12 +119,14 @@ moving:
   *contract literals*; `test_import_direction` runs over `contract.py` and
   `profile.py` only. Neither one reads a core module's import list, and there is
   no Node counterpart to either — `runtime-ts` has no layer test at all. So the
-  purity of `workplan.py` / `workplan.ts` is true today by inspection (their
-  imports are `typing.Any` and nothing, respectively) and would stay green if
-  someone added `import json, pathlib` tomorrow. Repo-wide and pre-existing: it
+  purity of `workplan.ts` is true today by inspection (it imports nothing; the
+  generated `workplan.py` imports only `_ts2py_runtime` and its shim adds
+  `typing.Any`) and would stay green if someone added `import json, pathlib`
+  tomorrow. Repo-wide and pre-existing: it
   is the property every Layer 1 row here claims.
 - Tool-observation wording is still inline in `filegraph.py` (repeat
-  annotations) and `memory/component.py` (save feedback). It is
+  annotations) and `memory/component.ts` (save feedback; runtime-py runs it
+  compiled, as `_generated/component.py`). It is
   model-facing, but it measured fine cross-model, so it moves in a later
   contract cycle, not this one.
 - The agent↔component protocol is duck-typed and undeclared, so it can

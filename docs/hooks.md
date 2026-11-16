@@ -3,7 +3,7 @@
 `tools/hooks/bantamkit-hook.mjs` is a Claude Code hook adapter: one Node file, every event,
 dispatched on `hook_event_name`. Register it once, user scope:
 
-    node tools/hooks/install.mjs          # writes six entries into ~/.claude/settings.json
+    node tools/hooks/install.mjs          # writes seven entries into ~/.claude/settings.json
     node tools/hooks/install.mjs --remove
 
 **AMENDED 2026-09-20 (job61, J61-2): the sentence above is no longer where the code is, and

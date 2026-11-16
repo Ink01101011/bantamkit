@@ -23,18 +23,61 @@ python -m venv .venv
 .venv/bin/pip install -e runtime-py
 ```
 
-For the test suite and linter, add the `dev` extra:
+For the test suite and linter, add the `dev` and `mcp` extras (without `mcp` the MCP server's
+tests skip):
 
 ```bash
-.venv/bin/pip install -e "runtime-py[dev]"
-.venv/bin/python -m pytest runtime-py
+.venv/bin/pip install -e "runtime-py[dev,mcp]"
+.venv/bin/python -m pytest runtime-py/tests -q
+.venv/bin/ruff check runtime-py tools
 ```
+
+The conformance suite (`node tools/conformance/run.mjs --all`) compares the Python answers with
+the Node build's, so build that first: `cd runtime-ts && npm ci && npm run build`.
 
 Check the install:
 
 ```bash
 .venv/bin/python -c "import bantamkit; print(bantamkit.Agent)"
 ```
+
+### Working on a generated module
+
+Part of the Python package is compiled from the TypeScript in `runtime-ts/src` by `tools/ts2py`,
+a Rust compiler: everything in `runtime-py/src/bantamkit/_generated/` (the memory store, recall,
+layers, dream and component, the fact-file codec, the event log, the token ledger, pricing, the
+job budget, the log segment and the work planner). The generated files are committed, so
+installing, testing and building the wheel need no Rust. You need `cargo` only to regenerate.
+
+To change one of these modules, edit the TypeScript, never `_generated/`, and regenerate from the
+repository root (`~/.cargo/bin/cargo` when cargo is not on PATH):
+
+```bash
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- runtime-ts/src/workplan.ts \
+  -o runtime-py/src/bantamkit/_generated/workplan.py --runtime-module ._ts2py_runtime
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+  runtime-ts/src/memory/pyyaml.ts runtime-ts/src/memory/factfile.ts \
+  --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+  runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
+  runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
+  runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
+  runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts runtime-ts/src/memory/dream.ts \
+  runtime-ts/src/memory/component.ts \
+  --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+  --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+  --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py
+```
+
+The output is deterministic: on an unchanged tree these five commands rewrite the same bytes. Two
+gates refuse a stale or hand-edited file: `runtime-py/tests/test_ts2py_fresh.py` (each module's
+`source-sha256` header against its TypeScript, no Rust needed) and
+`node tools/conformance/run.mjs --suite ts2py`, which recompiles everything and byte-compares it
+with the committed files. Each Python module keeps its public API through a hand-written shim
+beside it; see [Architecture → Generated modules](architecture.md#generated-modules-where-they-sit)
+and [Porting → Generated modules](porting.md).
 
 ## Pinned install from a tag
 
@@ -121,7 +164,7 @@ commit:
 
 Everything above installs the **library**, and it needs Python. The **MCP server** does
 not, any more. `runtime-ts/` is a pure-Node port of it — the same sixteen tools, the same
-prompt, the same two resource templates, the same memory store on disk — packaged so a
+three prompts, the same two resource templates, the same memory store on disk — packaged so a
 teammate can add one line to `.mcp.json` and be done:
 
 ```json

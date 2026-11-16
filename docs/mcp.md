@@ -24,7 +24,7 @@ and the [PyPI package's README](../runtime-py/README.md).
 
 ## What's exposed
 
-Fourteen tools, listed here in the order both servers answer `tools/list`
+Sixteen tools, listed here in the order both servers answer `tools/list`
 (`node .shiftwork/notes-job67/J67-7-probe.mjs <node|py> list` prints the roster; the two
 agree name for name, title for title):
 
@@ -44,10 +44,12 @@ agree name for name, title for title):
 | `token_ledger` | What a session actually cost, read off the host's own transcripts: one JSON document of the four token classes per session, counted per `requestId`. See [Ledger](ledger.md) |
 | `work_plan` | The dependency batcher over any `{id, depends_on, priority}` graph handed to it. Takes no path and opens no file |
 | `shiftwork_plan` | Read-only batch view of a checkpoint: which units its `depends_on` graph permits to run at once. Echoes the cursor unchanged and never mutates — see [Shift-work tools](#shift-work-tools) |
+| `memory_queries` | List the facts that still lack likely-prompt queries (up to 10 a call), and store the queries written for them; they live in a per-layer sidecar under `~/.bantamkit/queries/`, no fact file changes, and recall matches a prompt against them. See [Memory](memory.md) |
+| `shiftwork_draft` | Turn settled tickets into a new job: a checkpoint that validates against the checkpoint schema, plus one brief file per ticket, before the first `shiftwork_clock_in`. Never edits a job in progress — see [Shift-work](shiftwork.md) |
 
 `bantamkit_read` and `repo_map` are not served: both left the roster on 2026-09-12 (job50
 I5, user ruling) and answer `Unknown tool: <name>` on both servers. The reader and the repo
-map remain libraries ([Reader](docread.md), [The repo map](repomap.md)).
+map remain libraries (the reader: `runtime-py/src/bantamkit/docread.py` and `runtime-ts/src/docread.ts`, gated by `--suite docread`; [The repo map](repomap.md)).
 
 Every served tool's description, input schema, `title` and annotations are its asset
 `assets/tools/<name>.json`, the same file in both runtimes.
@@ -89,7 +91,7 @@ npx -y mcp-tdqs@0.2.0 lint --command ".venv/bin/bantamkit-mcp --store /tmp/s"   
 ```
 
 What it holds: every input property carries a schema `description` (100 % coverage on all
-fifteen tools, where six were at 0 %), every tool whose result is a JSON object serves real
+sixteen tools, read off `assets/tools/*.json` at #333; six were at 0 % before #222), every tool whose result is a JSON object serves real
 `output_schema` properties instead of narrating the return shape in prose, and every
 description says when to use the tool, which sibling to use instead, and what it writes
 beyond its annotations. The three `shadow-candidate` warnings it still prints are a cost

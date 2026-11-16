@@ -1055,6 +1055,12 @@ comparison between them can see it. Those two are pinned as typed literals again
 each side separately. Measured: 17 mutants applied to the port and to the reference,
 17 killed, and the two symmetric mutations reddened only the literals.
 
+Since #316 G3 (J89-5c) there is no separate Python pass to port: `memory/dream.py` is a shim
+over `_generated/dream.py`, compiled from `runtime-ts/src/memory/dream.ts` by `tools/ts2py`
+([Architecture → Generated modules](architecture.md#generated-modules-where-they-sit)). The
+same holds for the store, recall, layers, queries, the native layer and the component, so the
+suite now compares one TypeScript source run by Node with the same source compiled to Python.
+
 ```python
 from bantamkit.memory import Memory
 

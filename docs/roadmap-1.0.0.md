@@ -43,7 +43,7 @@ PyPI reaches the same CLI as `python -m bantamkit.memory` (`memory/__main__.py`)
 declares no script for it.
 
 **MCP.** The same 16 tools on both servers: the 14 in `docs/mcp.md` plus `memory_queries`
-and `shiftwork_draft`. **`docs/mcp.md` still says "Fourteen tools"; it is stale.** Definitions
+and `shiftwork_draft`. **`docs/mcp.md` still says "Fourteen tools"; it is stale.** (Fixed by #333, J89-D: it now lists all sixteen.) Definitions
 are shared assets (`assets/tools/*.json`, 21 files: the 16 served plus `bantamkit_read`,
 `repo_map`, `document_list`, `document_read` and `file_graph`, which are not served).
 
@@ -663,3 +663,19 @@ hand-written). The usage ledger's far-future folded line now weighs Infinity in 
 | python:3.11-slim (Docker, 3.11.18): `test_memory_retrieval.py`, `test_memory_usage.py`, `test_ts2py_fresh.py`, `test_storage_bar.py`, `test_touch_context.py`, `test_memory_queries.py`, `test_skillmine.py` | 283 passed, 1 skipped |
 | `node tools/conformance/run.mjs --all` | PASS 23,127 cases: 3,754 byte-identical, 10,865 exact-string, 8,508 structural, 195 ruled-different, 0 failures, no stale ruling |
 | `ruff check runtime-py tools` | clean |
+
+## 1.0.0 release note: the generated Python (#333, draft for #318)
+
+The user-facing note #333 asks the 1.0.0 release notes to carry, kept here until #318 writes them:
+
+> **Part of the Python package is now generated from TypeScript.** bantamkit's core logic (the
+> memory store, recall, layers, dream, the fact-file codec, the event log, the token ledger,
+> pricing and the work planner) is written once, in `runtime-ts/src`, and a Rust compiler in the
+> repository, `tools/ts2py`, compiles it into the Python modules under `bantamkit/_generated/`.
+> Those files ship in the wheel, so `pip install bantamkit` and `npx bantamkit-mcp` need no
+> Rust. The public Python API is unchanged: each generated module sits behind a hand-written
+> module under its old name. Where the two runtimes still deliberately differ is listed in
+> `docs/porting.md`.
+
+#333 asks for this pass to be repeated once more after the last #316 group lands, before #318
+publishes.

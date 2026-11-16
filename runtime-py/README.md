@@ -48,10 +48,14 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   ([docs/hooks.md](https://github.com/Ink01101011/bantamkit/blob/main/docs/hooks.md)).
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
-  [the fifteen tools](#-what-it-serves).
+  [the sixteen tools](#-what-it-serves).
 - **Same answers as the Node server.** The two share a memory store on disk, and every surface
   is compared between both runtimes by a conformance suite (`node tools/conformance/run.mjs
-  --all` in the repository), so install whichever your host makes easy.
+  --all` in the repository), so install whichever your host makes easy. Much of this package's
+  core (the memory store, recall, the fact-file codec, the event log, the token ledger, the work
+  planner) is compiled from the Node server's TypeScript by a Rust compiler in the repository and
+  shipped as plain Python under `bantamkit/_generated/`: `pip install` needs no Rust, and the
+  public Python API is unchanged.
 - **A Python library for small models, too.** `import bantamkit` lifts small-model agents
   (~1B–8B, any OpenAI-compatible endpoint) — see [Module API](#-module-api).
 
@@ -71,7 +75,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Configuration](#-configuration) | Every flag and variable, with its default |
 | [Update](#-update) | `--update`, pipx, uv, then restart |
 | [Troubleshooting](#-troubleshooting) | Timeouts, refusals, the wrong store |
-| [What it serves](#-what-it-serves) | 15 tools, three prompts, two resource templates |
+| [What it serves](#-what-it-serves) | 16 tools, three prompts, two resource templates |
 | [Requirements](#-requirements) | Python and dependencies |
 | [The asset pack](#-the-asset-pack) | `--assets-root`, `BANTAMKIT_ASSETS` |
 | [The operator CLI: `python -m bantamkit.memory`](#-the-operator-cli-python--m-bantamkitmemory) | status, lint, compact, archived, archive, restore |
@@ -315,6 +319,7 @@ It serves 16 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_
 | `shiftwork_status` | read-only progress summary of a checkpoint |
 | `shiftwork_plan` | read-only: which units of a checkpoint its `depends_on` graph permits to run at once. Never moves the cursor |
 | `work_plan` | turn any `{id, depends_on, priority}` graph into the batches that may run in parallel, plus the widest fan-out |
+| `shiftwork_draft` | turn settled tickets into a new job: a schema-valid checkpoint plus one brief file per ticket, before the first clock-in |
 | `token_ledger` | what a session cost, read off the host's transcripts |
 | `bantamkit_status` | is bantamkit working, and which build: version, `build_id`, store health against its budget |
 | `build_identity` | report the fingerprint of the source on disk, not the executing code — useful when a machine carries two installs under one name |
@@ -387,10 +392,12 @@ declares a single `.` entry point and refuses every deep import with
 `ERR_PACKAGE_PATH_NOT_EXPORTED`. Only the names below are *intended* as API; the rest are
 reachable because Python has no way to say otherwise.
 
-**`import bantamkit` binds 45 names, of which 30 are values.** The other 15 are submodules bound
+**`import bantamkit` binds 51 names, of which 30 are values.** The other 21 are submodules bound
 as a side effect of the package's own imports (`agent`, `assets`, `budget`, `client`, `contract`,
 `critique`, `docmanifest`, `docread`, `evalrun`, `filegraph`, `loopguard`, `memory`, `pdfread`,
-`profile`, `textutil`). There is no `__all__`, so `from bantamkit import *` takes all 45.
+`profile`, `replynative`, `skillfile`, `skillinstall`, `skillmine`, `storage`, `textutil`,
+`touch`). There is no `__all__`, so `from bantamkit import *` takes all 51. (Recounted for #333
+off a 0.40.0 wheel built from this tree; the 0.35.9 wheel above bound 45, 15 of them submodules.)
 
 | Module behind it | What it is | Names |
 | --- | --- | --- |
@@ -405,7 +412,7 @@ as a side effect of the package's own imports (`agent`, `assets`, `budget`, `cli
 | `bantamkit.memory` | the memory store | `Memory`, `MemoryStore` |
 | **9 modules** | | **30 values, no `__all__`** |
 
-**This is not the npm package's export surface.** Both runtimes serve the same fifteen MCP
+**This is not the npm package's export surface.** Both runtimes serve the same sixteen MCP
 tools, but what each one exports *to an importer* is a different product: here it is the
 agent/critique/eval library above; there it is the memory store, the asset pack, the event log,
 the shift-work tools and a set of CPython-semantics shims — 141 values behind one entry point. Of

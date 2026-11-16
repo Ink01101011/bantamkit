@@ -47,7 +47,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   ([docs/hooks.md](https://github.com/Ink01101011/bantamkit/blob/main/docs/hooks.md)).
 - **More than memory.** JSON Schema validation, a token ledger read off the host's transcripts,
   a skill-catalogue audit, and shift-work tools that plan and hand off multi-step jobs —
-  [the fifteen tools](#-what-it-serves).
+  [the sixteen tools](#-what-it-serves).
 - **Same answers as the Python server.** The Python server serves the same sixteen tools,
   three prompts (`bantamkit_status`, `skill_audit`, `skill_propose`) and two resource templates, and reads and writes the same memory
   store. Every surface is compared between both runtimes by a conformance suite
@@ -70,7 +70,7 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 | [Updating](#-updating) | `--update`, the per-install table, then restart |
 | [Troubleshooting](#-troubleshooting) | Connection closed, timeouts, `ENOENT`, refusals, the wrong store |
 | [Configuration](#-configuration) | Every flag and environment variable, with its default |
-| [What it serves](#-what-it-serves) | 15 tools, three prompts, two resource templates |
+| [What it serves](#-what-it-serves) | 16 tools, three prompts, two resource templates |
 | [Silent version float](#-silent-version-float) | Why two machines run different builds, and `build_identity` |
 | [The operator CLI: `bantamkit-memory`](#-the-operator-cli-bantamkit-memory) | The second bin: status, lint, compact, archived, archive, restore, list, candidates, merge |
 | [Memory stores are layered by default](#-memory-stores-are-layered-by-default) | Why not to add `--store` by reflex |
@@ -366,6 +366,7 @@ It serves 16 tools, three prompts (`bantamkit_status`, `skill_audit` and `skill_
 | `shiftwork_status` | read-only progress summary of a checkpoint |
 | `shiftwork_plan` | read-only: which units of a checkpoint its `depends_on` graph permits to run at once. Never moves the cursor |
 | `work_plan` | turn any `{id, depends_on, priority}` graph into the batches that may run in parallel, plus the widest fan-out |
+| `shiftwork_draft` | turn settled tickets into a new job: a schema-valid checkpoint plus one brief file per ticket, before the first clock-in |
 | `token_ledger` | what a session cost, read off the host's transcripts |
 | `bantamkit_status` | is bantamkit working, and which build: version, `build_id`, store health against its budget |
 | `build_identity` | report the fingerprint of the source on disk, not the executing code — useful when a machine carries two installs under one name |
