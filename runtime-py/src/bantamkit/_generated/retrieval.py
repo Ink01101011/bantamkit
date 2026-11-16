@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
+    _js_array,
     _js_coalesce_value,
     _js_code_units,
     _js_destructure,
@@ -35,7 +36,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_replace,
     _js_m_set,
     _js_m_slice,
-    _js_m_sort,
     _js_m_startsWith,
     _js_m_test,
     _js_m_toLowerCase,
@@ -48,6 +48,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_re,
     _js_rows,
     _js_sort_by_f64,
+    _js_sort_lex,
     _js_str_at,
     _js_strict_eq,
     _js_ta_get,
@@ -103,14 +104,11 @@ def nospace_table(cp):
 _NOSPACE_UNITS = _JS_RE_0
 
 
-def _strip_nospace__typed(text):
-    return _js_dispatch(text, "replace", _js_m_replace, _NOSPACE_UNITS, " ")
-
-
 def strip_nospace(text):
-    if type(text) is str:
-        return _strip_nospace__typed(text)
     return _js_dispatch(text, "replace", _js_m_replace, _NOSPACE_UNITS, " ")
+
+
+_strip_nospace__typed = strip_nospace
 
 
 _ASCII_ONLY = _JS_RE_1
@@ -242,14 +240,11 @@ SCORE_ROUND = 9
 QUERY_WEIGHT = 1
 
 
-def _py_round9__typed(x):
-    return py_round_float9(x)
-
-
 def py_round9(x):
-    if _js_is_double(x):
-        return _py_round9__typed(x)
     return py_round_float9(x)
+
+
+_py_round9__typed = py_round9
 
 
 def _fields(d):
@@ -303,7 +298,7 @@ def _bm25_postings__typed(q, n, total, df, lengths, postings):
         return _js_m_map(lengths, lambda *_: 0)
     avgdl = _js_or_value(_js_div(total, n), 1)
     k1 = BM25_K1 + 1
-    norm = _js_m_map(lengths, lambda dl, *_: _js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, dl), avgdl))))
+    norm = [_js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, dl), avgdl))) for dl in lengths]
     s = _js_m_map(lengths, lambda *_: 0)
     for t in q:
         hits = _js_m_get(postings, t)
@@ -324,7 +319,7 @@ def bm25_postings(q, n, total, df, lengths, postings):
         return _js_m_map(lengths, lambda *_: 0)
     avgdl = _js_or_value(_js_div(total, n), 1)
     k1 = BM25_K1 + 1
-    norm = _js_m_map(lengths, lambda dl, *_: _js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, dl), avgdl))))
+    norm = [_js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, dl), avgdl))) for dl in _js_array("map", lengths)]
     s = _js_m_map(lengths, lambda *_: 0)
     for t in q:
         hits = _js_m_get(postings, t)
@@ -445,7 +440,7 @@ def bm25_segments(q, n, total, df, lengths, segs):
 
 
 def _bm25_pooled__typed(q, n, total, df, rows):
-    postings = _JsMap(_js_m_map(q, lambda t, *_: [t, []]))
+    postings = _JsMap([[t, []] for t in q])
     i = 0
     while i < len(rows):
         weights = _js_get(_js_list_at(rows, i), 0)
@@ -460,7 +455,7 @@ def _bm25_pooled__typed(q, n, total, df, rows):
 def bm25_pooled(q, n, total, df, rows):
     if type(q) is list and _js_is_double(n) and _js_is_double(total) and type(rows) is list:
         return _bm25_pooled__typed(q, n, total, df, rows)
-    postings = _JsMap(_js_m_map(q, lambda t, *_: [t, []]))
+    postings = _JsMap([[t, []] for t in _js_array("map", q)])
     i = 0
     while _js_lt(i, _js_len(rows)):
         weights = _js_get(_js_get(rows, i), 0)
@@ -659,7 +654,7 @@ W_FLOOR = 0.1
 STALE_WORDS = ["SUPERSEDED", "CLOSED", "REFUTED"]
 
 
-_STALE_FIRST = _JsSet([" ", "\t", *_js_m_map(STALE_WORDS, lambda w, *_: _js_get(w, 0))])
+_STALE_FIRST = _JsSet([" ", "\t", *[_js_get(w, 0) for w in STALE_WORDS]])
 
 
 def _stale__typed(description):
@@ -705,7 +700,7 @@ def _gate__typed(scores, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
         if i == 0 or _js_gt(_js_list_at(scores, i), best):
             best = _js_list_at(scores, i)
         i = _js_num(i + 1)
-    return _js_m_map(scores, lambda s, *_: _js_gt(s, 0) and _js_ge(s, floor) and _js_ge(s, _js_mul(ratio, best)))
+    return [_js_gt(s, 0) and _js_ge(s, floor) and _js_ge(s, _js_mul(ratio, best)) for s in scores]
 
 
 def gate(scores, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
@@ -721,21 +716,16 @@ def gate(scores, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
         if i == 0 or _js_gt(_js_get(scores, i), best):
             best = _js_get(scores, i)
         i = _js_num(i + 1)
-    return _js_m_map(scores, lambda s, *_: _js_gt(s, 0) and _js_ge(s, floor) and _js_ge(s, _js_mul(ratio, best)))
-
-
-def _set_context_weight__typed(x):
-    global W_CONTEXT
-    W_CONTEXT = x
-    return _JS_UNDEFINED
+    return [_js_gt(s, 0) and _js_ge(s, floor) and _js_ge(s, _js_mul(ratio, best)) for s in _js_array("map", scores)]
 
 
 def set_context_weight(x):
     global W_CONTEXT
-    if _js_is_double(x):
-        return _set_context_weight__typed(x)
     W_CONTEXT = x
     return _JS_UNDEFINED
+
+
+_set_context_weight__typed = set_context_weight
 
 
 def weight(c, usage, context=_JS_UNDEFINED):
@@ -861,7 +851,7 @@ def _rank__typed(items, scores, usage, ratio=_JS_UNDEFINED, context=_JS_UNDEFINE
             _js_m_set(final, i, py_round9(_js_mul(_js_list_at(scores, i), weight(_js_list_at(items, i), usage, context))))
             order.append(i)
         i = _js_num(i + 1)
-    return _js_m_sort(order, lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_m_get(final, b)) - _js_num(_js_m_get(final, a))), lambda: _js_num(_js_num(_js_get(_js_list_at(items, a), "layerOrder")) - _js_num(_js_get(_js_list_at(items, b), "layerOrder")))), lambda: cmp_codepoint(_js_get(_js_list_at(items, a), "name"), _js_get(_js_list_at(items, b), "name"))))
+    return _js_sort_lex(order, ((lambda a, *_: _js_m_get(final, a), True, False), (lambda a, *_: _js_get(_js_list_at(items, a), "layerOrder"), False, False), (lambda a, *_: _js_get(_js_list_at(items, a), "name"), False, True),), lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_m_get(final, b)) - _js_num(_js_m_get(final, a))), lambda: _js_num(_js_num(_js_get(_js_list_at(items, a), "layerOrder")) - _js_num(_js_get(_js_list_at(items, b), "layerOrder")))), lambda: cmp_codepoint(_js_get(_js_list_at(items, a), "name"), _js_get(_js_list_at(items, b), "name"))))
 
 
 def rank(items, scores, usage, ratio=_JS_UNDEFINED, context=_JS_UNDEFINED):
@@ -880,4 +870,4 @@ def rank(items, scores, usage, ratio=_JS_UNDEFINED, context=_JS_UNDEFINED):
             _js_m_set(final, i, py_round9(_js_mul(_js_get(scores, i), weight(_js_get(items, i), usage, context))))
             order.append(i)
         i = _js_num(i + 1)
-    return _js_m_sort(order, lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_m_get(final, b)) - _js_num(_js_m_get(final, a))), lambda: _js_num(_js_num(_js_get(_js_get(items, a), "layerOrder")) - _js_num(_js_get(_js_get(items, b), "layerOrder")))), lambda: cmp_codepoint(_js_get(_js_get(items, a), "name"), _js_get(_js_get(items, b), "name"))))
+    return _js_sort_lex(order, ((lambda a, *_: _js_m_get(final, a), True, False), (lambda a, *_: _js_get(_js_get(items, a), "layerOrder"), False, False), (lambda a, *_: _js_get(_js_get(items, a), "name"), False, True),), lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_m_get(final, b)) - _js_num(_js_m_get(final, a))), lambda: _js_num(_js_num(_js_get(_js_get(items, a), "layerOrder")) - _js_num(_js_get(_js_get(items, b), "layerOrder")))), lambda: cmp_codepoint(_js_get(_js_get(items, a), "name"), _js_get(_js_get(items, b), "name"))))

@@ -18,7 +18,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_json_stringify,
     _js_len,
     _js_m_has,
-    _js_m_map,
     _js_m_sort,
     _js_m_toLowerCase,
     _js_m_trim,
@@ -75,14 +74,11 @@ def _default_clock():
     return _js_now()
 
 
-def _format_timestamp__typed(epoch_ms):
-    return _js_date_to_iso(epoch_ms)
-
-
 def format_timestamp(epoch_ms):
-    if _js_is_double(epoch_ms):
-        return _format_timestamp__typed(epoch_ms)
     return _js_date_to_iso(epoch_ms)
+
+
+_format_timestamp__typed = format_timestamp
 
 
 def _encode_record__typed(epoch_ms, tool, outcome, detail):
@@ -96,25 +92,22 @@ def encode_record(epoch_ms, tool, outcome, detail):
 
 
 def _record_object__typed(epoch_ms, tool, outcome, detail):
-    sorted_ = _js_object_from_entries(_js_m_map(_js_m_sort(_js_object_keys(detail), cmp_codepoint), lambda key, *_: [key, _js_get(detail, key)]))
+    sorted_ = _js_object_from_entries([[key, _js_get(detail, key)] for key in _js_m_sort(_js_object_keys(detail), cmp_codepoint)])
     return {"v": SCHEMA_VERSION, "ts": _format_timestamp__typed(epoch_ms), "tool": tool, "outcome": outcome, "detail": sorted_}
 
 
 def _record_object(epoch_ms, tool, outcome, detail):
     if _js_is_double(epoch_ms) and type(tool) is str and type(outcome) is str:
         return _record_object__typed(epoch_ms, tool, outcome, detail)
-    sorted_ = _js_object_from_entries(_js_m_map(_js_m_sort(_js_object_keys(detail), cmp_codepoint), lambda key, *_: [key, _js_get(detail, key)]))
+    sorted_ = _js_object_from_entries([[key, _js_get(detail, key)] for key in _js_m_sort(_js_object_keys(detail), cmp_codepoint)])
     return {"v": SCHEMA_VERSION, "ts": format_timestamp(epoch_ms), "tool": tool, "outcome": outcome, "detail": sorted_}
 
 
-def _default_path__typed(store_root):
-    return py_join(store_root, *DEFAULT_RELATIVE_PATH)
-
-
 def default_path(store_root):
-    if type(store_root) is str:
-        return _default_path__typed(store_root)
     return py_join(store_root, *DEFAULT_RELATIVE_PATH)
+
+
+_default_path__typed = default_path
 
 
 def _resolve_path__typed(store_root, raw):

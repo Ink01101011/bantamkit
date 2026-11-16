@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
+    _js_array,
     _js_cat,
     _js_catch,
     _js_coalesce_value,
@@ -23,7 +24,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_add,
     _js_m_endsWith,
     _js_m_entries,
-    _js_m_every,
     _js_m_get,
     _js_m_has,
     _js_m_map,
@@ -37,6 +37,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_put,
     _js_rows,
     _js_size,
+    _js_sort_lex,
     _js_spread,
     _js_str,
     _js_strict_eq,
@@ -98,14 +99,11 @@ def _is_plain_object(value):
     return _js_typeof(value) == "object" and value is not None and not _js_is_array(value)
 
 
-def _decode_line__typed(text):
-    return _js_json_parse(text)
-
-
 def _decode_line(text):
-    if type(text) is str:
-        return _decode_line__typed(text)
     return _js_json_parse(text)
+
+
+_decode_line__typed = _decode_line
 
 
 def _walk__typed(base):
@@ -190,16 +188,12 @@ def walk(base):
     return found
 
 
-def _read_utf8_strict__typed(path):
-    decoder = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
-    return _js_invoke(decoder, "decode", read_file_sync(path))
-
-
 def _read_utf8_strict(path):
-    if type(path) is str:
-        return _read_utf8_strict__typed(path)
     decoder = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
     return _js_invoke(decoder, "decode", read_file_sync(path))
+
+
+_read_utf8_strict__typed = _read_utf8_strict
 
 
 def _usage_of(record):
@@ -289,7 +283,7 @@ def _read__typed(root, options=_JS_UNDEFINED):
             if usage is _JS_UNDEFINED or usage is None:
                 omit(OMIT_NO_USAGE, site)
                 continue
-            if not _is_plain_object(usage) or not _js_m_every(TOKEN_CLASSES, lambda cls, *_: _is_count(_js_get(usage, cls))):
+            if not _is_plain_object(usage) or not all(_is_count(_js_get(usage, cls)) for cls in _js_array("every", TOKEN_CLASSES)):
                 omit(OMIT_MALFORMED_USAGE, site)
                 continue
             request_id = _js_get(record, "requestId")
@@ -322,7 +316,7 @@ def _read__typed(root, options=_JS_UNDEFINED):
                     raise TokenLedgerError(_js_str(cls) + " total exceeds 2**53-1, which is the largest integer both runtimes " + "represent exactly")
                 _js_put(row, cls, _js_add(_js_get(row, cls), count))
                 _js_put(totals, cls, _js_add(_js_get(totals, cls), count))
-    ordered = _js_m_sort([*_js_m_values(sessions)], lambda a, b, *_: _js_or(cmp_codepoint(_js_get(a, "first"), _js_get(b, "first")), lambda: cmp_codepoint(_js_get(a, "session"), _js_get(b, "session"))))
+    ordered = _js_sort_lex([*_js_m_values(sessions)], ((lambda a, *_: _js_get(a, "first"), False, True), (lambda a, *_: _js_get(a, "session"), False, True),), lambda a, b, *_: _js_or(cmp_codepoint(_js_get(a, "first"), _js_get(b, "first")), lambda: cmp_codepoint(_js_get(a, "session"), _js_get(b, "session"))))
     omissions = []
     for subject in OMISSION_ORDER:
         count = _js_coalesce_value(_js_m_get(counts, subject), 0)
@@ -402,7 +396,7 @@ def read(root, options=_JS_UNDEFINED):
             if usage is _JS_UNDEFINED or usage is None:
                 omit(OMIT_NO_USAGE, site)
                 continue
-            if not _is_plain_object(usage) or not _js_m_every(TOKEN_CLASSES, lambda cls, *_: _is_count(_js_get(usage, cls))):
+            if not _is_plain_object(usage) or not all(_is_count(_js_get(usage, cls)) for cls in _js_array("every", TOKEN_CLASSES)):
                 omit(OMIT_MALFORMED_USAGE, site)
                 continue
             request_id = _js_get(record, "requestId")
@@ -435,7 +429,7 @@ def read(root, options=_JS_UNDEFINED):
                     raise TokenLedgerError(_js_str(cls) + " total exceeds 2**53-1, which is the largest integer both runtimes " + "represent exactly")
                 _js_put(row, cls, _js_add(_js_get(row, cls), count))
                 _js_put(totals, cls, _js_add(_js_get(totals, cls), count))
-    ordered = _js_m_sort([*_js_m_values(sessions)], lambda a, b, *_: _js_or(cmp_codepoint(_js_get(a, "first"), _js_get(b, "first")), lambda: cmp_codepoint(_js_get(a, "session"), _js_get(b, "session"))))
+    ordered = _js_sort_lex([*_js_m_values(sessions)], ((lambda a, *_: _js_get(a, "first"), False, True), (lambda a, *_: _js_get(a, "session"), False, True),), lambda a, b, *_: _js_or(cmp_codepoint(_js_get(a, "first"), _js_get(b, "first")), lambda: cmp_codepoint(_js_get(a, "session"), _js_get(b, "session"))))
     omissions = []
     for subject in OMISSION_ORDER:
         count = _js_coalesce_value(_js_m_get(counts, subject), 0)
@@ -456,7 +450,7 @@ def as_dict(ledger):
         for cls in TOKEN_CLASSES:
             _js_put(row, cls, _js_get(s, cls))
         return row
-    doc = {"root": _js_get(ledger, "root"), "transcripts": _js_get(ledger, "transcripts"), "lines": _js_get(ledger, "lines"), "requests": _js_get(ledger, "requests"), "totals": totals, "sessions": _js_m_map(_js_get(ledger, "sessions"), _js_fn10), "omissions": _js_m_map(_js_get(ledger, "omissions"), lambda o, *_: {"subject": _js_get(o, "subject"), "count": _js_get(o, "count"), "what": _js_get(o, "what")})}
+    doc = {"root": _js_get(ledger, "root"), "transcripts": _js_get(ledger, "transcripts"), "lines": _js_get(ledger, "lines"), "requests": _js_get(ledger, "requests"), "totals": totals, "sessions": _js_m_map(_js_get(ledger, "sessions"), _js_fn10), "omissions": [{"subject": _js_get(o, "subject"), "count": _js_get(o, "count"), "what": _js_get(o, "what")} for o in _js_array("map", _js_get(ledger, "omissions"))]}
     if _js_get(ledger, "cost") is not _JS_UNDEFINED:
         _js_put(doc, "cost", _js_get(ledger, "cost"))
     return doc

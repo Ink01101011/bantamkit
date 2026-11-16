@@ -542,6 +542,9 @@ pub struct Lowerer<'s> {
     cur_indent: usize,
     /// J88-2: how many callback lambdas enclose the expression being lowered.
     in_callback: usize,
+    /// J90-P2: the operand of `&&` being lowered cannot change an array's length (`pure_test`),
+    /// so `x.length === N` on the left may narrow `x` to an array of exactly N elements there.
+    length_ok: bool,
     /// J89-3: `const` bindings of a `new Float64Array(n)` (SUBSET.md, *Typed arrays*).
     typed_arrays: HashSet<Key>,
     /// J89-3: `const` bindings of an array literal: a fresh array no parameter can alias.
@@ -692,6 +695,7 @@ impl<'s> Lowerer<'s> {
             pre: Vec::new(),
             cur_indent: 0,
             in_callback: 0,
+            length_ok: false,
             typed_arrays: HashSet::new(),
             fresh_arrays: HashSet::new(),
             fast: None,
@@ -843,10 +847,19 @@ impl<'s> Lowerer<'s> {
         use BinaryOperator as Op;
         match strip_parens(test) {
             Expression::LogicalExpression(l) => match (l.operator, when) {
-                // Both hold.
+                // Both hold (the right one tested where the left one holds).
                 (LogicalOperator::And, true) | (LogicalOperator::Or, false) => {
+                    // A length the left proves holds past the right only if the right cannot
+                    // change it either (J90-P2, `length_ok`).
+                    let length_ok = self.length_ok;
+                    self.length_ok = length_ok && self.pure_test(&l.right);
                     let mut out = self.narrowings(&l.left, when);
-                    out.extend(self.narrowings(&l.right, when));
+                    self.length_ok = length_ok;
+                    let depth = self.narrow.len();
+                    self.narrow.extend(out.iter().cloned());
+                    let right = self.narrowings(&l.right, when);
+                    self.narrow.truncate(depth);
+                    out.extend(right);
                     out
                 }
                 // One of the two holds: what both sides prove of the same binding.
@@ -909,6 +922,32 @@ impl<'s> Lowerer<'s> {
                 };
                 // The test is true exactly when the two sides are equal (`eq`) or unequal.
                 let equal = eq == when;
+                // J90-P2: `x.length === N` true, `x` an array: exactly N elements, while nothing
+                // can change its length (`length_ok`: the rest of an `&&` that `pure_test` holds).
+                if strict && equal && self.length_ok {
+                    for (side, other) in [(&b.left, &b.right), (&b.right, &b.left)] {
+                        let (Expression::StaticMemberExpression(m), Expression::NumericLiteral(n)) =
+                            (strip_parens(side), strip_parens(other))
+                        else {
+                            continue;
+                        };
+                        if m.optional
+                            || m.property.name != "length"
+                            || n.value.fract() != 0.0
+                            || !(0.0..=16.0).contains(&n.value)
+                        {
+                            continue;
+                        }
+                        let Some(key) = self.narrowable(&m.object) else {
+                            continue;
+                        };
+                        let Some(mut fact) = self.current(&key).filter(|f| f.list && !f.top) else {
+                            continue;
+                        };
+                        fact.tuple = Some(vec![Fact::default(); n.value as usize]);
+                        return vec![(key, fact)];
+                    }
+                }
                 // `x === null` / `x == undefined` ...: rules out what it names when unequal.
                 for (side, other) in [(&b.left, &b.right), (&b.right, &b.left)] {
                     if !is_nullish_literal(other) {
@@ -1396,13 +1435,47 @@ impl<'s> Lowerer<'s> {
             sig.py.clone()
         };
         self.typed = true;
+        let typed_at = out.len();
         self.function_body(&typed_name, source, &sig.params, None, ret(true), out);
         if wrapped {
-            out.push(String::new());
-            out.push(String::new());
             self.typed = false;
             let guard = (sig.typed_py.as_str(), sig.params.as_slice());
-            self.function_body(&sig.py, source, &[], Some(guard), ret(false), out);
+            let mut untyped = Vec::new();
+            self.function_body(&sig.py, source, &[], Some(guard), ret(false), &mut untyped);
+            // J90-P2: when the guarded entry's own body is the typed body line for line (the
+            // annotations proved nothing the lowering used), one body serves both names: the
+            // entry without its guard, and the typed name bound to it.
+            let guard_at = untyped
+                .iter()
+                .position(|l| l.starts_with("    if ") && l.ends_with(':'))
+                .filter(|&k| {
+                    untyped.get(k + 1).is_some_and(|l| {
+                        l.starts_with(&format!("        return {}(", sig.typed_py))
+                    })
+                });
+            let same = guard_at.is_some_and(|k| {
+                let typed = &out[typed_at..];
+                let head = |l: &str, name: &str| {
+                    l.strip_prefix(&format!("def {name}(")).map(str::to_string)
+                };
+                typed.len() + 2 == untyped.len()
+                    && head(&typed[0], &sig.typed_py).is_some()
+                    && head(&typed[0], &sig.typed_py) == head(&untyped[0], &sig.py)
+                    && typed[1..k] == untyped[1..k]
+                    && typed[k..] == untyped[k + 2..]
+            });
+            if let Some(k) = guard_at.filter(|_| same) {
+                out.truncate(typed_at);
+                untyped.drain(k..k + 2);
+                out.extend(untyped);
+                out.push(String::new());
+                out.push(String::new());
+                out.push(format!("{} = {}", sig.typed_py, sig.py));
+            } else {
+                out.push(String::new());
+                out.push(String::new());
+                out.extend(untyped);
+            }
         }
         self.typed = false;
     }
@@ -4103,12 +4176,20 @@ impl<'s> Lowerer<'s> {
         // J90-P: the right side runs only where the left is truthy (`&&`) or falsy (`||`), so it
         // is lowered under what that proves of `const` bindings, as an `if` narrows its branches.
         let depth = self.narrow.len();
+        let length_ok = self.length_ok;
         match l.operator {
-            LogicalOperator::And => self.narrow_on(&l.left, true),
-            LogicalOperator::Or => self.narrow_on(&l.left, false),
-            LogicalOperator::Coalesce => {}
+            LogicalOperator::And => {
+                self.length_ok = self.pure_test(&l.right);
+                self.narrow_on(&l.left, true);
+            }
+            LogicalOperator::Or => {
+                self.length_ok = false;
+                self.narrow_on(&l.left, false);
+            }
+            LogicalOperator::Coalesce => self.length_ok = false,
         }
         let right = self.expr(&l.right);
+        self.length_ok = length_ok;
         self.narrow.truncate(depth);
         match l.operator {
             LogicalOperator::And | LogicalOperator::Or if left.is_bool && right.is_bool => {
@@ -4363,6 +4444,112 @@ impl<'s> Lowerer<'s> {
         }
         params.push("*_".to_string());
         Py::new(format!("lambda {}: {code}", params.join(", ")), LAMBDA)
+    }
+
+    /// J90-P2: an expression that cannot change any array's length or run code that could: names,
+    /// literals, member reads (a getter is assumed to have no effect, as the key sorts assume),
+    /// `typeof`, `!`, `-`, comparisons, arithmetic, `&&` / `||` / `??`, `?:`, and calls of
+    /// `Number.isInteger`, `Number.isNaN` and `Array.isArray` on such expressions.
+    fn pure_test(&self, e: &Expression<'_>) -> bool {
+        match strip(e) {
+            Expression::Identifier(_)
+            | Expression::NumericLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_) => true,
+            Expression::StaticMemberExpression(m) => self.pure_test(&m.object),
+            Expression::ComputedMemberExpression(m) => {
+                self.pure_test(&m.object) && self.pure_test(&m.expression)
+            }
+            Expression::UnaryExpression(u) => {
+                matches!(
+                    u.operator,
+                    UnaryOperator::Typeof
+                        | UnaryOperator::LogicalNot
+                        | UnaryOperator::UnaryNegation
+                ) && self.pure_test(&u.argument)
+            }
+            Expression::BinaryExpression(b) => {
+                !matches!(b.operator, BinaryOperator::In | BinaryOperator::Instanceof)
+                    && self.pure_test(&b.left)
+                    && self.pure_test(&b.right)
+            }
+            Expression::LogicalExpression(l) => self.pure_test(&l.left) && self.pure_test(&l.right),
+            Expression::ConditionalExpression(c) => {
+                self.pure_test(&c.test)
+                    && self.pure_test(&c.consequent)
+                    && self.pure_test(&c.alternate)
+            }
+            Expression::CallExpression(c) => {
+                let known = matches!(strip(&c.callee), Expression::StaticMemberExpression(m)
+                    if !m.optional
+                        && matches!(strip(&m.object), Expression::Identifier(o)
+                            if (o.name == "Number" && matches!(m.property.name.as_str(), "isInteger" | "isNaN"))
+                                || (o.name == "Array" && m.property.name == "isArray")));
+                known
+                    && !self.is_local("Number")
+                    && !self.is_local("Array")
+                    && !c.optional
+                    && c.arguments
+                        .iter()
+                        .all(|a| a.as_expression().is_some_and(|e| self.pure_test(e)))
+            }
+            _ => false,
+        }
+    }
+
+    /// J90-P2: an arrow `(x) => e` whose body a comprehension may hold in place of the lambda
+    /// `callback` makes: one plain parameter (no default, no pattern, no rest), an expression body,
+    /// and no function in `e` (one could outlive its element, and a comprehension's variable is
+    /// one binding for every element, a lambda's parameter one per call).
+    fn inlinable_callback(&self, a: &ArrowFunctionExpression<'_>) -> bool {
+        let Some(body) = a.body.as_expression() else {
+            return false;
+        };
+        let text = self.text(body.span());
+        !a.r#async
+            && a.params.rest.is_none()
+            && a.params.items.len() == 1
+            && a.params.items[0].initializer.is_none()
+            && matches!(
+                a.params.items[0].pattern,
+                BindingPattern::BindingIdentifier(_)
+            )
+            && !text.contains("=>")
+            && !text.contains("function")
+            && !text.contains("class")
+    }
+
+    /// J90-P2: the parameter's Python name and the body of an `inlinable_callback`, lowered as
+    /// `callback` lowers it (the parameter a `const` a guard may narrow).
+    fn inline_callback(&mut self, a: &ArrowFunctionExpression<'_>) -> (String, Py) {
+        let BindingPattern::BindingIdentifier(id) = &a.params.items[0].pattern else {
+            unreachable!("inlinable_callback checked a plain parameter")
+        };
+        let body = a
+            .body
+            .as_expression()
+            .expect("inlinable_callback checked an expression body");
+        let py = py_name(id.name.as_str(), false, false);
+        self.claim(id.name.as_str(), &py, id.span);
+        let mut scope = HashSet::new();
+        scope.insert(id.name.to_string());
+        self.push_scope(scope, a.span.start);
+        self.bind(id.name.as_str(), Fact::default());
+        if let Some(key) = self.var_key(id.name.as_str()) {
+            self.consts.insert(key);
+        }
+        self.declare_annotation(
+            id.name.as_str(),
+            a.params.items[0].type_annotation.as_deref(),
+        );
+        self.rets.push(None);
+        self.in_callback += 1;
+        let value = self.expr(body);
+        self.in_callback -= 1;
+        self.rets.pop();
+        self.pop_scope();
+        (py, value)
     }
 
     /// J87: a direct call of a module function: its typed body when every guarded parameter's
@@ -4661,6 +4848,23 @@ impl<'s> Lowerer<'s> {
                     };
                     return returned(Ret::Str, format!("_js_date_to_iso({})", args[0]));
                 }
+                // J90-P2: `createHash('sha256' | 'sha1').update(x, 'utf8').digest('hex')` (the
+                // node:crypto adapter): `hash_hex(alg, x)`, the three calls' checks and bytes at
+                // once. The algorithm is a literal the adapter takes, so no call can throw before
+                // `x` is evaluated, as in JS.
+                if method == "digest"
+                    && let Some((alg, data)) = self.hash_chain(c, m)
+                {
+                    self.imports
+                        .entry(self.ctx.adapter_module.clone())
+                        .or_default()
+                        .insert("hash_hex".to_string());
+                    let value = self.expr(data);
+                    return returned(
+                        Ret::Str,
+                        format!("hash_hex({}, {})", py_str(alg), value.code),
+                    );
+                }
                 if let Expression::Identifier(object) = strip(&m.object)
                     && !self.is_local(object.name.as_str())
                     && !self.classes.contains_key(object.name.as_str())
@@ -4736,6 +4940,21 @@ impl<'s> Lowerer<'s> {
                 } else {
                     None
                 };
+                // J90-P2: `xs.sort((a, b) => k1(a) - k1(b) || cmpCodepoint(k2(a), k2(b)) || ...)`:
+                // stable sorts by each key, last first, when every key is a number JS holds
+                // exactly and none is NaN (a code-point key: a `str`), else the general sort.
+                let lex = if method == "sort"
+                    && !class_method
+                    && by_key.is_none()
+                    && keyed.is_none()
+                    && c.arguments.len() == 1
+                {
+                    c.arguments[0]
+                        .as_expression()
+                        .and_then(|e| self.lex_comparator(e))
+                } else {
+                    None
+                };
                 // J90-2: `xs.every((x) => Number.isInteger(x))` / `xs.every((x) => typeof x ===
                 // 'string')`, the hot index's shape checks over 5,000-element columns: one helper
                 // per test, which answers at C speed for a list of exactly that Python type and
@@ -4751,6 +4970,57 @@ impl<'s> Lowerer<'s> {
                     let result =
                         returned(Ret::Bool, format!("_js_every_{test}({})", receiver.code));
                     return if receiver.top {
+                        result.with_fact(None)
+                    } else {
+                        result
+                    };
+                }
+                // J90-P2: `xs.every/some/map/filter((x) => e)` with one plain parameter and no
+                // function inside `e`: the comprehension `_js_m_every` (...) runs, with `e` inline
+                // instead of a lambda called per element.
+                if matches!(method, "every" | "some" | "map" | "filter")
+                    && !class_method
+                    && c.arguments.len() == 1
+                    && let Some(Expression::ArrowFunctionExpression(arrow)) =
+                        c.arguments[0].as_expression().map(strip)
+                    && self.inlinable_callback(arrow)
+                {
+                    let receiver = self.expr(&m.object);
+                    let items = if receiver.is_list {
+                        receiver.at(OR + 1)
+                    } else {
+                        format!("_js_array({}, {})", py_str(method), receiver.code)
+                    };
+                    let (param, value) = self.inline_callback(arrow);
+                    // A comprehension's element may be a conditional expression; its `if` clause
+                    // may not.
+                    let test = |v: &Py, prec: u8| {
+                        if v.is_bool {
+                            v.at(prec)
+                        } else {
+                            format!("_js_truthy({})", v.code)
+                        }
+                    };
+                    let (code, ret) = match method {
+                        "every" => (
+                            format!("all({} for {param} in {items})", test(&value, TERNARY)),
+                            Ret::Bool,
+                        ),
+                        "some" => (
+                            format!("any({} for {param} in {items})", test(&value, TERNARY)),
+                            Ret::Bool,
+                        ),
+                        "map" => (
+                            format!("[{} for {param} in {items}]", value.at(TERNARY)),
+                            Ret::List,
+                        ),
+                        _ => (
+                            format!("[{param} for {param} in {items} if {}]", test(&value, OR)),
+                            Ret::List,
+                        ),
+                    };
+                    let result = returned(ret, code);
+                    return if receiver.top || value.top {
                         result.with_fact(None)
                     } else {
                         result
@@ -4791,6 +5061,28 @@ impl<'s> Lowerer<'s> {
                         receiver.code,
                         key,
                         if descending { "True" } else { "False" },
+                        args[0].code
+                    );
+                    let result = returned(Ret::List, code);
+                    return if receiver.top {
+                        result.with_fact(None)
+                    } else {
+                        result
+                    };
+                }
+                if let Some((arrow, parts)) = lex {
+                    let parts: Vec<String> = parts
+                        .into_iter()
+                        .map(|(key, descending, cp)| {
+                            let key = self.key_lambda(arrow, key);
+                            let flag = |b: bool| if b { "True" } else { "False" };
+                            format!("({key}, {}, {})", flag(descending), flag(cp))
+                        })
+                        .collect();
+                    let code = format!(
+                        "_js_sort_lex({}, ({},), {})",
+                        receiver.code,
+                        parts.join(", "),
                         args[0].code
                     );
                     let result = returned(Ret::List, code);
@@ -4982,6 +5274,135 @@ impl<'s> Lowerer<'s> {
             return Some((arrow, &d.left, false));
         }
         None
+    }
+
+    /// J90-P2: the `x` of `createHash(alg).update(x, 'utf8').digest('hex')`, `createHash` the
+    /// node:crypto adapter (not a local) and `alg` the literal `'sha256'` or `'sha1'`: None for
+    /// anything else (the calls are then lowered one by one).
+    fn hash_chain<'b, 'a>(
+        &self,
+        c: &'b CallExpression<'a>,
+        m: &'b StaticMemberExpression<'a>,
+    ) -> Option<(&'static str, &'b Expression<'a>)> {
+        let literal = |a: &Argument<'_>, want: &[&'static str]| -> Option<&'static str> {
+            match a.as_expression().map(strip) {
+                Some(Expression::StringLiteral(s)) => want.iter().copied().find(|w| s.value == *w),
+                _ => None,
+            }
+        };
+        if c.optional
+            || m.optional
+            || c.arguments.len() != 1
+            || literal(&c.arguments[0], &["hex"]).is_none()
+        {
+            return None;
+        }
+        let Expression::CallExpression(update) = strip(&m.object) else {
+            return None;
+        };
+        let Expression::StaticMemberExpression(um) = strip(&update.callee) else {
+            return None;
+        };
+        if update.optional
+            || um.optional
+            || um.property.name != "update"
+            || update.arguments.len() != 2
+            || literal(&update.arguments[1], &["utf8"]).is_none()
+        {
+            return None;
+        }
+        let Expression::CallExpression(create) = strip(&um.object) else {
+            return None;
+        };
+        let Expression::Identifier(f) = strip(&create.callee) else {
+            return None;
+        };
+        let adapter = self.adapter_fns.contains(f.name.as_str())
+            && !self.is_scoped(f.name.as_str())
+            && self
+                .globals
+                .get(f.name.as_str())
+                .is_some_and(|py| py == "create_hash");
+        if !adapter || create.optional || create.arguments.len() != 1 {
+            return None;
+        }
+        let alg = literal(&create.arguments[0], &["sha256", "sha1"])?;
+        Some((alg, update.arguments[0].as_expression()?))
+    }
+
+    /// J90-P2: `(a, b) => c1 || c2 || ... || cn`, each `ci` a key difference `k(a) - k(b)` /
+    /// `k(b) - k(a)` or a code-point comparison `cmpCodepoint(k(a), k(b))` /
+    /// `cmpCodepoint(k(b), k(a))` (the adapter, not a local), every `k` pure as for
+    /// `keyed_comparator`: the arrow and per part its `k(a)`, whether it is descending and whether
+    /// it is a code-point part. Only a chain of two or more parts, or one code-point part (one
+    /// difference alone is `keyed_comparator`'s).
+    #[allow(clippy::type_complexity)]
+    fn lex_comparator<'b, 'a>(
+        &self,
+        e: &'b Expression<'a>,
+    ) -> Option<(
+        &'b ArrowFunctionExpression<'a>,
+        Vec<(&'b Expression<'a>, bool, bool)>,
+    )> {
+        let Expression::ArrowFunctionExpression(arrow) = strip(e) else {
+            return None;
+        };
+        if arrow.r#async || arrow.params.items.len() != 2 || arrow.params.rest.is_some() {
+            return None;
+        }
+        if arrow.params.items.iter().any(|p| p.initializer.is_some()) {
+            return None;
+        }
+        let param = |k: usize| match &arrow.params.items[k].pattern {
+            BindingPattern::BindingIdentifier(id) => Some(id.name.to_string()),
+            _ => None,
+        };
+        let (a, b) = (param(0)?, param(1)?);
+        if a == b || matches!(&arrow.body, ArrowFunctionBody::FunctionBody(_)) {
+            return None;
+        }
+        fn chain<'b, 'a>(e: &'b Expression<'a>, out: &mut Vec<&'b Expression<'a>>) {
+            match strip(e) {
+                Expression::LogicalExpression(or) if or.operator == LogicalOperator::Or => {
+                    chain(&or.left, out);
+                    chain(&or.right, out);
+                }
+                other => out.push(other),
+            }
+        }
+        let mut parts = Vec::new();
+        chain(arrow.body.as_expression()?, &mut parts);
+        let codepoint =
+            !self.is_scoped("cmpCodepoint") && self.adapter_fns.contains("cmpCodepoint");
+        let mut keys = Vec::new();
+        for part in parts {
+            let (l, r, cp) = match part {
+                Expression::BinaryExpression(d) if d.operator == BinaryOperator::Subtraction => {
+                    (&d.left, &d.right, false)
+                }
+                Expression::CallExpression(c)
+                    if codepoint
+                        && !c.optional
+                        && c.arguments.len() == 2
+                        && matches!(strip(&c.callee), Expression::Identifier(id) if id.name == "cmpCodepoint") =>
+                {
+                    (
+                        c.arguments[0].as_expression()?,
+                        c.arguments[1].as_expression()?,
+                        true,
+                    )
+                }
+                _ => return None,
+            };
+            if self.swapped(l, r, &a, &b) {
+                keys.push((r, true, cp));
+            } else if self.swapped(r, l, &a, &b) {
+                keys.push((l, false, cp));
+            } else {
+                return None;
+            }
+        }
+        (keys.len() >= 2 || keys.first().is_some_and(|k| k.2)).then_some((arrow, keys))
     }
 
     /// J90-P: `l` is `r` with `a` read as `b`: the same pure expression of the other parameter.

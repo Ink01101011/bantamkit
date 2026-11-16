@@ -8,6 +8,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
     _js_and,
+    _js_array,
     _js_catch,
     _js_coalesce,
     _js_coalesce_value,
@@ -37,7 +38,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_endsWith,
     _js_m_every,
     _js_m_exec,
-    _js_m_filter,
     _js_m_forEach,
     _js_m_get,
     _js_m_has,
@@ -78,7 +78,9 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_rows,
     _js_size,
     _js_sort_keyed,
+    _js_sort_lex,
     _js_str,
+    _js_str_slice,
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
@@ -88,7 +90,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JsObject,
     _JsSet,
 )
-from ._ts2py_adapters import BantamError, cmp_codepoint, create_hash, dump_js_value, extract_refs, fact_refs, lstat_sync, mkdir_sync, node_realpath, parse_frontmatter, parse_native, path_basename, path_dirname, path_join, process_pid, py_decode_utf8, py_join, py_os_error_text, py_read_text, py_split, py_strip, PyOSError, read_file_sync, readdir_sync, rename_sync, rm_sync, stat_sync, write_file_sync
+from ._ts2py_adapters import BantamError, cmp_codepoint, create_hash, dump_js_value, extract_refs, fact_refs, hash_hex, lstat_sync, mkdir_sync, node_realpath, parse_frontmatter, parse_native, path_basename, path_dirname, path_join, process_pid, py_decode_utf8, py_join, py_os_error_text, py_read_text, py_split, py_strip, PyOSError, read_file_sync, readdir_sync, rename_sync, rm_sync, stat_sync, write_file_sync
 from .lock import exclusive, remove_stale_temps
 from .retrieval import FIELD_BOOST, py_round9, stale, tokenize_v2
 
@@ -222,20 +224,7 @@ def decode_segments(names, seg):
     return out
 
 
-def _encode_segments__typed(rows):
-    out = []
-    for i, a, b, c in _js_rows(rows, 4, (0, 1, 2, 3)):
-        m = len(out)
-        if m > 0 and _js_strict_eq(_js_add(_js_list_at(out, _js_num(m - 5)), _js_list_at(out, _js_num(m - 4))), i) and _js_strict_eq(_js_list_at(out, _js_num(m - 3)), a) and _js_strict_eq(_js_list_at(out, _js_num(m - 2)), b) and _js_strict_eq(_js_list_at(out, _js_num(m - 1)), c):
-            _js_put(out, _js_num(m - 4), _js_add(_js_list_at(out, _js_num(m - 4)), 1))
-        else:
-            _js_m_push(out, i, 1, a, b, c)
-    return out
-
-
 def encode_segments(rows):
-    if type(rows) is list:
-        return _encode_segments__typed(rows)
     out = []
     for i, a, b, c in _js_rows(rows, 4, (0, 1, 2, 3)):
         m = len(out)
@@ -244,16 +233,19 @@ def encode_segments(rows):
         else:
             _js_m_push(out, i, 1, a, b, c)
     return out
+
+
+_encode_segments__typed = encode_segments
 
 
 def head_text(d):
-    head = dump_index(_js_object_from_entries(_js_m_map(HEAD_KEYS, lambda k, *_: [k, _js_get(d, k)])))
-    tail = dump_index(_js_object_from_entries(_js_m_map(TAIL_KEYS, lambda k, *_: [k, _js_get(d, k)])))
+    head = dump_index(_js_object_from_entries([[k, _js_get(d, k)] for k in HEAD_KEYS]))
+    tail = dump_index(_js_object_from_entries([[k, _js_get(d, k)] for k in TAIL_KEYS]))
     return _js_str(_js_m_slice(head, 0, -1)) + ",\n" + _js_str(_js_m_slice(tail, 1))
 
 
 def _is_lens(v):
-    return _js_is_array(v) and len(v) == 3 and _js_m_every(v, lambda x, *_: _js_number_is_integer(x) and _js_ge(x, 0))
+    return _js_is_array(v) and len(v) == 3 and all(_js_number_is_integer(x) and _js_ge(x, 0) for x in v)
 
 
 _WIKI = _JS_RE_0
@@ -271,28 +263,22 @@ _ISO = _JS_RE_3
 DUPLICATE = "duplicate name"
 
 
-def _sha16__typed(p):
-    return _js_m_slice(_js_invoke(_js_invoke(create_hash("sha256"), "update", node_realpath(p), "utf8"), "digest", "hex"), 0, 16)
-
-
 def sha16(p):
-    if type(p) is str:
-        return _sha16__typed(p)
-    return _js_m_slice(_js_invoke(_js_invoke(create_hash("sha256"), "update", node_realpath(p), "utf8"), "digest", "hex"), 0, 16)
+    return _js_str_slice(hash_hex("sha256", node_realpath(p)), 0, 16)
 
 
-def _shard_of__typed(term):
-    return _js_mod(_js_parse_int(_js_m_slice(_js_invoke(_js_invoke(create_hash("sha256"), "update", term, "utf8"), "digest", "hex"), 0, 8), 16), SHARDS)
+_sha16__typed = sha16
 
 
 def shard_of(term):
-    if type(term) is str:
-        return _shard_of__typed(term)
-    return _js_mod(_js_parse_int(_js_m_slice(_js_invoke(_js_invoke(create_hash("sha256"), "update", term, "utf8"), "digest", "hex"), 0, 8), 16), SHARDS)
+    return _js_mod(_js_parse_int(_js_str_slice(hash_hex("sha256", term), 0, 8), 16), SHARDS)
+
+
+_shard_of__typed = shard_of
 
 
 def _fingerprint(value):
-    return _js_m_slice(_js_invoke(_js_invoke(create_hash("sha256"), "update", dump_index(value), "utf8"), "digest", "hex"), 0, 16)
+    return _js_str_slice(hash_hex("sha256", dump_index(value)), 0, 16)
 
 
 def _is_fps(v):
@@ -303,14 +289,11 @@ def dump_index(value):
     return dump_js_value(value, {"sortKeys": True, "ensureAscii": False, "separators": [",", ":"]}, "avgdl")
 
 
-def _iso_now__typed(now_ms):
-    return _js_dispatch(_js_date_to_iso(_js_mul(_js_floor(_js_div(now_ms, 1000)), 1000)), "replace", _js_m_replace, ".000Z", "Z")
-
-
 def _iso_now(now_ms):
-    if _js_is_double(now_ms):
-        return _iso_now__typed(now_ms)
     return _js_dispatch(_js_date_to_iso(_js_mul(_js_floor(_js_div(now_ms, 1000)), 1000)), "replace", _js_m_replace, ".000Z", "Z")
+
+
+_iso_now__typed = _iso_now
 
 
 _MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -376,24 +359,16 @@ def _age_s(full_at, now_ms):
     return _js_num(_js_div(now_ms, 1000) - _js_div(t, 1000))
 
 
-def _wiki_links__typed(body):
-    out = []
-    for m in _js_coalesce_value(_js_m_match(body, _WIKI), []):
-        s = py_strip(_js_m_slice(m, 2, -2))
-        if _js_truthy(s):
-            out.append(s)
-    return out
-
-
 def _wiki_links(body):
-    if type(body) is str:
-        return _wiki_links__typed(body)
     out = []
     for m in _js_coalesce_value(_js_m_match(body, _WIKI), []):
         s = py_strip(_js_m_slice(m, 2, -2))
         if _js_truthy(s):
             out.append(s)
     return out
+
+
+_wiki_links__typed = _wiki_links
 
 
 def _dedupe(items):
@@ -404,16 +379,12 @@ def _str_list(value):
     return [*value] if _js_is_array(value) and _js_every_string(value) else []
 
 
-def _front_of__typed(text):
-    parts = py_split(text, "---\n", 2)
-    return _js_get(parts, 1) if _js_strict_eq(_js_len(parts), 3) else ""
-
-
 def _front_of(text):
-    if type(text) is str:
-        return _front_of__typed(text)
     parts = py_split(text, "---\n", 2)
     return _js_get(parts, 1) if _js_strict_eq(_js_len(parts), 3) else ""
+
+
+_front_of__typed = _front_of
 
 
 def _secondary__typed(p, pattern):
@@ -492,14 +463,11 @@ def _all_docs(docs):
     return True
 
 
-def _stamped__typed(parsed, mtime_ns, size):
-    return {"file": _js_get(parsed, "file"), "name": _js_get(parsed, "name"), "description": _js_get(parsed, "description"), "type": _js_get(parsed, "type"), "keywords": _js_get(parsed, "keywords"), "links": _js_get(parsed, "links"), "tags": _js_get(parsed, "tags"), "refs": _js_get(parsed, "refs"), "mtime_ns": mtime_ns, "size": size}
-
-
 def _stamped(parsed, mtime_ns, size):
-    if type(mtime_ns) is str and _js_is_double(size):
-        return _stamped__typed(parsed, mtime_ns, size)
     return {"file": _js_get(parsed, "file"), "name": _js_get(parsed, "name"), "description": _js_get(parsed, "description"), "type": _js_get(parsed, "type"), "keywords": _js_get(parsed, "keywords"), "links": _js_get(parsed, "links"), "tags": _js_get(parsed, "tags"), "refs": _js_get(parsed, "refs"), "mtime_ns": mtime_ns, "size": size}
+
+
+_stamped__typed = _stamped
 
 
 def _entries(v):
@@ -534,7 +502,7 @@ class HotIndex(_JsObject):
         self.home = home
         self.real = node_realpath(self.source)
         where = _js_coalesce(index_dir, lambda: path_join(home, ".bantamkit", "index"))
-        self.path = path_join(where, _js_str(sha16(self.source)) + ".json")
+        self.path = path_join(where, sha16(self.source) + ".json")
         self.dir = py_join(self.source, "facts") if kind == "facts" else self.source
 
     def docs(self):
@@ -825,7 +793,7 @@ class HotIndex(_JsObject):
                 return None
             parsed = whole
             top = parsed
-            tail_obj = _js_object_from_entries(_js_m_map(TAIL_KEYS, lambda k, *_: [k, _js_get(parsed, k)]))
+            tail_obj = _js_object_from_entries([[k, _js_get(parsed, k)] for k in TAIL_KEYS])
         if not _js_strict_eq(_js_get(top, "version"), INDEX_VERSION):
             return None
         if not _js_strict_eq(_js_get(top, "kind"), self.kind) or not _js_strict_eq(_js_get(top, "source"), self.real):
@@ -852,7 +820,7 @@ class HotIndex(_JsObject):
         fams = _js_m_sort(_js_object_keys(sh), cmp_codepoint)
         if len(fams) != len(FAMILIES) or _js_m_some(fams, lambda f, i, *_: not _js_strict_eq(f, _js_list_at(FAMILIES, i))):
             return None
-        if not _js_m_every(FAMILIES, lambda f, *_: _is_fps(_js_get(sh, f))):
+        if not all(_is_fps(_js_get(sh, f)) for f in FAMILIES):
             return None
         skipped = _JsMap()
         for k, v in _js_rows(_entries(_js_get(top, "skipped")), 2, (0, 1)):
@@ -950,7 +918,7 @@ class HotIndex(_JsObject):
             if _js_get(_js_caught19, "code") == "ENOENT":
                 return []
             raise _js_caught19
-        return _js_m_map(_js_m_sort(_js_m_filter(names, lambda n, *_: _js_and(_js_m_endsWith(n, ".md") and n != "MEMORY.md", lambda: _is_file(py_join(self.dir, n)))), cmp_codepoint), lambda n, *_: py_join(self.dir, n))
+        return [py_join(self.dir, n) for n in _js_m_sort([n for n in _js_array("filter", names) if _js_truthy(_js_and(_js_m_endsWith(n, ".md") and n != "MEMORY.md", lambda: _is_file(py_join(self.dir, n))))], cmp_codepoint)]
 
     def statListing(self):
         out = []
@@ -986,7 +954,7 @@ class HotIndex(_JsObject):
             was = _js_m_get(files, name)
             if was is _JS_UNDEFINED or not _js_strict_eq(_js_get(was, 0), _js_get(now, 0)) or not _js_strict_eq(_js_get(was, 1), _js_get(now, 1)):
                 _js_m_add(redo, name)
-        gone = _JsSet(_js_m_filter([*_js_m_keys(files)], lambda n, *_: not _js_m_has(now_files, n)))
+        gone = _JsSet([n for n in [*_js_m_keys(files)] if not _js_m_has(now_files, n)])
         if _js_strict_eq(_js_size(redo), 0) and _js_strict_eq(_js_size(gone), 0) and not _js_truthy(force):
             return False
         derived_from = _derived_key(docs)
@@ -1048,7 +1016,7 @@ class HotIndex(_JsObject):
                     return _js_get(_js_caught23, "message")
                 raise _js_caught23
             extra = _secondary(p, _TAGS_LINE)
-            return {"file": file, "name": py_text(_js_get(fact, "name")), "description": py_text(_js_get(fact, "description")), "type": py_text(_js_get(fact, "type")), "keywords": [*_js_coalesce_value(_js_get(fact, "keywords"), [])], "links": _dedupe([*_js_m_map(_js_get(fact, "links"), lambda x, *_: py_text(x)), *_wiki_links(_js_get(fact, "body"))]), "tags": _str_list(_js_get(extra, "tags")), "refs": fact_refs(py_text(_js_get(fact, "description")), _js_m_map([*_js_coalesce_value(_js_get(fact, "keywords"), [])], lambda x, *_: py_text(x)), py_text(_js_get(fact, "body"))), "loose": not isinstance(_js_get(fact, "name"), str)}
+            return {"file": file, "name": py_text(_js_get(fact, "name")), "description": py_text(_js_get(fact, "description")), "type": py_text(_js_get(fact, "type")), "keywords": [*_js_coalesce_value(_js_get(fact, "keywords"), [])], "links": _dedupe([*[py_text(x) for x in _js_array("map", _js_get(fact, "links"))], *_wiki_links(_js_get(fact, "body"))]), "tags": _str_list(_js_get(extra, "tags")), "refs": fact_refs(py_text(_js_get(fact, "description")), [py_text(x) for x in [*_js_coalesce_value(_js_get(fact, "keywords"), [])]], py_text(_js_get(fact, "body"))), "loose": not isinstance(_js_get(fact, "name"), str)}
         stored = _JS_UNDEFINED
         _js_caught24 = None
         try:
@@ -1063,7 +1031,7 @@ class HotIndex(_JsObject):
         md = _js_get(extra, "metadata")
         nested = md if md is not None and _js_typeof(md) == "object" and not _js_is_array(md) else {}
         fl = _js_get(extra, "links") if _js_in("links", extra) else _js_get(nested, "links")
-        front_links = _js_m_map(fl, lambda x, *_: py_text(x)) if _js_is_array(fl) else []
+        front_links = [py_text(x) for x in fl] if _js_is_array(fl) else []
         tags = _js_get(extra, "tags") if _js_in("tags", extra) else _js_get(nested, "tags")
         return {"file": file, "name": _js_get(stored, "name"), "description": _js_get(stored, "description"), "type": _js_get(stored, "type"), "keywords": [], "links": _dedupe([*front_links, *_wiki_links(_js_get(stored, "body"))]), "tags": _str_list(tags), "refs": extract_refs(_js_str(_js_get(stored, "description")) + "\n" + _js_str(_js_get(stored, "body"))), "loose": False}
 
@@ -1150,7 +1118,7 @@ def _columns(docs, data):
     raw = _js_get(data, "lensRaw")
     boost = _boost_ints()
     names = _js_m_sort([*_js_m_keys(docs)], cmp_codepoint)
-    types = _js_m_sort([*_JsSet(_js_m_map(names, lambda n, *_: _js_get(_js_m_get(docs, n), "type")))], cmp_codepoint)
+    types = _js_m_sort([*_JsSet([_js_get(_js_m_get(docs, n), "type") for n in names])], cmp_codepoint)
     code = _JsMap(_js_m_map(types, lambda t, i, *_: [t, i]))
     cols = {"name": names, "file": [], "length": [], "type": [], "types": types, "stale": []}
     def _js_fn27(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
@@ -1201,14 +1169,14 @@ def _complete_tail(data):
 
 def _same_keys(v, keys):
     have = _js_object_keys(v)
-    return _js_strict_eq(_js_len(have), len(keys)) and _js_m_every(keys, lambda k, *_: _js_object_has_own(v, k))
+    return _js_strict_eq(_js_len(have), len(keys)) and all(_js_object_has_own(v, k) for k in keys)
 
 
 def _derived_key(docs):
     rows = []
     for n, d in _js_rows(docs, 2, (0, 1)):
         rows.append([n, _js_get(d, "description"), _js_get(d, "keywords")])
-    _js_m_sort(rows, lambda a, b, *_: cmp_codepoint(_js_get(a, 0), _js_get(b, 0)))
+    _js_sort_lex(rows, ((lambda a, *_: _js_get(a, 0), False, True),), lambda a, b, *_: cmp_codepoint(_js_get(a, 0), _js_get(b, 0)))
     return _js_json_stringify(rows)
 
 

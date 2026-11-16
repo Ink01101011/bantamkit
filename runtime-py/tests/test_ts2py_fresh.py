@@ -7,7 +7,8 @@ into line 2 of every module it emits, so this gate compares that header with the
 disk and fails, naming the regenerate command, the moment they part.
 
 The runtime support module and the adapter module are checked the same way against the copies
-ts2py embeds (`tools/ts2py/src/runtime.py`, which `--emit-runtime` writes out byte for byte, and
+ts2py embeds (`tools/ts2py/src/runtime.py`, which `--emit-runtime` writes out in its shipped form —
+comments and docstrings left in the source, J90-P2 — and
 `tools/ts2py/src/adapters.py`, which `--emit-adapters` writes with its runtime import filled in).
 
 Every `.py` in the directory must be one of those, so a generated module committed later cannot
@@ -100,9 +101,75 @@ def source_header(generated: Path, source: Path) -> tuple[str, str]:
     return carried, wanted
 
 
+SHIPPED_NOTE = "# Shipped form (J90-P2): its comments and docstrings are in tools/ts2py/src/."
+
+
+def shipped(text: str) -> str:
+    """`shipped` in tools/ts2py/src/lib.rs, line for line (J90-P2): the leading comment block and
+    `SHIPPED_NOTE`, then every line but the full-line comments and the docstring of each function or
+    class whose body goes on after it; nothing inside a triple-quoted string is touched."""
+    lines = text.split("\n")
+    out = []
+
+    def indent(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
+    i = 0
+    while i < len(lines) and lines[i].startswith("#"):
+        out.append(lines[i])
+        i += 1
+    out.append(SHIPPED_NOTE)
+    in_string = False
+    depth = None
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if in_string:
+            out.append(line)
+            in_string = line.count('"""') % 2 == 0
+            i += 1
+            continue
+        if depth is None and line.lstrip().startswith(("def ", "async def ", "class ")):
+            depth = 0
+        if depth is not None:
+            depth += sum(line.count(c) for c in "([{") - sum(line.count(c) for c in ")]}")
+            out.append(line)
+            i += 1
+            if depth == 0 and stripped.endswith(":"):
+                depth = None
+                body = lines[i].lstrip() if i < len(lines) else ""
+                if body.startswith(('"""', 'r"""')):
+                    opener = 4 if body.startswith("r") else 3
+                    if '"""' in body[opener:]:
+                        end = i
+                    else:
+                        end = next((k for k in range(i + 1, len(lines)) if '"""' in lines[k]), None)
+                    if end is not None:
+                        rest = (k for k in range(end + 1, len(lines)) if lines[k].strip())
+                        after = next(rest, None)
+                        width = len(lines[i]) - len(body)
+                        if after is not None and indent(lines[after]) >= width:
+                            i = end + 1
+            continue
+        if stripped.startswith("#"):
+            i += 1
+            continue
+        out.append(line)
+        in_string = line.count('"""') % 2 == 1
+        i += 1
+    return "\n".join(out)
+
+
+def expected_runtime() -> bytes:
+    # `--emit-runtime`: the embedded copy, in its shipped form.
+    return shipped(RUNTIME_SOURCE.read_text(encoding="utf-8")).encode("utf-8")
+
+
 def expected_adapters() -> bytes:
-    # `adapters_module` in tools/ts2py/src/lib.rs: the embedded copy, runtime import filled in.
-    return ADAPTERS_SOURCE.read_bytes().replace(b"__RUNTIME__", b"._ts2py_runtime")
+    # `adapters_module` in tools/ts2py/src/lib.rs: the embedded copy, runtime import filled in,
+    # in its shipped form.
+    text = ADAPTERS_SOURCE.read_text(encoding="utf-8").replace("__RUNTIME__", "._ts2py_runtime")
+    return shipped(text).encode("utf-8")
 
 
 def test_every_file_in_generated_is_gated():
@@ -125,7 +192,7 @@ def test_generated_module_names_the_typescript_on_disk(module):
 
 def test_generated_runtime_is_the_one_ts2py_emits():
     committed = (GENERATED / "_ts2py_runtime.py").read_bytes()
-    assert committed == RUNTIME_SOURCE.read_bytes(), (
+    assert committed == expected_runtime(), (
         "bantamkit/_generated/_ts2py_runtime.py differs from tools/ts2py/src/runtime.py; "
         + REGENERATE
     )

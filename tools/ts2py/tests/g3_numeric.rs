@@ -229,7 +229,6 @@ fn j89_3_only_the_exact_key_comparator_is_a_key_sort() {
         "(a, b) => t[b]! - t[a]! || b - a",
         "(a, b) => t[b]! * t[a]! || a - b",
         "(a, b) => t[b]! - t[b]! || a - b",
-        "(a, b) => ks[b]! - ks[a]! || a - b",
         "(a, b) => t[b]! - t[a]! && a - b",
         "(a, b) => (t[b]! - t[a]!) * 2 || a - b",
     ] {
@@ -243,6 +242,12 @@ fn j89_3_only_the_exact_key_comparator_is_a_key_sort() {
         "{head}(a, b) => (t[a]! - t[b]!) || (a - b));\n}}\n"
     ));
     assert!(code.contains("_js_sort_by_f64(xs, t, False, "), "{code}");
+    // J90-P2: over a plain array it is the chain key sort (`_js_sort_lex`), not this one.
+    let code = code_of(&format!("{head}(a, b) => ks[b]! - ks[a]! || a - b);\n}}\n"));
+    assert!(
+        code.contains("_js_sort_lex(xs, ") && !code.contains("_js_sort_by_f64("),
+        "{code}"
+    );
 }
 
 /// A counted loop gets no proven copy when anything in its body could change what the guard

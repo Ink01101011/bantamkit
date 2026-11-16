@@ -27,6 +27,92 @@ pub fn adapters_module(runtime_module: &str) -> String {
     ADAPTERS.replace("__RUNTIME__", runtime_module)
 }
 
+/// The line `shipped` writes after a support module's leading comment block.
+pub const SHIPPED_NOTE: &str =
+    "# Shipped form (J90-P2): its comments and docstrings are in tools/ts2py/src/.";
+
+/// J90-P2: the form of a support module `--emit-runtime` / `--emit-adapters` write (and the package
+/// ships): its leading comment block and `SHIPPED_NOTE`, then every line but the full-line
+/// comments and the docstring of each function or class whose body goes on after it. Nothing
+/// inside a triple-quoted string is touched, so the code is the source's statement for statement
+/// (`tests/shipped.rs` holds the two to one `ast.dump`, docstrings aside), and only the documentation
+/// stays behind in the source. `runtime-py/tests/test_ts2py_fresh.py` spells the same rule.
+pub fn shipped(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() && lines[i].starts_with('#') {
+        out.push(lines[i]);
+        i += 1;
+    }
+    out.push(SHIPPED_NOTE);
+    let quotes = |l: &str| l.matches("\"\"\"").count();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let header = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("def ") || t.starts_with("async def ") || t.starts_with("class ")
+    };
+    let mut in_string = false;
+    let mut depth: Option<i64> = None;
+    while i < lines.len() {
+        let line = lines[i];
+        let stripped = line.trim();
+        if in_string {
+            out.push(line);
+            if quotes(line) % 2 == 1 {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if depth.is_none() && header(line) {
+            depth = Some(0);
+        }
+        if let Some(d) = depth {
+            let open = line.chars().filter(|c| "([{".contains(*c)).count() as i64;
+            let close = line.chars().filter(|c| ")]}".contains(*c)).count() as i64;
+            let d = d + open - close;
+            out.push(line);
+            i += 1;
+            if d == 0 && stripped.ends_with(':') {
+                depth = None;
+                if i < lines.len() {
+                    let first = lines[i];
+                    let body = first.trim_start();
+                    if body.starts_with("\"\"\"") || body.starts_with("r\"\"\"") {
+                        let opener = if body.starts_with('r') { 4 } else { 3 };
+                        let end = if body[opener..].contains("\"\"\"") {
+                            Some(i)
+                        } else {
+                            (i + 1..lines.len()).find(|&k| lines[k].contains("\"\"\""))
+                        };
+                        if let Some(end) = end {
+                            let after =
+                                (end + 1..lines.len()).find(|&k| !lines[k].trim().is_empty());
+                            if after.is_some_and(|k| indent(lines[k]) >= indent(first)) {
+                                i = end + 1;
+                            }
+                        }
+                    }
+                }
+            } else {
+                depth = Some(d);
+            }
+            continue;
+        }
+        if stripped.starts_with('#') {
+            i += 1;
+            continue;
+        }
+        out.push(line);
+        if quotes(line) % 2 == 1 {
+            in_string = true;
+        }
+        i += 1;
+    }
+    out.join("\n")
+}
+
 #[derive(Default)]
 pub struct Options {
     /// Import the runtime helpers from this module (e.g. `._ts2py_runtime`) instead of inlining them.

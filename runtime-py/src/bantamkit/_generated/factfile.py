@@ -8,6 +8,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
     _js_and,
+    _js_array,
     _js_cat,
     _js_coalesce_value,
     _js_code_units,
@@ -35,7 +36,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_includes,
     _js_m_indexOf,
     _js_m_lastIndexOf,
-    _js_m_map,
     _js_m_padStart,
     _js_m_pop,
     _js_m_push,
@@ -105,18 +105,15 @@ class FactParseError(_JsError):
 OWNED_KEYS = ["name", "description", "type", "created", "last_recalled", "links", "keywords", "outcome", "status"]
 
 
-def _is_text_key__typed(key):
-    return isinstance(construct_plain(key), str)
-
-
 def is_text_key(key):
-    if type(key) is str:
-        return _is_text_key__typed(key)
     return isinstance(construct_plain(key), str)
+
+
+_is_text_key__typed = is_text_key
 
 
 def extra_of(meta):
-    return _js_m_map(_js_m_filter(_js_object_keys(meta), lambda k, *_: not _js_m_includes(OWNED_KEYS, k) and is_text_key(k)), lambda k, *_: [k, _js_get(meta, k)])
+    return [[k, _js_get(meta, k)] for k in [k for k in _js_array("filter", _js_object_keys(meta)) if not _js_m_includes(OWNED_KEYS, k) and is_text_key(k)]]
 
 
 VALID_OUTCOMES = ["error", "success"]
@@ -322,14 +319,11 @@ def parse_frontmatter(front):
 _LONE_SURROGATES = _JS_RE_6
 
 
-def _well_formed__typed(text):
-    return _js_m_replace(text, _LONE_SURROGATES, "�")
-
-
 def well_formed(text):
-    if type(text) is str:
-        return _well_formed__typed(text)
     return _js_m_replace(text, _LONE_SURROGATES, "�")
+
+
+_well_formed__typed = well_formed
 
 
 def _well_formed_meta(meta):
@@ -338,7 +332,7 @@ def _well_formed_meta(meta):
         if isinstance(v, str):
             out.append([k, well_formed(v)])
         elif _js_is_array(v):
-            out.append([k, _js_m_map(v, lambda x, *_: _well_formed__typed(x) if isinstance(x, str) else x)])
+            out.append([k, [_well_formed__typed(x) if isinstance(x, str) else x for x in _js_array("map", v)]])
         else:
             out.append([k, v])
     return _js_object_from_entries(out)

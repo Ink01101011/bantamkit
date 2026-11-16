@@ -7,6 +7,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
     _js_and,
+    _js_array,
     _js_bigint,
     _js_cat,
     _js_catch,
@@ -35,9 +36,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_add,
     _js_m_charCodeAt,
     _js_m_copyWithin,
-    _js_m_every,
     _js_m_exec,
-    _js_m_filter,
     _js_m_find,
     _js_m_forEach,
     _js_m_get,
@@ -82,6 +81,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_rows,
     _js_sar,
     _js_size,
+    _js_sort_lex,
     _js_spread,
     _js_str,
     _js_str_includes,
@@ -152,20 +152,14 @@ def ensure_bantamkit_gitignore(directory, created):
     return _JS_UNDEFINED
 
 
-def _bantamkit_dir_for__typed(path):
-    for candidate in [path, *py_parents(path)]:
-        if py_name(candidate) == ".bantamkit":
-            return candidate
-    return None
-
-
 def bantamkit_dir_for(path):
-    if type(path) is str:
-        return _bantamkit_dir_for__typed(path)
     for candidate in [path, *py_parents(path)]:
         if py_name(candidate) == ".bantamkit":
             return candidate
     return None
+
+
+_bantamkit_dir_for__typed = bantamkit_dir_for
 
 
 VALID_STATUSES = ["active", "done"]
@@ -181,13 +175,13 @@ _DONE_WORD_ALTERNATIVES = _js_list_join(DONE_WORDS, "|")
 
 
 def _py_list_text__typed(items):
-    return "[" + _js_list_join(_js_m_map(items, lambda t, *_: "'" + _js_str(t) + "'"), ", ") + "]"
+    return "[" + _js_list_join(["'" + _js_str(t) + "'" for t in items], ", ") + "]"
 
 
 def _py_list_text(items):
     if type(items) is list:
         return _py_list_text__typed(items)
-    return "[" + _js_list_join(_js_m_map(items, lambda t, *_: "'" + _js_str(t) + "'"), ", ") + "]"
+    return "[" + _js_list_join(["'" + _js_str(t) + "'" for t in _js_array("map", items)], ", ") + "]"
 
 
 def _validate_outcome_status__typed(type_, outcome, status):
@@ -253,14 +247,11 @@ def lone_surrogate(text):
     return None if found is None else _codepoint(_js_get(found, 0))
 
 
-def _one_line__typed(text):
-    return _js_dispatch(text, "replace", _js_m_replace, _NOT_ONE_LINE, " ")
-
-
 def one_line(text):
-    if type(text) is str:
-        return _one_line__typed(text)
     return _js_dispatch(text, "replace", _js_m_replace, _NOT_ONE_LINE, " ")
+
+
+_one_line__typed = one_line
 
 
 _NOT_ONE_LINE_UNIT = _JS_RE_3
@@ -293,14 +284,11 @@ DEFAULT_INDEX_BUDGET = 24000
 INDEX_PRESSURE_PERCENT = 90
 
 
-def _undegraded_index_ceiling__typed(budget):
-    return _js_floor(_js_div(_js_num(_js_mul(INDEX_PRESSURE_PERCENT, budget) - 1), 100))
-
-
 def undegraded_index_ceiling(budget):
-    if _js_is_double(budget):
-        return _undegraded_index_ceiling__typed(budget)
     return _js_floor(_js_div(_js_num(_js_mul(INDEX_PRESSURE_PERCENT, budget) - 1), 100))
+
+
+_undegraded_index_ceiling__typed = undegraded_index_ceiling
 
 
 _FACTS_UNREADABLE = "a store whose facts could not be listed is not a store with no facts, and " + "answering 'empty' here is what rewrites index.md from nothing"
@@ -392,7 +380,7 @@ def pool_without(pool, drop):
             d = _js_add(d, _js_list_at(out, j))
             j = _js_num(j + 3)
         _js_m_set(df, t, d)
-    return {"n": _js_num(_js_num(_js_get(pool, "n")) - _js_num(_js_num(_js_len(_js_get(pool, "names"))) - len(keep))), "total": total, "df": df, "names": _js_m_map(keep, lambda i, *_: _js_get(_js_get(pool, "names"), i)), "lengths": _js_m_map(keep, lambda i, *_: _js_get(_js_get(pool, "lengths"), i)), "types": _js_m_map(keep, lambda i, *_: _js_get(_js_get(pool, "types"), i)), "typeNames": _js_get(pool, "typeNames"), "stale": _js_m_map(_js_m_filter(_js_get(pool, "stale"), lambda i, *_: _js_m_has(new_id, i)), lambda i, *_: _js_m_get(new_id, i)), "segs": segs, "facts": None, "files": None if _js_get(pool, "files") is None else _js_m_map(keep, lambda i, *_: _js_get(_js_get(pool, "files"), i)), "indexed": _js_get(pool, "indexed"), "every": None}
+    return {"n": _js_num(_js_num(_js_get(pool, "n")) - _js_num(_js_num(_js_len(_js_get(pool, "names"))) - len(keep))), "total": total, "df": df, "names": [_js_get(_js_get(pool, "names"), i) for i in keep], "lengths": [_js_get(_js_get(pool, "lengths"), i) for i in keep], "types": [_js_get(_js_get(pool, "types"), i) for i in keep], "typeNames": _js_get(pool, "typeNames"), "stale": [_js_m_get(new_id, i) for i in [i for i in _js_array("filter", _js_get(pool, "stale")) if _js_m_has(new_id, i)]], "segs": segs, "facts": None, "files": None if _js_get(pool, "files") is None else [_js_get(_js_get(pool, "files"), i) for i in keep], "indexed": _js_get(pool, "indexed"), "every": None}
 
 
 def empty_pool():
@@ -431,8 +419,8 @@ def _bisect_name(names, name, right):
 def _pool_weights(p, usage, context=_JS_UNDEFINED):
     if context is _JS_UNDEFINED:
         context = None
-    plain = _js_m_map(_js_get(p, "typeNames"), lambda t, *_: weight_of(t, False, 0))
-    out = _js_m_map(_js_get(p, "types"), lambda c, *_: _js_list_at(plain, c))
+    plain = [weight_of(t, False, 0) for t in _js_array("map", _js_get(p, "typeNames"))]
+    out = [_js_list_at(plain, c) for c in _js_array("map", _js_get(p, "types"))]
     for i in _js_get(p, "stale"):
         _js_put(out, i, weight_of(_js_get(_js_get(p, "typeNames"), _js_get(_js_get(p, "types"), i)), True, 0))
     if _js_gt(_js_size(usage), 0):
@@ -466,7 +454,7 @@ def _pool_of__typed(facts, q, every_row=_JS_UNDEFINED):
         every_row = False
     held = []
     total = 0
-    df = _JsMap(_js_m_map(q, lambda t, *_: [t, 0]))
+    df = _JsMap([[t, 0] for t in q])
     for fact in facts:
         name = py_text(_js_get(fact, "name"))
         description = py_text(_js_get(fact, "description"))
@@ -481,10 +469,10 @@ def _pool_of__typed(facts, q, every_row=_JS_UNDEFINED):
             _js_m_set(df, t, _js_add(_js_m_get(df, t), 1))
         if _js_truthy(_js_or_value(_js_gt(_js_size(mine), 0), every_row)):
             held.append({"name": name, "length": length, "type": py_text(_js_get(fact, "type")), "stale": stale(description), "fact": fact, "mine": mine})
-    _js_m_sort(held, lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
-    type_names = _js_m_sort([*_JsSet(_js_m_map(held, lambda r, *_: _js_get(r, "type")))], cmp_codepoint)
+    _js_sort_lex(held, ((lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
+    type_names = _js_m_sort([*_JsSet([_js_get(r, "type") for r in held])], cmp_codepoint)
     code = _JsMap(_js_m_map(type_names, lambda t, i, *_: [t, i]))
-    segs = _JsMap(_js_m_map(q, lambda t, *_: [t, []]))
+    segs = _JsMap([[t, []] for t in q])
     def _js_fn5(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
             _js_m_push(_js_m_get(segs, t), i, 1, w)
@@ -496,7 +484,7 @@ def _pool_of__typed(facts, q, every_row=_JS_UNDEFINED):
             stale_ids.append(i)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn6)
-    return {"n": len(facts), "total": total, "df": df, "names": _js_m_map(held, lambda r, *_: _js_get(r, "name")), "lengths": _js_m_map(held, lambda r, *_: _js_len(r)), "types": _js_m_map(held, lambda r, *_: _js_m_get(code, _js_get(r, "type"))), "typeNames": type_names, "stale": stale_ids, "segs": segs, "facts": _js_m_map(held, lambda r, *_: _js_get(r, "fact")), "files": None, "indexed": False, "every": None if _js_truthy(every_row) else _js_m_map(facts, lambda fact, *_: py_text(_js_get(fact, "name")))}
+    return {"n": len(facts), "total": total, "df": df, "names": [_js_get(r, "name") for r in held], "lengths": [_js_len(r) for r in held], "types": [_js_m_get(code, _js_get(r, "type")) for r in held], "typeNames": type_names, "stale": stale_ids, "segs": segs, "facts": [_js_get(r, "fact") for r in held], "files": None, "indexed": False, "every": None if _js_truthy(every_row) else [py_text(_js_get(fact, "name")) for fact in facts]}
 
 
 def pool_of(facts, q, every_row=_JS_UNDEFINED):
@@ -506,7 +494,7 @@ def pool_of(facts, q, every_row=_JS_UNDEFINED):
         every_row = False
     held = []
     total = 0
-    df = _JsMap(_js_m_map(q, lambda t, *_: [t, 0]))
+    df = _JsMap([[t, 0] for t in _js_array("map", q)])
     for fact in facts:
         name = py_text(_js_get(fact, "name"))
         description = py_text(_js_get(fact, "description"))
@@ -521,10 +509,10 @@ def pool_of(facts, q, every_row=_JS_UNDEFINED):
             _js_m_set(df, t, _js_add(_js_m_get(df, t), 1))
         if _js_truthy(_js_or_value(_js_gt(_js_size(mine), 0), every_row)):
             held.append({"name": name, "length": length, "type": py_text(_js_get(fact, "type")), "stale": stale(description), "fact": fact, "mine": mine})
-    _js_m_sort(held, lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
-    type_names = _js_m_sort([*_JsSet(_js_m_map(held, lambda r, *_: _js_get(r, "type")))], cmp_codepoint)
+    _js_sort_lex(held, ((lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
+    type_names = _js_m_sort([*_JsSet([_js_get(r, "type") for r in held])], cmp_codepoint)
     code = _JsMap(_js_m_map(type_names, lambda t, i, *_: [t, i]))
-    segs = _JsMap(_js_m_map(q, lambda t, *_: [t, []]))
+    segs = _JsMap([[t, []] for t in _js_array("map", q)])
     def _js_fn7(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
             _js_m_push(_js_m_get(segs, t), i, 1, w)
@@ -536,7 +524,7 @@ def pool_of(facts, q, every_row=_JS_UNDEFINED):
             stale_ids.append(i)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn8)
-    return {"n": _js_len(facts), "total": total, "df": df, "names": _js_m_map(held, lambda r, *_: _js_get(r, "name")), "lengths": _js_m_map(held, lambda r, *_: _js_len(r)), "types": _js_m_map(held, lambda r, *_: _js_m_get(code, _js_get(r, "type"))), "typeNames": type_names, "stale": stale_ids, "segs": segs, "facts": _js_m_map(held, lambda r, *_: _js_get(r, "fact")), "files": None, "indexed": False, "every": None if _js_truthy(every_row) else _js_m_map(facts, lambda fact, *_: py_text(_js_get(fact, "name")))}
+    return {"n": _js_len(facts), "total": total, "df": df, "names": [_js_get(r, "name") for r in held], "lengths": [_js_len(r) for r in held], "types": [_js_m_get(code, _js_get(r, "type")) for r in held], "typeNames": type_names, "stale": stale_ids, "segs": segs, "facts": [_js_get(r, "fact") for r in held], "files": None, "indexed": False, "every": None if _js_truthy(every_row) else [py_text(_js_get(fact, "name")) for fact in _js_array("map", facts)]}
 
 
 def pooled_ranking(pools, q, ratio, usage, context=_JS_UNDEFINED, scorer=_JS_UNDEFINED, rows=_JS_UNDEFINED):
@@ -553,13 +541,13 @@ def pooled_ranking(pools, q, ratio, usage, context=_JS_UNDEFINED, scorer=_JS_UND
         return _JS_UNDEFINED
     _js_m_forEach(pools, _js_fn9)
     def any_hit():
-        return _js_m_some(live, lambda _js_arg10, *_: (lambda _, p: _js_m_some(q, lambda t, *_: _js_gt(_js_coalesce_value(_js_opt_get(_js_m_get(_js_get(p, "segs"), t), "length"), 0), 0)))(*_js_destructure(_js_arg10, 2)))
+        return _js_m_some(live, lambda _js_arg10, *_: (lambda _, p: any(_js_gt(_js_coalesce_value(_js_opt_get(_js_m_get(_js_get(p, "segs"), t), "length"), 0), 0) for t in _js_array("some", q)))(*_js_destructure(_js_arg10, 2)))
     if not _js_truthy(_js_get(scorer, "dense")) and not _js_truthy(any_hit()):
         return
     n = 0
     total = 0
-    df = _JsMap(_js_m_map(q, lambda t, *_: [t, 0]))
-    segs = _JsMap(_js_m_map(q, lambda t, *_: [t, []]))
+    df = _JsMap([[t, 0] for t in _js_array("map", q)])
+    segs = _JsMap([[t, []] for t in _js_array("map", q)])
     lengths = []
     starts = []
     for _js_hole, held in _js_rows(live, 2, (1,)):
@@ -813,8 +801,8 @@ def py_compare_lt(a, b):
 
 
 def _sort_scored__typed(scored):
-    if _js_m_every(scored, lambda s, *_: isinstance(_js_get(s, "name"), str)):
-        return _js_m_sort([*scored], lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "score")) - _js_num(_js_get(a, "score"))), lambda: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name"))))
+    if all(isinstance(_js_get(s, "name"), str) for s in scored):
+        return _js_sort_lex([*scored], ((lambda a, *_: _js_get(a, "score"), True, False), (lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "score")) - _js_num(_js_get(a, "score"))), lambda: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name"))))
     def lt(x, y):
         return _js_gt(_js_get(x, "score"), _js_get(y, "score")) if not _js_strict_eq(_js_get(x, "score"), _js_get(y, "score")) else False if py_equal_value(_js_get(x, "name"), _js_get(y, "name")) else py_compare_lt(_js_get(x, "name"), _js_get(y, "name"))
     a = [*scored]
@@ -853,8 +841,8 @@ def _sort_scored__typed(scored):
 def sort_scored(scored):
     if type(scored) is list:
         return _sort_scored__typed(scored)
-    if _js_m_every(scored, lambda s, *_: isinstance(_js_get(s, "name"), str)):
-        return _js_m_sort([*scored], lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "score")) - _js_num(_js_get(a, "score"))), lambda: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name"))))
+    if all(isinstance(_js_get(s, "name"), str) for s in _js_array("every", scored)):
+        return _js_sort_lex([*scored], ((lambda a, *_: _js_get(a, "score"), True, False), (lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "score")) - _js_num(_js_get(a, "score"))), lambda: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name"))))
     def lt(x, y):
         return _js_gt(_js_get(x, "score"), _js_get(y, "score")) if not _js_strict_eq(_js_get(x, "score"), _js_get(y, "score")) else False if py_equal_value(_js_get(x, "name"), _js_get(y, "name")) else py_compare_lt(_js_get(x, "name"), _js_get(y, "name"))
     a = [*scored]
@@ -890,23 +878,7 @@ def sort_scored(scored):
     return a
 
 
-def _looks_like_mapping__typed(front):
-    if py_strip(front) == "":
-        return False
-    first = _js_m_find(_js_m_split(front, "\n"), lambda line, *_: py_strip(line) != "")
-    head = _js_dispatch(first, "replace", _js_m_replace, _JS_RE_8, "")
-    if _js_m_startsWith(head, "#"):
-        return True
-    if head == "-" or _js_m_startsWith(head, "- ") or _js_m_startsWith(head, "["):
-        return False
-    if _js_m_startsWith(head, "{") or _js_m_startsWith(head, "? "):
-        return True
-    return _js_m_test(_JS_RE_9, head)
-
-
 def _looks_like_mapping(front):
-    if type(front) is str:
-        return _looks_like_mapping__typed(front)
     if py_strip(front) == "":
         return False
     first = _js_m_find(_js_m_split(front, "\n"), lambda line, *_: py_strip(line) != "")
@@ -918,6 +890,9 @@ def _looks_like_mapping(front):
     if _js_m_startsWith(head, "{") or _js_m_startsWith(head, "? "):
         return True
     return _js_m_test(_JS_RE_9, head)
+
+
+_looks_like_mapping__typed = _looks_like_mapping
 
 
 class MemoryStore(_JsObject):
@@ -991,7 +966,7 @@ class MemoryStore(_JsObject):
             dup_exempt = []
         self.ensureDirs()
         if not _js_m_includes(VALID_TYPES, type_):
-            raise MemoryValidationError("invalid type '" + _js_str(type_) + "'; must be one of [" + _js_list_join(_js_m_map(VALID_TYPES, lambda t, *_: "'" + _js_str(t) + "'"), ", ") + "]")
+            raise MemoryValidationError("invalid type '" + _js_str(type_) + "'; must be one of [" + _js_list_join(["'" + _js_str(t) + "'" for t in VALID_TYPES], ", ") + "]")
         _validate_outcome_status(type_, outcome, status)
         if not _js_m_test(_NAME_RE, _js_or_value(name, "")):
             raise MemoryValidationError("invalid name '" + _js_str(name) + "'; must match " + _NAME_PATTERN)
@@ -1068,7 +1043,7 @@ class MemoryStore(_JsObject):
         def facts_pool():
             got = self.candidates(skipped)
             if outcome is not None:
-                got = _js_m_filter(got, lambda f, *_: _js_strict_eq(_js_get(f, "outcome"), outcome))
+                got = [f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)]
             return pool_of(got, q)
         def _js_fn17(*_):
             return _js_invoke(ledger, "weights", self.now())
@@ -1191,7 +1166,7 @@ class MemoryStore(_JsObject):
         for f in self.facts():
             _js_m_set(live, py_text(_js_get(f, "name")), f)
         distinct = [*_JsSet(names)]
-        missing = _js_m_filter(distinct, lambda n, *_: not _js_m_has(live, n))
+        missing = [n for n in distinct if not _js_m_has(live, n)]
         if len(missing) > 0 or len(distinct) < 2:
             raise MemoryValidationError("merge needs at least two distinct live facts; missing: " + (_js_list_join(missing, ", ") if len(missing) > 0 else "none"))
         if _js_m_includes(distinct, name):
@@ -1199,7 +1174,7 @@ class MemoryStore(_JsObject):
         if _js_m_has(live, name) or _js_m_includes(self.archived(), name):
             raise MemoryValidationError("cannot merge into '" + _js_str(name) + "': a fact of that name exists")
         if not _js_m_includes(VALID_TYPES, type_):
-            raise MemoryValidationError("invalid type '" + _js_str(type_) + "'; must be one of [" + _js_list_join(_js_m_map(VALID_TYPES, lambda t, *_: "'" + _js_str(t) + "'"), ", ") + "]")
+            raise MemoryValidationError("invalid type '" + _js_str(type_) + "'; must be one of [" + _js_list_join(["'" + _js_str(t) + "'" for t in VALID_TYPES], ", ") + "]")
         _validate_outcome_status(type_, outcome, status)
         new_tokens = _tokens__typed(_js_str(name) + " " + _js_str(description))
         for key, other in _js_rows(live, 2, (0, 1)):
@@ -1207,7 +1182,7 @@ class MemoryStore(_JsObject):
                 continue
             if jaccard(new_tokens, _tokens__typed(py_text(_js_get(other, "name")) + " " + py_text(_js_get(other, "description")))) >= DUPLICATE_JACCARD:
                 raise MemoryValidationError("cannot merge into '" + _js_str(name) + "': it duplicates the live fact '" + _js_str(key) + "'")
-        consumed = _js_m_map(distinct, lambda n, *_: _js_m_get(live, n))
+        consumed = [_js_m_get(live, n) for n in distinct]
         links = []
         for fact in consumed:
             for link in _js_get(fact, "links"):
@@ -1334,7 +1309,7 @@ class MemoryStore(_JsObject):
                 raise _js_caught24
             _js_invoke(cold, "reset")
             held = []
-        seen = _JsSet(_js_m_map(held, lambda d, *_: _js_json_stringify([_js_get(d, "file"), _js_get(d, "mtime_ns"), _js_size(d)])))
+        seen = _JsSet([_js_json_stringify([_js_get(d, "file"), _js_get(d, "mtime_ns"), _js_size(d)]) for d in _js_array("map", held)])
         fresh = _JsMap()
         for file in listing:
             p = py_join(archive, file)
@@ -1515,7 +1490,7 @@ class MemoryStore(_JsObject):
 
     def indexTextOf(self, tolerant):
         facts = self.facts(_JS_UNDEFINED, []) if _js_truthy(tolerant) else self.facts()
-        return _js_list_join(_js_m_map(facts, lambda fact, *_: self.indexLine(fact)), "")
+        return _js_list_join([self.indexLine(fact) for fact in _js_array("map", facts)], "")
 
     def readableFacts(self):
         skipped = []
@@ -1546,7 +1521,7 @@ class MemoryStore(_JsObject):
         if used is _JS_UNDEFINED:
             used = _JsMap()
         def rank(fact):
-            return 1 if _js_m_some(DURABLE_TYPES, lambda durable, *_: py_equal_value(_js_get(fact, "type"), durable)) else 0
+            return 1 if any(py_equal_value(_js_get(fact, "type"), durable) for durable in DURABLE_TYPES) else 0
         def key(fact):
             last = _js_m_get(used, _js_get(fact, "name")) if isinstance(_js_get(fact, "name"), str) else _JS_UNDEFINED
             return [last if _js_truthy(last) else _js_get(fact, "last_recalled") if _js_truthy(py_truthy(_js_get(fact, "last_recalled"))) else _js_get(fact, "created") if _js_truthy(py_truthy(_js_get(fact, "created"))) else "", _js_get(fact, "name")]
@@ -1580,7 +1555,7 @@ class MemoryStore(_JsObject):
     def listing(self, directory, consequence):
         _js_caught40 = None
         try:
-            return _js_m_filter(py_scandir_names(directory), lambda name, *_: matches_md(name))
+            return [name for name in _js_array("filter", py_scandir_names(directory)) if _js_truthy(matches_md(name))]
         except Exception as _js_error40:
             _js_caught40 = _js_catch(_js_error40)
         if _js_caught40 is not None:
@@ -1593,7 +1568,7 @@ class MemoryStore(_JsObject):
 
     def factPaths(self):
         facts = py_join(self.root, "facts")
-        return _js_m_map(sorted_path_names(self.listing(facts, _FACTS_UNREADABLE)), lambda n, *_: py_join(facts, n))
+        return [py_join(facts, n) for n in _js_array("map", sorted_path_names(self.listing(facts, _FACTS_UNREADABLE)))]
 
     def unreadable(self, directory, error, consequence, detail=_JS_UNDEFINED):
         if detail is _JS_UNDEFINED:
@@ -1704,7 +1679,7 @@ class MemoryStore(_JsObject):
         n = _js_len(_js_get(cols, "name"))
         bn, bd, bk = _js_destructure(_js_m_map(FIELD_BOOST, lambda _js_arg44, *_: (lambda _, b: b)(*_js_destructure(_js_arg44, 2))), 3)
         segs = _JsMap()
-        df = _JsMap(_js_m_map(q, lambda t, *_: [t, 0]))
+        df = _JsMap([[t, 0] for t in _js_array("map", q)])
         for t, seg in _js_rows(_js_invoke(idx, "segments", q), 2, (0, 1)):
             if not _js_is_array(seg) or not _js_strict_eq(_js_mod(_js_len(seg), 5), 0):
                 return None

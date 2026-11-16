@@ -12,6 +12,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_add,
     _js_and,
     _js_and_value,
+    _js_array,
     _js_bigint,
     _js_cat,
     _js_coalesce_value,
@@ -28,7 +29,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_gt,
     _js_invoke,
     _js_is_array,
-    _js_is_double,
     _js_json_stringify,
     _js_le,
     _js_len,
@@ -48,7 +48,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_replace,
     _js_m_reverse,
     _js_m_slice,
-    _js_m_some,
     _js_m_split,
     _js_m_test,
     _js_m_toLowerCase,
@@ -268,14 +267,11 @@ def _analyze_scalar(chars):
 _ESCAPE_REPLACEMENTS = _JsMap([[0, "0"], [7, "a"], [8, "b"], [9, "t"], [10, "n"], [11, "v"], [12, "f"], [13, "r"], [27, "e"], [34, "\""], [92, "\\"], [133, "N"], [160, "_"], [8232, "L"], [8233, "P"]])
 
 
-def _hex__typed(cp, width):
-    return _js_m_padStart(_js_m_toUpperCase(_js_m_toString(cp, 16)), width, "0")
-
-
 def _hex(cp, width):
-    if _js_is_double(cp) and _js_is_double(width):
-        return _hex__typed(cp, width)
     return _js_m_padStart(_js_m_toUpperCase(_js_m_toString(cp, 16)), width, "0")
+
+
+_hex__typed = _hex
 
 
 class _Emitter(_JsObject):
@@ -485,20 +481,7 @@ class _Emitter(_JsObject):
         return _JS_UNDEFINED
 
 
-def _safe_dump_mapping__typed(entries):
-    e = _Emitter()
-    seen = []
-    _js_invoke(e, "increaseIndent", False, False)
-    for key, value in _js_rows(entries, 2, (0, 1)):
-        _emit_mapping_entry(e, key, value, key, seen)
-    _js_invoke(e, "popIndent")
-    _js_invoke(e, "writeIndent")
-    return _js_m_toString(e)
-
-
 def safe_dump_mapping(entries):
-    if type(entries) is list:
-        return _safe_dump_mapping__typed(entries)
     e = _Emitter()
     seen = []
     _js_invoke(e, "increaseIndent", False, False)
@@ -509,18 +492,16 @@ def safe_dump_mapping(entries):
     return _js_m_toString(e)
 
 
-def _is_simple_key__typed(key):
-    chars = [*key]
-    analysis = _analyze_scalar(chars)
-    return _js_num(5 + len(chars)) < 128 and not _js_truthy(_js_get(analysis, "empty")) and not _js_truthy(_js_get(analysis, "multiline"))
+_safe_dump_mapping__typed = safe_dump_mapping
 
 
 def _is_simple_key(key):
-    if type(key) is str:
-        return _is_simple_key__typed(key)
     chars = [*key]
     analysis = _analyze_scalar(chars)
     return _js_num(5 + len(chars)) < 128 and not _js_truthy(_js_get(analysis, "empty")) and not _js_truthy(_js_get(analysis, "multiline"))
+
+
+_is_simple_key__typed = _is_simple_key
 
 
 def _emit_mapping_entry__typed(e, key, value, path, seen):
@@ -558,7 +539,7 @@ def _emit_mapping_entry(e, key, value, path, seen):
 
 
 def _claim__typed(value, path, seen):
-    if _js_m_some(seen, lambda s, *_: _js_strict_eq(s, value)):
+    if any(_js_strict_eq(s, value) for s in seen):
         raise YamlEmitError("cannot emit " + path + ": the same collection appears twice in one document, which PyYAML writes as an anchor and an alias")
     seen.append(value)
     return _JS_UNDEFINED
@@ -567,7 +548,7 @@ def _claim__typed(value, path, seen):
 def _claim(value, path, seen):
     if type(path) is str and type(seen) is list:
         return _claim__typed(value, path, seen)
-    if _js_m_some(seen, lambda s, *_: _js_strict_eq(s, value)):
+    if any(_js_strict_eq(s, value) for s in _js_array("some", seen)):
         raise YamlEmitError("cannot emit " + _js_str(path) + ": the same collection appears twice in one document, which PyYAML writes as an anchor and an alias")
     _js_dispatch(seen, "push", _js_m_push, value)
     return _JS_UNDEFINED
@@ -723,34 +704,7 @@ def _days_from_civil(y, m, d):
 _BOOL_VALUES = {"yes": True, "no": False, "true": True, "false": False, "on": True, "off": False}
 
 
-def _construct_int__typed(raw):
-    value = _js_m_replace(raw, _JS_RE_9, "")
-    sign = _JsBigInt(1)
-    if _js_str_at(value, 0) == "-":
-        sign = _js_neg(_JsBigInt(1))
-    if _js_str_at(value, 0) == "+" or _js_str_at(value, 0) == "-":
-        value = _js_str_slice(value, 1)
-    if value == "0":
-        return _JsBigInt(0)
-    if _js_str_starts_with(value, "0b"):
-        return _js_mul(sign, _js_bigint("0b" + _js_str_slice(value, 2)))
-    if _js_str_starts_with(value, "0x"):
-        return _js_mul(sign, _js_bigint("0x" + _js_str_slice(value, 2)))
-    if _js_str_at(value, 0) == "0":
-        return _js_mul(sign, _js_bigint("0o" + _js_str_slice(value, 1)))
-    if _js_str_includes(value, ":"):
-        total = _JsBigInt(0)
-        base = _JsBigInt(1)
-        for part in _js_m_reverse(_js_m_split(value, ":")):
-            total = _js_add(total, _js_mul(_js_bigint(part), base))
-            base = _js_mul(base, _JsBigInt(60))
-        return _js_mul(sign, total)
-    return _js_mul(sign, _js_bigint(value))
-
-
 def _construct_int(raw):
-    if type(raw) is str:
-        return _construct_int__typed(raw)
     value = _js_m_replace(raw, _JS_RE_9, "")
     sign = _JsBigInt(1)
     if _js_str_at(value, 0) == "-":
@@ -775,30 +729,10 @@ def _construct_int(raw):
     return _js_mul(sign, _js_bigint(value))
 
 
-def _construct_float__typed(raw):
-    value = _js_m_toLowerCase(_js_m_replace(raw, _JS_RE_9, ""))
-    sign = 1
-    if _js_str_at(value, 0) == "-":
-        sign = -1
-    if _js_str_at(value, 0) == "+" or _js_str_at(value, 0) == "-":
-        value = _js_str_slice(value, 1)
-    if value == ".inf":
-        return _js_mul(sign, _JS_INFINITY)
-    if value == ".nan":
-        return _JS_NAN
-    if _js_str_includes(value, ":"):
-        total = 0
-        base = 1
-        for part in _js_m_reverse(_js_m_split(value, ":")):
-            total = _js_num(total + _js_mul(_js_number(part), base))
-            base = _js_mul(base, 60)
-        return _js_mul(sign, total)
-    return _js_mul(sign, _js_number(value))
+_construct_int__typed = _construct_int
 
 
 def _construct_float(raw):
-    if type(raw) is str:
-        return _construct_float__typed(raw)
     value = _js_m_toLowerCase(_js_m_replace(raw, _JS_RE_9, ""))
     sign = 1
     if _js_str_at(value, 0) == "-":
@@ -817,6 +751,9 @@ def _construct_float(raw):
             base = _js_mul(base, 60)
         return _js_mul(sign, total)
     return _js_mul(sign, _js_number(value))
+
+
+_construct_float__typed = _construct_float
 
 
 def _represent_float(x):

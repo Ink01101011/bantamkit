@@ -71,6 +71,7 @@ __all__ = [
     "fstat_sync",
     "gunzip_sync",
     "gzip_sync",
+    "hash_hex",
     "homedir",
     "lifecycle_of",
     "link_sync",
@@ -1198,6 +1199,16 @@ class Hash(_JsObject):
         out = self._live().hexdigest()
         object.__setattr__(self, "_js_hash", None)
         return out
+
+
+def hash_hex(algorithm, data):
+    """J90-P2: `createHash(algorithm).update(data, 'utf8').digest('hex')` in one call (ts2py
+    lowers that chain, `algorithm` a literal `'sha256'` or `'sha1'`, to it): an ASCII `str` is its
+    own UTF-8 and has no surrogate, so its bytes are `data.encode()`; anything else is the three
+    calls, with their refusals."""
+    if type(data) is str and data.isascii():
+        return _HASHES[algorithm](data.encode()).hexdigest()
+    return Hash(algorithm).update(data, "utf8").digest("hex")
 
 
 def create_hash(algorithm, *_):

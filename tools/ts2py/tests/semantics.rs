@@ -126,7 +126,10 @@ fn emit_runtime_writes_the_support_module() {
         .status()
         .unwrap();
     assert!(status.success());
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), ts2py::RUNTIME);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        ts2py::shipped(ts2py::RUNTIME)
+    );
     std::fs::remove_file(&path).unwrap();
 }
 

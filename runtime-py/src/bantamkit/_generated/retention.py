@@ -7,6 +7,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
     _js_and,
+    _js_array,
     _js_bigint,
     _js_catch,
     _js_coalesce,
@@ -34,7 +35,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_add,
     _js_m_endsWith,
     _js_m_equals,
-    _js_m_every,
     _js_m_get,
     _js_m_has,
     _js_m_join,
@@ -45,7 +45,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_replace,
     _js_m_set,
     _js_m_slice,
-    _js_m_some,
     _js_m_sort,
     _js_m_split,
     _js_m_startsWith,
@@ -214,16 +213,12 @@ def now_stamp():
     return _js_date_to_iso(_js_now())
 
 
-def _cold_base__typed(home):
-    override = process_env(INDEX_DIR_ENV)
-    return path_join(override, "cold") if _js_truthy(override) else path_join(home, ".bantamkit", "cold")
-
-
 def _cold_base(home):
-    if type(home) is str:
-        return _cold_base__typed(home)
     override = process_env(INDEX_DIR_ENV)
     return path_join(override, "cold") if _js_truthy(override) else path_join(home, ".bantamkit", "cold")
+
+
+_cold_base__typed = _cold_base
 
 
 def _empty_report():
@@ -605,7 +600,7 @@ def _closed(data):
     units = _js_get(plan, "units") if _is_obj(plan) else None
     if not _js_is_array(units) or len(units) == 0:
         return False
-    return _js_m_every(units, lambda u, *_: _is_obj(u) and isinstance(_js_get(u, "status"), str) and _js_m_has(_CLOSED, _js_get(u, "status")))
+    return all(_is_obj(u) and isinstance(_js_get(u, "status"), str) and _js_m_has(_CLOSED, _js_get(u, "status")) for u in units)
 
 
 def _walk__typed(d):
@@ -686,14 +681,11 @@ def _job_files(sw, name, job):
     return files
 
 
-def _rel__typed(root, p):
-    return _js_list_join(_js_m_split(path_relative(root, p), PATH_SEP), "/")
-
-
 def _rel(root, p):
-    if type(root) is str and type(p) is str:
-        return _rel__typed(root, p)
     return _js_list_join(_js_m_split(path_relative(root, p), PATH_SEP), "/")
+
+
+_rel__typed = _rel
 
 
 def bundle_bytes(bundle):
@@ -873,7 +865,7 @@ def _archive_jobs__typed(root, now_ns, report):
             continue
         files = _job_files(sw, name, job)
         stats = _js_m_map(files, lambda _js_a0=_JS_UNDEFINED, *_: _regular(_js_a0))
-        if _js_m_some(stats, lambda s, *_: s is None):
+        if any(s is None for s in stats):
             continue
         newest = _js_m_reduce(stats, lambda mx, s, *_: _js_get(s, "mtimeNs") if _js_gt(_js_get(s, "mtimeNs"), mx) else mx, _js_neg(_JsBigInt(1)))
         if _js_ge(newest, cutoff):
@@ -993,7 +985,7 @@ def _archive_jobs(root, now_ns, report):
             continue
         files = _job_files(sw, name, job)
         stats = _js_m_map(files, lambda _js_a0=_JS_UNDEFINED, *_: _regular(_js_a0))
-        if _js_m_some(stats, lambda s, *_: s is None):
+        if any(s is None for s in stats):
             continue
         newest = _js_m_reduce(stats, lambda mx, s, *_: _js_get(s, "mtimeNs") if _js_gt(_js_get(s, "mtimeNs"), mx) else mx, _js_neg(_JsBigInt(1)))
         if _js_ge(newest, cutoff):
@@ -1093,7 +1085,7 @@ def _sync_jobs__typed(home, root):
     held = _JS_UNDEFINED
     _js_caught47 = None
     try:
-        held = _JsSet(_js_m_map(_js_invoke(cold, "allDocs"), lambda d, *_: _js_get(d, "file")))
+        held = _JsSet([_js_get(d, "file") for d in _js_array("map", _js_invoke(cold, "allDocs"))])
     except Exception as _js_error47:
         _js_caught47 = _js_catch(_js_error47)
     if _js_caught47 is not None:
@@ -1136,7 +1128,7 @@ def sync_jobs(home, root):
     held = _JS_UNDEFINED
     _js_caught49 = None
     try:
-        held = _JsSet(_js_m_map(_js_invoke(cold, "allDocs"), lambda d, *_: _js_get(d, "file")))
+        held = _JsSet([_js_get(d, "file") for d in _js_array("map", _js_invoke(cold, "allDocs"))])
     except Exception as _js_error49:
         _js_caught49 = _js_catch(_js_error49)
     if _js_caught49 is not None:
@@ -1242,7 +1234,7 @@ def _compact_cold__typed(home, roots, report):
     keeps = _JsMap()
     for root in roots:
         _js_m_set(keeps, "shiftwork-" + _js_str(store_id(root)), [root, None])
-    stores = [path_join(home, ".bantamkit", "memory"), *_js_m_map(roots, lambda r, *_: path_join(r, ".bantamkit", "memory"))]
+    stores = [path_join(home, ".bantamkit", "memory"), *[path_join(r, ".bantamkit", "memory") for r in roots]]
     for store in stores:
         if _js_truthy(_is_dir(store)):
             _js_m_set(keeps, "facts-archive-" + _js_str(store_id(store)), [store, "archive"])
@@ -1270,7 +1262,7 @@ def _compact_cold(home, roots, report):
     keeps = _JsMap()
     for root in roots:
         _js_m_set(keeps, "shiftwork-" + _js_str(store_id(root)), [root, None])
-    stores = [path_join(home, ".bantamkit", "memory"), *_js_m_map(roots, lambda r, *_: path_join(r, ".bantamkit", "memory"))]
+    stores = [path_join(home, ".bantamkit", "memory"), *[path_join(r, ".bantamkit", "memory") for r in _js_array("map", roots)]]
     for store in stores:
         if _js_truthy(_is_dir(store)):
             _js_m_set(keeps, "facts-archive-" + _js_str(store_id(store)), [store, "archive"])
@@ -1305,7 +1297,7 @@ def _run_retention__typed(home, roots, now):
         _js_m_push(_js_get(report, "deleted"), path_join(state_dir, n))
     _prune_ledgers__typed(home, now_ns, report)
     _fold_logs(home, now_ms, report)
-    root_paths = _js_m_map(roots, lambda r, *_: path_join(r))
+    root_paths = [path_join(r) for r in roots]
     for root in root_paths:
         added = _archive_jobs(root, now_ns, report)
         if _js_gt(_js_size(added), 0):
@@ -1335,7 +1327,7 @@ def run_retention(home, roots, now):
         _js_m_push(_js_get(report, "deleted"), path_join(state_dir, n))
     _prune_ledgers(home, now_ns, report)
     _fold_logs(home, now_ms, report)
-    root_paths = _js_m_map(roots, lambda r, *_: path_join(r))
+    root_paths = [path_join(r) for r in _js_array("map", roots)]
     for root in root_paths:
         added = _archive_jobs(root, now_ns, report)
         if _js_gt(_js_size(added), 0):
@@ -1350,14 +1342,11 @@ def run_retention(home, roots, now):
     return report
 
 
-def _state_path__typed(home):
-    return path_join(home, ".bantamkit", STATE_NAME)
-
-
 def state_path(home):
-    if type(home) is str:
-        return _state_path__typed(home)
     return path_join(home, ".bantamkit", STATE_NAME)
+
+
+_state_path__typed = state_path
 
 
 def _due__typed(home, now):
@@ -1642,7 +1631,7 @@ def _search_archived__typed(checkpoint, search, home):
             i = 0
             while i < len(lines):
                 toks = _JsSet(tokenize_v2(_js_list_at(lines, i)))
-                if _js_m_every([*want], lambda t, *_: _js_m_has(toks, t)):
+                if all(_js_m_has(toks, t) for t in [*want]):
                     hits.append({"job": job, "file": r, "line": _js_num(i + 1)})
                     if len(hits) >= SEARCH_MAX:
                         return hits
@@ -1706,7 +1695,7 @@ def search_archived(checkpoint, search, home):
             i = 0
             while i < len(lines):
                 toks = _JsSet(tokenize_v2(_js_list_at(lines, i)))
-                if _js_m_every([*want], lambda t, *_: _js_m_has(toks, t)):
+                if all(_js_m_has(toks, t) for t in [*want]):
                     hits.append({"job": job, "file": r, "line": _js_num(i + 1)})
                     if len(hits) >= SEARCH_MAX:
                         return hits

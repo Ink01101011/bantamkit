@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
+    _js_array,
     _js_bigint,
     _js_catch,
     _js_div,
@@ -14,18 +15,14 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_gt,
     _js_in,
     _js_is_array,
-    _js_is_double,
     _js_is_number,
     _js_json_parse,
     _js_le,
     _js_list_at,
     _js_list_join,
     _js_lt,
-    _js_m_filter,
     _js_m_includes,
-    _js_m_map,
     _js_m_padStart,
-    _js_m_some,
     _js_m_sort,
     _js_mod,
     _js_mul,
@@ -147,14 +144,11 @@ def load_price_table(path=_JS_UNDEFINED):
     return validate_price_table(raw)
 
 
-def _decode_price_json__typed(text):
-    return _js_json_parse(text)
-
-
 def decode_price_json(text):
-    if type(text) is str:
-        return _decode_price_json__typed(text)
     return _js_json_parse(text)
+
+
+_decode_price_json__typed = decode_price_json
 
 
 def _is_plain_object(value):
@@ -164,7 +158,7 @@ def _is_plain_object(value):
 def validate_price_table(raw):
     if not _is_plain_object(raw):
         raise PriceTableError("price table must be a JSON object")
-    unknown = _sorted_by_code_point(_js_m_filter(_js_object_keys(raw), lambda k, *_: not _js_m_includes(_TABLE_KEYS, k)))
+    unknown = _sorted_by_code_point([k for k in _js_array("filter", _js_object_keys(raw)) if not _js_m_includes(_TABLE_KEYS, k)])
     if len(unknown) > 0:
         raise PriceTableError("price table has unknown key " + _js_str(py_repr(_js_list_at(unknown, 0))))
     version = _js_get(raw, "schema_version")
@@ -179,7 +173,7 @@ def validate_price_table(raw):
     rates = _js_get(raw, "rates")
     if not _is_plain_object(rates):
         raise PriceTableError("price table rates must be a JSON object")
-    built = _js_object_from_entries(_js_m_map(_sorted_by_code_point(_js_object_keys(rates)), lambda model, *_: [model, _validate_rate(model, _js_get(rates, model))]))
+    built = _js_object_from_entries([[model, _validate_rate(model, _js_get(rates, model))] for model in _sorted_by_code_point(_js_object_keys(rates))])
     out = {}
     _js_put(out, "schema_version", PRICE_SCHEMA_VERSION)
     _js_put(out, "currency", CURRENCY)
@@ -190,40 +184,11 @@ def validate_price_table(raw):
     return out
 
 
-def _validate_rate__typed(model, rate):
-    if not _is_plain_object(rate):
-        raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " must be a JSON object")
-    known = [*_RATE_META, *TOKEN_CLASSES]
-    unknown = _sorted_by_code_point(_js_m_filter(_js_object_keys(rate), lambda k, *_: not _js_m_includes(known, k)))
-    if len(unknown) > 0:
-        raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has unknown key " + _js_str(py_repr(_js_list_at(unknown, 0))))
-    if not _js_in("recorded", rate):
-        raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " is missing 'recorded' -- a rate with no date is not a fact")
-    if not _is_date(_js_get(rate, "recorded")):
-        raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has a 'recorded' that is not a YYYY-MM-DD date")
-    if not _js_in("source", rate):
-        raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " is missing 'source' -- a rate with no source cannot be re-derived")
-    if not isinstance(_js_get(rate, "source"), str) or _js_get(rate, "source") == "":
-        raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has a 'source' that is not a non-empty string")
-    for cls in TOKEN_CLASSES:
-        if _js_in(cls, rate) and not _is_count(_js_get(rate, cls)):
-            raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " prices " + _js_str(py_repr(cls)) + " with something that is not a " + "non-negative integer below 2**53")
-    if not _js_m_some(TOKEN_CLASSES, lambda cls, *_: _js_in(cls, rate)):
-        raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " prices no token class at all")
-    narrowed = {**_js_spread(rate)}
-    for cls in TOKEN_CLASSES:
-        if _js_in(cls, rate):
-            _js_put(narrowed, cls, _as_count(_js_get(rate, cls)))
-    return _rate_view(narrowed)
-
-
 def _validate_rate(model, rate):
-    if type(model) is str:
-        return _validate_rate__typed(model, rate)
     if not _is_plain_object(rate):
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " must be a JSON object")
     known = [*_RATE_META, *TOKEN_CLASSES]
-    unknown = _sorted_by_code_point(_js_m_filter(_js_object_keys(rate), lambda k, *_: not _js_m_includes(known, k)))
+    unknown = _sorted_by_code_point([k for k in _js_array("filter", _js_object_keys(rate)) if not _js_m_includes(known, k)])
     if len(unknown) > 0:
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has unknown key " + _js_str(py_repr(_js_list_at(unknown, 0))))
     if not _js_in("recorded", rate):
@@ -237,75 +202,36 @@ def _validate_rate(model, rate):
     for cls in TOKEN_CLASSES:
         if _js_in(cls, rate) and not _is_count(_js_get(rate, cls)):
             raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " prices " + _js_str(py_repr(cls)) + " with something that is not a " + "non-negative integer below 2**53")
-    if not _js_m_some(TOKEN_CLASSES, lambda cls, *_: _js_in(cls, rate)):
+    if not any(_js_in(cls, rate) for cls in TOKEN_CLASSES):
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " prices no token class at all")
     narrowed = {**_js_spread(rate)}
     for cls in TOKEN_CLASSES:
         if _js_in(cls, rate):
             _js_put(narrowed, cls, _as_count(_js_get(rate, cls)))
     return _rate_view(narrowed)
+
+
+_validate_rate__typed = _validate_rate
 
 
 def _unavailable(reason):
     return {"unavailable": reason}
 
 
-def _format_micros__typed(micros):
-    n = _js_bigint(micros)
-    return _js_str(_js_div(n, _MICROS_PER_UNIT_BIG)) + "." + _js_m_padStart(_js_str(_js_mod(n, _MICROS_PER_UNIT_BIG)), 6, "0")
-
-
 def format_micros(micros):
-    if _js_is_double(micros):
-        return _format_micros__typed(micros)
     n = _js_bigint(micros)
     return _js_str(_js_div(n, _MICROS_PER_UNIT_BIG)) + "." + _js_m_padStart(_js_str(_js_mod(n, _MICROS_PER_UNIT_BIG)), 6, "0")
 
 
-def _price_tokens__typed(table, model, usage):
-    if not isinstance(model, str):
-        return _unavailable("model must be a string")
-    if not _is_plain_object(usage):
-        return _unavailable("usage must be a mapping of token class to count")
-    extra = _sorted_by_code_point(_js_m_filter(_js_object_keys(usage), lambda k, *_: not _js_m_includes(TOKEN_CLASSES, k)))
-    if len(extra) > 0:
-        return _unavailable("usage has unknown token class " + _js_str(py_repr(_js_list_at(extra, 0))) + " -- the price table prices exactly " + _CLASSES)
-    for cls in TOKEN_CLASSES:
-        if not _js_in(cls, usage):
-            return _unavailable("usage is missing token class " + _js_str(py_repr(cls)) + " -- all four of " + _CLASSES + " must be " + "given, because a missing count is not a zero")
-        if not _is_count(_js_get(usage, cls)):
-            return _unavailable("usage token class " + _js_str(py_repr(cls)) + " is not a non-negative integer below 2**53")
-    rates = _js_get(table, "rates")
-    rate = _js_get(rates, model) if rates is not _JS_UNDEFINED and rates is not None and _js_object_has_own(rates, model) else _JS_UNDEFINED
-    if rate is _JS_UNDEFINED:
-        return _unavailable("no rate recorded for model " + _js_str(py_repr(model)) + " -- add one with its date and source, or " + ("point " + PRICES_ENV + " at a table that has it"))
-    breakdown = {}
-    total = _JsBigInt(0)
-    for cls in TOKEN_CLASSES:
-        count = _as_count(_js_get(usage, cls))
-        micros = _JS_UNDEFINED
-        if not _js_in(cls, rate):
-            if not _js_strict_eq(count, 0):
-                return _unavailable("rate for model " + _js_str(py_repr(model)) + " does not price " + _js_str(py_repr(cls)) + ", and " + _js_str(count) + " such " + "tokens were used -- a missing rate is not a zero")
-            micros = _JsBigInt(0)
-        else:
-            micros = _js_div(_js_add(_js_mul(_js_bigint(count), _js_bigint(_js_get(rate, cls))), _HALF_BIG), _MICROS_PER_UNIT_BIG)
-        _js_put(breakdown, cls, _js_number(micros))
-        total = _js_add(total, micros)
-    if _js_gt(total, _MAX_SAFE_INT_BIG):
-        return _unavailable("cost for model " + _js_str(py_repr(model)) + " exceeds 2**53-1 micro-USD, which is the largest " + "integer both runtimes represent exactly")
-    micros = _js_number(total)
-    return {"model": model, "currency": CURRENCY, "micros": micros, "amount": format_micros(micros), "breakdown": breakdown, "rate": _rate_view(rate)}
+_format_micros__typed = format_micros
 
 
 def price_tokens(table, model, usage):
-    if type(model) is str:
-        return _price_tokens__typed(table, model, usage)
     if not isinstance(model, str):
         return _unavailable("model must be a string")
     if not _is_plain_object(usage):
         return _unavailable("usage must be a mapping of token class to count")
-    extra = _sorted_by_code_point(_js_m_filter(_js_object_keys(usage), lambda k, *_: not _js_m_includes(TOKEN_CLASSES, k)))
+    extra = _sorted_by_code_point([k for k in _js_array("filter", _js_object_keys(usage)) if not _js_m_includes(TOKEN_CLASSES, k)])
     if len(extra) > 0:
         return _unavailable("usage has unknown token class " + _js_str(py_repr(_js_list_at(extra, 0))) + " -- the price table prices exactly " + _CLASSES)
     for cls in TOKEN_CLASSES:
@@ -334,6 +260,9 @@ def price_tokens(table, model, usage):
         return _unavailable("cost for model " + _js_str(py_repr(model)) + " exceeds 2**53-1 micro-USD, which is the largest " + "integer both runtimes represent exactly")
     micros = _js_number(total)
     return {"model": model, "currency": CURRENCY, "micros": micros, "amount": format_micros(micros), "breakdown": breakdown, "rate": _rate_view(rate)}
+
+
+_price_tokens__typed = price_tokens
 
 
 def _rate_view(rate):

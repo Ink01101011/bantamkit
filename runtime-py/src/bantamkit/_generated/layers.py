@@ -5,12 +5,10 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _js_array,
     _js_catch,
     _js_coalesce,
     _js_get,
-    _js_is_double,
-    _js_m_every,
-    _js_m_filter,
     _js_m_get,
     _js_str,
     _js_throw,
@@ -54,7 +52,7 @@ def _count_facts__typed(root):
     facts = py_join(root, "facts")
     _js_caught0 = None
     try:
-        return len(_js_m_filter(py_scandir_names(facts), lambda name, *_: matches_md(name)))
+        return len([name for name in _js_array("filter", py_scandir_names(facts)) if _js_truthy(matches_md(name))])
     except Exception as _js_error0:
         _js_caught0 = _js_catch(_js_error0)
     if _js_caught0 is not None:
@@ -70,7 +68,7 @@ def count_facts(root):
     facts = py_join(root, "facts")
     _js_caught1 = None
     try:
-        return len(_js_m_filter(py_scandir_names(facts), lambda name, *_: matches_md(name)))
+        return len([name for name in _js_array("filter", py_scandir_names(facts)) if _js_truthy(matches_md(name))])
     except Exception as _js_error1:
         _js_caught1 = _js_catch(_js_error1)
     if _js_caught1 is not None:
@@ -136,22 +134,15 @@ def _resolved_base(start=_JS_UNDEFINED):
     return py_resolve(py_cwd() if start is _JS_UNDEFINED or start is None else start)
 
 
-def _walk_to_store__typed(base):
-    for d in [base, *py_parents(base)]:
-        candidate = py_join(d, *PROJECT_STORE)
-        if _js_truthy(py_is_dir(candidate)):
-            return candidate
-    return py_join(base, *PROJECT_STORE)
-
-
 def _walk_to_store(base):
-    if type(base) is str:
-        return _walk_to_store__typed(base)
     for d in [base, *py_parents(base)]:
         candidate = py_join(d, *PROJECT_STORE)
         if _js_truthy(py_is_dir(candidate)):
             return candidate
     return py_join(base, *PROJECT_STORE)
+
+
+_walk_to_store__typed = _walk_to_store
 
 
 def _load_grants__typed(project_store):
@@ -186,7 +177,7 @@ def _load_grants__typed(project_store):
         raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": expected a mapping")
     mapping = data
     raw = _js_coalesce(_js_m_get(_js_get(mapping, "entries"), "extra_stores"), lambda: {"kind": "seq", "items": []})
-    if _js_get(raw, "kind") != "seq" or not _js_m_every(_js_get(raw, "items"), lambda item, *_: _js_get(item, "kind") == "str"):
+    if _js_get(raw, "kind") != "seq" or not all(_js_get(item, "kind") == "str" for item in _js_array("every", _js_get(raw, "items"))):
         raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": extra_stores must be a list of paths")
     grants = []
     for entry in _js_get(raw, "items"):
@@ -232,7 +223,7 @@ def load_grants(project_store):
         raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": expected a mapping")
     mapping = data
     raw = _js_coalesce(_js_m_get(_js_get(mapping, "entries"), "extra_stores"), lambda: {"kind": "seq", "items": []})
-    if _js_get(raw, "kind") != "seq" or not _js_m_every(_js_get(raw, "items"), lambda item, *_: _js_get(item, "kind") == "str"):
+    if _js_get(raw, "kind") != "seq" or not all(_js_get(item, "kind") == "str" for item in _js_array("every", _js_get(raw, "items"))):
         raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": extra_stores must be a list of paths")
     grants = []
     for entry in _js_get(raw, "items"):
@@ -244,11 +235,8 @@ def load_grants(project_store):
     return grants
 
 
-def _tab_sentence__typed(line, column):
-    return "line " + _js_str(line) + ", column " + _js_str(column) + ": a tab cannot start a YAML token; indent with spaces"
-
-
 def tab_sentence(line, column):
-    if _js_is_double(line) and _js_is_double(column):
-        return _tab_sentence__typed(line, column)
     return "line " + _js_str(line) + ", column " + _js_str(column) + ": a tab cannot start a YAML token; indent with spaces"
+
+
+_tab_sentence__typed = tab_sentence

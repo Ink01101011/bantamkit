@@ -172,6 +172,9 @@ def _js_number_is_integer(value):
     The value is first read as the double JS holds (`_js_num`), so an int past the double range
     (a 309-digit literal, which `JSON.parse` reads as Infinity) is not an integer, as in JS.
     """
+    # J90-P2: a plain int a double holds exactly, the general path's answer (True) at once.
+    if type(value) is int and _JS_SAFE_MIN <= value <= _JS_SAFE_MAX:
+        return True
     if not _js_is_number(value):
         return False
     value = _js_num(value)
@@ -1198,6 +1201,8 @@ def _js_m_sort(receiver, compare=_JS_UNDEFINED):
         # two strings it ties are equal, so the order is the same and the comparator never runs.
         present.sort()
     else:
+        # J90-P2: V8's own sort (`_js_v8_timsort`), so a comparator that is not a consistent order
+        # (a NaN key, a comparator of the two values' parity) leaves V8's order, not CPython's.
 
         def order(left, right):
             result = compare(left, right)
@@ -1207,7 +1212,7 @@ def _js_m_sort(receiver, compare=_JS_UNDEFINED):
                 return 0
             return result
 
-        present.sort(key=_js_functools.cmp_to_key(order))
+        _js_v8_timsort(present, order)
     items[:] = present + [_JS_UNDEFINED] * missing
     return items
 
@@ -3879,6 +3884,34 @@ def _js_sort_keyed(items, key, descending, compare):
             order = sorted(range(len(items)), key=keys.__getitem__, reverse=descending)
             items[:] = list(map(items.__getitem__, order))
             return items
+    return _js_m_sort(items, compare)
+
+
+def _js_sort_lex(items, parts, compare):
+    """J90-P2: `items.sort((a, b) => c1 || c2 || ...)`, each part `(key, descending, codepoint)`
+    one `ci`: `key(a) - key(b)` (`descending`: `key(b) - key(a)`), or `cmpCodepoint` of the two
+    keys (`codepoint`), every key an expression with no effect (ts2py proved it). When every
+    number key is a number JS holds exactly and none is NaN, and every code-point key is a `str`,
+    the comparator is a consistent total preorder (a part answers 0, or NaN read as 0, exactly
+    when its keys tie: two infinities of one sign; `cmpCodepoint` is `str` order), so every stable
+    sort gives V8's order: stably by each key, the last first. Otherwise, and when computing a
+    key raises, the general sort with `compare`."""
+    if type(items) is list and len(items) > 1 and _JS_UNDEFINED not in items:
+        try:
+            cols = [list(map(key, items)) for key, _, _ in parts]
+        except Exception:  # noqa: BLE001 - the general sort below raises what JS would
+            return _js_m_sort(items, compare)
+        for (_, _, codepoint), keys in zip(parts, cols, strict=True):
+            if codepoint:
+                if not all(type(k) is str for k in keys):
+                    return _js_m_sort(items, compare)
+            elif not _js_doubles(keys, 0, len(keys)) or any(map(_js_math.isnan, keys)):
+                return _js_m_sort(items, compare)
+        order = list(range(len(items)))
+        for (_, descending, _), keys in reversed(list(zip(parts, cols, strict=True))):
+            order.sort(key=keys.__getitem__, reverse=descending)
+        items[:] = list(map(items.__getitem__, order))
+        return items
     return _js_m_sort(items, compare)
 
 

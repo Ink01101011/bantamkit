@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_and,
+    _js_array,
     _js_catch,
     _js_coalesce_value,
     _js_code_units,
@@ -16,7 +17,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_is_nullish,
     _js_len,
     _js_m_endsWith,
-    _js_m_filter,
     _js_m_find,
     _js_m_get,
     _js_m_has,
@@ -110,7 +110,7 @@ class NativeStore(_JsObject):
             if code == "ENOENT" or code == "ENOTDIR":
                 return []
             raise _js_throw(as_py_os_error(_js_caught2, self.root))
-        return _js_m_map(_js_m_sort(_js_m_filter(names, lambda n, *_: _js_and(_js_m_endsWith(n, ".md") and n != NATIVE_INDEX, lambda: _is_file(py_join(self.root, n)))), cmp_codepoint), lambda n, *_: py_join(self.root, n))
+        return [py_join(self.root, n) for n in _js_m_sort([n for n in _js_array("filter", names) if _js_truthy(_js_and(_js_m_endsWith(n, ".md") and n != NATIVE_INDEX, lambda: _is_file(py_join(self.root, n))))], cmp_codepoint)]
 
     def read(self, p):
         stored = parse_native(p)

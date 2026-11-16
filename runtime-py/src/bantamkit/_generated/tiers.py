@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
+    _js_array,
     _js_catch,
     _js_get,
     _js_invoke,
@@ -14,12 +15,10 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_list_at,
     _js_lt,
     _js_m_endsWith,
-    _js_m_filter,
     _js_m_get,
     _js_m_push,
     _js_m_reduce,
     _js_m_slice,
-    _js_m_some,
     _js_m_sort,
     _js_m_split,
     _js_neg,
@@ -52,22 +51,15 @@ def _plural(count, word):
     return _js_str(count) + " " + _js_str(word) if _js_strict_eq(count, 1) else _js_str(count) + " " + _js_str(word) + "s"
 
 
-def _settings_paths__typed(home, cwd):
-    paths = [path_join(home, ".claude", "settings.json")]
-    if cwd is not None:
-        project = path_join(cwd, ".claude")
-        _js_m_push(paths, path_join(project, "settings.json"), path_join(project, "settings.local.json"))
-    return paths
-
-
 def settings_paths(home, cwd):
-    if type(home) is str:
-        return _settings_paths__typed(home, cwd)
     paths = [path_join(home, ".claude", "settings.json")]
     if cwd is not None:
         project = path_join(cwd, ".claude")
         _js_m_push(paths, path_join(project, "settings.json"), path_join(project, "settings.local.json"))
     return paths
+
+
+_settings_paths__typed = settings_paths
 
 
 def current_cwd():
@@ -81,13 +73,13 @@ def current_cwd():
 
 
 def _hook_tier__typed(home, cwd):
-    return _js_m_some(_settings_paths__typed(home, cwd), lambda p, *_: has_bantamkit_hooks(p))
+    return any(_js_truthy(has_bantamkit_hooks(p)) for p in _settings_paths__typed(home, cwd))
 
 
 def hook_tier(home, cwd):
     if type(home) is str:
         return _hook_tier__typed(home, cwd)
-    return _js_m_some(settings_paths(home, cwd), lambda p, *_: has_bantamkit_hooks(p))
+    return any(_js_truthy(has_bantamkit_hooks(p)) for p in settings_paths(home, cwd))
 
 
 def _host_data_tier__typed(home):
@@ -268,37 +260,7 @@ def _logs(base):
     return found
 
 
-def _log_lines__typed(home, detail=_JS_UNDEFINED):
-    if detail is _JS_UNDEFINED:
-        detail = False
-    out = []
-    families = _JsMap([["usage", [0, 0, 0, 0]], ["touch", [0, 0, 0, 0]]])
-    for name, p in _js_rows(_logs(path_join(home, ".bantamkit")), 2, (0, 1)):
-        seg = LogSegment(p)
-        segments = _js_invoke(seg, "segments")
-        if _kind_of(p) != "file" and _js_strict_eq(_js_len(segments), 0):
-            continue
-        held = _js_add(_size_of(p), _js_m_reduce(segments, lambda sum, s, *_: _js_add(sum, _size_of(s)), 0))
-        _js_invoke(seg, "read")
-        family = _js_m_get(families, _js_list_at(_js_m_split(name, "/"), 0))
-        if _js_truthy(_js_or(detail, lambda: family is _JS_UNDEFINED)):
-            out.append("logs: " + _js_str(name) + " " + _js_str(held) + " (" + _js_str(_js_len(segments)) + " rotated, " + _js_str(_js_get(seg, "skipped")) + " skipped)")
-            continue
-        _js_put(family, 0, _js_add(_js_get(family, 0), 1))
-        _js_put(family, 1, _js_add(_js_get(family, 1), held))
-        _js_put(family, 2, _js_add(_js_get(family, 2), _js_len(segments)))
-        _js_put(family, 3, _js_add(_js_get(family, 3), _js_get(seg, "skipped")))
-    for family, sums in _js_rows(families, 2, (0, 1)):
-        n = _js_get(sums, 0)
-        if _js_strict_eq(n, 0):
-            continue
-        out.append("logs: " + _js_str(family) + "/* " + _plural(n, "file") + " " + _js_str(_js_get(sums, 1)) + " (" + _js_str(_js_get(sums, 2)) + " rotated, " + _js_str(_js_get(sums, 3)) + " skipped)")
-    return out if len(out) > 0 else ["logs: none"]
-
-
 def log_lines(home, detail=_JS_UNDEFINED):
-    if type(home) is str:
-        return _log_lines__typed(home, detail)
     if detail is _JS_UNDEFINED:
         detail = False
     out = []
@@ -326,22 +288,18 @@ def log_lines(home, detail=_JS_UNDEFINED):
     return out if len(out) > 0 else ["logs: none"]
 
 
-def _touch_line__typed(home):
-    base = path_join(home, ".bantamkit")
-    misses = len(_js_m_filter(_js_invoke(LogSegment(path_join(base, "hooks", "hook-log.jsonl")), "read"), lambda r, *_: _js_get(r, "touch") == "miss"))
-    if misses == 0 and _kind_of(path_join(base, "touch")) != "dir":
-        return "touch: none"
-    return "touch: " + _plural__typed(misses, "missed write") + " (hook log)"
+_log_lines__typed = log_lines
 
 
 def touch_line(home):
-    if type(home) is str:
-        return _touch_line__typed(home)
     base = path_join(home, ".bantamkit")
-    misses = len(_js_m_filter(_js_invoke(LogSegment(path_join(base, "hooks", "hook-log.jsonl")), "read"), lambda r, *_: _js_get(r, "touch") == "miss"))
+    misses = len([r for r in _js_array("filter", _js_invoke(LogSegment(path_join(base, "hooks", "hook-log.jsonl")), "read")) if _js_get(r, "touch") == "miss"])
     if misses == 0 and _kind_of(path_join(base, "touch")) != "dir":
         return "touch: none"
     return "touch: " + _plural__typed(misses, "missed write") + " (hook log)"
+
+
+_touch_line__typed = touch_line
 
 
 _STRICT = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})

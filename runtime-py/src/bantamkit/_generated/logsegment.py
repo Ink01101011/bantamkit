@@ -7,6 +7,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
     _js_and,
+    _js_array,
     _js_catch,
     _js_coalesce_value,
     _js_destructure,
@@ -55,18 +56,13 @@ __all__ = ["LogSegment", "ROTATE_BYTES", "dumps_line", "rewrite_held", "write_ov
 ROTATE_BYTES = 1000000
 
 
-def _refuse_non_finite__typed(_key, value):
-    if _js_is_number(value) and not _js_number_is_finite(value):
-        raise _JsRangeError(_js_str(value) + " is not JSON")
-    return value
-
-
 def _refuse_non_finite(_key, value):
-    if type(_key) is str:
-        return _refuse_non_finite__typed(_key, value)
     if _js_is_number(value) and not _js_number_is_finite(value):
         raise _JsRangeError(_js_str(value) + " is not JSON")
     return value
+
+
+_refuse_non_finite__typed = _refuse_non_finite
 
 
 def dumps_line(obj):
@@ -106,29 +102,14 @@ def _load(line):
     return v if _js_typeof(v) == "object" and v is not None and not _js_is_array(v) else None
 
 
-def _is_old__typed(row, older_than):
-    return isinstance(_js_get(row, "ts"), str) and _js_lt(_js_get(row, "ts"), older_than)
-
-
 def _is_old(row, older_than):
-    if type(older_than) is str:
-        return _is_old__typed(row, older_than)
     return isinstance(_js_get(row, "ts"), str) and _js_lt(_js_get(row, "ts"), older_than)
 
 
-def _write_all__typed(fd, data):
-    done = 0
-    while _js_lt(done, _js_len(data)):
-        n = write_sync(fd, _js_m_subarray(data, done))
-        if _js_le(n, 0):
-            raise _js_throw(_js_object_assign(_JsError("EIO: i/o error, write wrote no bytes"), {"code": "EIO"}))
-        done = _js_add(done, n)
-    return _JS_UNDEFINED
+_is_old__typed = _is_old
 
 
 def _write_all(fd, data):
-    if _js_is_double(fd):
-        return _write_all__typed(fd, data)
     done = 0
     while _js_lt(done, _js_len(data)):
         n = write_sync(fd, _js_m_subarray(data, done))
@@ -136,6 +117,9 @@ def _write_all(fd, data):
             raise _js_throw(_js_object_assign(_JsError("EIO: i/o error, write wrote no bytes"), {"code": "EIO"}))
         done = _js_add(done, n)
     return _JS_UNDEFINED
+
+
+_write_all__typed = _write_all
 
 
 def _write_over__typed(target, data):
@@ -202,27 +186,7 @@ def _mark(p):
     return m
 
 
-def _read_from__typed(p, offset):
-    fd = open_sync(p, "r")
-    try:
-        parts = []
-        pos = offset
-        while True:
-            chunk = buffer_alloc(65536)
-            n = read_sync(fd, chunk, 0, _js_len(chunk), pos)
-            if _js_strict_eq(n, 0):
-                break
-            parts.append(_js_m_subarray(chunk, 0, n))
-            pos = _js_add(pos, n)
-        return buffer_concat(parts)
-    finally:
-        close_sync(fd)
-    return _JS_UNDEFINED
-
-
 def _read_from(p, offset):
-    if type(p) is str and _js_is_double(offset):
-        return _read_from__typed(p, offset)
     fd = open_sync(p, "r")
     try:
         parts = []
@@ -240,16 +204,15 @@ def _read_from(p, offset):
     return _JS_UNDEFINED
 
 
-def _sleep_ms__typed(ms):
-    _js_sleep_ms(ms)
-    return _JS_UNDEFINED
+_read_from__typed = _read_from
 
 
 def _sleep_ms(ms):
-    if _js_is_double(ms):
-        return _sleep_ms__typed(ms)
     _js_sleep_ms(ms)
     return _JS_UNDEFINED
+
+
+_sleep_ms__typed = _sleep_ms
 
 
 def _drain__typed(p, keep, offset, stale_ms, poll_ms):
@@ -523,7 +486,7 @@ class LogSegment(_JsObject):
 
     def foldLines(self, older_than, reducer):
         def _js_fn21(old=_JS_UNDEFINED, *_):
-            return buffer_from(_js_list_join(_js_m_map(reducer(old), lambda l, *_: _js_str(l) + "\n"), ""), "utf8")
+            return buffer_from(_js_list_join([_js_str(l) + "\n" for l in _js_array("map", reducer(old))], ""), "utf8")
         self.foldWith(older_than, _js_fn21)
         return _JS_UNDEFINED
 
@@ -550,7 +513,7 @@ class LogSegment(_JsObject):
                         kept.append(line)
                 if len(old) == 0 and older_than is not None:
                     return None
-                return buffer_concat([build(old), *_js_m_map(kept, lambda line, *_: buffer_from(_js_str(line) + "\n", "utf8"))])
+                return buffer_concat([build(old), *[buffer_from(_js_str(line) + "\n", "utf8") for line in kept]])
             self.rewrite(_js_fn24)
         except Exception as _js_error23:
             _js_caught23 = _js_catch(_js_error23)

@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
+    _js_array,
     _js_bigint,
     _js_cat,
     _js_catch,
@@ -20,7 +21,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_gt,
     _js_invoke,
     _js_is_array,
-    _js_is_double,
     _js_is_number,
     _js_json_parse,
     _js_len,
@@ -29,7 +29,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_lt,
     _js_m_add,
     _js_m_endsWith,
-    _js_m_every,
     _js_m_forEach,
     _js_m_get,
     _js_m_has,
@@ -38,7 +37,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_map,
     _js_m_push,
     _js_m_set,
-    _js_m_some,
     _js_m_sort,
     _js_m_test,
     _js_mod,
@@ -103,24 +101,18 @@ class SidecarWriteError(_JsError):
         self.name = "SidecarWriteError"
 
 
-def _write_failed__typed(e, p):
-    return SidecarWriteError(py_os_error_text(e if isinstance(e, PyOSError) else as_py_os_error(e, p)))
-
-
 def _write_failed(e, p):
-    if type(p) is str:
-        return _write_failed__typed(e, p)
     return SidecarWriteError(py_os_error_text(e if isinstance(e, PyOSError) else as_py_os_error(e, p)))
 
 
-def _sidecar_path__typed(home, root):
-    return path_join(home, ".bantamkit", QUERIES_DIR, _js_str(sha16(root)) + ".json")
+_write_failed__typed = _write_failed
 
 
 def sidecar_path(home, root):
-    if type(home) is str and type(root) is str:
-        return _sidecar_path__typed(home, root)
     return path_join(home, ".bantamkit", QUERIES_DIR, _js_str(sha16(root)) + ".json")
+
+
+_sidecar_path__typed = sidecar_path
 
 
 def _doc_of__typed(p):
@@ -190,8 +182,8 @@ def _entries_of(doc):
         if _js_get(entry, "t") != "dict":
             continue
         qs = _js_dispatch(_js_get(entry, "v"), "get", _js_m_get, "queries")
-        if qs is not _JS_UNDEFINED and _js_get(qs, "t") == "list" and _js_gt(_js_len(_js_get(qs, "v")), 0) and _js_m_every(_js_get(qs, "v"), lambda x, *_: _js_get(x, "t") == "str"):
-            _js_m_set(out, name, _js_m_map(_js_get(qs, "v"), lambda x, *_: _js_get(x, "v")))
+        if qs is not _JS_UNDEFINED and _js_get(qs, "t") == "list" and _js_gt(_js_len(_js_get(qs, "v")), 0) and all(_js_get(x, "t") == "str" for x in _js_array("every", _js_get(qs, "v"))):
+            _js_m_set(out, name, [_js_get(x, "v") for x in _js_array("map", _js_get(qs, "v"))])
     return out
 
 
@@ -269,18 +261,13 @@ class _CountsView(_JsObject):
         return _js_dispatch(seen, "keys", _js_m_keys)
 
 
-def _terms_path__typed(home, root):
-    override = _js_or_value(process_env(INDEX_DIR_ENV), None)
-    where = _js_coalesce(override, lambda: path_join(home, ".bantamkit", "index"))
-    return path_join(where, _js_cat(_js_str(sha16(root)), TERMS_SUFFIX))
-
-
 def terms_path(home, root):
-    if type(home) is str and type(root) is str:
-        return _terms_path__typed(home, root)
     override = _js_or_value(process_env(INDEX_DIR_ENV), None)
     where = _js_coalesce(override, lambda: path_join(home, ".bantamkit", "index"))
     return path_join(where, _js_cat(_js_str(sha16(root)), TERMS_SUFFIX))
+
+
+_terms_path__typed = terms_path
 
 
 def _is_count(x):
@@ -377,14 +364,11 @@ def _counts_of(queries):
     return [_js_len(toks), counts]
 
 
-def _py_int__typed(n):
-    return {"t": "int", "v": _js_bigint(n)}
-
-
 def _py_int(n):
-    if _js_is_double(n):
-        return _py_int__typed(n)
     return {"t": "int", "v": _js_bigint(n)}
+
+
+_py_int__typed = _py_int
 
 
 def _sidecar_entries(raw):
@@ -422,21 +406,18 @@ def _sidecar_entries(raw):
     return _entries_of(_doc_of_bytes(raw))
 
 
-def _by_codepoint__typed(a, b):
-    return cmp_codepoint(a, b)
-
-
 def _by_codepoint(a, b):
-    if type(a) is str and type(b) is str:
-        return _by_codepoint__typed(a, b)
     return cmp_codepoint(a, b)
+
+
+_by_codepoint__typed = _by_codepoint
 
 
 _SURROGATE = _JS_RE_0
 
 
 def _sorted_cp(xs):
-    return _js_m_sort(xs, lambda _js_a0=_JS_UNDEFINED, _js_a1=_JS_UNDEFINED, *_: _by_codepoint(_js_a0, _js_a1)) if _js_m_some(xs, lambda x, *_: _js_m_test(_SURROGATE, x)) else _js_m_sort(xs)
+    return _js_m_sort(xs, lambda _js_a0=_JS_UNDEFINED, _js_a1=_JS_UNDEFINED, *_: _by_codepoint(_js_a0, _js_a1)) if any(_js_m_test(_SURROGATE, x) for x in xs) else _js_m_sort(xs)
 
 
 _PLAIN = _JS_RE_1
@@ -456,7 +437,7 @@ def _dump_terms__typed(facts, sha):
     parts = []
     for name in _sorted_cp([*_js_dispatch(facts, "keys", _js_m_keys)]):
         dl, counts = _js_destructure(_js_dispatch(facts, "get", _js_m_get, name), 2)
-        terms = _js_m_map(_sorted_cp([*_js_dispatch(counts, "keys", _js_m_keys)]), lambda t, *_: _js_str(_json_ascii(t)) + "," + _js_str(_js_dispatch(counts, "get", _js_m_get, t)))
+        terms = [_js_str(_json_ascii(t)) + "," + _js_str(_js_dispatch(counts, "get", _js_m_get, t)) for t in _sorted_cp([*_js_dispatch(counts, "keys", _js_m_keys)])]
         parts.append(_js_str(_json_ascii(name)) + ":[" + _js_str(dl) + ",[" + _js_list_join(terms, ",") + "]]")
     return "{\"facts\":{" + _js_list_join(parts, ",") + "},\"sidecar\":" + _js_str(_json_ascii__typed(sha)) + ",\"v\":" + _js_str(TERMS_VERSION) + "}"
 
@@ -467,7 +448,7 @@ def dump_terms(facts, sha):
     parts = []
     for name in _sorted_cp([*_js_dispatch(facts, "keys", _js_m_keys)]):
         dl, counts = _js_destructure(_js_dispatch(facts, "get", _js_m_get, name), 2)
-        terms = _js_m_map(_sorted_cp([*_js_dispatch(counts, "keys", _js_m_keys)]), lambda t, *_: _js_str(_json_ascii(t)) + "," + _js_str(_js_dispatch(counts, "get", _js_m_get, t)))
+        terms = [_js_str(_json_ascii(t)) + "," + _js_str(_js_dispatch(counts, "get", _js_m_get, t)) for t in _sorted_cp([*_js_dispatch(counts, "keys", _js_m_keys)])]
         parts.append(_js_str(_json_ascii(name)) + ":[" + _js_str(dl) + ",[" + _js_list_join(terms, ",") + "]]")
     return "{\"facts\":{" + _js_list_join(parts, ",") + "},\"sidecar\":" + _js_str(_json_ascii(sha)) + ",\"v\":" + _js_str(TERMS_VERSION) + "}"
 
@@ -575,20 +556,14 @@ def layer_terms(home, root):
     return out
 
 
-def _cps__typed(s):
-    n = 0
-    for _ in s:
-        n = _js_num(n + 1)
-    return n
-
-
 def _cps(s):
-    if type(s) is str:
-        return _cps__typed(s)
     n = 0
     for _ in s:
         n = _js_num(n + 1)
     return n
+
+
+_cps__typed = _cps
 
 
 def check_queries(queries):
@@ -634,7 +609,7 @@ def _write_entries__typed(p, entries):
         _js_m_set(doc, "facts", {"t": "dict", "v": facts})
         for name, entry in _js_rows(entries, 2, (0, 1)):
             if entry is not None:
-                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": _js_m_map(_js_get(entry, 0), lambda x, *_: {"t": "str", "v": x})}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
+                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": [{"t": "str", "v": x} for x in _js_array("map", _js_get(entry, 0))]}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
         tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
         _js_caught20 = None
         try:
@@ -681,7 +656,7 @@ def write_entries(p, entries):
         _js_m_set(doc, "facts", {"t": "dict", "v": facts})
         for name, entry in _js_rows(entries, 2, (0, 1)):
             if entry is not None:
-                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": _js_m_map(_js_get(entry, 0), lambda x, *_: {"t": "str", "v": x})}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
+                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": [{"t": "str", "v": x} for x in _js_array("map", _js_get(entry, 0))]}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
         tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
         _js_caught24 = None
         try:
@@ -709,11 +684,8 @@ def write_entries(p, entries):
     return _JS_UNDEFINED
 
 
-def _status_line__typed(n, m):
-    return "queries: " + _js_str(n) + " of " + _js_str(m) + " facts"
-
-
 def status_line(n, m):
-    if _js_is_double(n) and _js_is_double(m):
-        return _status_line__typed(n, m)
     return "queries: " + _js_str(n) + " of " + _js_str(m) + " facts"
+
+
+_status_line__typed = status_line

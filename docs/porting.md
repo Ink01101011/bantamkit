@@ -1059,7 +1059,9 @@ source regenerates byte-identical files.
 `memory/factfile.ts`, and since #316 G1 `pricing.py` ↔ `pricing.ts`, `jobbudget.py` ↔
 `jobbudget.ts`), when the committed runtime differs from `tools/ts2py/src/runtime.py`, when
 the committed adapters differ from `tools/ts2py/src/adapters.py` with its runtime import filled
-in, or when `_generated/` holds a `.py` the test does not name. Every failure message prints the
+in (both in their SHIPPED form since J90-P2: `--emit-runtime` / `--emit-adapters` leave the
+full-line comments and the docstrings in the source, statement for statement the same code,
+`tools/ts2py/tests/shipped.rs`; the test spells the same rule), or when `_generated/` holds a `.py` the test does not name. Every failure message prints the
 commands above. It needs no Rust. (J86-3 proved each red once: one byte appended to `factfile.ts`,
 a line appended to the committed adapters, a stray `_generated/stray.py`; 3 failed, 6 passed.) `node tools/conformance/run.mjs --suite ts2py` recompiles the
 TypeScript fresh on every run and compares Node, the fresh module and `bantamkit.workplan`

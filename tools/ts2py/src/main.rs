@@ -62,7 +62,7 @@ fn main() -> ExitCode {
     }
 
     if let Some(path) = &runtime_out
-        && let Err(err) = std::fs::write(path, ts2py::RUNTIME)
+        && let Err(err) = std::fs::write(path, ts2py::shipped(ts2py::RUNTIME))
     {
         eprintln!("ts2py: cannot write {path}: {err}");
         return ExitCode::from(2);
@@ -72,7 +72,7 @@ fn main() -> ExitCode {
             .runtime_module
             .as_deref()
             .unwrap_or("._ts2py_runtime");
-        if let Err(err) = std::fs::write(path, ts2py::adapters_module(runtime)) {
+        if let Err(err) = std::fs::write(path, ts2py::shipped(&ts2py::adapters_module(runtime))) {
             eprintln!("ts2py: cannot write {path}: {err}");
             return ExitCode::from(2);
         }

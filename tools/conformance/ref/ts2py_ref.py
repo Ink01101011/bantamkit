@@ -2,6 +2,7 @@
 
     {"fixture": str, "generated": str} -> {"generated": [answer], "legacy": [answer]}
     {"lower": {"runtime": str, "inputs": [str]}} -> {"lower": [answer]}   (J89-7)
+    {"sort": {"runtime": str, "arrays": [[number | "NaN"]]}} -> {"sort": [answer]}   (J90-P2)
 
 `fixture` is `tools/conformance/fixtures/workplan-cases.json`, read HERE with `json.load` and
 never handed over as a payload: the payload travels through `JSON.stringify`, which would turn
@@ -18,6 +19,11 @@ serves that name: the hand-written planner today, the generated one once #314 sw
 
 `lower` (J89-7) imports the ts2py runtime at `runtime` by path and answers `_js_m_toLowerCase` of
 each input, or `RAISED <type>: <message>` where it refuses.
+
+`sort` (J90-P2) imports the runtime the same way and sorts each array (`"NaN"` is NaN) with
+`_js_m_sort` under each comparator of `_COMPARATORS`, the Python spelling of the suite's
+JavaScript one: per array, `String()` of every item of each answer joined by `,`, then the calls
+the first comparator was made, each `a<b`.
 """
 
 from __future__ import annotations
@@ -57,8 +63,42 @@ def _lower(runtime, text: str) -> str:
         return f"RAISED {type(exc).__name__}: {exc}"
 
 
+def _comparators(rt):
+    # Each the JavaScript comparator of the same index in `suites/ts2py.mjs` (`SORTS`).
+    num, mod, add, mul = rt._js_num, rt._js_mod, rt._js_add, rt._js_mul
+    return [
+        lambda a, b, *_: num(num(a) - num(b)),
+        lambda a, b, *_: num(num(b) - num(a)),
+        lambda a, b, *_: 1 if rt._js_gt(a, b) else 0,
+        lambda a, b, *_: num(mod(add(mul(a, 7), mul(b, 3)), 5) - 2),
+    ]
+
+
+def _sort(rt, items) -> list[str]:
+    items = [float("nan") if x == "NaN" else x for x in items]
+    out = []
+    calls = []
+
+    def logged(a, b, *_):
+        calls.append(rt._js_str(a) + "<" + rt._js_str(b))
+        return rt._js_num(rt._js_num(a) - rt._js_num(b))
+
+    for compare in [logged, *_comparators(rt)[1:]]:
+        try:
+            got = rt._js_m_sort(list(items), compare)
+            out.append(",".join(rt._js_str(x) for x in got))
+        except Exception as exc:  # noqa: BLE001 - the crash IS the answer under test
+            out.append(f"RAISED {type(exc).__name__}: {exc}")
+    out.append(" ".join(calls))
+    return out
+
+
 def main() -> None:
     request = json.load(sys.stdin)
+    if "sort" in request:
+        runtime = _load(request["sort"]["runtime"])
+        sys.stdout.write(json.dumps({"sort": [_sort(runtime, a) for a in request["sort"]["arrays"]]}))
+        return
     if "lower" in request:
         runtime = _load(request["lower"]["runtime"])
         sys.stdout.write(

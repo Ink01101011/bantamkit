@@ -7,6 +7,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_NAN,
     _JS_UNDEFINED,
     _js_add,
+    _js_array,
     _js_catch,
     _js_coalesce_value,
     _js_destructure,
@@ -26,7 +27,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_lt,
     _js_m_add,
     _js_m_exec,
-    _js_m_filter,
     _js_m_get,
     _js_m_has,
     _js_m_includes,
@@ -49,6 +49,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_rows,
     _js_size,
     _js_str,
+    _js_str_slice,
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
@@ -57,7 +58,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JsObject,
     _JsSet,
 )
-from ._ts2py_adapters import create_hash, path_join, py_pow, py_realpath, read_file_sync
+from ._ts2py_adapters import create_hash, hash_hex, path_join, py_pow, py_realpath, read_file_sync
 from .logsegment import ROTATE_BYTES, LogSegment
 
 __all__ = ["LEDGER_FOLD_LINES", "LOCK_POLL_MS", "LOCK_STALE_MS", "LOCK_WAIT_MS", "USAGE_HALF_LIFE_DAYS", "UsageLedger", "WEIGHT_MAX", "missed_writes", "parse_ts", "reduce_usage", "seed_ts", "status_line", "store_id"]
@@ -108,21 +109,7 @@ def _used_at(e):
     return None
 
 
-def _last_used_of__typed(events):
-    out = _JsMap()
-    for e in events:
-        at = _used_at(e)
-        if at is None:
-            continue
-        held = _js_m_get(out, _js_get(e, "fact"))
-        if held is _JS_UNDEFINED or _js_gt(at, held):
-            _js_m_set(out, _js_get(e, "fact"), at)
-    return out
-
-
 def _last_used_of(events):
-    if type(events) is list:
-        return _last_used_of__typed(events)
     out = _JsMap()
     for e in events:
         at = _used_at(e)
@@ -132,19 +119,19 @@ def _last_used_of(events):
         if held is _JS_UNDEFINED or _js_gt(at, held):
             _js_m_set(out, _js_get(e, "fact"), at)
     return out
+
+
+_last_used_of__typed = _last_used_of
 
 
 _TS = _JS_RE_0
 
 
-def _store_id__typed(store_root):
-    return _js_m_slice(_js_invoke(_js_invoke(create_hash("sha256"), "update", py_realpath(store_root), "utf8"), "digest", "hex"), 0, 16)
-
-
 def store_id(store_root):
-    if type(store_root) is str:
-        return _store_id__typed(store_root)
-    return _js_m_slice(_js_invoke(_js_invoke(create_hash("sha256"), "update", py_realpath(store_root), "utf8"), "digest", "hex"), 0, 16)
+    return _js_str_slice(hash_hex("sha256", py_realpath(store_root)), 0, 16)
+
+
+_store_id__typed = store_id
 
 
 _PARSED = _JsMap()
@@ -318,14 +305,11 @@ def _count_newlines(b):
 _MISSED = _JsMap()
 
 
-def _missed_writes__typed(ledger_path):
-    return _js_coalesce_value(_js_m_get(_MISSED, ledger_path), 0)
-
-
 def missed_writes(ledger_path):
-    if type(ledger_path) is str:
-        return _missed_writes__typed(ledger_path)
     return _js_coalesce_value(_js_m_get(_MISSED, ledger_path), 0)
+
+
+_missed_writes__typed = missed_writes
 
 
 def _status_line__typed(ledger_path, lines, skipped):
@@ -355,7 +339,7 @@ class UsageLedger(_JsObject):
         self.foldLines = _JS_UNDEFINED
         self.lockWaitMs = _JS_UNDEFINED
         self.rotateBytes = _JS_UNDEFINED
-        self.path = path_join(home, ".bantamkit", "usage", _js_str(store_id(store_root)) + ".jsonl")
+        self.path = path_join(home, ".bantamkit", "usage", store_id(store_root) + ".jsonl")
         self.foldLines = _js_coalesce_value(_js_get(options, "foldLines"), LEDGER_FOLD_LINES)
         self.lockWaitMs = _js_coalesce_value(_js_get(options, "lockWaitMs"), LOCK_WAIT_MS)
         self.rotateBytes = _js_coalesce_value(_js_get(options, "rotateBytes"), ROTATE_BYTES)
@@ -366,7 +350,7 @@ class UsageLedger(_JsObject):
     def events(self):
         seg = self.segment()
         rows = _js_invoke(seg, "read")
-        out = _js_m_filter(rows, lambda e, *_: _valid(e))
+        out = [e for e in _js_array("filter", rows) if _valid(e)]
         self.skipped = _js_num(_js_num(_js_add(_js_get(seg, "skipped"), _js_len(rows))) - len(out))
         return out
 
@@ -390,7 +374,7 @@ class UsageLedger(_JsObject):
             if not _js_strict_eq(_js_get(e, "fact"), fact) or _js_get(e, "kind") != "save":
                 continue
             if _js_is_array(_js_get(e, "keywords")):
-                found = _js_m_filter(_js_get(e, "keywords"), lambda k, *_: isinstance(k, str))
+                found = [k for k in _js_array("filter", _js_get(e, "keywords")) if isinstance(k, str)]
         return found
 
     def append(self, fact, kind, ts, keywords=_JS_UNDEFINED):
@@ -440,7 +424,7 @@ class UsageLedger(_JsObject):
 
 
 def _reduce_usage__typed(pairs, now):
-    read = _js_m_filter(pairs, lambda p, *_: _valid(_js_get(p, 0)))
+    read = [p for p in pairs if _valid(_js_get(p, 0))]
     w = _weights_of__typed(_js_m_map(read, lambda _js_arg4, *_: (lambda e: e)(*_js_destructure(_js_arg4, 1))), now)
     latest_save = _JsMap()
     order = []
@@ -468,7 +452,7 @@ def _reduce_usage__typed(pairs, now):
 def reduce_usage(pairs, now):
     if type(pairs) is list and type(now) is str:
         return _reduce_usage__typed(pairs, now)
-    read = _js_m_filter(pairs, lambda p, *_: _valid(_js_get(p, 0)))
+    read = [p for p in _js_array("filter", pairs) if _valid(_js_get(p, 0))]
     w = _weights_of(_js_m_map(read, lambda _js_arg6, *_: (lambda e: e)(*_js_destructure(_js_arg6, 1))), now)
     latest_save = _JsMap()
     order = []

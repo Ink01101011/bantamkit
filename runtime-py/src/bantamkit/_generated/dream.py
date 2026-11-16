@@ -8,6 +8,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_abs,
     _js_add,
     _js_and,
+    _js_array,
     _js_catch,
     _js_coalesce_value,
     _js_destructure,
@@ -42,7 +43,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_reverse,
     _js_m_set,
     _js_m_slice,
-    _js_m_some,
     _js_m_sort,
     _js_m_splice,
     _js_m_split,
@@ -64,6 +64,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_rows,
     _js_sar,
     _js_size,
+    _js_sort_lex,
     _js_spread,
     _js_str,
     _js_str_includes,
@@ -131,49 +132,9 @@ def _py_re_text(value):
     return value
 
 
-def _sorted_names__typed(values):
-    if _js_every_string(values):
-        return _js_m_sort([*values], lambda a, b, *_: cmp_codepoint(a, b))
-    def lt(x, y):
-        return False if _js_truthy(py_equal_value(x, y)) else py_compare_lt(x, y)
-    a = [*values]
-    n = len(a)
-    if n < 2:
-        return a
-    k = _JS_UNDEFINED
-    if _js_truthy(lt(_js_list_at(a, 1), _js_list_at(a, 0))):
-        i = 2
-        while _js_truthy(_js_and(i < n, lambda: lt(_js_list_at(a, i), _js_list_at(a, _js_num(i - 1))))):
-            i = _js_num(i + 1)
-        k = i
-        _js_m_splice(a, 0, k, *_js_m_reverse(_js_m_slice(a, 0, k)))
-    else:
-        i = 2
-        while i < n and not _js_truthy(lt(_js_list_at(a, i), _js_list_at(a, _js_num(i - 1)))):
-            i = _js_num(i + 1)
-        k = i
-    start = _js_max(k, 1)
-    while start < n:
-        pivot = _js_list_at(a, start)
-        l = 0
-        r = start
-        while l < r:
-            p = _js_num(l + _js_sar(_js_num(r - l), 1))
-            if _js_truthy(lt(pivot, _js_list_at(a, p))):
-                r = p
-            else:
-                l = _js_num(p + 1)
-        _js_m_copyWithin(a, _js_num(l + 1), l, start)
-        _js_put(a, l, pivot)
-        start = _js_num(start + 1)
-    return a
-
-
 def sorted_names(values):
-    if type(values) is list:
-        return _sorted_names__typed(values)
     if _js_every_string(values):
-        return _js_m_sort([*values], lambda a, b, *_: cmp_codepoint(a, b))
+        return _js_sort_lex([*values], ((lambda a, *_: a, False, True),), lambda a, b, *_: cmp_codepoint(a, b))
     def lt(x, y):
         return False if _js_truthy(py_equal_value(x, y)) else py_compare_lt(x, y)
     a = [*values]
@@ -207,6 +168,9 @@ def sorted_names(values):
         _js_put(a, l, pivot)
         start = _js_num(start + 1)
     return a
+
+
+_sorted_names__typed = sorted_names
 
 
 _DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -338,14 +302,11 @@ def _add_days(ordinal, delta):
     return _iso_from_ordinal(moved)
 
 
-def _collapse__typed(text):
-    return py_strip(py_sub_spaces(text))
-
-
 def collapse(text):
-    if type(text) is str:
-        return _collapse__typed(text)
     return py_strip(py_sub_spaces(text))
+
+
+_collapse__typed = collapse
 
 
 def _block_key__typed(text):
@@ -358,19 +319,7 @@ def block_key(text):
     return _js_m_toLowerCase(collapse(text))
 
 
-def _split_blocks__typed(text):
-    normalised = _js_dispatch(_js_dispatch(text, "replace", _js_m_replace, _JS_RE_3, "\n"), "replace", _js_m_replace, _JS_RE_4, "\n")
-    out = []
-    for block in _js_m_split(normalised, _BLOCK_SPLIT):
-        stripped = py_strip(block)
-        if stripped != "":
-            out.append(stripped)
-    return out
-
-
 def split_blocks(text):
-    if type(text) is str:
-        return _split_blocks__typed(text)
     normalised = _js_dispatch(_js_dispatch(text, "replace", _js_m_replace, _JS_RE_3, "\n"), "replace", _js_m_replace, _JS_RE_4, "\n")
     out = []
     for block in _js_m_split(normalised, _BLOCK_SPLIT):
@@ -378,6 +327,9 @@ def split_blocks(text):
         if stripped != "":
             out.append(stripped)
     return out
+
+
+_split_blocks__typed = split_blocks
 
 
 def _claim_slot__typed(block):
@@ -410,22 +362,15 @@ def claim_slot(block):
     return [_js_m_toLowerCase(collapse(subject)), _js_m_toLowerCase(collapse(value))]
 
 
-def _union_keywords__typed(first, second):
-    out = [*first]
-    for word in second:
-        if not _js_m_includes(out, word):
-            out.append(word)
-    return out
-
-
 def union_keywords(first, second):
-    if type(first) is list and type(second) is list:
-        return _union_keywords__typed(first, second)
     out = [*first]
     for word in second:
         if not _js_m_includes(out, word):
             out.append(word)
     return out
+
+
+_union_keywords__typed = union_keywords
 
 
 def _union_extra(here, there):
@@ -514,29 +459,7 @@ def merge_descriptions(base, other):
     return _js_str(py_strip(base)) + "; " + _js_str(py_strip(other))
 
 
-def _merge_links__typed(base, other):
-    out = []
-    seen = _JsSet()
-    for link in base:
-        if not _js_truthy(_truthy(link)):
-            continue
-        key = py_hash_key(link)
-        if _js_m_has(seen, key):
-            continue
-        _js_m_add(seen, key)
-        out.append(link)
-    for link in other:
-        if not _js_truthy(_truthy(link)):
-            continue
-        if _js_m_some(out, lambda held, *_: py_equal_value(held, link)):
-            continue
-        out.append(link)
-    return out
-
-
 def merge_links(base, other):
-    if type(base) is list and type(other) is list:
-        return _merge_links__typed(base, other)
     out = []
     seen = _JsSet()
     for link in base:
@@ -550,10 +473,13 @@ def merge_links(base, other):
     for link in other:
         if not _js_truthy(_truthy(link)):
             continue
-        if _js_m_some(out, lambda held, *_: py_equal_value(held, link)):
+        if any(_js_truthy(py_equal_value(held, link)) for held in out):
             continue
         out.append(link)
     return out
+
+
+_merge_links__typed = merge_links
 
 
 def _truthy(value):
@@ -581,7 +507,7 @@ def _merge_bodies__typed(base_body, other_body, base_layer, other_layer, base_da
     superseded = []
     drop_base = _JsSet()
     drop_other = _JsSet()
-    shared = _js_m_filter([*_js_m_keys(base_slots)], lambda subject, *_: _js_m_has(other_slots, subject))
+    shared = [subject for subject in [*_js_m_keys(base_slots)] if _js_m_has(other_slots, subject)]
     _js_m_sort(shared, cmp_codepoint)
     for subject in shared:
         base_index, base_value = _js_destructure(_js_m_get(base_slots, subject), 2)
@@ -646,7 +572,7 @@ def merge_bodies(base_body, other_body, base_layer, other_layer, base_date, othe
     superseded = []
     drop_base = _JsSet()
     drop_other = _JsSet()
-    shared = _js_m_filter([*_js_m_keys(base_slots)], lambda subject, *_: _js_m_has(other_slots, subject))
+    shared = [subject for subject in [*_js_m_keys(base_slots)] if _js_m_has(other_slots, subject)]
     _js_m_sort(shared, cmp_codepoint)
     for subject in shared:
         base_index, base_value = _js_destructure(_js_m_get(base_slots, subject), 2)
@@ -760,8 +686,8 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     hits = []
     unresolved = []
     consumed = []
-    both_keys = _js_m_filter([*_js_m_keys(by_project)], lambda key, *_: _js_m_has(by_profile, key))
-    for name in _sorted_names__typed(_js_m_map(both_keys, lambda key, *_: _js_get(_js_m_get(by_project, key), "name"))):
+    both_keys = [key for key in [*_js_m_keys(by_project)] if _js_m_has(by_profile, key)]
+    for name in _sorted_names__typed([_js_get(_js_m_get(by_project, key), "name") for key in both_keys]):
         key = py_hash_key(name)
         here = _js_m_get(by_project, key)
         there = _js_m_get(by_profile, key)
@@ -800,8 +726,8 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
         _js_m_set(planned, key, survivor)
         consumed.append(name)
         merged.append({"name": name, "kind": kind, "jaccard": jaccard(tokens(_js_str(py_text(_js_get(here, "name"))) + " " + _js_str(py_text(_js_get(here, "description")))), tokens(_js_str(py_text(_js_get(there, "name"))) + " " + _js_str(py_text(_js_get(there, "description"))))), "survivorLayer": PROJECT_LAYER, "consumedLayer": PROFILE_LAYER, "bodyBefore": buffer_byte_length(_js_get(here, "body"), "utf8"), "bodyAfter": buffer_byte_length(body, "utf8"), "blocksAdded": added, "superseded": records})
-    project_only = _js_m_filter([*_js_m_keys(by_project)], lambda key, *_: not _js_m_has(by_profile, key))
-    for name in _sorted_names__typed(_js_m_map(project_only, lambda key, *_: _js_get(_js_m_get(by_project, key), "name"))):
+    project_only = [key for key in [*_js_m_keys(by_project)] if not _js_m_has(by_profile, key)]
+    for name in _sorted_names__typed([_js_get(_js_m_get(by_project, key), "name") for key in project_only]):
         key = py_hash_key(name)
         fact = _js_m_get(by_project, key)
         basis = py_mtime_date(project_path(name))
@@ -821,11 +747,11 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     _js_m_sort(similar, lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_get(b, "jaccard")) - _js_num(_js_get(a, "jaccard"))), lambda: cmp_codepoint(py_text(_js_get(a, "projectName")), py_text(_js_get(b, "projectName")))), lambda: cmp_codepoint(py_text(_js_get(a, "profileName")), py_text(_js_get(b, "profileName")))))
     def bytes(text):
         return buffer_byte_length(text, "utf8")
-    index_before = bytes(_js_list_join(_js_m_map(project_facts, lambda f, *_: project_line(f)), ""))
-    index_after = bytes(_js_list_join(_js_m_map(project_facts, lambda f, *_: project_line(_js_coalesce_value(_js_m_get(planned, py_hash_key(_js_get(f, "name"))), f))), ""))
-    profile_index_before = bytes(_js_list_join(_js_m_map(profile_facts, lambda f, *_: profile_line(f)), ""))
-    consumed_keys = _JsSet(_js_m_map(consumed, lambda n, *_: py_hash_key(n)))
-    profile_index_after = bytes(_js_list_join(_js_m_map(_js_m_filter(profile_facts, lambda f, *_: not _js_m_has(consumed_keys, py_hash_key(_js_get(f, "name")))), lambda f, *_: profile_line(f)), ""))
+    index_before = bytes(_js_list_join([project_line(f) for f in _js_array("map", project_facts)], ""))
+    index_after = bytes(_js_list_join([project_line(_js_coalesce_value(_js_m_get(planned, py_hash_key(_js_get(f, "name"))), f)) for f in _js_array("map", project_facts)], ""))
+    profile_index_before = bytes(_js_list_join([profile_line(f) for f in _js_array("map", profile_facts)], ""))
+    consumed_keys = _JsSet([py_hash_key(n) for n in consumed])
+    profile_index_after = bytes(_js_list_join([profile_line(f) for f in [f for f in _js_array("filter", profile_facts) if not _js_m_has(consumed_keys, py_hash_key(_js_get(f, "name")))]], ""))
     project_sizes = _JsMap()
     for fact in project_facts:
         _js_m_set(project_sizes, py_hash_key(_js_get(fact, "name")), _file_size(project_path(_js_get(fact, "name"))))
@@ -838,10 +764,10 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
             total = _js_add(total, v)
         return total
     fact_bytes_before = _js_add(sum(_js_m_values(project_sizes)), sum(_js_m_values(profile_sizes)))
-    fact_bytes_after = _js_num(_js_num(fact_bytes_before) - _js_num(sum(_js_m_map(consumed, lambda n, *_: _js_m_get(profile_sizes, py_hash_key(n))))))
+    fact_bytes_after = _js_num(_js_num(fact_bytes_before) - _js_num(sum([_js_m_get(profile_sizes, py_hash_key(n)) for n in consumed])))
     for key, fact in _js_rows(planned, 2, (0, 1)):
         fact_bytes_after = _js_num(fact_bytes_after + _js_num(_js_num(bytes(format_fact(fact))) - _js_num(_js_m_get(project_sizes, key))))
-    rewritten = _sorted_names__typed(_js_m_map([*_js_m_values(planned)], lambda fact, *_: _js_get(fact, "name")))
+    rewritten = _sorted_names__typed([_js_get(fact, "name") for fact in [*_js_m_values(planned)]])
     all_superseded = []
     for merge in merged:
         _js_m_push(all_superseded, *_js_get(merge, "superseded"))

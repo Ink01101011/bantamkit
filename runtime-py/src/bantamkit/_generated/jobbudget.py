@@ -18,8 +18,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_le,
     _js_list_at,
     _js_lt,
-    _js_m_filter,
-    _js_m_map,
     _js_m_reduce,
     _js_m_splice,
     _js_max,
@@ -44,31 +42,7 @@ FALLBACK_TOKENS_PER_UNIT = 60000
 DIMENSIONS = ["tokens", "units", "wallclock_ms"]
 
 
-def _counted__typed(lines):
-    kept = []
-    for raw in lines:
-        if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
-            continue
-        line = raw
-        event = _js_get(line, "event")
-        if event == "brief":
-            continue
-        if event == "uncommitted":
-            i = _js_num(len(kept) - 1)
-            while i >= 0:
-                if _js_strict_eq(_js_get(_js_list_at(kept, i), "unit"), _js_get(line, "unit")):
-                    _js_m_splice(kept, i, 1)
-                    break
-                i = _js_num(i - 1)
-            continue
-        if event is _JS_UNDEFINED or event is None:
-            kept.append(line)
-    return kept
-
-
 def _counted(lines):
-    if type(lines) is list:
-        return _counted__typed(lines)
     kept = []
     for raw in lines:
         if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
@@ -88,6 +62,9 @@ def _counted(lines):
         if event is _JS_UNDEFINED or event is None:
             kept.append(line)
     return kept
+
+
+_counted__typed = _counted
 
 
 def _figure(value):
@@ -102,20 +79,17 @@ def _lower_median(values):
     return _js_list_at(ordered, _js_floor(_js_div(_js_num(len(ordered) - 1), 2)))
 
 
-def _floor_div__typed(a, b):
-    return _js_floor(_js_div(a, b))
-
-
 def _floor_div(a, b):
-    if _js_is_double(a) and _js_is_double(b):
-        return _floor_div__typed(a, b)
     return _js_floor(_js_div(a, b))
+
+
+_floor_div__typed = _floor_div
 
 
 def _budget__typed(lines, limit, in_flight):
     kept = _counted__typed(lines)
-    tokens = _js_m_map(_js_m_filter(kept, lambda line, *_: _js_in("tokens", line)), lambda line, *_: _figure(_js_get(line, "tokens")))
-    durations = _js_m_map(_js_m_filter(kept, lambda line, *_: _js_in("duration_ms", line)), lambda line, *_: _figure(_js_get(line, "duration_ms")))
+    tokens = [_figure(_js_get(line, "tokens")) for line in [line for line in kept if _js_in("tokens", line)]]
+    durations = [_figure(_js_get(line, "duration_ms")) for line in [line for line in kept if _js_in("duration_ms", line)]]
     per_unit = _lower_median(tokens) if len(tokens) > 0 else FALLBACK_TOKENS_PER_UNIT
     spent = {"tokens": _js_m_reduce(tokens, lambda a, b, *_: _js_add(a, b), 0), "units": len(kept), "wallclock_ms": _js_m_reduce(durations, lambda a, b, *_: _js_add(a, b), 0)}
     reserved = {"tokens": _js_mul(per_unit, in_flight), "units": in_flight, "wallclock_ms": 0}
@@ -128,7 +102,7 @@ def _budget__typed(lines, limit, in_flight):
         _js_put(declared, dim, cap)
         _js_put(remaining, dim, _js_num(_js_num(_js_num(cap) - _js_num(_js_get(spent, dim))) - _js_num(_js_get(reserved, dim))))
     price = {"tokens": per_unit, "units": 1}
-    positive = _js_m_filter(durations, lambda d, *_: _js_gt(d, 0))
+    positive = [d for d in durations if _js_gt(d, 0)]
     if len(positive) > 0:
         _js_put(price, "wallclock_ms", _lower_median(positive))
     fits = []
@@ -143,8 +117,8 @@ def budget(lines, limit, in_flight):
     if type(lines) is list and _js_is_double(in_flight):
         return _budget__typed(lines, limit, in_flight)
     kept = _counted(lines)
-    tokens = _js_m_map(_js_m_filter(kept, lambda line, *_: _js_in("tokens", line)), lambda line, *_: _figure(_js_get(line, "tokens")))
-    durations = _js_m_map(_js_m_filter(kept, lambda line, *_: _js_in("duration_ms", line)), lambda line, *_: _figure(_js_get(line, "duration_ms")))
+    tokens = [_figure(_js_get(line, "tokens")) for line in [line for line in kept if _js_in("tokens", line)]]
+    durations = [_figure(_js_get(line, "duration_ms")) for line in [line for line in kept if _js_in("duration_ms", line)]]
     per_unit = _lower_median(tokens) if len(tokens) > 0 else FALLBACK_TOKENS_PER_UNIT
     spent = {"tokens": _js_m_reduce(tokens, lambda a, b, *_: _js_add(a, b), 0), "units": len(kept), "wallclock_ms": _js_m_reduce(durations, lambda a, b, *_: _js_add(a, b), 0)}
     reserved = {"tokens": _js_mul(per_unit, in_flight), "units": in_flight, "wallclock_ms": 0}
@@ -157,7 +131,7 @@ def budget(lines, limit, in_flight):
         _js_put(declared, dim, cap)
         _js_put(remaining, dim, _js_num(_js_num(_js_num(cap) - _js_num(_js_get(spent, dim))) - _js_num(_js_get(reserved, dim))))
     price = {"tokens": per_unit, "units": 1}
-    positive = _js_m_filter(durations, lambda d, *_: _js_gt(d, 0))
+    positive = [d for d in durations if _js_gt(d, 0)]
     if len(positive) > 0:
         _js_put(price, "wallclock_ms", _lower_median(positive))
     fits = []

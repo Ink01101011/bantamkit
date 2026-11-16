@@ -472,6 +472,32 @@ general path it shortcuts by that file's seeded fuzz.
 A `Map` keeps each key's `_js_key` tag mapped to its value; a key that is not its own tag (a bool,
 NaN, an object, an int past 2^53) is kept beside it in `_keys`.
 
+## Storage speed and size (J90-P2, #316 G4)
+
+Each lowering below is pinned TAKEN and answering as Node does in `tests/j90p2.rs` (the probe and
+a 3,000-input digest of `tests/fixtures/j90p2_probe.ts`, compiled as `runtime-ts/src/j90p2_probe.ts`
+so `./pysem.js` is the `cmpCodepoint` adapter); each runtime fast path is held to the general path
+by that file's seeded fuzz.
+
+| Construct | Lowering | Otherwise |
+|---|---|---|
+| `xs.sort(compare)`, any comparator the rows below do not take | `_js_m_sort`, which runs V8's own sort (`_js_v8_timsort`): V8's order for an inconsistent comparator (a NaN key, a parity comparator) and V8's comparator calls, pair for pair | — (until J90-P2: CPython's `list.sort`, whose order differs on CPython 3.13+ and whose calls differ on every version) |
+| `xs.sort((a, b) => c1 \|\| c2 \|\| ...)`, each `ci` a key difference `k(a) - k(b)` / `k(b) - k(a)` or `cmpCodepoint(k(a), k(b))` / `cmpCodepoint(k(b), k(a))` (the adapter, not a local), two parts or more, or one `cmpCodepoint` part; every `k` pure as for `_js_sort_keyed` | `_js_sort_lex`: stable sorts by each key, the last first, when every number key is a number JS holds exactly and none is NaN and every code-point key is a `str` | the general `.sort` with the comparator |
+| `createHash('sha256' \| 'sha1').update(x, 'utf8').digest('hex')`, `createHash` the node:crypto adapter | `hash_hex(alg, x)`: an ASCII `str` hashed as its bytes at once, anything else the three calls with their refusals | the three calls |
+| `xs.every((x) => e)` / `.some` / `.map` / `.filter`, one plain parameter, an expression body with no function (`=>`, `function`, `class`) in it | `all(e for x in xs)` / `any(...)` / `[e for x in xs]` / `[x for x in xs if e]` (a receiver not proven a list through `_js_array`), the comprehension the helper runs, `e` inline | the helper with a lambda |
+| `x.length === N` (N a literal 0..16) on the left of `&&`, `x` proven a list and a `const` / stable binding, the right side `pure_test` (names, literals, member reads, `typeof`, `!`, `-`, comparisons, arithmetic, `&&` / `\|\|` / `??`, `?:`, `Number.isInteger` / `Number.isNaN` / `Array.isArray`) | the right side reads `x[k]` (k < N) as `x[k]` | `_js_list_at(x, k)` |
+| a wrapped function whose guarded entry's body is the typed body line for line | one body under the function's name, the typed name bound to it (`_f__typed = f`) | both bodies |
+
+`Number.isInteger` answers a plain int within 2^53 at once (`_js_number_is_integer`).
+
+**The shipped support modules.** `--emit-runtime` and `--emit-adapters` write the support modules
+in their SHIPPED form (`ts2py::shipped`): the leading comment block and one note line, then every
+line but the full-line comments and the docstring of each function or class whose body goes on
+after it; nothing inside a triple-quoted string is touched. `tests/shipped.rs` holds the shipped
+runtime and adapters to the source's `ast.dump` (docstrings aside), and
+`runtime-py/tests/test_ts2py_fresh.py` spells the same rule. The documentation stays in
+`tools/ts2py/src/`, the only copy anyone edits.
+
 ## Classes (J86)
 
 | Construct | Lowering | Preserved |

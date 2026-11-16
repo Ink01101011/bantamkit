@@ -8,6 +8,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_add,
     _js_and,
     _js_and_value,
+    _js_array,
     _js_cat,
     _js_catch,
     _js_coalesce_value,
@@ -38,7 +39,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_replace,
     _js_m_set,
     _js_m_slice,
-    _js_m_some,
     _js_m_sort,
     _js_m_splice,
     _js_m_split,
@@ -104,27 +104,21 @@ def _miss_line(name):
     return "no fact named '" + _js_str(name) + "' in any layer bound here; matching by words instead:"
 
 
-def _refused__typed(reason):
-    return {"result": "error", "reason": reason}
-
-
 def _refused(reason):
-    if type(reason) is str:
-        return _refused__typed(reason)
     return {"result": "error", "reason": reason}
 
 
-_STORE_PARTS = _js_m_map(PROJECT_STORE, lambda part, *_: part)
+_refused__typed = _refused
 
 
-def _layer_kind__typed(label):
-    return _js_list_at(_js_m_split(label, ":"), 0)
+_STORE_PARTS = [part for part in _js_array("map", PROJECT_STORE)]
 
 
 def _layer_kind(label):
-    if type(label) is str:
-        return _layer_kind__typed(label)
     return _js_list_at(_js_m_split(label, ":"), 0)
+
+
+_layer_kind__typed = _layer_kind
 
 
 def _context_weights(context):
@@ -143,7 +137,7 @@ def _skipped_note__typed(skipped, rest=_JS_UNDEFINED):
         return ""
     count = len(skipped)
     noun = "fact file" if count == 1 else "fact files"
-    return "\n\n" + _js_str(count) + " " + noun + " could not be read and " + ("was" if count == 1 else "were") + " skipped; " + (_js_str(rest) + ":\n") + _js_list_join(_js_m_map(skipped, lambda s, *_: "[" + _js_str(_js_get(s, "layer")) + "] " + _js_str(_js_get(s, "reason"))), "\n")
+    return "\n\n" + _js_str(count) + " " + noun + " could not be read and " + ("was" if count == 1 else "were") + " skipped; " + (_js_str(rest) + ":\n") + _js_list_join(["[" + _js_str(_js_get(s, "layer")) + "] " + _js_str(_js_get(s, "reason")) for s in skipped], "\n")
 
 
 def _skipped_note(skipped, rest=_JS_UNDEFINED):
@@ -155,7 +149,7 @@ def _skipped_note(skipped, rest=_JS_UNDEFINED):
         return ""
     count = _js_len(skipped)
     noun = "fact file" if _js_strict_eq(count, 1) else "fact files"
-    return "\n\n" + _js_str(count) + " " + noun + " could not be read and " + ("was" if _js_strict_eq(count, 1) else "were") + " skipped; " + (_js_str(rest) + ":\n") + _js_list_join(_js_m_map(skipped, lambda s, *_: "[" + _js_str(_js_get(s, "layer")) + "] " + _js_str(_js_get(s, "reason"))), "\n")
+    return "\n\n" + _js_str(count) + " " + noun + " could not be read and " + ("was" if _js_strict_eq(count, 1) else "were") + " skipped; " + (_js_str(rest) + ":\n") + _js_list_join(["[" + _js_str(_js_get(s, "layer")) + "] " + _js_str(_js_get(s, "reason")) for s in _js_array("map", skipped)], "\n")
 
 
 def normalize_name(name):
@@ -190,18 +184,13 @@ def _same_directory(a, b):
         return _js_strict_eq(path_resolve(a), path_resolve(b))
 
 
-def _layer_label__typed(root):
-    if py_name(py_parent(root)) == ".bantamkit":
-        return py_name(py_parent(py_parent(root)))
-    return py_name(root)
-
-
 def layer_label(root):
-    if type(root) is str:
-        return _layer_label__typed(root)
     if py_name(py_parent(root)) == ".bantamkit":
         return py_name(py_parent(py_parent(root)))
     return py_name(root)
+
+
+_layer_label__typed = layer_label
 
 
 def _is_read_only(store):
@@ -245,14 +234,14 @@ class Memory(_JsObject):
             only_present = False
         if _js_strict_eq(_js_len(roots), 0):
             return _JS_UNDEFINED
-        if _js_truthy(_js_and(only_present, lambda: not _js_m_some(roots, lambda r, *_: py_is_dir(r)))):
+        if _js_truthy(_js_and(only_present, lambda: not any(_js_truthy(py_is_dir(r)) for r in _js_array("some", roots)))):
             self.pendingSkills = roots
             return _JS_UNDEFINED
         _js_m_push(self.layers, [SKILL_LAYER, SkillStore(roots), False])
         return _JS_UNDEFINED
 
     def bindPendingSkills(self):
-        if _js_m_some(self.pendingSkills, lambda r, *_: py_is_dir(r)):
+        if any(_js_truthy(py_is_dir(r)) for r in _js_array("some", self.pendingSkills)):
             native = self.layerAt(NATIVE_LAYER)
             _js_m_splice(self.layers, _js_len(self.layers) if _js_lt(native, 0) else native, 0, [SKILL_LAYER, SkillStore(self.pendingSkills), False])
             self.pendingSkills = []
@@ -264,7 +253,7 @@ class Memory(_JsObject):
         return _JS_UNDEFINED
 
     def layerLabels(self):
-        return _js_m_map(self.layers, lambda layer, *_: _js_get(layer, 0))
+        return [_js_get(layer, 0) for layer in _js_array("map", self.layers)]
 
     def layerAt(self, label):
         i = 0
@@ -299,7 +288,7 @@ class Memory(_JsObject):
         if status is _JS_UNDEFINED:
             status = None
         normalized = normalize_name(name)
-        normalized_links = _js_m_map(_js_coalesce_value(links, []), lambda link, *_: normalize_name(link))
+        normalized_links = [normalize_name(link) for link in _js_array("map", _js_coalesce_value(links, []))]
         result = _JS_UNDEFINED
         _js_caught2 = None
         try:
@@ -316,7 +305,7 @@ class Memory(_JsObject):
             if isinstance(_js_caught2, MemoryBudgetExceeded):
                 return {"reply": "error: " + _js_str(_js_get(_js_caught2, "message")) + ". Nothing was saved and retrying will not help — shorten " + "the description, or save under the name of an existing memory to replace it. " + "Or call `memory_compact` to archive the stalest facts and free room — nothing is deleted.", "status": "refused-budget"}
             raise _js_caught2
-        note = _skipped_note__typed(_js_m_map(_js_coalesce_value(_js_get(result, "skipped"), []), lambda s, *_: {"layer": "project", **_js_spread(s)}), "the duplicate check read every other fact")
+        note = _skipped_note__typed([{"layer": "project", **_js_spread(s)} for s in _js_array("map", _js_coalesce_value(_js_get(result, "skipped"), []))], "the duplicate check read every other fact")
         if _js_get(result, "status") == "duplicate":
             return {"reply": "similar memory '" + _js_str(_js_get(result, "similar")) + "' already exists — save under that SAME " + "name to update it, or skip. Do not rename to force a copy." + note, "status": "duplicate"}
         _js_obj3 = self.store
@@ -506,8 +495,8 @@ class Memory(_JsObject):
         if outcome is _JS_UNDEFINED:
             outcome = None
         home = py_home()
-        sides = _js_m_map(self.layers, lambda layer, *_: layer_terms(home, _js_get(_js_get(layer, 1), "root")))
-        every_row = _js_m_some(sides, lambda side, *_: _js_gt(_js_size(side), 0))
+        sides = [layer_terms(home, _js_get(_js_get(layer, 1), "root")) for layer in _js_array("map", self.layers)]
+        every_row = any(_js_gt(_js_size(side), 0) for side in sides)
         q = query_terms(query if head is None else head)
         stores = []
         pools = []
@@ -532,7 +521,7 @@ class Memory(_JsObject):
                     if _js_truthy(_lends_shadow(store)):
                         for f in got:
                             _js_m_add(shadow, py_text(_js_get(f, "name")))
-                    pools.append(pool_of(_js_m_filter(got, lambda f, *_: _js_strict_eq(_js_get(f, "outcome"), outcome)), q, every_row))
+                    pools.append(pool_of([f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)], q, every_row))
                 elif _js_truthy(_is_read_only(store)):
                     pool = _js_invoke(store, "pool", q, left_out, shadow, every_row)
                     if _js_truthy(_lends_shadow(store)):
@@ -570,7 +559,7 @@ class Memory(_JsObject):
                 store = _js_list_at(stores, i)
                 got = _js_invoke(store, "candidates", _js_list_at(left, i), shadow) if _js_truthy(_is_read_only(store)) else _js_invoke(store, "candidates", _js_list_at(left, i))
                 if outcome is not None:
-                    got = _js_m_filter(got, lambda f, *_: _js_strict_eq(_js_get(f, "outcome"), outcome))
+                    got = [f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)]
                 return pool_of(got, q, every_row)
             except Exception as _js_error22:
                 _js_caught22 = _js_catch(_js_error22)
@@ -587,7 +576,7 @@ class Memory(_JsObject):
         if every_row:
             scorer = QueryScorer(query)
             def _js_fn24(i=_JS_UNDEFINED, p=_JS_UNDEFINED, *_):
-                return _js_m_map(_js_get(p, "names"), lambda n, *_: _js_coalesce_value(_js_m_get(_js_list_at(sides, i), n), None))
+                return [_js_coalesce_value(_js_m_get(_js_list_at(sides, i), n), None) for n in _js_array("map", _js_get(p, "names"))]
             rows = _js_fn24
         weights = None if context is None else _context_weights(context)
         def _js_fn25(*_):
@@ -621,7 +610,7 @@ class Memory(_JsObject):
         for label, store, w in _js_rows(self.layers, 3, (0, 1, 2)):
             if _js_truthy(_js_and(w, lambda: isinstance(store, MemoryStore))):
                 _js_m_set(writable, label, store)
-        if not _js_m_some(picked, lambda pick, *_: _js_m_has(writable, _js_get(pick, 0))):
+        if not any(_js_m_has(writable, _js_get(pick, 0)) for pick in _js_array("some", picked)):
             return _JS_UNDEFINED
         ledger = self.ledger()
         _js_obj28 = self.store
@@ -676,7 +665,7 @@ class Memory(_JsObject):
             _js_caught33 = None
             try:
                 pool = _js_invoke(store, "pool", [], [], _JsSet(seen)) if _js_truthy(_is_read_only(store)) else _js_invoke(store, "pool", [], [])
-                names = _js_m_sort(_js_m_filter([*_JsSet(_js_m_map(all_names(pool), lambda n, *_: py_text(n)))], lambda n, *_: not _js_m_has(seen, n)), cmp_codepoint)
+                names = _js_m_sort([n for n in [*_JsSet([py_text(n) for n in _js_array("map", all_names(pool))])] if not _js_m_has(seen, n)], cmp_codepoint)
             except Exception as _js_error33:
                 _js_caught33 = _js_catch(_js_error33)
             if _js_caught33 is not None:
@@ -869,7 +858,7 @@ class Memory(_JsObject):
             reply = "nothing archived: the index is " + _js_str(_js_get(result, "indexAfter")) + " bytes against a " + (_js_str(_js_get(result, "budget")) + "-byte budget, already at or under the ") + (_js_str(_js_get(result, "target")) + "-byte compaction target.")
             status = "nothing-archived"
         else:
-            lost = _js_list_join(_js_m_map(archived, lambda fact, *_: "- " + _js_str(_js_get(fact, "name")) + " (" + _js_str(_js_get(fact, "type")) + ") — " + _js_str(_js_get(fact, "description"))), "\n")
+            lost = _js_list_join(["- " + _js_str(_js_get(fact, "name")) + " (" + _js_str(_js_get(fact, "type")) + ") — " + _js_str(_js_get(fact, "description")) for fact in _js_array("map", archived)], "\n")
             reply = "archived " + _js_str(_js_len(archived)) + " memories; the index went from " + (_js_str(_js_get(result, "indexBefore")) + " to " + _js_str(_js_get(result, "indexAfter")) + " bytes against a ") + (_js_str(_js_get(result, "budget")) + "-byte budget, leaving " + _js_str(_js_get(result, "headroom")) + " bytes of headroom. ") + ("These moved to " + _js_str(_js_get(result, "archiveDir")) + " and are NOT deleted — they can be ") + ("restored by name:\n" + lost)
             status = "archived"
         return {"reply": reply, "status": status, "archived": _js_len(archived), "indexBefore": _js_get(result, "indexBefore"), "indexAfter": _js_get(result, "indexAfter"), "budget": _js_get(result, "budget")}
@@ -1026,7 +1015,7 @@ class Memory(_JsObject):
         if status == "nothing-to-consolidate":
             lines.append("nothing to consolidate: " + _js_str(_js_get(result, "projectRoot")) + " and " + _js_str(_js_get(result, "profileRoot")) + " " + "hold no fact under the same name, and no project fact carries a relative " + "date this pass will resolve.")
         else:
-            identical = len(_js_m_filter(_js_get(result, "merged"), lambda merge, *_: _js_get(merge, "kind") == "identical"))
+            identical = len([merge for merge in _js_array("filter", _js_get(result, "merged")) if _js_get(merge, "kind") == "identical"])
             diverged = _js_num(_js_num(_js_len(_js_get(result, "merged"))) - identical)
             verb = "consolidated" if status == "consolidated" else "would consolidate"
             lines.append(verb + " " + _js_str(_js_len(_js_get(result, "merged"))) + " cross-layer name collision(s) — " + _js_str(identical) + " " + ("byte-identical, " + _js_str(diverged) + " diverged and unioned — and rewrote ") + (_js_str(_js_len(_js_get(result, "rewritten"))) + " project fact(s). The survivor stays in the ") + ("project layer; the profile copy moves to " + _js_str(_js_get(result, "archiveDir")) + " and is NOT ") + "deleted: restore it by name.")

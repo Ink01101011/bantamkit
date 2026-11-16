@@ -209,8 +209,8 @@ export function fuzz(n: number): number {
   const eat = (text: string): void => {
     for (let j = 0; j < text.length; j += 1) h = (h * 31 + text.charCodeAt(j)) % 1000000007;
   };
-  // No NaN: a NaN key makes a comparator inconsistent, and the general `.sort` then answers
-  // CPython's order, not V8's (a divergence older than J90-P, reported, not ruled here).
+  // No NaN: a NaN key makes a comparator inconsistent, and the general `.sort` answered CPython's
+  // order there, not V8's, until J90-P2 (`tests/j90p2.rs` pins that fuzz now).
   const nums = [0, -0, 1, -1, 2.5, Infinity, -Infinity, 9007199254740993, 3, 3];
   const keys = ['0', '1', '01', '10', 'a', 'b', '4294967294', '4294967295', '', '-1', '7'];
   const chars = ['a', 'Z', '0', '9', 'é', '😀', '\ud800', '/', '.', '-', ' ', '"', 'x'];

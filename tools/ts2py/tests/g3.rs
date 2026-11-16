@@ -190,7 +190,8 @@ fn g3_modules_compile_together() {
     let modules = compile_package(&pairs);
     let code = |stem: &str| -> &str { &modules.iter().find(|m| m.py_module == stem).unwrap().code };
     assert!(code("usage").contains("from .logsegment import ROTATE_BYTES, LogSegment\n"));
-    assert!(code("usage").contains("create_hash(\"sha256\")"));
+    // J90-P2: `createHash(..).update(.., 'utf8').digest('hex')` is one adapter call.
+    assert!(code("usage").contains("hash_hex(\"sha256\", "));
     assert!(code("usage").contains("py_pow(0.5, "));
     for module in &modules {
         let committed = root

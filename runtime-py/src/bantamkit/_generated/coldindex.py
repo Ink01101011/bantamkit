@@ -6,6 +6,7 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_add,
+    _js_array,
     _js_catch,
     _js_coalesce_value,
     _js_code_units,
@@ -21,13 +22,11 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_json_stringify,
     _js_list_at,
     _js_lt,
-    _js_m_every,
     _js_m_filter,
     _js_m_get,
     _js_m_has,
     _js_m_join,
     _js_m_keys,
-    _js_m_map,
     _js_m_padStart,
     _js_m_push,
     _js_m_reduce,
@@ -123,7 +122,7 @@ def _is_segment(s):
 
 
 def _is_rows(v):
-    return _js_is_array(v) and _js_m_every(v, lambda r, *_: _js_is_array(r) and len(r) == 4 and isinstance(_js_list_at(r, 0), str) and isinstance(_js_list_at(r, 1), str) and isinstance(_js_list_at(r, 2), str) and _js_number_is_integer(_js_list_at(r, 3)))
+    return _js_is_array(v) and all(_js_is_array(r) and len(r) == 4 and isinstance(r[0], str) and isinstance(r[1], str) and isinstance(r[2], str) and _js_number_is_integer(r[3]) for r in v)
 
 
 def _iso_now(now_ms):
@@ -171,7 +170,7 @@ class ColdIndex(_JsObject):
             raise ColdIndexError("cold index manifest unreadable: " + _js_str(_err_message(_js_caught2)))
         top = data
         segs = _js_get(top, "segments") if _is_obj(data) else _JS_UNDEFINED
-        if not _is_obj(data) or not _js_strict_eq(_js_get(top, "version"), COLD_VERSION) or not _js_is_array(segs) or not _js_m_every(segs, lambda s, *_: _is_obj(s) and _is_segment(s)):
+        if not _is_obj(data) or not _js_strict_eq(_js_get(top, "version"), COLD_VERSION) or not _js_is_array(segs) or not all(_is_obj(s) and _is_segment(s) for s in segs):
             raise ColdIndexError("cold index manifest is not this version's shape")
         return data
 
@@ -231,7 +230,7 @@ class ColdIndex(_JsObject):
             raise ColdIndexError("cold index shard " + _js_m_padStart(_js_str(i), 2, "0") + " unreadable: " + _js_str(_err_message(_js_caught4)))
         top = data
         terms = _js_get(top, "terms") if _is_obj(data) else _JS_UNDEFINED
-        if not _is_obj(terms) or not _js_m_every(_js_object_keys(terms), lambda k, *_: _is_rows(_js_get(terms, k))):
+        if not _is_obj(terms) or not all(_is_rows(_js_get(terms, k)) for k in _js_array("every", _js_object_keys(terms))):
             raise ColdIndexError("cold index shard " + _js_m_padStart(_js_str(i), 2, "0") + " is not this version's shape")
         return _js_map_entries(terms)
 
@@ -256,7 +255,7 @@ class ColdIndex(_JsObject):
                         _js_m_set(sums, name, _js_add(_js_coalesce_value(_js_m_get(sums, name), 0), tf))
         ranked = _js_m_sort([*_js_m_keys(sums)], cmp_codepoint)
         _js_sort_keyed(ranked, lambda a, *_: _js_m_get(sums, a), True, lambda a, b, *_: _js_num(_js_num(_js_m_get(sums, b)) - _js_num(_js_m_get(sums, a))))
-        return _js_m_map(ranked, lambda n, *_: [n, _js_m_get(owners, n), _js_m_get(sums, n)])
+        return [[n, _js_m_get(owners, n), _js_m_get(sums, n)] for n in ranked]
 
     def addDocs(self, docs):
         def _js_fn5(*_):
@@ -273,7 +272,7 @@ class ColdIndex(_JsObject):
         def _js_fn6(*_):
             self.sweepTemps()
             manifest = self.manifest()
-            old = _js_m_map(_js_get(manifest, "segments"), lambda s, *_: _js_get(s, "id"))
+            old = [_js_get(s, "id") for s in _js_array("map", _js_get(manifest, "segments"))]
             if len(old) == 0 or len(old) == 1 and keep is None:
                 return None
             merged = _JsMap()
@@ -328,7 +327,7 @@ class ColdIndex(_JsObject):
 
     def publish(self, manifest, id_, docs, replace):
         names = _js_m_sort([*_js_m_keys(docs)], cmp_codepoint)
-        sorted_ = _JsMap(_js_m_map(names, lambda n, *_: [n, _js_m_get(docs, n)]))
+        sorted_ = _JsMap([[n, _js_m_get(docs, n)] for n in names])
         _write(self.segmentPath(id_), dump_index({"id": id_, "docs": sorted_}))
         fresh = []
         i = 0
@@ -349,7 +348,7 @@ class ColdIndex(_JsObject):
                         list_ = []
                         _js_m_set(table, term, list_)
                     _js_m_push(list_, [name, id_, field, tf])
-        live = _JsSet(_js_m_map(_js_get(manifest, "segments"), lambda s, *_: _js_get(s, "id")))
+        live = _JsSet([_js_get(s, "id") for s in _js_array("map", _js_get(manifest, "segments"))])
         self.writeShards(self.tables(), live, fresh)
         segments = [] if _js_truthy(replace) else [*_js_get(manifest, "segments")]
         segments.append({"id": id_, "docs": names, "created": _iso_now(_js_now())})
@@ -379,7 +378,7 @@ class ColdIndex(_JsObject):
         while _js_lt(i, SHARDS):
             terms = _JsMap()
             for term, rows in _js_rows(_js_get(tables, i), 2, (0, 1)):
-                kept = _js_m_filter(rows, lambda r, *_: _js_m_has(keep, _js_get(r, 1)))
+                kept = [r for r in _js_array("filter", rows) if _js_m_has(keep, _js_get(r, 1))]
                 if _js_truthy(len(kept)):
                     _js_m_set(terms, term, kept)
             if add is not None:

@@ -119,7 +119,6 @@ fn j90p_only_a_pure_key_difference_is_a_key_sort() {
         "(a, b) => m.get(b)! + m.get(a)!",
         "(a, b) => m.get(b)! - o[a]!",
         "(a, b) => f([b], m, o).length - f([a], m, o).length",
-        "(a, b) => (m.get(b)! - m.get(a)!) || a.length - b.length",
         "(a, b) => m.get(b)! - m.get(a)! - 1",
     ] {
         let code = ts2py::compile(
