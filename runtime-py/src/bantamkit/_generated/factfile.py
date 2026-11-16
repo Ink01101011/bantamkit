@@ -12,7 +12,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_coalesce_value,
     _js_code_units,
     _js_destructure,
-    _js_dispatch,
     _js_from_code_point,
     _js_ge,
     _js_get,
@@ -573,7 +572,7 @@ def _scan_block_scalar__typed(front, pos):
         max_indent = 0
         while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " " or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
             if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
-                _js_dispatch(breaks, "push", _js_m_push, "\n")
+                _js_m_push(breaks, "\n")
                 i = _js_num(i + 1)
             else:
                 i = _js_num(i + 1)
@@ -585,7 +584,7 @@ def _scan_block_scalar__typed(front, pos):
     chunks = []
     line_break = ""
     while _js_strict_eq(_column__typed(front, i), indent) and i < len(_jsu_front):
-        _js_dispatch(chunks, "push", _js_m_push, *breaks)
+        _js_m_push(chunks, *breaks)
         leading_non_space = (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != " " and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != "\t"
         eol = _js_units_index_of(_jsu_front, "\n", i)
         end = len(_jsu_front) if eol == -1 else eol
@@ -609,7 +608,7 @@ def _scan_block_scalar__typed(front, pos):
     if not _js_strict_eq(chomping, False):
         chunks.append(line_break)
     if _js_strict_eq(chomping, True):
-        _js_dispatch(chunks, "push", _js_m_push, *breaks)
+        _js_m_push(chunks, *breaks)
     if i < len(_jsu_front) and _column__typed(front, i) != 0 and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "#":
         eol = _js_units_index_of(_jsu_front, "\n", i)
         return [_js_list_join(chunks, ""), len(_jsu_front) if eol == -1 else eol]
@@ -677,7 +676,7 @@ def _scan_block_scalar(front, pos):
         max_indent = 0
         while _js_get(front, i) == " " or _js_get(front, i) == "\n":
             if _js_get(front, i) == "\n":
-                _js_dispatch(breaks, "push", _js_m_push, "\n")
+                _js_m_push(breaks, "\n")
                 i = _js_add(i, 1)
             else:
                 i = _js_add(i, 1)
@@ -689,7 +688,7 @@ def _scan_block_scalar(front, pos):
     chunks = []
     line_break = ""
     while _js_strict_eq(_column(front, i), indent) and _js_lt(i, _js_len(front)):
-        _js_dispatch(chunks, "push", _js_m_push, *breaks)
+        _js_m_push(chunks, *breaks)
         leading_non_space = _js_get(front, i) != " " and _js_get(front, i) != "\t"
         eol = _js_m_indexOf(front, "\n", i)
         end = _js_len(front) if eol == -1 else eol
@@ -713,7 +712,7 @@ def _scan_block_scalar(front, pos):
     if not _js_strict_eq(chomping, False):
         chunks.append(line_break)
     if _js_strict_eq(chomping, True):
-        _js_dispatch(chunks, "push", _js_m_push, *breaks)
+        _js_m_push(chunks, *breaks)
     if _js_lt(i, _js_len(front)) and _column(front, i) != 0 and _js_get(front, i) == "#":
         eol = _js_m_indexOf(front, "\n", i)
         return [_js_list_join(chunks, ""), _js_len(front) if eol == -1 else eol]

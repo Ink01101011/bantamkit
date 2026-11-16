@@ -5871,9 +5871,18 @@ pub fn generator_names(program: &Program<'_>) -> HashSet<String> {
     out
 }
 
-pub fn scan_module(program: &Program<'_>) -> (HashMap<String, (String, bool)>, HashSet<String>) {
+/// What a module offers the others of its call: its exports, the method names its EXPORTED
+/// classes declare (they reach every module of the call), and the method names its other classes
+/// declare (J89-5a: they dispatch in this module only, as an `ImportedClass` adapter's do).
+pub type ModuleScan = (
+    HashMap<String, (String, bool)>,
+    HashSet<String>,
+    HashSet<String>,
+);
+
+pub fn scan_module(program: &Program<'_>) -> ModuleScan {
     let mut exports = HashMap::new();
-    let mut methods = HashSet::new();
+    let mut class_methods: Vec<(String, Vec<String>)> = Vec::new();
     let mut locals: HashMap<String, (String, bool)> = HashMap::new();
     for stmt in &program.body {
         let (decl, exported) = match stmt {
@@ -5919,14 +5928,20 @@ pub fn scan_module(program: &Program<'_>) -> (HashMap<String, (String, bool)>, H
                         (class_py_name(id.name.as_str(), exported), true),
                     );
                 }
+                let mut declared = Vec::new();
                 for element in &c.body.body {
                     if let ClassElement::MethodDefinition(m) = element
                         && m.kind == MethodDefinitionKind::Method
                         && let Some(name) = property_key_name(&m.key)
                     {
-                        methods.insert(name);
+                        declared.push(name);
                     }
                 }
+                // An anonymous class cannot be named by an export (and is refused when lowered).
+                let name =
+                    c.id.as_ref()
+                        .map_or(String::new(), |id| id.name.to_string());
+                class_methods.push((name, declared));
             }
             _ => {}
         }
@@ -5941,7 +5956,22 @@ pub fn scan_module(program: &Program<'_>) -> (HashMap<String, (String, bool)>, H
             }
         }
     }
-    (exports, methods)
+    // J89-5a: a class no export names is reachable from another module only as a value a function
+    // returned. There a call of one of its methods that a builtin shares (`row.get(t)`) is the
+    // builtin's helper, which refuses an instance at run time (`_js_outside`), and a read of one as
+    // a value is refused by `_js_object_get`: never a different answer. So its method names stay
+    // in its own module, and the other modules' builtin calls are not dispatched for it.
+    let mut methods = HashSet::new();
+    let mut private = HashSet::new();
+    for (name, declared) in class_methods {
+        let exported = exports.get(&name).is_some_and(|(_, is_class)| *is_class);
+        if exported {
+            methods.extend(declared);
+        } else {
+            private.extend(declared);
+        }
+    }
+    (exports, methods, private)
 }
 
 // -------------------------------------------------------------------- helpers

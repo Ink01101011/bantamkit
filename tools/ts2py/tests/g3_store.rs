@@ -449,3 +449,159 @@ print(bad_sort, bad_join)
     );
     assert_eq!(got.trim(), "0 0");
 }
+
+/// J89-5a (#316 G3 U3, `memory/queries.ts`): a class no export names keeps its method names in
+/// its own module. queries.ts's `CountsView` (methods `has`, `get`, `keys`, `scan`) is handed out
+/// only as a row a function returned; were its names global, every `.get` / `.has` / `.keys` of
+/// every module of the call would dispatch at run time. In its module the calls dispatch and run
+/// its methods; elsewhere a builtin call is the builtin's helper, which refuses an instance at run
+/// time rather than answering differently. An Error subclass that names itself by a class field
+/// (`override name = 'Failed'`, queries.ts's `SidecarWriteError`) is the same own property as
+/// `this.name = ...` in a constructor. Node v26.13.0 printed, for the two files below,
+/// `[[1,true],[null,false],[5,true],5,1,["Failed: no room","Failed","no room","Failed: no room"]]`;
+/// Python answers the same but for `lookup(make(...))`, which it refuses.
+#[test]
+fn j89_5a_a_private_class_keeps_its_method_names_in_its_module() {
+    let view = r###"class View {
+  private readonly flat: readonly unknown[];
+  constructor(flat: readonly unknown[]) {
+    this.flat = flat;
+  }
+  get(k: string): unknown {
+    for (let i = 0; i < this.flat.length; i += 2) if (this.flat[i] === k) return this.flat[i + 1];
+    return undefined;
+  }
+  has(k: string): boolean {
+    return this.get(k) !== undefined;
+  }
+}
+export function make(flat: readonly unknown[]): ReadonlyMap<string, unknown> {
+  return new View(flat) as unknown as ReadonlyMap<string, unknown>;
+}
+export function read(m: ReadonlyMap<string, unknown>, k: string): unknown[] {
+  return [m.get(k) ?? null, m.has(k)];
+}
+export class Failed extends Error {
+  override name = 'Failed';
+}
+export function failed(): unknown[] {
+  const e = new Failed('no room');
+  let caught = '';
+  try {
+    throw e;
+  } catch (x) {
+    caught = x instanceof Failed && x instanceof Error ? String(x) : 'other';
+  }
+  return [String(e), e.name, e.message, caught];
+}
+"###;
+    let user = r###"export function lookup(m: ReadonlyMap<string, unknown>, k: string): unknown {
+  return m.get(k) ?? null;
+}
+"###;
+    let modules = compile_package(&[("view.ts", view), ("user.ts", user)]);
+    let view_py = &modules.iter().find(|m| m.py_module == "view").unwrap().code;
+    let user_py = &modules.iter().find(|m| m.py_module == "user").unwrap().code;
+    assert!(
+        view_py.contains("_js_dispatch(m, \"get\", _js_m_get, k)"),
+        "{view_py}"
+    );
+    assert!(
+        user_py.contains("_js_m_get(m, k)") && !user_py.contains("_js_dispatch"),
+        "{user_py}"
+    );
+    assert!(
+        view_py.contains("        self.name = \"Failed\""),
+        "{view_py}"
+    );
+    let dir = scratch("j89-5a-private");
+    package(&dir, &modules);
+    let got = run_python(
+        r#"import sys
+sys.path.insert(0, sys.argv[1])
+from pkg import _ts2py_runtime as rt
+from pkg.view import make, read, failed
+from pkg.user import lookup
+out = [read(make(['a', 1, 'b', 2, 'a', 3]), 'a'), read(make(['a', 1]), 'z'), read(rt._JsMap([['a', 5]]), 'a'), lookup(rt._JsMap([['a', 5]]), 'a')]
+try:
+    out.append(lookup(make(['a', 1]), 'a'))
+except TypeError as e:
+    out.append(str(e))
+out.append(failed())
+print(rt._js_json_stringify(out))
+"#,
+        &[&dir],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        got.trim(),
+        r#"[[1,true],[null,false],[5,true],5,"ts2py: .get() on _View is outside the subset",["Failed: no room","Failed","no room","Failed: no room"]]"#
+    );
+    // An exported class's method names still reach every module (J86), so there the call
+    // dispatches and runs the method, as Node does.
+    let exported = view.replacen("class View {", "export class View {", 1);
+    let modules = compile_package(&[("view.ts", &exported), ("user.ts", user)]);
+    let user_py = &modules.iter().find(|m| m.py_module == "user").unwrap().code;
+    assert!(
+        user_py.contains("_js_dispatch(m, \"get\", _js_m_get, k)"),
+        "{user_py}"
+    );
+}
+
+/// J89-5a: the adapters queries.ts imports (`parseJson`, `dumpJson`, `encodeBasestringAscii`,
+/// `pyDecodeUtf8`; `createHash('sha1')` over a Buffer; `fs.writeFileSync(path, string, 'utf8')`),
+/// held to what Node v26.13.0 printed through runtime-ts's own `pyjson.ts` / `pyfs.ts` / `node:fs`
+/// for the same inputs (a repeated key, a code-point key order, an int past 2^64, `-0`, `1e400`,
+/// NaN, a lone surrogate, a BOM, malformed texts, a lone surrogate written to a file). A seeded
+/// fuzz of 20,000 texts against Node agreed (RULES.md, J89-5a).
+#[test]
+fn j89_5a_queries_adapters_answer_like_node() {
+    let dir = scratch("j89-5a-adapters");
+    package(&dir, &[]);
+    let written = dir.join("w.txt");
+    let got = run_python(
+        r#"import sys
+sys.path.insert(0, sys.argv[1])
+from pkg import _ts2py_runtime as rt, _ts2py_adapters as A
+texts = ['{"a":1,"b":2,"a":3}', '{"\\u00e9":1,"z":2,"\\ud83d\\ude00":3,"\\uffff":4}', '{"b":1,"a":[1.0,true,null,"\\u00e9\\ud83d\\ude00\\udc80",-0,1e400,12345678901234567890],"a":{"z":2.5,"y":[]}}', '[NaN,-Infinity,"\\u007f\\u0000"]', '{"v": 1, "facts": {}}  ', '﻿{}', '{"a":1,}', '[1,2']
+opts = [{"sortKeys": True, "ensureAscii": False, "separators": [",", ":"]}, rt._JS_UNDEFINED, {"sortKeys": True, "ensureAscii": True, "separators": [",", ":"]}, {"indent": 2}]
+out = []
+for t in texts:
+    try:
+        v = A.parse_json(t)
+        out.append([A.dump_json(v, o) for o in opts])
+    except rt._JsError as e:
+        out.append(["error", e.message])
+out.append([A.encode_basestring_ascii(s) for s in ['x', '"q\\', 'é\U0001f600', '\ud800', '\x7f\x1f']])
+for b in [bytes([0x61, 0xff]), bytes([0xef, 0xbb, 0xbf, 0x61]), bytes([0xed, 0xa0, 0x80])]:
+    try:
+        out.append(A.py_decode_utf8(b))
+    except rt._JsError as e:
+        out.append(["error", e.message])
+out.append(A.create_hash("sha1").update(bytes([0, 1, 2, 255])).digest("hex"))
+A.write_file_sync(sys.argv[2], "a\ud800b\U0001f600\udc80", "utf8")
+out.append(open(sys.argv[2], "rb").read().hex())
+t = rt._js_json_stringify(out)
+print("".join(c if ord(c) < 0x7F else "\\u%04x" % ord(c) for c in rt._js_code_units(t)))
+refused = []
+for call in (lambda: A.write_file_sync(sys.argv[2], "x", {"encoding": "utf8"}), lambda: A.write_file_sync(sys.argv[2], b"x", "utf8"), lambda: A.create_hash("md5"), lambda: A.dump_json({"t": "null"}, {"allowNan": False}), lambda: A.parse_json(b"{}"), lambda: A.py_decode_utf8("x")):
+    try:
+        call()
+        refused.append("answered")
+    except TypeError as e:
+        refused.append(str(e).startswith("ts2py: ") and "outside the subset" in str(e))
+print(refused)
+"#,
+        &[&dir, &written],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let mut lines = got.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        r###"[["{\"a\":3,\"b\":2}","{\"a\": 3, \"b\": 2}","{\"a\":3,\"b\":2}","{\n  \"a\": 3,\n  \"b\": 2\n}"],["{\"z\":2,\"\u00e9\":1,\"\uffff\":4,\"\ud83d\ude00\":3}","{\"\\u00e9\": 1, \"z\": 2, \"\\ud83d\\ude00\": 3, \"\\uffff\": 4}","{\"z\":2,\"\\u00e9\":1,\"\\uffff\":4,\"\\ud83d\\ude00\":3}","{\n  \"\\u00e9\": 1,\n  \"z\": 2,\n  \"\\ud83d\\ude00\": 3,\n  \"\\uffff\": 4\n}"],["{\"a\":{\"y\":[],\"z\":2.5},\"b\":1}","{\"b\": 1, \"a\": {\"z\": 2.5, \"y\": []}}","{\"a\":{\"y\":[],\"z\":2.5},\"b\":1}","{\n  \"b\": 1,\n  \"a\": {\n    \"z\": 2.5,\n    \"y\": []\n  }\n}"],["[NaN,-Infinity,\"\u007f\\u0000\"]","[NaN, -Infinity, \"\\u007f\\u0000\"]","[NaN,-Infinity,\"\\u007f\\u0000\"]","[\n  NaN,\n  -Infinity,\n  \"\\u007f\\u0000\"\n]"],["{\"facts\":{},\"v\":1}","{\"v\": 1, \"facts\": {}}","{\"facts\":{},\"v\":1}","{\n  \"v\": 1,\n  \"facts\": {}\n}"],["error","Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)"],["error","Expecting property name enclosed in double quotes: line 1 column 8 (char 7)"],["error","Expecting ',' delimiter: line 1 column 5 (char 4)"],["\"x\"","\"\\\"q\\\\\"","\"\\u00e9\\ud83d\\ude00\"","\"\\ud800\"","\"\\u007f\\u001f\""],["error","'utf-8' codec can't decode byte 0xff in position 1: invalid start byte"],"\ufeffa",["error","'utf-8' codec can't decode byte 0xed in position 0: invalid continuation byte"],"c62c27924f4c967f5eddb1850c091d54c7a2ab58","61efbfbd62f09f9880efbfbd"]"###
+    );
+    assert_eq!(
+        lines.next().unwrap(),
+        "[True, True, True, True, True, True]"
+    );
+}

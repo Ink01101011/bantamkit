@@ -477,21 +477,21 @@ pub const ADAPTERS: &[Adapter] = &[
         name: "createHash",
         py_name: "create_hash",
         kind: AdapterKind::Function,
-        why: "Node builtin, `'sha256'` only: a `Hash` (below) over `hashlib.sha256`.",
+        why: "Node builtin, `'sha256'` or (J89-5a) `'sha1'`: a `Hash` (below) over `hashlib.sha256` / `hashlib.sha1`.",
     },
     Adapter {
         module: Some("node:crypto"),
         name: "Hash",
         py_name: "Hash",
         kind: AdapterKind::Class(&["update", "digest"]),
-        why: "Node builtin: `hash.update(string, 'utf8')` hashes the string's UTF-8, a lone surrogate as U+FFFD (EF BF BD), as Node's encoder writes it; under the G2 path policy (its only caller hashes a path, `storeId`) a POSIX surrogateescape code point U+DC80..U+DCFF is the real byte it stands for (the ruled target-specific difference, docs/porting.md). `digest('hex')` is `hexdigest()`; a finished hash is refused, as Node throws ERR_CRYPTO_HASH_FINALIZED.",
+        why: "Node builtin: `hash.update(string, 'utf8')` hashes the string's UTF-8, a lone surrogate as U+FFFD (EF BF BD), as Node's encoder writes it; under the G2 path policy (its only caller hashes a path, `storeId`) a POSIX surrogateescape code point U+DC80..U+DCFF is the real byte it stands for (the ruled target-specific difference, docs/porting.md). `digest('hex')` is `hexdigest()`; a finished hash is refused, as Node throws ERR_CRYPTO_HASH_FINALIZED. J89-5a: `hash.update(buffer)` (no encoding) hashes the Buffer's bytes as they are, as Node does (queries.ts hashes a sidecar's and a fact file's bytes).",
     },
     Adapter {
         module: Some("runtime-ts/src/memory/queries.ts"),
         name: "CountsView",
         py_name: "CountsView",
         kind: AdapterKind::Class(&["scan"]),
-        why: "Declared for its `scan` method only (#316 G3 U3 generates queries.ts later): retrieval's `bm25Rows` calls `row.scan(...)` on a row that has one (`'scan' in row`). No Python code builds one: `queries.layer_terms` answers dicts, which the retrieval shim hands over as Maps, and `'scan' in` a Map is false.",
+        why: "Declared for its `scan` method only: retrieval's `bm25Rows` calls `row.scan(...)` on a row that has one (`'scan' in row`). J89-5a: queries.ts is compiled and the class with it (`_generated/queries.py`'s `_CountsView`); it is not exported, so its method names stay in its module (`scan_module`), and this row is what still names `scan` for retrieval, whose call dispatches to the compiled class (`_js_invoke`). The adapter class itself is never built: the queries shim answers dicts, which the retrieval shim hands over as Maps, and `'scan' in` a Map is false.",
     },
     // J89-4a (#316 G3 U2: memory/store). Every import of store.ts that is not compiled.
     Adapter {
@@ -770,6 +770,49 @@ pub const ADAPTERS: &[Adapter] = &[
         py_name: "buffer_byte_length",
         kind: AdapterKind::Function,
         why: "Node global, `(string, 'utf8')` only: the length of the string's UTF-8, a lone surrogate counted as U+FFFD's three bytes, as `Buffer.from` writes it (tests/g3.rs).",
+    },
+    // J89-5a (#316 G3 U3: memory/queries). Every import of queries.ts that is not compiled.
+    Adapter {
+        module: Some("runtime-ts/src/pyjson.ts"),
+        name: "parseJson",
+        py_name: "parse_json",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `parseJson` is `json.loads` (its doc comment; pyjson.ts is the port of CPython's json module). The adapter is `json.loads`, its value answered as the tagged `PyValue` the TypeScript returns (`{t, v}`: an int as a BigInt, a dict as a Map in the dict's order, a repeated key at its first position with its last value, as both keep it), and a refusal is `PyJSONDecodeError` with CPython's message so a compiled `catch` sees it. The hand-written queries module read every sidecar with exactly this `json.loads` (`--suite recall-queries` reads malformed, BOM-led and non-int-`v` sidecars on both sides).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pyjson.ts"),
+        name: "dumpJson",
+        py_name: "dump_json",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `dumpJson` is `json.dumps` with the four options it ports (`indent`, `sort_keys`, `ensure_ascii`, `separators`), `allow_nan` and float `repr` as CPython's. The adapter is `json.dumps` of the `PyValue` untagged; the hand-written queries module wrote the sidecar with exactly `json.dumps(ensure_ascii=False, sort_keys=True, separators=(',', ':'))` (`hotindex.dumps`), which `--suite recall-queries` compares byte for byte.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/pyjson.ts"),
+        name: "encodeBasestringAscii",
+        py_name: "encode_basestring_ascii",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `encodeBasestringAscii` is CPython's `py_encode_basestring_ascii` (its doc comment); the adapter is `json.encoder.encode_basestring_ascii`, the same function (a lone surrogate and each half of an astral character as a lowercase `\\uXXXX`). The term cache's bytes are compared by `--suite recall-queries`.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/storage/hotindex.ts"),
+        name: "sha16",
+        py_name: "sha16",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `sha16` is the port of `bantamkit.storage.hotindex.sha16` (#204), the function the hand-written queries module keyed the sidecar and the term cache with; the adapter is that function.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyDecodeUtf8",
+        py_name: "py_decode_utf8",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyDecodeUtf8` is CPython's strict `bytes.decode('utf-8')`, a leading BOM kept as U+FEFF (its doc comment, measured over 64,028,929 byte sequences). The adapter is that decode; a refusal is the `PyUnicodeDecodeError` (above) with CPython's message, so a compiled `catch` sees it.",
+    },
+    Adapter {
+        module: Some("node:fs"),
+        name: "writeFileSync",
+        py_name: "write_file_sync",
+        kind: AdapterKind::Function,
+        why: "Node builtin, `(path, string, 'utf8')` only: opened `w` (O_TRUNC | O_CREAT | O_WRONLY, mode 0o666 under the umask, binary on Windows) and every byte of the string's UTF-8 written (Node loops until it is; a lone surrogate is U+FFFD's three bytes, as Node's encoder writes it), the path under the G2 path policy. The flags and mode are what `Path.write_text` opens with, which the hand-written queries module used for the sidecar and the term cache (tests/g3_store.rs `j89_5a_*`).",
     },
 ];
 

@@ -459,7 +459,7 @@ order). Any other comparator is the general `.sort`.
 | `constructor(p) { ... }` | `def __init__(self, p, *_):` (fields first, then the body) | extra `new` arguments ignored |
 | method `m(p) { ... }` | `def m(self, p):` | a body that can run off its end returns `undefined` |
 | getter `get g() { ... }` | `@property def g(self):` | |
-| `class E extends Error {}` (J87-3: or `extends` an adapter Error class such as `BantamError`, or a class declared above that extends one) | `class E(_JsError):` (`class E(BantamError):`) | `e.message` is the argument (as `String()`), `e.name` is `"Error"` (inherited, as JS gives every subclass that does not set its own), `String(e)` is `name: message`; `e.name = "X"` makes an own `name`; a `_JsError` is a Python exception, `_JsTypeError` also a Python `TypeError` |
+| `class E extends Error {}` (J87-3: or `extends` an adapter Error class such as `BantamError`, or a class declared above that extends one) | `class E(_JsError):` (`class E(BantamError):`) | `e.message` is the argument (as `String()`), `e.name` is `"Error"` (inherited, as JS gives every subclass that does not set its own), `String(e)` is `name: message`; `e.name = "X"` makes an own `name`, and so does a class field `override name = 'X'` (J89-5a: set after the base constructor, as JS defines a field once `super` returns); a `_JsError` is a Python exception, `_JsTypeError` also a Python `TypeError` |
 | `Object.freeze(this)` | `_js_freeze(self)` | a later write raises JS's TypeError (`Cannot assign to read only property 'v' of object '#<C>'`) |
 
 Refused in a class: `static` members, computed or `#private` keys, setters, accessor properties,
@@ -599,6 +599,16 @@ J89-5: the annotating type may also be IMPORTED from a compiled module of the sa
 type Pool } from './store.js'`, `import type { ... }`): it declares there what it declares in the
 module that declares it. An annotated ARROW parameter (`(o: Omission) => o.count`) declares its
 fields as a function parameter does (`tests/g3_store.rs`, `j89_5_*`, pinned to Node).
+J89-5a: a method name that only a class NO EXPORT NAMES declares (queries.ts's `CountsView`) is a
+method name in its own module only, as an `ImportedClass` adapter's is in a module that imports
+it: there its calls dispatch (`_js_dispatch`) and a read of it as a value is refused; in the other
+modules of the call a builtin call of that name is the builtin's helper (`m.get(k)` is
+`_js_m_get`), which refuses an instance of the class at run time (`ts2py: .get() on _CountsView is
+outside the subset`), and a property read of it is `_js_get`, which `_js_object_get` refuses on an
+instance. Such a class reaches another module only as a value a function returned, so the other
+modules never answer differently from Node: they answer as Node does or refuse. An exported
+class's method names still reach every module (`tests/g3_store.rs`,
+`j89_5a_a_private_class_keeps_its_method_names_in_its_module`, pinned to Node).
 
 Some operations are checked at run time instead, because only the value can tell: each raises
 a `TypeError` naming the subset rather than answering differently from JS. `.toLowerCase()` /

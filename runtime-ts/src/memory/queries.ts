@@ -23,7 +23,7 @@ import { dumpJson, encodeBasestringAscii, parseJson, type PyValue } from '../pyj
 import { cmpCodepoint } from '../pysem.js';
 import { INDEX_DIR_ENV, sha16 } from '../storage/hotindex.js';
 import { exclusive } from '../storage/lock.js';
-import { pyDecodeUtf8 } from './pyfs.js';
+import { asPyOSError, pyDecodeUtf8, PyOSError, pyOSErrorText } from './pyfs.js';
 import { stripNospace, tokenizeV2 } from './retrieval.js';
 import { loneSurrogate, MemoryValidationError } from './store.js';
 
@@ -35,13 +35,24 @@ export const BODY_EXCERPT = 600;
 export const QUERIES_DIR = 'queries';
 export const WRITE_FAILED = 'the sidecar could not be saved';
 
-/** Any failure to write a sidecar: the reference's `OSError` / `UnicodeError` there. */
+/**
+ * Any failure to write a sidecar: the reference's `OSError` / `UnicodeError` there. `name` is a
+ * class field: an own, writable, enumerable property set once `super` returns, the property
+ * `this.name = ...` in a constructor sets (J89-5a: a field is what ts2py compiles).
+ */
 export class SidecarWriteError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SidecarWriteError';
-  }
+  override name = 'SidecarWriteError';
 }
+
+/** The message of a failure to write: CPython's `str(e)` of the `OSError` the reference raised. */
+function writeFailed(e: unknown, p: string): SidecarWriteError {
+  return new SidecarWriteError(pyOSErrorText(e instanceof PyOSError ? e : asPyOSError(e, p)));
+}
+
+/** A value `JSON.parse` answers: data, never a function. */
+type JsonValue = string | number | boolean | null | readonly unknown[] | Record<string, unknown>;
+/** The top of a JSON document read as an object: `facts` a data field, never a method. */
+type JsonTop = { readonly facts?: JsonValue };
 
 export function sidecarPath(home: string, root: string): string {
   return path.join(home, '.bantamkit', QUERIES_DIR, `${sha16(root)}.json`);
@@ -142,7 +153,10 @@ export type Row = readonly [ReadonlyMap<string, number>, number];
  * of a term wins, as in the reference.
  */
 class CountsView implements Pick<ReadonlyMap<string, number>, 'has' | 'get' | 'keys'> {
-  constructor(private readonly flat: readonly unknown[]) {}
+  private readonly flat: readonly unknown[];
+  constructor(flat: readonly unknown[]) {
+    this.flat = flat;
+  }
   private at(t: string): number {
     for (let i = 0; i < this.flat.length; i += 2) if (this.flat[i] === t) return i;
     return -1;
@@ -196,7 +210,8 @@ function cached(p: string, sha: string): Map<string, Row> | null {
     return null;
   }
   if (!isObject(doc) || !isCount(doc['v']) || doc['v'] !== TERMS_VERSION) return null;
-  const facts = doc['facts'];
+  const top: JsonTop = doc as JsonTop;
+  const facts = top['facts'];
   if (doc['sidecar'] !== sha || !isObject(facts)) return null;
   const out = new Map<string, Row>();
   for (const name of Object.keys(facts)) {
@@ -247,7 +262,8 @@ function sidecarEntries(raw: Uint8Array): Map<string, string[]> {
     }
     if (isObject(doc) && doc['v'] === 1) {
       const out = new Map<string, string[]>();
-      const facts = doc['facts'];
+      const top: JsonTop = doc as JsonTop;
+      const facts = top['facts'];
       if (!isObject(facts)) return out;
       for (const name of Object.keys(facts)) {
         const entry = facts[name];
@@ -283,6 +299,13 @@ export function dumpTerms(facts: ReadonlyMap<string, readonly [number, ReadonlyM
   return `{"facts":{${parts.join(',')}},"sidecar":${jsonAscii(sha)},"v":${TERMS_VERSION}}`;
 }
 
+/** A row's terms in code-point order, each followed by its count, as the cache lists them. */
+function flatTerms(counts: ReadonlyMap<string, number>): PyValue[] {
+  const out: PyValue[] = [];
+  for (const t of [...counts.keys()].sort(byCodepoint)) out.push({ t: 'str', v: t }, pyInt(counts.get(t)!));
+  return out;
+}
+
 /** The same document through `dumpJson`: the oracle `dumpTerms` is tested against. */
 export function dumpTermsSlow(facts: ReadonlyMap<string, readonly [number, ReadonlyMap<string, number>]>, sha: string): string {
   const doc: PyValue = {
@@ -293,11 +316,11 @@ export function dumpTermsSlow(facts: ReadonlyMap<string, readonly [number, Reado
         {
           t: 'dict',
           v: new Map(
-            [...facts].map(([n, [dl, c]]): [string, PyValue] => [
+            [...facts].map(([n, row]): [string, PyValue] => [
               n,
               {
                 t: 'list',
-                v: [pyInt(dl), { t: 'list', v: [...c.keys()].sort(byCodepoint).flatMap((t): PyValue[] => [{ t: 'str', v: t }, pyInt(c.get(t)!)]) }],
+                v: [pyInt(row[0]), { t: 'list', v: flatTerms(row[1]) }],
               },
             ]),
           ),
@@ -348,7 +371,7 @@ export function layerTerms(home: string, root: string): Map<string, Row> {
     }
   }
   const out = new Map<string, Row>();
-  for (const [n, [dl, c]] of facts) out.set(n, [c, dl]);
+  for (const [n, row] of facts) out.set(n, [row[1], row[0]]);
   return out;
 }
 
@@ -396,18 +419,22 @@ export function writeEntries(p: string, entries: ReadonlyMap<string, readonly [r
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
   } catch (e) {
-    throw new SidecarWriteError(String((e as Error).message));
+    throw writeFailed(e, path.dirname(p));
   }
   exclusive(p, () => {
     const doc: Dict = docOf(p) ?? new Map<string, PyValue>([
       ['v', { t: 'int', v: BigInt(SIDECAR_VERSION) }],
       ['facts', { t: 'dict', v: new Map() }],
     ]);
-    const facts = (doc.get('facts') as { t: 'dict'; v: Dict }).v;
+    // A new Map, not `delete` in place: the sidecar is written with sorted keys, so the order the
+    // names are held in never reaches its bytes.
+    const facts: Dict = new Map();
+    for (const [name, held] of (doc.get('facts') as { t: 'dict'; v: Dict }).v) {
+      if (!entries.has(name)) facts.set(name, held);
+    }
+    doc.set('facts', { t: 'dict', v: facts });
     for (const [name, entry] of entries) {
-      if (entry === null) {
-        facts.delete(name);
-      } else {
+      if (entry !== null) {
         facts.set(name, {
           t: 'dict',
           v: new Map<string, PyValue>([
@@ -432,7 +459,7 @@ export function writeEntries(p: string, entries: ReadonlyMap<string, readonly [r
         /* nothing more to remove */
       }
       if (e instanceof SidecarWriteError) throw e;
-      throw new SidecarWriteError(String((e as Error).message));
+      throw writeFailed(e, tmp);
     }
   });
 }

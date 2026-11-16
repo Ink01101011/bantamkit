@@ -667,6 +667,40 @@ export async function run(ctx) {
     cases.push(...literalCases(pw, nw, 'sidecar/bom: LITERAL the write answer', BOM_WRITE));
   }
 
+  // ============================================================ sidecar/deep (J89-5a)
+  // A project sidecar holding one entry nested 20,000 lists deep, its text still ending
+  // `,"v":1}`. A recall reads it through `layerTerms`, whose fast path is `JSON.parse` (V8 reads
+  // any depth) and since J89-5a the generated Python's `_js_json_parse` (J88-2: no recursion
+  // limit). The hand-written Python read it through `json.loads` and raised RecursionError out of
+  // the recall. The deep entry is not a list of strings, so it holds no queries: each side ranks as
+  // the same bed without it. Red (the reference raises) against the Python of 2737c34e.
+  {
+    const SIDES = ['py', 'node'];
+    const DEPTH = 20000;
+    const deep = mixedBed(join(root, 'deep'));
+    const ref = mixedBed(join(root, 'deep-ref'));
+    for (const side of SIDES) {
+      const p = sidecarOf(deep.homes[side], deep.project);
+      const facts = JSON.stringify(JSON.parse(readFileSync(p, 'utf8')).facts);
+      if (!facts.startsWith('{"') || facts.length < 3) throw new Error('recall-queries: the deep sidecar bed holds no project entries');
+      // The shape `writeEntries` writes (`facts` first, `"v":1` last), so `layerTerms` takes its
+      // `JSON.parse` path on both sides.
+      writeFileSync(p, `{"facts":{"zz-deep":{"queries":${'['.repeat(DEPTH)}${']'.repeat(DEPTH)}},${facts.slice(1)},"v":1}`);
+    }
+    const { p: dp, n: dn } = rankBoth(deep);
+    const { p: rp, n: rn } = rankBoth(ref);
+    const view = (r) => ({ inject: names(r.inject), rank: names(r.rank), reply: unb64(r.reply), status: r.status });
+    PROMPTS.forEach((pp, i) => {
+      cases.push({ name: `sidecar/deep: rank ${JSON.stringify(pp.prompt)} through a sidecar nested ${DEPTH} deep — python against node`, kind: 'json', expected: view(dp.results[i]), actual: view(dn.results[i]) });
+      cases.push({
+        name: `sidecar/deep: rank ${JSON.stringify(pp.prompt)} — equals the bed without the deep entry, per side`,
+        kind: 'json',
+        expected: { py: view(rp.results[i]), node: view(rn.results[i]) },
+        actual: { py: view(dp.results[i]), node: view(dn.results[i]) },
+      });
+    });
+  }
+
   // ======================================================================= head (8-11)
   {
     const dir = join(root, 'head');

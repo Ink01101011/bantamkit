@@ -8,6 +8,8 @@ pub mod lower;
 pub mod pyfmt;
 pub mod types;
 
+use std::collections::{HashMap, HashSet};
+
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::{SourceType, Span};
@@ -98,6 +100,8 @@ pub fn compile_modules(
     ctx.class_methods
         .extend(adapters::class_methods().map(str::to_string));
     let mut stems = Vec::new();
+    // J89-5a: each module's own non-exported classes' method names (`scan_module`).
+    let mut private_methods: HashMap<String, HashSet<String>> = HashMap::new();
     for ((display_path, _), program) in sources.iter().zip(&programs) {
         let stem = py_module_name(display_path);
         if !is_identifier(&stem) || stems.contains(&stem) {
@@ -106,8 +110,9 @@ pub fn compile_modules(
             ));
         }
         stems.push(stem.clone());
-        let (names, methods) = lower::scan_module(program);
+        let (names, methods, private) = lower::scan_module(program);
         ctx.class_methods.extend(methods);
+        private_methods.insert(display_path.to_string(), private);
         ctx.modules.insert(
             display_path.to_string(),
             lower::ModuleExports {
@@ -124,10 +129,13 @@ pub fn compile_modules(
 
     let mut out = Vec::new();
     for (((display_path, source), program), stem) in sources.iter().zip(&programs).zip(stems) {
-        let module_ctx = lower::ModuleCtx {
+        let mut module_ctx = lower::ModuleCtx {
             path: display_path.to_string(),
             ..ctx.clone()
         };
+        if let Some(private) = private_methods.get(*display_path) {
+            module_ctx.class_methods.extend(private.iter().cloned());
+        }
         // J87: rounds of the type-fact fixpoint (`types.rs`): each lowers the whole module under
         // the facts the last one left standing, until a round observes exactly what it assumed.
         // Every fact only shrinks and every wrapper or escape only grows, so this ends.

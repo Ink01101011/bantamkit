@@ -53,6 +53,8 @@ __all__ = [
     "buffer_concat",
     "buffer_from",
     "close_sync",
+    "dump_json",
+    "encode_basestring_ascii",
     "cmp_codepoint",
     "create_hash",
     "ensure_bantamkit_gitignore",
@@ -72,6 +74,7 @@ __all__ = [
     "open_sync",
     "os_error_class_name",
     "parse_frontmatter",
+    "parse_json",
     "parse_native",
     "path_basename",
     "path_dirname",
@@ -79,6 +82,7 @@ __all__ = [
     "process_env",
     "process_env_all",
     "process_pid",
+    "py_decode_utf8",
     "py_exists",
     "py_float_repr",
     "py_is_dir",
@@ -119,9 +123,11 @@ __all__ = [
     "readdir_sync",
     "rename_sync",
     "rm_sync",
+    "sha16",
     "sorted_path_names",
     "stat_sync",
     "today_local",
+    "write_file_sync",
     "write_sync",
 ]
 
@@ -1106,17 +1112,23 @@ def py_realpath(path, *_):
     return _os.path.realpath(_os_text(path))
 
 
+_HASHES = {"sha256": _hashlib.sha256, "sha1": _hashlib.sha1}
+
+
 class Hash(_JsObject):
-    """`crypto.createHash('sha256')`: `update(string, 'utf8')`, then `digest('hex')` once."""
+    """`crypto.createHash('sha256' | 'sha1')`: `update(string, 'utf8')` or `update(buffer)`, then
+    `digest('hex')` once."""
 
     _js_name = "Hash"
     _js_own = frozenset({"update", "digest"})
     _js_own_methods = frozenset({"update", "digest"})
 
     def __init__(self, algorithm, *_):
-        if algorithm != "sha256":
-            raise TypeError("ts2py: createHash of anything but 'sha256' is outside the subset")
-        object.__setattr__(self, "_js_hash", _hashlib.sha256())
+        if algorithm not in _HASHES:
+            raise TypeError(
+                "ts2py: createHash of anything but 'sha256' or 'sha1' is outside the subset"
+            )
+        object.__setattr__(self, "_js_hash", _HASHES[algorithm]())
 
     def _live(self):
         if self._js_hash is None:
@@ -1124,9 +1136,14 @@ class Hash(_JsObject):
         return self._js_hash
 
     def update(self, data, encoding=_JS_UNDEFINED, *_):
+        if isinstance(data, (bytes, bytearray, memoryview)) and encoding is _JS_UNDEFINED:
+            # J89-5a: a Buffer is hashed as its bytes (queries.ts: a sidecar, a fact file).
+            self._live().update(data)
+            return self
         if not isinstance(data, str) or encoding not in ("utf8", "utf-8"):
             raise TypeError(
-                "ts2py: hash.update of anything but a 'utf8' string is outside the subset"
+                "ts2py: hash.update of anything but a 'utf8' string or a Buffer is outside the"
+                " subset"
             )
         # Node's UTF-8, a lone surrogate as U+FFFD, under the G2 path policy (`_os_char`): a POSIX
         # surrogateescape code point is the real byte it stands for.
@@ -1142,7 +1159,7 @@ class Hash(_JsObject):
 
 
 def create_hash(algorithm, *_):
-    """`crypto.createHash(algorithm)`: a `Hash`, `'sha256'` only."""
+    """`crypto.createHash(algorithm)`: a `Hash`, `'sha256'` or `'sha1'`."""
     return Hash(algorithm)
 
 
@@ -1207,9 +1224,9 @@ def __getattr__(name):
 
 
 class CountsView(_JsObject):
-    """queries.ts's cached row view, declared for its `scan` method only (#316 G3 U3 generates
-    queries.ts later). No Python code builds one: `queries.layer_terms` answers dicts, which the
-    retrieval shim hands over as Maps."""
+    """queries.ts's cached row view, declared for its `scan` method only (retrieval's `bm25Rows`).
+    J89-5a compiles the class itself (`_generated/queries.py`); this stub is never built: the
+    queries shim answers dicts, which the retrieval shim hands over as Maps."""
 
     _js_name = "CountsView"
     _js_own = frozenset({"scan"})
@@ -1760,3 +1777,192 @@ def sorted_path_names(names, *_):
     """`sortedPathNames` (pyfs.ts): `sorted(directory / name for name in names)` reduced to the
     names: stable, by `os.path.normcase` of each, by code point."""
     return sorted(names, key=_os.path.normcase)
+
+
+# ---------------------------------------------------------------- J89-5a (#316 G3 U3): queries
+
+
+def sha16(path, *_):
+    """`sha16` (runtime-ts/src/storage/hotindex.ts): `bantamkit.storage.hotindex.sha16`, which it
+    ports: the first 16 hex characters of sha256 over the realpath's UTF-8."""
+    from ..storage.hotindex import sha16 as reference
+
+    return reference(path)
+
+
+class PyJSONDecodeError(_JsError):
+    """`PyJSONDecodeError` (runtime-ts/src/pyjson.ts): CPython's `json.JSONDecodeError` as a JS
+    Error, its message `str()` of the one CPython raised."""
+
+    _js_name = "PyJSONDecodeError"
+    name = "PyJSONDecodeError"
+
+
+class _TaggedDict:
+    # The marker that closes a dict in `_tagged`: its values are converted (they were pushed after
+    # it), so the Map is built from them.
+    pass
+
+
+def _tagged_close(into, at):
+    keys, values = into[at]
+    held = _JsMap()
+    held._entries = {k: (k, v) for k, v in zip(keys, values, strict=True)}
+    into[at] = {"t": "dict", "v": held}
+
+
+def _tagged(value):
+    # A `json.loads` value as the TypeScript's `PyValue`: `{t, v}`, ints as BigInts (the int/float
+    # kind is what the tag keeps), dicts as Maps in the dict's order. Iterative, so a document
+    # `json.loads` read is converted at any depth it reached.
+    out = [None]
+    work = [(value, out, 0)]
+    while work:
+        item, into, at = work.pop()
+        if item is _TaggedDict:
+            _tagged_close(into, at)
+            continue
+        if item is None:
+            into[at] = {"t": "null"}
+        elif item is True or item is False:
+            into[at] = {"t": "bool", "v": item}
+        elif type(item) is int:
+            into[at] = {"t": "int", "v": _JsBigInt(item)}
+        elif type(item) is float:
+            into[at] = {"t": "float", "v": item}
+        elif type(item) is str:
+            into[at] = {"t": "str", "v": item}
+        elif type(item) is list:
+            items = [None] * len(item)
+            into[at] = {"t": "list", "v": items}
+            work.extend((x, items, i) for i, x in enumerate(item))
+        else:
+            keys = list(item)
+            values = [None] * len(keys)
+            into[at] = (keys, values)
+            work.append((_TaggedDict, into, at))
+            work.extend((item[k], values, i) for i, k in enumerate(keys))
+    return out[0]
+
+
+def parse_json(text, *_):
+    """`parseJson` (runtime-ts/src/pyjson.ts): `json.loads(text)`, which it ports, answered as the
+    tagged `PyValue` the TypeScript returns; a malformed text is `PyJSONDecodeError` with CPython's
+    message, so a compiled `catch` sees it."""
+    if not isinstance(text, str):
+        raise TypeError("ts2py: parseJson of anything but a string is outside the subset")
+    try:
+        value = _json.loads(text)
+    except ValueError as error:
+        raise PyJSONDecodeError(str(error)) from None
+    return _tagged(value)
+
+
+def _untagged(value):
+    # A `PyValue` as the Python value `json.dumps` is handed (iterative, as `_tagged`).
+    out = [None]
+    work = [(value, out, 0)]
+    while work:
+        item, into, at = work.pop()
+        if item is _TaggedDict:
+            keys, values = into[at]
+            into[at] = dict(zip(keys, values, strict=True))
+            continue
+        tag = item["t"]
+        if tag == "null":
+            into[at] = None
+        elif tag in ("bool", "float", "str"):
+            into[at] = item["v"]
+        elif tag == "int":
+            into[at] = item["v"].value
+        elif tag == "list":
+            items = [None] * len(item["v"])
+            into[at] = items
+            work.extend((x, items, i) for i, x in enumerate(item["v"]))
+        elif tag == "dict":
+            pairs = list(item["v"])
+            keys = [k for k, _ in pairs]
+            values = [None] * len(pairs)
+            into[at] = (keys, values)
+            work.append((_TaggedDict, into, at))
+            work.extend((v, values, i) for i, (_, v) in enumerate(pairs))
+        else:
+            raise TypeError("ts2py: dumpJson of anything but a PyValue is outside the subset")
+    return out[0]
+
+
+_DUMP_OPTIONS = frozenset({"indent", "sortKeys", "ensureAscii", "separators"})
+
+
+def dump_json(value, options=_JS_UNDEFINED, *_):
+    """`dumpJson` (runtime-ts/src/pyjson.ts): `json.dumps` with the options it ports (`indent`,
+    `sort_keys`, `ensure_ascii`, `separators`; `allow_nan` and float `repr` as CPython's)."""
+    if options is _JS_UNDEFINED:
+        options = {}
+    if not isinstance(options, dict) or not set(options) <= _DUMP_OPTIONS:
+        raise TypeError("ts2py: dumpJson with those options is outside the subset")
+
+    def opt(name, default):
+        got = options.get(name, _JS_UNDEFINED)
+        return default if got is _JS_UNDEFINED or got is None else got
+
+    separators = opt("separators", None)
+    return _json.dumps(
+        _untagged(value),
+        indent=opt("indent", None),
+        sort_keys=opt("sortKeys", False) is True,
+        ensure_ascii=opt("ensureAscii", True) is not False,
+        separators=None if separators is None else (separators[0], separators[1]),
+    )
+
+
+def encode_basestring_ascii(text, *_):
+    """`encodeBasestringAscii` (runtime-ts/src/pyjson.ts): CPython's
+    `json.encoder.encode_basestring_ascii`, which it ports."""
+    if not isinstance(text, str):
+        raise TypeError(
+            "ts2py: encodeBasestringAscii of anything but a string is outside the subset"
+        )
+    return _json.encoder.encode_basestring_ascii(text)
+
+
+def py_decode_utf8(data, *_):
+    """`pyDecodeUtf8` (runtime-ts/src/memory/pyfs.ts): `bytes.decode('utf-8')`, strict, a leading
+    BOM kept, which it ports; a refusal is `PyUnicodeDecodeError` with CPython's message."""
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("ts2py: pyDecodeUtf8 of anything but a Buffer is outside the subset")
+    try:
+        return bytes(data).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise PyUnicodeDecodeError(str(error)) from None
+
+
+def _node_utf8(text):
+    # Node's UTF-8 encoding of a JS string: a surrogate pair is its character, a lone surrogate
+    # the U+FFFD (EF BF BD) the encoder writes for it.
+    try:
+        # Strict UTF-8 refuses exactly the surrogate code points; anything else is Node's bytes.
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    units = text.encode("utf-16-le", "surrogatepass")
+    return units.decode("utf-16-le", "replace").encode("utf-8")
+
+
+def write_file_sync(path, data, options=_JS_UNDEFINED, *rest):
+    """`fs.writeFileSync(path, string, 'utf8')`: opened `w` (O_TRUNC | O_CREAT | O_WRONLY, mode
+    0o666 under the umask, binary), every byte of the string's UTF-8 written (Node loops until it
+    is), closed. A Buffer, another encoding or an options object is outside the subset."""
+    if rest or not isinstance(data, str) or options not in ("utf8", "utf-8"):
+        raise TypeError(
+            "ts2py: fs.writeFileSync of anything but (path, string, 'utf8') is outside the subset"
+        )
+    payload = _node_utf8(data)
+    fd = _os.open(_node_path(path, "fs.writeFileSync"), _OPEN_FLAGS["w"] | _BINARY, 0o666)
+    try:
+        view = memoryview(payload)
+        while len(view):
+            view = view[_os.write(fd, view) :]
+    finally:
+        _os.close(fd)
+    return _JS_UNDEFINED

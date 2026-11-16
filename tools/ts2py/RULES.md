@@ -567,3 +567,47 @@ differences; red under a UTF-16-order mutation of the sort, 8,704 differences):
 | `_js_m_sort` (runtime) | a comparator marked `_js_codepoint_order` (only `cmp_codepoint`'s adapter) over a list of strings sorts with Python's own `str` order, the comparator never called | Python compares `str` by code point, which is `cmpCodepoint`'s order; both sorts are stable and the strings it ties are equal |
 | `py_join` (adapter) | `str(PurePath(*parts))` memoised (8,192 entries) for string parts | `PurePath` reads no filesystem: the same parts give the same string on one OS |
 | `_native_bantam_error` (adapter) | restates into the `BantamError` class already built (`globals()`) | a FIX: a direct `__getattr__` call built a second class, so a module that had imported `BantamError` saw `instanceof BantamError` false for a restated error. Found by the native layer (`candidates` raised on a malformed file); `--suite recall-strings` `native candidates past a malformed file and a duplicate name` is red without it |
+
+## J89-5a rules (#316 G3 U3: `memory/queries.ts` generated)
+
+`queries.ts` joins the G1/G2/G3 call and is shipped as `_generated/queries.py` (the shim is
+`bantamkit.memory.queries`). One compile rule, six adapter rows and a widened one, and TS
+refactors for the rest of J89-5's census; no runtime helper was added.
+
+| Construct | Lowering | Why it is the same | Measurement |
+|---|---|---|---|
+| a method of a class no export names (`CountsView`: `has`, `get`, `keys`, `scan`, `at`) | a method name in its own module only (`scan_module` answers it apart; `lib.rs` adds it to that module's `class_methods`), as J89-4a's `ImportedClass` rows are; an exported class's names still reach every module | the class reaches another module only as a value a function returned; there `m.get(k)` is `_js_m_get`, which refuses an instance at run time (`_js_outside`), and a read of the name is `_js_get` -> `_js_object_get`, which refuses a method read: the other modules answer as Node or refuse, never differently. Without it every `.get` / `.has` / `.keys` of the eleven modules of the call would dispatch at run time (J89-5a measured the diff: eventlog, native, retrieval, store, tokenledger and usage each gained `_js_dispatch`), and the codec call's `factfile.py` loses the `push` dispatches pyyaml.ts's private `Emitter` gave it | `g3_store.rs` `j89_5a_a_private_class_keeps_its_method_names_in_its_module` (Node: `[[1,true],[null,false],[5,true],5,1,[...]]`; Python the same with the cross-module call refused); red when the private names are put back into the call's set |
+
+| TypeScript | Python | Why it is the same function |
+|---|---|---|
+| `parseJson` (`pyjson.ts`) | `parse_json`: `json.loads`, the value tagged as `PyValue` (`{t, v}`, an int a BigInt, a dict a Map in the dict's order), a refusal `PyJSONDecodeError` (a JS Error) with CPython's message | Python is the reference: pyjson.ts is the port of CPython's json module |
+| `dumpJson` (`pyjson.ts`) | `dump_json`: `json.dumps` of the untagged value with `indent`, `sort_keys`, `ensure_ascii`, `separators`; any other option refused | Python is the reference, as above; the hand-written queries module wrote the sidecar with `hotindex.dumps`, which is this call |
+| `encodeBasestringAscii` (`pyjson.ts`) | `json.encoder.encode_basestring_ascii` | Python is the reference: its doc comment names `py_encode_basestring_ascii` |
+| `sha16` (`storage/hotindex.ts`) | `bantamkit.storage.hotindex.sha16` | Python is the reference (#204), the key the hand-written module used |
+| `pyDecodeUtf8` (`memory/pyfs.ts`) | `bytes.decode('utf-8')`, strict, BOM kept; a refusal `PyUnicodeDecodeError` with CPython's message | Python is the reference: its doc comment, measured over 64,028,929 sequences |
+| `fs.writeFileSync(path, string, 'utf8')` | opened `w` (O_TRUNC, O_CREAT, O_WRONLY, mode 0o666, binary), every byte of Node's UTF-8 (a lone surrogate U+FFFD) written, closed; a Buffer, another encoding or an options object refused | Node builtin; the flags and mode `Path.write_text` opened with |
+| `createHash('sha1')`, `hash.update(buffer)` (the `createHash` / `Hash` rows, widened) | `hashlib.sha1`; a Buffer's bytes hashed as they are | Node builtin |
+
+Measured against Node v26.13.0 (runtime-ts's own `dist/pyjson.js`): a seeded fuzz of 20,000 JSON
+texts (repeated keys, code-point key order, ints past 2^64, `-0`, `1e400`, `NaN`, escaped lone
+surrogates, a BOM, 15% mutated so 6,262 of them refuse) through `parseJson` and `dumpJson` under
+four option sets, and 20,000 strings through `encodeBasestringAscii`: 0 differences, the refusal
+messages included. Red under a mutation that reads an integral float as an int (1,180
+differences). The adapters' pinned answers are `g3_store.rs`
+`j89_5a_queries_adapters_answer_like_node`, with each refusal above.
+
+TS refactors (Node's answers unchanged, `npm test` green; each only on a path Node's speed does not
+measure apart from the save it sits in):
+- `SidecarWriteError` names itself with a class field, `override name = 'SidecarWriteError'`, not
+  a constructor: the same own, writable, enumerable `name` (property descriptors compared in Node).
+- `CountsView`'s parameter property is a declared field assigned in the constructor.
+- `doc['facts']` (twice) is read through `const top: JsonTop = doc as JsonTop`, a type whose
+  `facts` is JSON data, so the read is a field read, not `MemoryStore.facts` (J89-4a's clash ruling).
+- `[n, [dl, c]]` (a for-of head and an arrow parameter) is `[n, row]` with `row[0]` / `row[1]`;
+  `dumpTermsSlow`'s `.flatMap` (outside the subset, met once the pattern compiled) is a loop.
+- `writeEntries` builds the merged `facts` Map anew instead of `Map.delete`: the sidecar is written
+  with sorted keys, so the order the names are held in never reaches its bytes.
+- `writeEntries`'s `String((e as Error).message)` is `pyOSErrorText(...)` of the `PyOSError` the
+  failure is (`asPyOSError`), so the message is CPython's `str(e)` on both sides. No caller reads
+  it: Node's component answers `WRITE_FAILED`, and the Python shim restates the error as the
+  `OSError` component.py catches.
