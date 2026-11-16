@@ -606,6 +606,73 @@ print(refused)
     );
 }
 
+/// J89-5e: `parse_json` reads at most 512 deep (arrays and objects alike, the outermost counted),
+/// whatever the CPython version and its recursion limit, and past that is the RangeError the
+/// recursive `parseJson` throws past its stack. A text malformed before the 513th opener keeps
+/// `json.loads`'s own refusal; brackets inside strings do not count. The recursion limit is
+/// lowered under the call to show the answer does not move with it (3.11's C scanner counts
+/// against it; 3.12 and later do not).
+#[test]
+fn j89_5e_parse_json_reads_a_fixed_depth() {
+    let dir = scratch("j89-5e-depth");
+    package(&dir, &[]);
+    let got = run_python(
+        r#"import sys
+sys.path.insert(0, sys.argv[1])
+from pkg import _ts2py_runtime as rt, _ts2py_adapters as A
+def arr(n, inner=""):
+    return "[" * n + inner + "]" * n
+def obj(n):
+    return '{"k":' * (n - 1) + "{}" + "}" * (n - 1)
+texts = [
+    arr(512), arr(513), obj(512), obj(513), arr(100000),
+    '["[[[[", ' + arr(511) + "]", '["[[[[", ' + arr(512) + "]",
+    '["\\"[", ' + arr(511) + "]", '["\\\\", ' + arr(512) + "]",
+    "[1 " + arr(600), "{" + arr(600) + "}", "[1, " + arr(600) + "]",
+    arr(512, "x"), arr(200) + "]",
+]
+out = []
+for limit in (1000, 600):
+    sys.setrecursionlimit(limit)
+    row = []
+    for t in texts:
+        try:
+            v = A.parse_json(t)
+            row.append("read")
+        except rt._JsError as e:
+            row.append(e.name + ": " + e.message)
+    out.append(row)
+sys.setrecursionlimit(1000)
+print(A._PARSE_JSON_DEPTH)
+print(out[0] == out[1])
+for r in out[0]:
+    print(r)
+"#,
+        &[&dir],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let range = "RangeError: Maximum call stack size exceeded";
+    let expected = [
+        "512",
+        "True",
+        "read",
+        range,
+        "read",
+        range,
+        range,
+        "read",
+        range,
+        "read",
+        range,
+        "PyJSONDecodeError: Expecting ',' delimiter: line 1 column 4 (char 3)",
+        "PyJSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+        range,
+        "PyJSONDecodeError: Expecting value: line 1 column 513 (char 512)",
+        "PyJSONDecodeError: Extra data: line 1 column 401 (char 400)",
+    ];
+    assert_eq!(got.lines().collect::<Vec<_>>(), expected);
+}
+
 /// J89-5b (#316 G3 U3, `memory/layers.ts`): the adapters layers.ts imports. `firstTokenTab` and
 /// `parseConfigDocument` (grantconfig.ts) are `yaml.safe_load` by the orchestrator's ruling
 /// (Python keeps PyYAML for the config): the tab positions are held to what Node v26.13.0's

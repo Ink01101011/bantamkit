@@ -1860,18 +1860,70 @@ def _tagged(value):
     return out[0]
 
 
+#: J89-5e: the deepest nesting `parse_json` reads, counted as `JSON.parse` nests (each array or
+#: object one level, the outermost included: `[]` is 1, `[[]]` is 2). CPython's own limit is not
+#: one number: 3.11's C scanner is bounded by `sys.getrecursionlimit()` less the caller's frames
+#: (991 at the top level, 978 on the MCP and hook paths, measured), 3.12 and 3.13 read to ~9,994
+#: and 3.14 has no fixed limit. A fixed depth below all of them keeps Python's answer off the
+#: CPython version and its recursion limit (ruled: docs/porting.md, the J89-5d/J89-5e row).
+_PARSE_JSON_DEPTH = 512
+
+# A JSON string (an unterminated one runs to the end, as `json.loads` would refuse it there) or
+# one bracket: what `_json_too_deep` steps over to count nesting.
+_JSON_NESTING = _re.compile(r'"(?:[^"\\]+|\\.)*"?|[\[\]{}]', _re.DOTALL)
+
+
+def _json_too_deep(text):
+    """True when `json.loads(text)`, reading without a depth limit, would open an array or object
+    `_PARSE_JSON_DEPTH + 1` deep: the text is well-formed up to that opener, which is where a
+    recursive descent with `_PARSE_JSON_DEPTH` levels of stack stops. A text that is malformed
+    before it is not too deep; `json.loads` refuses it with its own message. Never recurses."""
+    if text.count("[") + text.count("{") <= _PARSE_JSON_DEPTH:
+        return False
+    depth = 0
+    for match in _JSON_NESTING.finditer(text):
+        token = match.group()
+        if token[0] == '"':
+            continue
+        if token in "[{":
+            depth += 1
+            if depth > _PARSE_JSON_DEPTH:
+                cut = match.start()
+                break
+        else:
+            depth -= 1
+            if depth < 0:
+                return False
+    else:
+        return False
+    # The opener at `cut` is reached exactly when the text before it is a well-formed prefix that
+    # wants a value there: `json.loads` of that prefix stops at its end with `Expecting value`.
+    try:
+        _json.loads(text[:cut])
+    except _json.JSONDecodeError as error:
+        return error.msg == "Expecting value" and error.pos == cut
+    except RecursionError:
+        # Not reached on a supported CPython (the prefix is at most 512 deep); were it, the whole
+        # text would not read either.
+        return True
+    return False
+
+
 def parse_json(text, *_):
     """`parseJson` (runtime-ts/src/pyjson.ts): `json.loads(text)`, which it ports, answered as the
     tagged `PyValue` the TypeScript returns; a malformed text is `PyJSONDecodeError` with CPython's
     message, so a compiled `catch` sees it.
 
-    A text nested past CPython's limit (`json.loads` raises `RecursionError`) is the RangeError
-    `Maximum call stack size exceeded`, which is what `parseJson`, a recursive descent, throws for
-    it: a compiled `catch` sees it as it sees Node's (J89-5d, ruled: a crash is a bug). Between the
-    two limits (Node's stack, which moves with V8's tiering, and CPython's ~10,000) the two still
-    differ, by ruling: docs/porting.md, the J89-5d row."""
+    A text nested past `_PARSE_JSON_DEPTH` (512) is the RangeError `Maximum call stack size
+    exceeded`, which is what `parseJson`, a recursive descent, throws past its stack: a compiled
+    `catch` sees it as it sees Node's (J89-5d, ruled: a crash is a bug; J89-5e, ruled: the depth is
+    Python's own, so the answer does not move with the CPython version or its recursion limit).
+    Between 512 and Node's stack (1,562 cold) the two differ, by ruling: docs/porting.md, the
+    J89-5d/J89-5e row. `RecursionError` stays mapped the same way, as the backstop."""
     if not isinstance(text, str):
         raise TypeError("ts2py: parseJson of anything but a string is outside the subset")
+    if _json_too_deep(text):
+        raise _JsRangeError("Maximum call stack size exceeded")
     try:
         value = _json.loads(text)
     except RecursionError:

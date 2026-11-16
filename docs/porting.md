@@ -357,7 +357,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone. **#120 adds 8:** an anchor, `!!str`, a flow mapping, an empty flow mapping, a nested flow sequence, a flow-sequence pair, a flow sequence over two lines and an anchored sequence item are READ by PyYAML and REFUSED by the port with a named `FactParseError` — reading them means porting the scanner, anchors and the composer. A refusal names the file and writes nothing, which is the point: the plain-text guess it replaced was stamped back to disk. Ruled in `tools/conformance/suites/codec.mjs` as `ruling: #120 node refuses where python reads: …`, with the refusal-bit companions as per-side literals (`#120 per side: the ruled inputs — python reads every one` / `— node refuses every one, with a named FactParseError`), because the two bits DIFFER and a side-to-side bit could never be green. Teeth: forcing the ruled answers equal reddened all 8 as `STALE RULING`; dropping `&` from the refused set left every ruling green and reddened the node literal (1 failure). **job67 (J67-3), user ruling 2026-10-15 on #120's remainder: these eight are the FINAL answer** — the PyYAML scanner is not ported, and the refusal is by name. What the ruling changed is what a refusal COSTS: a `memory_save` on Node no longer refuses the whole store because one fact file is one of these shapes. Both runtimes' `save` now skip any fact file they cannot read, name it (`SaveResult.skipped`, and a closing paragraph on the reply: `N fact file(s) could not be read and was/were skipped; the duplicate check read every other fact:` + `[project] <the store's sentence>`), and land; the one file a save never skips is the one it would WRITE (`<sentence>; saving '<name>' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`). So over a store holding an anchored fact the save lands on both sides, Python reads the fact and Node names it skipped, and the `index.md` each rebuilds differs by that one line — ruled in `tools/conformance/suites/store.mjs` as `ruling: #120 save past a file only python reads — the answers`, with the refusal bit (`— the save lands on both sides`) and the written fact's bytes compared unruled and each side's skip pinned as a literal. Blank lines, lines of spaces and comment lines inside a block sequence — and `links: ` / `links: # c` before one — were NOT a ruled shape to keep: they are READ now, as PyYAML reads them, compared in `codec.mjs` as read-alike cases and a second 1500-frontmatter seeded corpus where node must neither guess nor refuse. **Since #315 (J86-3) runtime-py's store reads through the code compiled from the port's own `factfile.ts` first** (*Generated modules*), and that code refuses these eight shapes by the same names; `memory/factcodec.py` then reads the file with `yaml.safe_load`, exactly as before, so python still reads every one and this row's answers are unchanged (`ts2py-codec`'s `node-refuses` class: runtime-py reads each, `py=before` holds it equal to the pre-#315 read). |
 | the grants config (`config.yaml`) over a document outside the port reader's language (J89-5b) | **Python reads it with PyYAML; Node with its own reduced reader, and the two may grant and refuse differently.** The orchestrator's ruling on J89-5's stop (option b), after the owner's #315 ruling for fact files: `memory/layers` is generated, and the config read stays on `yaml.safe_load` on the Python side (the `firstTokenTab` / `parseConfigDocument` adapters; Node's reader is `runtime-ts/src/memory/grantconfig.ts`). That reader implements no tag, anchor, alias, merge key, directive, second document, document end, flow mapping, escape, block scalar or flow sequence over lines, and refuses (or reads literally) what it does not implement; matching would mean porting PyYAML's scanner and composer. J89-5 found the first: `extra_stores: &a [g]` is a grant on Python and `extra_stores must be a list of paths` on Node. J89-5b's scan found 41 in the family (28 where Python grants and Node refuses, 13 where both refuse in different sentences). Each: a `RULED: config outside the reader's language — <document>` case in `tools/conformance/suites/recall-strings.mjs`, a non-ruled `J89-5b outcome bit per side: <document>` companion (the grant/refuse bit of each side against a literal, since a ruling only proves the two still differ) and the per-side literals `LITERAL: J89-5b python|node: load_grants over the config family, every answer`. The older `RULED: a config outside the reader's language, and PyYAML's scanner diagnostics` (the wording after the identical prefix) stands. **J89-5d added seven** (the orchestrator: a crash is a bug), documents where CPython raised out of `load_grants` what it never caught: an impossible implicit timestamp as a value, a key or a grant (`2001-02-30`, `25:00:00`), a 5,000-digit int, a decoded NUL in a grant and a flow sequence 1,000 deep. Python now refuses each with `invalid memory config <path>: <reason>`: CPython's own `str(e)` for a scalar PyYAML resolves but cannot construct, `the document is nested too deeply to read` past CPython's limit, and `extra_stores must be a list of paths` for a NUL (it names no path). Where Node grants (four) the outcome differs; where Node also refuses (the timestamp grant, the NUL, the deep sequence) the outcome bit agrees and the sentence differs. All seven carry the family's three pins (48 documents); see *The layers* and *J89-5d* under *Generated modules*. |
-| the queries sidecar nested between Node's stack and CPython's recursion limit (J89-5d) | **Node reads it as malformed; Python reads its well-formed entries.** `readSidecar` / `read_sidecar` (the `memory_queries` coverage, its missing list and write, `bantamkit_status`) read through `parseJson`, the port of `json.loads`, and Node's is a recursive descent whose limit is its stack: measured on macOS arm64, Node v26.13.0, a sidecar whose entry nests past 1,562 lists overflows cold and past 6,902 once V8 has optimised `parseJson` (binary searches over 40 warm-up rounds; it moves with tiering), where CPython 3.12's `json.loads` reads to 9,994. The orchestrator's ruling (J89-5d): Node's limit is an implementation limit, not a contract, so between the two the sides differ by ruling, and Python is not made to mimic a stack-size-dependent threshold. Past CPython's limit a crash is a bug: Python raised `RecursionError` out of the coverage, the write and status, and now answers Node's (the `parse_json` adapter is the RangeError Node throws, which the compiled `catch` sees), so those depths agree. Pinned in `--suite recall-queries`: `ruling: sidecar/nested — read of a sidecar nested 8500 deep (between node's stack and CPython's limit)` (8,500: past Node's optimised limit, inside CPython's, so both answers are deterministic) with a per-side literal each, and the agreeing `sidecar/nested: J89-5d …` cases at 20,000 and 100,000 deep (read, coverage and the missing list against the bed with no project sidecar, a write that replaces it), each with per-side literals. |
+| the queries sidecar nested between Python's fixed limit of 512 and Node's stack (J89-5d, J89-5e) | **Node reads its well-formed entries; Python reads it as malformed.** `readSidecar` / `read_sidecar` (the `memory_queries` coverage, its missing list and write, `bantamkit_status`, recall's term rows) read through `parseJson`, the port of `json.loads`. Node's is a recursive descent whose limit is its stack: measured on macOS arm64, Node v26.13.0, past 1,562 nested lists cold and past 6,902 once V8 has optimised `parseJson` (binary searches over 40 warm-up rounds; it moves with tiering). CPython's `json.loads` has no one limit either (J89-5e, measured in Docker, `python:3.1x-slim`, default recursion limit 1,000): 3.11's C scanner is bounded by `sys.getrecursionlimit()` less the caller's frames (991 at the top level, 978-979 inside `parse_json` on the real MCP path, `memory_queries` / `memory_recall` / `bantamkit_status` in the AnyIO worker thread, 981 on the hook path), 3.12 reads to 9,997 (9,993 on the MCP path), 3.13 to 9,998 (9,994), and 3.14 has no fixed limit (20,000, the probe's ceiling). So J89-5d's answer, ruled at 8,500 on 3.12, was `[]` on 3.11 (the ruling went stale) and the band ran the other way between ~980 and 1,562. The orchestrator's rulings: Node's limit is an implementation limit, not a contract (J89-5d); a crash is a bug (J89-5d); Python's answer must not depend on the CPython version or its recursion limit (J89-5e). So the `parse_json` adapter reads at most **512** deep, a depth of its own below every supported CPython's on every user path, counted as `JSON.parse` nests (each array or object one level, the outermost included), and past it throws the RangeError `Maximum call stack size exceeded` Node throws past its stack, which the compiled `catch` sees (the depth is found by a non-recursive scan, `_json_too_deep`: the 513th opener counts only when the text before it is a well-formed prefix wanting a value there, so a text malformed earlier keeps `json.loads`'s own refusal; `RecursionError` stays mapped the same way as the backstop; the recursion limit is not raised). Between 512 and Node's cold limit the sides differ by ruling: Node reads and Python does not. From Node's stack on, both answer as no sidecar. Pinned in `--suite recall-queries`: `ruling: sidecar/nested — read of a sidecar nested 513 deep (between python's limit of 512 and node's stack)` (lists and objects) with a per-side literal each; the agreeing `sidecar/nested: J89-5e … nested 512 deep in lists|objects (python's limit)` cases, both reading, with per-side literals; and the agreeing `sidecar/nested: J89-5d …` cases at 8,500, 20,000 and 100,000 deep (read; coverage, the missing list and a write over a project sidecar 20,000 deep), each with per-side literals. The suite passes with a 3.11, a 3.12 and a 3.13 reference interpreter (`--python`). |
 | the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. **#315 (J86-3) leaves the mirror on `yaml.safe_load`:** the store now reads generated-first with a PyYAML fallback (*Generated modules*), and over these shapes the fallback answers, so the store and the mirror on the reference both read them as before; the mirror itself was not routed through the generated codec, because generated-first would also move the two classes #315's ruling licenses for the store (`yaml11-breaks`, `pyyaml-refuses`) into the mirror's outcomes, which this row pins. |
 | `MemoryStore.snapshot()` (Python only; J89-4b, #316 G3 U2) | **a Python-only API, kept by the shim, not a difference in any answer.** The pinned read set exists for ONE caller, `component.Memory.batch`, which `agent.py`'s loop (the Python eval agent, an unported module: no Node counterpart) enters around each assistant turn (RB-P1: a speculative save between two reads of one turn). `store.ts` deliberately omits it: the Node MCP server has no turn to pin. Since store.ts is generated it is hand-written in the shim (`bantamkit.memory.store`), built on the generated store: the pin is the generated `facts()` at entry, and while it holds the generated `candidates` answers it and `indexed` answers `null` (so `recall`, `lookup` and `pool` read the pin and `save` stays live), the same three moments `test_memory.py`'s snapshot cases pin. No `ruling:` case: no MCP tool, CLI or hook reaches it, so there is no Node answer to compare. |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
@@ -2160,6 +2160,8 @@ throws. The compiled `catch` sees that error, so the sidecar is malformed on bot
   100,000 deep. They answer as the bed with no project sidecar, and a write replaces the sidecar.
 - Between the two limits, the two sides differ by ruling. Node's limit is 1,562 cold and 6,902
   optimised; CPython's is 9,994. See the divergence row above, pinned at 8,500.
+  **Superseded by J89-5e** (below): CPython's limit is 9,994 only on 3.12 and 3.13, so Python now
+  reads to a fixed 512 and the ruled band is 512 to Node's stack, pinned at 513; 8,500 agrees.
 
 **The scan for the same shape (rule 3)** was a probe of both sides at 3,000, 8,500 and 100,000 deep:
 - **The term cache** (`cached`, `JSON.parse`) agreed on a deep entry, a deep row and a deep extra
@@ -2221,6 +2223,89 @@ with 0 failures. ts2py `cargo test`: 87 passed (`j89_5b_layers_adapters_answer_l
 now holds the held error, the two refusals and the NUL item); clippy (`-D warnings`) and fmt are
 clean. `npm test`: 2,460 passed, 0 failed, 47 skipped. Full pytest: 5,335 passed, 0 failed. ruff is
 clean.
+
+
+### The nested sidecar on every supported CPython (#316 G3, J89-5e)
+
+J89-5d ruled the band between Node's stack and CPython's `json.loads` limit at 8,500, measured on
+3.12. The orchestrator probed 3.11, the supported floor: there `json.loads` of an array 8,500 deep
+raises `RecursionError`, so Python answered `[]` as Node does and the ruled case went stale, and
+between ~980 and Node's cold 1,562 the band ran the other way, unpinned. **Ruled (J89-5e): Python's
+answer must not depend on the CPython version or its recursion limit.**
+
+**Measured** (Docker, `python:3.11-slim`, `python:3.12-slim`, `python:3.13-slim`, `python:3.14-slim`,
+default recursion limit 1,000; a binary search over `json.loads('[' * n + ']' * n)`):
+
+| CPython | top level | 50 / 100 / 200 / 400 frames deeper | inside `parse_json` on the MCP path |
+|---|---|---|---|
+| 3.11.18 | 991 | 941 / 891 / 791 / 591 | 979 (978 one frame deeper) |
+| 3.12.16 | 9,997 | 9,997 | 9,993 |
+| 3.13.18 | 9,998 | 9,998 | 9,994 |
+| 3.14.10 | none (20,000, the probe's ceiling) | | |
+
+The MCP path is the real server under the real SDK (`memory_save`, `memory_queries` coverage and
+write, `memory_recall`, `bantamkit_status`): `parse_json` runs 14-15 frames deep in the AnyIO worker
+thread. The hook path (`--hook` UserPromptSubmit, SessionStart, Stop) is as shallow (981, on a local
+3.11.15).
+
+**The change.** `parse_json` (the `parseJson` adapter) reads at most 512 deep
+(`_PARSE_JSON_DEPTH`), counted as `JSON.parse` nests: each array or object one level, the outermost
+included. Past it, the RangeError `Maximum call stack size exceeded`, which the compiled `catch`
+sees, so the sidecar is malformed. 512 is below every supported CPython's limit, with more than 450
+frames to spare on 3.11, where the real paths use 15. The depth is found by `_json_too_deep`, a non-recursive
+scan of the brackets outside strings; the 513th opener counts only when `json.loads` of the text
+before it stops there with `Expecting value` (a well-formed prefix wanting a value), so a text
+malformed earlier keeps `json.loads`'s own refusal, as a recursive descent would give it. A text
+with no more than 512 brackets is not scanned. `RecursionError` stays mapped to the same RangeError
+as the backstop, and the recursion limit is not touched.
+- Checked against an oracle: CPython 3.11's `json.loads` with the recursion limit set so it reads
+  exactly 512 deep, over 20,000 seeded texts nested around 512 in arrays and objects, with random
+  corruptions. 0 differences in outcome (read, refused, too deep), but for 31 texts where 3.11 itself
+  raised `RecursionError` while building a decode error within two frames of its limit: each is
+  malformed no deeper than 512, and `parse_json` refuses it with `json.loads`'s message.
+- The outcome of 20,000 more seeded texts (trailing commas included) hashes the same on 3.11, 3.12
+  and 3.13.
+- A 1.8 MB sidecar of 3,000 facts scans in 13 ms (its `json.loads` is 3 ms).
+- `cargo test`: `j89_5e_parse_json_reads_a_fixed_depth` pins 512 and 513 in arrays and in objects,
+  brackets inside strings, refusals before the deep opener, and the same answers with the recursion
+  limit lowered to 600.
+
+**The cases** (`--suite recall-queries`): the ruling moved to 513, the first depth past Python's
+(`ruling: sidecar/nested — read of a sidecar nested 513 deep (between python's limit of 512 and
+node's stack)`, in lists and in objects), with its per-side literals; new agreeing cases at 512 in
+lists and in objects, where both read, with per-side literals; 8,500 joined 20,000 and 100,000 as
+agreeing (both read it as no sidecar). Depth now means the whole document's, the sidecar's own
+three objects included. Against 8539b384's `runtime-py/src` (a scratch worktree, this suite): 4
+failures on 3.12 (the stale ruling, the Python literal at 513, and 8,500 now agreeing) and 2 on
+3.11 (the stale ruling and the Python literal at 513). With this change the suite passes with a
+3.11, a 3.12 and a 3.13 reference interpreter (`--python`, venvs made by `uv` with the repo venv's
+pinned versions).
+
+**The other JSON reads J89-5d scanned do not take the limit.** The term cache (`cached`), the usage
+ledger and the log segment (`LogSegment`), the token ledger and the pricing table all read through
+`_js_json_parse`, the `JSON.parse` lowering: it catches `RecursionError` and rereads without
+recursing (J88-2), so its answer is an unlimited read on every CPython, as V8's `JSON.parse` is.
+Applying 512 there would make a divergence where there is none. `--suite recall-usage`,
+`tokenledger`, `storage-log`, `pricing` and `eventlog` pass with 3.11 and 3.13 reference
+interpreters too.
+
+**Gates.** `--all` 23,298 cases, 0 failures, 241 ruled (23,289 before: nine cases added, and the
+one ruling moved from 8,500 to 513). By suite: `--suite recall-queries` 491 (1 ruled),
+`--suite recall-usage` 256, `--suite ts2py` 464 and `--suite wire` 712, each with 0 failures.
+ts2py `cargo test`: 88 passed; clippy (`-D warnings`) and fmt are clean. `npm test`: 2,460 passed, 0
+failed, 47 skipped. Full pytest: 5,335 passed, 0 failed. ruff is clean.
+
+**Left open (found, not changed here).** The same version dependence is outside the generated
+modules. The hand-written `json.loads` / `parseJson` pairs (`hookadapter`, `hostinstall`,
+`skillfile`, `client`, `mcpreport`, `contract`) still read to CPython's own depth. A transcript line
+1,200 deep makes `hookadapter._previous_prompt` answer `''` on 3.11 and `'first prompt'` on 3.12,
+3.13 and Node. CPython 3.13 also changed `json.loads`'s refusal for a trailing comma (`Illegal
+trailing comma before end of object: … (char 6)` where 3.11 and 3.12 say `Expecting property name
+enclosed in double quotes: … (char 7)`), so `parse_json`'s message moves with the version. The
+sidecar's bare `catch` cannot see it, but `j89_5a_queries_adapters_answer_like_node` fails with
+`TS2PY_PYTHON` set to 3.13. PyYAML's depth for the grants config does not move with the version
+(492 nested flow sequences at the top level on 3.11, 3.12 and 3.13), but it does move with the
+caller's stack.
 
 ## Concurrency
 
