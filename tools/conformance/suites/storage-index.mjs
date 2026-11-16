@@ -48,6 +48,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { j90, j90Cases } from '../lib/storage_j90.mjs';
 
 export const name = 'storage-index';
 export const summary = 'HotIndex: index bytes, docs/postings/df/avgdl, the refresh script, native read-only';
@@ -1155,5 +1156,8 @@ async function runIn(ctx) {
     });
   }
 
+  // J90-1 (#316 G4 prep): coverage this suite lacked, and the inputs the hand-written runtimes
+  // disagree on, pinned `UNRULED DIVERGENCE` (lib/storage_j90.mjs).
+  cases.push(...j90Cases('index', await j90(ctx, 'index')));
   return { cases, notes };
 }

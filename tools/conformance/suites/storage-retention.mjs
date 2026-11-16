@@ -27,6 +27,7 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSyn
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzipSync, gzipSync } from 'node:zlib';
+import { j90, j90Cases } from '../lib/storage_j90.mjs';
 
 export const name = 'storage-retention';
 export const summary = 'Retention: prune, fold, rotate, archive closed jobs, verify before delete, TTL, opt-out, search';
@@ -541,5 +542,8 @@ export async function run(ctx) {
       keys(nd.beds[linkIdx][linkFile]),
     ),
   );
+  // J90-1 (#316 G4 prep): coverage this suite lacked, and the inputs the hand-written runtimes
+  // disagree on, pinned `UNRULED DIVERGENCE` (lib/storage_j90.mjs).
+  cases.push(...j90Cases('retention', await j90(ctx, 'retention')));
   return { cases, notes: [`${SCENARIOS.length} scripted scenarios, ${SCENARIOS.reduce((n, s) => n + s.ops.length, 0)} ops per side`] };
 }

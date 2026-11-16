@@ -36,6 +36,7 @@ import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync 
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { j90, j90Cases } from '../lib/storage_j90.mjs';
 
 export const name = 'storage-lock';
 export const summary = 'no line lost to a log rewrite: held-lock-only fold/rotate/bound, an in-flight unlocked line carried over to EOF, a read-only dir fails fast';
@@ -217,5 +218,8 @@ export async function run(ctx) {
     const ro = (s) => [s[5][2], s[5][3], s[5][4], text(s[5][6]) === DATA + line(OBJ), s[5][7]];
     cases.push(...literalCases(ro(py), ro(nd), 'LITERAL: read-only dir, [lock held/fast, append ok/fast, new file refused/fast, bytes, dir]', [[false, true], [true, true], [false, true], true, [LOG]]));
   }
+  // J90-1 (#316 G4 prep): coverage this suite lacked, and the inputs the hand-written runtimes
+  // disagree on, pinned `UNRULED DIVERGENCE` (lib/storage_j90.mjs).
+  cases.push(...j90Cases('lock', await j90(ctx, 'lock')));
   return { cases, notes: [`${beds.length} beds${beds.length > BEDS.length ? '' : ' (read-only bed skipped on Windows)'}`] };
 }

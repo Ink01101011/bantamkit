@@ -799,7 +799,269 @@ def storage_lock(req: dict) -> dict:
     return {"beds": [_lock_bed(req["node"], b) for b in req.get("beds", [])]}
 
 
+# ----------------------------------------------------------------- storage-j90 (#316 G4 prep)
+#
+# J90-1 (#316 G4 prep): coverage the four G4 suites lacked, and the inputs on which the
+# hand-written runtimes disagree. One entry, sectioned by the suite that owns the cases:
+#
+#     {"suite": "storage-j90", "section": "index"|"cold"|"retention"|"lock", "dir": <scratch>}
+#       -> {name: answer, ...}
+#
+# Every answer is built here and in `lib/storage_j90.mjs` the same way; a raise is the answer
+# `{"raised": <class>, "msg": <sentence>}`, so the suite decides which of the two it compares.
+# Mirrored op for op by `lib/storage_j90.mjs`: change one, change both.
+
+_J90_T = 1_700_000_000
+_J90_FACT = (
+    "---\nname: {n}\ndescription: {d}\ntype: project\ncreated: '2026-08-01'\n"
+    "last_recalled: null\nlinks: []\n---\n\nbody [[{n}-link]] see src/{n}.py\n"
+)
+
+
+def _j90_try(f):
+    try:
+        return f()
+    except Exception as e:  # noqa: BLE001 -- a raise is an answer here
+        return {"raised": type(e).__name__, "msg": str(e)}
+
+
+def _j90_pin(d: Path) -> None:
+    for p in d.iterdir():
+        os.utime(p, (_J90_T, _J90_T))
+    os.utime(d, (_J90_T, _J90_T))
+
+
+def _j90_mangle(raw: bytes, mode: str) -> bytes:
+    import re
+
+    if mode == "lens_total_float":
+        return re.sub(rb'"lens_total":\[(\d+)', rb'"lens_total":[\1.0', raw, count=1)
+    if mode == "full_at_lower":
+        return re.sub(rb'"full_at":"([0-9-]{10})T([0-9:]{8})Z"', rb'"full_at":"\1t\2z"', raw, count=1)
+    if mode == "shard_invalid_utf8":
+        return raw.replace(b'"alpha":', b'"alph\xff":', 1)
+    if mode == "shard_seg_float":
+        return re.sub(rb'"alpha":\[(\d+),1,', rb'"alpha":[\1,1.0,', raw, count=1)
+    raise ValueError(mode)
+
+
+def _j90_index(d: Path) -> dict:
+    from bantamkit.storage import hotindex as h
+
+    out: dict = {}
+
+    def bed(name: str, kind: str, files: list) -> tuple[Path, Path]:
+        root = d / name
+        src = root / "facts" if kind == "facts" else root
+        src.mkdir(parents=True)
+        for rel, text in files:
+            (src / rel).write_text(text, encoding="utf-8", newline="\n")
+        _j90_pin(src)
+        return root, d / f"{name}-home"
+
+    facts = [
+        ["alpha.md", _J90_FACT.format(n="alpha", d="alpha word")],
+        ["beta.md", _J90_FACT.format(n="beta", d="beta alpha words, stale? no")],
+        ["other-file.md", _J90_FACT.format(n="gamma", d="gamma in another file")],
+        ["loose.md", "---\nname: 7\ndescription: loose\ntype: project\n---\n\nb\n"],
+    ]
+    # 1. The public read API over one clean facts index (each was reached only through recall).
+    root, home = bed("reads", "facts", facts)
+    hi = h.HotIndex(root, "facts", home)
+    hi.refresh("fast")
+    doc = hi.doc("alpha")
+    out["reads"] = {
+        "names": list(hi.names()),
+        "doc": doc,
+        "doc_missing": hi.doc("nope"),
+        "cols": hi.cols(),
+        "file_of": [hi.file_of(n) for n in ("alpha", "gamma", "nope")],
+        "lens": [hi.lens(n) for n in ("alpha", "beta", "nope")],
+        "lens_total": hi.lens_total(),
+        "size": hi.size(),
+        "exists": hi.exists(),
+        "head_print": json.loads(hi.head_print())["shards"],
+        "unchecked": sorted(hi.docs_unchecked()),
+        "parse_file": list(hi.parse_file(root / "facts" / "beta.md", "5", 9)),
+        "parse_file_loose": list(hi.parse_file(root / "facts" / "loose.md", "5", 9)),
+        "parse_file_gone": list(hi.parse_file(root / "facts" / "gone.md", "5", 9)),
+    }
+    hi.invalidate()
+    out["reads"]["after_invalidate"] = [hi.exists(), hi.size()]
+    out["units"] = {
+        "decode": h.decode(["a", "b", "c"], [0, 2, 1, 0, 3, 2, 1, 0, 0, 1]),
+        "decode_bad": _j90_try(lambda: h.decode(["a"], [0, 2, 1, 0, 0])),
+        "encode": h.encode([(0, 1, 0, 0), (1, 1, 0, 0), (2, 0, 2, 0), (4, 0, 2, 0)]),
+        "head_text": h.head_text({k: k for k in h.HEAD_KEYS + h.TAIL_KEYS}),
+        "constants": [h.INDEX_VERSION, h.FULL_REFRESH_EVERY_S, h.SHARDS, list(h.FAMILIES),
+                      list(h.HEAD_KEYS), list(h.TAIL_KEYS), h.SEG, h.DUPLICATE, h.INDEX_DIR_ENV],
+    }
+    # 2. A head or shard in a shape neither runtime writes, read by a fresh instance.
+    for mode in ("lens_total_float", "full_at_lower", "shard_invalid_utf8", "shard_seg_float"):
+        root, home = bed(mode, "facts", facts[:2])
+        hi = h.HotIndex(root, "facts", home)
+        hi.refresh("fast")
+        p = hi.path if mode in ("lens_total_float", "full_at_lower") else hi.shard_path("postings", h.shard_of("alpha"))
+        p.write_bytes(_j90_mangle(p.read_bytes(), mode))
+        hi = h.HotIndex(root, "facts", home)
+        res = {
+            "refresh": _j90_try(lambda hi=hi: hi.refresh("fast")),
+            "query": _j90_try(lambda hi=hi: sorted(hi.query(["alpha"]).items())),
+        }
+        stamp = json.loads(hi.path.read_text(encoding="utf-8").split("\n", 1)[0][:-1] + "}")["full_at"]
+        res["full_at_sep"] = stamp[10:11]
+        out[mode] = res
+    # 3. Native frontmatter only PyYAML reads: a flow mapping under `metadata:`.
+    native = [
+        ["flow.md", "---\nname: flow\ndescription: flow meta\nmetadata: {type: user}\n---\n\nb\n"],
+        ["plain.md", "---\nname: plain\ndescription: ok\nmetadata:\n  type: reference\n---\n\nb\n"],
+    ]
+    root, home = bed("native", "native", native)
+    hi = h.HotIndex(root, "native", home)
+    hi.refresh("fast")
+    out["native_flow"] = {"docs": sorted(hi.docs()), "skipped": sorted(hi.skipped)}
+    return out
+
+
+def _j90_cold(d: Path) -> dict:
+    from bantamkit.storage import coldindex as c
+
+    out: dict = {}
+
+    def doc(name: str, desc: str, file: str | None = None) -> dict:
+        return {"file": file or f"{name}.md", "name": name, "description": desc, "type": "project",
+                "keywords": ["kw"], "links": [], "tags": [], "refs": [], "mtime_ns": "1", "size": 1}
+
+    def fresh(name: str):
+        ci = c.ColdIndex("t", d / name)
+        ci.add({"alpha": doc("alpha", "word one"), "beta": doc("beta", "word two")})
+        ci.add({"alpha": doc("alpha", "word newer")})
+        return ci
+
+    ci = fresh("reads")
+    out["reads"] = {
+        "owners": sorted(ci.owners().items()),
+        "all_docs": [x["description"] for x in ci.all_docs()],
+        "docs": sorted((k, v["description"]) for k, v in ci.docs().items()),
+        "doc": ci.doc("alpha"),
+        "doc_missing": ci.doc("nope"),
+        "manifest_ids": [s["id"] for s in ci.manifest()["segments"]],
+        "constants": [c.COLD_VERSION],
+    }
+    out["bad_name"] = [_j90_try(lambda n=n: c.ColdIndex(n, d)) for n in ("a/b", "..", "")]
+
+    def sub(p: Path, a: bytes, b: bytes) -> None:
+        p.write_bytes(p.read_bytes().replace(a, b, 1))
+
+    def run(name: str, mutate) -> dict:
+        ci = fresh(name)
+        mutate(ci)
+        def q():
+            try:
+                return [list(r) for r in ci.query(["word"])]
+            except c.ColdIndexError:
+                return {"ColdIndexError": True}
+
+        def one():
+            try:
+                return ci.doc("beta")
+            except c.ColdIndexError:
+                return {"ColdIndexError": True}
+        return {"query": q(), "doc": one()}
+
+    def tf_float(ci):
+        for i in range(16):
+            p = ci.shard_path(i)
+            if b'"word"' in p.read_bytes():
+                sub(p, b'"description",1]', b'"description",1.0]')
+
+    out["tf_float"] = run("tf_float", tf_float)
+    out["version_true"] = run("version_true", lambda ci: sub(ci.manifest_path, b'"version":1', b'"version":true'))
+    out["id_newline"] = run("id_newline", lambda ci: sub(ci.manifest_path, b'"id":"000002"', b'"id":"000002\\n"'))
+    out["seg_invalid_utf8"] = run("seg_invalid_utf8", lambda ci: sub(ci.segment_path("000001"), b'"word two"', b'"word tw\xff"'))
+    return out
+
+
+def _j90_retention(d: Path) -> dict:
+    from bantamkit.storage import retention as r
+    from bantamkit.storage.hotindex import INDEX_DIR_ENV
+
+    out: dict = {}
+    saved = {k: os.environ.get(k) for k in (r.RETENTION_ENV, INDEX_DIR_ENV)}
+    os.environ[r.RETENTION_ENV] = "on"
+    os.environ[INDEX_DIR_ENV] = ""
+    try:
+        def bed(name: str) -> tuple[Path, Path]:
+            home, root = d / name / "home", d / name / "root"
+            (home / ".bantamkit").mkdir(parents=True)
+            (root / ".shiftwork" / "archive").mkdir(parents=True)
+            return home, root
+
+        now = "2026-10-16T00:00:00.000Z"
+        # a closed-looking job whose unit status is a list, beside an ordinary closed job
+        home, root = bed("list_status")
+        sw = root / ".shiftwork"
+        (sw / "checkpoint-a.json").write_text(json.dumps({"plan": {"units": [{"status": []}]}}))
+        (sw / "checkpoint-b.json").write_text(json.dumps({"plan": {"units": [{"status": "done"}]}}))
+        _j90_pin(sw)
+        out["list_status"] = {
+            "run": _j90_try(lambda: r.run_retention(home, [root], now)),
+            "left": sorted(os.listdir(sw)),
+        }
+        # a cold doc (the job index) with no `file`
+        home, root = bed("no_file")
+        cold = r.shiftwork_cold(home, root)
+        doc = {"name": "j", "description": "", "type": "shiftwork", "keywords": ["x"], "links": [],
+               "tags": [], "refs": [], "mtime_ns": "0", "size": 1}
+        cold.add({"j": doc})
+        cold.add({"k": dict(doc, name="k", file=".shiftwork/archive/k.json.gz")})
+        out["no_file_run"] = _j90_try(lambda: r.run_retention(home, [root], now))
+        out["no_file_search"] = _j90_try(lambda: r.search_archived(root / ".shiftwork" / "checkpoint.json", "x", home))
+        # retention.json with a byte that is not UTF-8 outside `ran_at`
+        home, _ = bed("due")
+        r.state_path(home).write_bytes(b'{"ran_at":"2026-10-16T00:00:00.000Z","note":"\xff"}')
+        out["due_invalid_utf8"] = r.due(home, "2026-10-16T01:00:00.000Z")
+        out["parse_now"] = [
+            _j90_try(lambda s=s: r.parse_now(s))
+            for s in ("2026-10-16T00:00:00Z", "2026-10-16T00:00:00.123Z", "0001-01-01T00:00:00Z",
+                      "2024-02-29T23:59:59.999Z", "2023-02-29T00:00:00Z", "0000-01-01T00:00:00Z",
+                      "2026-10-16T24:00:00Z", "2026-10-16T00:00:60Z", "2026-10-16 00:00:00Z",
+                      "2026-10-16T00:00:00", "x", "")
+        ]
+        out["parse_now_nonstr"] = _j90_try(lambda: r.parse_now(5))
+        out["constants"] = [r.RETENTION_ENV, r.SKILL_AUDIT_ENV, r.TTL_S, r.LEDGER_DAYS, r.LOG_DAYS,
+                            r.JOB_DAYS, r.STATE_NAME, r.SEARCH_MAX]
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+    return out
+
+
+def _j90_lock(d: Path) -> dict:
+    import stat as _stat
+
+    from bantamkit.storage import lock
+
+    t = d / "target"
+    with lock.exclusive(t) as held:
+        mode = _stat.S_IMODE(os.stat(f"{t}.lock").st_mode)
+    return {"mode": [held, oct(mode)], "constants": [lock.LOCK_WAIT_MS, lock.LOCK_STALE_MS, lock.LOCK_POLL_MS]}
+
+
+def storage_j90(req: dict) -> dict:
+    d = Path(req["dir"])
+    d.mkdir(parents=True, exist_ok=True)
+    os.umask(0o022)  # the lock mode is permission bits after the umask: pinned on both sides
+    return {"index": _j90_index, "cold": _j90_cold, "retention": _j90_retention, "lock": _j90_lock}[
+        req["section"]
+    ](d)
+
+
 SUITES = {
+    "storage-j90": storage_j90,
     "storage-cold": storage_cold,
     "storage-index": storage_index,
     "storage-lock": storage_lock,
